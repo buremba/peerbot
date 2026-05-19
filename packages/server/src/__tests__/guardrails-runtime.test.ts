@@ -1,46 +1,143 @@
 /**
- * End-to-end guardrails-runtime smoke test.
+ * End-to-end guardrails-runtime test against the actual wired call sites.
  *
- * Boots the bare minimum to exercise the wired call sites against a real DB:
- *   - createPostgresAgentConfigStore + AgentSettingsStore (real settings lookup)
- *   - GuardrailRegistry populated via the same `registerBuiltinGuardrails`
- *     the gateway uses at boot
- *   - The same `runGuardrails(...)` path the wired code invokes
- *   - A real `events` row produced by `recordGuardrailTrip` (the audit-trail
- *     side of every trip) — proving the join-up writes land.
+ * Each block constructs the real service (ChatResponseBridge / MessageConsumer
+ * / McpProxy), wires the same registry + AgentSettingsStore the production
+ * gateway uses, and drives the public method that handles the corresponding
+ * stage. Assertions cover:
  *
- * Doesn't boot the HTTP server or workers (would require provider keys + the
- * full Lobu stack). The three wired call sites all share the same shape:
- * load settings, run guardrails, on trip → emit audit row + branch. This test
- * pins that shape against a live DB.
+ *   - the block message is delivered (chat target / queue / JSON-RPC reply)
+ *   - the `events` row lands with `semantic_type='guardrail-trip'`
+ *   - the rolling output buffer catches secrets split across stream chunks
+ *   - the audit org id falls back to the connection / agent metadata when the
+ *     payload doesn't carry it
+ *
+ * Tests use `flushPendingGuardrailAudits()` (the production hook) instead of
+ * a sleep — fire-and-forget audit writes are explicitly awaitable.
  */
 
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { Guardrail } from '@lobu/core';
+import { generateWorkerToken, GuardrailRegistry } from '@lobu/core';
 import { AgentSettingsStore } from '../gateway/auth/settings/agent-settings-store';
-import { recordGuardrailTrip } from '../gateway/guardrails/audit';
+import { McpProxy } from '../gateway/auth/mcp/proxy';
+import { ChatResponseBridge } from '../gateway/connections/chat-response-bridge';
 import {
-  registerBuiltinGuardrails,
-  secretScanGuardrail,
-} from '../gateway/guardrails/builtins';
-import { GuardrailRegistry, runGuardrails } from '@lobu/core';
+  flushPendingGuardrailAudits,
+} from '../gateway/guardrails/audit';
+import { registerBuiltinGuardrails } from '../gateway/guardrails/builtins';
+import { MessageConsumer } from '../gateway/orchestration/message-consumer';
+import type { OrchestratorConfig } from '../gateway/orchestration/base-deployment-manager';
+import type { BaseDeploymentManager } from '../gateway/orchestration/base-deployment-manager';
+import { GrantStore } from '../gateway/permissions/grant-store';
+import {
+  PostgresSecretStore,
+} from '../lobu/stores/postgres-secret-store';
 import { orgContext } from '../lobu/stores/org-context';
 import { createPostgresAgentConfigStore } from '../lobu/stores/postgres-stores';
+import { SecretStoreRegistry } from '../gateway/secrets/index';
 import { cleanupTestDatabase, getTestDb } from './setup/test-db';
 import {
   createTestAgent,
   createTestOrganization,
 } from './setup/test-fixtures';
 
-describe('guardrails runtime — wired-path E2E', () => {
+// ─────────────────────────────────────────────────────────────────────────
+// Shared fixtures
+// ─────────────────────────────────────────────────────────────────────────
+
+interface PostedMessage {
+  text?: string;
+  iterableChunks?: string[];
+}
+
+/**
+ * Mock chat target that captures `post(string)` and `post(asyncIterable)`
+ * separately so the test can distinguish a streaming chunk from the
+ * out-of-band block message.
+ */
+function createCapturingTarget() {
+  const posted: PostedMessage[] = [];
+  const target = {
+    post: async (arg: unknown) => {
+      if (typeof arg === 'string') {
+        posted.push({ text: arg });
+        return { id: 'msg' };
+      }
+      if (arg && typeof (arg as any)[Symbol.asyncIterator] === 'function') {
+        const chunks: string[] = [];
+        for await (const chunk of arg as AsyncIterable<string>) {
+          chunks.push(chunk);
+        }
+        posted.push({ iterableChunks: chunks });
+        return { id: 'msg-stream' };
+      }
+      posted.push({});
+      return { id: 'msg-other' };
+    },
+    startTyping: async () => {},
+  };
+  return { target, posted };
+}
+
+function createManager(target: unknown, agentId: string, orgId: string) {
+  return {
+    getInstance: () => ({
+      connection: {
+        agentId,
+        organizationId: orgId,
+        platform: 'telegram',
+      },
+      chat: {
+        channel: () => target,
+        getAdapter: () => undefined,
+      },
+      conversationState: undefined,
+    }),
+    has: () => true,
+  };
+}
+
+async function fetchGuardrailEvents(orgId: string, stage: string) {
+  const db = getTestDb();
+  return db<{
+    id: number;
+    semantic_type: string;
+    origin_type: string | null;
+    title: string;
+    metadata: any;
+  }[]>`
+    SELECT id, semantic_type, origin_type, title, metadata
+    FROM events
+    WHERE organization_id = ${orgId}
+      AND semantic_type = 'guardrail-trip'
+      AND origin_type = ${`guardrail-${stage}`}
+    ORDER BY id DESC
+  `;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// ChatResponseBridge (output stage)
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('ChatResponseBridge — wired output guardrail', () => {
   let orgId: string;
   let agentId: string;
 
   beforeEach(async () => {
     await cleanupTestDatabase();
-    const org = await createTestOrganization({ name: 'Guardrails Org' });
+    const org = await createTestOrganization({ name: 'Guardrails Output Org' });
     orgId = org.id;
     const agent = await createTestAgent({ organizationId: orgId });
     agentId = agent.agentId;
+
+    const configStore = createPostgresAgentConfigStore();
+    await orgContext.run({ organizationId: orgId }, async () => {
+      await configStore.saveSettings(agentId, {
+        guardrails: ['secret-scan'],
+        updatedAt: Date.now(),
+      });
+    });
   });
 
   afterAll(async () => {
@@ -48,175 +145,491 @@ describe('guardrails runtime — wired-path E2E', () => {
     await db`TRUNCATE agents CASCADE`;
   });
 
-  it('secret-scan trips on the output stage when enabled in settings, audited as a guardrail-trip event', async () => {
-    // 1. Persist `guardrails = ["secret-scan"]` on the agent — exact write path
-    //    the wired runtime reads from on every message.
+  it('blocks a delta containing a full secret, posts the block message, audits the trip', async () => {
+    const { target, posted } = createCapturingTarget();
+    const manager = createManager(target, agentId, orgId);
+    const bridge = new ChatResponseBridge(manager as any);
+
+    const registry = new GuardrailRegistry();
+    registerBuiltinGuardrails(registry);
+    const settingsStore = new AgentSettingsStore(createPostgresAgentConfigStore());
+    bridge.setGuardrails(registry, settingsStore);
+
+    const payload = {
+      messageId: 'm1',
+      channelId: '123',
+      conversationId: '123',
+      userId: 'u1',
+      teamId: 't1',
+      timestamp: 0,
+      platform: 'telegram',
+      platformMetadata: {
+        connectionId: 'conn-1',
+        chatId: '123',
+        // agentId omitted on purpose — fallback to connection.agentId
+        // organizationId omitted on purpose — fallback to connection.organizationId
+      },
+    };
+
+    await orgContext.run({ organizationId: orgId }, async () => {
+      await bridge.handleDelta(
+        { ...payload, delta: 'here is sk-abcdefghij0123456789AB please' },
+        'session-1'
+      );
+    });
+
+    // The capturing target should have received exactly the block message,
+    // not the leaked delta.
+    expect(posted).toEqual([
+      expect.objectContaining({
+        text: expect.stringContaining('Message blocked by guardrail'),
+      }),
+    ]);
+    expect(posted[0]?.text).toMatch(/openai-key/);
+
+    await flushPendingGuardrailAudits();
+
+    const rows = await fetchGuardrailEvents(orgId, 'output');
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.metadata.guardrail).toBe('secret-scan');
+    expect(rows[0]!.metadata.stage).toBe('output');
+    expect(rows[0]!.metadata.agent_id).toBe(agentId);
+    expect(rows[0]!.metadata.conversation_id).toBe('123');
+  });
+
+  it('catches a secret split across two stream chunks via rolling buffer', async () => {
+    const { target, posted } = createCapturingTarget();
+    const manager = createManager(target, agentId, orgId);
+    const bridge = new ChatResponseBridge(manager as any);
+
+    const registry = new GuardrailRegistry();
+    registerBuiltinGuardrails(registry);
+    const settingsStore = new AgentSettingsStore(createPostgresAgentConfigStore());
+    bridge.setGuardrails(registry, settingsStore);
+
+    const payload = {
+      messageId: 'm1',
+      channelId: '123',
+      conversationId: '123',
+      userId: 'u1',
+      teamId: 't1',
+      timestamp: 0,
+      platform: 'telegram',
+      platformMetadata: { connectionId: 'conn-1', chatId: '123' },
+    };
+
+    // First chunk doesn't contain the full pattern.
+    await orgContext.run({ organizationId: orgId }, async () => {
+      await bridge.handleDelta({ ...payload, delta: 'leaking sk-a' }, 's');
+      // Second chunk, in isolation, doesn't match either. Only the
+      // concatenation of (rolling tail + this delta) trips the regex.
+      await bridge.handleDelta(
+        { ...payload, delta: 'bcdefghij0123456789ABCD done' },
+        's'
+      );
+    });
+
+    const blockPost = posted.find((p) =>
+      p.text?.startsWith('Message blocked by guardrail')
+    );
+    expect(blockPost).toBeDefined();
+    expect(blockPost!.text).toMatch(/openai-key/);
+
+    await flushPendingGuardrailAudits();
+    const rows = await fetchGuardrailEvents(orgId, 'output');
+    expect(rows.length).toBe(1);
+  });
+
+  it('audits the trip even when platformMetadata.organizationId is missing (connection fallback)', async () => {
+    const { target } = createCapturingTarget();
+    // Build a manager whose connection carries the org id — this is the
+    // canonical fallback for response-bridge audits.
+    const manager = {
+      getInstance: () => ({
+        connection: {
+          agentId,
+          organizationId: orgId,
+          platform: 'telegram',
+        },
+        chat: {
+          channel: () => target,
+          getAdapter: () => undefined,
+        },
+      }),
+      has: () => true,
+    };
+    const bridge = new ChatResponseBridge(manager as any);
+
+    const registry = new GuardrailRegistry();
+    registerBuiltinGuardrails(registry);
+    const settingsStore = new AgentSettingsStore(createPostgresAgentConfigStore());
+    bridge.setGuardrails(registry, settingsStore);
+
+    const payload = {
+      messageId: 'm1',
+      channelId: '123',
+      conversationId: '123',
+      userId: 'u1',
+      teamId: 't1',
+      timestamp: 0,
+      platform: 'telegram',
+      // No organizationId in metadata — bridge must resolve via the connection.
+      platformMetadata: { connectionId: 'conn-1', chatId: '123' },
+    };
+
+    await orgContext.run({ organizationId: orgId }, async () => {
+      await bridge.handleDelta(
+        { ...payload, delta: 'token AKIAIOSFODNN7EXAMPLE leaked' },
+        's'
+      );
+    });
+
+    await flushPendingGuardrailAudits();
+    const rows = await fetchGuardrailEvents(orgId, 'output');
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.metadata.guardrail).toBe('secret-scan');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// MessageConsumer (input stage)
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Sub-class that exposes `handleMessage` for direct invocation. Production
+ * paths reach it via the queue subscribe callback in `start()`; for tests
+ * we don't need the actual queue/worker startup machinery, just the wired
+ * call site.
+ */
+class TestableMessageConsumer extends MessageConsumer {
+  async invokeHandleMessage(job: { id?: string; data: any }): Promise<void> {
+    return (this as any).handleMessage(job);
+  }
+}
+
+/**
+ * The shipped built-ins are stage-specific: `secret-scan` is output-stage,
+ * `forbidden-tools` is pre-tool. To exercise the wired MessageConsumer
+ * input path without falsifying its shape, we register a minimal test-only
+ * input guardrail that trips on any message containing "SECRET".
+ */
+const testInputGuardrail: Guardrail<'input'> = {
+  name: 'test-input-tripper',
+  stage: 'input',
+  async run(ctx) {
+    if (ctx.message.includes('SECRET')) {
+      return {
+        tripped: true,
+        reason: 'test-input-tripper saw "SECRET"',
+        metadata: { stage: 'input' },
+      };
+    }
+    return { tripped: false };
+  },
+};
+
+describe('MessageConsumer — wired input guardrail', () => {
+  let orgId: string;
+  let agentId: string;
+
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+    const org = await createTestOrganization({ name: 'Guardrails Input Org' });
+    orgId = org.id;
+    const agent = await createTestAgent({ organizationId: orgId });
+    agentId = agent.agentId;
+
     const configStore = createPostgresAgentConfigStore();
-    const settingsStore = new AgentSettingsStore(configStore);
     await orgContext.run({ organizationId: orgId }, async () => {
       await configStore.saveSettings(agentId, {
-        guardrails: ['secret-scan'],
+        guardrails: ['test-input-tripper'],
         updatedAt: Date.now(),
       });
     });
-
-    // 2. Build the registry the same way the gateway does at boot.
-    const registry = new GuardrailRegistry();
-    registerBuiltinGuardrails(registry);
-
-    // 3. Exercise the same `runGuardrails` shape `ChatResponseBridge` uses on
-    //    a streaming delta. The text contains an OpenAI-key-shaped string.
-    const enabled = (
-      await orgContext.run({ organizationId: orgId }, async () => {
-        return settingsStore.getSettings(agentId);
-      })
-    )?.guardrails ?? [];
-    expect(enabled).toEqual(['secret-scan']);
-
-    const outcome = await runGuardrails(registry, 'output', enabled, {
-      agentId,
-      userId: 'user-1',
-      text: 'here is your secret sk-abcdefghij0123456789AB please',
-      platform: 'api',
-      conversationId: 'conv-1',
-    });
-
-    expect(outcome.tripped).not.toBeNull();
-    expect(outcome.tripped?.guardrail).toBe('secret-scan');
-    expect(outcome.tripped?.reason).toMatch(/openai-key/);
-
-    // 4. Record the trip via the same audit helper the wired code invokes.
-    recordGuardrailTrip({
-      organizationId: orgId,
-      agentId,
-      userId: 'user-1',
-      conversationId: 'conv-1',
-      stage: 'output',
-      guardrail: outcome.tripped!.guardrail,
-      reason: outcome.tripped!.reason,
-      metadata: outcome.tripped!.metadata,
-    });
-
-    // 5. Verify the event row landed with the contract shape. `recordGuardrailTrip`
-    //    is fire-and-forget — give the insert a tick to land.
-    await new Promise((r) => setTimeout(r, 50));
-
-    const db = getTestDb();
-    const rows = await db<{
-      id: number;
-      semantic_type: string;
-      origin_type: string | null;
-      title: string;
-      metadata: any;
-    }[]>`
-      SELECT id, semantic_type, origin_type, title, metadata
-      FROM events
-      WHERE organization_id = ${orgId}
-        AND semantic_type = 'guardrail-trip'
-      ORDER BY id DESC
-      LIMIT 1
-    `;
-
-    expect(rows.length).toBe(1);
-    const row = rows[0]!;
-    expect(row.semantic_type).toBe('guardrail-trip');
-    expect(row.origin_type).toBe('guardrail-output');
-    expect(row.title).toMatch(/secret-scan/);
-    expect(row.metadata.guardrail).toBe('secret-scan');
-    expect(row.metadata.stage).toBe('output');
-    expect(row.metadata.agent_id).toBe(agentId);
-    expect(row.metadata.conversation_id).toBe('conv-1');
   });
 
-  it('passes when settings.guardrails is empty (no enforcement)', async () => {
+  afterAll(async () => {
+    const db = getTestDb();
+    await db`TRUNCATE agents CASCADE`;
+  });
+
+  it('rejects a tripping input, pushes block message to the response queue, audits the trip', async () => {
+    const sentToQueue: Array<{ queue: string; data: any }> = [];
+    const fakeQueue = {
+      start: async () => {},
+      stop: async () => {},
+      createQueue: async () => {},
+      send: async (queue: string, data: any) => {
+        sentToQueue.push({ queue, data });
+        return 'job-id';
+      },
+      work: async () => {},
+      pauseWorker: async () => {},
+      resumeWorker: async () => {},
+      getQueueStats: async () => ({
+        waiting: 0,
+        active: 0,
+        completed: 0,
+        failed: 0,
+      }),
+      isHealthy: () => true,
+    };
+
+    // Stub deployment manager — happy-path branches need it for
+    // listDeployments / scaleDeployment / etc, but the trip path
+    // short-circuits before any of those are called.
+    const fakeDeployments: BaseDeploymentManager = {
+      listDeployments: async () => [],
+      scaleDeployment: async () => {},
+      updateDeploymentActivity: async () => {},
+      createWorkerDeployment: async () => {},
+      syncNetworkConfigGrants: async () => {},
+      deleteDeployment: async () => {},
+      validateWorkerImage: async () => {},
+      setSecretStore: () => {},
+      setGrantStore: () => {},
+      setPolicyStore: () => {},
+      setProviderCatalogService: () => {},
+      setProviderModules: () => {},
+      reconcileDeployments: async () => {},
+      invalidateGrantSyncCache: () => {},
+      clearAllGrantSyncCaches: () => {},
+    } as unknown as BaseDeploymentManager;
+
+    const config: OrchestratorConfig = {
+      queues: { retryLimit: 1, expireInSeconds: 60 },
+      cleanup: { initialDelayMs: 1_000_000, intervalMs: 1_000_000 },
+    } as OrchestratorConfig;
+
+    const consumer = new TestableMessageConsumer(config, fakeDeployments);
+    // Swap in the fake queue — `MessageConsumer` constructs a RunsQueue
+    // by default which would try to connect.
+    (consumer as any).queue = fakeQueue;
+
+    const registry = new GuardrailRegistry();
+    registerBuiltinGuardrails(registry);
+    registry.register(testInputGuardrail);
+    const settingsStore = new AgentSettingsStore(createPostgresAgentConfigStore());
+    consumer.setGuardrails(registry, settingsStore);
+
+    await orgContext.run({ organizationId: orgId }, async () => {
+      await consumer.invokeHandleMessage({
+        id: '1',
+        data: {
+          userId: 'u1',
+          conversationId: 'conv-1',
+          messageId: 'm1',
+          channelId: 'c1',
+          teamId: 't1',
+          agentId,
+          organizationId: orgId,
+          botId: 'bot',
+          platform: 'telegram',
+          messageText: 'hello SECRET world',
+          platformMetadata: {},
+          agentOptions: {},
+        },
+      });
+    });
+
+    // The trip path must NOT enqueue to the worker thread queue and MUST
+    // enqueue a single thread_response with the rejection content.
+    const threadResponses = sentToQueue.filter(
+      (q) => q.queue === 'thread_response'
+    );
+    const workerEnqueues = sentToQueue.filter((q) =>
+      q.queue.startsWith('thread_message_')
+    );
+    expect(workerEnqueues.length).toBe(0);
+    expect(threadResponses.length).toBe(1);
+    expect(threadResponses[0]!.data.content).toMatch(/Message rejected:/);
+    expect(threadResponses[0]!.data.content).toMatch(/SECRET/);
+
+    await flushPendingGuardrailAudits();
+    const rows = await fetchGuardrailEvents(orgId, 'input');
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.metadata.guardrail).toBe('test-input-tripper');
+  });
+
+  it('falls back to agent-metadata orgId when payload omits organizationId', async () => {
+    const sentToQueue: Array<{ queue: string; data: any }> = [];
+    const fakeQueue = {
+      start: async () => {},
+      stop: async () => {},
+      createQueue: async () => {},
+      send: async (queue: string, data: any) => {
+        sentToQueue.push({ queue, data });
+        return 'job-id';
+      },
+      work: async () => {},
+      pauseWorker: async () => {},
+      resumeWorker: async () => {},
+      getQueueStats: async () => ({
+        waiting: 0,
+        active: 0,
+        completed: 0,
+        failed: 0,
+      }),
+      isHealthy: () => true,
+    };
+    const fakeDeployments = {
+      listDeployments: async () => [],
+    } as unknown as BaseDeploymentManager;
+
+    const consumer = new TestableMessageConsumer(
+      { queues: { retryLimit: 1, expireInSeconds: 60 } } as OrchestratorConfig,
+      fakeDeployments
+    );
+    (consumer as any).queue = fakeQueue;
+
+    const registry = new GuardrailRegistry();
+    registerBuiltinGuardrails(registry);
+    registry.register(testInputGuardrail);
+    const settingsStore = new AgentSettingsStore(createPostgresAgentConfigStore());
+    consumer.setGuardrails(registry, settingsStore);
+
+    await orgContext.run({ organizationId: orgId }, async () => {
+      await consumer.invokeHandleMessage({
+        id: '1',
+        data: {
+          userId: 'u1',
+          conversationId: 'conv-1',
+          messageId: 'm1',
+          channelId: 'c1',
+          teamId: 't1',
+          agentId,
+          // organizationId intentionally absent — exercises metadata fallback
+          botId: 'bot',
+          platform: 'telegram',
+          messageText: 'leaking SECRET data',
+          platformMetadata: {},
+          agentOptions: {},
+        },
+      });
+    });
+
+    await flushPendingGuardrailAudits();
+    const rows = await fetchGuardrailEvents(orgId, 'input');
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.metadata.guardrail).toBe('test-input-tripper');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// McpProxy (pre-tool stage)
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('McpProxy — wired pre-tool guardrail', () => {
+  let orgId: string;
+  let agentId: string;
+
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+    const org = await createTestOrganization({
+      name: 'Guardrails Pre-Tool Org',
+    });
+    orgId = org.id;
+    const agent = await createTestAgent({ organizationId: orgId });
+    agentId = agent.agentId;
+
     const configStore = createPostgresAgentConfigStore();
     await orgContext.run({ organizationId: orgId }, async () => {
-      await configStore.saveSettings(agentId, { updatedAt: Date.now() });
+      await configStore.saveSettings(agentId, {
+        guardrails: ['forbidden-tools'],
+        updatedAt: Date.now(),
+      });
     });
+  });
+
+  afterAll(async () => {
+    const db = getTestDb();
+    await db`TRUNCATE agents CASCADE`;
+  });
+
+  it('blocks a forbidden tool with generic policy text and audits the trip', async () => {
+    // Minimal McpConfigSource that always returns an HTTP server config —
+    // we don't need real upstream behavior, only the gate before forwardRequest.
+    const fakeConfigService = {
+      getHttpServer: async () => ({
+        url: 'http://upstream.invalid/mcp',
+        type: 'http' as const,
+      }),
+      getAllHttpServers: async () => new Map(),
+    };
+
+    const defaultSecretStore = new PostgresSecretStore();
+    const secretStore = new SecretStoreRegistry(defaultSecretStore, {
+      secret: defaultSecretStore,
+    });
+    const grantStore = new GrantStore();
+    const settingsStore = new AgentSettingsStore(createPostgresAgentConfigStore());
 
     const registry = new GuardrailRegistry();
     registerBuiltinGuardrails(registry);
 
-    const outcome = await runGuardrails(registry, 'output', [], {
-      agentId,
-      userId: 'user-1',
-      text: 'sk-abcdefghij0123456789AB',
-      platform: 'api',
-      conversationId: 'conv-1',
+    const proxy = new McpProxy(fakeConfigService as any, {
+      secretStore,
+      grantStore,
+      agentSettingsStore: settingsStore,
+      guardrailRegistry: registry,
     });
 
-    expect(outcome.tripped).toBeNull();
-    expect(outcome.ran).toEqual([]);
-  });
-
-  it('secret-scan passes safe output', async () => {
-    const outcome = await secretScanGuardrail.run({
+    // Mint a real worker token (uses ENCRYPTION_KEY set by global setup).
+    const token = generateWorkerToken('u1', 'conv-1', 'deployment-1', {
+      channelId: 'c1',
+      teamId: 't1',
       agentId,
-      userId: 'u',
-      text: 'hello world, no secrets here',
-      platform: 'api',
+      organizationId: orgId,
+      platform: 'telegram',
     });
-    expect(outcome.tripped).toBe(false);
-  });
 
-  it('secret-scan matches GitHub PAT shape', async () => {
-    const outcome = await secretScanGuardrail.run({
-      agentId,
-      userId: 'u',
-      text: 'token: ghp_abcdefghij0123456789ABCDEFGH01234567',
-      platform: 'api',
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 42,
+      method: 'tools/call',
+      params: { name: 'delete_repo', arguments: { repo: 'org/x' } },
     });
-    expect(outcome.tripped).toBe(true);
-    expect(outcome.metadata).toMatchObject({ pattern: 'github-pat' });
-  });
 
-  it('secret-scan matches AWS access key shape', async () => {
-    const outcome = await secretScanGuardrail.run({
-      agentId,
-      userId: 'u',
-      text: 'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE',
-      platform: 'api',
-    });
-    expect(outcome.tripped).toBe(true);
-    expect(outcome.metadata).toMatchObject({ pattern: 'aws-access-key' });
-  });
-
-  it('forbidden-tools registers and trips on delete_repo', async () => {
-    const registry = new GuardrailRegistry();
-    registerBuiltinGuardrails(registry);
-
-    const outcome = await runGuardrails(
-      registry,
-      'pre-tool',
-      ['forbidden-tools'],
-      {
-        agentId,
-        userId: 'u',
-        toolName: 'delete_repo',
-        arguments: { repo: 'org/x' },
+    const response = await orgContext.run(
+      { organizationId: orgId },
+      async () => {
+        return proxy.getApp().fetch(
+          new Request('http://localhost/test-mcp', {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${token}`,
+              'content-type': 'application/json',
+            },
+            body,
+          })
+        );
       }
     );
 
-    expect(outcome.tripped).not.toBeNull();
-    expect(outcome.tripped?.guardrail).toBe('forbidden-tools');
+    expect(response.status).toBe(200);
+    const json = (await response.json()) as any;
+    expect(json.jsonrpc).toBe('2.0');
+    expect(json.id).toBe(42);
+    expect(json.result.isError).toBe(true);
+    // Generic text — no reason leak.
+    expect(json.result.content[0].text).toBe('Tool call blocked by policy.');
+    expect(json.result.content[0].text).not.toMatch(/delete_repo/);
+
+    await flushPendingGuardrailAudits();
+    const rows = await fetchGuardrailEvents(orgId, 'pre-tool');
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.metadata.guardrail).toBe('forbidden-tools');
+    // Reason is recorded in the audit row even though it's not surfaced
+    // to the worker — operators need it.
+    expect(rows[0]!.metadata.reason).toMatch(/delete_repo/);
   });
+});
 
-  it('forbidden-tools passes safe tools', async () => {
-    const registry = new GuardrailRegistry();
-    registerBuiltinGuardrails(registry);
+// ─────────────────────────────────────────────────────────────────────────
+// Reset for global test isolation
+// ─────────────────────────────────────────────────────────────────────────
 
-    const outcome = await runGuardrails(
-      registry,
-      'pre-tool',
-      ['forbidden-tools'],
-      {
-        agentId,
-        userId: 'u',
-        toolName: 'read_file',
-        arguments: {},
-      }
-    );
-
-    expect(outcome.tripped).toBeNull();
-  });
+afterEach(async () => {
+  // Drain anything still in flight so it doesn't leak into the next test.
+  await flushPendingGuardrailAudits();
 });

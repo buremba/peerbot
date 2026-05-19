@@ -251,8 +251,34 @@ export class MessageConsumer {
               }
             );
             if (outcome.tripped) {
-              recordGuardrailTrip({
-                organizationId: data.organizationId,
+              // Resolve org id with a metadata fallback so a trip never
+              // silently drops the audit. `data.organizationId` is
+              // populated for all production paths but legacy/test
+              // enqueues can omit it.
+              let resolvedOrgId = data.organizationId;
+              if (!resolvedOrgId && this.agentSettingsStore) {
+                try {
+                  const md = await this.agentSettingsStore.getMetadata(
+                    data.agentId
+                  );
+                  resolvedOrgId = md?.organizationId;
+                } catch (lookupErr) {
+                  logger.warn(
+                    {
+                      agentId: data.agentId,
+                      err:
+                        lookupErr instanceof Error
+                          ? lookupErr.message
+                          : String(lookupErr),
+                    },
+                    "Input guardrail trip: orgId metadata lookup failed (audit may be skipped)"
+                  );
+                }
+              }
+              // Fire-and-forget — never blocks the response queue send.
+              // Tests use `flushPendingGuardrailAudits` to drain.
+              void recordGuardrailTrip({
+                organizationId: resolvedOrgId,
                 agentId: data.agentId,
                 userId: data.userId,
                 conversationId: effectiveConversationId,

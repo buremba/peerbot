@@ -1023,8 +1023,34 @@ export class McpProxy {
                     }
                   );
                   if (outcome.tripped) {
-                    recordGuardrailTrip({
-                      organizationId: tokenData.organizationId,
+                    // Resolve org id with a metadata fallback: per-job
+                    // tokens minted by the runs-queue dispatcher carry it,
+                    // but legacy deployment-lifetime tokens may not. A
+                    // trip that fails to audit is a security log gap, so
+                    // hit the agent row before giving up.
+                    let resolvedOrgId = tokenData.organizationId;
+                    if (!resolvedOrgId) {
+                      try {
+                        const md =
+                          await this.agentSettingsStore.getMetadata(agentId);
+                        resolvedOrgId = md?.organizationId;
+                      } catch (lookupErr) {
+                        logger.warn(
+                          {
+                            agentId,
+                            err:
+                              lookupErr instanceof Error
+                                ? lookupErr.message
+                                : String(lookupErr),
+                          },
+                          "Pre-tool guardrail trip: orgId metadata lookup failed (audit may be skipped)"
+                        );
+                      }
+                    }
+                    // Fire-and-forget — never blocks the JSON-RPC reply.
+                    // Tests use `flushPendingGuardrailAudits` to drain.
+                    void recordGuardrailTrip({
+                      organizationId: resolvedOrgId,
                       agentId,
                       userId: tokenData.userId,
                       conversationId: tokenData.conversationId,

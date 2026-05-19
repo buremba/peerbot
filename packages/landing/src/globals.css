@@ -28,6 +28,19 @@
   --color-page-text: oklch(0.1804 0.0154 57.0973);
   --color-page-text-muted: oklch(0.4806 0.0254 51.1528);
 
+  /* Landing code-block palette (dev-focused sections). Tuned to harmonize
+     with the warm cream/orange page palette while staying readably dark. */
+  --color-landing-code-bg: oklch(0.1820 0.0080 70.0000);
+  --color-landing-code-bg-soft: oklch(0.2260 0.0080 70.0000);
+  --color-landing-code-text: oklch(0.9300 0.0220 80.0000);
+  --color-landing-code-comment: oklch(0.6010 0.0260 70.0000);
+  --color-landing-code-string: oklch(0.7900 0.1200 70.0000);
+  --color-landing-code-keyword: oklch(0.8000 0.1500 60.0000);
+  --color-landing-code-key: oklch(0.8200 0.0700 175.0000);
+  --color-landing-code-builtin: oklch(0.8000 0.1500 60.0000);
+  --color-landing-callout-bg: oklch(0.9180 0.0660 75.0000 / 0.55);
+  --color-landing-callout-border: oklch(0.7006 0.1891 46.5400);
+
   --color-tg-bg: oklch(0.2606 0.0040 84.5838);
   --color-tg-bg-secondary: oklch(0.2007 0.0101 52.8852);
   --color-tg-bubble-out: oklch(0.7006 0.1891 46.5400);

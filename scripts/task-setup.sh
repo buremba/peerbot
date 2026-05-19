@@ -83,7 +83,14 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # main repo's .git path) regardless of which worktree the call is made from.
 # Its parent is the main checkout — exactly what we want for both the
 # `git worktree add` target and the `.env` source.
-repo="$(cd "$(dirname "$(git -C "$script_dir" rev-parse --git-common-dir)")" && pwd)"
+#
+# `--path-format=absolute` is load-bearing. Without it, `--git-common-dir`
+# returns a path relative to git's cwd ("../.git"), and `dirname` of that
+# resolves against whatever directory the caller happens to be in — landing
+# the worktree at the wrong path (e.g. /Users/burakemre/Code instead of
+# /Users/burakemre/Code/lobu when run from the main checkout). The absolute
+# form makes the resolution invariant.
+repo="$(dirname "$(git -C "$script_dir" rev-parse --path-format=absolute --git-common-dir)")"
 worktree_dir="$repo/.claude/worktrees/$name"
 branch="feat/$name"
 

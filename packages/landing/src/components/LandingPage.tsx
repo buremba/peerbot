@@ -1,19 +1,10 @@
 import { useState } from "preact/hooks";
 import snippetsManifest from "../generated/use-case-snippets.json";
-import {
-  type LandingUseCaseId,
-  landingUseCases,
-} from "../use-case-definitions";
+import type { LandingUseCaseId } from "../use-case-definitions";
 import {
   DEFAULT_LANDING_USE_CASE_ID,
   getLobuBaseUrl,
 } from "../use-case-showcases";
-import {
-  AgentsPanel,
-  ConnectorsPanel,
-  MemoryPanel,
-  WatchersPanel,
-} from "./AppShellPanels";
 import { ArchitectureDiagram } from "./ArchitectureDiagram";
 import { CodeBlock, type CodeSnippet } from "./CodeBlock";
 import { CTA } from "./CTA";
@@ -648,8 +639,7 @@ function ProductLink(props: {
   );
 }
 
-function ConnectorsSection({ useCase, useCaseId }: ProductSectionProps) {
-  const def = landingUseCases[useCaseId];
+function ConnectorsSection({ useCase }: ProductSectionProps) {
   return (
     <Container className="py-16 sm:py-20">
       <ProductGrid
@@ -700,20 +690,16 @@ function ConnectorsSection({ useCase, useCaseId }: ProductSectionProps) {
           </div>
         }
         code={
-          <div class="space-y-3.5">
-            {useCase.connectorTs ? (
-              <CodeBlock badge="typescript" snippet={useCase.connectorTs} />
-            ) : null}
-            <ConnectorsPanel useCase={def} />
-          </div>
+          useCase.connectorTs ? (
+            <CodeBlock badge="typescript" snippet={useCase.connectorTs} />
+          ) : null
         }
       />
     </Container>
   );
 }
 
-function MemorySection({ useCase, useCaseId }: ProductSectionProps) {
-  const def = landingUseCases[useCaseId];
+function MemorySection({ useCase }: ProductSectionProps) {
   return (
     <Container className="py-16 sm:py-20">
       <ProductGrid
@@ -759,18 +745,14 @@ function MemorySection({ useCase, useCaseId }: ProductSectionProps) {
           </div>
         }
         code={
-          <div class="space-y-3.5">
-            <CodeBlock badge="entities" snippet={useCase.memorySchemaYaml} />
-            <MemoryPanel useCase={def} />
-          </div>
+          <CodeBlock badge="entities" snippet={useCase.memorySchemaYaml} />
         }
       />
     </Container>
   );
 }
 
-function WatchersSection({ useCase, useCaseId }: ProductSectionProps) {
-  const def = landingUseCases[useCaseId];
+function WatchersSection({ useCase }: ProductSectionProps) {
   return (
     <Container className="py-16 sm:py-20">
       <ProductGrid
@@ -823,21 +805,17 @@ function WatchersSection({ useCase, useCaseId }: ProductSectionProps) {
           </div>
         }
         code={
-          <div class="space-y-3.5">
-            <CodeBlock
-              badge="reactive + dreaming"
-              snippet={useCase.watcherYaml}
-            />
-            <WatchersPanel useCase={def} />
-          </div>
+          <CodeBlock
+            badge="reactive + dreaming"
+            snippet={useCase.watcherYaml}
+          />
         }
       />
     </Container>
   );
 }
 
-function AgentsSection({ useCase, useCaseId }: ProductSectionProps) {
-  const def = landingUseCases[useCaseId];
+function AgentsSection({ useCase }: ProductSectionProps) {
   return (
     <Container className="py-16 sm:py-20">
       <ProductGrid
@@ -881,12 +859,7 @@ function AgentsSection({ useCase, useCaseId }: ProductSectionProps) {
             </ProductLink>
           </div>
         }
-        code={
-          <div class="space-y-3.5">
-            <CodeBlock badge="agent" snippet={useCase.agentToml} />
-            <AgentsPanel useCase={def} />
-          </div>
-        }
+        code={<CodeBlock badge="agent" snippet={useCase.agentToml} />}
       />
     </Container>
   );

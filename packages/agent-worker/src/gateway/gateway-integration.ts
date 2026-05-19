@@ -27,7 +27,6 @@ export class HttpWorkerTransport implements WorkerTransport {
   private botResponseTs?: string;
   public processedMessageIds: string[] = [];
   private jobId?: string;
-  private moduleData?: Record<string, unknown>;
   private teamId: string;
   private platform?: string;
   private platformMetadata?: Record<string, unknown>;
@@ -50,10 +49,6 @@ export class HttpWorkerTransport implements WorkerTransport {
 
   setJobId(jobId: string): void {
     this.jobId = jobId;
-  }
-
-  setModuleData(moduleData: Record<string, unknown>): void {
-    this.moduleData = moduleData;
   }
 
   async signalDone(finalDelta?: string): Promise<void> {
@@ -137,7 +132,6 @@ export class HttpWorkerTransport implements WorkerTransport {
     await this.sendResponse(
       this.buildBaseResponse({
         delta: actualDelta,
-        moduleData: this.moduleData,
         isFullReplacement,
       })
     );
@@ -147,7 +141,6 @@ export class HttpWorkerTransport implements WorkerTransport {
     await this.sendResponse(
       this.buildBaseResponse({
         processedMessageIds: this.processedMessageIds,
-        moduleData: this.moduleData,
       })
     );
   }

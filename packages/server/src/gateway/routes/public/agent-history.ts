@@ -72,10 +72,10 @@ function isSafeAgentId(id: string): boolean {
 // ─── Direct session file reader (fallback) ─────────────────────────────────
 //
 // `SessionEntry`, `ParsedMessage`, `parseSessionEntries`, and `entryToMessage`
-// live in `@lobu/core/utils/session-file` so the worker's
-// `/session/messages` route (`packages/agent-worker/src/server.ts`) and
-// this gateway-side fallback can't drift again. `findSessionFile` stays
-// here because the path-policy differs from the worker's — gateway scans
+// are exported from `@lobu/core` so the worker's `/session/messages`
+// route (`packages/agent-worker/src/server.ts`) and this gateway-side
+// fallback can't drift again. `findSessionFile` stays here because the
+// path-policy differs from the worker's — gateway scans
 // `workspaces/<agentId>` up to three levels deep with a SAFE_AGENT_ID
 // guard; the worker scans its own `WORKSPACE_DIR` one level deep.
 

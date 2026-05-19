@@ -495,7 +495,6 @@ export interface ThreadResponsePayload {
   errorCode?: string;
   timestamp: number;
   originalMessageId?: string;
-  moduleData?: Record<string, unknown>;
   botResponseId?: string;
   ephemeral?: boolean; // If true, message should be sent as ephemeral (only visible to user)
   platformMetadata?: Record<string, unknown>;

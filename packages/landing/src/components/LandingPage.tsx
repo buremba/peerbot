@@ -162,7 +162,7 @@ function Hero() {
           <em class="not-italic" style={{ color: "var(--color-tg-accent)" }}>
             self-building
           </em>{" "}
-          knowledge graph.
+          knowledge graph
         </h1>
         <p
           class="hero-rise hero-rise-3 mx-auto mt-5 max-w-[42rem] text-[17px] leading-[1.55]"

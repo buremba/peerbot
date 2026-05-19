@@ -163,6 +163,13 @@ describe('TarballFileSource', () => {
     expect(await v1.readText('a.json')).toBe('{"x":1}');
   });
 
+  test('diffSinceRef on a fresh cache throws before issuing a network fetch', async () => {
+    const source = new TarballFileSource(`${baseUrl}/dataset.tar.gz`);
+    await expect(source.diffSinceRef('cafe'.repeat(16))).rejects.toThrow(
+      /not fetched|fetch\(\)/i,
+    );
+  });
+
   test('rejects an https→http redirect (no plaintext downgrade)', async () => {
     // Stand up a tiny HTTP server that would happily serve the tarball if
     // the source followed the downgrade. The HTTPS server 302s to it.

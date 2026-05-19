@@ -144,6 +144,14 @@ export class TarballFileSource implements FileSystemSource {
   }
 
   async diffSinceRef(prevRef: string): Promise<FileDelta> {
+    // diffSinceRef before fetch() is a caller bug — pin that contract first
+    // so a fresh cache throws "source not fetched yet" instead of silently
+    // performing a full re-ingest via the implicit fetch() below. Matches
+    // the local + git sources.
+    await withSourceLock(this.#uri, async () => {
+      await requireMeta(this.#paths.metaPath, this.#uri);
+    });
+
     // Re-fetch (no incremental wire support), then diff manifests.
     // fetch() takes the lock itself; nest a separate read step outside it.
     const snapshot = await this.fetch();

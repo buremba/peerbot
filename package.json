@@ -4,8 +4,7 @@
   "description": "Deploy autonomous AI agents with sandboxing, network isolation, and multi-platform access.",
   "license": "Apache-2.0",
   "workspaces": [
-    "packages/*",
-    "examples/personal-finance"
+    "packages/*"
   ],
   "scripts": {
     "build": "cd packages/core && bun run build && cd ../agent-worker && bun run build && cd ../..",

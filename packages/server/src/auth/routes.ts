@@ -410,40 +410,47 @@ credentialRoutes.post('/local-init', async (c) => {
   }
 
   const sql = createDbClientFromEnv(c.env);
-  // Find the single user this install belongs to. The historical design seeded
-  // a fake `bootstrap-user` ahead of time and minted sessions for it — but
-  // that created a fork the moment the operator signed up via web with a real
-  // email (one identity for the Mac app + CLI, another for the web UI). Now we
-  // skip the seed and mint for whichever real user signed up first; the
-  // single-user-mode hook in auth/index.tsx prevents anyone else from joining.
-  //
-  // Exclude any leftover `bootstrap-user` rows from pre-this-change installs:
-  // if both still exist, prefer the real user. After this lands, ensureBootstrap-
-  // User is gone — fresh installs have no `bootstrap-user` row at all.
+  // Find the single user this install belongs to. Prefer the real human
+  // (if one has signed up via /sign-up) over the synthetic install_operator
+  // row (auto-provisioned at boot in ensureInstallOperator). Ordering by
+  // principal_kind DESC keeps 'install_operator' last so a human comes
+  // first when both exist; on a fresh install before signup, only the
+  // operator row exists and it gets minted credentials. See
+  // docs/install-operator-bootstrap.md.
   const userRows = (await sql`
-    SELECT id, email, name
+    SELECT id, email, name, principal_kind
       FROM "user"
-     WHERE id <> 'bootstrap-user'
-     ORDER BY "createdAt" ASC
+     ORDER BY
+       CASE WHEN principal_kind = 'install_operator' THEN 1 ELSE 0 END ASC,
+       "createdAt" ASC
      LIMIT 2
-  `) as unknown as Array<{ id: string; email: string; name: string }>;
+  `) as unknown as Array<{
+    id: string;
+    email: string;
+    name: string;
+    principal_kind: string;
+  }>;
 
   if (userRows.length === 0) {
+    // Should be unreachable: ensureInstallOperator runs before listen.
+    // Treat as a defensive 500 rather than a 404 so the operator notices
+    // the missing boot step instead of falling into the "sign up first"
+    // copy path that no longer applies.
     return c.json(
       {
-        error: 'no_user_yet',
+        error: 'unexpected_empty_user_table',
         error_description:
-          'No user exists yet on this install. Open the web UI and sign up first; the menubar / CLI will pick up the new user on the next /api/local-init call.',
-        // Owletto's SPA routes signup via /auth/sign-up (mapped by
-        // auth/$pathname.tsx → /auth/login?intent=sign-up). A bare /sign-up
-        // would fall into the $owner catch-all and loop through the login
-        // redirect — pre-PR-908 codex review caught this.
-        signup_url: '/auth/sign-up',
+          'No user rows exist on this install. ensureInstallOperator() should run at boot — check server logs for a provisioning failure.',
       },
-      404
+      500
     );
   }
-  if (userRows.length > 1) {
+  // After excluding the synthetic install_operator, "multiple users"
+  // means the install has graduated past single-user mode and /local-init
+  // no longer applies — those operators sign in via the normal
+  // /api/auth/sign-in/email flow.
+  const humanRows = userRows.filter((r) => r.principal_kind !== 'install_operator');
+  if (humanRows.length > 1) {
     return c.json(
       {
         error: 'not_single_user',
@@ -453,7 +460,9 @@ credentialRoutes.post('/local-init', async (c) => {
       404
     );
   }
-  const user = userRows[0]!;
+  // Prefer the human (if any); fall back to the install_operator on a
+  // fresh install where no signup has happened yet.
+  const user = humanRows[0] ?? userRows[0]!;
 
   // Find the user's personal org (provisioned by databaseHooks.user.create.after).
   const orgRows = (await sql`

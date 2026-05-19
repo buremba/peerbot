@@ -41,6 +41,7 @@ import { applyUserServerConfigToEnv } from './utils/user-config';
 applyUserServerConfigToEnv();
 
 import { ensureDefaultAgent } from './auth/default-provisioning';
+import { ensureInstallOperator } from './auth/install-operator';
 
 import { PGlite } from '@electric-sql/pglite';
 import { pg_trgm } from '@electric-sql/pglite/contrib/pg_trgm';
@@ -225,17 +226,26 @@ async function main() {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
-  // ─── Bootstrap user ──────────────────────────────────────────
-  // Runs BEFORE listen so that the bootstrap user / org / member rows are
-  // No bootstrap-user seed: prior versions pre-created a `bootstrap-user`
-  // (`dev@lobu.local` / `lobudev123`) ahead of any real signup. That created
-  // a fork the moment the operator visited /sign-up with a real email — one
-  // identity for the Mac app + CLI, another for the web UI. Now the operator
-  // signs up via /sign-up first (web or in the menubar's connect card) and
-  // `POST /api/local-init` mints credentials for that single real user; the
-  // single-user-mode hook in auth/index.tsx (PR #898) prevents anyone else
-  // from joining.
+  // ─── Install operator ────────────────────────────────────────
+  // Runs BEFORE listen so headless installs (CI, containers, /tmp scaffolds
+  // without a browser) can sign in via better-auth without a chicken-and-egg
+  // /sign-up step. Provisions a synthetic `install_operator` user whose
+  // password is the install's ENCRYPTION_KEY. Idempotent — re-running on a
+  // boot where the operator already exists is a no-op. See
+  // `docs/install-operator-bootstrap.md`.
   //
+  // Carve-outs in auth/index.tsx + auth/config.ts exclude this row from
+  // every human-discovery surface (signup count, member list, password
+  // reset, magic link, OAuth account-linking) so the operator never
+  // collides with real human users.
+  try {
+    await ensureInstallOperator();
+  } catch (err) {
+    logger.error({ err }, 'Install-operator provisioning failed');
+    // Don't crash the server — the operator only matters for headless
+    // installs; a browser-based signup still works. But log it loudly.
+  }
+
   // ─── Default agent (Mac-app onboarding) ──────────────────────
   // Default-agent provisioning is deferred to first-user creation. The
   // `databaseHooks.user.create.after` hook in auth/index.tsx provisions the

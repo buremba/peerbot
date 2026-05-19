@@ -12,7 +12,6 @@ import { basename, join, resolve } from "node:path";
 import { confirm, input, password, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import ora from "ora";
-import { isPortFree } from "./dev.js";
 import { promptPlatformConfig } from "../commands/platforms/platform-prompts.js";
 import { setLocalEnvValue } from "../internal/local-env.js";
 import {
@@ -54,99 +53,6 @@ export interface InitOptions {
   sentry?: boolean;
   noSentry?: boolean;
   slackPreview?: boolean;
-  listProviders?: boolean;
-}
-
-async function pickFreePort(
-  start: number,
-  opts: { max?: number; avoid?: number[] } = {}
-): Promise<number> {
-  const max = opts.max ?? 100;
-  const avoid = new Set(opts.avoid ?? []);
-  for (let i = 0; i < max; i++) {
-    const candidate = start + i;
-    if (candidate > 65535) break;
-    if (avoid.has(candidate)) continue;
-    if (await isPortFree(candidate)) return candidate;
-  }
-  // Fall back to the starting port — the user can resolve the collision at
-  // `lobu run` time.
-  return start;
-}
-
-/**
- * The hardcoded `ClaudeOAuthModule` (providerId="claude") on the gateway
- * already handles both Anthropic OAuth tokens AND raw ANTHROPIC_API_KEY via
- * the same upstream slug. We surface it as a synthetic `--provider claude`
- * choice (with `anthropic` accepted as an alias) so scaffold users can pick
- * Claude without having to know about openrouter or the OAuth flow.
- */
-const SYNTHETIC_CLAUDE_PROVIDER: RegistryProvider = {
-  id: "claude",
-  name: "Claude (Anthropic)",
-  description: "Claude models via the native Anthropic API",
-  providers: [
-    {
-      displayName: "Claude (Anthropic)",
-      envVarName: "ANTHROPIC_API_KEY",
-      upstreamBaseUrl: "https://api.anthropic.com",
-      defaultModel: "claude-sonnet-4-20250514",
-      apiKeyInstructions:
-        "Get your API key from https://console.anthropic.com/settings/keys",
-    },
-  ],
-};
-
-const PROVIDER_ALIASES: Record<string, string> = {
-  anthropic: "claude",
-};
-
-function resolveProviderAlias(id: string): string {
-  return PROVIDER_ALIASES[id] ?? id;
-}
-
-function getAllProviders(): RegistryProvider[] {
-  return [SYNTHETIC_CLAUDE_PROVIDER, ...loadProviderRegistry()];
-}
-
-function getProviderByIdWithSynth(id: string): RegistryProvider | undefined {
-  const resolved = resolveProviderAlias(id);
-  if (resolved === SYNTHETIC_CLAUDE_PROVIDER.id) {
-    return SYNTHETIC_CLAUDE_PROVIDER;
-  }
-  return getProviderById(resolved);
-}
-
-function printProviderList(): void {
-  const providers = getAllProviders();
-  if (providers.length === 0) {
-    console.log(
-      chalk.yellow(
-        "No providers registered. Check that config/providers.json is reachable."
-      )
-    );
-    return;
-  }
-  console.log(chalk.bold("\nAvailable providers:\n"));
-  const idCol = Math.max(...providers.map((p) => p.id.length));
-  for (const p of providers) {
-    const first = p.providers?.[0];
-    const env = first?.envVarName ?? "";
-    const model = first?.defaultModel ? ` — ${first.defaultModel}` : "";
-    const aliases = Object.entries(PROVIDER_ALIASES)
-      .filter(([, target]) => target === p.id)
-      .map(([alias]) => alias);
-    const aliasSuffix =
-      aliases.length > 0 ? chalk.dim(`  (alias: ${aliases.join(", ")})`) : "";
-    console.log(
-      `  ${chalk.cyan(p.id.padEnd(idCol))}  ${chalk.dim(env)}${chalk.dim(model)}${aliasSuffix}`
-    );
-  }
-  console.log(
-    chalk.dim(
-      "\nPass to scaffold: lobu init <name> --provider <id> [--provider-key <key>]\n"
-    )
-  );
 }
 
 export async function initCommand(
@@ -156,11 +62,6 @@ export async function initCommand(
 ): Promise<void> {
   const cliVersion = await getCliVersion();
   const useDefaults = options.yes === true;
-
-  if (options.listProviders) {
-    printProviderList();
-    return;
-  }
 
   // Catch flag combos that can't satisfy a prompt before we mkdir anything.
   if (useDefaults && options.memory === "lobu-custom" && !options.memoryUrl) {
@@ -250,13 +151,10 @@ export async function initCommand(
     }
   }
 
-  // Pick free ports at scaffold time so two `lobu run`s on the same machine
-  // don't collide on the default 8787 / 8118. The flag / env value wins.
-  const gatewayPortDefault = String(await pickFreePort(8787));
   const gatewayPort = await promptOrDefault({
     flag: options.port,
     useDefaults,
-    defaultValue: gatewayPortDefault,
+    defaultValue: "8787",
     validate: (value: string) => {
       const p = Number(value);
       return Number.isInteger(p) && p >= 1 && p <= 65535
@@ -266,7 +164,7 @@ export async function initCommand(
     prompt: () =>
       input({
         message: "Gateway port?",
-        default: gatewayPortDefault,
+        default: "8787",
         validate: (value: string) => {
           const p = Number(value);
           if (!Number.isInteger(p) || p < 1 || p > 65535) {
@@ -276,17 +174,6 @@ export async function initCommand(
         },
       }),
   });
-
-  // WORKER_PROXY_PORT is the gateway's outbound HTTP proxy that workers route
-  // through (default 8118). Scaffold a non-colliding port so co-resident
-  // projects don't fight over it. Avoid the gateway port too — if the user
-  // passed `--port 8118` we don't want both vars pointing at the same number.
-  const gatewayPortNum = Number(gatewayPort);
-  const workerProxyPort = String(
-    await pickFreePort(8118, {
-      avoid: Number.isFinite(gatewayPortNum) ? [gatewayPortNum] : [],
-    })
-  );
 
   const publicGatewayUrl = await promptOrDefault({
     flag: options.publicUrl,
@@ -326,7 +213,7 @@ export async function initCommand(
       }),
   })) as NetworkChoice;
 
-  const providerSkills = getAllProviders();
+  const providerSkills = loadProviderRegistry();
   const providerChoices = [
     { name: "Skip — I'll add a provider later", value: "" },
     ...providerSkills.map((s) => ({
@@ -334,19 +221,18 @@ export async function initCommand(
       value: s.id,
     })),
   ];
-  const validProviderIds = new Set([
-    ...providerChoices.map((c) => c.value),
-    ...Object.keys(PROVIDER_ALIASES),
-  ]);
 
-  const providerIdRaw = await promptOrDefault({
+  const providerId = await promptOrDefault({
     flag: options.provider,
     useDefaults,
     defaultValue: "",
     validate: (v: string) =>
-      v === "" || validProviderIds.has(v)
+      v === "" || providerChoices.some((c) => c.value === v)
         ? true
-        : `Unknown provider "${v}". Run \`lobu init --list-providers\` to see the full list (also at config/providers.json).`,
+        : `Unknown provider "${v}". Available: ${providerChoices
+            .filter((c) => c.value)
+            .map((c) => c.value)
+            .join(", ")}`,
     prompt: () =>
       select<string>({
         message: "AI provider?",
@@ -354,14 +240,11 @@ export async function initCommand(
         default: "",
       }),
   });
-  // Resolve aliases (e.g. `--provider anthropic` → "claude") before any
-  // downstream use so the synthesized lobu.toml references the real id.
-  const providerId = providerIdRaw ? resolveProviderAlias(providerIdRaw) : "";
 
   let providerApiKey = "";
   let selectedProvider: RegistryProvider | undefined;
   if (providerId) {
-    selectedProvider = getProviderByIdWithSynth(providerId);
+    selectedProvider = getProviderById(providerId);
     const p = selectedProvider?.providers?.[0];
     if (p) {
       if (options.providerKey) {
@@ -574,18 +457,11 @@ export async function initCommand(
       CLI_VERSION: cliVersion,
       ENCRYPTION_KEY: answers.encryptionKey,
       GATEWAY_PORT: gatewayPort,
-      WORKER_PROXY_PORT: workerProxyPort,
       WORKER_ALLOWED_DOMAINS: answers.allowedDomains,
       WORKER_DISALLOWED_DOMAINS: answers.disallowedDomains,
     };
 
     await renderTemplate(".env.tmpl", variables, join(projectDir, ".env"));
-
-    // Pin Node 22 for nvm / fnm / mise / asdf / volta — Lobu refuses to boot
-    // on Node 25+ (isolated-vm has no prebuilt). Homebrew's `node` now
-    // resolves to 26, so without these files a fresh `lobu run` fails.
-    await writeFile(join(projectDir, ".nvmrc"), "22\n");
-    await writeFile(join(projectDir, ".node-version"), "22\n");
     // `.env` carries ENCRYPTION_KEY + provider API keys / OAuth tokens
     // appended via setLocalEnvValue below. Tighten now so the initial
     // write isn't world-readable on multi-user hosts (default umask 022).

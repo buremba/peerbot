@@ -29,18 +29,7 @@ interface LoginOptions {
   force?: boolean;
   /** Forwarded to RFC 7591 dynamic client registration as `software_version`. */
   cliVersion?: string;
-  /** Suppress spinner output; bail out non-interactively if the server rejects polling. */
-  quiet?: boolean;
 }
-
-/**
- * Hard ceiling on the polling loop. RFC 8628 servers typically return
- * `expires_in: 600` (10 min), but if the server hands us a much longer
- * deadline we still don't want to hammer `/oauth/token` for an hour from
- * a backgrounded shell. 5 minutes matches the documented device-code
- * expiry and is generous for a human to scan a QR + approve.
- */
-const POLL_HARD_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
  * `lobu login` runs the OAuth 2.0 device-code grant against the issuer
@@ -154,149 +143,73 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
     }
   }
 
-  // Both ends of the stdio pair must be a TTY for the device-code prompt to
-  // make sense — a backgrounded shell or CI runner has neither stdin to
-  // approve from nor stdout to spin on. Require both, plus the absence of
-  // `--quiet`, before treating the call as interactive.
-  const isInteractive =
-    process.stdout.isTTY === true &&
-    process.stdin.isTTY === true &&
-    !options.quiet;
-  const spinner = isInteractive
-    ? ora("Waiting for authorization...").start()
-    : null;
-
-  // Cap the wait at the server-advertised lifetime AND our local ceiling.
-  // The local ceiling guards against a misconfigured issuer handing us an
-  // hour-long deadline that a backgrounded shell would otherwise honour.
-  const serverDeadline = Date.now() + authorization.expiresIn * 1000;
-  const localDeadline = Date.now() + POLL_HARD_TIMEOUT_MS;
-  const deadline = Math.min(serverDeadline, localDeadline);
-
-  // If the user kills the spawning shell (SIGHUP) or any supervisor sends
-  // SIGTERM, exit promptly instead of inheriting the orphaned poll loop.
-  // The abortable sleep below wakes immediately when `signal` is set, so we
-  // don't have to wait out the polling interval first.
-  const abortBox: { signal: NodeJS.Signals | null; wake: (() => void) | null } =
-    { signal: null, wake: null };
-  const abort = (signal: NodeJS.Signals): void => {
-    if (abortBox.signal === null) {
-      abortBox.signal = signal;
-      abortBox.wake?.();
-    }
-  };
-  const onSIGHUP = () => abort("SIGHUP");
-  const onSIGTERM = () => abort("SIGTERM");
-  const onSIGINT = () => abort("SIGINT");
-  process.on("SIGHUP", onSIGHUP);
-  process.on("SIGTERM", onSIGTERM);
-  process.on("SIGINT", onSIGINT);
-  const detach = () => {
-    process.off("SIGHUP", onSIGHUP);
-    process.off("SIGTERM", onSIGTERM);
-    process.off("SIGINT", onSIGINT);
-  };
-
+  const spinner = ora("Waiting for authorization...").start();
+  const deadline = Date.now() + authorization.expiresIn * 1000;
   let intervalSeconds = authorization.interval;
 
-  try {
-    while (Date.now() < deadline) {
-      // Sleep at most until the deadline, and let signal handlers wake us
-      // up so cancellation doesn't have to wait out the full polling
-      // interval (which `slow_down` can balloon to >30s).
-      const remainingMs = deadline - Date.now();
-      const sleepMs = Math.min(
-        intervalSeconds * 1000,
-        Math.max(remainingMs, 0)
-      );
-      await abortableDelay(sleepMs, abortBox);
+  while (Date.now() < deadline) {
+    await delay(intervalSeconds * 1000);
 
-      if (abortBox.signal) {
-        spinner?.fail(`Login cancelled (${abortBox.signal}).`);
-        process.exitCode = 1;
-        return;
-      }
-      if (Date.now() >= deadline) break;
+    const result = await pollDeviceToken(
+      discovery.tokenEndpoint,
+      client,
+      authorization.deviceCode
+    );
 
-      const result = await pollDeviceToken(
-        discovery.tokenEndpoint,
-        client,
-        authorization.deviceCode
-      );
+    if (result.status === "pending") {
+      intervalSeconds = bumpInterval(intervalSeconds, result.bumpInterval);
+      continue;
+    }
 
-      if (result.status === "pending") {
-        // Non-interactive callers (CI, backgrounded shells) can't approve
-        // the device code, so a `pending` poll is the terminal answer —
-        // bail out instead of looping until expiry.
-        if (!isInteractive) {
-          console.log(
-            chalk.red("  Device-code login requires an interactive terminal.")
-          );
-          console.log(
-            chalk.dim("  Use `--token <pat>` for non-interactive auth.\n")
-          );
-          process.exitCode = 1;
-          return;
-        }
-        intervalSeconds = bumpInterval(intervalSeconds, result.bumpInterval);
-        continue;
-      }
-
-      if (result.status === "error") {
-        spinner?.fail(result.message);
-        if (!spinner) console.log(chalk.red(`  ${result.message}`));
-        console.log();
-        process.exitCode = 1;
-        return;
-      }
-
-      const tokens = result.tokens;
-      let identity: { email?: string; name?: string; userId?: string } = {};
-      if (discovery.userinfoEndpoint) {
-        const info = await fetchUserInfo(
-          discovery.userinfoEndpoint,
-          tokens.accessToken
-        );
-        if (info) {
-          identity = { email: info.email, name: info.name, userId: info.sub };
-        }
-      }
-
-      const oauth: OAuthClientInfo = {
-        clientId: client.clientId,
-        clientSecret: client.clientSecret,
-        tokenEndpoint: discovery.tokenEndpoint,
-        revocationEndpoint: discovery.revocationEndpoint,
-        userinfoEndpoint: discovery.userinfoEndpoint,
-      };
-
-      await saveCredentials(
-        {
-          accessToken: tokens.accessToken,
-          refreshToken: tokens.refreshToken,
-          expiresAt:
-            typeof tokens.expiresIn === "number"
-              ? Date.now() + tokens.expiresIn * 1000
-              : undefined,
-          ...identity,
-          oauth,
-        },
-        target.name
-      );
-
-      spinner?.succeed(`Logged in to ${target.name}.`);
-      if (!spinner) console.log(chalk.green(`  Logged in to ${target.name}.`));
+    if (result.status === "error") {
+      spinner.fail(result.message);
       console.log();
+      process.exitCode = 1;
       return;
     }
 
-    spinner?.fail("Login request expired. Run `lobu login` again.");
-    if (!spinner) console.log(chalk.red("  Login request expired."));
+    const tokens = result.tokens;
+    let identity: { email?: string; name?: string; userId?: string } = {};
+    if (discovery.userinfoEndpoint) {
+      const info = await fetchUserInfo(
+        discovery.userinfoEndpoint,
+        tokens.accessToken
+      );
+      if (info) {
+        identity = { email: info.email, name: info.name, userId: info.sub };
+      }
+    }
+
+    const oauth: OAuthClientInfo = {
+      clientId: client.clientId,
+      clientSecret: client.clientSecret,
+      tokenEndpoint: discovery.tokenEndpoint,
+      revocationEndpoint: discovery.revocationEndpoint,
+      userinfoEndpoint: discovery.userinfoEndpoint,
+    };
+
+    await saveCredentials(
+      {
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        expiresAt:
+          typeof tokens.expiresIn === "number"
+            ? Date.now() + tokens.expiresIn * 1000
+            : undefined,
+        ...identity,
+        oauth,
+      },
+      target.name
+    );
+
+    spinner.succeed(`Logged in to ${target.name}.`);
     console.log();
-    process.exitCode = 1;
-  } finally {
-    detach();
+    return;
   }
+
+  spinner.fail("Login request expired. Run `lobu login` again.");
+  console.log();
+  process.exitCode = 1;
 }
 
 async function loginWithToken(
@@ -339,23 +252,8 @@ async function revokeExisting(existing: Credentials): Promise<void> {
   );
 }
 
-function abortableDelay(
-  ms: number,
-  abortBox: { signal: NodeJS.Signals | null; wake: (() => void) | null }
-): Promise<void> {
-  if (ms <= 0) return Promise.resolve();
-  if (abortBox.signal) return Promise.resolve();
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      abortBox.wake = null;
-      resolve();
-    }, ms);
-    abortBox.wake = () => {
-      clearTimeout(timer);
-      abortBox.wake = null;
-      resolve();
-    };
-  });
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function tryOAuthStep<T>(fn: () => Promise<T>): Promise<T | undefined> {

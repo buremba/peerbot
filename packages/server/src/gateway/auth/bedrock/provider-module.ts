@@ -1,5 +1,4 @@
-import type { ConfigProviderMeta } from "@lobu/core";
-import type { ModelOption } from "../../modules/module-system.js";
+import type { ConfigProviderMeta, ModelOption } from "@lobu/core";
 import type { BedrockModelCatalog } from "../../services/bedrock-model-catalog.js";
 import { BaseProviderModule } from "../base-provider-module.js";
 import type { AuthProfilesManager } from "../settings/auth-profiles-manager.js";

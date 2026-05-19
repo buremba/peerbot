@@ -1,5 +1,4 @@
-import { createLogger } from "@lobu/core";
-import type { ModelOption } from "../../modules/module-system.js";
+import { createLogger, type ModelOption } from "@lobu/core";
 import { BaseProviderModule } from "../base-provider-module.js";
 import {
   type AuthProfilesManager,

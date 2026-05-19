@@ -1,11 +1,6 @@
-import type { CliBackendConfig } from "@lobu/core";
+import type { CliBackendConfig, ModelOption } from "@lobu/core";
 import { type ModuleInterface, moduleRegistry } from "@lobu/core";
 import type { ProviderCredentialContext } from "../embedded.js";
-
-export interface ModelOption {
-  value: string;
-  label: string;
-}
 
 interface OrchestratorModule<TModuleData = unknown>
   extends ModuleInterface<TModuleData> {

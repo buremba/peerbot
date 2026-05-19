@@ -7,7 +7,9 @@ export {
 export {
   BUILTIN_GUARDRAIL_FACTORIES,
   createPiiScanGuardrail,
+  luhnValid,
 } from "./builtins.js";
+export { safeStringify } from "./safe-stringify.js";
 export {
   _resetSharedJudgeForTests,
   _setSharedJudgeForTests,

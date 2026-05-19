@@ -4,6 +4,7 @@ import {
   type GuardrailRegistry,
   type GuardrailStage,
   type SkillConfig,
+  type SkillPreToolGuardrail,
   createLogger,
 } from "@lobu/core";
 import {
@@ -12,14 +13,6 @@ import {
 } from "./judge-factory.js";
 
 const logger = createLogger("guardrail-aggregator");
-
-/**
- * Aggregator input: an agent's pre-tool guardrail item from a skill config.
- * Mirrors the shape in {@link SkillConfig.guardrails["pre-tool"]}.
- */
-type SkillPreToolEntry = NonNullable<
-  NonNullable<SkillConfig["guardrails"]>["pre-tool"]
->[number];
 
 /**
  * Inline guardrail entry declared by the agent in lobu.toml (see
@@ -152,48 +145,43 @@ export function resolveAgentGuardrails(
 }
 
 function materializeSkillPreTool(
-  entry: SkillPreToolEntry,
+  entry: SkillPreToolGuardrail,
   skill: SkillConfig,
   registry: GuardrailRegistry
 ): Guardrail | null {
-  if (entry.builtin && entry.judge) {
-    logger.warn(
-      { skill: skill.name, repo: skill.repo },
-      "Skill pre-tool guardrail set both `builtin` and `judge`; preferring `builtin`"
-    );
-  }
-  if (entry.builtin) {
-    const found = registry.get("pre-tool", entry.builtin);
-    if (!found) {
+  switch (entry.kind) {
+    case "builtin": {
+      const found = registry.get("pre-tool", entry.name);
+      if (!found) {
+        logger.warn(
+          { skill: skill.name, builtin: entry.name },
+          "Skill referenced unknown built-in guardrail; skipping"
+        );
+        return null;
+      }
+      // Built-ins don't honor per-tool narrowing -- the discriminated union
+      // shape doesn't even expose `tools` on this arm, so skill authors are
+      // pushed toward the `judge` arm when they need it. The check below
+      // belt-and-braces against a `as any` cast bypassing the type system.
+      return found;
+    }
+    case "judge":
+      return createJudgeGuardrail("pre-tool", entry.policy, {
+        // Name the skill-inline judge with a stable prefix so operators can
+        // disable it via `guardrails_disabled`. Skill name is included so
+        // two skills with identical policy text don't collide.
+        name: `skill:${skill.name}:inline:pre-tool:${inlineJudgeHash(entry.policy)}`,
+        tools: entry.tools,
+      });
+    default: {
+      // Exhaustiveness guard -- TS will flag any new variant added to
+      // SkillPreToolGuardrail that isn't handled above.
+      const _exhaustive: never = entry;
       logger.warn(
-        { skill: skill.name, builtin: entry.builtin },
-        "Skill referenced unknown built-in guardrail; skipping"
+        { skill: skill.name, entry: _exhaustive },
+        "Skill pre-tool guardrail entry had unknown kind; skipping"
       );
       return null;
     }
-    // Built-ins don't honor `entry.tools` natively — for now skill authors
-    // wanting tool-narrowing should use an inline `judge` instead. Logging
-    // so the drift is visible.
-    if (entry.tools && entry.tools.length > 0) {
-      logger.warn(
-        { skill: skill.name, builtin: entry.builtin },
-        "Skill pre-tool guardrail specified `tools` for a builtin; ignored (use an inline judge)"
-      );
-    }
-    return found;
   }
-  if (entry.judge) {
-    return createJudgeGuardrail("pre-tool", entry.judge, {
-      // Name the skill-inline judge with a stable prefix so operators can
-      // disable it via `guardrails_disabled`. Skill name is included so two
-      // skills with identical policy text don't collide.
-      name: `skill:${skill.name}:inline:pre-tool:${inlineJudgeHash(entry.judge)}`,
-      tools: entry.tools,
-    });
-  }
-  logger.warn(
-    { skill: skill.name },
-    "Skill pre-tool guardrail set neither `builtin` nor `judge`; skipping"
-  );
-  return null;
 }

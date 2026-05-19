@@ -8,6 +8,7 @@ import type {
   PreToolGuardrailContext,
 } from "@lobu/core";
 import { TextJudge } from "../proxy/egress-judge/text-judge.js";
+import { safeStringify } from "./safe-stringify.js";
 
 /**
  * Lazily-constructed singleton TextJudge so multiple judge guardrails share
@@ -46,7 +47,11 @@ function extractText<S extends GuardrailStage>(
       return (ctx as OutputGuardrailContext).text;
     case "pre-tool": {
       const c = ctx as PreToolGuardrailContext;
-      return `tool: ${c.toolName}\narguments: ${JSON.stringify(c.arguments)}`;
+      // safeStringify so BigInt / circular tool args don't throw. A thrown
+      // guardrail is treated as a pass by the runner, which would silently
+      // weaken the judge for the very case (weird arg shape) we want it
+      // looking at.
+      return `tool: ${c.toolName}\narguments: ${safeStringify(c.arguments)}`;
     }
     default:
       throw new Error(`Unknown guardrail stage: ${String(stage)}`);

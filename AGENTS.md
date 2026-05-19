@@ -72,16 +72,16 @@ Three places guardrails can be turned on for an agent — all merged by `resolve
    judge = "Only allow when the issue ref matches the active sprint."
    ```
    Each materializes into a guardrail named `inline:<stage>:<hash8>` (sha256 of the policy text). `tools` narrows pre-tool to a list of tool names; omitted = runs on every tool call.
-3. **Skill-declared guardrails** — **`pre-tool` only**. Skills don't own `input` / `output`: a skill can't decide for the operator which messages reach which agent or which words the agent may speak. `pre-tool` is scoped to specific tool invocations, which is what a skill knows about. In `SkillConfig.guardrails`:
+3. **Skill-declared guardrails** — **`pre-tool` only**. Skills don't own `input` / `output`: a skill can't decide for the operator which messages reach which agent or which words the agent may speak. `pre-tool` is scoped to specific tool invocations, which is what a skill knows about. Each entry is a discriminated union (`{ kind: "builtin" | "judge" }`) so neither/both is a TS error, not a runtime log:
    ```ts
    guardrails: {
      "pre-tool": [
-       { builtin: "pii-scan" },
-       { tools: ["fs.write"], judge: "Reject writes outside the workspace." },
+       { kind: "builtin", name: "pii-scan" },
+       { kind: "judge", policy: "Reject writes outside the workspace.", tools: ["fs.write"] },
      ],
    }
    ```
-   Skill inline judges are named `skill:<skillName>:inline:pre-tool:<hash8>`.
+   Skill inline judges are named `skill:<skillName>:inline:pre-tool:<hash8>`. `tools` narrowing is only available on the `judge` arm — built-ins do their own input filtering, so per-tool narrowing for them would silently lie about scope.
 
 ##### Operator exclude list
 

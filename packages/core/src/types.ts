@@ -208,21 +208,30 @@ export interface SkillConfig {
    * a skill knows about — it can reasonably say "before this tool runs,
    * apply this judge".
    *
-   * Each entry is either:
-   *   - a built-in by name: `{ builtin: "secret-scan" }`
-   *   - an inline LLM judge with policy text: `{ judge: "Never delete prod data." }`
-   * The optional `tools` array narrows the guardrail to specific tool names
-   * (matched against `toolName` in {@link PreToolGuardrailContext}); when
-   * absent, the guardrail runs on every pre-tool stage.
+   * Discriminated by `kind` so invalid combinations (neither / both) are
+   * compile-time TS errors instead of runtime warnings:
+   *   - `{ kind: "builtin", name }` — reference a registered guardrail.
+   *     The optional `tools` field is ignored for builtins (built-ins
+   *     decide their own input filtering); use an inline judge if you
+   *     want per-tool narrowing.
+   *   - `{ kind: "judge", policy, tools? }` — ad-hoc LLM-judge policy;
+   *     `tools` narrows the judge to specific tool names (matched against
+   *     `toolName` in {@link PreToolGuardrailContext}); when absent, the
+   *     guardrail runs on every pre-tool invocation.
    */
   guardrails?: {
-    "pre-tool"?: Array<{
-      tools?: string[];
-      builtin?: string;
-      judge?: string;
-    }>;
+    "pre-tool"?: Array<SkillPreToolGuardrail>;
   };
 }
+
+/**
+ * Discriminated union of legal skill-declared pre-tool guardrail entries.
+ * Each entry must be either a built-in reference or an inline judge --
+ * setting both, or neither, is rejected by the type checker.
+ */
+export type SkillPreToolGuardrail =
+  | { kind: "builtin"; name: string }
+  | { kind: "judge"; policy: string; tools?: string[] };
 
 /**
  * Skills configuration for agent settings.

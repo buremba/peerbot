@@ -1,6 +1,7 @@
 /**
  * Tests for the guardrails extensions in PR B:
- *  - `pii-scan` regex built-in (input, output, pre-tool)
+ *  - `pii-scan` regex built-in (input, output, pre-tool) + Luhn filter
+ *  - `safeStringify` helper (BigInt, circular refs)
  *  - `TextJudge` with a fake LLM client (cache hit, fail closed)
  *  - `createJudgeGuardrail` factory across stages + tool narrowing
  *  - `resolveAgentGuardrails` merge / dedup / exclude semantics
@@ -16,12 +17,14 @@ import {
   createJudgeGuardrail,
   createPiiScanGuardrail,
   inlineJudgeHash,
+  luhnValid,
   resolveAgentGuardrails,
+  safeStringify,
   TextJudge,
 } from "../index.js";
 import type { JudgeClient, JudgeVerdict } from "../../proxy/egress-judge/types.js";
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+// --- Helpers ---------------------------------------------------------------
 
 class FakeJudgeClient implements JudgeClient {
   public calls: Array<{ userPrompt: string }> = [];
@@ -44,7 +47,65 @@ class ThrowingJudgeClient implements JudgeClient {
   }
 }
 
-// ─── pii-scan ──────────────────────────────────────────────────────────────
+// --- luhnValid -------------------------------------------------------------
+
+describe("luhnValid", () => {
+  test("accepts known Luhn-valid test PANs (Visa, MasterCard, Amex)", () => {
+    expect(luhnValid("4111111111111111")).toBe(true); // Visa
+    expect(luhnValid("4111 1111 1111 1111")).toBe(true); // spaced
+    expect(luhnValid("4111-1111-1111-1111")).toBe(true); // hyphenated
+    expect(luhnValid("5500000000000004")).toBe(true); // MasterCard
+    expect(luhnValid("340000000000009")).toBe(true); // Amex (15 digits)
+    expect(luhnValid("6011000000000004")).toBe(true); // Discover
+  });
+
+  test("rejects random / sequential 13-19 digit runs", () => {
+    expect(luhnValid("1234567890123456")).toBe(false);
+    expect(luhnValid("9876543210987654")).toBe(false);
+    expect(luhnValid("4111111111111112")).toBe(false); // one digit off
+  });
+
+  test("rejects out-of-range lengths", () => {
+    expect(luhnValid("1234567890")).toBe(false); // too short
+    expect(luhnValid("12345678901234567890")).toBe(false); // 20 digits
+  });
+
+  test("rejects non-digit content", () => {
+    expect(luhnValid("4111-aaaa-1111-1111")).toBe(false);
+  });
+});
+
+// --- safeStringify ---------------------------------------------------------
+
+describe("safeStringify", () => {
+  test("serializes plain objects normally", () => {
+    expect(safeStringify({ a: 1, b: "x" })).toBe('{"a":1,"b":"x"}');
+  });
+
+  test("handles BigInt without throwing", () => {
+    const out = safeStringify({ id: 10n });
+    expect(out).toContain('"10"');
+  });
+
+  test("handles circular references without throwing", () => {
+    const node: { name: string; self?: unknown } = { name: "root" };
+    node.self = node;
+    const out = safeStringify(node);
+    expect(out).toContain("<circular>");
+  });
+
+  test("returns <unserializable> if even JSON.stringify with replacer throws", () => {
+    // A getter that throws -- JSON.stringify will surface it.
+    const bad = {
+      get boom() {
+        throw new Error("nope");
+      },
+    };
+    expect(safeStringify(bad)).toBe("<unserializable>");
+  });
+});
+
+// --- pii-scan --------------------------------------------------------------
 
 describe("pii-scan builtin", () => {
   test("trips on an email in user input", async () => {
@@ -71,7 +132,7 @@ describe("pii-scan builtin", () => {
     expect((r.metadata as { kind: string }).kind).toBe("us-phone");
   });
 
-  test("trips on credit-card-shaped run in serialized pre-tool args", async () => {
+  test("trips on a Luhn-valid credit card in serialized pre-tool args", async () => {
     const g = createPiiScanGuardrail("pre-tool");
     const r = await g.run({
       agentId: "a",
@@ -81,6 +142,28 @@ describe("pii-scan builtin", () => {
     });
     expect(r.tripped).toBe(true);
     expect((r.metadata as { kind: string }).kind).toBe("credit-card");
+  });
+
+  test("does NOT trip on a 16-digit non-Luhn invoice / order number", async () => {
+    const g = createPiiScanGuardrail("output");
+    const r = await g.run({
+      agentId: "a",
+      userId: "u",
+      platform: "slack",
+      text: "Order #1234567890123456 shipped",
+    });
+    expect(r.tripped).toBe(false);
+  });
+
+  test("does NOT trip on a long tracking-style 18-digit run", async () => {
+    const g = createPiiScanGuardrail("output");
+    const r = await g.run({
+      agentId: "a",
+      userId: "u",
+      platform: "slack",
+      text: "FedEx tracking 123456789012345678",
+    });
+    expect(r.tripped).toBe(false);
   });
 
   test("passes on benign text", async () => {
@@ -94,7 +177,7 @@ describe("pii-scan builtin", () => {
     expect(r.tripped).toBe(false);
   });
 
-  test("does not fire on a long invoice number (10 digits)", async () => {
+  test("does not fire on a 10-digit invoice number", async () => {
     const g = createPiiScanGuardrail("output");
     const r = await g.run({
       agentId: "a",
@@ -104,9 +187,27 @@ describe("pii-scan builtin", () => {
     });
     expect(r.tripped).toBe(false);
   });
+
+  test("does not throw on BigInt or circular tool args", async () => {
+    const g = createPiiScanGuardrail("pre-tool");
+    const node: { name: string; self?: unknown; id: bigint } = {
+      name: "root",
+      id: 999999999n,
+    };
+    node.self = node;
+    const r = await g.run({
+      agentId: "a",
+      userId: "u",
+      toolName: "weird.tool",
+      arguments: node,
+    });
+    // Arg shape is exotic but contains no PII; must not throw and must not
+    // trip on the synthetic <circular> / "999999999" markers.
+    expect(r.tripped).toBe(false);
+  });
 });
 
-// ─── TextJudge ─────────────────────────────────────────────────────────────
+// --- TextJudge -------------------------------------------------------------
 
 describe("TextJudge", () => {
   test("returns allow when fake judge allows", async () => {
@@ -189,7 +290,7 @@ describe("TextJudge", () => {
   });
 });
 
-// ─── createJudgeGuardrail ──────────────────────────────────────────────────
+// --- createJudgeGuardrail --------------------------------------------------
 
 describe("createJudgeGuardrail", () => {
   test("output stage trips when judge denies", async () => {
@@ -239,13 +340,52 @@ describe("createJudgeGuardrail", () => {
     expect(fake.calls.length).toBe(1);
   });
 
+  test("pre-tool guardrail safely serializes BigInt args", async () => {
+    const fake = new FakeJudgeClient(() => ({
+      verdict: "allow",
+      reason: "",
+    }));
+    const judge = new TextJudge({ client: fake });
+    const g = createJudgeGuardrail("pre-tool", "policy", { judge });
+    const r = await g.run({
+      agentId: "a",
+      userId: "u",
+      toolName: "weird.tool",
+      arguments: { id: 999999999999999n },
+    });
+    expect(r.tripped).toBe(false);
+    // Verify the judge actually got called (i.e., extraction didn't throw).
+    expect(fake.calls.length).toBe(1);
+    expect(fake.calls[0]?.userPrompt).toContain("999999999999999");
+  });
+
+  test("pre-tool guardrail safely serializes circular args", async () => {
+    const fake = new FakeJudgeClient(() => ({
+      verdict: "allow",
+      reason: "",
+    }));
+    const judge = new TextJudge({ client: fake });
+    const g = createJudgeGuardrail("pre-tool", "policy", { judge });
+    const node: { name: string; self?: unknown } = { name: "root" };
+    node.self = node;
+    const r = await g.run({
+      agentId: "a",
+      userId: "u",
+      toolName: "weird.tool",
+      arguments: node,
+    });
+    expect(r.tripped).toBe(false);
+    expect(fake.calls.length).toBe(1);
+    expect(fake.calls[0]?.userPrompt).toContain("<circular>");
+  });
+
   test("inline name is inline:<stage>:<hash8>", () => {
     const g = createJudgeGuardrail("input", "policy text");
     expect(g.name).toBe(`inline:input:${inlineJudgeHash("policy text")}`);
   });
 });
 
-// ─── resolveAgentGuardrails ────────────────────────────────────────────────
+// --- resolveAgentGuardrails ------------------------------------------------
 
 describe("resolveAgentGuardrails (aggregator)", () => {
   function setupRegistry(): GuardrailRegistry {
@@ -266,10 +406,11 @@ describe("resolveAgentGuardrails (aggregator)", () => {
       enabled: true,
       guardrails: {
         "pre-tool": [
-          { builtin: "secret-scan" },
+          { kind: "builtin", name: "secret-scan" },
           {
+            kind: "judge",
+            policy: "Only allow if branch matches sprint",
             tools: ["github.delete_repo"],
-            judge: "Only allow if branch matches sprint",
           },
         ],
       },
@@ -279,9 +420,7 @@ describe("resolveAgentGuardrails (aggregator)", () => {
       [skill],
       reg,
       {
-        inline: [
-          { stage: "output", judge: "Never mention competitors" },
-        ],
+        inline: [{ stage: "output", judge: "Never mention competitors" }],
       }
     );
     // Agent built-in pii-scan registered for input/output/pre-tool; agent
@@ -298,19 +437,19 @@ describe("resolveAgentGuardrails (aggregator)", () => {
       )
     ).toBe(true);
     // Agent inline output judge
-    expect(
-      out.names.output.some((n) => n.startsWith("inline:output:"))
-    ).toBe(true);
+    expect(out.names.output.some((n) => n.startsWith("inline:output:"))).toBe(
+      true
+    );
   });
 
-  test("dedup: agent + skill both name secret-scan → one instance", () => {
+  test("dedup: agent + skill both name secret-scan -> one instance", () => {
     const reg = setupRegistry();
     const skill: SkillConfig = {
       repo: "x/y",
       name: "github",
       enabled: true,
       guardrails: {
-        "pre-tool": [{ builtin: "secret-scan" }],
+        "pre-tool": [{ kind: "builtin", name: "secret-scan" }],
       },
     };
     const out = resolveAgentGuardrails(
@@ -331,7 +470,7 @@ describe("resolveAgentGuardrails (aggregator)", () => {
       name: "github",
       enabled: true,
       guardrails: {
-        "pre-tool": [{ builtin: "secret-scan" }],
+        "pre-tool": [{ kind: "builtin", name: "secret-scan" }],
       },
     };
     const out = resolveAgentGuardrails({}, [skill], reg, {
@@ -347,7 +486,7 @@ describe("resolveAgentGuardrails (aggregator)", () => {
       name: "github",
       enabled: false,
       guardrails: {
-        "pre-tool": [{ builtin: "secret-scan" }],
+        "pre-tool": [{ kind: "builtin", name: "secret-scan" }],
       },
     };
     const out = resolveAgentGuardrails({}, [skill], reg);
@@ -361,7 +500,7 @@ describe("resolveAgentGuardrails (aggregator)", () => {
       name: "github",
       enabled: true,
       guardrails: {
-        "pre-tool": [{ builtin: "nonexistent-builtin" }],
+        "pre-tool": [{ kind: "builtin", name: "nonexistent-builtin" }],
       },
     };
     const out = resolveAgentGuardrails({}, [skill], reg);

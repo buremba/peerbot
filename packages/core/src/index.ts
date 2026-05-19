@@ -133,6 +133,7 @@ export type {
   SessionContext,
   SkillConfig,
   SkillMcpServer,
+  SkillPreToolGuardrail,
   SkillsConfig,
   SuggestedPrompt,
   ThinkingLevel,

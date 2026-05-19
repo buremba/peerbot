@@ -350,13 +350,10 @@ async execute(ctx: ActionContext): Promise<ActionResult> {
 }
 ```
 
-If your connector doesn't support actions:
-
-```typescript
-async execute(_ctx: ActionContext): Promise<ActionResult> {
-  return { success: false, error: 'Actions not supported' };
-}
-```
+If your connector doesn't support actions, do nothing — the base
+`ConnectorRuntime` class ships a default `execute()` that returns
+`{ success: false, error: 'Actions not supported' }`. Omit the method
+entirely.
 
 ## Options Schema
 

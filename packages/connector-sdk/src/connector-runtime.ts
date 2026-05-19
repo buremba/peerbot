@@ -65,11 +65,14 @@ export abstract class ConnectorRuntime {
    * Called either inline (low-risk) or by the worker (high-risk with approval).
    * Default implementation rejects with "Actions not supported" — connectors
    * that don't declare any `actions` in their definition need not override.
+   * The `ctx` parameter is part of the public contract (subclasses overriding
+   * this method receive the full `ActionContext`); the base impl ignores it.
    *
    * @param ctx - Action context with action key, input, and credentials
    * @returns Action result with output data
    */
-  async execute(_ctx: ActionContext): Promise<ActionResult> {
+  // biome-ignore lint/correctness/noUnusedFunctionParameters: contract signature — subclasses receive the full ActionContext
+  async execute(ctx: ActionContext): Promise<ActionResult> {
     return { success: false, error: 'Actions not supported' };
   }
 

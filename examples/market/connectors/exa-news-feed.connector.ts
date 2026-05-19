@@ -1,3 +1,4 @@
+// biome-ignore-all format: stays compact for the landing-page code panel
 import { ConnectorRuntime, type SyncContext } from "@lobu/connector-sdk";
 
 export default class ExaNewsFeedConnector extends ConnectorRuntime {
@@ -10,14 +11,9 @@ export default class ExaNewsFeedConnector extends ConnectorRuntime {
   };
 
   async sync(ctx: SyncContext) {
-    const seen = new Set<string>((ctx.checkpoint as { seen_ids?: string[] } | null)?.seen_ids ?? []);
-    const r = await fetch("https://api.exa.ai/search", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query: ctx.config.query, numResults: ctx.config.num_results ?? 20 }),
-    });
-    const { results = [] } = (await r.json()) as { results?: Array<{ id: string; title?: string; url: string; author?: string; publishedDate?: string }> };
-    const fresh = results.filter((x) => x.id && !seen.has(x.id));
+    const seen = new Set<string>((ctx.checkpoint as any)?.seen_ids ?? []);
+    const r = await fetch("https://api.exa.ai/search", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query: ctx.config.query, numResults: ctx.config.num_results ?? 20 }) });
+    const fresh: any[] = ((await r.json() as any).results ?? []).filter((x: any) => x.id && !seen.has(x.id));
     return {
       events: fresh.map((x) => ({
         origin_id: x.id,
@@ -27,7 +23,7 @@ export default class ExaNewsFeedConnector extends ConnectorRuntime {
         source_url: x.url,
         occurred_at: x.publishedDate ? new Date(x.publishedDate) : new Date(),
       })),
-      checkpoint: { seen_ids: [...seen, ...fresh.map((x) => x.id)].slice(-1000) } as Record<string, unknown>,
+      checkpoint: { seen_ids: [...seen, ...fresh.map((x) => x.id)].slice(-1000) },
     };
   }
 

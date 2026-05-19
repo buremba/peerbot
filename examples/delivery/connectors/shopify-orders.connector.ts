@@ -1,3 +1,4 @@
+// biome-ignore-all format: stays compact for the landing-page code panel
 import { ConnectorRuntime, type SyncContext } from "@lobu/connector-sdk";
 
 export default class ShopifyOrdersConnector extends ConnectorRuntime {
@@ -10,10 +11,9 @@ export default class ShopifyOrdersConnector extends ConnectorRuntime {
   };
 
   async sync(ctx: SyncContext) {
-    const since = (ctx.checkpoint as { updated_at_min?: string } | null)?.updated_at_min ?? "2000-01-01T00:00:00Z";
+    const since = (ctx.checkpoint as any)?.updated_at_min ?? "2000-01-01T00:00:00Z";
     const r = await fetch(`https://${ctx.config.shop}/admin/api/2024-10/orders.json?status=any&updated_at_min=${encodeURIComponent(since)}&limit=100`);
-    const { orders = [] } = (await r.json()) as { orders?: Array<{ id: number; name: string; fulfillment_status?: string; updated_at: string }> };
-    orders.sort((a, b) => new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime());
+    const orders: any[] = ((await r.json() as any).orders ?? []).sort((a: any, b: any) => new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime());
     return {
       events: orders.map((o) => ({
         origin_id: `${o.id}:${o.updated_at}`,
@@ -22,7 +22,7 @@ export default class ShopifyOrdersConnector extends ConnectorRuntime {
         source_url: `https://${ctx.config.shop}/admin/orders/${o.id}`,
         occurred_at: new Date(o.updated_at),
       })),
-      checkpoint: { updated_at_min: orders.at(-1)?.updated_at ?? since } as Record<string, unknown>,
+      checkpoint: { updated_at_min: orders.at(-1)?.updated_at ?? since },
     };
   }
 

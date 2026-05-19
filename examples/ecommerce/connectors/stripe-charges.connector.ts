@@ -1,3 +1,4 @@
+// biome-ignore-all format: stays compact for the landing-page code panel
 import { ConnectorRuntime, type SyncContext } from "@lobu/connector-sdk";
 
 export default class StripeChargesConnector extends ConnectorRuntime {
@@ -10,10 +11,9 @@ export default class StripeChargesConnector extends ConnectorRuntime {
   };
 
   async sync(ctx: SyncContext) {
-    const cursor = (ctx.checkpoint as { last_created?: number } | null)?.last_created ?? 0;
+    const cursor = (ctx.checkpoint as any)?.last_created ?? 0;
     const r = await fetch(`https://api.stripe.com/v1/charges?limit=100&created[gt]=${cursor}`);
-    const { data = [] } = (await r.json()) as { data?: Array<{ id: string; amount: number; currency: string; refunded: boolean; created: number }> };
-    data.sort((a, b) => a.created - b.created);
+    const data: any[] = ((await r.json() as any).data ?? []).sort((a: any, b: any) => a.created - b.created);
     return {
       events: data.map((c) => ({
         origin_id: c.refunded ? `${c.id}:refund` : c.id,
@@ -22,7 +22,7 @@ export default class StripeChargesConnector extends ConnectorRuntime {
         source_url: `https://dashboard.stripe.com/payments/${c.id}`,
         occurred_at: new Date(c.created * 1000),
       })),
-      checkpoint: { last_created: data.at(-1)?.created ?? cursor } as Record<string, unknown>,
+      checkpoint: { last_created: data.at(-1)?.created ?? cursor },
     };
   }
 

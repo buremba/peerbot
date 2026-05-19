@@ -1,3 +1,4 @@
+// biome-ignore-all format: stays compact for the landing-page code panel
 import { ConnectorRuntime, type SyncContext } from "@lobu/connector-sdk";
 
 export default class QuickBooksTransactionsConnector extends ConnectorRuntime {
@@ -10,11 +11,10 @@ export default class QuickBooksTransactionsConnector extends ConnectorRuntime {
   };
 
   async sync(ctx: SyncContext) {
-    const since = (ctx.checkpoint as { last_txn_date?: string } | null)?.last_txn_date ?? "1970-01-01";
+    const since = (ctx.checkpoint as any)?.last_txn_date ?? "1970-01-01";
     const q = `SELECT * FROM Transaction WHERE TxnDate > '${since}' ORDERBY TxnDate ASC MAXRESULTS 500`;
     const r = await fetch(`https://quickbooks.api.intuit.com/v3/company/${ctx.config.realm_id}/query?query=${encodeURIComponent(q)}`);
-    const body = (await r.json()) as { QueryResponse?: { Transaction?: Array<{ Id: string; TxnDate: string; Amount: number; AccountRef?: { name?: string } }> } };
-    const txns = body.QueryResponse?.Transaction ?? [];
+    const txns: any[] = (await r.json() as any).QueryResponse?.Transaction ?? [];
     return {
       events: txns.map((t) => ({
         origin_id: t.Id,
@@ -22,7 +22,7 @@ export default class QuickBooksTransactionsConnector extends ConnectorRuntime {
         title: `${t.AccountRef?.name ?? "Bank"} — $${t.Amount.toFixed(2)}`,
         occurred_at: new Date(`${t.TxnDate}T00:00:00Z`),
       })),
-      checkpoint: { last_txn_date: txns.at(-1)?.TxnDate ?? since } as Record<string, unknown>,
+      checkpoint: { last_txn_date: txns.at(-1)?.TxnDate ?? since },
     };
   }
 

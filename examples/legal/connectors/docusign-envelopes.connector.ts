@@ -1,3 +1,4 @@
+// biome-ignore-all format: stays compact for the landing-page code panel
 import { ConnectorRuntime, type SyncContext } from "@lobu/connector-sdk";
 
 export default class DocuSignEnvelopesConnector extends ConnectorRuntime {
@@ -10,11 +11,10 @@ export default class DocuSignEnvelopesConnector extends ConnectorRuntime {
   };
 
   async sync(ctx: SyncContext) {
-    const since = (ctx.checkpoint as { last_status_changed?: string } | null)?.last_status_changed ?? "2000-01-01T00:00:00Z";
-    const base = (ctx.config.base_path ?? "https://www.docusign.net/restapi").toString().replace(/\/$/, "");
+    const since = (ctx.checkpoint as any)?.last_status_changed ?? "2000-01-01T00:00:00Z";
+    const base = String(ctx.config.base_path ?? "https://www.docusign.net/restapi").replace(/\/$/, "");
     const r = await fetch(`${base}/v2.1/accounts/${ctx.config.account_id}/envelopes?from_date=${encodeURIComponent(since)}&count=100`);
-    const { envelopes = [] } = (await r.json()) as { envelopes?: Array<{ envelopeId: string; status: string; emailSubject?: string; statusChangedDateTime: string }> };
-    envelopes.sort((a, b) => new Date(a.statusChangedDateTime).getTime() - new Date(b.statusChangedDateTime).getTime());
+    const envelopes: any[] = ((await r.json() as any).envelopes ?? []).sort((a: any, b: any) => new Date(a.statusChangedDateTime).getTime() - new Date(b.statusChangedDateTime).getTime());
     return {
       events: envelopes.map((e) => ({
         origin_id: `${e.envelopeId}:${e.status}`,
@@ -22,7 +22,7 @@ export default class DocuSignEnvelopesConnector extends ConnectorRuntime {
         title: `${e.emailSubject ?? e.envelopeId} → ${e.status}`,
         occurred_at: new Date(e.statusChangedDateTime),
       })),
-      checkpoint: { last_status_changed: envelopes.at(-1)?.statusChangedDateTime ?? since } as Record<string, unknown>,
+      checkpoint: { last_status_changed: envelopes.at(-1)?.statusChangedDateTime ?? since },
     };
   }
 

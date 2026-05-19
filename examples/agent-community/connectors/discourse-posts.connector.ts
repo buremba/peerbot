@@ -1,3 +1,4 @@
+// biome-ignore-all format: stays compact for the landing-page code panel
 import { ConnectorRuntime, type SyncContext } from "@lobu/connector-sdk";
 
 export default class DiscoursePostsConnector extends ConnectorRuntime {
@@ -10,10 +11,9 @@ export default class DiscoursePostsConnector extends ConnectorRuntime {
   };
 
   async sync(ctx: SyncContext) {
-    const cursor = (ctx.checkpoint as { last_post_id?: number } | null)?.last_post_id ?? 0;
+    const cursor = (ctx.checkpoint as any)?.last_post_id ?? 0;
     const r = await fetch(`${ctx.config.base_url}/posts.json?before=${cursor + 50}`);
-    const body = (await r.json()) as { latest_posts?: Array<{ id: number; topic_id: number; topic_slug: string; username: string; cooked: string; created_at: string; topic_title?: string }> };
-    const posts = (body.latest_posts ?? []).filter((p) => p.id > cursor).sort((a, b) => a.id - b.id);
+    const posts: any[] = ((await r.json() as any).latest_posts ?? []).filter((p: any) => p.id > cursor).sort((a: any, b: any) => a.id - b.id);
     return {
       events: posts.map((p) => ({
         origin_id: String(p.id),
@@ -23,7 +23,7 @@ export default class DiscoursePostsConnector extends ConnectorRuntime {
         source_url: `${ctx.config.base_url}/t/${p.topic_slug}/${p.topic_id}/${p.id}`,
         occurred_at: new Date(p.created_at),
       })),
-      checkpoint: { last_post_id: posts.at(-1)?.id ?? cursor } as Record<string, unknown>,
+      checkpoint: { last_post_id: posts.at(-1)?.id ?? cursor },
     };
   }
 

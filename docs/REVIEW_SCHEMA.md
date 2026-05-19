@@ -1,12 +1,15 @@
 # PR Review Verdict Schema
 
-Every PR gets two independent AI review check-runs in **shadow mode** today:
-`pi-review` and `claude-review`. Each reviewer emits exactly one JSON object
-matching this schema, posted as the `output.summary` of its check-run.
+Every non-draft PR gets a single AI review check-run in **shadow mode**:
+`pi-review`. It emits exactly one JSON object matching this schema, posted
+as the `output.summary` of the check-run.
 
-A future merge bot will read both verdicts and decide whether to auto-merge.
-For now, verdicts are informational: the check-runs always finish with
+A future merge bot will read this verdict and decide whether to auto-merge.
+For now the verdict is informational: the check-run always finishes with
 `conclusion: neutral`, never `failure`. **No gate logic exists yet.**
+
+The schema is reviewer-agnostic — a second independent reviewer can be
+added later without touching the shape below.
 
 ## Schema
 
@@ -55,7 +58,8 @@ How confident the reviewer is that this PR can land without breaking prod.
 **Calibration rule:** do not go above 90 unless the change is genuinely
 low-risk *and* understood. Do not go below 30 unless the diff is unreadable.
 
-**Future gate:** auto-merge will require `min(pi.confidence, claude.confidence) >= 80`.
+**Future gate:** auto-merge will require `confidence >= 80` (and equivalent
+thresholds from any additional reviewer that gets wired in).
 
 ### `bugs` (integer, ≥0)
 
@@ -63,7 +67,7 @@ Count of concrete defects the reviewer can point at — wrong logic, off-by-ones
 mismatched signatures, dropped error paths, the kind of thing that would
 surface in a unit test if one existed. Style nits do not count.
 
-**Future gate:** auto-merge will require `pi.bugs == 0 && claude.bugs == 0`.
+**Future gate:** auto-merge will require `bugs == 0`.
 
 ### `slop` (integer, 0–100)
 
@@ -93,7 +97,7 @@ ratio of slop lines to total changed lines:
 diff; 50 = significant fraction of the diff is waste; 80+ = the diff is
 mostly waste.
 
-**Future gate:** auto-merge will require `max(pi.slop, claude.slop) <= 30`.
+**Future gate:** auto-merge will require `slop <= 30`.
 
 ### `blockers` (array of strings)
 
@@ -104,8 +108,7 @@ other scores. Empty array if none. Examples:
 - `"db migration is not idempotent"`
 - `"deletes a public export still used by @lobu/cli"`
 
-**Future gate:** auto-merge will require `blockers.length == 0` for both
-reviewers.
+**Future gate:** auto-merge will require `blockers.length == 0`.
 
 ### `change_type` (enum)
 
@@ -182,7 +185,7 @@ When a path matches multiple patterns, the more specific one wins
 
 ## Shadow-mode reminder
 
-The reviewers post `conclusion: neutral` regardless of scores. Merges are
-not gated by these check-runs yet. The point of shadow mode is to observe
-how the verdicts track real-world PR outcomes so the gate thresholds above
-can be calibrated before they are wired up.
+The reviewer posts `conclusion: neutral` regardless of scores. Merges are
+not gated by this check-run yet. The point of shadow mode is to observe how
+the verdicts track real-world PR outcomes so the gate thresholds above can
+be calibrated before they are wired up.

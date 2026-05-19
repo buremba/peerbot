@@ -4,9 +4,10 @@
 # Usage:
 #   ./scripts/run-pi-review.sh <PR_NUMBER>
 #
-# Env:
-#   ANTHROPIC_API_KEY  required — pi is run against the anthropic provider.
-#   PI_MODEL           optional — defaults to claude-sonnet-4-5.
+# Auth: reuses the operator's existing ~/.pi/agent state (ChatGPT-Codex).
+# Provider/model/extensions come from ~/.pi/agent/settings.json — by default
+# that's the openai-codex-3 profile (gpt-5.5 + thinking=high). This script
+# never writes to ~/.pi/.
 #
 # Output: prints the JSON verdict to stdout. Non-zero exit if the model's
 # output is not valid JSON.
@@ -19,8 +20,9 @@ if [ -z "$PR" ]; then
   exit 2
 fi
 
-if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-  echo "ANTHROPIC_API_KEY is required" >&2
+if [ ! -f "$HOME/.pi/agent/auth.json" ]; then
+  echo "~/.pi/agent/auth.json not found." >&2
+  echo "Sign in to pi first (\`pi\` then complete the ChatGPT-Codex flow), or run from a host where pi is already authenticated." >&2
   exit 2
 fi
 
@@ -32,37 +34,28 @@ if [ ! -f "$PROMPT_FILE" ]; then
   exit 2
 fi
 
-MODEL="${PI_MODEL:-claude-sonnet-4-5}"
-
-# `pi --mode json` makes pi emit one JSON object per turn instead of the
-# default streaming text. We feed the prompt file plus the PR number as the
-# message; pi can call `gh` itself to fetch the diff.
+# `pi --mode json` makes pi emit JSON envelopes per turn instead of streaming
+# text. No --provider / --model flags: settings.json picks the defaults.
 RAW="$(
   PR_NUMBER="$PR" pi \
-    --provider anthropic \
-    --model "$MODEL" \
     --mode json \
     --no-session \
     -p "@${PROMPT_FILE}" "PR_NUMBER=$PR — review this PR. Emit only the JSON verdict."
 )"
 
-# pi --mode json wraps each message in a JSON envelope. The final assistant
-# message body is what we want. Extract it, then validate it parses as the
-# verdict JSON.
+# pi --mode json may wrap each message in an envelope (multi-turn) OR emit a
+# single object. Try the multi-turn extraction first; fall back to the raw
+# output. Then strip code fences if present, and validate as JSON.
 VERDICT="$(printf '%s\n' "$RAW" | jq -rs '
   [.[] | select(.role == "assistant")] | last | .content // empty
-')"
+' 2>/dev/null || true)"
 
 if [ -z "$VERDICT" ]; then
-  # Fallback: pi may emit a single-object stream; treat the whole thing as
-  # the verdict.
   VERDICT="$RAW"
 fi
 
-# Strip code fences if the model added them despite instructions.
 VERDICT="$(printf '%s\n' "$VERDICT" | sed -e 's/^```json//' -e 's/^```//' -e 's/```$//')"
 
-# Validate.
 echo "$VERDICT" | jq -e . >/dev/null || {
   echo "pi output is not valid JSON:" >&2
   echo "$VERDICT" >&2

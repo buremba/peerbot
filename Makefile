@@ -1,6 +1,6 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test clean dev build-packages ensure-submodule clean-workers test-unit test-integration test-e2e typecheck task-setup task-clean task-use bump pi-review claude-review
+.PHONY: help setup build test clean dev build-packages ensure-submodule clean-workers test-unit test-integration test-e2e typecheck task-setup task-clean task-use bump pi-review
 
 # Default target
 help:
@@ -18,8 +18,7 @@ help:
 	@echo "  make task-clean NAME=<name> [FORCE=1]      - Remove the worktree, both branches, and the Lobu context (refuses if there's uncommitted/unpushed work unless FORCE=1)"
 	@echo "  make task-use NAME=<name|main>             - Point Chrome ext / Mac app symlinks at this worktree (or 'main' for the canonical checkout)"
 	@echo "  make bump SUBMODULE=<path> [TARGET=<ref>]  - Lightweight worktree + commit + PR for a trivial submodule pointer bump (skips bun install, .env, ports)"
-	@echo "  make pi-review PR=<n>                      - Run the shadow-mode pi review locally for PR <n> (needs ANTHROPIC_API_KEY)"
-	@echo "  make claude-review PR=<n>                  - Run the shadow-mode claude review locally for PR <n>"
+	@echo "  make pi-review PR=<n>                      - Run the shadow-mode pi review locally for PR <n> (uses ~/.pi/agent auth)"
 
 # Strict typecheck — mirrors the Dockerfile so local matches CI. Catches
 # what `build-packages` (relaxed, bundler-only) misses.
@@ -143,14 +142,10 @@ clean-workers:
 	@pkill -f '@lobu/worker' 2>/dev/null || true
 	@echo "✅ Worker subprocesses stopped"
 
-# --- Shadow-mode AI reviewers ----------------------------------------------
-# Mirror what .github/workflows/{pi,claude}-review.yml run in CI so a verdict
-# can be previewed locally before pushing. See docs/REVIEW_SCHEMA.md.
+# --- Shadow-mode AI reviewer -----------------------------------------------
+# Mirrors what .github/workflows/pi-review.yml runs in CI so a verdict can be
+# previewed locally before pushing. See docs/REVIEW_SCHEMA.md.
 
 pi-review:
 	@: $${PR?Usage: make pi-review PR=<pr-number>}
 	@./scripts/run-pi-review.sh $(PR)
-
-claude-review:
-	@: $${PR?Usage: make claude-review PR=<pr-number>}
-	@./scripts/run-claude-review.sh $(PR)

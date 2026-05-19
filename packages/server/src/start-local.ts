@@ -14,17 +14,16 @@
 // asserts on load, so this must be the first import; see assert-node-version.ts.
 import './utils/assert-node-version';
 
-import { fork, spawnSync } from 'node:child_process';
+import { fork } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import http from 'node:http';
 import { createRequire } from 'node:module';
-import os, { homedir } from 'node:os';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import dotenv from 'dotenv';
-import { z } from 'zod';
 
 dotenv.config();
 
@@ -232,26 +231,30 @@ async function main() {
 
   // ─── Bootstrap user ──────────────────────────────────────────
   // Runs BEFORE listen so that the bootstrap user / org / member rows are
-  // guaranteed to exist before the first request lands — first-boot UI
-  // calls would otherwise race the seed and 401 against a not-yet-
-  // provisioned user. Auth credentials (Better Auth sessions) are minted
-  // on demand by `POST /api/local-init` once the listener is up.
-  try {
-    await ensureBootstrapUser(dbUrl);
-  } catch (err) {
-    logger.warn({ err }, 'Bootstrap user seed failed');
-  }
-
-  // ─── Default agent (Mac-app onboarding) ──────────────────────
-  // Auto-provision the Owletto Personal agent for the bootstrap org
-  // the first time the deployment boots. Sticky against deletion via a
-  // sentinel in `organization.metadata` — if the user removes the agent
-  // through the web UI we do NOT recreate it on the next boot.
+  // No bootstrap-user seed: prior versions pre-created a `bootstrap-user`
+  // (`dev@lobu.local` / `lobudev123`) ahead of any real signup. That created
+  // a fork the moment the operator visited /sign-up with a real email — one
+  // identity for the Mac app + CLI, another for the web UI. Now the operator
+  // signs up via /sign-up first (web or in the menubar's connect card) and
+  // `POST /api/local-init` mints credentials for that single real user; the
+  // single-user-mode hook in auth/index.tsx (PR #898) prevents anyone else
+  // from joining.
   //
-  // Best-effort: failure here does not block boot. The Mac app degrades to
-  // an empty-agents state instead of failing to start the server.
+  // ─── Default agent (Mac-app onboarding) ──────────────────────
+  // Default-agent provisioning is deferred to first-user creation. The
+  // `databaseHooks.user.create.after` hook in auth/index.tsx provisions the
+  // personal org; ensureDefaultAgent runs the next time `lobu run` boots
+  // after the user exists.
   try {
-    await ensureDefaultAgent(BOOTSTRAP_ORG_ID);
+    const personalOrgRows = (await import('postgres')).default(dbUrl, { max: 1 });
+    try {
+      const rows =
+        (await personalOrgRows`SELECT id FROM "organization" WHERE (metadata::jsonb)->>'personal_org_for_user_id' IS NOT NULL ORDER BY "createdAt" ASC LIMIT 1`) as unknown as Array<{ id: string }>;
+      const orgId = rows[0]?.id;
+      if (orgId) await ensureDefaultAgent(orgId);
+    } finally {
+      await personalOrgRows.end({ timeout: 1 });
+    }
   } catch (err) {
     logger.warn({ err }, 'Default-agent provisioning failed');
   }
@@ -351,264 +354,6 @@ async function applyEmbeddedSchemaPatches(sql: MigrationSqlClient) {
   }
 }
 
-// ─── Bootstrap user ────────────────────────────────────────────────
-//
-// Seeds a default user, personal org (slug `dev`), member, and credential
-// account so the embedded PGlite deployment has a signed-in identity from
-// first boot. Self-skips when the user/org/member trio is already present
-// or when the deployment has non-bootstrap users (production safety —
-// real signups land via the web UI and own all subsequent boots).
-//
-// The auth credential itself (a Better Auth session token) is minted on
-// demand via `POST /api/local-init` once the HTTP listener is up —
-// CLI clients and the macOS menu bar both hit that endpoint instead of
-// reading a long-lived token from disk. PostgreSQL holds the truth: the
-// `session` table on issuance, the `user` row here on seeding.
-
-const BOOTSTRAP_USER_ID = 'bootstrap-user';
-// Fallback identity when no env override / git config is available. Needs a
-// dotted domain — better-auth's email validator rejects bare `dev@local`.
-const BOOTSTRAP_DEFAULT_EMAIL = 'dev@lobu.local';
-const BOOTSTRAP_DEFAULT_NAME = 'Local Developer';
-const BOOTSTRAP_DEFAULT_USERNAME = 'dev-local';
-const BOOTSTRAP_ORG_ID = 'org-bootstrap-dev';
-const BOOTSTRAP_ORG_SLUG = 'dev';
-const BOOTSTRAP_ORG_NAME = 'Local Dev';
-const BOOTSTRAP_MEMBER_ID = 'member-bootstrap-dev';
-// Fixed credential-login password for the bootstrap user. Local PGlite only —
-// the user-count guard below means this never lands in a real deployment.
-// Must be >= 8 chars to satisfy the web login form's minlength validation.
-const BOOTSTRAP_PASSWORD = 'lobudev123';
-const BOOTSTRAP_ACCOUNT_ID = 'account-bootstrap-dev';
-
-interface BootstrapIdentity {
-  email: string;
-  name: string;
-  username: string;
-}
-
-/**
- * Pick the bootstrap user's identity for a fresh local install.
- *
- * Order of preference:
- *   1. `LOBU_LOCAL_EMAIL` / `LOBU_LOCAL_NAME` env vars (operator-set).
- *   2. `git config user.email` / `git config user.name` (most likely correct
- *      for the dev running `lobu run` out of a checkout).
- *   3. `${USER}@${hostname}.local` fallback (no Apple Push push-mail goes
- *      anywhere — better-auth just needs a dotted domain).
- *   4. The original `dev@lobu.local` / "Local Developer" defaults.
- *
- * The bootstrap user only exists on a fresh PGlite install and is gated to
- * loopback, so a wrong-guess email here can't reach a real mailbox. The
- * point is to show the operator's actual identity in the menubar + web UI
- * instead of a hardcoded placeholder.
- */
-function pickBootstrapIdentity(): BootstrapIdentity {
-  const envEmail = process.env.LOBU_LOCAL_EMAIL?.trim();
-  const envName = process.env.LOBU_LOCAL_NAME?.trim();
-
-  const gitEmail = safeRead(() =>
-    spawnSync('git', ['config', '--get', 'user.email']).stdout.toString().trim()
-  );
-  const gitName = safeRead(() =>
-    spawnSync('git', ['config', '--get', 'user.name']).stdout.toString().trim()
-  );
-
-  const osUser = process.env.USER?.trim() || process.env.USERNAME?.trim();
-  const osHost = os.hostname()?.trim();
-  const osFallbackEmail =
-    osUser && osHost ? `${osUser.toLowerCase()}@${osHost.toLowerCase()}.local` : null;
-
-  const email = pickFirstValidEmail([envEmail, gitEmail, osFallbackEmail]) ?? BOOTSTRAP_DEFAULT_EMAIL;
-  const name = envName || gitName || osUser || BOOTSTRAP_DEFAULT_NAME;
-  const username = usernameFromEmail(email) ?? BOOTSTRAP_DEFAULT_USERNAME;
-  return { email, name, username };
-}
-
-function safeRead(fn: () => string): string | null {
-  try {
-    const v = fn();
-    return v ? v : null;
-  } catch {
-    return null;
-  }
-}
-
-// Use zod's email validator — it's what Better Auth's sign-in/sign-up
-// schemas use internally, so anything that passes here is also accepted
-// by `/api/auth/sign-in/email`. A weaker regex (e.g. `^[^@]+@[^@]+\.[^@]+$`)
-// lets values like `a@b.c`, `user@[127.0.0.1]`, `foo@bar..com` through,
-// which fail BA's Zod and leave us with a seeded user whose printed
-// credentials can't actually be used.
-const emailSchema = z.string().email();
-
-function pickFirstValidEmail(candidates: Array<string | null | undefined>): string | null {
-  for (const c of candidates) {
-    if (c && emailSchema.safeParse(c).success) return c;
-  }
-  return null;
-}
-
-function usernameFromEmail(email: string): string | null {
-  const local = email.split('@')[0]?.toLowerCase();
-  if (!local) return null;
-  // Match the slug shape personal-org-provisioning uses for collision safety.
-  const slug = local.replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
-  return slug || null;
-}
-
-function isLoopbackPgUrl(dbUrl: string): boolean {
-  try {
-    const { hostname } = new URL(dbUrl);
-    return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
-  } catch {
-    return false;
-  }
-}
-
-async function ensureBootstrapUser(dbUrl: string): Promise<void> {
-  // Defense-in-depth: this entrypoint spawns its own PGlite at 127.0.0.1
-  // (see line 120 above). If the dbUrl ever points elsewhere — someone
-  // refactors and reuses ensureBootstrapUser against a real DB — refuse
-  // to seed. The user-count guard below is the second layer; this catches
-  // the case where a fresh prod DB hasn't had its first signup yet.
-  if (!isLoopbackPgUrl(dbUrl)) {
-    logger.warn(
-      { dbUrl: dbUrl.replace(/:[^:@/]*@/, ':***@') },
-      'Skipping bootstrap user seed — dbUrl is not the local PGlite loopback'
-    );
-    return;
-  }
-
-  // Reuse the same dynamic-import shape `runMigrations` above uses so we share
-  // postgres' module init cost with that path on first boot.
-  const pg = await import('postgres');
-  const sql = pg.default(dbUrl, { max: 1 });
-
-  try {
-    // Stale-state detection: previously this early-returned whenever a PAT
-    // file existed on disk, but a wiped LOBU_DATA_DIR could leave rows
-    // missing. Check all three rows (user + org + member) — if ANY is
-    // missing, re-seed to restore consistency.
-    const stateRows = await sql<
-      [{ user_exists: boolean; org_exists: boolean; member_exists: boolean }]
-    >`
-      SELECT
-        EXISTS(SELECT 1 FROM "user"         WHERE id = ${BOOTSTRAP_USER_ID})   AS user_exists,
-        EXISTS(SELECT 1 FROM "organization" WHERE id = ${BOOTSTRAP_ORG_ID})    AS org_exists,
-        EXISTS(SELECT 1 FROM "member"       WHERE id = ${BOOTSTRAP_MEMBER_ID}) AS member_exists
-    `;
-    const allPresent =
-      stateRows[0]?.user_exists && stateRows[0]?.org_exists && stateRows[0]?.member_exists;
-    if (allPresent) {
-      logger.info(
-        { org: BOOTSTRAP_ORG_SLUG },
-        'Bootstrap user + org + member already provisioned'
-      );
-      return;
-    }
-    if (stateRows[0]?.user_exists || stateRows[0]?.org_exists || stateRows[0]?.member_exists) {
-      logger.warn(
-        stateRows[0],
-        'Bootstrap state is partial — re-seeding to restore consistency'
-      );
-    }
-
-    // Production safety: skip when OTHER users exist. A deployment that has
-    // real users provisioned via the web UI must not get a "Local Developer"
-    // user grafted in alongside them. (The bootstrap-user check above doesn't
-    // catch this — those other-user rows have different ids.)
-    const otherUserCountRows = await sql<[{ count: number }]>`
-      SELECT count(*)::int AS count FROM "user" WHERE id <> ${BOOTSTRAP_USER_ID}
-    `;
-    if ((otherUserCountRows[0]?.count ?? 0) > 0) {
-      logger.debug(
-        { userCount: otherUserCountRows[0]?.count },
-        'Skipping bootstrap user seed — deployment already has non-bootstrap users'
-      );
-      return;
-    }
-
-    // Pick the operator's actual identity from env / git config / OS user
-    // before seeding. The bootstrap user only exists on fresh PGlite installs
-    // (guarded above), and is loopback-only — wrong-guess emails can't reach
-    // a real mailbox. The point is to show a real identity in the menubar +
-    // web UI instead of a hardcoded `dev@lobu.local` placeholder.
-    const identity = pickBootstrapIdentity();
-
-    // Idempotent user/org/member upsert. Re-runs of the embedded schema (e.g.
-    // LOBU_DATA_DIR pre-existing without the PAT file) skip ON CONFLICT.
-    await sql`
-      INSERT INTO "user" (id, name, email, username, "emailVerified", "createdAt", "updatedAt")
-      VALUES (
-        ${BOOTSTRAP_USER_ID},
-        ${identity.name},
-        ${identity.email},
-        ${identity.username},
-        true,
-        NOW(),
-        NOW()
-      )
-      ON CONFLICT (id) DO NOTHING
-    `;
-
-    const metadata = JSON.stringify({ personal_org_for_user_id: BOOTSTRAP_USER_ID });
-    await sql`
-      INSERT INTO "organization" (id, name, slug, visibility, metadata, "createdAt")
-      VALUES (
-        ${BOOTSTRAP_ORG_ID},
-        ${BOOTSTRAP_ORG_NAME},
-        ${BOOTSTRAP_ORG_SLUG},
-        'private',
-        ${metadata},
-        NOW()
-      )
-      ON CONFLICT (id) DO NOTHING
-    `;
-
-    await sql`
-      INSERT INTO "member" (id, "userId", "organizationId", role, "createdAt")
-      VALUES (
-        ${BOOTSTRAP_MEMBER_ID},
-        ${BOOTSTRAP_USER_ID},
-        ${BOOTSTRAP_ORG_ID},
-        'owner',
-        NOW()
-      )
-      ON CONFLICT (id) DO NOTHING
-    `;
-
-    // Credential login for the web UI — same user, fixed password. Uses
-    // better-auth's default password hasher so `/api/auth/sign-in/email`
-    // accepts it. `emailVerified` was set true above, so no verification gate.
-    const { hashPassword } = await import('better-auth/crypto');
-    const passwordHash = await hashPassword(BOOTSTRAP_PASSWORD);
-    await sql`
-      INSERT INTO "account" (id, "accountId", "providerId", "userId", password, "createdAt", "updatedAt")
-      VALUES (
-        ${BOOTSTRAP_ACCOUNT_ID},
-        ${BOOTSTRAP_USER_ID},
-        'credential',
-        ${BOOTSTRAP_USER_ID},
-        ${passwordHash},
-        NOW(),
-        NOW()
-      )
-      ON CONFLICT ("providerId", "accountId") DO NOTHING
-    `;
-
-    const url = `http://localhost:${PORT}`;
-    process.stdout.write(
-      `[bootstrap login] ${identity.email} / ${BOOTSTRAP_PASSWORD}  →  ${url}\n`
-    );
-    logger.info(
-      { org: BOOTSTRAP_ORG_SLUG, url },
-      'Bootstrap user + web credential login seeded'
-    );
-  } finally {
-    await sql.end();
-  }
-}
 
 // ─── Embeddings (child process) ──────────────────────────────────
 

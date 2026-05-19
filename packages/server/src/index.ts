@@ -498,39 +498,17 @@ app.get('/health/scheduler', async (c) => {
 
 /**
  * Better-Auth routes
- * Handles all authentication requests: OAuth, magic link, phone OTP, sessions
+ * Handles all authentication requests: OAuth, magic link, phone OTP, sessions.
  *
- * Single-user-mode guard (`LOBU_SINGLE_USER=1`): blocks new credential/social
- * sign-ups so the bootstrap user can't be forked into a second account.
- * Without this guard, a fresh PGlite install where the operator visits
- * `/sign-up` ends up with `bootstrap-user` (used by the Mac app + CLI) AND
- * the new real user (used by the web UI) — same machine, two identities,
- * orphaned worker rows and personal orgs. The Mac app's saved bearer keeps
- * working as `bootstrap-user` while the web UI shows the new account, and
- * nothing migrates between them.
- *
- * Sign-IN still works (so the operator can log into the bootstrap user with
- * the printed credentials). Sign-OUT, magic-link, OTP, OAuth-callback, etc.
- * also pass through — only the sign-up entry points are blocked.
+ * Single-user-mode enforcement (`LOBU_SINGLE_USER=1`) lives at
+ * `databaseHooks.user.create.before` (auth/index.tsx), not here. The DB hook
+ * sees every account-creation path — sign-up/email, magic-link verify, OAuth
+ * callback — and refuses a second user with a structured `APIError`. A prior
+ * path-based fast-fail at this layer also blocked the *first* `/sign-up`,
+ * which made fresh local-first installs unable to register; that guard has
+ * been removed in favour of the always-correct DB-hook chokepoint.
  */
 app.on(['GET', 'POST'], '/api/auth/*', async (c) => {
-  if (c.env.LOBU_SINGLE_USER === '1' && c.req.method === 'POST') {
-    const path = new URL(c.req.url).pathname;
-    if (
-      path === '/api/auth/sign-up/email' ||
-      path === '/api/auth/sign-up' ||
-      path.startsWith('/api/auth/sign-up/')
-    ) {
-      return c.json(
-        {
-          error: 'sign_up_disabled_in_single_user_mode',
-          error_description:
-            'This install is in single-user mode. Sign in with the bootstrap credentials printed by `lobu run`, or unset LOBU_SINGLE_USER to allow additional accounts.',
-        },
-        403
-      );
-    }
-  }
   const auth = await createAuth(c.env, c.req.raw);
   // better-call crashes with "Unexpected end of JSON input" when a POST has
   // Content-Type: application/json but an empty body. Ensure a valid body.

@@ -323,31 +323,34 @@ credentialRoutes.get('/exchange-token', async (c) => {
 });
 
 /**
- * Mint a Better Auth session for the embedded-PGlite bootstrap user.
+ * Mint a Better Auth session + worker PAT for the install's single user.
  *
  * Used by the macOS menu bar and the CLI's `local` context — both run on
  * the same host as the server, both want a credential they can send as
  * `Authorization: Bearer <session-token>` without prompting the user for
  * an OAuth device flow.
  *
+ * Identity model: the install has exactly one user (enforced by
+ * `LOBU_SINGLE_USER` + the sign-up-blocking hook in auth/index.tsx).
+ * Whatever email the operator used at /sign-up is the identity; local-init
+ * finds that user and mints credentials for them. There is no pre-seeded
+ * placeholder. When the DB has zero users, we return `no_user_yet` and
+ * point the caller at /sign-up.
+ *
  * Trust model:
  *   - Refuses when any `x-forwarded-*` / `forwarded` header is present. A
  *     Tailscale Funnel / ngrok / cloudflared / nginx proxy fronting a
  *     loopback bind sets these — the bind looks local but the *exposure*
  *     isn't, so a public client could otherwise reach this endpoint.
- *   - Refuses when the deployment has any non-bootstrap users. Real
- *     deployments mint credentials through OAuth/email signup; the
- *     bootstrap user only exists on a fresh PGlite install.
- *   - Refuses when the bootstrap user/org/member trio is missing
- *     (`ensureBootstrapUser` either hasn't run or the deployment isn't
- *     bootstrap-shaped). Caller should retry once the server is ready.
+ *   - Refuses when the deployment has more than one user (legacy bootstrap
+ *     row counts as zero — see the `id <> 'bootstrap-user'` filter below).
+ *   - Refuses when the single user has no personal org (shouldn't happen —
+ *     databaseHooks.user.create.after provisions one).
  *
  * Returns the session token in the response body too, so non-cookie
  * clients (CLI persisting to ~/.config/lobu/credentials.json, Mac app
  * persisting in OAuthCredentials) can send it as Bearer next time.
  */
-const BOOTSTRAP_USER_ID = 'bootstrap-user';
-const BOOTSTRAP_ORG_ID = 'org-bootstrap-dev';
 
 credentialRoutes.post('/local-init', async (c) => {
   // Defense-in-depth: the embedded runner defaults to a loopback bind,
@@ -407,43 +410,67 @@ credentialRoutes.post('/local-init', async (c) => {
   }
 
   const sql = createDbClientFromEnv(c.env);
-  const rows = (await sql`
-    SELECT
-      EXISTS(SELECT 1 FROM "user"         WHERE id = ${BOOTSTRAP_USER_ID}) AS has_user,
-      EXISTS(SELECT 1 FROM "organization" WHERE id = ${BOOTSTRAP_ORG_ID})  AS has_org,
-      EXISTS(SELECT 1 FROM "member"
-             WHERE "userId" = ${BOOTSTRAP_USER_ID}
-               AND "organizationId" = ${BOOTSTRAP_ORG_ID})                 AS has_member,
-      (SELECT count(*)::int FROM "user" WHERE id <> ${BOOTSTRAP_USER_ID}) AS non_bootstrap_users
-  `) as unknown as Array<{
-    has_user: boolean;
-    has_org: boolean;
-    has_member: boolean;
-    non_bootstrap_users: number;
-  }>;
-  const state = rows[0];
-  if (!state || !state.has_user || !state.has_org || !state.has_member) {
+  // Find the single user this install belongs to. The historical design seeded
+  // a fake `bootstrap-user` ahead of time and minted sessions for it — but
+  // that created a fork the moment the operator signed up via web with a real
+  // email (one identity for the Mac app + CLI, another for the web UI). Now we
+  // skip the seed and mint for whichever real user signed up first; the
+  // single-user-mode hook in auth/index.tsx prevents anyone else from joining.
+  //
+  // Exclude any leftover `bootstrap-user` rows from pre-this-change installs:
+  // if both still exist, prefer the real user. After this lands, ensureBootstrap-
+  // User is gone — fresh installs have no `bootstrap-user` row at all.
+  const userRows = (await sql`
+    SELECT id, email, name
+      FROM "user"
+     WHERE id <> 'bootstrap-user'
+     ORDER BY "createdAt" ASC
+     LIMIT 2
+  `) as unknown as Array<{ id: string; email: string; name: string }>;
+
+  if (userRows.length === 0) {
     return c.json(
       {
-        error: 'bootstrap_not_provisioned',
+        error: 'no_user_yet',
         error_description:
-          'bootstrap user/org/member not seeded — server may still be starting, or this is not a PGlite deployment.',
+          'No user exists yet on this install. Open the web UI and sign up first; the menubar / CLI will pick up the new user on the next /api/local-init call.',
+        signup_url: '/sign-up',
       },
       404
     );
   }
-  if (state.non_bootstrap_users > 0) {
+  if (userRows.length > 1) {
     return c.json(
       {
-        error: 'not_a_bootstrap_deployment',
+        error: 'not_single_user',
         error_description:
-          '/api/local-init is only available before any real users sign up. Sign in normally.',
+          '/api/local-init is only for single-user local installs. This deployment has multiple users; sign in normally via /api/auth/sign-in/email.',
       },
       404
+    );
+  }
+  const user = userRows[0]!;
+
+  // Find the user's personal org (provisioned by databaseHooks.user.create.after).
+  const orgRows = (await sql`
+    SELECT id, slug, name
+      FROM "organization"
+     WHERE (metadata::jsonb)->>'personal_org_for_user_id' = ${user.id}
+     LIMIT 1
+  `) as unknown as Array<{ id: string; slug: string; name: string }>;
+  const org = orgRows[0];
+  if (!org) {
+    return c.json(
+      {
+        error: 'personal_org_missing',
+        error_description:
+          "User exists but has no personal org. databaseHooks.user.create.after may not have run; can't mint a worker PAT without an org binding.",
+      },
+      500
     );
   }
 
-  const minted = await mintSessionCookieValue(c, BOOTSTRAP_USER_ID);
+  const minted = await mintSessionCookieValue(c, user.id);
   if ('error' in minted) {
     return c.json(
       { error: 'session_create_failed', error_description: minted.error },
@@ -460,8 +487,8 @@ credentialRoutes.post('/local-init', async (c) => {
   // work zero-config. PostgreSQL still holds the truth (PAT hash in
   // `personal_access_tokens`, session row in `session`); nothing on disk.
   const workerPat = await new PersonalAccessTokenService(sql).create(
-    BOOTSTRAP_USER_ID,
-    BOOTSTRAP_ORG_ID,
+    user.id,
+    org.id,
     'local-init',
     {
       description: 'Auto-minted by POST /api/local-init for local-runner clients.',
@@ -479,14 +506,14 @@ credentialRoutes.post('/local-init', async (c) => {
     device_token: workerPat.token,
     device_token_scope: workerPat.scope,
     user: {
-      id: BOOTSTRAP_USER_ID,
-      email: 'dev@lobu.local',
-      name: 'Local Developer',
+      id: user.id,
+      email: user.email,
+      name: user.name,
     },
     organization: {
-      id: BOOTSTRAP_ORG_ID,
-      slug: 'dev',
-      name: 'Local Dev',
+      id: org.id,
+      slug: org.slug,
+      name: org.name,
     },
   });
 });

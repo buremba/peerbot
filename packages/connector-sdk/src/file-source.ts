@@ -67,7 +67,19 @@ export interface FileDelta {
 export interface FileSystemSource {
   /** Fetch (or refetch) to a local cache; returns the snapshot. Idempotent. */
   fetch(): Promise<Snapshot>;
-  /** File-level delta against a prior ref. Empty if `prevRef === currentRef`. */
+  /**
+   * File-level delta against a prior ref.
+   *
+   * Contract (all implementations behave the same way):
+   *  - `prevRef === currentRef` → empty delta.
+   *  - `prevRef` is recognised (manifest on disk for tarball/local; commit
+   *    reachable in the shallow clone for git) → real `(added, modified,
+   *    removed)` lists.
+   *  - `prevRef` is NOT recognised → full-reingest delta: every currently
+   *    present file appears in `added`. Connectors are expected to be
+   *    idempotent at the event-id layer, so a re-ingest is safe.
+   *  - The source has never been `fetch()`ed → throws. Call `fetch()` first.
+   */
   diffSinceRef(prevRef: string): Promise<FileDelta>;
 }
 

@@ -138,17 +138,19 @@ export class GitFileSource implements FileSystemSource {
     const currentRef = await git.resolveRef({ fs: nodeFs, dir, ref: 'HEAD' });
     if (currentRef === prevRef) return { added: [], modified: [], removed: [] };
 
-    // Ensure both refs are reachable in the local (shallow) repo. If `prevRef`
-    // is unknown, we can't walk it — surface a precise error so the caller
-    // can fall back (e.g. treat as a full re-ingest).
+    // If `prevRef` isn't reachable in the local (shallow) repo, return a
+    // full-reingest delta — every current file as `added`. Matches the
+    // tarball and local-source contract: an unknown prevRef yields a
+    // re-ingest, never a thrown error.
+    let prevReachable = true;
     try {
       await git.readCommit({ fs: nodeFs, dir, oid: prevRef });
     } catch {
-      throw new Error(
-        `GitFileSource.diffSinceRef: prevRef ${prevRef} is not present in the ` +
-          `shallow clone. Re-fetch with depth covering this commit, or treat ` +
-          `as a full re-ingest.`,
-      );
+      prevReachable = false;
+    }
+    if (!prevReachable) {
+      const allFiles = await listCurrentFiles(dir, currentRef);
+      return { added: allFiles, modified: [], removed: [] };
     }
 
     const added: string[] = [];
@@ -185,6 +187,26 @@ export class GitFileSource implements FileSystemSource {
 
     return { added, modified, removed };
   }
+}
+
+/** Walk a commit's tree and return every blob path (POSIX-separated). */
+async function listCurrentFiles(dir: string, ref: string): Promise<string[]> {
+  const collected: string[] = [];
+  await git.walk({
+    fs: nodeFs,
+    dir,
+    trees: [git.TREE({ ref })],
+    map: async (filepath, entries) => {
+      if (filepath === '.') return undefined;
+      if (!entries) return undefined;
+      const [entry] = entries;
+      if (!entry) return undefined;
+      const type = await entry.type();
+      if (type === 'blob') collected.push(filepath);
+      return undefined;
+    },
+  });
+  return collected;
 }
 
 /** Filter for git internals — matches `.git` itself and anything under it. */

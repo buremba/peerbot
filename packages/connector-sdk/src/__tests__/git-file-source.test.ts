@@ -118,14 +118,16 @@ describe('GitFileSource diffSinceRef', () => {
     expect(delta.removed.sort()).toEqual(['b.json']);
   });
 
-  test('throws clearly when prevRef is unknown to the local clone', async () => {
+  test('treats unknown prevRef as a full re-ingest (every current file → added)', async () => {
     const uri = 'git+https://example.invalid/test/repo2.git@main';
     const source = new GitFileSource(uri);
     workdir = await seedCache(uri);
     await git.init({ fs: nodeFs, dir: workdir, defaultBranch: 'main' });
 
     await writeFile(join(workdir, 'a.json'), '{}');
+    await writeFile(join(workdir, 'b.json'), '{}');
     await git.add({ fs: nodeFs, dir: workdir, filepath: 'a.json' });
+    await git.add({ fs: nodeFs, dir: workdir, filepath: 'b.json' });
     await git.commit({
       fs: nodeFs,
       dir: workdir,
@@ -133,7 +135,12 @@ describe('GitFileSource diffSinceRef', () => {
       author: { name: 'test', email: 't@example.com' },
     });
 
-    await expect(source.diffSinceRef('0'.repeat(40))).rejects.toThrow(/not present/i);
+    // 40 zero hex chars is a syntactically-valid OID that the shallow clone
+    // doesn't know about. Should round-trip as a full re-ingest, NOT throw.
+    const delta = await source.diffSinceRef('0'.repeat(40));
+    expect(delta.added.sort()).toEqual(['a.json', 'b.json']);
+    expect(delta.modified).toEqual([]);
+    expect(delta.removed).toEqual([]);
   });
 
   test('diffSinceRef without prior fetch() throws on missing meta', async () => {

@@ -38,11 +38,22 @@ import { EXTERNAL_RUNTIME_DEPS } from './runtime-deps.js';
 // gateway-supplied absolute paths.
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const WORKER_CONNECTOR_DIR_CANDIDATES = [
+  // Monorepo: workspace package at packages/connector-worker/src/ →
+  // packages/connectors/src.
   resolve(HERE, '../../../connectors/src'),
   resolve(HERE, '../../../connectors/dist'),
   resolve(HERE, '../../connectors/src'),
   resolve(HERE, '../../connectors/dist'),
   resolve(HERE, '../connectors/src'),
+  // Embedded CLI install (`npx @lobu/cli`): the start-local bundle and the
+  // connectors directory ship side-by-side under
+  // node_modules/@lobu/cli/dist/. When the bundled connector-worker code is
+  // running from that bundle, `HERE` resolves to that same dist dir, so
+  // `./connectors` is the layout the CLI build produced
+  // (packages/cli/scripts/build.cjs::copyDirIfExists('../connectors/src',
+  // 'dist/connectors')). Without this, the embedded worker claims runs and
+  // fails them with "did not resolve to a local source file".
+  resolve(HERE, 'connectors'),
   resolve(process.cwd(), 'packages/connectors/src'),
   resolve(process.cwd(), 'connectors'),
 ];

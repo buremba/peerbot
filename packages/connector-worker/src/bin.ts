@@ -10,8 +10,8 @@
 
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import type { Env } from '@lobu/connector-sdk';
 import { startDaemon } from './daemon/index.js';
+import { buildConnectorWorkerEnv } from './env.js';
 import { assertExternalDepsResolvable } from './runtime-deps.js';
 
 function printUsage(): void {
@@ -68,22 +68,10 @@ function parseArgs(args: string[]): { command: string; options: Record<string, s
   return { command, options };
 }
 
-function buildEnv(): Env {
-  return {
-    ENVIRONMENT: process.env.ENVIRONMENT || 'production',
-    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
-    GOOGLE_MAPS_API_KEY: process.env.GOOGLE_MAPS_API_KEY,
-    X_USERNAME: process.env.X_USERNAME,
-    X_PASSWORD: process.env.X_PASSWORD,
-    X_EMAIL: process.env.X_EMAIL,
-    X_2FA_SECRET: process.env.X_2FA_SECRET,
-    X_COOKIES: process.env.X_COOKIES,
-    REDDIT_CLIENT_ID: process.env.REDDIT_CLIENT_ID,
-    REDDIT_CLIENT_SECRET: process.env.REDDIT_CLIENT_SECRET,
-    REDDIT_USER_AGENT: process.env.REDDIT_USER_AGENT,
-    WORKER_API_TOKEN: process.env.WORKER_API_TOKEN,
-  };
-}
+// Connector-runtime env whitelist now lives in `./env.ts` so the in-process
+// embedded worker can import it without pulling in `bin.ts`'s top-level
+// `main()` execution.
+const buildEnv = buildConnectorWorkerEnv;
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);

@@ -20,6 +20,7 @@
 
 import { hostname } from 'node:os';
 import { WorkerDaemon } from '../../../connector-worker/src/daemon/worker';
+import { buildConnectorWorkerEnv } from '../../../connector-worker/src/env';
 import type { Env } from '../index';
 import logger from '../utils/logger';
 
@@ -41,7 +42,7 @@ export interface EmbeddedConnectorWorkerHandle {
  * isn't ready yet.
  */
 export function startEmbeddedConnectorWorker(
-  env: Env,
+  serverEnv: Env,
   apiUrl: string
 ): EmbeddedConnectorWorkerHandle | null {
   if (process.env.LOBU_DISABLE_EMBEDDED_WORKER === '1') {
@@ -50,28 +51,39 @@ export function startEmbeddedConnectorWorker(
   }
 
   const workerId = `embedded:${hostname() || 'localhost'}:${process.pid}`;
+  // Connector subprocesses inherit `context.env` from the WorkerDaemon's
+  // `env` arg (`SubprocessExecutor.fork` spreads it onto `pickSystemEnv`).
+  // Passing the gateway's full env would leak ENCRYPTION_KEY,
+  // BETTER_AUTH_SECRET, DATABASE_URL, and provider secrets into every
+  // connector run. Re-use the same whitelist the standalone connector-worker
+  // CLI applies in `packages/connector-worker/src/bin.ts::buildConnectorWorkerEnv`.
+  const connectorEnv = buildConnectorWorkerEnv();
   const daemon = new WorkerDaemon(
     {
       apiUrl,
       workerId,
-      workerApiToken: env.WORKER_API_TOKEN,
+      workerApiToken: serverEnv.WORKER_API_TOKEN,
       capabilities: { browser: false },
       pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
       maxConcurrentJobs: 1,
     },
-    env
+    connectorEnv
   );
 
-  // Fire-and-forget. WorkerDaemon.start() loops until stop() and surfaces
-  // poll errors via console.error internally; failure here is recoverable
-  // (next tick retries) so we don't want to crash the gateway boot.
+  // Fire-and-forget. `WorkerDaemon.start()` does a one-shot
+  // `GET /api/health` check up front and throws on failure — if that
+  // throws, the .catch logs once and the worker is dead until process
+  // restart (no exponential-retry built into the daemon). Future
+  // hardening could re-spawn on startup failure, but the listen-callback
+  // ordering in start-local.ts / server.ts already makes this path
+  // succeed in practice.
   void daemon
     .start()
     .then(() => logger.info({ workerId }, '[embedded-worker] stopped cleanly'))
     .catch((err) => {
       logger.error(
         { err, workerId },
-        '[embedded-worker] crashed; runs(run_type=sync) will not drain until restart'
+        '[embedded-worker] failed to start or crashed mid-loop; runs(run_type=sync) will not drain until restart'
       );
     });
 

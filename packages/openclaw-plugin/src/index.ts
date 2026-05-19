@@ -345,6 +345,7 @@ function resolvePluginConfig(api: Record<string, unknown>, pluginId: string): Re
   const tokenCommand =
     asString(cfg.tokenCommand) ?? asString(process.env.LOBU_MCP_TOKEN_COMMAND);
   const gatewayAuthUrl = asString(cfg.gatewayAuthUrl) ?? asString(process.env.GATEWAY_AUTH_URL);
+  const agentId = asString(cfg.agentId) ?? asString(process.env.LOBU_AGENT_ID);
 
   const headers: Record<string, string> = {};
   if (isRecord(cfg.headers)) {
@@ -365,6 +366,7 @@ function resolvePluginConfig(api: Record<string, unknown>, pluginId: string): Re
     autoRecall: asBoolean(cfg.autoRecall, true),
     autoCapture: asBoolean(cfg.autoCapture, true),
     recallLimit: asPositiveInt(cfg.recallLimit, DEFAULT_RECALL_LIMIT),
+    agentId,
   };
 }
 
@@ -1481,10 +1483,18 @@ const plugin = {
         const content = combined.length > 2000 ? combined.slice(0, 2000) : combined;
 
         // Fire-and-forget — don't block the agent_end path.
+        // Stamp `agent_id` so `search_memory` can scope recall to this
+        // agent's own observations. `metadata.agent_id` is the memory-scope
+        // axis (see `identity-normalize.ts` glossary); it does NOT relate
+        // to `entity_identities.namespace`.
+        const captureMetadata: Record<string, unknown> = {};
+        if (config.agentId) {
+          captureMetadata.agent_id = config.agentId;
+        }
         callMcpTool(config, 'save_memory', {
           content,
           semantic_type: 'observation',
-          metadata: {},
+          metadata: captureMetadata,
         })
           .then(() => log.info('lobu: captured conversation observation'))
           .catch((err) =>

@@ -32,6 +32,7 @@ Replace `<mcp-url>` with your workspace MCP URL (for example `https://lobu.ai/mc
 | `autoRecall` | Search Lobu memory for relevant memories before each prompt. Default `true`. |
 | `recallLimit` | Maximum recalled memory records per request. Default `6`. |
 | `autoCapture` | Capture conversation observations as long-term memories after each session. Default `true`. |
+| `agentId` | Agent ID this plugin instance is bound to. When set, `autoCapture` stamps `metadata.agent_id` on every save so `search_memory`'s `agent_id` filter can scope recall to this agent's own writes. Falls back to `LOBU_AGENT_ID` env. |
 
 See [`openclaw.plugin.json`](./openclaw.plugin.json) for the full schema.
 

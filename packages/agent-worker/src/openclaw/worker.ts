@@ -81,6 +81,32 @@ const logger = createLogger("worker");
 const MEMORY_FLUSH_STATE_CUSTOM_TYPE = "lobu.memory_flush_state";
 const APPROX_IMAGE_TOKENS = 1200;
 
+const LOBU_MEMORY_PLUGIN_SOURCE = "@lobu/openclaw-plugin";
+
+/**
+ * Inject the bound agentId into the Lobu memory plugin's config so its
+ * autoCapture path stamps `metadata.agent_id` on save_memory calls. Other
+ * plugins are passed through unchanged. Returns a new PluginsConfig — does
+ * not mutate input.
+ */
+function injectAgentIdIntoLobuPlugin(
+  pluginsConfig: PluginsConfig | undefined,
+  agentId: string | undefined
+): PluginsConfig | undefined {
+  if (!pluginsConfig?.plugins?.length || !agentId) return pluginsConfig;
+  const plugins = pluginsConfig.plugins.map((plugin) => {
+    if (plugin.source !== LOBU_MEMORY_PLUGIN_SOURCE) return plugin;
+    return {
+      ...plugin,
+      config: {
+        ...plugin.config,
+        agentId,
+      },
+    };
+  });
+  return { ...pluginsConfig, plugins };
+}
+
 interface ResolvedMemoryFlushConfig {
   enabled: boolean;
   softThresholdTokens: number;
@@ -1239,8 +1265,14 @@ Use it when the user references past discussions or you need context.`);
       }
     }
 
-    // Load OpenClaw plugins
-    const pluginsConfig = rawOptions.pluginsConfig as PluginsConfig | undefined;
+    // Load OpenClaw plugins. Inject the worker's bound agentId into the Lobu
+    // memory plugin's config so its autoCapture path can stamp
+    // `metadata.agent_id` on every save_memory call — that's the
+    // memory-scope axis search_memory's `agent_id` filter reads.
+    const pluginsConfig = injectAgentIdIntoLobuPlugin(
+      rawOptions.pluginsConfig as PluginsConfig | undefined,
+      this.config.agentId
+    );
     const loadedPlugins = await loadPlugins(pluginsConfig, workspaceDir);
     const pluginTools = loadedPlugins.flatMap((p) => p.tools);
 

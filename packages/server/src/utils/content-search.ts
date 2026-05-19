@@ -159,6 +159,9 @@ function buildStandardParams(
         )
       : null,
     options.interaction_status ?? null,
+    // Slot $11 — per-agent memory scope. WHERE template uses
+    // `($11::text IS NULL OR f.metadata->>'agent_id' = $11::text)`.
+    options.agent_id ?? null,
   ];
 }
 
@@ -335,7 +338,8 @@ function buildStandardWhereSql(entityLinkSql: string): string {
               AND lc_source.source = $8::text
           ))
           AND ($9::text[] IS NULL OR f.semantic_type = ANY($9::text[]))
-          AND ($10::text IS NULL OR f.interaction_status = $10::text)`;
+          AND ($10::text IS NULL OR f.interaction_status = $10::text)
+          AND ($11::text IS NULL OR f.metadata->>'agent_id' = $11::text)`;
 }
 
 const WINDOW_JOIN_SQL = `LEFT JOIN watcher_window_events iwf
@@ -473,6 +477,14 @@ interface ContentSearchOptions {
   content_ids?: number[]; // Filter to specific content IDs
   semantic_type?: string | string[]; // Filter by semantic type — single value or array (matches any)
   interaction_status?: 'pending' | 'approved' | 'rejected' | 'completed' | 'failed';
+
+  // Per-agent memory scope. Filters events whose `metadata->>'agent_id'`
+  // matches this string. Threaded through search_memory's top-level
+  // `agent_id` arg; populated automatically on saves by the
+  // `@lobu/openclaw-plugin` autoCapture path. Note: `metadata.agent_id`
+  // is the memory-scope axis, NOT the identity-namespace column
+  // (`entity_identities.namespace`) — see identity-normalize.ts.
+  agent_id?: string;
 
   // Classification options (only JOINs when needed)
   include_classifications?: boolean; // Include classifications in results
@@ -1239,6 +1251,10 @@ async function listContentInternal(
       baseParams.push(options.interaction_status);
       baseConditions.push(`f.interaction_status = $${baseParams.length}`);
     }
+    if (options.agent_id) {
+      baseParams.push(options.agent_id);
+      baseConditions.push(`f.metadata->>'agent_id' = $${baseParams.length}`);
+    }
 
     const classificationExists = buildClassificationExistsClauses(
       filtersBySlug,
@@ -1515,14 +1531,15 @@ async function searchContentBySingleQuery(
   const searchEntityScopes: EntityIdentityScope[] =
     entityId != null ? await fetchEntityIdentityScopes(sql, entityId) : [];
 
+  // Slot $11 is the agent_id memory-scope filter — bumps orgScope to $12.
   const orgScope = buildOrgScopeWhere({
     entity_id: entityId,
     organization_id: options.organization_id,
-    baseParamIndex: 11,
+    baseParamIndex: 12,
   });
   // Exclude-watcher param slot sits immediately after orgScope so its $N index
   // is stable regardless of whether an embedding param follows.
-  const excludeParamIdx = 11 + orgScope.params.length;
+  const excludeParamIdx = 12 + orgScope.params.length;
   const excludeClause = buildExcludeWatcherClause(
     options.exclude_watcher_id,
     excludeParamIdx
@@ -1582,6 +1599,7 @@ async function searchContentBySingleQuery(
           AND ($8::numeric IS NULL OR f.score <= $8::numeric)
           AND ($9::text[] IS NULL OR f.semantic_type = ANY($9::text[]))
           AND ($10::text IS NULL OR f.interaction_status = $10::text)
+          AND ($11::text IS NULL OR f.metadata->>'agent_id' = $11::text)
           ${excludeClause.sql}
           ${visibilityClause.sql}
           ${orgScope.sql}`;
@@ -1832,6 +1850,9 @@ async function searchContentBySingleQuery(
         )
       : null,
     options.interaction_status ?? null,
+    // Slot $11 — per-agent memory scope. See buildStandardParams for the
+    // mirror call site. Bumps orgScope to $12 (set above).
+    options.agent_id ?? null,
     ...orgScope.params,
     ...excludeClause.params,
     ...visibilityClause.params,

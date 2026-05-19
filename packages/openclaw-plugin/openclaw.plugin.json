@@ -60,6 +60,10 @@
         "type": "boolean",
         "default": true,
         "description": "When true, captures conversation observations as long-term memories after each agent session."
+      },
+      "agentId": {
+        "type": "string",
+        "description": "Agent ID this plugin instance is bound to. autoCapture saves stamp `metadata.agent_id` with this value so `search_memory` can scope recall to the agent's own writes. Falls back to LOBU_AGENT_ID env when unset."
       }
     }
   },

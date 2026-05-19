@@ -98,7 +98,13 @@ export const SearchSchema = Type.Object({
   metadata_filter: Type.Optional(
     Type.Record(Type.String(), Type.String(), {
       description:
-        'Filter entities by metadata key-value pairs (e.g. {"namespace": "agent:prefs"})',
+        'Filter entities by metadata key-value pairs (e.g. {"category": "preference"})',
+    })
+  ),
+  agent_id: Type.Optional(
+    Type.String({
+      description:
+        "Limit results to memory written by this agent. Filters events where `metadata.agent_id` matches the given id. Agents that opt in (via the `@lobu/openclaw-plugin` autoCapture path) get their saves stamped with their own id automatically; pass the same id here to scope recall to that agent's own writes.",
     })
   ),
   limit: Type.Optional(
@@ -252,7 +258,8 @@ async function fetchContentSnippets(
   organizationId: string,
   contentLimit: number,
   env: Env,
-  queryEmbedding?: number[]
+  queryEmbedding?: number[],
+  agentId?: string
 ): Promise<ContentSnippet[]> {
   const result = await searchContentByText(
     query,
@@ -261,6 +268,7 @@ async function fetchContentSnippets(
       limit: contentLimit,
       min_similarity: 0.4,
       query_embedding: queryEmbedding,
+      agent_id: agentId,
       // Recall wants the most *relevant* matching content, not the most recent.
       // This also opts into the bounded recall-only candidate path (the implicit
       // default is a chronological date feed).
@@ -305,6 +313,8 @@ export async function search(
   // query or a pre-computed embedding — forwarding the embedding lets the
   // content layer skip regenerating it from text.
   const hasContentSignal = Boolean(args.query || args.query_embedding?.length);
+  const agentIdScope =
+    args.agent_id ?? (args.metadata_filter?.agent_id as string | undefined);
   const contentSearchPromise =
     includeContent && hasContentSignal
       ? fetchContentSnippets(
@@ -312,7 +322,8 @@ export async function search(
           ctx.organizationId,
           contentLimit,
           env,
-          args.query_embedding
+          args.query_embedding,
+          agentIdScope
         ).catch((err) => {
           logger.warn(
             `[search] content search failed: ${err instanceof Error ? err.message : String(err)}`
@@ -579,6 +590,14 @@ async function queryEntities(
     for (const [key, value] of Object.entries(args.metadata_filter)) {
       conditions.push(`e.metadata->>'${key.replace(/'/g, "''")}' = $${addParam(value)}`);
     }
+  }
+
+  // Structured agent_id filter (also accepted under metadata_filter; the
+  // top-level form is the documented contract so agents can't typo the key).
+  const agentIdFilter =
+    args.agent_id ?? (args.metadata_filter?.agent_id as string | undefined);
+  if (agentIdFilter) {
+    conditions.push(`e.metadata->>'agent_id' = $${addParam(agentIdFilter)}`);
   }
 
   const whereClause = conditions.join(' AND ');

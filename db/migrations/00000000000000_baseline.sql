@@ -13,7 +13,7 @@
 --        - tables: mcp_proxy_sessions, organization_lobu_links, and four
 --          migration_* temp artifacts (entity_type_org_backfill,
 --          created_entity_types, deleted_default_entity_types, events_kind_backup)
---        - columns: agents.skill_auto_granted_domains, runs.retry_delay_seconds
+--        - columns: agents.skill_auto_granted_domains
 --   3. Annotate the load-bearing tables with COMMENT ON
 --   4. pg_dump --schema-only
 --   5. Strip pg_dump noise + the schema_migrations table CREATE (dbmate
@@ -95,11 +95,10 @@
 --   ALTER TABLE IF EXISTS public.migration_20260316100000_deleted_default_entity_types RENAME TO migration_20260316100000_deleted_default_entity_types_d20260519;
 --   ALTER TABLE IF EXISTS public.migration_20260316100000_events_kind_backup RENAME TO migration_20260316100000_events_kind_backup_d20260519;
 --
---   -- Snapshot the 2 dead columns into per-column backup tables BEFORE
---   -- dropping them from the live tables. Each snapshot includes the FULL
---   -- primary key of the parent so the restore UPDATE is unambiguous:
---   --   agents.PK = (organization_id, id)  → snapshot keeps both
---   --   runs.PK   = (id)                   → snapshot needs only id
+--   -- Snapshot the 1 dead column into a backup table BEFORE dropping it
+--   -- from the live table. The snapshot includes the FULL primary key of
+--   -- the parent so the restore UPDATE is unambiguous:
+--   --   agents.PK = (organization_id, id) → snapshot keeps both
 --   CREATE TABLE public.agents_d20260519_skill_auto_granted_domains AS
 --     SELECT organization_id, id AS agent_id, skill_auto_granted_domains
 --     FROM public.agents
@@ -107,10 +106,11 @@
 --       AND skill_auto_granted_domains <> '[]'::jsonb;
 --   ALTER TABLE public.agents DROP COLUMN IF EXISTS skill_auto_granted_domains;
 --
---   CREATE TABLE public.runs_d20260519_retry_delay_seconds AS
---     SELECT id AS run_id, retry_delay_seconds FROM public.runs
---     WHERE retry_delay_seconds IS NOT NULL;
---   ALTER TABLE public.runs DROP COLUMN IF EXISTS retry_delay_seconds;
+--   -- NOTE: `runs.retry_delay_seconds` was originally proposed for drop
+--   -- (audit flagged it as comment-only) but the column is in fact
+--   -- load-bearing for RunsQueue (see packages/server/src/gateway/
+--   -- infrastructure/queue/runs-queue.ts lines 301, 368, 386, 575, 584,
+--   -- 603, 617-620). KEPT. No surgery needed.
 --
 --   -- Reset the migration ledger to baseline-only. New code's dbmate-up
 --   -- skips the baseline body (it's already applied: the renames + drops
@@ -129,7 +129,6 @@
 --   SELECT count(*) FROM public.mcp_proxy_sessions_d20260519;
 --   -- Dropped column data still queryable:
 --   SELECT count(*) FROM public.agents_d20260519_skill_auto_granted_domains;
---   SELECT count(*) FROM public.runs_d20260519_retry_delay_seconds;
 --
 -- Rollback procedures
 -- -------------------
@@ -214,9 +213,6 @@
 --     UPDATE public.agents a SET skill_auto_granted_domains = b.skill_auto_granted_domains
 --       FROM public.agents_d20260519_skill_auto_granted_domains b
 --       WHERE a.organization_id = b.organization_id AND a.id = b.agent_id;
---     ALTER TABLE public.runs ADD COLUMN retry_delay_seconds integer;
---     UPDATE public.runs r SET retry_delay_seconds = b.retry_delay_seconds
---       FROM public.runs_d20260519_retry_delay_seconds b WHERE r.id = b.run_id;
 --   SQL
 --
 -- Cleanup follow-up (separate PR, a week or two after this lands):
@@ -1910,6 +1906,7 @@ CREATE TABLE public.runs (
     run_at timestamp with time zone DEFAULT now() NOT NULL,
     priority integer DEFAULT 0 NOT NULL,
     expires_at timestamp with time zone,
+    retry_delay_seconds integer,
     CONSTRAINT runs_approval_status_check CHECK ((approval_status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'auto'::text]))),
     CONSTRAINT runs_legacy_org_required CHECK (((run_type <> ALL (ARRAY['sync'::text, 'action'::text, 'embed_backfill'::text, 'watcher'::text, 'auth'::text])) OR (organization_id IS NOT NULL))),
     CONSTRAINT runs_run_type_check CHECK ((run_type = ANY (ARRAY['sync'::text, 'action'::text, 'embed_backfill'::text, 'watcher'::text, 'auth'::text, 'chat_message'::text, 'schedule'::text, 'agent_run'::text, 'internal'::text, 'task'::text]))),

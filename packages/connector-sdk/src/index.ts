@@ -118,3 +118,14 @@ export type { BrowserNetworkConfig, BrowserNetworkResult } from './browser-netwo
 export { browserNetworkSync } from './browser-network.js';
 export type { ReactionContext } from './reaction-sdk.js';
 export type { Env } from './types.js';
+
+// =============================================================================
+// FileSystemSource — reusable primitive for filesystem-shape ingestion sources
+// =============================================================================
+
+export type { FileDelta, FileSystemSource, Snapshot } from './file-source.js';
+export { fileSystemSourceFromUri } from './file-source.js';
+export { GitFileSource, parseGitUri } from './sources/git-file-source.js';
+export type { TarballFileSourceOptions } from './sources/tarball-file-source.js';
+export { TarballFileSource } from './sources/tarball-file-source.js';
+export { LocalFileSource } from './sources/local-file-source.js';

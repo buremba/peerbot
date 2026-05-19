@@ -8,6 +8,12 @@ name: pi-review
 # Posts a JSON verdict per docs/REVIEW_SCHEMA.md as a check-run.
 # Always conclusion=neutral; never gates merges.
 #
+# The job also boots a full e2e environment (Postgres + pgvector, owletto
+# submodule, workspace builds) so pi can actually run affected test suites
+# and exercise endpoints — diff-reading alone misses runtime regressions.
+# The e2e setup steps are best-effort (`continue-on-error: true`); if any
+# fail, pi still reviews the diff statically.
+#
 # `pull_request` (not `pull_request_target`): fork PRs MUST NOT see the
 # bundle — they execute the head ref unprivileged with no secrets.
 
@@ -19,11 +25,28 @@ jobs:
   pi-review:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: read
       pull-requests: read
       checks: write
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: lobu_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5433/lobu_test
+      DB_POOL_MAX: '5'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,22 +57,85 @@ jobs:
         with:
           bun-version: 1.3.5
 
+      # Node 22 pinned to match `ci.yml` integration job — isolated-vm's
+      # abi127 prebuild only loads under Node 22.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Init owletto submodule (best-effort)
+        continue-on-error: true
+        uses: ./.github/actions/setup-submodule
+        with:
+          deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
+
+      - name: Install dependencies
+        continue-on-error: true
+        run: bun install
+
+      - name: Build workspace packages
+        continue-on-error: true
+        run: make build-packages
+
+      - name: Verify Postgres health + enable pgvector
+        continue-on-error: true
+        run: |
+          for i in {1..20}; do
+            if pg_isready -h 127.0.0.1 -p 5433 -U postgres; then break; fi
+            sleep 1
+          done
+          PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres -d lobu_test \
+            -c "CREATE EXTENSION IF NOT EXISTS vector"
+
+      - name: Write minimal .env so the gateway can boot
+        continue-on-error: true
+        # No ANTHROPIC_API_KEY: pi auths to ChatGPT-Codex via the restored
+        # bundle, not the gateway. If a runtime check needs Anthropic the
+        # gateway will fail cleanly and pi will note it.
+        run: |
+          cat > .env <<EOF
+          DATABASE_URL=$DATABASE_URL
+          BETTER_AUTH_SECRET=ci-shadow-review-not-prod-not-prod-not-prod
+          ENCRYPTION_KEY=ci-shadow-review-encryption-key-32b!
+          LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1
+          PORT=8787
+          EOF
+
       - name: Restore pi auth bundle
         env:
           PI_AUTH_BUNDLE: ${{ secrets.PI_AUTH_BUNDLE }}
         run: |
           if [ -z "${PI_AUTH_BUNDLE:-}" ]; then
             echo "::error::PI_AUTH_BUNDLE secret is empty. Generate it locally with:"
-            echo "::error::  tar -czf - -C ~/.pi/agent auth.json chatgpt-accounts.json models.json settings.json extensions git | base64 | pbcopy"
+            echo "::error::  tar -czf - -C ~/.pi/agent auth.json chatgpt-accounts.json models.json settings.json | base64 | pbcopy"
             echo "::error::and add the result as the PI_AUTH_BUNDLE repo secret."
             exit 1
           fi
           mkdir -p ~/.pi/agent
           printf '%s' "$PI_AUTH_BUNDLE" | base64 -d | tar -xzf - -C ~/.pi/agent/
 
-      - name: Install pi + verify extensions
+      - name: Install pi
+        run: bun add -g @mariozechner/pi-coding-agent
+
+      - name: Install pi extensions from settings.json
+        # The bundle ships settings.json but NOT extensions/ (would exceed
+        # GitHub's 64 KB secret cap). Iterate .packages[] and re-install
+        # each source. Don't fail the run if a single install fails — some
+        # are non-essential for review (e.g. pi-mermaid) and the reviewer
+        # still works without them.
         run: |
-          bun add -g @mariozechner/pi-coding-agent
+          if [ ! -f ~/.pi/agent/settings.json ]; then
+            echo "WARN: settings.json missing from bundle — skipping extension install"
+            exit 0
+          fi
+          jq -r '.packages[] | (if type=="string" then . else .source end)' \
+            ~/.pi/agent/settings.json \
+            | while read -r src; do
+                [ -z "$src" ] && continue
+                echo "Installing $src"
+                pi install "$src" || echo "WARN: failed to install $src (continuing)"
+              done
+          echo "--- pi list ---"
           pi list || true
 
       - name: Run pi review
@@ -57,6 +143,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          DATABASE_URL: ${{ env.DATABASE_URL }}
         run: |
           set -o pipefail
           VERDICT="$(./scripts/run-pi-review.sh "$PR")"

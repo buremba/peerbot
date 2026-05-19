@@ -32,7 +32,8 @@
       "!**/apps/**",
       "!**/scripts/lobu/**",
       "!**/benchmarks/**",
-      "!**/skills/**"
+      "!**/skills/**",
+      "!**/packages/landing/public/**"
     ]
   },
   "formatter": {

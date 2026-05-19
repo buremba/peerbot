@@ -182,7 +182,7 @@ function Hero() {
           <em class="not-italic" style={{ color: "var(--color-tg-accent)" }}>
             self-building
           </em>{" "}
-          knowledge graph
+          knowledge graph.
         </h1>
         <p
           class="hero-rise hero-rise-3 mx-auto mt-5 max-w-[42rem] text-[17px] leading-[1.55]"
@@ -230,7 +230,7 @@ function Hero() {
           <span class="font-mono">opencode</span> — it'll scaffold the project
           for you
         </p>
-        <HeroTerminalDemo />
+        <HeroAsciinema />
         <p
           class="mx-auto mt-4 max-w-[36rem] text-[14px]"
           style={{ color: "var(--color-page-text-muted)" }}
@@ -292,7 +292,13 @@ function GithubIcon() {
   );
 }
 
-function HeroTerminalDemo() {
+/**
+ * Slot for the vendored asciinema-player. The script tag in
+ * BaseLayout.astro defines window.AsciinemaPlayer; we mount it into the
+ * container on first paint. If the cast 404s the container stays empty —
+ * the page never errors.
+ */
+function HeroAsciinema() {
   return (
     <div
       class="hero-rise hero-rise-5 mx-auto mt-12 max-w-[44rem] overflow-hidden rounded-lg border"
@@ -300,84 +306,35 @@ function HeroTerminalDemo() {
         backgroundColor: "var(--color-landing-code-bg)",
         borderColor: "var(--color-page-border)",
       }}
-    >
-      <div
-        class="flex items-center gap-1.5 border-b px-4 py-2.5 font-mono text-[12px]"
-        style={{
-          borderColor: "rgba(255,255,255,0.08)",
-          color: "var(--color-landing-code-comment)",
-        }}
-      >
-        <span
-          class="inline-block h-2.5 w-2.5 rounded-full"
-          style={{ backgroundColor: "#ee5847" }}
-        />
-        <span
-          class="inline-block h-2.5 w-2.5 rounded-full"
-          style={{ backgroundColor: "#f6bd2c" }}
-        />
-        <span
-          class="inline-block h-2.5 w-2.5 rounded-full"
-          style={{ backgroundColor: "#66c84a" }}
-        />
-        <span class="ml-2">claude code · scaffold lobu agent</span>
-      </div>
-      <pre
-        class="px-5 py-5 text-left font-mono text-[12.5px] leading-[1.75]"
-        style={{ color: "var(--color-landing-code-text)" }}
-      >
-        <span style={{ color: "var(--color-landing-code-comment)" }}>
-          ~/projects/lobu-agent
-        </span>{" "}
-        $ claude
-        {"\n"}
-        <span style={{ color: "var(--color-landing-code-comment)" }}>
-          ▸ Paste the Lobu setup prompt below, then press Enter.
-        </span>
-        {"\n"}
-        <span style={{ color: "var(--color-landing-code-string)" }}>
-          Build me a working Lobu agent end-to-end…
-        </span>
-        {"\n"}
-        <span style={{ color: "var(--color-landing-code-keyword)" }}>
-          ▼ thinking
-        </span>{" "}
-        <span style={{ color: "var(--color-landing-code-comment)" }}>
-          (reading lobu.ai/docs/getting-started)
-        </span>
-        {"\n"}
-        <span style={{ color: "#66c84a" }}>✓</span> Created{" "}
-        <span style={{ color: "var(--color-landing-code-key)" }}>
-          lobu.toml
-        </span>{" "}
-        <span style={{ color: "var(--color-landing-code-comment)" }}>
-          (agent + provider + memory)
-        </span>
-        {"\n"}
-        <span style={{ color: "#66c84a" }}>✓</span> Created{" "}
-        <span style={{ color: "var(--color-landing-code-key)" }}>
-          models/schema.yaml
-        </span>{" "}
-        <span style={{ color: "var(--color-landing-code-comment)" }}>
-          (3 entity types, 1 watcher)
-        </span>
-        {"\n"}
-        <span style={{ color: "#66c84a" }}>✓</span> Created{" "}
-        <span style={{ color: "var(--color-landing-code-key)" }}>
-          connectors/linear.yaml
-        </span>
-        {"\n"}
-        <span style={{ color: "#66c84a" }}>✓</span> Created{" "}
-        <span style={{ color: "var(--color-landing-code-key)" }}>
-          models/reactions/triage.reaction.ts
-        </span>
-        {"\n"}
-        <span style={{ color: "var(--color-landing-code-keyword)" }}>▸</span>{" "}
-        Run{" "}
-        <span style={{ color: "var(--color-landing-code-key)" }}>lobu run</span>{" "}
-        to start.
-      </pre>
-    </div>
+      ref={(node) => {
+        if (!node) return;
+        if (node.dataset.asciinemaMounted === "1") return;
+        const player =
+          typeof window !== "undefined"
+            ? (
+                window as unknown as {
+                  AsciinemaPlayer?: {
+                    create: (
+                      src: string,
+                      el: Element,
+                      opts?: Record<string, unknown>
+                    ) => unknown;
+                  };
+                }
+              ).AsciinemaPlayer
+            : null;
+        if (!player) return;
+        player.create("/casts/setup.cast", node, {
+          autoPlay: true,
+          loop: true,
+          idleTimeLimit: 2,
+          fit: "width",
+          terminalFontSize: "13px",
+          theme: "asciinema",
+        });
+        node.dataset.asciinemaMounted = "1";
+      }}
+    />
   );
 }
 

@@ -1,0 +1,11 @@
+{"version": 2, "width": 100, "height": 24, "timestamp": 0, "title": "scaffold lobu agent", "env": {"SHELL": "/bin/zsh", "TERM": "xterm-256color"}}
+[0.0, "o", "[2m~/projects/lobu-agent[0m $ "]
+[0.6, "o", "claude\r\n"]
+[1.0, "o", "[2m▸ Paste the Lobu setup prompt below, then press Enter.[0m\r\n"]
+[1.6, "o", "[33mBuild me a working Lobu agent end-to-end…[0m\r\n"]
+[2.2, "o", "[33m▼ thinking[0m [2m(reading lobu.ai/docs/getting-started)[0m\r\n"]
+[3.0, "o", "[32m✓[0m Created [36mlobu.toml[0m [2m(agent + provider + memory)[0m\r\n"]
+[3.6, "o", "[32m✓[0m Created [36mmodels/schema.yaml[0m [2m(3 entity types, 1 watcher)[0m\r\n"]
+[4.2, "o", "[32m✓[0m Created [36mconnectors/linear.connector.ts[0m\r\n"]
+[4.8, "o", "[32m✓[0m Created [36mmodels/reactions/triage.reaction.ts[0m\r\n"]
+[5.4, "o", "[33m▸[0m Run [36mlobu run[0m to start.\r\n"]

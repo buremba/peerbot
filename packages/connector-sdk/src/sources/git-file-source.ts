@@ -46,8 +46,11 @@ export interface ParsedGitUri {
 }
 
 export function parseGitUri(uri: string): ParsedGitUri {
-  if (!uri.startsWith('git+https://') && !uri.startsWith('git+http://')) {
-    throw new Error(`GitFileSource: expected git+http(s):// URI, got ${uri}`);
+  if (uri.startsWith('git+http://')) {
+    throw new Error('GitFileSource: plaintext HTTP rejected, use git+https://');
+  }
+  if (!uri.startsWith('git+https://')) {
+    throw new Error(`GitFileSource: expected git+https:// URI, got ${uri}`);
   }
   const stripped = uri.slice('git+'.length); // → https://...
   // Split on the LAST `@` that follows the host's `/`, not the user@host form.

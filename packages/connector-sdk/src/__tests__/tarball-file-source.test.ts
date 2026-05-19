@@ -1,17 +1,18 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server } from 'node:https';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AddressInfo } from 'node:net';
 import { c as tarCreate } from 'tar';
 import { TarballFileSource } from '../sources/tarball-file-source.js';
+import { TEST_TLS_CERT, TEST_TLS_KEY } from './tls-fixture.js';
 
 /**
- * Tarball tests use a localhost http server (no external network) and
- * bypass the resolver so we can use `http://`. The TarballFileSource
- * constructor accepts http(s) — the resolver-level https-only check is
- * exercised in file-source-resolver.test.ts.
+ * Tarball tests use a localhost HTTPS server with a self-signed cert (no
+ * external network). `NODE_TLS_REJECT_UNAUTHORIZED=0` is scoped to this
+ * test file. The resolver-level https-only check is exercised in
+ * file-source-resolver.test.ts.
  */
 describe('TarballFileSource', () => {
   let server: Server;
@@ -42,7 +43,7 @@ describe('TarballFileSource', () => {
     // Mutable pointer so the server can swap which tarball it serves.
     serveTarballPath = tarballPath;
 
-    server = createServer((req, res) => {
+    server = createServer({ cert: TEST_TLS_CERT, key: TEST_TLS_KEY }, (req, res) => {
       if (req.url === '/missing.tar.gz') {
         res.writeHead(404);
         res.end();
@@ -66,15 +67,21 @@ describe('TarballFileSource', () => {
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const addr = server.address() as AddressInfo;
-    baseUrl = `http://127.0.0.1:${addr.port}`;
+    baseUrl = `https://127.0.0.1:${addr.port}`;
+    // Self-signed cert — disable TLS verification for the duration of this suite.
+    originalTlsReject = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
   });
 
   afterAll(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(fixtureDir, { recursive: true, force: true });
+    if (originalTlsReject === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    else process.env.NODE_TLS_REJECT_UNAUTHORIZED = originalTlsReject;
   });
 
   let serveTarballPath: string;
+  let originalTlsReject: string | undefined;
 
   beforeEach(async () => {
     workspaceDir = await mkdtemp(join(tmpdir(), 'lobu-tarball-ws-'));

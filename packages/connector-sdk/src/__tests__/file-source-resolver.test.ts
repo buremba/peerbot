@@ -91,3 +91,24 @@ describe('fileSystemSourceFromUri', () => {
     expect(() => fileSystemSourceFromUri('weird://thing')).toThrow(/Unsupported/i);
   });
 });
+
+describe('direct constructor HTTPS-only enforcement', () => {
+  // Defense in depth: the resolver rejects plaintext schemes, but constructors
+  // are publicly re-exported (`new GitFileSource(...)`, `new TarballFileSource(...)`).
+  // The same plaintext check MUST live in the constructor too — otherwise a
+  // caller importing the class directly bypasses the resolver entirely.
+
+  test('GitFileSource constructor rejects git+http://', async () => {
+    const { GitFileSource } = await import('../sources/git-file-source.js');
+    expect(() => new GitFileSource('git+http://example.com/repo.git')).toThrow(
+      /plaintext|http/i,
+    );
+  });
+
+  test('TarballFileSource constructor rejects http://', async () => {
+    const { TarballFileSource } = await import('../sources/tarball-file-source.js');
+    expect(() => new TarballFileSource('http://example.com/x.tar.gz')).toThrow(
+      /plaintext|http/i,
+    );
+  });
+});

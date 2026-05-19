@@ -52,8 +52,11 @@ export class TarballFileSource implements FileSystemSource {
   readonly #stripComponents: number;
 
   constructor(uri: string, opts: TarballFileSourceOptions = {}) {
-    if (!/^https?:\/\//.test(uri)) {
-      throw new Error(`TarballFileSource: expected http(s):// URI, got ${uri}`);
+    if (uri.startsWith('http://')) {
+      throw new Error('TarballFileSource: plaintext HTTP rejected, use https://');
+    }
+    if (!uri.startsWith('https://')) {
+      throw new Error(`TarballFileSource: expected https:// URI, got ${uri}`);
     }
     const lower = uri.split('?')[0]?.split('#')[0] ?? uri;
     if (!lower.endsWith('.tar.gz') && !lower.endsWith('.tgz')) {

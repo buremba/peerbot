@@ -252,6 +252,78 @@ describe('Lobu embedded Agent API auth bridge', () => {
     });
   });
 
+  describe('Case-insensitive Bearer scheme (codex round-3)', () => {
+    it('rejects an invalid PAT presented with a lowercase `bearer` scheme even when a valid cookie is set', async () => {
+      // Pre-fix: `header.startsWith("Bearer ")` failed on lowercase scheme →
+      // bridge skipped PAT validation, fell through to the cookie path, and
+      // authenticated the request via the valid session cookie. That hid an
+      // invalid/revoked PAT — an evasion gap. RFC 7235 §2.1 makes the scheme
+      // token case-insensitive; the bridge must parse it that way.
+      const session = await createTestSession(user.id);
+
+      const { status, body } = await fetchTest(app, {
+        authHeader: 'bearer owl_pat_obviously_invalid_hash',
+        cookie: session.cookieHeader,
+      });
+
+      expect(status).toBe(401);
+      expect(body.error).toBe('invalid_token');
+    });
+
+    it('accepts a valid PAT presented with an uppercase `BEARER` scheme', async () => {
+      // Same case-insensitivity, success direction: an all-uppercase scheme
+      // token must still hit the PAT path and resolve identity.
+      const { token } = await createTestPAT(user.id, org.id);
+
+      const { status, body } = await fetchTest(app, {
+        authHeader: `BEARER ${token}`,
+      });
+
+      expect(status).toBe(200);
+      expect(body.ok).toBe(true);
+      expect(body.userId).toBe(user.id);
+      expect(body.organizationId).toBe(org.id);
+    });
+  });
+
+  describe('Cookie-only path does not short-circuit (codex round-3)', () => {
+    it('lets a cookie-only request reach the downstream handler instead of returning a bridge-level 401/403', async () => {
+      // Guards the PAT-precedence change against silently regressing the
+      // cookie path. Better Auth's `getSession` is exercised end-to-end by
+      // other integration suites (see entities/member-privacy-contract.test.ts);
+      // here we assert the *bridge contract* — when no Authorization header
+      // is present, the bridge:
+      //   1. does NOT return its own 401/403 (`error: 'invalid_token'` /
+      //      `error: 'forbidden'`) — those are reserved for the PAT path
+      //      and the tenant-membership check.
+      //   2. invokes the Better Auth path and reaches `await next()`, so the
+      //      downstream handler runs.
+      // If the test handler 401s with `reason: 'no-user'`, that 401 came
+      // from the downstream handler (Better Auth didn't resolve a session in
+      // this minimal harness — the full app does, but the bridge contract
+      // here is "did we reach next()", not "did Better Auth verify the cookie").
+      const session = await createTestSession(user.id);
+
+      const { status, body } = await fetchTest(app, { cookie: session.cookieHeader });
+
+      // Bridge-level rejections carry an `error` field with a specific code.
+      // Reaching `next()` means the test handler answered — its 401 carries
+      // `reason: 'no-user'` instead.
+      expect(body.error).toBeUndefined();
+      if (status === 200) {
+        // Full Better Auth integration would land here.
+        expect(body.ok).toBe(true);
+        expect(body.userId).toBe(user.id);
+      } else {
+        // Bridge reached next() but Better Auth didn't materialize a user in
+        // this minimal harness. Still proves the bridge didn't reject — the
+        // PAT-precedence path didn't run, no membership check fired.
+        expect(status).toBe(401);
+        expect(body.reason).toBe('no-user');
+      }
+    });
+  });
+
   describe('Null org PAT (codex #3)', () => {
     it('rejects a valid PAT whose organization_id is NULL', async () => {
       // PATs with null org id (e.g. minted against a since-deleted org —

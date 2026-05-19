@@ -20,46 +20,15 @@ import { ensurePersonalOrganization } from './personal-org-provisioning';
 
 export const INSTALL_OPERATOR_KIND = 'install_operator' as const;
 
-/** Discriminator value for human signups (the default). */
-export const HUMAN_KIND = 'human' as const;
-
-/**
- * Shape of the carve-out predicate. Use in any SQL filter that should
- * exclude the install operator from human-discovery surfaces (member
- * lists, password reset, magic link, OAuth account-linking, signup
- * count).
- *
- * The literal string is duplicated in a few SQL call sites for clarity;
- * code paths that already have a typed user row in hand should use
- * `isInstallOperator(user)` instead so the discriminator stays in one
- * place.
- */
-export const NOT_INSTALL_OPERATOR_PREDICATE =
-  `principal_kind <> '${INSTALL_OPERATOR_KIND}'` as const;
-
-/**
- * True iff the row represents the synthetic install operator. Centralises
- * the carve-out check so every surface that filters humans uses the same
- * discriminator.
- */
-export function isInstallOperator(
-  row: { principal_kind?: string | null } | null | undefined
-): boolean {
-  return row?.principal_kind === INSTALL_OPERATOR_KIND;
-}
-
 /**
  * Deterministic synthetic email for the install operator. Not a real
  * deliverable address — no password reset / magic link will ever reach
  * it (and the carve-outs in `auth/index.tsx` reject those flows
  * anyway). Using `<hostname>` keeps it stable across reboots on the
- * same host.
+ * same host; falls back to `localhost` when `hostname()` is empty.
  */
-export function installOperatorEmail(): string {
-  // hostname() can return an empty string in some sandboxes; fall back so
-  // we never produce `install@`.
-  const host = hostname() || 'localhost';
-  return `install@${host}`.toLowerCase();
+function installOperatorEmail(): string {
+  return `install@${hostname() || 'localhost'}`.toLowerCase();
 }
 
 /**
@@ -75,7 +44,7 @@ export async function ensureInstallOperator(): Promise<{
   created: boolean;
 }> {
   const encryptionKey = process.env.ENCRYPTION_KEY;
-  if (!encryptionKey || encryptionKey.length === 0) {
+  if (!encryptionKey) {
     throw new Error(
       'ensureInstallOperator: ENCRYPTION_KEY is required. Set it in .env or opt into ephemeral keys with LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1 (which gateway.ts will generate before this is called).'
     );
@@ -140,11 +109,10 @@ export async function ensureInstallOperator(): Promise<{
   // tagged with this user.id in metadata). Running it on every boot
   // closes the gap where a transient failure on first boot used to
   // leave the operator without a personal org forever.
-  const operatorEmail = installOperatorEmail();
   try {
     await ensurePersonalOrganization({
       id: userId,
-      email: operatorEmail,
+      email: installOperatorEmail(),
       name: 'Local Install',
       username: null,
     });

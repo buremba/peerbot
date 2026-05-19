@@ -275,6 +275,19 @@ function AgentsColumn() {
           ))}
         </ul>
       </SubBlock>
+      <SubBlock title="skills" caption="bundled per agent or shared">
+        <ul class="grid grid-cols-2 gap-2 text-[11.5px]" style={{ color: "var(--color-page-text-muted)" }}>
+          {["instructions", "tools", "network", "packages"].map((label) => (
+            <li
+              key={label}
+              class="flex items-center justify-center rounded-md border px-2 py-1 font-mono text-[11px]"
+              style={{ borderColor: "var(--color-page-border)", backgroundColor: "var(--color-page-surface)", color: "var(--color-page-text)" }}
+            >
+              {label}
+            </li>
+          ))}
+        </ul>
+      </SubBlock>
       <SubBlock title="api readers" caption="agents read memory">
         <ul class="grid grid-cols-3 gap-2 text-[11.5px]" style={{ color: "var(--color-page-text-muted)" }}>
           {["HTTP", "MCP", "SDK"].map((label) => (

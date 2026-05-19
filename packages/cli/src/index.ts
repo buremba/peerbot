@@ -1,11 +1,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // AGENTS.md allow-list entry: the subcommand handlers below are lazy-loaded
-// via `await import("./commands/...")` rather than static imports. AGENTS.md
-// (Agent Rules → "No new dynamic imports outside the documented allow-list")
-// enumerates every grandfathered call site in the repo; this file is the
-// largest entry, with sibling entries for the connector / apply / browser-auth
-// codepaths and a category entry for test files. See the allow-list there for
-// the full set; this comment only documents the specific reason this file
+// via `await import("./commands/...")` rather than static imports. See the
+// AGENTS.md allow-list (Agent Rules → "No new dynamic imports outside the
+// documented allow-list") for the documented exceptions and rationale —
+// sibling entries cover the connector / apply / browser-auth codepaths and
+// test files. This comment only documents the specific reason this file
 // qualifies.
 //
 // Why: the CLI's command graph pulls in `postgres`, `playwright`, every

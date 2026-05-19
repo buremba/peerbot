@@ -12,6 +12,7 @@ import path from 'node:path';
 import type { Hono } from 'hono';
 import { Hono as HonoApp } from 'hono';
 import { createAuth } from '../auth';
+import { PersonalAccessTokenService } from '../auth/tokens';
 import { ApiPlatform } from '../gateway/api/platform';
 import { createGatewayApp } from '../gateway/cli/gateway';
 import { ChatInstanceManager } from '../gateway/connections/chat-instance-manager';
@@ -268,6 +269,69 @@ export async function initLobuGateway(): Promise<Hono | null> {
         // Lobu auth routes fall back to their own unauthenticated handling.
       }
 
+      // Personal access tokens (`owl_pat_*`) are not Better Auth session
+      // tokens, so `auth.api.getSession` above ignores them. Without this
+      // bridge, every `/lobu/api/v1/agents/*` call authenticated with a PAT
+      // minted by `lobu token create` falls through to the unauthenticated
+      // path and the embedded `authProvider` returns null. Resolve the PAT
+      // against `personal_access_tokens` directly and synthesise the same
+      // `(user, session)` context the Better Auth session would have set,
+      // so the downstream `authProvider` and `verifySettingsSession` paths
+      // treat it as a first-class identity.
+      if (!c.get('user')) {
+        const authHeader = c.req.header('Authorization');
+        if (authHeader?.startsWith('Bearer ')) {
+          const token = authHeader.slice(7);
+          if (token.startsWith('owl_pat_')) {
+            try {
+              const sql = getDb();
+              const patInfo = await new PersonalAccessTokenService(sql).verify(token);
+              if (patInfo?.userId) {
+                const rows = (await sql`
+                  SELECT id, name, email, "emailVerified"
+                  FROM "user"
+                  WHERE id = ${patInfo.userId}
+                  LIMIT 1
+                `) as unknown as Array<{
+                  id: string;
+                  name: string;
+                  email: string;
+                  emailVerified: boolean;
+                }>;
+                const userRow = rows[0];
+                if (userRow) {
+                  const expiresAt =
+                    patInfo.expiresAt === Number.MAX_SAFE_INTEGER
+                      ? new Date(Date.now() + 86_400_000)
+                      : new Date(patInfo.expiresAt * 1000);
+                  c.set('user', {
+                    id: userRow.id,
+                    name: userRow.name,
+                    email: userRow.email,
+                    emailVerified: userRow.emailVerified,
+                  });
+                  c.set('session', {
+                    id: `pat:${patInfo.clientId}`,
+                    userId: userRow.id,
+                    token,
+                    expiresAt,
+                    activeOrganizationId: patInfo.organizationId ?? null,
+                  });
+                  if (patInfo.organizationId) {
+                    c.set('organizationId', patInfo.organizationId);
+                  }
+                }
+              }
+            } catch (err) {
+              logger.warn(
+                { err: err instanceof Error ? err.message : String(err) },
+                '[Lobu] PAT verification failed'
+              );
+            }
+          }
+        }
+      }
+
       await next();
     });
 
@@ -287,21 +351,22 @@ export async function initLobuGateway(): Promise<Hono | null> {
         await next();
         return;
       }
-      // Skip if a higher-priority middleware already set the org id.
-      if (c.get('organizationId')) {
-        await next();
-        return;
-      }
-      let orgId: string | null;
-      try {
-        orgId = await resolveDefaultOrgId(user.id);
-      } catch {
-        return c.json({ error: 'Unable to resolve organization membership' }, 503);
-      }
+      // PAT-hydration middleware above sets `organizationId` when the PAT
+      // is bound to one. Honor that pin first so the org-scoped stores see
+      // the same tenant the PAT was minted for; only fall back to the user's
+      // default membership when no pin exists.
+      let orgId: string | null = (c.get('organizationId') as string | null) ?? null;
       if (!orgId) {
-        return c.json({ error: 'No organization membership found' }, 404);
+        try {
+          orgId = await resolveDefaultOrgId(user.id);
+        } catch {
+          return c.json({ error: 'Unable to resolve organization membership' }, 503);
+        }
+        if (!orgId) {
+          return c.json({ error: 'No organization membership found' }, 404);
+        }
+        c.set('organizationId', orgId);
       }
-      c.set('organizationId', orgId);
       await orgContext.run({ organizationId: orgId }, () => next());
     });
 

@@ -31,7 +31,15 @@ if [[ "$name" != "main" ]] && ! [[ "$name" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
 fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo="$(cd "$script_dir/.." && pwd)"
+# Resolve `repo` to the main checkout, not whatever worktree the script
+# happens to live inside. Worktrees share the working tree (scripts/
+# included), so a naive `$script_dir/..` returns the calling worktree's
+# root — and task-use would retarget the active/chrome + active/mac
+# symlinks at `<calling-worktree>/.claude/worktrees/<name>/packages/...`,
+# nested inside whatever worktree the operator happened to be in. Same
+# fix as task-setup.sh (#899/#900): use git's shared .git path with
+# --path-format=absolute so the resolution is invariant to cwd.
+repo="$(dirname "$(git -C "$script_dir" rev-parse --path-format=absolute --git-common-dir)")"
 
 if [[ "$name" == "main" ]]; then
   source_root="$repo"

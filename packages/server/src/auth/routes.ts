@@ -434,7 +434,11 @@ credentialRoutes.post('/local-init', async (c) => {
         error: 'no_user_yet',
         error_description:
           'No user exists yet on this install. Open the web UI and sign up first; the menubar / CLI will pick up the new user on the next /api/local-init call.',
-        signup_url: '/sign-up',
+        // Owletto's SPA routes signup via /auth/sign-up (mapped by
+        // auth/$pathname.tsx → /auth/login?intent=sign-up). A bare /sign-up
+        // would fall into the $owner catch-all and loop through the login
+        // redirect — pre-PR-908 codex review caught this.
+        signup_url: '/auth/sign-up',
       },
       404
     );

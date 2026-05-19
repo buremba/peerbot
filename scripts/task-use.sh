@@ -1,19 +1,29 @@
 #!/usr/bin/env bash
-# task-use.sh — point external tools (Chrome extension, Xcode/Mac app) at a
-# specific worktree's source by retargeting fixed symlinks.
+# task-use.sh — point the Chrome extension at a specific worktree's source by
+# retargeting a fixed symlink.
 #
 # Usage:
 #   scripts/task-use.sh <name>     # use the worktree at .claude/worktrees/<name>
 #   scripts/task-use.sh main       # use the main checkout (no worktree)
 #
-# Symlinks (created/updated each run):
+# Symlink (created/updated each run):
 #   ~/.config/lobu-dev/active/chrome  →  <root>/packages/owletto/apps/chrome
-#   ~/.config/lobu-dev/active/mac     →  <root>/packages/owletto/apps/mac
 #
 # Point Chrome's "Load unpacked" at ~/.config/lobu-dev/active/chrome ONCE.
-# Open Xcode against ~/.config/lobu-dev/active/mac. Then `task-use <name>`
-# swaps which worktree those resolve to; reload the extension / re-open the
-# Xcode project to pick up the new source.
+# Then `task-use <name>` swaps which worktree it resolves to; reload the
+# extension at chrome://extensions to pick up the new source.
+#
+# The Chrome extension's gateway URL is configured separately in the
+# sidepanel ("Server URL"). Because each worktree's `make dev` runs on its
+# own PORT (assigned in .env.local), the symlink retarget alone does NOT
+# repoint the extension at the new server — re-open the sidepanel and update
+# the URL to http://localhost:<PORT> for the active worktree.
+#
+# Xcode/Mac is intentionally NOT symlinked. Open the .xcodeproj at the
+# worktree path directly (`packages/owletto/apps/mac` inside the worktree).
+# The Mac menubar reads ~/.config/lobu/config.json on every popover, so
+# per-worktree Lobu contexts (registered by task-setup) appear in its picker
+# automatically — no separate "active mac" indirection is required.
 
 set -euo pipefail
 
@@ -34,10 +44,10 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Resolve `repo` to the main checkout, not whatever worktree the script
 # happens to live inside. Worktrees share the working tree (scripts/
 # included), so a naive `$script_dir/..` returns the calling worktree's
-# root — and task-use would retarget the active/chrome + active/mac
-# symlinks at `<calling-worktree>/.claude/worktrees/<name>/packages/...`,
-# nested inside whatever worktree the operator happened to be in. Same
-# fix as task-setup.sh (#899/#900): use git's shared .git path with
+# root — and task-use would retarget the active/chrome symlink at
+# `<calling-worktree>/.claude/worktrees/<name>/packages/...`, nested inside
+# whatever worktree the operator happened to be in. Same fix as
+# task-setup.sh (#899/#900): use git's shared .git path with
 # --path-format=absolute so the resolution is invariant to cwd.
 repo="$(dirname "$(git -C "$script_dir" rev-parse --path-format=absolute --git-common-dir)")"
 
@@ -67,14 +77,28 @@ set_link() {
 }
 
 set_link "chrome" "$source_root/packages/owletto/apps/chrome" "$active_dir/chrome"
-set_link "mac"    "$source_root/packages/owletto/apps/mac"    "$active_dir/mac"
 
 # Record the active task name for tooling that wants it (and for task-clean
 # to know whether to reset to 'main' when cleaning the active worktree).
 echo "$name" > "$active_dir/.active-name"
+
+# Surface the worktree's PORT so the operator is reminded to update the
+# Chrome extension's "Server URL" sidepanel setting — the source symlink
+# and the gateway URL are independent switches, and stale URLs are the
+# single most common footgun across worktree switches.
+active_port=""
+if [[ "$name" != "main" ]]; then
+  env_local="$source_root/.env.local"
+  if [[ -f "$env_local" ]]; then
+    active_port="$(awk -F= '/^PORT=/{print $2; exit}' "$env_local" | tr -d '[:space:]')"
+  fi
+fi
+
 echo "✓ active worktree: $name"
-echo ""
-echo "  ↳ Chrome will not auto-reload the extension when the symlink retargets."
-echo "    Click 'Reload' on the owletto extension in chrome://extensions to pick"
-echo "    up the new source. (MV3 service workers re-register on extension reload,"
-echo "    not on symlink change.)"
+if [[ -n "$active_port" ]]; then
+  echo "  ↳ Chrome ext: set Server URL to http://localhost:$active_port"
+  echo "    (open the owletto sidepanel; or reset via chrome://extensions → Reload)"
+else
+  echo "  ↳ Chrome ext: confirm Server URL points at this worktree's gateway"
+fi
+echo "    MV3 service workers re-register on extension reload, not on symlink change."

@@ -61,7 +61,6 @@ export function LandingPage(props: {
       <Container className="py-14 sm:py-20">
         <ArchitectureDiagram />
       </Container>
-      <PullQuote />
       <UseCaseGrid />
       <UseCasePivot
         activeUseCaseId={activeUseCaseId}
@@ -169,8 +168,9 @@ function Hero() {
           class="hero-rise hero-rise-3 mx-auto mt-5 max-w-[42rem] text-[17px] leading-[1.55]"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          Connectors emit events. Watchers structure them into memory. Agents
-          act on prompts, events, or cron. Open source, multi-tenant, BYO model.
+          Connectors stream events into an append-only memory. LLM watchers
+          shape them into entities your agent can search and cite. Open source,
+          multi-tenant, BYO model.
         </p>
         <div class="hero-rise hero-rise-4 mt-8 flex flex-wrap items-center justify-center gap-3">
           <button
@@ -323,37 +323,6 @@ function HeroAsciinema() {
 /*  Static sections                                                           */
 /* -------------------------------------------------------------------------- */
 
-function PullQuote() {
-  return (
-    <section class="py-14 sm:py-16">
-      <Container>
-        <p
-          class="mx-auto max-w-[51rem] text-center font-display text-[clamp(1.35rem,2.4vw,1.85rem)] font-semibold leading-[1.25] tracking-[-0.015em]"
-          style={{ color: "var(--color-page-text)" }}
-        >
-          If you know{" "}
-          <em class="not-italic" style={{ color: "var(--color-tg-accent)" }}>
-            TypeScript
-          </em>{" "}
-          and{" "}
-          <em class="not-italic" style={{ color: "var(--color-tg-accent)" }}>
-            Postgres
-          </em>
-          , you know Lobu.
-        </p>
-        <p
-          class="mx-auto mt-3.5 max-w-[37.5rem] text-center text-[14.5px]"
-          style={{ color: "var(--color-page-text-muted)" }}
-        >
-          No new language. No proprietary DSL. No vector DB. No Kafka, no Redis,
-          no Kubernetes operator. Watchers and connectors are YAML; reactions
-          and custom connectors are TypeScript; everything lives in Postgres.
-        </p>
-      </Container>
-    </section>
-  );
-}
-
 function UseCaseGrid() {
   const cards: Array<{
     eyebrow: string;
@@ -367,9 +336,9 @@ function UseCaseGrid() {
       title: "An internal Slack bot.",
       body: (
         <>
-          Lunch ordering, Linear triage, standup digests. One-click{" "}
-          <b>"Add to Slack"</b> wires the bot live. Same agent ships to
-          Telegram, Discord, or MS Teams.
+          Lunch ordering, Linear triage, standup digests. Add the bot to Slack
+          from the admin UI; the same agent also runs on Telegram, Discord, or
+          MS Teams.
         </>
       ),
       snippetLines: [
@@ -400,7 +369,8 @@ function UseCaseGrid() {
       body: (
         <>
           Pull from Slack, Notion, Gmail, GitHub, Linear. Declare entity types
-          once. Dreaming watchers deepen the graph nightly. No manual ETL.
+          once. Watchers run on cron to add structure overnight, so the schema
+          grows with your data.
         </>
       ),
       snippetLines: [
@@ -476,7 +446,7 @@ function UseCaseGrid() {
         <div class="mb-10 text-center">
           <Eyebrow>What you'd build</Eyebrow>
           <SectionHeading className="mx-auto">
-            Three shapes. One platform.
+            Three ways teams ship Lobu agents.
           </SectionHeading>
         </div>
         <div class="grid gap-5 md:grid-cols-3">
@@ -678,7 +648,7 @@ function ConnectorsSection({ useCase, useCaseId }: ProductSectionProps) {
           <div>
             <Eyebrow>Connectors</Eyebrow>
             <SectionHeading>
-              One event stream for everything your team produces.
+              One typed event stream from every source.
             </SectionHeading>
             <p
               class="mt-4 max-w-[28rem] text-[16px] leading-[1.6]"
@@ -824,8 +794,8 @@ function WatchersSection({ useCase, useCaseId }: ProductSectionProps) {
                   ).
                 </>,
                 <>
-                  <b>Dreaming</b> — runs on cron. Aggregates yesterday's events
-                  into higher-level entities while your team sleeps.
+                  <b>Dreaming</b> — runs on cron. Aggregates the previous day's
+                  events into higher-level entities.
                 </>,
                 <>
                   <b>No-code ETL</b> — the prompt is your transformation; the
@@ -885,7 +855,9 @@ function AgentsSection({ useCase, useCaseId }: ProductSectionProps) {
             <FeatureList
               items={[
                 <>
-                  <b>Ship anywhere</b> — one config, every surface.
+                  <b>Every chat surface</b> — Slack, Telegram, Discord, Teams,
+                  WhatsApp, HTTP, MCP. Same{" "}
+                  <code class="font-mono text-[13px]">lobu.toml</code>.
                 </>,
                 <>
                   <b>BYO model</b> — Anthropic, OpenAI, Z.ai, OpenRouter, your

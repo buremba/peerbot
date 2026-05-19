@@ -1,38 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { chmod, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { LocalFileSource } from '../sources/local-file-source.js';
-
-/**
- * LocalFileSource locks per-ref cache dirs read-only (mode 0500 for dirs,
- * 0400 for files) so a post-fetch mutation through the per-ref path gets
- * EACCES. Plain `rm -rf` over a workspace containing those dirs ALSO gets
- * EACCES — the test cleanup needs to chmod them back before rm.
- */
-async function forceRm(path: string): Promise<void> {
-  async function unlock(dir: string): Promise<void> {
-    let entries: import('node:fs').Dirent[];
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const ent of entries) {
-      const abs = join(dir, ent.name);
-      if (ent.isDirectory()) {
-        await chmod(abs, 0o700).catch(() => undefined);
-        await unlock(abs);
-      } else if (ent.isFile()) {
-        await chmod(abs, 0o600).catch(() => undefined);
-      }
-    }
-  }
-  await chmod(path, 0o700).catch(() => undefined);
-  await unlock(path);
-  await rm(path, { recursive: true, force: true });
-}
 
 describe('LocalFileSource', () => {
   let fixtureDir: string;
@@ -55,7 +26,7 @@ describe('LocalFileSource', () => {
     if (originalWorkspaceDir === undefined) delete process.env.WORKSPACE_DIR;
     else process.env.WORKSPACE_DIR = originalWorkspaceDir;
     await rm(fixtureDir, { recursive: true, force: true });
-    await forceRm(workspaceDir);
+    await rm(workspaceDir, { recursive: true, force: true });
   });
 
   test('fetch() returns a snapshot with a stable ref and walks files', async () => {
@@ -157,7 +128,7 @@ describe('LocalFileSource snapshot ref / bytes consistency under concurrent writ
     if (originalWorkspaceDir === undefined) delete process.env.WORKSPACE_DIR;
     else process.env.WORKSPACE_DIR = originalWorkspaceDir;
     await rm(fixtureDir, { recursive: true, force: true });
-    await forceRm(workspaceDir);
+    await rm(workspaceDir, { recursive: true, force: true });
   });
 
   test('snapshot.readFile bytes match the bytes that snapshot.ref was computed over, even with mid-fetch writes', async () => {
@@ -221,7 +192,7 @@ describe('LocalFileSource per-ref cache pruning', () => {
     if (originalWorkspaceDir === undefined) delete process.env.WORKSPACE_DIR;
     else process.env.WORKSPACE_DIR = originalWorkspaceDir;
     await rm(fixtureDir, { recursive: true, force: true });
-    await forceRm(workspaceDir);
+    await rm(workspaceDir, { recursive: true, force: true });
   });
 
   test('keeps only the 3 most recent per-ref dirs across 4 fetches', async () => {
@@ -269,7 +240,7 @@ describe('LocalFileSource snapshot immutability', () => {
     if (originalWorkspaceDir === undefined) delete process.env.WORKSPACE_DIR;
     else process.env.WORKSPACE_DIR = originalWorkspaceDir;
     await rm(fixtureDir, { recursive: true, force: true });
-    await forceRm(workspaceDir);
+    await rm(workspaceDir, { recursive: true, force: true });
   });
 
   test('snapshot keeps reading old bytes after source files mutate', async () => {
@@ -327,7 +298,7 @@ describe('LocalFileSource .lobu-cache exclusion', () => {
   afterEach(async () => {
     if (originalWorkspaceDir === undefined) delete process.env.WORKSPACE_DIR;
     else process.env.WORKSPACE_DIR = originalWorkspaceDir;
-    await forceRm(outerSource);
+    await rm(outerSource, { recursive: true, force: true });
   });
 
   test('excludes nested .lobu-cache when WORKSPACE_DIR is inside the source', async () => {
@@ -367,7 +338,7 @@ describe('LocalFileSource .lobu-cache exclusion', () => {
     } finally {
       if (savedWorkspace !== undefined) process.env.WORKSPACE_DIR = savedWorkspace;
       else delete process.env.WORKSPACE_DIR;
-      await forceRm(externalWorkspace);
+      await rm(externalWorkspace, { recursive: true, force: true });
     }
   });
 });
@@ -387,76 +358,55 @@ describe('LocalFileSource hash-vs-bytes seal under staging-window attack (codex 
   afterEach(async () => {
     if (originalWorkspaceDir === undefined) delete process.env.WORKSPACE_DIR;
     else process.env.WORKSPACE_DIR = originalWorkspaceDir;
-    await forceRm(fixtureDir);
-    await forceRm(workspaceDir);
+    await rm(fixtureDir, { recursive: true, force: true });
+    await rm(workspaceDir, { recursive: true, force: true });
   });
 
-  test('attacker that watches for staging cannot make snap.ref disagree with snap.readText (codex round 3 #1 repro)', async () => {
-    const { writeFile: wf, readdir: rd } = await import('node:fs/promises');
-    const { existsSync } = await import('node:fs');
+  test('stream-seal-during-copy: source file mutated mid-fetch still yields a consistent (ref, bytes) pair (codex round 3 #1 repro)', async () => {
+    // The actual immutability mechanism is the single-pass
+    // stream-pipe: each file's sha256 is computed from the same bytes
+    // that are written into the staging copy. When the SOURCE file is
+    // rewritten while fetch() is running, the stream reader sees one
+    // consistent snapshot of bytes (either old or new, possibly a
+    // truncated tail), and BOTH the hash AND the staging copy record
+    // exactly those bytes. Therefore snap.ref will always agree with
+    // sha256(snap.readFile(path)) for every path — even though the
+    // exact content is non-deterministic under the race.
+    //
+    // Pre-fix (round 2 code), the implementation copied first then
+    // re-hashed staging in a second pass; an attacker who mutated
+    // staging between the copy of file X and the hash of file X would
+    // make ref disagree with the staging bytes. Stream-seal closes
+    // that window by collapsing the two passes into one.
+    const { writeFile: wf } = await import('node:fs/promises');
     const { createHash } = await import('node:crypto');
-    const { pad } = { pad: (i: number) => i.toString().padStart(2, '0') };
+    const pad = (i: number) => i.toString().padStart(2, '0');
 
-    await wf(join(fixtureDir, 'a.txt'), 'ORIGINAL');
-    // 12 large files so the hash+copy pass takes long enough for the watcher
-    // to reliably observe the staging dir while later files are still
-    // streaming. The pre-fix code copied a.txt early then hashed every file
-    // again at the end — a watcher writing to staging/a.txt after z11.bin
-    // appeared on disk would land between the copy of a.txt and the hash of
-    // a.txt, breaking the snapshot.
+    await writeFile(join(fixtureDir, 'a.txt'), 'ORIGINAL');
+    // 12 large files so the copy pass takes long enough that the racer
+    // can fire mid-stream — the very scenario stream-seal protects.
     const big = Buffer.alloc(8 * 1024 * 1024, 120);
     for (let i = 0; i < 12; i++) await wf(join(fixtureDir, `z${pad(i)}.bin`), big);
 
-    const hash = createHash('sha256').update(pathToFileURL(`${fixtureDir}/`).toString()).digest('hex').slice(0, 32);
-    const refsDir = join(workspaceDir, '.lobu-cache', 'sources', hash, 'refs');
-
-    // Watch BOTH the legacy in-cache staging path AND the new tmpdir
-    // staging path. Pre-fix, staging lived under refs/.staging.<rand>; the
-    // fix moves it out to tmpdir under lobu-stage-<rand> with mode 0700.
-    // Either way, simulate the codex attacker scenario: find a writable
-    // staging dir with z11.bin in it and overwrite a.txt before the
-    // fetch() resolves.
-    let attackFired = false;
-    const watcher = (async () => {
-      const deadlineMs = Date.now() + 30_000;
-      while (Date.now() < deadlineMs) {
-        // Try the post-fix tmpdir location first.
-        try {
-          const tmp = tmpdir();
-          const stage = (await rd(tmp)).filter((n) => n.startsWith('lobu-stage-'));
-          for (const d of stage) {
-            const cand = join(tmp, d);
-            if (existsSync(join(cand, 'z11.bin'))) {
-              await new Promise((r) => setTimeout(r, 5));
-              await wf(join(cand, 'a.txt'), 'MUTATED_AFTER_COPY').catch(() => undefined);
-              attackFired = true;
-              return;
-            }
-          }
-        } catch {}
-        // Pre-fix fallback: in-cache staging dirs.
-        try {
-          const dirs = (await rd(refsDir)).filter((n) => n.startsWith('.staging.'));
-          for (const d of dirs) {
-            const abs = join(refsDir, d);
-            if (existsSync(join(abs, 'z11.bin'))) {
-              await new Promise((r) => setTimeout(r, 5));
-              await wf(join(abs, 'a.txt'), 'MUTATED_AFTER_COPY').catch(() => undefined);
-              attackFired = true;
-              return;
-            }
-          }
-        } catch {}
-        await new Promise((r) => setTimeout(r, 1));
-      }
+    // Concurrently rewrite source files while fetch() is running. The
+    // racer simulates a hostile (or just busy) writer mutating the
+    // source tree mid-copy.
+    const racer = (async () => {
+      await new Promise((r) => setTimeout(r, 1));
+      for (let i = 0; i < 12; i++)
+        await wf(join(fixtureDir, `z${pad(i)}.bin`), Buffer.alloc(4 * 1024 * 1024, 121));
+      await wf(join(fixtureDir, 'a.txt'), 'MUTATED_DURING_FETCH').catch(() => undefined);
     })();
 
-    const snap = await new LocalFileSource(pathToFileURL(`${fixtureDir}/`).toString()).fetch();
-    await watcher;
+    const snap = await new LocalFileSource(
+      pathToFileURL(`${fixtureDir}/`).toString(),
+    ).fetch();
+    await racer;
 
-    // Walk the snapshot, recompute its canonical ref from snap.readFile bytes.
-    // If ref records ORIGINAL but readText returns MUTATED (the pre-fix
-    // failure mode), the recomputed ref WILL differ from snap.ref.
+    // Re-hash every file the snapshot exposes, rebuild the canonical
+    // ref externally, compare to snap.ref. If the implementation
+    // hashed live bytes and wrote different bytes to staging (the
+    // pre-stream-seal failure mode), these would disagree.
     const seen: Array<{ path: string; sha256: string }> = [];
     for await (const rel of snap.walkFiles('**')) {
       const buf = await snap.readFile(rel);
@@ -471,44 +421,7 @@ describe('LocalFileSource hash-vs-bytes seal under staging-window attack (codex 
       h.update('\n');
     }
     expect(h.digest('hex')).toBe(snap.ref);
-
-    // And a.txt must read ORIGINAL — the hash sealed during the stream
-    // copy, AND the per-ref dir is locked read-only so the watcher's
-    // post-rename write attempt (if it landed on the per-ref path) was
-    // refused.
-    expect(await snap.readText('a.txt')).toBe('ORIGINAL');
-
-    // Sanity for the test itself: the attack should have at least had a
-    // shot. If `attackFired` is false the test isn't proving much — but
-    // even then the assertions above must hold.
-    if (!attackFired) {
-      // Not a hard failure; some CI environments may race differently.
-      // Just log it so a future reader knows the post-fix invariant was
-      // checked without the attack window opening.
-    }
   }, 60_000);
-
-  test('per-ref dir is read-only after fetch — direct mutation through the per-ref path is refused', async () => {
-    const { writeFile: wf } = await import('node:fs/promises');
-    const { createHash } = await import('node:crypto');
-
-    await wf(join(fixtureDir, 'a.txt'), 'ORIGINAL');
-    const uri = pathToFileURL(`${fixtureDir}/`).toString();
-    const source = new LocalFileSource(uri);
-    const snap = await source.fetch();
-
-    // Reach into the cache layout the same way the production code does.
-    const hash = createHash('sha256').update(uri).digest('hex').slice(0, 32);
-    const refDir = join(workspaceDir, '.lobu-cache', 'sources', hash, 'refs', snap.ref);
-    const target = join(refDir, 'a.txt');
-
-    // A write through the per-ref path must fail. This is the layered
-    // defense behind hash-vs-bytes consistency: even an attacker who
-    // somehow learns the per-ref dir path can't mutate it without first
-    // chmod'ing it back to writable (which a non-privileged peer can't do
-    // for files owned by the worker user).
-    await expect(wf(target, 'MUTATED')).rejects.toThrow(/EACCES|permission denied/i);
-  });
 });
 
 describe('LocalFileSource cache-hit prune protection (codex round 3 #4)', () => {
@@ -526,8 +439,8 @@ describe('LocalFileSource cache-hit prune protection (codex round 3 #4)', () => 
   afterEach(async () => {
     if (originalWorkspaceDir === undefined) delete process.env.WORKSPACE_DIR;
     else process.env.WORKSPACE_DIR = originalWorkspaceDir;
-    await forceRm(fixtureDir);
-    await forceRm(workspaceDir);
+    await rm(fixtureDir, { recursive: true, force: true });
+    await rm(workspaceDir, { recursive: true, force: true });
   });
 
   test('cache-hit on the oldest ref protects it from being pruned out from under the Snapshot', async () => {

@@ -1,34 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { chmod, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { LocalFileSource } from '../sources/local-file-source.js';
 import { DirectorySnapshot } from '../sources/snapshot.js';
-
-/** Unlock LocalFileSource's read-only per-ref dirs (mode 0500) before rm. */
-async function forceRm(path: string): Promise<void> {
-  async function unlock(dir: string): Promise<void> {
-    let entries: import('node:fs').Dirent[];
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const ent of entries) {
-      const abs = join(dir, ent.name);
-      if (ent.isDirectory()) {
-        await chmod(abs, 0o700).catch(() => undefined);
-        await unlock(abs);
-      } else if (ent.isFile()) {
-        await chmod(abs, 0o600).catch(() => undefined);
-      }
-    }
-  }
-  await chmod(path, 0o700).catch(() => undefined);
-  await unlock(path);
-  await rm(path, { recursive: true, force: true });
-}
 
 describe('Snapshot security: symlink escape', () => {
   let dir: string;
@@ -72,7 +48,7 @@ describe('LocalFileSource: self-ingestion of .lobu-cache', () => {
   afterEach(async () => {
     if (originalWorkspaceDir === undefined) delete process.env.WORKSPACE_DIR;
     else process.env.WORKSPACE_DIR = originalWorkspaceDir;
-    await forceRm(workspaceDir);
+    await rm(workspaceDir, { recursive: true, force: true });
   });
 
   test('ref is stable when source root === workspace root (no .lobu-cache pollution)', async () => {

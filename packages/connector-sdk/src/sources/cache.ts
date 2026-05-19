@@ -104,6 +104,15 @@ export async function requireMeta(metaPath: string, expectedUri: string): Promis
  * `fetch()` calls serialize. Process-local only — fine for the embedded
  * worker model where one worker subprocess owns its cache.
  *
+ * v1 limitation: two processes sharing the same
+ * `${WORKSPACE_DIR}/.lobu-cache` are NOT coordinated by this lock —
+ * each gets its own in-memory `_sourceLocks` map, and they can
+ * race-prune each other's per-ref dirs (see `pruneOldRefDirs` in each
+ * source impl). v1 assumes one cache owner per workspace. If we ever
+ * need multi-process sharing, replace this with a filesystem advisory
+ * lock (e.g. `proper-lockfile` against `${root}/.lock`) around
+ * fetch+prune.
+ *
  * The map stores the *guarded* (error-swallowed) promise so a rejection in
  * `fn` doesn't poison the chain. Identity comparison in `finally` uses the
  * same stored reference, so cleanup actually removes the entry — an

@@ -25,15 +25,30 @@
  *
  * Lifecycle / mutability contract (important):
  *
- *  - A Snapshot is a *cursor* over the SDK-managed cache for one URI, not a
- *    content-addressed copy. Two snapshots of the same source share one
- *    on-disk directory. Calling `fetch()` again will mutate that directory.
- *  - Connectors MUST consume a snapshot fully (walk + read) before calling
- *    `fetch()` again on the same source — concretely: don't park a Snapshot
- *    in a queue and re-`fetch()` in another task expecting both views to
- *    remain readable. The SDK serializes concurrent `fetch()` calls on a
- *    single source, but reads against a stale snapshot once a new fetch has
- *    completed will return current-on-disk bytes, not historical bytes.
+ *  - The bytes returned by `readFile` / `readText` reflect the state of the
+ *    cache at the moment `fetch()` returned. `snap.ref` is a deterministic
+ *    hash of those bytes, sealed during the stream-copy from source into
+ *    the per-ref cache dir.
+ *  - The SDK does NOT protect the cache against same-UID writes. The worker
+ *    process owns the cache, and we don't fight our own UID — chmod 0500
+ *    would just be re-mode'd away by an attacker running as the same user.
+ *    If a hostile connector (or external same-UID process) mutates the
+ *    per-ref dir after fetch returns, `readFile` will return mutated bytes
+ *    while `snap.ref` still reflects the bytes captured at fetch time.
+ *    Connectors should treat their own cache as trusted.
+ *  - Cross-process readers sharing the same cache see the same per-ref
+ *    dir contents. Pruning is process-local (an in-memory `Promise`
+ *    mutex per URI); concurrent processes can race-prune each other's
+ *    protected refs. v1 supports one cache owner per workspace —
+ *    multi-process sharing would need a filesystem advisory lock.
+ *  - A Snapshot is a *cursor* over the SDK-managed cache for one URI, not
+ *    a content-addressed copy in your possession. The SDK serializes
+ *    concurrent `fetch()` calls on a single source within one process;
+ *    the per-ref dir the Snapshot points at is kept alive through prune
+ *    (`MAX_REF_DIRS` >= 3 accommodates a fresh fetch plus two in-flight
+ *    overlapping syncs), but if you park a Snapshot long enough that 3+
+ *    subsequent distinct fetches roll past it, its backing dir may have
+ *    been pruned.
  *  - `ref` always reflects the on-disk content at the moment `fetch()`
  *    returned — pin it in the connector checkpoint to detect mutation later.
  */

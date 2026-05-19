@@ -115,6 +115,7 @@ Cloud:
   link | unlink            Bind this directory to a (context, org)
   apply | deploy           Sync lobu.toml to cloud (idempotent)
   agent <subcmd>           CRUD agents via REST
+  call [tool]              Invoke an admin REST tool by name (--list to discover)
   token [create]           Print or mint personal access tokens
 
 Memory:
@@ -830,6 +831,60 @@ Memory:
       await agentConfigPatchCommand(agentId, options);
     }
   );
+
+  // ─── call ───────────────────────────────────────────────────────────
+  // Generic dispatcher over the admin REST tool surface
+  // (`POST /api/<org>/<tool>`). Replaces the urge to add bespoke
+  // per-action commands (`lobu sync`, `lobu retry-feed`, ...) by exposing
+  // every UI-callable tool through one entry point. `lobu memory run` is
+  // kept alongside intentionally — it routes via MCP JSON-RPC, this one via
+  // the REST proxy. See packages/cli/src/commands/call.ts for the arg shape.
+  const call = withCommonOpts(
+    program
+      .command("call [tool]")
+      .description(
+        "Invoke an admin REST tool by name (POST /api/<org>/<tool>). Run with --list or no args to discover."
+      )
+      .option(
+        "--list",
+        "List tools available to the current token (default when called bare)"
+      )
+      .option("--all", "Include internal/admin-only tools in --list output")
+      .option(
+        "--input-file <path>",
+        "Read the JSON args body from a file (top-level object)"
+      )
+      .option(
+        "--arg <entry>",
+        "Add a top-level arg as key=string or key:=<json> (repeatable)",
+        (value: string, previous: string[] | undefined) =>
+          previous ? [...previous, value] : [value]
+      )
+      .option("--raw", "Emit compact JSON (default is pretty-printed)")
+      .option("--url <url>", "Server URL override"),
+    { org: true, json: true }
+  ).action(
+    async (
+      tool: string | undefined,
+      options: {
+        org?: string;
+        context?: string;
+        json?: boolean;
+        list?: boolean;
+        all?: boolean;
+        inputFile?: string;
+        arg?: string[];
+        raw?: boolean;
+        url?: string;
+      }
+    ) => {
+      const { callCommand } = await import("./commands/call.js");
+      await callCommand(tool, options);
+    }
+  );
+  // Silence unused-variable lint — `call` is the Commander handle, retained
+  // for symmetry with sibling command groups in case subcommands are added.
+  void call;
 
   // ─── connector ──────────────────────────────────────────────────────
   const connector = program

@@ -285,3 +285,62 @@ export async function restToolCall<T = unknown>(
 
   return (raw.length > 0 ? JSON.parse(raw) : {}) as T;
 }
+
+/**
+ * GET sibling of `restToolCall` — fetches `${origin}/api/${orgSlug}/${path}`
+ * using the same auth-resolution + localhost-fallback chain. Used by
+ * `lobu call --list` to hit `GET /api/<org>/tools` without spinning up an MCP
+ * session for discovery.
+ */
+export async function restGet<T = unknown>(
+  mcpUrl: string,
+  path: string,
+  contextName?: string
+): Promise<T> {
+  const headers: Record<string, string> = {};
+  const tokenResult = await getUsableToken(mcpUrl, contextName);
+  if (tokenResult) {
+    headers.Authorization = `Bearer ${tokenResult.token}`;
+  }
+
+  const orgSlug = orgFromMcpUrl(mcpUrl) ?? tokenResult?.session.org ?? null;
+  if (!orgSlug) {
+    throw new ApiError(
+      `Cannot GET ${path}: no org slug on MCP URL ${mcpUrl}. Use --org or run: lobu org set <slug>`
+    );
+  }
+
+  const baseUrl = new URL(mcpUrl).origin;
+  const endpoint = `${baseUrl}/api/${orgSlug}/${path}`;
+
+  const { response: res, usedUrl } = await fetchMcpWithFallback(endpoint, {
+    method: "GET",
+    headers,
+  });
+
+  const raw = await res.text();
+  if (!res.ok) {
+    let message = `${res.status} ${res.statusText}`;
+    if (raw) {
+      try {
+        const body = JSON.parse(raw) as { error?: string };
+        if (body?.error) message = body.error;
+      } catch {
+        message = raw;
+      }
+    }
+    const authContext = tokenResult
+      ? ` using context "${tokenResult.contextName}"`
+      : " without an access token";
+    const hint =
+      res.status === 401
+        ? `${authContext}. Try --context <name> or run \`lobu context use <name>\`.`
+        : authContext;
+    throw new ApiError(
+      `GET ${path} failed via ${usedUrl}: ${message}${hint}`,
+      res.status
+    );
+  }
+
+  return (raw.length > 0 ? JSON.parse(raw) : {}) as T;
+}

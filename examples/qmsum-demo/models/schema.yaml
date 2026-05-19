@@ -1,0 +1,44 @@
+version: 2
+
+entities:
+  - slug: meeting
+    name: Meeting
+    description: A QMSum meeting (one source JSON file in the QMSum dataset).
+    metadata_schema:
+      type: object
+      required: [meeting_id, domain]
+      properties:
+        meeting_id:
+          type: string
+          description: Base filename of the source JSON (e.g. "Bed003", "ES2004a").
+        domain:
+          type: string
+          enum: [Academic, Product, Committee]
+        source_file:
+          type: string
+        title:
+          type: string
+
+  # Speaker identity rules differ by domain — see the connector.
+  #   Academic:  per-meeting (Grad A in Bed003 ≠ Grad A in Bed008)
+  #   Product:   per-domain  (Industrial Designer is the same role across all Product meetings)
+  #   Committee: per-domain  (real persistent names like "Barry Hughes")
+  - slug: speaker
+    name: Speaker
+    description: A speaker in a QMSum meeting (scope depends on domain).
+    metadata_schema:
+      type: object
+      required: [label, domain, scope]
+      properties:
+        label:
+          type: string
+          description: Raw speaker label from the transcript.
+        domain:
+          type: string
+          enum: [Academic, Product, Committee]
+        scope:
+          type: string
+          enum: [per-meeting, per-domain]
+        meeting_id:
+          type: string
+          description: Only set when scope=per-meeting (Academic).

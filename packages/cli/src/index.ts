@@ -71,7 +71,6 @@ Local dev:
   init [name]              Scaffold a new agent project
   run | dev | start        Boot the embedded Lobu stack
   chat <prompt>            Send a prompt to an agent and stream the response
-  eval [name]              Run agent evaluations
   validate                 Validate lobu.toml
   doctor                   Health checks (deps, DB, pgvector, ports, keys)
   telemetry                Show / toggle anonymous error reporting
@@ -224,59 +223,6 @@ Memory:
       ) => {
         const { chatCommand } = await import("./commands/chat.js");
         await chatCommand(process.cwd(), prompt, options);
-      }
-    );
-
-  // ─── eval ──────────────────────────────────────────────────────────
-  const evalCmd = program
-    .command("eval [name]")
-    .description("Run agent evaluations")
-    .option("-a, --agent <id>", "Agent ID (defaults to first in lobu.toml)")
-    .option(
-      "-g, --gateway <url>",
-      `Gateway URL (default: ${GATEWAY_DEFAULT_URL})`
-    )
-    .option(
-      "-m, --model <model>",
-      "Model to eval (e.g. claude/sonnet, openai/gpt-4.1)"
-    )
-    .option("--trials <n>", "Override trial count", parseInt)
-    .option("--list", "List available evals without running them")
-    .option("--ci", "CI mode: JSON output, non-zero exit on failure")
-    .option("--output <file>", "Write results to JSON file")
-    .option("-c, --context <name>", "Use a named context")
-    .action(
-      async (
-        name: string | undefined,
-        options: {
-          agent?: string;
-          gateway?: string;
-          model?: string;
-          trials?: number;
-          list?: boolean;
-          ci?: boolean;
-          output?: string;
-          context?: string;
-        }
-      ) => {
-        const { evalCommand } = await import("./commands/eval.js");
-        await evalCommand(process.cwd(), name, options);
-      }
-    );
-
-  evalCmd
-    .command("new <name>")
-    .description("Scaffold a new YAML eval into the agent's evals/ directory")
-    .option("-a, --agent <id>", "Agent ID (defaults to first in lobu.toml)")
-    .option("--description <text>", "Eval description")
-    .option("--trials <n>", "Trial count", parseInt)
-    .action(
-      async (
-        name: string,
-        options: { agent?: string; description?: string; trials?: number }
-      ) => {
-        const { evalNewCommand } = await import("./commands/eval.js");
-        await evalNewCommand(name, options);
       }
     );
 

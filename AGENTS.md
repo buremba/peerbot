@@ -192,14 +192,15 @@ If replies look stale, clear chat history rows directly in Postgres. Chat histor
 psql "$DATABASE_URL" -c "DELETE FROM chat_state_lists WHERE key LIKE 'history:<connectionId>:%';"
 ```
 
-For prompt / behavior changes, run evals (definitions in `<example>/agents/<name>/evals/*.yaml`):
+For prompt / behavior changes, run evals via [promptfoo](https://www.promptfoo.dev) + the `@lobu/promptfoo-provider` package. Each example project ships its own `agents/<id>/evals/promptfooconfig.yaml`. From the project directory:
 
 ```bash
-lobu eval                    # all evals for default agent
-lobu eval ping               # single eval
-lobu eval -m claude/sonnet   # with model override
-lobu eval --list
+export LOBU_TOKEN=$(lobu token)
+bun run evals          # promptfoo eval -c agents/<id>/evals/promptfooconfig.yaml
+bun run evals:view     # comparison grid in the browser
 ```
+
+See `examples/qmsum-demo/` for the canonical pattern (custom provider auto-wired, parametric tests from JSONL fixtures, RAG + answer-quality assertions). The in-house YAML eval runner (`lobu eval`) has been removed.
 
 Local dev Telegram bot: `@clawdotfreebot`. Production: `@lobuaibot`.
 

@@ -13,7 +13,6 @@ import { join } from "node:path";
 
 import { isPortFree } from "../commands/dev";
 import { agentScaffoldCommand } from "../commands/agent";
-import { evalNewCommand } from "../commands/eval";
 import { loadProjectLink, saveProjectLink } from "../internal/project-link";
 import { initCommand } from "../commands/init";
 
@@ -165,40 +164,5 @@ describe("agent scaffold", () => {
     });
     const toml = readFileSync(join(cwd, "lobu.toml"), "utf-8");
     expect(toml).toContain('name = "Sales \\"Bot\\" v2"');
-  });
-});
-
-describe("eval new", () => {
-  let cwd: string;
-  beforeEach(() => {
-    cwd = mkdtempSync(join(tmpdir(), "lobu-eval-new-"));
-    writeFileSync(
-      join(cwd, "lobu.toml"),
-      [
-        "[agents.demo]",
-        'name = "demo"',
-        'dir = "./agents/demo"',
-        "",
-        "[agents.demo.skills]",
-        "",
-        "[agents.demo.network]",
-        "allowed = []",
-        "",
-      ].join("\n")
-    );
-    mkdirSync(join(cwd, "agents", "demo"), { recursive: true });
-  });
-  afterEach(() => {
-    rmSync(cwd, { recursive: true, force: true });
-  });
-
-  test("creates evals/<name>.yaml with a sane template", async () => {
-    await evalNewCommand("smoke", { cwd, description: "smoke test" });
-    const file = join(cwd, "agents", "demo", "evals", "smoke.yaml");
-    expect(existsSync(file)).toBe(true);
-    const yaml = readFileSync(file, "utf-8");
-    expect(yaml).toContain("name: smoke");
-    expect(yaml).toContain("smoke test");
-    expect(yaml).toContain("type: llm-rubric");
   });
 });

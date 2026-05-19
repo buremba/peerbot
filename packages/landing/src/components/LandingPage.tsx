@@ -244,13 +244,13 @@ function TerminalWindow(props: { npxCopied: boolean; onCopyNpx: () => void }) {
             style={{ backgroundColor: "#66c84a" }}
           />
         </div>
+        <span class="flex-1" />
         <span
-          class="hidden flex-1 truncate text-center font-mono text-[11.5px] sm:block"
+          class="hidden shrink-0 truncate font-mono text-[11.5px] sm:inline"
           style={{ color: "var(--color-landing-code-comment)" }}
         >
-          claude code · scaffold a lobu agent
+          scaffold a lobu agent ·
         </span>
-        <span class="flex-1 sm:hidden" />
         <button
           class="inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[11.5px] transition-colors hover:border-[color:var(--color-tg-accent)]"
           onClick={props.onCopyNpx}

@@ -71,7 +71,19 @@ case "$name" in
 esac
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo="$(cd "$script_dir/.." && pwd)"
+# Always resolve `repo` to the main checkout, not the cwd we were invoked
+# from. Worktrees share the full working tree (scripts/ included), so a naive
+# `$script_dir/..` resolves to whatever worktree the user happened to be
+# inside when they ran `make task-setup`. That landed new worktrees at
+# <calling-worktree>/.claude/worktrees/<name>/ — nested instead of flat,
+# and `make task-clean` of the outer one would then refuse on (or rm -rf
+# through) the inner ones.
+#
+# `git rev-parse --git-common-dir` returns the SHARED .git directory (the
+# main repo's .git path) regardless of which worktree the call is made from.
+# Its parent is the main checkout — exactly what we want for both the
+# `git worktree add` target and the `.env` source.
+repo="$(cd "$(dirname "$(git -C "$script_dir" rev-parse --git-common-dir)")" && pwd)"
 worktree_dir="$repo/.claude/worktrees/$name"
 branch="feat/$name"
 

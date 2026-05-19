@@ -816,23 +816,37 @@ function WatchersSection({ useCase }: ProductSectionProps) {
 
 /* -------------------------------------------------------------------------- */
 /*  Skills section — not use-case pivoted (only lobu-crm + office-bot ship    */
-/*  skills today). Snippet is the YAML frontmatter + first heading +          */
-/*  first paragraph of examples/lobu-crm/agents/crm/skills/crm-ops/SKILL.md.  */
+/*  skills today). Snippet is the YAML frontmatter of                         */
+/*  examples/office-bot/agents/food-ordering/skills/deliveroo-order/SKILL.md  */
+/*  because deliveroo-order is the example that exercises every frontmatter   */
+/*  field the section's pitch promises: nixPackages, network.allow,           */
+/*  network.judge, and a judges.default policy.                               */
 /* -------------------------------------------------------------------------- */
 
 const SKILL_SNIPPET: CodeSnippet = {
-  path: "agents/crm/skills/crm-ops/SKILL.md",
+  path: "agents/food-ordering/skills/deliveroo-order/SKILL.md",
   githubUrl:
-    "https://github.com/lobu-ai/lobu/blob/main/examples/lobu-crm/agents/crm/skills/crm-ops/SKILL.md",
+    "https://github.com/lobu-ai/lobu/blob/main/examples/office-bot/agents/food-ordering/skills/deliveroo-order/SKILL.md",
   language: "markdown",
   code: `---
-name: crm-ops
-description: How to operate the Lobu funnel CRM — create and enrich leads, log interactions, advance funnel stages, open and update pilots.
----
-
-# CRM operations
-
-The CRM lives in Lobu memory. Two entity types — \`lead\` and \`pilot\` — hold current state; events of type \`lead:*\` / \`pilot:*\` are the append-only history.`,
+name: deliveroo-order
+description: Read a restaurant's Deliveroo menu and assemble a group-order basket for the office lunch. Reading menus is allowed; completing checkout or touching payment is NOT.
+nixPackages:
+  - chromium
+network:
+  allow:
+    - registry.npmjs.org
+    - playwright.azureedge.net
+  judge:
+    - deliveroo.co.uk
+    - deliveroo.com
+judges:
+  default: >
+    Allow GET reads of restaurant listings, menus, item details, and the basket.
+    Allow POST/PUT that build or modify a basket (add, remove, change quantity).
+    DENY anything that completes checkout, touches payment, or modifies account.
+    If the effect is unclear, fail closed.
+---`,
 };
 
 function SkillsSection() {
@@ -853,11 +867,12 @@ function SkillsSection() {
               A skill is a folder with a{" "}
               <code class="font-mono text-[14px]">SKILL.md</code>. Drop it in{" "}
               <code class="font-mono text-[13px]">skills/</code> or{" "}
-              <code class="font-mono text-[13px]">agents/&lt;id&gt;/skills/</code>
-              ,{" "}
-              <code class="font-mono text-[13px]">lobu apply</code> picks it up.
-              The agent gets instructions, tools, network, and packages in one
-              shot.
+              <code class="font-mono text-[13px]">
+                agents/&lt;id&gt;/skills/
+              </code>
+              , <code class="font-mono text-[13px]">lobu apply</code> picks it
+              up. The agent gets instructions, tools, packages, and a
+              per-domain LLM egress policy in one shot.
             </p>
             <FeatureList
               items={[
@@ -870,12 +885,12 @@ function SkillsSection() {
                   Auto-registered as MCP tools.
                 </>,
                 <>
-                  <b>Network</b> — allowed domains + per-domain LLM egress
-                  judge in YAML.
+                  <b>Network</b> — allowed domains + per-domain LLM egress judge
+                  in YAML.
                 </>,
                 <>
-                  <b>Packages</b> — Nix packages (git, jq, etc.) merged into
-                  the worker env.
+                  <b>Packages</b> — Nix packages (git, jq, etc.) merged into the
+                  worker env.
                 </>,
               ]}
             />

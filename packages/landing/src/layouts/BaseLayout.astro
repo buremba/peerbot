@@ -8,6 +8,8 @@ interface Props {
     author: string;
     tags: string[];
   };
+  /** Force `light` or `dark`; if unset, respect prefers-color-scheme. */
+  forceTheme?: "light" | "dark";
 }
 
 const {
@@ -15,6 +17,7 @@ const {
   description = "Open-source backend for multi-user AI agents with isolated workers, per-user OAuth, connected sources, shared memory, and secrets agents never see.",
   ogType = "website",
   article,
+  forceTheme,
 } = Astro.props;
 
 import { existsSync } from "node:fs";
@@ -103,7 +106,7 @@ const hasMarkdownTwin = existsSync(markdownFileURL);
   </head>
   <body>
     <!-- Apply theme tokens via inline styles to defeat Tailwind v4 @layer cascade -->
-    <script is:inline set:html={themeScript(Astro)} />
+    <script is:inline set:html={themeScript(Astro, forceTheme)} />
     <slot />
   </body>
 </html>

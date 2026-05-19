@@ -1,6 +1,6 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test clean dev build-packages ensure-submodule clean-workers test-unit test-integration test-e2e typecheck task-setup task-clean task-use
+.PHONY: help setup build test clean dev build-packages ensure-submodule clean-workers test-unit test-integration test-e2e typecheck task-setup task-clean task-use bump
 
 # Default target
 help:
@@ -17,6 +17,7 @@ help:
 	@echo "  make task-setup NAME=<name>                - Create a paired worktree at .claude/worktrees/<name> (lobu + submodule on real branch, .env copied, ports auto-assigned, Lobu context registered)"
 	@echo "  make task-clean NAME=<name> [FORCE=1]      - Remove the worktree, both branches, and the Lobu context (refuses if there's uncommitted/unpushed work unless FORCE=1)"
 	@echo "  make task-use NAME=<name|main>             - Point Chrome ext / Mac app symlinks at this worktree (or 'main' for the canonical checkout)"
+	@echo "  make bump SUBMODULE=<path> [TARGET=<ref>]  - Lightweight worktree + commit + PR for a trivial submodule pointer bump (skips bun install, .env, ports)"
 
 # Strict typecheck — mirrors the Dockerfile so local matches CI. Catches
 # what `build-packages` (relaxed, bundler-only) misses.
@@ -84,6 +85,14 @@ task-clean:
 task-use:
 	@: $${NAME?Usage: make task-use NAME=<name|main>}
 	@./scripts/task-use.sh "$(NAME)"
+
+# Lightweight shortcut for "trivial submodule pointer bump" work. Creates a
+# minimal worktree (no bun install, no .env copy, no port allocation), advances
+# the submodule, opens an auto-merge PR. For agent work that also touches
+# submodule *code*, use `make task-setup` instead — it sets up the full env.
+bump:
+	@: $${SUBMODULE?Usage: make bump SUBMODULE=<path> [TARGET=<sha-or-ref>] [NAME=<slug>]}
+	@NAME="$(NAME)" ./scripts/bump-submodule.sh "$(SUBMODULE)" "$(TARGET)"
 
 # --- Test pipelines ---------------------------------------------------------
 # These mirror what CI runs (.github/workflows/ci.yml) so a passing local run

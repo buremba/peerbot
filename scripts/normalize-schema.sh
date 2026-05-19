@@ -44,9 +44,15 @@ awk '
     next
   }
   # Restore schema_migrations.version length stripped by pg18 pg_dump.
-  /^    version character varying NOT NULL$/ {
+  # Table-scoped: only inside `CREATE TABLE public.schema_migrations (...)`.
+  # Without the scope guard, any future app table whose column happens to be
+  # exactly `    version character varying NOT NULL` would also get silently
+  # patched to (128) — which would be wrong.
+  /^CREATE TABLE public\.schema_migrations \(/ { in_schema_migrations = 1 }
+  in_schema_migrations && /^    version character varying NOT NULL$/ {
     sub(/character varying/, "character varying(128)")
   }
+  in_schema_migrations && /^\);/ { in_schema_migrations = 0 }
   {
     if (pending_blank) { print ""; pending_blank = 0 }
     print

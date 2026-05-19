@@ -384,12 +384,12 @@ jobs:
         # immutability check above looks at the migration file set; this looks
         # at the end-state schema. They catch the same class of bug from
         # opposite sides — a buggy edit could in principle pass one and trip
-        # the other (e.g. rename + edit). Failure mode is concrete: regenerate
-        # `db/schema.sql` locally (`dbmate --schema-file db/schema.sql dump`),
-        # run `scripts/normalize-schema.sh db/schema.sql`, and commit.
+        # the other (e.g. rename + edit). Failure mode is concrete:
+        # `make db-schema` locally (requires DATABASE_URL with pgvector) and
+        # commit the regenerated db/schema.sql.
         run: |
           if ! git diff --exit-code -- db/schema.sql; then
-            echo "::error::db/schema.sql is stale. Regenerate with \`dbmate --migrations-dir db/migrations --schema-file db/schema.sql dump && scripts/normalize-schema.sh db/schema.sql\` and commit the result."
+            echo "::error::db/schema.sql is stale. Regenerate locally with \`make db-schema\` (requires DATABASE_URL with pgvector) and commit the result."
             exit 1
           fi
 

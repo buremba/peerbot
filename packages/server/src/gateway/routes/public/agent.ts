@@ -754,6 +754,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
         : undefined,
       nixConfig,
       agentId,
+      ...(tokenOrganizationId ? { organizationId: tokenOrganizationId } : {}),
       dryRun: effectiveDryRun,
       intent: watcherIntent ?? undefined,
       isEphemeral,
@@ -1210,6 +1211,9 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
         channelId,
         teamId: "api",
         agentId: realAgentId,
+        ...(session.organizationId
+          ? { organizationId: session.organizationId }
+          : {}),
         botId: "lobu-api",
         platform: "api",
         messageText: messageContent,

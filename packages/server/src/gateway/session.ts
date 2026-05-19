@@ -37,6 +37,15 @@ export interface ThreadSession {
   nixConfig?: NixConfig;
   /** Original agent ID (before composite session key generation) */
   agentId?: string;
+  /**
+   * Owning organization of the agent. Cached at session-create time so the
+   * message-send path can stamp it on the queue payload without re-reading
+   * `agent_metadata` for every message. EmbeddedDeploymentManager refuses
+   * `grantStore.grant()` calls without an org id, so without this the very
+   * first message after `lobu chat` would fail at worker spawn even though
+   * the session itself was created cleanly.
+   */
+  organizationId?: string;
   /** Process without persisting history */
   dryRun?: boolean;
   /** Internal automation intent for one-shot system sessions. */

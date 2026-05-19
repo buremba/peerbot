@@ -4,10 +4,10 @@ import {
   ErrorCode,
   extractTraceId,
   generateWorkerToken,
+  type MessagePayload,
   OrchestratorError,
 } from "@lobu/core";
 import type { ProviderCredentialContext } from "../embedded.js";
-import type { MessagePayload } from "../infrastructure/queue/queue-producer.js";
 import type { ModelProviderModule } from "../modules/module-system.js";
 import type { GrantStore } from "../permissions/grant-store.js";
 import {
@@ -23,8 +23,6 @@ import {
   persistSecretValue,
   type WritableSecretStore,
 } from "../secrets/index.js";
-// Re-export MessagePayload for use by deployment implementations
-export type { MessagePayload };
 
 const logger = createLogger("orchestrator");
 

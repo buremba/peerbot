@@ -10,11 +10,8 @@ import {
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
-import { ErrorCode, OrchestratorError } from "@lobu/core";
-import type {
-  MessagePayload,
-  OrchestratorConfig,
-} from "../orchestration/base-deployment-manager.js";
+import { ErrorCode, type MessagePayload, OrchestratorError } from "@lobu/core";
+import type { OrchestratorConfig } from "../orchestration/base-deployment-manager.js";
 
 // ---------------------------------------------------------------------------
 // Mock child_process.spawn to return a fake ChildProcess

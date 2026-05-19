@@ -1,13 +1,17 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { createLogger, ErrorCode, OrchestratorError } from "@lobu/core";
+import {
+  createLogger,
+  ErrorCode,
+  type MessagePayload,
+  OrchestratorError,
+} from "@lobu/core";
 import { getDb } from "../../../db/client.js";
 import type { ModelProviderModule } from "../../modules/module-system.js";
 import {
   BaseDeploymentManager,
   type DeploymentInfo,
-  type MessagePayload,
   type ModuleEnvVarsBuilder,
   type OrchestratorConfig,
 } from "../base-deployment-manager.js";

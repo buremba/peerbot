@@ -8,6 +8,8 @@ import {
   createLogger,
   extractTraceId,
   flushTracing,
+  type MessagePayload,
+  type QueuedMessage,
   SpanStatusCode,
   stripEnv,
 } from "@lobu/core";
@@ -16,7 +18,6 @@ import type { WorkerConfig, WorkerExecutor } from "../core/types";
 import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
 import { HttpWorkerTransport } from "./gateway-integration";
 import { MessageBatcher } from "./message-batcher";
-import type { MessagePayload, QueuedMessage } from "./types";
 
 const logger = createLogger("sse-client");
 

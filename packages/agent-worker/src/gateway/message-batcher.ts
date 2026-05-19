@@ -2,8 +2,7 @@
  * Message batching for grouping rapid messages
  */
 
-import { createLogger } from "@lobu/core";
-import type { QueuedMessage } from "./types";
+import { createLogger, type QueuedMessage } from "@lobu/core";
 
 const logger = createLogger("message-batcher");
 

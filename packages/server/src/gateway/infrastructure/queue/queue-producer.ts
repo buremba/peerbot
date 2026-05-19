@@ -5,12 +5,6 @@ import type { IMessageQueue } from "./types.js";
 
 const logger = createLogger("queue-producer");
 
-// `MessagePayload` and `JobType` are the gateway↔worker wire contract — both
-// sides need to agree, so they live in `@lobu/core` (see
-// `packages/core/src/worker/wire.ts`). Re-exported here so existing
-// `from "../infrastructure/queue/queue-producer"` callers don't change.
-export type { JobType, MessagePayload } from "@lobu/core";
-
 /**
  * Queue producer for dispatching messages to the runs queue.
  * Handles both direct_message and thread_message queues with bot isolation.

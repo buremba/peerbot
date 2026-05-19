@@ -1,22 +1,13 @@
 /**
- * Worker-side gateway-communication types.
+ * Worker-side response payload returned to the gateway over HTTP.
  *
- * `MessagePayload`, `JobType`, and `QueuedMessage` live in `@lobu/core` —
- * see `packages/core/src/worker/wire.ts` — and are re-exported here so the
- * existing `from "./types"` imports inside the worker keep resolving.
+ * The gateway↔worker wire contract (`MessagePayload`, `JobType`,
+ * `QueuedMessage`) lives in `@lobu/core/worker/wire` — import from there
+ * directly, not from this file.
  */
 
 import type { ThreadResponsePayload } from "@lobu/core";
 
-export type {
-  JobType,
-  MessagePayload,
-  QueuedMessage,
-} from "@lobu/core";
-
-/**
- * Response data sent back to gateway
- */
 export type ResponseData = ThreadResponsePayload & {
   originalMessageId: string;
 };

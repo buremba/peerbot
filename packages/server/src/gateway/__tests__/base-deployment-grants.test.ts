@@ -1,5 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import type { MessagePayload } from "../infrastructure/queue/queue-producer.js";
+import type { MessagePayload } from "@lobu/core";
 import {
   BaseDeploymentManager,
   type DeploymentInfo,

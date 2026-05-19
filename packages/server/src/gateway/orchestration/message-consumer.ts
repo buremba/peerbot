@@ -7,6 +7,7 @@ import {
   generateWorkerToken,
   getTraceparent,
   type GuardrailRegistry,
+  type MessagePayload,
   OrchestratorError,
   retryWithBackoff,
   runGuardrails,
@@ -25,7 +26,6 @@ import {
   type BaseDeploymentManager,
   buildCanonicalConversationKey,
   generateDeploymentName,
-  type MessagePayload,
   type OrchestratorConfig,
 } from "./base-deployment-manager.js";
 

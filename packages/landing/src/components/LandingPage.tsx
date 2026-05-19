@@ -1,16 +1,23 @@
 import { useState } from "preact/hooks";
 import snippetsManifest from "../generated/use-case-snippets.json";
-import { TERMINAL_OUTPUTS } from "../terminal-outputs";
-import type { LandingUseCaseId } from "../use-case-definitions";
+import {
+  type LandingUseCaseId,
+  landingUseCases,
+} from "../use-case-definitions";
 import {
   DEFAULT_LANDING_USE_CASE_ID,
   getLobuBaseUrl,
 } from "../use-case-showcases";
+import {
+  AgentsPanel,
+  ConnectorsPanel,
+  MemoryPanel,
+  WatchersPanel,
+} from "./AppShellPanels";
 import { ArchitectureDiagram } from "./ArchitectureDiagram";
 import { CodeBlock, type CodeSnippet } from "./CodeBlock";
 import { CTA } from "./CTA";
 import { LatestBlogPosts, type LatestBlogPost } from "./LatestBlogPosts";
-import { TerminalPanel } from "./TerminalPanel";
 
 type UseCaseSnippets = {
   agentToml: CodeSnippet;
@@ -640,7 +647,7 @@ function ProductLink(props: {
 }
 
 function ConnectorsSection({ useCase, useCaseId }: ProductSectionProps) {
-  const terminal = TERMINAL_OUTPUTS[useCaseId]?.connectors;
+  const def = landingUseCases[useCaseId];
   return (
     <Container className="py-16 sm:py-20">
       <ProductGrid
@@ -695,9 +702,7 @@ function ConnectorsSection({ useCase, useCaseId }: ProductSectionProps) {
             {useCase.connectorTs ? (
               <CodeBlock badge="typescript" snippet={useCase.connectorTs} />
             ) : null}
-            {terminal ? (
-              <TerminalPanel title={terminal.title} lines={terminal.lines} />
-            ) : null}
+            <ConnectorsPanel useCase={def} />
           </div>
         }
       />
@@ -706,7 +711,7 @@ function ConnectorsSection({ useCase, useCaseId }: ProductSectionProps) {
 }
 
 function MemorySection({ useCase, useCaseId }: ProductSectionProps) {
-  const terminal = TERMINAL_OUTPUTS[useCaseId]?.memory;
+  const def = landingUseCases[useCaseId];
   return (
     <Container className="py-16 sm:py-20">
       <ProductGrid
@@ -754,9 +759,7 @@ function MemorySection({ useCase, useCaseId }: ProductSectionProps) {
         code={
           <div class="space-y-3.5">
             <CodeBlock badge="entities" snippet={useCase.memorySchemaYaml} />
-            {terminal ? (
-              <TerminalPanel title={terminal.title} lines={terminal.lines} />
-            ) : null}
+            <MemoryPanel useCase={def} />
           </div>
         }
       />
@@ -765,7 +768,7 @@ function MemorySection({ useCase, useCaseId }: ProductSectionProps) {
 }
 
 function WatchersSection({ useCase, useCaseId }: ProductSectionProps) {
-  const terminal = TERMINAL_OUTPUTS[useCaseId]?.watchers;
+  const def = landingUseCases[useCaseId];
   return (
     <Container className="py-16 sm:py-20">
       <ProductGrid
@@ -823,9 +826,7 @@ function WatchersSection({ useCase, useCaseId }: ProductSectionProps) {
               badge="reactive + dreaming"
               snippet={useCase.watcherYaml}
             />
-            {terminal ? (
-              <TerminalPanel title={terminal.title} lines={terminal.lines} />
-            ) : null}
+            <WatchersPanel useCase={def} />
           </div>
         }
       />
@@ -834,7 +835,7 @@ function WatchersSection({ useCase, useCaseId }: ProductSectionProps) {
 }
 
 function AgentsSection({ useCase, useCaseId }: ProductSectionProps) {
-  const terminal = TERMINAL_OUTPUTS[useCaseId]?.agents;
+  const def = landingUseCases[useCaseId];
   return (
     <Container className="py-16 sm:py-20">
       <ProductGrid
@@ -881,9 +882,7 @@ function AgentsSection({ useCase, useCaseId }: ProductSectionProps) {
         code={
           <div class="space-y-3.5">
             <CodeBlock badge="agent" snippet={useCase.agentToml} />
-            {terminal ? (
-              <TerminalPanel title={terminal.title} lines={terminal.lines} />
-            ) : null}
+            <AgentsPanel useCase={def} />
           </div>
         }
       />

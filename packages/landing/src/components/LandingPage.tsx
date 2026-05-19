@@ -1,5 +1,6 @@
 import { useState } from "preact/hooks";
 import snippetsManifest from "../generated/use-case-snippets.json";
+import { TERMINAL_OUTPUTS } from "../terminal-outputs";
 import type { LandingUseCaseId } from "../use-case-definitions";
 import {
   DEFAULT_LANDING_USE_CASE_ID,
@@ -9,7 +10,7 @@ import { ArchitectureDiagram } from "./ArchitectureDiagram";
 import { CodeBlock, type CodeSnippet } from "./CodeBlock";
 import { CTA } from "./CTA";
 import { LatestBlogPosts, type LatestBlogPost } from "./LatestBlogPosts";
-import { WebhookFanDiagram } from "./WebhookFanDiagram";
+import { TerminalPanel } from "./TerminalPanel";
 
 type UseCaseSnippets = {
   agentToml: CodeSnippet;
@@ -195,7 +196,7 @@ function Hero() {
           <em class="not-italic" style={{ color: "var(--color-tg-accent)" }}>
             self-building
           </em>{" "}
-          knowledge graph.
+          knowledge graph
         </h1>
         <p
           class="hero-rise hero-rise-3 mx-auto mt-5 max-w-[42rem] text-[17px] leading-[1.55]"
@@ -649,9 +650,7 @@ function UseCasePivot(props: {
               class="-mb-px border-b-2 px-3 py-2 font-mono text-[12.5px] transition-colors"
               onClick={() => props.onChange(uc.id)}
               style={{
-                borderColor: active
-                  ? "var(--color-page-text)"
-                  : "transparent",
+                borderColor: active ? "var(--color-page-text)" : "transparent",
                 color: active
                   ? "var(--color-page-text)"
                   : "var(--color-page-text-muted)",
@@ -746,7 +745,8 @@ function ProductLink(props: {
   );
 }
 
-function ConnectorsSection({ useCase }: ProductSectionProps) {
+function ConnectorsSection({ useCase, useCaseId }: ProductSectionProps) {
+  const terminal = TERMINAL_OUTPUTS[useCaseId]?.connectors;
   return (
     <Container className="py-16 sm:py-20">
       <ProductGrid
@@ -797,30 +797,13 @@ function ConnectorsSection({ useCase }: ProductSectionProps) {
           </div>
         }
         code={
-          <div>
+          <div class="space-y-3.5">
             {useCase.connectorTs ? (
-              <CodeBlock
-                badge="typescript"
-                snippet={useCase.connectorTs}
-              />
-            ) : (
-              <div
-                class="rounded-lg border p-6 text-center text-[13px]"
-                style={{
-                  borderColor: "var(--color-page-border)",
-                  color: "var(--color-page-text-muted)",
-                }}
-              >
-                Custom TypeScript connector example coming soon for this use
-                case.
-              </div>
-            )}
-            <Callout>
-              <b>Workers never see secrets.</b> Tokens stay in the gateway's
-              secret-proxy. Outbound calls swap{" "}
-              <code class="font-mono text-[13px]">lobu_secret_…</code>{" "}
-              placeholders at the edge.
-            </Callout>
+              <CodeBlock badge="typescript" snippet={useCase.connectorTs} />
+            ) : null}
+            {terminal ? (
+              <TerminalPanel title={terminal.title} lines={terminal.lines} />
+            ) : null}
           </div>
         }
       />
@@ -828,7 +811,8 @@ function ConnectorsSection({ useCase }: ProductSectionProps) {
   );
 }
 
-function MemorySection({ useCase }: ProductSectionProps) {
+function MemorySection({ useCase, useCaseId }: ProductSectionProps) {
+  const terminal = TERMINAL_OUTPUTS[useCaseId]?.memory;
   return (
     <Container className="py-16 sm:py-20">
       <ProductGrid
@@ -874,19 +858,11 @@ function MemorySection({ useCase }: ProductSectionProps) {
           </div>
         }
         code={
-          <div>
-            <CodeBlock
-              badge="entities"
-              snippet={useCase.memorySchemaYaml}
-            />
-            <Callout>
-              <b>Append-only.</b> Every fact is an event. History is
-              recoverable; audits are real.{" "}
-              <code class="font-mono text-[13px]">
-                save_knowledge(supersedes_event_id=…)
-              </code>{" "}
-              is the only sanctioned way to "delete."
-            </Callout>
+          <div class="space-y-3.5">
+            <CodeBlock badge="entities" snippet={useCase.memorySchemaYaml} />
+            {terminal ? (
+              <TerminalPanel title={terminal.title} lines={terminal.lines} />
+            ) : null}
           </div>
         }
       />
@@ -895,6 +871,7 @@ function MemorySection({ useCase }: ProductSectionProps) {
 }
 
 function WatchersSection({ useCase, useCaseId }: ProductSectionProps) {
+  const terminal = TERMINAL_OUTPUTS[useCaseId]?.watchers;
   return (
     <Container className="py-16 sm:py-20">
       <ProductGrid
@@ -952,12 +929,9 @@ function WatchersSection({ useCase, useCaseId }: ProductSectionProps) {
               badge="reactive + dreaming"
               snippet={useCase.watcherYaml}
             />
-            <WebhookFanDiagram useCaseId={useCaseId} />
-            <Callout>
-              <b>Your agents get smarter every night.</b> Same primitive, two
-              triggers — an event or a cron. The framework persists the
-              extraction.
-            </Callout>
+            {terminal ? (
+              <TerminalPanel title={terminal.title} lines={terminal.lines} />
+            ) : null}
           </div>
         }
       />
@@ -965,7 +939,8 @@ function WatchersSection({ useCase, useCaseId }: ProductSectionProps) {
   );
 }
 
-function AgentsSection({ useCase }: ProductSectionProps) {
+function AgentsSection({ useCase, useCaseId }: ProductSectionProps) {
+  const terminal = TERMINAL_OUTPUTS[useCaseId]?.agents;
   return (
     <Container className="py-16 sm:py-20">
       <ProductGrid
@@ -1010,18 +985,9 @@ function AgentsSection({ useCase }: ProductSectionProps) {
         code={
           <div class="space-y-3.5">
             <CodeBlock badge="agent" snippet={useCase.agentToml} />
-            {useCase.reactionTs ? (
-              <CodeBlock
-                badge="optional · typescript"
-                snippet={useCase.reactionTs}
-              />
+            {terminal ? (
+              <TerminalPanel title={terminal.title} lines={terminal.lines} />
             ) : null}
-            <Callout>
-              <b>Reactions are optional.</b> The default path (no reaction
-              script) writes the LLM extraction to memory. Add a reaction only
-              when you need to call actions, post messages, or branch on the
-              result.
-            </Callout>
           </div>
         }
       />

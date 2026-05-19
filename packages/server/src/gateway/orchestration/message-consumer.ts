@@ -254,9 +254,7 @@ export class MessageConsumer {
             );
             if (outcome.tripped) {
               // Resolve org id with a metadata fallback so a trip never
-              // silently drops the audit. `data.organizationId` is
-              // populated for all production paths but legacy/test
-              // enqueues can omit it.
+              // silently drops the audit — legacy/test enqueues can omit it.
               let resolvedOrgId = data.organizationId;
               if (!resolvedOrgId && this.agentSettingsStore) {
                 try {
@@ -277,8 +275,6 @@ export class MessageConsumer {
                   );
                 }
               }
-              // Fire-and-forget — never blocks the response queue send.
-              // Tests use `flushPendingGuardrailAudits` to drain.
               void recordGuardrailTrip({
                 organizationId: resolvedOrgId,
                 agentId: data.agentId,
@@ -325,9 +321,8 @@ export class MessageConsumer {
             }
           }
         } catch (err) {
-          // Fail open on guardrail infra errors — same rationale as the
-          // pre-tool path in McpProxy. The runner already fail-opens on
-          // per-guardrail throws; this catches store/registry-level issues.
+          // Fail open on store/registry-level errors — the runner already
+          // fail-opens on per-guardrail throws.
           logger.warn(
             {
               agentId: data.agentId,

@@ -76,20 +76,15 @@ interface ResponseContext {
 }
 
 /**
- * Streaming chunks split arbitrarily across token boundaries. A secret like
- * `sk-abc...` can arrive as `"sk-an"` then `"t-..."` and bypass every
- * per-delta regex. The bridge keeps a rolling tail of recent emitted text
- * per stream key (capped at OUTPUT_GUARDRAIL_TAIL_CHARS) and prepends it
- * to the next delta before scanning, so a pattern straddling a chunk
- * boundary still matches. Cleared on stream completion / dispose.
- *
- * 256 chars is generous against the regexes the built-ins ship — the
- * longest pattern (JWT) is bounded only on its first segment but the
- * second `.eyJ…` re-anchors, so a tail well above the first-segment
- * minimum suffices. Keep it tight to avoid quadratic scan cost on long
- * streams.
+ * Streaming chunks split arbitrarily across token boundaries; a secret like
+ * `sk-abc...` can arrive as `"sk-an"` then `"t-..."` and bypass any per-delta
+ * regex. We keep a rolling tail of recent emitted text per stream and scan
+ * `tail + delta` so patterns straddling a chunk boundary still match. The
+ * scan window is bounded at 2× this value to keep regex cost proportional
+ * to the chunk being processed, not the entire stream.
  */
 const OUTPUT_GUARDRAIL_TAIL_CHARS = 256;
+const GUARDRAIL_SCAN_WINDOW = OUTPUT_GUARDRAIL_TAIL_CHARS * 2;
 
 /**
  * ChatResponseBridge implements ResponseRenderer so it can be plugged into
@@ -98,16 +93,12 @@ const OUTPUT_GUARDRAIL_TAIL_CHARS = 256;
 export class ChatResponseBridge implements ResponseRenderer {
   private streams = new Map<string, StreamState>();
   /**
-   * Tracks streams that an output guardrail already blocked. A stream that
-   * trips mid-flight must not have any further deltas (or the final
-   * completion buffer) reach the platform.
+   * Streams whose output guardrail has tripped — every subsequent delta
+   * and the final completion buffer must be dropped before reaching the
+   * platform.
    */
   private blockedStreams = new Set<string>();
-  /**
-   * Per-stream rolling tail of emitted output text, used as a prefix when
-   * scanning the next delta so secrets split across chunk boundaries still
-   * match. Keyed by the same `key` as `streams`.
-   */
+  /** Per-stream rolling tail of recently emitted output text. */
   private guardrailTails = new Map<string, string>();
   private guardrailRegistry?: GuardrailRegistry;
   private agentSettingsStore?: AgentSettingsStore;
@@ -127,10 +118,9 @@ export class ChatResponseBridge implements ResponseRenderer {
   }
 
   /**
-   * Resolve the agentId for a given response payload. Workers attach it on
-   * `platformMetadata.agentId`; for cases where it's missing we fall back
-   * to the bound connection's agent. Returns `null` when neither is known —
-   * the caller should treat that as "skip guardrails" rather than block.
+   * Resolve the agentId for a payload: payload metadata first, then the
+   * bound connection's agent. Returns `null` when neither is known so
+   * the caller can skip guardrails rather than block.
    */
   private resolveAgentId(
     payload: ThreadResponsePayload,
@@ -139,18 +129,15 @@ export class ChatResponseBridge implements ResponseRenderer {
     const md = readPlatformMetadata(payload.platformMetadata);
     if (md.agentId) return md.agentId;
     const fromConnection = ctx.instance?.connection?.agentId;
-    if (typeof fromConnection === "string" && fromConnection)
-      return fromConnection;
-    return null;
+    return typeof fromConnection === "string" && fromConnection
+      ? fromConnection
+      : null;
   }
 
   /**
-   * Resolve the organization id for audit attribution. Workers attach it
-   * on `platformMetadata.organizationId`; the canonical fallback is the
-   * connection record (`instance.connection.organizationId`), which is
-   * set when the connection was created via the connections CRUD API and
-   * is durable across requests. Returns `undefined` only when neither is
-   * available — in that case the audit module logs the gap loudly.
+   * Resolve the organization id for audit attribution: payload metadata
+   * first, then the connection record. Undefined only when neither is
+   * available — the audit module logs that gap loudly.
    */
   private resolveOrganizationId(
     payload: ThreadResponsePayload,
@@ -159,49 +146,31 @@ export class ChatResponseBridge implements ResponseRenderer {
     const md = readPlatformMetadata(payload.platformMetadata);
     if (md.organizationId) return md.organizationId;
     const fromConnection = ctx.instance?.connection?.organizationId;
-    if (typeof fromConnection === "string" && fromConnection)
-      return fromConnection;
-    return undefined;
+    return typeof fromConnection === "string" && fromConnection
+      ? fromConnection
+      : undefined;
   }
 
   /**
-   * Append `delta` to the per-stream tail and return the rolling window
-   * (tail-prefix + delta, capped at `OUTPUT_GUARDRAIL_TAIL_CHARS * 2`)
-   * that should be scanned. The cap keeps the scanned slice bounded —
-   * the slice length is at most ~2× the tail, so regex cost stays
-   * proportional to the chunk being processed, not the entire stream.
+   * Append `delta` to the per-stream tail and return the scan window
+   * (`tail + delta`, capped at `GUARDRAIL_SCAN_WINDOW` chars). The stored
+   * tail is the same window — next call sees the most recent emitted text
+   * even when individual deltas exceed the cap.
    */
-  private updateGuardrailTail(key: string, delta: string): string {
-    const previous = this.guardrailTails.get(key) ?? "";
-    const combined = previous + delta;
-    // Keep the last 2 × tail chars so the next call can still build a
-    // tail-prefix from this combined window if needed.
-    const nextTail = combined.slice(-OUTPUT_GUARDRAIL_TAIL_CHARS * 2);
-    this.guardrailTails.set(key, nextTail);
-    // Return the scan slice: previous tail + current delta. Bound at
-    // 2× tail to stay cheap.
-    const scanSlice =
-      previous.length > 0 ? previous + delta : delta;
-    return scanSlice.length > OUTPUT_GUARDRAIL_TAIL_CHARS * 2
-      ? scanSlice.slice(-OUTPUT_GUARDRAIL_TAIL_CHARS * 2)
-      : scanSlice;
-  }
-
-  /** Drop the rolling tail when a stream finishes or is disposed. */
-  private clearGuardrailTail(key: string): void {
-    this.guardrailTails.delete(key);
+  private scanWindowWithTail(key: string, delta: string): string {
+    const combined = (this.guardrailTails.get(key) ?? "") + delta;
+    const window =
+      combined.length > GUARDRAIL_SCAN_WINDOW
+        ? combined.slice(-GUARDRAIL_SCAN_WINDOW)
+        : combined;
+    this.guardrailTails.set(key, window);
+    return window;
   }
 
   /**
-   * Run output-stage guardrails for a single delta. Returns the trip outcome
-   * (already audited) when blocked, `null` when the delta is safe to send.
-   * Failures inside the runner are logged and treated as a pass.
-   *
-   * The scan operates on `tailPrefix + delta`, not just `delta`, so a
-   * secret split across two streaming chunks still trips on the second
-   * chunk. The tail is updated in `handleDelta` only after a passing
-   * scan — a tripped stream is disposed and its tail dropped, so we
-   * never carry blocked-stream state forward.
+   * Run output-stage guardrails for `scanText` (already includes any
+   * rolling tail). Returns the trip outcome (already audited) on block,
+   * `null` when safe to send. Runner failures are logged and pass.
    */
   private async runOutputGuardrails(
     scanText: string,
@@ -230,8 +199,7 @@ export class ChatResponseBridge implements ResponseRenderer {
         }
       );
       if (!outcome.tripped) return null;
-      // Fire-and-forget: the audit module returns a promise that never
-      // rejects. Don't block delivery of the block message on the write.
+      // Fire-and-forget — the block message must not wait on the audit write.
       void recordGuardrailTrip({
         organizationId: this.resolveOrganizationId(payload, ctx),
         agentId,
@@ -305,46 +273,31 @@ export class ChatResponseBridge implements ResponseRenderer {
     const { strategy, instance, channelId } = ctx;
     const key = `${channelId}:${payload.conversationId}`;
 
-    // If a prior delta in this stream tripped a guardrail, drop everything
-    // else for the rest of the message. We've already posted the block
-    // notice; the worker may keep streaming because trip handling here is
-    // async to the worker — silently swallowing the tail is correct.
+    // A prior delta tripped — drop everything else for this stream. The
+    // worker may keep streaming because trip handling here is async to it.
     if (this.blockedStreams.has(key)) return null;
 
-    // Full-replacement: dispose the prior stream + drop the rolling tail
-    // BEFORE scanning. Order matters: a replacement throws away the previous
-    // emitted text, so the next scan must operate on the new delta alone.
-    // Without clearing first, the tail would still hold the previous
-    // delta's last 256 chars and the scan would run against
-    // (previous-stream-bytes + new-replacement-text), which can synthesize
-    // a regex match that exists in neither piece on its own — a false
-    // positive trip on the very first delta of an unrelated reply.
+    // Full-replacement must dispose the prior stream and clear the tail
+    // BEFORE scanning. Otherwise the tail still holds the previous delta's
+    // last bytes and the scan runs against (prior + replacement), which
+    // can synthesize a regex match present in neither piece alone.
     const existingForReplacement = this.streams.get(key);
     if (payload.isFullReplacement && existingForReplacement) {
       await strategy.disposeOnFullReplacement(existingForReplacement);
       this.streams.delete(key);
-      this.clearGuardrailTail(key);
+      this.guardrailTails.delete(key);
     }
 
-    // Per-delta output guardrails. We scan `(rolling tail) + delta` so a
-    // secret split across two streaming chunks ("sk-ab" then "cd…") still
-    // trips on the second chunk. The tail is only updated after a passing
-    // scan — tripping disposes the stream and drops its tail.
-    const scanText = this.updateGuardrailTail(key, payload.delta);
+    // Per-delta output guardrails scan `tail + delta` so a secret split
+    // across chunks ("sk-ab" then "cd…") still trips on the second chunk.
+    const scanText = this.scanWindowWithTail(key, payload.delta);
     const trip = await this.runOutputGuardrails(scanText, payload, ctx);
     if (trip) {
       this.blockedStreams.add(key);
-      // Drop the rolling tail — the stream is dead, no further deltas
-      // will be scanned for this key, and we don't want a future stream
-      // re-using the key to inherit the blocked stream's bytes.
-      this.clearGuardrailTail(key);
-      // Close any in-flight strategy stream so the partial output that
-      // already shipped to the platform terminates cleanly. We can't
-      // unsend bytes already delivered, but for the default strategy
-      // (Telegram buffers a single edit) the block message will replace
-      // the partial; for Slack, the user sees the partial followed by
-      // the block notice. Closing here also prevents further deltas from
-      // being appended.
+      this.guardrailTails.delete(key);
+      // Close any in-flight strategy stream so the partial output already
+      // delivered terminates cleanly. We can't unsend delivered bytes, but
+      // closing prevents further deltas from being appended.
       const existingStream = this.streams.get(key);
       if (existingStream) {
         try {
@@ -378,9 +331,8 @@ export class ChatResponseBridge implements ResponseRenderer {
       return null;
     }
 
-    // Pick up the current stream after the (possible) full-replacement
-    // dispose above. If we disposed, `current` stays undefined so the
-    // strategy starts a fresh stream.
+    // After the (possible) full-replacement dispose, `current` is
+    // undefined and the strategy starts a fresh stream.
     const current = this.streams.get(key);
 
     const next = await strategy.handleDelta({
@@ -421,7 +373,7 @@ export class ChatResponseBridge implements ResponseRenderer {
     if (this.blockedStreams.has(key)) {
       this.blockedStreams.delete(key);
       this.streams.delete(key);
-      this.clearGuardrailTail(key);
+      this.guardrailTails.delete(key);
       logger.info(
         { connectionId, channelId, conversationId: payload.conversationId },
         "Completion suppressed — stream was blocked by guardrail"
@@ -447,9 +399,8 @@ export class ChatResponseBridge implements ResponseRenderer {
       await strategy.handleCompletion({ ctx, payload, stream });
       this.streams.delete(key);
     }
-    // Drop the rolling guardrail tail on any non-blocked completion path —
-    // next stream on the same key starts with a fresh tail.
-    this.clearGuardrailTail(key);
+    // Next stream on the same key starts with a fresh tail.
+    this.guardrailTails.delete(key);
 
     const conversationState =
       this.manager.getInstance(connectionId)?.conversationState;

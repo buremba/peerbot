@@ -1,14 +1,9 @@
 /**
  * Audit trail for guardrail trips. Every short-circuited stage writes one
  * `semantic_type='guardrail-trip'` row to `events` so operators can review
- * what was blocked, when, and why.
- *
- * `recordGuardrailTrip` returns a Promise that resolves once the insert
- * lands (or has been logged-and-swallowed on failure). Wired call sites
- * fire-and-forget by ignoring the return value; tests can `await` it. A
- * trip that we couldn't audit (e.g. missing organizationId after fallback)
- * is logged at warn so it shows up in the security log audit even when the
- * `events` row didn't make it.
+ * what was blocked, when, and why. `recordGuardrailTrip` never rejects —
+ * failures (insert error or missing org id) are logged at warn/error so the
+ * gap still shows up in the security log even when the row didn't make it.
  */
 
 import { insertEvent } from "../../utils/insert-event";
@@ -16,23 +11,16 @@ import logger from "../../utils/logger";
 import type { GuardrailStage } from "@lobu/core";
 
 /**
- * Tracks in-flight `recordGuardrailTrip` calls so tests can flush all
- * pending audit writes without sleep-and-pray. Wired call sites use
- * `void recordGuardrailTrip(...)` and don't care about completion, but
- * the tracker still resolves on each insert so a single
- * `flushPendingGuardrailAudits()` await drains everything.
+ * Tracks in-flight `recordGuardrailTrip` calls. Production fires-and-forgets
+ * the returned promise; tests await `flushPendingGuardrailAudits()` to drain.
  */
 const pendingAudits = new Set<Promise<void>>();
 
 /**
- * Await all in-flight guardrail-audit inserts. For test code only — the
- * production call sites fire-and-forget so they don't block the user-facing
- * block message on a DB write. Resolves after the current set drains; new
- * trips that fire while we're awaiting are NOT included (call again).
+ * Await all currently in-flight guardrail-audit inserts. Test-only — trips
+ * that fire after the snapshot is taken are not included (call again).
  */
 export async function flushPendingGuardrailAudits(): Promise<void> {
-  // Snapshot the current set — Promise.allSettled handles concurrent
-  // additions by simply not waiting on them.
   const snapshot = Array.from(pendingAudits);
   if (snapshot.length === 0) return;
   await Promise.allSettled(snapshot);
@@ -65,8 +53,6 @@ export function recordGuardrailTrip(
 ): Promise<void> {
   const work = doRecordGuardrailTrip(params);
   pendingAudits.add(work);
-  // Remove from the tracker regardless of success/failure so the set
-  // doesn't grow unbounded.
   work.finally(() => pendingAudits.delete(work));
   return work;
 }

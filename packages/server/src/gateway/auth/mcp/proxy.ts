@@ -1023,11 +1023,10 @@ export class McpProxy {
                     }
                   );
                   if (outcome.tripped) {
-                    // Resolve org id with a metadata fallback: per-job
-                    // tokens minted by the runs-queue dispatcher carry it,
-                    // but legacy deployment-lifetime tokens may not. A
-                    // trip that fails to audit is a security log gap, so
-                    // hit the agent row before giving up.
+                    // Resolve org id with a metadata fallback — per-job
+                    // tokens carry it, but legacy deployment-lifetime
+                    // tokens may not, and an unaudited trip is a security
+                    // log gap.
                     let resolvedOrgId = tokenData.organizationId;
                     if (!resolvedOrgId) {
                       try {
@@ -1047,8 +1046,6 @@ export class McpProxy {
                         );
                       }
                     }
-                    // Fire-and-forget — never blocks the JSON-RPC reply.
-                    // Tests use `flushPendingGuardrailAudits` to drain.
                     void recordGuardrailTrip({
                       organizationId: resolvedOrgId,
                       agentId,
@@ -1083,10 +1080,8 @@ export class McpProxy {
                   }
                 }
               } catch (err) {
-                // Treat lookup/runner failures as a pass — guardrails are a
-                // safety net, not a hard dependency. The runner itself
-                // already fail-opens on individual guardrail throws; this
-                // catch covers settings-store outages.
+                // Fail open on store/registry-level errors — the runner
+                // already fail-opens on per-guardrail throws.
                 logger.warn(
                   {
                     agentId,

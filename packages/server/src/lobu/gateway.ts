@@ -140,8 +140,14 @@ export function createLobuAuthBridge() {
     c.set('session', null);
 
     const authHeader = c.req.header('Authorization');
-    const bearerValue =
-      authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+    // RFC 7235 §2.1 — the auth scheme token is case-insensitive. A request
+    // sending `Authorization: bearer owl_pat_*` with a valid Better Auth
+    // cookie would otherwise skip PAT validation entirely (lowercase fails
+    // the `Bearer ` literal match) and fall through to the cookie path,
+    // silently masking an invalid/revoked PAT (codex round-2 finding).
+    // Token VALUE comparison stays case-sensitive — PAT hashes are.
+    const bearerMatch = authHeader ? /^bearer\s+(.*)$/i.exec(authHeader) : null;
+    const bearerValue = bearerMatch ? (bearerMatch[1] ?? '').trim() : null;
     const isPatBearer = bearerValue !== null && bearerValue.startsWith('owl_pat_');
 
     // 1. PAT path — authoritative when the Authorization header carries

@@ -9,8 +9,6 @@ export type CodeSnippet = {
 
 type CodeBlockProps = {
   snippet: CodeSnippet;
-  /** Optional cap; lines beyond fade out with a "see on GitHub" CTA. */
-  maxLines?: number;
   /** Override the filename shown in the tab. Defaults to `snippet.path`. */
   tabLabel?: string;
   /** Optional pill in the tab (e.g. "declarative", "reactive"). */
@@ -375,22 +373,22 @@ function highlight(code: string, language: CodeSnippet["language"]): Token[][] {
 
 export function CodeBlock({
   snippet,
-  maxLines,
   tabLabel,
   badge,
   footnote,
 }: CodeBlockProps) {
-  const allLines = highlight(snippet.code, snippet.language);
-  const truncated = typeof maxLines === "number" && allLines.length > maxLines;
-  const lines = truncated ? allLines.slice(0, maxLines) : allLines;
+  const lines = highlight(snippet.code, snippet.language);
 
   return (
     <div
-      class="overflow-hidden rounded-lg shadow-[0_2px_8px_rgba(0,0,0,0.04),0_16px_40px_-20px_rgba(0,0,0,0.18)]"
-      style={{ backgroundColor: "var(--color-landing-code-bg)" }}
+      class="overflow-hidden rounded-lg border"
+      style={{
+        backgroundColor: "var(--color-landing-code-bg)",
+        borderColor: "var(--color-page-border)",
+      }}
     >
       <div
-        class="flex items-center justify-between border-b px-4 py-2.5 font-mono text-xs"
+        class="flex items-center justify-between border-b px-4 py-2 font-mono text-[11.5px] lowercase"
         style={{
           color: "var(--color-landing-code-comment)",
           backgroundColor: "var(--color-landing-code-bg-soft)",
@@ -399,20 +397,14 @@ export function CodeBlock({
       >
         <span>{tabLabel ?? snippet.path}</span>
         {badge ? (
-          <span
-            class="rounded-md px-2 py-0.5 text-[11px] font-semibold"
-            style={{
-              backgroundColor: "rgba(232,160,92,0.18)",
-              color: "var(--color-landing-code-keyword)",
-            }}
-          >
+          <span style={{ color: "var(--color-landing-code-comment)" }}>
             {badge}
           </span>
         ) : null}
       </div>
 
       <pre
-        class="relative overflow-x-auto px-5 py-4 font-mono text-[13px] leading-[1.7]"
+        class="overflow-x-auto px-5 py-4 font-mono text-[12.5px] leading-[1.65]"
         style={{ color: "var(--color-landing-code-text)" }}
       >
         <code class="block">
@@ -423,40 +415,25 @@ export function CodeBlock({
             </span>
           ))}
         </code>
-        {truncated ? (
-          <span
-            aria-hidden="true"
-            class="pointer-events-none absolute inset-x-0 bottom-0 h-16"
-            style={{
-              background:
-                "linear-gradient(180deg, rgba(31,28,24,0) 0%, var(--color-landing-code-bg) 100%)",
-            }}
-          />
-        ) : null}
       </pre>
 
       <div
-        class="flex items-center justify-between border-t px-4 py-2 font-mono text-[11.5px]"
+        class="flex items-center justify-between border-t px-4 py-2 font-mono text-[11px] lowercase"
         style={{
           color: "var(--color-landing-code-comment)",
           backgroundColor: "var(--color-landing-code-bg-soft)",
           borderColor: "rgba(255,255,255,0.06)",
         }}
       >
-        <span>
-          {truncated
-            ? `${lines.length} / ${allLines.length} lines`
-            : `${allLines.length} lines`}
-        </span>
+        <span>{lines.length} lines</span>
         <span class="flex items-center gap-3">
           {footnote}
           <a
-            class="hover:text-[color:var(--color-landing-code-keyword)]"
             href={snippet.githubUrl}
             rel="noopener noreferrer"
             target="_blank"
           >
-            See on GitHub →
+            see on github →
           </a>
         </span>
       </div>

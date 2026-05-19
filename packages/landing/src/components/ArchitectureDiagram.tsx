@@ -2,163 +2,138 @@ import { messagingChannels } from "./platforms";
 
 /**
  * Lightweight three-box architecture diagram for the dev-focused landing
- * page. Mirrors the mockup's monospace pattern (external platforms ↔ Lobu
- * control plane + worker fleet ↔ company context / memory) while keeping the
- * existing warm Lobu palette. Replaces the older multi-card / feature-pill
- * variant — the rest of the page covers each surface in depth.
+ * page. Three flat boxes joined by thin arrow labels:
+ *
+ *   external platforms  ←→  lobu  ←→  knowledge graph
+ *
+ * All boxes share the same surface, border, and radius — no shadows, no
+ * gradients, no badges. Labels are all lowercase monospace.
  */
 export function ArchitectureDiagram() {
   return (
-    <div
-      class="rounded-lg border bg-[var(--color-page-surface)]/60 p-5 sm:p-8"
-      style={{ borderColor: "var(--color-page-border)" }}
-    >
-      <div class="flex flex-col items-stretch gap-4 md:grid md:grid-cols-[1fr_auto_1.1fr_auto_1fr] md:items-center md:gap-2">
-        <ExternalPlatformsBox />
-        <ArrowLabel top="OAuth" bottom="Events" />
-        <LobuBox />
-        <ArrowLabel top="Tools" bottom="Syncs" />
-        <MemoryBox />
-      </div>
+    <div class="flex flex-col items-stretch gap-3 md:grid md:grid-cols-[1fr_auto_1.1fr_auto_1fr] md:items-stretch md:gap-3">
+      <Box title="external platforms">
+        <PlatformList />
+      </Box>
+      <Arrow top="oauth" bottom="events" />
+      <Box title="lobu" emphasised>
+        <LobuContents />
+      </Box>
+      <Arrow top="tools" bottom="syncs" />
+      <Box title="knowledge graph">
+        <ul class="space-y-1">
+          <li>events (append-only)</li>
+          <li>entities &amp; relationships</li>
+          <li>watchers (reactive + cron)</li>
+          <li>vectors (pgvector)</li>
+          <li>multi-tenant by org / user</li>
+        </ul>
+      </Box>
     </div>
   );
 }
 
-function BoxFrame(props: {
-  eyebrow: string;
+function Box(props: {
   title: string;
-  children?: preact.ComponentChildren;
+  emphasised?: boolean;
+  children: preact.ComponentChildren;
 }) {
   return (
     <div
-      class="rounded-lg border bg-[var(--color-page-bg)] p-4 font-mono text-[12.5px] leading-[1.6]"
-      style={{ borderColor: "var(--color-page-border)" }}
+      class="rounded-lg border p-5 font-mono text-[12.5px] leading-[1.65]"
+      style={{
+        borderColor: props.emphasised
+          ? "var(--color-page-text)"
+          : "var(--color-page-border)",
+        backgroundColor: "var(--color-page-surface)",
+        color: "var(--color-page-text-muted)",
+      }}
     >
       <div
-        class="mb-2 text-[10.5px] font-semibold uppercase tracking-[0.12em]"
-        style={{ color: "var(--color-tg-accent)" }}
-      >
-        {props.eyebrow}
-      </div>
-      <div
-        class="mb-3 font-sans text-sm font-semibold tracking-tight"
+        class="mb-3 text-[11.5px] uppercase tracking-[0.12em]"
         style={{ color: "var(--color-page-text)" }}
       >
         {props.title}
       </div>
-      <div style={{ color: "var(--color-page-text-muted)" }}>
-        {props.children}
-      </div>
+      {props.children}
     </div>
   );
 }
 
-function ExternalPlatformsBox() {
+function PlatformList() {
   return (
-    <BoxFrame eyebrow="External" title="Chat + data platforms">
+    <>
       <ul class="grid grid-cols-2 gap-x-3 gap-y-1.5">
         {messagingChannels.slice(0, 6).map((channel) => (
           <li key={channel.id} class="flex items-center gap-2">
             <span
               aria-hidden="true"
-              class="inline-flex h-4 w-4 items-center justify-center"
+              class="inline-flex h-3.5 w-3.5 items-center justify-center"
             >
-              {channel.renderIcon(14)}
+              {channel.renderIcon(12)}
             </span>
-            <span>{channel.label}</span>
+            <span>{channel.label.toLowerCase()}</span>
           </li>
         ))}
       </ul>
       <div class="mt-3 text-[11.5px]">
-        + GitHub, Linear, Stripe, Gmail, Notion…
+        + github, linear, stripe, gmail, notion…
       </div>
-    </BoxFrame>
+    </>
   );
 }
 
-function LobuBox() {
+function LobuContents() {
   return (
-    <div
-      class="rounded-lg border-2 p-5 font-mono text-[12.5px] leading-[1.6]"
-      style={{
-        borderColor: "var(--color-tg-accent)",
-        backgroundColor: "var(--color-page-bg)",
-      }}
-    >
+    <>
       <div
-        class="mb-1 text-[10.5px] font-semibold uppercase tracking-[0.12em]"
-        style={{ color: "var(--color-tg-accent)" }}
-      >
-        Lobu
-      </div>
-      <div
-        class="mb-3 font-sans text-base font-semibold tracking-tight"
+        class="mb-3 text-[13px]"
         style={{ color: "var(--color-page-text)" }}
       >
-        CLI · MCP · API · SDK
+        cli · mcp · api · sdk
+      </div>
+      <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11.5px]">
+        <div>
+          <div
+            class="mb-1 uppercase tracking-[0.08em]"
+            style={{ color: "var(--color-page-text)" }}
+          >
+            gateway
+          </div>
+          <ul class="space-y-0.5">
+            <li>secret-proxy</li>
+            <li>guardrails</li>
+            <li>egress judge</li>
+          </ul>
+        </div>
+        <div>
+          <div
+            class="mb-1 uppercase tracking-[0.08em]"
+            style={{ color: "var(--color-page-text)" }}
+          >
+            workers
+          </div>
+          <ul class="space-y-0.5">
+            <li>per-user sandbox</li>
+            <li>openclaw runtime</li>
+            <li>mcp tools</li>
+          </ul>
+        </div>
       </div>
       <div
-        class="grid grid-cols-2 gap-2 text-[11.5px]"
-        style={{ color: "var(--color-page-text-muted)" }}
+        class="mt-4 border-t pt-3 text-[11.5px]"
+        style={{ borderColor: "var(--color-page-border)" }}
       >
-        <SubBox label="Gateway" lines={["secret-proxy", "guardrails", "egress judge"]} />
-        <SubBox
-          label="Workers"
-          lines={["per-user sandbox", "OpenClaw runtime", "MCP tools"]}
-        />
+        postgres + pgvector — the only external dependency
       </div>
-      <div
-        class="mt-3 rounded-md px-3 py-2 text-[11.5px]"
-        style={{
-          backgroundColor: "var(--color-landing-callout-bg)",
-          color: "var(--color-page-text)",
-        }}
-      >
-        Postgres + pgvector — the only external dependency
-      </div>
-    </div>
+    </>
   );
 }
 
-function SubBox(props: { label: string; lines: string[] }) {
+function Arrow(props: { top: string; bottom: string }) {
   return (
     <div
-      class="rounded-md border p-2"
-      style={{
-        borderColor: "var(--color-page-border)",
-        backgroundColor: "var(--color-page-surface)",
-      }}
-    >
-      <div class="mb-1 font-semibold" style={{ color: "var(--color-page-text)" }}>
-        {props.label}
-      </div>
-      <ul class="space-y-0.5">
-        {props.lines.map((line) => (
-          <li key={line}>{line}</li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function MemoryBox() {
-  return (
-    <BoxFrame eyebrow="Memory" title="Your company context">
-      <ul class="space-y-1">
-        <li>events (append-only)</li>
-        <li>entities &amp; relationships</li>
-        <li>watchers (reactive + cron)</li>
-        <li>vectors (pgvector)</li>
-        <li>multi-tenant by org / user</li>
-      </ul>
-    </BoxFrame>
-  );
-}
-
-function ArrowLabel(props: { top: string; bottom: string }) {
-  return (
-    <div
-      class="flex flex-col items-center justify-center font-mono text-[10.5px]"
+      class="flex flex-col items-center justify-center font-mono text-[10.5px] lowercase"
       style={{ color: "var(--color-page-text-muted)" }}
     >
       <span>{props.top}</span>

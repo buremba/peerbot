@@ -1,14 +1,15 @@
 import type { LandingUseCaseId } from "../use-case-definitions";
 
 /**
- * Fan-in / fan-out visualisation for the Watchers section.
+ * Flat fan-in / fan-out visualisation for the Watchers section.
  *
- * Left column: 5 event types that the watcher fires on (or extracts from).
- * Center: the watcher webhook handle.
- * Right column: 5 actions / reactions the watcher emits.
+ * Three columns, all the same visual weight (no shadows, no gradients):
+ *   left   — trigger event types
+ *   center — one rounded box with the watcher's webhook call
+ *   right  — actions / reaction targets
  *
- * SVG lines connect every trigger to the center and the center to every
- * action; one trigger + one action highlighted to suggest a hot path.
+ * Connector lines are thin SVG drawn behind the columns; one trigger and one
+ * action are highlighted to show a representative hot path.
  */
 
 type WatcherShape = {
@@ -156,63 +157,64 @@ const WATCHERS: Record<LandingUseCaseId, WatcherShape> = {
   },
 };
 
-export function getWatcherShape(useCaseId: LandingUseCaseId): WatcherShape {
-  return WATCHERS[useCaseId];
-}
-
-const ROW_HEIGHT = 28;
+/* Layout constants — kept small and local so the SVG sizes match the
+   surrounding flex grid exactly. */
+const ROW_HEIGHT = 26;
 const ROW_GAP = 8;
-const ROWS = 5;
-const COL_TRIGGER_W = 220;
-const COL_ACTION_W = 220;
+const COL_W = 220;
 const CENTER_W = 200;
-const CENTER_H = 70;
+const CENTER_H = 60;
 const SVG_GAP = 56;
-const SVG_W = COL_TRIGGER_W + SVG_GAP + CENTER_W + SVG_GAP + COL_ACTION_W;
-const SVG_H = ROWS * (ROW_HEIGHT + ROW_GAP) - ROW_GAP;
+const SVG_W = COL_W + SVG_GAP + CENTER_W + SVG_GAP + COL_W;
+
+const HIGHLIGHT_TRIGGER = 0;
+const HIGHLIGHT_ACTION = 2;
 
 export function WebhookFanDiagram(props: { useCaseId: LandingUseCaseId }) {
   const shape = WATCHERS[props.useCaseId];
   if (!shape) return null;
 
+  const rows = Math.max(shape.triggers.length, shape.actions.length);
+  const svgH = rows * (ROW_HEIGHT + ROW_GAP) - ROW_GAP;
   const triggerYs = shape.triggers.map(
     (_, i) => i * (ROW_HEIGHT + ROW_GAP) + ROW_HEIGHT / 2
   );
   const actionYs = shape.actions.map(
     (_, i) => i * (ROW_HEIGHT + ROW_GAP) + ROW_HEIGHT / 2
   );
-
-  const centerX = COL_TRIGGER_W + SVG_GAP + CENTER_W / 2;
-  const centerY = SVG_H / 2;
-  const triggerEdgeX = COL_TRIGGER_W;
-  const centerLeftX = COL_TRIGGER_W + SVG_GAP;
+  const centerY = svgH / 2;
+  const triggerEdgeX = COL_W;
+  const centerLeftX = COL_W + SVG_GAP;
   const centerRightX = centerLeftX + CENTER_W;
-  const actionEdgeX = COL_TRIGGER_W + SVG_GAP + CENTER_W + SVG_GAP;
-
-  const HIGHLIGHT_TRIGGER = 0;
-  const HIGHLIGHT_ACTION = 2;
+  const actionEdgeX = centerRightX + SVG_GAP;
 
   return (
     <div
-      class="overflow-hidden rounded-lg border bg-[var(--color-page-surface)]/70 p-4 sm:p-5"
-      style={{ borderColor: "var(--color-page-border)" }}
+      class="rounded-lg border p-5"
+      style={{
+        borderColor: "var(--color-page-border)",
+        backgroundColor: "var(--color-page-surface)",
+      }}
     >
-      <div class="mb-3 flex items-baseline justify-between font-mono text-[11px] uppercase tracking-[0.12em]" style={{ color: "var(--color-page-text-muted)" }}>
-        <span style={{ color: "var(--color-tg-accent)" }}>Triggers</span>
-        <span>worker.webhook</span>
-        <span style={{ color: "var(--color-tg-accent)" }}>Actions</span>
+      <div
+        class="mb-4 grid grid-cols-3 items-baseline font-mono text-[10.5px] uppercase tracking-[0.12em]"
+        style={{ color: "var(--color-page-text-muted)" }}
+      >
+        <span>triggers</span>
+        <span class="text-center">worker.webhook</span>
+        <span class="text-right">actions</span>
       </div>
       <div class="overflow-x-auto">
         <svg
           width={SVG_W}
-          height={SVG_H}
-          viewBox={`0 0 ${SVG_W} ${SVG_H}`}
-          class="max-w-full"
+          height={svgH}
+          viewBox={`0 0 ${SVG_W} ${svgH}`}
+          class="block max-w-full"
           role="img"
           aria-label={`Fan diagram for ${shape.watcherName}`}
         >
           <title>{`Fan-in / fan-out for ${shape.watcherName}`}</title>
-          {/* Connector lines */}
+          {/* Connector lines (drawn first so labels overlap them) */}
           {triggerYs.map((y, i) => (
             <line
               key={`tl-${i}`}
@@ -222,11 +224,10 @@ export function WebhookFanDiagram(props: { useCaseId: LandingUseCaseId }) {
               y2={centerY}
               stroke={
                 i === HIGHLIGHT_TRIGGER
-                  ? "var(--color-tg-accent)"
+                  ? "var(--color-page-text)"
                   : "var(--color-page-border)"
               }
-              stroke-width={i === HIGHLIGHT_TRIGGER ? 2 : 1}
-              opacity={i === HIGHLIGHT_TRIGGER ? 0.9 : 0.45}
+              stroke-width={1}
             />
           ))}
           {actionYs.map((y, i) => (
@@ -238,29 +239,31 @@ export function WebhookFanDiagram(props: { useCaseId: LandingUseCaseId }) {
               y2={y}
               stroke={
                 i === HIGHLIGHT_ACTION
-                  ? "var(--color-tg-accent)"
+                  ? "var(--color-page-text)"
                   : "var(--color-page-border)"
               }
-              stroke-width={i === HIGHLIGHT_ACTION ? 2 : 1}
-              opacity={i === HIGHLIGHT_ACTION ? 0.9 : 0.45}
+              stroke-width={1}
             />
           ))}
 
-          {/* Trigger pills */}
+          {/* Trigger rows */}
           {shape.triggers.map((trigger, i) => (
-            <g key={`t-${i}`} transform={`translate(0, ${i * (ROW_HEIGHT + ROW_GAP)})`}>
+            <g
+              key={`t-${i}`}
+              transform={`translate(0, ${i * (ROW_HEIGHT + ROW_GAP)})`}
+            >
               <rect
                 x={0}
                 y={0}
-                width={COL_TRIGGER_W}
+                width={COL_W}
                 height={ROW_HEIGHT}
-                rx={6}
-                fill={
+                rx={4}
+                fill="var(--color-page-bg)"
+                stroke={
                   i === HIGHLIGHT_TRIGGER
-                    ? "var(--color-landing-callout-bg)"
-                    : "var(--color-page-bg)"
+                    ? "var(--color-page-text)"
+                    : "var(--color-page-border)"
                 }
-                stroke="var(--color-page-border)"
                 stroke-width={1}
               />
               <text
@@ -277,66 +280,69 @@ export function WebhookFanDiagram(props: { useCaseId: LandingUseCaseId }) {
           ))}
 
           {/* Center webhook box */}
-          <g transform={`translate(${centerLeftX}, ${centerY - CENTER_H / 2})`}>
+          <g
+            transform={`translate(${centerLeftX}, ${centerY - CENTER_H / 2})`}
+          >
             <rect
               x={0}
               y={0}
               width={CENTER_W}
               height={CENTER_H}
-              rx={10}
+              rx={6}
               fill="var(--color-page-bg)"
-              stroke="var(--color-tg-accent)"
-              stroke-width={2}
+              stroke="var(--color-page-text)"
+              stroke-width={1}
             />
             <text
               x={CENTER_W / 2}
-              y={26}
+              y={22}
               text-anchor="middle"
               font-family="ui-monospace, monospace"
               font-size={11}
-              fill="var(--color-tg-accent)"
-              font-weight={600}
+              fill="var(--color-page-text-muted)"
             >
               worker.webhook(
             </text>
             <text
               x={CENTER_W / 2}
-              y={44}
+              y={40}
               text-anchor="middle"
               font-family="ui-monospace, monospace"
-              font-size={12.5}
+              font-size={12}
               fill="var(--color-page-text)"
             >
               {`"${shape.watcherName}"`}
             </text>
             <text
               x={CENTER_W / 2}
-              y={60}
+              y={54}
               text-anchor="middle"
               font-family="ui-monospace, monospace"
               font-size={11}
-              fill="var(--color-tg-accent)"
-              font-weight={600}
+              fill="var(--color-page-text-muted)"
             >
               )
             </text>
           </g>
 
-          {/* Action pills */}
+          {/* Action rows */}
           {shape.actions.map((action, i) => (
-            <g key={`a-${i}`} transform={`translate(${actionEdgeX - COL_ACTION_W}, ${i * (ROW_HEIGHT + ROW_GAP)})`}>
+            <g
+              key={`a-${i}`}
+              transform={`translate(${actionEdgeX}, ${i * (ROW_HEIGHT + ROW_GAP)})`}
+            >
               <rect
                 x={0}
                 y={0}
-                width={COL_ACTION_W}
+                width={COL_W}
                 height={ROW_HEIGHT}
-                rx={6}
-                fill={
+                rx={4}
+                fill="var(--color-page-bg)"
+                stroke={
                   i === HIGHLIGHT_ACTION
-                    ? "var(--color-landing-callout-bg)"
-                    : "var(--color-page-bg)"
+                    ? "var(--color-page-text)"
+                    : "var(--color-page-border)"
                 }
-                stroke="var(--color-page-border)"
                 stroke-width={1}
               />
               <text
@@ -353,11 +359,6 @@ export function WebhookFanDiagram(props: { useCaseId: LandingUseCaseId }) {
           ))}
         </svg>
       </div>
-      <p class="mt-3 text-[12.5px]" style={{ color: "var(--color-page-text-muted)" }}>
-        Highlighted path: any matching trigger event fans into the watcher
-        webhook, which extracts schema-typed data, persists it as memory, and
-        fans the structured output back out to your team's actions.
-      </p>
     </div>
   );
 }

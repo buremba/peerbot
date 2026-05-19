@@ -38,8 +38,6 @@
   --color-landing-code-keyword: oklch(0.8000 0.1500 60.0000);
   --color-landing-code-key: oklch(0.8200 0.0700 175.0000);
   --color-landing-code-builtin: oklch(0.8000 0.1500 60.0000);
-  --color-landing-callout-bg: oklch(0.9180 0.0660 75.0000 / 0.55);
-  --color-landing-callout-border: oklch(0.7006 0.1891 46.5400);
 
   --color-tg-bg: oklch(0.2606 0.0040 84.5838);
   --color-tg-bg-secondary: oklch(0.2007 0.0101 52.8852);

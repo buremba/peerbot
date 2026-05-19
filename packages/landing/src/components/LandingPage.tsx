@@ -143,11 +143,10 @@ function SectionHeading(props: {
 function Callout(props: { children: preact.ComponentChildren }) {
   return (
     <div
-      class="mt-4 rounded-lg border-l-[3px] px-4 py-3 text-[14px]"
+      class="mt-4 border-l-[2px] px-4 py-2 text-[14px] leading-[1.55]"
       style={{
-        backgroundColor: "var(--color-landing-callout-bg)",
-        borderColor: "var(--color-landing-callout-border)",
-        color: "var(--color-page-text)",
+        borderColor: "var(--color-page-text)",
+        color: "var(--color-page-text-muted)",
       }}
     >
       {props.children}
@@ -203,8 +202,7 @@ function Hero() {
           style={{ color: "var(--color-page-text-muted)" }}
         >
           Connectors emit events. Watchers structure them into memory. Agents
-          act on prompts, events, or cron. Open source, multi-tenant, BYO
-          model.
+          act on prompts, events, or cron. Open source, multi-tenant, BYO model.
         </p>
         <div class="hero-rise hero-rise-4 mt-8 flex flex-wrap items-center justify-center gap-3">
           <button
@@ -217,7 +215,9 @@ function Hero() {
             type="button"
           >
             <CopyIcon copied={copied} />
-            <span>{copied ? "Copied — paste into your agent" : "Copy setup prompt"}</span>
+            <span>
+              {copied ? "Copied — paste into your agent" : "Copy setup prompt"}
+            </span>
           </button>
           <a
             class="inline-flex items-center gap-2 rounded-lg border px-5 py-3 text-[14.5px] font-semibold transition-colors hover:bg-[var(--color-page-surface-dim)]"
@@ -238,8 +238,7 @@ function Hero() {
           class="hero-rise hero-rise-4 mt-3.5 text-[13px]"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          or paste the prompt into{" "}
-          <span class="font-mono">claude code</span>,{" "}
+          or paste the prompt into <span class="font-mono">claude code</span>,{" "}
           <span class="font-mono">cursor</span>, or{" "}
           <span class="font-mono">opencode</span> — it'll scaffold the project
           for you
@@ -309,7 +308,7 @@ function GithubIcon() {
 function HeroTerminalDemo() {
   return (
     <div
-      class="hero-rise hero-rise-5 mx-auto mt-12 max-w-[44rem] overflow-hidden rounded-2xl border shadow-[0_20px_60px_-25px_rgba(0,0,0,0.35)]"
+      class="hero-rise hero-rise-5 mx-auto mt-12 max-w-[44rem] overflow-hidden rounded-lg border"
       style={{
         backgroundColor: "var(--color-landing-code-bg)",
         borderColor: "var(--color-page-border)",
@@ -322,40 +321,74 @@ function HeroTerminalDemo() {
           color: "var(--color-landing-code-comment)",
         }}
       >
-        <span class="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#ee5847" }} />
-        <span class="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#f6bd2c" }} />
-        <span class="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: "#66c84a" }} />
+        <span
+          class="inline-block h-2.5 w-2.5 rounded-full"
+          style={{ backgroundColor: "#ee5847" }}
+        />
+        <span
+          class="inline-block h-2.5 w-2.5 rounded-full"
+          style={{ backgroundColor: "#f6bd2c" }}
+        />
+        <span
+          class="inline-block h-2.5 w-2.5 rounded-full"
+          style={{ backgroundColor: "#66c84a" }}
+        />
         <span class="ml-2">claude code · scaffold lobu agent</span>
       </div>
       <pre
         class="px-5 py-5 text-left font-mono text-[12.5px] leading-[1.75]"
         style={{ color: "var(--color-landing-code-text)" }}
       >
-        <span style={{ color: "var(--color-landing-code-comment)" }}>~/projects/lobu-agent</span> $ claude
+        <span style={{ color: "var(--color-landing-code-comment)" }}>
+          ~/projects/lobu-agent
+        </span>{" "}
+        $ claude
         {"\n"}
-        <span style={{ color: "var(--color-landing-code-comment)" }}>▸ Paste the Lobu setup prompt below, then press Enter.</span>
+        <span style={{ color: "var(--color-landing-code-comment)" }}>
+          ▸ Paste the Lobu setup prompt below, then press Enter.
+        </span>
         {"\n"}
-        <span style={{ color: "var(--color-landing-code-string)" }}>Build me a working Lobu agent end-to-end…</span>
+        <span style={{ color: "var(--color-landing-code-string)" }}>
+          Build me a working Lobu agent end-to-end…
+        </span>
         {"\n"}
-        <span style={{ color: "var(--color-landing-code-keyword)" }}>▼ thinking</span>{" "}
-        <span style={{ color: "var(--color-landing-code-comment)" }}>(reading lobu.ai/docs/getting-started)</span>
+        <span style={{ color: "var(--color-landing-code-keyword)" }}>
+          ▼ thinking
+        </span>{" "}
+        <span style={{ color: "var(--color-landing-code-comment)" }}>
+          (reading lobu.ai/docs/getting-started)
+        </span>
         {"\n"}
         <span style={{ color: "#66c84a" }}>✓</span> Created{" "}
-        <span style={{ color: "var(--color-landing-code-key)" }}>lobu.toml</span>{" "}
-        <span style={{ color: "var(--color-landing-code-comment)" }}>(agent + provider + memory)</span>
+        <span style={{ color: "var(--color-landing-code-key)" }}>
+          lobu.toml
+        </span>{" "}
+        <span style={{ color: "var(--color-landing-code-comment)" }}>
+          (agent + provider + memory)
+        </span>
         {"\n"}
         <span style={{ color: "#66c84a" }}>✓</span> Created{" "}
-        <span style={{ color: "var(--color-landing-code-key)" }}>models/schema.yaml</span>{" "}
-        <span style={{ color: "var(--color-landing-code-comment)" }}>(3 entity types, 1 watcher)</span>
+        <span style={{ color: "var(--color-landing-code-key)" }}>
+          models/schema.yaml
+        </span>{" "}
+        <span style={{ color: "var(--color-landing-code-comment)" }}>
+          (3 entity types, 1 watcher)
+        </span>
         {"\n"}
         <span style={{ color: "#66c84a" }}>✓</span> Created{" "}
-        <span style={{ color: "var(--color-landing-code-key)" }}>connectors/linear.yaml</span>
+        <span style={{ color: "var(--color-landing-code-key)" }}>
+          connectors/linear.yaml
+        </span>
         {"\n"}
         <span style={{ color: "#66c84a" }}>✓</span> Created{" "}
-        <span style={{ color: "var(--color-landing-code-key)" }}>models/reactions/triage.reaction.ts</span>
+        <span style={{ color: "var(--color-landing-code-key)" }}>
+          models/reactions/triage.reaction.ts
+        </span>
         {"\n"}
-        <span style={{ color: "var(--color-landing-code-keyword)" }}>▸</span> Run{" "}
-        <span style={{ color: "var(--color-landing-code-key)" }}>lobu run</span> to start.
+        <span style={{ color: "var(--color-landing-code-keyword)" }}>▸</span>{" "}
+        Run{" "}
+        <span style={{ color: "var(--color-landing-code-key)" }}>lobu run</span>{" "}
+        to start.
       </pre>
     </div>
   );
@@ -446,24 +479,35 @@ function UseCaseGrid() {
         </>
       ),
       snippetLines: [
-        <span style={{ color: "var(--color-landing-code-comment)" }}># models/schema.yaml</span>,
+        <span style={{ color: "var(--color-landing-code-comment)" }}>
+          # models/schema.yaml
+        </span>,
         <>
-          <span style={{ color: "var(--color-landing-code-key)" }}>entities</span>:
+          <span style={{ color: "var(--color-landing-code-key)" }}>
+            entities
+          </span>
+          :
         </>,
         <>
           {"  - "}
           <span style={{ color: "var(--color-landing-code-key)" }}>slug</span>:{" "}
-          <span style={{ color: "var(--color-landing-code-string)" }}>customer</span>
+          <span style={{ color: "var(--color-landing-code-string)" }}>
+            customer
+          </span>
         </>,
         <>
           {"  - "}
           <span style={{ color: "var(--color-landing-code-key)" }}>slug</span>:{" "}
-          <span style={{ color: "var(--color-landing-code-string)" }}>incident</span>
+          <span style={{ color: "var(--color-landing-code-string)" }}>
+            incident
+          </span>
         </>,
         <>
           {"  - "}
           <span style={{ color: "var(--color-landing-code-key)" }}>slug</span>:{" "}
-          <span style={{ color: "var(--color-landing-code-string)" }}>order</span>
+          <span style={{ color: "var(--color-landing-code-string)" }}>
+            order
+          </span>
         </>,
       ],
       link: {
@@ -481,10 +525,17 @@ function UseCaseGrid() {
         </>
       ),
       snippetLines: [
-        <span style={{ color: "var(--color-landing-code-comment)" }}>POST /agents/assistant/run</span>,
+        <span style={{ color: "var(--color-landing-code-comment)" }}>
+          POST /agents/assistant/run
+        </span>,
         <>
-          <span style={{ color: "var(--color-landing-code-key)" }}>x-lobu-user</span>:{" "}
-          <span style={{ color: "var(--color-landing-code-string)" }}>"acme_user_42"</span>
+          <span style={{ color: "var(--color-landing-code-key)" }}>
+            x-lobu-user
+          </span>
+          :{" "}
+          <span style={{ color: "var(--color-landing-code-string)" }}>
+            "acme_user_42"
+          </span>
         </>,
       ],
       link: { href: "/getting-started/", label: "See multi-tenant SDK" },
@@ -507,7 +558,7 @@ function UseCaseGrid() {
           {cards.map((card) => (
             <div
               key={card.title}
-              class="rounded-lg border p-6 shadow-[0_1px_3px_rgba(0,0,0,0.03),0_8px_24px_-12px_rgba(0,0,0,0.08)]"
+              class="rounded-lg border p-6"
               style={{
                 borderColor: "var(--color-page-border)",
                 backgroundColor: "var(--color-page-surface)",
@@ -586,31 +637,29 @@ function UseCasePivot(props: {
         </p>
       </div>
       <div
-        class="mx-auto mt-6 flex flex-wrap justify-center gap-1.5 rounded-full border p-1.5"
-        style={{
-          borderColor: "var(--color-page-border)",
-          backgroundColor: "var(--color-page-surface)",
-          maxWidth: "fit-content",
-        }}
+        class="mx-auto mt-8 flex flex-wrap justify-center gap-x-1 gap-y-0 border-b"
+        style={{ borderColor: "var(--color-page-border)" }}
       >
         {PIVOT_USE_CASES.map((uc) => {
           const active = uc.id === props.activeUseCaseId;
           return (
             <button
+              aria-pressed={active}
               key={uc.id}
-              class="rounded-full px-3.5 py-1.5 font-mono text-[12.5px] font-medium transition-colors"
+              class="-mb-px border-b-2 px-3 py-2 font-mono text-[12.5px] transition-colors"
               onClick={() => props.onChange(uc.id)}
               style={{
-                backgroundColor: active
+                borderColor: active
                   ? "var(--color-page-text)"
                   : "transparent",
                 color: active
-                  ? "var(--color-page-bg)"
+                  ? "var(--color-page-text)"
                   : "var(--color-page-text-muted)",
+                fontWeight: active ? 700 : 500,
               }}
               type="button"
             >
-              {uc.label}
+              {uc.label.toLowerCase()}
             </button>
           );
         })}
@@ -679,7 +728,10 @@ function FeatureList(props: { items: Array<preact.ComponentChildren> }) {
   );
 }
 
-function ProductLink(props: { href: string; children: preact.ComponentChildren }) {
+function ProductLink(props: {
+  href: string;
+  children: preact.ComponentChildren;
+}) {
   return (
     <a
       class="border-b pb-0.5 text-[14px] font-semibold transition-colors hover:text-[color:var(--color-tg-accent)] hover:border-[color:var(--color-tg-accent)]"
@@ -749,7 +801,6 @@ function ConnectorsSection({ useCase }: ProductSectionProps) {
             {useCase.connectorTs ? (
               <CodeBlock
                 badge="typescript"
-                maxLines={36}
                 snippet={useCase.connectorTs}
               />
             ) : (
@@ -826,7 +877,6 @@ function MemorySection({ useCase }: ProductSectionProps) {
           <div>
             <CodeBlock
               badge="entities"
-              maxLines={28}
               snippet={useCase.memorySchemaYaml}
             />
             <Callout>
@@ -851,7 +901,9 @@ function WatchersSection({ useCase, useCaseId }: ProductSectionProps) {
         text={
           <div>
             <Eyebrow>Watchers</Eyebrow>
-            <SectionHeading>Turn events into memory. With prompts.</SectionHeading>
+            <SectionHeading>
+              Turn events into memory. With prompts.
+            </SectionHeading>
             <p
               class="mt-4 max-w-[28rem] text-[16px] leading-[1.6]"
               style={{ color: "var(--color-page-text-muted)" }}
@@ -865,7 +917,10 @@ function WatchersSection({ useCase, useCaseId }: ProductSectionProps) {
               items={[
                 <>
                   <b>Reactive</b> — fires on the event stream (e.g.{" "}
-                  <code class="font-mono text-[13px]">linear.issue.created</code>).
+                  <code class="font-mono text-[13px]">
+                    linear.issue.created
+                  </code>
+                  ).
                 </>,
                 <>
                   <b>Dreaming</b> — runs on cron. Aggregates yesterday's events
@@ -895,7 +950,6 @@ function WatchersSection({ useCase, useCaseId }: ProductSectionProps) {
           <div class="space-y-3.5">
             <CodeBlock
               badge="reactive + dreaming"
-              maxLines={42}
               snippet={useCase.watcherYaml}
             />
             <WebhookFanDiagram useCaseId={useCaseId} />
@@ -959,7 +1013,6 @@ function AgentsSection({ useCase }: ProductSectionProps) {
             {useCase.reactionTs ? (
               <CodeBlock
                 badge="optional · typescript"
-                maxLines={28}
                 snippet={useCase.reactionTs}
               />
             ) : null}
@@ -1067,7 +1120,9 @@ function RunAnywhereSection() {
           lobu apply{"\n"}
           <span style={{ color: "var(--color-landing-code-comment)" }}>→</span>{" "}
           org{"      "}
-          <span style={{ color: "var(--color-landing-code-string)" }}>acme</span>
+          <span style={{ color: "var(--color-landing-code-string)" }}>
+            acme
+          </span>
           {"\n"}
           <span style={{ color: "var(--color-landing-code-comment)" }}>→</span>{" "}
           region{"   "}

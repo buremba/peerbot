@@ -16,89 +16,198 @@
 --        - columns: agents.skill_auto_granted_domains, runs.retry_delay_seconds
 --   3. Annotate the load-bearing tables with COMMENT ON
 --   4. pg_dump --schema-only
---   5. Strip pg_dump noise + the schema_migrations data dump
+--   5. Strip pg_dump noise + the schema_migrations table CREATE (dbmate
+--      creates it itself) + the schema_migrations data dump
 --
 -- Companion changes in this commit:
---   - db/schema.sql deleted (the baseline IS the schema; drift gate retires)
---   - scripts/normalize-schema.sh deleted (no more pg_dump normalization needed)
---   - packages/server/src/db/embedded-schema-patches.ts deleted (embedded path
---     now runs migrations the same way prod does — no mirror to maintain)
---   - Makefile: removed `make db-schema` target
---   - CI: removed drift-gate job + normalize step + dbmate --schema-file flag;
---     immutability check rebased so this commit's deletions are permitted
+--   - db/schema.sql deleted (the baseline IS the schema)
+--   - scripts/normalize-schema.sh deleted (no schema.sql to normalize)
+--   - packages/server/src/db/embedded-schema-patches.ts deleted (embedded
+--     path now runs migrations the same way prod does)
+--   - Makefile: removed `make db-schema`
+--   - CI: removed drift-gate; immutability check honors [squash-baseline]
 --
--- Prod rollout — REQUIRED before deploying the new image
--- -------------------------------------------------------
+-- Prod rollout — data-safe procedure
+-- -----------------------------------
 --
--- STEP 1: full-DB backup as belt-and-suspenders. (The managed-Postgres
--- point-in-time recovery is the real safety net; this is paranoia.)
+-- Safety stance: nothing is dropped. Tables get renamed (data preserved
+-- in-place under a date-stamped name). Columns get snapshotted into a
+-- side table before being removed from the live table. If the audit
+-- missed a reader, recovery is `SELECT * FROM <renamed>` away — no
+-- pg_restore round-trip.
+--
+-- Layered safety:
+--   Layer A (cheap, default rollback): CNPG point-in-time recovery via
+--     the existing `barmanObjectStore` to Cloudflare R2 with 30-day
+--     retention + 15-min archive_timeout (see Cluster spec in
+--     packages/owletto/deploy/k8s/apps/lobu/base/helmrelease.yaml).
+--     Pattern proof-point: db-recovery.yaml ran successfully on
+--     2026-03-15 after the Reddit re-sync incident.
+--   Layer B (in-DB safety net): the renamed tables + column-snapshot
+--     tables this surgery leaves behind. Queryable any time; restore
+--     in a single ALTER TABLE/UPDATE.
+--
+-- STEP 0: pre-flight. Record the surgery start timestamp — this is the
+-- `targetTime` for any future PITR rollback. CNPG can recover to any
+-- transaction-level point within the 30-day retention window.
+--
+--   psql "$PROD_DATABASE_URL" -c "SELECT now()" | tee /tmp/pre-surgery-ts.txt
+--
+-- STEP 1: full-DB dump as belt-and-suspenders (CNPG PITR is the real
+-- safety net; this is paranoia in case of WAL archive corruption):
 --
 --   pg_dump --format=custom --no-owner --no-privileges \
 --     "$PROD_DATABASE_URL" > /tmp/lobu-pre-squash-$(date +%Y%m%d-%H%M%S).dump
 --
--- STEP 2: dump the schema_migrations ledger so rollback can restore the
--- 82 applied-version rows the surgery is about to wipe:
+-- STEP 2: dump the schema_migrations ledger as CSV. Rollback restores
+-- the 82 applied-version rows the surgery is about to reset:
 --
 --   psql "$PROD_DATABASE_URL" \
 --     -c "\\copy public.schema_migrations TO '/tmp/schema-migrations-pre-squash.csv' CSV HEADER"
 --
--- STEP 3: dump the two named-table droppees as CSV. (The four migration_*
--- temp tables are explicitly disposable — skip them.) If the audit
--- missed something and these tables turn out to have real data, the CSV
--- is the recovery artifact:
+-- STEP 3: sanity-check the named droppee tables. The audit says they
+-- have 0 rows; the counts let us catch surprise data before proceeding:
 --
 --   psql "$PROD_DATABASE_URL" \
 --     -c "SELECT 'mcp_proxy_sessions' AS t, COUNT(*) FROM public.mcp_proxy_sessions
---         UNION ALL
---         SELECT 'organization_lobu_links', COUNT(*) FROM public.organization_lobu_links"
---   # If either count is unexpectedly non-zero, ABORT and investigate.
---   # Otherwise:
---   psql "$PROD_DATABASE_URL" \
---     -c "\\copy public.mcp_proxy_sessions TO '/tmp/mcp_proxy_sessions-pre-squash.csv' CSV HEADER"
---   psql "$PROD_DATABASE_URL" \
---     -c "\\copy public.organization_lobu_links TO '/tmp/organization_lobu_links-pre-squash.csv' CSV HEADER"
+--         UNION ALL SELECT 'organization_lobu_links', COUNT(*) FROM public.organization_lobu_links
+--         UNION ALL SELECT 'migration_20260315300000_entity_type_org_backfill', COUNT(*) FROM public.migration_20260315300000_entity_type_org_backfill
+--         UNION ALL SELECT 'migration_20260316100000_created_entity_types', COUNT(*) FROM public.migration_20260316100000_created_entity_types
+--         UNION ALL SELECT 'migration_20260316100000_deleted_default_entity_types', COUNT(*) FROM public.migration_20260316100000_deleted_default_entity_types
+--         UNION ALL SELECT 'migration_20260316100000_events_kind_backup', COUNT(*) FROM public.migration_20260316100000_events_kind_backup"
+--   # If any count is unexpectedly non-zero, ABORT and investigate. The
+--   # rename in Step 4 will preserve the rows either way, but the
+--   # surprise itself is signal.
 --
--- STEP 4: the actual surgery. Single transaction, fully reversible via
--- ROLLBACK on any error:
+-- STEP 4: surgery. Single transaction; ROLLBACK on any error:
 --
 --   BEGIN;
---   DROP TABLE IF EXISTS public.mcp_proxy_sessions CASCADE;
---   DROP TABLE IF EXISTS public.organization_lobu_links CASCADE;
---   DROP TABLE IF EXISTS public.migration_20260315300000_entity_type_org_backfill CASCADE;
---   DROP TABLE IF EXISTS public.migration_20260316100000_created_entity_types CASCADE;
---   DROP TABLE IF EXISTS public.migration_20260316100000_deleted_default_entity_types CASCADE;
---   DROP TABLE IF EXISTS public.migration_20260316100000_events_kind_backup CASCADE;
+--
+--   -- Rename the 2 named tables. Suffix is short to stay within
+--   -- Postgres's 63-char identifier limit.
+--   ALTER TABLE IF EXISTS public.mcp_proxy_sessions RENAME TO mcp_proxy_sessions_d20260519;
+--   ALTER TABLE IF EXISTS public.organization_lobu_links RENAME TO organization_lobu_links_d20260519;
+--
+--   -- Rename the 4 migration_* artifact tables. Names approach the 63-char
+--   -- identifier limit; use a 10-char suffix `_d20260519` to fit.
+--   ALTER TABLE IF EXISTS public.migration_20260315300000_entity_type_org_backfill RENAME TO migration_20260315300000_entity_type_org_backfill_d20260519;
+--   ALTER TABLE IF EXISTS public.migration_20260316100000_created_entity_types RENAME TO migration_20260316100000_created_entity_types_d20260519;
+--   ALTER TABLE IF EXISTS public.migration_20260316100000_deleted_default_entity_types RENAME TO migration_20260316100000_deleted_default_entity_types_d20260519;
+--   ALTER TABLE IF EXISTS public.migration_20260316100000_events_kind_backup RENAME TO migration_20260316100000_events_kind_backup_d20260519;
+--
+--   -- Snapshot the 2 dead columns into per-column backup tables BEFORE
+--   -- dropping them from the live tables. Keyed off the primary key so
+--   -- restore is a one-statement UPDATE.
+--   CREATE TABLE public.agents_d20260519_skill_auto_granted_domains AS
+--     SELECT id AS agent_id, skill_auto_granted_domains FROM public.agents
+--     WHERE skill_auto_granted_domains IS NOT NULL
+--       AND skill_auto_granted_domains <> '[]'::jsonb;
 --   ALTER TABLE public.agents DROP COLUMN IF EXISTS skill_auto_granted_domains;
+--
+--   CREATE TABLE public.runs_d20260519_retry_delay_seconds AS
+--     SELECT id AS run_id, retry_delay_seconds FROM public.runs
+--     WHERE retry_delay_seconds IS NOT NULL;
 --   ALTER TABLE public.runs DROP COLUMN IF EXISTS retry_delay_seconds;
+--
+--   -- Reset the migration ledger to baseline-only. New code's dbmate-up
+--   -- skips the baseline body (it's already applied: the renames + drops
+--   -- above did the diff against pre-squash state).
 --   DELETE FROM public.schema_migrations;
 --   INSERT INTO public.schema_migrations (version) VALUES ('00000000000000');
+--
 --   COMMIT;
 --
--- STEP 5: deploy the new image. Pods boot with `dbmate up` which now
--- expects schema_migrations to list only '00000000000000' — the baseline
--- body is skipped (already-applied per the surgery's INSERT).
+-- STEP 5: deploy the new image. The app's `dbmate up` on boot sees
+-- '00000000000000' applied → skips the baseline. assertSchemaUpToDate
+-- passes (expected = applied = baseline version).
 --
--- Rollback procedure (if anything fails after surgery): revert the PR,
--- redeploy the old image, and restore the pre-squash ledger so old code's
--- assertSchemaUpToDate accepts the DB:
+-- Verification post-deploy:
+--   -- Renamed tables still queryable:
+--   SELECT count(*) FROM public.mcp_proxy_sessions_d20260519;
+--   -- Dropped column data still queryable:
+--   SELECT count(*) FROM public.agents_d20260519_skill_auto_granted_domains;
+--   SELECT count(*) FROM public.runs_d20260519_retry_delay_seconds;
 --
+-- Rollback procedures
+-- -------------------
+--
+-- Recovery path A (preferred — CNPG PITR; full restore):
+--
+--   The Cluster spec in helmrelease.yaml has `backup.barmanObjectStore`
+--   wired to R2 with `retentionPolicy: 30d` and `archive_timeout: 900`.
+--   To recover to the pre-surgery timestamp from STEP 0:
+--
+--   1. Pause the broken app (scale to 0 or pause Flux reconcile).
+--   2. Apply a new Cluster CR patterned on
+--      packages/owletto/deploy/k8s/apps/lobu/base/db-recovery.yaml:
+--
+--        apiVersion: postgresql.cnpg.io/v1
+--        kind: Cluster
+--        metadata:
+--          name: db-recovery-<date>
+--        spec:
+--          instances: 1
+--          storage: { size: 30Gi, storageClass: hcloud-volumes }
+--          bootstrap:
+--            recovery:
+--              source: summaries-db-backup
+--              recoveryTarget:
+--                targetTime: "<timestamp from /tmp/pre-surgery-ts.txt>"
+--          externalClusters:
+--            - name: summaries-db-backup
+--              barmanObjectStore:
+--                serverName: summaries-db-v2
+--                destinationPath: s3://summaries-db-backup
+--                # ... (same s3Credentials block as helmrelease.yaml)
+--
+--   3. Wait for CNPG to fetch the latest base backup + replay WAL.
+--   4. Repoint the app at the recovered cluster (update the
+--      `database.existingSecret` reference, or rename Clusters).
+--   5. Resume Flux / scale the app back up.
+--
+--   Why this works: WAL is archived every 15 minutes; PITR restores to
+--   transaction-level precision within the retention window. The new
+--   image's dbmate-up against the recovered DB finds the original 82
+--   applied versions and behaves like nothing happened.
+--
+-- Recovery path B (lightweight — just the surgery, not the whole DB):
+--
+--   If only the squash-induced state needs reverting:
+--
+--   -- 1. Restore the ledger:
 --   psql "$PROD_DATABASE_URL" -c "DELETE FROM public.schema_migrations"
 --   psql "$PROD_DATABASE_URL" \
 --     -c "\\copy public.schema_migrations FROM '/tmp/schema-migrations-pre-squash.csv' CSV HEADER"
+--   -- 2. Restore renamed tables to original names:
+--   psql "$PROD_DATABASE_URL" <<'SQL'
+--     ALTER TABLE public.mcp_proxy_sessions_d20260519 RENAME TO mcp_proxy_sessions;
+--     ALTER TABLE public.organization_lobu_links_d20260519 RENAME TO organization_lobu_links;
+--     ALTER TABLE public.migration_20260315300000_entity_type_org_backfill_d20260519 RENAME TO migration_20260315300000_entity_type_org_backfill;
+--     ALTER TABLE public.migration_20260316100000_created_entity_types_d20260519 RENAME TO migration_20260316100000_created_entity_types;
+--     ALTER TABLE public.migration_20260316100000_deleted_default_entity_types_d20260519 RENAME TO migration_20260316100000_deleted_default_entity_types;
+--     ALTER TABLE public.migration_20260316100000_events_kind_backup_d20260519 RENAME TO migration_20260316100000_events_kind_backup;
+--   SQL
+--   -- 3. Restore dropped columns + values (only if needed):
+--   psql "$PROD_DATABASE_URL" <<'SQL'
+--     ALTER TABLE public.agents ADD COLUMN skill_auto_granted_domains jsonb DEFAULT '[]'::jsonb;
+--     UPDATE public.agents a SET skill_auto_granted_domains = b.skill_auto_granted_domains
+--       FROM public.agents_d20260519_skill_auto_granted_domains b WHERE a.id = b.agent_id;
+--     ALTER TABLE public.runs ADD COLUMN retry_delay_seconds integer;
+--     UPDATE public.runs r SET retry_delay_seconds = b.retry_delay_seconds
+--       FROM public.runs_d20260519_retry_delay_seconds b WHERE r.id = b.run_id;
+--   SQL
 --
--- Dropped tables don't come back from a ledger restore alone — restore
--- them from the STEP 1 pg_dump:
+-- Cleanup follow-up (separate PR, a week or two after this lands):
+-- Once nothing in code or queries reads the renamed tables / snapshot
+-- tables, drop them in a small focused PR:
 --
---   pg_restore --no-owner --no-privileges \
---     --table=public.mcp_proxy_sessions \
---     --table=public.organization_lobu_links \
---     --dbname="$PROD_DATABASE_URL" \
---     /tmp/lobu-pre-squash-<ts>.dump
+--   DROP TABLE public.mcp_proxy_sessions_d20260519;
+--   DROP TABLE public.organization_lobu_links_d20260519;
+--   -- ... etc.
 --
 -- Fresh DBs (local dev, PGlite, CI): no surgery, no backups; dbmate
 -- applies this file from scratch. Wipe local PGlite dirs
--- (`rm -rf <workspace>/data`) to take advantage of the squash; next
--- boot recreates from the baseline.
+-- (`rm -rf <workspace>/data`) to take advantage of the squash.
 -- =============================================================================
 
 --
@@ -1831,14 +1940,6 @@ CREATE TABLE public.scheduled_jobs (
 );
 
 --
--- Name: schema_migrations; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.schema_migrations (
-    version character varying(128) NOT NULL
-);
-
---
 -- Name: session; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2982,13 +3083,6 @@ ALTER TABLE ONLY public.runs
 
 ALTER TABLE ONLY public.scheduled_jobs
     ADD CONSTRAINT scheduled_jobs_pkey PRIMARY KEY (id);
-
---
--- Name: schema_migrations schema_migrations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.schema_migrations
-    ADD CONSTRAINT schema_migrations_pkey PRIMARY KEY (version);
 
 --
 -- Name: session session_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -5346,7 +5440,7 @@ ALTER TABLE ONLY public.watchers
 -- migrate:down
 
 -- Reverting the baseline drops everything in public. Safe for fresh dev
--- DBs; never run against prod.
+-- DBs; never run against prod (use CNPG PITR — see header).
 DROP SCHEMA IF EXISTS public CASCADE;
 CREATE SCHEMA public;
 COMMENT ON SCHEMA public IS 'standard public schema';

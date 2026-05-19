@@ -4,7 +4,7 @@ export type CodeSnippet = {
   code: string;
   path: string;
   githubUrl: string;
-  language: "toml" | "yaml" | "typescript";
+  language: "toml" | "yaml" | "typescript" | "markdown";
 };
 
 type CodeBlockProps = {
@@ -357,7 +357,74 @@ function mergePlain(tokens: Token[]): Token[] {
   return out;
 }
 
+/* -------------------------------------------------------------------------- */
+/*  Markdown tokenizer — frontmatter fence, frontmatter keys, ATX headings,   */
+/*  and inline backtick code spans. Everything else falls through as plain.   */
+/* -------------------------------------------------------------------------- */
+
+function tokenizeMarkdownFile(code: string): Token[][] {
+  const lines = code.split("\n");
+  let inFrontmatter = false;
+  return lines.map((line, idx) => {
+    if (line.trim() === "---") {
+      // Open frontmatter on first `---`, close on second.
+      if (idx === 0) {
+        inFrontmatter = true;
+        return [{ kind: "punctuation", text: line }];
+      }
+      if (inFrontmatter) {
+        inFrontmatter = false;
+        return [{ kind: "punctuation", text: line }];
+      }
+      return [{ kind: "punctuation", text: line }];
+    }
+    if (inFrontmatter) {
+      // `key: value`
+      const m = /^([A-Za-z_][\w-]*)(\s*:\s*)(.*)$/.exec(line);
+      if (m) {
+        return [
+          { kind: "key", text: m[1] },
+          { kind: "punctuation", text: m[2] },
+          { kind: "string", text: m[3] },
+        ];
+      }
+      return [{ kind: "plain", text: line }];
+    }
+    // ATX heading.
+    const heading = /^(#{1,6})(\s+.*)$/.exec(line);
+    if (heading) {
+      return [
+        { kind: "keyword", text: heading[1] },
+        { kind: "key", text: heading[2] },
+      ];
+    }
+    // Inline backtick code spans.
+    if (line.includes("`")) {
+      const out: Token[] = [];
+      let i = 0;
+      while (i < line.length) {
+        const tick = line.indexOf("`", i);
+        if (tick === -1) {
+          out.push({ kind: "plain", text: line.slice(i) });
+          break;
+        }
+        if (tick > i) out.push({ kind: "plain", text: line.slice(i, tick) });
+        const end = line.indexOf("`", tick + 1);
+        if (end === -1) {
+          out.push({ kind: "plain", text: line.slice(tick) });
+          break;
+        }
+        out.push({ kind: "string", text: line.slice(tick, end + 1) });
+        i = end + 1;
+      }
+      return out;
+    }
+    return [{ kind: "plain", text: line }];
+  });
+}
+
 function highlight(code: string, language: CodeSnippet["language"]): Token[][] {
+  if (language === "markdown") return tokenizeMarkdownFile(code);
   const tokenize =
     language === "toml"
       ? tokenizeToml

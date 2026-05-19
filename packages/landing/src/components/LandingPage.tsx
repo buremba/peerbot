@@ -67,6 +67,7 @@ export function LandingPage(props: {
       <ConnectorsSection useCase={active} useCaseId={activeUseCaseId} />
       <MemorySection useCase={active} useCaseId={activeUseCaseId} />
       <WatchersSection useCase={active} useCaseId={activeUseCaseId} />
+      <SkillsSection />
       <AgentsSection useCase={active} useCaseId={activeUseCaseId} />
       <RunAnywhereSection />
       <CTA startUrl={getLobuBaseUrl()} />
@@ -744,9 +745,7 @@ function MemorySection({ useCase }: ProductSectionProps) {
             </ProductLink>
           </div>
         }
-        code={
-          <CodeBlock badge="entities" snippet={useCase.memorySchemaYaml} />
-        }
+        code={<CodeBlock badge="entities" snippet={useCase.memorySchemaYaml} />}
       />
     </Container>
   );
@@ -808,6 +807,88 @@ function WatchersSection({ useCase }: ProductSectionProps) {
           <CodeBlock
             badge="reactive + dreaming"
             snippet={useCase.watcherYaml}
+          />
+        }
+      />
+    </Container>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Skills section — not use-case pivoted (only lobu-crm + office-bot ship    */
+/*  skills today). Snippet is the YAML frontmatter + first heading +          */
+/*  first paragraph of examples/lobu-crm/agents/crm/skills/crm-ops/SKILL.md.  */
+/* -------------------------------------------------------------------------- */
+
+const SKILL_SNIPPET: CodeSnippet = {
+  path: "agents/crm/skills/crm-ops/SKILL.md",
+  githubUrl:
+    "https://github.com/lobu-ai/lobu/blob/main/examples/lobu-crm/agents/crm/skills/crm-ops/SKILL.md",
+  language: "markdown",
+  code: `---
+name: crm-ops
+description: How to operate the Lobu funnel CRM — create and enrich leads, log interactions, advance funnel stages, open and update pilots.
+---
+
+# CRM operations
+
+The CRM lives in Lobu memory. Two entity types — \`lead\` and \`pilot\` — hold current state; events of type \`lead:*\` / \`pilot:*\` are the append-only history.`,
+};
+
+function SkillsSection() {
+  return (
+    <Container className="py-16 sm:py-20">
+      <ProductGrid
+        reverse
+        text={
+          <div>
+            <Eyebrow>Skills</Eyebrow>
+            <SectionHeading>
+              Bundle tools, packages, and policy into one drop-in.
+            </SectionHeading>
+            <p
+              class="mt-4 max-w-[28rem] text-[16px] leading-[1.6]"
+              style={{ color: "var(--color-page-text-muted)" }}
+            >
+              A skill is a folder with a{" "}
+              <code class="font-mono text-[14px]">SKILL.md</code>. Drop it in{" "}
+              <code class="font-mono text-[13px]">skills/</code> or{" "}
+              <code class="font-mono text-[13px]">agents/&lt;id&gt;/skills/</code>
+              ,{" "}
+              <code class="font-mono text-[13px]">lobu apply</code> picks it up.
+              The agent gets instructions, tools, network, and packages in one
+              shot.
+            </p>
+            <FeatureList
+              items={[
+                <>
+                  <b>Instructions</b> — markdown describing when the agent
+                  should use this skill.
+                </>,
+                <>
+                  <b>Tools</b> — TypeScript functions the agent calls.
+                  Auto-registered as MCP tools.
+                </>,
+                <>
+                  <b>Network</b> — allowed domains + per-domain LLM egress
+                  judge in YAML.
+                </>,
+                <>
+                  <b>Packages</b> — Nix packages (git, jq, etc.) merged into
+                  the worker env.
+                </>,
+              ]}
+            />
+            <ProductLink href="/getting-started/">
+              Read the skills guide
+            </ProductLink>
+          </div>
+        }
+        code={
+          <CodeBlock
+            badge="skill"
+            snippet={SKILL_SNIPPET}
+            tabLabel={SKILL_SNIPPET.path}
           />
         }
       />

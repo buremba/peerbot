@@ -41,6 +41,9 @@ RAW="$(
     --mode json \
     --no-session \
     --no-extensions \
+    --provider openai-codex-3 \
+    --model gpt-5.5 \
+    --thinking high \
     -p "@${PROMPT_FILE}" "PR_NUMBER=$PR — review this PR. Emit only the JSON verdict."
 )"
 

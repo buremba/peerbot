@@ -164,7 +164,7 @@ async function main() {
 
   const { app: mainApp } = await import('./index');
   const { initWorkspaceProvider } = await import('./workspace');
-  const { initLobuGateway, getLobuCoreServices } = await import('./lobu/gateway');
+  const { initLobuGateway, getLobuCoreServices, stopLobuGateway } = await import('./lobu/gateway');
   const { bootTaskScheduler } = await import('./scheduled/jobs');
 
   await initWorkspaceProvider();
@@ -239,6 +239,10 @@ async function main() {
     stopReaper();
     stopScheduler();
     await vite?.close();
+    // Drain MCP sessions / DB listeners / secret-proxy before tearing down
+    // PGlite-owned resources below — gateway holds postgres.js connections
+    // that talk to the socket server.
+    await stopLobuGateway();
     httpServer.close();
     embeddingsChild?.kill();
     await socketServer.stop();

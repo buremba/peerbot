@@ -163,6 +163,44 @@ describe('TarballFileSource', () => {
     expect(await v1.readText('a.json')).toBe('{"x":1}');
   });
 
+  test('prunes old per-ref dirs to at most 3 across 4 distinct refs', async () => {
+    // Build 4 distinct tarballs, swap them in turn, and assert the
+    // refs/ directory holds at most 3 ref dirs after the 4th fetch.
+    const extras: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const dir = join(fixtureDir, `vp${i}`);
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'a.json'), `{"v":${i}}`);
+      const p = join(fixtureDir, `vp${i}.tar.gz`);
+      await tarCreate({ gzip: true, file: p, cwd: dir }, ['.']);
+      extras.push(p);
+    }
+    const source = new TarballFileSource(`${baseUrl}/dataset.tar.gz`);
+    for (let i = 0; i < extras.length; i++) {
+      serveTarballPath = extras[i] as string;
+      await source.fetch();
+      // Bump mtime granularity for prune ordering.
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const { createHash } = await import('node:crypto');
+    const { readdir: readdirP } = await import('node:fs/promises');
+    const hash = createHash('sha256')
+      .update(`${baseUrl}/dataset.tar.gz`)
+      .digest('hex')
+      .slice(0, 32);
+    const refsDir = join(workspaceDir, '.lobu-cache', 'sources', hash, 'refs');
+    const ents = await readdirP(refsDir, { withFileTypes: true });
+    const dirs = ents.filter(
+      (e) => e.isDirectory() && !e.name.startsWith('snapshot.tmp.'),
+    );
+    expect(dirs.length).toBeLessThanOrEqual(3);
+    expect(dirs.length).toBeGreaterThanOrEqual(1);
+    // Per-ref manifest JSON files remain so historical diffs work.
+    expect(ents.filter((e) => e.isFile() && e.name.endsWith('.json')).length).toBeGreaterThanOrEqual(
+      3,
+    );
+  });
+
   test('diffSinceRef on a fresh cache throws before issuing a network fetch', async () => {
     const source = new TarballFileSource(`${baseUrl}/dataset.tar.gz`);
     await expect(source.diffSinceRef('cafe'.repeat(16))).rejects.toThrow(

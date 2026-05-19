@@ -17,7 +17,7 @@
 
 import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rename, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -132,6 +132,9 @@ export class TarballFileSource implements FileSystemSource {
       await writeManifest(this.#paths.manifestPath, manifest);
       await writeMeta(this.#paths.metaPath, { uri: this.#uri, kind: 'tarball' });
       await writePerRefManifest(this.#paths.root, manifest);
+      // Keep cache size bounded. We always preserve the freshly-installed
+      // ref dir, so the just-returned Snapshot is safe.
+      await pruneOldRefDirs(this.#paths.root, MAX_REF_DIRS, refDir);
 
       // Snapshot reads from the immutable per-ref dir — never overwritten.
       return new DirectorySnapshot(refDir, ref);
@@ -206,6 +209,67 @@ async function writePerRefManifest(root: string, manifest: Manifest): Promise<vo
 
 async function readPerRefManifest(root: string, ref: string): Promise<Manifest | null> {
   return readManifest(join(root, 'refs', `${ref}.json`));
+}
+
+/** Max number of `refs/<hash>` per-ref directories kept on disk. */
+const MAX_REF_DIRS = 3;
+
+/**
+ * Keep at most `keep` per-ref directories under `${root}/refs/`. Sorted by
+ * mtime descending; the oldest are rm-rf'd. The current ref (the one we
+ * just installed and are about to hand a Snapshot for) is always
+ * preserved, even if its mtime happens to be older than another dir's
+ * (e.g. a cache-hit branch that didn't touch the dir).
+ *
+ * Ignores `snapshot.tmp.*` staging dirs and the per-ref manifest JSON
+ * files (`<ref>.json`) which are kept indefinitely so historical diffs
+ * keep working after a data dir is pruned.
+ */
+async function pruneOldRefDirs(
+  root: string,
+  keep: number,
+  protectedRefDir: string,
+): Promise<void> {
+  const refsRoot = join(root, 'refs');
+  let entries: import('node:fs').Dirent[];
+  try {
+    entries = await readdir(refsRoot, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw err;
+  }
+  const candidates: Array<{ name: string; abs: string; mtimeMs: number; protected: boolean }> = [];
+  for (const ent of entries) {
+    if (!ent.isDirectory()) continue;
+    if (ent.name.startsWith('snapshot.tmp.')) continue;
+    const abs = join(refsRoot, ent.name);
+    try {
+      const s = await stat(abs);
+      candidates.push({
+        name: ent.name,
+        abs,
+        mtimeMs: s.mtimeMs,
+        protected: abs === protectedRefDir,
+      });
+    } catch {
+      // Skip — concurrent prune from another process is fine.
+    }
+  }
+  if (candidates.length <= keep) return;
+  // Always-keep the protected (current) dir; sort the rest by mtime desc and
+  // keep the (keep - 1) most recent.
+  const protectedDirs = candidates.filter((c) => c.protected);
+  const others = candidates
+    .filter((c) => !c.protected)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const keepers = new Set([
+    ...protectedDirs.map((c) => c.name),
+    ...others.slice(0, Math.max(0, keep - protectedDirs.length)).map((c) => c.name),
+  ]);
+  for (const c of candidates) {
+    if (keepers.has(c.name)) continue;
+    await rm(c.abs, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 const MAX_REDIRECTS = 5;

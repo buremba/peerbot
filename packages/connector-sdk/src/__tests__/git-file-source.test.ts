@@ -3,9 +3,13 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import nodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { createServer as createHttpsServer } from 'node:https';
+import { createServer as createHttpServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import * as git from 'isomorphic-git';
 import { GitFileSource, parseGitUri } from '../sources/git-file-source.js';
 import { DirectorySnapshot } from '../sources/snapshot.js';
+import { TEST_TLS_CERT, TEST_TLS_KEY } from './tls-fixture.js';
 
 describe('parseGitUri', () => {
   test('parses URL with @ref', () => {
@@ -278,6 +282,64 @@ describe('GitFileSource hides .git from the connector', () => {
     expect(found).toContain('a.json');
 
     await expect(snap.readText('.git/HEAD')).rejects.toThrow(/excluded/i);
+  });
+});
+
+describe('GitFileSource redirect downgrade protection', () => {
+  let cacheRoot: string;
+  let originalWorkspaceDir: string | undefined;
+  let originalTlsReject: string | undefined;
+
+  beforeEach(async () => {
+    cacheRoot = await mkdtemp(join(tmpdir(), 'lobu-git-dgrd-'));
+    originalWorkspaceDir = process.env.WORKSPACE_DIR;
+    process.env.WORKSPACE_DIR = cacheRoot;
+    originalTlsReject = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+  });
+
+  afterEach(async () => {
+    if (originalWorkspaceDir === undefined) delete process.env.WORKSPACE_DIR;
+    else process.env.WORKSPACE_DIR = originalWorkspaceDir;
+    if (originalTlsReject === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    else process.env.NODE_TLS_REJECT_UNAUTHORIZED = originalTlsReject;
+    await rm(cacheRoot, { recursive: true, force: true });
+  });
+
+  test('rejects fetch() when an https endpoint 302s to http', async () => {
+    // Plaintext destination that would happily serve git protocol if the
+    // source followed the downgrade — but we never expect a request here.
+    let plaintextHit = false;
+    const httpServer = createHttpServer((_req, res) => {
+      plaintextHit = true;
+      res.writeHead(200);
+      res.end();
+    });
+    await new Promise<void>((r) => httpServer.listen(0, '127.0.0.1', r));
+    const httpAddr = httpServer.address() as AddressInfo;
+
+    // HTTPS endpoint redirects the smart-http info/refs to plaintext.
+    const httpsServer = createHttpsServer(
+      { cert: TEST_TLS_CERT, key: TEST_TLS_KEY },
+      (req, res) => {
+        const target = `http://127.0.0.1:${httpAddr.port}${req.url}`;
+        res.writeHead(302, { Location: target });
+        res.end();
+      },
+    );
+    await new Promise<void>((r) => httpsServer.listen(0, '127.0.0.1', r));
+    const httpsAddr = httpsServer.address() as AddressInfo;
+
+    try {
+      const source = new GitFileSource(
+        `git+https://127.0.0.1:${httpsAddr.port}/foo/bar.git@main`,
+      );
+      await expect(source.fetch()).rejects.toThrow(/plaintext|http:\/\/|non-https/i);
+      expect(plaintextHit).toBe(false);
+    } finally {
+      await new Promise<void>((r) => httpsServer.close(() => r()));
+      await new Promise<void>((r) => httpServer.close(() => r()));
+    }
   });
 });
 

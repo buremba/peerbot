@@ -82,7 +82,7 @@ export class TarballFileSource implements FileSystemSource {
     const stagingDir = join(this.#paths.root, `snapshot.tmp.${randomSuffix()}`);
     let stagingMoved = false;
     try {
-      const res = await fetch(this.#uri, { redirect: 'follow' });
+      const res = await httpsFetchNoDowngrade(this.#uri);
       if (!res.ok) {
         throw new Error(
           `TarballFileSource: GET ${this.#uri} returned ${res.status}`,
@@ -198,4 +198,40 @@ async function writePerRefManifest(root: string, manifest: Manifest): Promise<vo
 
 async function readPerRefManifest(root: string, ref: string): Promise<Manifest | null> {
   return readManifest(join(root, 'refs', `${ref}.json`));
+}
+
+const MAX_REDIRECTS = 5;
+
+/**
+ * fetch() with manual redirect following + an https-only guard on every hop.
+ * Rejects with a clear error if any 3xx Location points at a non-https URL,
+ * defending against a redirect-based plaintext downgrade.
+ */
+async function httpsFetchNoDowngrade(initialUrl: string): Promise<Response> {
+  let url = initialUrl;
+  for (let i = 0; i <= MAX_REDIRECTS; i++) {
+    if (!url.startsWith('https://')) {
+      throw new Error(`TarballFileSource: redirect to plaintext URL rejected: ${url}`);
+    }
+    const res = await fetch(url, { redirect: 'manual' });
+    if (res.status < 300 || res.status >= 400) {
+      return res;
+    }
+    // 3xx — must have a Location header.
+    const loc = res.headers.get('location');
+    if (!loc) return res;
+    // Resolve relative URLs against the current URL.
+    try {
+      url = new URL(loc, url).toString();
+    } catch {
+      throw new Error(`TarballFileSource: invalid redirect location: ${loc}`);
+    }
+    // Drain the body so the socket is reusable.
+    try {
+      await res.body?.cancel();
+    } catch {
+      // ignore
+    }
+  }
+  throw new Error(`TarballFileSource: too many redirects (>${MAX_REDIRECTS}) for ${initialUrl}`);
 }

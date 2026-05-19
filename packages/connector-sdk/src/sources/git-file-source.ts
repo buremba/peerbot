@@ -22,7 +22,6 @@
 import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import * as git from 'isomorphic-git';
-import http from 'isomorphic-git/http/node';
 // `fs` is passed as a plain Node fs module — isomorphic-git accepts it.
 // We import the callback-style module so isomorphic-git's promisified
 // adapter works out of the box (it auto-detects promises if present).
@@ -38,6 +37,10 @@ import {
   writeMeta,
 } from './cache.js';
 import { GitSnapshot } from './git-snapshot.js';
+// Custom https-only http client — rejects plaintext redirects that the
+// stock `isomorphic-git/http/node` (simple-get under the hood) would
+// silently follow.
+import { gitHttpsOnlyClient as http } from './git-http.js';
 
 const DEFAULT_BRANCH = 'main';
 

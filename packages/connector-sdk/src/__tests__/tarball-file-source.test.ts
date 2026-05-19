@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { createServer, type Server } from 'node:https';
+import { createServer as createHttpServer, type Server as HttpServer } from 'node:http';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -160,6 +161,44 @@ describe('TarballFileSource', () => {
 
     // Old snapshot's per-ref dir is untouched — bytes still readable.
     expect(await v1.readText('a.json')).toBe('{"x":1}');
+  });
+
+  test('rejects an https→http redirect (no plaintext downgrade)', async () => {
+    // Stand up a tiny HTTP server that would happily serve the tarball if
+    // the source followed the downgrade. The HTTPS server 302s to it.
+    const httpServer = createHttpServer((_req, res) => {
+      readFile(tarballPath).then((buf) => {
+        res.writeHead(200, { 'Content-Type': 'application/gzip' });
+        res.end(buf);
+      });
+    });
+    await new Promise<void>((r) => httpServer.listen(0, '127.0.0.1', r));
+    const httpAddr = httpServer.address() as AddressInfo;
+    const downgradeTarget = `http://127.0.0.1:${httpAddr.port}/leak.tar.gz`;
+
+    // Replace the existing request handler with one that 302s the downgrade
+    // URL; restore the original after the test.
+    const originalListeners = server.listeners('request') as Array<
+      (...args: unknown[]) => void
+    >;
+    server.removeAllListeners('request');
+    server.on('request', (req, res) => {
+      if (req.url === '/downgrade.tar.gz') {
+        res.writeHead(302, { Location: downgradeTarget });
+        res.end();
+        return;
+      }
+      // Fall back to the original handler for unrelated paths.
+      for (const l of originalListeners) (l as (...args: unknown[]) => void)(req, res);
+    });
+    try {
+      const source = new TarballFileSource(`${baseUrl}/downgrade.tar.gz`);
+      await expect(source.fetch()).rejects.toThrow(/plaintext|http:\/\//i);
+    } finally {
+      server.removeAllListeners('request');
+      for (const l of originalListeners) server.on('request', l);
+      await new Promise<void>((r) => httpServer.close(() => r()));
+    }
   });
 
   test('older snapshot stays readable after a subsequent fetch() of new content', async () => {

@@ -172,7 +172,7 @@ export class LobuProvider {
     if (this.providerOverride) body.provider = this.providerOverride;
     if (this.modelOverride) body.model = this.modelOverride;
 
-    const res = await fetch(`${this.gateway}/api/v1/agents`, {
+    const res = await fetch(`${this.gateway}/lobu/api/v1/agents`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -190,7 +190,9 @@ export class LobuProvider {
     return {
       agentId: data.agentId,
       sessionToken: data.token,
-      base: `${this.gateway}/api/v1/agents/${data.agentId}`,
+      // Public Agent API is mounted at /lobu (mainApp serves org-scoped REST
+      // at /). See packages/server/src/server.ts.
+      base: `${this.gateway}/lobu/api/v1/agents/${data.agentId}`,
     };
   }
 

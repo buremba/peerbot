@@ -200,7 +200,7 @@ bun run evals          # promptfoo eval -c agents/<id>/evals/promptfooconfig.yam
 bun run evals:view     # comparison grid in the browser
 ```
 
-See `examples/qmsum-demo/` for the canonical pattern (custom provider auto-wired, parametric tests from JSONL fixtures, RAG + answer-quality assertions). The in-house YAML eval runner (`lobu eval`) has been removed.
+See `examples/personal-finance/agents/personal-finance/evals/promptfooconfig.yaml` for the current pattern (`@lobu/promptfoo-provider` loaded via promptfoo's `package:` protocol, single-turn parametric tests, answer-quality + behavioural assertions). The in-house YAML eval runner (`lobu eval`) has been removed.
 
 Local dev Telegram bot: `@clawdotfreebot`. Production: `@lobuaibot`.
 

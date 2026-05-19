@@ -16,9 +16,9 @@
  */
 
 import { createHash } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, realpath, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import type { FileDelta, FileSystemSource, Snapshot } from '../file-source.js';
 import {
   type CachePaths,
@@ -26,6 +26,7 @@ import {
   type ManifestEntry,
   canonicalManifestRef,
   cachePathsFor,
+  defaultCacheRoot,
   diffManifests,
   readAndVerifyMeta,
   readManifest,
@@ -42,12 +43,17 @@ export class LocalFileSource implements FileSystemSource {
   readonly #paths: CachePaths;
   /**
    * When the local source root happens to *contain* the SDK cache dir
-   * (`.lobu-cache/`) — typical when the source is the workspace root — we
-   * must NOT ingest our own cache files, or every fetch() would mutate the
-   * ref and self-pollute. This predicate hides them from manifest, walk,
-   * and read.
+   * (`${WORKSPACE_DIR}/.lobu-cache`) — typical when the source is the
+   * workspace root, OR when WORKSPACE_DIR is nested inside the source —
+   * we must NOT ingest our own cache files, or every fetch() would mutate
+   * the ref and self-pollute.
+   *
+   * Resolved at fetch() time using realpath() on both source root and the
+   * cache directory, so we exclude exactly the right subtree no matter
+   * where the cache lives relative to the source. If the cache is outside
+   * the source entirely, the predicate excludes nothing.
    */
-  readonly #exclude: (relativePath: string) => boolean;
+  #exclude: (relativePath: string) => boolean = () => false;
 
   constructor(uri: string) {
     if (!uri.startsWith('file://')) {
@@ -56,7 +62,6 @@ export class LocalFileSource implements FileSystemSource {
     this.#uri = uri;
     this.#rootDir = fileURLToPath(uri);
     this.#paths = cachePathsFor(uri);
-    this.#exclude = (rel) => rel === '.lobu-cache' || rel.startsWith('.lobu-cache/');
   }
 
   fetch(): Promise<Snapshot> {
@@ -70,6 +75,11 @@ export class LocalFileSource implements FileSystemSource {
       const { mkdir } = await import('node:fs/promises');
       await mkdir(this.#paths.root, { recursive: true });
       await readAndVerifyMeta(this.#paths.metaPath, this.#uri);
+
+      // Recompute exclude predicate each fetch(): the cache dir's location
+      // relative to the source can shift if WORKSPACE_DIR changes between
+      // calls (different process, different cwd).
+      this.#exclude = await resolveCacheExclude(this.#rootDir);
 
       const files = await collectFiles(this.#rootDir, this.#exclude);
       const ref = canonicalManifestRef(files);
@@ -90,6 +100,7 @@ export class LocalFileSource implements FileSystemSource {
 
   diffSinceRef(prevRef: string): Promise<FileDelta> {
     return withSourceLock(this.#uri, async () => {
+      this.#exclude = await resolveCacheExclude(this.#rootDir);
       const files = await collectFiles(this.#rootDir, this.#exclude);
       const curRef = canonicalManifestRef(files);
       if (curRef === prevRef) return { added: [], modified: [], removed: [] };
@@ -106,6 +117,38 @@ export class LocalFileSource implements FileSystemSource {
       return diffManifests(prev, next);
     });
   }
+}
+
+/**
+ * Compute the exclude predicate for `.lobu-cache`. Realpaths both source root
+ * and `${cacheRoot}/.lobu-cache`, then:
+ *   - If the cache dir is contained under the source root, exclude that exact
+ *     relative subtree (POSIX-separated).
+ *   - Otherwise return a no-op predicate — no exclusion needed.
+ *
+ * This handles three layouts correctly:
+ *   (a) source root === workspace root → exclude `.lobu-cache/`
+ *   (b) WORKSPACE_DIR is nested inside source (e.g. `source/workspace/`) →
+ *       exclude `workspace/.lobu-cache/`
+ *   (c) workspace lives outside source → no exclusion
+ *
+ * Realpath defends against symlinked workspace dirs.
+ */
+async function resolveCacheExclude(
+  sourceRoot: string,
+): Promise<(relativePath: string) => boolean> {
+  const cacheBase = join(defaultCacheRoot(), '.lobu-cache');
+  const realSource = await realpath(sourceRoot).catch(() => sourceRoot);
+  const realCache = await realpath(cacheBase).catch(() => cacheBase);
+  const rel = relative(realSource, realCache);
+  if (rel === '' || rel.startsWith('..') || rel.split(sep).includes('..')) {
+    // cache is outside source (or coincides with the source root, which is
+    // degenerate — nothing meaningful to exclude). No-op predicate.
+    return () => false;
+  }
+  const posixRel = sep === '/' ? rel : rel.split(sep).join('/');
+  const prefix = `${posixRel}/`;
+  return (relPath) => relPath === posixRel || relPath.startsWith(prefix);
 }
 
 async function collectFiles(

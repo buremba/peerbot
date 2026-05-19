@@ -25,19 +25,24 @@
 #
 # Optional shell-function sugar — `make task-setup` does the setup, then you
 # still have to `cd <path> && claude` by hand. If you want one command that
-# also moves your shell and launches claude, add this to ~/.zshrc:
+# also moves your shell and launches a tool, add this to ~/.zshrc:
 #
 #   task-start() {
-#     local name="$1"; local repo="$HOME/Code/lobu"
+#     local name="$1"; shift
+#     local repo="$HOME/Code/lobu"
 #     "$repo/scripts/task-setup.sh" "$name" || return $?
-#     cd "$repo/.claude/worktrees/$name" && exec claude
+#     cd "$repo/.claude/worktrees/$name" && exec "${@:-claude}"
 #   }
 #   task-resume() {
-#     local name="$1"; local repo="$HOME/Code/lobu"
+#     local name="$1"; shift
+#     local repo="$HOME/Code/lobu"
 #     [[ -d "$repo/.claude/worktrees/$name" ]] \
 #       || { echo "no such worktree: $name"; return 1; }
-#     cd "$repo/.claude/worktrees/$name" && exec claude
+#     cd "$repo/.claude/worktrees/$name" && exec "${@:-claude}"
 #   }
+#
+# Usage: `task-start fix-sse-leak` (defaults to claude), or
+#        `task-start fix-sse-leak codex` / `task-start fix-sse-leak zsh`.
 #
 # The cd + exec must live in the shell function (not a Makefile target or this
 # script) so that the parent terminal actually moves and Warp/iTerm detect the

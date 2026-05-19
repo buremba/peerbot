@@ -52,30 +52,34 @@ promptfoo view
 
 ```ts
 {
-  output: string                  // final assistant text from the agent
+  output: string                    // final assistant text from the agent
   tokenUsage: { prompt, completion, total }
   metadata: {
     agent: string
-    thread: string                // fresh per call by default
-    traceId?: string              // W3C trace id from `traceparent` header
-    toolCalls?: unknown[]         // see "Known limitations" below
-    retrievedContext?: string     // see "Known limitations" below
+    thread: string                  // fresh per call by default
+    traceId?: string                // W3C trace id from `traceparent` header
+    toolCalls?: LobuToolCall[]      // every tool call observed during the turn
+    retrievedContext?: string       // joined snippet text from retrieval tools
   }
 }
 ```
 
-## Known limitations
+`toolCalls` mirrors Anthropic's tool-use blocks (`{ name, input, isError?, result_summary? }`) and is populated from the gateway's `tool_use` SSE event. For retrieval tools (`search_memory` / `lobu_search_memory`) the `result_summary` includes the matched event IDs plus the snippet text content, and the provider joins those texts into `metadata.retrievedContext` so promptfoo's RAG assertions can use it directly:
 
-**`metadata.toolCalls` / `metadata.retrievedContext` are not yet populated.**
+```yaml
+- type: context-recall
+  contextTransform: 'metadata.retrievedContext'
+  threshold: 0.5
+  value: "the expected fact the agent should have grounded its answer in"
 
-The gateway's SSE protocol currently exposes only `output` / `complete` / `error` events to clients. Tool calls (e.g., the agent invoking `search_memory` and receiving event IDs) happen inside the worker but aren't surfaced over SSE. Until that changes:
+- type: javascript
+  contextTransform: 'metadata.toolCalls'
+  value: |
+    Array.isArray(context.context) &&
+      context.context.some((c) => c.name === 'search_memory')
+```
 
-- promptfoo's RAG-specific assertions that rely on `contextTransform: 'metadata.retrievedContext'` — `context-recall`, `context-faithfulness`, `answer-relevance` — won't have useful context to work with.
-- Custom `javascript` assertions inspecting `metadata.toolCalls` will see `undefined`.
-
-Workable assertions today: `contains`, `regex`, `equals`, `is-json`, `similar`, `levenshtein`, `llm-rubric`, `factuality`, `cost`, `latency`. These cover answer-quality and behavioral checks.
-
-When the gateway adds a `tool_use` SSE event type, this provider will start populating `metadata.toolCalls` and (for `search_memory` specifically) `metadata.retrievedContext`. No promptfoo config change required.
+For non-retrieval tools the provider still records the call (name + input) so `javascript` assertions can verify that, e.g., the agent did or didn't call a destructive tool.
 
 ## License
 

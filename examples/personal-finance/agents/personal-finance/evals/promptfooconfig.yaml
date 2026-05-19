@@ -75,3 +75,31 @@ tests:
           Two dates five days apart fall in different UK fiscal years. The agent
           should not claim both belong to the same year.
         weight: 0.7
+
+  # ─── retrieval — agent grounds answer in saved memory ───────────────────
+  # Exercises the `tool_use` SSE event surfaced by the gateway: the provider
+  # populates `metadata.toolCalls` (every tool call observed in the turn) and
+  # `metadata.retrievedContext` (joined snippet text from search_memory). For
+  # personal-finance, a prompt that references the workspace's saved facts
+  # should trigger at least one `search_memory` call.
+
+  - description: retrieval — recent activity question triggers search_memory
+    vars:
+      query: "What dividends have I logged in this tax year so far?"
+    assert:
+      # The agent should consult its memory; even an empty workspace should
+      # produce a search_memory call before answering.
+      - type: javascript
+        value: |
+          const calls = context.vars.metadata?.toolCalls ?? [];
+          return Array.isArray(calls) && calls.some((c) =>
+            c && (c.name === 'search_memory' || c.name === 'lobu_search_memory')
+          );
+        weight: 0.5
+      - type: llm-rubric
+        value: |
+          Response either lists dividends grounded in workspace data, or
+          (if the workspace is empty) cleanly tells the user no dividends are
+          logged yet and offers to record one. Does not invent dividend
+          amounts or sources.
+        weight: 0.5

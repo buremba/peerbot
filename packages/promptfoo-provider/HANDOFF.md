@@ -20,14 +20,12 @@ This PR (`feat/promptfoo-evals`) ships the `@lobu/promptfoo-provider` workspace 
 
 ## Should-fix (unblocks the demo use-cases this PR was originally for)
 
-4. **Gateway SSE protocol needs a `tool_use` event type.**
-   - Current protocol (from `packages/server/src/gateway/api/response-renderer.ts` + `unified-thread-consumer.ts`): broadcasts only `output` / `complete` / `error` / `status` / `ephemeral` / `question` / `link-button` / `tool-approval` / `suggestion`. No tool-call trace surfaces to clients.
-   - Impact on this PR: `LobuProvider.metadata.toolCalls` and `metadata.retrievedContext` are always absent. promptfoo RAG assertions (`context-recall`, `context-faithfulness`, `answer-relevance`) and any custom assertion that inspects retrieved evidence are non-functional.
-   - Sketch:
-     - Worker emits a structured tool-use record per Claude tool-use block (or aggregated at `complete`) through the existing worker → gateway message bus.
-     - Gateway broadcasts `tool_use` SSE events with `{ name, input, result_summary?, messageId }`.
-     - For `search_memory` specifically, include the returned event IDs so the provider can fetch event payloads for `retrievedContext`.
-   - Once shipped, `LobuProvider` populates the fields with no provider-side config change.
+4. **Gateway SSE protocol needs a `tool_use` event type.** — **DONE (PR: feat(gateway): tool_use SSE events for client-side trace inspection)**
+   - Worker (`packages/agent-worker/src/openclaw/worker.ts` + `tool-use-events.ts`) emits one `tool_use` custom event per `tool_execution_end` pi-agent event.
+   - Gateway broadcasts it as an SSE event named `tool_use` (via the existing customEvent path in `unified-thread-consumer.ts`) — additive, doesn't touch `output` / `complete` / `error`.
+   - Payload mirrors Anthropic tool-use blocks: `{ toolCallId, name, input, isError, result_summary?, messageId, timestamp }`. For `search_memory` / `lobu_search_memory`, `result_summary` includes `event_ids` and inline `snippets[]` (id + text) so clients can compute `retrievedContext` without a round-trip.
+   - `LobuProvider.collectResponse` consumes the new event, accumulates `metadata.toolCalls`, and joins retrieval-tool snippet text into `metadata.retrievedContext`. promptfoo RAG assertions (`context-recall`, `context-faithfulness`, custom `javascript` over `toolCalls`) now work end-to-end.
+   - Example: `examples/personal-finance/agents/personal-finance/evals/promptfooconfig.yaml` ships a retrieval assertion that asserts the agent called `search_memory` before answering.
 
 ## Background context for the follow-up agent
 

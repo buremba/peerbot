@@ -68,6 +68,7 @@ import {
 } from "./plugin-loader";
 import { OpenClawProgressProcessor } from "./processor";
 import { getOpenClawSessionContext } from "./session-context";
+import { buildToolUseEventPayload } from "./tool-use-events";
 import {
   buildToolPolicy,
   enforceBashCommandPolicy,
@@ -1457,6 +1458,26 @@ Use it when the user references past discussions or you need context.`);
             pendingDelta += delta;
             scheduleDeltaFlush();
           }
+        }
+
+        // Surface tool-use traces to SSE clients (promptfoo provider, CLI eval,
+        // any client subscribed via `event: tool_use`). Worker emits one record
+        // per tool call at `tool_execution_end` so the result is included.
+        if (event.type === "tool_execution_end") {
+          const payload = buildToolUseEventPayload(event);
+          onProgress({
+            type: "custom_event",
+            data: {
+              name: "tool_use",
+              payload: payload as unknown as Record<string, unknown>,
+            },
+            timestamp: Date.now(),
+          }).catch((err) => {
+            logger.warn(
+              `Failed to emit tool_use custom event for ${event.toolName}:`,
+              err
+            );
+          });
         }
 
         if (event.type === "agent_end") {

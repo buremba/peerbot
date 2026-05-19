@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import nodeFs from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import * as git from 'isomorphic-git';
 import { GitFileSource, parseGitUri } from '../sources/git-file-source.js';
 import { DirectorySnapshot } from '../sources/snapshot.js';
@@ -67,17 +67,26 @@ describe('GitFileSource diffSinceRef', () => {
     await rm(cacheRoot, { recursive: true, force: true });
   });
 
+  // Helper: seed the cache layout the way fetch() would, so diffSinceRef
+  // sees a valid meta.json without doing a real network clone.
+  async function seedCache(uri: string): Promise<string> {
+    const { createHash } = await import('node:crypto');
+    const hash = createHash('sha256').update(uri).digest('hex').slice(0, 32);
+    const wd = join(cacheRoot, '.lobu-cache', 'sources', hash, 'snapshot');
+    await mkdir(wd, { recursive: true });
+    await writeFile(
+      join(dirname(wd), 'meta.json'),
+      JSON.stringify({ uri, kind: 'git' }, null, 2),
+    );
+    return wd;
+  }
+
   test('diffs added/modified/removed across two commits', async () => {
     // Construct a source pointing at a syntactic URI; we won't call fetch().
     const uri = 'git+https://example.invalid/test/repo.git@main';
     const source = new GitFileSource(uri);
 
-    // Find the cache dir the source would use, and build a real repo there.
-    // (Cache hash is sha256(uri)[:32].)
-    const { createHash } = await import('node:crypto');
-    const hash = createHash('sha256').update(uri).digest('hex').slice(0, 32);
-    workdir = join(cacheRoot, '.lobu-cache', 'sources', hash, 'snapshot');
-    await mkdir(workdir, { recursive: true });
+    workdir = await seedCache(uri);
     await git.init({ fs: nodeFs, dir: workdir, defaultBranch: 'main' });
 
     const commit = async (msg: string) =>
@@ -112,10 +121,7 @@ describe('GitFileSource diffSinceRef', () => {
   test('throws clearly when prevRef is unknown to the local clone', async () => {
     const uri = 'git+https://example.invalid/test/repo2.git@main';
     const source = new GitFileSource(uri);
-    const { createHash } = await import('node:crypto');
-    const hash = createHash('sha256').update(uri).digest('hex').slice(0, 32);
-    workdir = join(cacheRoot, '.lobu-cache', 'sources', hash, 'snapshot');
-    await mkdir(workdir, { recursive: true });
+    workdir = await seedCache(uri);
     await git.init({ fs: nodeFs, dir: workdir, defaultBranch: 'main' });
 
     await writeFile(join(workdir, 'a.json'), '{}');
@@ -130,13 +136,16 @@ describe('GitFileSource diffSinceRef', () => {
     await expect(source.diffSinceRef('0'.repeat(40))).rejects.toThrow(/not present/i);
   });
 
+  test('diffSinceRef without prior fetch() throws on missing meta', async () => {
+    const uri = 'git+https://example.invalid/test/no-fetch.git@main';
+    const source = new GitFileSource(uri);
+    await expect(source.diffSinceRef('deadbeef')).rejects.toThrow(/not fetched|fetch\(\)/i);
+  });
+
   test('diffSinceRef returns empty when prevRef === currentRef', async () => {
     const uri = 'git+https://example.invalid/test/repo3.git@main';
     const source = new GitFileSource(uri);
-    const { createHash } = await import('node:crypto');
-    const hash = createHash('sha256').update(uri).digest('hex').slice(0, 32);
-    workdir = join(cacheRoot, '.lobu-cache', 'sources', hash, 'snapshot');
-    await mkdir(workdir, { recursive: true });
+    workdir = await seedCache(uri);
     await git.init({ fs: nodeFs, dir: workdir, defaultBranch: 'main' });
     await writeFile(join(workdir, 'a.json'), '{}');
     await git.add({ fs: nodeFs, dir: workdir, filepath: 'a.json' });

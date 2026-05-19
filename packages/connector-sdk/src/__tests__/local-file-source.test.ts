@@ -87,6 +87,14 @@ describe('LocalFileSource', () => {
     expect(delta).toEqual({ added: [], modified: [], removed: [] });
   });
 
+  test('diffSinceRef without prior fetch() throws on missing meta', async () => {
+    const uri = pathToFileURL(`${fixtureDir}/`).toString();
+    const source = new LocalFileSource(uri);
+    await expect(source.diffSinceRef('0'.repeat(64))).rejects.toThrow(
+      /not fetched|fetch\(\)/i,
+    );
+  });
+
   test('diffSinceRef against unknown prevRef treats everything as added', async () => {
     const uri = pathToFileURL(`${fixtureDir}/`).toString();
     const source = new LocalFileSource(uri);

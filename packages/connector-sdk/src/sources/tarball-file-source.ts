@@ -34,6 +34,7 @@ import {
   diffManifests,
   readAndVerifyMeta,
   readManifest,
+  requireMeta,
   withSourceLock,
   writeManifest,
   writeMeta,
@@ -136,6 +137,7 @@ export class TarballFileSource implements FileSystemSource {
     if (snapshot.ref === prevRef) return { added: [], modified: [], removed: [] };
 
     return withSourceLock(this.#uri, async () => {
+      await requireMeta(this.#paths.metaPath, this.#uri);
       const prev = await readPerRefManifest(this.#paths.root, prevRef);
       const next = await readManifest(this.#paths.manifestPath);
       if (!next) throw new Error('TarballFileSource: manifest disappeared after fetch');

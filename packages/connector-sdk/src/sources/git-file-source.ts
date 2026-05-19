@@ -33,6 +33,7 @@ import {
   type CachePaths,
   cachePathsFor,
   readAndVerifyMeta,
+  requireMeta,
   withSourceLock,
   writeMeta,
 } from './cache.js';
@@ -131,6 +132,7 @@ export class GitFileSource implements FileSystemSource {
   }
 
   async #diffLocked(prevRef: string): Promise<FileDelta> {
+    await requireMeta(this.#paths.metaPath, this.#uri);
     const dir = this.#paths.snapshotDir;
     const currentRef = await git.resolveRef({ fs: nodeFs, dir, ref: 'HEAD' });
     if (currentRef === prevRef) return { added: [], modified: [], removed: [] };

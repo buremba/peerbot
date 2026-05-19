@@ -30,6 +30,7 @@ import {
   diffManifests,
   readAndVerifyMeta,
   readManifest,
+  requireMeta,
   withSourceLock,
   writeManifest,
   writeMeta,
@@ -100,6 +101,7 @@ export class LocalFileSource implements FileSystemSource {
 
   diffSinceRef(prevRef: string): Promise<FileDelta> {
     return withSourceLock(this.#uri, async () => {
+      await requireMeta(this.#paths.metaPath, this.#uri);
       this.#exclude = await resolveCacheExclude(this.#rootDir);
       const files = await collectFiles(this.#rootDir, this.#exclude);
       const curRef = canonicalManifestRef(files);

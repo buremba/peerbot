@@ -84,6 +84,22 @@ export async function readAndVerifyMeta(
 }
 
 /**
+ * Like `readAndVerifyMeta`, but rejects when the cache is uninitialised.
+ * Use this from `diffSinceRef()` paths — calling diff before fetch is a
+ * caller bug, and a missing meta also means a stale/collided cache dir
+ * should not be silently consumed.
+ */
+export async function requireMeta(metaPath: string, expectedUri: string): Promise<CacheMeta> {
+  const meta = await readAndVerifyMeta(metaPath, expectedUri);
+  if (!meta) {
+    throw new Error(
+      `FileSystemSource: source not fetched yet — call fetch() before diffSinceRef() (${expectedUri})`,
+    );
+  }
+  return meta;
+}
+
+/**
  * Per-source mutex. Same URI → shared `Promise` chain so concurrent
  * `fetch()` calls serialize. Process-local only — fine for the embedded
  * worker model where one worker subprocess owns its cache.

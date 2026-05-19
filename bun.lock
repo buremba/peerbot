@@ -340,6 +340,7 @@
         "@hono/node-server": "^1.13.7",
         "@hono/zod-openapi": "^1.2.1",
         "@lobu/connector-sdk": "workspace:*",
+        "@lobu/connector-worker": "workspace:*",
         "@lobu/core": "workspace:*",
         "@mariozechner/pi-ai": "^0.51.6",
         "@modelcontextprotocol/sdk": "^1.27.1",

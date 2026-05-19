@@ -23,6 +23,10 @@
     "./executor/interface": {
       "import": "./dist/executor/interface.js",
       "types": "./dist/executor/interface.d.ts"
+    },
+    "./compile": {
+      "import": "./dist/compile/index.js",
+      "types": "./dist/compile/index.d.ts"
     }
   },
   "files": [

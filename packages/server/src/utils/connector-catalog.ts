@@ -1,16 +1,13 @@
 import { existsSync } from 'node:fs';
-import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
-import { createRequire } from 'node:module';
-import { tmpdir } from 'node:os';
-import { extname, join, relative, resolve } from 'node:path';
+import { readdir, stat } from 'node:fs/promises';
+import { extname, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { build, type Plugin } from 'esbuild';
-import { EXTERNAL_RUNTIME_DEPS } from '../../../connector-worker/src/runtime-deps';
+import {
+  createConnectorCompiler,
+  findBundledConnectorFile as findInDirs,
+} from '@lobu/connector-worker/compile';
 import { extractConnectorMetadata } from './connector-compiler';
 import logger from './logger';
-
-const require_ = createRequire(import.meta.url);
-const SDK_ENTRY = require_.resolve('@lobu/connector-sdk');
 
 const DEFAULT_CONNECTOR_DIR_CANDIDATES = [
   // Published CLI runtime: packages/cli/scripts/build.cjs copies bundled
@@ -26,42 +23,18 @@ const DEFAULT_CONNECTOR_DIR_CANDIDATES = [
   resolve(process.cwd(), 'connectors'),
 ];
 
-// Connectors declare their npm deps via `import x from 'npm:foo@1.2.3'`. This
-// plugin strips the prefix so esbuild can resolve the bare package against
-// node_modules. When the package isn't installed in the gateway image (e.g.
-// heavyweight deps like `baileys` that only the worker pod needs), we mark
-// the import as external rather than failing the whole bundle. The bundle
-// still emits `import 'baileys'` and the worker — which has those packages
-// installed — can run it. Without this, one un-installable npm dep takes
-// down the entire connector-catalog path, breaking /api/workers/poll for
-// every worker.
-const npmSpecifierPlugin: Plugin = {
-  name: 'npm-specifier',
-  setup(b) {
-    b.onResolve({ filter: /^npm:/ }, async (args) => {
-      const bare = args.path
-        .slice(4)
-        .replace(/^(@[^/]+\/[^/@]+)@[^/]*/, '$1')
-        .replace(/^([^/@]+)@[^/]*/, '$1');
-      const resolved = await b.resolve(bare, {
-        resolveDir: args.resolveDir,
-        kind: args.kind,
-      });
-      if (resolved.errors.length > 0) {
-        // Package isn't installed in this image — externalize so the bundle
-        // still produces. Worker runtime supplies the implementation.
-        // Log so an actual typo or missing-dep regression is diagnosable
-        // rather than silently producing a bundle that crashes at runtime.
-        logger.warn(
-          { package: bare, importer: args.importer },
-          'externalising npm:* import — package not resolvable in gateway image (worker runtime must provide it)'
-        );
-        return { path: bare, external: true, errors: [], warnings: [] };
-      }
-      return resolved;
-    });
+const connectorCompiler = createConnectorCompiler({
+  onUnresolvedNpm: ({ bareSpecifier, importer }) => {
+    // Package isn't installed in this image — externalize so the bundle
+    // still produces. Worker runtime supplies the implementation.
+    // Log so an actual typo or missing-dep regression is diagnosable
+    // rather than silently producing a bundle that crashes at runtime.
+    logger.warn(
+      { package: bareSpecifier, importer },
+      'externalising npm:* import — package not resolvable in gateway image (worker runtime must provide it)'
+    );
   },
-};
+});
 
 type CachedMetadata =
   | {
@@ -134,22 +107,7 @@ const bundledFileCache = new Map<string, string | null>();
 export function findBundledConnectorFile(key: string): string | null {
   const cached = bundledFileCache.get(key);
   if (cached !== undefined) return cached;
-  // Mirror the worker-side resolver in compile-connector.ts: try the
-  // subdir layout first (`browser.evaluate` → `browser/evaluate.ts`) and
-  // fall back to the flat underscore convention (`chrome.tabs` →
-  // `chrome_tabs.ts`). Keep these in sync if either side changes.
-  const candidates = [`${key.replace(/\./g, '/')}.ts`, `${key.replace(/\./g, '_')}.ts`];
-  let found: string | null = null;
-  outer: for (const dir of DEFAULT_CONNECTOR_DIR_CANDIDATES) {
-    for (const fileName of candidates) {
-      const filePath = resolve(dir, fileName);
-      if (!filePath.startsWith(`${dir}/`)) continue;
-      if (existsSync(filePath)) {
-        found = filePath;
-        break outer;
-      }
-    }
-  }
+  const found = findInDirs(key, DEFAULT_CONNECTOR_DIR_CANDIDATES);
   bundledFileCache.set(key, found);
   return found;
 }
@@ -222,81 +180,11 @@ export function getConfiguredConnectorCatalogUris(rawUris?: string): string[] {
   return [...normalized];
 }
 
-// Compiling a connector spawns esbuild; on the hot paths (feed sync, worker
-// poll) the same bundled .ts file is recompiled repeatedly. Cache the output
-// keyed by file mtime so a recompile only happens when the source actually
-// changes. Process restart (= deploy, = SDK rebuild) clears it.
-//
-// LRU-capped: each entry is the full compiled bundle (~13 MB today, smaller
-// once non-essential transitive deps are externalized — see
-// EXTERNAL_RUNTIME_DEPS). Before the cap, prod was seeing the cache hold
-// every connector's bundle indefinitely (~29 × 13 MB = 384 MB resident, the
-// dominant heap occupant under the 1 GiB pod limit; see lobu#771 postmortem
-// for the heap-snapshot trail). The cap keeps the cache to the working set
-// of recently-used connectors and lets V8 reclaim the rest.
-const COMPILED_FILE_CACHE_MAX = 8;
-const compiledFileCache = new Map<string, { mtimeMs: number; code: string }>();
-
-function touchCacheEntry(filePath: string, entry: { mtimeMs: number; code: string }): void {
-  compiledFileCache.delete(filePath);
-  compiledFileCache.set(filePath, entry);
-  while (compiledFileCache.size > COMPILED_FILE_CACHE_MAX) {
-    const oldest = compiledFileCache.keys().next().value;
-    if (oldest === undefined) break;
-    compiledFileCache.delete(oldest);
-  }
-}
-
-export async function compileConnectorFromFile(filePath: string): Promise<string> {
-  let mtimeMs: number | null = null;
-  try {
-    mtimeMs = (await stat(filePath)).mtimeMs;
-    const cached = compiledFileCache.get(filePath);
-    if (cached && cached.mtimeMs === mtimeMs) {
-      // Move to end of insertion order = mark as most-recently-used.
-      touchCacheEntry(filePath, cached);
-      return cached.code;
-    }
-  } catch {
-    // stat failed — fall through and let the build surface the real error.
-  }
-
-  const tmpDir = await mkdtemp(join(tmpdir(), 'lobu-connector-'));
-  const outPath = join(tmpDir, 'out.mjs');
-
-  try {
-    await build({
-      entryPoints: [filePath],
-      outfile: outPath,
-      bundle: true,
-      format: 'esm',
-      platform: 'node',
-      target: 'node20',
-      alias: { lobu: SDK_ENTRY, '@lobu/connector-sdk': SDK_ENTRY },
-      banner: {
-        js: `import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);`,
-      },
-      plugins: [npmSpecifierPlugin],
-      // Single source of truth: EXTERNAL_RUNTIME_DEPS in
-      // packages/connector-worker/src/runtime-deps.ts. Only natives /
-      // runtime-installed deps belong there (playwright ships browsers via
-      // `npx playwright install`). Pure JS deps (pino, link-preview-js) must be
-      // bundled — externalising them previously caused every connector run to
-      // fail with "Cannot find package 'pino'" because the worker image didn't
-      // ship them.
-      external: [...EXTERNAL_RUNTIME_DEPS],
-      write: true,
-      minify: false,
-      sourcemap: false,
-    });
-
-    const code = await readFile(outPath, 'utf-8');
-    if (mtimeMs !== null) touchCacheEntry(filePath, { mtimeMs, code });
-    return code;
-  } finally {
-    await rm(tmpDir, { recursive: true, force: true });
-  }
-}
+// `compileConnectorFromFile` is owned by `@lobu/connector-worker/compile`
+// (LRU-capped at 8 entries, keyed by file mtime, identical to the previous
+// implementation that lived here — see lobu#771 for the cap rationale).
+// Re-exported here so existing server callers keep their import paths.
+export const compileConnectorFromFile = connectorCompiler.compileConnectorFromFile;
 
 async function extractConnectorCatalogMetadata(
   filePath: string

@@ -3,23 +3,28 @@
  *
  * URI shape: `file:///absolute/path/`
  *
- *  - `fetch()` does NOT copy files. The snapshot points at the local path
- *    directly. It DOES compute and persist a manifest in the SDK cache so
- *    `diffSinceRef()` can compare hashes across calls.
+ *  - `fetch()` stream-copies the source tree into a per-ref cache dir
+ *    (`${WORKSPACE_DIR}/.lobu-cache/sources/<uri-hash>/refs/<ref>/`),
+ *    sealing each file's sha256 during the copy so the manifest's hashes
+ *    record exactly the bytes that landed in the cache. The returned
+ *    Snapshot reads from that locked, read-only per-ref dir — never the
+ *    live source — so `snapshot.ref` always agrees with
+ *    `snapshot.readFile(path)` even under concurrent writes against the
+ *    source.
  *  - `ref` is the canonical manifest hash (sha256 of sorted `(path, sha256)`
  *    pairs).
- *  - `diffSinceRef(prevRef)`: re-walks the directory, builds a fresh manifest,
- *    and diffs it against whichever stored manifest happens to match
- *    `prevRef`. If no stored manifest matches (i.e. the cache was cleared
- *    between runs), the diff is empty for `added` / `modified` and the prev
- *    side is treated as unknown — see `diffSinceRef` JSDoc.
+ *  - `diffSinceRef(prevRef)`: re-walks the live directory, builds a fresh
+ *    manifest, and diffs it against the stored per-ref manifest that
+ *    matches `prevRef`. If no stored manifest matches (cache was cleared
+ *    between runs), the diff treats every current file as `added`.
  */
 
-import { constants as fsConstants } from 'node:fs';
+import { createReadStream, createWriteStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import {
-  copyFile,
+  chmod,
   mkdir,
+  mkdtemp,
   readFile,
   readdir,
   realpath,
@@ -27,7 +32,9 @@ import {
   rm,
   stat,
 } from 'node:fs/promises';
+import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import type { FileDelta, FileSystemSource, Snapshot } from '../file-source.js';
 import {
@@ -90,30 +97,43 @@ export class LocalFileSource implements FileSystemSource {
       // calls (different process, different cwd).
       this.#exclude = await resolveCacheExclude(this.#rootDir);
 
-      // Race-free pipeline:
+      // Race-free pipeline (two layers of immutability):
       //
       //  1. List the source's relative file paths (no byte reads yet).
-      //  2. Copy each into a staging dir.
-      //  3. Hash bytes FROM THE STAGED COPY — so the hash and the bytes the
-      //     Snapshot will later read are identical even if the live source
-      //     gets rewritten between step 2 and step 3.
-      //  4. Compute the canonical ref from those hashes.
-      //  5. If `refs/<ref>` already exists (same content already cached),
-      //     drop the staging dir. Else rename staging into place atomically.
+      //  2. For each file: stream-pipe the source bytes through a sha256 hash
+      //     AND into a staging copy in a single pass. The per-file hash is
+      //     SEALED at copy time — the bytes that landed in staging are
+      //     identical to the bytes the hash was computed over, and there is
+      //     no second pass over staging that could observe a post-copy
+      //     mutation.
+      //  3. The staging dir lives in `os.tmpdir()` (NOT under the cache root)
+      //     with a crypto-random 128-bit suffix and mode 0700. An attacker
+      //     who can guess our cache root layout still has to guess a 128-bit
+      //     name AND defeat dir permissions before they can mutate a file
+      //     mid-copy. The cache root itself never contains a staging dir.
+      //  4. Compute the canonical ref from the sealed per-file hashes.
+      //  5. If `refs/<ref>` already exists, drop staging; else rename staging
+      //     into the per-ref dir. After rename, chmod every file to 0400 and
+      //     the dir tree to 0500 so post-rename mutation through the per-ref
+      //     dir gets EACCES. This pins `snapshot.readFile()` bytes to the
+      //     same bytes the hash was sealed over.
       //
-      // The Snapshot reads from the per-ref dir — never from the live source —
-      // so `snapshot.ref` matches `sha256(snapshot.readFile(path))` for every
-      // tracked path no matter what races happen on the source filesystem.
+      // The Snapshot reads from the per-ref dir — never from the live source
+      // and never from a writable staging dir — so `snapshot.ref` matches
+      // `sha256(snapshot.readFile(path))` for every tracked path no matter
+      // what races happen on the source filesystem.
       const relPaths = await listRelativeFiles(this.#rootDir, this.#exclude);
-      const stagingDir = `${this.#paths.root}/refs/.staging.${randomSuffix()}`;
+      const stagingDir = await mkdtemp(join(tmpdir(), 'lobu-stage-'));
+      // Tighten staging permissions: mkdtemp creates 0700 on POSIX, but be
+      // explicit so the chmod is also applied on filesystems with a wider
+      // default umask.
+      await chmod(stagingDir, 0o700).catch(() => undefined);
       let stagingMoved = false;
       let refDir: string;
       let files: ManifestEntry[];
       let ref: string;
       try {
-        await mkdir(stagingDir, { recursive: true });
-        await copyFilesToStaging(this.#rootDir, stagingDir, relPaths);
-        files = await hashStagedFiles(stagingDir, relPaths);
+        files = await streamCopyAndHash(this.#rootDir, stagingDir, relPaths);
         ref = canonicalManifestRef(files);
         refDir = perRefDir(this.#paths.root, ref);
         if (await dirExists(refDir)) {
@@ -121,8 +141,15 @@ export class LocalFileSource implements FileSystemSource {
           await rm(stagingDir, { recursive: true, force: true });
           stagingMoved = true;
         } else {
+          // Ensure the parent refs/ dir exists — staging lives in tmpdir so
+          // we can't rely on `refs/` having been created by mkdtemp.
+          await mkdir(join(this.#paths.root, 'refs'), { recursive: true });
           await rename(stagingDir, refDir);
           stagingMoved = true;
+          // Lock the per-ref tree read-only AFTER rename. Any post-rename
+          // write through the per-ref dir path now gets EACCES — so the
+          // bytes a Snapshot reads can't drift from the sealed manifest.
+          await lockTreeReadOnly(refDir);
         }
       } finally {
         if (!stagingMoved) {
@@ -214,10 +241,6 @@ async function dirExists(p: string): Promise<boolean> {
 /** Max number of `refs/<hash>` per-ref directories kept on disk. */
 const MAX_REF_DIRS = 3;
 
-function randomSuffix(): string {
-  return Math.random().toString(36).slice(2, 10);
-}
-
 /** List relative paths from the source root, applying the exclude predicate. */
 async function listRelativeFiles(
   rootDir: string,
@@ -232,35 +255,100 @@ async function listRelativeFiles(
 }
 
 /**
- * Copy each tracked file from `sourceRoot` into `stagingDir`. Prefers
- * copy-on-write (`COPYFILE_FICLONE`) on filesystems that support it
- * (APFS, btrfs, xfs/reflink); falls back to a full byte copy elsewhere.
+ * Stream-copy each tracked file from `sourceRoot` into `stagingDir`, feeding
+ * the bytes through a sha256 hasher in the same pass. Per-file hash is
+ * SEALED at copy time — the manifest entry records exactly the bytes that
+ * were written into staging. There is no second pass over staging that
+ * could observe a post-copy mutation.
  *
- * Why not hardlink: a hardlink shares the underlying inode. A subsequent
- * truncate-and-rewrite on the source file mutates the bytes the snapshot
- * is reading — the opposite of immutability. Copy-on-write copies (or
- * full copies) own their data, so writes through the source path don't
- * leak into the pinned snapshot.
+ * Why streaming instead of copy-on-write + post-hash: COW (`COPYFILE_FICLONE`)
+ * shares pages with the source until either side writes; a concurrent
+ * truncate-and-rewrite on the source breaks the share and may race the
+ * hash pass. A read-then-hash-then-write streaming pipe seals the bytes
+ * the instant they leave the source.
  */
-async function copyFilesToStaging(
+async function streamCopyAndHash(
   sourceRoot: string,
   stagingDir: string,
   relPaths: string[],
-): Promise<void> {
+): Promise<ManifestEntry[]> {
+  const out: ManifestEntry[] = [];
   for (const rel of relPaths) {
     const src = join(sourceRoot, rel);
     const dst = join(stagingDir, rel);
     await mkdir(dirname(dst), { recursive: true });
-    try {
-      await copyFile(src, dst, fsConstants.COPYFILE_FICLONE);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOTSUP') {
-        await copyFile(src, dst);
-      } else {
-        throw err;
+    const hash = createHash('sha256');
+    const reader = createReadStream(src);
+    reader.on('data', (chunk) => {
+      hash.update(chunk as Buffer);
+    });
+    await pipeline(reader, createWriteStream(dst, { mode: 0o400 }));
+    out.push({ path: rel, sha256: hash.digest('hex') });
+  }
+  return out;
+}
+
+/**
+ * Recursively chmod a freshly-installed per-ref dir to read-only:
+ *   - regular files → 0400 (owner read)
+ *   - directories   → 0500 (owner read+execute, no write)
+ *
+ * Locks ordering: chmod files first, dirs after — once a dir is 0500 you
+ * can still read its contents but can't add or rename entries inside it.
+ * That ordering means each file is locked before its parent dir, which is
+ * harmless either way; do it for symmetry with the unlock path used by
+ * `pruneOldRefDirs`.
+ */
+async function lockTreeReadOnly(root: string): Promise<void> {
+  // Two-pass walk: collect everything first, then chmod files then dirs.
+  // We can't rely on walkDirectoryRelative to yield dirs, so do a manual
+  // depth-first walk and track both.
+  const files: string[] = [];
+  const dirs: string[] = [];
+  async function walk(dir: string): Promise<void> {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const ent of entries) {
+      const abs = join(dir, ent.name);
+      if (ent.isDirectory()) {
+        dirs.push(abs);
+        await walk(abs);
+      } else if (ent.isFile()) {
+        files.push(abs);
       }
     }
   }
+  await walk(root);
+  for (const f of files) await chmod(f, 0o400).catch(() => undefined);
+  for (const d of dirs) await chmod(d, 0o500).catch(() => undefined);
+  await chmod(root, 0o500).catch(() => undefined);
+}
+
+/**
+ * Reverse `lockTreeReadOnly` so `rm -rf` can delete the tree. Restores
+ * write permission to the owner on every dir + file, depth-first so we
+ * never try to descend into a still-locked directory.
+ */
+async function unlockTree(root: string): Promise<void> {
+  await chmod(root, 0o700).catch(() => undefined);
+  async function walk(dir: string): Promise<void> {
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw err;
+    }
+    for (const ent of entries) {
+      const abs = join(dir, ent.name);
+      if (ent.isDirectory()) {
+        await chmod(abs, 0o700).catch(() => undefined);
+        await walk(abs);
+      } else if (ent.isFile()) {
+        await chmod(abs, 0o600).catch(() => undefined);
+      }
+    }
+  }
+  await walk(root);
 }
 
 /**
@@ -285,33 +373,18 @@ async function collectFilesFromLive(
 }
 
 /**
- * Hash files in the staging dir. The hash is computed from the BYTES THAT
- * WERE COPIED, so the returned manifest is consistent with what the
- * Snapshot will later expose via `readFile()` — even if the live source
- * was rewritten between the copy and the hash.
- */
-async function hashStagedFiles(
-  stagingDir: string,
-  relPaths: string[],
-): Promise<ManifestEntry[]> {
-  const out: ManifestEntry[] = [];
-  for (const rel of relPaths) {
-    const buf = await readFile(join(stagingDir, rel));
-    const sha = createHash('sha256').update(buf).digest('hex');
-    out.push({ path: rel, sha256: sha });
-  }
-  return out;
-}
-
-/**
  * Keep at most `keep` per-ref directories under `${root}/refs/`. Sorted by
- * mtime descending; the oldest are rm-rf'd. Snapshots already handed out
- * keep working as long as their backing dir wasn't pruned — `keep=3`
- * accommodates a fresh fetch plus two in-flight overlapping syncs.
+ * mtime descending; the oldest are rm-rf'd. Per-ref dirs are locked
+ * read-only (0500) after install, so `rm -rf` would EACCES on them;
+ * unlock before remove. Snapshots already handed out keep working as
+ * long as their backing dir wasn't pruned — `keep=3` accommodates a
+ * fresh fetch plus two in-flight overlapping syncs.
  *
- * Ignores `.staging.*` directories (in-progress copies) and the per-ref
- * manifest JSON files (`<ref>.json`) which are kept indefinitely so
- * historical diffs work even after the data dir is gone.
+ * Skips `.staging.*` legacy dirs (staging now lives outside the cache
+ * root entirely; the check is kept to clean up any leftover from older
+ * code). Per-ref manifest JSON files (`<ref>.json`) are files, not
+ * directories, and are kept indefinitely so historical diffs work even
+ * after the data dir is gone.
  */
 async function pruneOldRefDirs(root: string, keep: number): Promise<void> {
   const refsRoot = join(root, 'refs');
@@ -322,14 +395,14 @@ async function pruneOldRefDirs(root: string, keep: number): Promise<void> {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw err;
   }
-  const candidates: Array<{ name: string; mtimeMs: number }> = [];
+  const candidates: Array<{ name: string; abs: string; mtimeMs: number }> = [];
   for (const ent of entries) {
     if (!ent.isDirectory()) continue;
     if (ent.name.startsWith('.staging.')) continue;
     const abs = join(refsRoot, ent.name);
     try {
       const s = await stat(abs);
-      candidates.push({ name: ent.name, mtimeMs: s.mtimeMs });
+      candidates.push({ name: ent.name, abs, mtimeMs: s.mtimeMs });
     } catch {
       // Skip — concurrent prune from another process is fine.
     }
@@ -337,7 +410,10 @@ async function pruneOldRefDirs(root: string, keep: number): Promise<void> {
   if (candidates.length <= keep) return;
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
   for (const c of candidates.slice(keep)) {
-    await rm(join(refsRoot, c.name), { recursive: true, force: true }).catch(() => undefined);
+    // Unlock the read-only tree first; rm -rf would EACCES on dirs in
+    // mode 0500.
+    await unlockTree(c.abs).catch(() => undefined);
+    await rm(c.abs, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 

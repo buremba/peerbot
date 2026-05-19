@@ -210,20 +210,14 @@ function Hero() {
           for you
         </p>
         <div class="hero-rise hero-rise-5 mx-auto mt-10 max-w-[44rem]">
-          <TerminalWindow
-            npxCopied={npxCopied}
-            onCopyNpx={onCopyNpx}
-          />
+          <TerminalWindow npxCopied={npxCopied} onCopyNpx={onCopyNpx} />
         </div>
       </Container>
     </section>
   );
 }
 
-function TerminalWindow(props: {
-  npxCopied: boolean;
-  onCopyNpx: () => void;
-}) {
+function TerminalWindow(props: { npxCopied: boolean; onCopyNpx: () => void }) {
   return (
     <div
       class="overflow-hidden rounded-lg border"
@@ -338,14 +332,28 @@ function GithubIcon() {
  * BaseLayout.astro defines window.AsciinemaPlayer; we mount it into the
  * container on first paint. If the cast 404s the container stays empty —
  * the page never errors.
+ *
+ * Playback is gated so the cast doesn't start on its own:
+ * - Devices with hover capability (desktop with a mouse) wait for the
+ *   user to hover over the player, then play once on the first enter.
+ * - Devices without hover (touch / mobile) wait 5 seconds after mount,
+ *   then play once.
+ *
+ * The ref-callback captures the player instance and the listener /
+ * timer cleanup on `node.__lobuHeroCleanup` so a follow-up render (or
+ * unmount) can detach everything cleanly.
  */
 function HeroAsciinema() {
   return (
     <div
       class="w-full overflow-hidden"
       ref={(node) => {
+        type CleanupNode = HTMLDivElement & {
+          __lobuHeroCleanup?: () => void;
+        };
         if (!node) return;
-        if (node.dataset.asciinemaMounted === "1") return;
+        const typedNode = node as CleanupNode;
+        if (typedNode.dataset.asciinemaMounted === "1") return;
         const player =
           typeof window !== "undefined"
             ? (
@@ -355,21 +363,52 @@ function HeroAsciinema() {
                       src: string,
                       el: Element,
                       opts?: Record<string, unknown>
-                    ) => unknown;
+                    ) => { play?: () => void } | undefined;
                   };
                 }
               ).AsciinemaPlayer
             : null;
         if (!player) return;
-        player.create(CAST_SRC, node, {
-          autoPlay: true,
+        const instance = player.create(CAST_SRC, node, {
+          autoPlay: false,
           loop: true,
           idleTimeLimit: 2,
           fit: "width",
           terminalFontSize: "13px",
           theme: "asciinema",
         });
-        node.dataset.asciinemaMounted = "1";
+        typedNode.dataset.asciinemaMounted = "1";
+
+        let started = false;
+        const startOnce = () => {
+          if (started) return;
+          started = true;
+          try {
+            instance?.play?.();
+          } catch {
+            // asciinema-player's play() is a no-op pre-init; ignore.
+          }
+        };
+
+        const canHover =
+          typeof window !== "undefined" &&
+          typeof window.matchMedia === "function"
+            ? window.matchMedia("(hover: hover)").matches
+            : false;
+
+        let cleanup: () => void;
+        if (canHover) {
+          const onEnter = () => {
+            startOnce();
+            node.removeEventListener("mouseenter", onEnter);
+          };
+          node.addEventListener("mouseenter", onEnter);
+          cleanup = () => node.removeEventListener("mouseenter", onEnter);
+        } else {
+          const timer = window.setTimeout(startOnce, 5000);
+          cleanup = () => window.clearTimeout(timer);
+        }
+        typedNode.__lobuHeroCleanup = cleanup;
       }}
       style={{
         backgroundColor: "var(--color-landing-code-bg)",

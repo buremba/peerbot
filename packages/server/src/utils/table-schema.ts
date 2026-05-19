@@ -271,7 +271,16 @@ export const QUERYABLE_SCHEMA = {
     // user (excludes: email, phoneNumber, phoneNumberVerified)
     {
       name: 'user',
-      columns: cols('id', 'name', 'emailVerified', 'image', 'createdAt', 'updatedAt', 'username'),
+      columns: cols(
+        'id',
+        'name',
+        'emailVerified',
+        'image',
+        'createdAt',
+        'updatedAt',
+        'username',
+        'principal_kind'
+      ),
     },
     // feeds (excludes: checkpoint)
     {

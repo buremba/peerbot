@@ -556,7 +556,49 @@ async function startEmbeddings(): Promise<ReturnType<typeof fork> | null> {
   return child;
 }
 
+/**
+ * Defensive error → plain-object serializer for the top-level boot catch.
+ *
+ * Mirrors server.ts's helper (see #766): `JSON.stringify(new Error('boom'))`
+ * returns `{}` because Error's own properties are non-enumerable. Walks the
+ * error manually so a boot failure (ZodError, AggregateError, wrapped cause
+ * chain, etc.) always carries message + stack regardless of pino serializer
+ * config or log-shipper field stripping.
+ */
+function serializeBootError(err: unknown): Record<string, unknown> {
+  if (err === null || err === undefined) return { value: String(err) };
+  if (typeof err !== 'object') return { value: String(err), type: typeof err };
+  const e = err as Error & {
+    code?: unknown;
+    cause?: unknown;
+    issues?: unknown;
+    errors?: unknown;
+  };
+  const out: Record<string, unknown> = {
+    type: e?.constructor?.name ?? 'Error',
+    message: typeof e.message === 'string' ? e.message : String(e),
+  };
+  if (typeof e.stack === 'string') out.stack = e.stack;
+  if (e.code !== undefined) out.code = e.code;
+  if (Array.isArray(e.issues)) out.issues = e.issues;
+  if (Array.isArray(e.errors)) {
+    out.errors = e.errors.map((child) => serializeBootError(child));
+  }
+  if (e.cause !== undefined && e.cause !== err) {
+    out.cause = serializeBootError(e.cause);
+  }
+  return out;
+}
+
 main().catch((error) => {
-  logger.error({ err: error }, 'Failed to start');
+  const serialized = serializeBootError(error);
+  logger.error({ err: serialized, error: serialized }, 'Failed to start');
+  // Plain-text stderr fallback for log shippers that drop structured fields.
+  process.stderr.write(
+    `Failed to start: ${serialized.type ?? 'Error'}: ${serialized.message ?? ''}\n`
+  );
+  if (typeof serialized.stack === 'string') {
+    process.stderr.write(`${serialized.stack}\n`);
+  }
   process.exit(1);
 });

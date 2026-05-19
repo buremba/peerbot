@@ -48,7 +48,7 @@ Skip silently when:
 - `isDraft == true`
 - Labels include `triage:hold`
 - The most recent `<!-- triage:summary -->` comment records the same `headRefOid` AND classification `needs-human`. **Only `needs-human` short-circuits.** `auto-mergeable` must be re-evaluated on every event because a later `CHANGES_REQUESTED` review on the same head should downgrade the decision (without branch protection, an already-queued `--auto --squash` would otherwise still merge after CI green). `needs-fixes` naturally re-runs because the agent's own push changes the head SHA.
-- `additions + deletions > 1000` and `skip-size-check` not in labels (already failed in `pr-validation.yml`)
+- `additions + deletions > 1000` and `skip-size-check` not in labels (size discipline; was previously enforced by the removed `pr-validation.yml`)
 
 Classify as `needs-human` and exit when:
 

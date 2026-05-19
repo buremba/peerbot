@@ -1,0 +1,81 @@
+name: pi-review
+
+# Shadow-mode AI code review by `pi` (Mario Zechner's pi-coding-agent).
+# Posts a JSON verdict per docs/REVIEW_SCHEMA.md as a check-run.
+# Always conclusion=neutral; never gates merges.
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+
+jobs:
+  pi-review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # pi may walk history to understand the diff; give it room.
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+
+      - name: Install pi
+        run: bun add -g @mariozechner/pi-coding-agent
+
+      - name: Run pi review
+        id: review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -o pipefail
+          VERDICT="$(./scripts/run-pi-review.sh "$PR")"
+          # Persist for the post-check step.
+          echo "$VERDICT" > /tmp/verdict.json
+          # Cheap one-line summary for the run log.
+          jq -r '"confidence=\(.confidence) bugs=\(.bugs) slop=\(.slop) blockers=\(.blockers|length)"' /tmp/verdict.json
+
+      - name: Post check-run
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ -s /tmp/verdict.json ]; then
+            HEADLINE="$(jq -r '"confidence \(.confidence), bugs \(.bugs), slop \(.slop), blockers \(.blockers|length)"' /tmp/verdict.json)"
+            PRETTY="$(jq . /tmp/verdict.json)"
+            SUMMARY="$(printf '%s\n\n```json\n%s\n```\n\n_Shadow mode — verdict does not gate merges. See `docs/REVIEW_SCHEMA.md`._' "$HEADLINE" "$PRETTY")"
+            CONCLUSION="neutral"
+            TITLE="pi: $HEADLINE"
+          else
+            SUMMARY="pi-review failed to produce a verdict. See workflow logs."
+            CONCLUSION="neutral"
+            TITLE="pi: error"
+          fi
+          jq -n \
+            --arg name "pi-review" \
+            --arg head_sha "$HEAD_SHA" \
+            --arg conclusion "$CONCLUSION" \
+            --arg title "$TITLE" \
+            --arg summary "$SUMMARY" \
+            '{name:$name, head_sha:$head_sha, status:"completed", conclusion:$conclusion, output:{title:$title, summary:$summary}}' \
+            > /tmp/check-run.json
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${{ github.repository }}/check-runs" \
+            --input /tmp/check-run.json

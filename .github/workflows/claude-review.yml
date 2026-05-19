@@ -1,0 +1,89 @@
+name: claude-review
+
+# Shadow-mode AI code review by Claude Code (anthropics/claude-code-action).
+# Posts a JSON verdict per docs/REVIEW_SCHEMA.md as a check-run.
+# Always conclusion=neutral; never gates merges.
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE'
+
+jobs:
+  claude-review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: write
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Run Claude review
+        id: review
+        uses: anthropics/claude-code-action@beta
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          additional_permissions: |
+            actions: read
+          # Direct-prompt mode: no @claude trigger required. The action runs
+          # Claude Code headless against this prompt and writes the result
+          # to ${{ steps.review.outputs.execution_file }}.
+          direct_prompt: |
+            Read `prompts/review-prompt.md` and follow it exactly for PR #${{ github.event.pull_request.number }}.
+            Emit ONLY the JSON verdict — no prose, no Markdown fences.
+
+      - name: Extract verdict + post check-run
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}
+        run: |
+          set -o pipefail
+          VERDICT=""
+          if [ -n "${EXECUTION_FILE:-}" ] && [ -s "$EXECUTION_FILE" ]; then
+            # claude-code-action writes a JSONL transcript; the final
+            # assistant text message is the verdict body.
+            VERDICT="$(jq -rs '
+              [.[] | select(.type == "assistant")
+                   | .message.content[]?
+                   | select(.type == "text") | .text] | last // empty
+            ' "$EXECUTION_FILE")"
+            # Strip fences if Claude added them despite instructions.
+            VERDICT="$(printf '%s\n' "$VERDICT" | sed -e 's/^```json//' -e 's/^```//' -e 's/```$//')"
+          fi
+
+          if [ -n "$VERDICT" ] && echo "$VERDICT" | jq -e . >/dev/null 2>&1; then
+            echo "$VERDICT" > /tmp/verdict.json
+            HEADLINE="$(jq -r '"confidence \(.confidence), bugs \(.bugs), slop \(.slop), blockers \(.blockers|length)"' /tmp/verdict.json)"
+            PRETTY="$(jq . /tmp/verdict.json)"
+            SUMMARY="$(printf '%s\n\n```json\n%s\n```\n\n_Shadow mode — verdict does not gate merges. See `docs/REVIEW_SCHEMA.md`._' "$HEADLINE" "$PRETTY")"
+            TITLE="claude: $HEADLINE"
+          else
+            SUMMARY="claude-review failed to produce a valid JSON verdict. See workflow logs."
+            TITLE="claude: error"
+          fi
+
+          jq -n \
+            --arg name "claude-review" \
+            --arg head_sha "$HEAD_SHA" \
+            --arg title "$TITLE" \
+            --arg summary "$SUMMARY" \
+            '{name:$name, head_sha:$head_sha, status:"completed", conclusion:"neutral", output:{title:$title, summary:$summary}}' \
+            > /tmp/check-run.json
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${{ github.repository }}/check-runs" \
+            --input /tmp/check-run.json

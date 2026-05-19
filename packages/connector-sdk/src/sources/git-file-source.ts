@@ -37,7 +37,7 @@ import {
   withSourceLock,
   writeMeta,
 } from './cache.js';
-import { DirectorySnapshot } from './snapshot.js';
+import { GitSnapshot } from './git-snapshot.js';
 
 const DEFAULT_BRANCH = 'main';
 
@@ -123,8 +123,9 @@ export class GitFileSource implements FileSystemSource {
     const ref = await git.resolveRef({ fs: nodeFs, dir, ref: 'HEAD' });
     await writeMeta(this.#paths.metaPath, { uri: this.#uri, kind: 'git' });
 
-    // Hide `.git/` from the connector — repo metadata is implementation detail.
-    return new DirectorySnapshot(dir, ref, { exclude: isGitInternalPath });
+    // Read from the captured commit's tree/blobs — immutable view even if a
+    // later fetch() moves HEAD or rewrites the working tree on disk.
+    return new GitSnapshot(dir, ref, nodeFs, { exclude: isGitInternalPath });
   }
 
   diffSinceRef(prevRef: string): Promise<FileDelta> {

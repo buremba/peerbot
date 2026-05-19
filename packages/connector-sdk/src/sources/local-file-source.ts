@@ -15,10 +15,11 @@
  *    side is treated as unknown — see `diffSinceRef` JSDoc.
  */
 
+import { constants as fsConstants } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { readFile, realpath, stat } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { join, relative, sep } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import type { FileDelta, FileSystemSource, Snapshot } from '../file-source.js';
 import {
   type CachePaths,
@@ -72,8 +73,6 @@ export class LocalFileSource implements FileSystemSource {
         throw new Error(`LocalFileSource: ${this.#rootDir} is not a directory`);
       }
 
-      // Cache root is opaque metadata only — no file copies for `file://`.
-      const { mkdir } = await import('node:fs/promises');
       await mkdir(this.#paths.root, { recursive: true });
       await readAndVerifyMeta(this.#paths.metaPath, this.#uri);
 
@@ -90,12 +89,23 @@ export class LocalFileSource implements FileSystemSource {
         fetched_at: new Date().toISOString(),
       };
 
+      // Materialise an immutable snapshot of the source as it exists right
+      // now into `${root}/refs/<ref>/`. Hardlink each file (cheap, no
+      // bytes copied); fall back to a real copy on cross-device boundaries
+      // (`EXDEV`). Once installed, the per-ref dir is never overwritten,
+      // so any Snapshot holding it observes stable bytes even if the source
+      // mutates underneath.
+      const refDir = perRefDir(this.#paths.root, ref);
+      if (!(await dirExists(refDir))) {
+        await installRefDir(this.#rootDir, refDir, files);
+      }
+
       await writeManifest(this.#paths.manifestPath, manifest);
       await writeMeta(this.#paths.metaPath, { uri: this.#uri, kind: 'local' });
       // Also persist a per-ref copy so diffSinceRef can look up prior refs.
       await writePerRefManifest(this.#paths.root, manifest);
 
-      return new DirectorySnapshot(this.#rootDir, ref, { exclude: this.#exclude });
+      return new DirectorySnapshot(refDir, ref);
     });
   }
 
@@ -151,6 +161,62 @@ async function resolveCacheExclude(
   const posixRel = sep === '/' ? rel : rel.split(sep).join('/');
   const prefix = `${posixRel}/`;
   return (relPath) => relPath === posixRel || relPath.startsWith(prefix);
+}
+
+function perRefDir(root: string, ref: string): string {
+  return join(root, 'refs', ref);
+}
+
+async function dirExists(p: string): Promise<boolean> {
+  const s = await stat(p).catch(() => null);
+  return !!s && s.isDirectory();
+}
+
+/**
+ * Build `${refDir}` by copying each tracked file under it. Prefers
+ * copy-on-write (`COPYFILE_FICLONE`) on filesystems that support it
+ * (APFS, btrfs, xfs/reflink) — cheap and isolates writes. Falls back to
+ * a full byte copy on filesystems that don't support reflinks.
+ *
+ * Stages into a sibling `.tmp.<n>` dir then renames into place so a crash
+ * leaves only the staging dir behind (cleaned by the next install attempt)
+ * and never a half-populated refDir.
+ *
+ * Why not hardlink: a hardlink shares the underlying inode. A subsequent
+ * truncate-and-rewrite on the source file mutates the bytes the snapshot
+ * is reading — the opposite of immutability. Copy-on-write copies (or
+ * full copies) own their data, so writes through the source path don't
+ * leak into the pinned snapshot.
+ */
+async function installRefDir(
+  sourceRoot: string,
+  refDir: string,
+  files: ManifestEntry[],
+): Promise<void> {
+  const stagingDir = `${refDir}.tmp.${Math.random().toString(36).slice(2, 10)}`;
+  try {
+    await mkdir(stagingDir, { recursive: true });
+    for (const f of files) {
+      const src = join(sourceRoot, f.path);
+      const dst = join(stagingDir, f.path);
+      await mkdir(dirname(dst), { recursive: true });
+      try {
+        // COPYFILE_FICLONE: reflink if the FS supports it, full copy otherwise.
+        await copyFile(src, dst, fsConstants.COPYFILE_FICLONE);
+      } catch (err) {
+        // Fallback for kernels/FSes that reject the FICLONE flag outright.
+        if ((err as NodeJS.ErrnoException).code === 'ENOTSUP') {
+          await copyFile(src, dst);
+        } else {
+          throw err;
+        }
+      }
+    }
+    await rename(stagingDir, refDir);
+  } catch (err) {
+    await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+    throw err;
+  }
 }
 
 async function collectFiles(

@@ -68,7 +68,9 @@ describe('LocalFileSource: self-ingestion of .lobu-cache', () => {
     expect(seen).toEqual(['a.json']);
     expect(seen.some((p) => p.startsWith('.lobu-cache'))).toBe(false);
 
-    // readText on a `.lobu-cache/` path is denied even if the file exists.
-    await expect(a.readText('.lobu-cache/sources/foo')).rejects.toThrow(/excluded/i);
+    // readText on a `.lobu-cache/` path fails — the snapshot is materialised
+    // into a per-ref pinned dir and `.lobu-cache/` was filtered out at install
+    // time. It doesn't exist inside the snapshot's view.
+    await expect(a.readText('.lobu-cache/sources/foo')).rejects.toThrow();
   });
 });

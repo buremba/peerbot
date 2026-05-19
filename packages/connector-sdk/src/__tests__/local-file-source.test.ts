@@ -112,6 +112,58 @@ describe('LocalFileSource', () => {
   });
 });
 
+describe('LocalFileSource snapshot immutability', () => {
+  let fixtureDir: string;
+  let workspaceDir: string;
+  let originalWorkspaceDir: string | undefined;
+
+  beforeEach(async () => {
+    fixtureDir = await mkdtemp(join(tmpdir(), 'lobu-localfs-imm-'));
+    workspaceDir = await mkdtemp(join(tmpdir(), 'lobu-localfs-immws-'));
+    originalWorkspaceDir = process.env.WORKSPACE_DIR;
+    process.env.WORKSPACE_DIR = workspaceDir;
+  });
+
+  afterEach(async () => {
+    if (originalWorkspaceDir === undefined) delete process.env.WORKSPACE_DIR;
+    else process.env.WORKSPACE_DIR = originalWorkspaceDir;
+    await rm(fixtureDir, { recursive: true, force: true });
+    await rm(workspaceDir, { recursive: true, force: true });
+  });
+
+  test('snapshot keeps reading old bytes after source files mutate', async () => {
+    await writeFile(join(fixtureDir, 'a.json'), 'old');
+    const uri = pathToFileURL(`${fixtureDir}/`).toString();
+    const source = new LocalFileSource(uri);
+    const snap = await source.fetch();
+    expect(await snap.readText('a.json')).toBe('old');
+
+    // Mutate the source root after the snapshot is taken.
+    await writeFile(join(fixtureDir, 'a.json'), 'new');
+
+    // The snapshot is pinned to the hardlinked per-ref dir. Even though the
+    // source mutated, the snapshot's bytes are stable.
+    expect(await snap.readText('a.json')).toBe('old');
+  });
+
+  test('older snapshots stay readable after a subsequent fetch()', async () => {
+    await writeFile(join(fixtureDir, 'a.json'), 'v1');
+    const uri = pathToFileURL(`${fixtureDir}/`).toString();
+    const source = new LocalFileSource(uri);
+    const snap1 = await source.fetch();
+    expect(await snap1.readText('a.json')).toBe('v1');
+
+    // New content, new fetch() → new ref + new per-ref dir.
+    await writeFile(join(fixtureDir, 'a.json'), 'v2');
+    const snap2 = await source.fetch();
+    expect(snap2.ref).not.toBe(snap1.ref);
+    expect(await snap2.readText('a.json')).toBe('v2');
+
+    // Old snapshot still reads v1 — its per-ref dir is untouched.
+    expect(await snap1.readText('a.json')).toBe('v1');
+  });
+});
+
 describe('LocalFileSource .lobu-cache exclusion', () => {
   let outerSource: string;
   let nestedWorkspace: string;

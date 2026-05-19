@@ -161,6 +161,70 @@ describe('GitFileSource diffSinceRef', () => {
   });
 });
 
+describe('GitSnapshot immutability', () => {
+  let cacheRoot: string;
+
+  beforeEach(async () => {
+    cacheRoot = await mkdtemp(join(tmpdir(), 'lobu-git-imm-'));
+  });
+
+  afterEach(async () => {
+    await rm(cacheRoot, { recursive: true, force: true });
+  });
+
+  test('readFile returns bytes from the captured commit even after the working tree is rewritten', async () => {
+    const { GitSnapshot } = await import('../sources/git-snapshot.js');
+    const workdir = join(cacheRoot, 'repo');
+    await mkdir(workdir, { recursive: true });
+    await git.init({ fs: nodeFs, dir: workdir, defaultBranch: 'main' });
+
+    await writeFile(join(workdir, 'a.json'), 'v1');
+    await git.add({ fs: nodeFs, dir: workdir, filepath: 'a.json' });
+    const sha1 = await git.commit({
+      fs: nodeFs,
+      dir: workdir,
+      message: 'v1',
+      author: { name: 't', email: 't@e.com' },
+    });
+
+    const snap = new GitSnapshot(workdir, sha1, nodeFs);
+    expect(await snap.readText('a.json')).toBe('v1');
+
+    // Now rewrite the working tree: a different commit + a different on-disk
+    // file. The snapshot should keep returning v1 because it reads the blob
+    // for sha1, not the file on disk.
+    await writeFile(join(workdir, 'a.json'), 'v2');
+    await git.add({ fs: nodeFs, dir: workdir, filepath: 'a.json' });
+    await git.commit({
+      fs: nodeFs,
+      dir: workdir,
+      message: 'v2',
+      author: { name: 't', email: 't@e.com' },
+    });
+
+    // On-disk says v2; snapshot pinned to sha1 still says v1.
+    expect(await snap.readText('a.json')).toBe('v1');
+  });
+
+  test('readFile rejects path-escape attempts', async () => {
+    const { GitSnapshot } = await import('../sources/git-snapshot.js');
+    const workdir = join(cacheRoot, 'repo2');
+    await mkdir(workdir, { recursive: true });
+    await git.init({ fs: nodeFs, dir: workdir, defaultBranch: 'main' });
+    await writeFile(join(workdir, 'a.json'), 'x');
+    await git.add({ fs: nodeFs, dir: workdir, filepath: 'a.json' });
+    const sha = await git.commit({
+      fs: nodeFs,
+      dir: workdir,
+      message: 'init',
+      author: { name: 't', email: 't@e.com' },
+    });
+    const snap = new GitSnapshot(workdir, sha, nodeFs);
+    await expect(snap.readText('/etc/passwd')).rejects.toThrow(/absolute/i);
+    await expect(snap.readText('../escape')).rejects.toThrow(/escapes/i);
+  });
+});
+
 describe('GitFileSource hides .git from the connector', () => {
   let cacheRoot: string;
   let originalWorkspaceDir: string | undefined;

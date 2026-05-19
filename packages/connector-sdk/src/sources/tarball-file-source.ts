@@ -76,11 +76,12 @@ export class TarballFileSource implements FileSystemSource {
     await mkdir(this.#paths.root, { recursive: true });
     await readAndVerifyMeta(this.#paths.metaPath, this.#uri);
 
-    // 1. Download to temp file (streaming).
+    // 1. Download to temp file (streaming) + extract to a staging dir.
     const tmpDir = await mkdtemp(join(tmpdir(), 'lobu-tarball-'));
     const tarPath = join(tmpDir, 'archive.tar.gz');
+    const stagingDir = join(this.#paths.root, `snapshot.tmp.${randomSuffix()}`);
+    let stagingMoved = false;
     try {
-      // Use Node's built-in fetch — handles redirects + streaming bodies.
       const res = await fetch(this.#uri, { redirect: 'follow' });
       if (!res.ok) {
         throw new Error(
@@ -90,17 +91,11 @@ export class TarballFileSource implements FileSystemSource {
       if (!res.body) {
         throw new Error(`TarballFileSource: GET ${this.#uri} returned an empty body`);
       }
-      // Soft Content-Type check — accept tarball-ish or generic binary.
-      // Some CDNs return text/plain; don't reject on that, just continue and
-      // let tar's parser surface a malformed-input error if it isn't a tarball.
       void res.headers.get('content-type');
 
-      // Web ReadableStream -> Node Readable for pipeline().
       const nodeBody = Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]);
       await pipeline(nodeBody, createWriteStream(tarPath));
 
-      // 2. Extract to a temp staging dir, atomic-rename into place.
-      const stagingDir = join(this.#paths.root, `snapshot.tmp.${randomSuffix()}`);
       await mkdir(stagingDir, { recursive: true });
       await tarExtract({
         file: tarPath,
@@ -108,26 +103,44 @@ export class TarballFileSource implements FileSystemSource {
         strip: this.#stripComponents,
       });
 
-      // Remove any previous snapshot, then rename.
-      await rm(this.#paths.snapshotDir, { recursive: true, force: true });
-      await rename(stagingDir, this.#paths.snapshotDir);
+      // 2. Compute the content-addressed ref from the extracted files.
+      const files = await collectFiles(stagingDir);
+      const ref = canonicalManifestRef(files);
+      const refDir = perRefSnapshotDir(this.#paths.root, ref);
+
+      // 3. Install into the per-ref dir if it isn't already there. Old refs
+      // stay on disk so any Snapshot already handed out keeps reading its
+      // pinned bytes. A partial crash leaves the staging dir behind, which
+      // is harmless — the next fetch() will simply re-stage.
+      const alreadyInstalled = await dirExists(refDir);
+      if (alreadyInstalled) {
+        // Same content already installed under this ref; drop the staging dir.
+        await rm(stagingDir, { recursive: true, force: true });
+      } else {
+        await mkdir(join(this.#paths.root, 'refs'), { recursive: true });
+        await rename(stagingDir, refDir);
+      }
+      stagingMoved = true;
+
+      // 4. Persist manifest + meta + per-ref manifest. (Old per-ref manifests
+      // stay so historical diffs still work.)
+      const manifest: Manifest = {
+        ref,
+        files,
+        fetched_at: new Date().toISOString(),
+      };
+      await writeManifest(this.#paths.manifestPath, manifest);
+      await writeMeta(this.#paths.metaPath, { uri: this.#uri, kind: 'tarball' });
+      await writePerRefManifest(this.#paths.root, manifest);
+
+      // Snapshot reads from the immutable per-ref dir — never overwritten.
+      return new DirectorySnapshot(refDir, ref);
     } finally {
+      if (!stagingMoved) {
+        await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+      }
       await rm(tmpDir, { recursive: true, force: true });
     }
-
-    // 3. Build manifest from extracted files.
-    const files = await collectFiles(this.#paths.snapshotDir);
-    const ref = canonicalManifestRef(files);
-    const manifest: Manifest = {
-      ref,
-      files,
-      fetched_at: new Date().toISOString(),
-    };
-    await writeManifest(this.#paths.manifestPath, manifest);
-    await writeMeta(this.#paths.metaPath, { uri: this.#uri, kind: 'tarball' });
-    await writePerRefManifest(this.#paths.root, manifest);
-
-    return new DirectorySnapshot(this.#paths.snapshotDir, ref);
   }
 
   async diffSinceRef(prevRef: string): Promise<FileDelta> {
@@ -149,6 +162,15 @@ export class TarballFileSource implements FileSystemSource {
       return diffManifests(prev, next);
     });
   }
+}
+
+function perRefSnapshotDir(root: string, ref: string): string {
+  return join(root, 'refs', ref);
+}
+
+async function dirExists(p: string): Promise<boolean> {
+  const s = await stat(p).catch(() => null);
+  return !!s && s.isDirectory();
 }
 
 async function collectFiles(rootDir: string): Promise<ManifestEntry[]> {

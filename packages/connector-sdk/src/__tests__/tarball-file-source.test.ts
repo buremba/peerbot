@@ -144,4 +144,38 @@ describe('TarballFileSource', () => {
     const source = new TarballFileSource(`${baseUrl}/missing.tar.gz`);
     await expect(source.fetch()).rejects.toThrow(/404/);
   });
+
+  test('install is atomic: a failed second fetch() leaves the existing snapshot intact', async () => {
+    const source = new TarballFileSource(`${baseUrl}/dataset.tar.gz`);
+    const v1 = await source.fetch();
+    expect(await v1.readText('a.json')).toBe('{"x":1}');
+
+    // Next fetch will 404 (server returns 404 for `/missing.tar.gz`). To
+    // exercise the same fetch path against a failing response, build a
+    // second source pointing at the missing URL — but we want fetch() to
+    // fail on the SAME source. The TarballFileSource caches by URI, so we
+    // simulate failure by pointing the server at a non-existent file.
+    serveTarballPath = '/this/path/does/not/exist';
+    await expect(source.fetch()).rejects.toThrow();
+
+    // Old snapshot's per-ref dir is untouched — bytes still readable.
+    expect(await v1.readText('a.json')).toBe('{"x":1}');
+  });
+
+  test('older snapshot stays readable after a subsequent fetch() of new content', async () => {
+    const source = new TarballFileSource(`${baseUrl}/dataset.tar.gz`);
+    const v1 = await source.fetch();
+    expect(await v1.readText('a.json')).toBe('{"x":1}');
+
+    // Swap the server's response and re-fetch — the source extracts into a
+    // fresh per-ref dir, leaving the v1 dir untouched.
+    serveTarballPath = alternateTarballPath;
+    const v2 = await source.fetch();
+    expect(v2.ref).not.toBe(v1.ref);
+    expect(await v2.readText('a.json')).toBe('{"x":99}');
+
+    // v1 still reads its pinned content — proves the old per-ref dir wasn't
+    // overwritten and any caller holding v1 still gets the original bytes.
+    expect(await v1.readText('a.json')).toBe('{"x":1}');
+  });
 });

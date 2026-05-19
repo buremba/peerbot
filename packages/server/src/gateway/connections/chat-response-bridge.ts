@@ -26,6 +26,7 @@ import { extractSettingsLinkButtons } from "../platform/link-buttons.js";
 import type { ResponseRenderer } from "../platform/response-renderer.js";
 import type { ChatInstanceManager } from "./chat-instance-manager.js";
 import {
+  type PlatformMetadata,
   platformMetadataString,
   readPlatformMetadata,
 } from "./platform-metadata.js";
@@ -47,14 +48,13 @@ const logger = createLogger("chat-response-bridge");
  */
 function buildCurrentMessageFromMetadata(
   threadId: string,
-  platformMetadata: Record<string, unknown> | undefined
+  platformMetadata: PlatformMetadata
 ): Record<string, unknown> | undefined {
-  const md = readPlatformMetadata(platformMetadata);
-  const senderId = md.senderId;
+  const senderId = platformMetadata.senderId;
   if (!senderId) return undefined;
-  const senderUsername = md.senderUsername;
-  const senderDisplayName = md.senderDisplayName;
-  const teamId = md.teamId;
+  const senderUsername = platformMetadata.senderUsername;
+  const senderDisplayName = platformMetadata.senderDisplayName;
+  const teamId = platformMetadata.teamId;
   return {
     threadId,
     text: "",
@@ -311,6 +311,21 @@ export class ChatResponseBridge implements ResponseRenderer {
     // async to the worker — silently swallowing the tail is correct.
     if (this.blockedStreams.has(key)) return null;
 
+    // Full-replacement: dispose the prior stream + drop the rolling tail
+    // BEFORE scanning. Order matters: a replacement throws away the previous
+    // emitted text, so the next scan must operate on the new delta alone.
+    // Without clearing first, the tail would still hold the previous
+    // delta's last 256 chars and the scan would run against
+    // (previous-stream-bytes + new-replacement-text), which can synthesize
+    // a regex match that exists in neither piece on its own — a false
+    // positive trip on the very first delta of an unrelated reply.
+    const existingForReplacement = this.streams.get(key);
+    if (payload.isFullReplacement && existingForReplacement) {
+      await strategy.disposeOnFullReplacement(existingForReplacement);
+      this.streams.delete(key);
+      this.clearGuardrailTail(key);
+    }
+
     // Per-delta output guardrails. We scan `(rolling tail) + delta` so a
     // secret split across two streaming chunks ("sk-ab" then "cd…") still
     // trips on the second chunk. The tail is only updated after a passing
@@ -349,7 +364,7 @@ export class ChatResponseBridge implements ResponseRenderer {
           channelId,
           payload.conversationId,
           platformMetadataString(payload.platformMetadata, "responseThreadId"),
-          payload.platformMetadata as Record<string, unknown> | undefined
+          readPlatformMetadata(payload.platformMetadata)
         );
         if (target) {
           await target.post(blockText);
@@ -363,22 +378,10 @@ export class ChatResponseBridge implements ResponseRenderer {
       return null;
     }
 
-    const existing = this.streams.get(key);
-
-    // Full replacement: ask the strategy to dispose the prior stream (the
-    // default strategy closes the live iterator and awaits its delivery;
-    // Slack is a no-op since no real stream was opened). Treat the delta
-    // as the start of a fresh stream below.
-    let current = existing;
-    if (payload.isFullReplacement && existing) {
-      await strategy.disposeOnFullReplacement(existing);
-      this.streams.delete(key);
-      current = undefined;
-      // Full-replacement also throws away the prior emitted text, so the
-      // rolling tail must reset to avoid a false positive joining the
-      // replaced text with the new stream's first delta.
-      this.clearGuardrailTail(key);
-    }
+    // Pick up the current stream after the (possible) full-replacement
+    // dispose above. If we disposed, `current` stays undefined so the
+    // strategy starts a fresh stream.
+    const current = this.streams.get(key);
 
     const next = await strategy.handleDelta({
       ctx,
@@ -390,7 +393,7 @@ export class ChatResponseBridge implements ResponseRenderer {
           channelId,
           payload.conversationId,
           platformMetadataString(payload.platformMetadata, "responseThreadId"),
-          payload.platformMetadata as Record<string, unknown> | undefined
+          readPlatformMetadata(payload.platformMetadata)
         ),
     });
 
@@ -607,7 +610,7 @@ export class ChatResponseBridge implements ResponseRenderer {
         channelId,
         payload.conversationId,
         platformMetadataString(payload.platformMetadata, "responseThreadId"),
-        payload.platformMetadata as Record<string, unknown> | undefined
+        readPlatformMetadata(payload.platformMetadata)
       );
       if (target) {
         await target.post(`Error: ${payload.error}`);
@@ -633,7 +636,7 @@ export class ChatResponseBridge implements ResponseRenderer {
         channelId,
         payload.conversationId,
         platformMetadataString(payload.platformMetadata, "responseThreadId"),
-        payload.platformMetadata as Record<string, unknown> | undefined
+        readPlatformMetadata(payload.platformMetadata)
       );
       if (target) {
         await target.startTyping?.("Processing...");
@@ -657,7 +660,7 @@ export class ChatResponseBridge implements ResponseRenderer {
         channelId,
         payload.conversationId,
         platformMetadataString(payload.platformMetadata, "responseThreadId"),
-        payload.platformMetadata as Record<string, unknown> | undefined
+        readPlatformMetadata(payload.platformMetadata)
       );
       if (target) {
         const { processedContent, linkButtons } = extractSettingsLinkButtons(
@@ -712,7 +715,7 @@ export class ChatResponseBridge implements ResponseRenderer {
     channelId: string,
     conversationId?: string,
     responseThreadId?: string,
-    platformMetadata?: Record<string, unknown>
+    platformMetadata: PlatformMetadata = {}
   ): Promise<any | null> {
     const platform = instance.connection.platform;
     const chat = instance.chat;

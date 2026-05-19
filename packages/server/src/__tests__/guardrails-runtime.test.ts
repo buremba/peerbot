@@ -240,6 +240,71 @@ describe('ChatResponseBridge — wired output guardrail', () => {
     expect(rows.length).toBe(1);
   });
 
+  it('isFullReplacement clears the rolling tail before scanning (no false positive across replacement)', async () => {
+    // Regression: scanning ran BEFORE the fullReplacement dispose, so the
+    // tail still contained the prior delta and the next scan operated on
+    // (prior-delta + replacement-text), synthesizing matches that exist
+    // in neither piece alone. The fix moves the replacement handling
+    // ahead of the scan + tail-update.
+    const { target, posted } = createCapturingTarget();
+    const manager = createManager(target, agentId, orgId);
+    const bridge = new ChatResponseBridge(manager as any);
+
+    const registry = new GuardrailRegistry();
+    registerBuiltinGuardrails(registry);
+    const settingsStore = new AgentSettingsStore(
+      createPostgresAgentConfigStore()
+    );
+    bridge.setGuardrails(registry, settingsStore);
+
+    const payload = {
+      messageId: 'm1',
+      channelId: '123',
+      conversationId: '123',
+      userId: 'u1',
+      teamId: 't1',
+      timestamp: 0,
+      platform: 'telegram',
+      platformMetadata: { connectionId: 'conn-1', chatId: '123' },
+    };
+
+    // Choose two chunks that are individually safe but whose
+    // concatenation matches the openai-key regex (`sk-` + 20+ alnum).
+    //   prior:        "...ends with sk-a"
+    //   replacement:  "bcdefghij0123456789AB starts fresh"
+    // Pre-fix: tail = "...sk-a", scanText = tail + replacement → match.
+    // Post-fix: replacement clears the tail first → scanText is just the
+    // replacement, which does NOT match.
+    await orgContext.run({ organizationId: orgId }, async () => {
+      await bridge.handleDelta(
+        { ...payload, delta: 'first reply ending with sk-a' },
+        's-1'
+      );
+      // Second message arrives as a full replacement. Despite the prior
+      // delta still being in the tail, the scan must run only against the
+      // replacement text.
+      await bridge.handleDelta(
+        {
+          ...payload,
+          delta: 'bcdefghij0123456789AB starts fresh',
+          isFullReplacement: true,
+        },
+        's-2'
+      );
+    });
+
+    // No block message should have been posted — neither delta on its own
+    // contains a secret, and the replacement properly resets the tail.
+    const blockPost = posted.find((p) =>
+      p.text?.startsWith('Message blocked by guardrail')
+    );
+    expect(blockPost).toBeUndefined();
+
+    await flushPendingGuardrailAudits();
+    const rows = await fetchGuardrailEvents(orgId, 'output');
+    expect(rows.length).toBe(0);
+  });
+
   it('audits the trip even when platformMetadata.organizationId is missing (connection fallback)', async () => {
     const { target } = createCapturingTarget();
     // Build a manager whose connection carries the org id — this is the

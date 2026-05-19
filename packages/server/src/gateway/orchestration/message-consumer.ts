@@ -14,6 +14,7 @@ import {
 } from "@lobu/core";
 import * as Sentry from "@sentry/node";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
+import { platformMetadataString } from "../connections/platform-metadata.js";
 import { recordGuardrailTrip } from "../guardrails/audit.js";
 import type {
   IMessageQueue,
@@ -123,9 +124,10 @@ export class MessageConsumer {
     const jobId = job?.id || "unknown";
 
     // Extract traceparent for distributed tracing (from message ingestion)
-    const traceparent = data?.platformMetadata?.traceparent as
-      | string
-      | undefined;
+    const traceparent = platformMetadataString(
+      data?.platformMetadata,
+      "traceparent"
+    );
 
     // Extract or generate trace ID for logging (backwards compatible)
     const traceId =

@@ -11,11 +11,12 @@
  *     TTL filtering. Nothing here is upstream IP — keeping it in-tree is
  *     cheaper than the dep weight.
  *
- * Schema lives in `db/migrations/20260519020000_chat_state_tables.sql` and
- * is mirrored in `db/embedded-schema-patches.ts` for pre-initialized
- * embedded (PGlite) databases. Table names and column types match
- * state-pg's so an existing state-pg deployment can swap in this adapter
- * without a schema migration.
+ * Schema lives in `db/migrations/00000000000000_baseline.sql` (the post-2026-05-19
+ * squashed baseline that absorbed the original 20260519020000_chat_state_tables
+ * migration). All boot paths — prod dbmate-up, embedded start-local — apply the
+ * baseline; no separate mirror to maintain. Table names and column types match
+ * `@chat-adapter/state-pg`'s so an existing state-pg deployment can swap in
+ * this adapter without a schema migration.
  *
  * Concurrency: every method works on a single statement that round-trips
  * through the pool; no in-class state. Multiple gateways on the same DB

@@ -19,6 +19,7 @@ type LandingSnippets = {
   watcher: CodeSnippet;
   reaction: CodeSnippet;
   agentToml: CodeSnippet;
+  skill: CodeSnippet;
   examples: ExampleEntry[];
 };
 
@@ -694,39 +695,11 @@ function WatchersSection() {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Skills section — not use-case pivoted (only lobu-crm + office-bot ship    */
-/*  skills today). Snippet is the YAML frontmatter of                         */
-/*  examples/office-bot/agents/food-ordering/skills/deliveroo-order/SKILL.md  */
-/*  because deliveroo-order is the example that exercises every frontmatter   */
-/*  field the section's pitch promises: nixPackages, network.allow,           */
-/*  network.judge, and a judges.default policy.                               */
+/*  Skills section — snippet is the YAML frontmatter of the deliveroo-order   */
+/*  SKILL.md, trimmed at build time by gen-landing-snippets.ts (the example   */
+/*  that exercises every field the pitch promises: nixPackages,               */
+/*  network.allow, network.judge, judges.default).                            */
 /* -------------------------------------------------------------------------- */
-
-const SKILL_SNIPPET: CodeSnippet = {
-  path: "agents/food-ordering/skills/deliveroo-order/SKILL.md",
-  githubUrl:
-    "https://github.com/lobu-ai/lobu/blob/main/examples/office-bot/agents/food-ordering/skills/deliveroo-order/SKILL.md",
-  language: "markdown",
-  code: `---
-name: deliveroo-order
-description: Read a restaurant's Deliveroo menu and assemble a group-order basket for the office lunch. Reading menus is allowed; completing checkout or touching payment is NOT.
-nixPackages:
-  - chromium
-network:
-  allow:
-    - registry.npmjs.org
-    - playwright.azureedge.net
-  judge:
-    - deliveroo.co.uk
-    - deliveroo.com
-judges:
-  default: >
-    Allow GET reads of restaurant listings, menus, item details, and the basket.
-    Allow POST/PUT that build or modify a basket (add, remove, change quantity).
-    DENY anything that completes checkout, touches payment, or modifies account.
-    If the effect is unclear, fail closed.
----`,
-};
 
 function SkillsSection() {
   return (
@@ -780,11 +753,7 @@ function SkillsSection() {
         }
         code={
           <div>
-            <CodeBlock
-              badge="skill"
-              snippet={SKILL_SNIPPET}
-              tabLabel={SKILL_SNIPPET.path}
-            />
+            <CodeBlock badge="skill" snippet={snippets.skill} />
             <ExampleFooterLink slug="office-bot" />
           </div>
         }

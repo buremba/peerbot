@@ -39,6 +39,10 @@ const PINNED = {
     path: "models/reactions/account-health-monitor.reaction.ts",
   },
   agentToml: { slug: "sales", path: "lobu.toml" },
+  skill: {
+    slug: "office-bot",
+    path: "agents/food-ordering/skills/deliveroo-order/SKILL.md",
+  },
 } as const;
 
 const BUDGETS = {
@@ -47,6 +51,7 @@ const BUDGETS = {
   watcher: 16,
   reaction: 50,
   connector: 40,
+  skill: 26,
 };
 
 type Language = "toml" | "yaml" | "typescript" | "markdown";
@@ -71,6 +76,7 @@ type LandingSnippets = {
   watcher: Snippet;
   reaction: Snippet;
   agentToml: Snippet;
+  skill: Snippet;
   examples: ExampleEntry[];
 };
 
@@ -464,6 +470,94 @@ function compressWatcher(yamlLines: string[]): string[] {
 }
 
 /* -------------------------------------------------------------------------- */
+/*  SKILL.md frontmatter extraction                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Pull just the YAML frontmatter out of a SKILL.md (everything between the
+ * leading `---` and the next `---`). Then slim it so the landing snippet
+ * fits the right column without scrolling:
+ *
+ *   - cap `network.allow` and `network.judge` lists at 2 entries each
+ *   - collapse `judges.default: > … (multi-line block scalar)` into a single
+ *     short bullet sentence that keeps the policy's essence
+ *   - leave name + description + nixPackages untouched
+ */
+function trimSkillMarkdown(raw: string): string {
+  const lines = raw.split("\n");
+  if (lines[0]?.trim() !== "---") return raw;
+  let end = -1;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === "---") {
+      end = i;
+      break;
+    }
+  }
+  if (end < 0) return raw;
+  const fm = lines.slice(0, end + 1);
+
+  const out: string[] = [];
+  let i = 0;
+  while (i < fm.length) {
+    const line = fm[i];
+    const trimmed = line.trimStart();
+
+    // network.allow / network.judge — cap children to 2 entries.
+    const listKey = /^(\s*)(allow|judge):\s*$/.exec(line);
+    if (listKey) {
+      const baseIndent = listKey[1].length;
+      out.push(line);
+      let kept = 0;
+      let total = 0;
+      let j = i + 1;
+      while (j < fm.length) {
+        const child = fm[j];
+        const childTrim = child.trimStart();
+        const childIndent = child.length - childTrim.length;
+        if (!childTrim.startsWith("- ") || childIndent <= baseIndent) break;
+        total++;
+        if (kept < 2) {
+          out.push(child);
+          kept++;
+        }
+        j++;
+      }
+      if (total > kept) {
+        out.push(`${" ".repeat(baseIndent + 2)}# …${total - kept} more`);
+      }
+      i = j;
+      continue;
+    }
+
+    // judges.default: > … — collapse the block scalar to one essence line.
+    const blockScalar = /^(\s*)default:\s*[>|][+-]?\s*$/.exec(line);
+    if (blockScalar) {
+      const baseIndent = blockScalar[1].length;
+      out.push(
+        `${" ".repeat(baseIndent)}default: "Allow GET reads + basket mutations; DENY checkout, payment, profile changes. Fail closed if unclear."`
+      );
+      let j = i + 1;
+      while (j < fm.length) {
+        const child = fm[j];
+        if (child.trim() === "") {
+          j++;
+          continue;
+        }
+        const childIndent = child.length - child.trimStart().length;
+        if (childIndent <= baseIndent) break;
+        j++;
+      }
+      i = j;
+      continue;
+    }
+
+    out.push(line);
+    i++;
+  }
+  return collapseBlanks(out).join("\n");
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Helpers                                                                   */
 /* -------------------------------------------------------------------------- */
 
@@ -607,12 +701,26 @@ function build(): LandingSnippets {
     BUDGETS.agentToml
   );
 
+  const skill = snippetFrom(
+    PINNED.skill.slug,
+    pinnedFile(PINNED.skill.slug, PINNED.skill.path),
+    PINNED.skill.path,
+    "markdown",
+    trimSkillMarkdown
+  );
+  warnOverBudget(
+    `${PINNED.skill.slug}/${PINNED.skill.path}`,
+    skill.code.split("\n").length,
+    BUDGETS.skill
+  );
+
   return {
     connector,
     memorySchema,
     watcher,
     reaction,
     agentToml,
+    skill,
     examples: listExamples(),
   };
 }
@@ -621,7 +729,7 @@ function main() {
   const out = build();
   writeFileSync(outFile, `${JSON.stringify(out, null, 2)}\n`, "utf-8");
   console.log(
-    `gen-landing-snippets: wrote 5 pinned snippets + ${out.examples.length} example entries to ${outFile}`
+    `gen-landing-snippets: wrote 6 pinned snippets + ${out.examples.length} example entries to ${outFile}`
   );
 }
 

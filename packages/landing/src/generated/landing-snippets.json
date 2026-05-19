@@ -29,6 +29,12 @@
     "githubUrl": "https://github.com/lobu-ai/lobu/blob/main/examples/sales/lobu.toml",
     "language": "toml"
   },
+  "skill": {
+    "code": "---\nname: deliveroo-order\ndescription: Read a restaurant's Deliveroo menu and assemble a group-order basket for the office lunch. Use in step 2 of the lunch run, after orders are collected. Reading menus and building a basket is allowed; completing checkout or touching payment is NOT.\nnixPackages:\n  - chromium\nnetwork:\n  allow:\n    - registry.npmjs.org\n    - .npmjs.org\n    # …2 more\n  judge:\n    - deliveroo.co.uk\n    - .deliveroo.co.uk\n    # …2 more\njudges:\n  default: \"Allow GET reads + basket mutations; DENY checkout, payment, profile changes. Fail closed if unclear.\"\n---",
+    "path": "agents/food-ordering/skills/deliveroo-order/SKILL.md",
+    "githubUrl": "https://github.com/lobu-ai/lobu/blob/main/examples/office-bot/agents/food-ordering/skills/deliveroo-order/SKILL.md",
+    "language": "markdown"
+  },
   "examples": [
     {
       "slug": "agent-community",

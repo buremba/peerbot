@@ -7,7 +7,7 @@
  * manifest is no longer keyed by use case. Each primitive section instead
  * shows ONE canonical example:
  *
- *   connector    -> examples/lobu-crm/connectors/funnel-form.connector.ts
+ *   connector    -> examples/leadership/connectors/linear-cycles.connector.ts
  *   memorySchema -> examples/sales/models/schema.yaml         (entities slice)
  *   watcher      -> examples/sales/models/schema.yaml         (watchers slice)
  *   reaction     -> examples/sales/models/reactions/account-health-monitor.reaction.ts
@@ -31,7 +31,10 @@ const examplesDir = resolve(__dirname, "../../../examples");
 const outFile = resolve(__dirname, "../src/generated/landing-snippets.json");
 
 const PINNED = {
-  connector: { slug: "lobu-crm", path: "connectors/funnel-form.connector.ts" },
+  connector: {
+    slug: "leadership",
+    path: "connectors/linear-cycles.connector.ts",
+  },
   memorySchema: { slug: "sales", path: "models/schema.yaml" },
   watcher: { slug: "sales", path: "models/schema.yaml" },
   reaction: {

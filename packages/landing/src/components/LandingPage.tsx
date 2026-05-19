@@ -556,7 +556,7 @@ function ConnectorsSection() {
         code={
           <div>
             <CodeBlock badge="typescript" snippet={snippets.connector} />
-            <ExampleFooterLink slug="lobu-crm" />
+            <ExampleFooterLink slug="leadership" />
           </div>
         }
       />

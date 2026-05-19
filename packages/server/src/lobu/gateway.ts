@@ -148,7 +148,12 @@ export function createLobuAuthBridge() {
     // Token VALUE comparison stays case-sensitive — PAT hashes are.
     const bearerMatch = authHeader ? /^bearer\s+(.*)$/i.exec(authHeader) : null;
     const bearerValue = bearerMatch ? (bearerMatch[1] ?? '').trim() : null;
-    const isPatBearer = bearerValue !== null && bearerValue.startsWith('owl_pat_');
+    // PAT prefix detection is case-insensitive so `Bearer OWL_PAT_*` is
+    // recognized as a PAT and validated, not silently masked behind cookie
+    // auth (codex round-3 finding). The token VALUE handed to verify() is
+    // unchanged — PAT hashes are case-sensitive on the bytes.
+    const isPatBearer =
+      bearerValue !== null && bearerValue.slice(0, 8).toLowerCase() === 'owl_pat_';
 
     // 1. PAT path — authoritative when the Authorization header carries
     //    `Bearer owl_pat_*`. Validate first so an invalid PAT cannot fall

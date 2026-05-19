@@ -2,8 +2,8 @@ import type { AuthResult, EventEnvelope, SyncCredentials } from '@lobu/connector
 
 /**
  * Executor mode discriminator. The executor speaks the same V1 SDK shapes
- * the connector code expects — no more magic `__action_key` / `__feed_key` /
- * `__auth_mode` packing.
+ * the connector code expects: `SyncContext` / `ActionContext` / `AuthContext`
+ * in, `SyncResult` / `ActionResult` / `AuthResult` out, no envelope.
  */
 export type ExecutorJob =
   | {
@@ -34,12 +34,14 @@ export type ExecutorJob =
 
 /**
  * Result shape returned by the executor. One discriminated union per mode
- * mirrors the SDK's `SyncResult` / `ActionResult` / `AuthResult` directly.
+ * mirrors the SDK's `ActionResult` / `AuthResult` directly. Sync is
+ * streaming-only: events leave via `hooks.onEventChunk`, never collected
+ * onto the result — callers that need a list build it themselves in the
+ * hook (see e.g. `packages/cli/src/commands/_lib/connector-run-cmd.ts`).
  */
 export type ExecutorResult =
   | {
       mode: 'sync';
-      events: EventEnvelope[];
       checkpoint: Record<string, unknown> | null;
       auth_update?: Record<string, unknown> | null;
       metadata?: Record<string, unknown>;

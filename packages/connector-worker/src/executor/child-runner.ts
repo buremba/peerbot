@@ -149,19 +149,23 @@ async function executeConnectorRuntime(
     updateCheckpoint,
   })) as SyncResult;
 
-  const events = Array.isArray(syncResult?.events) ? syncResult.events : [];
-  await emitEvents(events);
+  // Sync is streaming-only on the executor boundary: connectors that build
+  // the full list before returning still arrive here as `syncResult.events`,
+  // we just forward them through the same `emitEvents` IPC channel so the
+  // parent sees one uniform stream regardless of whether the connector
+  // streamed incrementally or returned in one shot.
+  const trailingEvents = Array.isArray(syncResult?.events) ? syncResult.events : [];
+  await emitEvents(trailingEvents);
 
   return {
     mode: 'sync',
-    events: [],
     checkpoint: (syncResult?.checkpoint ?? null) as Record<string, unknown> | null,
     auth_update: syncResult?.auth_update ?? null,
     metadata: {
       items_found:
         typeof syncResult?.metadata?.items_found === 'number'
           ? syncResult.metadata.items_found
-          : events.length,
+          : trailingEvents.length,
       items_skipped:
         typeof syncResult?.metadata?.items_skipped === 'number'
           ? syncResult.metadata.items_skipped

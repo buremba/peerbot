@@ -607,14 +607,17 @@ export async function createAuth(env: Env, request?: Request) {
 							const sql = getDb();
 							// Exclude the synthetic install_operator row
 							// (auto-provisioned at boot in ensureInstallOperator)
+							// AND the legacy bootstrap-user row (pre-PR #902)
 							// from the "deployment already has a user" count, so
 							// the first human signup can still proceed in
-							// single-user mode. See
+							// single-user mode against upgraded installs that
+							// still carry a bootstrap-user row. See
 							// docs/install-operator-bootstrap.md.
 							const rows = (await sql`
 								SELECT count(*)::int AS count
 									  FROM "user"
 									 WHERE principal_kind <> 'install_operator'
+									   AND id <> 'bootstrap-user'
 							`) as unknown as Array<{ count: number }>;
 							const existing = rows[0]?.count ?? 0;
 							if (existing > 0) {

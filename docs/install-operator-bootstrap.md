@@ -26,14 +26,20 @@ before `httpServer.listen(...)`. The function:
      `email = install@<hostname>` (deterministic, no PII collected),
      `name = "Local Install"`.
    - One `account` row with `providerId = 'credential'`,
-     `password = await hashPassword(ENCRYPTION_KEY)` — the existing
-     `@better-auth/utils/password` hasher used for every email-password
-     account on the install.
+     `password = await hashPassword(ENCRYPTION_KEY)` — re-using the
+     `hashPassword` re-export from `better-auth/crypto` (the same hasher
+     better-auth's email-password adapter uses for every credential).
    - A personal organization for the operator (re-use
-     `ensurePersonalOrganization` from `auth/personal-org-provisioning.ts`,
-     and `ensureDefaultAgent` from `auth/default-provisioning.ts` so the
-     install ships with the default agent without waiting for a second
-     boot).
+     `ensurePersonalOrganization` from `auth/personal-org-provisioning.ts`).
+     Default-agent provisioning is handled by the existing pass in
+     `start-local.ts` that runs `ensureDefaultAgent` against the first
+     personal org; we don't call it again from `ensureInstallOperator`.
+
+The provisioning is convergent: every boot ensures each piece exists. If
+a transient failure on first boot leaves the operator without a personal
+org, the next boot patches it (the user/account fast path runs, then
+`ensurePersonalOrganization` — itself idempotent — re-runs and creates
+the missing org).
 
 `ENCRYPTION_KEY` is the random secret already generated in `.env` for
 at-rest encryption. Making it serve double duty as the install operator's
@@ -41,22 +47,33 @@ sign-in credential removes the need for a separate install secret and
 matches what's already in operator muscle memory.
 
 `principal_kind` is a new `text NOT NULL DEFAULT 'human'` column on
-`user`. The discriminator lets every surface that filters humans (signup
-count, member lists, password reset, magic link, OAuth account-linking,
-admin user lists) exclude the install operator with a single predicate:
-`WHERE principal_kind <> 'install_operator'`.
+`user`. The discriminator lets surfaces that gate on "is there a real
+human?" exclude the install operator with a single predicate:
+`WHERE principal_kind <> 'install_operator' AND id <> 'bootstrap-user'`
+(the trailing `id <>` clause keeps the pre-PR-#902 legacy bootstrap row
+from being mistaken for a human on upgraded installs).
 
-A centralised helper `isInstallOperator(user)` plus a server-side helper
-`isInstallOperatorRow(row)` keep the carve-out logic in one place so we
-can extend it without grep'ing for the predicate.
+Carve-outs land at: signup count (`databaseHooks.user.create.before`),
+`getAuthConfig().hasUser`, password reset (`sendResetPassword`), magic
+link (`sendMagicLink`), OAuth account-linking (`databaseHooks.account.create.before`),
+and `/api/local-init`'s user-selection query. Member-list and admin
+user-list filtering are explicitly **not** carved out in this PR; the
+install operator does get a personal org + member row, but discovery
+surfaces are scoped to that org's owner so the operator only ever shows
+up to itself (single-tenant case) or alongside humans on a team install
+(where the operator is intentionally still visible to the org owner).
+
+A centralised helper `isInstallOperator(user)` keeps the carve-out
+discriminator check in one place so we can extend it without grep'ing
+for the predicate string.
 
 ## Client flows
 
 | Client | Path | New code? |
 | --- | --- | --- |
-| CLI on install host (`lobu apply`, `lobu chat`) | Existing `POST /api/auth/sign-in/email` with `email=install@<hostname>` + `password=ENCRYPTION_KEY` | No |
-| Loopback menubar / web first sign-in | Existing `POST /api/local-init` (loopback-only) — install_operator now exists, so it short-circuits to a session immediately | No |
-| Cross-machine first sign-in | SPA login → operator pastes `ENCRYPTION_KEY` once → enrol passkey via existing settings page | Tiny copy hint |
+| CLI on install host (`lobu apply`, `lobu chat`) | Existing `POST /api/local-init` (loopback-only) — install_operator exists, route mints a session cookie + worker-scoped PAT in one round-trip. The CLI doesn't go through `/api/auth/sign-in/email` because that path mints a session but not the PAT the worker poll loop needs. | No |
+| Loopback menubar / web first sign-in | Same `POST /api/local-init` — short-circuits to a session immediately | No |
+| Cross-machine first sign-in (SPA via browser) | SPA login screen → operator pastes `ENCRYPTION_KEY` once into the password field at `/auth/login?intent=sign-in` → `POST /api/auth/sign-in/email` returns a session → operator enrols a passkey from the existing settings page so the next sign-in is biometric | Tiny copy hint (deferred to a follow-up owletto PR) |
 | Second device | Browser-native WebAuthn cross-device verification (caBLE / hybrid) — already wired via `@better-auth/passkey` | No |
 | Multi-tenant install (team org) | Standard `/sign-up` flow; install_operator coexists silently with humans | No |
 
@@ -129,26 +146,43 @@ touch surfaces it didn't before:
 
 Trade-offs:
 
-- The SPA login screen sets `autocomplete="off"` on the install-secret
-  field by default; operators who *want* the password manager hint can
-  enrol a passkey instead and never paste it again.
+- Browser password-manager mitigations on the SPA login page
+  (`autocomplete="off"` on the install-secret field, or an explicit
+  copy hint pointing operators at a passkey enrolment as the long-term
+  credential) are deferred to a follow-up owletto PR + submodule bump.
+  This PR is backend-only. The risk window between this PR landing and
+  the owletto follow-up is bounded: only operators who proactively use
+  cross-machine sign-in (web SPA on a non-install machine) before
+  enrolling a passkey are exposed, and they would have pasted the same
+  secret without these mitigations anyway.
 - The synthetic `email = install@<hostname>` is not a real address. No
   password reset / magic link can be sent to it, which is fine because
   the carve-outs below reject those flows anyway.
 
 Carve-outs (one predicate, applied at each surface):
 
-- `databaseHooks.user.create.before` — install_operator excluded from the
-  "deployment already has a user" count, so the first human signup can
-  still proceed in single-user mode.
+- `databaseHooks.user.create.before` — install_operator (and the legacy
+  `bootstrap-user` row, if present) excluded from the "deployment already
+  has a user" count, so the first human signup can still proceed in
+  single-user mode.
 - `getAuthConfig().hasUser` — same predicate, so the SPA gateway knows
   "the install has a *human*" not "the install has the operator row".
 - `sendResetPassword` / `sendMagicLink` — reject when the target user has
-  `principal_kind = 'install_operator'`.
-- OAuth account-linking — reject when the linking target is the install
-  operator (we don't want the operator row to accumulate social identities).
-- Member listing / org member UI — filter out install_operator so it
-  doesn't appear in human-discovery surfaces.
+  `principal_kind = 'install_operator'` (DB-checked at send-time, since
+  better-auth's hook payload doesn't carry custom user columns).
+- OAuth account-linking (`databaseHooks.account.create.before`) — reject
+  any non-`credential` provider attempting to write an account row for
+  the install operator. `credential` is allowed so `ensureInstallOperator`
+  can write the password-hash row at boot.
+- `/api/local-init` user-selection — orders the operator last and
+  excludes `bootstrap-user` entirely, so the route mints credentials
+  for a real human when one exists.
+
+Not carved out in this PR (intentional — see "Design" section):
+member listing / org member UI / admin user lists. The install operator
+gets a real personal-org member row; the admin surfaces are already
+scoped to the requesting user's orgs, so the operator only ever appears
+in its own org's member list (which the operator itself owns).
 
 ## Migration of existing installs
 

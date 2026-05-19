@@ -361,7 +361,25 @@ credentialRoutes.post('/local-init', async (c) => {
   //
   // `peerRemoteAddress` is set by the env-swap middleware in server.ts /
   // start-local.ts before c.env is replaced with the app config object.
+  //
+  // Now that install-operator bootstrap means this route reliably mints
+  // a high-privilege worker PAT on every fresh install, we fail CLOSED
+  // when peer metadata is absent instead of letting the request through.
+  // The only path that lacks peerRemoteAddress is in-process `app.fetch`
+  // from unit tests, which should opt in explicitly via the test-only
+  // env override below.
   const peer = c.var.peerRemoteAddress;
+  const allowMissingPeer = c.env.LOBU_LOCAL_INIT_ALLOW_MISSING_PEER === '1';
+  if (!peer && !allowMissingPeer) {
+    return c.json(
+      {
+        error: 'missing_peer',
+        error_description:
+          '/api/local-init requires a TCP peer address to enforce loopback. The adapter did not populate one. Set LOBU_LOCAL_INIT_ALLOW_MISSING_PEER=1 only in tests.',
+      },
+      403
+    );
+  }
   if (peer && !isLoopbackAddress(peer)) {
     return c.json(
       {
@@ -413,13 +431,16 @@ credentialRoutes.post('/local-init', async (c) => {
   // Find the single user this install belongs to. Prefer the real human
   // (if one has signed up via /sign-up) over the synthetic install_operator
   // row (auto-provisioned at boot in ensureInstallOperator). Ordering by
-  // principal_kind DESC keeps 'install_operator' last so a human comes
-  // first when both exist; on a fresh install before signup, only the
-  // operator row exists and it gets minted credentials. See
+  // principal_kind keeps 'install_operator' last so a human comes first
+  // when both exist; on a fresh install before signup, only the operator
+  // row exists and it gets minted credentials. The legacy bootstrap-user
+  // (pre-PR #902) is excluded entirely — upgraded installs that still
+  // carry it should still see the install_operator / human flow. See
   // docs/install-operator-bootstrap.md.
   const userRows = (await sql`
     SELECT id, email, name, principal_kind
       FROM "user"
+     WHERE id <> 'bootstrap-user'
      ORDER BY
        CASE WHEN principal_kind = 'install_operator' THEN 1 ELSE 0 END ASC,
        "createdAt" ASC

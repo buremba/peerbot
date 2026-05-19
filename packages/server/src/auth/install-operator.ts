@@ -83,55 +83,68 @@ export async function ensureInstallOperator(): Promise<{
 
   const sql = getDb();
 
-  // Fast path: operator already exists. We don't re-hash the password on
-  // every boot — that would needlessly burn the scrypt/argon2 cost and
-  // would silently rotate the operator's credentials any time
-  // ENCRYPTION_KEY changes. If the operator forgot the key, the recovery
-  // path is to wipe the user + account rows manually, not to silently
-  // accept a new key.
+  // Convergent provisioning: every boot ensures each step exists. The
+  // user/account rows are immutable (we never re-hash on top of an
+  // existing password — that would silently rotate credentials when
+  // ENCRYPTION_KEY changed). But the personal-org step lives outside
+  // the user-creation txn, so a transient failure there used to leave
+  // the operator permanently broken: subsequent boots would see the
+  // user row and skip provisioning entirely, and `/api/local-init`
+  // would loop forever on `personal_org_missing`. Now we check each
+  // step independently and patch missing pieces.
   const existing = (await sql`
     SELECT id FROM "user"
      WHERE principal_kind = ${INSTALL_OPERATOR_KIND}
      LIMIT 1
   `) as unknown as Array<{ id: string }>;
+
+  let userId: string;
+  let created: boolean;
+
   if (existing.length > 0) {
-    return { userId: existing[0]!.id, created: false };
+    userId = existing[0]!.id;
+    created = false;
+  } else {
+    userId = `user_install_${generateSecureToken(8)}`;
+    const email = installOperatorEmail();
+    const hashed = await hashPassword(encryptionKey);
+
+    await sql.begin(async (tx) => {
+      await tx`
+        INSERT INTO "user"
+          (id, name, email, "emailVerified", principal_kind, "createdAt", "updatedAt")
+        VALUES
+          (${userId}, ${'Local Install'}, ${email}, true,
+           ${INSTALL_OPERATOR_KIND}, NOW(), NOW())
+      `;
+
+      // Better Auth's email-password adapter expects one `account` row
+      // per user with providerId='credential' and the hashed password
+      // stored in the `password` column. accountId matches userId by
+      // convention.
+      const accountId = `acct_install_${generateSecureToken(8)}`;
+      await tx`
+        INSERT INTO "account"
+          (id, "accountId", "providerId", "userId", password,
+           "createdAt", "updatedAt")
+        VALUES
+          (${accountId}, ${userId}, 'credential', ${userId}, ${hashed},
+           NOW(), NOW())
+      `;
+    });
+    created = true;
   }
 
-  const userId = `user_install_${generateSecureToken(8)}`;
-  const email = installOperatorEmail();
-  const hashed = await hashPassword(encryptionKey);
-
-  await sql.begin(async (tx) => {
-    await tx`
-      INSERT INTO "user"
-        (id, name, email, "emailVerified", principal_kind, "createdAt", "updatedAt")
-      VALUES
-        (${userId}, ${'Local Install'}, ${email}, true,
-         ${INSTALL_OPERATOR_KIND}, NOW(), NOW())
-    `;
-
-    // Better Auth's email-password adapter expects one `account` row per
-    // user with providerId='credential' and the hashed password stored
-    // in the `password` column. accountId matches userId by convention.
-    const accountId = `acct_install_${generateSecureToken(8)}`;
-    await tx`
-      INSERT INTO "account"
-        (id, "accountId", "providerId", "userId", password,
-         "createdAt", "updatedAt")
-      VALUES
-        (${accountId}, ${userId}, 'credential', ${userId}, ${hashed},
-         NOW(), NOW())
-    `;
-  });
-
-  // Personal org + default agent provisioning happens outside the txn so
-  // a failure here (e.g. transient lock contention) doesn't roll back
-  // the operator row itself — the next boot will catch up.
+  // Personal org provisioning is convergent: ensurePersonalOrganization
+  // is itself idempotent (returns the existing org if one is already
+  // tagged with this user.id in metadata). Running it on every boot
+  // closes the gap where a transient failure on first boot used to
+  // leave the operator without a personal org forever.
+  const operatorEmail = installOperatorEmail();
   try {
     await ensurePersonalOrganization({
       id: userId,
-      email,
+      email: operatorEmail,
       name: 'Local Install',
       username: null,
     });
@@ -142,5 +155,5 @@ export async function ensureInstallOperator(): Promise<{
     );
   }
 
-  return { userId, created: true };
+  return { userId, created };
 }

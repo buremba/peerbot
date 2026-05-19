@@ -4,8 +4,6 @@
  */
 
 import {
-  type ActionContext,
-  type ActionResult,
   type ConnectorDefinition,
   ConnectorRuntime,
   calculateEngagementScore,
@@ -269,9 +267,5 @@ export default class CapterraConnector extends ConnectorRuntime {
         },
       };
     });
-  }
-
-  async execute(_ctx: ActionContext): Promise<ActionResult> {
-    return { success: false, error: 'Actions not supported' };
   }
 }

@@ -6,8 +6,6 @@
  */
 
 import {
-  type ActionContext,
-  type ActionResult,
   type ConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
@@ -244,11 +242,6 @@ export default class MicrosoftOutlookConnector extends ConnectorRuntime {
   // -------------------------------------------------------------------------
   // execute
   // -------------------------------------------------------------------------
-
-  async execute(_ctx: ActionContext): Promise<ActionResult> {
-    return { success: false, error: 'Actions not supported' };
-  }
-
   // -------------------------------------------------------------------------
   // Feed: messages
   // -------------------------------------------------------------------------

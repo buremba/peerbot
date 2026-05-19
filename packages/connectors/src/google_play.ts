@@ -6,8 +6,6 @@
  */
 
 import {
-  type ActionContext,
-  type ActionResult,
   type ConnectorDefinition,
   ConnectorRuntime,
   calculateEngagementScore,
@@ -361,9 +359,5 @@ export default class GooglePlayConnector extends ConnectorRuntime {
         items_skipped: 0,
       },
     };
-  }
-
-  async execute(_ctx: ActionContext): Promise<ActionResult> {
-    return { success: false, error: 'Actions not supported' };
   }
 }

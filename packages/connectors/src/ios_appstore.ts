@@ -5,8 +5,6 @@
  */
 
 import {
-  type ActionContext,
-  type ActionResult,
   type ConnectorDefinition,
   ConnectorRuntime,
   calculateEngagementScore,
@@ -218,9 +216,5 @@ export default class IOSAppStoreConnector extends ConnectorRuntime {
         items_found: allReviews.length,
       },
     };
-  }
-
-  async execute(_ctx: ActionContext): Promise<ActionResult> {
-    return { success: false, error: 'Actions not supported' };
   }
 }

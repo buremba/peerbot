@@ -14,7 +14,7 @@
  * inline — they don't have the connectors directory on disk.
  *
  * The resolver + esbuild bundle pipeline themselves are owned by the
- * shared `./build` module so the gateway and CLI sides don't drift.
+ * shared `./compile` module so the gateway and CLI sides don't drift.
  * This file just supplies the worker-image-specific candidate dirs.
  */
 

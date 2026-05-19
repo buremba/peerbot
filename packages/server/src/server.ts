@@ -216,6 +216,16 @@ async function main() {
   // backstop — the lock keeps the two cadences from double-failing rows.
   const stopReaper = startStaleRunReaper();
 
+  // Embedded connector-worker daemon — polls our own `/api/workers/poll`
+  // and executes claimed runs in-process. Started AFTER `listen()` below
+  // so the daemon's boot-time health check resolves. Prod deployments
+  // running a separate connector-worker pod should set
+  // `LOBU_DISABLE_EMBEDDED_WORKER=1`.
+  const { startEmbeddedConnectorWorker } = await import(
+    './scheduled/embedded-connector-worker'
+  );
+  let embeddedWorker: ReturnType<typeof startEmbeddedConnectorWorker> = null;
+
   const port = parseInt(process.env.PORT || '8787', 10);
   const host = process.env.HOST?.trim() || '0.0.0.0';
 
@@ -238,6 +248,10 @@ async function main() {
   // Graceful shutdown
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Received shutdown signal, stopping gracefully...');
+    if (embeddedWorker) {
+      embeddedWorker.stop();
+      await embeddedWorker.wait(15_000);
+    }
     await vite?.close();
     stopReaper();
     taskScheduler.stop();
@@ -308,6 +322,10 @@ async function main() {
       logger.error({ err }, 'Connector external dependency check failed');
       process.exit(1);
     }
+    // Embedded daemon waits for the listener because its boot health check
+    // hits `/api/health` on this same process.
+    const daemonHost = host === '0.0.0.0' ? '127.0.0.1' : host;
+    embeddedWorker = startEmbeddedConnectorWorker(env, `http://${daemonHost}:${port}`);
   });
 }
 

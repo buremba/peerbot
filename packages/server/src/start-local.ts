@@ -180,6 +180,15 @@ async function main() {
   const { startStaleRunReaper } = await import('./scheduled/check-stalled-executions');
   const stopReaper = startStaleRunReaper();
 
+  // Embedded connector-worker daemon — same process executes
+  // `runs(run_type='sync')` by polling our own `/api/workers/poll`.
+  // Started AFTER `listen()` so the daemon's boot-time health check
+  // can resolve. Opt-out: `LOBU_DISABLE_EMBEDDED_WORKER=1`.
+  const { startEmbeddedConnectorWorker } = await import(
+    './scheduled/embedded-connector-worker'
+  );
+  let embeddedWorker: ReturnType<typeof startEmbeddedConnectorWorker> = null;
+
   const wrapper = new Hono<{ Bindings: Env }>();
   wrapper.use('*', async (c, next) => {
     // Stash the peer TCP remote-address so handlers that need to enforce
@@ -214,6 +223,11 @@ async function main() {
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down');
+    if (embeddedWorker) {
+      embeddedWorker.stop();
+      // Best-effort drain; don't block shutdown forever on a stuck connector.
+      await embeddedWorker.wait(15_000);
+    }
     stopReaper();
     stopScheduler();
     await vite?.close();
@@ -270,6 +284,9 @@ async function main() {
   httpServer.listen(PORT, HOST, () => {
     logger.info(`Lobu running at http://${HOST}:${PORT}`);
     logger.info(`Data: ${DATA_DIR}`);
+    // Embedded daemon must wait for the listener — its boot-time
+    // health check hits `/api/health` on this same process.
+    embeddedWorker = startEmbeddedConnectorWorker(env, `http://${HOST}:${PORT}`);
   });
 }
 

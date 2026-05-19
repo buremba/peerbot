@@ -1,10 +1,6 @@
 import { useState } from "preact/hooks";
 import snippetsManifest from "../generated/use-case-snippets.json";
-import type { LandingUseCaseId } from "../use-case-definitions";
-import {
-  DEFAULT_LANDING_USE_CASE_ID,
-  getLobuBaseUrl,
-} from "../use-case-showcases";
+import { getLobuBaseUrl } from "../use-case-showcases";
 import { ArchitectureDiagram } from "./ArchitectureDiagram";
 import { CodeBlock, type CodeSnippet } from "./CodeBlock";
 import { CTA } from "./CTA";
@@ -19,17 +15,8 @@ type UseCaseSnippets = {
 };
 
 const snippets = snippetsManifest as Record<string, UseCaseSnippets>;
-
-const PIVOT_USE_CASES: Array<{ id: LandingUseCaseId; label: string }> = [
-  { id: "sales", label: "Sales" },
-  { id: "finance", label: "Finance" },
-  { id: "legal", label: "Legal" },
-  { id: "delivery", label: "Delivery" },
-  { id: "leadership", label: "Leadership" },
-  { id: "ecommerce", label: "Ecommerce" },
-  { id: "agent-community", label: "Community" },
-  { id: "market", label: "Market" },
-];
+const PINNED_USE_CASE = "sales";
+const active = snippets[PINNED_USE_CASE] ?? snippets.sales;
 
 const SETUP_PROMPT = `I want to build a Lobu agent.
 
@@ -44,15 +31,7 @@ Lobu is an open-source event-sourced backend for AI agents — connectors emit e
 
 const GITHUB_URL = "https://github.com/lobu-ai/lobu";
 
-export function LandingPage(props: {
-  defaultUseCaseId?: LandingUseCaseId;
-  latestPosts?: LatestBlogPost[];
-}) {
-  const [activeUseCaseId, setActiveUseCaseId] = useState<LandingUseCaseId>(
-    props.defaultUseCaseId ?? DEFAULT_LANDING_USE_CASE_ID
-  );
-  const active = snippets[activeUseCaseId] ?? snippets.sales;
-
+export function LandingPage(props: { latestPosts?: LatestBlogPost[] }) {
   return (
     <>
       <Hero />
@@ -60,15 +39,11 @@ export function LandingPage(props: {
         <ArchitectureDiagram />
       </Container>
       <UseCaseGrid />
-      <UseCasePivot
-        activeUseCaseId={activeUseCaseId}
-        onChange={setActiveUseCaseId}
-      />
-      <ConnectorsSection useCase={active} useCaseId={activeUseCaseId} />
-      <MemorySection useCase={active} useCaseId={activeUseCaseId} />
-      <WatchersSection useCase={active} useCaseId={activeUseCaseId} />
+      <ConnectorsSection useCase={active} />
+      <MemorySection useCase={active} />
+      <WatchersSection useCase={active} />
       <SkillsSection />
-      <AgentsSection useCase={active} useCaseId={activeUseCaseId} />
+      <AgentsSection useCase={active} />
       <RunAnywhereSection />
       <CTA startUrl={getLobuBaseUrl()} />
       {props.latestPosts?.length ? (
@@ -509,66 +484,11 @@ function UseCaseGrid() {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Use-case pivot                                                            */
-/* -------------------------------------------------------------------------- */
-
-function UseCasePivot(props: {
-  activeUseCaseId: LandingUseCaseId;
-  onChange: (id: LandingUseCaseId) => void;
-}) {
-  return (
-    <Container className="pb-2 pt-12">
-      <div class="mb-3 text-center">
-        <Eyebrow>Same primitives, every domain</Eyebrow>
-        <SectionHeading className="mx-auto">
-          Pick a use case. Every code panel changes.
-        </SectionHeading>
-        <p
-          class="mx-auto mt-3 max-w-[40rem] text-[14.5px]"
-          style={{ color: "var(--color-page-text-muted)" }}
-        >
-          The connectors, memory schema, watcher, and agent config below are
-          read straight from <span class="font-mono">examples/&lt;id&gt;/</span>{" "}
-          in the repo.
-        </p>
-      </div>
-      <div
-        class="mx-auto mt-8 flex flex-wrap justify-center gap-x-1 gap-y-0 border-b"
-        style={{ borderColor: "var(--color-page-border)" }}
-      >
-        {PIVOT_USE_CASES.map((uc) => {
-          const active = uc.id === props.activeUseCaseId;
-          return (
-            <button
-              aria-pressed={active}
-              key={uc.id}
-              class="-mb-px border-b-2 px-3 py-2 font-mono text-[12.5px] transition-colors"
-              onClick={() => props.onChange(uc.id)}
-              style={{
-                borderColor: active ? "var(--color-page-text)" : "transparent",
-                color: active
-                  ? "var(--color-page-text)"
-                  : "var(--color-page-text-muted)",
-                fontWeight: active ? 700 : 500,
-              }}
-              type="button"
-            >
-              {uc.label.toLowerCase()}
-            </button>
-          );
-        })}
-      </div>
-    </Container>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
 /*  Product sections (Connectors / Memory / Watchers / Agents)               */
 /* -------------------------------------------------------------------------- */
 
 type ProductSectionProps = {
   useCase: UseCaseSnippets;
-  useCaseId: LandingUseCaseId;
 };
 
 function ProductGrid(props: {
@@ -871,8 +791,8 @@ function SkillsSection() {
                 agents/&lt;id&gt;/skills/
               </code>
               , <code class="font-mono text-[13px]">lobu apply</code> picks it
-              up. The agent gets instructions, tools, packages, and a
-              per-domain LLM egress policy in one shot.
+              up. The agent gets instructions, tools, packages, and a per-domain
+              LLM egress policy in one shot.
             </p>
             <FeatureList
               items={[

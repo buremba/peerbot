@@ -1,8 +1,9 @@
 import { timingSafeEqual } from 'node:crypto';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import { scrubSecrets, validateEmbeddingDimensions } from './embedding-utils.js';
+import { validateEmbeddingDimensions } from './embedding-utils.js';
 import { batchGenerateLocalEmbeddings, getLocalModelName } from './embeddings.js';
+import { scrubSecrets } from './internal/scrub-secrets.js';
 import {
   OpenAIEmbeddingsTimeoutError,
   generateOpenAIEmbeddings,

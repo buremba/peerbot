@@ -1,8 +1,8 @@
 import {
   normalizeEmbeddings,
-  scrubSecrets,
   validateEmbeddingDimensions,
 } from './embedding-utils.js';
+import { scrubSecrets } from './internal/scrub-secrets.js';
 
 interface OpenAIEmbeddingResponse {
   data: Array<{ embedding: number[]; index: number }>;

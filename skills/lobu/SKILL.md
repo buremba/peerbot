@@ -1,11 +1,79 @@
 ---
 name: lobu
-description: Build, run, and maintain Lobu agent projects, including lobu.toml, prompt files, local skills, evals, providers, connections, and Lobu memory workflows.
+description: Scaffold a new Lobu agent project from a user interview, then build, run, and maintain it — including lobu.toml, prompt files, local skills, evals, providers, connections, and Lobu memory workflows.
 ---
 
 # Lobu
 
-Use this skill when the user is working on a Lobu project or wants to scaffold, run, validate, evaluate, or connect one. Also use it when the user wants persistent Lobu memory, MCP client setup, OpenClaw memory plugin configuration, knowledge search/save workflows, watchers, or browser-authenticated connectors.
+Use this skill when the user wants to scaffold a new Lobu agent (no existing project), or when they're working on an existing Lobu project — running, validating, evaluating, or connecting one. Also use it for persistent Lobu memory, MCP client setup, OpenClaw memory plugin configuration, knowledge search/save workflows, watchers, and browser-authenticated connectors.
+
+If no `lobu.toml` exists in the current working directory, treat the user as a first-time user and run the "First-Time Setup" flow below. Otherwise jump straight to "Core Model" + the relevant reference section.
+
+## First-Time Setup
+
+The user has installed this skill and wants a working Lobu agent end-to-end. Run the four phases below in order. Pause at every real decision and ask the user — do not fake credentials, do not guess. Cite specific docs/files when you do not know something.
+
+### Phase 1 — Environment
+
+Verify the host can run Lobu before writing any code:
+
+- Node.js 22.x–24.x. Reject Node 25+ (it breaks `isolated-vm`, which the worker depends on). If missing, instruct the user to install via `nvm`, `fnm`, or `mise`.
+- Bun (used to run the CLI from npm). Install via `curl -fsSL https://bun.sh/install | bash` if missing.
+- A reachable Postgres with the `pgvector` extension. If the user does not have one, point them at `docker run -d --name lobu-pg -p 5432:5432 -e POSTGRES_PASSWORD=lobu pgvector/pgvector:pg16` or Neon/Supabase.
+- One LLM provider API key. Anthropic (`ANTHROPIC_API_KEY`), OpenAI (`OPENAI_API_KEY`), or Z.ai (`ZAI_API_KEY`). Ask the user which they have; do not pick for them.
+
+Capture `DATABASE_URL` and the provider key in the user's response — they will go into `.env` in Phase 3.
+
+### Phase 2 — Interview
+
+Ask short, concrete questions one at a time. Wait for the answer before asking the next. Do not batch questions.
+
+1. **What is the agent for?** One sentence. (Example: "Triage support emails and draft replies for the on-call engineer.")
+2. **Who uses it?** Just you, your team, or each of your customers (multi-tenant)?
+3. **What does it need to remember?** Translate the answer into 1–3 entity types. (Example: "support tickets, customers, recurring issues.")
+4. **Where does the data come from?** One source to start. (Slack, Gmail, GitHub, Linear, Stripe, a custom webhook, a CSV — pick one.) If the user names a source Lobu does not ship a bundled connector for, plan to write a custom `connector.ts`.
+5. **Where do people talk to it?** Slack, Telegram, Discord, MS Teams, WhatsApp, web (HTTP API), or MCP-only?
+6. **What should it do on a schedule, if anything?** For v1, propose at most one "dreaming" watcher (e.g. "every morning at 8am, cluster yesterday's tickets by root cause"). Skip if the user does not need one.
+
+### Phase 3 — Scaffold
+
+Based on the interview answers, run:
+
+```bash
+npx @lobu/cli@latest init <agent-name>
+cd <agent-name>
+```
+
+The CLI generates the directory layout. Then edit:
+
+- **`lobu.toml`** — set the agent name + description from question 1; add the chosen provider; set `[memory] org` from a slug of the user's choice.
+- **`.env`** — fill in `DATABASE_URL` and the provider API key from Phase 1.
+- **`models/schema.yaml`** — declare the entity types from question 3. Each entity needs `slug`, `name`, and a `metadata_schema` (JSON Schema) describing the fields you will store.
+- **`connectors/<name>.connector.ts`** — only if the source from question 4 is not a bundled connector. Model it on `examples/lobu-crm/connectors/funnel-form.connector.ts` in the lobu repo.
+- **`models/schema.yaml`** (watchers section) — add one reactive watcher with `on: <event-type>`, `prompt`, and `extraction_schema`. Optionally add the cron `schedule:` watcher from question 6.
+- **`models/reactions/<name>.reaction.ts`** — only if the watcher needs to call actions after extracting (post to Slack, update an entity, etc.). Default path (no reaction) just writes the extracted data to memory.
+
+Then boot:
+
+```bash
+npx @lobu/cli@latest run
+```
+
+The CLI starts the embedded gateway + worker on `http://localhost:8787`.
+
+### Phase 4 — Verify
+
+Confirm the agent works end-to-end before declaring done:
+
+1. Send a test message via the chosen channel from question 5 (or the local web UI at `http://localhost:8787` if MCP-only).
+2. Confirm the agent replies.
+3. If you wired a connector, trigger a real event (or post a synthetic one) and confirm the watcher fired:
+   ```bash
+   npx @lobu/cli@latest memory run search_memory '{"query": "<something the watcher would have extracted>"}'
+   ```
+4. Show the user the memory event row from step 3, plus the admin UI at `http://localhost:8787/<org>/events` so they can see the structured record.
+
+If anything fails, do not silently move on — surface the error, propose a fix, and only continue once the user confirms.
 
 ## Core Model
 

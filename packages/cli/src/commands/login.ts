@@ -154,7 +154,14 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
     }
   }
 
-  const isInteractive = process.stdout.isTTY === true && !options.quiet;
+  // Both ends of the stdio pair must be a TTY for the device-code prompt to
+  // make sense — a backgrounded shell or CI runner has neither stdin to
+  // approve from nor stdout to spin on. Require both, plus the absence of
+  // `--quiet`, before treating the call as interactive.
+  const isInteractive =
+    process.stdout.isTTY === true &&
+    process.stdin.isTTY === true &&
+    !options.quiet;
   const spinner = isInteractive
     ? ora("Waiting for authorization...").start()
     : null;
@@ -168,11 +175,15 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 
   // If the user kills the spawning shell (SIGHUP) or any supervisor sends
   // SIGTERM, exit promptly instead of inheriting the orphaned poll loop.
-  // Without these handlers a backgrounded `lobu login &` keeps hitting
-  // `/oauth/token` every interval until the device code expires.
-  const abortBox: { signal: NodeJS.Signals | null } = { signal: null };
+  // The abortable sleep below wakes immediately when `signal` is set, so we
+  // don't have to wait out the polling interval first.
+  const abortBox: { signal: NodeJS.Signals | null; wake: (() => void) | null } =
+    { signal: null, wake: null };
   const abort = (signal: NodeJS.Signals): void => {
-    if (abortBox.signal === null) abortBox.signal = signal;
+    if (abortBox.signal === null) {
+      abortBox.signal = signal;
+      abortBox.wake?.();
+    }
   };
   const onSIGHUP = () => abort("SIGHUP");
   const onSIGTERM = () => abort("SIGTERM");
@@ -190,13 +201,22 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 
   try {
     while (Date.now() < deadline) {
-      await delay(intervalSeconds * 1000);
+      // Sleep at most until the deadline, and let signal handlers wake us
+      // up so cancellation doesn't have to wait out the full polling
+      // interval (which `slow_down` can balloon to >30s).
+      const remainingMs = deadline - Date.now();
+      const sleepMs = Math.min(
+        intervalSeconds * 1000,
+        Math.max(remainingMs, 0)
+      );
+      await abortableDelay(sleepMs, abortBox);
 
       if (abortBox.signal) {
         spinner?.fail(`Login cancelled (${abortBox.signal}).`);
         process.exitCode = 1;
         return;
       }
+      if (Date.now() >= deadline) break;
 
       const result = await pollDeviceToken(
         discovery.tokenEndpoint,
@@ -319,8 +339,23 @@ async function revokeExisting(existing: Credentials): Promise<void> {
   );
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function abortableDelay(
+  ms: number,
+  abortBox: { signal: NodeJS.Signals | null; wake: (() => void) | null }
+): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  if (abortBox.signal) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      abortBox.wake = null;
+      resolve();
+    }, ms);
+    abortBox.wake = () => {
+      clearTimeout(timer);
+      abortBox.wake = null;
+      resolve();
+    };
+  });
 }
 
 async function tryOAuthStep<T>(fn: () => Promise<T>): Promise<T | undefined> {

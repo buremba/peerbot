@@ -1,20 +1,25 @@
 #!/usr/bin/env bun
 /**
- * Pulls real source files from `examples/<id>/` and emits a JSON manifest the
+ * Reads pinned files out of `examples/` and emits a flat JSON manifest the
  * landing page imports at build time.
  *
- * Round 4 budget — every code block has to fit in the landing's flat
- * left-column without scrolling. Targets:
+ * Round 10 redesign — the page no longer has a global use-case pivot, so the
+ * manifest is no longer keyed by use case. Each primitive section instead
+ * shows ONE canonical example:
  *
- *   lobu.toml   ≤ 10 lines  (one [agents.<id>] table, one provider, [memory])
- *   memory      ≤ 20 lines  (ONE entity, 2-3 properties, type only)
- *   watcher     ≤ 15 lines  (slug + agent + trigger + 1-line prompt +
- *                           extraction_schema.type + required)
- *   connector   ≤ 28 lines  (handled by the source files themselves)
- *   reaction    untouched   (real example code)
+ *   connector    -> examples/lobu-crm/connectors/funnel-form.connector.ts
+ *   memorySchema -> examples/sales/models/schema.yaml         (entities slice)
+ *   watcher      -> examples/sales/models/schema.yaml         (watchers slice)
+ *   reaction     -> examples/sales/models/reactions/account-health-monitor.reaction.ts
+ *   agentToml    -> examples/sales/lobu.toml
  *
- * Each snippet records its display path and a GitHub permalink so the
- * `CodeBlock` component can render a "see on github" footer.
+ * Plus a list of every `examples/*\/lobu.toml` for BrowseExamplesSection:
+ *
+ *   examples     -> [{ slug, label, description, githubUrl }]
+ *
+ * The skill snippet stays inline in LandingPage.tsx (set in round 9).
+ *
+ * Output: packages/landing/src/generated/landing-snippets.json
  */
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -23,28 +28,28 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const examplesDir = resolve(__dirname, "../../../examples");
-const outFile = resolve(__dirname, "../src/generated/use-case-snippets.json");
+const outFile = resolve(__dirname, "../src/generated/landing-snippets.json");
 
-const USE_CASES = [
-  "legal",
-  "finance",
-  "sales",
-  "delivery",
-  "leadership",
-  "agent-community",
-  "ecommerce",
-  "market",
-] as const;
+const PINNED = {
+  connector: { slug: "lobu-crm", path: "connectors/funnel-form.connector.ts" },
+  memorySchema: { slug: "sales", path: "models/schema.yaml" },
+  watcher: { slug: "sales", path: "models/schema.yaml" },
+  reaction: {
+    slug: "sales",
+    path: "models/reactions/account-health-monitor.reaction.ts",
+  },
+  agentToml: { slug: "sales", path: "lobu.toml" },
+} as const;
 
 const BUDGETS = {
   agentToml: 12,
-  memorySchemaYaml: 22,
-  watcherYaml: 16,
-  connectorTs: 40,
-  reactionTs: 50,
+  memorySchema: 22,
+  watcher: 16,
+  reaction: 50,
+  connector: 40,
 };
 
-type Language = "toml" | "yaml" | "typescript";
+type Language = "toml" | "yaml" | "typescript" | "markdown";
 
 type Snippet = {
   code: string;
@@ -53,18 +58,31 @@ type Snippet = {
   language: Language;
 };
 
-type UseCaseSnippets = {
-  agentToml: Snippet;
-  memorySchemaYaml: Snippet;
-  watcherYaml: Snippet;
-  connectorTs?: Snippet;
-  reactionTs?: Snippet;
+type ExampleEntry = {
+  slug: string;
+  label: string;
+  description: string | null;
+  githubUrl: string;
 };
 
-const GITHUB_BASE = "https://github.com/lobu-ai/lobu/blob/main/examples";
+type LandingSnippets = {
+  connector: Snippet;
+  memorySchema: Snippet;
+  watcher: Snippet;
+  reaction: Snippet;
+  agentToml: Snippet;
+  examples: ExampleEntry[];
+};
 
-function githubUrlFor(useCase: string, relativePath: string): string {
-  return `${GITHUB_BASE}/${useCase}/${relativePath}`;
+const GITHUB_FILE_BASE = "https://github.com/lobu-ai/lobu/blob/main/examples";
+const GITHUB_TREE_BASE = "https://github.com/lobu-ai/lobu/tree/main/examples";
+
+function githubFileUrl(slug: string, relativePath: string): string {
+  return `${GITHUB_FILE_BASE}/${slug}/${relativePath}`;
+}
+
+function githubTreeUrl(slug: string): string {
+  return `${GITHUB_TREE_BASE}/${slug}`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -95,9 +113,7 @@ function trimAgentToml(raw: string): string {
         providersSeen = true;
       } else if (isMemory) mode = "memory";
       else mode = "skip";
-      if (mode !== "skip") {
-        out.push(line.trimEnd());
-      }
+      if (mode !== "skip") out.push(line.trimEnd());
       continue;
     }
     if (mode === "skip") continue;
@@ -113,11 +129,44 @@ function trimAgentToml(raw: string): string {
   return collapseBlanks(out).join("\n");
 }
 
+/** Parse a full lobu.toml and pull the first agent name + description fields. */
+type TomlExampleMeta = { label: string | null; description: string | null };
+
+function readExampleMeta(rawToml: string, slug: string): TomlExampleMeta {
+  const lines = rawToml.split("\n");
+  type Mode = "none" | "agent" | "memory";
+  let mode: Mode = "none";
+  let agentName: string | null = null;
+  let agentDescription: string | null = null;
+  let memoryDescription: string | null = null;
+  for (const line of lines) {
+    const sectionMatch = /^\s*\[\[?([\w.-]+)\]\]?\s*$/.exec(line);
+    if (sectionMatch) {
+      const name = sectionMatch[1];
+      if (/^agents\.[\w-]+$/.test(name) && mode === "none") mode = "agent";
+      else if (name === "memory") mode = "memory";
+      else if (mode !== "none") mode = "none";
+      continue;
+    }
+    const kv = /^\s*([A-Za-z_][\w-]*)\s*=\s*"([^"]*)"\s*$/.exec(line);
+    if (!kv) continue;
+    const [, key, value] = kv;
+    if (mode === "agent" && key === "name" && !agentName) agentName = value;
+    if (mode === "agent" && key === "description" && !agentDescription)
+      agentDescription = value;
+    if (mode === "memory" && key === "description" && !memoryDescription)
+      memoryDescription = value;
+  }
+  const label =
+    agentName ?? slug.charAt(0).toUpperCase() + slug.slice(1);
+  const description = memoryDescription ?? agentDescription ?? null;
+  return { label, description };
+}
+
 /* -------------------------------------------------------------------------- */
 /*  YAML helpers                                                              */
 /* -------------------------------------------------------------------------- */
 
-/** Extract the first N list items at the top-level `<key>:` of a YAML doc. */
 function extractYamlListItems(
   raw: string,
   topKey: string,
@@ -152,11 +201,8 @@ function extractYamlListItems(
     }
     if (current) {
       const indent = line.match(/^\s*/)?.[0].length ?? 0;
-      if (line.trim() === "" || indent > baseIndent) {
-        current.push(line);
-      } else {
-        break;
-      }
+      if (line.trim() === "" || indent > baseIndent) current.push(line);
+      else break;
     }
   }
   if (current) items.push(current);
@@ -168,27 +214,14 @@ function extractYamlListItems(
 /*  Memory (entity) compression                                               */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Strict entity-section shrinker. Keeps:
- *   - the `entities:` header
- *   - the first entity's `- slug:` and `name:`
- *   - the entity's `metadata_schema.type:`
- *   - `properties:` with the first 3 keys, each rendered as a single line
- *     (`<key>: { type: <type> }`) regardless of the source's expanded form
- *
- * Everything else (description, icon, color, enum, x-*, nested objects,
- * extra entities) is dropped.
- */
 function compressEntities(yamlLines: string[]): string[] {
   if (yamlLines.length === 0) return [];
   const out: string[] = [];
   let i = 0;
-  // Header
   if (/^entities:/.test(yamlLines[0])) {
     out.push("entities:");
     i++;
   }
-  // First item
   while (i < yamlLines.length && yamlLines[i].trim() === "") i++;
   if (i >= yamlLines.length) return out;
 
@@ -200,22 +233,15 @@ function compressEntities(yamlLines: string[]): string[] {
   const pad = " ".repeat(baseIndent);
   const padChild = " ".repeat(childIndent);
 
-  // Walk the first item collecting slug, name, properties.
   let slug = "";
   let name = "";
   const props: Array<{ key: string; type: string }> = [];
 
   let cursor = i;
-  // Read first-line `- slug: foo`
   const slugInline = /^\s*-\s*slug:\s*(.+)$/.exec(firstLine);
   if (slugInline) slug = slugInline[1].trim();
   cursor++;
 
-  // childIndent is where direct children of the `- slug: …` mapping live
-  // (e.g. `name:`, `metadata_schema:` — aligned with `slug` after the dash).
-  // The source uses YAML's 2-space-per-indent style, so children are at
-  // baseIndent + 2. metadata_schema's body lives at +4, and the property
-  // *names* under metadata_schema.properties live at +6.
   let inProperties = false;
   let currentPropName: string | null = null;
   let currentPropType: string | null = null;
@@ -230,12 +256,8 @@ function compressEntities(yamlLines: string[]): string[] {
     const trimmed = ln.trimStart();
 
     if (ind === childIndent) {
-      // Direct child of the entity mapping.
-      if (trimmed.startsWith("slug:")) {
-        slug = trimmed.slice("slug:".length).trim();
-      } else if (trimmed.startsWith("name:")) {
-        name = trimmed.slice("name:".length).trim();
-      }
+      if (trimmed.startsWith("slug:")) slug = trimmed.slice(5).trim();
+      else if (trimmed.startsWith("name:")) name = trimmed.slice(5).trim();
       inProperties = false;
       currentPropName = null;
       currentPropType = null;
@@ -252,34 +274,28 @@ function compressEntities(yamlLines: string[]): string[] {
     if (inProperties && ind === childIndent + 4) {
       const m = /^([A-Za-z_][\w-]*)\s*:/.exec(trimmed);
       if (m) {
-        if (currentPropName && currentPropType) {
+        if (currentPropName && currentPropType)
           props.push({ key: currentPropName, type: currentPropType });
-        }
         currentPropName = m[1];
         currentPropType = "string";
       }
     } else if (inProperties && currentPropName && trimmed.startsWith("type:")) {
-      currentPropType = trimmed.slice("type:".length).trim();
+      currentPropType = trimmed.slice(5).trim();
     }
     cursor++;
   }
-  if (currentPropName && currentPropType) {
+  if (currentPropName && currentPropType)
     props.push({ key: currentPropName, type: currentPropType });
-  }
 
   out.push(`${pad}- slug: ${slug || "entity"}`);
   if (name) out.push(`${padChild}name: ${name}`);
   out.push(`${padChild}metadata_schema:`);
   out.push(`${padChild}  type: object`);
   out.push(`${padChild}  properties:`);
-  const shownProps = props.slice(0, 3);
-  for (const p of shownProps) {
-    out.push(`${padChild}    ${p.key}: { type: ${p.type} }`);
-  }
-  if (props.length > shownProps.length) {
-    out.push(`${padChild}    # ${props.length - shownProps.length} more…`);
-  }
-
+  const shown = props.slice(0, 3);
+  for (const p of shown) out.push(`${padChild}    ${p.key}: { type: ${p.type} }`);
+  if (props.length > shown.length)
+    out.push(`${padChild}    # ${props.length - shown.length} more…`);
   return out;
 }
 
@@ -289,24 +305,10 @@ function compressEntities(yamlLines: string[]): string[] {
 
 const WATCHER_KEEP_TOP_KEYS = new Set(["slug", "agent", "on", "schedule"]);
 
-/**
- * Strict watcher shrinker — output layout:
- *   watchers:
- *     - slug: <name>
- *       agent: <id>
- *       (on | schedule): <value>
- *       prompt: "<first non-blank line of the source prompt>"
- *       extraction_schema:
- *         type: object
- *         required: [<top-level required keys>]
- */
 function compressWatcher(yamlLines: string[]): string[] {
   if (yamlLines.length === 0) return [];
   const out: string[] = [];
-  if (/^watchers:/.test(yamlLines[0])) {
-    out.push("watchers:");
-  }
-  // First item
+  if (/^watchers:/.test(yamlLines[0])) out.push("watchers:");
   let i = 1;
   while (i < yamlLines.length && yamlLines[i].trim() === "") i++;
   if (i >= yamlLines.length) return out;
@@ -323,7 +325,6 @@ function compressWatcher(yamlLines: string[]): string[] {
   let prompt = "";
   let extractionRequired: string[] = [];
 
-  // Parse inline first line: `- slug: <value>`
   const slugInline = /^\s*-\s*slug:\s*(.+)$/.exec(firstLine);
   if (slugInline) fields.slug = slugInline[1].trim();
 
@@ -338,7 +339,6 @@ function compressWatcher(yamlLines: string[]): string[] {
     if (ind <= baseIndent) break;
     const trimmed = ln.trimStart();
 
-    // Top-level child of the watcher (slug, agent, on, schedule, prompt, …)
     if (ind === childIndent) {
       const kv = /^([A-Za-z_][\w-]*)\s*:\s*(.*)$/.exec(trimmed);
       if (!kv) {
@@ -346,7 +346,6 @@ function compressWatcher(yamlLines: string[]): string[] {
         continue;
       }
       const [, key, value] = kv;
-      // Block scalar prompt
       if (key === "prompt") {
         if (
           value === "|" ||
@@ -355,7 +354,6 @@ function compressWatcher(yamlLines: string[]): string[] {
           value === "|-" ||
           value === ">-"
         ) {
-          // Collect first non-blank child line.
           let k = cursor + 1;
           while (k < yamlLines.length) {
             const sub = yamlLines[k];
@@ -368,7 +366,6 @@ function compressWatcher(yamlLines: string[]): string[] {
             prompt = sub.trimStart();
             break;
           }
-          // Skip the rest of the block.
           while (k < yamlLines.length) {
             const sub = yamlLines[k];
             if (sub.trim() === "") {
@@ -386,9 +383,6 @@ function compressWatcher(yamlLines: string[]): string[] {
         cursor++;
         continue;
       }
-      // extraction_schema block: harvest the FIRST `required:` we see at the
-      // expected nesting depth (childIndent + 2). Nested `required:` lists
-      // inside object properties don't belong on the landing.
       if (key === "extraction_schema") {
         const schemaInd = childIndent + 2;
         let k = cursor + 1;
@@ -418,7 +412,6 @@ function compressWatcher(yamlLines: string[]): string[] {
               k++;
               continue;
             }
-            // Block list form — collect lines at schemaInd + 2 starting with `- `.
             k++;
             while (k < yamlLines.length) {
               const sub2 = yamlLines[k];
@@ -443,9 +436,7 @@ function compressWatcher(yamlLines: string[]): string[] {
         cursor = k;
         continue;
       }
-      if (WATCHER_KEEP_TOP_KEYS.has(key)) {
-        fields[key] = value;
-      }
+      if (WATCHER_KEEP_TOP_KEYS.has(key)) fields[key] = value;
     }
     cursor++;
   }
@@ -490,15 +481,8 @@ function collapseBlanks(lines: string[]): string[] {
   return out;
 }
 
-function firstFile(dir: string, suffix: string): string | undefined {
-  if (!existsSync(dir)) return undefined;
-  const entries = readdirSync(dir);
-  const match = entries.find((f) => f.endsWith(suffix));
-  return match ? resolve(dir, match) : undefined;
-}
-
 function snippetFrom(
-  useCase: string,
+  slug: string,
   absPath: string,
   relativePath: string,
   language: Language,
@@ -509,49 +493,71 @@ function snippetFrom(
   return {
     code,
     path: relativePath,
-    githubUrl: githubUrlFor(useCase, relativePath),
+    githubUrl: githubFileUrl(slug, relativePath),
     language,
   };
 }
 
 function warnOverBudget(
-  useCase: string,
-  name: string,
+  label: string,
   lines: number,
   budget: number
-) {
+): void {
   if (lines > budget) {
     console.warn(
-      `gen-landing-snippets: ${useCase}/${name} is ${lines} lines — landing budget is ≤ ${budget}.`
+      `gen-landing-snippets: ${label} is ${lines} lines — landing budget is ≤ ${budget}.`
     );
   }
 }
 
-function buildForUseCase(useCase: string): UseCaseSnippets {
-  const root = resolve(examplesDir, useCase);
-  const tomlPath = resolve(root, "lobu.toml");
-  const schemaPath = resolve(root, "models/schema.yaml");
-  if (!existsSync(tomlPath)) throw new Error(`Missing ${tomlPath}`);
-  if (!existsSync(schemaPath)) throw new Error(`Missing ${schemaPath}`);
+/* -------------------------------------------------------------------------- */
+/*  Main                                                                      */
+/* -------------------------------------------------------------------------- */
 
-  const agentToml = snippetFrom(
-    useCase,
-    tomlPath,
-    "lobu.toml",
-    "toml",
-    trimAgentToml
+function pinnedFile(slug: string, rel: string): string {
+  const p = resolve(examplesDir, slug, rel);
+  if (!existsSync(p)) throw new Error(`Missing pinned source ${p}`);
+  return p;
+}
+
+function listExamples(): ExampleEntry[] {
+  const entries = readdirSync(examplesDir, { withFileTypes: true });
+  const out: ExampleEntry[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const slug = entry.name;
+    const tomlPath = resolve(examplesDir, slug, "lobu.toml");
+    if (!existsSync(tomlPath)) continue;
+    const raw = readFileSync(tomlPath, "utf-8");
+    const { label, description } = readExampleMeta(raw, slug);
+    out.push({
+      slug,
+      label: label ?? slug,
+      description,
+      githubUrl: githubTreeUrl(slug),
+    });
+  }
+  out.sort((a, b) => a.slug.localeCompare(b.slug));
+  return out;
+}
+
+function build(): LandingSnippets {
+  const connector = snippetFrom(
+    PINNED.connector.slug,
+    pinnedFile(PINNED.connector.slug, PINNED.connector.path),
+    PINNED.connector.path,
+    "typescript"
   );
   warnOverBudget(
-    useCase,
-    "lobu.toml",
-    agentToml.code.split("\n").length,
-    BUDGETS.agentToml
+    `${PINNED.connector.slug}/${PINNED.connector.path}`,
+    connector.code.split("\n").length,
+    BUDGETS.connector
   );
 
-  const memorySchemaYaml = snippetFrom(
-    useCase,
-    schemaPath,
-    "models/schema.yaml",
+  const memorySchema = snippetFrom(
+    PINNED.memorySchema.slug,
+    pinnedFile(PINNED.memorySchema.slug, PINNED.memorySchema.path),
+    PINNED.memorySchema.path,
     "yaml",
     (raw) =>
       collapseBlanks(
@@ -559,16 +565,15 @@ function buildForUseCase(useCase: string): UseCaseSnippets {
       ).join("\n")
   );
   warnOverBudget(
-    useCase,
-    "memorySchemaYaml",
-    memorySchemaYaml.code.split("\n").length,
-    BUDGETS.memorySchemaYaml
+    `${PINNED.memorySchema.slug}/${PINNED.memorySchema.path} (entities)`,
+    memorySchema.code.split("\n").length,
+    BUDGETS.memorySchema
   );
 
-  const watcherYaml = snippetFrom(
-    useCase,
-    schemaPath,
-    "models/schema.yaml",
+  const watcher = snippetFrom(
+    PINNED.watcher.slug,
+    pinnedFile(PINNED.watcher.slug, PINNED.watcher.path),
+    PINNED.watcher.path,
     "yaml",
     (raw) =>
       collapseBlanks(
@@ -576,52 +581,51 @@ function buildForUseCase(useCase: string): UseCaseSnippets {
       ).join("\n")
   );
   warnOverBudget(
-    useCase,
-    "watcherYaml",
-    watcherYaml.code.split("\n").length,
-    BUDGETS.watcherYaml
+    `${PINNED.watcher.slug}/${PINNED.watcher.path} (watchers)`,
+    watcher.code.split("\n").length,
+    BUDGETS.watcher
   );
 
-  const reactionPath = firstFile(
-    resolve(root, "models/reactions"),
-    ".reaction.ts"
+  const reaction = snippetFrom(
+    PINNED.reaction.slug,
+    pinnedFile(PINNED.reaction.slug, PINNED.reaction.path),
+    PINNED.reaction.path,
+    "typescript"
   );
-  let reactionTs: Snippet | undefined;
-  if (reactionPath) {
-    const rel = `models/reactions/${reactionPath.split("/").pop()}`;
-    reactionTs = snippetFrom(useCase, reactionPath, rel, "typescript");
-    warnOverBudget(
-      useCase,
-      rel,
-      reactionTs.code.split("\n").length,
-      BUDGETS.reactionTs
-    );
-  }
+  warnOverBudget(
+    `${PINNED.reaction.slug}/${PINNED.reaction.path}`,
+    reaction.code.split("\n").length,
+    BUDGETS.reaction
+  );
 
-  const connectorPath = firstFile(resolve(root, "connectors"), ".connector.ts");
-  let connectorTs: Snippet | undefined;
-  if (connectorPath) {
-    const rel = `connectors/${connectorPath.split("/").pop()}`;
-    connectorTs = snippetFrom(useCase, connectorPath, rel, "typescript");
-    warnOverBudget(
-      useCase,
-      rel,
-      connectorTs.code.split("\n").length,
-      BUDGETS.connectorTs
-    );
-  }
+  const agentToml = snippetFrom(
+    PINNED.agentToml.slug,
+    pinnedFile(PINNED.agentToml.slug, PINNED.agentToml.path),
+    PINNED.agentToml.path,
+    "toml",
+    trimAgentToml
+  );
+  warnOverBudget(
+    `${PINNED.agentToml.slug}/${PINNED.agentToml.path}`,
+    agentToml.code.split("\n").length,
+    BUDGETS.agentToml
+  );
 
-  return { agentToml, memorySchemaYaml, watcherYaml, reactionTs, connectorTs };
+  return {
+    connector,
+    memorySchema,
+    watcher,
+    reaction,
+    agentToml,
+    examples: listExamples(),
+  };
 }
 
 function main() {
-  const out: Record<string, UseCaseSnippets> = {};
-  for (const useCase of USE_CASES) {
-    out[useCase] = buildForUseCase(useCase);
-  }
+  const out = build();
   writeFileSync(outFile, `${JSON.stringify(out, null, 2)}\n`, "utf-8");
   console.log(
-    `gen-landing-snippets: wrote ${Object.keys(out).length} use cases to ${outFile}`
+    `gen-landing-snippets: wrote 5 pinned snippets + ${out.examples.length} example entries to ${outFile}`
   );
 }
 

@@ -1,0 +1,106 @@
+{
+  "connector": {
+    "code": "// biome-ignore-all format: stays compact for the landing-page code panel\nimport { ConnectorRuntime, type SyncContext } from \"@lobu/connector-sdk\";\n\n/**\n * Funnel-form connector — polls a small JSON API (`config.endpoint` returns\n * `{ submissions: [...] }`) and emits one event per new submission. Dedup\n * via a rolling checkpoint of seen IDs. Auto-discovered by `lobu apply`.\n */\nexport default class FunnelFormConnector extends ConnectorRuntime {\n  readonly definition = {\n    key: \"funnel-form\",\n    name: \"Funnel form\",\n    version: \"1.0.0\",\n    authSchema: { methods: [{ type: \"none\" as const }] },\n    feeds: { submissions: { key: \"submissions\", name: \"Form submissions\" } },\n  };\n\n  async sync(ctx: SyncContext) {\n    const seen = new Set<string>((ctx.checkpoint as any)?.seen_ids ?? []);\n    const subs: any[] = (await (await fetch(String(ctx.config.endpoint))).json()).submissions ?? [];\n    const fresh = subs.filter((s) => s?.id && !seen.has(s.id));\n    return {\n      events: fresh.map((s) => ({\n        origin_id: s.id,\n        origin_type: \"form_submission\",\n        title: s.company ? `Demo request — ${s.company}` : `Demo request — ${s.name ?? s.email ?? s.id}`,\n        payload_text: s.message ?? \"\",\n        author_name: s.name,\n        occurred_at: s.submitted_at ? new Date(s.submitted_at) : new Date(),\n        metadata: { company: s.company, email: s.email },\n      })),\n      checkpoint: { seen_ids: [...seen, ...fresh.map((s) => s.id)].slice(-1000) },\n    };\n  }\n\n  async execute() {\n    return { success: false, error: \"no actions\" };\n  }\n}",
+    "path": "connectors/funnel-form.connector.ts",
+    "githubUrl": "https://github.com/lobu-ai/lobu/blob/main/examples/lobu-crm/connectors/funnel-form.connector.ts",
+    "language": "typescript"
+  },
+  "memorySchema": {
+    "code": "entities:\n  - slug: organization\n    name: Organization\n    metadata_schema:\n      type: object\n      properties:\n        company_name: { type: string }\n        stage: { type: string }\n        arr: { type: string }\n        # 1 more…",
+    "path": "models/schema.yaml",
+    "githubUrl": "https://github.com/lobu-ai/lobu/blob/main/examples/sales/models/schema.yaml",
+    "language": "yaml"
+  },
+  "watcher": {
+    "code": "watchers:\n  - slug: account-health-monitor\n    agent: sales\n    schedule: 0 */12 * * *\n    prompt: \"Poll CRM data for tracked accounts. Track expansion progress, risk level changes, and renewal timeline.\"\n    extraction_schema:\n      type: object\n      required: [risk_level, expansion_status, renewal_blockers, activity_delta]",
+    "path": "models/schema.yaml",
+    "githubUrl": "https://github.com/lobu-ai/lobu/blob/main/examples/sales/models/schema.yaml",
+    "language": "yaml"
+  },
+  "reaction": {
+    "code": "/**\n * Reaction for the `account-health-monitor` watcher.\n *\n * When the watcher detects a material risk-level change on a tracked account,\n * persist a `health_change` event so the renewal-risk view + weekly digest\n * have a stable record without re-extracting from the CRM stream.\n */\nimport type { ReactionContext } from \"@lobu/connector-sdk\";\n\ninterface HealthData {\n  account_changes?: Array<{\n    account: string;\n    previous_risk: \"low\" | \"medium\" | \"high\";\n    current_risk: \"low\" | \"medium\" | \"high\";\n    signals: string[];\n  }>;\n}\n\nconst RISK_ORDER = { low: 0, medium: 1, high: 2 } as const;\n\nexport default async (ctx: ReactionContext, client: any): Promise<void> => {\n  const data = ctx.extracted_data as HealthData;\n  const changes = data.account_changes ?? [];\n  // Only persist *worsening* transitions — improvements are visible in the\n  // CRM stream and don't need a durable flag.\n  const escalations = changes.filter(\n    (c) => RISK_ORDER[c.current_risk] > RISK_ORDER[c.previous_risk]\n  );\n  if (escalations.length === 0) return;\n\n  for (const c of escalations) {\n    await client.knowledge.save({\n      entity_ids: ctx.entities.map((e) => e.id),\n      content: `Account ${c.account}: risk ${c.previous_risk} → ${c.current_risk}\\nSignals: ${c.signals.join(\"; \")}`,\n      semantic_type: \"health_change\",\n      metadata: {\n        account: c.account,\n        from: c.previous_risk,\n        to: c.current_risk,\n        window_id: ctx.window.id,\n      },\n    });\n  }\n};",
+    "path": "models/reactions/account-health-monitor.reaction.ts",
+    "githubUrl": "https://github.com/lobu-ai/lobu/blob/main/examples/sales/models/reactions/account-health-monitor.reaction.ts",
+    "language": "typescript"
+  },
+  "agentToml": {
+    "code": "[agents.sales]\nname = \"sales\"\n[[agents.sales.providers]]\nid = \"anthropic\"\nmodel = \"claude/sonnet-4-5\"\nkey = \"$ANTHROPIC_API_KEY\"\n[memory]\nenabled = true\norg = \"sales\"\nmodels = \"./models\"\ndata = \"./data\"",
+    "path": "lobu.toml",
+    "githubUrl": "https://github.com/lobu-ai/lobu/blob/main/examples/sales/lobu.toml",
+    "language": "toml"
+  },
+  "examples": [
+    {
+      "slug": "agent-community",
+      "label": "agent-community",
+      "description": "Discover aligned members, explain why they should meet, and draft warm introductions",
+      "githubUrl": "https://github.com/lobu-ai/lobu/tree/main/examples/agent-community"
+    },
+    {
+      "slug": "atlas",
+      "label": "atlas-curator",
+      "description": "Public reference catalog — places, taxonomies, institutions",
+      "githubUrl": "https://github.com/lobu-ai/lobu/tree/main/examples/atlas"
+    },
+    {
+      "slug": "delivery",
+      "label": "delivery",
+      "description": "Help delivery teams keep milestones, blockers, owners, and artifacts aligned",
+      "githubUrl": "https://github.com/lobu-ai/lobu/tree/main/examples/delivery"
+    },
+    {
+      "slug": "ecommerce",
+      "label": "ecommerce-ops",
+      "description": "Manage subscriptions, process order changes, and resolve customer requests",
+      "githubUrl": "https://github.com/lobu-ai/lobu/tree/main/examples/ecommerce"
+    },
+    {
+      "slug": "finance",
+      "label": "finance",
+      "description": "Help finance teams reconcile data, explain variance, and prepare reporting runs",
+      "githubUrl": "https://github.com/lobu-ai/lobu/tree/main/examples/finance"
+    },
+    {
+      "slug": "leadership",
+      "label": "leadership",
+      "description": "Turn memos, decisions, and board materials into reusable operating context",
+      "githubUrl": "https://github.com/lobu-ai/lobu/tree/main/examples/leadership"
+    },
+    {
+      "slug": "legal",
+      "label": "legal-review",
+      "description": "Review contracts, summarize risk, and surface missing protections",
+      "githubUrl": "https://github.com/lobu-ai/lobu/tree/main/examples/legal"
+    },
+    {
+      "slug": "lobu-crm",
+      "label": "crm",
+      "description": "Funnel CRM for Lobu — leads, pilots, conversations, launch signals",
+      "githubUrl": "https://github.com/lobu-ai/lobu/tree/main/examples/lobu-crm"
+    },
+    {
+      "slug": "market",
+      "label": "vc-tracking",
+      "description": "Track companies, founders, and investment opportunities for venture firms",
+      "githubUrl": "https://github.com/lobu-ai/lobu/tree/main/examples/market"
+    },
+    {
+      "slug": "office-bot",
+      "label": "food-ordering",
+      "description": "Office-ops agents — first up: the weekday lunch order",
+      "githubUrl": "https://github.com/lobu-ai/lobu/tree/main/examples/office-bot"
+    },
+    {
+      "slug": "personal-finance",
+      "label": "personal-finance",
+      "description": "UK Self Assessment helper — captures financial activity across the tax year and assembles SA100 + supplementary pages.",
+      "githubUrl": "https://github.com/lobu-ai/lobu/tree/main/examples/personal-finance"
+    },
+    {
+      "slug": "sales",
+      "label": "sales",
+      "description": "Help revenue teams track account health, rollout progress, and renewal signals",
+      "githubUrl": "https://github.com/lobu-ai/lobu/tree/main/examples/sales"
+    }
+  ]
+}

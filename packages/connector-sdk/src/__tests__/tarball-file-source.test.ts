@@ -69,8 +69,10 @@ describe('TarballFileSource', () => {
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const addr = server.address() as AddressInfo;
     baseUrl = `https://127.0.0.1:${addr.port}`;
-    // Self-signed cert — disable TLS verification for the duration of this suite.
     originalTlsReject = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    // lgtm[js/disabling-certificate-validation]
+    // Test-only: connects to an in-process HTTPS server with a self-signed
+    // cert. Prod rejection is pinned by tls-verification.test.ts.
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
   });
 

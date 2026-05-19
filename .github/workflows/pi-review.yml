@@ -8,11 +8,17 @@ name: pi-review
 # Posts a JSON verdict per docs/REVIEW_SCHEMA.md as a check-run.
 # Always conclusion=neutral; never gates merges.
 #
-# The job also boots a full e2e environment (Postgres + pgvector, owletto
-# submodule, workspace builds) so pi can actually run affected test suites
-# and exercise endpoints — diff-reading alone misses runtime regressions.
-# The e2e setup steps are best-effort (`continue-on-error: true`); if any
-# fail, pi still reviews the diff statically.
+# The job boots a full e2e environment (Postgres + pgvector, owletto
+# submodule, workspace builds), then runs the deterministic test suites
+# (typecheck, bun unit tests, vitest integration suite) ITSELF and hands
+# the log paths + exit codes to pi. Pi reads the logs — it does not get
+# to skip the suites under time/token pressure. Pi's remaining job is
+# exploratory verification (booting the server, exercising endpoints,
+# probing edge cases the suite doesn't cover).
+#
+# The e2e setup + test-runner steps are best-effort (`continue-on-error:
+# true`); if any fail, pi still reviews the diff statically and treats the
+# non-zero exit code as a blocker per docs/REVIEW_SCHEMA.md.
 #
 # `pull_request` (not `pull_request_target`): fork PRs MUST NOT see the
 # bundle — they execute the head ref unprivileged with no secrets.
@@ -101,6 +107,76 @@ jobs:
           PORT=8787
           EOF
 
+      # Test runners — the workflow drives these, not pi. Each suite mirrors
+      # what `.github/workflows/ci.yml` runs on the corresponding job, so a
+      # green here matches a green there. All `continue-on-error: true` so a
+      # failure surfaces as a non-zero exit code in `outputs.exit_code` that
+      # pi reads from the log + uses to set `bugs >= 1` per the schema.
+
+      - name: Run typecheck
+        id: typecheck
+        continue-on-error: true
+        run: |
+          set +e
+          bun run typecheck 2>&1 | tee /tmp/typecheck.log
+          ec=${PIPESTATUS[0]}
+          echo "exit_code=$ec" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Run unit tests (bun)
+        id: unit-tests
+        continue-on-error: true
+        # Mirrors the `unit` job in ci.yml: core / cli, full worker suite,
+        # gateway pure-unit subdirs, connector-worker. Each `bun test` line
+        # is independent; capture per-line exit via PIPESTATUS but report
+        # the worst (max) exit so pi sees one number.
+        run: |
+          set +e
+          {
+            echo "::group::core + cli"
+            bun test packages/core packages/cli
+            echo "::endgroup::"
+            echo "::group::agent-worker"
+            bun test packages/agent-worker
+            echo "::endgroup::"
+            echo "::group::server unit subdirs"
+            bun test packages/server/src/__tests__/unit
+            bun test packages/server/src/auth/__tests__/tool-access.test.ts
+            bun test packages/server/src/gateway/infrastructure/queue
+            echo "::endgroup::"
+            echo "::group::connector-worker"
+            bun test packages/connector-worker
+            echo "::endgroup::"
+          } 2>&1 | tee /tmp/unit-tests.log
+          ec=${PIPESTATUS[0]}
+          echo "exit_code=$ec" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Run integration tests (vitest + bun, needs Postgres)
+        id: integration-tests
+        continue-on-error: true
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+        # Mirrors the `integration` job in ci.yml: server vitest suite, then
+        # the bun:test suites that need Postgres (gateway, lobu route,
+        # workspace).
+        run: |
+          set +e
+          {
+            echo "::group::server vitest"
+            (cd packages/server && node ../../node_modules/.bin/vitest run --reporter=default)
+            echo "::endgroup::"
+            echo "::group::server gateway (bun:test, Postgres)"
+            (cd packages/server && bun test src/gateway/__tests__)
+            echo "::endgroup::"
+            echo "::group::server lobu + workspace (bun:test, Postgres)"
+            (cd packages/server && bun test src/lobu/__tests__ src/workspace/__tests__)
+            echo "::endgroup::"
+          } 2>&1 | tee /tmp/integration-tests.log
+          ec=${PIPESTATUS[0]}
+          echo "exit_code=$ec" >> "$GITHUB_OUTPUT"
+          exit 0
+
       - name: Restore pi auth bundle
         env:
           PI_AUTH_BUNDLE: ${{ secrets.PI_AUTH_BUNDLE }}
@@ -145,6 +221,14 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           DATABASE_URL: ${{ env.DATABASE_URL }}
+          # Pi reads these; do not re-run the suites. A non-zero exit code
+          # is a hard blocker per docs/REVIEW_SCHEMA.md.
+          TYPECHECK_LOG: /tmp/typecheck.log
+          TYPECHECK_EXIT: ${{ steps.typecheck.outputs.exit_code }}
+          UNIT_LOG: /tmp/unit-tests.log
+          UNIT_EXIT: ${{ steps.unit-tests.outputs.exit_code }}
+          INTEGRATION_LOG: /tmp/integration-tests.log
+          INTEGRATION_EXIT: ${{ steps.integration-tests.outputs.exit_code }}
         run: |
           set -o pipefail
           VERDICT="$(./scripts/run-pi-review.sh "$PR")"

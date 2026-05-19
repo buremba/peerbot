@@ -17,42 +17,63 @@ gh pr diff "$PR_NUMBER"
 gh pr checks "$PR_NUMBER"
 ```
 
-## 2. Verify behavior (REQUIRED for any change under packages/{core,server,agent-worker,cli}/**)
+## 2. Test results (already run by the workflow — read, don't re-run)
 
-Don't trust the diff alone — code that compiles can still be wrong. For any
-non-trivial source change:
+The workflow ran the deterministic suites before invoking you. Read the
+logs. Do NOT re-run these — that's wasted budget and the workflow already
+captured the canonical output.
 
-- Identify which packages are touched. `gh pr view --json files` gives you
-  the list.
-- **Run the affected test suites.** Examples:
-  - `bun test packages/core` — core unit tests
-  - `bun test packages/agent-worker` — worker unit tests
-  - `bun test packages/server/src/__tests__/unit` — gateway pure-unit
-  - `bun test packages/server/src/gateway/__tests__` — gateway DB-backed
-    (needs `DATABASE_URL`, which you have)
-  - `cd packages/server && node ../../node_modules/.bin/vitest run --reporter=default` — server integration suite
-- **For runtime/boot-path changes** (`packages/server/**`, `packages/agent-worker/**`),
-  boot the gateway and hit an endpoint:
+- Typecheck: exit `$TYPECHECK_EXIT` (log: `$TYPECHECK_LOG`)
+- Unit tests (bun): exit `$UNIT_EXIT` (log: `$UNIT_LOG`)
+- Integration tests (vitest + bun, Postgres-backed): exit `$INTEGRATION_EXIT` (log: `$INTEGRATION_LOG`)
+
+```bash
+echo "typecheck=$TYPECHECK_EXIT unit=$UNIT_EXIT integration=$INTEGRATION_EXIT"
+tail -200 "$TYPECHECK_LOG" "$UNIT_LOG" "$INTEGRATION_LOG"
+```
+
+A non-zero exit code on any of these is a hard `blocker`: set `bugs >= 1`,
+add a one-line entry to `blockers`, and quote the failing test names +
+short excerpts in `notes`.
+
+If a log file is missing or empty (`$..._EXIT` is empty), the test step
+itself was skipped by the workflow — record that as a blocker
+(`"test suite skipped: <suite>"`) rather than inferring pass.
+
+## 3. Additional exploratory verification (your discretion)
+
+After reading the test results, exercise the system for edge cases the
+deterministic suite doesn't cover. Pick what fits the diff:
+
+- **Server / worker changes**: boot the gateway in the background, hit a
+  representative endpoint, verify the shape. Example:
   - `bun packages/server/dist/server.bundle.mjs &` then `curl -sf localhost:8787/health`
   - Kill the process before exiting.
-- **CI is already running these tests** — if `gh pr checks` shows green
-  on the unit / integration jobs, you don't need to re-run them. Read
-  `gh run view <runId> --log-failed` for the failure excerpts instead.
-- Capture pass/fail output. Paste relevant failure excerpts into `notes`
-  (keep under 500 chars total).
+- **CLI changes**: run the affected `lobu <subcommand>` with a
+  representative invocation.
+- **DB / schema changes**: connect with `psql "$DATABASE_URL"` and inspect
+  the migrated state.
+- **Behavior-change PRs**: run the specific test file (or a narrow filter)
+  with a fresh invocation to verify it isn't flaky.
 
-## 3. Time and tool budget
+Time budget for exploratory steps: ~8 min. Report what you exercised in
+`notes` (e.g. "Booted server, hit /health → 200, hit /api/v1/agents → 200
+with empty list"). If you skipped exploration, say so explicitly — don't
+lie by omission.
 
-- ~15 min total compute budget. If a single test suite runs long, skip it
-  rather than blowing the budget — note "skipped: too slow" in `notes`.
-- If the environment itself is broken (postgres unreachable, build
-  artifacts missing), record it as a `blocker` and finish with a partial
-  verdict based on the diff alone. Do not retry indefinitely.
+## 4. Time and tool budget
+
+- ~15 min total compute budget on top of the workflow-run suites.
+- If the environment itself is broken beyond the suites the workflow
+  already ran (e.g. you can't even boot the server for an exploratory
+  endpoint check), record that as a `blocker` and finish with a partial
+  verdict. Do not retry indefinitely.
 - The numeric scores must reflect what you empirically verified — don't
-  inflate `bugs` from speculation. Confirmed-by-failing-test = a bug;
-  "this looks suspicious but tests pass" = a note, not a bug.
+  inflate `bugs` from speculation. Confirmed by a failing workflow-run
+  suite OR a failure you reproduced in exploration = a bug. "This looks
+  suspicious but everything passed" = a note, not a bug.
 
-## 4. Schema
+## 5. Schema
 
 ```json
 {
@@ -74,11 +95,13 @@ non-trivial source change:
 
 ### Calibration
 
-- **confidence ≥ 90** only if you ran tests AND would stake the team on this
-  not breaking prod.
-- **confidence ≤ 30** only if you cannot understand the diff or saw tests
-  fail.
-- Default range for clean PRs you verified is **70–89**.
+- **confidence ≥ 90** only if every workflow-run suite passed AND your
+  exploratory probes lined up with expectations AND you would stake the
+  team on this not breaking prod.
+- **confidence ≤ 30** only if you cannot understand the diff or a
+  workflow-run suite failed in a way the diff caused.
+- Default range for clean PRs (suites green, no exploration surprises) is
+  **70–89**.
 
 ### Slop rubric
 
@@ -140,7 +163,7 @@ Sum should approximate `additions + deletions`. Path → category:
 
 Most specific pattern wins.
 
-## 5. Emit
+## 6. Emit
 
 Exactly one JSON object matching the schema. Validate that it parses before
 you stop. No prose, no fences, no commentary.

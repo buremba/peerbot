@@ -63,9 +63,13 @@ thresholds from any additional reviewer that gets wired in).
 
 ### `bugs` (integer, ≥0)
 
-Count of concrete defects the reviewer can point at — wrong logic, off-by-ones,
-mismatched signatures, dropped error paths, the kind of thing that would
-surface in a unit test if one existed. Style nits do not count.
+Count of confirmed issues. A confirmed issue is **either** a non-zero exit
+code on a workflow-run test suite (typecheck, unit, integration) **or** a
+reproducible failure the reviewer observed exercising the system (boot
+probe, endpoint hit, narrow test re-run). Speculation is NOT a bug — it
+goes in `notes` as a concern. If you didn't verify, you don't get to count.
+
+Style nits and naming preferences do not count.
 
 **Future gate:** auto-merge will require `bugs == 0`.
 

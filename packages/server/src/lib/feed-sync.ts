@@ -4,7 +4,7 @@
  * Extracted from scripts/sync-local.ts for programmatic reuse.
  */
 
-import { executeCompiledConnector } from '../../../connector-worker/src/executor/runtime';
+import { executeCompiledConnector } from '@lobu/connector-worker/executor/runtime';
 import { getDb, parsePgNumberArray } from '../db/client';
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
@@ -112,20 +112,33 @@ export async function runFeed(feed: FeedRecord): Promise<{ itemCount: number }> 
     logContext: { feedId: feed.id },
     logMessage: 'Failed to resolve feed credentials',
   });
+  let itemCount = 0;
   const result = await executeCompiledConnector({
-    mode: 'sync',
     compiledCode,
-    config: mergeExecutionConfig(feed.connection_config, feed.config),
-    checkpoint: feed.checkpoint as any,
-    env: process.env as Record<string, string | undefined>,
-    connectionCredentials,
-    sessionState,
-    credentials,
-    feedKey: feed.feed_key,
-    entityIds: feed.entity_ids,
-    apiType: (feed.api_type as 'api' | 'browser') || 'api',
+    job: {
+      mode: 'sync',
+      config: mergeExecutionConfig(
+        feed.connection_config,
+        connectionCredentials,
+        feed.config
+      ),
+      checkpoint: feed.checkpoint,
+      env: process.env as Record<string, string | undefined>,
+      sessionState,
+      credentials,
+      feedKey: feed.feed_key,
+      entityIds: feed.entity_ids,
+    },
+    hooks: {
+      onEventChunk: async (events) => {
+        itemCount += events.length;
+      },
+    },
   });
-  const itemCount = result.contents.length;
+
+  if (result.mode !== 'sync') {
+    throw new Error(`Expected sync result, got mode=${result.mode}`);
+  }
 
   logger.info({ feedId: feed.id, itemCount }, 'Feed sync completed');
   return { itemCount };

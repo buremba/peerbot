@@ -48,10 +48,12 @@ import { pg_trgm } from '@electric-sql/pglite/contrib/pg_trgm';
 import { vector } from '@electric-sql/pglite/vector';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 import { getRequestListener } from '@hono/node-server';
+import * as Sentry from '@sentry/node';
 import { Hono } from 'hono';
 import { closeDbSingleton } from './db/client';
 import { listMigrationFiles, loadMigrationUpSection } from './db/migration-loader';
 import type { Env } from './index';
+import { isSentryReported, markSentryReported } from './sentry';
 import { getEnvFromProcess } from './utils/env';
 import logger from './utils/logger';
 
@@ -203,11 +205,66 @@ async function main() {
     Object.assign(c.env, env);
     return next();
   });
+
+  // Server-error capture. Mirrors server.ts: routes either throw (caught by
+  // onError below, full stack preserved) or try/catch and return c.json(...,
+  // 500) (only the response status is visible, so capture from the post-
+  // response middleware). Either branch marks the request reported so the
+  // pino → Sentry forwarder doesn't double-count. No-op when SENTRY_DSN is
+  // unset because Sentry.init was a no-op (`./instrument`).
+  wrapper.use('*', async (c, next) => {
+    await next();
+    if (c.res.status >= 500 && !isSentryReported(c)) {
+      let body: unknown = null;
+      try {
+        body = await c.res.clone().json();
+      } catch {
+        // response wasn't JSON; ignore
+      }
+      const message =
+        (body && typeof body === 'object' && 'error' in body && typeof (body as { error?: unknown }).error === 'string'
+          ? (body as { error: string }).error
+          : null) ?? `HTTP ${c.res.status} from ${c.req.method} ${c.req.path}`;
+      Sentry.captureMessage(message, {
+        level: 'error',
+        tags: {
+          source: 'http_response',
+          http_method: c.req.method,
+          http_status: String(c.res.status),
+        },
+        extra: {
+          path: c.req.path,
+          url: c.req.url,
+          response_body: body,
+        },
+      });
+      markSentryReported(c);
+    }
+  });
+
+  wrapper.onError((err, c) => {
+    if (!isSentryReported(c)) {
+      Sentry.captureException(err, {
+        tags: {
+          source: 'app_onError',
+          http_method: c.req.method,
+        },
+        extra: {
+          path: c.req.path,
+          url: c.req.url,
+        },
+      });
+      markSentryReported(c);
+    }
+    logger.error({ err, path: c.req.path, sentryReported: true }, 'Unhandled error in HTTP handler');
+    return c.json({ error: 'Internal server error' }, 500);
+  });
+
   // Mount the embedded Lobu gateway under /lobu (mirrors server.ts:199-202).
   // Without this, the public Agent API (`/lobu/api/v1/agents/*`) and bundled
   // docs are 404 in PGlite mode — only the org-scoped REST app at `/` works.
   // This was the missing piece behind PR #637, which only fixed the Postgres
-  // entrypoint.
+  // entrypoint. The Sentry middleware above wraps both this and the `/` mount.
   if (lobuApp) {
     wrapper.route('/lobu', lobuApp);
   }

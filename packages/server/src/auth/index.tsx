@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { betterAuth } from "better-auth";
+import { APIError, betterAuth } from "better-auth";
 import { magicLink, organization, phoneNumber } from "better-auth/plugins";
 import { bearer } from "better-auth/plugins/bearer";
 import type { Env } from "../index";
@@ -519,6 +519,33 @@ export async function createAuth(env: Env, request?: Request) {
 			user: {
 				create: {
 					before: async (user) => {
+						// Single-user-mode chokepoint. The /api/auth/* middleware
+						// in index.ts blocks /api/auth/sign-up/*, but Better Auth
+						// also creates users on magic-link verify and on OAuth
+						// callbacks — paths the URL guard never sees. This hook
+						// runs immediately before every user INSERT regardless of
+						// how the request arrived; if LOBU_SINGLE_USER is on and
+						// the deployment already has a user, refuse to create a
+						// second one. Closes the fork-via-magic-link / fork-via-
+						// social-login backdoor codex flagged.
+						if (env.LOBU_SINGLE_USER === "1") {
+							const { getDb } = await import("../db/client");
+							const sql = getDb();
+							const rows = (await sql`
+								SELECT count(*)::int AS count FROM "user"
+							`) as unknown as Array<{ count: number }>;
+							const existing = rows[0]?.count ?? 0;
+							if (existing > 0) {
+								// APIError so Better Auth turns this into a structured
+								// JSON response with the right status code, not an
+								// unhandled 500 with an empty body.
+								throw new APIError("FORBIDDEN", {
+									code: "SIGN_UP_DISABLED_IN_SINGLE_USER_MODE",
+									message:
+										"This install allows exactly one user; sign in to the existing account instead.",
+								});
+							}
+						}
 						if (!user.image && user.email) {
 							return { data: { ...user, image: gravatarUrl(user.email) } };
 						}

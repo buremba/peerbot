@@ -14,16 +14,17 @@
 // asserts on load, so this must be the first import; see assert-node-version.ts.
 import './utils/assert-node-version';
 
-import { fork } from 'node:child_process';
+import { fork, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import http from 'node:http';
 import { createRequire } from 'node:module';
-import { homedir } from 'node:os';
+import os, { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import dotenv from 'dotenv';
+import { z } from 'zod';
 
 dotenv.config();
 
@@ -108,6 +109,15 @@ async function main() {
   }
   process.env.PGSSLMODE = 'disable';
   process.env.LOBU_DISABLE_PREPARE = '1';
+  // Single-user mode default: the embedded runner spawns its own PGlite,
+  // seeds a single bootstrap user, and is expected to be used by exactly
+  // one operator on one machine. Block additional sign-ups so the
+  // operator can't accidentally fork into a second account (one for the
+  // Mac app + CLI, one for the web UI) by visiting /sign-up. Operators
+  // who actually want multi-user mode set LOBU_SINGLE_USER=0 explicitly.
+  if (process.env.LOBU_SINGLE_USER === undefined) {
+    process.env.LOBU_SINGLE_USER = '1';
+  }
 
   // ─── PGlite ──────────────────────────────────────────────────
 
@@ -356,10 +366,11 @@ async function applyEmbeddedSchemaPatches(sql: MigrationSqlClient) {
 // `session` table on issuance, the `user` row here on seeding.
 
 const BOOTSTRAP_USER_ID = 'bootstrap-user';
-// Needs a dotted domain — better-auth's email validator rejects bare `dev@local`.
-const BOOTSTRAP_USER_EMAIL = 'dev@lobu.local';
-const BOOTSTRAP_USER_NAME = 'Local Developer';
-const BOOTSTRAP_USERNAME = 'dev-local';
+// Fallback identity when no env override / git config is available. Needs a
+// dotted domain — better-auth's email validator rejects bare `dev@local`.
+const BOOTSTRAP_DEFAULT_EMAIL = 'dev@lobu.local';
+const BOOTSTRAP_DEFAULT_NAME = 'Local Developer';
+const BOOTSTRAP_DEFAULT_USERNAME = 'dev-local';
 const BOOTSTRAP_ORG_ID = 'org-bootstrap-dev';
 const BOOTSTRAP_ORG_SLUG = 'dev';
 const BOOTSTRAP_ORG_NAME = 'Local Dev';
@@ -369,6 +380,82 @@ const BOOTSTRAP_MEMBER_ID = 'member-bootstrap-dev';
 // Must be >= 8 chars to satisfy the web login form's minlength validation.
 const BOOTSTRAP_PASSWORD = 'lobudev123';
 const BOOTSTRAP_ACCOUNT_ID = 'account-bootstrap-dev';
+
+interface BootstrapIdentity {
+  email: string;
+  name: string;
+  username: string;
+}
+
+/**
+ * Pick the bootstrap user's identity for a fresh local install.
+ *
+ * Order of preference:
+ *   1. `LOBU_LOCAL_EMAIL` / `LOBU_LOCAL_NAME` env vars (operator-set).
+ *   2. `git config user.email` / `git config user.name` (most likely correct
+ *      for the dev running `lobu run` out of a checkout).
+ *   3. `${USER}@${hostname}.local` fallback (no Apple Push push-mail goes
+ *      anywhere — better-auth just needs a dotted domain).
+ *   4. The original `dev@lobu.local` / "Local Developer" defaults.
+ *
+ * The bootstrap user only exists on a fresh PGlite install and is gated to
+ * loopback, so a wrong-guess email here can't reach a real mailbox. The
+ * point is to show the operator's actual identity in the menubar + web UI
+ * instead of a hardcoded placeholder.
+ */
+function pickBootstrapIdentity(): BootstrapIdentity {
+  const envEmail = process.env.LOBU_LOCAL_EMAIL?.trim();
+  const envName = process.env.LOBU_LOCAL_NAME?.trim();
+
+  const gitEmail = safeRead(() =>
+    spawnSync('git', ['config', '--get', 'user.email']).stdout.toString().trim()
+  );
+  const gitName = safeRead(() =>
+    spawnSync('git', ['config', '--get', 'user.name']).stdout.toString().trim()
+  );
+
+  const osUser = process.env.USER?.trim() || process.env.USERNAME?.trim();
+  const osHost = os.hostname()?.trim();
+  const osFallbackEmail =
+    osUser && osHost ? `${osUser.toLowerCase()}@${osHost.toLowerCase()}.local` : null;
+
+  const email = pickFirstValidEmail([envEmail, gitEmail, osFallbackEmail]) ?? BOOTSTRAP_DEFAULT_EMAIL;
+  const name = envName || gitName || osUser || BOOTSTRAP_DEFAULT_NAME;
+  const username = usernameFromEmail(email) ?? BOOTSTRAP_DEFAULT_USERNAME;
+  return { email, name, username };
+}
+
+function safeRead(fn: () => string): string | null {
+  try {
+    const v = fn();
+    return v ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+// Use zod's email validator — it's what Better Auth's sign-in/sign-up
+// schemas use internally, so anything that passes here is also accepted
+// by `/api/auth/sign-in/email`. A weaker regex (e.g. `^[^@]+@[^@]+\.[^@]+$`)
+// lets values like `a@b.c`, `user@[127.0.0.1]`, `foo@bar..com` through,
+// which fail BA's Zod and leave us with a seeded user whose printed
+// credentials can't actually be used.
+const emailSchema = z.string().email();
+
+function pickFirstValidEmail(candidates: Array<string | null | undefined>): string | null {
+  for (const c of candidates) {
+    if (c && emailSchema.safeParse(c).success) return c;
+  }
+  return null;
+}
+
+function usernameFromEmail(email: string): string | null {
+  const local = email.split('@')[0]?.toLowerCase();
+  if (!local) return null;
+  // Match the slug shape personal-org-provisioning uses for collision safety.
+  const slug = local.replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  return slug || null;
+}
 
 function isLoopbackPgUrl(dbUrl: string): boolean {
   try {
@@ -442,15 +529,22 @@ async function ensureBootstrapUser(dbUrl: string): Promise<void> {
       return;
     }
 
+    // Pick the operator's actual identity from env / git config / OS user
+    // before seeding. The bootstrap user only exists on fresh PGlite installs
+    // (guarded above), and is loopback-only — wrong-guess emails can't reach
+    // a real mailbox. The point is to show a real identity in the menubar +
+    // web UI instead of a hardcoded `dev@lobu.local` placeholder.
+    const identity = pickBootstrapIdentity();
+
     // Idempotent user/org/member upsert. Re-runs of the embedded schema (e.g.
     // LOBU_DATA_DIR pre-existing without the PAT file) skip ON CONFLICT.
     await sql`
       INSERT INTO "user" (id, name, email, username, "emailVerified", "createdAt", "updatedAt")
       VALUES (
         ${BOOTSTRAP_USER_ID},
-        ${BOOTSTRAP_USER_NAME},
-        ${BOOTSTRAP_USER_EMAIL},
-        ${BOOTSTRAP_USERNAME},
+        ${identity.name},
+        ${identity.email},
+        ${identity.username},
         true,
         NOW(),
         NOW()
@@ -505,7 +599,7 @@ async function ensureBootstrapUser(dbUrl: string): Promise<void> {
 
     const url = `http://localhost:${PORT}`;
     process.stdout.write(
-      `[bootstrap login] ${BOOTSTRAP_USER_EMAIL} / ${BOOTSTRAP_PASSWORD}  →  ${url}\n`
+      `[bootstrap login] ${identity.email} / ${BOOTSTRAP_PASSWORD}  →  ${url}\n`
     );
     logger.info(
       { org: BOOTSTRAP_ORG_SLUG, url },

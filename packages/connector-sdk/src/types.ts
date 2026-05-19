@@ -96,6 +96,11 @@ export interface Env {
   // HTML responses. Defaults to `https://lobu.ai https://*.lobu.ai` when unset.
   FRAME_ANCESTORS?: string;
 
+  // Single-user-mode toggle ("1" enables). When on, blocks /api/auth/sign-up/*
+  // so the bootstrap user can't be forked into a second account. `lobu run`
+  // defaults this on; multi-user deployments leave it unset.
+  LOBU_SINGLE_USER?: string;
+
   // Sync intervals
   DEFAULT_SYNC_INTERVAL_MS?: string;
   DEFAULT_SYNC_INTERVAL_HOURS?: string;

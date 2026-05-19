@@ -14,6 +14,11 @@
 // asserts on load, so this must be the first import; see assert-node-version.ts.
 import './utils/assert-node-version';
 
+// Sentry must init before any other imports for auto-instrumentation
+// (postgres.js, http, etc.). No-op when SENTRY_DSN is unset, which is the
+// common case for `lobu run` installs — the import is cheap.
+import './instrument';
+
 import { fork } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';

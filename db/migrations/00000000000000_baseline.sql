@@ -96,10 +96,13 @@
 --   ALTER TABLE IF EXISTS public.migration_20260316100000_events_kind_backup RENAME TO migration_20260316100000_events_kind_backup_d20260519;
 --
 --   -- Snapshot the 2 dead columns into per-column backup tables BEFORE
---   -- dropping them from the live tables. Keyed off the primary key so
---   -- restore is a one-statement UPDATE.
+--   -- dropping them from the live tables. Each snapshot includes the FULL
+--   -- primary key of the parent so the restore UPDATE is unambiguous:
+--   --   agents.PK = (organization_id, id)  → snapshot keeps both
+--   --   runs.PK   = (id)                   → snapshot needs only id
 --   CREATE TABLE public.agents_d20260519_skill_auto_granted_domains AS
---     SELECT id AS agent_id, skill_auto_granted_domains FROM public.agents
+--     SELECT organization_id, id AS agent_id, skill_auto_granted_domains
+--     FROM public.agents
 --     WHERE skill_auto_granted_domains IS NOT NULL
 --       AND skill_auto_granted_domains <> '[]'::jsonb;
 --   ALTER TABLE public.agents DROP COLUMN IF EXISTS skill_auto_granted_domains;
@@ -161,14 +164,30 @@
 --                # ... (same s3Credentials block as helmrelease.yaml)
 --
 --   3. Wait for CNPG to fetch the latest base backup + replay WAL.
---   4. Repoint the app at the recovered cluster (update the
---      `database.existingSecret` reference, or rename Clusters).
+--   4. ONE OF the following two reconciliation paths, depending on which
+--      image you want serving traffic after recovery:
+--      (a) "Roll back to the pre-squash code" — revert this PR + redeploy
+--          the old image, then repoint at the recovered cluster. The old
+--          image's migrations dir has all 82 forward deltas; the recovered
+--          DB has all 82 ledger rows; dbmate sees nothing pending. This is
+--          the safest path and the one to take if the squash itself is
+--          suspect.
+--      (b) "Keep the new code, just rewind the data" — repoint at the
+--          recovered cluster AND insert the baseline ledger row before any
+--          new-image migration job runs:
+--             psql <recovered-DATABASE_URL> -v ON_ERROR_STOP=1 <<'SQL'
+--             DELETE FROM public.schema_migrations;
+--             INSERT INTO public.schema_migrations (version) VALUES ('00000000000000');
+--             SQL
+--          (Without that, the new image's dbmate-up sees 82 old applied
+--           versions and 1 unapplied baseline → tries to CREATE TABLE
+--           against existing tables → errors.)
 --   5. Resume Flux / scale the app back up.
 --
---   Why this works: WAL is archived every 15 minutes; PITR restores to
---   transaction-level precision within the retention window. The new
---   image's dbmate-up against the recovered DB finds the original 82
---   applied versions and behaves like nothing happened.
+--   Why this works: WAL is archived every 15 minutes; PITR restores the
+--   DB content to transaction-level precision within the retention window.
+--   Reconciling the ledger to whichever image's migrations dir is
+--   authoritative completes the rollback.
 --
 -- Recovery path B (lightweight — just the surgery, not the whole DB):
 --
@@ -190,8 +209,11 @@
 --   -- 3. Restore dropped columns + values (only if needed):
 --   psql "$PROD_DATABASE_URL" <<'SQL'
 --     ALTER TABLE public.agents ADD COLUMN skill_auto_granted_domains jsonb DEFAULT '[]'::jsonb;
+--     -- agents.PK is composite (organization_id, id); join on both to
+--     -- avoid restoring the wrong org's row when an id is reused across orgs.
 --     UPDATE public.agents a SET skill_auto_granted_domains = b.skill_auto_granted_domains
---       FROM public.agents_d20260519_skill_auto_granted_domains b WHERE a.id = b.agent_id;
+--       FROM public.agents_d20260519_skill_auto_granted_domains b
+--       WHERE a.organization_id = b.organization_id AND a.id = b.agent_id;
 --     ALTER TABLE public.runs ADD COLUMN retry_delay_seconds integer;
 --     UPDATE public.runs r SET retry_delay_seconds = b.retry_delay_seconds
 --       FROM public.runs_d20260519_retry_delay_seconds b WHERE r.id = b.run_id;
@@ -219,7 +241,10 @@ SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
-SELECT pg_catalog.set_config('search_path', '', false);
+-- Transaction-scoped (true) — without this, pg_dump's default session-scoped
+-- value would leak past this migration's apply and any later forward delta
+-- using unqualified table names would fail under CI's `dbmate up`.
+SELECT pg_catalog.set_config('search_path', '', true);
 SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;

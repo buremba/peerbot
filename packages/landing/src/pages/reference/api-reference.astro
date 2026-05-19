@@ -43,6 +43,13 @@ const config = JSON.stringify({
   }}
   hasSidebar={false}
 >
+  <div class="sdk-quicklinks">
+    <span class="sdk-quicklinks-label">Other references:</span>
+    <a href="/reference/connector-sdk/">@lobu/connector-sdk</a>
+    <a href="/reference/reaction-sdk/">@lobu/reaction-sdk</a>
+    <a href="/reference/cli/">CLI</a>
+    <a href="/reference/lobu-toml/">lobu.toml</a>
+  </div>
   <div id="scalar-api-reference"></div>
   <script is:inline src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
   <script is:inline define:vars={{ config }}>
@@ -134,5 +141,28 @@ const config = JSON.stringify({
   /* Hide the Starlight page title — Scalar has its own header */
   h1#_top {
     display: none !important;
+  }
+
+  .sdk-quicklinks {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem 1.25rem;
+    padding: 0.75rem 1.25rem;
+    margin: 0 0 1rem;
+    font-size: 0.875rem;
+    border-bottom: 1px solid var(--sl-color-hairline, rgba(125, 125, 125, 0.2));
+  }
+  .sdk-quicklinks-label {
+    color: var(--sl-color-text-accent, #666);
+    font-weight: 600;
+  }
+  .sdk-quicklinks a {
+    color: var(--sl-color-text, currentColor);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .sdk-quicklinks a:hover {
+    color: var(--sl-color-accent, #d97706);
   }
 </style>

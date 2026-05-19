@@ -616,7 +616,7 @@ function ConnectorsSection() {
                 </>,
               ]}
             />
-            <ProductLink href="/getting-started/">
+            <ProductLink href="/getting-started/connector-sdk/">
               Read the connector-sdk docs
             </ProductLink>
           </div>
@@ -735,7 +735,7 @@ function WatchersSection() {
                 </>,
               ]}
             />
-            <ProductLink href="/getting-started/">
+            <ProductLink href="/getting-started/reaction-sdk/">
               Read the watchers guide
             </ProductLink>
           </div>

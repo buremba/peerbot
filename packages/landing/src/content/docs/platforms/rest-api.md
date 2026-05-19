@@ -19,6 +19,11 @@ Browse all endpoints, try requests, and see response schemas in the [full API re
 
 The reference is auto-generated from the gateway's OpenAPI spec and always reflects the latest routes.
 
+For TypeScript SDKs used inside Lobu projects rather than over the wire, see:
+
+- [`@lobu/connector-sdk`](/reference/connector-sdk/) — write connectors that emit events into the stream.
+- [`@lobu/reaction-sdk`](/reference/reaction-sdk/) — write reactions that run after a watcher extracts data.
+
 ## Quick Start
 
 ```bash

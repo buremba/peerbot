@@ -394,13 +394,6 @@ export class OpenClawWorker implements WorkerExecutor {
             this.config.userId,
             this.config.sessionKey
           );
-
-          const { initModuleWorkspace } = await import("../modules/lifecycle");
-          await initModuleWorkspace({
-            workspaceDir: this.workspaceManager.getCurrentWorkingDirectory(),
-            username: this.config.userId,
-            sessionKey: this.config.sessionKey,
-          });
         }
       );
 
@@ -425,26 +418,6 @@ export class OpenClawWorker implements WorkerExecutor {
         }
       );
 
-      // Module hooks may modify the system prompt before agent execution.
-      try {
-        const { onSessionStart } = await import("../modules/lifecycle");
-        const moduleContext = await onSessionStart({
-          platform: this.config.platform,
-          channelId: this.config.channelId,
-          userId: this.config.userId,
-          conversationId: this.config.conversationId,
-          messageId: this.config.responseId,
-          workingDirectory: this.workspaceManager.getCurrentWorkingDirectory(),
-          customInstructions,
-        });
-        if (moduleContext.customInstructions) {
-          customInstructions = moduleContext.customInstructions;
-        }
-      } catch (error) {
-        logger.error("Failed to call onSessionStart hooks:", error);
-      }
-
-      // Add file I/O instructions AFTER module hooks so they aren't overwritten
       customInstructions += this.getFileIOInstructions();
 
       logger.info(
@@ -506,14 +479,6 @@ export class OpenClawWorker implements WorkerExecutor {
           );
         }
       );
-
-      const { collectModuleData } = await import("../modules/lifecycle");
-      const moduleData = await collectModuleData({
-        workspaceDir: this.workspaceManager.getCurrentWorkingDirectory(),
-        userId: this.config.userId,
-        conversationId: this.config.conversationId,
-      });
-      this.workerTransport.setModuleData(moduleData);
 
       if (result.success) {
         // Snapshot writer in cleanup() reads this to discriminate the row.

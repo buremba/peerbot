@@ -136,14 +136,14 @@ export async function tokenRevokeCommand(
     expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
   }
 
+  // `public.revoked_tokens` schema lives in
+  // db/migrations/20260519020001_revoked_tokens.sql and is mirrored in
+  // db/embedded-schema-patches.ts. If the INSERT below fails with
+  // `relation "revoked_tokens" does not exist`, the operator hasn't
+  // applied migrations yet — run dbmate up (or `lobu run` once, which
+  // applies them on boot) and retry.
   const sql = postgres(databaseUrl, { max: 1 });
   try {
-    await sql.unsafe(`
-      CREATE TABLE IF NOT EXISTS public.revoked_tokens (
-        jti text PRIMARY KEY,
-        expires_at timestamptz NOT NULL
-      )
-    `);
     await sql`
       INSERT INTO public.revoked_tokens (jti, expires_at)
       VALUES (${jti}, ${expiresAt})

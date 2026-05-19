@@ -898,4 +898,169 @@ export const EMBEDDED_SCHEMA_PATCHES: EmbeddedSchemaPatch[] = [
       `);
     },
   },
+  {
+    id: 'pat-worker-id-binding',
+    apply: async (sql) => {
+      // Mirrors db/migrations/20260517030000_pat_worker_id_binding.sql.
+      // Binds PATs minted via /api/me/devices/mint-child-token to a
+      // specific worker_id so a child PAT can't post any worker_id at
+      // /api/workers/poll. Legacy PATs keep worker_id = NULL.
+      await sql.unsafe(`
+        ALTER TABLE public.personal_access_tokens
+          ADD COLUMN IF NOT EXISTS worker_id text
+      `);
+      await sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS idx_personal_access_tokens_worker_id
+          ON public.personal_access_tokens (worker_id)
+          WHERE worker_id IS NOT NULL
+      `);
+    },
+  },
+  {
+    id: 'pending-interactions',
+    apply: async (sql) => {
+      // Mirrors db/migrations/20260518000000_pending_interactions.sql.
+      // Per-question state for the chat-interaction bridge — moved out of
+      // the gateway's in-process Map so a button click on pod B can claim
+      // a question registered on pod A. The migration itself omits
+      // IF NOT EXISTS; we add it here for embedded-patch idempotency.
+      await sql.unsafe(`
+        CREATE TABLE IF NOT EXISTS public.pending_interactions (
+          id text PRIMARY KEY,
+          organization_id text NOT NULL REFERENCES public.organization(id) ON DELETE CASCADE,
+          connection_id text NOT NULL,
+          expected_user_id text NOT NULL,
+          entry_payload jsonb NOT NULL,
+          created_at timestamp with time zone NOT NULL DEFAULT now(),
+          claimed_at timestamp with time zone
+        )
+      `);
+    },
+  },
+  {
+    id: 'agent-transcript-snapshot',
+    apply: async (sql) => {
+      // Mirrors db/migrations/20260518040000_agent_transcript_snapshot.sql.
+      // Per-run snapshot of OpenClaw's session.jsonl. Replaces the
+      // workspaces PVC as the source of truth for conversation continuity
+      // across pod boundaries.
+      await sql.unsafe(`
+        CREATE TABLE IF NOT EXISTS public.agent_transcript_snapshot (
+          id              bigserial PRIMARY KEY,
+          organization_id text NOT NULL REFERENCES public.organization(id) ON DELETE CASCADE,
+          agent_id        text NOT NULL,
+          conversation_id text NOT NULL,
+          run_id          bigint NOT NULL REFERENCES public.runs(id) ON DELETE CASCADE,
+          snapshot_jsonl  text NOT NULL,
+          byte_size       bigint NOT NULL,
+          terminal_status text NOT NULL,
+          created_at      timestamp with time zone NOT NULL DEFAULT now()
+        )
+      `);
+    },
+  },
+  {
+    id: 'runs-denormalize-agent-conversation',
+    apply: async (sql) => {
+      // Mirrors db/migrations/20260518050000_runs_denormalize_agent_conversation.sql.
+      // Denormalize agent_id + conversation_id out of runs.action_input
+      // JSONB into real columns. No backfill — readers fall through to
+      // the JSONB extraction via COALESCE.
+      await sql.unsafe(`
+        ALTER TABLE public.runs
+          ADD COLUMN IF NOT EXISTS agent_id text,
+          ADD COLUMN IF NOT EXISTS conversation_id text
+      `);
+    },
+  },
+  {
+    id: 'chat-state-tables',
+    apply: async (sql) => {
+      // Mirrors db/migrations/20260519020000_chat_state_tables.sql.
+      // The Chat SDK state-adapter tables previously created at runtime
+      // by `LobuStateAdapter.ensureSchema()`. Promoted to a migration so
+      // db/schema.sql can stay canonical; the runtime ensureSchema() call
+      // was removed in the same change set.
+      await sql.unsafe(`
+        CREATE TABLE IF NOT EXISTS public.chat_state_subscriptions (
+          key_prefix text NOT NULL,
+          thread_id text NOT NULL,
+          created_at timestamp with time zone NOT NULL DEFAULT now(),
+          PRIMARY KEY (key_prefix, thread_id)
+        )
+      `);
+      await sql.unsafe(`
+        CREATE TABLE IF NOT EXISTS public.chat_state_locks (
+          key_prefix text NOT NULL,
+          thread_id text NOT NULL,
+          token text NOT NULL,
+          expires_at timestamp with time zone NOT NULL,
+          updated_at timestamp with time zone NOT NULL DEFAULT now(),
+          PRIMARY KEY (key_prefix, thread_id)
+        )
+      `);
+      await sql.unsafe(`
+        CREATE TABLE IF NOT EXISTS public.chat_state_cache (
+          key_prefix text NOT NULL,
+          cache_key text NOT NULL,
+          value text NOT NULL,
+          expires_at timestamp with time zone,
+          updated_at timestamp with time zone NOT NULL DEFAULT now(),
+          PRIMARY KEY (key_prefix, cache_key)
+        )
+      `);
+      await sql.unsafe(`
+        CREATE TABLE IF NOT EXISTS public.chat_state_lists (
+          key_prefix text NOT NULL,
+          list_key text NOT NULL,
+          seq bigserial NOT NULL,
+          value text NOT NULL,
+          expires_at timestamp with time zone,
+          PRIMARY KEY (key_prefix, list_key, seq)
+        )
+      `);
+      await sql.unsafe(`
+        CREATE TABLE IF NOT EXISTS public.chat_state_queues (
+          key_prefix text NOT NULL,
+          thread_id text NOT NULL,
+          seq bigserial NOT NULL,
+          value text NOT NULL,
+          expires_at timestamp with time zone NOT NULL,
+          PRIMARY KEY (key_prefix, thread_id, seq)
+        )
+      `);
+      await sql.unsafe(
+        `CREATE INDEX IF NOT EXISTS chat_state_locks_expires_idx ON public.chat_state_locks (expires_at)`
+      );
+      await sql.unsafe(
+        `CREATE INDEX IF NOT EXISTS chat_state_cache_expires_idx ON public.chat_state_cache (expires_at)`
+      );
+      await sql.unsafe(
+        `CREATE INDEX IF NOT EXISTS chat_state_lists_expires_idx ON public.chat_state_lists (expires_at)`
+      );
+      await sql.unsafe(
+        `CREATE INDEX IF NOT EXISTS chat_state_queues_expires_idx ON public.chat_state_queues (expires_at)`
+      );
+    },
+  },
+  {
+    id: 'revoked-tokens',
+    apply: async (sql) => {
+      // Mirrors db/migrations/20260519020001_revoked_tokens.sql.
+      // Token revocation kill-switch, previously created at runtime in
+      // RevokedTokenStore.ensureSchema() AND duplicated in the
+      // `lobu token revoke` CLI command. Both runtime CREATE sites are
+      // removed in the same change set.
+      await sql.unsafe(`
+        CREATE TABLE IF NOT EXISTS public.revoked_tokens (
+          jti text PRIMARY KEY,
+          expires_at timestamp with time zone NOT NULL
+        )
+      `);
+      await sql.unsafe(`
+        CREATE INDEX IF NOT EXISTS revoked_tokens_expires_at_idx
+          ON public.revoked_tokens (expires_at)
+      `);
+    },
+  },
 ];

@@ -7,12 +7,15 @@
  *     postgres-js everywhere, so depending on state-pg meant carrying both
  *     drivers + a second connection pool just to keep one upstream library
  *     happy.
- *   - The schema is small (5 tables, all `IF NOT EXISTS`-creatable) and the
- *     methods are plain CRUD with TTL filtering. Nothing here is upstream
- *     IP — keeping it in-tree is cheaper than the dep weight.
+ *   - The schema is small (5 tables) and the methods are plain CRUD with
+ *     TTL filtering. Nothing here is upstream IP — keeping it in-tree is
+ *     cheaper than the dep weight.
  *
- * Schema is identical to state-pg's so an existing deployment migrates
- * transparently: same table names, same column types, same semantics.
+ * Schema lives in `db/migrations/20260519020000_chat_state_tables.sql` and
+ * is mirrored in `db/embedded-schema-patches.ts` for pre-initialized
+ * embedded (PGlite) databases. Table names and column types match
+ * state-pg's so an existing state-pg deployment can swap in this adapter
+ * without a schema migration.
  *
  * Concurrency: every method works on a single statement that round-trips
  * through the pool; no in-class state. Multiple gateways on the same DB
@@ -58,7 +61,6 @@ class LobuStateAdapter implements StateAdapter {
       this.connectPromise = (async () => {
         try {
           await this.sql`SELECT 1`;
-          await this.ensureSchema();
           this.connected = true;
         } catch (error) {
           this.connectPromise = null;
@@ -363,73 +365,6 @@ class LobuStateAdapter implements StateAdapter {
   }
 
   // ── Internals ───────────────────────────────────────────────────────────
-
-  private async ensureSchema(): Promise<void> {
-    await this.sql`
-      CREATE TABLE IF NOT EXISTS chat_state_subscriptions (
-        key_prefix text NOT NULL,
-        thread_id text NOT NULL,
-        created_at timestamptz NOT NULL DEFAULT now(),
-        PRIMARY KEY (key_prefix, thread_id)
-      )
-    `;
-    await this.sql`
-      CREATE TABLE IF NOT EXISTS chat_state_locks (
-        key_prefix text NOT NULL,
-        thread_id text NOT NULL,
-        token text NOT NULL,
-        expires_at timestamptz NOT NULL,
-        updated_at timestamptz NOT NULL DEFAULT now(),
-        PRIMARY KEY (key_prefix, thread_id)
-      )
-    `;
-    await this.sql`
-      CREATE TABLE IF NOT EXISTS chat_state_cache (
-        key_prefix text NOT NULL,
-        cache_key text NOT NULL,
-        value text NOT NULL,
-        expires_at timestamptz,
-        updated_at timestamptz NOT NULL DEFAULT now(),
-        PRIMARY KEY (key_prefix, cache_key)
-      )
-    `;
-    await this.sql`
-      CREATE INDEX IF NOT EXISTS chat_state_locks_expires_idx
-      ON chat_state_locks (expires_at)
-    `;
-    await this.sql`
-      CREATE INDEX IF NOT EXISTS chat_state_cache_expires_idx
-      ON chat_state_cache (expires_at)
-    `;
-    await this.sql`
-      CREATE TABLE IF NOT EXISTS chat_state_lists (
-        key_prefix text NOT NULL,
-        list_key text NOT NULL,
-        seq bigserial NOT NULL,
-        value text NOT NULL,
-        expires_at timestamptz,
-        PRIMARY KEY (key_prefix, list_key, seq)
-      )
-    `;
-    await this.sql`
-      CREATE INDEX IF NOT EXISTS chat_state_lists_expires_idx
-      ON chat_state_lists (expires_at)
-    `;
-    await this.sql`
-      CREATE TABLE IF NOT EXISTS chat_state_queues (
-        key_prefix text NOT NULL,
-        thread_id text NOT NULL,
-        seq bigserial NOT NULL,
-        value text NOT NULL,
-        expires_at timestamptz NOT NULL,
-        PRIMARY KEY (key_prefix, thread_id, seq)
-      )
-    `;
-    await this.sql`
-      CREATE INDEX IF NOT EXISTS chat_state_queues_expires_idx
-      ON chat_state_queues (expires_at)
-    `;
-  }
 
   private ensureConnected(): void {
     if (!this.connected) {

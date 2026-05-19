@@ -5,14 +5,10 @@
  * Generates embeddings and streams results.
  */
 
-import type { Checkpoint, Content, Env } from '@lobu/connector-sdk';
+import type { Env, EventEnvelope } from '@lobu/connector-sdk';
 import { compileConnectorFromFile, findBundledConnectorFile } from '../compile-connector.js';
 import { batchGenerateEmbeddings, generateEmbedding } from '../embeddings.js';
-import {
-  executeCompiledConnector,
-  getActionOutput,
-  normalizeEventEnvelope,
-} from '../executor/runtime.js';
+import { executeCompiledConnector } from '../executor/runtime.js';
 import { SubprocessExecutor } from '../executor/subprocess.js';
 import type { ContentItem, ExecutorClient, PollResponse } from './client.js';
 
@@ -207,23 +203,21 @@ async function executeSyncRun(
     };
 
     const result = await executeCompiledConnector({
-      mode: 'sync',
       compiledCode: compiled_code,
-      config: (feedConfig ?? {}) as Record<string, unknown>,
-      checkpoint: checkpoint as unknown as Checkpoint | null,
-      env,
-      connectionCredentials: ((job.connection_credentials as Record<string, string>) ??
-        null) as Record<string, string | undefined> | null,
-      sessionState: (job.session_state ?? null) as Record<string, unknown> | null,
-      credentials,
-      feedKey: feed_key,
-      entityIds: job.entity_ids ?? [],
-      apiType: 'api',
       executor: subprocessExecutor,
+      job: {
+        mode: 'sync',
+        config: mergeEnv(env, job.connection_credentials, feedConfig),
+        checkpoint: checkpoint as Record<string, unknown> | null,
+        env,
+        sessionState: (job.session_state ?? null) as Record<string, unknown> | null,
+        credentials: credentials ?? null,
+        feedKey: feed_key,
+        entityIds: job.entity_ids ?? [],
+      },
       hooks: {
-        collectContents: false,
         onCheckpointUpdate: async (nextCheckpoint) => {
-          lastCheckpoint = nextCheckpoint as Record<string, unknown> | null;
+          lastCheckpoint = nextCheckpoint;
           if (!lastCheckpoint) return;
           try {
             await client.stream({
@@ -236,9 +230,9 @@ async function executeSyncRun(
             console.error('[executor] Checkpoint flush failed:', err);
           }
         },
-        onContentChunk: async (items) => {
-          for (const item of items) {
-            const contentItem = await processContent(item, cfg.generateEmbeddings);
+        onEventChunk: async (events) => {
+          for (const event of events) {
+            const contentItem = await processEvent(event, cfg.generateEmbeddings);
             batch.push(contentItem);
             itemsCollectedSoFar++;
 
@@ -250,7 +244,10 @@ async function executeSyncRun(
       },
     });
 
-    lastCheckpoint = result.checkpoint as unknown as Record<string, unknown> | null;
+    if (result.mode !== 'sync') {
+      throw new Error(`Expected sync result, got mode=${result.mode}`);
+    }
+    lastCheckpoint = result.checkpoint;
 
     await flushBatch();
 
@@ -369,20 +366,23 @@ async function executeActionRun(
 
   try {
     const result = await executeCompiledConnector({
-      mode: 'action',
       compiledCode: compiled_code,
-      actionKey: action_key,
-      actionInput: (action_input ?? {}) as Record<string, unknown>,
-      env,
-      connectionCredentials: ((job.connection_credentials as Record<string, string>) ??
-        null) as Record<string, string | undefined> | null,
-      credentials,
-      apiType: 'api',
       executor: subprocessExecutor,
+      job: {
+        mode: 'action',
+        actionKey: action_key,
+        actionInput: (action_input ?? {}) as Record<string, unknown>,
+        config: mergeEnv(env, job.connection_credentials, null),
+        env,
+        sessionState: null,
+        credentials: credentials ?? null,
+      },
     });
 
-    // For actions, the "contents" array may contain a single result envelope
-    const actionOutput = getActionOutput(result);
+    if (result.mode !== 'action') {
+      throw new Error(`Expected action result, got mode=${result.mode}`);
+    }
+    const actionOutput = result.output;
 
     await client.completeAction({
       run_id,
@@ -459,14 +459,15 @@ async function executeAuthRun(
 
   try {
     const result = await executeCompiledConnector({
-      mode: 'authenticate',
       compiledCode: compiled_code,
-      previousCredentials: previous_credentials ?? null,
-      env,
       executor: subprocessExecutor,
-      apiType: 'api',
+      job: {
+        mode: 'authenticate',
+        config: {},
+        previousCredentials: previous_credentials ?? null,
+        env,
+      },
       hooks: {
-        collectContents: false,
         onAuthArtifact: async (artifact) => {
           try {
             await client.emitAuthArtifact({
@@ -498,7 +499,7 @@ async function executeAuthRun(
 
     clearInterval(heartbeatInterval);
 
-    if (!result.auth_result?.credentials) {
+    if (result.mode !== 'authenticate' || !result.auth?.credentials) {
       await client.completeAuth({
         run_id,
         worker_id: client.id,
@@ -512,8 +513,8 @@ async function executeAuthRun(
       run_id,
       worker_id: client.id,
       status: 'success',
-      credentials: result.auth_result.credentials,
-      metadata: result.auth_result.metadata,
+      credentials: result.auth.credentials,
+      metadata: result.auth.metadata,
     });
 
     console.error(`[executor] Auth run ${run_id} completed`);
@@ -675,30 +676,53 @@ async function executeEmbedBackfillRun(
 }
 
 /**
- * Process a content item - convert to ContentItem and optionally generate embedding
+ * Merge the run-level env, the per-connection stored credentials, and the
+ * per-feed config into the single `config` object that the connector's
+ * `sync()` / `execute()` sees. Connection credentials override env (per-conn
+ * trumps fleet-wide); feed config wins last (per-feed trumps connection).
  */
-async function processContent(item: Content, generateEmbeddings: boolean): Promise<ContentItem> {
-  const normalized = normalizeEventEnvelope(item as Record<string, any>);
+function mergeEnv(
+  env: Env,
+  connectionCredentials: Record<string, unknown> | undefined | null,
+  feedConfig: Record<string, unknown> | undefined | null
+): Record<string, unknown> {
+  return {
+    ...(env as unknown as Record<string, unknown>),
+    ...((connectionCredentials ?? {}) as Record<string, unknown>),
+    ...((feedConfig ?? {}) as Record<string, unknown>),
+  };
+}
+
+/**
+ * Convert a V1 EventEnvelope (the SDK's standard sync output) into the
+ * gateway-bound ContentItem shape, optionally generating an embedding.
+ */
+async function processEvent(
+  event: EventEnvelope,
+  generateEmbeddings: boolean
+): Promise<ContentItem> {
+  const occurredAtIso =
+    event.occurred_at instanceof Date
+      ? event.occurred_at.toISOString()
+      : (event.occurred_at as unknown as string);
+
   const contentItem: ContentItem = {
-    id: normalized.origin_id,
-    title: normalized.title,
-    payload_text: normalized.payload_text,
-    author_name: normalized.author_name,
-    occurred_at:
-      normalized.occurred_at instanceof Date
-        ? normalized.occurred_at.toISOString()
-        : (normalized.occurred_at as unknown as string),
-    source_url: normalized.source_url,
-    score: normalized.score,
-    metadata: normalized.metadata,
-    origin_parent_id: normalized.origin_parent_id || undefined,
-    origin_type: normalized.origin_type,
-    semantic_type: normalized.semantic_type,
+    id: event.origin_id,
+    title: event.title,
+    payload_text: event.payload_text,
+    author_name: event.author_name,
+    occurred_at: occurredAtIso,
+    source_url: event.source_url ?? undefined,
+    score: typeof event.score === 'number' ? event.score : 0,
+    metadata: event.metadata ?? {},
+    origin_parent_id: event.origin_parent_id ?? undefined,
+    origin_type: event.origin_type,
+    semantic_type: event.semantic_type ?? event.origin_type,
   };
 
   if (generateEmbeddings) {
     try {
-      const textForEmbedding = [normalized.title, normalized.payload_text]
+      const textForEmbedding = [event.title, event.payload_text]
         .filter(Boolean)
         .join(' ')
         .trim();
@@ -706,7 +730,7 @@ async function processContent(item: Content, generateEmbeddings: boolean): Promi
         contentItem.embedding = await generateEmbedding(textForEmbedding);
       }
     } catch (err) {
-      console.error(`[executor] Embedding generation failed for ${normalized.origin_id}:`, err);
+      console.error(`[executor] Embedding generation failed for ${event.origin_id}:`, err);
     }
   }
 

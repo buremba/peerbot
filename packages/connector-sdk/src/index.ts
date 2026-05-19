@@ -117,11 +117,4 @@ export {
 export type { BrowserNetworkConfig, BrowserNetworkResult } from './browser-network.js';
 export { browserNetworkSync } from './browser-network.js';
 export type { ReactionContext } from './reaction-sdk.js';
-export type {
-  Checkpoint,
-  Content,
-  Env,
-  FeedOptions,
-  FeedSyncResult,
-  SessionState,
-} from './types.js';
+export type { Env } from './types.js';

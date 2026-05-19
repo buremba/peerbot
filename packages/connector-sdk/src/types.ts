@@ -1,87 +1,7 @@
 /**
- * Checkpoint data structure for tracking feed sync state
- */
-export interface Checkpoint {
-  // Required for all feeds - used to filter content by time
-  last_timestamp?: Date;
-
-  // Metadata
-  updated_at: Date;
-  total_items_processed?: number;
-
-  // Platform-specific fields should extend this interface
-}
-
-/**
- * Sync result containing extracted content and updated checkpoint
- *
- * Note: checkpoint can be null for feeds that use incremental checkpoint
- * updates via updateCheckpointFn during pagination (e.g., Reddit)
- */
-export interface FeedSyncResult {
-  contents: Content[];
-  checkpoint: Checkpoint | null;
-  metadata?: {
-    items_found: number;
-    items_skipped: number;
-    rate_limit_remaining?: number;
-    next_sync_recommended_at?: Date;
-    parent_map?: Record<string, string>; // For hierarchical content (e.g., GitHub comments -> issues)
-    [key: string]: any; // Allow additional feed-specific metadata
-  };
-  /**
-   * Auth state to persist after sync (browser cookies, etc.)
-   * Will be saved back to the linked auth profile for browser-based connectors.
-   */
-  auth_update?: Record<string, any>;
-}
-
-/**
- * Extracted content from platform
- */
-export interface Content {
-  origin_id: string; // Platform's unique ID
-  payload_text: string; // Main text content
-  title?: string; // Title of content (e.g., post title, issue title, review subject)
-  author_name?: string; // Username/display name
-  source_url: string; // Link to original content
-  occurred_at: Date; // When content was posted
-
-  // Source-native item type (e.g. 'thread', 'message', 'email', 'issue', 'review')
-  origin_type?: string;
-
-  // Semantic type inside Lobu (defaults to 'content' for raw connector ingests)
-  semantic_type?: string;
-
-  // Calculated engagement score (0-100, calculated by feed implementation)
-  score: number;
-
-  // Optional parent reference for hierarchical content
-  origin_parent_id?: string | null;
-
-  // Metadata including engagement metrics (platform-specific)
-  // Engagement fields: score, upvotes, downvotes, rating, helpful_count, reply_count, likes, views, retweets, replies, comments
-  // Platform fields: post_id, parent_id, etc.
-  metadata?: Record<string, any>;
-}
-
-/**
- * Feed options passed from MCP tool
- */
-export interface FeedOptions {
-  /**
-   * Number of days to look back when collecting historical data
-   * Default: 365 (1 year)
-   */
-  lookback_days?: number;
-
-  // Platform-specific options defined in each feed
-  [key: string]: any;
-}
-
-/**
  * Consolidated environment bindings used across the platform.
- * This is the single source of truth for environment variable types.
+ * This is the single source of truth for environment variable types
+ * read by the gateway, worker, and connector code.
  */
 export interface Env {
   // Environment
@@ -154,11 +74,3 @@ export interface Env {
   // Allow any other env vars accessed via c.env[key]
   [key: string]: string | undefined;
 }
-
-/**
- * Base session state type - feeds define their own specific types
- * Values can come from env vars (defaults) or DB (per-connection overrides)
- * At runtime, DB values override env defaults
- */
-export type SessionState = Record<string, any>;
-

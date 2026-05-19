@@ -414,7 +414,7 @@ async function announceLocalSignIn(
       user?: { id?: string; email?: string; name?: string };
     };
     // CLI gets the worker-scoped PAT — works against /api/workers/* (used
-    // by lobu apply / lobu eval) and everything else. The session_token is
+    // by lobu apply and everything else). The session_token is
     // for the browser deep-link URL: exchange-token validates either, but
     // the cookie path needs a session (we pass session_token in the URL
     // so the SPA hook reaches /api/exchange-token → Better Auth session

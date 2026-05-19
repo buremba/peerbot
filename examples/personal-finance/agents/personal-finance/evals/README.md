@@ -1,10 +1,22 @@
-# Migration pending
+# Evals
 
-These YAML files were authored against Lobu's in-house eval runner (`packages/cli/src/eval/`), which has been **removed** in favour of [promptfoo](https://www.promptfoo.dev) via [`@lobu/promptfoo-provider`](../../../../../packages/promptfoo-provider). They are not currently executable.
+The active evals live in [`promptfooconfig.yaml`](./promptfooconfig.yaml) and are run via [promptfoo](https://www.promptfoo.dev) + [`@lobu/promptfoo-provider`](../../../../../packages/promptfoo-provider).
 
-They are kept here as the source for a follow-up migration. Each YAML is a multi-turn conversational test (e.g. `gap-surfacing.yaml` relies on context from turn 1 to evaluate turn 2's behaviour), and promptfoo's parametric `tests:` model is single-turn by default. Porting needs either:
+```bash
+cd examples/personal-finance
+bun install
+export LOBU_TOKEN=$(lobu token)
+bun run evals
+bun run evals:view
+```
 
-- Provider extension: `LobuProvider` learns to replay a `vars.turns` array as multiple messages in one Lobu thread, returning the final turn's response for assertions. ~30 LOC change.
+## Dormant YAML files
+
+`ping.yaml` and `tax-year-anchoring.yaml` have been **migrated** into `promptfooconfig.yaml` above and can be deleted in a follow-up.
+
+The remaining YAMLs — `gap-surfacing.yaml`, `sa102-employment.yaml`, `sa105-property.yaml`, `sa108-cgt.yaml` — are still on the old format and **not currently executable**. They are multi-turn conversational tests (e.g. `gap-surfacing.yaml` relies on context established in turn 1 to evaluate turn 2's behaviour) and promptfoo's parametric `tests:` model is single-turn by default. Porting needs either:
+
+- Provider extension: `LobuProvider` learns to replay a `vars.transcript` array as multiple messages in one Lobu thread, returning the final turn's response for assertions. ~30 LOC change.
 - Or: flatten each conversation into a single richer prompt ("user said earlier: X; now they say: Y"). Loses fidelity but works today.
 
-See [`examples/qmsum-demo/agents/qmsum/evals/promptfooconfig.yaml`](../../../../qmsum-demo/agents/qmsum/evals/promptfooconfig.yaml) for the new authoring pattern.
+Tracked as a follow-up migration.

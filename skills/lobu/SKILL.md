@@ -22,7 +22,7 @@ Use this skill when the user is working on a Lobu project or wants to scaffold, 
 2. Read the active agent files under `agents/<id>/`.
 3. Check local skills under `skills/` and `agents/<id>/skills/`.
 4. Use `lobu validate` after config changes.
-5. Use `lobu eval` when prompt or behavior changes.
+5. When prompt or behavior changes, run evals via promptfoo (see `examples/personal-finance/agents/personal-finance/evals/promptfooconfig.yaml`). The in-house `lobu eval` command has been removed.
 
 ## Common Commands
 
@@ -30,7 +30,6 @@ Use this skill when the user is working on a Lobu project or wants to scaffold, 
 npx @lobu/cli@latest init my-agent
 npx @lobu/cli@latest run
 npx @lobu/cli@latest validate
-npx @lobu/cli@latest eval
 npx @lobu/cli@latest login
 ```
 

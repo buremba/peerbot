@@ -1,7 +1,0 @@
-node_modules/
-.env
-.env.local
-data/qmsum/
-.eval-fixtures/
-promptfoo-results/
-.promptfoo/

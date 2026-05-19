@@ -1,0 +1,17 @@
+{
+  "name": "@lobu/example-personal-finance",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lobu example: personal-finance agent + promptfoo evals.",
+  "type": "module",
+  "scripts": {
+    "evals": "promptfoo eval -c agents/personal-finance/evals/promptfooconfig.yaml",
+    "evals:view": "promptfoo view"
+  },
+  "dependencies": {
+    "@lobu/promptfoo-provider": "workspace:*"
+  },
+  "devDependencies": {
+    "promptfoo": "^0.121.0"
+  }
+}

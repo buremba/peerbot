@@ -1,0 +1,77 @@
+# personal-finance agent evals — driven by promptfoo + @lobu/promptfoo-provider.
+#
+# Quick start (from examples/personal-finance):
+#   bun install
+#   export LOBU_TOKEN=$(lobu token)
+#   bun run evals          # promptfoo eval -c agents/personal-finance/evals/promptfooconfig.yaml
+#   bun run evals:view     # comparison grid in the browser
+#
+# This is a partial migration from the old YAML-based runner. Multi-turn
+# behavioural evals (gap-surfacing, sa102, sa105, sa108) are still on the
+# old YAML format; see README.md in this directory.
+
+description: personal-finance agent evals
+
+providers:
+  - id: 'package:@lobu/promptfoo-provider:LobuProvider'
+    config:
+      agent: personal-finance
+      # gateway: http://localhost:8787      # default; override via LOBU_GATEWAY
+      # token: ...                          # required via LOBU_TOKEN env
+
+defaultTest:
+  options:
+    provider: anthropic:messages:claude-haiku-4-5-20251001
+
+prompts:
+  - '{{query}}'
+
+tests:
+  # ─── ping — agent responds to a simple greeting in-character ────────────
+  - description: ping — friendly greeting in-character
+    vars:
+      query: "Hello, are you there?"
+    assert:
+      - type: regex
+        value: 'hello|hi\b|hey|yes|here|ready'
+        weight: 0.3
+      - type: llm-rubric
+        value: |
+          Response is friendly, acknowledges the greeting, and is consistent with
+          a private financial accountant persona (not generic customer support,
+          not overly chatty). Short is good.
+        weight: 0.7
+
+  # ─── tax-year-anchoring — 6 April UK fiscal year boundary ───────────────
+  # Original YAML had these as sequential turns; in fact they're independent
+  # behavioural checks. Splitting into two test cases preserves the signal.
+
+  - description: tax-year-anchoring — date in 2024-25
+    vars:
+      query: "I got a £200 dividend from Lloyds on 15 March 2025. Which tax year is that?"
+    assert:
+      - type: regex
+        value: '2024.?25|2024/25|2024-25'
+        weight: 0.3
+      - type: llm-rubric
+        value: |
+          The agent correctly identifies this as falling in the 2024-25 tax year
+          (runs 6 April 2024 to 5 April 2025). A £200 dividend is well under the
+          £500 dividend allowance so the agent may note it won't trigger tax on
+          its own, but that's not required — the critical thing is the tax-year
+          mapping.
+        weight: 0.7
+
+  - description: tax-year-anchoring — date in 2025-26
+    vars:
+      query: "What about a £200 dividend on 10 April 2025? Which tax year is that?"
+    assert:
+      - type: regex
+        value: '2025.?26|2025/26|2025-26'
+        weight: 0.3
+      - type: llm-rubric
+        value: |
+          The agent correctly identifies this as 2025-26 (after 6 April 2025).
+          Two dates five days apart fall in different UK fiscal years. The agent
+          should not claim both belong to the same year.
+        weight: 0.7

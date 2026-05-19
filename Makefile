@@ -1,6 +1,6 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test eval clean dev build-packages ensure-submodule clean-workers test-unit test-integration test-e2e typecheck task-setup task-clean task-use
+.PHONY: help setup build test clean dev build-packages ensure-submodule clean-workers test-unit test-integration test-e2e typecheck task-setup task-clean task-use
 
 # Default target
 help:
@@ -12,7 +12,6 @@ help:
 	@echo "  make test-unit                             - Run the CI unit suite (no Postgres needed)"
 	@echo "  make test-integration                      - Run the CI integration suite (needs DATABASE_URL with pgvector)"
 	@echo "  make test-e2e                              - Boot the dev server + run openclaw-plugin e2e against it"
-	@echo "  make eval                                  - Run agent evals"
 	@echo "  make clean-workers                         - Stop any running embedded worker subprocesses"
 	@echo "  make typecheck                             - Strict typecheck (same as Dockerfile) for server + owletto"
 	@echo "  make task-setup NAME=<name>                - Create a paired worktree at .claude/worktrees/<name> (lobu + submodule on real branch, .env copied, ports auto-assigned, Lobu context registered)"
@@ -68,10 +67,6 @@ setup:
 # Run test bot
 test:
 	@./scripts/test-bot.sh "@me test from make command"
-
-# Run agent evals
-eval:
-	@npx @lobu/cli@latest eval
 
 # --- Task worktrees ---------------------------------------------------------
 # Paired-branch worktrees for parallel work without losing changes to the

@@ -20,49 +20,12 @@ export interface ModuleInterface<_TModuleData = unknown> {
   registerEndpoints(app: any): void;
 }
 
-export interface WorkerContext {
-  workspaceDir: string;
-  userId: string;
-  conversationId: string;
-}
-
-export interface WorkerModule<TModuleData = unknown>
-  extends ModuleInterface<TModuleData> {
-  /** Initialize workspace - called when worker starts session */
-  initWorkspace(config: any): Promise<void>;
-
-  /** Called at session start - can modify system prompt */
-  onSessionStart(context: ModuleSessionContext): Promise<ModuleSessionContext>;
-
-  /** Called at session end - can add action buttons */
-  onSessionEnd(context: ModuleSessionContext): Promise<ActionButton[]>;
-
-  /** Collect module-specific data before sending response. Return null if no data. */
-  onBeforeResponse(context: WorkerContext): Promise<TModuleData | null>;
-}
-
-export interface ModuleSessionContext {
-  userId: string;
-  conversationId: string;
-  systemPrompt: string;
-  workspace?: any;
-}
-
-export interface ActionButton {
-  text: string;
-  action_id: string;
-  style?: "primary" | "danger";
-  value?: string;
-  url?: string;
-}
-
 // ============================================================================
 // Module Registry
 // ============================================================================
 
 export interface IModuleRegistry {
   register(module: ModuleInterface): void;
-  getWorkerModules(): WorkerModule[];
   registerAvailableModules(modulePackages?: string[]): Promise<void>;
   initAll(): Promise<void>;
   registerEndpoints(app: any): void;
@@ -160,12 +123,6 @@ export class ModuleRegistry implements IModuleRegistry {
         );
       }
     }
-  }
-
-  getWorkerModules(): WorkerModule[] {
-    return Array.from(this.modules.values()).filter(
-      (m): m is WorkerModule => "onBeforeResponse" in m
-    );
   }
 
   getModules(): ModuleInterface[] {

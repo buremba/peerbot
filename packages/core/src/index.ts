@@ -70,7 +70,6 @@ export {
 } from "./lobu-toml-schema";
 export * from "./logger";
 // Module system
-export type { ActionButton, ModuleSessionContext } from "./modules";
 export * from "./modules";
 export type { OtelConfig, Span, Tracer } from "./otel";
 // OpenTelemetry tracing

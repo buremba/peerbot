@@ -48,10 +48,6 @@ import { vector } from '@electric-sql/pglite/vector';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 import { getRequestListener } from '@hono/node-server';
 import { Hono } from 'hono';
-import {
-  EMBEDDED_SCHEMA_PATCHES,
-  type MigrationSqlClient,
-} from './db/embedded-schema-patches';
 import { listMigrationFiles, loadMigrationUpSection } from './db/migration-loader';
 import type { Env } from './index';
 import { getEnvFromProcess } from './utils/env';
@@ -270,20 +266,20 @@ async function main() {
 // ─── Migrations ──────────────────────────────────────────────────
 
 async function runMigrations(dbUrl: string) {
+  // Embedded boot runs the same migrations dbmate uses for prod, applied
+  // unconditionally. After the schema squash (2026-05-19), the migrations
+  // dir is a single baseline + any forward deltas; both are idempotent
+  // enough to replay on a pre-initialized DB:
+  //   - The baseline starts with `CREATE TABLE` against a fresh schema
+  //     and is gated by a `schema_migrations` row insertion. On a DB that
+  //     has the baseline applied, dbmate-style version tracking skips the
+  //     file; we do the same below.
+  //   - Forward deltas use `IF NOT EXISTS` discipline so re-application
+  //     against an already-migrated DB is a no-op.
   const pg = await import('postgres');
   const sql = pg.default(dbUrl, { max: 1 });
 
   try {
-    const [{ cnt }] = await sql<[{ cnt: number }]>`
-      SELECT count(*)::int AS cnt FROM pg_tables
-      WHERE schemaname = 'public' AND tablename = 'organization'
-    `;
-    if (cnt > 0) {
-      logger.info('Database already initialized; applying legacy embedded schema patches');
-      await applyEmbeddedSchemaPatches(sql);
-      return;
-    }
-
     const migrationsDir = resolveExistingPath(
       // Published @lobu/cli copies migrations next to start-local.bundle.mjs
       // under dist/db/migrations.
@@ -299,58 +295,40 @@ async function runMigrations(dbUrl: string) {
       throw new Error('Migrations directory not found.');
     }
 
+    // Make sure the `schema_migrations` ledger exists before we read it.
+    await sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS public.schema_migrations (
+        version character varying(128) NOT NULL PRIMARY KEY
+      )
+    `);
+
+    const appliedRows = (await sql.unsafe(
+      `SELECT version FROM public.schema_migrations`
+    )) as Array<{ version: string }>;
+    const applied = new Set(appliedRows.map((r) => r.version));
+
     logger.info('Running migrations...');
     for (const file of listMigrationFiles(migrationsDir)) {
+      // Filename convention is `<version>_<slug>.sql`; the version is the
+      // leading underscore-separated prefix.
+      const version = file.split('_')[0] ?? '';
+      if (applied.has(version)) {
+        continue;
+      }
       const migrationSql = loadMigrationUpSection(migrationsDir, file);
       if (!migrationSql) continue;
 
       await sql.unsafe('SET search_path TO public');
       await sql.unsafe(migrationSql);
+      await sql`
+        INSERT INTO public.schema_migrations (version) VALUES (${version})
+        ON CONFLICT DO NOTHING
+      `;
     }
 
     logger.info('Migrations complete');
   } finally {
     await sql.end();
-  }
-}
-
-async function applyEmbeddedSchemaPatches(sql: MigrationSqlClient) {
-  // Embedded patches mirror DDL from `db/migrations/*.sql`. When a patch
-  // actually changes the schema (column count delta), that's a drift signal:
-  // the canonical migration didn't run for this database, either because a
-  // dev edited an already-applied migration (the #639 footgun) or because
-  // dbmate isn't wired up. Surface that loudly so it doesn't silently mask
-  // the same bug class in dev that would crash in prod.
-  async function schemaSnapshot(): Promise<{ columns: number; indexes: number }> {
-    try {
-      const rows = (await sql.unsafe(`
-        SELECT
-          (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public')::int AS columns,
-          (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public')::int AS indexes
-      `)) as Array<{ columns: number; indexes: number }>;
-      return rows[0] ?? { columns: 0, indexes: 0 };
-    } catch {
-      return { columns: 0, indexes: 0 };
-    }
-  }
-
-  for (const patch of EMBEDDED_SCHEMA_PATCHES) {
-    logger.info({ patch: patch.id }, 'Applying embedded schema patch');
-    const before = await schemaSnapshot();
-    await patch.apply(sql);
-    const after = await schemaSnapshot();
-    if (after.columns !== before.columns || after.indexes !== before.indexes) {
-      logger.warn(
-        {
-          patch: patch.id,
-          columnDelta: after.columns - before.columns,
-          indexDelta: after.indexes - before.indexes,
-        },
-        'Embedded patch modified schema — the matching db/migrations/*.sql ' +
-          'did not run for this database. If you just edited a migration, ' +
-          'roll it back and ship a new dated migration file instead.'
-      );
-    }
   }
 }
 

@@ -20,11 +20,10 @@
  */
 
 import { createReadStream, createWriteStream } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   chmod,
   mkdir,
-  mkdtemp,
   readFile,
   readdir,
   realpath,
@@ -34,7 +33,6 @@ import {
 } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
-import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import type { FileDelta, FileSystemSource, Snapshot } from '../file-source.js';
 import {
@@ -97,7 +95,7 @@ export class LocalFileSource implements FileSystemSource {
       // calls (different process, different cwd).
       this.#exclude = await resolveCacheExclude(this.#rootDir);
 
-      // Race-free pipeline (two layers of immutability):
+      // Race-free pipeline:
       //
       //  1. List the source's relative file paths (no byte reads yet).
       //  2. For each file: stream-pipe the source bytes through a sha256 hash
@@ -106,28 +104,29 @@ export class LocalFileSource implements FileSystemSource {
       //     identical to the bytes the hash was computed over, and there is
       //     no second pass over staging that could observe a post-copy
       //     mutation.
-      //  3. The staging dir lives in `os.tmpdir()` (NOT under the cache root)
-      //     with a crypto-random 128-bit suffix and mode 0700. An attacker
-      //     who can guess our cache root layout still has to guess a 128-bit
-      //     name AND defeat dir permissions before they can mutate a file
-      //     mid-copy. The cache root itself never contains a staging dir.
+      //  3. Staging lives INSIDE the cache root at
+      //     `${root}/refs/<crypto-random-32hex>` — same filesystem as the
+      //     destination per-ref dir, so `rename()` is atomic and never
+      //     throws EXDEV on Linux hosts where `os.tmpdir()` is a separate
+      //     `tmpfs` mount. The directory name is a 128-bit crypto-random
+      //     hex string with no fixed prefix, so an external `readdir` of
+      //     `refs/` cannot distinguish in-flight staging (32-hex) from
+      //     completed per-ref dirs (64-hex sha256) without inspecting
+      //     each entry — both look like opaque hex blobs.
       //  4. Compute the canonical ref from the sealed per-file hashes.
       //  5. If `refs/<ref>` already exists, drop staging; else rename staging
       //     into the per-ref dir. After rename, chmod every file to 0400 and
       //     the dir tree to 0500 so post-rename mutation through the per-ref
-      //     dir gets EACCES. This pins `snapshot.readFile()` bytes to the
-      //     same bytes the hash was sealed over.
+      //     dir gets EACCES.
       //
       // The Snapshot reads from the per-ref dir — never from the live source
       // and never from a writable staging dir — so `snapshot.ref` matches
       // `sha256(snapshot.readFile(path))` for every tracked path no matter
       // what races happen on the source filesystem.
       const relPaths = await listRelativeFiles(this.#rootDir, this.#exclude);
-      const stagingDir = await mkdtemp(join(tmpdir(), 'lobu-stage-'));
-      // Tighten staging permissions: mkdtemp creates 0700 on POSIX, but be
-      // explicit so the chmod is also applied on filesystems with a wider
-      // default umask.
-      await chmod(stagingDir, 0o700).catch(() => undefined);
+      await mkdir(join(this.#paths.root, 'refs'), { recursive: true });
+      const stagingDir = join(this.#paths.root, 'refs', randomBytes(16).toString('hex'));
+      await mkdir(stagingDir, { recursive: true, mode: 0o700 });
       let stagingMoved = false;
       let refDir: string;
       let files: ManifestEntry[];
@@ -141,9 +140,6 @@ export class LocalFileSource implements FileSystemSource {
           await rm(stagingDir, { recursive: true, force: true });
           stagingMoved = true;
         } else {
-          // Ensure the parent refs/ dir exists — staging lives in tmpdir so
-          // we can't rely on `refs/` having been created by mkdtemp.
-          await mkdir(join(this.#paths.root, 'refs'), { recursive: true });
           await rename(stagingDir, refDir);
           stagingMoved = true;
           // Lock the per-ref tree read-only AFTER rename. Any post-rename
@@ -393,11 +389,11 @@ async function collectFilesFromLive(
  * `keep=3` accommodates a fresh fetch plus two in-flight overlapping
  * syncs.
  *
- * Skips `.staging.*` legacy dirs (staging now lives outside the cache
- * root entirely; the check is kept to clean up any leftover from older
- * code). Per-ref manifest JSON files (`<ref>.json`) are files, not
- * directories, and are kept indefinitely so historical diffs work even
- * after the data dir is gone.
+ * Filters by name shape (64-hex sha256). Skips in-flight staging dirs
+ * (32-hex random names co-located in `refs/`) AND any legacy `.staging.*`
+ * directories from older builds. Per-ref manifest JSON files
+ * (`<ref>.json`) are files, not directories, and are kept indefinitely
+ * so historical diffs work even after the data dir is gone.
  */
 async function pruneOldRefDirs(
   root: string,
@@ -420,7 +416,9 @@ async function pruneOldRefDirs(
   }> = [];
   for (const ent of entries) {
     if (!ent.isDirectory()) continue;
-    if (ent.name.startsWith('.staging.')) continue;
+    // Only touch completed per-ref dirs (64-hex sha256). In-flight staging
+    // dirs use a 32-hex randomBytes name and must not be pruned.
+    if (!/^[a-f0-9]{64}$/.test(ent.name)) continue;
     const abs = join(refsRoot, ent.name);
     try {
       const s = await stat(abs);

@@ -46,12 +46,12 @@ export function LandingPage(props: { latestPosts?: LatestBlogPost[] }) {
       <Container className="py-14 sm:py-20">
         <ArchitectureDiagram />
       </Container>
-      <UseCaseGrid />
       <ConnectorsSection />
       <MemorySection />
       <WatchersSection />
       <SkillsSection />
       <AgentsSection />
+      <BrowseExamplesSection />
       <RunAnywhereSection />
       <CTA startUrl={getLobuBaseUrl()} />
       {props.latestPosts?.length ? (
@@ -305,122 +305,8 @@ function HeroAsciinema() {
 /*  Static sections                                                           */
 /* -------------------------------------------------------------------------- */
 
-function UseCaseGrid() {
-  const cards: Array<{
-    eyebrow: string;
-    title: string;
-    body: preact.ComponentChildren;
-    snippetLines: Array<preact.ComponentChildren>;
-    link: { href: string; label: string };
-  }> = [
-    {
-      eyebrow: "Reactive bot",
-      title: "A chat-driven agent.",
-      body: (
-        <>
-          Fires per message in Slack, Telegram, Discord, MS Teams, WhatsApp, or
-          HTTP. Recalls memory, calls tools, replies.
-        </>
-      ),
-      snippetLines: [
-        <>
-          <span style={{ color: "var(--color-landing-code-comment)" }}>$</span>{" "}
-          lobu apply
-        </>,
-        <>
-          <span style={{ color: "var(--color-landing-code-string)" }}>→</span>{" "}
-          agent: office-bot ready
-        </>,
-        <>
-          <span style={{ color: "var(--color-landing-code-string)" }}>→</span>{" "}
-          click{" "}
-          <span style={{ color: "var(--color-landing-code-string)" }}>
-            "Add to Slack"
-          </span>
-        </>,
-      ],
-      link: {
-        href: "https://github.com/lobu-ai/lobu/tree/main/examples/office-bot",
-        label: "See office-bot example",
-      },
-    },
-    {
-      eyebrow: "Cron digest",
-      title: "A dreaming watcher.",
-      body: (
-        <>
-          Runs on a schedule (cron). Aggregates the previous day's events into
-          higher-level entities your team can read in the morning.
-        </>
-      ),
-      snippetLines: [
-        <span style={{ color: "var(--color-landing-code-comment)" }}>
-          # models/schema.yaml
-        </span>,
-        <>
-          <span style={{ color: "var(--color-landing-code-key)" }}>
-            watchers
-          </span>
-          :
-        </>,
-        <>
-          {"  - "}
-          <span style={{ color: "var(--color-landing-code-key)" }}>slug</span>:{" "}
-          <span style={{ color: "var(--color-landing-code-string)" }}>
-            month-end-variance
-          </span>
-        </>,
-        <>
-          {"    "}
-          <span style={{ color: "var(--color-landing-code-key)" }}>
-            schedule
-          </span>
-          :{" "}
-          <span style={{ color: "var(--color-landing-code-string)" }}>
-            "0 9 * * 1"
-          </span>
-        </>,
-      ],
-      link: {
-        href: "https://github.com/lobu-ai/lobu/tree/main/examples/finance",
-        label: "See finance example",
-      },
-    },
-    {
-      eyebrow: "Event automation",
-      title: "A connector → watcher → reaction pipeline.",
-      body: (
-        <>
-          An external event lands in the stream, a watcher extracts structured
-          data, an optional reaction calls Slack / Linear / Salesforce / etc.
-        </>
-      ),
-      snippetLines: [
-        <span style={{ color: "var(--color-landing-code-comment)" }}>
-          # salesforce.opportunity.updated
-        </span>,
-        <>
-          <span style={{ color: "var(--color-landing-code-string)" }}>→</span>{" "}
-          watcher:{" "}
-          <span style={{ color: "var(--color-landing-code-key)" }}>
-            renewal-risk
-          </span>
-        </>,
-        <>
-          <span style={{ color: "var(--color-landing-code-string)" }}>→</span>{" "}
-          reaction:{" "}
-          <span style={{ color: "var(--color-landing-code-key)" }}>
-            ping_csm
-          </span>
-        </>,
-      ],
-      link: {
-        href: "https://github.com/lobu-ai/lobu/tree/main/examples/sales",
-        label: "See sales example",
-      },
-    },
-  ];
-
+function BrowseExamplesSection() {
+  const examples = snippets.examples;
   return (
     <section
       class="border-t py-16"
@@ -428,62 +314,45 @@ function UseCaseGrid() {
     >
       <Container>
         <div class="mb-10 text-center">
-          <Eyebrow>What you'd build</Eyebrow>
-          <SectionHeading className="mx-auto">
-            Three shapes. Three working examples.
-          </SectionHeading>
+          <Eyebrow>Browse the repo</Eyebrow>
+          <SectionHeading className="mx-auto">Examples</SectionHeading>
+          <p
+            class="mx-auto mt-3 max-w-[42rem] text-[14.5px]"
+            style={{ color: "var(--color-page-text-muted)" }}
+          >
+            Every example below is a working Lobu project. Clone any of them,
+            <code class="font-mono text-[13.5px]"> lobu apply</code>, and you
+            have a running agent.
+          </p>
         </div>
-        <div class="grid gap-5 md:grid-cols-3">
-          {cards.map((card) => (
-            <div
-              key={card.title}
-              class="rounded-lg border p-6"
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
+          {examples.map((ex) => (
+            <a
+              class="flex flex-col rounded-lg border p-4 transition-colors hover:border-[color:var(--color-tg-accent)]"
+              href={ex.githubUrl}
+              key={ex.slug}
+              rel="noopener noreferrer"
               style={{
                 borderColor: "var(--color-page-border)",
                 backgroundColor: "var(--color-page-surface)",
               }}
+              target="_blank"
             >
-              <div
-                class="mb-2 font-mono text-[11px] font-semibold uppercase tracking-[0.08em]"
-                style={{ color: "var(--color-tg-accent)" }}
-              >
-                {card.eyebrow}
-              </div>
-              <h3
-                class="mb-3 text-[1.1rem] font-bold tracking-tight"
+              <span
+                class="mb-2 font-mono text-[12.5px]"
                 style={{ color: "var(--color-page-text)" }}
               >
-                {card.title}
-              </h3>
-              <p
-                class="mb-4 text-[14.5px] leading-[1.6]"
-                style={{ color: "var(--color-page-text-muted)" }}
-              >
-                {card.body}
-              </p>
-              <pre
-                class="mb-4 rounded-lg px-3 py-2.5 font-mono text-[12px] leading-[1.65]"
-                style={{
-                  backgroundColor: "var(--color-landing-code-bg)",
-                  color: "var(--color-landing-code-text)",
-                }}
-              >
-                {card.snippetLines.map((line, i) => (
-                  <span class="block whitespace-pre" key={i}>
-                    {line}
-                  </span>
-                ))}
-              </pre>
-              <a
-                class="text-[13px] font-semibold"
-                href={card.link.href}
-                rel="noopener noreferrer"
-                style={{ color: "var(--color-page-text)" }}
-                target="_blank"
-              >
-                {card.link.label} →
-              </a>
-            </div>
+                examples/{ex.slug}
+              </span>
+              {ex.description ? (
+                <span
+                  class="text-[13px] leading-[1.5]"
+                  style={{ color: "var(--color-page-text-muted)" }}
+                >
+                  {ex.description}
+                </span>
+              ) : null}
+            </a>
           ))}
         </div>
       </Container>
@@ -758,10 +627,7 @@ function WatchersSection() {
         }
         code={
           <div class="space-y-3.5">
-            <CodeBlock
-              badge="reactive + dreaming"
-              snippet={snippets.watcher}
-            />
+            <CodeBlock badge="reactive + dreaming" snippet={snippets.watcher} />
             <p
               class="text-[13px]"
               style={{ color: "var(--color-page-text-muted)" }}

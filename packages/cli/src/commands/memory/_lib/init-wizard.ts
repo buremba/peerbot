@@ -3,6 +3,7 @@
  */
 
 import * as p from "@clack/prompts";
+import { loginCommand } from "../../login.js";
 import { type DetectedAgent, detectAgents } from "./agent-detect.js";
 import { getInstallTarget, INSTALL_TARGETS } from "./install-targets.js";
 import { getUsableToken } from "./openclaw-auth.js";
@@ -59,7 +60,6 @@ async function authenticate(mcpUrl: string, skipAuth: boolean): Promise<void> {
     return;
   }
 
-  const { loginCommand } = await import("../../login.js");
   await loginCommand({});
 }
 

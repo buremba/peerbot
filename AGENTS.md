@@ -166,7 +166,15 @@ Rules for agents:
 - After editing `packages/agent-worker/*`, run `make clean-workers` so new workers pick up the change.
 - When the user pastes a Slack link (`slack.com/archives/…?thread_ts=`), call `./scripts/slack-thread-viewer.js "<link>"` first.
 - In planning mode, when unsure, ask: `codex exec "QUESTION" --config model_reasoning_effort="high"`.
-- **No dynamic imports** — use static `import` everywhere; never `await import(...)`. Use side-effect imports + boot-time assertion for registries. **One documented exception:** `packages/cli/src/index.ts` lazy-loads subcommand handlers (`await import("./commands/<name>.js")` inside the `.action(...)` callback) because the static-import variant regresses `lobu --help` boot from ~60ms → ~500ms (CLI command graph pulls postgres / playwright / chat adapters). See the comment block at the top of `packages/cli/src/index.ts` for the measurement and the rules for new subcommands.
+- **No dynamic imports** — use static `import` everywhere; never `await import(...)`. Use side-effect imports + boot-time assertion for registries. The CLI carries a small documented allow-list (each call site has a one-line rationale; no other file in the repo may add a new entry without amending this list in the same PR):
+  - `packages/cli/src/index.ts` — every subcommand handler is lazy-loaded inside its `.action(...)` callback. Static-importing the command tree regresses `lobu --help` from ~60ms to ~500ms (the tree pulls postgres / playwright / chat adapters / the bundled server). Boot-time measurement and add-a-command rules live in the comment block at the top of that file.
+  - `packages/cli/src/commands/_lib/connector-run-cmd.ts` — three lazy loads, all from `@lobu/connector-*`:
+    - `acquireMirroredCookies` + `readDevToolsActivePort` from `@lobu/connector-sdk/browser-{mirror,devtools-active-port}` — only when `mirrorSourceDir && mirrorBrowserRoot` are set (the user opted into Chrome-profile mirroring). Pulls Playwright + DevTools probing; the 99% non-mirroring `lobu connector run` path must not pay that cost.
+    - `executeCompiledConnector` from `@lobu/connector-worker/executor/runtime` — only after the resolve / validate / auth steps have all succeeded. Pulls the full subprocess executor + connector runtime; CLI startup must not pay it.
+  - `packages/cli/src/commands/_lib/apply/desired-state.ts` (`yaml`, two call sites) — only loaded when a skill file or connector dir actually contains YAML. The `yaml` package is a ~30 kB dep that the rest of the apply pipeline never touches; hoisting would tax every `lobu apply` invocation that has zero YAML.
+  - `packages/cli/src/commands/memory/_lib/browser-auth-cmd.ts` — two heavy lazy loads:
+    - `decryptChromeCookiesMacOS` from `@lobu/connector-sdk/browser-mirror` — only on macOS, only after the user explicitly invoked `lobu memory browser-auth`. Triggers a Keychain access prompt; pulling it at startup would also trip the prompt on unrelated commands.
+    - `chromium` from `playwright` — only in the CDP cookie-extraction fallback path. Playwright is a ~50 MB install; the lazy load is what keeps `npx @lobu/cli`'s install footprint sane for the common case.
 
 ## Scope discipline and branch hygiene
 

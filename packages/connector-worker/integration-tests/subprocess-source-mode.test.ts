@@ -17,23 +17,28 @@
  * natively, so the import works as-is.
  */
 import { describe, expect, test } from 'bun:test';
-import type { SyncContext } from '../src/executor/interface.ts';
+import type { ExecutorJob } from '../src/executor/interface.ts';
 import { SubprocessError, SubprocessExecutor } from '../src/executor/subprocess.ts';
 
-const BASE_CONTEXT: SyncContext = {
-  options: {} as any,
+// Minimal V1 ExecutorJob — see subprocess.test.ts for shape rationale.
+const BASE_JOB: ExecutorJob = {
+  mode: 'sync',
+  feedKey: 'integration-test',
+  config: {},
   checkpoint: null,
+  entityIds: [],
+  credentials: null,
+  sessionState: null,
   env: {},
-  apiType: 'api',
 };
 
 function compiled(body: string): string {
   return `
     class ConnectorRuntime {
-      async sync(_ctx, _hooks) {
+      async sync(_ctx) {
         ${body}
       }
-      async execute() { return { contents: [], checkpoint: null }; }
+      async execute() { return { success: false, error: 'no actions' }; }
     }
     module.exports = { ConnectorRuntime };
   `;
@@ -52,7 +57,7 @@ describe('SubprocessExecutor (source-mode, Bun runtime)', () => {
           console.log('source-mode child ran');
           process.exit(1);
         `),
-        BASE_CONTEXT
+        BASE_JOB
       );
     } catch (e) {
       err = e as SubprocessError;

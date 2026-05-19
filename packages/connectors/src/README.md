@@ -493,12 +493,12 @@ Connectors can also be installed manually via `client.connections.installConnect
 
 ### How connector code runs
 
-1. The server checks `connector_versions.compiled_code` — if present, uses it directly
-2. If `compiled_code` is NULL (bundled connectors), it compiles from `connectors/{source_path}` on disk via esbuild
-3. The compiled code is sent to the worker, written to a temp file (`.connector-child-{pid}.mjs`), and loaded via dynamic `import()`
-4. Each sync/action runs in an **isolated child process** with a 10-minute timeout and 512MB memory limit
-5. The child process has a restricted environment — only `PATH`, `HOME`, `TMPDIR`, `TZ`, `NODE_ENV`, `NODE_PATH`, and `PLAYWRIGHT_BROWSERS_PATH` are available as env vars
-6. Secrets flow through `ctx.credentials` and `ctx.config`, not environment variables
+1. For fleet workers and embedded-mode hosts (worker + gateway share a host), the gateway sends only `connector_key` in the worker-poll response — both pods have the `.ts` source on disk, and the worker compiles locally via the shared pipeline at `@lobu/connector-worker/compile`. For DB-only / device workers without source on disk, the gateway sends `compiled_code` inline.
+2. The compiled bundle is written to a temp file (`.connector-child-{pid}-{rand}.mjs`) under cwd and loaded via dynamic `import()` inside a forked child process.
+3. The parent and child speak `ExecutorJob` / `ExecutorResult` over IPC — the same V1 SDK shapes (`SyncContext` / `ActionContext` / `AuthContext` in, `SyncResult` / `ActionResult` / `AuthResult` out, no envelope). Sync events stream via `event_chunk` IPC messages as the connector emits them.
+4. Each sync/action runs in an **isolated child process** with a 10-minute timeout and 512MB memory limit.
+5. The child process has a restricted environment — only `PATH`, `HOME`, `TMPDIR`, `TZ`, `NODE_ENV`, `NODE_PATH`, and `PLAYWRIGHT_BROWSERS_PATH` are available as env vars.
+6. Secrets flow through `ctx.credentials` and `ctx.config`, not environment variables.
 
 This means edits to `.ts` files in `connectors/` take effect on the next sync without reinstalling.
 

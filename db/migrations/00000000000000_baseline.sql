@@ -27,7 +27,39 @@
 --   - CI: removed drift-gate job + normalize step + dbmate --schema-file flag;
 --     immutability check rebased so this commit's deletions are permitted
 --
--- Prod surgery (one-time, BEFORE rolling out this PR's image):
+-- Prod rollout — REQUIRED before deploying the new image
+-- -------------------------------------------------------
+--
+-- STEP 1: full-DB backup as belt-and-suspenders. (The managed-Postgres
+-- point-in-time recovery is the real safety net; this is paranoia.)
+--
+--   pg_dump --format=custom --no-owner --no-privileges \
+--     "$PROD_DATABASE_URL" > /tmp/lobu-pre-squash-$(date +%Y%m%d-%H%M%S).dump
+--
+-- STEP 2: dump the schema_migrations ledger so rollback can restore the
+-- 82 applied-version rows the surgery is about to wipe:
+--
+--   psql "$PROD_DATABASE_URL" \
+--     -c "\\copy public.schema_migrations TO '/tmp/schema-migrations-pre-squash.csv' CSV HEADER"
+--
+-- STEP 3: dump the two named-table droppees as CSV. (The four migration_*
+-- temp tables are explicitly disposable — skip them.) If the audit
+-- missed something and these tables turn out to have real data, the CSV
+-- is the recovery artifact:
+--
+--   psql "$PROD_DATABASE_URL" \
+--     -c "SELECT 'mcp_proxy_sessions' AS t, COUNT(*) FROM public.mcp_proxy_sessions
+--         UNION ALL
+--         SELECT 'organization_lobu_links', COUNT(*) FROM public.organization_lobu_links"
+--   # If either count is unexpectedly non-zero, ABORT and investigate.
+--   # Otherwise:
+--   psql "$PROD_DATABASE_URL" \
+--     -c "\\copy public.mcp_proxy_sessions TO '/tmp/mcp_proxy_sessions-pre-squash.csv' CSV HEADER"
+--   psql "$PROD_DATABASE_URL" \
+--     -c "\\copy public.organization_lobu_links TO '/tmp/organization_lobu_links-pre-squash.csv' CSV HEADER"
+--
+-- STEP 4: the actual surgery. Single transaction, fully reversible via
+-- ROLLBACK on any error:
 --
 --   BEGIN;
 --   DROP TABLE IF EXISTS public.mcp_proxy_sessions CASCADE;
@@ -42,9 +74,31 @@
 --   INSERT INTO public.schema_migrations (version) VALUES ('00000000000000');
 --   COMMIT;
 --
--- Fresh DBs (local dev, PGlite, CI): no surgery; dbmate applies this file
--- from scratch. Wipe local PGlite dirs (`rm -rf <workspace>/data`) to take
--- advantage of the squash; next boot recreates from the baseline.
+-- STEP 5: deploy the new image. Pods boot with `dbmate up` which now
+-- expects schema_migrations to list only '00000000000000' — the baseline
+-- body is skipped (already-applied per the surgery's INSERT).
+--
+-- Rollback procedure (if anything fails after surgery): revert the PR,
+-- redeploy the old image, and restore the pre-squash ledger so old code's
+-- assertSchemaUpToDate accepts the DB:
+--
+--   psql "$PROD_DATABASE_URL" -c "DELETE FROM public.schema_migrations"
+--   psql "$PROD_DATABASE_URL" \
+--     -c "\\copy public.schema_migrations FROM '/tmp/schema-migrations-pre-squash.csv' CSV HEADER"
+--
+-- Dropped tables don't come back from a ledger restore alone — restore
+-- them from the STEP 1 pg_dump:
+--
+--   pg_restore --no-owner --no-privileges \
+--     --table=public.mcp_proxy_sessions \
+--     --table=public.organization_lobu_links \
+--     --dbname="$PROD_DATABASE_URL" \
+--     /tmp/lobu-pre-squash-<ts>.dump
+--
+-- Fresh DBs (local dev, PGlite, CI): no surgery, no backups; dbmate
+-- applies this file from scratch. Wipe local PGlite dirs
+-- (`rm -rf <workspace>/data`) to take advantage of the squash; next
+-- boot recreates from the baseline.
 -- =============================================================================
 
 --

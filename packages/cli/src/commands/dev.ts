@@ -11,8 +11,10 @@ import { isLoadError, loadConfig } from "../config/loader.js";
 import { resolveApiClient } from "../internal/api-client.js";
 import {
   addContext,
+  getCurrentContextName,
   getServerConfig,
   setActiveOrg,
+  setCurrentContext,
 } from "../internal/context.js";
 import { type Credentials, saveCredentials } from "../internal/credentials.js";
 import { parseEnvContent } from "../internal/index.js";
@@ -444,6 +446,23 @@ async function announceLocalSignIn(
     const orgSlug = body.organization?.slug?.trim();
     if (orgSlug) {
       await setActiveOrg(orgSlug, contextName).catch(() => undefined);
+    }
+    // Auto-switch the active context so plain `lobu apply` / `lobu chat`
+    // from any shell hit this loopback server instead of whatever cloud
+    // context was active. Announce on stderr when we actually flip so the
+    // user isn't surprised — `lobu run` on a fresh box silently lands on
+    // `local`; `lobu run` from a shell previously on `lobu` cloud prints
+    // the switch.
+    try {
+      const current = await getCurrentContextName();
+      if (current !== contextName) {
+        await setCurrentContext(contextName);
+        process.stderr.write(
+          `Switched active context to "${contextName}" (lobu run)\n`
+        );
+      }
+    } catch {
+      // Best-effort — failing to switch shouldn't kill the run banner.
     }
 
     const url = new URL(gatewayUrl);

@@ -2,9 +2,11 @@ import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   DEFAULT_CONTEXT_NAME,
+  getCurrentContextName,
   LOBU_CONFIG_DIR,
   resolveContext,
   setActiveOrg,
+  setCurrentContext,
 } from "./context.js";
 import { refreshTokens } from "./oauth.js";
 
@@ -195,6 +197,23 @@ async function tryLocalInit(contextName?: string): Promise<Credentials | null> {
     const orgSlug = body.organization?.slug?.trim();
     if (orgSlug) {
       await setActiveOrg(orgSlug, target.name).catch(() => undefined);
+    }
+    // Auto-switch the active context so subsequent `lobu apply` / `lobu chat`
+    // invocations (without `-c <name>`) hit the same loopback server. Without
+    // this, a user previously on the `lobu` cloud context who runs `lobu run`
+    // locally still sees cloud for every other command — and the fact that a
+    // local context exists is invisible. Announce on stderr so the change is
+    // visible but doesn't pollute stdout pipelines.
+    try {
+      const current = await getCurrentContextName();
+      if (current !== target.name) {
+        await setCurrentContext(target.name);
+        process.stderr.write(
+          `Switched active context to "${target.name}" (lobu run)\n`
+        );
+      }
+    } catch {
+      // Best-effort — a write failure here shouldn't break the auth flow.
     }
     return creds;
   } catch {

@@ -374,11 +374,16 @@ Memory:
       .option("--token <token>", "Use API token directly (CI/CD)")
   )
     .option("-f, --force", "Re-authenticate (revokes existing session)")
+    .option(
+      "-q, --quiet",
+      "Suppress spinner; bail immediately if non-interactive (CI / backgrounded shells)"
+    )
     .action(
       async (options: {
         token?: string;
         context?: string;
         force?: boolean;
+        quiet?: boolean;
       }) => {
         const { loginCommand } = await import("./commands/login.js");
         await loginCommand({ ...options, cliVersion: version });

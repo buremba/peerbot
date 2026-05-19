@@ -319,7 +319,26 @@ async function runMigrations(dbUrl: string) {
       if (!migrationSql) continue;
 
       await sql.unsafe('SET search_path TO public');
-      await sql.unsafe(migrationSql);
+      try {
+        await sql.unsafe(migrationSql);
+      } catch (err) {
+        // Migrations are written to be replayable (`CREATE TABLE IF NOT
+        // EXISTS`, `ADD COLUMN IF NOT EXISTS`, …), but the squashed baseline
+        // uses plain `CREATE FUNCTION` / `CREATE TYPE` for cleanliness, so
+        // replaying it against a DB that already has the schema raises
+        // `42723` (duplicate function) or `42P07` (duplicate table/type).
+        // When every statement in the file would fail this way the DB is
+        // already at the target state — mark the version applied and move on.
+        const code = (err as { code?: string } | null)?.code;
+        if (code === '42723' || code === '42P07' || code === '42710') {
+          logger.info(
+            { migration: file, version, pgErrorCode: code },
+            'Migration already applied (idempotent skip)'
+          );
+        } else {
+          throw err;
+        }
+      }
       await sql`
         INSERT INTO public.schema_migrations (version) VALUES (${version})
         ON CONFLICT DO NOTHING

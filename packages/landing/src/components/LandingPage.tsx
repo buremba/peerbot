@@ -116,8 +116,7 @@ const CASTS: Record<CastMode, { src: string; caption: string }> = {
   },
   agent: {
     src: "/casts/claude.cast",
-    caption:
-      "Or paste the prompt into Claude Code and let it interview you.",
+    caption: "Or paste the prompt into Claude Code and let it interview you.",
   },
 };
 

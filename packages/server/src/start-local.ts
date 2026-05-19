@@ -168,7 +168,7 @@ async function main() {
   const { bootTaskScheduler } = await import('./scheduled/jobs');
 
   await initWorkspaceProvider();
-  await initLobuGateway();
+  const lobuApp = await initLobuGateway();
 
   const env = getEnvFromProcess();
   const taskScheduler = await bootTaskScheduler(getLobuCoreServices(), env);
@@ -202,6 +202,16 @@ async function main() {
     Object.assign(c.env, env);
     return next();
   });
+  // Mount the embedded Lobu gateway (Agent API + worker proxy + MCP) at
+  // /lobu BEFORE the main app's catch-all. Mirrors server.ts so that
+  // `lobu chat` / `lobu run` / SDK clients targeting `<origin>/lobu/api/v1/*`
+  // resolve identically in local-mode and production. Without this the
+  // bundle exposes /api/<orgSlug>/* (admin REST) but nothing under /lobu —
+  // so the public Agent API 404s and `lobu chat` fails before the worker
+  // even starts.
+  if (lobuApp) {
+    wrapper.route('/lobu', lobuApp);
+  }
   wrapper.route('/', mainApp);
 
   const honoListener = getRequestListener(wrapper.fetch);

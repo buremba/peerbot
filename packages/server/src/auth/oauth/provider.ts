@@ -6,6 +6,7 @@
  */
 
 import type { DbClient } from '../../db/client';
+import { PersonalAccessTokenService } from '../tokens';
 import { OAuthClientsStore } from './clients';
 import { AVAILABLE_SCOPES } from './scopes';
 import type {
@@ -352,9 +353,22 @@ export class OAuthProvider {
   // ============================================
 
   /**
-   * Verify an access token and return auth info
+   * Verify an access token and return auth info.
+   *
+   * Accepts both OAuth 2.1 access tokens (`oauth_tokens` rows) and Personal
+   * Access Tokens (`personal_access_tokens` rows, prefix `owl_pat_`). The
+   * `/oauth/userinfo` route delegates here, so making PATs work for OAuth
+   * introspection lets a single bearer token authenticate against
+   * `/oauth/userinfo`, `/api/<orgSlug>/*`, the gateway's `/lobu/api/v1/*`
+   * via `createApiAuthMiddleware`, and the CLI's `lobu apply`
+   * org-resolution call. Without this, `lobu chat -c local` against the
+   * embedded server fails with a 404/401 even after a successful
+   * `/api/local-init` because the gateway can't introspect the PAT.
    */
   async verifyAccessToken(token: string): Promise<AuthInfo | null> {
+    if (token.startsWith('owl_pat_')) {
+      return new PersonalAccessTokenService(this.sql).verify(token);
+    }
     const tokenHash = hashToken(token);
 
     const result = await this.sql`

@@ -526,7 +526,12 @@ credentialRoutes.post('/local-init', async (c) => {
     'local-init',
     {
       description: 'Auto-minted by POST /api/local-init for local-runner clients.',
-      scope: 'device_worker:run mcp:read mcp:write mcp:admin',
+      // `profile:read` lets the same PAT hit `/oauth/userinfo`, which the
+      // gateway's `createApiAuthMiddleware` (used by `/lobu/api/v1/agents/*`)
+      // and the CLI's `lobu apply` org-resolution path both call. Without it
+      // the PAT works for `/api/<orgSlug>/*` and worker poll but is rejected
+      // by the agent-session and userinfo endpoints with a confusing 403/404.
+      scope: 'device_worker:run mcp:read mcp:write mcp:admin profile:read',
     }
   );
 

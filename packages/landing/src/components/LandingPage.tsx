@@ -333,11 +333,11 @@ function GithubIcon() {
  * container on first paint. If the cast 404s the container stays empty —
  * the page never errors.
  *
- * Playback is gated so the cast doesn't start on its own:
- * - Devices with hover capability (desktop with a mouse) wait for the
- *   user to hover over the player, then play once on the first enter.
- * - Devices without hover (touch / mobile) wait 5 seconds after mount,
- *   then play once.
+ * Playback is gated so the cast doesn't start on its own. On every
+ * platform we show the player's "click to play" overlay, start a 5s
+ * timer, and call `player.play()` when it elapses. If the user clicks
+ * the play button before 5s, the player's `play` event fires and we
+ * cancel the timer so we don't fight with a manual play.
  *
  * The ref-callback captures the player instance and the listener /
  * timer cleanup on `node.__lobuHeroCleanup` so a follow-up render (or
@@ -363,7 +363,19 @@ function HeroAsciinema() {
                       src: string,
                       el: Element,
                       opts?: Record<string, unknown>
-                    ) => { play?: () => void } | undefined;
+                    ) =>
+                      | {
+                          play?: () => void;
+                          addEventListener?: (
+                            event: string,
+                            cb: () => void
+                          ) => void;
+                          removeEventListener?: (
+                            event: string,
+                            cb: () => void
+                          ) => void;
+                        }
+                      | undefined;
                   };
                 }
               ).AsciinemaPlayer
@@ -379,36 +391,23 @@ function HeroAsciinema() {
         });
         typedNode.dataset.asciinemaMounted = "1";
 
-        let started = false;
-        const startOnce = () => {
-          if (started) return;
-          started = true;
+        const timer = window.setTimeout(() => {
           try {
             instance?.play?.();
           } catch {
             // asciinema-player's play() is a no-op pre-init; ignore.
           }
+        }, 5000);
+
+        const onManualPlay = () => {
+          window.clearTimeout(timer);
         };
+        instance?.addEventListener?.("play", onManualPlay);
 
-        const canHover =
-          typeof window !== "undefined" &&
-          typeof window.matchMedia === "function"
-            ? window.matchMedia("(hover: hover)").matches
-            : false;
-
-        let cleanup: () => void;
-        if (canHover) {
-          const onEnter = () => {
-            startOnce();
-            node.removeEventListener("mouseenter", onEnter);
-          };
-          node.addEventListener("mouseenter", onEnter);
-          cleanup = () => node.removeEventListener("mouseenter", onEnter);
-        } else {
-          const timer = window.setTimeout(startOnce, 5000);
-          cleanup = () => window.clearTimeout(timer);
-        }
-        typedNode.__lobuHeroCleanup = cleanup;
+        typedNode.__lobuHeroCleanup = () => {
+          window.clearTimeout(timer);
+          instance?.removeEventListener?.("play", onManualPlay);
+        };
       }}
       style={{
         backgroundColor: "var(--color-landing-code-bg)",

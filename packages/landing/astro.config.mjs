@@ -115,6 +115,12 @@ export default defineConfig({
     sitemap(),
   ],
   vite: {
+    // Read .env from the repo root so PUBLIC_POSTHOG_KEY (and any other
+    // workspace-wide env we add later) reaches the build / dev server.
+    // Without this, Vite scopes envDir to this package and the repo-root
+    // .env is invisible — PosthogAnalytics then silently no-ops because
+    // posthogKey is undefined.
+    envDir: resolve(__dirname, "../.."),
     plugins: [settingsMockPlugin(), tailwindcss()],
     resolve: {
       alias: {

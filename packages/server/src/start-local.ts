@@ -53,6 +53,7 @@ import { pg_trgm } from '@electric-sql/pglite/contrib/pg_trgm';
 import { vector } from '@electric-sql/pglite/vector';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 import { getRequestListener } from '@hono/node-server';
+import { assertExternalDepsResolvable } from '@lobu/connector-worker/compile';
 import * as Sentry from '@sentry/node';
 import { Hono } from 'hono';
 import { closeDbSingleton } from './db/client';
@@ -371,6 +372,16 @@ async function main() {
   httpServer.listen(PORT, HOST, () => {
     logger.info(`Lobu running at http://${HOST}:${PORT}`);
     logger.info(`Data: ${DATA_DIR}`);
+    // Crash loud if the runtime image is missing any connector external dep,
+    // instead of letting every feed silently fail with "Missing npm
+    // dependency: X" hours later. Run after listen() so the synchronous
+    // require.resolve walk doesn't add to cold-boot latency.
+    try {
+      assertExternalDepsResolvable(require.resolve);
+    } catch (err) {
+      logger.error({ err }, 'Connector external dependency check failed');
+      process.exit(1);
+    }
     // Embedded daemon must wait for the listener — its boot-time
     // health check hits `/api/health` on this same process.
     embeddedWorker = startEmbeddedConnectorWorker(env, `http://${HOST}:${PORT}`);

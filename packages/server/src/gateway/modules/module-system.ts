@@ -2,8 +2,7 @@ import type { CliBackendConfig, ModelOption } from "@lobu/core";
 import { type ModuleInterface, moduleRegistry } from "@lobu/core";
 import type { ProviderCredentialContext } from "../embedded.js";
 
-interface OrchestratorModule<TModuleData = unknown>
-  extends ModuleInterface<TModuleData> {
+interface OrchestratorModule extends ModuleInterface {
   buildEnvVars(
     agentId: string,
     baseEnv: Record<string, string>,
@@ -66,9 +65,7 @@ export interface ModelProviderModule extends OrchestratorModule {
   }>;
 }
 
-export abstract class BaseModule<_TModuleData = unknown>
-  implements OrchestratorModule<_TModuleData>
-{
+export abstract class BaseModule implements OrchestratorModule {
   abstract name: string;
   abstract isEnabled(): boolean;
 

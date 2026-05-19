@@ -2,7 +2,7 @@
  * Worker-side response payload returned to the gateway over HTTP.
  *
  * The gateway↔worker wire contract (`MessagePayload`, `JobType`,
- * `QueuedMessage`) lives in `@lobu/core/worker/wire` — import from there
+ * `QueuedMessage`) is exported from `@lobu/core` — import from there
  * directly, not from this file.
  */
 

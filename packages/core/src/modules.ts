@@ -6,7 +6,7 @@ const logger = createLogger("modules");
 // Module Type Definitions
 // ============================================================================
 
-export interface ModuleInterface<_TModuleData = unknown> {
+export interface ModuleInterface {
   /** Module identifier */
   name: string;
 

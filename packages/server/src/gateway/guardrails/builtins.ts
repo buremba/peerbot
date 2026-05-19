@@ -16,20 +16,16 @@ import { safeStringify } from "./safe-stringify.js";
 // -- pii-scan ---------------------------------------------------------------
 
 /**
- * Cheap regex patterns. Each is global / case-insensitive where appropriate
- * and is tried in order -- first match trips the guardrail.
+ * Cheap shape patterns for the non-credit-card families. Tried first
+ * (cheaper than the Luhn-validated CC scan), in order; first match wins.
  *
- * Credit-card matches are post-filtered through a Luhn check (see
- * {@link luhnValid}) so 13-19 digit invoice / tracking / order numbers don't
- * false-positive. The other two patterns are precise enough on shape alone.
+ * Credit cards are handled separately by {@link scanCreditCard} because the
+ * single-match `.match()` approach has a real bug for multi-PAN text: if a
+ * text contains `1234567890123456 ... 4111111111111111`, the first 16-digit
+ * run Luhn-fails and the real PAN that follows escapes detection. The CC
+ * scan uses `matchAll` to iterate every shaped candidate.
  */
-const PII_PATTERNS: ReadonlyArray<{
-  kind: string;
-  pattern: RegExp;
-  /** Optional post-filter; when present, must return true for the match to
-   *  be reported. The string passed is the raw regex match. */
-  validate?: (raw: string) => boolean;
-}> = [
+const PII_SHAPE_PATTERNS: ReadonlyArray<{ kind: string; pattern: RegExp }> = [
   // Email -- lowercase RFC-light pattern (case-insensitive flag covers upper).
   {
     kind: "email",
@@ -42,15 +38,26 @@ const PII_PATTERNS: ReadonlyArray<{
     pattern:
       /(?:^|[^\d])(?:\+?1[-.\s]?)?\(?\b\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b/,
   },
-  // Credit-card-shaped -- 13-19 digit runs allowing single space/hyphen
-  // separators between groups. Validated with Luhn so a long order or
-  // tracking number doesn't trip.
-  {
-    kind: "credit-card",
-    pattern: /\b(?:\d[ -]?){12,18}\d\b/,
-    validate: (raw) => luhnValid(raw),
-  },
 ];
+
+/**
+ * Global regex for candidate credit-card-shaped runs: 13-19 digits with
+ * optional single space/hyphen separators. Must be `g`-flagged so `matchAll`
+ * walks every candidate, not just the first.
+ */
+const CC_CANDIDATE_PATTERN = /\b(?:\d[ -]?){12,18}\d\b/g;
+
+/**
+ * Find the first Luhn-valid credit-card-shaped run anywhere in the text.
+ * Iterates every candidate (not just the first) so a non-Luhn invoice
+ * number appearing before a real PAN doesn't shadow it.
+ */
+function scanCreditCard(text: string): { kind: string; match: string } | null {
+  for (const m of text.matchAll(CC_CANDIDATE_PATTERN)) {
+    if (luhnValid(m[0])) return { kind: "credit-card", match: m[0] };
+  }
+  return null;
+}
 
 /**
  * Standard Luhn (mod-10) check. Strips spaces / hyphens, then walks digits
@@ -82,13 +89,11 @@ export function luhnValid(raw: string): boolean {
 }
 
 function scanForPii(text: string): { kind: string; match: string } | null {
-  for (const { kind, pattern, validate } of PII_PATTERNS) {
+  for (const { kind, pattern } of PII_SHAPE_PATTERNS) {
     const m = text.match(pattern);
-    if (!m) continue;
-    if (validate && !validate(m[0])) continue;
-    return { kind, match: m[0] };
+    if (m) return { kind, match: m[0] };
   }
-  return null;
+  return scanCreditCard(text);
 }
 
 function extractTextForPii<S extends GuardrailStage>(

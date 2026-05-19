@@ -4,19 +4,18 @@
  *     serialize a BigInt")
  *   - Circular refs (object graphs, accidentally) -- throws
  *     "TypeError: Converting circular structure to JSON"
- *   - Functions / symbols -- silently dropped by JSON.stringify, harmless
+ *   - Functions / symbols / undefined at the TOP level -- JSON.stringify
+ *     returns `undefined` (not a string!), or throws for a top-level symbol
  *
  * If a guardrail throws (sync or async), the runner logs and treats it as a
  * pass -- that quietly disables pii-scan / inline judges in exactly the
  * case where the input is weird enough to deserve closer inspection. So we
- * never throw from extraction; on any failure we fall back to the
- * placeholder string so downstream regex / judge logic still runs (and the
- * regex won't match a literal "<unserializable>" anyway, so this fails
- * "no PII detected" which the operator can spot via guardrail audit logs).
+ * never throw from extraction, AND we never return a non-string -- callers
+ * downstream invoke `.match(...)` on the result, which would throw if we
+ * handed back `undefined`.
  *
  * Per-call cycle tracking via a fresh WeakSet so concurrent calls don't see
- * each other's nodes -- a module-level WeakSet would never get pruned
- * within a single call either (we'd still need to clear between calls).
+ * each other's nodes.
  */
 export function safeStringify(value: unknown): string {
   const seen = new WeakSet<object>();
@@ -30,12 +29,19 @@ export function safeStringify(value: unknown): string {
     }
     return v;
   };
+  let result: string | undefined;
   try {
-    return JSON.stringify(value, replacer);
+    result = JSON.stringify(value, replacer);
   } catch {
-    // Either an exotic host object the replacer didn't catch, or
-    // JSON.stringify threw before reaching us. Either way, swallow so the
-    // guardrail doesn't fail-open.
+    // Either a top-level symbol, an exotic host object the replacer didn't
+    // catch, or JSON.stringify threw before reaching us.
     return "<unserializable>";
   }
+  // `JSON.stringify(undefined)`, `JSON.stringify(()=>{})`, and similar
+  // top-level non-serializable primitives return `undefined`, not a string.
+  // Downstream code calls `.match()` / template-string interpolation on the
+  // result, so we MUST hand back a string. Defensive `typeof` guard in case
+  // the engine ever hands us something else.
+  if (typeof result !== "string") return "<unserializable>";
+  return result;
 }

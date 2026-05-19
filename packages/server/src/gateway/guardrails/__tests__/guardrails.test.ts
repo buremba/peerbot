@@ -103,6 +103,42 @@ describe("safeStringify", () => {
     };
     expect(safeStringify(bad)).toBe("<unserializable>");
   });
+
+  // -- top-level non-object guards (codex r2 finding #1) --
+  test("always returns a string for top-level undefined", () => {
+    // JSON.stringify(undefined) === undefined (not a string). pii-scan
+    // would then crash on `.match()`, the runner would log+swallow, and
+    // the guardrail would silently fail-open.
+    const out = safeStringify(undefined);
+    expect(typeof out).toBe("string");
+    expect(out).toBe("<unserializable>");
+  });
+
+  test("always returns a string for top-level function", () => {
+    const out = safeStringify(() => 42);
+    expect(typeof out).toBe("string");
+    expect(out).toBe("<unserializable>");
+  });
+
+  test("always returns a string for top-level symbol", () => {
+    const out = safeStringify(Symbol("x"));
+    expect(typeof out).toBe("string");
+    // Either the replacer/stringify throws (caught -> <unserializable>) or
+    // returns undefined (typeof guard -> <unserializable>). Either path
+    // must produce a string, not crash.
+    expect(out).toBe("<unserializable>");
+  });
+
+  test("always returns a string for top-level bigint", () => {
+    // JSON.stringify with a replacer that converts bigint inside an object
+    // still throws when bigint is the TOP-level value (the replacer's
+    // first call has _key === "" and v === the bigint; even returning a
+    // string from the replacer makes JSON.stringify happy here, so this
+    // is the lucky case -- but the typeof guard still protects against
+    // engine drift).
+    const out = safeStringify(10n);
+    expect(typeof out).toBe("string");
+  });
 });
 
 // --- pii-scan --------------------------------------------------------------
@@ -164,6 +200,36 @@ describe("pii-scan builtin", () => {
       text: "FedEx tracking 123456789012345678",
     });
     expect(r.tripped).toBe(false);
+  });
+
+  // -- multi-PAN scan (codex r2 finding #2) --
+  test("finds a real PAN that follows a non-Luhn 16-digit run", async () => {
+    // The old single-match implementation would match the first candidate
+    // (1234567890123456, Luhn-fails), return no-trip, and let the real
+    // Visa PAN escape. The matchAll-based scan must catch the second.
+    const g = createPiiScanGuardrail("output");
+    const r = await g.run({
+      agentId: "a",
+      userId: "u",
+      platform: "slack",
+      text: "order 1234567890123456 paid with 4111111111111111",
+    });
+    expect(r.tripped).toBe(true);
+    expect((r.metadata as { kind: string }).kind).toBe("credit-card");
+  });
+
+  test("finds a Luhn-valid PAN buried mid-text after multiple invoice numbers", async () => {
+    const g = createPiiScanGuardrail("pre-tool");
+    const r = await g.run({
+      agentId: "a",
+      userId: "u",
+      toolName: "x",
+      arguments: {
+        note: "invoices: 1111111111111111, 2222222222222222, charge: 5500000000000004",
+      },
+    });
+    expect(r.tripped).toBe(true);
+    expect((r.metadata as { kind: string }).kind).toBe("credit-card");
   });
 
   test("passes on benign text", async () => {
@@ -383,6 +449,39 @@ describe("createJudgeGuardrail", () => {
     const g = createJudgeGuardrail("input", "policy text");
     expect(g.name).toBe(`inline:input:${inlineJudgeHash("policy text")}`);
   });
+
+  // -- tool-scope hash isolation (codex r2 finding #3) --
+  test("same policy with different tool scopes yields distinct names", () => {
+    const g1 = createJudgeGuardrail("pre-tool", "no destructive ops", {
+      tools: ["fs.write"],
+    });
+    const g2 = createJudgeGuardrail("pre-tool", "no destructive ops", {
+      tools: ["fs.delete"],
+    });
+    expect(g1.name).not.toBe(g2.name);
+  });
+
+  test("same policy with same tool scope yields the same name (sort-invariant)", () => {
+    const g1 = createJudgeGuardrail("pre-tool", "policy", {
+      tools: ["a", "b"],
+    });
+    const g2 = createJudgeGuardrail("pre-tool", "policy", {
+      tools: ["b", "a"],
+    });
+    expect(g1.name).toBe(g2.name);
+  });
+
+  test("policy without tools differs from policy with tools", () => {
+    const g1 = createJudgeGuardrail("pre-tool", "policy");
+    const g2 = createJudgeGuardrail("pre-tool", "policy", { tools: ["x"] });
+    expect(g1.name).not.toBe(g2.name);
+  });
+
+  test("empty tools array is canonically equal to undefined tools", () => {
+    const g1 = createJudgeGuardrail("pre-tool", "policy", { tools: [] });
+    const g2 = createJudgeGuardrail("pre-tool", "policy");
+    expect(g1.name).toBe(g2.name);
+  });
 });
 
 // --- resolveAgentGuardrails ------------------------------------------------
@@ -521,5 +620,47 @@ describe("resolveAgentGuardrails (aggregator)", () => {
       disabled: [expectedName],
     });
     expect(excluded.names.output).not.toContain(expectedName);
+  });
+
+  // -- skill inline judges with different tool scopes (codex r2 finding #3) --
+  test("skill inline judges: same policy, different tool scopes -> two distinct guardrails", () => {
+    const reg = setupRegistry();
+    const policy = "Block destructive ops";
+    const skill: SkillConfig = {
+      repo: "x/y",
+      name: "github",
+      enabled: true,
+      guardrails: {
+        "pre-tool": [
+          { kind: "judge", policy, tools: ["fs.write"] },
+          { kind: "judge", policy, tools: ["fs.delete"] },
+        ],
+      },
+    };
+    const out = resolveAgentGuardrails({}, [skill], reg);
+    const skillInlineNames = out.names["pre-tool"].filter((n) =>
+      n.startsWith("skill:github:inline:pre-tool:")
+    );
+    // The old hash(policy)-only naming collapsed these into ONE entry,
+    // silently dropping the second tool narrowing. The hash(policy, tools)
+    // naming keeps them distinct.
+    expect(skillInlineNames.length).toBe(2);
+    expect(new Set(skillInlineNames).size).toBe(2);
+  });
+
+  test("agent inline judges: same policy, different tool scopes -> two distinct guardrails", () => {
+    const reg = setupRegistry();
+    const policy = "Block destructive ops";
+    const out = resolveAgentGuardrails({}, [], reg, {
+      inline: [
+        { stage: "pre-tool", judge: policy, tools: ["fs.write"] },
+        { stage: "pre-tool", judge: policy, tools: ["fs.delete"] },
+      ],
+    });
+    const inlineNames = out.names["pre-tool"].filter((n) =>
+      n.startsWith("inline:pre-tool:")
+    );
+    expect(inlineNames.length).toBe(2);
+    expect(new Set(inlineNames).size).toBe(2);
   });
 });

@@ -169,8 +169,12 @@ function materializeSkillPreTool(
       return createJudgeGuardrail("pre-tool", entry.policy, {
         // Name the skill-inline judge with a stable prefix so operators can
         // disable it via `guardrails_disabled`. Skill name is included so
-        // two skills with identical policy text don't collide.
-        name: `skill:${skill.name}:inline:pre-tool:${inlineJudgeHash(entry.policy)}`,
+        // two skills with identical policy text don't collide. `tools` is
+        // threaded into the hash so the same skill declaring the same
+        // English policy twice with different tool narrowings produces two
+        // distinct guardrails (otherwise the aggregator's dedup would
+        // silently drop the second narrowing).
+        name: `skill:${skill.name}:inline:pre-tool:${inlineJudgeHash(entry.policy, entry.tools)}`,
         tools: entry.tools,
       });
     default: {

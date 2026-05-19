@@ -5,18 +5,19 @@ import { messagingChannels } from "./platforms";
  * Three-column architecture flow:
  *
  *   inputs (connector-sdk + brand logos)
- *     ─ streaming event capture ─►
- *   knowledge graph (stacked 'cube' + watcher arrows)
- *     ─ agents read ─►
+ *     ── streaming event capture ──►
+ *   knowledge graph (stacked layers + internal dreaming arrow + reactions out)
+ *     ── agents read ──►
  *   agents (chat bots + api readers)
  *
- * Flat composition: no shadows, no gradients. Column-to-column arrows are
- * inline SVG. Watcher arrows pointing into the cube live inside the middle
- * column. Stacks to one column at the sm breakpoint.
+ * Flat layers (not a metaphor cube), big column gaps, solid 1.5px arrows,
+ * larger brand glyphs. A single hairline-bottom border on each column card
+ * adds enough weight to feel like a real diagram without breaking the
+ * flat-composition rule (no glow, no drop shadow, no gradient).
  */
 export function ArchitectureDiagram() {
   return (
-    <div class="flex flex-col gap-4 md:grid md:grid-cols-[1fr_2.5rem_1fr_2.5rem_1fr] md:items-stretch md:gap-0">
+    <div class="flex flex-col gap-6 md:grid md:grid-cols-[1fr_3.5rem_1fr_3.5rem_1fr] md:items-stretch md:gap-0">
       <InputsColumn />
       <BetweenArrow label="streaming event capture" axis="lr" />
       <BetweenArrow label="streaming event capture" axis="tb" />
@@ -35,19 +36,25 @@ export function ArchitectureDiagram() {
 function ColumnFrame(props: { title: string; children: preact.ComponentChildren; footer?: preact.ComponentChildren }) {
   return (
     <div
-      class="flex h-full min-h-[360px] flex-col rounded-lg border p-5"
-      style={{ borderColor: "var(--color-page-border)", backgroundColor: "var(--color-page-surface)" }}
+      class="flex h-full min-h-[420px] flex-col rounded-lg border p-6"
+      style={{
+        borderColor: "var(--color-page-border)",
+        backgroundColor: "var(--color-page-surface)",
+        // Single hairline below the card. Not a glow — just the bottom edge
+        // gets a hair more weight to read as 'panel' instead of 'box'.
+        boxShadow: "0 1px 0 0 var(--color-page-border)",
+      }}
     >
       <div
-        class="mb-4 font-mono text-[10.5px] uppercase tracking-[0.14em]"
-        style={{ color: "var(--color-tg-accent)" }}
+        class="mb-5 font-mono text-[13px] font-semibold uppercase tracking-[0.16em]"
+        style={{ color: "var(--color-page-text)" }}
       >
         {props.title}
       </div>
       <div class="flex flex-1 flex-col gap-3">{props.children}</div>
       {props.footer ? (
         <div
-          class="mt-4 border-t pt-3 font-mono text-[11px]"
+          class="mt-5 border-t pt-3 font-mono text-[11px]"
           style={{ borderColor: "var(--color-page-border)", color: "var(--color-page-text-muted)" }}
         >
           {props.footer}
@@ -57,10 +64,10 @@ function ColumnFrame(props: { title: string; children: preact.ComponentChildren;
   );
 }
 
-function Pill({ label, mono = true, dim = false }: { label: string; mono?: boolean; dim?: boolean }) {
+function Pill({ label, dim = false }: { label: string; dim?: boolean }) {
   return (
     <span
-      class={`inline-flex items-center rounded-md border px-2.5 py-1 text-[12px] ${mono ? "font-mono" : ""}`}
+      class="inline-flex items-center rounded-md border px-2.5 py-1 font-mono text-[12px]"
       style={{
         borderColor: "var(--color-page-border)",
         backgroundColor: dim ? "var(--color-page-bg)" : "var(--color-page-surface-dim)",
@@ -89,7 +96,7 @@ const CONNECTOR_BRANDS: Brand[] = [
   { key: "hubspot", label: "HubSpot", color: "#FF7A59", path: "M18.164 7.93V5.084a2.198 2.198 0 0 0 1.27-1.985v-.067A2.2 2.2 0 0 0 17.238.832h-.067a2.2 2.2 0 0 0-2.198 2.2v.067a2.196 2.196 0 0 0 1.27 1.985V7.93a6.226 6.226 0 0 0-2.957 1.296L5.512 3.917c.027-.103.045-.21.045-.319A1.717 1.717 0 1 0 4.598 4.91l7.69 5.99a6.255 6.255 0 0 0-.939 3.31c0 1.27.382 2.452 1.04 3.444l-2.341 2.34a2.005 2.005 0 0 0-.585-.097 2.05 2.05 0 1 0 2.052 2.05c0-.205-.039-.405-.094-.594l2.314-2.314a6.27 6.27 0 1 0 4.43-11.108zm-1.107 9.397a3.22 3.22 0 1 1 0-6.44 3.22 3.22 0 0 1 0 6.44z" },
 ];
 
-function BrandGlyph({ brand, size = 18 }: { brand: Brand; size?: number }) {
+function BrandGlyph({ brand, size = 26 }: { brand: Brand; size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-label={brand.label} role="img">
       <title>{brand.label}</title>
@@ -100,19 +107,19 @@ function BrandGlyph({ brand, size = 18 }: { brand: Brand; size?: number }) {
 
 function InputsColumn() {
   return (
-    <ColumnFrame title="inputs" footer={<span>events stream into the graph</span>}>
+    <ColumnFrame title="Inputs" footer={<span>events stream into the graph</span>}>
       <Pill label="@lobu/connector-sdk" />
-      <div class="text-[12px]" style={{ color: "var(--color-page-text-muted)" }}>
+      <div class="text-[12.5px]" style={{ color: "var(--color-page-text-muted)" }}>
         50+ bundled integrations
       </div>
-      <div class="mt-2 grid grid-cols-3 gap-3">
+      <div class="mt-3 grid grid-cols-3 gap-3">
         {CONNECTOR_BRANDS.map((b) => (
           <div
             key={b.key}
-            class="flex h-12 items-center justify-center rounded-md border"
+            class="flex h-14 items-center justify-center rounded-md border"
             style={{ borderColor: "var(--color-page-border)", backgroundColor: "var(--color-page-bg)" }}
           >
-            <BrandGlyph brand={b} size={20} />
+            <BrandGlyph brand={b} size={26} />
           </div>
         ))}
       </div>
@@ -121,66 +128,107 @@ function InputsColumn() {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Middle column — knowledge-graph cube + watcher arrows                     */
+/*  Middle column — flat stacked layers + internal dreaming arrow + reactions */
 /* -------------------------------------------------------------------------- */
 
-function CubeRow({ label, depth }: { label: string; depth: 0 | 1 | 2 }) {
-  // depth=0 sits on top (most muted), depth=2 sits on bottom (most saturated).
-  // Same border colour, fill goes from page-bg to surface-dim to suggest depth.
-  const fill =
-    depth === 0
-      ? "var(--color-page-bg)"
-      : depth === 1
-        ? "var(--color-page-surface)"
-        : "var(--color-page-surface-dim)";
-  const ml = depth === 0 ? 0 : depth === 1 ? 6 : 12;
+function Layer({ label, sub }: { label: string; sub?: string }) {
   return (
     <div
-      class="flex h-10 items-center rounded-md border px-3 font-mono text-[12px]"
+      class="flex items-center justify-between rounded-md border px-3 py-2.5"
       style={{
-        borderColor: "var(--color-page-text)",
-        backgroundColor: fill,
-        color: "var(--color-page-text)",
-        marginLeft: ml,
+        borderColor: "var(--color-page-border)",
+        backgroundColor: "var(--color-page-bg)",
       }}
     >
-      {label}
+      <span class="font-mono text-[13px]" style={{ color: "var(--color-page-text)" }}>
+        {label}
+      </span>
+      {sub ? (
+        <span class="font-mono text-[10.5px]" style={{ color: "var(--color-page-text-muted)" }}>
+          {sub}
+        </span>
+      ) : null}
     </div>
   );
 }
 
-function WatcherArrow({ label }: { label: string }) {
+function LayerConnector() {
+  // Short vertical bar joining adjacent layers — visual continuity without
+  // shouting 'arrow'. Lives between Layer rows.
   return (
-    <div class="flex items-center gap-2 font-mono text-[11px]" style={{ color: "var(--color-page-text-muted)" }}>
-      <svg width="36" height="10" viewBox="0 0 36 10" aria-hidden="true">
-        <title>incoming watcher</title>
+    <div class="flex items-center justify-center" aria-hidden="true">
+      <span
+        class="block h-2 w-px"
+        style={{ backgroundColor: "var(--color-page-border)" }}
+      />
+    </div>
+  );
+}
+
+/**
+ * Inline arrow that lives in the gap between events and entities, pointing
+ * UP — the dreaming watcher (LLM, cron) is what lifts raw events into typed
+ * entities. Replaces the LayerConnector hairline at that one spot so the
+ * stack reads top-to-bottom as: relationships ← entities ← (dreaming) ← events.
+ */
+function DreamingConnector() {
+  return (
+    <div class="flex items-center gap-2 pl-3" aria-hidden="true">
+      <svg width="12" height="20" viewBox="0 0 12 20" aria-hidden="true">
+        <title>dreaming watcher lifts events into entities</title>
         <path
-          d="M0 5 H30 M27 1.5 L31 5 L27 8.5"
+          d="M6 18 V4 M2 7 L6 3 L10 7"
           stroke="var(--color-tg-accent)"
-          stroke-width="1"
+          stroke-width="1.5"
           stroke-linecap="round"
           stroke-linejoin="round"
-          stroke-dasharray="3 2"
           fill="none"
         />
       </svg>
-      <span>{label}</span>
+      <div class="flex flex-col gap-0.5 font-mono text-[10.5px] leading-tight" style={{ color: "var(--color-page-text-muted)" }}>
+        <span style={{ color: "var(--color-page-text)" }}>dreaming watchers</span>
+        <span>cron · LLM</span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Reactions arrow pointing OUT of the cube area toward the agents column.
+ * Reactions are imperative TS that runs after a watcher extracts something
+ * and takes external actions (post to Slack, open a Linear issue, …).
+ */
+function ReactionsCallout() {
+  return (
+    <div class="mt-3 flex items-center justify-between border-t pt-3" style={{ borderColor: "var(--color-page-border)" }}>
+      <div class="flex flex-col gap-0.5 font-mono text-[11px] leading-tight" style={{ color: "var(--color-page-text-muted)" }}>
+        <span style={{ color: "var(--color-page-text)" }}>reactions</span>
+        <span>your TS · @lobu/reaction-sdk</span>
+      </div>
+      <svg width="36" height="12" viewBox="0 0 36 12" aria-hidden="true">
+        <title>reactions emit external actions</title>
+        <path
+          d="M0 6 H30 M27 2.5 L31 6 L27 9.5"
+          stroke="var(--color-tg-accent)"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          fill="none"
+        />
+      </svg>
     </div>
   );
 }
 
 function KnowledgeColumn() {
   return (
-    <ColumnFrame title="knowledge graph" footer={<Pill label="@lobu/reaction-sdk" />}>
-      <div class="flex flex-col gap-1.5">
-        <CubeRow label="relationships" depth={0} />
-        <CubeRow label="entities" depth={1} />
-        <CubeRow label="events (append-only)" depth={2} />
-      </div>
-      <div class="mt-4 flex flex-col gap-1.5">
-        <WatcherArrow label="cron · AI (dreaming watchers)" />
-        <WatcherArrow label="reactions · code (your TS)" />
-      </div>
+    <ColumnFrame title="Knowledge graph">
+      <Layer label="relationships" sub="entity → entity" />
+      <LayerConnector />
+      <Layer label="entities" sub="typed records" />
+      <DreamingConnector />
+      <Layer label="events" sub="append-only log" />
+      <ReactionsCallout />
     </ColumnFrame>
   );
 }
@@ -189,27 +237,33 @@ function KnowledgeColumn() {
 /*  Agents column                                                             */
 /* -------------------------------------------------------------------------- */
 
-function SubBlock(props: { title: string; children: preact.ComponentChildren }) {
+function SubBlock(props: { title: string; caption: string; children: preact.ComponentChildren }) {
   return (
     <div
       class="rounded-md border p-3"
       style={{ borderColor: "var(--color-page-border)", backgroundColor: "var(--color-page-bg)" }}
     >
       <div
-        class="mb-2 font-mono text-[10.5px] uppercase tracking-[0.1em]"
+        class="mb-2 font-mono text-[10.5px] uppercase tracking-[0.12em]"
         style={{ color: "var(--color-page-text)" }}
       >
         {props.title}
       </div>
       {props.children}
+      <div
+        class="mt-2 font-mono text-[10.5px]"
+        style={{ color: "var(--color-page-text-muted)" }}
+      >
+        {props.caption}
+      </div>
     </div>
   );
 }
 
 function AgentsColumn() {
   return (
-    <ColumnFrame title="agents" footer={<span>← agents read</span>}>
-      <SubBlock title="chat bots">
+    <ColumnFrame title="Agents">
+      <SubBlock title="chat bots" caption="users chat with the agent">
         <ul class="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11.5px]" style={{ color: "var(--color-page-text-muted)" }}>
           {messagingChannels.slice(0, 6).map((channel) => (
             <li key={channel.id} class="flex items-center gap-2">
@@ -221,10 +275,18 @@ function AgentsColumn() {
           ))}
         </ul>
       </SubBlock>
-      <SubBlock title="api readers">
-        <div class="text-[12px]" style={{ color: "var(--color-page-text-muted)" }}>
-          agents read via HTTP / MCP / SDK
-        </div>
+      <SubBlock title="api readers" caption="agents read the graph">
+        <ul class="grid grid-cols-3 gap-2 text-[11.5px]" style={{ color: "var(--color-page-text-muted)" }}>
+          {["HTTP", "MCP", "SDK"].map((label) => (
+            <li
+              key={label}
+              class="flex items-center justify-center rounded-md border px-2 py-1 font-mono text-[11.5px]"
+              style={{ borderColor: "var(--color-page-border)", backgroundColor: "var(--color-page-surface)", color: "var(--color-page-text)" }}
+            >
+              {label}
+            </li>
+          ))}
+        </ul>
       </SubBlock>
     </ColumnFrame>
   );
@@ -241,18 +303,18 @@ function BetweenArrow({ label, axis }: { label: string; axis: "lr" | "tb" }) {
   if (axis === "lr") {
     return (
       <div class="hidden flex-col items-center justify-center md:flex">
-        <svg width="40" height="10" viewBox="0 0 40 10" aria-hidden="true">
+        <svg width="56" height="12" viewBox="0 0 56 12" aria-hidden="true">
           <title>{label}</title>
           <path
-            d="M0 5 H34 M31 1.5 L35 5 L31 8.5"
+            d="M0 6 H48 M45 2.5 L49 6 L45 9.5"
             stroke="var(--color-page-text)"
-            stroke-width="1"
+            stroke-width="1.5"
             stroke-linecap="round"
             stroke-linejoin="round"
             fill="none"
           />
         </svg>
-        <span class="mt-1 max-w-[6rem] text-center font-mono text-[10px] leading-tight" style={{ color: "var(--color-page-text-muted)" }}>
+        <span class="mt-2 max-w-[7rem] text-center font-mono text-[10.5px] leading-tight" style={{ color: "var(--color-page-text-muted)" }}>
           {label}
         </span>
       </div>
@@ -263,12 +325,12 @@ function BetweenArrow({ label, axis }: { label: string; axis: "lr" | "tb" }) {
       <span class="font-mono text-[10.5px]" style={{ color: "var(--color-page-text-muted)" }}>
         {label}
       </span>
-      <svg class="ml-2" width="10" height="22" viewBox="0 0 10 22" aria-hidden="true">
+      <svg class="ml-2" width="12" height="28" viewBox="0 0 12 28" aria-hidden="true">
         <title>{label}</title>
         <path
-          d="M5 0 V18 M1.5 15 L5 19 L8.5 15"
+          d="M6 0 V22 M2.5 19 L6 23 L9.5 19"
           stroke="var(--color-page-text)"
-          stroke-width="1"
+          stroke-width="1.5"
           stroke-linecap="round"
           stroke-linejoin="round"
           fill="none"

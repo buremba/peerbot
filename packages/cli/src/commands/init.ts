@@ -12,6 +12,7 @@ import { basename, join, resolve } from "node:path";
 import { confirm, input, password, select } from "@inquirer/prompts";
 import chalk from "chalk";
 import ora from "ora";
+import { isPortFree } from "./dev.js";
 import { promptPlatformConfig } from "../commands/platforms/platform-prompts.js";
 import { setLocalEnvValue } from "../internal/local-env.js";
 import {
@@ -53,6 +54,45 @@ export interface InitOptions {
   sentry?: boolean;
   noSentry?: boolean;
   slackPreview?: boolean;
+  listProviders?: boolean;
+}
+
+async function pickFreePort(start: number, max = 100): Promise<number> {
+  for (let i = 0; i < max; i++) {
+    const candidate = start + i;
+    if (candidate > 65535) break;
+    if (await isPortFree(candidate)) return candidate;
+  }
+  // Fall back to the starting port — the user can resolve the collision at
+  // `lobu run` time.
+  return start;
+}
+
+function printProviderList(): void {
+  const providers = loadProviderRegistry();
+  if (providers.length === 0) {
+    console.log(
+      chalk.yellow(
+        "No providers registered. Check that config/providers.json is reachable."
+      )
+    );
+    return;
+  }
+  console.log(chalk.bold("\nAvailable providers (config/providers.json):\n"));
+  const idCol = Math.max(...providers.map((p) => p.id.length));
+  for (const p of providers) {
+    const first = p.providers?.[0];
+    const env = first?.envVarName ?? "";
+    const model = first?.defaultModel ? ` — ${first.defaultModel}` : "";
+    console.log(
+      `  ${chalk.cyan(p.id.padEnd(idCol))}  ${chalk.dim(env)}${chalk.dim(model)}`
+    );
+  }
+  console.log(
+    chalk.dim(
+      "\nPass to scaffold: lobu init <name> --provider <id> [--provider-key <key>]\n"
+    )
+  );
 }
 
 export async function initCommand(
@@ -62,6 +102,11 @@ export async function initCommand(
 ): Promise<void> {
   const cliVersion = await getCliVersion();
   const useDefaults = options.yes === true;
+
+  if (options.listProviders) {
+    printProviderList();
+    return;
+  }
 
   // Catch flag combos that can't satisfy a prompt before we mkdir anything.
   if (useDefaults && options.memory === "lobu-custom" && !options.memoryUrl) {
@@ -151,10 +196,13 @@ export async function initCommand(
     }
   }
 
+  // Pick free ports at scaffold time so two `lobu run`s on the same machine
+  // don't collide on the default 8787 / 8118. The flag / env value wins.
+  const gatewayPortDefault = String(await pickFreePort(8787));
   const gatewayPort = await promptOrDefault({
     flag: options.port,
     useDefaults,
-    defaultValue: "8787",
+    defaultValue: gatewayPortDefault,
     validate: (value: string) => {
       const p = Number(value);
       return Number.isInteger(p) && p >= 1 && p <= 65535
@@ -164,7 +212,7 @@ export async function initCommand(
     prompt: () =>
       input({
         message: "Gateway port?",
-        default: "8787",
+        default: gatewayPortDefault,
         validate: (value: string) => {
           const p = Number(value);
           if (!Number.isInteger(p) || p < 1 || p > 65535) {
@@ -174,6 +222,11 @@ export async function initCommand(
         },
       }),
   });
+
+  // WORKER_PROXY_PORT is the gateway's outbound HTTP proxy that workers route
+  // through (default 8118). Scaffold a non-colliding port so co-resident
+  // projects don't fight over it.
+  const workerProxyPort = String(await pickFreePort(8118));
 
   const publicGatewayUrl = await promptOrDefault({
     flag: options.publicUrl,
@@ -229,10 +282,7 @@ export async function initCommand(
     validate: (v: string) =>
       v === "" || providerChoices.some((c) => c.value === v)
         ? true
-        : `Unknown provider "${v}". Available: ${providerChoices
-            .filter((c) => c.value)
-            .map((c) => c.value)
-            .join(", ")}`,
+        : `Unknown provider "${v}". Run \`lobu init --list-providers\` to see the full list (also at config/providers.json).`,
     prompt: () =>
       select<string>({
         message: "AI provider?",
@@ -457,11 +507,18 @@ export async function initCommand(
       CLI_VERSION: cliVersion,
       ENCRYPTION_KEY: answers.encryptionKey,
       GATEWAY_PORT: gatewayPort,
+      WORKER_PROXY_PORT: workerProxyPort,
       WORKER_ALLOWED_DOMAINS: answers.allowedDomains,
       WORKER_DISALLOWED_DOMAINS: answers.disallowedDomains,
     };
 
     await renderTemplate(".env.tmpl", variables, join(projectDir, ".env"));
+
+    // Pin Node 22 for nvm / fnm / mise / asdf / volta — Lobu refuses to boot
+    // on Node 25+ (isolated-vm has no prebuilt). Homebrew's `node` now
+    // resolves to 26, so without these files a fresh `lobu run` fails.
+    await writeFile(join(projectDir, ".nvmrc"), "22\n");
+    await writeFile(join(projectDir, ".node-version"), "22\n");
     // `.env` carries ENCRYPTION_KEY + provider API keys / OAuth tokens
     // appended via setLocalEnvValue below. Tighten now so the initial
     // write isn't world-readable on multi-user hosts (default umask 022).

@@ -108,22 +108,15 @@ function SectionHeading(props: {
 /*  Hero                                                                      */
 /* -------------------------------------------------------------------------- */
 
-type CastMode = "cli" | "agent";
+const CAST_SRC = "/casts/claude.cast";
+const CAST_CAPTION =
+  "Paste the prompt into Claude Code. It interviews you, scaffolds the project, and validates.";
 
-const CASTS: Record<CastMode, { src: string; caption: string }> = {
-  cli: {
-    src: "/casts/setup.cast",
-    caption: "Scaffold a Lobu agent end-to-end with the CLI.",
-  },
-  agent: {
-    src: "/casts/claude.cast",
-    caption: "Or paste the prompt into Claude Code and let it interview you.",
-  },
-};
+const NPX_COMMAND = "npx @lobu/cli@latest init my-agent";
 
 function Hero() {
   const [copied, setCopied] = useState(false);
-  const [castMode, setCastMode] = useState<CastMode>("cli");
+  const [npxCopied, setNpxCopied] = useState(false);
 
   const onCopy = async () => {
     try {
@@ -135,9 +128,58 @@ function Hero() {
     }
   };
 
+  const onCopyNpx = async () => {
+    try {
+      await navigator.clipboard.writeText(NPX_COMMAND);
+      setNpxCopied(true);
+      window.setTimeout(() => setNpxCopied(false), 2000);
+    } catch {
+      setNpxCopied(false);
+    }
+  };
+
   return (
     <section class="px-4 pb-12 pt-20 text-center sm:pb-16 sm:pt-28">
       <Container>
+        <div class="hero-rise hero-rise-1 mb-6 flex flex-col items-start gap-1">
+          <button
+            class="group inline-flex max-w-full items-center gap-2 rounded-lg border px-3 py-1.5 font-mono text-[12.5px] transition-colors hover:border-[color:var(--color-tg-accent)]"
+            onClick={onCopyNpx}
+            style={{
+              borderColor: "var(--color-page-border)",
+              backgroundColor: "var(--color-landing-code-bg)",
+              color: "var(--color-page-text)",
+            }}
+            title="Copy command"
+            type="button"
+          >
+            <span
+              aria-hidden="true"
+              style={{ color: "var(--color-page-text-muted)" }}
+            >
+              $
+            </span>
+            <span class="truncate">{NPX_COMMAND}</span>
+            <span
+              aria-hidden="true"
+              class="ml-1 shrink-0"
+              style={{ color: "var(--color-page-text-muted)" }}
+            >
+              <CopyIcon copied={npxCopied} />
+            </span>
+            <span class="sr-only">
+              {npxCopied ? "Copied" : "Copy command"}
+            </span>
+          </button>
+          <span
+            class="font-mono text-[11px]"
+            style={{ color: "var(--color-page-text-muted)" }}
+          >
+            {npxCopied
+              ? "copied"
+              : "skip the agent — scaffold from your shell"}
+          </span>
+        </div>
         <span
           class="hero-rise hero-rise-1 mb-6 inline-block rounded-full border px-3.5 py-1.5 text-[11.5px] font-medium"
           style={{
@@ -208,43 +250,14 @@ function Hero() {
           <span class="font-mono">opencode</span> — it'll scaffold the project
           for you
         </p>
-        <div
-          class="hero-rise hero-rise-5 mx-auto mt-10 flex max-w-[44rem] justify-center gap-x-1 border-b"
-          style={{ borderColor: "var(--color-page-border)" }}
-          role="tablist"
-          aria-label="hero recording"
-        >
-          {(["cli", "agent"] as const).map((mode) => {
-            const isActive = mode === castMode;
-            return (
-              <button
-                aria-selected={isActive}
-                class="-mb-px border-b-2 px-3 py-2 font-mono text-[12.5px] transition-colors"
-                key={mode}
-                onClick={() => setCastMode(mode)}
-                role="tab"
-                style={{
-                  borderColor: isActive
-                    ? "var(--color-page-text)"
-                    : "transparent",
-                  color: isActive
-                    ? "var(--color-page-text)"
-                    : "var(--color-page-text-muted)",
-                  fontWeight: isActive ? 700 : 500,
-                }}
-                type="button"
-              >
-                {mode}
-              </button>
-            );
-          })}
+        <div class="hero-rise hero-rise-5 mt-10">
+          <HeroAsciinema />
         </div>
-        <HeroAsciinema castMode={castMode} />
         <p
           class="mx-auto mt-4 max-w-[36rem] text-[14px]"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          {CASTS[castMode].caption}
+          {CAST_CAPTION}
         </p>
       </Container>
     </section>
@@ -304,15 +317,10 @@ function GithubIcon() {
  * container on first paint. If the cast 404s the container stays empty —
  * the page never errors.
  */
-function HeroAsciinema({ castMode }: { castMode: CastMode }) {
-  // Key the wrapper on castMode so Preact tears down the player when the tab
-  // flips — the asciinema web component doesn't re-fetch when its src
-  // attribute mutates in place.
-  const src = CASTS[castMode].src;
+function HeroAsciinema() {
   return (
     <div
-      class="mx-auto mt-4 max-w-[44rem] overflow-hidden rounded-lg border"
-      key={castMode}
+      class="mx-auto max-w-[44rem] overflow-hidden rounded-lg border"
       ref={(node) => {
         if (!node) return;
         if (node.dataset.asciinemaMounted === "1") return;
@@ -331,7 +339,7 @@ function HeroAsciinema({ castMode }: { castMode: CastMode }) {
               ).AsciinemaPlayer
             : null;
         if (!player) return;
-        player.create(src, node, {
+        player.create(CAST_SRC, node, {
           autoPlay: true,
           loop: true,
           idleTimeLimit: 2,

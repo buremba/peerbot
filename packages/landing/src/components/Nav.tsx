@@ -1,9 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { LandingUseCaseId } from "../use-case-definitions";
 import {
-  getLobuBaseUrl,
   getLobuLoginUrl,
-  getLobuUrl,
   landingUseCaseGroupedOptions,
 } from "../use-case-showcases";
 
@@ -296,19 +293,12 @@ function MegaMenuTrigger({
 
 type NavProps = {
   currentPath?: string;
-  startUseCaseId?: LandingUseCaseId;
 };
 
-export function Nav({
-  currentPath: _currentPath = "/",
-  startUseCaseId,
-}: NavProps) {
+export function Nav({ currentPath: _currentPath = "/" }: NavProps) {
   const [openId, setOpenId] = useState<string | null>(null);
   const solutions = buildSolutionsMenu();
   const loginUrl = getLobuLoginUrl();
-  const startUrl = startUseCaseId
-    ? getLobuUrl(startUseCaseId)
-    : getLobuBaseUrl();
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -385,16 +375,6 @@ export function Nav({
               style={{ color: "var(--color-page-text)" }}
             >
               Sign in
-            </a>
-            <a
-              href={startUrl}
-              class="inline-flex items-center text-[14px] font-medium px-4 h-9 rounded-full transition-opacity hover:opacity-90"
-              style={{
-                background: "var(--color-page-bg-inverted)",
-                color: "var(--color-page-text-inverted)",
-              }}
-            >
-              Start building
             </a>
           </div>
         </div>

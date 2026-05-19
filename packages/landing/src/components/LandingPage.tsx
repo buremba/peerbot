@@ -1,22 +1,30 @@
 import { useState } from "preact/hooks";
-import snippetsManifest from "../generated/use-case-snippets.json";
+import snippetsManifest from "../generated/landing-snippets.json";
 import { getLobuBaseUrl } from "../use-case-showcases";
 import { ArchitectureDiagram } from "./ArchitectureDiagram";
 import { CodeBlock, type CodeSnippet } from "./CodeBlock";
 import { CTA } from "./CTA";
 import { LatestBlogPosts, type LatestBlogPost } from "./LatestBlogPosts";
 
-type UseCaseSnippets = {
-  agentToml: CodeSnippet;
-  memorySchemaYaml: CodeSnippet;
-  watcherYaml: CodeSnippet;
-  connectorTs?: CodeSnippet;
-  reactionTs?: CodeSnippet;
+type ExampleEntry = {
+  slug: string;
+  label: string;
+  description: string | null;
+  githubUrl: string;
 };
 
-const snippets = snippetsManifest as Record<string, UseCaseSnippets>;
-const PINNED_USE_CASE = "sales";
-const active = snippets[PINNED_USE_CASE] ?? snippets.sales;
+type LandingSnippets = {
+  connector: CodeSnippet;
+  memorySchema: CodeSnippet;
+  watcher: CodeSnippet;
+  reaction: CodeSnippet;
+  agentToml: CodeSnippet;
+  examples: ExampleEntry[];
+};
+
+const snippets = snippetsManifest as LandingSnippets;
+
+const EXAMPLE_BASE_URL = "https://github.com/lobu-ai/lobu/tree/main/examples";
 
 const SETUP_PROMPT = `I want to build a Lobu agent.
 
@@ -39,11 +47,11 @@ export function LandingPage(props: { latestPosts?: LatestBlogPost[] }) {
         <ArchitectureDiagram />
       </Container>
       <UseCaseGrid />
-      <ConnectorsSection useCase={active} />
-      <MemorySection useCase={active} />
-      <WatchersSection useCase={active} />
+      <ConnectorsSection />
+      <MemorySection />
+      <WatchersSection />
       <SkillsSection />
-      <AgentsSection useCase={active} />
+      <AgentsSection />
       <RunAnywhereSection />
       <CTA startUrl={getLobuBaseUrl()} />
       {props.latestPosts?.length ? (
@@ -487,9 +495,28 @@ function UseCaseGrid() {
 /*  Product sections (Connectors / Memory / Watchers / Agents)               */
 /* -------------------------------------------------------------------------- */
 
-type ProductSectionProps = {
-  useCase: UseCaseSnippets;
-};
+/** Small footer link rendered under each section's code panel, linking to the
+ *  full example on GitHub. Matches the ProductLink monospace-path treatment. */
+function ExampleFooterLink({ slug }: { slug: string }) {
+  return (
+    <a
+      class="mt-3 inline-flex items-center gap-1 text-[13px] transition-colors hover:text-[color:var(--color-tg-accent)]"
+      href={`${EXAMPLE_BASE_URL}/${slug}`}
+      rel="noopener noreferrer"
+      style={{ color: "var(--color-page-text-muted)" }}
+      target="_blank"
+    >
+      Full example:{" "}
+      <code
+        class="font-mono text-[13px]"
+        style={{ color: "var(--color-page-text)" }}
+      >
+        examples/{slug}
+      </code>
+      <span aria-hidden="true">→</span>
+    </a>
+  );
+}
 
 function ProductGrid(props: {
   reverse?: boolean;
@@ -560,7 +587,7 @@ function ProductLink(props: {
   );
 }
 
-function ConnectorsSection({ useCase }: ProductSectionProps) {
+function ConnectorsSection() {
   return (
     <Container className="py-16 sm:py-20">
       <ProductGrid
@@ -611,16 +638,17 @@ function ConnectorsSection({ useCase }: ProductSectionProps) {
           </div>
         }
         code={
-          useCase.connectorTs ? (
-            <CodeBlock badge="typescript" snippet={useCase.connectorTs} />
-          ) : null
+          <div>
+            <CodeBlock badge="typescript" snippet={snippets.connector} />
+            <ExampleFooterLink slug="lobu-crm" />
+          </div>
         }
       />
     </Container>
   );
 }
 
-function MemorySection({ useCase }: ProductSectionProps) {
+function MemorySection() {
   return (
     <Container className="py-16 sm:py-20">
       <ProductGrid
@@ -665,13 +693,18 @@ function MemorySection({ useCase }: ProductSectionProps) {
             </ProductLink>
           </div>
         }
-        code={<CodeBlock badge="entities" snippet={useCase.memorySchemaYaml} />}
+        code={
+          <div>
+            <CodeBlock badge="entities" snippet={snippets.memorySchema} />
+            <ExampleFooterLink slug="sales" />
+          </div>
+        }
       />
     </Container>
   );
 }
 
-function WatchersSection({ useCase }: ProductSectionProps) {
+function WatchersSection() {
   return (
     <Container className="py-16 sm:py-20">
       <ProductGrid
@@ -724,10 +757,23 @@ function WatchersSection({ useCase }: ProductSectionProps) {
           </div>
         }
         code={
-          <CodeBlock
-            badge="reactive + dreaming"
-            snippet={useCase.watcherYaml}
-          />
+          <div class="space-y-3.5">
+            <CodeBlock
+              badge="reactive + dreaming"
+              snippet={snippets.watcher}
+            />
+            <p
+              class="text-[13px]"
+              style={{ color: "var(--color-page-text-muted)" }}
+            >
+              When the watcher extracts data, this reaction runs:
+            </p>
+            <CodeBlock
+              badge="optional · typescript"
+              snippet={snippets.reaction}
+            />
+            <ExampleFooterLink slug="sales" />
+          </div>
         }
       />
     </Container>
@@ -820,18 +866,21 @@ function SkillsSection() {
           </div>
         }
         code={
-          <CodeBlock
-            badge="skill"
-            snippet={SKILL_SNIPPET}
-            tabLabel={SKILL_SNIPPET.path}
-          />
+          <div>
+            <CodeBlock
+              badge="skill"
+              snippet={SKILL_SNIPPET}
+              tabLabel={SKILL_SNIPPET.path}
+            />
+            <ExampleFooterLink slug="office-bot" />
+          </div>
         }
       />
     </Container>
   );
 }
 
-function AgentsSection({ useCase }: ProductSectionProps) {
+function AgentsSection() {
   return (
     <Container className="py-16 sm:py-20">
       <ProductGrid
@@ -875,7 +924,12 @@ function AgentsSection({ useCase }: ProductSectionProps) {
             </ProductLink>
           </div>
         }
-        code={<CodeBlock badge="agent" snippet={useCase.agentToml} />}
+        code={
+          <div>
+            <CodeBlock badge="agent" snippet={snippets.agentToml} />
+            <ExampleFooterLink slug="sales" />
+          </div>
+        }
       />
     </Container>
   );

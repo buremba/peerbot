@@ -107,8 +107,23 @@ function SectionHeading(props: {
 /*  Hero                                                                      */
 /* -------------------------------------------------------------------------- */
 
+type CastMode = "cli" | "agent";
+
+const CASTS: Record<CastMode, { src: string; caption: string }> = {
+  cli: {
+    src: "/casts/setup.cast",
+    caption: "Scaffold a Lobu agent end-to-end with the CLI.",
+  },
+  agent: {
+    src: "/casts/claude.cast",
+    caption:
+      "Or paste the prompt into Claude Code and let it interview you.",
+  },
+};
+
 function Hero() {
   const [copied, setCopied] = useState(false);
+  const [castMode, setCastMode] = useState<CastMode>("cli");
 
   const onCopy = async () => {
     try {
@@ -193,15 +208,43 @@ function Hero() {
           <span class="font-mono">opencode</span> — it'll scaffold the project
           for you
         </p>
-        <HeroAsciinema />
+        <div
+          class="hero-rise hero-rise-5 mx-auto mt-10 flex max-w-[44rem] justify-center gap-x-1 border-b"
+          style={{ borderColor: "var(--color-page-border)" }}
+          role="tablist"
+          aria-label="hero recording"
+        >
+          {(["cli", "agent"] as const).map((mode) => {
+            const isActive = mode === castMode;
+            return (
+              <button
+                aria-selected={isActive}
+                class="-mb-px border-b-2 px-3 py-2 font-mono text-[12.5px] transition-colors"
+                key={mode}
+                onClick={() => setCastMode(mode)}
+                role="tab"
+                style={{
+                  borderColor: isActive
+                    ? "var(--color-page-text)"
+                    : "transparent",
+                  color: isActive
+                    ? "var(--color-page-text)"
+                    : "var(--color-page-text-muted)",
+                  fontWeight: isActive ? 700 : 500,
+                }}
+                type="button"
+              >
+                {mode}
+              </button>
+            );
+          })}
+        </div>
+        <HeroAsciinema castMode={castMode} />
         <p
           class="mx-auto mt-4 max-w-[36rem] text-[14px]"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          <b style={{ color: "var(--color-page-text)" }}>
-            Paste the prompt. Claude Code scaffolds everything:
-          </b>{" "}
-          connectors, schema, watcher, reaction.
+          {CASTS[castMode].caption}
         </p>
       </Container>
     </section>
@@ -261,14 +304,15 @@ function GithubIcon() {
  * container on first paint. If the cast 404s the container stays empty —
  * the page never errors.
  */
-function HeroAsciinema() {
+function HeroAsciinema({ castMode }: { castMode: CastMode }) {
+  // Key the wrapper on castMode so Preact tears down the player when the tab
+  // flips — the asciinema web component doesn't re-fetch when its src
+  // attribute mutates in place.
+  const src = CASTS[castMode].src;
   return (
     <div
-      class="hero-rise hero-rise-5 mx-auto mt-12 max-w-[44rem] overflow-hidden rounded-lg border"
-      style={{
-        backgroundColor: "var(--color-landing-code-bg)",
-        borderColor: "var(--color-page-border)",
-      }}
+      class="mx-auto mt-4 max-w-[44rem] overflow-hidden rounded-lg border"
+      key={castMode}
       ref={(node) => {
         if (!node) return;
         if (node.dataset.asciinemaMounted === "1") return;
@@ -287,7 +331,7 @@ function HeroAsciinema() {
               ).AsciinemaPlayer
             : null;
         if (!player) return;
-        player.create("/casts/setup.cast", node, {
+        player.create(src, node, {
           autoPlay: true,
           loop: true,
           idleTimeLimit: 2,
@@ -296,6 +340,10 @@ function HeroAsciinema() {
           theme: "asciinema",
         });
         node.dataset.asciinemaMounted = "1";
+      }}
+      style={{
+        backgroundColor: "var(--color-landing-code-bg)",
+        borderColor: "var(--color-page-border)",
       }}
     />
   );

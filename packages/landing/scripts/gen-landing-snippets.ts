@@ -157,8 +157,7 @@ function readExampleMeta(rawToml: string, slug: string): TomlExampleMeta {
     if (mode === "memory" && key === "description" && !memoryDescription)
       memoryDescription = value;
   }
-  const label =
-    agentName ?? slug.charAt(0).toUpperCase() + slug.slice(1);
+  const label = agentName ?? slug.charAt(0).toUpperCase() + slug.slice(1);
   const description = memoryDescription ?? agentDescription ?? null;
   return { label, description };
 }
@@ -293,7 +292,8 @@ function compressEntities(yamlLines: string[]): string[] {
   out.push(`${padChild}  type: object`);
   out.push(`${padChild}  properties:`);
   const shown = props.slice(0, 3);
-  for (const p of shown) out.push(`${padChild}    ${p.key}: { type: ${p.type} }`);
+  for (const p of shown)
+    out.push(`${padChild}    ${p.key}: { type: ${p.type} }`);
   if (props.length > shown.length)
     out.push(`${padChild}    # ${props.length - shown.length} more…`);
   return out;
@@ -498,11 +498,7 @@ function snippetFrom(
   };
 }
 
-function warnOverBudget(
-  label: string,
-  lines: number,
-  budget: number
-): void {
+function warnOverBudget(label: string, lines: number, budget: number): void {
   if (lines > budget) {
     console.warn(
       `gen-landing-snippets: ${label} is ${lines} lines — landing budget is ≤ ${budget}.`

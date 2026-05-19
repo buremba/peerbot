@@ -49,6 +49,7 @@ import { vector } from '@electric-sql/pglite/vector';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 import { getRequestListener } from '@hono/node-server';
 import { Hono } from 'hono';
+import { closeDbSingleton } from './db/client';
 import { listMigrationFiles, loadMigrationUpSection } from './db/migration-loader';
 import type { Env } from './index';
 import { getEnvFromProcess } from './utils/env';
@@ -243,6 +244,9 @@ async function main() {
     // PGlite-owned resources below — gateway holds postgres.js connections
     // that talk to the socket server.
     await stopLobuGateway();
+    // Close the postgres.js singleton pool before tearing down the socket
+    // server underneath it; otherwise pooled connections hang on EPIPE.
+    await closeDbSingleton();
     httpServer.close();
     embeddingsChild?.kill();
     await socketServer.stop();

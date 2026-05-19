@@ -109,8 +109,6 @@ function SectionHeading(props: {
 /* -------------------------------------------------------------------------- */
 
 const CAST_SRC = "/casts/claude.cast";
-const CAST_CAPTION =
-  "Paste the prompt into Claude Code. It interviews you, scaffolds the project, and validates.";
 
 const NPX_COMMAND = "npx @lobu/cli@latest init my-agent";
 
@@ -141,45 +139,6 @@ function Hero() {
   return (
     <section class="px-4 pb-12 pt-20 text-center sm:pb-16 sm:pt-28">
       <Container>
-        <div class="hero-rise hero-rise-1 mb-6 flex flex-col items-start gap-1">
-          <button
-            class="group inline-flex max-w-full items-center gap-2 rounded-lg border px-3 py-1.5 font-mono text-[12.5px] transition-colors hover:border-[color:var(--color-tg-accent)]"
-            onClick={onCopyNpx}
-            style={{
-              borderColor: "var(--color-page-border)",
-              backgroundColor: "var(--color-landing-code-bg)",
-              color: "var(--color-page-text)",
-            }}
-            title="Copy command"
-            type="button"
-          >
-            <span
-              aria-hidden="true"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              $
-            </span>
-            <span class="truncate">{NPX_COMMAND}</span>
-            <span
-              aria-hidden="true"
-              class="ml-1 shrink-0"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              <CopyIcon copied={npxCopied} />
-            </span>
-            <span class="sr-only">
-              {npxCopied ? "Copied" : "Copy command"}
-            </span>
-          </button>
-          <span
-            class="font-mono text-[11px]"
-            style={{ color: "var(--color-page-text-muted)" }}
-          >
-            {npxCopied
-              ? "copied"
-              : "skip the agent — scaffold from your shell"}
-          </span>
-        </div>
         <span
           class="hero-rise hero-rise-1 mb-6 inline-block rounded-full border px-3.5 py-1.5 text-[11.5px] font-medium"
           style={{
@@ -250,17 +209,80 @@ function Hero() {
           <span class="font-mono">opencode</span> — it'll scaffold the project
           for you
         </p>
-        <div class="hero-rise hero-rise-5 mt-10">
-          <HeroAsciinema />
+        <div class="hero-rise hero-rise-5 mx-auto mt-10 max-w-[44rem]">
+          <TerminalWindow
+            npxCopied={npxCopied}
+            onCopyNpx={onCopyNpx}
+          />
         </div>
-        <p
-          class="mx-auto mt-4 max-w-[36rem] text-[14px]"
-          style={{ color: "var(--color-page-text-muted)" }}
-        >
-          {CAST_CAPTION}
-        </p>
       </Container>
     </section>
+  );
+}
+
+function TerminalWindow(props: {
+  npxCopied: boolean;
+  onCopyNpx: () => void;
+}) {
+  return (
+    <div
+      class="overflow-hidden rounded-lg border"
+      style={{
+        backgroundColor: "var(--color-landing-code-bg)",
+        borderColor: "var(--color-page-border)",
+      }}
+    >
+      <div
+        class="flex items-center gap-3 border-b px-3 py-2 sm:px-4"
+        style={{ borderColor: "var(--color-page-border)" }}
+      >
+        <div aria-hidden="true" class="flex shrink-0 items-center gap-1.5">
+          <span
+            class="block h-3 w-3 rounded-full"
+            style={{ backgroundColor: "#ee5847" }}
+          />
+          <span
+            class="block h-3 w-3 rounded-full"
+            style={{ backgroundColor: "#f6bd2c" }}
+          />
+          <span
+            class="block h-3 w-3 rounded-full"
+            style={{ backgroundColor: "#66c84a" }}
+          />
+        </div>
+        <span
+          class="hidden flex-1 truncate text-center font-mono text-[11.5px] sm:block"
+          style={{ color: "var(--color-landing-code-comment)" }}
+        >
+          claude code · scaffold a lobu agent
+        </span>
+        <span class="flex-1 sm:hidden" />
+        <button
+          class="inline-flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[11.5px] transition-colors hover:border-[color:var(--color-tg-accent)]"
+          onClick={props.onCopyNpx}
+          style={{
+            borderColor: "var(--color-page-border)",
+            color: "var(--color-page-text)",
+          }}
+          title="Copy command"
+          type="button"
+        >
+          <span class="hidden sm:inline">{NPX_COMMAND}</span>
+          <span class="sm:hidden">npx @lobu/cli init</span>
+          <span
+            aria-hidden="true"
+            class="shrink-0"
+            style={{ color: "var(--color-page-text-muted)" }}
+          >
+            <CopyIcon copied={props.npxCopied} />
+          </span>
+          <span class="sr-only">
+            {props.npxCopied ? "Copied" : "Copy command"}
+          </span>
+        </button>
+      </div>
+      <HeroAsciinema />
+    </div>
   );
 }
 
@@ -320,7 +342,7 @@ function GithubIcon() {
 function HeroAsciinema() {
   return (
     <div
-      class="mx-auto max-w-[44rem] overflow-hidden rounded-lg border"
+      class="w-full overflow-hidden"
       ref={(node) => {
         if (!node) return;
         if (node.dataset.asciinemaMounted === "1") return;
@@ -351,7 +373,6 @@ function HeroAsciinema() {
       }}
       style={{
         backgroundColor: "var(--color-landing-code-bg)",
-        borderColor: "var(--color-page-border)",
       }}
     />
   );

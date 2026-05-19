@@ -1628,24 +1628,6 @@ CREATE SEQUENCE public.personal_access_tokens_id_seq
 ALTER SEQUENCE public.personal_access_tokens_id_seq OWNED BY public.personal_access_tokens.id;
 
 --
--- Name: passkey; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.passkey (
-    id text NOT NULL,
-    name text,
-    "publicKey" text NOT NULL,
-    "userId" text NOT NULL,
-    "credentialID" text NOT NULL,
-    counter bigint DEFAULT 0 NOT NULL,
-    "deviceType" text NOT NULL,
-    "backedUp" boolean DEFAULT false NOT NULL,
-    transports text,
-    "createdAt" timestamp with time zone DEFAULT now() NOT NULL,
-    aaguid text
-);
-
---
 -- Name: rate_limits; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2912,13 +2894,6 @@ ALTER TABLE ONLY public.personal_access_tokens
 
 ALTER TABLE ONLY public.personal_access_tokens
     ADD CONSTRAINT personal_access_tokens_token_hash_key UNIQUE (token_hash);
-
---
--- Name: passkey passkey_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.passkey
-    ADD CONSTRAINT passkey_pkey PRIMARY KEY (id);
 
 --
 -- Name: rate_limits rate_limits_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -4386,18 +4361,6 @@ CREATE INDEX personal_access_tokens_token_prefix_idx ON public.personal_access_t
 CREATE INDEX personal_access_tokens_user_id_idx ON public.personal_access_tokens USING btree (user_id);
 
 --
--- Name: passkey_credential_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX passkey_credential_id_idx ON public.passkey USING btree ("credentialID");
-
---
--- Name: passkey_user_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX passkey_user_id_idx ON public.passkey USING btree ("userId");
-
---
 -- Name: rate_limits_expires_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -5195,13 +5158,6 @@ ALTER TABLE ONLY public.runs
 
 ALTER TABLE ONLY public.runs
     ADD CONSTRAINT runs_feed_id_fkey FOREIGN KEY (feed_id) REFERENCES public.feeds(id) ON DELETE SET NULL;
-
---
--- Name: passkey passkey_userId_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.passkey
-    ADD CONSTRAINT "passkey_userId_fkey" FOREIGN KEY ("userId") REFERENCES public."user"(id) ON DELETE CASCADE;
 
 --
 -- Name: runs runs_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -

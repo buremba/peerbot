@@ -4,6 +4,7 @@ import {
   DEFAULT_CONTEXT_NAME,
   LOBU_CONFIG_DIR,
   resolveContext,
+  setActiveOrg,
 } from "./context.js";
 import { refreshTokens } from "./oauth.js";
 
@@ -171,6 +172,7 @@ async function tryLocalInit(contextName?: string): Promise<Credentials | null> {
       device_token?: string;
       session_token?: string;
       user?: { id?: string; email?: string; name?: string };
+      organization?: { id?: string; slug?: string; name?: string };
     };
     // Prefer device_token (PAT scoped with device_worker:run + mcp:*) so
     // `lobu chat` / `lobu apply` / worker poll all pass the scope gate on
@@ -185,6 +187,15 @@ async function tryLocalInit(contextName?: string): Promise<Credentials | null> {
       ...(body.user?.id ? { userId: body.user.id } : {}),
     };
     await saveCredentials(creds, target.name);
+    // Bind the local-init org slug to the context so `lobu apply` /
+    // `lobu chat` / `lobu org current` find it without a manual
+    // `lobu org set <slug>`. The server's bootstrap auto-provisions the
+    // single user's personal org and returns it in the response — that
+    // slug is the source of truth for this loopback install.
+    const orgSlug = body.organization?.slug?.trim();
+    if (orgSlug) {
+      await setActiveOrg(orgSlug, target.name).catch(() => undefined);
+    }
     return creds;
   } catch {
     return null;

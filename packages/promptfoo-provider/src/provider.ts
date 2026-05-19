@@ -60,10 +60,10 @@ interface CollectedResponse {
  * promptfoo custom provider that drives a Lobu agent end-to-end via the
  * gateway's public Agent API:
  *
- *   POST   {gateway}/api/v1/agents                  → create session
- *   POST   {gateway}/api/v1/agents/<id>/messages    → send user message
- *   GET    {gateway}/api/v1/agents/<id>/events      → SSE stream of output
- *   DELETE {gateway}/api/v1/agents/<id>             → cleanup
+ *   POST   {gateway}/lobu/api/v1/agents                  → create session
+ *   POST   {gateway}/lobu/api/v1/agents/<id>/messages    → send user message
+ *   GET    {gateway}/lobu/api/v1/agents/<id>/events      → SSE stream of output
+ *   DELETE {gateway}/lobu/api/v1/agents/<id>             → cleanup
  *
  * One fresh thread per `callApi` invocation by default so promptfoo's repeat /
  * scenario semantics see a clean slate. Tool-call traces are not yet captured

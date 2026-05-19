@@ -16,6 +16,8 @@ This PR (`feat/promptfoo-evals`) ships the `@lobu/promptfoo-provider` workspace 
    - File: `Makefile` (the `build-packages` target's `for pkg in ...` list)
    - Fix: add `promptfoo-provider` to the list so `dist/` is produced in CI / production images.
 
+   Same for the root `package.json` `build:packages` script — it's what `scripts/publish-packages.mjs` calls before publishing, so missing it here means the package's `dist/` isn't built before npm publish.
+
 ## Should-fix (unblocks the demo use-cases this PR was originally for)
 
 4. **Gateway SSE protocol needs a `tool_use` event type.**
@@ -32,7 +34,7 @@ This PR (`feat/promptfoo-evals`) ships the `@lobu/promptfoo-provider` workspace 
 - The branch deletes `packages/cli/src/eval/` (the in-house YAML runner) and the `lobu eval` command. This is intentional and replaces the runner with `@lobu/promptfoo-provider` + plain `promptfoo` invocation.
 - One example project (`examples/personal-finance`) is migrated as proof-of-concept (2 simple evals in `promptfooconfig.yaml`); 4 multi-turn YAMLs remain dormant pending either a provider extension or a flattening port (see that project's `evals/README.md`).
 - No other example projects are migrated yet — they had no eval YAMLs to begin with.
-- The provider implementation is in `packages/promptfoo-provider/src/provider.ts`; it speaks the gateway's Agent API (`POST /api/v1/agents` → `/messages` → SSE `/events` → `DELETE`).
+- The provider implementation is in `packages/promptfoo-provider/src/provider.ts`; it speaks the gateway's Agent API (`POST /lobu/api/v1/agents` → `/messages` → SSE `/events` → `DELETE`).
 - Provider is loaded via promptfoo's `package:` protocol: `id: 'package:@lobu/promptfoo-provider:LobuProvider'`.
 
 ## Verification once the must-fixes land

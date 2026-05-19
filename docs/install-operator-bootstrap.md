@@ -60,6 +60,46 @@ can extend it without grep'ing for the predicate.
 | Second device | Browser-native WebAuthn cross-device verification (caBLE / hybrid) — already wired via `@better-auth/passkey` | No |
 | Multi-tenant install (team org) | Standard `/sign-up` flow; install_operator coexists silently with humans | No |
 
+## Chrome extension via Mac bridge (macOS)
+
+The Chrome extension story on macOS is already solved by existing
+infrastructure — no new auth surface needed in this PR. The Mac app
+installs itself as a Chrome native-messaging host (`ai.owletto.bridge`)
+at first launch into every Chromium-family browser's
+`NativeMessagingHosts/` directory (see
+`packages/owletto/apps/mac/Lobu/ChromeBridgeHost.swift`). The flow:
+
+1. Extension calls `chrome.runtime.connectNative("ai.owletto.bridge")`
+   with `{op: "pair", platform: "chrome-extension"}`.
+2. Chrome spawns the Mac app as a short-lived stdio child, which routes
+   to `NativeMessagingLoop.run()`.
+3. Mac app loads its stored Keychain credentials, calls
+   `POST /api/me/devices/mint-child-token` on the gateway, gets a child
+   token (separate `personal_access_tokens` row, distinct `worker_id`,
+   scoped to the extension).
+4. Returns to extension over stdout; extension persists in
+   `chrome.storage.local`.
+
+After install-operator lands, the Mac app's stored credential is the
+install_operator's PAT (minted via `/api/local-init` after a paste-once
+or `.env`-read sign-in). The extension inherits a child of that PAT
+through the existing bridge with zero new code.
+
+Reference: `packages/server/src/index.ts:781` (the `mint-child-token`
+route), `packages/server/src/worker-api.ts:184,2247` (implementation +
+child-token semantics).
+
+## Cross-platform extension fallback (Linux / Windows / Mac-app-not-installed)
+
+Without the Mac bridge (Linux, Windows, or a macOS user who never
+installs the menubar app), the Chrome extension's options page shows the
+same paste-once UX as a fresh Mac webview install: user pastes the
+install secret (`ENCRYPTION_KEY`) once, the extension signs in via
+`/api/auth/sign-in/email`, receives a PAT, stores in
+`chrome.storage.local`. Future: a Linux tray / Windows tray app with the
+same `pair` op as `ChromeBridgeHost` would extend the inheritance flow
+to those platforms.
+
 ## Out of scope
 
 The following machinery from PR #917 is **deliberately not in this design**.

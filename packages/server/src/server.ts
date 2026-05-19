@@ -41,7 +41,7 @@ import {
 import { startStaleRunReaper } from './scheduled/check-stalled-executions';
 import { bootTaskScheduler } from './scheduled/jobs';
 import * as Sentry from '@sentry/node';
-import { assertExternalDepsResolvable } from '../../connector-worker/src/runtime-deps';
+import { assertExternalDepsResolvable } from '@lobu/connector-worker/compile';
 import { isSentryReported, markSentryReported } from './sentry';
 import { getEnvFromProcess } from './utils/env';
 import logger from './utils/logger';

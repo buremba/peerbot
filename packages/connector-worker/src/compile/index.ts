@@ -28,7 +28,7 @@ import { join, resolve } from 'node:path';
 import { build, type Plugin } from 'esbuild';
 import { EXTERNAL_RUNTIME_DEPS } from '../runtime-deps.js';
 
-export { EXTERNAL_RUNTIME_DEPS } from '../runtime-deps.js';
+export { assertExternalDepsResolvable, EXTERNAL_RUNTIME_DEPS } from '../runtime-deps.js';
 
 // Strict regex for connector_key: lowercase letters/digits, optional dots
 // for namespacing, underscores for word separators. Defense-in-depth even

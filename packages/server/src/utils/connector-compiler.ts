@@ -5,7 +5,7 @@
  * and metadata extraction (finds ConnectorRuntime subclass with sync()+execute()).
  */
 
-import { EXTERNAL_RUNTIME_DEPS } from '../../../connector-worker/src/runtime-deps';
+import { EXTERNAL_RUNTIME_DEPS } from '@lobu/connector-worker/compile';
 import { type CompileResult, compileSource, extractMetadata } from './compiler-core';
 
 export interface ConnectorMetadata {

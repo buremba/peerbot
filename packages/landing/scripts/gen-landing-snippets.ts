@@ -73,12 +73,7 @@ function githubUrlFor(useCase: string, relativePath: string): string {
 
 const TOML_AGENT_KEEP_KEYS = new Set(["name"]);
 const TOML_PROVIDER_KEEP_KEYS = new Set(["id", "model", "key"]);
-const TOML_MEMORY_KEEP_KEYS = new Set([
-  "enabled",
-  "org",
-  "models",
-  "data",
-]);
+const TOML_MEMORY_KEEP_KEYS = new Set(["enabled", "org", "models", "data"]);
 
 function trimAgentToml(raw: string): string {
   const lines = raw.split("\n");
@@ -353,7 +348,13 @@ function compressWatcher(yamlLines: string[]): string[] {
       const [, key, value] = kv;
       // Block scalar prompt
       if (key === "prompt") {
-        if (value === "|" || value === ">" || value === "" || value === "|-" || value === ">-") {
+        if (
+          value === "|" ||
+          value === ">" ||
+          value === "" ||
+          value === "|-" ||
+          value === ">-"
+        ) {
           // Collect first non-blank child line.
           let k = cursor + 1;
           while (k < yamlLines.length) {
@@ -400,7 +401,11 @@ function compressWatcher(yamlLines: string[]): string[] {
           }
           const subInd = sub.length - sub.trimStart().length;
           if (subInd <= childIndent) break;
-          if (!captured && subInd === schemaInd && sub.trimStart().startsWith("required:")) {
+          if (
+            !captured &&
+            subInd === schemaInd &&
+            sub.trimStart().startsWith("required:")
+          ) {
             const sct = sub.trimStart();
             const inline = sct.slice("required:".length).trim();
             if (inline.startsWith("[") && inline.endsWith("]")) {
@@ -509,7 +514,12 @@ function snippetFrom(
   };
 }
 
-function warnOverBudget(useCase: string, name: string, lines: number, budget: number) {
+function warnOverBudget(
+  useCase: string,
+  name: string,
+  lines: number,
+  budget: number
+) {
   if (lines > budget) {
     console.warn(
       `gen-landing-snippets: ${useCase}/${name} is ${lines} lines — landing budget is ≤ ${budget}.`
@@ -531,32 +541,61 @@ function buildForUseCase(useCase: string): UseCaseSnippets {
     "toml",
     trimAgentToml
   );
-  warnOverBudget(useCase, "lobu.toml", agentToml.code.split("\n").length, BUDGETS.agentToml);
+  warnOverBudget(
+    useCase,
+    "lobu.toml",
+    agentToml.code.split("\n").length,
+    BUDGETS.agentToml
+  );
 
   const memorySchemaYaml = snippetFrom(
     useCase,
     schemaPath,
     "models/schema.yaml",
     "yaml",
-    (raw) => collapseBlanks(compressEntities(extractYamlListItems(raw, "entities", 1))).join("\n")
+    (raw) =>
+      collapseBlanks(
+        compressEntities(extractYamlListItems(raw, "entities", 1))
+      ).join("\n")
   );
-  warnOverBudget(useCase, "memorySchemaYaml", memorySchemaYaml.code.split("\n").length, BUDGETS.memorySchemaYaml);
+  warnOverBudget(
+    useCase,
+    "memorySchemaYaml",
+    memorySchemaYaml.code.split("\n").length,
+    BUDGETS.memorySchemaYaml
+  );
 
   const watcherYaml = snippetFrom(
     useCase,
     schemaPath,
     "models/schema.yaml",
     "yaml",
-    (raw) => collapseBlanks(compressWatcher(extractYamlListItems(raw, "watchers", 1))).join("\n")
+    (raw) =>
+      collapseBlanks(
+        compressWatcher(extractYamlListItems(raw, "watchers", 1))
+      ).join("\n")
   );
-  warnOverBudget(useCase, "watcherYaml", watcherYaml.code.split("\n").length, BUDGETS.watcherYaml);
+  warnOverBudget(
+    useCase,
+    "watcherYaml",
+    watcherYaml.code.split("\n").length,
+    BUDGETS.watcherYaml
+  );
 
-  const reactionPath = firstFile(resolve(root, "models/reactions"), ".reaction.ts");
+  const reactionPath = firstFile(
+    resolve(root, "models/reactions"),
+    ".reaction.ts"
+  );
   let reactionTs: Snippet | undefined;
   if (reactionPath) {
     const rel = `models/reactions/${reactionPath.split("/").pop()}`;
     reactionTs = snippetFrom(useCase, reactionPath, rel, "typescript");
-    warnOverBudget(useCase, rel, reactionTs.code.split("\n").length, BUDGETS.reactionTs);
+    warnOverBudget(
+      useCase,
+      rel,
+      reactionTs.code.split("\n").length,
+      BUDGETS.reactionTs
+    );
   }
 
   const connectorPath = firstFile(resolve(root, "connectors"), ".connector.ts");
@@ -564,7 +603,12 @@ function buildForUseCase(useCase: string): UseCaseSnippets {
   if (connectorPath) {
     const rel = `connectors/${connectorPath.split("/").pop()}`;
     connectorTs = snippetFrom(useCase, connectorPath, rel, "typescript");
-    warnOverBudget(useCase, rel, connectorTs.code.split("\n").length, BUDGETS.connectorTs);
+    warnOverBudget(
+      useCase,
+      rel,
+      connectorTs.code.split("\n").length,
+      BUDGETS.connectorTs
+    );
   }
 
   return { agentToml, memorySchemaYaml, watcherYaml, reactionTs, connectorTs };

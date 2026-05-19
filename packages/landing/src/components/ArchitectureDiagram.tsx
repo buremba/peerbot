@@ -86,10 +86,7 @@ function PlatformList() {
 function LobuContents() {
   return (
     <>
-      <div
-        class="mb-3 text-[13px]"
-        style={{ color: "var(--color-page-text)" }}
-      >
+      <div class="mb-3 text-[13px]" style={{ color: "var(--color-page-text)" }}>
         cli · mcp · api · sdk
       </div>
       <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11.5px]">

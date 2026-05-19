@@ -428,11 +428,7 @@ export function CodeBlock({
         <span>{lines.length} lines</span>
         <span class="flex items-center gap-3">
           {footnote}
-          <a
-            href={snippet.githubUrl}
-            rel="noopener noreferrer"
-            target="_blank"
-          >
+          <a href={snippet.githubUrl} rel="noopener noreferrer" target="_blank">
             see on github →
           </a>
         </span>

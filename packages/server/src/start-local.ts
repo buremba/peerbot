@@ -168,7 +168,7 @@ async function main() {
   const { bootTaskScheduler } = await import('./scheduled/jobs');
 
   await initWorkspaceProvider();
-  await initLobuGateway();
+  const lobuApp = await initLobuGateway();
 
   const env = getEnvFromProcess();
   const taskScheduler = await bootTaskScheduler(getLobuCoreServices(), env);
@@ -202,6 +202,14 @@ async function main() {
     Object.assign(c.env, env);
     return next();
   });
+  // Mount the embedded Lobu gateway under /lobu (mirrors server.ts:199-202).
+  // Without this, the public Agent API (`/lobu/api/v1/agents/*`) and bundled
+  // docs are 404 in PGlite mode — only the org-scoped REST app at `/` works.
+  // This was the missing piece behind PR #637, which only fixed the Postgres
+  // entrypoint.
+  if (lobuApp) {
+    wrapper.route('/lobu', lobuApp);
+  }
   wrapper.route('/', mainApp);
 
   const honoListener = getRequestListener(wrapper.fetch);

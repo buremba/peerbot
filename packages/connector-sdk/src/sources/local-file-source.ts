@@ -168,8 +168,12 @@ export class LocalFileSource implements FileSystemSource {
       // Also persist a per-ref copy so diffSinceRef can look up prior refs.
       await writePerRefManifest(this.#paths.root, manifest);
       // Keep the per-ref cache bounded — `refs/` accumulates a new dir per
-      // distinct content state if the source is rewritten.
-      await pruneOldRefDirs(this.#paths.root, MAX_REF_DIRS);
+      // distinct content state if the source is rewritten. Always preserve
+      // the just-returned dir (`refDir`), including the cache-hit branch
+      // where its mtime is older than newer entries — pruning it would
+      // ENOENT the Snapshot we just handed back. Mirrors the
+      // `protectedRefDir` argument tarball-file-source.ts already uses.
+      await pruneOldRefDirs(this.#paths.root, MAX_REF_DIRS, refDir);
 
       return new DirectorySnapshot(refDir, ref);
     });
@@ -374,11 +378,20 @@ async function collectFilesFromLive(
 
 /**
  * Keep at most `keep` per-ref directories under `${root}/refs/`. Sorted by
- * mtime descending; the oldest are rm-rf'd. Per-ref dirs are locked
- * read-only (0500) after install, so `rm -rf` would EACCES on them;
- * unlock before remove. Snapshots already handed out keep working as
- * long as their backing dir wasn't pruned — `keep=3` accommodates a
- * fresh fetch plus two in-flight overlapping syncs.
+ * mtime descending; the oldest are rm-rf'd. `protectedRefDir` is always
+ * preserved regardless of mtime — the cache-hit branch in fetch() returns
+ * an existing dir whose mtime may be older than newer entries, and the
+ * Snapshot we just handed back is reading from it. Pre-this-guard, the
+ * mtime sort happily pruned exactly the dir the caller was about to read,
+ * leaving the Snapshot pointing at an ENOENT. Matches the
+ * `protectedRefDir` parameter tarball-file-source.ts already uses
+ * (lines 137 + 228-273).
+ *
+ * Per-ref dirs are locked read-only (0500) after install, so `rm -rf`
+ * would EACCES on them; unlock before remove. Snapshots already handed
+ * out keep working as long as their backing dir wasn't pruned —
+ * `keep=3` accommodates a fresh fetch plus two in-flight overlapping
+ * syncs.
  *
  * Skips `.staging.*` legacy dirs (staging now lives outside the cache
  * root entirely; the check is kept to clean up any leftover from older
@@ -386,7 +399,11 @@ async function collectFilesFromLive(
  * directories, and are kept indefinitely so historical diffs work even
  * after the data dir is gone.
  */
-async function pruneOldRefDirs(root: string, keep: number): Promise<void> {
+async function pruneOldRefDirs(
+  root: string,
+  keep: number,
+  protectedRefDir: string,
+): Promise<void> {
   const refsRoot = join(root, 'refs');
   let entries: import('node:fs').Dirent[];
   try {
@@ -395,21 +412,39 @@ async function pruneOldRefDirs(root: string, keep: number): Promise<void> {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw err;
   }
-  const candidates: Array<{ name: string; abs: string; mtimeMs: number }> = [];
+  const candidates: Array<{
+    name: string;
+    abs: string;
+    mtimeMs: number;
+    protected: boolean;
+  }> = [];
   for (const ent of entries) {
     if (!ent.isDirectory()) continue;
     if (ent.name.startsWith('.staging.')) continue;
     const abs = join(refsRoot, ent.name);
     try {
       const s = await stat(abs);
-      candidates.push({ name: ent.name, abs, mtimeMs: s.mtimeMs });
+      candidates.push({
+        name: ent.name,
+        abs,
+        mtimeMs: s.mtimeMs,
+        protected: abs === protectedRefDir,
+      });
     } catch {
       // Skip — concurrent prune from another process is fine.
     }
   }
   if (candidates.length <= keep) return;
-  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  for (const c of candidates.slice(keep)) {
+  const protectedDirs = candidates.filter((c) => c.protected);
+  const others = candidates
+    .filter((c) => !c.protected)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const keepers = new Set([
+    ...protectedDirs.map((c) => c.name),
+    ...others.slice(0, Math.max(0, keep - protectedDirs.length)).map((c) => c.name),
+  ]);
+  for (const c of candidates) {
+    if (keepers.has(c.name)) continue;
     // Unlock the read-only tree first; rm -rf would EACCES on dirs in
     // mode 0500.
     await unlockTree(c.abs).catch(() => undefined);

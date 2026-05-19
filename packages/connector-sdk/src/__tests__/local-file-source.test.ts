@@ -511,3 +511,62 @@ describe('LocalFileSource hash-vs-bytes seal under staging-window attack (codex 
   });
 });
 
+describe('LocalFileSource cache-hit prune protection (codex round 3 #4)', () => {
+  let fixtureDir: string;
+  let workspaceDir: string;
+  let originalWorkspaceDir: string | undefined;
+
+  beforeEach(async () => {
+    fixtureDir = await mkdtemp(join(tmpdir(), 'lobu-localfs-hitprune-'));
+    workspaceDir = await mkdtemp(join(tmpdir(), 'lobu-localfs-hitprune-ws-'));
+    originalWorkspaceDir = process.env.WORKSPACE_DIR;
+    process.env.WORKSPACE_DIR = workspaceDir;
+  });
+
+  afterEach(async () => {
+    if (originalWorkspaceDir === undefined) delete process.env.WORKSPACE_DIR;
+    else process.env.WORKSPACE_DIR = originalWorkspaceDir;
+    await forceRm(fixtureDir);
+    await forceRm(workspaceDir);
+  });
+
+  test('cache-hit on the oldest ref protects it from being pruned out from under the Snapshot', async () => {
+    const { writeFile: wf, utimes } = await import('node:fs/promises');
+    const { createHash } = await import('node:crypto');
+    const uri = pathToFileURL(`${fixtureDir}/`).toString();
+    const source = new LocalFileSource(uri);
+
+    // 1) Fetch ref v0 — this is the dir we'll later re-hit. Force its mtime
+    //    to the deep past so any mtime-sort sees it as the oldest.
+    await wf(join(fixtureDir, 'a.txt'), 'v0');
+    const snapV0 = await source.fetch();
+
+    const hash = createHash('sha256').update(uri).digest('hex').slice(0, 32);
+    const refsDir = join(workspaceDir, '.lobu-cache', 'sources', hash, 'refs');
+    const v0Dir = join(refsDir, snapV0.ref);
+
+    const ancient = new Date(2000, 0, 1);
+    await utimes(v0Dir, ancient, ancient).catch(() => undefined);
+
+    // 2) Produce three NEWER refs so we cross MAX_REF_DIRS=3 on the next
+    //    cache-hit fetch. Each gets a normal "now" mtime.
+    for (let i = 1; i <= 3; i++) {
+      await wf(join(fixtureDir, 'a.txt'), `v${i}`);
+      await source.fetch();
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    // 3) Restore source content to v0 and fetch again. This is the
+    //    cache-hit branch: `refs/<v0>` already exists, fetch() skips the
+    //    install and reuses the existing dir. Pre-fix, the prune step
+    //    sorted by mtime, saw v0 as oldest, and rm'd it — leaving the
+    //    just-returned Snapshot pointing at an ENOENT dir. Post-fix,
+    //    `protectedRefDir` keeps v0 even though its mtime is ancient.
+    await wf(join(fixtureDir, 'a.txt'), 'v0');
+    const snapHit = await source.fetch();
+    expect(snapHit.ref).toBe(snapV0.ref);
+
+    // The Snapshot must still be readable — its backing dir survived prune.
+    expect(await snapHit.readText('a.txt')).toBe('v0');
+  });
+});

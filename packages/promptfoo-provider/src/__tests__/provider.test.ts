@@ -26,7 +26,10 @@ function createFetchStub(events: string[]) {
     }
     if (url.includes("/messages")) {
       return new Response(
-        JSON.stringify({ messageId: "msg-1", traceparent: "00-traceabcdef-span0-01" }),
+        JSON.stringify({
+          messageId: "msg-1",
+          traceparent: "00-traceabcdef-span0-01",
+        }),
         { status: 200, headers: { "content-type": "application/json" } }
       );
     }
@@ -58,7 +61,10 @@ describe("LobuProvider tool_use SSE handling", () => {
   test("populates metadata.toolCalls and metadata.retrievedContext from search_memory tool_use events", async () => {
     const events = [
       sseEvent("connected", { agentId: "agent-x" }),
-      sseEvent("output", { content: "Looking at your records...", messageId: "msg-1" }),
+      sseEvent("output", {
+        content: "Looking at your records...",
+        messageId: "msg-1",
+      }),
       sseEvent("tool_use", {
         toolCallId: "tc-1",
         name: "search_memory",
@@ -73,7 +79,10 @@ describe("LobuProvider tool_use SSE handling", () => {
         },
         messageId: "msg-1",
       }),
-      sseEvent("output", { content: " Acme pays £1,200 monthly.", messageId: "msg-1" }),
+      sseEvent("output", {
+        content: " Acme pays £1,200 monthly.",
+        messageId: "msg-1",
+      }),
       sseEvent("complete", {
         messageId: "msg-1",
         usage: { input_tokens: 10, output_tokens: 8 },
@@ -86,7 +95,9 @@ describe("LobuProvider tool_use SSE handling", () => {
     });
     const result = await provider.callApi("when is rent due?");
 
-    expect(result.output).toBe("Looking at your records... Acme pays £1,200 monthly.");
+    expect(result.output).toBe(
+      "Looking at your records... Acme pays £1,200 monthly."
+    );
     expect(result.metadata.toolCalls).toBeDefined();
     expect(result.metadata.toolCalls).toHaveLength(1);
     expect(result.metadata.toolCalls![0]!.name).toBe("search_memory");
@@ -106,7 +117,10 @@ describe("LobuProvider tool_use SSE handling", () => {
         toolCallId: "tc-other",
         name: "search_memory",
         input: { query: "stale" },
-        result_summary: { event_ids: [1], snippets: [{ id: 1, text: "stale" }] },
+        result_summary: {
+          event_ids: [1],
+          snippets: [{ id: 1, text: "stale" }],
+        },
         messageId: "different-message",
       }),
       sseEvent("output", { content: "hi", messageId: "msg-1" }),

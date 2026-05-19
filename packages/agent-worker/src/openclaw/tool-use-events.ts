@@ -31,7 +31,10 @@ export interface ToolUseResultSummary {
   error?: string;
 }
 
-const SEARCH_MEMORY_TOOL_NAMES = new Set(["search_memory", "lobu_search_memory"]);
+const SEARCH_MEMORY_TOOL_NAMES = new Set([
+  "search_memory",
+  "lobu_search_memory",
+]);
 
 /**
  * Build the SSE payload for a `tool_execution_end` pi-agent event.

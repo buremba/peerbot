@@ -197,6 +197,31 @@ export interface SkillConfig {
   modelPreference?: string;
   /** Thinking level budget for this skill */
   thinkingLevel?: ThinkingLevel;
+  /**
+   * Guardrails declared by the skill.
+   *
+   * Skills may only declare `pre-tool` guardrails — the asymmetry is
+   * deliberate. `input` (user message → worker) and `output` (worker text →
+   * user) are agent-wide concerns: a skill can't decide for the operator
+   * which messages should reach which agent or which words an agent may
+   * speak. `pre-tool` is scoped to specific tool invocations, which is what
+   * a skill knows about — it can reasonably say "before this tool runs,
+   * apply this judge".
+   *
+   * Each entry is either:
+   *   - a built-in by name: `{ builtin: "secret-scan" }`
+   *   - an inline LLM judge with policy text: `{ judge: "Never delete prod data." }`
+   * The optional `tools` array narrows the guardrail to specific tool names
+   * (matched against `toolName` in {@link PreToolGuardrailContext}); when
+   * absent, the guardrail runs on every pre-tool stage.
+   */
+  guardrails?: {
+    "pre-tool"?: Array<{
+      tools?: string[];
+      builtin?: string;
+      judge?: string;
+    }>;
+  };
 }
 
 /**

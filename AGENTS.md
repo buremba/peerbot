@@ -49,8 +49,52 @@ All chat platforms (Telegram, Slack, Discord, WhatsApp, Teams) run through Chat 
 #### Guardrails
 - Primitive lives in `packages/core/src/guardrails/`: `Guardrail<stage>`, `GuardrailRegistry`, `runGuardrails()`. Stages: `input` (user message → worker), `output` (worker text → user), `pre-tool` (tool call authorization).
 - Each guardrail's `run(ctx)` returns `{ tripped, reason?, metadata? }`. The runner races all enabled guardrails at a stage; the first trip short-circuits (later results are discarded) and a thrown guardrail is logged and treated as a pass.
-- Enable per-agent in `lobu.toml`: `[agents.<id>] guardrails = ["secret-scan", "prompt-injection"]`. Names must match a guardrail registered in the gateway's `GuardrailRegistry` at startup.
-- Built-in: `createNoopGuardrail(stage, name?)` for tests and as a template. Real guardrails (prompt-injection classifier, secret/PII scanner) live in downstream packages that call `registry.register(...)` during gateway boot.
+- Built-in: `createNoopGuardrail(stage, name?)` for tests and as a template. Real built-ins ship from `packages/server/src/gateway/guardrails/builtins.ts` — currently `pii-scan` (regex sweep for emails / US phones / 13–19 digit card-shaped runs across input, output, and serialized pre-tool args). Plugin-provided guardrails (prompt-injection classifier, secret scanner, …) live in downstream packages that call `registry.register(...)` during gateway boot.
+
+##### Configuration
+
+Three places guardrails can be turned on for an agent — all merged by `resolveAgentGuardrails()` in `packages/server/src/gateway/guardrails/aggregator.ts`:
+
+1. **Agent built-in list** (all stages):
+   ```toml
+   [agents.<id>]
+   guardrails = ["pii-scan", "prompt-injection"]
+   ```
+2. **Agent inline judges** — ad-hoc LLM-judge guardrails, no registry lookup:
+   ```toml
+   [[agents.<id>.guardrails_inline]]
+   stage = "output"
+   judge = "Never mention competitors."
+
+   [[agents.<id>.guardrails_inline]]
+   stage = "pre-tool"
+   tools = ["github.delete_repo"]
+   judge = "Only allow when the issue ref matches the active sprint."
+   ```
+   Each materializes into a guardrail named `inline:<stage>:<hash8>` (sha256 of the policy text). `tools` narrows pre-tool to a list of tool names; omitted = runs on every tool call.
+3. **Skill-declared guardrails** — **`pre-tool` only**. Skills don't own `input` / `output`: a skill can't decide for the operator which messages reach which agent or which words the agent may speak. `pre-tool` is scoped to specific tool invocations, which is what a skill knows about. In `SkillConfig.guardrails`:
+   ```ts
+   guardrails: {
+     "pre-tool": [
+       { builtin: "pii-scan" },
+       { tools: ["fs.write"], judge: "Reject writes outside the workspace." },
+     ],
+   }
+   ```
+   Skill inline judges are named `skill:<skillName>:inline:pre-tool:<hash8>`.
+
+##### Operator exclude list
+
+```toml
+[agents.<id>]
+guardrails_disabled = ["pii-scan", "skill:secret-lookup:inline:pre-tool:1a2b3c4d"]
+```
+
+Names match the resolved `Guardrail.name` — including the synthesized inline names. Applied last, after the merge. Use this to turn off a guardrail a skill auto-attaches without un-installing the skill.
+
+##### LLM judge engine
+
+`createJudgeGuardrail(stage, policy, options?)` from `packages/server/src/gateway/guardrails/judge-factory.ts` wraps `TextJudge` (extracted from the egress judge — same Haiku client, 5-min verdict cache keyed by `(policyHash, textHash)`, circuit breaker 5 failures → 30s cooldown, fail closed). Requires `ANTHROPIC_API_KEY` at the gateway. Reuses the egress judge's primitives so behavior is identical: cache, breaker, timeout, fail-closed posture.
 
 #### Network
 - Gateway runs a Node HTTP proxy on `127.0.0.1:8118`; worker subprocesses get `HTTP_PROXY=http://localhost:8118` for all outbound (curl/wget/npm/git). The proxy enforces domain allowlist/blocklist + LLM egress judge.

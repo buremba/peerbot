@@ -1,4 +1,8 @@
-import { normalizeEmbeddings, validateEmbeddingDimensions } from './embedding-utils.js';
+import {
+  normalizeEmbeddings,
+  scrubSecrets,
+  validateEmbeddingDimensions,
+} from './embedding-utils.js';
 
 interface OpenAIEmbeddingResponse {
   data: Array<{ embedding: number[]; index: number }>;
@@ -29,22 +33,6 @@ export class OpenAIEmbeddingsTimeoutError extends Error {
     this.name = 'OpenAIEmbeddingsTimeoutError';
     this.timeoutMs = timeoutMs;
   }
-}
-
-/**
- * Strip anything that looks like an API key / bearer token from an upstream
- * error body before it leaves the process. Some "OpenAI-compatible" endpoints
- * echo the Authorization header in error payloads.
- */
-function sanitizeUpstreamError(text: string, apiKey: string): string {
-  let cleaned = text;
-  if (apiKey) {
-    cleaned = cleaned.split(apiKey).join('[redacted]');
-  }
-  cleaned = cleaned
-    .replace(/\b(sk|sk-proj|rk|pk|api[_-]?key)[-_][A-Za-z0-9_-]{12,}/gi, '[redacted]')
-    .replace(/\bbearer\s+[A-Za-z0-9._-]+/gi, 'bearer [redacted]');
-  return cleaned.slice(0, 300);
 }
 
 export async function generateOpenAIEmbeddings(config: {
@@ -97,7 +85,7 @@ export async function generateOpenAIEmbeddings(config: {
     }
     throw new OpenAIEmbeddingsHTTPError(
       response.status,
-      `OpenAI embeddings error (${response.status}): ${sanitizeUpstreamError(errorText, config.apiKey)}`
+      `OpenAI embeddings error (${response.status}): ${scrubSecrets(errorText, [config.apiKey]).slice(0, 300)}`
     );
   }
 

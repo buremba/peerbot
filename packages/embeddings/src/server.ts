@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import { validateEmbeddingDimensions } from './embedding-utils.js';
+import { scrubSecrets, validateEmbeddingDimensions } from './embedding-utils.js';
 import { batchGenerateLocalEmbeddings, getLocalModelName } from './embeddings.js';
 import {
   OpenAIEmbeddingsTimeoutError,
@@ -31,19 +31,11 @@ function resolveNumber(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function scrubSecrets(message: string): string {
-  const apiKey = process.env.EMBEDDINGS_API_KEY;
-  const serviceToken = process.env.EMBEDDINGS_SERVICE_TOKEN;
-  let cleaned = message;
-  if (apiKey) {
-    cleaned = cleaned.split(apiKey).join('[redacted]');
-  }
-  if (serviceToken) {
-    cleaned = cleaned.split(serviceToken).join('[redacted]');
-  }
-  return cleaned
-    .replace(/\b(sk|sk-proj|rk|pk|api[_-]?key)[-_][A-Za-z0-9_-]{12,}/gi, '[redacted]')
-    .replace(/\bbearer\s+[A-Za-z0-9._-]+/gi, 'bearer [redacted]');
+function scrubServerSecrets(message: string): string {
+  return scrubSecrets(message, [
+    process.env.EMBEDDINGS_API_KEY ?? '',
+    process.env.EMBEDDINGS_SERVICE_TOKEN ?? '',
+  ]);
 }
 
 function parseTexts(payload: EmbeddingRequest): { texts: string[] } | { error: string } {
@@ -181,7 +173,7 @@ app.post('/api/embeddings', async (c) => {
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : 'Embedding generation failed';
     // Defense-in-depth scrub before logging/returning.
-    const message = scrubSecrets(rawMessage);
+    const message = scrubServerSecrets(rawMessage);
     console.error('[EmbeddingsService] Error:', message);
     if (error instanceof OpenAIEmbeddingsTimeoutError) {
       return c.json({ error: message }, 504);

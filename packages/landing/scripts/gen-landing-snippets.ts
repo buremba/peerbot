@@ -3,25 +3,18 @@
  * Pulls real source files from `examples/<id>/` and emits a JSON manifest the
  * landing page imports at build time.
  *
- * Round 3 constraint: every code block on the landing must fit without an
- * internal scrollbar at a normal viewport. So this script DOESN'T just dump
- * the full file — it extracts a focused slice per snippet:
+ * Round 4 budget — every code block has to fit in the landing's flat
+ * left-column without scrolling. Targets:
  *
- *   - lobu.toml             -> the `[agents.<id>]` table + first
- *                              `[[agents.<id>.providers]]` block + `[memory]`
- *   - models/schema.yaml    -> two slim views of the same file:
- *                              * memorySchemaYaml: first 1-2 entity types,
- *                                with descriptions and x-table-* metadata
- *                                pruned
- *                              * watcherYaml: the first watcher only, with
- *                                long prose prompts collapsed to a single
- *                                literal line
- *   - models/reactions/...  -> the first *.reaction.ts (already small)
- *   - connectors/...        -> the first *.connector.ts (must be small in
- *                              the source — see CONNECTORS_MAX_LINES check)
+ *   lobu.toml   ≤ 10 lines  (one [agents.<id>] table, one provider, [memory])
+ *   memory      ≤ 20 lines  (ONE entity, 2-3 properties, type only)
+ *   watcher     ≤ 15 lines  (slug + agent + trigger + 1-line prompt +
+ *                           extraction_schema.type + required)
+ *   connector   ≤ 28 lines  (handled by the source files themselves)
+ *   reaction    untouched   (real example code)
  *
  * Each snippet records its display path and a GitHub permalink so the
- * `CodeBlock` component can render a "see on github →" footer.
+ * `CodeBlock` component can render a "see on github" footer.
  */
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -43,7 +36,13 @@ const USE_CASES = [
   "market",
 ] as const;
 
-const CONNECTORS_MAX_LINES = 40;
+const BUDGETS = {
+  agentToml: 12,
+  memorySchemaYaml: 22,
+  watcherYaml: 16,
+  connectorTs: 40,
+  reactionTs: 50,
+};
 
 type Language = "toml" | "yaml" | "typescript";
 
@@ -72,54 +71,58 @@ function githubUrlFor(useCase: string, relativePath: string): string {
 /*  TOML extraction                                                           */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Pull the `[agents.<id>]`, first `[[agents.<id>.providers]]`, and `[memory]`
- * tables out of a lobu.toml. Drops the leading docstring comment and any
- * other `[agents.<id>.<sub>]` tables (network rules, guardrails, etc.).
- */
+const TOML_AGENT_KEEP_KEYS = new Set(["name"]);
+const TOML_PROVIDER_KEEP_KEYS = new Set(["id", "model", "key"]);
+const TOML_MEMORY_KEEP_KEYS = new Set([
+  "enabled",
+  "org",
+  "models",
+  "data",
+]);
+
 function trimAgentToml(raw: string): string {
   const lines = raw.split("\n");
   const out: string[] = [];
-  let inSection = false;
-  let inProviders = false;
+  type Mode = "skip" | "agent" | "provider" | "memory";
+  let mode: Mode = "skip";
   let providersSeen = false;
   for (const line of lines) {
     const sectionMatch = /^\s*\[\[?([\w.-]+)\]\]?\s*$/.exec(line);
     if (sectionMatch) {
       const name = sectionMatch[1];
-      // Top-level [agents.<id>] table (e.g. agents.sales)
       const isAgentTop = /^agents\.[\w-]+$/.test(name);
       const isFirstProvider =
         /^agents\.[\w-]+\.providers$/.test(name) && !providersSeen;
       const isMemory = name === "memory";
-      inSection = isAgentTop || isFirstProvider || isMemory;
-      inProviders = isFirstProvider;
-      if (inProviders) providersSeen = true;
-      if (inSection) {
-        if (out.length > 0) out.push("");
-        out.push(line);
+      if (isAgentTop) mode = "agent";
+      else if (isFirstProvider) {
+        mode = "provider";
+        providersSeen = true;
+      } else if (isMemory) mode = "memory";
+      else mode = "skip";
+      if (mode !== "skip") {
+        out.push(line.trimEnd());
       }
       continue;
     }
-    if (inSection) {
-      // Skip the `dir` line in [agents.<id>] (filesystem detail, not load-bearing)
-      // and trailing blank lines inside a section.
-      if (/^\s*dir\s*=/.test(line)) continue;
-      out.push(line);
-    }
+    if (mode === "skip") continue;
+    const kvMatch = /^\s*([A-Za-z_][\w-]*)\s*=/.exec(line);
+    if (!kvMatch) continue;
+    const key = kvMatch[1];
+    const keep =
+      (mode === "agent" && TOML_AGENT_KEEP_KEYS.has(key)) ||
+      (mode === "provider" && TOML_PROVIDER_KEEP_KEYS.has(key)) ||
+      (mode === "memory" && TOML_MEMORY_KEEP_KEYS.has(key));
+    if (keep) out.push(line.trimEnd());
   }
-  // Compact: drop runs of >1 blank line, trim trailing whitespace.
   return collapseBlanks(out).join("\n");
 }
 
 /* -------------------------------------------------------------------------- */
-/*  YAML extraction                                                           */
+/*  YAML helpers                                                              */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Extract a top-level YAML list, returning the leading `<key>:` line plus the
- * first `n` items at indent depth 2 (or whatever the first `- ` indent is).
- */
+/** Extract the first N list items at the top-level `<key>:` of a YAML doc. */
 function extractYamlListItems(
   raw: string,
   topKey: string,
@@ -147,276 +150,319 @@ function extractYamlListItems(
     if (dashMatch) {
       if (baseIndent < 0) baseIndent = dashMatch[1].length;
       if (dashMatch[1].length === baseIndent) {
-        // New item.
         if (current) items.push(current);
         current = [line];
         continue;
       }
     }
     if (current) {
-      // Continuation of current item (deeper indent or comment line).
-      // Stop if we drop below baseIndent at a non-dash level.
       const indent = line.match(/^\s*/)?.[0].length ?? 0;
       if (line.trim() === "" || indent > baseIndent) {
         current.push(line);
       } else {
-        // Belongs to a sibling top-level key — stop.
         break;
       }
     }
   }
   if (current) items.push(current);
   if (!header) return [];
-  const slice = items.slice(0, itemCount).flat();
-  return [header, ...slice];
+  return [header, ...items.slice(0, itemCount).flat()];
 }
+
+/* -------------------------------------------------------------------------- */
+/*  Memory (entity) compression                                               */
+/* -------------------------------------------------------------------------- */
 
 /**
- * Drop verbose entity-type metadata that doesn't teach anything on the landing:
- * `description:`, `icon:`, `color:`, the `x-table-*` extensions, enum blocks,
- * normalize/namespace blocks. Also caps each entity's `properties:` to the
- * first 4 keys so very wide schemas (e.g. market.Company) stay on screen.
+ * Strict entity-section shrinker. Keeps:
+ *   - the `entities:` header
+ *   - the first entity's `- slug:` and `name:`
+ *   - the entity's `metadata_schema.type:`
+ *   - `properties:` with the first 3 keys, each rendered as a single line
+ *     (`<key>: { type: <type> }`) regardless of the source's expanded form
+ *
+ * Everything else (description, icon, color, enum, x-*, nested objects,
+ * extra entities) is dropped.
  */
-function pruneEntityMetadata(yamlLines: string[]): string[] {
-  return capProperties(stripNoiseLines(yamlLines), 4);
-}
-
-function stripNoiseLines(yamlLines: string[]): string[] {
+function compressEntities(yamlLines: string[]): string[] {
+  if (yamlLines.length === 0) return [];
   const out: string[] = [];
   let i = 0;
-  while (i < yamlLines.length) {
-    const line = yamlLines[i];
-    const trimmed = line.trimStart();
-    if (
-      trimmed.startsWith("description:") ||
-      trimmed.startsWith("icon:") ||
-      trimmed.startsWith("color:") ||
-      /^x-/.test(trimmed) ||
-      trimmed.startsWith("namespace:") ||
-      trimmed.startsWith("normalize:")
-    ) {
-      i++;
-      continue;
-    }
-    // Drop an `enum:` block (header + nested `- value` items).
-    const enumMatch = /^(\s*)enum\s*:\s*$/.exec(line);
-    if (enumMatch) {
-      const baseIndent = enumMatch[1].length;
-      let j = i + 1;
-      while (j < yamlLines.length) {
-        const sub = yamlLines[j];
-        if (sub.trim() === "") {
-          j++;
-          continue;
-        }
-        const subInd = sub.length - sub.trimStart().length;
-        if (subInd <= baseIndent) break;
-        j++;
-      }
-      i = j;
-      continue;
-    }
-    out.push(line);
+  // Header
+  if (/^entities:/.test(yamlLines[0])) {
+    out.push("entities:");
     i++;
   }
+  // First item
+  while (i < yamlLines.length && yamlLines[i].trim() === "") i++;
+  if (i >= yamlLines.length) return out;
+
+  const firstLine = yamlLines[i];
+  const dashMatch = /^(\s*)-\s/.exec(firstLine);
+  if (!dashMatch) return out;
+  const baseIndent = dashMatch[1].length;
+  const childIndent = baseIndent + 2;
+  const pad = " ".repeat(baseIndent);
+  const padChild = " ".repeat(childIndent);
+
+  // Walk the first item collecting slug, name, properties.
+  let slug = "";
+  let name = "";
+  const props: Array<{ key: string; type: string }> = [];
+
+  let cursor = i;
+  // Read first-line `- slug: foo`
+  const slugInline = /^\s*-\s*slug:\s*(.+)$/.exec(firstLine);
+  if (slugInline) slug = slugInline[1].trim();
+  cursor++;
+
+  // childIndent is where direct children of the `- slug: …` mapping live
+  // (e.g. `name:`, `metadata_schema:` — aligned with `slug` after the dash).
+  // The source uses YAML's 2-space-per-indent style, so children are at
+  // baseIndent + 2. metadata_schema's body lives at +4, and the property
+  // *names* under metadata_schema.properties live at +6.
+  let inProperties = false;
+  let currentPropName: string | null = null;
+  let currentPropType: string | null = null;
+  while (cursor < yamlLines.length) {
+    const ln = yamlLines[cursor];
+    if (ln.trim() === "") {
+      cursor++;
+      continue;
+    }
+    const ind = ln.length - ln.trimStart().length;
+    if (ind <= baseIndent) break;
+    const trimmed = ln.trimStart();
+
+    if (ind === childIndent) {
+      // Direct child of the entity mapping.
+      if (trimmed.startsWith("slug:")) {
+        slug = trimmed.slice("slug:".length).trim();
+      } else if (trimmed.startsWith("name:")) {
+        name = trimmed.slice("name:".length).trim();
+      }
+      inProperties = false;
+      currentPropName = null;
+      currentPropType = null;
+      cursor++;
+      continue;
+    }
+    if (trimmed === "properties:" && ind === childIndent + 2) {
+      inProperties = true;
+      currentPropName = null;
+      currentPropType = null;
+      cursor++;
+      continue;
+    }
+    if (inProperties && ind === childIndent + 4) {
+      const m = /^([A-Za-z_][\w-]*)\s*:/.exec(trimmed);
+      if (m) {
+        if (currentPropName && currentPropType) {
+          props.push({ key: currentPropName, type: currentPropType });
+        }
+        currentPropName = m[1];
+        currentPropType = "string";
+      }
+    } else if (inProperties && currentPropName && trimmed.startsWith("type:")) {
+      currentPropType = trimmed.slice("type:".length).trim();
+    }
+    cursor++;
+  }
+  if (currentPropName && currentPropType) {
+    props.push({ key: currentPropName, type: currentPropType });
+  }
+
+  out.push(`${pad}- slug: ${slug || "entity"}`);
+  if (name) out.push(`${padChild}name: ${name}`);
+  out.push(`${padChild}metadata_schema:`);
+  out.push(`${padChild}  type: object`);
+  out.push(`${padChild}  properties:`);
+  const shownProps = props.slice(0, 3);
+  for (const p of shownProps) {
+    out.push(`${padChild}    ${p.key}: { type: ${p.type} }`);
+  }
+  if (props.length > shownProps.length) {
+    out.push(`${padChild}    # ${props.length - shownProps.length} more…`);
+  }
+
   return out;
 }
 
-function capProperties(yamlLines: string[], maxKeys: number): string[] {
-  const out: string[] = [];
-  let i = 0;
-  while (i < yamlLines.length) {
-    const line = yamlLines[i];
-    const propsMatch = /^(\s*)properties\s*:\s*$/.exec(line);
-    if (!propsMatch) {
-      out.push(line);
-      i++;
-      continue;
-    }
-    const baseIndent = propsMatch[1].length;
-    const propIndent = baseIndent + 2;
-    out.push(line);
-    let j = i + 1;
-    let propsKept = 0;
-    let totalProps = 0;
-    let copying = false;
-    while (j < yamlLines.length) {
-      const sub = yamlLines[j];
-      if (sub.trim() === "") {
-        j++;
-        continue;
-      }
-      const subInd = sub.length - sub.trimStart().length;
-      if (subInd <= baseIndent) break;
-      const isPropKey =
-        subInd === propIndent && /^[A-Za-z_][\w-]*\s*:/.test(sub.trimStart());
-      if (isPropKey) {
-        totalProps++;
-        copying = propsKept < maxKeys;
-        if (copying) propsKept++;
-      }
-      if (copying) out.push(sub);
-      j++;
-    }
-    if (totalProps > propsKept) {
-      out.push(`${" ".repeat(propIndent)}# …${totalProps - propsKept} more`);
-    }
-    i = j;
-  }
-  return out;
-}
+/* -------------------------------------------------------------------------- */
+/*  Watcher compression                                                       */
+/* -------------------------------------------------------------------------- */
+
+const WATCHER_KEEP_TOP_KEYS = new Set(["slug", "agent", "on", "schedule"]);
 
 /**
- * Collapse multi-line block scalars (`prompt: |` / `prompt: >`) and other
- * deeply-nested doc fields down to a single representative line so the
- * watcher block stays compact.
+ * Strict watcher shrinker — output layout:
+ *   watchers:
+ *     - slug: <name>
+ *       agent: <id>
+ *       (on | schedule): <value>
+ *       prompt: "<first non-blank line of the source prompt>"
+ *       extraction_schema:
+ *         type: object
+ *         required: [<top-level required keys>]
  */
 function compressWatcher(yamlLines: string[]): string[] {
+  if (yamlLines.length === 0) return [];
   const out: string[] = [];
-  let i = 0;
-  while (i < yamlLines.length) {
-    const line = yamlLines[i];
-    const trimmed = line.trimStart();
-    const indent = line.length - trimmed.length;
+  if (/^watchers:/.test(yamlLines[0])) {
+    out.push("watchers:");
+  }
+  // First item
+  let i = 1;
+  while (i < yamlLines.length && yamlLines[i].trim() === "") i++;
+  if (i >= yamlLines.length) return out;
 
-    // Detect a block-scalar prompt: `<indent>prompt: |` or `prompt: >`
-    const blockMatch = /^(\s*)([A-Za-z_][\w-]*)\s*:\s*[|>][+-]?\s*$/.exec(line);
-    if (blockMatch && blockMatch[2] === "prompt") {
-      const baseIndent = blockMatch[1].length;
-      // Collect the first non-blank child line as the canonical example.
-      let child = "";
-      let j = i + 1;
-      while (j < yamlLines.length) {
-        const childLine = yamlLines[j];
-        if (childLine.trim() === "") {
-          j++;
-          continue;
-        }
-        const childIndent = childLine.length - childLine.trimStart().length;
-        if (childIndent <= baseIndent) break;
-        child = childLine.trimStart();
-        break;
-      }
-      // Skip past the whole block scalar.
-      while (j < yamlLines.length) {
-        const childLine = yamlLines[j];
-        if (childLine.trim() === "") {
-          j++;
-          continue;
-        }
-        const childIndent = childLine.length - childLine.trimStart().length;
-        if (childIndent <= baseIndent) break;
-        j++;
-      }
-      out.push(`${" ".repeat(indent)}prompt: "${child.replace(/"/g, '\\"')}"`);
-      i = j;
+  const firstLine = yamlLines[i];
+  const dashMatch = /^(\s*)-\s/.exec(firstLine);
+  if (!dashMatch) return out;
+  const baseIndent = dashMatch[1].length;
+  const childIndent = baseIndent + 2;
+  const pad = " ".repeat(baseIndent);
+  const padChild = " ".repeat(childIndent);
+
+  const fields: Record<string, string> = {};
+  let prompt = "";
+  let extractionRequired: string[] = [];
+
+  // Parse inline first line: `- slug: <value>`
+  const slugInline = /^\s*-\s*slug:\s*(.+)$/.exec(firstLine);
+  if (slugInline) fields.slug = slugInline[1].trim();
+
+  let cursor = i + 1;
+  while (cursor < yamlLines.length) {
+    const ln = yamlLines[cursor];
+    if (ln.trim() === "") {
+      cursor++;
       continue;
     }
+    const ind = ln.length - ln.trimStart().length;
+    if (ind <= baseIndent) break;
+    const trimmed = ln.trimStart();
 
-    if (
-      trimmed.startsWith("description:") ||
-      trimmed.startsWith("expected_output_count:") ||
-      trimmed.startsWith("max_runs_per_day:") ||
-      trimmed.startsWith("max_invocations_per_event:") ||
-      trimmed.startsWith("retry_policy:") ||
-      trimmed.startsWith("rate_limit:") ||
-      trimmed.startsWith("notification_priority:") ||
-      trimmed.startsWith("tags:") ||
-      trimmed.startsWith("min_cooldown_seconds:") ||
-      trimmed.startsWith("reaction_script:") ||
-      trimmed.startsWith("name:")
-    ) {
-      i++;
-      continue;
-    }
-
-    // Compact a sprawling extraction_schema: keep the header, the top-level
-    // `type:` + `required:` line(s), and the property *names* only.
-    const extractionMatch = /^(\s*)extraction_schema\s*:\s*$/.exec(line);
-    if (extractionMatch) {
-      const baseIndent = extractionMatch[1].length;
-      const childIndent = baseIndent + 2;
-      out.push(line);
-      let j = i + 1;
-      let typeLine: string | null = null;
-      let requiredLines: string[] = [];
-      const propNames: string[] = [];
-      // Walk the schema body.
-      while (j < yamlLines.length) {
-        const child = yamlLines[j];
-        if (child.trim() === "") {
-          j++;
-          continue;
-        }
-        const ind = child.length - child.trimStart().length;
-        if (ind <= baseIndent) break;
-        const ct = child.trimStart();
-        if (ind === childIndent && ct.startsWith("type:")) {
-          typeLine = child;
-          j++;
-          continue;
-        }
-        if (ind === childIndent && ct.startsWith("required:")) {
-          // Capture the required: line; if it's a block-style list (next
-          // lines start with `- `) collect them.
-          requiredLines.push(child);
-          let k = j + 1;
+    // Top-level child of the watcher (slug, agent, on, schedule, prompt, …)
+    if (ind === childIndent) {
+      const kv = /^([A-Za-z_][\w-]*)\s*:\s*(.*)$/.exec(trimmed);
+      if (!kv) {
+        cursor++;
+        continue;
+      }
+      const [, key, value] = kv;
+      // Block scalar prompt
+      if (key === "prompt") {
+        if (value === "|" || value === ">" || value === "" || value === "|-" || value === ">-") {
+          // Collect first non-blank child line.
+          let k = cursor + 1;
           while (k < yamlLines.length) {
             const sub = yamlLines[k];
-            const subTrim = sub.trimStart();
-            if (subTrim.startsWith("- ")) {
-              requiredLines.push(sub);
+            if (sub.trim() === "") {
               k++;
               continue;
             }
+            const subInd = sub.length - sub.trimStart().length;
+            if (subInd <= childIndent) break;
+            prompt = sub.trimStart();
             break;
           }
-          j = k;
-          continue;
-        }
-        if (ind === childIndent && ct === "properties:") {
-          j++;
-          // Read property names at childIndent + 2.
-          const propIndent = childIndent + 2;
-          while (j < yamlLines.length) {
-            const sub = yamlLines[j];
+          // Skip the rest of the block.
+          while (k < yamlLines.length) {
+            const sub = yamlLines[k];
             if (sub.trim() === "") {
-              j++;
+              k++;
               continue;
             }
             const subInd = sub.length - sub.trimStart().length;
-            if (subInd < propIndent) break;
-            if (subInd === propIndent) {
-              const m = /^([A-Za-z_][\w-]*)\s*:/.exec(sub.trimStart());
-              if (m) propNames.push(m[1]);
-            }
-            j++;
+            if (subInd <= childIndent) break;
+            k++;
           }
+          cursor = k;
           continue;
         }
-        // Unknown child — skip.
-        j++;
+        prompt = value;
+        cursor++;
+        continue;
       }
-      const pad = " ".repeat(childIndent);
-      if (typeLine) out.push(typeLine);
-      if (requiredLines.length > 0) {
-        out.push(...requiredLines);
-      }
-      if (propNames.length > 0) {
-        out.push(`${pad}properties:`);
-        for (const name of propNames.slice(0, 4)) {
-          out.push(`${pad}  ${name}: { type: string }`);
+      // extraction_schema block: harvest the FIRST `required:` we see at the
+      // expected nesting depth (childIndent + 2). Nested `required:` lists
+      // inside object properties don't belong on the landing.
+      if (key === "extraction_schema") {
+        const schemaInd = childIndent + 2;
+        let k = cursor + 1;
+        let captured = false;
+        while (k < yamlLines.length) {
+          const sub = yamlLines[k];
+          if (sub.trim() === "") {
+            k++;
+            continue;
+          }
+          const subInd = sub.length - sub.trimStart().length;
+          if (subInd <= childIndent) break;
+          if (!captured && subInd === schemaInd && sub.trimStart().startsWith("required:")) {
+            const sct = sub.trimStart();
+            const inline = sct.slice("required:".length).trim();
+            if (inline.startsWith("[") && inline.endsWith("]")) {
+              extractionRequired = inline
+                .slice(1, -1)
+                .split(",")
+                .map((s) => s.trim())
+                .filter(Boolean);
+              captured = true;
+              k++;
+              continue;
+            }
+            // Block list form — collect lines at schemaInd + 2 starting with `- `.
+            k++;
+            while (k < yamlLines.length) {
+              const sub2 = yamlLines[k];
+              if (sub2.trim() === "") {
+                k++;
+                continue;
+              }
+              const sub2Ind = sub2.length - sub2.trimStart().length;
+              const sub2Trim = sub2.trimStart();
+              if (sub2Ind === schemaInd + 2 && sub2Trim.startsWith("- ")) {
+                extractionRequired.push(sub2Trim.slice(2).trim());
+                k++;
+                continue;
+              }
+              break;
+            }
+            captured = true;
+            continue;
+          }
+          k++;
         }
-        if (propNames.length > 4) {
-          out.push(`${pad}  # …${propNames.length - 4} more`);
-        }
+        cursor = k;
+        continue;
       }
-      i = j;
-      continue;
+      if (WATCHER_KEEP_TOP_KEYS.has(key)) {
+        fields[key] = value;
+      }
     }
+    cursor++;
+  }
 
-    out.push(line);
-    i++;
+  out.push(`${pad}- slug: ${fields.slug ?? "watcher"}`);
+  if (fields.agent) out.push(`${padChild}agent: ${fields.agent}`);
+  if (fields.on) out.push(`${padChild}on: ${fields.on}`);
+  if (fields.schedule) out.push(`${padChild}schedule: ${fields.schedule}`);
+  if (prompt) {
+    const compact = prompt.replace(/^["'`]?|["'`]?$/g, "").replace(/\s+/g, " ");
+    out.push(`${padChild}prompt: "${compact}"`);
+  }
+  out.push(`${padChild}extraction_schema:`);
+  out.push(`${padChild}  type: object`);
+  if (extractionRequired.length > 0) {
+    out.push(
+      `${padChild}  required: [${extractionRequired.slice(0, 5).join(", ")}${
+        extractionRequired.length > 5
+          ? `, …${extractionRequired.length - 5}`
+          : ""
+      }]`
+    );
   }
   return out;
 }
@@ -434,7 +480,6 @@ function collapseBlanks(lines: string[]): string[] {
     out.push(line);
     blank = isBlank;
   }
-  // Trim leading/trailing blanks.
   while (out.length > 0 && out[0].trim() === "") out.shift();
   while (out.length > 0 && out[out.length - 1].trim() === "") out.pop();
   return out;
@@ -464,6 +509,14 @@ function snippetFrom(
   };
 }
 
+function warnOverBudget(useCase: string, name: string, lines: number, budget: number) {
+  if (lines > budget) {
+    console.warn(
+      `gen-landing-snippets: ${useCase}/${name} is ${lines} lines — landing budget is ≤ ${budget}.`
+    );
+  }
+}
+
 function buildForUseCase(useCase: string): UseCaseSnippets {
   const root = resolve(examplesDir, useCase);
   const tomlPath = resolve(root, "lobu.toml");
@@ -478,37 +531,32 @@ function buildForUseCase(useCase: string): UseCaseSnippets {
     "toml",
     trimAgentToml
   );
+  warnOverBudget(useCase, "lobu.toml", agentToml.code.split("\n").length, BUDGETS.agentToml);
 
   const memorySchemaYaml = snippetFrom(
     useCase,
     schemaPath,
     "models/schema.yaml",
     "yaml",
-    (raw) =>
-      collapseBlanks(
-        pruneEntityMetadata(extractYamlListItems(raw, "entities", 2))
-      ).join("\n")
+    (raw) => collapseBlanks(compressEntities(extractYamlListItems(raw, "entities", 1))).join("\n")
   );
+  warnOverBudget(useCase, "memorySchemaYaml", memorySchemaYaml.code.split("\n").length, BUDGETS.memorySchemaYaml);
 
   const watcherYaml = snippetFrom(
     useCase,
     schemaPath,
     "models/schema.yaml",
     "yaml",
-    (raw) =>
-      collapseBlanks(
-        compressWatcher(extractYamlListItems(raw, "watchers", 1))
-      ).join("\n")
+    (raw) => collapseBlanks(compressWatcher(extractYamlListItems(raw, "watchers", 1))).join("\n")
   );
+  warnOverBudget(useCase, "watcherYaml", watcherYaml.code.split("\n").length, BUDGETS.watcherYaml);
 
-  const reactionPath = firstFile(
-    resolve(root, "models/reactions"),
-    ".reaction.ts"
-  );
+  const reactionPath = firstFile(resolve(root, "models/reactions"), ".reaction.ts");
   let reactionTs: Snippet | undefined;
   if (reactionPath) {
     const rel = `models/reactions/${reactionPath.split("/").pop()}`;
     reactionTs = snippetFrom(useCase, reactionPath, rel, "typescript");
+    warnOverBudget(useCase, rel, reactionTs.code.split("\n").length, BUDGETS.reactionTs);
   }
 
   const connectorPath = firstFile(resolve(root, "connectors"), ".connector.ts");
@@ -516,12 +564,7 @@ function buildForUseCase(useCase: string): UseCaseSnippets {
   if (connectorPath) {
     const rel = `connectors/${connectorPath.split("/").pop()}`;
     connectorTs = snippetFrom(useCase, connectorPath, rel, "typescript");
-    const lineCount = connectorTs.code.split("\n").length;
-    if (lineCount > CONNECTORS_MAX_LINES) {
-      console.warn(
-        `gen-landing-snippets: ${useCase}/${rel} is ${lineCount} lines — landing wants ≤ ${CONNECTORS_MAX_LINES} so the code block fits without scrolling.`
-      );
-    }
+    warnOverBudget(useCase, rel, connectorTs.code.split("\n").length, BUDGETS.connectorTs);
   }
 
   return { agentToml, memorySchemaYaml, watcherYaml, reactionTs, connectorTs };

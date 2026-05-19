@@ -1,55 +1,55 @@
 {
-  "name": "@lobu/openclaw-plugin",
-  "version": "7.2.0",
-  "description": "Lobu memory plugin for OpenClaw",
-  "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
-  },
-  "files": [
-    "dist",
-    "openclaw.plugin.json"
-  ],
-  "scripts": {
-    "build": "tsc && cp ./openclaw.plugin.json ./dist/openclaw.plugin.json",
-    "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist",
-    "test:e2e": "vitest run --config test/e2e/vitest.config.ts",
-    "test:unit": "vitest run --config test/unit/vitest.config.ts"
-  },
-  "openclaw": {
-    "extensions": [
-      "./dist/index.js"
-    ],
-    "compat": {
-      "pluginApi": ">=2026.4.0"
-    },
-    "build": {
-      "openclawVersion": "2026.5.7"
-    }
-  },
-  "dependencies": {
-    "@lobu/core": "workspace:*"
-  },
-  "devDependencies": {
-    "@types/node": "^20.10.0",
-    "postgres": "^3.4.7",
-    "typescript": "^5.3.3",
-    "vitest": "^2.1.8"
-  },
-  "license": "BUSL-1.1",
-  "publishConfig": {
-    "access": "public"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/lobu-ai/lobu.git",
-    "directory": "packages/openclaw-plugin"
-  }
+	"name": "@lobu/openclaw-plugin",
+	"version": "7.2.0",
+	"description": "Lobu memory plugin for OpenClaw",
+	"type": "module",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"exports": {
+		".": {
+			"import": "./dist/index.js",
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist",
+		"openclaw.plugin.json"
+	],
+	"scripts": {
+		"build": "tsc && cp ./openclaw.plugin.json ./dist/openclaw.plugin.json",
+		"typecheck": "tsc --noEmit",
+		"clean": "rm -rf dist",
+		"test:e2e": "vitest run --config test/e2e/vitest.config.ts",
+		"test:unit": "vitest run --config test/unit/vitest.config.ts"
+	},
+	"openclaw": {
+		"extensions": [
+			"./dist/index.js"
+		],
+		"compat": {
+			"pluginApi": ">=2026.4.0"
+		},
+		"build": {
+			"openclawVersion": "2026.5.7"
+		}
+	},
+	"dependencies": {
+		"@lobu/core": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/node": "^20.10.0",
+		"postgres": "^3.4.7",
+		"typescript": "^5.3.3",
+		"vitest": "^2.1.8"
+	},
+	"license": "BUSL-1.1",
+	"publishConfig": {
+		"access": "public"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/lobu-ai/lobu.git",
+		"directory": "packages/openclaw-plugin"
+	}
 }

@@ -11,14 +11,17 @@
  * to the package only.
  */
 export function scrubSecrets(
-  text: string,
-  knownSecrets: readonly string[] = []
+	text: string,
+	knownSecrets: readonly string[] = [],
 ): string {
-  let cleaned = text;
-  for (const secret of knownSecrets) {
-    if (secret) cleaned = cleaned.split(secret).join('[redacted]');
-  }
-  return cleaned
-    .replace(/\b(sk|sk-proj|rk|pk|api[_-]?key)[-_][A-Za-z0-9_-]{12,}/gi, '[redacted]')
-    .replace(/\bbearer\s+[A-Za-z0-9._-]+/gi, 'bearer [redacted]');
+	let cleaned = text;
+	for (const secret of knownSecrets) {
+		if (secret) cleaned = cleaned.split(secret).join("[redacted]");
+	}
+	return cleaned
+		.replace(
+			/\b(sk|sk-proj|rk|pk|api[_-]?key)[-_][A-Za-z0-9_-]{12,}/gi,
+			"[redacted]",
+		)
+		.replace(/\bbearer\s+[A-Za-z0-9._-]+/gi, "bearer [redacted]");
 }

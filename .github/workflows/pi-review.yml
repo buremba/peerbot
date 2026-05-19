@@ -193,26 +193,13 @@ jobs:
       - name: Install pi
         run: bun add -g @mariozechner/pi-coding-agent
 
-      - name: Install pi extensions from settings.json
-        # The bundle ships settings.json but NOT extensions/ (would exceed
-        # GitHub's 64 KB secret cap). Iterate .packages[] and re-install
-        # each source. Don't fail the run if a single install fails — some
-        # are non-essential for review (e.g. pi-mermaid) and the reviewer
-        # still works without them.
-        run: |
-          if [ ! -f ~/.pi/agent/settings.json ]; then
-            echo "WARN: settings.json missing from bundle — skipping extension install"
-            exit 0
-          fi
-          jq -r '.packages[] | (if type=="string" then . else .source end)' \
-            ~/.pi/agent/settings.json \
-            | while read -r src; do
-                [ -z "$src" ] && continue
-                echo "Installing $src"
-                pi install "$src" || echo "WARN: failed to install $src (continuing)"
-              done
-          echo "--- pi list ---"
-          pi list || true
+      # Note: we deliberately do NOT install pi extensions in CI. The reviewer
+      # runs with `--no-extensions` and uses pi's built-in Bash / Read / Edit
+      # tools — that's enough for diff review + e2e exploration. The bundled
+      # settings.json still references extensions (pi-subagents, files-widget,
+      # pi-mermaid, …) which would need transitive peers like
+      # @earendil-works/pi-tui that aren't shipped — installing them only to
+      # then ignore them wastes CI time and creates fragile load paths.
 
       - name: Run pi review
         id: review

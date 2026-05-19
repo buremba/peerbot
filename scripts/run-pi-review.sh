@@ -40,6 +40,7 @@ RAW="$(
   PR_NUMBER="$PR" pi \
     --mode json \
     --no-session \
+    --no-extensions \
     -p "@${PROMPT_FILE}" "PR_NUMBER=$PR — review this PR. Emit only the JSON verdict."
 )"
 

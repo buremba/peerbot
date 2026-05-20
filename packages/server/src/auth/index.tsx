@@ -219,12 +219,10 @@ export async function createAuth(env: Env, request?: Request) {
 
 		user: {
 			additionalFields: {
-				// Declare `principal_kind` so Better Auth's adapter accepts
-				// it in where clauses (e.g. the single-user-mode count in
-				// the user.create.before hook below). The column itself is
-				// added by db/migrations/20260519152824_principal_kind.sql
-				// with NOT NULL DEFAULT 'human', so input=false lets the DB
-				// default kick in on signup. See #947.
+				// Declared so the where-clause in the single-user guard
+				// below resolves through BA's adapter. DB column has
+				// `NOT NULL DEFAULT 'human'` (db/migrations/...principal_kind.sql),
+				// so `input: false` lets the default fill in on signup.
 				principalKind: {
 					type: "string",
 					fieldName: "principal_kind",
@@ -611,58 +609,38 @@ export async function createAuth(env: Env, request?: Request) {
 			user: {
 				create: {
 					before: async (user, ctx) => {
-						// Single-user-mode chokepoint. The /api/auth/* middleware
+						// Single-user-mode chokepoint. The /api/auth/* URL filter
 						// in index.ts blocks /api/auth/sign-up/*, but Better Auth
-						// also creates users on magic-link verify and on OAuth
+						// also creates users on magic-link verify and OAuth
 						// callbacks — paths the URL guard never sees. This hook
-						// runs immediately before every user INSERT regardless of
-						// how the request arrived; if LOBU_SINGLE_USER is on and
-						// the deployment already has a user, refuse to create a
-						// second one. Closes the fork-via-magic-link / fork-via-
-						// social-login backdoor codex flagged.
+						// fires before every user INSERT, so it's the one place
+						// that closes the fork-via-magic-link / fork-via-OAuth
+						// backdoor.
+						//
+						// The count goes through ctx.internalAdapter so it joins
+						// the in-flight transaction connection. Calling getDb()
+						// here would request a second pool connection while
+						// sign-up's runWithTransaction holds the only one —
+						// deadlock in PGlite mode (pool max=1). See #947.
+						// Missing ctx (called outside the BA endpoint pipeline)
+						// throws via `ctx!` → BA returns FAILED_TO_CREATE_USER,
+						// which is the fail-closed posture we want.
 						if (env.LOBU_SINGLE_USER === "1") {
-							// Route the count through Better Auth's internalAdapter
-							// so it joins the reserved transaction connection
-							// (sign-up runs inside runWithTransaction). Calling
-							// getDb() here would ask for a second pool connection
-							// while the signup endpoint already holds the only
-							// one — deadlock in PGlite mode (pool max=1). See #947.
-							//
-							// Fail closed if BA invokes this hook without an
-							// auth context: the count we'd otherwise default to
-							// `0` is the gate that prevents a second user from
-							// being created.
-							if (!ctx) {
-								throw new APIError("INTERNAL_SERVER_ERROR", {
-									code: "SIGN_UP_NO_AUTH_CONTEXT",
-									message:
-										"Sign-up rejected: missing auth context for single-user guard.",
-								});
-							}
 							// Exclude the synthetic install_operator row
-							// (auto-provisioned at boot in ensureInstallOperator)
-							// AND the legacy bootstrap-user row (pre-PR #902)
-							// from the count, so the first human signup can still
-							// proceed against upgraded installs that still carry a
-							// bootstrap-user row. See
-							// docs/install-operator-bootstrap.md.
+							// (auto-provisioned by ensureInstallOperator) AND the
+							// legacy bootstrap-user row (pre-PR #902) so the
+							// first human signup still proceeds on upgraded
+							// installs. See docs/install-operator-bootstrap.md.
 							const existing =
-								await ctx.context.internalAdapter.countTotalUsers([
+								await ctx!.context.internalAdapter.countTotalUsers([
 									{
 										field: "principalKind",
 										operator: "ne",
 										value: "install_operator",
 									},
-									{
-										field: "id",
-										operator: "ne",
-										value: "bootstrap-user",
-									},
+									{ field: "id", operator: "ne", value: "bootstrap-user" },
 								]);
 							if (existing > 0) {
-								// APIError so Better Auth turns this into a structured
-								// JSON response with the right status code, not an
-								// unhandled 500 with an empty body.
 								throw new APIError("FORBIDDEN", {
 									code: "SIGN_UP_DISABLED_IN_SINGLE_USER_MODE",
 									message:
@@ -755,18 +733,15 @@ export async function createAuth(env: Env, request?: Request) {
 						// password-hash row at boot. See
 						// docs/install-operator-bootstrap.md.
 						if (account.providerId !== "credential") {
-							// Route the lookup through Better Auth's internalAdapter
-							// so it joins the reserved transaction connection. A
-							// raw getDb() query would deadlock in PGlite mode (pool
-							// max=1) during new-OAuth-user registration, where
-							// createOAuthUser wraps user + account creation in
-							// runWithTransaction. The /link-social and
-							// callback-link paths are not transactional today but
-							// stay safe under this same code. See #947.
+							// Route through ctx.internalAdapter so the lookup
+							// shares the in-flight transaction connection on the
+							// one path that wraps in runWithTransaction —
+							// createOAuthUser, called from OAuth callback for new
+							// users. Avoids the PGlite pool-max=1 deadlock; see
+							// #947. `/link-social` and existing-user callback
+							// links aren't transactional today but stay safe.
 							const linkedUser =
-								await ctx?.context.internalAdapter.findUserById(
-									account.userId,
-								);
+								await ctx!.context.internalAdapter.findUserById(account.userId);
 							const principalKind = (
 								linkedUser as { principalKind?: string } | null
 							)?.principalKind;

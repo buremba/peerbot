@@ -503,6 +503,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         AND cv.version = r.connector_version
       LEFT JOIN connector_definitions cd ON cd.key = r.connector_key
         AND cd.organization_id = r.organization_id
+        AND cd.status = 'active'
       LEFT JOIN auth_profiles ap ON ap.id = r.auth_profile_id
       LEFT JOIN watchers w ON w.id = r.watcher_id
       WHERE r.id = ${runId}

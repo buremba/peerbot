@@ -377,11 +377,13 @@ async function installConnectorDefinitions(
     const def = row.desired;
     if (!def) continue;
     let result: Awaited<ReturnType<typeof client.installConnector>>;
-    if (def.sourceCode !== undefined) {
-      // Compile project connectors on the CLI: only here is the project's
-      // node_modules available, so esbuild can bundle the connector's declared
-      // npm deps. The server can't (it only receives the artifact). Native deps
-      // ride `runtime.nix.packages` and are provisioned at run time.
+    if (def.sourcePath) {
+      // Local `*.connector.ts`: compile on the CLI, where the project's
+      // node_modules is available, so esbuild can bundle the connector's
+      // declared npm deps (the server only receives the artifact). Native deps
+      // ride `runtime.nix.packages` and are provisioned at run time. Compile
+      // `sourcePath` (the actual `.ts`), not `sourceFile` (an error-message
+      // label that may point at a `type: connector` YAML doc).
       //
       // Lazy-imported (cached by the loader) so the heavy connector-compile
       // graph (esbuild + connector-worker + SDK) stays out of apply-cmd's
@@ -392,12 +394,17 @@ async function installConnectorDefinitions(
       const { compileConnectorFromFile } = await import(
         "../connector-loader.js"
       );
-      ensureProjectDepsInstalled(def.sourceFile, printText);
-      const compiledCode = await compileConnectorFromFile(def.sourceFile);
+      ensureProjectDepsInstalled(def.sourcePath, printText);
+      const compiledCode = await compileConnectorFromFile(def.sourcePath);
       result = await client.installConnector({
         sourceCode: compiledCode,
         compiled: true,
       });
+    } else if (def.sourceCode !== undefined) {
+      // `source_url` connector: source was fetched into `sourceCode` and has no
+      // local project/node_modules to bundle against — upload it raw and let
+      // the gateway compile it (the pre-existing path).
+      result = await client.installConnector({ sourceCode: def.sourceCode });
     } else {
       result = await client.installConnector({ sourceUrl: def.sourceUrl });
     }

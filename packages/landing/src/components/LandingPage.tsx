@@ -362,74 +362,74 @@ function HeroAsciinema() {
       <p class="sr-only">
         Asciicast: <code>claude</code> opens, the user pastes a setup prompt,
         Claude runs <code>lobu init support-bot</code>, writes{" "}
-        <code>models/schema.yaml</code> with customer and ticket entities,
-        then runs <code>lobu validate</code> which prints{" "}
+        <code>models/schema.yaml</code> with customer and ticket entities, then
+        runs <code>lobu validate</code> which prints{" "}
         <code>lobu.toml is valid</code>.
       </p>
       <div
         class="w-full"
         ref={(node) => {
-        type CleanupNode = HTMLDivElement & {
-          __lobuHeroCleanup?: () => void;
-        };
-        if (!node) return;
-        const typedNode = node as CleanupNode;
-        if (typedNode.dataset.asciinemaMounted === "1") return;
-        const player =
-          typeof window !== "undefined"
-            ? (
-                window as unknown as {
-                  AsciinemaPlayer?: {
-                    create: (
-                      src: string,
-                      el: Element,
-                      opts?: Record<string, unknown>
-                    ) =>
-                      | {
-                          play?: () => void;
-                          addEventListener?: (
-                            event: string,
-                            cb: () => void
-                          ) => void;
-                          removeEventListener?: (
-                            event: string,
-                            cb: () => void
-                          ) => void;
-                        }
-                      | undefined;
-                  };
-                }
-              ).AsciinemaPlayer
-            : null;
-        if (!player) return;
-        const instance = player.create(CAST_SRC, node, {
-          autoPlay: false,
-          loop: true,
-          idleTimeLimit: 2,
-          fit: "width",
-          terminalFontSize: "13px",
-          theme: "asciinema",
-        });
-        typedNode.dataset.asciinemaMounted = "1";
+          type CleanupNode = HTMLDivElement & {
+            __lobuHeroCleanup?: () => void;
+          };
+          if (!node) return;
+          const typedNode = node as CleanupNode;
+          if (typedNode.dataset.asciinemaMounted === "1") return;
+          const player =
+            typeof window !== "undefined"
+              ? (
+                  window as unknown as {
+                    AsciinemaPlayer?: {
+                      create: (
+                        src: string,
+                        el: Element,
+                        opts?: Record<string, unknown>
+                      ) =>
+                        | {
+                            play?: () => void;
+                            addEventListener?: (
+                              event: string,
+                              cb: () => void
+                            ) => void;
+                            removeEventListener?: (
+                              event: string,
+                              cb: () => void
+                            ) => void;
+                          }
+                        | undefined;
+                    };
+                  }
+                ).AsciinemaPlayer
+              : null;
+          if (!player) return;
+          const instance = player.create(CAST_SRC, node, {
+            autoPlay: false,
+            loop: true,
+            idleTimeLimit: 2,
+            fit: "width",
+            terminalFontSize: "13px",
+            theme: "asciinema",
+          });
+          typedNode.dataset.asciinemaMounted = "1";
 
-        const timer = window.setTimeout(() => {
-          try {
-            instance?.play?.();
-          } catch {
-            // asciinema-player's play() is a no-op pre-init; ignore.
-          }
-        }, 5000);
+          const timer = window.setTimeout(() => {
+            try {
+              instance?.play?.();
+            } catch {
+              // asciinema-player's play() is a no-op pre-init; ignore.
+            }
+          }, 5000);
 
-        const onManualPlay = () => {
-          window.clearTimeout(timer);
-        };
-        instance?.addEventListener?.("play", onManualPlay);
+          const onManualPlay = () => {
+            window.clearTimeout(timer);
+          };
+          instance?.addEventListener?.("play", onManualPlay);
 
-        typedNode.__lobuHeroCleanup = () => {
-          window.clearTimeout(timer);
-          instance?.removeEventListener?.("play", onManualPlay);
-        };
-      }}
+          typedNode.__lobuHeroCleanup = () => {
+            window.clearTimeout(timer);
+            instance?.removeEventListener?.("play", onManualPlay);
+          };
+        }}
       />
     </div>
   );

@@ -368,10 +368,12 @@ function StreamBox({ label }: { label: string }) {
  */
 function EntitiesTable() {
   const HEADERS = ["name", "type", "updated"] as const;
+  // Placeholder rows — labelled generically so the widget reads as a
+  // schema preview, not a snapshot of a real customer's data.
   const ROWS: ReadonlyArray<readonly [string, string, string]> = [
-    ["acme corp", "company", "2d"],
-    ["jane doe", "person", "5h"],
-    ["q3 review", "meeting", "1h"],
+    ["Customer A", "company", "2d"],
+    ["Customer B", "person", "5h"],
+    ["Customer C", "meeting", "1h"],
   ];
   return (
     <div

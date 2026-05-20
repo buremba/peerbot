@@ -36,6 +36,41 @@ const SKIP_ON_FRESH_SETUP = new Set<string>();
 
 let sql: postgres.Sql | null = null;
 
+/**
+ * Refuse to run the (destructive) test harness against anything that isn't an
+ * obvious throwaway test database.
+ *
+ * `setupTestDatabase()` runs `DROP SCHEMA public CASCADE`. On 2026-05-20 a
+ * developer ran the integration suite with `DATABASE_URL` pointed at the
+ * production `owletto` database; the test role owns that DB, so the drop
+ * succeeded and wiped 49 orgs / 1.15M events. There was no guard.
+ *
+ * Allow only databases whose name marks them as test/CI (anything containing
+ * `test`, or ending `_ci`) — CI uses `lobu_test` / `lobu_ci`. Anything else
+ * (e.g. `owletto`) is refused unless `LOBU_ALLOW_DESTRUCTIVE_TEST_DB=1` is set
+ * as a deliberate, explicit override.
+ */
+export function assertSafeTestDatabaseUrl(url: string): void {
+  if (process.env.LOBU_ALLOW_DESTRUCTIVE_TEST_DB === '1') return;
+  let dbName: string;
+  try {
+    dbName = new URL(url).pathname.replace(/^\//, '').split('?')[0];
+  } catch {
+    // Unparseable URL — let the postgres client surface the connection error.
+    return;
+  }
+  const looksLikeTestDb = /test/i.test(dbName) || /_ci$/i.test(dbName);
+  if (!looksLikeTestDb) {
+    throw new Error(
+      `Refusing to run the integration test harness against database "${dbName}": ` +
+        `setup runs DROP SCHEMA public CASCADE and would destroy its data. ` +
+        `Point DATABASE_URL at a throwaway test database (name must contain "test", ` +
+        `e.g. postgresql://localhost:5432/lobu_test). If this really is a disposable ` +
+        `database, set LOBU_ALLOW_DESTRUCTIVE_TEST_DB=1 to override.`
+    );
+  }
+}
+
 function pgBool(value: unknown): boolean {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'string') {
@@ -59,6 +94,7 @@ export function getTestDb(): postgres.Sql {
           'Example: DATABASE_URL=postgresql://localhost:5432/lobu_test'
       );
     }
+    assertSafeTestDatabaseUrl(url);
     sql = postgres(url, {
       max: 5,
       idle_timeout: 20,

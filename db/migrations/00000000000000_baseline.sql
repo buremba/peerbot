@@ -5461,8 +5461,16 @@ ALTER TABLE ONLY public.watchers
 
 -- migrate:down
 
--- Reverting the baseline drops everything in public. Safe for fresh dev
--- DBs; never run against prod (use CNPG PITR — see header).
-DROP SCHEMA IF EXISTS public CASCADE;
-CREATE SCHEMA public;
-COMMENT ON SCHEMA public IS 'standard public schema';
+-- The squashed baseline is the ORIGIN of the schema; it is intentionally
+-- irreversible. The previous down here was `DROP SCHEMA public CASCADE`,
+-- which on 2026-05-20 wiped production when a `dbmate down`/rollback was run
+-- against $PROD_DATABASE_URL. A baseline down must never be destructive — any
+-- environment a rollback can reach (incl. prod) would lose everything.
+--
+-- To reset a *dev* database, drop the database itself (an explicit, dev-only
+-- action), not the schema:  `dbmate drop`  (or `dropdb && createdb`).
+DO $$
+BEGIN
+  RAISE EXCEPTION 'baseline 00000000000000 is irreversible: refusing to roll back the schema origin. To reset a dev database use `dbmate drop` (drops the whole database), never `dbmate down`.';
+END
+$$;

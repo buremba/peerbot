@@ -27,9 +27,16 @@ export interface OperationsNamespace {
   execute(input: OperationsExecuteInput): Promise<unknown>;
   listRuns(input?: {
     connection_id?: number;
+    connection_ids?: number[];
+    feed_ids?: number[];
+    device_worker_id?: string;
     operation_key?: string;
     status?: string;
     approval_status?: string;
+    /** Omit to list every run type (sync, action, auth, …). */
+    run_types?: string[];
+    before_id?: number;
+    before_created_at?: string;
     limit?: number;
     offset?: number;
   }): Promise<unknown>;

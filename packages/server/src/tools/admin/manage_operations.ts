@@ -7,7 +7,7 @@
  */
 
 import { type Static, Type } from '@sinclair/typebox';
-import { getDb } from '../../db/client';
+import { getDb, pgBigintArray, pgTextArray } from '../../db/client';
 import type { Env } from '../../index';
 import { callTool as callProxyTool } from '../../mcp-proxy/client';
 import { resolveCredentialsByConnectionId } from '../../mcp-proxy/credential-resolver';
@@ -62,9 +62,17 @@ const ExecuteAction = Type.Object({
 const ListRunsAction = Type.Object({
   action: Type.Literal('list_runs'),
   connection_id: Type.Optional(Type.Number()),
+  connection_ids: Type.Optional(Type.Array(Type.Number())),
+  feed_ids: Type.Optional(Type.Array(Type.Number())),
+  device_worker_id: Type.Optional(Type.String()),
   operation_key: Type.Optional(Type.String()),
   status: Type.Optional(Type.String()),
   approval_status: Type.Optional(Type.String()),
+  /** Filter by run_type. Omit to list every run type (sync, action, auth, …). */
+  run_types: Type.Optional(Type.Array(Type.String())),
+  /** Keyset cursor: return runs ordered before (before_created_at, before_id). */
+  before_id: Type.Optional(Type.Number()),
+  before_created_at: Type.Optional(Type.String()),
   ...PaginationFields,
 });
 
@@ -125,7 +133,14 @@ type ManageOperationsResult =
       status: 'timeout';
       error_message: string;
     }
-  | { action: 'list_runs'; runs: any[]; total: number; limit: number; offset: number }
+  | {
+      action: 'list_runs';
+      runs: any[];
+      total: number;
+      limit: number;
+      offset: number;
+      has_more: boolean;
+    }
   | { action: 'get_run'; run: any }
   | { action: 'approve'; approved: true; run_id: number; event_id?: number; message: string }
   | { action: 'reject'; rejected: true; run_id: number; event_id?: number };
@@ -790,43 +805,67 @@ async function handleListRuns(
 ): Promise<ManageOperationsResult> {
   const sql = getDb();
   const limit = args.limit ?? 20;
-  const offset = args.offset ?? 0;
+  // Keyset pagination short-circuits offset whenever a cursor is supplied.
+  const hasCursor = args.before_id != null && args.before_created_at != null;
+  const offset = hasCursor ? 0 : (args.offset ?? 0);
 
-  let countQuery = sql`
-    SELECT COUNT(*)::int AS total
-    FROM runs r
-    WHERE r.organization_id = ${ctx.organizationId}
-      AND r.run_type = 'action'
-  `;
-
-  let query = sql`
-    SELECT r.id, r.connection_id, r.connector_key,
-           r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
-           r.approval_status, r.status, r.error_message,
-           r.created_at, r.completed_at
-    FROM runs r
-    WHERE r.organization_id = ${ctx.organizationId}
-      AND r.run_type = 'action'
-  `;
-
-  if (args.connection_id) {
-    countQuery = sql`${countQuery} AND r.connection_id = ${args.connection_id}`;
-    query = sql`${query} AND r.connection_id = ${args.connection_id}`;
+  // Shared WHERE fragment so the count and page queries can't drift apart.
+  let where = sql`r.organization_id = ${ctx.organizationId}`;
+  if (args.run_types && args.run_types.length > 0) {
+    // fetch_types:false means JS arrays aren't auto-serialized — use the
+    // PG array-literal helpers (see db/client.ts).
+    where = sql`${where} AND r.run_type = ANY(${pgTextArray(args.run_types)}::text[])`;
+  }
+  // connection scope: scalar connection_id (REST/SDK), an explicit id list, or
+  // every connection pinned to a device.
+  if (args.connection_id != null) {
+    where = sql`${where} AND r.connection_id = ${args.connection_id}`;
+  }
+  if (args.connection_ids && args.connection_ids.length > 0) {
+    where = sql`${where} AND r.connection_id = ANY(${pgBigintArray(args.connection_ids)}::bigint[])`;
+  }
+  if (args.feed_ids && args.feed_ids.length > 0) {
+    where = sql`${where} AND r.feed_id = ANY(${pgBigintArray(args.feed_ids)}::bigint[])`;
+  }
+  if (args.device_worker_id) {
+    where = sql`${where} AND r.connection_id IN (
+      SELECT id FROM connections
+      WHERE device_worker_id = ${args.device_worker_id}
+        AND organization_id = ${ctx.organizationId}
+        AND deleted_at IS NULL
+    )`;
   }
   if (args.operation_key) {
-    countQuery = sql`${countQuery} AND r.action_key = ${args.operation_key}`;
-    query = sql`${query} AND r.action_key = ${args.operation_key}`;
+    where = sql`${where} AND r.action_key = ${args.operation_key}`;
   }
   if (args.status) {
-    countQuery = sql`${countQuery} AND r.status = ${args.status}`;
-    query = sql`${query} AND r.status = ${args.status}`;
+    where = sql`${where} AND r.status = ${args.status}`;
   }
   if (args.approval_status) {
-    countQuery = sql`${countQuery} AND r.approval_status = ${args.approval_status}`;
-    query = sql`${query} AND r.approval_status = ${args.approval_status}`;
+    where = sql`${where} AND r.approval_status = ${args.approval_status}`;
   }
 
-  query = sql`${query} ORDER BY r.created_at DESC LIMIT ${limit} OFFSET ${offset}`;
+  const countQuery = sql`SELECT COUNT(*)::int AS total FROM runs r WHERE ${where}`;
+
+  let pageWhere = where;
+  if (hasCursor) {
+    pageWhere = sql`${pageWhere} AND (r.created_at, r.id) < (${args.before_created_at}::timestamptz, ${args.before_id})`;
+  }
+  const query = sql`
+    SELECT r.id, r.run_type, r.connection_id, r.feed_id, r.connector_key, r.connector_version,
+           r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
+           r.approval_status, r.status, r.error_message, r.items_collected, r.checkpoint,
+           r.created_at, r.completed_at,
+           f.feed_key, f.display_name AS feed_display_name,
+           c.display_name AS connection_display_name, c.device_worker_id
+    FROM runs r
+    LEFT JOIN feeds f ON f.id = r.feed_id
+    LEFT JOIN connections c ON c.id = r.connection_id
+    WHERE ${pageWhere}
+    ORDER BY r.created_at DESC, r.id DESC
+    LIMIT ${limit} OFFSET ${offset}
+  `;
+
   const [countResult, rows] = await Promise.all([countQuery, query]);
 
   return {
@@ -835,6 +874,7 @@ async function handleListRuns(
     total: Number(countResult[0]?.total ?? 0),
     limit,
     offset,
+    has_more: rows.length === limit,
   };
 }
 

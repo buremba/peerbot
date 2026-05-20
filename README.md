@@ -21,14 +21,16 @@ https://github.com/user-attachments/assets/d72a9286-0325-4b8b-afc0-c1efe9c96f4e
 
 ## Quick Start
 
-Scaffold and run via the CLI. Lobu boots as a single Node process; you bring your own Postgres (pgvector required — managed instance or local via `brew services start postgresql`).
+Scaffold and run via the CLI. Lobu boots as a single Node process with a zero-config embedded Postgres by default (or bring your own — pgvector required — via `DATABASE_URL`).
 
 ```bash
 npx @lobu/cli@latest init my-bot
 cd my-bot
-# edit .env to set DATABASE_URL
-npx @lobu/cli@latest run
+npx @lobu/cli@latest run                      # boots the stack and applies your agent
+npx @lobu/cli@latest chat -c local "hello"    # talk to it
 ```
+
+`lobu run` (embedded) auto-applies your `lobu.toml`, so the scaffolded agent is usable immediately. To use an external Postgres, set `DATABASE_URL` in `.env`; to push later config changes, run `lobu apply`.
 
 ## Agent configuration
 

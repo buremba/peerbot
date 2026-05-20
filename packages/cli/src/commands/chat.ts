@@ -272,6 +272,18 @@ async function createSession(
       );
       process.exit(1);
     }
+    if (createRes.status === 404) {
+      // The server returns an actionable message (e.g. the agent hasn't been
+      // deployed yet — "Run `lobu apply`"). Surface it directly.
+      let message = body;
+      try {
+        message = (JSON.parse(body) as { error?: string }).error ?? body;
+      } catch {
+        // body wasn't JSON — fall back to the raw text
+      }
+      console.error(chalk.red(`\n  ${message}\n`));
+      process.exit(1);
+    }
     console.error(
       chalk.red(`\n  Failed to create session (${createRes.status}): ${body}\n`)
     );

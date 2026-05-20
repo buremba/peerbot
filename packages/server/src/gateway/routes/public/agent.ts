@@ -631,7 +631,25 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     // user cannot open a session against another tenant's agent.
     if (!isEphemeral) {
       const denial = await requireAgentOwnership(c, agentId);
-      if (denial) return denial;
+      if (denial) {
+        // A denial conflates two cases: the agent exists but the caller can't
+        // access it (a genuine 403), or the agent simply hasn't been deployed
+        // yet. A fresh local project hits the latter before its first
+        // `lobu apply` — surface that as an actionable 404 instead of a bare
+        // "Forbidden". Existing-but-unauthorized agents still return 403, so
+        // this leaks nothing about another tenant's agents.
+        const metadata = await ownershipMetadataStore?.getMetadata(agentId);
+        if (!metadata) {
+          return c.json(
+            {
+              success: false,
+              error: `Agent "${agentId}" not found. Run \`lobu apply\` to deploy it.`,
+            },
+            404
+          );
+        }
+        return denial;
+      }
     }
 
     // Stamp the worker token with the agent's owning org so the egress

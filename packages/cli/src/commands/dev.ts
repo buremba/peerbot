@@ -363,7 +363,13 @@ export async function devCommand(
   // click the URL straight from their terminal and land logged in. Also
   // persists the session as the `local` CLI context so `lobu chat -c local`
   // works without a separate `lobu login`.
-  void announceLocalSignIn(gatewayUrl, mode === "embedded");
+  void announceLocalSignIn(gatewayUrl, mode === "embedded").then(() => {
+    // After the `local` context is registered, push the project's lobu.toml
+    // into the embedded DB so the agent the user just scaffolded is usable via
+    // `lobu chat -c local …` with no separate `lobu apply`. Embedded/local
+    // only — never auto-mutate an external (prod) DB from a local file.
+    if (mode === "embedded") return autoApplyLocalProject(cwd);
+  });
 
   // Forward Ctrl+C to the child so it can clean up its own subprocess workers
   // before the parent exits. SIGKILL after a timeout in case it wedges.
@@ -387,6 +393,32 @@ export async function devCommand(
     }
     process.exit(code ?? 0);
   });
+}
+
+/**
+ * After `lobu run` boots an embedded backend, push the project's `lobu.toml`
+ * into the local DB so the agent the user just scaffolded is immediately usable
+ * (`lobu chat -c local …`) without a separate `lobu apply`. Uses the `local`
+ * context that `announceLocalSignIn` just registered.
+ *
+ * Best-effort: a project with nothing to apply, or a transient failure, must
+ * never crash the running server. The apply graph (esbuild + connector-worker
+ * + SDK, pulled in by apply-cmd) is imported lazily so it stays out of
+ * `lobu run`'s module-load path — see the dynamic-import allow-list in
+ * AGENTS.md.
+ */
+async function autoApplyLocalProject(cwd: string): Promise<void> {
+  if (!existsSync(join(cwd, "lobu.toml"))) return;
+  try {
+    const { applyCommand } = await import("./_lib/apply/apply-cmd.js");
+    await applyCommand({ cwd, yes: true });
+  } catch (err) {
+    console.warn(
+      chalk.dim(
+        `  (auto-apply skipped: ${err instanceof Error ? err.message : String(err)})`
+      )
+    );
+  }
 }
 
 /**

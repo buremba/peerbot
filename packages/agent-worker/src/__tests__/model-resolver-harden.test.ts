@@ -244,7 +244,9 @@ describe("DEFAULT_PROVIDER_MODELS completeness", () => {
     "anthropic",
     "openai",
     "openai-codex",
-    "google",
+    // Keyed by the gateway provider slug "gemini" (the providers.json id),
+    // NOT "google" — the gateway never emits "google" as a defaultProvider.
+    "gemini",
     "nvidia",
     "z-ai",
   ];

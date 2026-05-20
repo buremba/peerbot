@@ -37,7 +37,7 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://aistudio.google.com/apikey\" target=\"_blank\" class=\"text-blue-600 hover:underline\">Google AI Studio</a>",
           "apiKeyPlaceholder": "AIza...",
           "sdkCompat": "openai",
-          "defaultModel": "gemini-2.0-flash",
+          "defaultModel": "gemini-2.5-flash",
           "modelsEndpoint": "/v1/models"
         }
       ]

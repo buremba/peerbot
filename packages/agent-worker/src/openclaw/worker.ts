@@ -47,19 +47,13 @@ import {
   OpenClawPromptIntentInstructionProvider,
 } from "./instructions";
 import {
+  buildDynamicOpenAIModel,
   DEFAULT_PROVIDER_BASE_URL_ENV,
   openOrCreateSessionManager,
   PROVIDER_REGISTRY_ALIASES,
   registerDynamicProvider,
   resolveModelRef,
 } from "./model-resolver";
-import { checkSandboxLeak } from "./sandbox-leak";
-import {
-  clearSnapshots,
-  hydrateFromSnapshot,
-  type TerminalStatus,
-  writeSnapshot,
-} from "./transcript-snapshot";
 import {
   loadPlugins,
   runPluginHooks,
@@ -67,14 +61,21 @@ import {
   stopPluginServices,
 } from "./plugin-loader";
 import { OpenClawProgressProcessor } from "./processor";
+import { checkSandboxLeak } from "./sandbox-leak";
 import { getOpenClawSessionContext } from "./session-context";
-import { buildToolUseEventPayload } from "./tool-use-events";
 import {
   buildToolPolicy,
   enforceBashCommandPolicy,
   isToolAllowedByPolicy,
 } from "./tool-policy";
+import { buildToolUseEventPayload } from "./tool-use-events";
 import { createOpenClawTools } from "./tools";
+import {
+  clearSnapshots,
+  hydrateFromSnapshot,
+  type TerminalStatus,
+  writeSnapshot,
+} from "./transcript-snapshot";
 
 const logger = createLogger("worker");
 
@@ -907,18 +908,14 @@ export class OpenClawWorker implements WorkerExecutor {
         logger.info(
           `Creating dynamic model entry for ${rawProvider}/${modelId} (openai-compatible)`
         );
-        baseModel = {
-          id: modelId,
-          name: modelId,
-          api: "openai-completions",
-          provider: registryProvider,
-          baseUrl: providerBaseUrl || "https://api.openai.com/v1",
-          reasoning: false,
-          input: ["text", "image"],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: 128000,
-          maxTokens: 16384,
-        };
+        // Throws if a non-OpenAI provider's base URL is unresolved, rather
+        // than silently routing to OpenAI's public endpoint.
+        baseModel = buildDynamicOpenAIModel({
+          rawProvider,
+          registryProvider,
+          modelId,
+          providerBaseUrl,
+        });
       } else {
         throw new Error(
           `Model "${modelId}" not found for provider "${provider}". Check that the model ID is valid and registered in the model registry.`

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+  buildDynamicOpenAIModel,
   DEFAULT_PROVIDER_BASE_URL_ENV,
   DEFAULT_PROVIDER_MODELS,
   PROVIDER_REGISTRY_ALIASES,
@@ -60,10 +61,10 @@ describe("resolveModelRef", () => {
   });
 
   test("falls back to provider default when no model or AGENT_DEFAULT_MODEL", () => {
-    process.env.AGENT_DEFAULT_PROVIDER = "google";
+    process.env.AGENT_DEFAULT_PROVIDER = "gemini";
     const result = resolveModelRef("");
-    expect(result.provider).toBe("google");
-    expect(result.modelId).toBe(DEFAULT_PROVIDER_MODELS.google);
+    expect(result.provider).toBe("gemini");
+    expect(result.modelId).toBe(DEFAULT_PROVIDER_MODELS.gemini);
   });
 
   test("throws when no model can be determined", () => {
@@ -169,7 +170,74 @@ describe("DEFAULT_PROVIDER_MODELS", () => {
   test("contains expected providers", () => {
     expect(DEFAULT_PROVIDER_MODELS.anthropic).toBeDefined();
     expect(DEFAULT_PROVIDER_MODELS.openai).toBeDefined();
-    expect(DEFAULT_PROVIDER_MODELS.google).toBeDefined();
+    // Keyed by gateway slug "gemini" (the config provider id), not "google".
+    expect(DEFAULT_PROVIDER_MODELS.gemini).toBeDefined();
+  });
+});
+
+describe("buildDynamicOpenAIModel — never silently route to OpenAI", () => {
+  test("third-party provider with a resolved base URL builds an entry", () => {
+    const model = buildDynamicOpenAIModel({
+      rawProvider: "gemini",
+      registryProvider: "openai",
+      modelId: "gemini-2.5-flash",
+      providerBaseUrl: "http://localhost:8118/api/proxy/gemini/a/agent-1",
+    });
+    expect(model.api).toBe("openai-completions");
+    expect(model.id).toBe("gemini-2.5-flash");
+    expect(model.provider).toBe("openai");
+    expect(model.baseUrl).toBe(
+      "http://localhost:8118/api/proxy/gemini/a/agent-1"
+    );
+  });
+
+  test("THROWS for a third-party provider with no resolved base URL", () => {
+    // Regression for the silent-misroute bug: an unresolved proxy base URL
+    // previously fell back to api.openai.com, shipping the request to OpenAI
+    // with an unknown model ID ("400 <model> is not a valid model ID").
+    expect(() =>
+      buildDynamicOpenAIModel({
+        rawProvider: "gemini",
+        registryProvider: "openai",
+        modelId: "gemini-2.5-flash",
+        providerBaseUrl: undefined,
+      })
+    ).toThrow(/Could not resolve a base URL for provider "gemini"/);
+  });
+
+  test("THROWS for nvidia/together/etc with no base URL (generic, all providers)", () => {
+    for (const rawProvider of ["nvidia", "together-ai", "z-ai", "groq"]) {
+      expect(() =>
+        buildDynamicOpenAIModel({
+          rawProvider,
+          registryProvider: "openai",
+          modelId: "some-model",
+          providerBaseUrl: undefined,
+        })
+      ).toThrow(/Refusing to route .* to OpenAI's public endpoint/);
+    }
+  });
+
+  test("real OpenAI MAY default to api.openai.com when base URL is absent", () => {
+    const model = buildDynamicOpenAIModel({
+      rawProvider: "openai",
+      registryProvider: "openai",
+      modelId: "gpt-4.1",
+      providerBaseUrl: undefined,
+    });
+    expect(model.baseUrl).toBe("https://api.openai.com/v1");
+  });
+});
+
+describe("DEFAULT_PROVIDER_BASE_URL_ENV — gateway-slug keying", () => {
+  test("gemini base-URL env is keyed by the 'gemini' slug, not 'google'", () => {
+    // The gateway emits the provider slug "gemini" (config id) as
+    // defaultProvider and keys its proxy mapping on GEMINI_API_BASE_URL.
+    // The worker's fallback map MUST use the same "gemini" key, or
+    // providerBaseUrl resolution misses and the request silently routes to
+    // OpenAI. A dead "google" key would never match.
+    expect(DEFAULT_PROVIDER_BASE_URL_ENV.gemini).toBe("GEMINI_API_BASE_URL");
+    expect(DEFAULT_PROVIDER_BASE_URL_ENV.google).toBeUndefined();
   });
 });
 

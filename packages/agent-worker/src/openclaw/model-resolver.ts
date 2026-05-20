@@ -15,7 +15,10 @@ export const DEFAULT_PROVIDER_BASE_URL_ENV: Record<string, string> = {
   anthropic: "ANTHROPIC_BASE_URL",
   openai: "OPENAI_BASE_URL",
   "openai-codex": "OPENAI_BASE_URL",
-  google: "GEMINI_API_BASE_URL",
+  // Keyed by the gateway provider slug (config id), e.g. "gemini" — NOT
+  // "google". registerDynamicProvider() overlays the live config values at
+  // runtime; these stay as fallbacks for providers not in providers.json.
+  gemini: "GEMINI_API_BASE_URL",
   nvidia: "NVIDIA_API_BASE_URL",
   "z-ai": "Z_AI_API_BASE_URL",
 };
@@ -25,7 +28,9 @@ export const DEFAULT_PROVIDER_MODELS: Record<string, string> = {
   anthropic: "claude-sonnet-4-20250514",
   openai: "gpt-4.1",
   "openai-codex": "gpt-5.1-codex-max",
-  google: "gemini-2.5-pro",
+  // Keyed by gateway slug ("gemini", not "google"). Overridden at runtime by
+  // the config-driven defaultModel via registerDynamicProvider().
+  gemini: "gemini-2.5-flash",
   nvidia: "nvidia/moonshotai/kimi-k2.5",
   "z-ai": "glm-4.7",
 };
@@ -73,6 +78,70 @@ export function registerDynamicProvider(
   logger.info(
     `Registered dynamic provider: ${id} (baseUrlEnv=${config.baseUrlEnvVar}, sdkCompat=${config.sdkCompat || "none"})`
   );
+}
+
+/** Shape of a dynamically-built openai-completions model entry. */
+export interface DynamicOpenAIModel {
+  id: string;
+  name: string;
+  api: "openai-completions";
+  provider: string;
+  baseUrl: string;
+  reasoning: boolean;
+  input: string[];
+  cost: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+  };
+  contextWindow: number;
+  maxTokens: number;
+}
+
+/**
+ * Build a dynamic openai-completions model entry for a config-driven provider
+ * whose model isn't in pi-ai's static registry (gemini, nvidia, together-ai,
+ * z.ai, …).
+ *
+ * `rawProvider` is the gateway provider slug; `registryProvider` is the
+ * model-registry name it maps to (usually "openai" for sdkCompat providers).
+ *
+ * Reliability invariant: only REAL OpenAI may default to OpenAI's public
+ * endpoint. For every other provider an unresolved `providerBaseUrl` means the
+ * gateway failed to supply a proxy mapping — routing such a request to
+ * api.openai.com would silently mis-deliver it to OpenAI with a model ID it
+ * doesn't know, surfacing as a confusing "400 <model> is not a valid model
+ * ID". We throw instead so the real cause (no proxy base URL) is visible.
+ */
+export function buildDynamicOpenAIModel(args: {
+  rawProvider: string;
+  registryProvider: string;
+  modelId: string;
+  providerBaseUrl: string | undefined;
+}): DynamicOpenAIModel {
+  const { rawProvider, registryProvider, modelId, providerBaseUrl } = args;
+  const isRealOpenAI = rawProvider === "openai";
+  if (!isRealOpenAI && !providerBaseUrl) {
+    throw new Error(
+      `Could not resolve a base URL for provider "${rawProvider}". ` +
+        `The gateway did not supply a proxy mapping for its base-URL env ` +
+        `var (${DEFAULT_PROVIDER_BASE_URL_ENV[rawProvider] ?? "unknown"}). ` +
+        `Refusing to route "${modelId}" to OpenAI's public endpoint.`
+    );
+  }
+  return {
+    id: modelId,
+    name: modelId,
+    api: "openai-completions",
+    provider: registryProvider,
+    baseUrl: providerBaseUrl || "https://api.openai.com/v1",
+    reasoning: false,
+    input: ["text", "image"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128000,
+    maxTokens: 16384,
+  };
 }
 
 export function resolveModelRef(

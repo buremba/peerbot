@@ -363,13 +363,19 @@ export async function devCommand(
   // click the URL straight from their terminal and land logged in. Also
   // persists the session as the `local` CLI context so `lobu chat -c local`
   // works without a separate `lobu login`.
-  void announceLocalSignIn(gatewayUrl, mode === "embedded").then(() => {
-    // After the `local` context is registered, push the project's lobu.toml
-    // into the embedded DB so the agent the user just scaffolded is usable via
-    // `lobu chat -c local …` with no separate `lobu apply`. Embedded/local
-    // only — never auto-mutate an external (prod) DB from a local file.
-    if (mode === "embedded") return autoApplyLocalProject(cwd);
-  });
+  void announceLocalSignIn(gatewayUrl, mode === "embedded").then(
+    (localContextReady) => {
+      // Once the `local` context is confirmed registered + active, push the
+      // project's lobu.toml into the embedded DB so the scaffolded agent is
+      // usable via `lobu chat -c local …` with no separate `lobu apply`.
+      // Gated on localContextReady AND pinned to the local URL (below) so a
+      // failed sign-in can never apply this local project to whatever
+      // cloud/prod context happened to be active.
+      if (mode === "embedded" && localContextReady) {
+        return autoApplyLocalProject(cwd, gatewayUrl);
+      }
+    }
+  );
 
   // Forward Ctrl+C to the child so it can clean up its own subprocess workers
   // before the parent exits. SIGKILL after a timeout in case it wedges.
@@ -407,11 +413,18 @@ export async function devCommand(
  * `lobu run`'s module-load path — see the dynamic-import allow-list in
  * AGENTS.md.
  */
-async function autoApplyLocalProject(cwd: string): Promise<void> {
+async function autoApplyLocalProject(
+  cwd: string,
+  gatewayUrl: string
+): Promise<void> {
   if (!existsSync(join(cwd, "lobu.toml"))) return;
   try {
     const { applyCommand } = await import("./_lib/apply/apply-cmd.js");
-    await applyCommand({ cwd, yes: true });
+    // Pin the apply to the embedded server's URL. `resolveApiTarget` matches
+    // the `local` context by URL — and refuses to send any other context's
+    // credentials to a different URL — so this can only ever target the local
+    // server, never a cloud/prod org.
+    await applyCommand({ cwd, yes: true, url: gatewayUrl });
   } catch (err) {
     console.warn(
       chalk.dim(
@@ -505,23 +518,23 @@ export function resolveBackendBundle(
 async function announceLocalSignIn(
   gatewayUrl: string,
   embedded: boolean
-): Promise<void> {
+): Promise<boolean> {
   // Poll briefly so the announce lands AFTER the server's own startup
   // banner without racing it.
   const reachable = await waitForServerReachable(gatewayUrl);
-  if (!reachable) return;
+  if (!reachable) return false;
 
   // Only the embedded path seeds the bootstrap user → /local-init will refuse
   // on an external-Postgres deployment with real signups. Skip the network
   // call entirely in that case to keep the banner quiet.
-  if (!embedded) return;
+  if (!embedded) return false;
 
   try {
     const res = await fetch(`${gatewayUrl}/api/local-init`, {
       method: "POST",
       headers: { "X-Lobu-Client": "lobu-run" },
     });
-    if (!res.ok) return;
+    if (!res.ok) return false;
     const body = (await res.json()) as {
       device_token?: string;
       session_token?: string;
@@ -535,7 +548,7 @@ async function announceLocalSignIn(
     // so the SPA hook reaches /api/exchange-token → Better Auth session
     // cookie).
     const cliToken = body.device_token ?? body.session_token;
-    if (!cliToken) return;
+    if (!cliToken) return false;
 
     const contextName = "local";
     await addContext(contextName, gatewayUrl);
@@ -585,8 +598,12 @@ async function announceLocalSignIn(
         chalk.cyan(`lobu chat -c ${contextName} "hello"`)
     );
     console.log();
+    // The `local` context is registered, credentialed, and active — safe to
+    // auto-apply the project against it.
+    return true;
   } catch {
     // Swallow — the banner is best-effort.
+    return false;
   }
 }
 

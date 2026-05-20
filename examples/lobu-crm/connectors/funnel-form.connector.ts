@@ -1,12 +1,21 @@
-// biome-ignore-all format: stays compact for the landing-page code panel
-import { ConnectorRuntime, type SyncContext } from "@lobu/connector-sdk";
+import { ConnectorRuntime, type SyncContext, type SyncResult } from "@lobu/connector-sdk";
+
+interface FunnelCheckpoint {
+  seen_ids: string[];
+}
+
+interface FunnelConfig {
+  endpoint: string;
+}
 
 /**
  * Funnel-form connector — polls a small JSON API (`config.endpoint` returns
  * `{ submissions: [...] }`) and emits one event per new submission. Dedup
  * via a rolling checkpoint of seen IDs. Auto-discovered by `lobu apply`.
+ *
+ * Demonstrates: ConnectorRuntime<C, F> with typed checkpoint + config.
  */
-export default class FunnelFormConnector extends ConnectorRuntime {
+export default class FunnelFormConnector extends ConnectorRuntime<FunnelCheckpoint, FunnelConfig> {
   readonly definition = {
     key: "funnel-form",
     name: "Funnel form",
@@ -15,9 +24,9 @@ export default class FunnelFormConnector extends ConnectorRuntime {
     feeds: { submissions: { key: "submissions", name: "Form submissions" } },
   };
 
-  async sync(ctx: SyncContext) {
-    const seen = new Set<string>((ctx.checkpoint as any)?.seen_ids ?? []);
-    const subs: any[] = (await (await fetch(String(ctx.config.endpoint))).json()).submissions ?? [];
+  async sync(ctx: SyncContext<FunnelCheckpoint, FunnelConfig>): Promise<SyncResult<FunnelCheckpoint>> {
+    const seen = new Set<string>(ctx.checkpoint?.seen_ids ?? []);
+    const subs: any[] = (await (await fetch(ctx.config.endpoint)).json()).submissions ?? [];
     const fresh = subs.filter((s) => s?.id && !seen.has(s.id));
     return {
       events: fresh.map((s) => ({

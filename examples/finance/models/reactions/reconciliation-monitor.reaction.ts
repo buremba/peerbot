@@ -15,7 +15,7 @@ interface ReconciliationData {
 
 export default async (
   ctx: ReactionContext,
-  client: ReactionClient,
+  client: ReactionClient
 ): Promise<void> => {
   const data = ctx.extracted_data as ReconciliationData;
 

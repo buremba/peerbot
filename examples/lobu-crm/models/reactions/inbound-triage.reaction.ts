@@ -20,7 +20,7 @@ interface TriageData {
 
 export default async (
   ctx: ReactionContext,
-  client: ReactionClient,
+  client: ReactionClient
 ): Promise<void> => {
   const data = ctx.extracted_data as TriageData;
   if (!data.notable) return;

@@ -57,6 +57,11 @@ All chat platforms (Telegram, Slack, Discord, WhatsApp, Teams) run through Chat 
 - **Integration auth lives in Lobu** — OAuth, token refresh, and API proxying for third-party services (GitHub, Google, etc.) are handled by Lobu MCP servers. Workers never see OAuth tokens.
 - **`events` is append-only.** Never `DELETE FROM events`. To hide a row, write a tombstone via `client.knowledge.delete()` or `save_knowledge({ supersedes_event_id, ... })`; the `current_event_records` view masks superseded rows, `include_superseded` recovers history.
 
+#### Connectors
+- A connector is a `*.connector.ts` extending `ConnectorRuntime`. **npm deps** go in the project's `package.json` (next to `lobu.toml`) and are **bundled** into the connector by esbuild at compile time. **Native deps** (ffmpeg, imagemagick, …) are declared as nixpkgs refs in `runtime.nix.packages` on the connector `definition`; the runtime provisions them on PATH via `nix-shell` at execution. npm = bundled (compile-time); native = nix (run-time).
+- **Compile happens on the CLI**, not the server: `lobu apply` runs `bun install` in the project, compiles each connector with the project's `node_modules`, and uploads the bundle (`compiled: true`). esbuild resolves a connector's imports relative to the connector file's dir, so the project's deps are used regardless of where the `lobu` binary is installed. `@lobu/connector-sdk` is **externalized** (runtime-provided, à la Lambda's `aws-sdk`) — the bundle stays the connector's own code + deps, not multiple MB of SDK infra.
+- `lobu init` scaffolds `package.json` (with `@lobu/connector-sdk` devDependency for editor types) + `tsconfig.json` + `connectors/`.
+
 #### Guardrails
 - Primitive lives in `packages/core/src/guardrails/`: `Guardrail<stage>`, `GuardrailRegistry`, `runGuardrails()`. Stages: `input` (user message → worker), `output` (worker text → user), `pre-tool` (tool call authorization).
 - Each guardrail's `run(ctx)` returns `{ tripped, reason?, metadata? }`. The runner races all enabled guardrails at a stage; the first trip short-circuits (later results are discarded) and a thrown guardrail is logged and treated as a pass.

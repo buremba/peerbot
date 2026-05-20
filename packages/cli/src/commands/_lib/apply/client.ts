@@ -851,6 +851,8 @@ export class ApplyClient {
     sourceUrl?: string;
     /** `file://` URI of a bundled connector source on the server host. */
     sourceUri?: string;
+    /** `sourceCode` is already a compiled bundle (CLI-side compile) — skip server compile. */
+    compiled?: boolean;
   }): Promise<InstallConnectorResult> {
     const body = await this.connectionsTool<{
       installed?: boolean;
@@ -860,7 +862,7 @@ export class ApplyClient {
     }>({
       action: "install_connector",
       ...(payload.sourceCode !== undefined
-        ? { source_code: payload.sourceCode, compiled: false }
+        ? { source_code: payload.sourceCode, compiled: payload.compiled ?? false }
         : {}),
       ...(payload.sourceUrl ? { source_url: payload.sourceUrl } : {}),
       ...(payload.sourceUri ? { source_uri: payload.sourceUri } : {}),

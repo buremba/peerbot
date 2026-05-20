@@ -7,6 +7,8 @@ import { loadProjectLink } from "../../../internal/project-link.js";
 import { CONFIG_FILENAME } from "../../../config/loader.js";
 import { ApiError, ValidationError } from "../../memory/_lib/errors.js";
 import { printError, printText } from "../../memory/_lib/output.js";
+import { compileConnectorFromFile } from "../connector-loader.js";
+import { ensureProjectDepsInstalled } from "../ensure-deps-installed.js";
 import {
   type ApplyClient,
   type RemoteAgent,
@@ -376,10 +378,18 @@ async function installConnectorDefinitions(
     if (row.verb === "noop" || row.verb === "drift") continue;
     const def = row.desired;
     if (!def) continue;
-    const result =
-      def.sourceCode !== undefined
-        ? await client.installConnector({ sourceCode: def.sourceCode })
-        : await client.installConnector({ sourceUrl: def.sourceUrl });
+    let result: Awaited<ReturnType<typeof client.installConnector>>;
+    if (def.sourceCode !== undefined) {
+      // Compile project connectors on the CLI: only here is the project's
+      // node_modules available, so esbuild can bundle the connector's declared
+      // npm deps. The server can't (it only receives the artifact). Native deps
+      // ride `runtime.nix.packages` and are provisioned at run time.
+      ensureProjectDepsInstalled(def.sourceFile, printText);
+      const compiledCode = await compileConnectorFromFile(def.sourceFile);
+      result = await client.installConnector({ sourceCode: compiledCode, compiled: true });
+    } else {
+      result = await client.installConnector({ sourceUrl: def.sourceUrl });
+    }
     if (result.connectorKey) {
       locallySuppliedKeys.add(result.connectorKey);
       installedKeys.add(result.connectorKey);

@@ -705,6 +705,46 @@ export async function initCommand(
     await mkdir(join(projectDir, "skills"), { recursive: true });
     await writeFile(join(projectDir, "skills", ".gitkeep"), "");
 
+    // Connector authoring surface: package.json declares the connector SDK
+    // (provided by the runtime — externalized at compile, here for editor
+    // types) plus any npm deps the user adds; tsconfig gives the editor
+    // resolution; the connectors/ dir holds `*.connector.ts`. `lobu apply`
+    // runs `bun install` here and bundles each connector's own deps.
+    await writeFile(
+      join(projectDir, "package.json"),
+      `${JSON.stringify(
+        {
+          name: projectName,
+          version: "0.0.0",
+          private: true,
+          type: "module",
+          devDependencies: { "@lobu/connector-sdk": `^${cliVersion}` },
+        },
+        null,
+        2
+      )}\n`
+    );
+    await writeFile(
+      join(projectDir, "tsconfig.json"),
+      `${JSON.stringify(
+        {
+          compilerOptions: {
+            target: "ES2022",
+            module: "Preserve",
+            moduleResolution: "bundler",
+            strict: true,
+            skipLibCheck: true,
+            noEmit: true,
+          },
+          include: ["connectors/**/*.ts"],
+        },
+        null,
+        2
+      )}\n`
+    );
+    await mkdir(join(projectDir, "connectors"), { recursive: true });
+    await writeFile(join(projectDir, "connectors", ".gitkeep"), "");
+
     await renderTemplate(
       "AGENTS.md.tmpl",
       variables,

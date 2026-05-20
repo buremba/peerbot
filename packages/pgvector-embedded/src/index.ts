@@ -12,7 +12,13 @@
  * against a same-major PostgreSQL — the extension ABI is stable within a major,
  * so a library built against PG 18.x loads into `embedded-postgres`'s PG 18.x.
  */
-import { cpSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  symlinkSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,9 +65,43 @@ export function resolveEmbeddedNativeDir(
 }
 
 /**
+ * embedded-postgres' macOS native libs ship only as the fully-versioned
+ * `lib<name>.<major>.<minor>.dylib`, but the Postgres binaries link against both
+ * the major SONAME (`lib<name>.<major>.dylib`) and the unversioned linker name
+ * (`lib<name>.dylib`, e.g. postgres' `@loader_path/../lib/libicui18n.dylib`) —
+ * and the @embedded-postgres/darwin-* packages omit those symlinks. Without them
+ * `initdb`/`postgres` abort with `Library not loaded`. Recreate both link levels
+ * idempotently, pointing at the real versioned file. No-op off macOS (Linux ships
+ * the `.so.<major>` links) and when a link already exists.
+ */
+export function ensureNativeLibSonames(
+  nativeDir: string = resolveEmbeddedNativeDir()
+): void {
+  if (process.platform !== "darwin") return;
+  const libDir = join(nativeDir, "lib");
+  if (!existsSync(libDir)) return;
+  for (const file of readdirSync(libDir)) {
+    // lib<base>.<major>.<minor>.dylib → { lib<base>.<major>.dylib, lib<base>.dylib }
+    const match = file.match(/^(lib.+?)\.(\d+)\.\d+\.dylib$/);
+    if (!match) continue;
+    const [, base, major] = match;
+    for (const soname of [`${base}.${major}.dylib`, `${base}.dylib`]) {
+      const link = join(libDir, soname);
+      if (existsSync(link)) continue;
+      try {
+        symlinkSync(file, link); // relative target within libDir
+      } catch {
+        // Best-effort: a race or perms issue surfaces as the real initdb error.
+      }
+    }
+  }
+}
+
+/**
  * Copy the host platform's prebuilt pgvector files into an embedded-postgres
- * `native` tree so `CREATE EXTENSION vector` works. Idempotent — returns early
- * if pgvector is already present in the tree.
+ * `native` tree so `CREATE EXTENSION vector` works, and hydrate the macOS ICU
+ * SONAME symlinks so `initdb` can link. Idempotent — returns early if pgvector
+ * is already present in the tree.
  *
  * @param nativeDir absolute path to `.../native`; defaults to the resolved
  *   host-platform `@embedded-postgres` package.
@@ -70,6 +110,10 @@ export function injectPgvector(
   nativeDir: string = resolveEmbeddedNativeDir(),
   platform: string = currentPlatformKey()
 ): void {
+  // Always (re)hydrate the dylib SONAME symlinks — needed for initdb to link
+  // even when pgvector was already injected on a prior run.
+  ensureNativeLibSonames(nativeDir);
+
   const libDst = join(nativeDir, "lib", "postgresql");
   const extDst = join(nativeDir, "share", "postgresql", "extension");
 

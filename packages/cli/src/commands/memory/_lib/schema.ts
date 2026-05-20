@@ -11,7 +11,11 @@
  * Bump CURRENT_SCHEMA_VERSION when making breaking changes.
  */
 
-import { AutoCreateWhenRule } from "@lobu/connector-sdk";
+// Import from the module subpath, not the barrel: a barrel re-export of this
+// value+type dual name trips bun's cross-file module lexer in the test runner
+// ("Export named AutoCreateWhenRule not found"). The direct subpath resolves
+// to the module that declares it and sidesteps the bug.
+import { AutoCreateWhenRule } from "@lobu/connector-sdk/identity-types";
 import { TypeCompiler } from "@sinclair/typebox/compiler";
 import { parseAllDocuments } from "yaml";
 

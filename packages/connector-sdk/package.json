@@ -16,6 +16,10 @@
         "default": "./dist/index.js"
       }
     },
+    "./identity-types": {
+      "types": "./dist/identity-types.d.ts",
+      "import": "./dist/identity-types.js"
+    },
     "./browser-mirror": {
       "import": {
         "types": "./dist/browser/mirror-cookies.d.ts",

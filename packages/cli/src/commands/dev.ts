@@ -323,12 +323,24 @@ export async function devCommand(
     envVars.LOBU_PROVIDER_REGISTRY_PATH ||
     (existsSync(bundledProvidersPath) ? bundledProvidersPath : undefined);
 
+  // Bundled CLIs ship the built owletto web UI next to the server bundle (see
+  // packages/cli/scripts/build.cjs). Point the server at it unless the user or
+  // .env already set WEB_DIST_DIR. In a monorepo checkout the bundle's sibling
+  // dir has no owletto/dist, so this stays undefined and the server's own
+  // monorepo-relative lookup / Vite dev path takes over.
+  const bundledWebDistPath = join(dirname(bundlePath), "owletto", "dist");
+  const webDistDir =
+    process.env.WEB_DIST_DIR ||
+    envVars.WEB_DIST_DIR ||
+    (existsSync(bundledWebDistPath) ? bundledWebDistPath : undefined);
+
   const childEnv: Record<string, string> = {
     ...mergedEnv,
     LOBU_DEV_PROJECT_PATH: projectPath,
     ...(providerRegistryPath
       ? { LOBU_PROVIDER_REGISTRY_PATH: providerRegistryPath }
       : {}),
+    ...(webDistDir ? { WEB_DIST_DIR: webDistDir } : {}),
     PORT: String(portNum),
     GATEWAY_PORT: String(portNum),
     ...(logLevel ? { LOG_LEVEL: logLevel } : {}),

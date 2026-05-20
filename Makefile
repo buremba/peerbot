@@ -40,6 +40,12 @@ build-packages:
 	done
 	@echo "   📦 Building packages/server bundle..."
 	@( cd packages/server && bun run build:server ) || exit $$?
+	@if [ -f packages/owletto/package.json ]; then \
+		echo "   📦 Building packages/owletto (web UI)..."; \
+		( cd packages/owletto && bun run build ) || exit $$?; \
+	else \
+		echo "   ⚠️  packages/owletto absent — CLI will ship headless (API only)"; \
+	fi
 	@echo "   📦 Building packages/cli..."
 	@( cd packages/cli && bun run build ) || exit $$?
 	@echo "✅ All packages built successfully!"

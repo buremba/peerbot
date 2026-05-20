@@ -38,6 +38,16 @@ copyDirIfExists("../connectors/src", "dist/connectors");
 // Copy database migrations for the bundled PGlite local server.
 copyDirIfExists("../../db/migrations", "dist/db/migrations");
 
+// Copy the built owletto web UI (admin/console SPA) next to the server bundle
+// so `lobu run` serves it — OAuth, MCP-client setup, and connection CRUD have
+// no surface without it. owletto is a private submodule (`private: true`);
+// only its compiled `dist/` ships in the CLI tarball, never the source. CI's
+// publish flow builds it (`bun run build` in packages/owletto, gated on the
+// submodule being present) before this script runs. Missing locally (fork or
+// uninitialised submodule) → the copy is skipped and `lobu run` boots headless
+// (API only), matching prior behaviour. `dev.ts` points WEB_DIST_DIR here.
+copyDirIfExists("../owletto/dist", "dist/owletto/dist");
+
 // Copy server bundles so `lobu run` is self-contained.
 // @lobu/server is private (`private: true` in its package.json),
 // so `npx @lobu/cli` users can never resolve it via npm — they only get

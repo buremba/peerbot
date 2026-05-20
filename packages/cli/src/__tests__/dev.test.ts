@@ -167,6 +167,13 @@ describe("lobu run backend bundle resolution", () => {
 
     // Garbage URL → not "shared" (the boot path will fail elsewhere).
     expect(isSharedDatabaseUrl("not-a-url")).toBe(false);
+
+    // file:// embedded paths are LOCAL, never shared — even though their URL
+    // hostname parses as empty. The menubar app passes file://<abs path>, so a
+    // regression here refuses to boot the local embedded server.
+    expect(isSharedDatabaseUrl("file:///Users/me/lobu/data")).toBe(false);
+    expect(isSharedDatabaseUrl("file://.")).toBe(false);
+    expect(isSharedDatabaseUrl("file:/Users/me/lobu/data")).toBe(false);
   });
 
   describe("shouldRefuseSharedDatabaseUrl", () => {

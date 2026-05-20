@@ -43,6 +43,12 @@ export interface DevOptions {
  * Exported for unit tests; the safety gate in `devCommand` is the consumer.
  */
 export function isSharedDatabaseUrl(databaseUrl: string): boolean {
+  // Only network (postgres://) URLs can point at a shared/remote DB. Embedded
+  // backends are local filesystem paths — frequently a `file://<abs path>` URL
+  // (e.g. the menubar app passes `file:///Users/me/lobu/data`), whose URL
+  // hostname parses as empty. Treating that empty host as "non-loopback" would
+  // wrongly flag every local embedded run as shared and refuse to boot.
+  if (!isExternalDatabaseUrl(databaseUrl)) return false;
   try {
     const url = new URL(databaseUrl);
     // `new URL("postgres://[::1]:5432/x").hostname` returns `[::1]` with the

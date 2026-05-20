@@ -2,14 +2,20 @@
 # Local-only pi-review runner.
 #
 # Usage:
-#   ./scripts/run-pi-review.sh <PR_NUMBER>
+#   ./scripts/run-pi-review.sh           # auto-derives PR from current branch
+#   ./scripts/run-pi-review.sh <PR>      # explicit PR override
+#   PR=<n> ./scripts/run-pi-review.sh    # env-var override
 #
-# GitHub Actions does NOT run pi-review — the agent (a Claude Code session)
-# runs this script after finishing a PR. The script:
-#   1. fetches the PR head into a dedicated worktree under ~/.pi-review-worktrees/
-#   2. installs deps + builds workspace packages
-#   3. runs the same test suites the old CI workflow ran (typecheck, unit,
-#      integration), capturing exit codes + logs
+# Runs in $PWD — assumes you're already inside the worktree the PR was built
+# in (deps installed, dist built, .env in place, postgres reachable). The
+# script does NOT create a worktree, install deps, or manage the test
+# database. Set PI_REVIEW_REBUILD=1 to re-run install + build if needed.
+#
+# What it does:
+#   1. derives PR number from the current branch (or arg/env override)
+#   2. sanity-checks HEAD matches the PR's headRefOid (warn if drifted)
+#   3. runs the same test suites as before (typecheck, unit, integration),
+#      capturing exit codes + logs under /tmp/
 #   4. invokes `pi` (using the operator's local ~/.pi/agent state) with the
 #      review prompt + env-passed log paths/exit codes
 #   5. extracts the JSON verdict
@@ -22,13 +28,6 @@
 # GitHub: uses `gh auth token`.
 
 set -euo pipefail
-
-PR="${1:-}"
-if ! [[ "$PR" =~ ^[1-9][0-9]*$ ]]; then
-  echo "usage: $0 <PR_NUMBER>" >&2
-  echo "PR_NUMBER must be a positive integer." >&2
-  exit 2
-fi
 
 # --- preflight --------------------------------------------------------------
 
@@ -49,15 +48,29 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 2
 fi
 
-LOBU_REPO="${LOBU_REPO:-$HOME/Code/lobu}"
-if [ ! -d "$LOBU_REPO/.git" ]; then
-  echo "Lobu source repo not found at $LOBU_REPO (override with LOBU_REPO=...)." >&2
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "Not inside a git work tree. cd into the PR's worktree first." >&2
   exit 2
 fi
 
 # --- resolve PR -------------------------------------------------------------
 
-PR_JSON="$(gh pr view "$PR" --repo lobu-ai/lobu --json headRefOid,headRefName,baseRefName,number,title,url)"
+PR="${1:-${PR:-}}"
+if [ -z "$PR" ]; then
+  # gh pr view (no arg) uses the current branch's PR.
+  if ! PR_JSON="$(gh pr view --json number,headRefOid,headRefName,baseRefName,title,url 2>/dev/null)"; then
+    echo "Could not find a PR for the current branch. Pass PR=<n> explicitly." >&2
+    exit 2
+  fi
+else
+  if ! [[ "$PR" =~ ^[1-9][0-9]*$ ]]; then
+    echo "PR must be a positive integer (got: $PR)." >&2
+    exit 2
+  fi
+  PR_JSON="$(gh pr view "$PR" --json number,headRefOid,headRefName,baseRefName,title,url)"
+fi
+
+PR="$(printf '%s' "$PR_JSON" | jq -r .number)"
 HEAD_SHA="$(printf '%s' "$PR_JSON" | jq -r .headRefOid)"
 HEAD_BRANCH="$(printf '%s' "$PR_JSON" | jq -r .headRefName)"
 BASE_BRANCH="$(printf '%s' "$PR_JSON" | jq -r .baseRefName)"
@@ -71,71 +84,39 @@ fi
 
 echo ">> PR #$PR: $PR_TITLE"
 echo ">> head: $HEAD_BRANCH @ $HEAD_SHA (base: $BASE_BRANCH)"
+echo ">> cwd:  $(pwd)"
 
-# --- worktree ---------------------------------------------------------------
-
-WORKDIR="$HOME/.pi-review-worktrees/lobu-$PR"
-PI_REVIEW_REF="refs/pi-review/$PR"
-
-mkdir -p "$(dirname "$WORKDIR")"
-
-if [ -d "$WORKDIR/.git" ] || git -C "$LOBU_REPO" worktree list --porcelain | grep -q "^worktree $WORKDIR$"; then
-  echo ">> Reusing worktree at $WORKDIR"
-  git -C "$LOBU_REPO" fetch origin "pull/$PR/head:$PI_REVIEW_REF" >/dev/null
-  git -C "$WORKDIR" fetch origin "pull/$PR/head" >/dev/null
-  git -C "$WORKDIR" reset --hard "$HEAD_SHA" >/dev/null
-  git -C "$WORKDIR" clean -fdx -e node_modules -e .env >/dev/null
-else
-  echo ">> Creating fresh worktree at $WORKDIR"
-  git -C "$LOBU_REPO" fetch origin "pull/$PR/head:$PI_REVIEW_REF" >/dev/null
-  git -C "$LOBU_REPO" worktree add --detach "$WORKDIR" "$HEAD_SHA"
+LOCAL_SHA="$(git rev-parse HEAD)"
+if [ "$LOCAL_SHA" != "$HEAD_SHA" ]; then
+  echo ""
+  echo "!! WARNING: cwd HEAD ($LOCAL_SHA) does not match PR head ($HEAD_SHA)."
+  echo "!! Changes between the two will NOT be reviewed by pi."
+  echo "!! Proceeding anyway — the check-run will be posted against PR head."
+  echo ""
 fi
-
-# Init owletto submodule in the worktree. bun install --frozen-lockfile
-# requires it.
-git -C "$WORKDIR" submodule update --init packages/owletto >/dev/null
-
-cd "$WORKDIR"
 
 # --- env --------------------------------------------------------------------
 
-TEST_DB="lobu_pi_review_$PR"
-# Default DATABASE_URL — operator can override by exporting before running.
-PG_BASE_URL="${PI_REVIEW_PG_BASE_URL:-postgres://postgres@127.0.0.1:5432}"
-DATABASE_URL="${PI_REVIEW_DATABASE_URL:-${PG_BASE_URL}/${TEST_DB}}"
+# Load .env if present so DATABASE_URL etc. are available to the test
+# subprocesses. Doesn't override existing env.
+if [ -f .env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+fi
 
-# Sanity-check Postgres reachability against the base (postgres db, no DB
-# specified) so a missing test DB doesn't masquerade as "Postgres is down."
-if ! psql "${PG_BASE_URL}/postgres" -tAc 'SELECT 1' >/dev/null 2>&1; then
-  echo "Cannot reach Postgres at $PG_BASE_URL — start postgres or set PI_REVIEW_PG_BASE_URL / PI_REVIEW_DATABASE_URL." >&2
+if [ -z "${DATABASE_URL:-}" ]; then
+  echo "DATABASE_URL not set (not in .env, not in env). Tests need Postgres." >&2
   exit 2
 fi
 
-# DROP + CREATE = idempotent per-PR test DB.
-psql "${PG_BASE_URL}/postgres" -tAc "DROP DATABASE IF EXISTS \"$TEST_DB\"" >/dev/null
-psql "${PG_BASE_URL}/postgres" -tAc "CREATE DATABASE \"$TEST_DB\"" >/dev/null
-psql "$DATABASE_URL" -tAc "CREATE EXTENSION IF NOT EXISTS vector" >/dev/null || true
+# --- optional rebuild -------------------------------------------------------
 
-cat > .env <<EOF
-DATABASE_URL=$DATABASE_URL
-BETTER_AUTH_SECRET=pi-review-local-not-prod-not-prod-not-prod
-ENCRYPTION_KEY=pi-review-local-encryption-key-32b!
-LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1
-PORT=8787
-EOF
-
-# --- install + build --------------------------------------------------------
-
-SETUP_OK=1
-echo ">> bun install --frozen-lockfile"
-if ! bun install --frozen-lockfile; then
-  echo "!! bun install failed"
-  SETUP_OK=0
-fi
-echo ">> make build-packages"
-if ! make build-packages; then
-  echo "!! make build-packages failed"
-  SETUP_OK=0
+if [ "${PI_REVIEW_REBUILD:-0}" = "1" ]; then
+  echo ">> PI_REVIEW_REBUILD=1 — bun install + make build-packages"
+  bun install --frozen-lockfile
+  make build-packages
 fi
 
 # --- test suites ------------------------------------------------------------
@@ -190,11 +171,11 @@ INTEGRATION_EXIT=0
 } > "$INTEGRATION_LOG" 2>&1
 set -e
 
-echo ">> suite exit codes: typecheck=$TYPECHECK_EXIT unit=$UNIT_EXIT integration=$INTEGRATION_EXIT (setup_ok=$SETUP_OK)"
+echo ">> suite exit codes: typecheck=$TYPECHECK_EXIT unit=$UNIT_EXIT integration=$INTEGRATION_EXIT"
 
 # --- pi ---------------------------------------------------------------------
 
-PROMPT_FILE="$WORKDIR/prompts/review-prompt.md"
+PROMPT_FILE="$(pwd)/prompts/review-prompt.md"
 if [ ! -f "$PROMPT_FILE" ]; then
   echo "prompt not found: $PROMPT_FILE" >&2
   exit 2
@@ -231,18 +212,19 @@ fi
 VERDICT="$(printf '%s\n' "$VERDICT" | sed -e 's/^```json//' -e 's/^```//' -e 's/```$//')"
 
 VALID=1
-if ! echo "$VERDICT" | jq -e '.confidence != null and .bugs != null and .slop != null and (.blockers|type=="array")' >/dev/null 2>&1; then
+if ! echo "$VERDICT" | jq -e '.bug_free_confidence != null and .bugs != null and .slop != null and .simplicity != null and (.blockers|type=="array")' >/dev/null 2>&1; then
   VALID=0
 fi
 
 # --- post check-run + comment ----------------------------------------------
 
 if [ "$VALID" = "1" ]; then
-  CONFIDENCE="$(echo "$VERDICT" | jq -r .confidence)"
+  BUG_FREE="$(echo "$VERDICT" | jq -r .bug_free_confidence)"
   BUGS="$(echo "$VERDICT" | jq -r .bugs)"
   SLOP="$(echo "$VERDICT" | jq -r .slop)"
+  SIMPLICITY="$(echo "$VERDICT" | jq -r .simplicity)"
   BLOCKER_COUNT="$(echo "$VERDICT" | jq -r '.blockers|length')"
-  HEADLINE="confidence $CONFIDENCE, bugs $BUGS, slop $SLOP, $BLOCKER_COUNT blockers"
+  HEADLINE="bug_free $BUG_FREE, simplicity $SIMPLICITY, slop $SLOP, bugs $BUGS, $BLOCKER_COUNT blockers"
   TITLE="pi: $HEADLINE"
   NOTES="$(echo "$VERDICT" | jq -r '.notes // ""')"
   PRETTY="$(echo "$VERDICT" | jq .)"
@@ -312,7 +294,6 @@ echo "=========================================="
 echo "pi-review for PR #$PR complete."
 echo "  PR:        $PR_URL"
 echo "  check-run: $CHECK_URL"
-echo "  worktree:  $WORKDIR (kept for re-runs)"
 echo "  logs:      $TYPECHECK_LOG"
 echo "             $UNIT_LOG"
 echo "             $INTEGRATION_LOG"

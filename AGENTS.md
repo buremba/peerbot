@@ -249,7 +249,7 @@ Without an editor integration, biome's `--write` still rewrites files at commit 
 
 ### Validation after code changes
 
-**After completing a PR, run `make pi-review PR=<n>` locally** — pi reviews the diff, runs the affected test suites, exercises the system, and posts a `pi-review` check-run + PR comment with the JSON verdict. Verdicts do not gate merges yet (shadow mode). See `docs/REVIEW_SCHEMA.md`.
+**After completing a PR, run `make pi-review` locally** (auto-derives PR number from current branch; pass `PR=<n>` to override). Pi reviews diff + runs test suites + exercises the system, then posts a `pi-review` check-run + PR comment with the multi-axis verdict (`bug_free_confidence`, `slop`, `simplicity`, `bugs`). Verdicts do not gate merges yet (shadow mode). See `docs/REVIEW_SCHEMA.md`.
 
 **E2E before merge (hard gate).** For any bug-fix PR, do a red → fix → green cycle before opening:
 

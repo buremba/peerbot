@@ -18,7 +18,7 @@ help:
 	@echo "  make task-clean NAME=<name> [FORCE=1]      - Remove the worktree, both branches, and the Lobu context (refuses if there's uncommitted/unpushed work unless FORCE=1)"
 	@echo "  make task-use NAME=<name|main>             - Point Chrome ext / Mac app symlinks at this worktree (or 'main' for the canonical checkout)"
 	@echo "  make bump SUBMODULE=<path> [TARGET=<ref>]  - Lightweight worktree + commit + PR for a trivial submodule pointer bump (skips bun install, .env, ports)"
-	@echo "  make pi-review PR=<n>                      - Run the shadow-mode pi review locally for PR <n> (uses ~/.pi/agent auth)"
+	@echo "  make pi-review [PR=<n>]                    - Run the shadow-mode pi review locally in cwd (auto-derives PR from branch; pass PR=<n> to override)"
 
 # Strict typecheck — mirrors the Dockerfile so local matches CI. Catches
 # what `build-packages` (relaxed, bundler-only) misses.
@@ -143,12 +143,12 @@ clean-workers:
 	@echo "✅ Worker subprocesses stopped"
 
 # --- Shadow-mode AI reviewer -----------------------------------------------
-# Local-only: the agent that landed a PR runs this after pushing. The script
-# spins up a per-PR worktree under ~/.pi-review-worktrees/, runs the test
-# suites, invokes pi (using local ~/.pi/agent state), and posts the JSON
-# verdict as a check-run + PR comment. GitHub Actions does not run pi-review.
-# See docs/REVIEW_SCHEMA.md.
+# Local-only: the agent that landed a PR runs this from the PR's worktree
+# (cwd = the checked-out PR, deps installed, .env in place, postgres
+# reachable). The script auto-derives the PR number from the current branch
+# (pass PR=<n> to override), runs the test suites, invokes pi (using local
+# ~/.pi/agent state), and posts the JSON verdict as a check-run + PR
+# comment. GitHub Actions does not run pi-review. See docs/REVIEW_SCHEMA.md.
 
 pi-review:
-	@: $${PR?Usage: make pi-review PR=<pr-number>}
-	@./scripts/run-pi-review.sh $(PR)
+	@./scripts/run-pi-review.sh $(if $(PR),$(PR),)

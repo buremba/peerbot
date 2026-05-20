@@ -1,11 +1,12 @@
 # PR Review Verdict Schema
 
-After completing a PR, the agent runs `make pi-review PR=<n>` locally. The
-script (`scripts/run-pi-review.sh`) drives the deterministic test suites,
-invokes `pi` against the diff, and posts a `pi-review` check-run plus a PR
-comment with a JSON verdict matching this schema. **GitHub Actions does not
-run pi-review** — it's a local-driven shadow mode owned by the agent that
-landed the PR.
+After completing a PR, the agent runs `make pi-review` locally from the PR's
+worktree — the script auto-derives the PR number from the current branch
+(pass `PR=<n>` to override). `scripts/run-pi-review.sh` drives the
+deterministic test suites in cwd, invokes `pi` against the diff, and posts a
+`pi-review` check-run plus a PR comment with a JSON verdict matching this
+schema. **GitHub Actions does not run pi-review** — it's a local-driven
+shadow mode owned by the agent that landed the PR.
 
 A future merge bot will read this verdict and decide whether to auto-merge.
 For now the verdict is informational: the check-run always finishes with
@@ -18,9 +19,10 @@ added later without touching the shape below.
 
 ```json
 {
-  "confidence": 0,
+  "bug_free_confidence": 0,
   "bugs": 0,
   "slop": 0,
+  "simplicity": 0,
   "blockers": ["string", "..."],
   "change_type": "feat|fix|refactor|docs|chore|test|deps",
   "behavior_change_risk": "none|low|medium|high",
@@ -45,24 +47,24 @@ surrounding prose, no Markdown fences, no commentary.
 
 ## Fields
 
-### `confidence` (integer, 0–100)
+### `bug_free_confidence` (integer, 0–100)
 
-How confident the reviewer is that this PR can land without breaking prod.
+How sure the reviewer is that the change works correctly and won't break prod.
 
-- **90+** — would stake the team on it. Reserve for changes the reviewer fully
-  understands and that are well-tested.
-- **60–89** — looks correct, no concerns worth raising. Default ceiling for
-  most clean PRs.
-- **30–59** — readable but with material uncertainty (e.g. touches a path the
-  reviewer can't fully reason about, missing tests on a risky surface).
-- **<30** — reviewer cannot even understand the diff, or sees a concrete
-  reason it will break.
+- **90+** — "I'd stake the team on this not breaking prod." Tests pass;
+  exploratory verification confirmed; no semantic risk the reviewer can name.
+- **70–89** — Compiles + tests pass, but there's a code path the reviewer
+  couldn't verify.
+- **40–69** — The reviewer found at least one thing that *might* break and
+  can't rule it out.
+- **0–39** — The reviewer found something that almost certainly breaks, OR
+  can't even understand the change well enough to judge.
 
-**Calibration rule:** do not go above 90 unless the change is genuinely
-low-risk *and* understood. Do not go below 30 unless the diff is unreadable.
+**Calibration rule:** do not go above 90 unless the reviewer would genuinely
+stake the team on this.
 
-**Future gate:** auto-merge will require `confidence >= 80` (and equivalent
-thresholds from any additional reviewer that gets wired in).
+**Future gate:** auto-merge will require `bug_free_confidence >= 80` (and
+equivalent thresholds from any additional reviewer that gets wired in).
 
 ### `bugs` (integer, ≥0)
 
@@ -105,6 +107,29 @@ diff; 50 = significant fraction of the diff is waste; 80+ = the diff is
 mostly waste.
 
 **Future gate:** auto-merge will require `slop <= 30`.
+
+### `simplicity` (integer, 0–100)
+
+How elegant the change is for the goal it's pursuing. Higher = simpler.
+
+- **100** — elegant. Minimal change for the goal. No abstraction not earned by
+  current users. Could be picked up by someone new without context.
+- **70–99** — reasonable. Some flex but justifiable.
+- **40–69** — overcomplicated. Helper layers that hide what's happening. Flag
+  arguments that should be separate functions. Generics for one caller.
+- **0–39** — byzantine. Heavy abstraction tax. Reader has to hold a lot to
+  understand a small change.
+
+**Note:** high `simplicity` does NOT mean "less code." A 3-line change with a
+clever side effect is low simplicity. A 200-line change that reads
+top-to-bottom is high simplicity.
+
+**Future gate:** auto-merge will require `simplicity >= 60`.
+
+> **Independent axes.** `bug_free_confidence`, `slop`, and `simplicity` are
+> independent. A change can score high `bug_free_confidence` (works), high
+> `slop` (lots of unused code added), and low `simplicity` (overengineered).
+> All three must clear their thresholds for auto-merge.
 
 ### `blockers` (array of strings)
 
@@ -158,8 +183,13 @@ behavior change ships without test coverage.
 ### `suggested_fixes` (array of objects)
 
 Specific actionable suggestions. Each object has `file`, `line`, `change`.
-Empty array if none. These get surfaced in PR comments by the future merge
-bot but are advisory in shadow mode.
+Empty array if none.
+
+These are read by the local Claude Code agent and applied between review
+iterations — not by pi itself. Be specific (file path + line + concrete
+change). Vibe suggestions ("consider refactoring", "this could be cleaner")
+don't belong here — the agent can't act on them; surface those as `notes`
+instead.
 
 ### `notes` (string)
 
@@ -197,7 +227,8 @@ not gated by this check-run yet. The point of shadow mode is to observe how
 the verdicts track real-world PR outcomes so the gate thresholds above can
 be calibrated before they are wired up.
 
-Today's flow: agent finishes a PR → runs `make pi-review PR=<n>` locally →
-pi reviews + posts check-run + PR comment → human reads the verdict in the
-GitHub UI and merges. A future merge bot will read the verdict and apply
-the gate thresholds above; that bot doesn't exist yet.
+Today's flow: agent finishes a PR → from the PR's worktree runs `make
+pi-review` (auto-derives PR from branch) → pi reviews + posts check-run + PR
+comment → human reads the verdict in the GitHub UI and merges. A future
+merge bot will read the verdict and apply the gate thresholds above; that
+bot doesn't exist yet.

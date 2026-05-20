@@ -77,9 +77,10 @@ lie by omission.
 
 ```json
 {
-  "confidence": 0,
+  "bug_free_confidence": 0,
   "bugs": 0,
   "slop": 0,
+  "simplicity": 0,
   "blockers": [],
   "change_type": "feat|fix|refactor|docs|chore|test|deps",
   "behavior_change_risk": "none|low|medium|high",
@@ -93,15 +94,26 @@ lie by omission.
 }
 ```
 
-### Calibration
+`bug_free_confidence`, `slop`, and `simplicity` are **independent axes**. A
+change can score high `bug_free_confidence` (works), high `slop` (lots of
+unused code added), and low `simplicity` (overengineered). Score each on its
+own merits.
 
-- **confidence ≥ 90** only if every script-run suite passed AND your
-  exploratory probes lined up with expectations AND you would stake the
-  team on this not breaking prod.
-- **confidence ≤ 30** only if you cannot understand the diff or a
-  script-run suite failed in a way the diff caused.
-- Default range for clean PRs (suites green, no exploration surprises) is
-  **70–89**.
+### Calibration — bug_free_confidence
+
+How sure are you the change works correctly?
+
+- **90+** — "I'd stake the team on this not breaking prod." Every script-run
+  suite passed AND your exploratory probes lined up with expectations AND you
+  see no semantic risk you can name.
+- **70–89** — Compiles + tests pass, but there's a code path you couldn't
+  verify.
+- **40–69** — You found at least one thing that *might* break; can't rule it
+  out.
+- **0–39** — You found something that almost certainly breaks, OR you can't
+  even understand the change well enough to judge.
+
+Do not go above 90 unless you would genuinely stake the team on this.
 
 ### Slop rubric
 
@@ -124,6 +136,22 @@ the score reflect ratio of slop to total changed lines:
 `0` = none. `20` = one or two minor instances in a large diff. `50` =
 significant fraction is waste. `80+` = mostly waste.
 
+### Simplicity rubric
+
+0–100 score for "how elegant is this change for the goal." Higher = simpler.
+
+- **100** — elegant. Minimal change for the goal. No abstraction not earned
+  by current users. Could be picked up by someone new without context.
+- **70–99** — reasonable. Some flex but justifiable.
+- **40–69** — overcomplicated. Helper layers that hide what's happening.
+  Flag arguments that should be separate functions. Generics for one caller.
+- **0–39** — byzantine. Heavy abstraction tax. Reader has to hold a lot to
+  understand a small change.
+
+High `simplicity` does NOT mean "less code." A 3-line change with a clever
+side effect is low simplicity. A 200-line change that reads top-to-bottom is
+high simplicity.
+
 ### Blockers
 
 Reserve `blockers` for things that should stop merge regardless of scores:
@@ -145,6 +173,15 @@ Style and taste belong in `suggested_fixes`, not `blockers`.
 `bugs` = count of concrete defects you can point at — wrong logic,
 off-by-ones, mismatched signatures, dropped error paths, failing tests
 attributable to the diff. Style nits and naming preferences don't count.
+
+### Suggested fixes
+
+Suggested fixes are read by the local Claude Code agent and applied between
+review iterations — not by pi itself. Be specific (file path + line number +
+concrete change). Don't include vibe suggestions like "consider refactoring
+this" or "this could be cleaner" — the agent can't act on those. If you
+can't name the file, line, and the exact change, leave it out and put it in
+`notes` instead.
 
 ### Categories
 

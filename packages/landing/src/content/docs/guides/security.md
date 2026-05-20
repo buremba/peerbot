@@ -26,42 +26,13 @@ Domain format: exact (`api.example.com`) or wildcard (`.example.com` matches all
 
 ### LLM-judged egress
 
-For domains where flat allow/deny is too coarse — Slack, GitHub user-content, Notion — skills can route requests through an LLM judge that decides per request. Most traffic still bypasses the judge: only domains that match a `judge` rule invoke it, so the cost stays bounded.
+For domains where flat allow/deny is too coarse, like Slack, GitHub user-content, or Notion, skills can route requests through an LLM judge that decides per request. Only domains that match a `judge` rule invoke it, so the cost stays bounded. Skills declare judged domains and named policies in `SKILL.md`; operators layer an `extra_policy` on top in `lobu.toml`.
 
-Skills declare judged domains and named policies in `SKILL.md` frontmatter:
-
-```yaml
-network:
-  allow: [api.readonly.example.com]      # flat allow, fast path
-  judge:
-    - .slack.com                          # uses the "default" policy
-    - domain: user-content.x.com
-      judge: strict                       # uses the named "strict" policy
-judges:
-  default: "Allow only reads to channels in the agent's context."
-  strict:  "Only GET for file IDs from the current session."
-```
-
-Operators append a project-wide policy in `lobu.toml`:
-
-```toml
-[agents.<id>.egress]
-extra_policy = "Never exfiltrate PATs or bearer tokens."
-judge_model  = "claude-haiku-4-5-20251001"   # default
-```
-
-`extra_policy` is appended to the matched skill policy, so operator constraints compose with skill author intent rather than replacing it.
-
-Behavior:
-
-- **Defaults**: Haiku judge, 5-minute verdict cache keyed by `(policyHash, request signature)`, circuit breaker opens after 5 consecutive judge failures (30s cooldown) and fails closed.
-- **Hostname-only for HTTPS CONNECT** (TLS tunnel is opaque); method + path inspected for plain HTTP.
-- **Audit**: every decision emits a structured `egress-decision` log with verdict, source (`global | grant | judge`), latency, and policy hash. No request bodies/headers are logged.
-- **Required**: `ANTHROPIC_API_KEY` in the gateway env. Gateways with no judged-domain rules never construct the judge client.
+See [Egress judge](/guides/egress-judge/) for the policy schema, judge defaults (Haiku, verdict cache, fail-closed circuit breaker), and the `egress-decision` audit record.
 
 ## Credentials
 
-Workers never receive raw provider credentials or OAuth tokens. The gateway resolves credentials, injects them only at proxy time, and keeps workers on opaque placeholders or agent-scoped proxy URLs.
+Workers never receive raw provider credentials or OAuth tokens. The gateway resolves credentials, injects them only at proxy time, and keeps workers on opaque placeholders or agent-scoped proxy URLs. See [Secret proxy](/guides/secret-proxy/) for how the `lobu_secret_<uuid>` placeholder swap works at egress.
 
 | Category | How it works | Where secret material can live |
 |---|---|---|

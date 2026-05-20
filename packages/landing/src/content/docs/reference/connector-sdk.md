@@ -76,11 +76,14 @@ interface ConnectorDefinition {
 ```ts
 interface ConnectorRuntimeInfo {
   platforms: Array<"ios" | "android" | "macos" | "windows" | "linux">;
-  scopes?: string[]; // forwarded to the native platform adapter
+  scopes?: string[];            // forwarded to the native platform adapter
+  nix?: { packages: string[] }; // native deps provisioned at run time
 }
 ```
 
-Present only on device-bound connectors. Omit for cloud-fleet connectors.
+`platforms` and `scopes` describe device-bound connectors; omit the `runtime` block for cloud-fleet connectors that do not pin to a device.
+
+`nix.packages` lists native system dependencies as nixpkgs attribute refs (for example `["ffmpeg", "imagemagick"]`) the connector needs on PATH at execution time. npm dependencies are bundled into the connector at compile time and do **not** go here. Backends that can run native deps (embedded, container, machine) provision them via `nix-shell`; backends that cannot (for example edge workers) reject a connector that declares them. See [Dependencies](/getting-started/connector-sdk/#dependencies) in the guide for the npm-vs-native split.
 
 ---
 

@@ -318,6 +318,40 @@ my-agent/
 
 `lobu apply` discovers, type-checks, and ships them. Update the `version` field whenever the event shape changes so the gateway forces a fresh checkpoint.
 
+## Dependencies
+
+A connector can pull in two kinds of dependency, and they are provisioned differently.
+
+**npm packages are bundled at compile time.** Add them to the `package.json` next to your `lobu.toml` and import them normally:
+
+```ts
+import { parse } from "csv-parse/sync";
+```
+
+`lobu apply` runs `bun install --ignore-scripts` in the project, then esbuild bundles each connector with the project's `node_modules` and uploads the artifact. The server only ever receives the bundle, so npm deps ship inside it. `--ignore-scripts` keeps install-time supply-chain surface off your machine, which is also why packages that need native build steps do not belong here.
+
+**Native tools are provisioned at run time via nix.** Declare them as nixpkgs attribute refs in `runtime.nix.packages` on the connector definition:
+
+```ts
+export default class VideoConnector extends ConnectorRuntime {
+  definition: ConnectorDefinition = {
+    key: "media.video",
+    name: "Video",
+    version: "1.0.0",
+    runtime: {
+      platforms: ["linux", "macos"],
+      nix: { packages: ["ffmpeg", "imagemagick"] },
+    },
+    // ...feeds, actions
+  };
+  // ...sync / execute can now shell out to ffmpeg
+}
+```
+
+At execution the runtime wraps the connector's subprocess in `nix-shell -p <packages>` so the declared tools are on `PATH`. Backends that cannot run native deps reject a connector that declares them, and a host without `nix-shell` errors with a clear message rather than failing mid-run.
+
+The rule of thumb: **npm is bundled (compile-time), native is nix (run-time).** Never put a native tool in `package.json` expecting it to ship, and never list an npm package in `runtime.nix.packages`. See the [`ConnectorRuntimeInfo` reference](/reference/connector-sdk/#connectorruntimeinfo) for the field shape.
+
 ## See it in production
 
 - [`examples/ecommerce/connectors/stripe-charges.connector.ts`](https://github.com/lobu-ai/lobu/blob/main/examples/ecommerce/connectors/stripe-charges.connector.ts) — REST API, `env_keys` auth, timestamp checkpoint.

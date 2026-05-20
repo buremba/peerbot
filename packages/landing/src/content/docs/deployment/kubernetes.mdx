@@ -105,6 +105,32 @@ curl https://lobu.example.com/health
 curl http://localhost:8787/health
 ```
 
+## Scaling and multi-replica operation
+
+In production the app runs as a multi-replica Deployment. Two chart values must move together when you scale past one app pod:
+
+```yaml
+app:
+  replicaCount: 3
+
+service:
+  # Required when replicaCount > 1. Pins each client to one pod for the
+  # affinity window (default 3h). The chart's NOTES.txt prints a warning
+  # if you scale up without it.
+  sessionAffinity: ClientIP
+  sessionAffinityTimeoutSeconds: 10800
+```
+
+Affinity is mandatory because some per-pod state is in-memory and pod-local, with no cross-pod fan-out. Each pod owns its own SSE connections and their event backlog (`SseManager`), its own map of spawned worker subprocesses, and its deployment-creation lock cache. A client whose SSE stream (`/api/v1/agents/<id>/events`) lands on pod A but whose `POST /messages` lands on pod B would silently miss events. `ClientIP` affinity co-locates a client's SSE stream, its message posts, and its conversation's worker on one pod.
+
+Cross-replica delivery rides Postgres, not memory. A worker reply reaches the client's SSE pod through the `thread_response` queue: any pod's consumer may claim a row and broadcast it to its own local `SseManager`. Platform responses (Slack, Telegram, and so on) are owner-routed, re-queued until the pod that owns the connection claims them.
+
+The conversation workers the gateway spawns are child processes of their pod, not pods themselves. Scaling `app.replicaCount` scales the gateway and its local worker capacity together.
+
+### Migrations stay single-writer
+
+Schema migrations run once, from the Helm pre-install/pre-upgrade Job, never from app pods. That is why the [example values](#prepare-values) set `SKIP_MIGRATIONS: "1"` on `app.env`. With N app pods, letting each pod run migrations on boot would race the schema. The Job is the single writer and the pods skip it.
+
 ## Upgrade
 
 Pin image tags for production upgrades, then run:

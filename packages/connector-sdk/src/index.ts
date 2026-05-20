@@ -137,6 +137,16 @@ export {
 export type { BrowserNetworkConfig, BrowserNetworkResult } from './browser-network.js';
 export { browserNetworkSync } from './browser-network.js';
 export type { ReactionContext } from './reaction-sdk.js';
+export type { ReactionClient } from './reaction-client-types.js';
+export type {
+  EntityCreateInput,
+  EntityLinkInput,
+  EntityListFilter,
+  EntityUpdateInput,
+  KnowledgeReadInput,
+  KnowledgeSaveInput,
+  KnowledgeSearchInput,
+} from './reaction-client-types.js';
 export type { Env } from './types.js';
 
 // =============================================================================

@@ -2,11 +2,10 @@
  * Reaction for the `inbound-triage` watcher.
  *
  * Fires every 2h after the watcher LLM extracts new and enriched leads from
- * GitHub/X/HN signals. The script writes a `lead_interaction` event per
- * recommended action so the next digest can count them — the watcher itself
- * already creates the `lead` rows, so we don't duplicate that here.
+ * GitHub/X/HN signals. Persists a `lead_interaction` event per run so the
+ * next digest can count them.
  */
-import type { ReactionContext } from "@lobu/connector-sdk";
+import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
 interface TriageData {
   new_leads?: Array<{
@@ -19,10 +18,11 @@ interface TriageData {
   notable?: boolean;
 }
 
-export default async (ctx: ReactionContext, client: any): Promise<void> => {
+export default async (
+  ctx: ReactionContext,
+  client: ReactionClient,
+): Promise<void> => {
   const data = ctx.extracted_data as TriageData;
-  // Nothing notable → nothing to persist. The watcher's prompt is explicit
-  // about not manufacturing noise; we mirror that here.
   if (!data.notable) return;
 
   const actions = data.recommended_actions ?? [];

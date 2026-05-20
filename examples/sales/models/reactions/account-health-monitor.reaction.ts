@@ -5,7 +5,7 @@
  * persist a `health_change` event so the renewal-risk view + weekly digest
  * have a stable record without re-extracting from the CRM stream.
  */
-import type { ReactionContext } from "@lobu/connector-sdk";
+import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
 interface HealthData {
   account_changes?: Array<{
@@ -18,13 +18,14 @@ interface HealthData {
 
 const RISK_ORDER = { low: 0, medium: 1, high: 2 } as const;
 
-export default async (ctx: ReactionContext, client: any): Promise<void> => {
+export default async (
+  ctx: ReactionContext,
+  client: ReactionClient,
+): Promise<void> => {
   const data = ctx.extracted_data as HealthData;
   const changes = data.account_changes ?? [];
-  // Only persist *worsening* transitions — improvements are visible in the
-  // CRM stream and don't need a durable flag.
   const escalations = changes.filter(
-    (c) => RISK_ORDER[c.current_risk] > RISK_ORDER[c.previous_risk]
+    (c) => RISK_ORDER[c.current_risk] > RISK_ORDER[c.previous_risk],
   );
   if (escalations.length === 0) return;
 

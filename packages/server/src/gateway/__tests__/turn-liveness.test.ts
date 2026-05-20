@@ -27,7 +27,7 @@ import {
   type TurnRouting,
 } from "../orchestration/turn-liveness.js";
 import {
-  ensurePgliteForGatewayTests,
+  ensureDbForGatewayTests,
   resetTestDatabase,
 } from "./helpers/db-setup.js";
 
@@ -36,7 +36,7 @@ const TURN_TIMEOUT_QUEUE = "internal:turn_timeout";
 let queue: RunsQueue;
 
 beforeAll(async () => {
-  await ensurePgliteForGatewayTests();
+  await ensureDbForGatewayTests();
 });
 
 beforeEach(async () => {

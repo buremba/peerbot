@@ -179,7 +179,7 @@ RAW="$(
   UNIT_LOG="$UNIT_LOG" UNIT_EXIT="$UNIT_EXIT" \
   INTEGRATION_LOG="$INTEGRATION_LOG" INTEGRATION_EXIT="$INTEGRATION_EXIT" \
   GH_TOKEN="$GH_TOKEN_VAL" \
-  DATABASE_URL="$DATABASE_URL" \
+  DATABASE_URL="${DATABASE_URL:-}" \
   pi --mode json --no-session --models "$PI_REVIEW_MODELS" -p "@${PROMPT_FILE}" "Review the diff. Emit only the JSON verdict." < /dev/null
 )"
 PI_EXIT=$?

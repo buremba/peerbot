@@ -419,9 +419,7 @@ export function shouldAutoApplyLocalProject(opts: {
   localContextReady: boolean;
   hasLobuToml: boolean;
 }): boolean {
-  return (
-    opts.mode === "embedded" && opts.localContextReady && opts.hasLobuToml
-  );
+  return opts.mode === "embedded" && opts.localContextReady && opts.hasLobuToml;
 }
 
 /**

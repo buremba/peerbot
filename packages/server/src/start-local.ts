@@ -14,6 +14,11 @@
 // asserts on load, so this must be the first import; see assert-node-version.ts.
 import './utils/assert-node-version';
 
+// Sentry must init before any other imports for auto-instrumentation
+// (postgres.js, http, etc.). No-op when SENTRY_DSN is unset, which is the
+// common case for `lobu run` installs — the import is cheap.
+import './instrument';
+
 import { fork } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
@@ -48,9 +53,13 @@ import { pg_trgm } from '@electric-sql/pglite/contrib/pg_trgm';
 import { vector } from '@electric-sql/pglite/vector';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 import { getRequestListener } from '@hono/node-server';
+import { assertExternalDepsResolvable } from '@lobu/connector-worker/compile';
+import * as Sentry from '@sentry/node';
 import { Hono } from 'hono';
+import { closeDbSingleton } from './db/client';
 import { listMigrationFiles, loadMigrationUpSection } from './db/migration-loader';
 import type { Env } from './index';
+import { isSentryReported, markSentryReported } from './sentry';
 import { getEnvFromProcess } from './utils/env';
 import logger from './utils/logger';
 
@@ -64,7 +73,16 @@ const PORT = parseInt(process.env.PORT || '8787', 10);
 const HOST = process.env.HOST?.trim() || '127.0.0.1';
 const EMBEDDINGS_PORT = parseInt(process.env.EMBEDDINGS_PORT || '0', 10);
 const APP_ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
+const PACKAGE_REPO_ROOT = join(APP_ROOT, '..', '..');
 const require = createRequire(import.meta.url);
+
+// Mirror server.ts: downstream `buildGatewayConfig()` in the embedded
+// gateway derives worker paths from LOBU_DEV_PROJECT_PATH. Without this
+// fallback, users running `lobu run` from a project subdir get a wrong
+// cwd-relative resolve (see CLAUDE.md: "lobu run from a project subdir").
+if (!process.env.LOBU_DEV_PROJECT_PATH) {
+  process.env.LOBU_DEV_PROJECT_PATH = PACKAGE_REPO_ROOT;
+}
 
 function resolveExistingPath(...candidates: Array<string | undefined>): string | null {
   for (const candidate of candidates) {
@@ -164,7 +182,7 @@ async function main() {
 
   const { app: mainApp } = await import('./index');
   const { initWorkspaceProvider } = await import('./workspace');
-  const { initLobuGateway, getLobuCoreServices } = await import('./lobu/gateway');
+  const { initLobuGateway, getLobuCoreServices, stopLobuGateway } = await import('./lobu/gateway');
   const { bootTaskScheduler } = await import('./scheduled/jobs');
 
   await initWorkspaceProvider();
@@ -202,13 +220,66 @@ async function main() {
     Object.assign(c.env, env);
     return next();
   });
-  // Mount the embedded Lobu gateway (Agent API + worker proxy + MCP) at
-  // /lobu BEFORE the main app's catch-all. Mirrors server.ts so that
-  // `lobu chat` / `lobu run` / SDK clients targeting `<origin>/lobu/api/v1/*`
-  // resolve identically in local-mode and production. Without this the
-  // bundle exposes /api/<orgSlug>/* (admin REST) but nothing under /lobu —
-  // so the public Agent API 404s and `lobu chat` fails before the worker
-  // even starts.
+
+  // Server-error capture. Mirrors server.ts: routes either throw (caught by
+  // onError below, full stack preserved) or try/catch and return c.json(...,
+  // 500) (only the response status is visible, so capture from the post-
+  // response middleware). Either branch marks the request reported so the
+  // pino → Sentry forwarder doesn't double-count. No-op when SENTRY_DSN is
+  // unset because Sentry.init was a no-op (`./instrument`).
+  wrapper.use('*', async (c, next) => {
+    await next();
+    if (c.res.status >= 500 && !isSentryReported(c)) {
+      let body: unknown = null;
+      try {
+        body = await c.res.clone().json();
+      } catch {
+        // response wasn't JSON; ignore
+      }
+      const message =
+        (body && typeof body === 'object' && 'error' in body && typeof (body as { error?: unknown }).error === 'string'
+          ? (body as { error: string }).error
+          : null) ?? `HTTP ${c.res.status} from ${c.req.method} ${c.req.path}`;
+      Sentry.captureMessage(message, {
+        level: 'error',
+        tags: {
+          source: 'http_response',
+          http_method: c.req.method,
+          http_status: String(c.res.status),
+        },
+        extra: {
+          path: c.req.path,
+          url: c.req.url,
+          response_body: body,
+        },
+      });
+      markSentryReported(c);
+    }
+  });
+
+  wrapper.onError((err, c) => {
+    if (!isSentryReported(c)) {
+      Sentry.captureException(err, {
+        tags: {
+          source: 'app_onError',
+          http_method: c.req.method,
+        },
+        extra: {
+          path: c.req.path,
+          url: c.req.url,
+        },
+      });
+      markSentryReported(c);
+    }
+    logger.error({ err, path: c.req.path, sentryReported: true }, 'Unhandled error in HTTP handler');
+    return c.json({ error: 'Internal server error' }, 500);
+  });
+
+  // Mount the embedded Lobu gateway under /lobu (mirrors server.ts:199-202).
+  // Without this, the public Agent API (`/lobu/api/v1/agents/*`) and bundled
+  // docs are 404 in PGlite mode — only the org-scoped REST app at `/` works.
+  // This was the missing piece behind PR #637, which only fixed the Postgres
+  // entrypoint. The Sentry middleware above wraps both this and the `/` mount.
   if (lobuApp) {
     wrapper.route('/lobu', lobuApp);
   }
@@ -241,6 +312,13 @@ async function main() {
     stopReaper();
     stopScheduler();
     await vite?.close();
+    // Drain MCP sessions / DB listeners / secret-proxy before tearing down
+    // PGlite-owned resources below — gateway holds postgres.js connections
+    // that talk to the socket server.
+    await stopLobuGateway();
+    // Close the postgres.js singleton pool before tearing down the socket
+    // server underneath it; otherwise pooled connections hang on EPIPE.
+    await closeDbSingleton();
     httpServer.close();
     embeddingsChild?.kill();
     await socketServer.stop();
@@ -294,6 +372,16 @@ async function main() {
   httpServer.listen(PORT, HOST, () => {
     logger.info(`Lobu running at http://${HOST}:${PORT}`);
     logger.info(`Data: ${DATA_DIR}`);
+    // Crash loud if the runtime image is missing any connector external dep,
+    // instead of letting every feed silently fail with "Missing npm
+    // dependency: X" hours later. Run after listen() so the synchronous
+    // require.resolve walk doesn't add to cold-boot latency.
+    try {
+      assertExternalDepsResolvable(require.resolve);
+    } catch (err) {
+      logger.error({ err }, 'Connector external dependency check failed');
+      process.exit(1);
+    }
     // Embedded daemon must wait for the listener — its boot-time
     // health check hits `/api/health` on this same process.
     embeddedWorker = startEmbeddedConnectorWorker(env, `http://${HOST}:${PORT}`);
@@ -468,7 +556,49 @@ async function startEmbeddings(): Promise<ReturnType<typeof fork> | null> {
   return child;
 }
 
+/**
+ * Defensive error → plain-object serializer for the top-level boot catch.
+ *
+ * Mirrors server.ts's helper (see #766): `JSON.stringify(new Error('boom'))`
+ * returns `{}` because Error's own properties are non-enumerable. Walks the
+ * error manually so a boot failure (ZodError, AggregateError, wrapped cause
+ * chain, etc.) always carries message + stack regardless of pino serializer
+ * config or log-shipper field stripping.
+ */
+function serializeBootError(err: unknown): Record<string, unknown> {
+  if (err === null || err === undefined) return { value: String(err) };
+  if (typeof err !== 'object') return { value: String(err), type: typeof err };
+  const e = err as Error & {
+    code?: unknown;
+    cause?: unknown;
+    issues?: unknown;
+    errors?: unknown;
+  };
+  const out: Record<string, unknown> = {
+    type: e?.constructor?.name ?? 'Error',
+    message: typeof e.message === 'string' ? e.message : String(e),
+  };
+  if (typeof e.stack === 'string') out.stack = e.stack;
+  if (e.code !== undefined) out.code = e.code;
+  if (Array.isArray(e.issues)) out.issues = e.issues;
+  if (Array.isArray(e.errors)) {
+    out.errors = e.errors.map((child) => serializeBootError(child));
+  }
+  if (e.cause !== undefined && e.cause !== err) {
+    out.cause = serializeBootError(e.cause);
+  }
+  return out;
+}
+
 main().catch((error) => {
-  logger.error({ err: error }, 'Failed to start');
+  const serialized = serializeBootError(error);
+  logger.error({ err: serialized, error: serialized }, 'Failed to start');
+  // Plain-text stderr fallback for log shippers that drop structured fields.
+  process.stderr.write(
+    `Failed to start: ${serialized.type ?? 'Error'}: ${serialized.message ?? ''}\n`
+  );
+  if (typeof serialized.stack === 'string') {
+    process.stderr.write(`${serialized.stack}\n`);
+  }
   process.exit(1);
 });

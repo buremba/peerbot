@@ -49,7 +49,13 @@ export type {
 export { IDENTITY } from './connector-types.js';
 // Identity-engine SDK contracts. Each schema export is both a TypeBox
 // runtime validator (value) AND a TypeScript type via declaration merging.
-export {
+// We import then re-export locally instead of `export { … } from
+// './identity-types.js'`: bun's ESM linker (macOS + node26 + bun 1.3.5)
+// intermittently fails to resolve a name through a large transitive
+// re-export barrel, surfacing as a flaky `Export named 'X' not found in
+// dist/index.js` under concurrent test load (issue #976). A local export
+// list links against the already-bound import.
+import {
   AssuranceLevel,
   assuranceMeets,
   AutoCreateWhenRule,
@@ -63,6 +69,20 @@ export {
   IDENTITY_FACT_SEMANTIC_TYPE,
   RelationshipTypeIdentityMetadata,
 } from './identity-types.js';
+export {
+  AssuranceLevel,
+  assuranceMeets,
+  AutoCreateWhenRule,
+  CLAIM_COLLISION_SEMANTIC_TYPE,
+  ClaimCollisionPayload,
+  ConnectorFact,
+  ConnectorIdentityCapability,
+  DerivedFromProvenance,
+  DerivedRelationshipMetadata,
+  FactEventMetadata,
+  IDENTITY_FACT_SEMANTIC_TYPE,
+  RelationshipTypeIdentityMetadata,
+};
 export {
   normalizeAuthUserId,
   normalizeEmail,

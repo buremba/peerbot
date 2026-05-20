@@ -1,6 +1,6 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test clean dev build-packages ensure-submodule clean-workers test-unit test-integration test-e2e typecheck task-setup task-clean task-use bump pi-review
+.PHONY: help setup build test clean dev build-packages ensure-submodule clean-workers test-unit test-integration test-e2e typecheck task-setup task-clean task-use bump review
 
 # Default target
 help:
@@ -18,7 +18,7 @@ help:
 	@echo "  make task-clean NAME=<name> [FORCE=1]      - Remove the worktree, both branches, and the Lobu context (refuses if there's uncommitted/unpushed work unless FORCE=1)"
 	@echo "  make task-use NAME=<name|main>             - Point Chrome ext / Mac app symlinks at this worktree (or 'main' for the canonical checkout)"
 	@echo "  make bump SUBMODULE=<path> [TARGET=<ref>]  - Lightweight worktree + commit + PR for a trivial submodule pointer bump (skips bun install, .env, ports)"
-	@echo "  make pi-review [PR=<n>]                    - Run the shadow-mode pi review locally in cwd (auto-derives PR from branch; pass PR=<n> to override)"
+	@echo "  make review [BASE=<branch>]                - Run the local review (typecheck+unit+integration + pi) in cwd; posts pi-review check-run if a PR exists for the current branch"
 
 # Strict typecheck — mirrors the Dockerfile so local matches CI. Catches
 # what `build-packages` (relaxed, bundler-only) misses.
@@ -143,12 +143,11 @@ clean-workers:
 	@echo "✅ Worker subprocesses stopped"
 
 # --- Shadow-mode AI reviewer -----------------------------------------------
-# Local-only: the agent that landed a PR runs this from the PR's worktree
-# (cwd = the checked-out PR, deps installed, .env in place, postgres
-# reachable). The script auto-derives the PR number from the current branch
-# (pass PR=<n> to override), runs the test suites, invokes pi (using local
-# ~/.pi/agent state), and posts the JSON verdict as a check-run + PR
-# comment. GitHub Actions does not run pi-review. See docs/REVIEW_SCHEMA.md.
+# Local-only: runs the deterministic suites in cwd, then invokes pi against
+# `git diff <BASE>...HEAD` (BASE defaults to main; override with BASE=<branch>
+# env or `--base <branch>` arg). Prints a JSON verdict on the last line. If
+# the current branch has an open PR, also posts a pi-review check-run + PR
+# comment. See docs/REVIEW_SCHEMA.md.
 
-pi-review:
-	@./scripts/run-pi-review.sh $(if $(PR),$(PR),)
+review:
+	@./scripts/review.sh $(if $(BASE),--base $(BASE),)

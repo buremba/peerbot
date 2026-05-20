@@ -1,10 +1,11 @@
-# PR review — Lobu
+# Code review — Lobu
 
-You are reviewing PR **#$PR_NUMBER** on the lobu monorepo. Final output is a
-single JSON object matching `docs/REVIEW_SCHEMA.md`. **Emit only the JSON.
-No prose, no Markdown fences, no commentary before or after.**
+You are reviewing the local changes on the current branch of the lobu
+monorepo, against `$BASE_BRANCH`. Final output is a single JSON object
+matching `docs/REVIEW_SCHEMA.md`. **Emit only the JSON. No prose, no
+Markdown fences, no commentary before or after.**
 
-The repo is checked out at the PR head SHA. A working dev environment is set
+The repo is checked out at `$HEAD_SHA`. A working dev environment is set
 up: Postgres (with `pgvector`) is reachable at `$DATABASE_URL`, dependencies
 are installed, workspace packages are built, and a minimal `.env` is on
 disk. You have bash. Use it.
@@ -12,10 +13,13 @@ disk. You have bash. Use it.
 ## 1. Read the diff
 
 ```bash
-gh pr view "$PR_NUMBER" --json number,title,body,headRefOid,baseRefName,additions,deletions,files,author
-gh pr diff "$PR_NUMBER"
-gh pr checks "$PR_NUMBER"
+git log --oneline "$BASE_BRANCH..HEAD"
+git diff --stat "$BASE_BRANCH...HEAD"
+git diff "$BASE_BRANCH...HEAD"
 ```
+
+There may or may not be a PR for this branch — don't assume one exists.
+The review is on the local diff, not on PR metadata.
 
 ## 2. Test results (already run by the script — read, don't re-run)
 
@@ -185,7 +189,8 @@ can't name the file, line, and the exact change, leave it out and put it in
 
 ### Categories
 
-Sum should approximate `additions + deletions`. Path → category:
+Sum should approximate `additions + deletions` from `git diff --stat
+"$BASE_BRANCH...HEAD"`. Path → category:
 
 | Pattern | Category |
 | --- | --- |

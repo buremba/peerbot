@@ -1,12 +1,14 @@
 # PR Review Verdict Schema
 
-After completing a PR, the agent runs `make pi-review` locally from the PR's
-worktree — the script auto-derives the PR number from the current branch
-(pass `PR=<n>` to override). `scripts/run-pi-review.sh` drives the
-deterministic test suites in cwd, invokes `pi` against the diff, and posts a
-`pi-review` check-run plus a PR comment with a JSON verdict matching this
-schema. **GitHub Actions does not run pi-review** — it's a local-driven
-shadow mode owned by the agent that landed the PR.
+After making changes on a feature branch, the agent runs `make review`
+locally. `scripts/review.sh` drives the deterministic test suites in cwd,
+invokes `pi` against `git diff <base>...HEAD` (base defaults to `main`,
+override with `BASE=<branch>` or `--base <branch>`), and prints a JSON
+verdict matching this schema. If a PR exists for the current branch, the
+script also posts a `pi-review` check-run on HEAD plus a PR comment with
+the same verdict — that posting is a bonus, not a requirement. **GitHub
+Actions does not run review** — it's a local-driven shadow mode owned by
+the agent doing the work.
 
 A future merge bot will read this verdict and decide whether to auto-merge.
 For now the verdict is informational: the check-run always finishes with
@@ -227,8 +229,8 @@ not gated by this check-run yet. The point of shadow mode is to observe how
 the verdicts track real-world PR outcomes so the gate thresholds above can
 be calibrated before they are wired up.
 
-Today's flow: agent finishes a PR → from the PR's worktree runs `make
-pi-review` (auto-derives PR from branch) → pi reviews + posts check-run + PR
-comment → human reads the verdict in the GitHub UI and merges. A future
-merge bot will read the verdict and apply the gate thresholds above; that
-bot doesn't exist yet.
+Today's flow: agent finishes a change → runs `make review` from the
+branch's worktree → pi reviews and prints the JSON verdict (and posts a
+check-run + PR comment if a PR exists) → human reads the verdict and
+decides whether to merge. A future merge bot will read the verdict and
+apply the gate thresholds above; that bot doesn't exist yet.

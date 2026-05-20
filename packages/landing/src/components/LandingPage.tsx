@@ -344,10 +344,31 @@ function GithubIcon() {
  * unmount) can detach everything cleanly.
  */
 function HeroAsciinema() {
+  // role="img" + aria-label give screen readers a single semantic anchor for
+  // the whole player. The visually-hidden <p> sibling renders even when the
+  // asciinema player script fails to mount (JS error, blocked CDN, JS off),
+  // so assistive tech and no-JS visitors still get the gist of what plays.
+  // The asciinema mount target is a separate child <div> so the player's
+  // DOM rewrites don't clobber the summary.
   return (
     <div
       class="w-full overflow-hidden"
-      ref={(node) => {
+      role="img"
+      aria-label="Demo: scaffold a Lobu agent with the CLI — paste the prompt, get a project with lobu.toml, schema.yaml, and a validated config in under a minute."
+      style={{
+        backgroundColor: "var(--color-landing-code-bg)",
+      }}
+    >
+      <p class="sr-only">
+        Asciicast: <code>claude</code> opens, the user pastes a setup prompt,
+        Claude runs <code>lobu init support-bot</code>, writes{" "}
+        <code>models/schema.yaml</code> with customer and ticket entities,
+        then runs <code>lobu validate</code> which prints{" "}
+        <code>lobu.toml is valid</code>.
+      </p>
+      <div
+        class="w-full"
+        ref={(node) => {
         type CleanupNode = HTMLDivElement & {
           __lobuHeroCleanup?: () => void;
         };
@@ -409,10 +430,8 @@ function HeroAsciinema() {
           instance?.removeEventListener?.("play", onManualPlay);
         };
       }}
-      style={{
-        backgroundColor: "var(--color-landing-code-bg)",
-      }}
-    />
+      />
+    </div>
   );
 }
 
@@ -920,19 +939,19 @@ function RunAnywhereSection() {
           <span style={{ color: "var(--color-landing-code-comment)" }}>→</span>{" "}
           worker{"    "}
           <span style={{ color: "var(--color-landing-code-string)" }}>
-            pid=72341
+            pid=&lt;n&gt;
           </span>
           {"\n"}
           <span style={{ color: "var(--color-landing-code-comment)" }}>→</span>{" "}
           memory{"    "}
           <span style={{ color: "var(--color-landing-code-string)" }}>
-            2 entities
+            N entities
           </span>
           {"\n"}
           <span style={{ color: "var(--color-landing-code-comment)" }}>→</span>{" "}
           watchers{"  "}
           <span style={{ color: "var(--color-landing-code-string)" }}>
-            1 armed
+            N armed
           </span>
         </>
       ),
@@ -981,25 +1000,25 @@ function RunAnywhereSection() {
           <span style={{ color: "var(--color-landing-code-comment)" }}>→</span>{" "}
           org{"      "}
           <span style={{ color: "var(--color-landing-code-string)" }}>
-            acme
+            &lt;your-org&gt;
           </span>
           {"\n"}
           <span style={{ color: "var(--color-landing-code-comment)" }}>→</span>{" "}
           region{"   "}
           <span style={{ color: "var(--color-landing-code-string)" }}>
-            us-east-1
+            &lt;your-region&gt;
           </span>
           {"\n"}
           <span style={{ color: "var(--color-landing-code-comment)" }}>→</span>{" "}
           agents{"   "}
           <span style={{ color: "var(--color-landing-code-string)" }}>
-            1 deployed
+            N deployed
           </span>
           {"\n"}
           <span style={{ color: "var(--color-landing-code-comment)" }}>→</span>{" "}
           gateway{"  "}
           <span style={{ color: "var(--color-landing-code-string)" }}>
-            acme.lobu.run
+            &lt;your-org&gt;.lobu.run
           </span>
         </>
       ),

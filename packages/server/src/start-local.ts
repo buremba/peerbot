@@ -52,6 +52,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { pg_trgm } from "@electric-sql/pglite/contrib/pg_trgm";
 import { vector } from "@electric-sql/pglite/vector";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
+import { assertExternalDepsResolvable } from "@lobu/connector-worker/compile";
 import { ensureDefaultAgent } from "./auth/default-provisioning";
 import { ensureInstallOperator } from "./auth/install-operator";
 import {
@@ -245,6 +246,22 @@ async function main(): Promise<void> {
 					}
 				} catch (err) {
 					logger.warn({ err }, "Default-agent provisioning failed");
+				}
+			},
+		],
+		// Mirror server.ts: crash loud if the runtime image is missing any
+		// connector external dep, instead of letting each feed silently fail
+		// with "Missing npm dependency: X" hours later. Runs after listen() so
+		// the sync require.resolve walk doesn't add to cold-boot latency.
+		// Without this hook, PGlite mode silently re-introduces the drift the
+		// refactor exists to prevent — flagged by pi review on #951.
+		postListenHooks: [
+			() => {
+				try {
+					assertExternalDepsResolvable(require.resolve);
+				} catch (err) {
+					logger.error({ err }, "Connector external dependency check failed");
+					process.exit(1);
 				}
 			},
 		],

@@ -375,41 +375,68 @@ export function createServerLifecycle(
 				{ signal, mode },
 				"Received shutdown signal, stopping gracefully...",
 			);
+			// Each step is wrapped in try/catch so one failing teardown can't
+			// block the rest — we still want the listener closed and the
+			// process gone, even if (say) the gateway drain rejects. Catch +
+			// log + continue.
+			const safe = async (step: string, fn: () => Promise<void> | void) => {
+				try {
+					await fn();
+				} catch (err) {
+					logger.error({ err, step, mode }, "Shutdown step failed; continuing");
+				}
+			};
 			// Order matters:
 			//   a. Stop accepting new work from the embedded connector worker.
 			if (embeddedWorker) {
-				embeddedWorker.stop();
-				await embeddedWorker.wait(15_000);
+				const worker = embeddedWorker;
+				await safe("embeddedWorker.stop", async () => {
+					worker.stop();
+					await worker.wait(15_000);
+				});
 			}
 			//   b. Close Vite (HMR sockets) before tearing down the http server
 			//      so dev-mode listeners detach cleanly.
-			await vite?.close();
+			await safe("vite.close", async () => {
+				await vite?.close();
+			});
 			//   c. Stop the reaper poll loop.
-			stopReaper();
+			await safe("stopReaper", () => stopReaper());
 			//   d. Stop the task scheduler dispatch loop.
-			taskScheduler.stop();
+			await safe("taskScheduler.stop", () => taskScheduler.stop());
 			//   e. Drain MCP sessions / DB listeners / secret-proxy. Gateway
 			//      holds postgres.js connections that must be released before
 			//      mode-specific db teardown runs.
-			await stopLobuGateway();
+			await safe("stopLobuGateway", () => stopLobuGateway());
 			//   f. Close the postgres.js singleton pool.
-			await closeDbSingleton();
+			await safe("closeDbSingleton", () => closeDbSingleton());
 			//   g. Mode-specific teardown (PGlite kills embeddings child, stops
 			//      socket server, closes the in-process db).
-			for (const teardown of extraTeardown) {
-				await teardown();
+			for (let i = 0; i < extraTeardown.length; i++) {
+				await safe(`extraTeardown[${i}]`, extraTeardown[i]);
 			}
 			//   h. Finally, close the listener. Matches the historical behavior of
 			//      not awaiting (server.ts:260; start-local.ts:322).
 			httpServer.close();
 			process.exit(0);
 		};
-		process.on("SIGTERM", () => {
-			void shutdown("SIGTERM");
-		});
-		process.on("SIGINT", () => {
-			void shutdown("SIGINT");
-		});
+		// Single-flight guard: SIGTERM+SIGINT or a double-tap on either must
+		// not run shutdown concurrently — concurrent gateway-stop calls race
+		// the secret-proxy close, and concurrent process.exit calls leak.
+		let shutdownStarted = false;
+		const onSignal = (signal: string) => {
+			if (shutdownStarted) {
+				logger.warn(
+					{ signal, mode },
+					"Shutdown already in progress; ignoring signal",
+				);
+				return;
+			}
+			shutdownStarted = true;
+			void shutdown(signal);
+		};
+		process.on("SIGTERM", () => onSignal("SIGTERM"));
+		process.on("SIGINT", () => onSignal("SIGINT"));
 
 		// 10. Optional heap-snapshot wiring (gated on ALLOW_HEAP_SNAPSHOT=1).
 		maybeWireHeapSnapshot();

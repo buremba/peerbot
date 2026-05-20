@@ -321,13 +321,16 @@ describe("createServerLifecycle (source-level contract)", () => {
 	});
 
 	it("shuts down in the documented order", () => {
-		const worker = indexOf("embeddedWorker.stop()");
-		const vite = indexOf("await vite?.close()");
-		const reaper = indexOf("stopReaper()");
-		const scheduler = indexOf("taskScheduler.stop()");
-		const gateway = indexOf("await stopLobuGateway()");
-		const db = indexOf("await closeDbSingleton()");
-		const extra = indexOf("for (const teardown of extraTeardown)");
+		// Each step is wrapped in `safe("<step>", …)` so a failing teardown
+		// can't block the rest. Order-check by the step label which is stable
+		// across refactors of the wrapper.
+		const worker = indexOf('safe("embeddedWorker.stop"');
+		const vite = indexOf('safe("vite.close"');
+		const reaper = indexOf('safe("stopReaper"');
+		const scheduler = indexOf('safe("taskScheduler.stop"');
+		const gateway = indexOf('safe("stopLobuGateway"');
+		const db = indexOf('safe("closeDbSingleton"');
+		const extra = indexOf("safe(`extraTeardown[");
 		const close = indexOf("httpServer.close();");
 
 		expect(worker).toBeLessThan(vite);
@@ -337,6 +340,24 @@ describe("createServerLifecycle (source-level contract)", () => {
 		expect(gateway).toBeLessThan(db);
 		expect(db).toBeLessThan(extra);
 		expect(extra).toBeLessThan(close);
+	});
+
+	it("wraps every shutdown step in a safe() helper (one failing step does not skip the rest)", () => {
+		// The `safe()` wrapper is what guarantees that — for example — a
+		// rejecting `stopLobuGateway()` doesn't leave the listener bound and
+		// the process pinned. If a future refactor inlines a raw `await` for
+		// any step, this assertion catches it.
+		const safeCalls = LIFECYCLE_SOURCE.match(/safe\((`extraTeardown\[|")/g);
+		expect(safeCalls?.length ?? 0).toBeGreaterThanOrEqual(7);
+	});
+
+	it("single-flights concurrent shutdown signals", () => {
+		// SIGTERM and SIGINT can both arrive (or one can fire twice during a
+		// supervisor restart). The guard short-circuits the second entry so
+		// gateway-stop / extraTeardown / process.exit don't race.
+		expect(LIFECYCLE_SOURCE).toContain("let shutdownStarted = false");
+		expect(LIFECYCLE_SOURCE).toContain("if (shutdownStarted)");
+		expect(LIFECYCLE_SOURCE).toContain("shutdownStarted = true");
 	});
 
 	it("registers SIGTERM and SIGINT handlers", () => {

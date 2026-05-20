@@ -63,6 +63,30 @@ if [ -f .env ]; then
 fi
 [ -n "${DATABASE_URL:-}" ] || { echo "DATABASE_URL not set." >&2; exit 2; }
 
+# --- build ------------------------------------------------------------------
+# Tests need workspace packages built. Worktree's `dist/` may be stale or
+# missing — always rebuild before tests. Cheap if up-to-date.
+
+BUILD_LOG="/tmp/lobu-review-build.log"
+echo ">> make build-packages → $BUILD_LOG"
+set +e
+make build-packages > "$BUILD_LOG" 2>&1
+BUILD_EXIT=$?
+set -e
+if [ $BUILD_EXIT -ne 0 ]; then
+  echo "!! build failed (exit $BUILD_EXIT) — proceeding so pi can review the diff, but unit tests will likely fail" >&2
+fi
+
+# --- DB schema ownership ----------------------------------------------------
+# Postgres 15+ restricts CREATE on the `public` schema to its owner. Integration
+# tests run DDL as the DATABASE_URL user — make them the schema owner so
+# `setupTestDatabase` doesn't trip on "must be owner of schema public".
+
+DB_USER="$(printf '%s' "$DATABASE_URL" | sed -E 's|^postgres(ql)?://([^:@/]+).*|\2|')"
+if [ -n "$DB_USER" ] && [ "$DB_USER" != "$DATABASE_URL" ]; then
+  psql "$DATABASE_URL" -tAc "ALTER SCHEMA public OWNER TO \"$DB_USER\"" >/dev/null 2>&1 || true
+fi
+
 # --- test suites ------------------------------------------------------------
 
 TYPECHECK_LOG="/tmp/lobu-review-typecheck.log"
@@ -123,8 +147,18 @@ RAW="$(
 PI_EXIT=$?
 set -e
 
-# pi --mode json may wrap each message in an envelope OR emit a single object.
-VERDICT="$(printf '%s\n' "$RAW" | jq -rs '[.[] | select(.role == "assistant")] | last | .content // empty' 2>/dev/null || true)"
+# pi --mode json emits a stream of NDJSON envelopes. The last `agent_end`
+# event has .messages[] with role+content; we want the LAST assistant
+# message's last `text` content item — that's the verdict JSON string.
+# Fall back to scanning all events for assistant messages if the agent_end
+# envelope isn't present, then fall back to RAW.
+VERDICT="$(printf '%s\n' "$RAW" | jq -rs '
+  ( [.[] | select(.type == "agent_end") | .messages[]?] +
+    [.[] | select(.role == "assistant")] )
+  | map(select(.role == "assistant" and (.content | type) == "array"))
+  | last
+  | (.content // []) | map(select(.type == "text")) | last | .text // empty
+' 2>/dev/null || true)"
 [ -n "$VERDICT" ] || VERDICT="$RAW"
 VERDICT="$(printf '%s\n' "$VERDICT" | sed -e 's/^```json//' -e 's/^```//' -e 's/```$//')"
 

@@ -20,6 +20,10 @@ import { getStoredCredential } from "../routes/internal/device-auth.js";
 import type { WritableSecretStore } from "../secrets/index.js";
 import { resolveEffectiveModelRef } from "../auth/settings/model-selection.js";
 import type { IMessageQueue } from "../infrastructure/queue/index.js";
+import {
+  commitTerminalReply,
+  extendTurnDeadlines,
+} from "../orchestration/turn-liveness.js";
 import type { InstructionService } from "../services/instruction-service.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import {
@@ -406,6 +410,10 @@ export class WorkerGateway {
             `[WORKER-GATEWAY] Received heartbeat ACK from ${deploymentName}`
           );
         }
+        // A worker ACK (delivery receipt or heartbeat) is a worker-driven
+        // liveness signal — push the turn-liveness deadline forward so a live
+        // but slow worker is never falsely failed by the sweep. Best-effort.
+        void extendTurnDeadlines(deploymentName);
         return c.json({ success: true });
       }
 
@@ -419,8 +427,42 @@ export class WorkerGateway {
         );
       }
 
-      // Send response to thread_response queue
-      await this.queue.send("thread_response", enrichedResponse);
+      // Send response to thread_response queue. TERMINAL rows (success
+      // completion via processedMessageIds, or error) are subject to the API
+      // owner-gate in routeToRenderer — a non-owning replica re-queues them —
+      // so they need the elevated retry budget to survive cross-pod hand-off.
+      // Non-terminal deltas/status keep default options (not owner-gated).
+      const isTerminalResponse = !!(
+        enrichedResponse.error ||
+        (Array.isArray(enrichedResponse.processedMessageIds) &&
+          enrichedResponse.processedMessageIds.length > 0)
+      );
+
+      if (isTerminalResponse) {
+        // The worker produced a real terminal reply (success or explicit
+        // error). Persist the reply AND discharge the turn-liveness marker(s)
+        // for the message(s) it processed in ONE transaction — so a pod crash
+        // can't leave a surviving marker that the sweep would later turn into a
+        // duplicate "worker stopped" error. The terminal row carries the
+        // elevated retry budget (applied inside commitTerminalReply) so it
+        // survives the owner-gate re-queue to the SSE-holding pod.
+        const dischargeIds = new Set<string>();
+        if (typeof enrichedResponse.messageId === "string") {
+          dischargeIds.add(enrichedResponse.messageId);
+        }
+        for (const id of enrichedResponse.processedMessageIds ?? []) {
+          if (typeof id === "string") dischargeIds.add(id);
+        }
+        await commitTerminalReply(
+          deploymentName,
+          [...dischargeIds],
+          enrichedResponse,
+          (enrichedResponse.organizationId as string | undefined) ?? null
+        );
+      } else {
+        // Non-terminal (delta / status): best-effort, not owner-gated.
+        await this.queue.send("thread_response", enrichedResponse);
+      }
 
       return c.json({ success: true });
     } catch (error) {

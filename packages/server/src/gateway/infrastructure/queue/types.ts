@@ -26,6 +26,26 @@ export interface QueueOptions {
   actionKey?: string;
 }
 
+/**
+ * Send options for TERMINAL `thread_response` rows (success completion or
+ * error) that are subject to the API owner-gate in `routeToRenderer`. When a
+ * non-owning replica claims such a row it throws to re-queue; the owning pod
+ * (which holds the client's SSE) must win a SKIP-LOCKED claim before delivery.
+ *
+ * A short FIXED retry delay (not the default exponential backoff, which would
+ * span hours) plus a raised retry limit gives a ~30s re-claim window. That
+ * covers both the cross-pod hand-off and the client's POST→connect gap at the
+ * small replica counts we run. After the budget is exhausted the row is
+ * dropped (the client is genuinely gone).
+ *
+ * Non-terminal rows (deltas/status) are NOT owner-gated, so they don't need
+ * this and keep the default send options.
+ */
+export const TERMINAL_DELIVERY_SEND_OPTS: QueueOptions = {
+  retryLimit: 30,
+  retryDelay: 1,
+};
+
 export interface QueueStats {
   waiting: number;
   active: number;

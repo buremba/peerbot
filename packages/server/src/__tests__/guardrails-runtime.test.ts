@@ -498,7 +498,10 @@ describe('MessageConsumer — wired input guardrail', () => {
     });
 
     // The trip path must NOT enqueue to the worker thread queue and MUST
-    // enqueue a single thread_response with the rejection content.
+    // enqueue a single thread_response with the rejection. The notice rides the
+    // `error` field (not `content`): routeToRenderer has no plain-`content`
+    // branch, so a `content`-only payload is dropped — `error` renders
+    // end-to-end (SSE error event + CLI exit 1; platforms post `Error: …`).
     const threadResponses = sentToQueue.filter(
       (q) => q.queue === 'thread_response'
     );
@@ -507,8 +510,8 @@ describe('MessageConsumer — wired input guardrail', () => {
     );
     expect(workerEnqueues.length).toBe(0);
     expect(threadResponses.length).toBe(1);
-    expect(threadResponses[0]!.data.content).toMatch(/Message rejected:/);
-    expect(threadResponses[0]!.data.content).toMatch(/SECRET/);
+    expect(threadResponses[0]!.data.error).toMatch(/Message rejected:/);
+    expect(threadResponses[0]!.data.error).toMatch(/SECRET/);
 
     await flushPendingGuardrailAudits();
     const rows = await fetchGuardrailEvents(orgId, 'input');

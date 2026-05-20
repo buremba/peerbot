@@ -164,6 +164,54 @@ export class UnifiedThreadResponseConsumer {
         ? (data.platformMetadata.sessionId as string)
         : null;
 
+    // Owner-routing for API/SSE TERMINAL delivery (success completion OR
+    // error). The SseManager is per-pod and in-memory, so a terminal event
+    // only reaches the client if THIS pod holds the SSE connection. Under N>1
+    // replicas the client's SSE (pod S, pinned by ClientIP affinity) and the
+    // pod that produced this row can differ — so a row claimed by a non-owning
+    // pod must re-queue until pod S claims it. This mirrors the platform
+    // canHandle re-queue (handleThreadResponse) and also fixes the pre-existing
+    // cross-pod success-completion drop on the API path.
+    //
+    // Scoped to TERMINAL API rows only: platform replies have their own
+    // connectionId owner-routing, and deltas stay best-effort (un-gated) to
+    // avoid per-delta re-queue churn. The re-queue relies on the owning pod
+    // eventually winning the SKIP-LOCKED claim; terminal sends use a short
+    // fixed retryDelay + raised retryLimit (see TERMINAL_DELIVERY_SEND_OPTS) so
+    // the window covers both cross-pod hand-off and the client's POST→connect
+    // gap. Sufficient at the small replica counts we run; a durable
+    // SSE-session→pod registry with targeted delivery is the future hardening
+    // for very large N.
+    // Detect API rows by platform OR teamId: the worker's HTTP response carries
+    // `teamId: "api"` but omits `platform`, while gateway-generated rows (e.g.
+    // turn-liveness errors) set `platform: "api"`. Matching only `platform`
+    // would leave NORMAL worker success/error rows un-gated → cross-pod drop.
+    // Exclude Chat SDK rows: routeToRenderer is also reached via the
+    // chatResponseBridge path, which already owner-routes by `connectionId`
+    // (canHandle re-queues to the managing instance). Gating those on SSE
+    // ownership too could re-queue a reply that was ready to deliver. The SSE
+    // owner-gate is only for pure API/SSE rows, which never carry a connectionId.
+    const isApiRow =
+      (data.platform || data.teamId) === "api" &&
+      !data.platformMetadata?.connectionId;
+    if (isApiRow) {
+      const isTerminal = !!(
+        data.error ||
+        (data.processedMessageIds && data.processedMessageIds.length)
+      );
+      const sseKey =
+        (data.platformMetadata?.sessionId as string) || data.conversationId;
+      if (
+        isTerminal &&
+        sseKey &&
+        !this.sseManager.hasActiveConnection(sseKey)
+      ) {
+        throw new Error(
+          `API SSE session ${sseKey} not owned by this gateway instance; re-queueing for owner delivery`
+        );
+      }
+    }
+
     if (data.customEvent) {
       const eventPayload = {
         ...data.customEvent.data,

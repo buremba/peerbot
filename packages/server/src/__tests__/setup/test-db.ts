@@ -318,8 +318,13 @@ export async function cleanupTestDatabase(): Promise<void> {
     AND tablename NOT LIKE 'schema_migrations%'
   `;
 
-  // Disable triggers temporarily for faster truncation
-  await db`SET session_replication_role = 'replica'`;
+  // Disable triggers temporarily for faster truncation. `session_replication_role`
+  // is superuser-only, so on a non-superuser test role (the PG15+ fresh-`createdb`
+  // shape from #950, where DATABASE_URL points at a plain CREATE-granted user) this
+  // throws `permission denied to set parameter` (42501). Treat it as best-effort:
+  // `TRUNCATE ... CASCADE` already respects FK ordering on its own, so skipping the
+  // trigger-disable only forgoes the speedup, never correctness.
+  const triggersDisabled = await trySetReplicationRole(db, 'replica');
 
   if (tables.length > 0) {
     const quotedTables = tables.map(({ tablename }) => `"${tablename}"`).join(', ');
@@ -330,11 +335,33 @@ export async function cleanupTestDatabase(): Promise<void> {
     }
   }
 
-  // Re-enable triggers
-  await db`SET session_replication_role = 'origin'`;
+  // Re-enable triggers only if we managed to disable them.
+  if (triggersDisabled) {
+    await trySetReplicationRole(db, 'origin');
+  }
 
   // Fix check constraints that are out-of-date relative to the app code
   await fixSchemaConstraints(db);
+}
+
+/**
+ * Best-effort `SET session_replication_role`. Returns true if the role was set,
+ * false if the connection user lacks the superuser right (42501) — the caller
+ * then proceeds without trigger-disabling, which is safe for `TRUNCATE CASCADE`.
+ * Any other error is a real problem and surfaces.
+ */
+async function trySetReplicationRole(
+  db: postgres.Sql,
+  role: 'replica' | 'origin'
+): Promise<boolean> {
+  try {
+    await db.unsafe(`SET session_replication_role = '${role}'`);
+    return true;
+  } catch (err) {
+    const code = (err as { code?: string } | null)?.code;
+    if (code === '42501') return false;
+    throw err;
+  }
 }
 
 /**

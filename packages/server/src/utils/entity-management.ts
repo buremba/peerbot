@@ -320,7 +320,10 @@ export async function createEntity(
       throw new Error('Entity already exists with this name/domain');
     }
     if (msg.includes('foreign key')) {
-      throw new Error(`Parent entity ${data.parent_id} does not exist`);
+      if (data.parent_id) {
+        throw new Error(`Parent entity ${data.parent_id} does not exist`);
+      }
+      throw new Error(`Foreign key violation: ${msg}`);
     }
     if (msg.includes('check constraint')) {
       throw new Error(`Invalid entity data: ${msg}`);

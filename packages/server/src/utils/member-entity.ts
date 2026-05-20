@@ -71,13 +71,17 @@ export async function ensureMemberEntity(params: EnsureMemberEntityParams): Prom
   if (params.image && imageField) metadata[imageField] = params.image;
   if (params.role) metadata.role = params.role;
 
-  await createEntity(
-    {
+  const entityData: Record<string, unknown> = {
       entity_type: '$member',
       name: params.name.trim(),
       organization_id: params.organizationId,
       metadata,
-    },
+  };
+  if (params.userId) {
+    (entityData as any).created_by = params.userId;
+  }
+  await createEntity(
+    entityData as any,
     { skipHooks: true }
   );
 }

@@ -201,7 +201,6 @@ export async function createAuth(env: Env, request?: Request) {
 				// install@<hostname> email that doesn't deliver. Refuse password
 				// reset for it so an accidental "forgot password" can't replace
 				// the operator's credential. See docs/install-operator-bootstrap.md.
-				const { getDb } = await import("../db/client");
 				const sql = getDb();
 				const rows = (await sql`
 					SELECT principal_kind FROM "user"
@@ -510,7 +509,6 @@ export async function createAuth(env: Env, request?: Request) {
 					// the hostname mint an operator session via the email channel,
 					// bypassing the ENCRYPTION_KEY guard. See
 					// docs/install-operator-bootstrap.md.
-					const { getDb } = await import("../db/client");
 					const sql = getDb();
 					const rows = (await sql`
 						SELECT principal_kind FROM "user"

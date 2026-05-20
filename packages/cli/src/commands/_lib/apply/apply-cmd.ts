@@ -7,8 +7,6 @@ import { loadProjectLink } from "../../../internal/project-link.js";
 import { CONFIG_FILENAME } from "../../../config/loader.js";
 import { ApiError, ValidationError } from "../../memory/_lib/errors.js";
 import { printError, printText } from "../../memory/_lib/output.js";
-import { compileConnectorFromFile } from "../connector-loader.js";
-import { ensureProjectDepsInstalled } from "../ensure-deps-installed.js";
 import {
   type ApplyClient,
   type RemoteAgent,
@@ -384,6 +382,16 @@ async function installConnectorDefinitions(
       // node_modules available, so esbuild can bundle the connector's declared
       // npm deps. The server can't (it only receives the artifact). Native deps
       // ride `runtime.nix.packages` and are provisioned at run time.
+      //
+      // Lazy-imported (cached by the loader) so the heavy connector-compile
+      // graph (esbuild + connector-worker + SDK) stays out of apply-cmd's
+      // module-load path — see the dynamic-import allow-list in AGENTS.md.
+      const { ensureProjectDepsInstalled } = await import(
+        "../ensure-deps-installed.js"
+      );
+      const { compileConnectorFromFile } = await import(
+        "../connector-loader.js"
+      );
       ensureProjectDepsInstalled(def.sourceFile, printText);
       const compiledCode = await compileConnectorFromFile(def.sourceFile);
       result = await client.installConnector({

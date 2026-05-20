@@ -109,6 +109,7 @@ Rules for agents:
 - **No new dynamic imports outside the allow-list below.** Use static `import` by default; new `await import(...)` sites need a measured cost justification (boot time, install footprint, Keychain prompt) added to this list in the same PR. Rationale for each entry lives as a code comment at the call site:
   - `packages/cli/src/index.ts` — lazy subcommand handlers (keeps `lobu --help` ~60ms).
   - `packages/cli/src/commands/_lib/connector-run-cmd.ts` — `browser-mirror`, `devtools-active-port`, `executeCompiledConnector`.
+  - `packages/cli/src/commands/_lib/apply/apply-cmd.ts` — `connector-loader` + `ensure-deps-installed` (the connector-compile graph: esbuild + connector-worker + SDK). Loaded only when an apply has local `*.connector.ts` to compile; keeps that graph out of apply-cmd's module-load path (and out of every CLI test that imports it).
   - `packages/cli/src/commands/_lib/apply/desired-state.ts` — `yaml` (loaded only on YAML inputs).
   - `packages/cli/src/commands/memory/_lib/browser-auth-cmd.ts` — `decryptChromeCookiesMacOS`, `playwright/chromium`.
   - `packages/server/src/server.ts` — `./embedded-runtime` is statically imported, but `./server-lifecycle` is lazy: its transitive imports read env at module-eval, and the embedded branch only finalises DATABASE_URL during `main()`. Loading the lifecycle eagerly would snapshot a stale env.

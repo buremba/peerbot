@@ -77,7 +77,14 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: pgvector-${{ matrix.platform }}
-          path: packages/pgvector-embedded/prebuilt/${{ matrix.platform }}
+          # The platform-specific library plus the shared control/SQL (vendored
+          # once at the prebuilt root). The least-common-ancestor is `prebuilt/`,
+          # so the artifact lays out as `<platform>/vector.*`, `vector.control`,
+          # `vector--*.sql`.
+          path: |
+            packages/pgvector-embedded/prebuilt/${{ matrix.platform }}
+            packages/pgvector-embedded/prebuilt/vector.control
+            packages/pgvector-embedded/prebuilt/vector--*.sql
           if-no-files-found: error
 
   open-pr:
@@ -91,12 +98,17 @@ jobs:
 
       - name: Stage regenerated artifacts
         run: |
+          PREBUILT=packages/pgvector-embedded/prebuilt
           for dir in /tmp/pgvector-artifacts/pgvector-*; do
             platform="$(basename "$dir" | sed 's/^pgvector-//')"
-            dest="packages/pgvector-embedded/prebuilt/${platform}"
+            dest="$PREBUILT/${platform}"
             rm -rf "$dest"
             mkdir -p "$dest"
-            cp -R "$dir/." "$dest/"
+            # Platform-specific library lives under <platform>/ in the artifact.
+            cp "$dir/$platform/"* "$dest/"
+            # Control + SQL are byte-identical across platforms — refresh the
+            # single shared copy at the prebuilt root (last writer wins).
+            cp "$dir"/vector.control "$dir"/vector--*.sql "$PREBUILT/"
           done
 
       - name: Open PR

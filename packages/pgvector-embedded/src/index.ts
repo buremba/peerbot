@@ -2,11 +2,15 @@
  * @lobu/pgvector-embedded
  *
  * `embedded-postgres` ships vanilla PostgreSQL binaries with no pgvector. This
- * package carries small prebuilt pgvector artifacts (the compiled extension
- * library + its `.control` / `.sql` files) for each platform `embedded-postgres`
- * supports, and injects the host platform's artifact into the live
- * `@embedded-postgres/<platform>/native` tree so `CREATE EXTENSION vector`
- * resolves at runtime.
+ * package carries small prebuilt pgvector artifacts and injects the host
+ * platform's into the live `@embedded-postgres/<platform>/native` tree so
+ * `CREATE EXTENSION vector` resolves at runtime.
+ *
+ * Layout: the compiled library is platform-specific (`prebuilt/<platform>/
+ * vector.{so,dylib}`); `vector.control` + `vector--<version>.sql` are
+ * byte-identical across platforms, so they're vendored ONCE at the prebuilt
+ * root (`prebuilt/vector.control`, `prebuilt/vector--<version>.sql`) rather
+ * than copied into each platform dir.
  *
  * Artifacts are built by `scripts/build.sh` (one platform per CI matrix cell)
  * against a same-major PostgreSQL — the extension ABI is stable within a major,
@@ -26,14 +30,28 @@ export function currentPlatformKey(): string {
   return `${process.platform}-${process.arch}`;
 }
 
-/** Directory holding the prebuilt pgvector files for a platform. */
+/** Directory holding the platform-specific prebuilt pgvector library. */
 export function prebuiltDir(platform: string = currentPlatformKey()): string {
   return join(PREBUILT_ROOT, platform);
 }
 
+/** True if the platform library file (vector.so / vector.dylib) is present. */
+function hasPrebuiltLibrary(platform: string): boolean {
+  const dir = prebuiltDir(platform);
+  if (!existsSync(dir)) return false;
+  return readdirSync(dir).some(
+    (f) =>
+      f.startsWith("vector") && (f.endsWith(".so") || f.endsWith(".dylib"))
+  );
+}
+
 /** Whether a usable prebuilt pgvector artifact exists for the platform. */
 export function hasPrebuilt(platform: string = currentPlatformKey()): boolean {
-  return existsSync(join(prebuiltDir(platform), "vector.control"));
+  // Platform-specific library + the shared control file (vendored once at root).
+  return (
+    hasPrebuiltLibrary(platform) &&
+    existsSync(join(PREBUILT_ROOT, "vector.control"))
+  );
 }
 
 /**
@@ -83,16 +101,25 @@ export function injectPgvector(
     );
   }
 
-  const src = prebuiltDir(platform);
   mkdirSync(libDst, { recursive: true });
   mkdirSync(extDst, { recursive: true });
 
-  for (const file of readdirSync(src)) {
-    if (!file.startsWith("vector")) continue;
-    // The compiled library (vector.so / vector.dylib) goes to lib/postgresql;
-    // the control + version SQL files go to share/postgresql/extension.
-    const dest =
-      file.endsWith(".so") || file.endsWith(".dylib") ? libDst : extDst;
-    cpSync(join(src, file), join(dest, file));
+  // Platform-specific compiled library → lib/postgresql.
+  const binDir = prebuiltDir(platform);
+  for (const file of readdirSync(binDir)) {
+    if (file.endsWith(".so") || file.endsWith(".dylib")) {
+      cpSync(join(binDir, file), join(libDst, file));
+    }
+  }
+
+  // Shared control + version SQL (vendored once at the prebuilt root) →
+  // share/postgresql/extension.
+  for (const file of readdirSync(PREBUILT_ROOT)) {
+    if (
+      file === "vector.control" ||
+      (file.startsWith("vector--") && file.endsWith(".sql"))
+    ) {
+      cpSync(join(PREBUILT_ROOT, file), join(extDst, file));
+    }
   }
 }

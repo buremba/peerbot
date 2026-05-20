@@ -90,9 +90,12 @@ export default class GitHubIssuesConnector extends ConnectorRuntime {
   };
 
   async sync(ctx: SyncContext): Promise<SyncResult> {
-    const config = ctx.config as unknown as GitHubConfig;
+    // For `env_keys` auth, the values land in `ctx.config` keyed by the
+    // `key` you declared on the auth field. OAuth tokens (for `oauth` auth)
+    // arrive on `ctx.credentials.accessToken` instead.
+    const config = ctx.config as unknown as GitHubConfig & { token?: string };
     const checkpoint = readCheckpoint(ctx.checkpoint);
-    const token = (ctx.credentials?.accessToken ?? "") as string;
+    const token = config.token ?? "";
 
     // GitHub returns issues updated *at or after* `since`; we want
     // strictly after, so we filter by id below.
@@ -145,7 +148,8 @@ export default class GitHubIssuesConnector extends ConnectorRuntime {
 A few things to notice:
 
 - **`SyncContext["checkpoint"]` is `Record<string, unknown> | null`.** Wrap it once in a tiny typed reader (`readCheckpoint`) instead of casting at every call site.
-- **`ctx.credentials.accessToken` is a `lobu_secret_<uuid>` placeholder at runtime.** The gateway's secret proxy swaps it for the real PAT when the outbound HTTPS request leaves the worker, so the secret never lives in the worker's memory.
+- **`env_keys` credentials live on `ctx.config`, not `ctx.credentials`.** Lobu merges the values the user filled into the `env_keys` form into `ctx.config` under the keys you declared (`token` here). `ctx.credentials` is reserved for `oauth` auth — `accessToken`, `refreshToken`, `scope`, `expiresAt`.
+- **The PAT is a `lobu_secret_<uuid>` placeholder at runtime.** The gateway's secret proxy swaps it for the real value when the outbound HTTPS request leaves the worker, so the secret never lives in the worker's memory.
 - **Pagination via the `since` query param.** The GitHub `Link` header is the alternative for cursor-style paging when you need to walk a stable, ordered list; `since` is simpler when the source already gives you a monotonic timestamp.
 
 Drop this file at `connectors/github-issues.connector.ts` in your Lobu project. `lobu apply` ships the source to the gateway, which compiles and registers it; from there each `feeds.<key>` entry shows up as something a user can create a connection for in the admin UI.
@@ -178,7 +182,7 @@ What `sync()` receives. Every field is read-only.
 | `feedKey` | Which feed Lobu is asking you to run |
 | `config` | The connection-level config the user filled in (typed by your `FeedDefinition.configSchema`) |
 | `checkpoint` | The last successful run's checkpoint, or `null` on the first run |
-| `credentials` | OAuth tokens for `oauth` auth, or env-key credentials for `env_keys`; `null` for `none` |
+| `credentials` | OAuth tokens (`accessToken`, `refreshToken`, …) for `oauth` auth; `null` for everything else. `env_keys` values land on `ctx.config` under the declared `key`. |
 | `entityIds` | Entities this feed is linked to (rarely needed; useful for scoping the sync) |
 | `sessionState` | Browser cookies / tokens captured by `lobu memory browser-auth` for `browser` auth |
 | `emitEvents(events)` | Optional streaming hook — flush a chunk before the run ends |
@@ -242,7 +246,8 @@ async execute(ctx: ActionContext): Promise<ActionResult> {
     return { success: false, error: `unknown action ${ctx.actionKey}` };
   }
   const { issueId, assignee } = ctx.input as unknown as AssignIssueInput;
-  const token = (ctx.credentials?.accessToken ?? "") as string;
+  // Same `env_keys` field as sync() — execute()'s ctx.config carries it too.
+  const token = String((ctx.config as { token?: string }).token ?? "");
 
   await fetch(`https://api.example.com/issues/${issueId}`, {
     method: "PATCH",
@@ -267,7 +272,7 @@ Declare on `definition.authSchema`. A connector can list multiple methods; the g
 | `browser` | Session cookies captured via `lobu memory browser-auth` from a logged-in Chrome profile (or CDP) |
 | `interactive` | Custom auth flow (QR pairing, OTP, signed device handshake) — implement `authenticate(ctx)` and stream `AuthArtifact`s |
 
-Workers never see the raw secret on the wire: the gateway's `secret-proxy` swaps `lobu_secret_<uuid>` placeholders for real values at egress, so `ctx.credentials.accessToken` looks like a normal string from your code, but it's only resolved when the outbound request leaves the proxy.
+Workers never see the raw secret on the wire: the gateway's `secret-proxy` swaps `lobu_secret_<uuid>` placeholders for real values at egress, so the string you pull from `ctx.config.<field>` (env_keys) or `ctx.credentials.accessToken` (oauth) looks like a normal token from your code, but it's only resolved when the outbound request leaves the proxy.
 
 Full breakdown at [`reference/connector-sdk` › ConnectorAuthSchema](/reference/connector-sdk/#connectorauthschema).
 

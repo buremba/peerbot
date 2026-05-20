@@ -317,6 +317,8 @@ interface SyncCredentials {
 
 `emitEvents` and `updateCheckpoint` are present only on the long-running sync path. For short syncs return the full result and ignore both hooks.
 
+**Where credentials land.** `ctx.credentials` is populated only for `oauth` auth (the gateway hands you the resolved `SyncCredentials`). For `env_keys` auth, the values the user filled into the form are merged into `ctx.config` under the keys you declared on each `ConnectorAuthEnvField`. For `browser` auth, captured cookies arrive on `ctx.sessionState`. For `none`, all three are `null`/empty. Same rules apply to `ActionContext`.
+
 ---
 
 ## `SyncResult`

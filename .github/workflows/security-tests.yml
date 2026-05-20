@@ -161,10 +161,16 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      - name: Build core + connector-sdk
+      - name: Build core + connector-sdk + pgvector-embedded
         run: |
           cd packages/core && bun run build && cd ../..
           cd packages/connector-sdk && bun run build && cd ../..
+          # vitest resolves @lobu/pgvector-embedded via its "import"/"require"
+          # export condition (dist/index.js), unlike bun:test which uses the
+          # "bun" condition (src). The embedded-Postgres test backend imports
+          # it, so without this build vitest fails collection with
+          # ERR_RESOLVE_PACKAGE_ENTRY_FAIL.
+          cd packages/pgvector-embedded && bun run build && cd ../..
 
       - name: Verify Postgres + pgvector
         run: |

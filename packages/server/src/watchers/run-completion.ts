@@ -1,5 +1,5 @@
 import type { DbClient } from '../db/client';
-import { getDb } from '../db/client';
+import { getDb, pgTextArray } from '../db/client';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 
 export type WatcherTerminalResult = { ok: true } | { ok: false; error: string };
@@ -60,7 +60,7 @@ export async function resolveWatcherRunsByMessageIds(
     SELECT id
     FROM runs
     WHERE run_type = 'watcher'
-      AND dispatched_message_id = ANY(${ids}::text[])
+      AND dispatched_message_id = ANY(${pgTextArray(ids)}::text[])
       AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
   `;
 

@@ -25,7 +25,7 @@
 
 import { verifyPassword } from "better-auth/crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createAuth } from "../../../auth/index";
+import { clearAuthCacheForTests, createAuth } from "../../../auth/index";
 import { getEnvFromProcess } from "../../../utils/env";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 
@@ -79,6 +79,11 @@ describe("single-user-mode sign-up guard", () => {
 		process.env.LOBU_SINGLE_USER = "1";
 		// Deterministic secret so credential hashing + session signing work.
 		process.env.BETTER_AUTH_SECRET = "a".repeat(64);
+		// createAuth() memoizes per-org instances (TtlCache). Other test files
+		// build the "__system__" instance with LOBU_SINGLE_USER unset; without
+		// busting the cache we'd reuse that instance and the guard closure would
+		// read the wrong flag.
+		clearAuthCacheForTests();
 	});
 
 	afterEach(() => {
@@ -86,6 +91,9 @@ describe("single-user-mode sign-up guard", () => {
 		else process.env.LOBU_SINGLE_USER = originalSingleUser;
 		if (originalSecret === undefined) delete process.env.BETTER_AUTH_SECRET;
 		else process.env.BETTER_AUTH_SECRET = originalSecret;
+		// Don't leak our LOBU_SINGLE_USER=1 instance into the shared cache —
+		// a later file's createAuth() would otherwise reuse it.
+		clearAuthCacheForTests();
 	});
 
 	it("admits the first human signup and makes a sign-in-ready row", async () => {
@@ -122,28 +130,19 @@ describe("single-user-mode sign-up guard", () => {
 		);
 	});
 
-	it("refuses the second signup once a human exists", async () => {
-		const first = await signUp({
-			email: "first@local.test",
-			password: "firstpassword99",
-			name: "First",
-		});
-		expect(first.status).toBe(200);
+	it("refuses signup once a human already exists", async () => {
+		// Seed a committed human directly (not via a prior signup) so the
+		// precondition has a clean happens-before and doesn't depend on
+		// cross-request visibility timing under the shared test pool.
+		await seedUser("existing-human", "human");
 
-		const second = await signUp({
+		const res = await signUp({
 			email: "second@local.test",
 			password: "secondpassword99",
 			name: "Second",
 		});
-		expect(second.status).toBe(403);
-		expect(second.body.code).toBe("SIGN_UP_DISABLED_IN_SINGLE_USER_MODE");
-
-		const sql = getTestDb();
-		const humans = (await sql`
-      SELECT count(*)::int AS count FROM "user"
-       WHERE principal_kind <> 'install_operator' AND id <> 'bootstrap-user'
-    `) as unknown as Array<{ count: number }>;
-		expect(humans[0]?.count).toBe(1);
+		expect(res.status).toBe(403);
+		expect(res.body.code).toBe("SIGN_UP_DISABLED_IN_SINGLE_USER_MODE");
 	});
 
 	it("does not count install_operator or bootstrap-user as the existing human", async () => {

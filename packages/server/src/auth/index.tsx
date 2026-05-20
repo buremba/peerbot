@@ -69,6 +69,17 @@ function gravatarUrl(email: string): string {
 const authCache = new TtlCache<ReturnType<typeof betterAuth>>(60_000);
 
 /**
+ * Drop every cached betterAuth instance. Production never needs this (env is
+ * stable per-process), but integration tests that flip env vars like
+ * LOBU_SINGLE_USER between cases must bust the cache, or a stale instance
+ * built under the previous env serves the request and the hook closures
+ * read the wrong flag.
+ */
+export function clearAuthCacheForTests(): void {
+	authCache.clear();
+}
+
+/**
  * Create a better-auth instance with all plugins configured.
  *
  * OAuth providers are dynamically loaded from connector_definitions where login_enabled=true.

@@ -96,6 +96,12 @@ export interface PollResponse {
    * sources).
    */
   compiled_code?: string;
+  /**
+   * Native (nixpkgs) packages the connector declared in `runtime.nix.packages`.
+   * The executor wraps the child in `nix-shell -p <packages>` so the tools are
+   * on PATH. Absent/empty = plain subprocess (the common case).
+   */
+  nix_packages?: string[];
   /** Connection session state (browser cookies, etc.) */
   session_state?: Record<string, unknown>;
   /** Connector version */

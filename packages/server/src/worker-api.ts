@@ -489,6 +489,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         conn.config AS connection_config,
         conn.device_worker_id AS connection_device_worker_id,
         cv.compiled_code,
+        cd.runtime AS connector_runtime,
         ap.auth_data AS auth_profile_auth_data,
         w.name AS watcher_name,
         w.slug AS watcher_slug,
@@ -500,6 +501,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       LEFT JOIN connections conn ON conn.id = r.connection_id
       LEFT JOIN connector_versions cv ON cv.connector_key = r.connector_key
         AND cv.version = r.connector_version
+      LEFT JOIN connector_definitions cd ON cd.key = r.connector_key
+        AND cd.organization_id = r.organization_id
       LEFT JOIN auth_profiles ap ON ap.id = r.auth_profile_id
       LEFT JOIN watchers w ON w.id = r.watcher_id
       WHERE r.id = ${runId}
@@ -555,6 +558,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     connection_config: Record<string, unknown> | null;
     connection_device_worker_id: string | null;
     compiled_code: string | null;
+    connector_runtime: { nix?: { packages?: string[] } | null } | null;
     run_created_at: string | Date | null;
     // Watcher run fields (populated via LEFT JOINs)
     watcher_id: number | null;
@@ -691,11 +695,18 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         sessionState: null,
       };
 
+  // Native (nixpkgs) packages the connector declared in `runtime.nix.packages`.
+  // The worker provisions these on PATH via nix-shell before executing.
+  const nixPackages = (row.connector_runtime?.nix?.packages ?? []).filter(
+    (p): p is string => typeof p === 'string'
+  );
+
   return c.json({
     run_id: row.run_id,
     run_type: row.run_type,
     connector_key: row.connector_key,
     connector_version: row.connector_version ?? undefined,
+    nix_packages: nixPackages.length > 0 ? nixPackages : undefined,
     feed_key: row.feed_key ?? undefined,
     feed_id: row.feed_id ?? undefined,
     connection_id: row.connection_id ?? undefined,

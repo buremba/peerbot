@@ -204,6 +204,7 @@ async function executeSyncRun(
 
     const result = await executeCompiledConnector({
       compiledCode: compiled_code,
+      nixPackages: job.nix_packages,
       executor: subprocessExecutor,
       job: {
         mode: 'sync',
@@ -367,6 +368,7 @@ async function executeActionRun(
   try {
     const result = await executeCompiledConnector({
       compiledCode: compiled_code,
+      nixPackages: job.nix_packages,
       executor: subprocessExecutor,
       job: {
         mode: 'action',
@@ -460,6 +462,7 @@ async function executeAuthRun(
   try {
     const result = await executeCompiledConnector({
       compiledCode: compiled_code,
+      nixPackages: job.nix_packages,
       executor: subprocessExecutor,
       job: {
         mode: 'authenticate',

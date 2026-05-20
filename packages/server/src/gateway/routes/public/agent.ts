@@ -628,28 +628,14 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     const agentId = requestedAgentId?.trim() || randomUUID();
 
     // If the caller pinned a specific agentId, require ownership so a signed-in
-    // user cannot open a session against another tenant's agent.
+    // user cannot open a session against another tenant's agent. The denial is
+    // uniform on purpose: never reveal whether `agentId` exists (distinguishing
+    // "missing" from "exists-but-unauthorized" would be a cross-tenant
+    // enumeration oracle). The getting-started UX is carried by `lobu run`
+    // auto-applying the project, so a fresh local agent exists by chat time.
     if (!isEphemeral) {
       const denial = await requireAgentOwnership(c, agentId);
-      if (denial) {
-        // A denial conflates two cases: the agent exists but the caller can't
-        // access it (a genuine 403), or the agent simply hasn't been deployed
-        // yet. A fresh local project hits the latter before its first
-        // `lobu apply` — surface that as an actionable 404 instead of a bare
-        // "Forbidden". Existing-but-unauthorized agents still return 403, so
-        // this leaks nothing about another tenant's agents.
-        const metadata = await ownershipMetadataStore?.getMetadata(agentId);
-        if (!metadata) {
-          return c.json(
-            {
-              success: false,
-              error: `Agent "${agentId}" not found. Run \`lobu apply\` to deploy it.`,
-            },
-            404
-          );
-        }
-        return denial;
-      }
+      if (denial) return denial;
     }
 
     // Stamp the worker token with the agent's owning org so the egress

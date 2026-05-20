@@ -82,22 +82,15 @@ describe("resolveModelRef", () => {
   });
 
   test("configured provider wins: OpenRouter vendor/model slug is passed through verbatim", () => {
-    // OpenRouter expresses models as "vendor/model" in its OWN namespace.
-    // With provider configured, do NOT split — route to the configured
-    // provider and keep the model string intact.
+    // Smoke case — the full matrix of configured-provider slug routing lives in
+    // model-resolver-harden.test.ts. OpenRouter expresses models as
+    // "vendor/model" in its OWN namespace; with a provider configured, do NOT
+    // split — route to the configured provider and keep the model intact.
     const result = resolveModelRef("anthropic/claude-sonnet-4", {
       defaultProvider: "openrouter",
     });
     expect(result.provider).toBe("openrouter");
     expect(result.modelId).toBe("anthropic/claude-sonnet-4");
-  });
-
-  test("configured provider wins: openai/gpt-4o slug is not mis-routed to openai", () => {
-    const result = resolveModelRef("openai/gpt-4o", {
-      defaultProvider: "openrouter",
-    });
-    expect(result.provider).toBe("openrouter");
-    expect(result.modelId).toBe("openai/gpt-4o");
   });
 
   test("configured provider + 'auto' resolves to that provider's default model", () => {

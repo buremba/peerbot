@@ -14,6 +14,7 @@ import {
   findEnclosingMonorepoRoot,
   isSharedDatabaseUrl,
   resolveBackendBundle,
+  shouldAutoApplyLocalProject,
   shouldRefuseSharedDatabaseUrl,
 } from "../commands/dev";
 
@@ -249,5 +250,49 @@ describe("lobu run backend bundle resolution", () => {
     );
     expect(buildScript).toContain('copyDirIfExists("../../db/migrations"');
     expect(buildScript).toContain('"server.bundle.mjs"');
+  });
+});
+
+describe("shouldAutoApplyLocalProject", () => {
+  test("applies for an embedded run once the local context is ready", () => {
+    expect(
+      shouldAutoApplyLocalProject({
+        mode: "embedded",
+        localContextReady: true,
+        hasLobuToml: true,
+      })
+    ).toBe(true);
+  });
+
+  test("skips when sign-in did not establish the local context", () => {
+    // The guard that stops `lobu run` applying a local project to whatever
+    // cloud/prod context happened to be active.
+    expect(
+      shouldAutoApplyLocalProject({
+        mode: "embedded",
+        localContextReady: false,
+        hasLobuToml: true,
+      })
+    ).toBe(false);
+  });
+
+  test("never auto-applies against an external backend", () => {
+    expect(
+      shouldAutoApplyLocalProject({
+        mode: "external",
+        localContextReady: true,
+        hasLobuToml: true,
+      })
+    ).toBe(false);
+  });
+
+  test("skips when the project has no lobu.toml to apply", () => {
+    expect(
+      shouldAutoApplyLocalProject({
+        mode: "embedded",
+        localContextReady: true,
+        hasLobuToml: false,
+      })
+    ).toBe(false);
   });
 });

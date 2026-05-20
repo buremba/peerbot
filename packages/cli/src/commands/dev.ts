@@ -368,10 +368,16 @@ export async function devCommand(
       // Once the `local` context is confirmed registered + active, push the
       // project's lobu.toml into the embedded DB so the scaffolded agent is
       // usable via `lobu chat -c local …` with no separate `lobu apply`.
-      // Gated on localContextReady AND pinned to the local URL (below) so a
-      // failed sign-in can never apply this local project to whatever
+      // Gated (see shouldAutoApplyLocalProject) AND pinned to the local URL so
+      // a failed sign-in can never apply this local project to whatever
       // cloud/prod context happened to be active.
-      if (mode === "embedded" && localContextReady) {
+      if (
+        shouldAutoApplyLocalProject({
+          mode,
+          localContextReady,
+          hasLobuToml: existsSync(join(cwd, "lobu.toml")),
+        })
+      ) {
         return autoApplyLocalProject(cwd, gatewayUrl);
       }
     }
@@ -402,6 +408,23 @@ export async function devCommand(
 }
 
 /**
+ * Whether `lobu run` should auto-apply the project. True only when:
+ *  - the backend is embedded (never auto-mutate an external/prod DB), AND
+ *  - the `local` context was registered + made active (so the apply targets the
+ *    embedded server, not whatever cloud context was active before), AND
+ *  - the project actually has a `lobu.toml` to apply.
+ */
+export function shouldAutoApplyLocalProject(opts: {
+  mode: "external" | "embedded";
+  localContextReady: boolean;
+  hasLobuToml: boolean;
+}): boolean {
+  return (
+    opts.mode === "embedded" && opts.localContextReady && opts.hasLobuToml
+  );
+}
+
+/**
  * After `lobu run` boots an embedded backend, push the project's `lobu.toml`
  * into the local DB so the agent the user just scaffolded is immediately usable
  * (`lobu chat -c local …`) without a separate `lobu apply`. Uses the `local`
@@ -417,7 +440,6 @@ async function autoApplyLocalProject(
   cwd: string,
   gatewayUrl: string
 ): Promise<void> {
-  if (!existsSync(join(cwd, "lobu.toml"))) return;
   try {
     const { applyCommand } = await import("./_lib/apply/apply-cmd.js");
     // Pin the apply to the embedded server's URL. `resolveApiTarget` matches

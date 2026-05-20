@@ -22,7 +22,7 @@ The reference is auto-generated from the gateway's OpenAPI spec and always refle
 For TypeScript SDKs used inside Lobu projects rather than over the wire, see:
 
 - [`@lobu/connector-sdk`](/reference/connector-sdk/) — write connectors that emit events into the stream.
-- [`@lobu/reaction-sdk`](/reference/reaction-sdk/) — write reactions that run after a watcher extracts data.
+- [Reactions](/reference/reaction-sdk/) — the typed hook (part of `@lobu/connector-sdk`) for code that runs after a watcher extracts data.
 
 ## Quick Start
 

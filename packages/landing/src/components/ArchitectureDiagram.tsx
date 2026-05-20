@@ -239,7 +239,7 @@ function AgentsColumn() {
           >
             read memory programmatically
           </div>
-          <SdkPill label="@lobu/reaction-sdk" caption="automate actions — TypeScript" />
+          <SdkPill label="reactions" caption="automate actions — from @lobu/connector-sdk" />
         </SubBlock>
       </div>
     </ColumnCard>

@@ -1,13 +1,13 @@
 ---
-title: "@lobu/reaction-sdk"
-description: Type reference for reaction scripts — ReactionContext, ReactionEntity, and the client SDK surface.
+title: Reactions
+description: Type reference for reactions — ReactionContext, ReactionEntity, and the injected client SDK surface, all from @lobu/connector-sdk.
 sidebar:
   order: 6
 ---
 
-API reference for the reaction surface. Reactions are TypeScript files that run after a watcher's extraction lands; for a tutorial-style introduction see the [Reaction SDK guide](/getting-started/reaction-sdk/).
+API reference for the **reactions** surface of [`@lobu/connector-sdk`](/reference/connector-sdk/). Reactions are TypeScript files that run after a watcher's extraction lands; for a tutorial-style introduction see the [Reactions guide](/getting-started/reaction-sdk/).
 
-The reaction types ship inside [`@lobu/connector-sdk`](/reference/connector-sdk/) — there is no separate `@lobu/reaction-sdk` package on npm, just a stable named entry point:
+All reaction types live in `@lobu/connector-sdk` — there is no separate `@lobu/reaction-sdk` package on npm. Import them by name:
 
 ```ts
 import type { ReactionContext, ReactionEntity } from "@lobu/connector-sdk";
@@ -149,6 +149,6 @@ When you need to call a third-party API that an installed connector already auth
 
 ## See also
 
-- [Reaction SDK guide](/getting-started/reaction-sdk/) — when to reach for a reaction, where the file lives, real-world example.
-- [`@lobu/connector-sdk` reference](/reference/connector-sdk/) — the connector side of the platform.
+- [Reactions guide](/getting-started/reaction-sdk/) — when to reach for a reaction, where the file lives, real-world example.
+- [`@lobu/connector-sdk` reference](/reference/connector-sdk/) — the connector surface of the same package.
 - [Memory](/getting-started/memory/) — how events become entity memory.

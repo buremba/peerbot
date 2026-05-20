@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-API reference for [`@lobu/connector-sdk`](https://www.npmjs.com/package/@lobu/connector-sdk). For a tutorial-style introduction see the [Connector SDK guide](/getting-started/connector-sdk/); for the reaction surface see [`@lobu/reaction-sdk` reference](/reference/reaction-sdk/).
+API reference for [`@lobu/connector-sdk`](https://www.npmjs.com/package/@lobu/connector-sdk). For a tutorial-style introduction see the [Connector SDK guide](/getting-started/connector-sdk/); for the reactions surface (also exported from this package) see the [Reactions reference](/reference/reaction-sdk/).
 
 Every symbol below is a re-export from the package's top-level entry point:
 

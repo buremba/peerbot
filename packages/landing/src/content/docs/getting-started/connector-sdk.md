@@ -325,6 +325,6 @@ my-agent/
 
 ## See also
 
-- [Reaction SDK](/getting-started/reaction-sdk/) — code that runs after watchers extract data.
+- [Reactions](/getting-started/reaction-sdk/) — the typed hook (part of this same package) for code that runs after watchers extract data.
 - [`@lobu/connector-sdk` API reference](/reference/connector-sdk/) — every exported symbol with types.
 - [Memory](/getting-started/memory/) — how connector events become durable entity memory.

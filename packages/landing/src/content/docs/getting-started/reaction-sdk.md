@@ -1,9 +1,9 @@
 ---
-title: Reaction SDK
+title: Reactions
 description: Run TypeScript code after a watcher extracts data — post to Slack, write derived events, update entities.
 ---
 
-A **reaction** is TypeScript code that runs *after* a watcher's LLM extraction completes. The default watcher path is: LLM extracts data → Lobu validates against the schema → result is persisted to memory. Adding a reaction lets you take imperative actions on top of that — post a Slack message, write a derived event, mutate an external system — before the run lands in the durable log.
+Reactions are part of [`@lobu/connector-sdk`](/reference/connector-sdk/) — they're the typed hook you write to take action *after* a watcher's LLM extraction completes (there is no separate `@lobu/reaction-sdk` npm package). The default watcher path is: LLM extracts data → Lobu validates against the schema → result is persisted to memory. Adding a reaction lets you do imperative work on top of that — post a Slack message, write a derived event, mutate an external system — before the run lands in the durable log.
 
 Reactions are optional. A watcher without one is pure extraction; a watcher with one is extraction + a typed hook.
 
@@ -153,5 +153,5 @@ If you don't want a reaction, don't create the file. The watcher's extraction st
 ## See also
 
 - [Connector SDK](/getting-started/connector-sdk/) — how external events arrive in the first place.
-- [`@lobu/connector-sdk` reaction reference](/reference/reaction-sdk/) — every type a reaction can read.
+- [Reactions reference](/reference/reaction-sdk/) — every type a reaction can read, all exported from `@lobu/connector-sdk`.
 - [Memory](/getting-started/memory/) — how reactions plug into the entity model.

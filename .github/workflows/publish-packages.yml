@@ -27,6 +27,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production
+    env:
+      # Step-level env is not visible to the same step's `if:` evaluator.
+      CLAWHUB_TOKEN_SET: ${{ secrets.CLAWHUB_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -57,7 +60,6 @@ jobs:
         if: ${{ env.CLAWHUB_TOKEN_SET == 'true' }}
         env:
           CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
-          CLAWHUB_TOKEN_SET: ${{ secrets.CLAWHUB_TOKEN != '' }}
         run: npx --yes clawhub@latest login --token "$CLAWHUB_TOKEN" --no-browser
 
       - name: Publish packages

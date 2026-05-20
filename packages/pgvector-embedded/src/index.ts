@@ -40,8 +40,7 @@ function hasPrebuiltLibrary(platform: string): boolean {
   const dir = prebuiltDir(platform);
   if (!existsSync(dir)) return false;
   return readdirSync(dir).some(
-    (f) =>
-      f.startsWith("vector") && (f.endsWith(".so") || f.endsWith(".dylib"))
+    (f) => f.startsWith("vector") && (f.endsWith(".so") || f.endsWith(".dylib"))
   );
 }
 

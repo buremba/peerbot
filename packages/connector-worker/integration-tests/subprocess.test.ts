@@ -12,23 +12,36 @@
  * runs that haven't built the workspace.
  */
 import { describe, expect, test } from 'bun:test';
-import type { SyncContext } from '../dist/executor/interface.js';
+import type { ExecutorJob } from '../dist/executor/interface.js';
 import { SubprocessError, SubprocessExecutor } from '../dist/executor/subprocess.js';
 
-const BASE_CONTEXT: SyncContext = {
-  options: {} as any,
+// Minimal V1 ExecutorJob — the subprocess executor only reads what each
+// connector body needs; the diagnostic tests below exercise the crash /
+// throw / redact paths, which don't touch most fields, but the shape
+// itself has to be valid `ExecutorJob` so the parent's IPC envelope is
+// well-formed.
+const BASE_JOB: ExecutorJob = {
+  mode: 'sync',
+  feedKey: 'integration-test',
+  config: {},
   checkpoint: null,
+  entityIds: [],
+  credentials: null,
+  sessionState: null,
   env: {},
-  apiType: 'api',
 };
 
+// Synthetic connector source. The class needs `sync` and `execute` on its
+// prototype for `findRuntimeClass` to accept it. `sync` receives a V1
+// `SyncContext` (with `emitEvents` / `updateCheckpoint` hooks), `execute`
+// returns a V1 `ActionResult` — both unused by these crash-path tests.
 function compiled(body: string): string {
   return `
     class ConnectorRuntime {
-      async sync(_ctx, _hooks) {
+      async sync(_ctx) {
         ${body}
       }
-      async execute() { return { contents: [], checkpoint: null }; }
+      async execute() { return { success: false, error: 'no actions' }; }
     }
     module.exports = { ConnectorRuntime };
   `;
@@ -45,7 +58,7 @@ describe('SubprocessExecutor diagnostic capture', () => {
           console.log('about to die hard');
           process.exit(1);
         `),
-        BASE_CONTEXT
+        BASE_JOB
       );
     } catch (e) {
       err = e as SubprocessError;
@@ -65,7 +78,7 @@ describe('SubprocessExecutor diagnostic capture', () => {
         compiled(`
           throw new Error('connector blew up');
         `),
-        BASE_CONTEXT
+        BASE_JOB
       );
     } catch (e) {
       err = e as SubprocessError;
@@ -84,7 +97,7 @@ describe('SubprocessExecutor diagnostic capture', () => {
           setTimeout(() => { throw new Error('async tick throw'); }, 0);
           await new Promise(() => {});
         `),
-        BASE_CONTEXT
+        BASE_JOB
       );
     } catch (e) {
       err = e as SubprocessError;
@@ -103,7 +116,7 @@ describe('SubprocessExecutor diagnostic capture', () => {
           Promise.reject(new Error('dangling rejection'));
           await new Promise(() => {});
         `),
-        BASE_CONTEXT
+        BASE_JOB
       );
     } catch (e) {
       err = e as SubprocessError;
@@ -123,7 +136,7 @@ describe('SubprocessExecutor diagnostic capture', () => {
           console.error('CH_API_KEY=longvaluesecret789');
           process.exit(1);
         `),
-        BASE_CONTEXT
+        BASE_JOB
       );
     } catch (e) {
       err = e as SubprocessError;
@@ -142,7 +155,7 @@ describe('SubprocessExecutor diagnostic capture', () => {
         compiled(`
           throw new Error('upstream failed: api_key=sk_live_abcdefghijklmn123');
         `),
-        BASE_CONTEXT
+        BASE_JOB
       );
     } catch (e) {
       err = e as SubprocessError;
@@ -163,7 +176,7 @@ describe('SubprocessExecutor diagnostic capture', () => {
         compiled(`
           await new Promise(() => {});
         `),
-        BASE_CONTEXT
+        BASE_JOB
       );
     } catch (e) {
       err = e as SubprocessError;

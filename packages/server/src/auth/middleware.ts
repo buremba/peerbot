@@ -7,6 +7,7 @@
 import type { Context, Next } from 'hono';
 import type { Env } from '../index';
 import { getWorkspaceProvider } from '../workspace';
+import type { ResolveAuthNext } from '../workspace/types';
 import { createAuth } from './index';
 import type { AuthInfo } from './oauth/types';
 
@@ -93,15 +94,17 @@ export async function requireAuth(c: Context<{ Bindings: Env }>, next: Next) {
  * Middleware: MCP authentication (optional auth for MCP endpoints)
  * Delegates entirely to WorkspaceProvider.resolveAuth.
  *
- * `next` is widened past Hono's `Next` so callers that use `mcpAuth(c, cb)`
- * with an `async` callback that may short-circuit by returning a `Response`
- * (e.g. the /api/workers/* gating middleware) still typecheck — Hono's own
- * `Next` (`() => Promise<void>`) is a subtype of this, so the normal
- * `app.use(..., mcpAuth)` usage is unchanged.
+ * `next` is typed as `ResolveAuthNext` (`() => Promise<Response | void>`) so
+ * callers that use `mcpAuth(c, cb)` with an `async` callback that may
+ * short-circuit by returning a `Response` (e.g. the /api/workers/* gating
+ * middleware) actually have that Response propagate back. Hono's own `Next`
+ * (`() => Promise<void>`) is a subtype, so plain `app.use(..., mcpAuth)`
+ * usage is unchanged.
+ *
+ * See `workspace/types.ts::ResolveAuthNext` for the widening rationale —
+ * the prior `next as Next` cast silently dropped the cb's Response and
+ * caused Bug B (workers/poll 500s with the undici RangeError).
  */
-export async function mcpAuth(
-  c: Context<{ Bindings: Env }>,
-  next: () => Promise<unknown>
-) {
-  return getWorkspaceProvider().resolveAuth(c, next as Next);
+export async function mcpAuth(c: Context<{ Bindings: Env }>, next: ResolveAuthNext | Next) {
+  return getWorkspaceProvider().resolveAuth(c, next as ResolveAuthNext);
 }

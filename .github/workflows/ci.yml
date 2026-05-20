@@ -192,9 +192,21 @@ jobs:
         run: bun install
 
       - name: Build packages server depends on
+        # embeddings → connector-worker order matters: connector-worker's
+        # src/embeddings.ts imports `@lobu/embeddings` and resolves it via
+        # the workspace symlink → dist. connector-worker itself is required
+        # because `packages/server/src/utils/connector-catalog.ts` imports
+        # `@lobu/connector-worker/compile` (the shared compile pipeline),
+        # which resolves via the package's `exports` field to
+        # `./dist/compile/index.js`. Vitest's vite-node resolver follows
+        # the `import` condition and fails to load if dist is absent —
+        # which transitively breaks every integration file whose import
+        # graph touches `queue-helpers` / `worker-api` / `connector-catalog`.
         run: |
           cd packages/core && bun run build && cd ../..
           cd packages/connector-sdk && bun run build && cd ../..
+          cd packages/embeddings && bun run build && cd ../..
+          cd packages/connector-worker && bun run build && cd ../..
 
       - name: Verify Postgres health (fail fast if pgvector setup is broken)
         run: |

@@ -9,7 +9,7 @@
     "evals:view": "promptfoo view"
   },
   "dependencies": {
-    "@lobu/promptfoo-provider": "workspace:*"
+    "@lobu/promptfoo-provider": "file:../../packages/promptfoo-provider"
   },
   "devDependencies": {
     "promptfoo": "^0.121.0"

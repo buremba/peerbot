@@ -909,6 +909,16 @@ export async function getChannelHistory(
 // MCP Tools (route to MCP proxy /mcp/{mcpId}/tools/{toolName})
 // ============================================================================
 
+/**
+ * Retrieval tools that we ask the upstream MCP server to return as JSON instead
+ * of formatted markdown so the worker can include structured `result_summary`
+ * (event IDs, snippet text) in the `tool_use` SSE event for RAG assertions.
+ */
+const TOOLS_REQUESTING_JSON_FORMAT = new Set([
+  "search_memory",
+  "lobu_search_memory",
+]);
+
 export async function callMcpTool(
   gw: GatewayParams,
   mcpId: string,
@@ -917,15 +927,23 @@ export async function callMcpTool(
 ): Promise<TextResult> {
   return withErrorHandling(`${mcpId}/${toolName}`, async () => {
     let response: Response;
+    const wantsJson = TOOLS_REQUESTING_JSON_FORMAT.has(toolName);
     try {
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${gw.workerToken}`,
+        "Content-Type": "application/json",
+      };
+      // Retrieval tools (`search_memory`) opt into JSON-encoded results so the
+      // worker → SSE `tool_use` event can carry structured `result_summary`
+      // (event ids + snippet text) to clients like @lobu/promptfoo-provider for
+      // RAG assertions. Other tools keep the formatted-markdown output the
+      // agent has been seeing. External MCP servers ignore the header.
+      if (wantsJson) headers["x-mcp-format"] = "json";
       response = await fetch(
         `${gw.gatewayUrl}/mcp/${mcpId}/tools/${toolName}`,
         {
           method: "POST",
-          headers: {
-            Authorization: `Bearer ${gw.workerToken}`,
-            "Content-Type": "application/json",
-          },
+          headers,
           body: JSON.stringify(args),
           // Third-party MCP server on the other side — give it a generous
           // budget but never wait forever.

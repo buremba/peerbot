@@ -10,7 +10,7 @@ import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { renderFallbackSystemContext } from './lobu-guidance.js';
+import { renderFallbackSystemContext } from '@lobu/core';
 import type {
   McpToolDefinition,
   McpToolResponse,
@@ -345,6 +345,7 @@ function resolvePluginConfig(api: Record<string, unknown>, pluginId: string): Re
   const tokenCommand =
     asString(cfg.tokenCommand) ?? asString(process.env.LOBU_MCP_TOKEN_COMMAND);
   const gatewayAuthUrl = asString(cfg.gatewayAuthUrl) ?? asString(process.env.GATEWAY_AUTH_URL);
+  const agentId = asString(cfg.agentId) ?? asString(process.env.LOBU_AGENT_ID);
 
   const headers: Record<string, string> = {};
   if (isRecord(cfg.headers)) {
@@ -365,6 +366,7 @@ function resolvePluginConfig(api: Record<string, unknown>, pluginId: string): Re
     autoRecall: asBoolean(cfg.autoRecall, true),
     autoCapture: asBoolean(cfg.autoCapture, true),
     recallLimit: asPositiveInt(cfg.recallLimit, DEFAULT_RECALL_LIMIT),
+    agentId,
   };
 }
 
@@ -1481,10 +1483,18 @@ const plugin = {
         const content = combined.length > 2000 ? combined.slice(0, 2000) : combined;
 
         // Fire-and-forget — don't block the agent_end path.
+        // Stamp `agent_id` so `search_memory` can scope recall to this
+        // agent's own observations. `metadata.agent_id` is the memory-scope
+        // axis (see `identity-normalize.ts` glossary); it does NOT relate
+        // to `entity_identities.namespace`.
+        const captureMetadata: Record<string, unknown> = {};
+        if (config.agentId) {
+          captureMetadata.agent_id = config.agentId;
+        }
         callMcpTool(config, 'save_memory', {
           content,
           semantic_type: 'observation',
-          metadata: {},
+          metadata: captureMetadata,
         })
           .then(() => log.info('lobu: captured conversation observation'))
           .catch((err) =>
@@ -1502,9 +1512,9 @@ const plugin = {
     // OpenClaw 2026.5.x only surfaces plugin tools to agents when the host's
     // tool-policy allowlist explicitly opts them in. With no `tools.*` section
     // in the OpenClaw config, `registerTool` calls succeed but the agent's
-    // tool list silently excludes every lobu_*, wiki_*, and memory_* tool —
-    // the plugin appears healthy in logs while the agent has no way to call it.
-    // Detect this and shout, with a copy-pasteable fix.
+    // tool list silently excludes every lobu_* tool — the plugin appears
+    // healthy in logs while the agent has no way to call it. Detect this and
+    // shout, with a copy-pasteable fix.
     if (registerTool && config.mcpUrl) {
       const cfg = isRecord(api.config) ? (api.config as Record<string, unknown>) : {};
       const topTools = isRecord(cfg.tools) ? (cfg.tools as Record<string, unknown>) : null;
@@ -1524,9 +1534,9 @@ const plugin = {
       if (!hasToolPolicy(topTools) && !hasToolPolicy(agentTools)) {
         log.warn(
           'lobu: no tools.* policy detected in OpenClaw config. Plugin tools ' +
-            '(lobu_*, wiki_*, memory_*) register successfully but may not ' +
-            'reach the agent on OpenClaw 2026.5.x — every plugin on the host ' +
-            'is gated the same way. The autoRecall hook and autoCapture hook ' +
+            '(lobu_*) register successfully but may not reach the agent on ' +
+            'OpenClaw 2026.5.x — every plugin on the host is gated the same ' +
+            'way. The autoRecall hook and autoCapture hook ' +
             'still write to Lobu in the background (they call MCP directly, ' +
             'not via registered agent tools), so memory continues to flow; ' +
             'only deliberate agent-driven tool calls during a conversation ' +

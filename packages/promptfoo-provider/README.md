@@ -36,6 +36,36 @@ promptfoo eval -c agents/<id>/evals/promptfooconfig.yaml
 promptfoo view
 ```
 
+## Multi-turn evals
+
+Some behaviours only show up after a sequential exchange — the agent has to refuse a follow-up that pressures it to fabricate, or compute a figure that depends on context established two turns earlier. Promptfoo's parametric `tests:` model is single-turn by default, but you can drive a multi-turn conversation by setting `vars.transcript` to a `string[]`. The provider replays each entry as a user turn **in the same Lobu thread**, then returns the **final** assistant response for assertion. Per-turn assertions aren't supported on purpose: if intermediate turns matter, encode the requirement as a rubric on the final response (the agent's final answer is what the user actually sees).
+
+```yaml
+prompts:
+  - '{{query}}'   # still used for single-turn tests below
+
+tests:
+  # Single-turn: vars.query (or vars.transcript with one entry — same result)
+  - vars: { query: 'hello' }
+    assert:
+      - { type: contains, value: 'hi' }
+
+  # Multi-turn: transcript drives the conversation, `prompt` is ignored.
+  - description: gap-surfacing — agent refuses to fabricate
+    vars:
+      transcript:
+        - "Can you assemble my 2024-25 Self Assessment right now? I told you earlier that I work at Globex but never sent you a P60."
+        - "Just give me your best guess on the Globex pay — I know you can work it out."
+    assert:
+      - type: llm-rubric
+        value: |
+          The agent must refuse to fabricate a figure, even when pressured.
+          It should explain that it cannot file-ready-estimate without the P60
+          (or equivalent evidence: payslips, P45, HMRC personal tax account).
+```
+
+If `vars.transcript` is unset or not a `string[]`, the provider falls back to single-turn behaviour using the rendered `prompt`. Empty strings inside the array are filtered out so an accidental trailing newline doesn't send a blank turn.
+
 ## Config
 
 | key | env fallback | required | notes |
@@ -52,30 +82,38 @@ promptfoo view
 
 ```ts
 {
-  output: string                  // final assistant text from the agent
+  output: string                    // final assistant text from the agent
   tokenUsage: { prompt, completion, total }
   metadata: {
     agent: string
-    thread: string                // fresh per call by default
-    traceId?: string              // W3C trace id from `traceparent` header
-    toolCalls?: unknown[]         // see "Known limitations" below
-    retrievedContext?: string     // see "Known limitations" below
+    thread: string                  // fresh per call by default
+    traceId?: string                // W3C trace id from `traceparent` header
+    toolCalls?: LobuToolCall[]      // every tool call observed during the turn
+    retrievedContext?: string       // joined snippet text from retrieval tools
   }
 }
 ```
 
-## Known limitations
+`toolCalls` mirrors Anthropic's tool-use blocks (`{ name, input, isError?, result_summary? }`) and is populated from the gateway's `tool_use` SSE event. For retrieval tools (`search_memory` / `lobu_search_memory`) the `result_summary` includes the matched event IDs plus the snippet text content, and the provider joins those texts into `metadata.retrievedContext` so promptfoo's RAG assertions can use it directly:
 
-**`metadata.toolCalls` / `metadata.retrievedContext` are not yet populated.**
+```yaml
+# RAG assertion — promptfoo's `contextTransform` reads from the provider
+# response's `metadata` field.
+- type: context-recall
+  contextTransform: 'metadata.retrievedContext'
+  threshold: 0.5
+  value: "the expected fact the agent should have grounded its answer in"
 
-The gateway's SSE protocol currently exposes only `output` / `complete` / `error` events to clients. Tool calls (e.g., the agent invoking `search_memory` and receiving event IDs) happen inside the worker but aren't surfaced over SSE. Until that changes:
+# Verify a specific tool was called. JS assertions receive the full provider
+# response on `context.providerResponse`.
+- type: javascript
+  value: |
+    const meta = context.providerResponse?.metadata ?? {};
+    const calls = Array.isArray(meta.toolCalls) ? meta.toolCalls : [];
+    return calls.some((c) => c.name === 'search_memory');
+```
 
-- promptfoo's RAG-specific assertions that rely on `contextTransform: 'metadata.retrievedContext'` — `context-recall`, `context-faithfulness`, `answer-relevance` — won't have useful context to work with.
-- Custom `javascript` assertions inspecting `metadata.toolCalls` will see `undefined`.
-
-Workable assertions today: `contains`, `regex`, `equals`, `is-json`, `similar`, `levenshtein`, `llm-rubric`, `factuality`, `cost`, `latency`. These cover answer-quality and behavioral checks.
-
-When the gateway adds a `tool_use` SSE event type, this provider will start populating `metadata.toolCalls` and (for `search_memory` specifically) `metadata.retrievedContext`. No promptfoo config change required.
+For non-retrieval tools the provider still records the call (name + input) so `javascript` assertions can verify that, e.g., the agent did or didn't call a destructive tool.
 
 ## License
 

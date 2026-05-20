@@ -10,8 +10,6 @@
 import { createHash } from 'node:crypto';
 import TurndownService from 'turndown';
 import {
-  type ActionContext,
-  type ActionResult,
   type ConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
@@ -290,11 +288,6 @@ export default class WebsiteConnector extends ConnectorRuntime {
       metadata: { pages_scraped: urls.length, events_created: events.length },
     };
   }
-
-  async execute(_ctx: ActionContext): Promise<ActionResult> {
-    return { success: false, error: 'Actions not supported' };
-  }
-
   private async dismissOverlays(page: Page): Promise<void> {
     const dismissLabels = [
       'Accept',

@@ -1,3 +1,35 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// AGENTS.md allow-list entry: the subcommand handlers below are lazy-loaded
+// via `await import("./commands/...")` rather than static imports. See the
+// AGENTS.md allow-list (Agent Rules → "No new dynamic imports outside the
+// documented allow-list") for the documented exceptions and rationale —
+// sibling entries cover the connector / apply / browser-auth codepaths and
+// test files. This comment only documents the specific reason this file
+// qualifies.
+//
+// Why: the CLI's command graph pulls in `postgres`, `playwright`, every
+// `@chat-adapter/*`, the bundled server, etc. Measured boot times on a 2026
+// macOS host:
+//
+//   lazy (current)   `lobu --help` / `--version` : ~60ms
+//   static import    same invocations           : ~470-540ms (8x slower)
+//
+// `lobu --help` runs every time a user TAB-completes or pokes the CLI; the
+// 400ms penalty is paid on every shell hit even when the user never runs the
+// subcommand whose module would have been loaded. Dynamic import keeps the
+// hot path (commander parses argv, prints help) free of any module the user
+// didn't actually invoke. The measurement was redone after the round-2 audit
+// (REPORT.md → "CLI dynamic-imports rule conflict") so future contributors
+// have a fresh data point before re-litigating the rule.
+//
+// Rules for adding a new subcommand:
+//   1. Put the handler in `./commands/<name>.ts`.
+//   2. Register it with `.command(...).action(async (...) => { … })`.
+//   3. Inside the action, do `const { fooCommand } = await import("./commands/foo.js");`
+//      then call `fooCommand(...)`.
+//   4. Do NOT hoist the import to the top of this file.
+// ─────────────────────────────────────────────────────────────────────────────
+
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -83,6 +115,7 @@ Cloud:
   link | unlink            Bind this directory to a (context, org)
   apply | deploy           Sync lobu.toml to cloud (idempotent)
   agent <subcmd>           CRUD agents via REST
+  call [tool]              Invoke an admin REST tool by name (--list to discover)
   token [create]           Print or mint personal access tokens
 
 Memory:
@@ -134,6 +167,10 @@ Memory:
       "Enable public Lobu Developer Slack Preview in lobu.toml"
     )
     .option("--no-slack-preview", "Disable Slack Preview without prompting")
+    .option(
+      "--list-providers",
+      "Print available provider ids from config/providers.json and exit"
+    )
     .action(
       async (
         name: string | undefined,
@@ -151,6 +188,7 @@ Memory:
           otelEndpoint?: string;
           sentry?: boolean;
           slackPreview?: boolean;
+          listProviders?: boolean;
         }
       ) => {
         try {
@@ -172,6 +210,7 @@ Memory:
             sentry: options.sentry === true,
             noSentry: options.sentry === false,
             slackPreview: options.slackPreview,
+            listProviders: options.listProviders,
           });
         } catch (error) {
           console.error(chalk.red("\n  Error:"), error);
@@ -374,11 +413,16 @@ Memory:
       .option("--token <token>", "Use API token directly (CI/CD)")
   )
     .option("-f, --force", "Re-authenticate (revokes existing session)")
+    .option(
+      "-q, --quiet",
+      "Suppress spinner; bail immediately if non-interactive (CI / backgrounded shells)"
+    )
     .action(
       async (options: {
         token?: string;
         context?: string;
         force?: boolean;
+        quiet?: boolean;
       }) => {
         const { loginCommand } = await import("./commands/login.js");
         await loginCommand({ ...options, cliVersion: version });
@@ -787,6 +831,60 @@ Memory:
       await agentConfigPatchCommand(agentId, options);
     }
   );
+
+  // ─── call ───────────────────────────────────────────────────────────
+  // Generic dispatcher over the admin REST tool surface
+  // (`POST /api/<org>/<tool>`). Replaces the urge to add bespoke
+  // per-action commands (`lobu sync`, `lobu retry-feed`, ...) by exposing
+  // every UI-callable tool through one entry point. `lobu memory run` is
+  // kept alongside intentionally — it routes via MCP JSON-RPC, this one via
+  // the REST proxy. See packages/cli/src/commands/call.ts for the arg shape.
+  const call = withCommonOpts(
+    program
+      .command("call [tool]")
+      .description(
+        "Invoke an admin REST tool by name (POST /api/<org>/<tool>). Run with --list or no args to discover."
+      )
+      .option(
+        "--list",
+        "List tools available to the current token (default when called bare)"
+      )
+      .option("--all", "Include internal/admin-only tools in --list output")
+      .option(
+        "--input-file <path>",
+        "Read the JSON args body from a file (top-level object)"
+      )
+      .option(
+        "--arg <entry>",
+        "Add a top-level arg as key=string or key:=<json> (repeatable)",
+        (value: string, previous: string[] | undefined) =>
+          previous ? [...previous, value] : [value]
+      )
+      .option("--raw", "Emit compact JSON (default is pretty-printed)")
+      .option("--url <url>", "Server URL override"),
+    { org: true, json: true }
+  ).action(
+    async (
+      tool: string | undefined,
+      options: {
+        org?: string;
+        context?: string;
+        json?: boolean;
+        list?: boolean;
+        all?: boolean;
+        inputFile?: string;
+        arg?: string[];
+        raw?: boolean;
+        url?: string;
+      }
+    ) => {
+      const { callCommand } = await import("./commands/call.js");
+      await callCommand(tool, options);
+    }
+  );
+  // Silence unused-variable lint — `call` is the Commander handle, retained
+  // for symmetry with sibling command groups in case subcommands are added.
+  void call;
 
   // ─── connector ──────────────────────────────────────────────────────
   const connector = program

@@ -1,5 +1,4 @@
 import { verifyWorkerToken } from '@lobu/core';
-import type { Next } from 'hono';
 import { getAuthConfig as getAuthConfigFromEnv } from '../auth/config';
 import { createAuth } from '../auth/index';
 import { OAuthProvider } from '../auth/oauth/provider';
@@ -14,6 +13,7 @@ import type {
   AuthConfigData,
   HonoContext,
   OrgInfo,
+  ResolveAuthNext,
   ResolvedOwner,
   WorkspaceProvider,
 } from './types';
@@ -134,7 +134,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
     logger.info('[MultiTenantProvider] Initialized');
   }
 
-  async resolveAuth(c: HonoContext, next: Next): Promise<Response | undefined> {
+  async resolveAuth(c: HonoContext, next: ResolveAuthNext): Promise<Response | undefined> {
     const authHeader = c.req.header('Authorization');
     const sql = getDb();
     const baseUrl = getConfiguredPublicOrigin() ?? new URL(c.req.url).origin;
@@ -236,7 +236,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
       return role;
     }
 
-    function setContextAndContinue(
+    async function setContextAndContinue(
       overrides: Partial<{
         mcpAuthInfo: AuthInfo | null;
         mcpIsAuthenticated: boolean;
@@ -246,7 +246,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
         session: unknown;
         authSource: 'session' | 'pat' | 'oauth' | null;
       }>
-    ) {
+    ): Promise<Response | undefined> {
       if (overrides.mcpAuthInfo !== undefined) c.set('mcpAuthInfo', overrides.mcpAuthInfo);
       if (overrides.mcpIsAuthenticated !== undefined)
         c.set('mcpIsAuthenticated', overrides.mcpIsAuthenticated);
@@ -255,7 +255,11 @@ export class MultiTenantProvider implements WorkspaceProvider {
       if (overrides.user !== undefined) c.set('user', overrides.user as any);
       if (overrides.session !== undefined) c.set('session', overrides.session as any);
       if (overrides.authSource !== undefined) c.set('authSource', overrides.authSource);
-      return next();
+      // The cb (workers/* gating mw) may return a Response to short-circuit;
+      // Hono's plain `Next` returns void. `next()` resolves to one of those —
+      // pass it back to the caller so a short-circuit Response actually
+      // reaches Hono compose and gets installed as c.res. See Bug B fix doc.
+      return (await next()) ?? undefined;
     }
 
     // 1) Embedded worker direct-auth for the in-process lobu-memory MCP.
@@ -317,7 +321,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
           403
         );
       }
-      await setContextAndContinue({
+      return setContextAndContinue({
         mcpAuthInfo: {
           userId: directAuthUserId,
           organizationId: requestedOrgId,
@@ -331,7 +335,6 @@ export class MultiTenantProvider implements WorkspaceProvider {
         memberRole: directAuthRole,
         authSource: 'pat',
       });
-      return undefined;
     }
 
     // 2) Bearer token auth (PAT or OAuth)
@@ -402,14 +405,13 @@ export class MultiTenantProvider implements WorkspaceProvider {
 
       if (!effectiveOrgId) {
         if (isUnscopedRoute) {
-          await setContextAndContinue({
+          return setContextAndContinue({
             mcpAuthInfo: authInfo,
             mcpIsAuthenticated: true,
             organizationId: null,
             memberRole: null,
             authSource: isPat ? 'pat' : 'oauth',
           });
-          return undefined;
         }
         return c.json(
           {
@@ -471,7 +473,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
         bearerUser = null;
       }
 
-      await setContextAndContinue({
+      return setContextAndContinue({
         mcpAuthInfo: authInfo,
         mcpIsAuthenticated: true,
         organizationId: effectiveOrgId,
@@ -479,7 +481,6 @@ export class MultiTenantProvider implements WorkspaceProvider {
         user: bearerUser,
         authSource: isPat ? 'pat' : 'oauth',
       });
-      return undefined;
       } // end of `else` branch (PAT/OAuth verify hit)
     }
 
@@ -521,7 +522,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
       if (session?.user && session.session) {
         if (!requestedOrgId) {
           if (isUnscopedRoute) {
-            await setContextAndContinue({
+            return setContextAndContinue({
               mcpIsAuthenticated: true,
               organizationId: null,
               memberRole: null,
@@ -529,7 +530,6 @@ export class MultiTenantProvider implements WorkspaceProvider {
               session: session.session,
               authSource: 'session',
             });
-            return undefined;
           }
           return c.json(
             { error: 'invalid_request', error_description: 'Organization slug is required in URL' },
@@ -539,7 +539,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
 
         const role = await getMembershipRole(requestedOrgId, session.session.userId);
         if (role) {
-          await setContextAndContinue({
+          return setContextAndContinue({
             mcpIsAuthenticated: true,
             organizationId: requestedOrgId,
             memberRole: role,
@@ -547,7 +547,6 @@ export class MultiTenantProvider implements WorkspaceProvider {
             session: session.session,
             authSource: 'session',
           });
-          return undefined;
         }
 
         // Non-member: only allow through for public-readable endpoints
@@ -560,7 +559,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
             403
           );
         }
-        await setContextAndContinue({
+        return setContextAndContinue({
           mcpIsAuthenticated: false,
           organizationId: requestedOrgId,
           memberRole: null,
@@ -568,7 +567,6 @@ export class MultiTenantProvider implements WorkspaceProvider {
           session: session.session,
           authSource: 'session',
         });
-        return undefined;
       }
     } catch {
       // Session validation failed, continue to anonymous
@@ -593,8 +591,7 @@ export class MultiTenantProvider implements WorkspaceProvider {
     // 3) Anonymous: allow through with null org for discovery (tools/list, initialize)
     //    tools/call will enforce org context at the handler level.
     if (!requestedOrgId) {
-      await setContextAndContinue({ organizationId: null, memberRole: null });
-      return undefined;
+      return setContextAndContinue({ organizationId: null, memberRole: null });
     }
 
     if (!allowOrgLevelPublicRead && !allowAnonymousPublicOrgMcp) {
@@ -608,11 +605,10 @@ export class MultiTenantProvider implements WorkspaceProvider {
       );
     }
 
-    await setContextAndContinue({
+    return setContextAndContinue({
       organizationId: requestedOrgId,
       memberRole: null,
     });
-    return undefined;
   }
 
   async listOrganizations(search?: string, userId?: string | null): Promise<OrgInfo[]> {

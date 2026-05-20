@@ -80,12 +80,12 @@ mock.module("node:child_process", () => ({
 
 // ── Import classes after mock ────────────────────────────────────────────────
 
+import type { MessagePayload } from "@lobu/core";
 import { EmbeddedDeploymentManager } from "../orchestration/impl/embedded-deployment.js";
 import {
   buildCanonicalConversationKey,
   generateDeploymentName,
   type OrchestratorConfig,
-  type MessagePayload,
 } from "../orchestration/base-deployment-manager.js";
 import {
   backoffSeconds,

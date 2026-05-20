@@ -1,5 +1,39 @@
 # Changelog
 
+## [8.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v7.2.0...lobu-v8.0.0) (2026-05-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* **core:** drop unused module-lifecycle public types; consolidate wire + session-file utilities ([#930](https://github.com/lobu-ai/lobu/issues/930))
+* **evals:** The in-house `lobu eval` command and YAML eval schema are removed. Migrate evals to promptfoo + @lobu/promptfoo-provider; see examples/personal-finance/agents/personal-finance/evals/promptfooconfig.yaml for the new pattern.
+
+### Features
+
+* **auth:** install_operator bootstrap — unblock headless installs ([#923](https://github.com/lobu-ai/lobu/issues/923)) ([2a903fd](https://github.com/lobu-ai/lobu/commit/2a903fd99ddc41a2fe6a864c33806fe674e53f5e))
+* **connector-sdk:** FileSystemSource primitive for filesystem-shape ingestion ([#933](https://github.com/lobu-ai/lobu/issues/933)) ([7cced39](https://github.com/lobu-ai/lobu/commit/7cced3953f977d0787acda30d8bd03cd923362e7))
+* **core:** drop unused module-lifecycle public types; consolidate wire + session-file utilities ([#930](https://github.com/lobu-ai/lobu/issues/930)) ([27fbece](https://github.com/lobu-ai/lobu/commit/27fbeceaa9792ecf8aa01eba4c3d5b91b5083518))
+* **evals:** drop in-house YAML runner, ship @lobu/promptfoo-provider ([#911](https://github.com/lobu-ai/lobu/issues/911)) ([f8f087b](https://github.com/lobu-ai/lobu/commit/f8f087bca8f503f12158ff5fd6ece7739021fb6d))
+* **gateway:** tool_use SSE events for client-side trace inspection ([#918](https://github.com/lobu-ai/lobu/issues/918)) ([dcb5b1d](https://github.com/lobu-ai/lobu/commit/dcb5b1d8ba6ac7b76ec108156d260740540fd8b7))
+* guardrails schema extensions + judge engine + pii-scan ([#915](https://github.com/lobu-ai/lobu/issues/915)) ([ef48a3d](https://github.com/lobu-ai/lobu/commit/ef48a3dbc0c8ccd0c2690d3b1ced5a787c35c8f2))
+* local-first polish — magic-link gating, task-use bug, no_user_yet route + SPA copy ([#909](https://github.com/lobu-ai/lobu/issues/909)) ([125fb6b](https://github.com/lobu-ai/lobu/commit/125fb6b5faaf7ebd9bf288d7104ae94983699551))
+* make bump shortcut + "main checkout read-only" doctrine ([#928](https://github.com/lobu-ai/lobu/issues/928)) ([57cd312](https://github.com/lobu-ai/lobu/commit/57cd3123faec5c1c5db416ae0a05bfefcc9c6aff))
+* passkey (WebAuthn) auth + auth-config flags for local-mode routing ([#905](https://github.com/lobu-ai/lobu/issues/905)) ([54de2e0](https://github.com/lobu-ai/lobu/commit/54de2e0d365f8de22fbf564f0c43c6272583ea8a))
+* **promptfoo-provider:** vars.transcript multi-turn + migrate 4 personal-finance evals ([#913](https://github.com/lobu-ai/lobu/issues/913)) ([69151a9](https://github.com/lobu-ai/lobu/commit/69151a9d98013cf4bb85e5cad825c3d87ce7e3b1))
+* **promptfoo-provider:** vars.transcript multi-turn + migrate 4 personal-finance evals ([#921](https://github.com/lobu-ai/lobu/issues/921)) ([9453f37](https://github.com/lobu-ai/lobu/commit/9453f3747a250d91faa2e3f0ce9da3b8cd996a6e))
+* **server,chrome-ext:** mint session_token alongside child PAT for native auto-pair ([#896](https://github.com/lobu-ai/lobu/issues/896)) ([a675eeb](https://github.com/lobu-ai/lobu/commit/a675eeb233b3416812fd68731b66dfb94fde5af8))
+* **server:** drop bootstrap-user, first /sign-up becomes the install's identity ([#902](https://github.com/lobu-ai/lobu/issues/902)) ([f6522b3](https://github.com/lobu-ai/lobu/commit/f6522b3923cb025831d4715658159713c39775b8))
+* **server:** local-first identity + single-user mode for bootstrap ([#898](https://github.com/lobu-ai/lobu/issues/898)) ([aa5a71f](https://github.com/lobu-ai/lobu/commit/aa5a71f7c5595cf510757de5c76c439ec9a65cc5))
+* wire guardrails runtime end-to-end + secret-scan and forbidden-tools built-ins ([#919](https://github.com/lobu-ai/lobu/issues/919)) ([a66c00d](https://github.com/lobu-ai/lobu/commit/a66c00d3a61a3c0e9d5e31114d4c44e522702b73))
+
+
+### Bug Fixes
+
+* **build:** drop examples/personal-finance from root workspaces — unblock image builds ([#927](https://github.com/lobu-ai/lobu/issues/927)) ([8932729](https://github.com/lobu-ai/lobu/commit/89327292eace0e477f49f90726240d489f2b2296))
+* **cli:** task-setup resolves repo via git-common-dir, not script cwd ([#899](https://github.com/lobu-ai/lobu/issues/899)) ([8e26abd](https://github.com/lobu-ai/lobu/commit/8e26abd691e4d729d7eaecf71da63eaa7cfad100))
+* **cli:** task-setup uses --path-format=absolute for git-common-dir ([#900](https://github.com/lobu-ai/lobu/issues/900)) ([f200751](https://github.com/lobu-ai/lobu/commit/f200751c5dbcbc97246e3b561bfcae96b6bc5cd7))
+* **sync:** wire embedded feed-sync executor + workers/poll RangeError ([#929](https://github.com/lobu-ai/lobu/issues/929)) ([9b1d40b](https://github.com/lobu-ai/lobu/commit/9b1d40b2776dc045c163af5b779f89d28b0fd50f))
+
 ## [7.2.0](https://github.com/lobu-ai/lobu/compare/lobu-v7.1.0...lobu-v7.2.0) (2026-05-18)
 
 

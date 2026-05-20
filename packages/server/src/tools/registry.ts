@@ -3,6 +3,18 @@
  *
  * This file defines all MCP tools and imports their Typebox schemas from tool files.
  * Typebox provides compile-time type safety and runtime JSON schema generation.
+ *
+ * Glossary — "namespace" in tool descriptions below means three different things,
+ * none of which is a memory-scope axis:
+ *   1. `search_sdk`'s `namespace` param — a ClientSDK module name
+ *      (`watchers`, `entities`, `knowledge`, ...).
+ *   2. `resolve_path`'s "namespace-based URL path" — the first URL segment
+ *      (org slug or entity-type slug).
+ *   3. `entity_identities.namespace` (deep in SQL) — the identifier type
+ *      (`email`, `phone`, `wa_jid`); see `identity-normalize.ts`.
+ *
+ * Memory scoping uses `events.metadata.agent_id` (filtered via
+ * `search_memory`'s top-level `agent_id` arg) — not any of the above.
  */
 
 import { getPublicReadableActions, getRequiredAccessLevel } from '../auth/tool-access';

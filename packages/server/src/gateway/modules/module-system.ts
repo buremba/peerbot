@@ -1,27 +1,13 @@
-import type { CliBackendConfig } from "@lobu/core";
-import {
-  type ActionButton,
-  type ModuleInterface,
-  type ModuleSessionContext,
-  moduleRegistry,
-  type WorkerContext,
-  type WorkerModule,
-} from "@lobu/core";
+import type { CliBackendConfig, ModelOption } from "@lobu/core";
+import { type ModuleInterface, moduleRegistry } from "@lobu/core";
 import type { ProviderCredentialContext } from "../embedded.js";
 
-export interface ModelOption {
-  value: string;
-  label: string;
-}
-
-interface OrchestratorModule<TModuleData = unknown>
-  extends ModuleInterface<TModuleData> {
+interface OrchestratorModule extends ModuleInterface {
   buildEnvVars(
     agentId: string,
     baseEnv: Record<string, string>,
     context?: ProviderCredentialContext
   ): Promise<Record<string, string>>;
-  getContainerAddress(): string;
 }
 
 export interface ProviderUpstreamConfig {
@@ -79,33 +65,7 @@ export interface ModelProviderModule extends OrchestratorModule {
   }>;
 }
 
-interface DispatcherContext<TModuleData = unknown> {
-  userId: string;
-  channelId: string;
-  threadTs: string;
-  platformClient?: unknown;
-  moduleData: TModuleData;
-}
-
-interface DispatcherModule<TModuleData = unknown>
-  extends ModuleInterface<TModuleData> {
-  generateActionButtons(
-    context: DispatcherContext<TModuleData>
-  ): Promise<ActionButton[]>;
-  handleAction(
-    actionId: string,
-    userId: string,
-    agentId: string,
-    context: any
-  ): Promise<boolean>;
-}
-
-export abstract class BaseModule<TModuleData = unknown>
-  implements
-    WorkerModule<TModuleData>,
-    DispatcherModule<TModuleData>,
-    OrchestratorModule<TModuleData>
-{
+export abstract class BaseModule implements OrchestratorModule {
   abstract name: string;
   abstract isEnabled(): boolean;
 
@@ -115,24 +75,6 @@ export abstract class BaseModule<TModuleData = unknown>
 
   registerEndpoints(_app: any): void {
     // no-op
-  }
-
-  async initWorkspace(_config: any): Promise<void> {
-    // no-op
-  }
-
-  async onSessionStart(
-    context: ModuleSessionContext
-  ): Promise<ModuleSessionContext> {
-    return context;
-  }
-
-  async onSessionEnd(_context: ModuleSessionContext): Promise<ActionButton[]> {
-    return [];
-  }
-
-  async onBeforeResponse(_context: WorkerContext): Promise<TModuleData | null> {
-    return null;
   }
 
   async buildEnvVars(
@@ -148,25 +90,6 @@ export abstract class BaseModule<TModuleData = unknown>
     _userId: string
   ): Promise<ModelOption[]> {
     return [];
-  }
-
-  getContainerAddress(): string {
-    return "";
-  }
-
-  async generateActionButtons(
-    _context: DispatcherContext<TModuleData>
-  ): Promise<ActionButton[]> {
-    return [];
-  }
-
-  async handleAction(
-    _actionId: string,
-    _userId: string,
-    _agentId: string,
-    _context: any
-  ): Promise<boolean> {
-    return false;
   }
 }
 

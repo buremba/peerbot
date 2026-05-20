@@ -58,6 +58,7 @@ import {
   publicRestSearchKnowledge,
   restGetWatchers,
   restHealth,
+  restListTools,
   restSearchKnowledge,
   restToolProxy,
   restUpdateContentClassification,
@@ -1193,6 +1194,14 @@ app.post('/api/:orgSlug/join', async (c) => {
     role: result.role,
   });
 });
+
+/**
+ * GET /api/:orgSlug/tools
+ * List admin REST tools available to the caller. Companion to the POST
+ * proxy below — gives CLI/web callers a discovery surface without spinning
+ * up an MCP session just to call tools/list.
+ */
+app.get('/api/:orgSlug/tools', mcpAuth, restListTools);
 
 /**
  * Generic tool proxy - forwards to any MCP tool

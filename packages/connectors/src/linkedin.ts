@@ -9,8 +9,6 @@
  */
 
 import {
-  type ActionContext,
-  type ActionResult,
   browserNetworkSync,
   type ConnectorDefinition,
   ConnectorRuntime,
@@ -486,9 +484,5 @@ export default class LinkedInConnector extends ConnectorRuntime {
         api_calls: result.apiCallCount,
       },
     };
-  }
-
-  async execute(_ctx: ActionContext): Promise<ActionResult> {
-    return { success: false, error: 'Actions not supported' };
   }
 }

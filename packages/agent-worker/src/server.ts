@@ -9,9 +9,11 @@ import { join } from "node:path";
 import { getRequestListener } from "@hono/node-server";
 import {
   createLogger,
+  entryToMessage,
   getOptionalEnv,
   getOptionalNumber,
-  safeJsonParse,
+  type ParsedMessage,
+  parseSessionEntries,
 } from "@lobu/core";
 import { Hono } from "hono";
 
@@ -19,6 +21,16 @@ const logger = createLogger("worker-http");
 
 const app = new Hono();
 
+/**
+ * Locate a `.openclaw/session.jsonl` under the worker's own `WORKSPACE_DIR`.
+ *
+ * Different from the gateway-side `findSessionFile` (in
+ * `packages/server/src/gateway/routes/public/agent-history.ts`) on purpose
+ * — the worker's tree is single-agent, anchored at `WORKSPACE_DIR`, and
+ * only one level deep; the gateway scans up to three levels under
+ * `workspaces/<agentId>` with a `SAFE_AGENT_ID` regex guard. Path-policy
+ * stays per-caller.
+ */
 async function findSessionFile(): Promise<string | null> {
   const workspaceDir = getOptionalEnv("WORKSPACE_DIR", "/workspace");
 
@@ -57,111 +69,6 @@ async function findSessionFile(): Promise<string | null> {
   return null;
 }
 
-interface SessionEntry {
-  type: string;
-  id: string;
-  parentId: string | null;
-  timestamp: string;
-  message?: {
-    role: string;
-    content: unknown;
-    usage?: { inputTokens?: number; outputTokens?: number };
-  };
-  summary?: string;
-  provider?: string;
-  modelId?: string;
-  customType?: string;
-  content?: unknown;
-  display?: boolean;
-  tokensBefore?: number;
-  firstKeptEntryId?: string;
-}
-
-interface ParsedMessage {
-  id: string;
-  type: string;
-  role?: string;
-  content: unknown;
-  model?: string;
-  timestamp: string;
-  isVerbose?: boolean;
-  usage?: { inputTokens?: number; outputTokens?: number };
-}
-
-function parseSessionFile(content: string): {
-  entries: SessionEntry[];
-  sessionId?: string;
-} {
-  const lines = content.split("\n").filter((l) => l.trim());
-  const entries: SessionEntry[] = [];
-  let sessionId: string | undefined;
-
-  for (const line of lines) {
-    const parsed = safeJsonParse<SessionEntry & { id: string }>(line);
-    if (!parsed) {
-      // Skip malformed lines
-      continue;
-    }
-    if (parsed.type === "session") {
-      sessionId = parsed.id;
-      continue;
-    }
-    entries.push(parsed);
-  }
-
-  return { entries, sessionId };
-}
-
-function entryToMessage(entry: SessionEntry): ParsedMessage | null {
-  if (entry.type === "message" && entry.message) {
-    const role = entry.message.role;
-    const isVerbose = role === "toolResult";
-    return {
-      id: entry.id,
-      type: "message",
-      role,
-      content: entry.message.content,
-      timestamp: entry.timestamp,
-      isVerbose,
-      usage: entry.message.usage,
-    };
-  }
-
-  if (entry.type === "compaction") {
-    return {
-      id: entry.id,
-      type: "compaction",
-      content: entry.summary || "",
-      timestamp: entry.timestamp,
-      isVerbose: true,
-    };
-  }
-
-  if (entry.type === "model_change") {
-    return {
-      id: entry.id,
-      type: "model_change",
-      content: `${entry.provider}/${entry.modelId}`,
-      model: `${entry.provider}/${entry.modelId}`,
-      timestamp: entry.timestamp,
-      isVerbose: true,
-    };
-  }
-
-  if (entry.type === "custom_message") {
-    return {
-      id: entry.id,
-      type: "custom_message",
-      role: "user",
-      content: entry.content,
-      timestamp: entry.timestamp,
-      isVerbose: !entry.display,
-    };
-  }
-
-  return null;
-}
-
 app.get("/health", (c) => c.json({ status: "ok" }));
 
 app.get("/session/messages", async (c) => {
@@ -179,7 +86,7 @@ app.get("/session/messages", async (c) => {
       });
     }
     const content = await readFile(sessionPath, "utf-8");
-    const { entries, sessionId } = parseSessionFile(content);
+    const { entries, sessionId } = parseSessionEntries(content);
 
     // Convert all entries to messages, filtering nulls
     const allMessages: ParsedMessage[] = [];
@@ -241,7 +148,7 @@ app.get("/session/stats", async (c) => {
       });
     }
     const content = await readFile(sessionPath, "utf-8");
-    const { entries, sessionId } = parseSessionFile(content);
+    const { entries, sessionId } = parseSessionEntries(content);
 
     let messageCount = 0;
     let userMessages = 0;

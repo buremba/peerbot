@@ -49,8 +49,65 @@ All chat platforms (Telegram, Slack, Discord, WhatsApp, Teams) run through Chat 
 #### Guardrails
 - Primitive lives in `packages/core/src/guardrails/`: `Guardrail<stage>`, `GuardrailRegistry`, `runGuardrails()`. Stages: `input` (user message → worker), `output` (worker text → user), `pre-tool` (tool call authorization).
 - Each guardrail's `run(ctx)` returns `{ tripped, reason?, metadata? }`. The runner races all enabled guardrails at a stage; the first trip short-circuits (later results are discarded) and a thrown guardrail is logged and treated as a pass.
-- Enable per-agent in `lobu.toml`: `[agents.<id>] guardrails = ["secret-scan", "prompt-injection"]`. Names must match a guardrail registered in the gateway's `GuardrailRegistry` at startup.
-- Built-in: `createNoopGuardrail(stage, name?)` for tests and as a template. Real guardrails (prompt-injection classifier, secret/PII scanner) live in downstream packages that call `registry.register(...)` during gateway boot.
+- Built-ins ship from `packages/server/src/gateway/guardrails/builtins.ts` and are wired during `CoreServices.initialize`:
+  - `secret-scan` (output) — regex scan for OpenAI keys (`sk-…`), GitHub PATs (`ghp_…`), AWS access keys (`AKIA…`), JWT-shaped tokens. Cheap enough to run per streaming delta.
+  - `pii-scan` (input / output / pre-tool) — regex sweep for emails, US-shaped phones, and Luhn-valid 13–19 digit card-shaped runs across the user message, worker output, or serialized pre-tool args.
+  - `forbidden-tools` (pre-tool) — hardcoded deny-list (`delete_repo`, `delete_branch`, `drop_table`).
+- `createNoopGuardrail(stage, name?)` remains a template for downstream packages (prompt-injection classifier, custom PII scrubbers, etc.) that call `registry.register(...)` after `getCoreServices().getGuardrailRegistry()`.
+
+##### Configuration
+
+Three places guardrails can be turned on for an agent — all merged by `resolveAgentGuardrails()` in `packages/server/src/gateway/guardrails/aggregator.ts`:
+
+1. **Agent built-in list** (all stages):
+   ```toml
+   [agents.<id>]
+   guardrails = ["pii-scan", "prompt-injection"]
+   ```
+2. **Agent inline judges** — ad-hoc LLM-judge guardrails, no registry lookup:
+   ```toml
+   [[agents.<id>.guardrails_inline]]
+   stage = "output"
+   judge = "Never mention competitors."
+
+   [[agents.<id>.guardrails_inline]]
+   stage = "pre-tool"
+   tools = ["github.delete_repo"]
+   judge = "Only allow when the issue ref matches the active sprint."
+   ```
+   Each materializes into a guardrail named `inline:<stage>:<hash8>` (sha256 of the policy text). `tools` narrows pre-tool to a list of tool names; omitted = runs on every tool call.
+3. **Skill-declared guardrails** — **`pre-tool` only**. Skills don't own `input` / `output`: a skill can't decide for the operator which messages reach which agent or which words the agent may speak. `pre-tool` is scoped to specific tool invocations, which is what a skill knows about. Each entry is a discriminated union (`{ kind: "builtin" | "judge" }`) so neither/both is a TS error, not a runtime log:
+   ```ts
+   guardrails: {
+     "pre-tool": [
+       { kind: "builtin", name: "pii-scan" },
+       { kind: "judge", policy: "Reject writes outside the workspace.", tools: ["fs.write"] },
+     ],
+   }
+   ```
+   Skill inline judges are named `skill:<skillName>:inline:pre-tool:<hash8>`. `tools` narrowing is only available on the `judge` arm — built-ins do their own input filtering, so per-tool narrowing for them would silently lie about scope.
+
+##### Operator exclude list
+
+```toml
+[agents.<id>]
+guardrails_disabled = ["pii-scan", "skill:secret-lookup:inline:pre-tool:1a2b3c4d"]
+```
+
+Names match the resolved `Guardrail.name` — including the synthesized inline names. Applied last, after the merge. Use this to turn off a guardrail a skill auto-attaches without un-installing the skill.
+
+##### LLM judge engine
+
+`createJudgeGuardrail(stage, policy, options?)` from `packages/server/src/gateway/guardrails/judge-factory.ts` wraps `TextJudge` (extracted from the egress judge — same Haiku client, 5-min verdict cache keyed by `(policyHash, textHash)`, circuit breaker 5 failures → 30s cooldown, fail closed). Requires `ANTHROPIC_API_KEY` at the gateway. Reuses the egress judge's primitives so behavior is identical: cache, breaker, timeout, fail-closed posture.
+
+##### Runtime wiring
+
+- Wired call sites: `MessageConsumer.handleMessage` (input), `ChatResponseBridge.handleDelta` (output, runs per streaming delta), and `McpProxy.handleProxyRequest` (pre-tool, before the approval check). All three fail open on infrastructure errors — guardrails are a safety net, not a hard dependency.
+- Trip handling per stage:
+  - **Input** → dispatch is skipped and `Message rejected: <reason>` is pushed to the `thread_response` queue so the user sees a rejection in-thread.
+  - **Output** → the in-flight platform stream is disposed, `Message blocked by guardrail: <reason>` is posted, and the rest of the worker's stream for that conversation is suppressed. The partial buffer is NOT written to history.
+  - **Pre-tool** → the worker receives a JSON-RPC `isError: true` reply with the literal text `Tool call blocked by policy.`. The specific reason is intentionally NOT surfaced to the worker — leaking it is an evasion surface.
+- Every trip writes one `events` row with `semantic_type='guardrail-trip'`, `origin_type='guardrail-<stage>'`, and metadata `{guardrail, stage, reason, agent_id, user_id, conversation_id, guardrail_metadata?}`. Append-only — operators can dashboard these in the same place lifecycle events live.
 
 #### Network
 - Gateway runs a Node HTTP proxy on `127.0.0.1:8118`; worker subprocesses get `HTTP_PROXY=http://localhost:8118` for all outbound (curl/wget/npm/git). The proxy enforces domain allowlist/blocklist + LLM egress judge.
@@ -109,6 +166,16 @@ Rules for agents:
 - After editing `packages/agent-worker/*`, run `make clean-workers` so new workers pick up the change.
 - When the user pastes a Slack link (`slack.com/archives/…?thread_ts=`), call `./scripts/slack-thread-viewer.js "<link>"` first.
 - In planning mode, when unsure, ask: `codex exec "QUESTION" --config model_reasoning_effort="high"`.
+- **No new dynamic imports outside the documented allow-list below.** Use static `import` everywhere by default; never introduce a fresh `await import(...)` site without adding it to this list in the same PR. Side-effect imports + boot-time assertion are the right pattern for registries. The existing entries below are grandfathered with a one-line rationale each — they exist because static-importing the named modules has a measured cost (boot time, install footprint, Keychain prompt, mock-isolation) the lazy form avoids. New code falls under the static-import rule; only amend this list when a new call site has the same shape of justification as an existing one.
+  - `packages/cli/src/index.ts` — every subcommand handler is lazy-loaded inside its `.action(...)` callback. Static-importing the command tree regresses `lobu --help` from ~60ms to ~500ms (the tree pulls postgres / playwright / chat adapters / the bundled server). Boot-time measurement and add-a-command rules live in the comment block at the top of that file.
+  - `packages/cli/src/commands/_lib/connector-run-cmd.ts` — three lazy loads, all from `@lobu/connector-*`:
+    - `acquireMirroredCookies` + `readDevToolsActivePort` from `@lobu/connector-sdk/browser-{mirror,devtools-active-port}` — only when `mirrorSourceDir && mirrorBrowserRoot` are set (the user opted into Chrome-profile mirroring). Pulls Playwright + DevTools probing; the 99% non-mirroring `lobu connector run` path must not pay that cost.
+    - `executeCompiledConnector` from `@lobu/connector-worker/executor/runtime` — only after the resolve / validate / auth steps have all succeeded. Pulls the full subprocess executor + connector runtime; CLI startup must not pay it.
+  - `packages/cli/src/commands/_lib/apply/desired-state.ts` (`yaml`, two call sites) — only loaded when a skill file or connector dir actually contains YAML. The `yaml` package is a ~30 kB dep that the rest of the apply pipeline never touches; hoisting would tax every `lobu apply` invocation that has zero YAML.
+  - `packages/cli/src/commands/memory/_lib/browser-auth-cmd.ts` — two heavy lazy loads:
+    - `decryptChromeCookiesMacOS` from `@lobu/connector-sdk/browser-mirror` — only on macOS, only after the user explicitly invoked `lobu memory browser-auth`. Triggers a Keychain access prompt; pulling it at startup would also trip the prompt on unrelated commands.
+    - `chromium` from `playwright` — only in the CDP cookie-extraction fallback path. Playwright is a ~50 MB install; the lazy load is what keeps `npx @lobu/cli`'s install footprint sane for the common case.
+  - **Tests (`**/__tests__/**.ts`, `**/*.test.ts`, `**/*.integration.test.ts`)** — `await import(...)` is allowed inside `beforeAll` / `beforeEach` / `test()` blocks specifically to load a module *after* `vi.mock(...)` / env-var setup has been wired up. Static imports run before the test runner installs mocks, so the un-mocked module gets cached and the rest of the test sees the wrong dependency. This is the standard vitest/jest pattern; do not add the entry here for the production code path it tests — only for the test file itself.
 
 ## Scope discipline and branch hygiene
 
@@ -121,9 +188,10 @@ When the user pivots mid-session, the default failure mode is piling unrelated w
   3. `git switch main && git pull && git switch -c feat/<new-thing>` before touching any new code.
 - **When the new ask genuinely builds on unmerged code**, stack it: `git switch -c feat/b feat/a` off the existing feature branch and open PR #2 targeting `feat/a` (not `main`). Rebase PR #2 onto `main` once PR #1 merges.
 - **Never `git stash`.** Stashes are invisible, easy to lose, and collide across agents. If you need to pivot without finishing, commit WIP to the current branch (`git add -A && git commit -m "wip"`) and squash later. WIP commits are visible, pushable, recoverable.
+- **`~/Code/lobu` is read-only for agents.** All writes — commits, branch creation, submodule bumps, even one-line build fixes — go through a `make task-setup NAME=<slug>` worktree. For the trivial "advance a submodule pointer" case, `make bump SUBMODULE=<path> [TARGET=<ref>]` is the lightweight shortcut (skips bun install, .env copy, port allocation). The main checkout staying on `main` is the invariant that lets other agents `git worktree add` cleanly — leaving it on `chore/some-fix` silently breaks every parallel agent's `task-setup`.
 - **Per-agent isolation:** when launching a parallel Claude Code session, use `claude --worktree <name>` so each agent gets its own checkout + branch. No shared working dir = no cross-agent collisions.
 - **Subagent isolation (mandatory):** any spawned subagent that may `git switch`, commit, push, or run a destructive command MUST run with `isolation: "worktree"`. Read-only research/exploration agents may share the parent checkout. If unsure, use a worktree — the cost is a temp checkout, the cost of skipping is overwriting the user's working tree.
-- **Cross-repo dispatch:** owletto changes go through a **standalone clone at `~/Code/owletto`**, not `packages/owletto/`. The submodule worktree inherits the parent's `.git` and pushes to the wrong remote; an isolation worktree of lobu that needs to edit owletto code ends up with `origin = lobu-ai/owletto` and can't push to lobu. After an owletto PR merges, bump the submodule pointer in lobu in a separate small PR.
+- **Cross-repo dispatch:** owletto changes go through a `make task-setup NAME=<slug>` worktree, which fetches a fresh owletto checkout under `.claude/worktrees/<slug>/packages/owletto` on a real branch (not a detached submodule SHA). The submodule worktree inherits the parent's `.git` and pushes to the wrong remote; an isolation worktree of lobu that needs to edit owletto code ends up with `origin = lobu-ai/owletto` and can't push to lobu. After an owletto PR merges, bump the submodule pointer in lobu in a separate small PR.
 - **Don't pass `"REPO: /absolute/path"` in dispatch prompts.** Agents take it as a cwd directive and `cd` out of their isolation worktree onto the main checkout. Say "the lobu repo" / "the owletto repo" instead and let `isolation: "worktree"` do its job.
 - **If a branch has already gotten mixed**, recover with `git rebase -i` + `git reset HEAD~N` and re-commit in clean groups before opening PRs.
 
@@ -156,6 +224,29 @@ worktree owns `:8787` is what `https://...ts.net:8443` serves. Other worktrees
 are reachable on `http://localhost:8788` etc. — fine for UI work; only
 webhook/OAuth-callback testing actually needs the public URL.
 
+### bun lockfile + owletto submodule
+
+CI initialises `packages/owletto` via the deploy key before `bun install --frozen-lockfile`, so the lockfile that lands on `main` always reflects an *initialised* submodule. Locally, `bun install --frozen-lockfile` only matches that state if your checkout also has the submodule initialised — an uninitialised submodule prunes the owletto half of the dependency graph and Bun rewrites the lockfile, which then fails CI's frozen check on the next push.
+
+Before pushing changes that touch `bun.lock` or any `package.json`, run:
+
+```bash
+git submodule update --init packages/owletto
+bun install --frozen-lockfile
+```
+
+If the second command rewrites `bun.lock`, that's the drift CI would have caught — commit the regenerated lockfile in the same change.
+
+### Biome / IDE setup
+
+Husky's pre-commit hook runs `biome check --write`, so the canonical formatter is biome and not whatever your editor ships by default. To keep your editor and the hook from fighting:
+
+- **VS Code:** install the official [Biome extension](https://marketplace.visualstudio.com/items?itemName=biomejs.biome) and set it as the default formatter for TS/JS/JSON in workspace settings.
+- **JetBrains (WebStorm/IDEA):** install the Biome plugin, *or* wire a File Watcher that runs `bunx biome check --write $FilePath$` on save.
+- **Other editors:** point your save-time formatter at `bunx biome check --write` so the pre-commit hook's auto-fixes match what's already on disk.
+
+Without an editor integration, biome's `--write` still rewrites files at commit time — you just don't see the diff until `git status` surprises you.
+
 ### Validation after code changes
 
 **E2E before merge (hard gate).** For any bug-fix PR, do a red → fix → green cycle before opening:
@@ -166,7 +257,7 @@ webhook/OAuth-callback testing actually needs the public URL.
 4. Paste both in the PR body under a "Reproducer" section.
 5. **If you can't reproduce the original failure, BAIL** — post the dead-end on the issue, do not open a PR. Pi (the project's automated PR-review CLI, run as `pi -p <PR>`) validates code shape, not that the fix hits the actual smoking gun.
 
-Exception: changes that require dev environments the agent can't reach (Mac/Xcode, iOS, hardware). Call it out in the PR body ("Untested — requires Xcode") and leave the PR in draft until a human validates.
+Exception: runtime/UI validation on native apps (Mac/iOS) or hardware that needs a human-driven click. Compile-checks aren't exempt — `xcodebuild` runs headlessly. If you can't drive the UI, say so explicitly in the PR body ("Compiled clean; UI flow needs human validation") and leave the PR in draft.
 
 Run the validation that matches what you touched:
 
@@ -174,6 +265,7 @@ Run the validation that matches what you touched:
 | --- | --- |
 | `packages/landing/*` | `cd packages/landing && bun run build` |
 | `packages/{core,server,agent-worker,cli}/*` | `make build-packages` |
+| `packages/owletto/apps/mac/*` | `cd packages/owletto/apps/mac && xcodebuild -project Owletto.xcodeproj -scheme Owletto -configuration Debug -destination "platform=macOS" build CODE_SIGNING_ALLOWED=NO` |
 | Broad TS check | `bun run typecheck` |
 
 For MCP work, verify tool calls against the gateway proxy or Lobu directly (e.g. via `bun -e`) before exercising the full agent loop.

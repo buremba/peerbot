@@ -5,7 +5,11 @@
  */
 
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import type { AgentConfigStore, SkillConfig } from "@lobu/core";
+import type {
+  AgentConfigStore,
+  ModelOption,
+  SkillConfig,
+} from "@lobu/core";
 import type { ProviderCatalogService } from "../../auth/provider-catalog.js";
 import { collectProviderModelOptions } from "../../auth/provider-model-options.js";
 
@@ -28,7 +32,6 @@ import type { WorkerConnectionManager } from "../../gateway/connection-manager.j
 import type { IMessageQueue } from "../../infrastructure/queue/index.js";
 import {
   getModelProviderModules,
-  type ModelOption,
   type ModelProviderModule,
 } from "../../modules/module-system.js";
 import type { GrantStore } from "../../permissions/grant-store.js";

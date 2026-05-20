@@ -17,6 +17,24 @@ export interface LobuProviderConfig {
   thread?: string;
 }
 
+/**
+ * Structured tool-call trace surfaced by the gateway's `tool_use` SSE event.
+ * Mirrors Anthropic's tool-use block plus an optional `result_summary` field
+ * that retrieval tools (`search_memory`) populate so client code can compute
+ * `retrievedContext` without a round-trip back to the server.
+ */
+export interface LobuToolCall {
+  toolCallId?: string;
+  name: string;
+  input: unknown;
+  isError?: boolean;
+  result_summary?: {
+    event_ids?: number[];
+    snippets?: Array<{ id: number; text: string }>;
+    error?: string;
+  };
+}
+
 export interface LobuProviderResponse {
   output: string;
   tokenUsage?: {
@@ -30,11 +48,14 @@ export interface LobuProviderResponse {
     agent: string;
     traceId?: string;
     thread: string;
+    /** Tool calls observed during the turn, in order. */
+    toolCalls?: LobuToolCall[];
     /**
-     * Placeholder for retrieved-event traces. Populated once the gateway
-     * exposes tool_use SSE events — see TODO in README.
+     * Concatenated text content of events returned by retrieval tools
+     * (currently `search_memory`). Useful as `contextTransform:
+     * 'metadata.retrievedContext'` for promptfoo's `context-recall` /
+     * `context-faithfulness` assertions.
      */
-    toolCalls?: unknown[];
     retrievedContext?: string;
   };
 }
@@ -54,7 +75,11 @@ interface CollectedResponse {
     totalTokens?: number;
   };
   traceId?: string;
+  toolCalls?: LobuToolCall[];
+  retrievedContext?: string;
 }
+
+const RETRIEVAL_TOOL_NAMES = new Set(["search_memory", "lobu_search_memory"]);
 
 /**
  * promptfoo custom provider that drives a Lobu agent end-to-end via the
@@ -66,9 +91,10 @@ interface CollectedResponse {
  *   DELETE {gateway}/lobu/api/v1/agents/<id>             → cleanup
  *
  * One fresh thread per `callApi` invocation by default so promptfoo's repeat /
- * scenario semantics see a clean slate. Tool-call traces are not yet captured
- * because the gateway SSE protocol doesn't expose them (output/complete/error
- * only); see provider.metadata.toolCalls for the placeholder shape.
+ * scenario semantics see a clean slate. Tool-call traces are surfaced via the
+ * gateway's `tool_use` SSE event and populated on `metadata.toolCalls`. For
+ * retrieval tools (`search_memory`) the joined snippet text is also exposed as
+ * `metadata.retrievedContext` for promptfoo's RAG assertions.
  */
 export class LobuProvider {
   private readonly agent: string;
@@ -112,29 +138,45 @@ export class LobuProvider {
 
   async callApi(
     prompt: string,
-    _context?: PromptfooContext
+    context?: PromptfooContext
   ): Promise<LobuProviderResponse> {
     const thread = this.explicitThread ?? `promptfoo-${randomUUID()}`;
     const session = await this.createSession(thread);
 
-    try {
-      const response = await this.sendAndCollect(
-        session,
-        prompt,
-        this.defaultTimeoutMs
-      );
+    // Multi-turn mode: `vars.transcript` is a string[] of sequential user
+    // turns replayed in one Lobu thread. Only the final turn's response is
+    // returned for assertion. When set, `prompt` is ignored — the transcript
+    // is the source of truth for what the user said.
+    const turns = extractTranscript(context) ?? [prompt];
 
-      if (response.error) {
-        return {
-          output: response.text,
-          error: response.error,
-          metadata: {
-            agent: this.agent,
-            thread,
-            traceId: response.traceId,
-          },
-        };
+    try {
+      let lastResponse: CollectedResponse | undefined;
+
+      for (const turn of turns) {
+        lastResponse = await this.sendAndCollect(
+          session,
+          turn,
+          this.defaultTimeoutMs
+        );
+
+        // Bail on the first turn that errors — subsequent assertions would
+        // be meaningless against a broken thread.
+        if (lastResponse.error) {
+          return {
+            output: lastResponse.text,
+            error: lastResponse.error,
+            metadata: {
+              agent: this.agent,
+              thread,
+              traceId: lastResponse.traceId,
+            },
+          };
+        }
       }
+
+      // `turns` is always non-empty (defaults to `[prompt]`), so lastResponse
+      // is defined here.
+      const response = lastResponse as CollectedResponse;
 
       return {
         output: response.text,
@@ -149,10 +191,12 @@ export class LobuProvider {
           agent: this.agent,
           thread,
           traceId: response.traceId,
-          // toolCalls + retrievedContext intentionally absent until the gateway
-          // SSE protocol surfaces tool_use events. Assertions that depend on
-          // these (context-recall, context-faithfulness, custom turn-overlap)
-          // should gate on their presence.
+          ...(response.toolCalls && response.toolCalls.length > 0
+            ? { toolCalls: response.toolCalls }
+            : {}),
+          ...(response.retrievedContext
+            ? { retrievedContext: response.retrievedContext }
+            : {}),
         },
       };
     } finally {
@@ -250,12 +294,32 @@ export class LobuProvider {
       let buffer = "";
       let currentEvent = "";
       let text = "";
+      const toolCalls: LobuToolCall[] = [];
+      const retrievedSnippets: Array<{ id: number; text: string }> = [];
+      const seenSnippetIds = new Set<number>();
 
       const matchesTarget = (eventMessageId: unknown): boolean => {
         if (!messageId) return true;
         return (
           typeof eventMessageId === "string" && eventMessageId === messageId
         );
+      };
+
+      const finalize = (
+        extra: Partial<CollectedResponse> = {}
+      ): CollectedResponse => {
+        const result: CollectedResponse = {
+          text,
+          latencyMs: Date.now() - start,
+          ...extra,
+        };
+        if (toolCalls.length > 0) result.toolCalls = toolCalls;
+        if (retrievedSnippets.length > 0) {
+          result.retrievedContext = retrievedSnippets
+            .map((s) => s.text)
+            .join("\n\n");
+        }
+        return result;
       };
 
       while (true) {
@@ -282,12 +346,27 @@ export class LobuProvider {
                   text += data.content;
                 }
                 break;
+              case "tool_use": {
+                if (!matchesTarget(data.messageId)) break;
+                const call = normaliseToolUseEvent(data);
+                if (!call) break;
+                toolCalls.push(call);
+                if (
+                  RETRIEVAL_TOOL_NAMES.has(call.name) &&
+                  call.result_summary?.snippets
+                ) {
+                  for (const snippet of call.result_summary.snippets) {
+                    if (seenSnippetIds.has(snippet.id)) continue;
+                    seenSnippetIds.add(snippet.id);
+                    retrievedSnippets.push(snippet);
+                  }
+                }
+                break;
+              }
               case "complete": {
                 if (!matchesTarget(data.messageId)) break;
                 const usage = data.usage as Record<string, number> | undefined;
-                return {
-                  text,
-                  latencyMs: Date.now() - start,
+                return finalize({
                   tokens: usage
                     ? {
                         inputTokens: usage.input_tokens ?? usage.inputTokens,
@@ -297,15 +376,13 @@ export class LobuProvider {
                           (usage.output_tokens ?? usage.outputTokens ?? 0),
                       }
                     : undefined,
-                };
+                });
               }
               case "error":
                 if (!matchesTarget(data.messageId)) break;
-                return {
-                  text,
-                  latencyMs: Date.now() - start,
+                return finalize({
                   error: String(data.error ?? "Unknown error"),
-                };
+                });
             }
             currentEvent = "";
           } else if (line === "") {
@@ -314,7 +391,7 @@ export class LobuProvider {
         }
       }
 
-      return { text, latencyMs: Date.now() - start };
+      return finalize();
     } catch (err: unknown) {
       if (err instanceof Error && err.name === "AbortError") {
         return { text: "", latencyMs: Date.now() - start, error: "Timeout" };
@@ -353,6 +430,23 @@ interface Session {
   base: string;
 }
 
+/**
+ * Pull a multi-turn transcript out of the promptfoo test context. Expects
+ * `vars.transcript` to be a non-empty `string[]`; anything else falls back
+ * to single-turn mode (returns undefined). Empty strings are filtered out
+ * so an accidental trailing newline in YAML doesn't send a blank turn.
+ */
+function extractTranscript(
+  context: PromptfooContext | undefined
+): string[] | undefined {
+  const raw = context?.vars?.transcript;
+  if (!Array.isArray(raw)) return undefined;
+  const turns = raw.filter(
+    (t): t is string => typeof t === "string" && t.trim().length > 0
+  );
+  return turns.length > 0 ? turns : undefined;
+}
+
 function parseJSON(str: string): Record<string, unknown> | null {
   try {
     const parsed: unknown = JSON.parse(str);
@@ -363,4 +457,43 @@ function parseJSON(str: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+function normaliseToolUseEvent(
+  data: Record<string, unknown>
+): LobuToolCall | null {
+  const name = data.name;
+  if (typeof name !== "string" || !name) return null;
+  const call: LobuToolCall = {
+    name,
+    input: data.input ?? null,
+  };
+  if (typeof data.toolCallId === "string") call.toolCallId = data.toolCallId;
+  if (data.isError === true) call.isError = true;
+  const summary = data.result_summary;
+  if (summary && typeof summary === "object") {
+    const parsed: NonNullable<LobuToolCall["result_summary"]> = {};
+    const ids = (summary as { event_ids?: unknown }).event_ids;
+    if (Array.isArray(ids)) {
+      const numeric = ids.filter((id): id is number => typeof id === "number");
+      if (numeric.length > 0) parsed.event_ids = numeric;
+    }
+    const snippetsRaw = (summary as { snippets?: unknown }).snippets;
+    if (Array.isArray(snippetsRaw)) {
+      const snippets: Array<{ id: number; text: string }> = [];
+      for (const item of snippetsRaw) {
+        if (!item || typeof item !== "object") continue;
+        const id = (item as { id?: unknown }).id;
+        const text = (item as { text?: unknown }).text;
+        if (typeof id === "number" && typeof text === "string") {
+          snippets.push({ id, text });
+        }
+      }
+      if (snippets.length > 0) parsed.snippets = snippets;
+    }
+    const errorMsg = (summary as { error?: unknown }).error;
+    if (typeof errorMsg === "string") parsed.error = errorMsg;
+    if (Object.keys(parsed).length > 0) call.result_summary = parsed;
+  }
+  return call;
 }

@@ -7,8 +7,6 @@
  */
 
 import {
-  type ActionContext,
-  type ActionResult,
   browserNetworkSync,
   type ConnectorDefinition,
   ConnectorRuntime,
@@ -528,9 +526,5 @@ export default class XConnector extends ConnectorRuntime {
     }
 
     return syncViaBrowser(ctx, config, checkpoint);
-  }
-
-  async execute(_ctx: ActionContext): Promise<ActionResult> {
-    return { success: false, error: 'Actions not supported' };
   }
 }

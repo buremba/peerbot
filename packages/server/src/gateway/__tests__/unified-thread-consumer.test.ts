@@ -46,6 +46,80 @@ function createConsumer(overrides?: {
   return { consumer, platformRegistry, renderer };
 }
 
+describe("UnifiedThreadResponseConsumer customEvent broadcast", () => {
+  test("broadcasts tool_use customEvent to conversation + cli session", async () => {
+    const renderer = {
+      handleCompletion: mock(async () => undefined),
+      handleError: mock(async () => undefined),
+    };
+    const queue = {
+      start: mock(async () => undefined),
+      stop: mock(async () => undefined),
+      createQueue: mock(async () => undefined),
+      work: mock(async () => undefined),
+    };
+    const broadcast = mock(() => undefined);
+    const sseManager = { broadcast };
+    const platformRegistry = {
+      get: mock(() => ({ getResponseRenderer: () => renderer })),
+    };
+    const consumer = new UnifiedThreadResponseConsumer(
+      queue as any,
+      platformRegistry as any,
+      sseManager as any
+    ) as any;
+
+    const payload = {
+      messageId: "m1",
+      channelId: "api:1",
+      conversationId: "api:1",
+      userId: "u1",
+      teamId: "api",
+      platform: "api",
+      timestamp: 1000,
+      platformMetadata: { sessionId: "cli-session-1" },
+      customEvent: {
+        name: "tool_use",
+        data: {
+          toolCallId: "tc-1",
+          name: "search_memory",
+          input: { query: "rent" },
+          isError: false,
+          result_summary: {
+            event_ids: [42],
+            snippets: [{ id: 42, text: "Rent is due 1st" }],
+          },
+        },
+      },
+    };
+
+    await consumer.handleThreadResponse({ id: "job-1", data: payload });
+
+    const broadcasts = broadcast.mock.calls;
+    const toolUseBroadcasts = broadcasts.filter(
+      (call: any[]) => call[1] === "tool_use"
+    );
+    expect(toolUseBroadcasts.length).toBe(2);
+    const conversationBroadcast = toolUseBroadcasts.find(
+      (call: any[]) => call[0] === "api:1"
+    );
+    const cliBroadcast = toolUseBroadcasts.find(
+      (call: any[]) => call[0] === "cli-session-1"
+    );
+    expect(conversationBroadcast).toBeDefined();
+    expect(cliBroadcast).toBeDefined();
+    expect(conversationBroadcast?.[2]).toMatchObject({
+      toolCallId: "tc-1",
+      name: "search_memory",
+      result_summary: {
+        event_ids: [42],
+      },
+      messageId: "m1",
+      timestamp: 1000,
+    });
+  });
+});
+
 describe("UnifiedThreadResponseConsumer Chat SDK ownership", () => {
   test("throws for Chat SDK connection responses not owned by this gateway", async () => {
     const chatResponseBridge = {

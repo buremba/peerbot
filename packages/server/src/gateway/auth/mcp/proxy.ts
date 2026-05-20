@@ -1,12 +1,19 @@
 import { randomUUID } from "node:crypto";
 import dns from "node:dns/promises";
-import { createLogger, verifyWorkerToken } from "@lobu/core";
+import {
+  createLogger,
+  type GuardrailRegistry,
+  runGuardrails,
+  verifyWorkerToken,
+} from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { storePendingTool } from "./pending-tool-store.js";
 import { getRevokedTokenStore } from "../revoked-token-store.js";
 import { requiresToolApproval } from "../../permissions/approval-policy.js";
 import type { GrantStore } from "../../permissions/grant-store.js";
+import type { AgentSettingsStore } from "../settings/agent-settings-store.js";
+import { recordGuardrailTrip } from "../../guardrails/audit.js";
 import {
   getStoredCredential,
   refreshCredential,
@@ -211,6 +218,8 @@ export class McpProxy {
   private readonly secretStore: WritableSecretStore;
   private readonly grantStore?: GrantStore;
   private readonly publicGatewayUrl?: string;
+  private readonly agentSettingsStore?: AgentSettingsStore;
+  private readonly guardrailRegistry?: GuardrailRegistry;
 
   /** Callback invoked when a tool call is blocked for approval. */
   public onToolBlocked?: (
@@ -254,12 +263,18 @@ export class McpProxy {
       grantStore?: GrantStore;
       /** Absolute gateway URL for OAuth redirect_uri construction. */
       publicGatewayUrl?: string;
+      /** Source of per-agent guardrail enable lists for the pre-tool stage. */
+      agentSettingsStore?: AgentSettingsStore;
+      /** Shared registry of guardrails; pre-tool stage entries are queried. */
+      guardrailRegistry?: GuardrailRegistry;
     }
   ) {
     this.secretStore = options.secretStore;
     this.toolCache = options.toolCache;
     this.grantStore = options.grantStore;
     this.publicGatewayUrl = options.publicGatewayUrl;
+    this.agentSettingsStore = options.agentSettingsStore;
+    this.guardrailRegistry = options.guardrailRegistry;
     this.app = new Hono();
     this.setupRoutes();
     logger.debug("MCP proxy initialized");
@@ -740,6 +755,16 @@ export class McpProxy {
         id: 1,
       });
 
+      // Forward the caller's `x-mcp-format` opt-in so internal MCPs (the
+      // embedded lobu-memory server) can return raw JSON instead of formatted
+      // markdown. The worker uses this for retrieval tools to surface
+      // structured `result_summary` (event ids + snippet text) through the
+      // `tool_use` SSE event.
+      const callerFormat = c.req.header("x-mcp-format");
+      const extraHeaders = callerFormat
+        ? { "x-mcp-format": callerFormat }
+        : undefined;
+
       let response = await this.sendUpstreamRequest(
         httpServer,
         agentId,
@@ -747,7 +772,8 @@ export class McpProxy {
         "POST",
         jsonRpcBody,
         scopeKey,
-        auth.token
+        auth.token,
+        extraHeaders
       );
 
       // Detect HTTP 401 + WWW-Authenticate → start MCP OAuth 2.1 auth-code flow.
@@ -973,12 +999,100 @@ export class McpProxy {
           if (jsonRpc.method === "tools/call" && jsonRpc.params?.name) {
             const toolName = jsonRpc.params.name;
             const toolArgs = jsonRpc.params.arguments || {};
-            // TODO(#254): pre-tool-stage guardrail hook. Before the existing
-            // approval check below, call runGuardrails("pre-tool", registry,
-            // settings.guardrails, { toolName, arguments: toolArgs, agentId, ...}).
-            // On trip: reuse the onToolBlocked path to return a JSON-RPC error
-            // with trip.reason. Wiring deferred to the PR that registers the
-            // first real pre-tool guardrail.
+
+            // Pre-tool guardrails: run before the existing approval check so
+            // a blocked tool never enters the approval funnel. The worker
+            // sees a generic policy message — the specific reason is
+            // intentionally NOT surfaced (evasion surface).
+            if (this.guardrailRegistry && this.agentSettingsStore) {
+              try {
+                const settings =
+                  await this.agentSettingsStore.getSettings(agentId);
+                const enabled = settings?.guardrails ?? [];
+                if (enabled.length > 0) {
+                  const outcome = await runGuardrails(
+                    this.guardrailRegistry,
+                    "pre-tool",
+                    enabled,
+                    {
+                      agentId,
+                      userId: tokenData.userId,
+                      toolName,
+                      arguments: toolArgs,
+                      conversationId: tokenData.conversationId,
+                    }
+                  );
+                  if (outcome.tripped) {
+                    // Resolve org id with a metadata fallback — per-job
+                    // tokens carry it, but legacy deployment-lifetime
+                    // tokens may not, and an unaudited trip is a security
+                    // log gap.
+                    let resolvedOrgId = tokenData.organizationId;
+                    if (!resolvedOrgId) {
+                      try {
+                        const md =
+                          await this.agentSettingsStore.getMetadata(agentId);
+                        resolvedOrgId = md?.organizationId;
+                      } catch (lookupErr) {
+                        logger.warn(
+                          {
+                            agentId,
+                            err:
+                              lookupErr instanceof Error
+                                ? lookupErr.message
+                                : String(lookupErr),
+                          },
+                          "Pre-tool guardrail trip: orgId metadata lookup failed (audit may be skipped)"
+                        );
+                      }
+                    }
+                    void recordGuardrailTrip({
+                      organizationId: resolvedOrgId,
+                      agentId,
+                      userId: tokenData.userId,
+                      conversationId: tokenData.conversationId,
+                      stage: "pre-tool",
+                      guardrail: outcome.tripped.guardrail,
+                      reason: outcome.tripped.reason,
+                      metadata: outcome.tripped.metadata,
+                    });
+                    logger.info(
+                      {
+                        agentId,
+                        toolName,
+                        guardrail: outcome.tripped.guardrail,
+                      },
+                      "Pre-tool guardrail tripped — returning generic policy block to worker"
+                    );
+                    return c.json({
+                      jsonrpc: "2.0",
+                      id: jsonRpc.id,
+                      result: {
+                        content: [
+                          {
+                            type: "text",
+                            text: "Tool call blocked by policy.",
+                          },
+                        ],
+                        isError: true,
+                      },
+                    });
+                  }
+                }
+              } catch (err) {
+                // Fail open on store/registry-level errors — the runner
+                // already fail-opens on per-guardrail throws.
+                logger.warn(
+                  {
+                    agentId,
+                    toolName,
+                    err: err instanceof Error ? err.message : String(err),
+                  },
+                  "Pre-tool guardrail check failed — proceeding without guardrails"
+                );
+              }
+            }
+
             const approval = await this.evaluateToolApproval(
               mcpId,
               toolName,
@@ -1255,7 +1369,8 @@ export class McpProxy {
     method: string,
     body?: string,
     scopeKey?: string,
-    directAuthToken?: string
+    directAuthToken?: string,
+    extraHeaders?: Record<string, string>
   ): Promise<Response> {
     const sessionKey = this.buildSessionKey(agentId, mcpId, scopeKey);
     const sessionId = this.getSession(sessionKey);
@@ -1280,6 +1395,11 @@ export class McpProxy {
       credentialToken,
       httpServer.internal === true
     );
+    if (extraHeaders) {
+      for (const [key, value] of Object.entries(extraHeaders)) {
+        headers[key] = value;
+      }
+    }
 
     const response = await fetch(httpServer.upstreamUrl, {
       method,

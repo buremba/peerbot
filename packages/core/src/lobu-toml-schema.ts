@@ -143,6 +143,42 @@ const egressSchema = z.object({
   judge_model: z.string().optional(),
 });
 
+// ── Guardrails (inline) ─────────────────────────────────────────────────────
+
+/**
+ * Inline guardrail declared in `lobu.toml` as an array of `[[agents.<id>.guardrails_inline]]`
+ * tables. Sibling to the name-based `guardrails = ["secret-scan", ...]` list —
+ * use this when you want to attach an ad-hoc LLM-judge guardrail without
+ * registering a named guardrail at gateway boot.
+ *
+ * Example:
+ *   [[agents.<id>.guardrails_inline]]
+ *   stage = "output"
+ *   judge = "Never mention competitors."
+ *
+ *   [[agents.<id>.guardrails_inline]]
+ *   stage = "pre-tool"
+ *   tools = ["github.delete_repo"]
+ *   judge = "Only allow when issue ref matches active sprint."
+ *
+ * `tools` is only meaningful for `pre-tool` and is silently ignored for
+ * other stages.
+ */
+const guardrailInlineSchema = z.object({
+  stage: z.enum(["input", "output", "pre-tool"]),
+  /**
+   * Inline LLM-judge policy text. Required for now — built-in references go
+   * in the sibling `guardrails = [...]` list. The judge runs through the
+   * shared TextJudge engine (Haiku + 5-min cache + circuit breaker).
+   */
+  judge: z.string().min(1),
+  /**
+   * Optional pre-tool narrowing. Only meaningful when `stage = "pre-tool"`.
+   * When omitted the guardrail runs on every tool call.
+   */
+  tools: z.array(z.string()).optional(),
+});
+
 // ── Tools ───────────────────────────────────────────────────────────────────
 
 /**
@@ -220,6 +256,20 @@ const agentEntrySchema = z.object({
    * registered in the gateway's GuardrailRegistry. See packages/core/src/guardrails.
    */
   guardrails: z.array(z.string()).optional(),
+  /**
+   * Operator's exclude list: built-in / skill-provided guardrails that
+   * should be turned off for this agent even if a skill declared them.
+   * Names are matched against {@link Guardrail.name}, including the
+   * synthesized `inline:<stage>:<hash8>` names for inline judges from skills.
+   */
+  guardrails_disabled: z.array(z.string()).optional(),
+  /**
+   * Inline guardrails declared directly on the agent (no registry lookup).
+   * Each entry materializes into an ad-hoc registered guardrail named
+   * `inline:<stage>:<hash8>` (hash of policy text) and is merged into the
+   * effective per-agent list at startup.
+   */
+  guardrails_inline: z.array(guardrailInlineSchema).optional(),
   worker: workerSchema.optional(),
   preview: previewSchema.optional(),
 });
@@ -262,3 +312,4 @@ export type EgressEntry = z.infer<typeof egressSchema>;
 export type ToolsEntry = z.infer<typeof toolsSchema>;
 export type WorkerEntry = z.infer<typeof workerSchema>;
 export type MemoryEntry = z.infer<typeof memorySchema>;
+export type GuardrailInlineEntry = z.infer<typeof guardrailInlineSchema>;

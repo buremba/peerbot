@@ -50,6 +50,16 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: ClawHub login
+        # clawhub CLI v0.16 doesn't expose an explicit OIDC flag; use a
+        # long-lived org token stored as a repo + production-environment
+        # secret. Skipped if CLAWHUB_TOKEN is unset (e.g. forks).
+        if: ${{ env.CLAWHUB_TOKEN_SET == 'true' }}
+        env:
+          CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
+          CLAWHUB_TOKEN_SET: ${{ secrets.CLAWHUB_TOKEN != '' }}
+        run: npx --yes clawhub@latest login --token "$CLAWHUB_TOKEN" --no-browser
+
       - name: Publish packages
         env:
           # Auth precedence (npm 11+):

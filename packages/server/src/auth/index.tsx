@@ -185,6 +185,24 @@ export async function createAuth(env: Env, request?: Request) {
 			enabled: authConfig.emailPassword,
 			requireEmailVerification: false,
 			sendResetPassword: async ({ user, url }) => {
+				// Carve-out: the synthetic install_operator user (auto-provisioned
+				// at boot) authenticates with ENCRYPTION_KEY and uses a synthetic
+				// install@<hostname> email that doesn't deliver. Refuse password
+				// reset for it so an accidental "forgot password" can't replace
+				// the operator's credential. See docs/install-operator-bootstrap.md.
+				const { getDb } = await import("../db/client");
+				const sql = getDb();
+				const rows = (await sql`
+					SELECT principal_kind FROM "user"
+					 WHERE id = ${user.id} LIMIT 1
+				`) as unknown as Array<{ principal_kind: string }>;
+				if (rows[0]?.principal_kind === "install_operator") {
+					throw new APIError("FORBIDDEN", {
+						code: "PASSWORD_RESET_NOT_ALLOWED_FOR_INSTALL_OPERATOR",
+						message:
+							"Password reset is not available for the install operator. Use the install's ENCRYPTION_KEY to sign in.",
+					});
+				}
 				await sendTransactionalEmail({
 					env,
 					to: user.email,
@@ -459,6 +477,26 @@ export async function createAuth(env: Env, request?: Request) {
 			// Magic link authentication
 			magicLink({
 				sendMagicLink: async ({ email, url }) => {
+					// Carve-out: refuse magic-link for the synthetic install_operator
+					// row. Its synthetic install@<hostname> email is non-deliverable
+					// and admitting a magic-link would let any caller who can guess
+					// the hostname mint an operator session via the email channel,
+					// bypassing the ENCRYPTION_KEY guard. See
+					// docs/install-operator-bootstrap.md.
+					const { getDb } = await import("../db/client");
+					const sql = getDb();
+					const rows = (await sql`
+						SELECT principal_kind FROM "user"
+						 WHERE email = ${email} LIMIT 1
+					`) as unknown as Array<{ principal_kind: string }>;
+					if (rows[0]?.principal_kind === "install_operator") {
+						throw new APIError("FORBIDDEN", {
+							code: "MAGIC_LINK_NOT_ALLOWED_FOR_INSTALL_OPERATOR",
+							message:
+								"Magic link is not available for the install operator. Use the install's ENCRYPTION_KEY to sign in.",
+						});
+					}
+
 					if (!env.RESEND_API_KEY && runtimeNodeEnv !== "production") {
 						console.info(
 							{ email, url },
@@ -567,10 +605,19 @@ export async function createAuth(env: Env, request?: Request) {
 						if (env.LOBU_SINGLE_USER === "1") {
 							const { getDb } = await import("../db/client");
 							const sql = getDb();
+							// Exclude the synthetic install_operator row
+							// (auto-provisioned at boot in ensureInstallOperator)
+							// AND the legacy bootstrap-user row (pre-PR #902)
+							// from the "deployment already has a user" count, so
+							// the first human signup can still proceed in
+							// single-user mode against upgraded installs that
+							// still carry a bootstrap-user row. See
+							// docs/install-operator-bootstrap.md.
 							const rows = (await sql`
 								SELECT count(*)::int AS count
 									  FROM "user"
-									 WHERE id <> 'bootstrap-user'
+									 WHERE principal_kind <> 'install_operator'
+									   AND id <> 'bootstrap-user'
 							`) as unknown as Array<{ count: number }>;
 							const existing = rows[0]?.count ?? 0;
 							if (existing > 0) {
@@ -658,6 +705,33 @@ export async function createAuth(env: Env, request?: Request) {
 			},
 			account: {
 				create: {
+					before: async (account) => {
+						// Carve-out: refuse OAuth account-linking onto the synthetic
+						// install_operator user. The operator authenticates via
+						// ENCRYPTION_KEY; admitting social-login linking would pin a
+						// real human identity onto the operator row, which is exactly
+						// the fork between "the install" and "a person" the
+						// principal_kind discriminator exists to prevent. Allow the
+						// `credential` provider so ensureInstallOperator can write the
+						// password-hash row at boot. See
+						// docs/install-operator-bootstrap.md.
+						if (account.providerId !== "credential") {
+							const { getDb } = await import("../db/client");
+							const sql = getDb();
+							const rows = (await sql`
+								SELECT principal_kind FROM "user"
+								 WHERE id = ${account.userId} LIMIT 1
+							`) as unknown as Array<{ principal_kind: string }>;
+							if (rows[0]?.principal_kind === "install_operator") {
+								throw new APIError("FORBIDDEN", {
+									code: "ACCOUNT_LINKING_NOT_ALLOWED_FOR_INSTALL_OPERATOR",
+									message:
+										"Cannot link a social account to the install operator. Sign up as a real user first.",
+								});
+							}
+						}
+						return { data: account };
+					},
 					after: async (account, context) => {
 						const accountSummary = {
 							id: account.id,

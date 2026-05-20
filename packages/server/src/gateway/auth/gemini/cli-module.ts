@@ -1,4 +1,4 @@
-import type { ModelOption } from "../../modules/module-system.js";
+import type { ModelOption } from "@lobu/core";
 import { CliBackendOnlyModule } from "../cli-backend-only-module.js";
 import type { AuthProfilesManager } from "../settings/auth-profiles-manager.js";
 

@@ -12,6 +12,13 @@ export interface PluginConfig {
   autoRecall?: boolean;
   autoCapture?: boolean;
   recallLimit?: number;
+  /**
+   * Agent ID the plugin instance is bound to. When set, autoCapture saves
+   * stamp `metadata.agent_id` on every event so `search_memory` can scope
+   * recall to this agent's own writes. Injected by the Lobu worker from
+   * the agent's runtime config; falls back to `process.env.LOBU_AGENT_ID`.
+   */
+  agentId?: string;
 }
 
 export interface ResolvedPluginConfig {
@@ -24,6 +31,7 @@ export interface ResolvedPluginConfig {
   autoRecall: boolean;
   autoCapture: boolean;
   recallLimit: number;
+  agentId: string | null;
 }
 
 export interface McpToolDefinition {

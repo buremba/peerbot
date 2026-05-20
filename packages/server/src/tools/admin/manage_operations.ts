@@ -204,25 +204,32 @@ async function executeLocalActionInline(
   });
 
   try {
-    const { executeCompiledConnector, getActionOutput } = await import(
-      '../../../../connector-worker/src/executor/runtime'
+    const { executeCompiledConnector } = await import(
+      '@lobu/connector-worker/executor/runtime'
+    );
+    const envStrings = Object.fromEntries(
+      Object.entries(env).filter(([, value]) => typeof value === 'string')
     );
     const result = await executeCompiledConnector({
-      mode: 'action',
       compiledCode,
-      actionKey:
-        operation.backend_config.backend === 'local_action'
-          ? operation.backend_config.actionKey
-          : operation.operation_key,
-      actionInput,
-      env: Object.fromEntries(Object.entries(env).filter(([, value]) => typeof value === 'string')),
-      connectionCredentials,
-      sessionState,
-      credentials,
-      apiType: 'api',
+      job: {
+        mode: 'action',
+        actionKey:
+          operation.backend_config.backend === 'local_action'
+            ? operation.backend_config.actionKey
+            : operation.operation_key,
+        actionInput,
+        config: { ...envStrings, ...connectionCredentials },
+        env: envStrings,
+        sessionState,
+        credentials,
+      },
     });
 
-    const actionOutput = getActionOutput(result);
+    if (result.mode !== 'action') {
+      throw new Error(`Expected action result, got mode=${result.mode}`);
+    }
+    const actionOutput = result.output;
     await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(actionOutput)} WHERE id = ${runId} AND organization_id = ${organizationId}`;
     return { status: 'completed', output: actionOutput };
   } catch (error) {

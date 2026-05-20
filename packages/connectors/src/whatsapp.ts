@@ -11,8 +11,6 @@
  */
 
 import {
-  type ActionContext,
-  type ActionResult,
   type AuthContext,
   type AuthResult,
   type ConnectorDefinition,
@@ -427,10 +425,6 @@ export default class WhatsAppConnector extends ConnectorRuntime {
       safeEnd(sock);
       throw error;
     }
-  }
-
-  async execute(_ctx: ActionContext): Promise<ActionResult> {
-    return { success: false, error: 'Actions not supported in v1.' };
   }
 }
 

@@ -6,8 +6,6 @@
 
 import { createHash } from 'node:crypto';
 import {
-  type ActionContext,
-  type ActionResult,
   type ConnectorDefinition,
   ConnectorRuntime,
   calculateEngagementScore,
@@ -287,9 +285,5 @@ export default class GlassdoorConnector extends ConnectorRuntime {
         },
       };
     });
-  }
-
-  async execute(_ctx: ActionContext): Promise<ActionResult> {
-    return { success: false, error: 'Actions not supported' };
   }
 }

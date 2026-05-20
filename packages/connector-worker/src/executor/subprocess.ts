@@ -11,7 +11,8 @@ import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ExecutionHooks, FeedSyncResult, SyncContext, SyncExecutor } from './interface.js';
+import type { EventEnvelope } from '@lobu/connector-sdk';
+import type { ExecutionHooks, ExecutorJob, ExecutorResult, SyncExecutor } from './interface.js';
 import { StreamRedactor, redactOutput } from './redact.js';
 
 /**
@@ -115,6 +116,10 @@ const DEFAULT_OPTIONS: SubprocessExecutorOptions = {
   maxOldSpaceSize: 512,
 };
 
+function jobEnv(job: ExecutorJob): Record<string, string | undefined> {
+  return job.env;
+}
+
 export class SubprocessExecutor implements SyncExecutor {
   private options: SubprocessExecutorOptions;
 
@@ -124,10 +129,10 @@ export class SubprocessExecutor implements SyncExecutor {
 
   async execute(
     compiledCode: string,
-    context: SyncContext,
+    job: ExecutorJob,
     hooks?: ExecutionHooks
-  ): Promise<FeedSyncResult> {
-    return new Promise<FeedSyncResult>((resolve, reject) => {
+  ): Promise<ExecutorResult> {
+    return new Promise<ExecutorResult>((resolve, reject) => {
       let childRunnerPath = join(__dirname, 'child-runner.js');
       const childRunnerTsPath = join(__dirname, 'child-runner.ts');
 
@@ -163,18 +168,14 @@ export class SubprocessExecutor implements SyncExecutor {
       const child = fork(childRunnerPath, [], {
         stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
         execArgv,
-        env: { ...pickSystemEnv(), ...context.env } as NodeJS.ProcessEnv,
+        env: { ...pickSystemEnv(), ...jobEnv(job) } as NodeJS.ProcessEnv,
       });
 
       let resolved = false;
       let terminalMessageReceived = false;
       let timedOut = false;
-      let latestCheckpoint = context.checkpoint;
-      let finalMetadata: Record<string, any> | undefined;
-      let finalAuthUpdate: Record<string, any> | undefined;
-      let finalAuthResult: FeedSyncResult['auth_result'] | undefined;
-      const collectedContents: FeedSyncResult['contents'] = [];
-      const collectContents = hooks?.collectContents !== false;
+      let latestCheckpoint =
+        job.mode === 'sync' ? job.checkpoint : null;
       let processingChain = Promise.resolve();
 
       // Per-stream ring buffers — preserve the *tail* (most recent bytes),
@@ -250,13 +251,10 @@ export class SubprocessExecutor implements SyncExecutor {
       // so validate shape at this trust boundary before dereferencing fields.
       const onMessage = (msg: any) => {
         if (!msg || typeof msg !== 'object' || typeof msg.type !== 'string') return;
-        if (msg.type === 'content_chunk') {
-          const items = Array.isArray(msg.items) ? msg.items : [];
+        if (msg.type === 'event_chunk') {
+          const events: EventEnvelope[] = Array.isArray(msg.events) ? msg.events : [];
           queueTask(async () => {
-            if (collectContents) {
-              collectedContents.push(...items);
-            }
-            await hooks?.onContentChunk?.(items);
+            await hooks?.onEventChunk?.(events);
           });
           return;
         }
@@ -319,29 +317,15 @@ export class SubprocessExecutor implements SyncExecutor {
 
         if (msg.type === 'result') {
           terminalMessageReceived = true;
-          const result = msg.result as FeedSyncResult;
+          const result = msg.result as ExecutorResult;
           queueTask(async () => {
-            finalMetadata = result.metadata;
-            finalAuthUpdate = result.auth_update;
-            finalAuthResult = result.auth_result;
-            latestCheckpoint = result.checkpoint;
-
-            if (Array.isArray(result.contents) && result.contents.length > 0) {
-              if (collectContents) {
-                collectedContents.push(...result.contents);
-              }
-              await hooks?.onContentChunk?.(result.contents);
+            // For sync results, surface the trailing checkpoint to callers
+            // through the result; in-flight `checkpoint_update` messages have
+            // already been forwarded via the hook.
+            if (result.mode === 'sync') {
+              latestCheckpoint = result.checkpoint;
             }
-
-            settle(() =>
-              resolve({
-                contents: collectedContents,
-                checkpoint: latestCheckpoint,
-                metadata: finalMetadata,
-                auth_update: finalAuthUpdate,
-                auth_result: finalAuthResult,
-              })
-            );
+            settle(() => resolve(result));
           });
           return;
         }
@@ -440,20 +424,19 @@ export class SubprocessExecutor implements SyncExecutor {
       child.stdout?.on('data', onStdout);
       child.stderr?.on('data', onStderr);
 
-      // Send the compiled code and context to the child. Use the callback
-      // form so a failed send (e.g. child died before IPC handshake, or fork
-      // resolved to a non-existent file) rejects the executor promise
+      // Hint to keep linter quiet when latestCheckpoint isn't consumed in
+      // non-sync modes; it's the parent-side mirror of the sync checkpoint
+      // stream and only relevant when hooks.onCheckpointUpdate is wired.
+      void latestCheckpoint;
+
+      // Send the compiled code and job descriptor to the child. Use the
+      // callback form so a failed send (e.g. child died before IPC handshake,
+      // or fork resolved to a non-existent file) rejects the executor promise
       // instead of going unhandled on the IPC channel.
       child.send(
         {
           compiledCode,
-          context: {
-            options: context.options,
-            checkpoint: context.checkpoint,
-            env: context.env,
-            sessionState: context.sessionState,
-            apiType: context.apiType,
-          },
+          job,
         },
         (err) => {
           if (err) {

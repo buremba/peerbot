@@ -25,6 +25,7 @@ import {
   fetchCdpVersionInfo,
   resolveCdpUrl,
 } from "@lobu/connector-sdk";
+import { resolveMcpEndpoint, restToolCall } from "./mcp.js";
 import { printText } from "./output.js";
 
 /** Stub of the old getProfile() shim. resolveMcpEndpoint falls through to
@@ -306,7 +307,6 @@ async function resolveConnectorDomains(
     return domainsOverride.split(",").map((d) => d.trim());
   }
 
-  const { resolveMcpEndpoint, restToolCall } = await import("./mcp.js");
   const mcpUrl = await resolveMcpEndpoint(cliProfile.config);
   if (!mcpUrl) {
     printText(
@@ -365,7 +365,6 @@ export async function captureBrowserAuth(
       process.exitCode = 1;
       return;
     }
-    const { resolveMcpEndpoint, restToolCall } = await import("./mcp.js");
     const mcpUrl = await resolveMcpEndpoint(cliProfile.config);
     if (!mcpUrl) {
       printText("No MCP URL configured.");
@@ -491,7 +490,6 @@ export async function captureBrowserAuth(
     }
 
     if (args.authProfileSlug) {
-      const { resolveMcpEndpoint, restToolCall } = await import("./mcp.js");
       const mcpUrl = await resolveMcpEndpoint(cliProfile.config);
 
       if (!mcpUrl) {
@@ -640,7 +638,6 @@ export async function captureBrowserAuth(
   if (args.authProfileSlug) {
     printText("Saving cookies to auth profile...");
 
-    const { resolveMcpEndpoint, restToolCall } = await import("./mcp.js");
     const mcpUrl = await resolveMcpEndpoint(cliProfile.config);
 
     if (!mcpUrl) {

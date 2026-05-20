@@ -197,7 +197,41 @@ export interface SkillConfig {
   modelPreference?: string;
   /** Thinking level budget for this skill */
   thinkingLevel?: ThinkingLevel;
+  /**
+   * Guardrails declared by the skill.
+   *
+   * Skills may only declare `pre-tool` guardrails — the asymmetry is
+   * deliberate. `input` (user message → worker) and `output` (worker text →
+   * user) are agent-wide concerns: a skill can't decide for the operator
+   * which messages should reach which agent or which words an agent may
+   * speak. `pre-tool` is scoped to specific tool invocations, which is what
+   * a skill knows about — it can reasonably say "before this tool runs,
+   * apply this judge".
+   *
+   * Discriminated by `kind` so invalid combinations (neither / both) are
+   * compile-time TS errors instead of runtime warnings:
+   *   - `{ kind: "builtin", name }` — reference a registered guardrail.
+   *     The optional `tools` field is ignored for builtins (built-ins
+   *     decide their own input filtering); use an inline judge if you
+   *     want per-tool narrowing.
+   *   - `{ kind: "judge", policy, tools? }` — ad-hoc LLM-judge policy;
+   *     `tools` narrows the judge to specific tool names (matched against
+   *     `toolName` in {@link PreToolGuardrailContext}); when absent, the
+   *     guardrail runs on every pre-tool invocation.
+   */
+  guardrails?: {
+    "pre-tool"?: Array<SkillPreToolGuardrail>;
+  };
 }
+
+/**
+ * Discriminated union of legal skill-declared pre-tool guardrail entries.
+ * Each entry must be either a built-in reference or an inline judge --
+ * setting both, or neither, is rejected by the type checker.
+ */
+export type SkillPreToolGuardrail =
+  | { kind: "builtin"; name: string }
+  | { kind: "judge"; policy: string; tools?: string[] };
 
 /**
  * Skills configuration for agent settings.
@@ -461,7 +495,6 @@ export interface ThreadResponsePayload {
   errorCode?: string;
   timestamp: number;
   originalMessageId?: string;
-  moduleData?: Record<string, unknown>;
   botResponseId?: string;
   ephemeral?: boolean; // If true, message should be sent as ephemeral (only visible to user)
   platformMetadata?: Record<string, unknown>;

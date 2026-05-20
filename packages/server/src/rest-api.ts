@@ -24,7 +24,7 @@ import { listWatchers } from './tools/admin/manage_watchers';
 import { executeTool, extractAuthContext, toToolContext } from './tools/execute';
 import { getContent } from './tools/get_content';
 import { getWatcher } from './tools/get_watchers';
-import { getTool, type ToolContext } from './tools/registry';
+import { getAllTools, getTool, type ToolContext } from './tools/registry';
 import { toJsonSafe } from '@lobu/core';
 import { ToolNotRegisteredError, ToolUserError, errorMessage } from './utils/errors';
 import logger from './utils/logger';
@@ -250,6 +250,67 @@ export async function restToolProxy(
         extra: { tool_name: error.toolName },
       });
     }
+    return c.json({ error: errorMessage(error) }, 400);
+  }
+}
+
+/**
+ * GET /api/:orgSlug/tools
+ * List the admin REST tool surface available to the caller.
+ *
+ * Mirrors the access-level / scope filter that `mcp-handler.ts` applies to
+ * `tools/list`, but always returns the REST-internal surface (`/api/:orgSlug/*`
+ * is never the public MCP path, so `allowInternalTools` is true here). The
+ * `internal` flag is preserved on each row so CLI clients can mark tools that
+ * external MCP clients don't see.
+ */
+export async function restListTools(c: Context<{ Bindings: Env }>) {
+  try {
+    const authCtx = extractAuthContext(c);
+    if (!authCtx.organizationId) {
+      return c.json(
+        { error: 'Organization context required. Authenticate with OAuth or API key.' },
+        401
+      );
+    }
+    const roleAccessLevel = !authCtx.memberRole
+      ? 'read'
+      : authCtx.memberRole === 'owner' || authCtx.memberRole === 'admin'
+        ? 'admin'
+        : 'write';
+    const scopeAccessLevel = !authCtx.scopes
+      ? 'admin'
+      : authCtx.scopes.includes('mcp:admin')
+        ? 'admin'
+        : authCtx.scopes.includes('mcp:write')
+          ? 'write'
+          : 'read';
+    const maxAccessLevel =
+      roleAccessLevel === 'read' || scopeAccessLevel === 'read'
+        ? 'read'
+        : roleAccessLevel === 'write' || scopeAccessLevel === 'write'
+          ? 'write'
+          : 'admin';
+    const tools = getAllTools({
+      includeInternalTools: true,
+      publicOnly: false,
+      maxAccessLevel,
+    });
+    // Re-attach the `internal` flag from the source registry (getAllTools
+    // strips it) so callers can distinguish UI-only handlers from public MCP
+    // tools.
+    const withInternalFlag = tools.map((tool) => {
+      const source = getTool(tool.name);
+      return {
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        ...(tool.annotations && { annotations: tool.annotations }),
+        internal: source?.internal === true,
+      };
+    });
+    return c.json({ tools: withInternalFlag });
+  } catch (error) {
     return c.json({ error: errorMessage(error) }, 400);
   }
 }

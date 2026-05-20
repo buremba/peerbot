@@ -26,6 +26,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { printText } from "../memory/_lib/output.js";
 
+import type { EventEnvelope } from "@lobu/connector-sdk";
 import { resolveContext } from "../../internal/context.js";
 import { getUsableToken, resolveOrg } from "../memory/_lib/openclaw-auth.js";
 import {
@@ -340,7 +341,7 @@ export async function connectorRun(
   printText(`Compiling ${connectorKey} from ${sourcePath}...`);
   const compiledCode = await compileConnectorFromFile(sourcePath);
 
-  // Build the SyncContext shape that executeCompiledConnector expects.
+  // Build the ExecutorJob shape that executeCompiledConnector expects.
   // For mirror profiles we layer two acquisition paths:
   //   1. DevToolsActivePort lookup against the source Chrome's
   //      user-data root. If the file is there, Chrome is exposing a
@@ -422,30 +423,36 @@ export async function connectorRun(
   process.once("SIGINT", () => onSignal("SIGINT"));
   process.once("SIGTERM", () => onSignal("SIGTERM"));
 
-  // Stream progress to stderr (so --json output to stdout stays clean).
-  let streamedCount = 0;
-  const onContentChunk = (items: any[]) => {
-    streamedCount += items.length;
-    process.stderr.write(`  ... ${streamedCount} events so far\n`);
+  // Sync events stream via the onEventChunk hook now (the executor used to
+  // collect them into result.contents for us — that path is gone). Collect
+  // locally so the artifact/--json output still has the full payload.
+  const collectedEvents: EventEnvelope[] = [];
+  const onEventChunk = (events: EventEnvelope[]) => {
+    for (const event of events) collectedEvents.push(event);
+    process.stderr.write(`  ... ${collectedEvents.length} events so far\n`);
   };
 
   printText(`Running ${connectorKey} (subprocess executor)...`);
   const startMs = Date.now();
-  const result = await (executeCompiledConnector as any)({
-    mode: "sync",
+  const result = await executeCompiledConnector({
     compiledCode,
-    config: mergedConfig,
-    checkpoint,
-    env: process.env as Record<string, string | undefined>,
-    connectionCredentials: {},
-    sessionState,
-    credentials: {},
-    feedKey: feed?.feed_key ?? `${connectorKey}-cli-run`,
-    entityIds: [],
-    apiType: "browser" as const,
-    hooks: { onContentChunk, collectContents: true },
+    job: {
+      mode: "sync",
+      config: mergedConfig,
+      checkpoint,
+      env: process.env as Record<string, string | undefined>,
+      sessionState,
+      credentials: null,
+      feedKey: feed?.feed_key ?? `${connectorKey}-cli-run`,
+      entityIds: [],
+    },
+    hooks: { onEventChunk },
   });
   const durationMs = Date.now() - startMs;
+
+  if (result.mode !== "sync") {
+    throw new Error(`Expected sync result, got mode=${result.mode}`);
+  }
 
   // Save artifact for debugging / sharing. ~/.lobu/cache/connector-runs/<ts>.json.
   const cacheDir = join(homedir(), ".lobu", "cache", "connector-runs");
@@ -459,9 +466,9 @@ export async function connectorRun(
     config: mergedConfig,
     input_checkpoint: checkpoint,
     duration_ms: durationMs,
-    event_count: result.contents.length,
+    event_count: collectedEvents.length,
     next_checkpoint: result.checkpoint,
-    events: result.contents,
+    events: collectedEvents,
     metadata: result.metadata ?? {},
   };
   await writeFile(artifactPath, JSON.stringify(artifact, null, 2), "utf-8");
@@ -471,10 +478,10 @@ export async function connectorRun(
   } else {
     printText("");
     printText(`✓ Completed in ${(durationMs / 1000).toFixed(1)}s`);
-    printText(`  Events: ${result.contents.length}`);
-    if (result.contents.length > 0) {
+    printText(`  Events: ${collectedEvents.length}`);
+    if (collectedEvents.length > 0) {
       printText("  Sample:");
-      printText(summarizeEvents(result.contents));
+      printText(summarizeEvents(collectedEvents));
     }
     if (result.checkpoint) {
       printText(`  Next checkpoint: ${JSON.stringify(result.checkpoint)}`);

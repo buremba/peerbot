@@ -36,32 +36,40 @@ export type {
   Skill,
   SkillMcpServerInfo,
 } from "./api-types";
+export * from "./capabilities";
 export type { CommandContext, CommandDefinition } from "./command-registry";
 // Command registry
 export { CommandRegistry } from "./command-registry";
-// Shared base for InstructionProvider implementations (server + worker)
-export { BaseInstructionProvider } from "./instruction-provider";
-export * from "./capabilities";
 export * from "./constants";
-// Guardrail primitive (type + registry + parallel runner + no-op builtin)
-export * from "./guardrails";
 // Errors & logging
 export * from "./errors";
+// Guardrail primitive (type + registry + parallel runner + no-op builtin)
+export * from "./guardrails";
+// Shared base for InstructionProvider implementations (server + worker)
+export { BaseInstructionProvider } from "./instruction-provider";
 // Integration types
 export type {
   ProviderRegistryEntry,
   ProvidersConfigFile,
 } from "./integration-types";
+// Lobu memory guidance (rendered into the OpenClaw plugin's fallback system
+// context and into the bundled `lobu` skill's "Memory Defaults" section). Lives
+// in core so the openclaw-plugin and the server-side skill-sync test can both
+// import it via the package name instead of a cross-package relative path.
+export {
+  renderFallbackSystemContext,
+  renderSkillMemorySection,
+} from "./lobu-guidance";
 // lobu.toml zod schema (canonical — used by CLI and gateway)
 export {
   type AgentEntry as TomlAgentEntry,
   type EgressEntry as TomlEgressEntry,
-  type PlatformEntry as TomlPlatformEntry,
   type LobuTomlConfig,
   lobuConfigSchema,
   type McpServerEntry as TomlMcpServerEntry,
   type MemoryEntry as TomlMemoryEntry,
   type NetworkEntry as TomlNetworkEntry,
+  type PlatformEntry as TomlPlatformEntry,
   type ProviderEntry as TomlProviderEntry,
   type SkillsEntry as TomlSkillsEntry,
   type ToolsEntry,
@@ -70,7 +78,6 @@ export {
 } from "./lobu-toml-schema";
 export * from "./logger";
 // Module system
-export type { ActionButton, ModuleSessionContext } from "./modules";
 export * from "./modules";
 export type { OtelConfig, Span, Tracer } from "./otel";
 // OpenTelemetry tracing
@@ -133,6 +140,7 @@ export type {
   SessionContext,
   SkillConfig,
   SkillMcpServer,
+  SkillPreToolGuardrail,
   SkillsConfig,
   SuggestedPrompt,
   ThinkingLevel,
@@ -153,9 +161,18 @@ export type { McpStatus, McpToolDef } from "./utils/mcp-tool-instructions";
 export * from "./utils/network-domains";
 export * from "./utils/retry";
 export * from "./utils/sanitize";
+// Shared OpenClaw session.jsonl parser (gateway + worker).
+export {
+  entryToMessage,
+  type ParsedMessage,
+  parseSessionEntries,
+  type SessionEntry,
+} from "./utils/session-file";
 export * from "./utils/urls";
 export * from "./worker/auth";
 export type {
   WorkerTransport,
   WorkerTransportConfig,
 } from "./worker/transport";
+// Gateway ↔ worker wire contract (MessagePayload, JobType, QueuedMessage).
+export type { JobType, MessagePayload, QueuedMessage } from "./worker/wire";

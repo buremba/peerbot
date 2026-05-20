@@ -13,8 +13,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import type { QueuedMessage } from "@lobu/core";
 import { MessageBatcher } from "../gateway/message-batcher";
-import type { QueuedMessage } from "../gateway/types";
 
 function makeMsg(
   messageId: string,

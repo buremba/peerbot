@@ -1,17 +1,17 @@
-import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { renderSkillMemorySection } from '../../packages/openclaw-plugin/src/lobu-guidance.ts';
+import { readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { renderSkillMemorySection } from "../../packages/core/src/lobu-guidance.ts";
 
-const SKILL_PATH = resolve(process.cwd(), 'skills/lobu/SKILL.md');
-const START_MARKER = '<!-- lobu-memory-guidance:start -->';
-const END_MARKER = '<!-- lobu-memory-guidance:end -->';
+const SKILL_PATH = resolve(process.cwd(), "skills/lobu/SKILL.md");
+const START_MARKER = "<!-- lobu-memory-guidance:start -->";
+const END_MARKER = "<!-- lobu-memory-guidance:end -->";
 
-const skill = readFileSync(SKILL_PATH, 'utf-8');
+const skill = readFileSync(SKILL_PATH, "utf-8");
 const startIndex = skill.indexOf(START_MARKER);
 const endIndex = skill.indexOf(END_MARKER);
 
 if (startIndex === -1 || endIndex === -1 || endIndex < startIndex) {
-  throw new Error(`Could not find guidance markers in ${SKILL_PATH}`);
+	throw new Error(`Could not find guidance markers in ${SKILL_PATH}`);
 }
 
 const generated = renderSkillMemorySection();

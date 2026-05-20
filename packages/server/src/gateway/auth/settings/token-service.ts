@@ -1,34 +1,4 @@
-/**
- * Pre-filled skill configuration for an agent config session
- */
-interface PrefillSkill {
-  /** Skill repository (e.g., "anthropics/skills/pdf") */
-  repo: string;
-  /** Display name */
-  name?: string;
-  /** Description */
-  description?: string;
-}
-
-/**
- * Pre-filled MCP server configuration for an agent config session
- */
-interface PrefillMcpServer {
-  /** MCP server ID (key in mcpServers record) */
-  id: string;
-  /** Display name/description */
-  name?: string;
-  /** Server URL (for SSE type) */
-  url?: string;
-  /** Server type */
-  type?: "sse" | "streamable-http" | "stdio";
-  /** Command (for stdio type) */
-  command?: string;
-  /** Args (for stdio type) */
-  args?: string[];
-  /** Environment variables needed (just the keys, user fills values) */
-  envVars?: string[];
-}
+import type { PrefillMcp, PrefillSkill } from "@lobu/core";
 
 /**
  * Source message context where settings link was requested.
@@ -70,7 +40,7 @@ export interface SettingsTokenPayload {
   /** Optional skills to pre-fill (user confirms to enable) */
   prefillSkills?: PrefillSkill[];
   /** Optional MCP servers to pre-fill (user confirms to enable) */
-  prefillMcpServers?: PrefillMcpServer[];
+  prefillMcpServers?: PrefillMcp[];
   /** Optional Nix packages to pre-fill */
   prefillNixPackages?: string[];
   /** Optional domain patterns to pre-fill as grants */

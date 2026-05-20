@@ -35,7 +35,12 @@ if ! [[ "$name" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
 fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo="$(cd "$script_dir/.." && pwd)"
+# Resolve `repo` to the main checkout, not whatever worktree the script
+# happens to live inside. Same fix as task-setup.sh (#900) / task-use.sh —
+# `--git-common-dir --path-format=absolute` returns the shared .git path
+# regardless of which worktree the call is made from, so invoking
+# `make task-clean` from inside a worktree targets the right paths.
+repo="$(dirname "$(git -C "$script_dir" rev-parse --path-format=absolute --git-common-dir)")"
 worktree_dir="$repo/.claude/worktrees/$name"
 branch="feat/$name"
 
@@ -114,11 +119,15 @@ fi
 if command -v lobu >/dev/null 2>&1; then
   if lobu context rm "$name" >/dev/null 2>&1; then
     echo "→ removed Lobu context '$name'"
+  else
+    echo "warning: failed to remove Lobu context '$name' (already gone or CLI error)" >&2
   fi
+else
+  echo "warning: 'lobu' CLI not on PATH; skipping context removal" >&2
 fi
 
-# If this worktree was the active target for the Chrome/Mac symlinks, fall
-# back to 'main' so the symlinks don't dangle into a deleted directory.
+# If this worktree was the active target for the Chrome symlink, fall back
+# to 'main' so the active/chrome symlink doesn't dangle into a deleted dir.
 active_name_file="$HOME/.config/lobu-dev/active/.active-name"
 if [[ -f "$active_name_file" ]] && [[ "$(cat "$active_name_file")" == "$name" ]]; then
   "$repo/scripts/task-use.sh" main >/dev/null && \

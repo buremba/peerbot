@@ -68,6 +68,7 @@ import {
 } from "./plugin-loader";
 import { OpenClawProgressProcessor } from "./processor";
 import { getOpenClawSessionContext } from "./session-context";
+import { buildToolUseEventPayload } from "./tool-use-events";
 import {
   buildToolPolicy,
   enforceBashCommandPolicy,
@@ -79,6 +80,32 @@ const logger = createLogger("worker");
 
 const MEMORY_FLUSH_STATE_CUSTOM_TYPE = "lobu.memory_flush_state";
 const APPROX_IMAGE_TOKENS = 1200;
+
+const LOBU_MEMORY_PLUGIN_SOURCE = "@lobu/openclaw-plugin";
+
+/**
+ * Inject the bound agentId into the Lobu memory plugin's config so its
+ * autoCapture path stamps `metadata.agent_id` on save_memory calls. Other
+ * plugins are passed through unchanged. Returns a new PluginsConfig — does
+ * not mutate input.
+ */
+function injectAgentIdIntoLobuPlugin(
+  pluginsConfig: PluginsConfig | undefined,
+  agentId: string | undefined
+): PluginsConfig | undefined {
+  if (!pluginsConfig?.plugins?.length || !agentId) return pluginsConfig;
+  const plugins = pluginsConfig.plugins.map((plugin) => {
+    if (plugin.source !== LOBU_MEMORY_PLUGIN_SOURCE) return plugin;
+    return {
+      ...plugin,
+      config: {
+        ...plugin.config,
+        agentId,
+      },
+    };
+  });
+  return { ...pluginsConfig, plugins };
+}
 
 interface ResolvedMemoryFlushConfig {
   enabled: boolean;
@@ -393,13 +420,6 @@ export class OpenClawWorker implements WorkerExecutor {
             this.config.userId,
             this.config.sessionKey
           );
-
-          const { initModuleWorkspace } = await import("../modules/lifecycle");
-          await initModuleWorkspace({
-            workspaceDir: this.workspaceManager.getCurrentWorkingDirectory(),
-            username: this.config.userId,
-            sessionKey: this.config.sessionKey,
-          });
         }
       );
 
@@ -424,26 +444,6 @@ export class OpenClawWorker implements WorkerExecutor {
         }
       );
 
-      // Module hooks may modify the system prompt before agent execution.
-      try {
-        const { onSessionStart } = await import("../modules/lifecycle");
-        const moduleContext = await onSessionStart({
-          platform: this.config.platform,
-          channelId: this.config.channelId,
-          userId: this.config.userId,
-          conversationId: this.config.conversationId,
-          messageId: this.config.responseId,
-          workingDirectory: this.workspaceManager.getCurrentWorkingDirectory(),
-          customInstructions,
-        });
-        if (moduleContext.customInstructions) {
-          customInstructions = moduleContext.customInstructions;
-        }
-      } catch (error) {
-        logger.error("Failed to call onSessionStart hooks:", error);
-      }
-
-      // Add file I/O instructions AFTER module hooks so they aren't overwritten
       customInstructions += this.getFileIOInstructions();
 
       logger.info(
@@ -505,14 +505,6 @@ export class OpenClawWorker implements WorkerExecutor {
           );
         }
       );
-
-      const { collectModuleData } = await import("../modules/lifecycle");
-      const moduleData = await collectModuleData({
-        workspaceDir: this.workspaceManager.getCurrentWorkingDirectory(),
-        userId: this.config.userId,
-        conversationId: this.config.conversationId,
-      });
-      this.workerTransport.setModuleData(moduleData);
 
       if (result.success) {
         // Snapshot writer in cleanup() reads this to discriminate the row.
@@ -1273,8 +1265,14 @@ Use it when the user references past discussions or you need context.`);
       }
     }
 
-    // Load OpenClaw plugins
-    const pluginsConfig = rawOptions.pluginsConfig as PluginsConfig | undefined;
+    // Load OpenClaw plugins. Inject the worker's bound agentId into the Lobu
+    // memory plugin's config so its autoCapture path can stamp
+    // `metadata.agent_id` on every save_memory call — that's the
+    // memory-scope axis search_memory's `agent_id` filter reads.
+    const pluginsConfig = injectAgentIdIntoLobuPlugin(
+      rawOptions.pluginsConfig as PluginsConfig | undefined,
+      this.config.agentId
+    );
     const loadedPlugins = await loadPlugins(pluginsConfig, workspaceDir);
     const pluginTools = loadedPlugins.flatMap((p) => p.tools);
 
@@ -1442,6 +1440,15 @@ Use it when the user references past discussions or you need context.`);
         }
       };
 
+      // Track tool-call input args across tool_execution_start → _end. pi-agent
+      // only includes `args` on the start event; the end event carries
+      // `toolCallId`, `toolName`, `result`, `isError`. The worker emits one
+      // SSE `tool_use` per finished call, so it needs to remember the input.
+      const pendingToolArgs = new Map<string, unknown>();
+      // Tool-use SSE emits are awaited at agent_end so the `complete` event
+      // can't race ahead of late tool_use events on slow networks.
+      const inFlightToolUse: Set<Promise<void>> = new Set();
+
       session.subscribe((event) => {
         if (suppressProgressOutput) {
           if (event.type === "agent_end") {
@@ -1459,9 +1466,54 @@ Use it when the user references past discussions or you need context.`);
           }
         }
 
+        // Capture the input args at tool start so we can attach them when the
+        // matching end event fires.
+        if (event.type === "tool_execution_start") {
+          pendingToolArgs.set(event.toolCallId, event.args);
+        }
+
+        // Surface tool-use traces to SSE clients (promptfoo provider, CLI eval,
+        // any client subscribed via `event: tool_use`). Worker emits one record
+        // per tool call at `tool_execution_end` so the result is included.
+        if (event.type === "tool_execution_end") {
+          const args = pendingToolArgs.get(event.toolCallId);
+          pendingToolArgs.delete(event.toolCallId);
+          const payload = buildToolUseEventPayload({
+            toolCallId: event.toolCallId,
+            toolName: event.toolName,
+            args,
+            result: event.result,
+            isError: event.isError,
+          });
+          const promise = onProgress({
+            type: "custom_event",
+            data: {
+              name: "tool_use",
+              payload: payload as unknown as Record<string, unknown>,
+            },
+            timestamp: Date.now(),
+          }).catch((err) => {
+            logger.warn(
+              `Failed to emit tool_use custom event for ${event.toolName}:`,
+              err
+            );
+          });
+          inFlightToolUse.add(promise);
+          promise.finally(() => inFlightToolUse.delete(promise));
+        }
+
         if (event.type === "agent_end") {
           flushDelta()
-            .then(() => resolveTurnDone?.())
+            .then(async () => {
+              // Wait for any pending tool_use emits so clients don't see
+              // `complete` arrive before all tool_use records (the provider
+              // returns on `complete`, and a slow tool_use POST mid-flight
+              // would otherwise be lost).
+              if (inFlightToolUse.size > 0) {
+                await Promise.allSettled(Array.from(inFlightToolUse));
+              }
+              resolveTurnDone?.();
+            })
             .catch((err) => {
               logger.error("Failed to flush final delta:", err);
               resolveTurnDone?.();

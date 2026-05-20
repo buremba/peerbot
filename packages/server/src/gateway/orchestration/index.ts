@@ -2,7 +2,12 @@ export * from "./base-deployment-manager.js";
 export * from "./deployment-utils.js";
 export * from "./impl/embedded-deployment.js";
 
-import { createLogger, moduleRegistry } from "@lobu/core";
+import {
+  createLogger,
+  type GuardrailRegistry,
+  moduleRegistry,
+} from "@lobu/core";
+import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import type { ProviderCatalogService } from "../auth/provider-catalog.js";
 import {
   getModelProviderModules,
@@ -53,7 +58,9 @@ export class Orchestrator {
     secretStore: WritableSecretStore,
     providerCatalogService?: ProviderCatalogService,
     grantStore?: GrantStore,
-    policyStore?: PolicyStore
+    policyStore?: PolicyStore,
+    guardrailRegistry?: GuardrailRegistry,
+    agentSettingsStore?: AgentSettingsStore
   ): Promise<void> {
     this.deploymentManager.setSecretStore(secretStore);
 
@@ -67,6 +74,14 @@ export class Orchestrator {
 
     if (providerCatalogService) {
       this.deploymentManager.setProviderCatalogService(providerCatalogService);
+    }
+
+    // Wire input-stage guardrails into the queue consumer. Both must be
+    // present for the consumer to run anything — the setter is a no-op
+    // otherwise.
+    if (guardrailRegistry && agentSettingsStore) {
+      this.queueConsumer.setGuardrails(guardrailRegistry, agentSettingsStore);
+      logger.debug("Input-stage guardrails wired into MessageConsumer");
     }
 
     const providerModules = getModelProviderModules();

@@ -4,6 +4,18 @@
  * Connectors call these before emitting identifiers on events. The ingestion
  * pipeline also re-runs normalization as a defensive pass, so mismatched
  * connector behavior can't poison cross-channel matching.
+ *
+ * Glossary — "namespace" in this file:
+ *   The string `namespace` here means an *identity scope* — the type of an
+ *   external identifier (`email`, `phone`, `wa_jid`, `slack_user_id`, etc.).
+ *   It backs the `entity_identities.namespace` column and is the unit of
+ *   uniqueness for cross-connector identity matching.
+ *
+ *   It is NOT the memory-scope axis. Per-agent memory scoping lives on
+ *   `events.metadata.agent_id` (filtered via `search_memory`'s `agent_id`
+ *   arg, populated by `@lobu/openclaw-plugin` autoCapture). Identity
+ *   namespaces and memory scopes are unrelated subsystems that happen to
+ *   share an English word — don't conflate them when reading this file.
  */
 
 const PHONE_MIN_DIGITS = 7;

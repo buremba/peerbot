@@ -420,15 +420,19 @@ export async function getAuthConfig(
   // WebAuthn ceremonies regardless of env config.
   const passkey = true;
   const singleUserMode = env.LOBU_SINGLE_USER === '1';
-  // Filter out the legacy bootstrap-user (pre-PR #902) — it doesn't count as
-  // "the install has a user." Real users include anyone signed up via the web
-  // UI after that PR.
+  // Filter out the synthetic install_operator row (auto-provisioned at
+  // boot in ensureInstallOperator) AND the legacy bootstrap-user row
+  // (pre-PR #902) — neither counts as "the install has a *human*".
+  // Real users include anyone signed up via the web UI. See
+  // docs/install-operator-bootstrap.md.
   let hasUser = false;
   try {
     const sql = getDb();
     const rows = (await sql`
       SELECT EXISTS(
-        SELECT 1 FROM "user" WHERE id <> 'bootstrap-user'
+        SELECT 1 FROM "user"
+         WHERE principal_kind <> 'install_operator'
+           AND id <> 'bootstrap-user'
       ) AS has_user
     `) as unknown as Array<{ has_user: boolean }>;
     hasUser = !!rows[0]?.has_user;

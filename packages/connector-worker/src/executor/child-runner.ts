@@ -1,40 +1,23 @@
 /**
  * Child Runner - Entry point for forked subprocess
  *
- * Receives compiled connector code + context via IPC,
- * dynamically imports the ConnectorRuntime class, and executes sync()/execute().
- * Streams normalized content chunks and checkpoint updates back via IPC.
+ * Receives compiled connector code + an ExecutorJob via IPC, dynamically
+ * imports the ConnectorRuntime class, and dispatches to sync() / execute() /
+ * authenticate() using the V1 SDK shapes directly — no magic-key adapter.
  */
 
 import { randomBytes } from 'node:crypto';
 import { rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { SyncResult } from '@lobu/connector-sdk';
-import type { FeedSyncResult } from './interface.js';
-import { normalizeEventEnvelope } from './runtime.js';
+import type { EventEnvelope, SyncResult } from '@lobu/connector-sdk';
+import type { ExecutorJob, ExecutorResult } from './interface.js';
 
-const CONTENT_CHUNK_SIZE = 100;
+const EVENT_CHUNK_SIZE = 100;
 
 interface ChildMessage {
   compiledCode: string;
-  context: {
-    options: Record<string, any>;
-    checkpoint: any;
-    env: Record<string, string | undefined>;
-    sessionState?: Record<string, any> | null;
-    apiType: 'api' | 'browser';
-  };
-}
-
-function stripInternalOptions(options: Record<string, any>): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(options)) {
-    if (!key.startsWith('__')) {
-      result[key] = value;
-    }
-  }
-  return result;
+  job: ExecutorJob;
 }
 
 function findRuntimeClass(mod: Record<string, unknown>) {
@@ -101,23 +84,14 @@ function awaitAuthSignal(
   });
 }
 
-async function executeConnectorRuntime(instance: any, context: ChildMessage['context']) {
-  const isAction = typeof context.options?.__action_key === 'string';
-  const isAuth = context.options?.__auth_mode === true;
-  const credentials = context.sessionState?.oauth ?? null;
-  const publicConfig = stripInternalOptions(context.options ?? {});
-  const runtimeConfig = {
-    ...(context.env ?? {}),
-    ...publicConfig,
-  };
-
-  if (isAuth) {
+async function executeConnectorRuntime(
+  instance: any,
+  job: ExecutorJob
+): Promise<ExecutorResult> {
+  if (job.mode === 'authenticate') {
     const authResult = await instance.authenticate({
-      config: (context.options?.__auth_config ?? {}) as Record<string, unknown>,
-      previousCredentials: (context.options?.__auth_previous_credentials ?? null) as Record<
-        string,
-        unknown
-      > | null,
+      config: job.config,
+      previousCredentials: job.previousCredentials,
       emit: async (artifact: Record<string, unknown>) => {
         await sendIPC({ type: 'auth_artifact', artifact });
       },
@@ -129,57 +103,33 @@ async function executeConnectorRuntime(instance: any, context: ChildMessage['con
       throw new Error('authenticate() returned no credentials');
     }
 
-    const result: FeedSyncResult = {
-      contents: [],
-      checkpoint: null,
-      auth_result: {
-        credentials: authResult.credentials,
-        metadata: authResult.metadata,
-      },
+    return {
+      mode: 'authenticate',
+      auth: { credentials: authResult.credentials, metadata: authResult.metadata },
     };
-    return result;
   }
 
-  if (isAction) {
-    const actionKey = context.options.__action_key;
-    const actionInput = (context.options.__action_input ?? {}) as Record<string, unknown>;
+  if (job.mode === 'action') {
     const actionResult = await instance.execute({
-      actionKey,
-      input: actionInput,
-      credentials,
-      config: runtimeConfig,
+      actionKey: job.actionKey,
+      input: job.actionInput,
+      credentials: job.credentials,
+      config: { ...job.env, ...job.config },
     });
 
     if (!actionResult?.success) {
-      throw new Error(actionResult?.error || `Action '${actionKey}' failed`);
+      throw new Error(actionResult?.error || `Action '${job.actionKey}' failed`);
     }
 
-    const result: FeedSyncResult = {
-      contents: [
-        {
-          origin_id: `action-${actionKey}-${Date.now()}`,
-          payload_text: '',
-          source_url: '',
-          occurred_at: new Date(),
-          score: 0,
-          metadata: actionResult.output ?? {},
-        },
-      ],
-      checkpoint: context.checkpoint ?? null,
-      metadata: {
-        items_found: 0,
-        items_skipped: 0,
-      },
-    };
-    return result;
+    return { mode: 'action', output: actionResult.output ?? {} };
   }
 
-  const emitEvents = async (events: unknown[]) => {
-    const normalized = events.map((event: any) => normalizeEventEnvelope(event));
-    for (let index = 0; index < normalized.length; index += CONTENT_CHUNK_SIZE) {
+  // mode === 'sync'
+  const emitEvents = async (events: EventEnvelope[]) => {
+    for (let index = 0; index < events.length; index += EVENT_CHUNK_SIZE) {
       await sendIPC({
-        type: 'content_chunk',
-        items: normalized.slice(index, index + CONTENT_CHUNK_SIZE),
+        type: 'event_chunk',
+        events: events.slice(index, index + EVENT_CHUNK_SIZE),
       });
     }
   };
@@ -189,27 +139,33 @@ async function executeConnectorRuntime(instance: any, context: ChildMessage['con
   };
 
   const syncResult = (await instance.sync({
-    feedKey: context.options?.__feed_key,
-    config: runtimeConfig,
-    checkpoint: context.checkpoint ?? null,
-    credentials,
-    entityIds: (context.options?.__entity_ids as number[] | undefined) ?? [],
-    sessionState: context.sessionState ?? null,
+    feedKey: job.feedKey,
+    config: { ...job.env, ...job.config },
+    checkpoint: job.checkpoint,
+    credentials: job.credentials,
+    entityIds: job.entityIds,
+    sessionState: job.sessionState,
     emitEvents,
     updateCheckpoint,
   })) as SyncResult;
 
-  const events = Array.isArray(syncResult?.events) ? syncResult.events : [];
-  await emitEvents(events);
-  const result: FeedSyncResult = {
-    contents: [],
-    checkpoint: (syncResult?.checkpoint ?? null) as any,
-    auth_update: syncResult?.auth_update ?? undefined,
+  // Sync is streaming-only on the executor boundary: connectors that build
+  // the full list before returning still arrive here as `syncResult.events`,
+  // we just forward them through the same `emitEvents` IPC channel so the
+  // parent sees one uniform stream regardless of whether the connector
+  // streamed incrementally or returned in one shot.
+  const trailingEvents = Array.isArray(syncResult?.events) ? syncResult.events : [];
+  await emitEvents(trailingEvents);
+
+  return {
+    mode: 'sync',
+    checkpoint: (syncResult?.checkpoint ?? null) as Record<string, unknown> | null,
+    auth_update: syncResult?.auth_update ?? null,
     metadata: {
       items_found:
         typeof syncResult?.metadata?.items_found === 'number'
           ? syncResult.metadata.items_found
-          : events.length,
+          : trailingEvents.length,
       items_skipped:
         typeof syncResult?.metadata?.items_skipped === 'number'
           ? syncResult.metadata.items_skipped
@@ -217,7 +173,6 @@ async function executeConnectorRuntime(instance: any, context: ChildMessage['con
       ...(syncResult?.metadata ?? {}),
     },
   };
-  return result;
 }
 
 /** Send an IPC message and wait for it to be flushed to the parent. */
@@ -330,7 +285,7 @@ async function main() {
     );
 
     try {
-      const { compiledCode, context } = msg as ChildMessage;
+      const { compiledCode, job } = msg as ChildMessage;
 
       // Write compiled code to temp file for dynamic import.
       // - `flag: 'wx'` fails if the file already exists (no symlink follow,
@@ -352,7 +307,7 @@ async function main() {
       }
 
       const instance = new (RuntimeClass as new () => any)();
-      const result = await executeConnectorRuntime(instance, context);
+      const result = await executeConnectorRuntime(instance, job);
 
       // Send result back to parent (wait for IPC flush before exiting)
       await sendIPC({ type: 'result', result });

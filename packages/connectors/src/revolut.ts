@@ -19,8 +19,6 @@
  */
 
 import {
-	type ActionContext,
-	type ActionResult,
 	browserNetworkSync,
 	type ConnectorDefinition,
 	ConnectorRuntime,
@@ -561,9 +559,5 @@ export default class RevolutConnector extends ConnectorRuntime {
 				...(currencyFilter ? { currency_filter: currencyFilter } : {}),
 			},
 		};
-	}
-
-	async execute(_ctx: ActionContext): Promise<ActionResult> {
-		return { success: false, error: "Actions not supported" };
 	}
 }

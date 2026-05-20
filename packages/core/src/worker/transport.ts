@@ -20,12 +20,6 @@ export interface WorkerTransport {
   setJobId(jobId: string): void;
 
   /**
-   * Set module-specific data to be included in responses
-   * Allows modules to attach metadata to worker responses
-   */
-  setModuleData(moduleData: Record<string, unknown>): void;
-
-  /**
    * Send a streaming delta to the gateway
    *
    * @param delta - The content delta to send

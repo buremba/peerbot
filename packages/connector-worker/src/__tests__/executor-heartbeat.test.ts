@@ -20,8 +20,8 @@ import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:
 type AnyFn = (...args: any[]) => any;
 
 const executeCompiledConnectorMock = mock<AnyFn>(async () => ({
-  contents: [],
-  checkpoint: null,
+  mode: 'action',
+  output: { ok: true },
 }));
 
 const batchGenerateEmbeddingsMock = mock<AnyFn>(async (texts: string[]) =>
@@ -30,8 +30,6 @@ const batchGenerateEmbeddingsMock = mock<AnyFn>(async (texts: string[]) =>
 
 mock.module('../executor/runtime.js', () => ({
   executeCompiledConnector: executeCompiledConnectorMock,
-  getActionOutput: () => ({ ok: true }),
-  normalizeEventEnvelope: (e: Record<string, unknown>) => e,
 }));
 
 mock.module('../embeddings.js', () => ({
@@ -133,7 +131,7 @@ describe('executor heartbeats (lobu#860)', () => {
     // have fired — simulates the action body taking 60+ seconds.
     executeCompiledConnectorMock.mockImplementationOnce(async () => {
       await fireIntervalTicks(2);
-      return { contents: [{ result: { ok: true } }], checkpoint: null };
+      return { mode: 'action', output: { ok: true } };
     });
 
     const job = {
@@ -185,8 +183,8 @@ describe('executor heartbeats (lobu#860)', () => {
   test('heartbeat interval is cleared after a successful action run', async () => {
     const client = makeStubClient();
     executeCompiledConnectorMock.mockImplementationOnce(async () => ({
-      contents: [{ result: { ok: true } }],
-      checkpoint: null,
+      mode: 'action',
+      output: { ok: true },
     }));
 
     const job = {

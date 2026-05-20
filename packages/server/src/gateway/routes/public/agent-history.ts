@@ -6,8 +6,12 @@
 
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { AgentConfigStore } from "@lobu/core";
-import { createLogger } from "@lobu/core";
+import type { AgentConfigStore, ParsedMessage } from "@lobu/core";
+import {
+  createLogger,
+  entryToMessage,
+  parseSessionEntries,
+} from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
@@ -66,35 +70,14 @@ function isSafeAgentId(id: string): boolean {
 }
 
 // ─── Direct session file reader (fallback) ─────────────────────────────────
-
-interface SessionEntry {
-  type: string;
-  id: string;
-  parentId: string | null;
-  timestamp: string;
-  message?: {
-    role: string;
-    content: unknown;
-    usage?: { inputTokens?: number; outputTokens?: number };
-  };
-  summary?: string;
-  provider?: string;
-  modelId?: string;
-  customType?: string;
-  content?: unknown;
-  display?: boolean;
-}
-
-interface ParsedMessage {
-  id: string;
-  type: string;
-  role?: string;
-  content: unknown;
-  model?: string;
-  timestamp: string;
-  isVerbose?: boolean;
-  usage?: { inputTokens?: number; outputTokens?: number };
-}
+//
+// `SessionEntry`, `ParsedMessage`, `parseSessionEntries`, and `entryToMessage`
+// are exported from `@lobu/core` so the worker's `/session/messages`
+// route (`packages/agent-worker/src/server.ts`) and this gateway-side
+// fallback can't drift again. `findSessionFile` stays here because the
+// path-policy differs from the worker's — gateway scans
+// `workspaces/<agentId>` up to three levels deep with a SAFE_AGENT_ID
+// guard; the worker scans its own `WORKSPACE_DIR` one level deep.
 
 async function findSessionFile(agentId: string): Promise<string | null> {
   if (!isSafeAgentId(agentId)) return null;
@@ -138,72 +121,6 @@ async function findSessionFile(agentId: string): Promise<string | null> {
     // Workspace dir doesn't exist
   }
 
-  return null;
-}
-
-function parseSessionEntries(content: string): {
-  entries: SessionEntry[];
-  sessionId?: string;
-} {
-  const lines = content.split("\n").filter((l) => l.trim());
-  const entries: SessionEntry[] = [];
-  let sessionId: string | undefined;
-  for (const line of lines) {
-    try {
-      const parsed = JSON.parse(line);
-      if (parsed.type === "session") {
-        sessionId = parsed.id;
-        continue;
-      }
-      entries.push(parsed);
-    } catch {
-      // Skip malformed
-    }
-  }
-  return { entries, sessionId };
-}
-
-function entryToMessage(entry: SessionEntry): ParsedMessage | null {
-  if (entry.type === "message" && entry.message) {
-    return {
-      id: entry.id,
-      type: "message",
-      role: entry.message.role,
-      content: entry.message.content,
-      timestamp: entry.timestamp,
-      isVerbose: entry.message.role === "toolResult",
-      usage: entry.message.usage,
-    };
-  }
-  if (entry.type === "compaction") {
-    return {
-      id: entry.id,
-      type: "compaction",
-      content: entry.summary || "",
-      timestamp: entry.timestamp,
-      isVerbose: true,
-    };
-  }
-  if (entry.type === "model_change") {
-    return {
-      id: entry.id,
-      type: "model_change",
-      content: `${entry.provider}/${entry.modelId}`,
-      model: `${entry.provider}/${entry.modelId}`,
-      timestamp: entry.timestamp,
-      isVerbose: true,
-    };
-  }
-  if (entry.type === "custom_message") {
-    return {
-      id: entry.id,
-      type: "custom_message",
-      role: "user",
-      content: entry.content,
-      timestamp: entry.timestamp,
-      isVerbose: !entry.display,
-    };
-  }
   return null;
 }
 

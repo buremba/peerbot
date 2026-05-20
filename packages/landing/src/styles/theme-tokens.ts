@@ -2,13 +2,13 @@
 //
 // This module is inlined as a <script is:inline> in BaseLayout.astro so it
 // runs before paint, bypassing Tailwind's CSS cascade entirely.  It sets CSS
-// custom properties directly on document.documentElement.style — which wins
+// custom properties directly on document.documentElement.style, which wins
 // over any stylesheet rule.
 //
 // Components reference these via var(--color-page-*) in inline styles and
 // Tailwind arbitrary-value classes like bg-[var(--color-page-surface)].
 
-/** Light palette (default) — tweakcn "Retro" */
+/** Light palette (default): tweakcn "Retro" */
 export const light = {
   "--color-page-bg": "oklch(0.9808 0.0079 73.7452)",
   "--color-page-bg-elevated": "oklch(0.9724 0.0096 72.6627)",
@@ -53,7 +53,7 @@ export const light = {
   "--color-page-meta-theme": "#ffffff",
 } as const;
 
-/** Dark palette — tweakcn "Retro" (aligned with packages/owletto/src/index.css .dark) */
+/** Dark palette: tweakcn "Retro" (aligned with packages/owletto/src/index.css .dark) */
 export const dark = {
   "--color-page-bg": "oklch(0.1700 0.0040 50)",
   "--color-page-bg-elevated": "oklch(0.2250 0.0050 50)",

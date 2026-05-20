@@ -10,7 +10,7 @@
 import type { UseCase } from "./types";
 
 /**
- * Permission flow — the gateway proxy blocks outbound requests to domains
+ * Permission flow: the gateway proxy blocks outbound requests to domains
  * not on the allowlist. Workers must request access and the user approves
  * via an in-chat button.
  */
@@ -32,7 +32,7 @@ const PERMISSION_SCENARIO: UseCase = {
     },
     {
       role: "bot",
-      text: "Can't reach github.com — not in the agent's allowed domains.\n\nGrant access?",
+      text: "Can't reach github.com, not in the agent's allowed domains.\n\nGrant access?",
       buttons: [{ label: "Allow github.com", action: "link" }],
     },
     {
@@ -47,7 +47,7 @@ const PERMISSION_SCENARIO: UseCase = {
 };
 
 /**
- * Skill install flow — user asks for a capability, agent proposes installing
+ * Skill install flow: user asks for a capability, agent proposes installing
  * a Lobu provider (real ID from providers.json), OAuth flows handled by
  * Lobu, user approves via in-chat button.
  */
@@ -84,7 +84,7 @@ const SKILL_INSTALL_SCENARIO: UseCase = {
 };
 
 /**
- * Settings link flow — agents open a platform-scoped settings page for
+ * Settings link flow: agents open a platform-scoped settings page for
  * config that shouldn't happen in chat (model picker, system prompt, etc.)
  */
 const SETTINGS_LINK_SCENARIO: UseCase = {
@@ -105,12 +105,12 @@ const SETTINGS_LINK_SCENARIO: UseCase = {
     },
     {
       role: "bot",
-      text: "You can change the model from your settings — opens a scoped page with your current agent config.",
+      text: "You can change the model from your settings, opens a scoped page with your current agent config.",
       buttons: [{ label: "Open Settings", action: "settings" }],
     },
     {
       role: "user",
-      text: "Done — set to claude-sonnet-4-6",
+      text: "Done, set to claude-sonnet-4-6",
     },
     {
       role: "bot",

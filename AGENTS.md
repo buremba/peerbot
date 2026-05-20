@@ -14,6 +14,7 @@
 - TypeScript sources in `packages/*/src`, tests in `packages/*/src/__tests__`.
 - Always prefer `bun` over `npm`.
 - When fixing unused-parameter errors, delete the parameter rather than prefixing with `_`.
+- Landing page copy (`packages/landing`): never use em dashes (`—`) in user-facing text. Rephrase with commas, periods, or restructure the sentence.
 
 ### Submodules
 `packages/owletto` is a submodule of `lobu-ai/owletto`. Push the submodule change to a reachable branch first, then bump the pointer in the parent — an unreachable SHA breaks production cloning.

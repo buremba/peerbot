@@ -3,9 +3,8 @@
  * Reads pinned files out of `examples/` and emits a flat JSON manifest the
  * landing page imports at build time.
  *
- * Round 10 redesign — the page no longer has a global use-case pivot, so the
- * manifest is no longer keyed by use case. Each primitive section instead
- * shows ONE canonical example:
+ * Each primitive section shows ONE canonical pinned example, used as the
+ * generic fallback when no use case is selected:
  *
  *   connector    -> examples/ecommerce/connectors/stripe-charges.connector.ts
  *   memorySchema -> examples/sales/models/schema.yaml         (entities slice)
@@ -16,6 +15,11 @@
  * Plus a list of every `examples/*\/lobu.toml` for BrowseExamplesSection:
  *
  *   examples     -> [{ slug, label, description, githubUrl }]
+ *
+ * And, under `useCases`, per-use-case connector / memorySchema / watcher
+ * snippets keyed by the example dir slug. The interactive use-case tab strip
+ * on the landing page swaps these three sections; everything else stays
+ * generic. Hero copy is not part of this manifest.
  *
  * The skill snippet stays inline in LandingPage.tsx (set in round 9).
  *
@@ -73,6 +77,12 @@ type ExampleEntry = {
   githubUrl: string;
 };
 
+type UseCaseSnippets = {
+  connector: Snippet;
+  memorySchema: Snippet;
+  watcher: Snippet;
+};
+
 type LandingSnippets = {
   connector: Snippet;
   memorySchema: Snippet;
@@ -81,7 +91,22 @@ type LandingSnippets = {
   agentToml: Snippet;
   skill: Snippet;
   examples: ExampleEntry[];
+  useCases: Record<string, UseCaseSnippets>;
 };
+
+/** Slugs that get per-use-case connector / memory / watcher snippets. The id
+ *  equals the example directory name. Each dir has exactly one
+ *  connectors/*.connector.ts and a models/schema.yaml. */
+const USE_CASE_SLUGS = [
+  "legal",
+  "finance",
+  "sales",
+  "delivery",
+  "market",
+  "agent-community",
+  "ecommerce",
+  "leadership",
+] as const;
 
 const GITHUB_FILE_BASE = "https://github.com/lobu-ai/lobu/blob/main/examples";
 const GITHUB_TREE_BASE = "https://github.com/lobu-ai/lobu/tree/main/examples";
@@ -217,6 +242,10 @@ function extractYamlListItems(
   if (!header) return [];
   return [header, ...items.slice(0, itemCount).flat()];
 }
+
+/* -------------------------------------------------------------------------- */
+/*  Connector definition extraction                                           */
+/* -------------------------------------------------------------------------- */
 
 /* -------------------------------------------------------------------------- */
 /*  Memory (entity) compression                                               */
@@ -481,9 +510,9 @@ function compressWatcher(yamlLines: string[]): string[] {
  * leading `---` and the next `---`). Then slim it so the landing snippet
  * fits the right column without scrolling:
  *
- *   - cap `network.allow` and `network.judge` lists at 2 entries each
- *   - collapse `judges.default: > … (multi-line block scalar)` into a single
- *     short bullet sentence that keeps the policy's essence
+ *   - show the first 2 entries of `network.allow` / `network.judge` (the
+ *     lists are illustrative, so no truncation marker)
+ *   - shorten each judge policy to a concise folded block scalar (`>`)
  *   - leave name + description + nixPackages untouched
  */
 function trimSkillMarkdown(raw: string): string {
@@ -503,41 +532,47 @@ function trimSkillMarkdown(raw: string): string {
   let i = 0;
   while (i < fm.length) {
     const line = fm[i];
-    const trimmed = line.trimStart();
 
-    // network.allow / network.judge — cap children to 2 entries.
+    // network.allow / network.judge, keep the first 2 entries. Entries may
+    // span multiple lines (the `{ domain, judge }` per-domain form), so we keep
+    // every line of a kept entry. Lists are illustrative: no truncation marker.
     const listKey = /^(\s*)(allow|judge):\s*$/.exec(line);
     if (listKey) {
       const baseIndent = listKey[1].length;
       out.push(line);
-      let kept = 0;
-      let total = 0;
+      let entries = 0;
+      let keepingCurrent = false;
       let j = i + 1;
       while (j < fm.length) {
         const child = fm[j];
         const childTrim = child.trimStart();
         const childIndent = child.length - childTrim.length;
-        if (!childTrim.startsWith("- ") || childIndent <= baseIndent) break;
-        total++;
-        if (kept < 2) {
-          out.push(child);
-          kept++;
+        if (childTrim !== "" && childIndent <= baseIndent) break;
+        if (childTrim.startsWith("- ")) {
+          entries++;
+          keepingCurrent = entries <= 2;
         }
+        if (keepingCurrent) out.push(child);
         j++;
-      }
-      if (total > kept) {
-        out.push(`${" ".repeat(baseIndent + 2)}# …${total - kept} more`);
       }
       i = j;
       continue;
     }
 
-    // judges.default: > … — collapse the block scalar to one essence line.
-    const blockScalar = /^(\s*)default:\s*[>|][+-]?\s*$/.exec(line);
+    // A judge policy (`<name>: >` block scalar under judges), keep a short
+    // folded block scalar (valid YAML that reads naturally) in place of the
+    // full multi-line policy text.
+    const blockScalar = /^(\s*)([\w-]+):\s*[>|][+-]?\s*$/.exec(line);
     if (blockScalar) {
       const baseIndent = blockScalar[1].length;
+      const policyName = blockScalar[2];
+      const childPad = " ".repeat(baseIndent + 2);
+      out.push(`${" ".repeat(baseIndent)}${policyName}: >`);
       out.push(
-        `${" ".repeat(baseIndent)}default: "Allow GET reads + basket mutations; DENY checkout, payment, profile changes. Fail closed if unclear."`
+        `${childPad}Allow reads and basket changes. Deny checkout, payment,`
+      );
+      out.push(
+        `${childPad}saved cards, address, or profile changes. Fail closed if unclear.`
       );
       let j = i + 1;
       while (j < fm.length) {
@@ -598,7 +633,7 @@ function snippetFrom(
 function warnOverBudget(label: string, lines: number, budget: number): void {
   if (lines > budget) {
     console.warn(
-      `gen-landing-snippets: ${label} is ${lines} lines — landing budget is ≤ ${budget}.`
+      `gen-landing-snippets: ${label} is ${lines} lines, landing budget is <= ${budget}.`
     );
   }
 }
@@ -631,6 +666,55 @@ function listExamples(): ExampleEntry[] {
     });
   }
   out.sort((a, b) => a.slug.localeCompare(b.slug));
+  return out;
+}
+
+function findConnectorFile(slug: string): { abs: string; rel: string } {
+  const connectorsDir = resolve(examplesDir, slug, "connectors");
+  const file = readdirSync(connectorsDir).find((f) =>
+    f.endsWith(".connector.ts")
+  );
+  if (!file) throw new Error(`No *.connector.ts in ${connectorsDir}`);
+  return {
+    abs: resolve(connectorsDir, file),
+    rel: `connectors/${file}`,
+  };
+}
+
+function buildUseCases(): Record<string, UseCaseSnippets> {
+  const out: Record<string, UseCaseSnippets> = {};
+  for (const slug of USE_CASE_SLUGS) {
+    const { abs, rel } = findConnectorFile(slug);
+    // Show the full connector file (imports + class + definition + sync), like
+    // the pinned homepage connector. These files are ~32-39 lines, within the
+    // connector budget, and read as complete TypeScript rather than a fragment.
+    const connector = snippetFrom(slug, abs, rel, "typescript");
+
+    const schemaRel = "models/schema.yaml";
+    const memorySchema = snippetFrom(
+      slug,
+      pinnedFile(slug, schemaRel),
+      schemaRel,
+      "yaml",
+      (raw) =>
+        collapseBlanks(
+          compressEntities(extractYamlListItems(raw, "entities", 1))
+        ).join("\n")
+    );
+
+    const watcher = snippetFrom(
+      slug,
+      pinnedFile(slug, schemaRel),
+      schemaRel,
+      "yaml",
+      (raw) =>
+        collapseBlanks(
+          compressWatcher(extractYamlListItems(raw, "watchers", 1))
+        ).join("\n")
+    );
+
+    out[slug] = { connector, memorySchema, watcher };
+  }
   return out;
 }
 
@@ -725,6 +809,7 @@ function build(): LandingSnippets {
     agentToml,
     skill,
     examples: listExamples(),
+    useCases: buildUseCases(),
   };
 }
 
@@ -732,7 +817,11 @@ function main() {
   const out = build();
   writeFileSync(outFile, `${JSON.stringify(out, null, 2)}\n`, "utf-8");
   console.log(
-    `gen-landing-snippets: wrote 6 pinned snippets + ${out.examples.length} example entries to ${outFile}`
+    `gen-landing-snippets: wrote 6 pinned snippets + ${
+      out.examples.length
+    } example entries + ${
+      Object.keys(out.useCases).length
+    } per-use-case snippet sets to ${outFile}`
   );
 }
 

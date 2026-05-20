@@ -60,7 +60,7 @@ const connectFromClientConfigs: Record<
     docsHref: "/connect-from/chatgpt/",
     docsLabel: "ChatGPT setup docs",
     valueProp:
-      "Add structured, queryable long-term memory to ChatGPT — the same graph other agents share, recalled and updated through one MCP endpoint.",
+      "Add structured, queryable long-term memory to ChatGPT, the same graph other agents share, recalled and updated through one MCP endpoint.",
     installPrompt:
       "Connect ChatGPT to Lobu: open Settings → Integrations → Model Context Protocol → Add Server, name it `Lobu`, and paste the MCP URL https://lobu.ai/mcp. Sign in with your Lobu account when prompted, then point ChatGPT at the workspace I want it to use.",
     describe: mcpClientDescribe("ChatGPT"),
@@ -84,7 +84,7 @@ const connectFromClientConfigs: Record<
     docsHref: "/connect-from/claude/",
     docsLabel: "Claude setup docs",
     valueProp:
-      "Give Claude durable, structured memory it can search and append to — so the same recall is available across Claude, ChatGPT, and your own agents.",
+      "Give Claude durable, structured memory it can search and append to, so the same recall is available across Claude, ChatGPT, and your own agents.",
     installPrompt:
       "Connect Claude to Lobu: open Settings → Connectors → Add Custom Connector, paste the MCP URL https://lobu.ai/mcp, complete the Lobu sign-in, then enable the connector. Pick the workspace I want Claude to read and write.",
     describe: mcpClientDescribe("Claude"),
@@ -116,7 +116,7 @@ const connectFromClientConfigs: Record<
     docsHref: "/connect-from/openclaw/",
     docsLabel: "OpenClaw setup docs",
     valueProp:
-      "Layer structured, shareable Lobu memory on top of OpenClaw's built-in filesystem memory — the plugin extends OpenClaw's filesystem plugin and can optionally take over its memory slot, so different OpenClaw agents can talk to each other through the same Lobu graph.",
+      "Layer structured, shareable Lobu memory on top of OpenClaw's built-in filesystem memory. The plugin extends OpenClaw's filesystem plugin and can optionally take over its memory slot, so different OpenClaw agents can talk to each other through the same Lobu graph.",
     installPrompt:
       "Connect OpenClaw to Lobu. Run:\n\n  openclaw plugins install @lobu/openclaw-plugin\n  lobu login\n  lobu memory configure --url https://lobu.ai/mcp --org <org-slug>\n  lobu memory health --url https://lobu.ai/mcp --org <org-slug>\n\nUse Lobu as the multi-user backend for OpenClaw: org-scoped memory, connected sources, watchers, and credentials that stay behind the gateway.",
     npmPackage: {
@@ -140,7 +140,7 @@ const connectFromClientConfigs: Record<
     docsExtraSection: {
       title: "Cross-agent memory",
       paragraphs: [
-        "Once two OpenClaw agents point at the same Lobu memory workspace, they read and write the same entities, observations, and decisions — that is how a team of OpenClaw agents stays coherent without copy-pasting context.",
+        "Once two OpenClaw agents point at the same Lobu memory workspace, they read and write the same entities, observations, and decisions. That is how a team of OpenClaw agents stays coherent without copy-pasting context.",
       ],
     },
     docsRelated: [

@@ -10,12 +10,16 @@ network:
     - playwright.azureedge.net
     - cdn.playwright.dev
   judge:
-    - deliveroo.co.uk
-    - .deliveroo.co.uk
-    - deliveroo.com
-    - .deliveroo.com
+    - domain: deliveroo.co.uk
+      judge: deliveroo
+    - domain: .deliveroo.co.uk
+      judge: deliveroo
+    - domain: deliveroo.com
+      judge: deliveroo
+    - domain: .deliveroo.com
+      judge: deliveroo
 judges:
-  default: >
+  deliveroo: >
     Allow GET requests that read restaurant listings, menus, item details, and
     the current basket. Allow POST/PUT requests whose effect is limited to
     building or modifying a basket / group order (add, remove, change quantity;

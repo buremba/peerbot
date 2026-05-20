@@ -51,7 +51,7 @@ const highlights = [
   {
     title: "Same open-source code",
     description:
-      "Identical to self-hosted Lobu. Migrate off anytime — no lock-in.",
+      "Identical to self-hosted Lobu. Migrate off anytime, no lock-in.",
     link: "/getting-started",
     linkLabel: "Getting started",
   },

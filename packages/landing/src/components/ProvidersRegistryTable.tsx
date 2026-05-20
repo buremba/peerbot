@@ -18,10 +18,10 @@ const providerRows = providers.flatMap((providerEntry) =>
   (providerEntry.providers ?? []).map((provider) => ({
     id: providerEntry.id,
     displayName: provider.displayName,
-    defaultModel: provider.defaultModel ?? "—",
-    sdkCompat: provider.sdkCompat ?? "—",
-    upstreamBaseUrl: provider.upstreamBaseUrl ?? "—",
-    modelsEndpoint: provider.modelsEndpoint ?? "—",
+    defaultModel: provider.defaultModel ?? "N/A",
+    sdkCompat: provider.sdkCompat ?? "N/A",
+    upstreamBaseUrl: provider.upstreamBaseUrl ?? "N/A",
+    modelsEndpoint: provider.modelsEndpoint ?? "N/A",
   }))
 );
 

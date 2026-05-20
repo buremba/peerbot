@@ -50,13 +50,16 @@ allowed = [
 ]
 # Deliveroo goes through the egress judge — reading menus and assembling a
 # basket is fine; touching payment, addresses, or the account profile is not.
+# Each domain names the "deliveroo" policy below.
 judge = [
-  "deliveroo.co.uk", ".deliveroo.co.uk",
-  "deliveroo.com", ".deliveroo.com",
+  { domain = "deliveroo.co.uk", judge = "deliveroo" },
+  { domain = ".deliveroo.co.uk", judge = "deliveroo" },
+  { domain = "deliveroo.com", judge = "deliveroo" },
+  { domain = ".deliveroo.com", judge = "deliveroo" },
 ]
 
 [agents.food-ordering.network.judges]
-default = """
+deliveroo = """
 Allow GET requests that read restaurant listings, menus, item details, and the
 current basket. Allow POST/PUT requests whose effect is limited to building or
 modifying a basket / group order (adding, removing, changing quantity of items;

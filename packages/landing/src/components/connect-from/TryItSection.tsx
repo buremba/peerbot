@@ -57,7 +57,7 @@ export function TryItSection({
           </>
         ) : (
           <>
-            The same URL works for every workspace — pick one below to scope it
+            The same URL works for every workspace. Pick one below to scope it
             to that example.
           </>
         )}

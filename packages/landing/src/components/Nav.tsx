@@ -1,8 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import {
-  getLobuLoginUrl,
-  landingUseCaseGroupedOptions,
-} from "../use-case-showcases";
+import { getLobuLoginUrl } from "../use-case-showcases";
 
 const GITHUB_URL = "https://github.com/lobu-ai/lobu";
 const GITHUB_STARS_BADGE =
@@ -29,40 +26,6 @@ type MegaMenu = {
   widthRem: number;
 };
 
-function buildSolutionsMenu(): MegaMenu {
-  const personalUseCases = [
-    ...(landingUseCaseGroupedOptions.find((group) => group.label === "Personal")
-      ?.useCases ?? []),
-    ...(landingUseCaseGroupedOptions.find((group) => group.label === "Public")
-      ?.useCases ?? []),
-  ];
-  const groups = landingUseCaseGroupedOptions
-    .filter((group) => group.label !== "Public")
-    .map((group) =>
-      group.label === "Personal"
-        ? { ...group, useCases: personalUseCases }
-        : group
-    );
-
-  const richColumns: MenuColumn[] = groups.map((group) => ({
-    heading: group.label.toUpperCase(),
-    variant: "rich",
-    links: group.useCases.map((uc) => ({
-      label: uc.label,
-      href: `/for/${uc.id}`,
-      emoji: uc.emoji,
-    })),
-  }));
-
-  return {
-    id: "solutions",
-    label: "Solutions",
-    width: "min(32rem, calc(100vw - 2rem))",
-    widthRem: 32,
-    columns: richColumns,
-  };
-}
-
 const RESOURCES_MENU: MegaMenu = {
   id: "resources",
   label: "Resources",
@@ -73,12 +36,6 @@ const RESOURCES_MENU: MegaMenu = {
       heading: "LEARN",
       variant: "rich",
       links: [
-        {
-          label: "Docs",
-          description: "Build, deploy, and run agents",
-          href: "/getting-started",
-          emoji: "📘",
-        },
         {
           label: "Blog",
           description: "Engineering notes and updates",
@@ -297,7 +254,6 @@ type NavProps = {
 
 export function Nav({ currentPath: _currentPath = "/" }: NavProps) {
   const [openId, setOpenId] = useState<string | null>(null);
-  const solutions = buildSolutionsMenu();
   const loginUrl = getLobuLoginUrl();
 
   useEffect(() => {
@@ -344,11 +300,13 @@ export function Nav({ currentPath: _currentPath = "/" }: NavProps) {
             Lobu
           </a>
           <div class="hidden md:flex items-center gap-1">
-            <MegaMenuTrigger
-              menu={solutions}
-              openId={openId}
-              setOpenId={setOpenId}
-            />
+            <a
+              href="/getting-started"
+              class="inline-flex items-center text-[14px] font-medium px-3 h-9 rounded-full transition-colors hover:bg-[var(--color-page-surface-dim)]"
+              style={{ color: "var(--color-page-text)" }}
+            >
+              Docs
+            </a>
             <MegaMenuTrigger
               menu={RESOURCES_MENU}
               openId={openId}

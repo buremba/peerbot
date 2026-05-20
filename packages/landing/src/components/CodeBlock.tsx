@@ -90,7 +90,7 @@ const TS_KEYWORDS = new Set([
 function tokensToJsx(tokens: Token[]): ComponentChildren {
   return tokens.map((tok, i) => {
     if (tok.kind === "plain") {
-      // Plain text — render as a raw string so React doesn't add wrappers.
+      // Plain text: render as a raw string so React doesn't add wrappers.
       return tok.text;
     }
     return (
@@ -135,7 +135,7 @@ function tokenizeToml(line: string): Token[] {
     return out;
   }
 
-  // Blank or array continuation — tokenize inline.
+  // Blank or array continuation: tokenize inline.
   return tokenizeTomlInline(line);
 }
 
@@ -264,7 +264,7 @@ function tokenizeYamlInline(rest: string): Token[] {
       i++;
       continue;
     }
-    // Word / scalar — break on whitespace, `,`, `]`, `}`.
+    // Word / scalar: break on whitespace, `,`, `]`, `}`.
     const remainder = rest.slice(i);
     const wordMatch = /^[^\s,\]}#]+/.exec(remainder);
     if (wordMatch) {
@@ -358,7 +358,7 @@ function mergePlain(tokens: Token[]): Token[] {
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Markdown tokenizer — frontmatter fence, frontmatter keys, ATX headings,   */
+/*  Markdown tokenizer: frontmatter fence, frontmatter keys, ATX headings,    */
 /*  and inline backtick code spans. Everything else falls through as plain.   */
 /* -------------------------------------------------------------------------- */
 

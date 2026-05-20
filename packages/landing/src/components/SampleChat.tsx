@@ -12,7 +12,7 @@
 import type { ChatMessage, InlineButton, UseCase } from "../types";
 
 export interface ChatTheme {
-  /** Brand primary color — used for button outline, user bubble tint, hover glow */
+  /** Brand primary color, used for button outline, user bubble tint, hover glow */
   primary: string;
   /** Outer window background */
   bg: string;
@@ -21,10 +21,10 @@ export interface ChatTheme {
   /** Bot (incoming) message bubble */
   botBubbleBg: string;
   botBubbleBorder: string;
-  /** User (outgoing) message bubble — derived from primary */
+  /** User (outgoing) message bubble, derived from primary */
   userBubbleBg: string;
   userBubbleBorder: string;
-  /** Glow/shadow color used on button hover — derived from primary */
+  /** Glow/shadow color used on button hover, derived from primary */
   buttonGlow: string;
 }
 

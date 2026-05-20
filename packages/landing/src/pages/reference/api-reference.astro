@@ -1,7 +1,7 @@
 ---
 import StarlightPage from "@astrojs/starlight/components/StarlightPage.astro";
 
-// Fetch spec server-side (build time for prod, per-request in dev) — no CORS issues.
+// Fetch spec server-side (build time for prod, per-request in dev), no CORS issues.
 // Try the local dev gateway first, then fall back to production so the page
 // always renders something useful even when the local gateway is offline.
 const specOrigins = import.meta.env.DEV
@@ -102,7 +102,7 @@ const config = JSON.stringify({
     --scalar-color-purple: oklch(0.5790 0.1499 295.1422) !important;
   }
 
-  /* Dark — mirrors .dark in packages/owletto/src/index.css */
+  /* Dark: mirrors .dark in packages/owletto/src/index.css */
   html[data-theme="dark"] .scalar-app {
     --scalar-color-1: oklch(0.9206 0.0042 56.3709) !important;
     --scalar-color-2: oklch(0.8500 0.0040 50) !important;
@@ -138,7 +138,7 @@ const config = JSON.stringify({
   .sl-container {
     max-width: 100% !important;
   }
-  /* Hide the Starlight page title — Scalar has its own header */
+  /* Hide the Starlight page title: Scalar has its own header */
   h1#_top {
     display: none !important;
   }

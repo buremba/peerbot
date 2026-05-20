@@ -652,7 +652,7 @@ const memoryStepPanels: Record<
     connect: {
       title: "Project source inputs",
       description:
-        "Project memory comes from issue trackers, docs, chat, and app events — not from one fragile weekly summary.",
+        "Project memory comes from issue trackers, docs, chat, and app events, not from one fragile weekly summary.",
       items: [
         {
           meta: "Tracker",
@@ -874,7 +874,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
         kind: "memory_recall",
         source: "Lobu",
         call: "recall(counterparty: Redwood, topic: risk)",
-        result: "Acme NDA blocked Sep — similar §7 language",
+        result: "Acme NDA blocked Sep, similar §7 language",
       },
       {
         kind: "memory_upsert",
@@ -896,7 +896,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
     ],
     response:
-      "Clause §7 carries uncapped indemnity language — the same pattern that blocked the Acme NDA in September, so it needs counsel sign-off before you countersign. I've filed REV-88 with Priya and linked the clause to the Redwood counterparty record for future drafts.",
+      "Clause §7 carries uncapped indemnity language, the same pattern that blocked the Acme NDA in September, so it needs counsel sign-off before you countersign. I've filed REV-88 with Priya and linked the clause to the Redwood counterparty record for future drafts.",
     outcome: [
       "Clause-level risk summary with citations",
       "Recommended edits and unresolved approval items",
@@ -904,7 +904,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
     ],
   },
   finance: {
-    schedule: "Daily at 7 AM — reconciles Stripe vs NetSuite",
+    schedule: "Daily at 7 AM, reconciles Stripe vs NetSuite",
     outcomeChannel: "#finance-digest",
     request:
       "Reconcile payment sources against the ledger, explain any variances, and prep the reconciliation note.",
@@ -958,7 +958,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
     ],
     response:
-      "The 4100 variance traces to merchant STR-44 — same 3-day settlement lag we saw in September, $12,480 net. Month-end note is drafted and ready for your sign-off.",
+      "The 4100 variance traces to merchant STR-44, same 3-day settlement lag we saw in September, $12,480 net. Month-end note is drafted and ready for your sign-off.",
     outcome: [
       "A structured explanation for the variance",
       "Operator-ready notes for the month-end deck",
@@ -966,7 +966,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
     ],
   },
   sales: {
-    schedule: "Daily at 9 AM — scans accounts 60 days from renewal",
+    schedule: "Daily at 9 AM, scans accounts 60 days from renewal",
     outcomeChannel: "#sales-renewals",
     request:
       "Scan accounts approaching renewal, surface usage and sentiment changes, and recommend next steps.",
@@ -1020,7 +1020,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
     ],
     response:
-      "Northstar's renewal owner changed — Jake Chen is the new contact after Maria moved roles, and usage is down 38% since August. Recommend an exec sync with Jake and Jane before the Oct renewal to reset the relationship.",
+      "Northstar's renewal owner changed: Jake Chen is the new contact after Maria moved roles, and usage is down 38% since August. Recommend an exec sync with Jake and Jane before the Oct renewal to reset the relationship.",
     outcome: [
       "Renewal summaries grounded in account evidence",
       "Expansion and risk signals in one place",
@@ -1028,7 +1028,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
     ],
   },
   delivery: {
-    schedule: "Weekdays at 8 AM — scans rollout status and blockers",
+    schedule: "Weekdays at 8 AM, scans rollout status and blockers",
     outcomeChannel: "#delivery-standup",
     request:
       "Give me the Monday Phoenix rollout update with blockers, owners, and the next escalation.",
@@ -1082,7 +1082,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
     ],
     response:
-      "Phoenix is blocked on shard-14 — same pattern we saw in the Apollo rollout — and Lena owns the fix on the backend side. Escalation draft to Rahul is ready if shard-14 isn't cleared by end of day Tuesday.",
+      "Phoenix is blocked on shard-14, the same pattern we saw in the Apollo rollout, and Lena owns the fix on the backend side. Escalation draft to Rahul is ready if shard-14 isn't cleared by end of day Tuesday.",
     outcome: [
       "Consistent rollout updates with owners and blockers",
       "Project context that survives across standups and escalations",
@@ -1144,7 +1144,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
     ],
     response:
-      "Board approved the $4M Series A bridge and the Q1 hiring freeze. Blocked: the Frankfurt office lease pending legal diligence — Priya owns the counter with a decision due Fri Apr 25.",
+      "Board approved the $4M Series A bridge and the Q1 hiring freeze. Blocked: the Frankfurt office lease pending legal diligence; Priya owns the counter with a decision due Fri Apr 25.",
     outcome: [
       "Action-oriented board summaries grounded in source material",
       "Durable decision history across review cycles",
@@ -1152,7 +1152,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
     ],
   },
   "agent-community": {
-    schedule: "Every 15 min — matches new launches and posts to members",
+    schedule: "Every 15 min, matches new launches and posts to members",
     outcomeChannel: "#community-matches",
     request:
       "Match community members to new launches and posts in their space, and draft intro messages for the best two matches.",
@@ -1268,7 +1268,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
     ],
     response:
-      "Emma's plan switched from monthly to annual ($199/yr, saves $48) and April's shipment is skipped — next delivery May 3. Confirmation email is queued with the updated billing date.",
+      "Emma's plan switched from monthly to annual ($199/yr, saves $48) and April's shipment is skipped; next delivery May 3. Confirmation email is queued with the updated billing date.",
     outcome: [
       "Faster subscription and order changes with approval flows",
       "Customer context that persists across interactions",
@@ -1276,8 +1276,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
     ],
   },
   market: {
-    schedule:
-      "Daily at 8 AM — new Crunchbase activity on portfolio & watchlist",
+    schedule: "Daily at 8 AM, new Crunchbase activity on portfolio & watchlist",
     outcomeChannel: "#deal-flow",
     request:
       "Pull new funding, launches, and market signals on portfolio and watchlist companies, and surface what to track next.",
@@ -1331,7 +1330,7 @@ const runtimeContent: Record<LandingUseCaseId, RuntimeJourney> = {
       },
     ],
     response:
-      "Lovable just closed a $15M Series A led by Accel — already in portfolio. Also worth tracking: v0, Bolt, and Replit Agent in the same prompt-to-app space. Adam K. (ex-Replit) is a warm intro through your network.",
+      "Lovable just closed a $15M Series A led by Accel, already in portfolio. Also worth tracking: v0, Bolt, and Replit Agent in the same prompt-to-app space. Adam K. (ex-Replit) is a warm intro through your network.",
     outcome: [
       "Company summaries with funding and team history",
       "Portfolio health and competitive signals",
@@ -1464,13 +1463,13 @@ const chatScenarioContent: Partial<
         { role: "user", text: "Review Redwood's latest NDA draft" },
         {
           role: "bot",
-          text: "Can't reach contracts.redwood.com — not in the agent's allowed domains.\n\nGrant access?",
+          text: "Can't reach contracts.redwood.com, not in the agent's allowed domains.\n\nGrant access?",
           buttons: [{ label: "Allow contracts.redwood.com", action: "link" }],
         },
         { role: "user", text: "Allow for this session" },
         {
           role: "bot",
-          text: "Pulled v4. Two clauses changed since v3:\n• §7 indemnity — narrowed cap, OK\n• §12 IP — new carve-out, needs counsel review",
+          text: "Pulled v4. Two clauses changed since v3:\n• §7 indemnity: narrowed cap, OK\n• §12 IP: new carve-out, needs counsel review",
         },
       ],
     },
@@ -1489,13 +1488,13 @@ const chatScenarioContent: Partial<
         { role: "user", text: "Redline this MSA against our standard" },
         {
           role: "bot",
-          text: "6 redlines across 4 sections. §12 IP and §18 liability cap flagged for counsel — both deviate materially.\n\nNothing goes out until you approve.",
+          text: "6 redlines across 4 sections. §12 IP and §18 liability cap flagged for counsel, both deviate materially.\n\nNothing goes out until you approve.",
           buttons: [{ label: "Send §12 to counsel", action: "link" }],
         },
         { role: "user", text: "Send §12 to counsel" },
         {
           role: "bot",
-          text: "Sent to counsel@yourco.com. Tracking as open — I'll surface the reply when it lands and hold the remaining redlines until cleared.",
+          text: "Sent to counsel@yourco.com. Tracking as open, I'll surface the reply when it lands and hold the remaining redlines until cleared.",
         },
       ],
     },
@@ -1517,12 +1516,12 @@ const chatScenarioContent: Partial<
         },
         {
           role: "bot",
-          text: "From the Redwood NDA review:\n• Residuals clause — broad language still present\n• Confidentiality term — no cap, needs counsel sign-off\n• Venue — Delaware (their ask, not standard)\n\nAll three are unresolved from v4.",
+          text: "From the Redwood NDA review:\n• Residuals clause: broad language still present\n• Confidentiality term: no cap, needs counsel sign-off\n• Venue: Delaware (their ask, not standard)\n\nAll three are unresolved from v4.",
         },
         { role: "user", text: "Has the confidentiality term come up before?" },
         {
           role: "bot",
-          text: "Yes — flagged in v2 and v3. They haven't moved on it. Last note: counsel said any term over 5 years needs sign-off before we accept.",
+          text: "Yes, flagged in v2 and v3. They haven't moved on it. Last note: counsel said any term over 5 years needs sign-off before we accept.",
         },
       ],
     },
@@ -1542,13 +1541,13 @@ const chatScenarioContent: Partial<
         { role: "user", text: "Prep me for the Redwood renewal call" },
         {
           role: "bot",
-          text: "Can't reach yourco.my.salesforce.com — not in the agent's allowed domains.\n\nGrant access?",
+          text: "Can't reach yourco.my.salesforce.com, not in the agent's allowed domains.\n\nGrant access?",
           buttons: [{ label: "Allow Salesforce", action: "link" }],
         },
         { role: "user", text: "Allow" },
         {
           role: "bot",
-          text: "Redwood, Enterprise, ARR $180k, renewal in 12 days.\n• 2 open tickets (both resolved this week)\n• Exec sponsor changed — new CFO: Priya R.\n• Last usage dip: -8% in March",
+          text: "Redwood, Enterprise, ARR $180k, renewal in 12 days.\n• 2 open tickets (both resolved this week)\n• Exec sponsor changed, new CFO: Priya R.\n• Last usage dip: -8% in March",
         },
       ],
     },
@@ -1567,7 +1566,7 @@ const chatScenarioContent: Partial<
         { role: "user", text: "Which pilots are at risk?" },
         {
           role: "bot",
-          text: "3 at risk:\n• Acme — no exec sponsor named\n• Northwind — usage -40% MoM\n• Globex — procurement stalled 2 weeks",
+          text: "3 at risk:\n• Acme: no exec sponsor named\n• Northwind: usage -40% MoM\n• Globex: procurement stalled 2 weeks",
         },
         { role: "user", text: "Draft a renewal brief for Northwind" },
         {
@@ -1594,7 +1593,7 @@ const chatScenarioContent: Partial<
         },
         {
           role: "bot",
-          text: "Key changes:\n• Usage dropped -40% MoM from August\n• Exec sponsor changed — new CFO: Priya R. (joined Sept)\n• 2 support tickets opened and resolved\n• Procurement stalled for 2 weeks in September",
+          text: "Key changes:\n• Usage dropped -40% MoM from August\n• Exec sponsor changed, new CFO: Priya R. (joined Sept)\n• 2 support tickets opened and resolved\n• Procurement stalled for 2 weeks in September",
         },
         { role: "user", text: "Has Priya been on any calls with us?" },
         {
@@ -1620,13 +1619,13 @@ const chatScenarioContent: Partial<
         { role: "user", text: "What shipped this week across the org?" },
         {
           role: "bot",
-          text: "Can't reach yourco.notion.site — not in the agent's allowed domains.\n\nGrant access?",
+          text: "Can't reach yourco.notion.site, not in the agent's allowed domains.\n\nGrant access?",
           buttons: [{ label: "Allow Notion", action: "link" }],
         },
         { role: "user", text: "Allow" },
         {
           role: "bot",
-          text: "This week:\n• Platform — shipped multi-region failover\n• Growth — launched partner portal beta\n• Ops — closed 3 P1 incidents, MTTR down 22%",
+          text: "This week:\n• Platform: shipped multi-region failover\n• Growth: launched partner portal beta\n• Ops: closed 3 P1 incidents, MTTR down 22%",
         },
       ],
     },
@@ -1653,7 +1652,7 @@ const chatScenarioContent: Partial<
         { role: "user", text: "What's blocking the pricing revamp?" },
         {
           role: "bot",
-          text: "CFO review was scheduled March 28 — postponed, no new date set. Finance sign-off is the only open gate. Want me to draft a nudge to schedule it?",
+          text: "CFO review was scheduled March 28, postponed, no new date set. Finance sign-off is the only open gate. Want me to draft a nudge to schedule it?",
         },
       ],
     },
@@ -1672,12 +1671,12 @@ const chatScenarioContent: Partial<
         { role: "user", text: "Which Q1 action items are still open?" },
         {
           role: "bot",
-          text: "4 still open:\n• Hiring plan for Growth — owner: Dara, no update since March\n• EU region GTM — owner: Priya, in progress\n• Pricing revamp — blocked on CFO review (postponed)\n• Analytics rebuild — in discovery, no owner named",
+          text: "4 still open:\n• Hiring plan for Growth: owner: Dara, no update since March\n• EU region GTM: owner: Priya, in progress\n• Pricing revamp: blocked on CFO review (postponed)\n• Analytics rebuild: in discovery, no owner named",
         },
         { role: "user", text: "What was approved in the last board memo?" },
         {
           role: "bot",
-          text: "From March memo:\n• APAC expansion budget — approved\n• Q2 headcount plan — approved\n• Infra migration timeline — approved with conditions\n\nAll three had owners assigned at the time.",
+          text: "From March memo:\n• APAC expansion budget: approved\n• Q2 headcount plan: approved\n• Infra migration timeline: approved with conditions\n\nAll three had owners assigned at the time.",
         },
       ],
     },
@@ -1698,7 +1697,7 @@ const chatScenarioContent: Partial<
         { role: "user", text: "Reconcile March Stripe payouts to the GL" },
         {
           role: "bot",
-          text: "Can't reach yourco.netsuite.com — not in the agent's allowed domains.\n\nGrant access?",
+          text: "Can't reach yourco.netsuite.com, not in the agent's allowed domains.\n\nGrant access?",
           buttons: [{ label: "Allow NetSuite", action: "link" }],
         },
         { role: "user", text: "Allow" },
@@ -1726,7 +1725,7 @@ const chatScenarioContent: Partial<
         },
         {
           role: "bot",
-          text: "7 exceptions: 2 missing POs, 1 duplicate invoice ($12,400 to Acme), 4 awaiting approval.\n\nLargest: $42k to Global Suppliers — no matching PO.",
+          text: "7 exceptions: 2 missing POs, 1 duplicate invoice ($12,400 to Acme), 4 awaiting approval.\n\nLargest: $42k to Global Suppliers, no matching PO.",
         },
         { role: "user", text: "Send to Priya for sign-off" },
         {
@@ -1750,7 +1749,7 @@ const chatScenarioContent: Partial<
         { role: "user", text: "What's still unresolved from the March close?" },
         {
           role: "bot",
-          text: "2 items still open:\n• $180 refund — booked to April instead of March\n• $206 FX delta on EUR charges — no journal entry yet\n\nAll other variances on Account 4100 are tied.",
+          text: "2 items still open:\n• $180 refund: booked to April instead of March\n• $206 FX delta on EUR charges: no journal entry yet\n\nAll other variances on Account 4100 are tied.",
         },
         { role: "user", text: "Who owns the FX delta item?" },
         {
@@ -1776,7 +1775,7 @@ const chatScenarioContent: Partial<
         { role: "user", text: "Status on the Q2 onboarding rollout?" },
         {
           role: "bot",
-          text: "Can't reach yourco.atlassian.net — not in the agent's allowed domains.\n\nGrant access?",
+          text: "Can't reach yourco.atlassian.net, not in the agent's allowed domains.\n\nGrant access?",
           buttons: [{ label: "Allow Atlassian", action: "link" }],
         },
         { role: "user", text: "Allow" },
@@ -1806,7 +1805,7 @@ const chatScenarioContent: Partial<
         { role: "user", text: "Assign DATA-61 to Marcus" },
         {
           role: "bot",
-          text: "DATA-61 assigned to Marcus. He's been notified. Blocker count holds at 5 — if this clears today, Q2 milestone stays on track.",
+          text: "DATA-61 assigned to Marcus. He's been notified. Blocker count holds at 5; if this clears today, Q2 milestone stays on track.",
         },
       ],
     },
@@ -1825,7 +1824,7 @@ const chatScenarioContent: Partial<
         { role: "user", text: "What needs to be escalated today on Phoenix?" },
         {
           role: "bot",
-          text: "2 items:\n• DATA-61 — unassigned, blocks the May 6 pilot kickoff\n• ONB-322 — waiting on Legal, no update in 4 days\n\nBoth will push the milestone if not resolved today.",
+          text: "2 items:\n• DATA-61: unassigned, blocks the May 6 pilot kickoff\n• ONB-322: waiting on Legal, no update in 4 days\n\nBoth will push the milestone if not resolved today.",
         },
         { role: "user", text: "What's ONB-322 waiting on from Legal?" },
         {
@@ -1851,13 +1850,13 @@ const chatScenarioContent: Partial<
         { role: "user", text: "Find 5 members working on RAG eval tooling" },
         {
           role: "bot",
-          text: "Can't reach yourco.circle.so — not in the agent's allowed domains.\n\nGrant access?",
+          text: "Can't reach yourco.circle.so, not in the agent's allowed domains.\n\nGrant access?",
           buttons: [{ label: "Allow Circle", action: "link" }],
         },
         { role: "user", text: "Allow" },
         {
           role: "bot",
-          text: "5 member matches:\n• Maya R. — shipped eval harness in #ml-infra\n• Dev K. — posted benchmark last week\n• Lin C. — asking for RAG ground truth\n• Priya N. — hiring for eval work\n• Sam T. — wrote the eval FAQ.",
+          text: "5 member matches:\n• Maya R.: shipped eval harness in #ml-infra\n• Dev K.: posted benchmark last week\n• Lin C.: asking for RAG ground truth\n• Priya N.: hiring for eval work\n• Sam T.: wrote the eval FAQ.",
         },
       ],
     },
@@ -1881,7 +1880,7 @@ const chatScenarioContent: Partial<
         { role: "user", text: "Draft intros for the 3 new members" },
         {
           role: "bot",
-          text: "3 intro drafts ready — each personalized to stated interests and matched to existing members. Send to channel or DMs?",
+          text: "3 intro drafts ready, each personalized to stated interests and matched to existing members. Send to channel or DMs?",
           buttons: [{ label: "Review drafts", action: "link" }],
         },
       ],
@@ -1904,7 +1903,7 @@ const chatScenarioContent: Partial<
         },
         {
           role: "bot",
-          text: "3 confirmed meetings from April intros:\n• Maya R. ↔ Dev K. — met Apr 9, started collaborating on eval harness\n• Lin C. ↔ Priya N. — met Apr 14, Priya shared a hiring role\n• Sam T. ↔ Alex W. — meeting scheduled Apr 22",
+          text: "3 confirmed meetings from April intros:\n• Maya R. ↔ Dev K.: met Apr 9, started collaborating on eval harness\n• Lin C. ↔ Priya N.: met Apr 14, Priya shared a hiring role\n• Sam T. ↔ Alex W.: meeting scheduled Apr 22",
         },
         { role: "user", text: "Any intros that didn't land?" },
         {
@@ -1929,13 +1928,13 @@ const chatScenarioContent: Partial<
         { role: "user", text: "Where's order #10482?" },
         {
           role: "bot",
-          text: "Can't reach yourco.myshopify.com — not in the agent's allowed domains.\n\nGrant access?",
+          text: "Can't reach yourco.myshopify.com, not in the agent's allowed domains.\n\nGrant access?",
           buttons: [{ label: "Allow Shopify", action: "link" }],
         },
         { role: "user", text: "Allow" },
         {
           role: "bot",
-          text: 'Order #10482 shipped Apr 12, delivered Apr 15. Customer opened a "where is it" ticket today — tracking shows delivered to mailroom. Drafted reply with photo proof.',
+          text: 'Order #10482 shipped Apr 12, delivered Apr 15. Customer opened a "where is it" ticket today; tracking shows delivered to mailroom. Drafted reply with photo proof.',
         },
       ],
     },
@@ -1954,7 +1953,7 @@ const chatScenarioContent: Partial<
         { role: "user", text: "Which SKUs are low in stock?" },
         {
           role: "bot",
-          text: "7 below reorder point:\n• SKU-1204 — 2 left\n• SKU-1187 — 4 left\n• 5 more flagged\n\nSKU-1204 has 3 open orders incoming — needs PO today.",
+          text: "7 below reorder point:\n• SKU-1204: 2 left\n• SKU-1187: 4 left\n• 5 more flagged\n\nSKU-1204 has 3 open orders incoming, needs PO today.",
         },
         { role: "user", text: "Raise a PO for SKU-1204" },
         {
@@ -1984,7 +1983,7 @@ const chatScenarioContent: Partial<
         { role: "user", text: "Has she contacted support recently?" },
         {
           role: "bot",
-          text: "One ticket this week — 'where is my order' for #10482. Resolved Apr 16 with tracking confirmation. No other open issues.",
+          text: "One ticket this week, 'where is my order' for #10482. Resolved Apr 16 with tracking confirmation. No other open issues.",
         },
       ],
     },
@@ -2005,7 +2004,7 @@ const chatScenarioContent: Partial<
         { role: "user", text: "What's in the pipeline this week?" },
         {
           role: "bot",
-          text: "Can't reach affinity.co — not in the agent's allowed domains.\n\nGrant access?",
+          text: "Can't reach affinity.co, not in the agent's allowed domains.\n\nGrant access?",
           buttons: [{ label: "Allow Affinity", action: "link" }],
         },
         { role: "user", text: "Allow" },
@@ -2038,7 +2037,7 @@ const chatScenarioContent: Partial<
         { role: "user", text: "Who at Accel handles AI infra?" },
         {
           role: "bot",
-          text: "Amit Sharma — 4 shared deals including Cortex and Relay. Last intro was 8 months ago via Sarah. Want me to draft a re-intro note?",
+          text: "Amit Sharma: 4 shared deals including Cortex and Relay. Last intro was 8 months ago via Sarah. Want me to draft a re-intro note?",
         },
       ],
     },
@@ -2057,7 +2056,7 @@ const chatScenarioContent: Partial<
         { role: "user", text: "What's the latest on Lovable?" },
         {
           role: "bot",
-          text: "Lovable — AI dev tools, seed stage:\n• Last funding: $2.5M (Jan, undisclosed lead)\n• Team: 8 → 14 in 90 days\n• Product: shipped live preview in March\n• Category signal: 3 competitors entered since Q4",
+          text: "Lovable, AI dev tools, seed stage:\n• Last funding: $2.5M (Jan, undisclosed lead)\n• Team: 8 → 14 in 90 days\n• Product: shipped live preview in March\n• Category signal: 3 competitors entered since Q4",
         },
         { role: "user", text: "Any warm paths into the team?" },
         {
@@ -2243,12 +2242,12 @@ const landingUseCaseRoleMeta: Array<{
   {
     id: "personal",
     label: "Personal",
-    description: "Solo memory — your own decisions, deals, and context.",
+    description: "Solo memory: your own decisions, deals, and context.",
   },
   {
     id: "public",
     label: "Public",
-    description: "Community-scale memory — members, markets, open knowledge.",
+    description: "Community-scale memory: members, markets, open knowledge.",
   },
 ];
 

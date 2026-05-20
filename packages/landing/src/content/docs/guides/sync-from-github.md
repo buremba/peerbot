@@ -84,7 +84,7 @@ model = "claude/sonnet-4-5"
 key = "$ANTHROPIC_API_KEY"
 ```
 
-See [`lobu apply`](/docs/reference/lobu-apply/) for the full file format and the list of fields that get synced.
+See [`lobu apply`](/reference/lobu-apply/) for the full file format and the list of fields that get synced.
 
 ## Multiple environments
 
@@ -117,5 +117,5 @@ Since the [agents flatten](https://github.com/lobu-ai/lobu/pull/531) landed, def
 
 ## See also
 
-- [`lobu apply` reference](/docs/reference/lobu-apply/) — file format, flags, exit codes.
+- [`lobu apply` reference](/reference/lobu-apply/) — file format, flags, exit codes.
 - The [`examples/atlas/`](https://github.com/lobu-ai/lobu/tree/main/examples/atlas) folder in the Lobu monorepo dogfoods this pattern; the workflow at [`.github/workflows/lobu-apply-atlas.yml`](https://github.com/lobu-ai/lobu/blob/main/.github/workflows/lobu-apply-atlas.yml) is the live version of the snippet above.

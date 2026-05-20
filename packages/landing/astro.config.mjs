@@ -99,6 +99,7 @@ export default defineConfig({
             { label: "SKILL.md", link: "/reference/skill-md/" },
             { label: "Providers", link: "/reference/providers/" },
             { label: "CLI", link: "/reference/cli/" },
+            { label: "lobu apply", link: "/reference/lobu-apply/" },
             { label: "Lobu memory CLI", link: "/reference/lobu-memory/" },
             { label: "@lobu/connector-sdk", link: "/reference/connector-sdk/" },
             { label: "Reactions", link: "/reference/reaction-sdk/" },

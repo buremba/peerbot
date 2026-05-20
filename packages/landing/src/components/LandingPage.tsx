@@ -56,7 +56,6 @@ const GITHUB_URL = "https://github.com/lobu-ai/lobu";
 export function LandingPage(props: {
   latestPosts?: LatestBlogPost[];
   defaultUseCaseId?: string;
-  linkTabsToCampaigns?: boolean;
 }) {
   const [activeUseCase, setActiveUseCase] = useState<string>(
     props.defaultUseCaseId ?? DEFAULT_LANDING_USE_CASE_ID

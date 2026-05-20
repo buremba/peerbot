@@ -93,7 +93,7 @@ export interface EntityListFilter {
 export interface ReactionClient {
   knowledge: {
     search(input: KnowledgeSearchInput): Promise<unknown>;
-    save(input: KnowledgeSaveInput): Promise<{ event_id: number }>;
+    save(input: KnowledgeSaveInput): Promise<unknown>;
     read(input: KnowledgeReadInput): Promise<unknown>;
     delete(input: number | { event_id?: number; event_ids?: number[]; reason?: string }): Promise<unknown>;
   };

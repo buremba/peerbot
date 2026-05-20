@@ -133,7 +133,7 @@ describe("applyCommand --dry-run", () => {
     spyOn(context, "getActiveOrg").mockResolvedValue("acme");
     spyOn(context, "loadContextConfig").mockResolvedValue({
       currentContext: "prod",
-      contexts: { prod: { apiUrl: "https://app.lobu.ai/api/v1" } },
+      contexts: { prod: { url: "https://app.lobu.ai/api/v1" } },
     });
   });
 
@@ -226,7 +226,7 @@ describe("applyCommand org resolution", () => {
     spyOn(context, "getActiveOrg").mockResolvedValue(undefined);
     spyOn(context, "loadContextConfig").mockResolvedValue({
       currentContext: "prod",
-      contexts: { prod: { apiUrl: "https://app.lobu.ai/api/v1" } },
+      contexts: { prod: { url: "https://app.lobu.ai/api/v1" } },
     });
   });
 
@@ -335,7 +335,7 @@ describe("applyCommand — missing lobu.toml", () => {
     spyOn(context, "getActiveOrg").mockResolvedValue("acme");
     spyOn(context, "loadContextConfig").mockResolvedValue({
       currentContext: "prod",
-      contexts: { prod: { apiUrl: "https://app.lobu.ai/api/v1" } },
+      contexts: { prod: { url: "https://app.lobu.ai/api/v1" } },
     });
   });
 

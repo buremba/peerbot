@@ -45,7 +45,7 @@ describe("resolveApiClient — org resolution", () => {
     spyOn(context, "findContextByUrl").mockResolvedValue(undefined);
     spyOn(context, "loadContextConfig").mockResolvedValue({
       currentContext: "prod",
-      contexts: { prod: { apiUrl: "https://app.lobu.ai/api/v1" } },
+      contexts: { prod: { url: "https://app.lobu.ai/api/v1" } },
     });
   });
 

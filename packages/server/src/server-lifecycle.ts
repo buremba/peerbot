@@ -158,7 +158,7 @@ export function reportBootFailure(err: unknown): never {
 export function buildWrapperApp(
 	env: Env,
 	lobuApp: Hono | null,
-	mountedMainApp: Hono = mainApp,
+	mountedMainApp: Hono<{ Bindings: Env }> = mainApp,
 ): Hono<{ Bindings: Env }> {
 	const wrapper = new Hono<{ Bindings: Env }>();
 

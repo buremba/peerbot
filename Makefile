@@ -142,7 +142,7 @@ clean-workers:
 	@pkill -f '@lobu/worker' 2>/dev/null || true
 	@echo "✅ Worker subprocesses stopped"
 
-# --- Shadow-mode AI reviewer -----------------------------------------------
+# --- Local AI review gate ---------------------------------------------------
 # Local-only: runs the deterministic suites in cwd, then invokes pi against
 # `git diff <BASE>...HEAD` (BASE defaults to main; override with BASE=<branch>
 # env or `--base <branch>` arg). Prints a JSON verdict on the last line. If

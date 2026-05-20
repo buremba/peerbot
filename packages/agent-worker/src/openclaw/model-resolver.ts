@@ -108,6 +108,26 @@ export function resolveModelRef(
     );
   }
 
+  // When the agent has an explicitly configured provider, route to it and pass
+  // the model string AS-IS. The model is expressed in that provider's own
+  // namespace — e.g. OpenRouter slugs like "anthropic/claude-sonnet-4" or
+  // "openai/gpt-4o" mean "OpenRouter's anthropic/openai model", not "switch to
+  // the anthropic/openai provider". Splitting on "/" here would mis-route them.
+  if (defaultProvider) {
+    let modelId = modelRef;
+    // Resolve "auto" to the configured provider's default model.
+    if (modelId === "auto") {
+      const fallback = DEFAULT_PROVIDER_MODELS[defaultProvider];
+      if (fallback) {
+        logger.info(`Resolved auto model for ${defaultProvider}: ${fallback}`);
+        modelId = fallback;
+      }
+    }
+    return { provider: defaultProvider, modelId };
+  }
+
+  // Auto / no-configured-provider mode: derive the provider from the model
+  // string's first segment ("provider/model").
   const parts = modelRef.split("/").filter(Boolean);
   if (parts.length >= 2) {
     const provider = parts[0]!;
@@ -123,13 +143,9 @@ export function resolveModelRef(
     return { provider, modelId };
   }
 
-  if (!defaultProvider) {
-    throw new Error(
-      `No provider specified for model "${modelRef}". Use "provider/model" format or set AGENT_DEFAULT_PROVIDER.`
-    );
-  }
-
-  return { provider: defaultProvider, modelId: modelRef };
+  throw new Error(
+    `No provider specified for model "${modelRef}". Use "provider/model" format or set AGENT_DEFAULT_PROVIDER.`
+  );
 }
 
 export async function openOrCreateSessionManager(

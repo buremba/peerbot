@@ -114,6 +114,70 @@ describe("resolveModelRef — edge cases", () => {
   });
 });
 
+describe("resolveModelRef — configured provider wins over slug split", () => {
+  let origDefaultModel: string | undefined;
+  let origDefaultProvider: string | undefined;
+
+  beforeEach(() => {
+    origDefaultModel = process.env.AGENT_DEFAULT_MODEL;
+    origDefaultProvider = process.env.AGENT_DEFAULT_PROVIDER;
+    delete process.env.AGENT_DEFAULT_MODEL;
+    delete process.env.AGENT_DEFAULT_PROVIDER;
+  });
+
+  afterEach(() => {
+    if (origDefaultModel !== undefined)
+      process.env.AGENT_DEFAULT_MODEL = origDefaultModel;
+    else delete process.env.AGENT_DEFAULT_MODEL;
+
+    if (origDefaultProvider !== undefined)
+      process.env.AGENT_DEFAULT_PROVIDER = origDefaultProvider;
+    else delete process.env.AGENT_DEFAULT_PROVIDER;
+  });
+
+  test("openrouter + anthropic/claude-sonnet-4 → openrouter, slug intact", () => {
+    const result = resolveModelRef("anthropic/claude-sonnet-4", {
+      defaultProvider: "openrouter",
+    });
+    expect(result.provider).toBe("openrouter");
+    expect(result.modelId).toBe("anthropic/claude-sonnet-4");
+  });
+
+  test("openrouter + openai/gpt-4o → openrouter, NOT openai", () => {
+    const result = resolveModelRef("openai/gpt-4o", {
+      defaultProvider: "openrouter",
+    });
+    expect(result.provider).toBe("openrouter");
+    expect(result.modelId).toBe("openai/gpt-4o");
+  });
+
+  test("AGENT_DEFAULT_PROVIDER env also wins over slug split", () => {
+    process.env.AGENT_DEFAULT_PROVIDER = "openrouter";
+    const result = resolveModelRef("google/gemini-2.0-flash");
+    expect(result.provider).toBe("openrouter");
+    expect(result.modelId).toBe("google/gemini-2.0-flash");
+  });
+
+  test("configured provider + 'auto' resolves to that provider's default", () => {
+    const result = resolveModelRef("auto", { defaultProvider: "openrouter" });
+    expect(result.provider).toBe("openrouter");
+    // openrouter has no DEFAULT_PROVIDER_MODELS entry, so "auto" stays as-is.
+    expect(result.modelId).toBe("auto");
+  });
+
+  test("configured provider + 'auto' for a known provider resolves the default", () => {
+    const result = resolveModelRef("auto", { defaultProvider: "anthropic" });
+    expect(result.provider).toBe("anthropic");
+    expect(result.modelId).toBe(DEFAULT_PROVIDER_MODELS.anthropic);
+  });
+
+  test("auto-mode (no provider) still derives provider from slug", () => {
+    const result = resolveModelRef("groq/llama-x");
+    expect(result.provider).toBe("groq");
+    expect(result.modelId).toBe("llama-x");
+  });
+});
+
 describe("resolveModelRef — does not leak secrets", () => {
   test("model ID containing lobu_secret placeholder is passed through unchanged", () => {
     // Unlikely in practice but the resolver must not strip or transform it

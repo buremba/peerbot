@@ -217,6 +217,24 @@ export async function createAuth(env: Env, request?: Request) {
 		// Tokens are reusable for both login AND connectors
 		socialProviders,
 
+		user: {
+			additionalFields: {
+				// Declare `principal_kind` so Better Auth's adapter accepts
+				// it in where clauses (e.g. the single-user-mode count in
+				// the user.create.before hook below). The column itself is
+				// added by db/migrations/20260519152824_principal_kind.sql
+				// with NOT NULL DEFAULT 'human', so input=false lets the DB
+				// default kick in on signup. See #947.
+				principalKind: {
+					type: "string",
+					fieldName: "principal_kind",
+					input: false,
+					returned: false,
+					required: false,
+				},
+			},
+		},
+
 		account: {
 			accountLinking: {
 				enabled: true,
@@ -592,7 +610,7 @@ export async function createAuth(env: Env, request?: Request) {
 		databaseHooks: {
 			user: {
 				create: {
-					before: async (user) => {
+					before: async (user, ctx) => {
 						// Single-user-mode chokepoint. The /api/auth/* middleware
 						// in index.ts blocks /api/auth/sign-up/*, but Better Auth
 						// also creates users on magic-link verify and on OAuth
@@ -603,23 +621,44 @@ export async function createAuth(env: Env, request?: Request) {
 						// second one. Closes the fork-via-magic-link / fork-via-
 						// social-login backdoor codex flagged.
 						if (env.LOBU_SINGLE_USER === "1") {
-							const { getDb } = await import("../db/client");
-							const sql = getDb();
+							// Route the count through Better Auth's internalAdapter
+							// so it joins the reserved transaction connection
+							// (sign-up runs inside runWithTransaction). Calling
+							// getDb() here would ask for a second pool connection
+							// while the signup endpoint already holds the only
+							// one — deadlock in PGlite mode (pool max=1). See #947.
+							//
+							// Fail closed if BA invokes this hook without an
+							// auth context: the count we'd otherwise default to
+							// `0` is the gate that prevents a second user from
+							// being created.
+							if (!ctx) {
+								throw new APIError("INTERNAL_SERVER_ERROR", {
+									code: "SIGN_UP_NO_AUTH_CONTEXT",
+									message:
+										"Sign-up rejected: missing auth context for single-user guard.",
+								});
+							}
 							// Exclude the synthetic install_operator row
 							// (auto-provisioned at boot in ensureInstallOperator)
 							// AND the legacy bootstrap-user row (pre-PR #902)
-							// from the "deployment already has a user" count, so
-							// the first human signup can still proceed in
-							// single-user mode against upgraded installs that
-							// still carry a bootstrap-user row. See
+							// from the count, so the first human signup can still
+							// proceed against upgraded installs that still carry a
+							// bootstrap-user row. See
 							// docs/install-operator-bootstrap.md.
-							const rows = (await sql`
-								SELECT count(*)::int AS count
-									  FROM "user"
-									 WHERE principal_kind <> 'install_operator'
-									   AND id <> 'bootstrap-user'
-							`) as unknown as Array<{ count: number }>;
-							const existing = rows[0]?.count ?? 0;
+							const existing =
+								await ctx.context.internalAdapter.countTotalUsers([
+									{
+										field: "principalKind",
+										operator: "ne",
+										value: "install_operator",
+									},
+									{
+										field: "id",
+										operator: "ne",
+										value: "bootstrap-user",
+									},
+								]);
 							if (existing > 0) {
 								// APIError so Better Auth turns this into a structured
 								// JSON response with the right status code, not an
@@ -705,7 +744,7 @@ export async function createAuth(env: Env, request?: Request) {
 			},
 			account: {
 				create: {
-					before: async (account) => {
+					before: async (account, ctx) => {
 						// Carve-out: refuse OAuth account-linking onto the synthetic
 						// install_operator user. The operator authenticates via
 						// ENCRYPTION_KEY; admitting social-login linking would pin a
@@ -716,13 +755,22 @@ export async function createAuth(env: Env, request?: Request) {
 						// password-hash row at boot. See
 						// docs/install-operator-bootstrap.md.
 						if (account.providerId !== "credential") {
-							const { getDb } = await import("../db/client");
-							const sql = getDb();
-							const rows = (await sql`
-								SELECT principal_kind FROM "user"
-								 WHERE id = ${account.userId} LIMIT 1
-							`) as unknown as Array<{ principal_kind: string }>;
-							if (rows[0]?.principal_kind === "install_operator") {
+							// Route the lookup through Better Auth's internalAdapter
+							// so it joins the reserved transaction connection. A
+							// raw getDb() query would deadlock in PGlite mode (pool
+							// max=1) during new-OAuth-user registration, where
+							// createOAuthUser wraps user + account creation in
+							// runWithTransaction. The /link-social and
+							// callback-link paths are not transactional today but
+							// stay safe under this same code. See #947.
+							const linkedUser =
+								await ctx?.context.internalAdapter.findUserById(
+									account.userId,
+								);
+							const principalKind = (
+								linkedUser as { principalKind?: string } | null
+							)?.principalKind;
+							if (principalKind === "install_operator") {
 								throw new APIError("FORBIDDEN", {
 									code: "ACCOUNT_LINKING_NOT_ALLOWED_FOR_INSTALL_OPERATOR",
 									message:

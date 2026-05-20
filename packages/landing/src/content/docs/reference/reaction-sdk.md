@@ -24,10 +24,25 @@ A reaction file default-exports an async function:
 ```ts
 import type { ReactionContext } from "@lobu/connector-sdk";
 
+// Declare the subset of the injected ClientSDK your reaction touches.
+// `@lobu/connector-sdk` doesn't export `ClientSDK` (the implementation
+// lives in the server package), so pin only what you call.
+interface ReactionClient {
+  knowledge: {
+    save(input: {
+      entity_ids?: number[];
+      content: string;
+      semantic_type: string;
+      title?: string;
+      metadata?: Record<string, unknown>;
+    }): Promise<unknown>;
+  };
+}
+
 export default async (
   ctx: ReactionContext,
-  client: any,
-  params?: Record<string, unknown>
+  client: ReactionClient,
+  params?: Record<string, unknown>,
 ): Promise<void> => {
   // …
 };
@@ -36,7 +51,7 @@ export default async (
 | Argument | Description |
 |----------|-------------|
 | `ctx` | The watcher-window context — extraction output, attached entities, window metadata. |
-| `client` | The `ClientSDK` instance injected by the sandbox. Use `client.knowledge.*` and `client.actions.*`. |
+| `client` | The `ClientSDK` instance injected by the sandbox. Use `client.knowledge.*` for memory reads/writes; use `fetch` for outbound HTTP. |
 | `params` | Optional bag of reaction-specific parameters (rare — most reactions ignore this). |
 
 Throwing fails the reaction run; the error is surfaced to the watcher run log. Returning `void` is success — there is no need to return the saved-event ID.
@@ -109,21 +124,16 @@ Not exported from `@lobu/connector-sdk` — injected as the second argument at r
 
 | Method | Use |
 |--------|-----|
-| `save({ entity_ids, content, semantic_type, metadata?, supersedes_event_id? })` | Append a new event. Pass `supersedes_event_id` to tombstone an earlier event (`events` is append-only — there's no real delete). |
-| `search({ query, semantic_type?, entity_ids?, limit?, sort_by? })` | Hybrid (vector + full-text) search across the org's events. Use to dedupe before writing. |
-| `delete({ event_id })` | Write a tombstone for `event_id`. Equivalent to `save({ supersedes_event_id: event_id, … })` with the platform-blessed defaults. |
+| `save({ entity_ids?, content, semantic_type, title?, slug?, metadata? })` | Append a new event to memory. |
+| `search({ query?, entity_type?, entity_id?, limit?, ... })` | Hybrid (vector + full-text) search across the org's events. Use to dedupe before writing. |
+| `read({ content_id? \| watcher_id?, entity_ids?, since?, until?, limit? })` | Fetch a single event by id, or pull events from a watcher window. |
+| `delete(event_id)` or `delete({ event_id?, event_ids?, reason? })` | Append a tombstone for one or more events. `events` is append-only — `delete` writes a superseding row, never `DELETE`s. |
 
-### `client.actions.*`
+### Outbound HTTP
 
-Calls registered platform actions through the gateway's connector proxy — your reaction code never holds the OAuth token. Typical surfaces:
+Reactions hit external systems (Slack incoming webhooks, Linear, GitHub) directly with `fetch`. The worker proxy enforces the same `WORKER_ALLOWED_DOMAINS` policy as connector code, so non-allowlisted hosts are blocked at the network layer — no extra wrapper required.
 
-| Call | What it does |
-|------|--------------|
-| `client.actions.slack.postMessage({ channel, text, blocks? })` | Post into a Slack channel the org has connected. |
-| `client.actions.linear.createIssue({ teamId, title, description })` | Open a Linear issue. |
-| `client.actions.<connector>.<action>({...})` | Any action declared on a connector's `actions` map is reachable here, gated by per-action `requiresApproval`. |
-
-The proxy enforces the same `WORKER_ALLOWED_DOMAINS` policy as the connector runtime, and an action with `requiresApproval: true` blocks until an operator approves it in the admin UI.
+When you need to call a third-party API that an installed connector already authenticates, fetch the token through the gateway proxy instead of duplicating credentials in the reaction.
 
 ---
 
@@ -132,7 +142,7 @@ The proxy enforces the same `WORKER_ALLOWED_DOMAINS` policy as the connector run
 1. **Watcher window closes.** The watcher's prompt + `extraction_schema` runs against the events in the window; the extracted JSON is validated.
 2. **Lobu looks for a paired reaction.** Filename match: a watcher with slug `account-health-monitor` pairs with `models/reactions/account-health-monitor.reaction.ts`. If no file exists, the run ends here.
 3. **Sandbox boots the reaction.** Isolated worker, network restricted by the agent's `WORKER_ALLOWED_DOMAINS`, stdout/stderr captured into the run record, hard timeout.
-4. **Reaction runs.** Any `client.knowledge.save` calls append events; `client.actions.*` calls route through the gateway proxy.
+4. **Reaction runs.** Any `client.knowledge.save` calls append events; outbound `fetch` calls go through the worker HTTP proxy.
 5. **Result lands.** Success or failure is recorded on the watcher run; partial side effects (events already saved before a throw) stay in place — they're real events in the durable log.
 
 ---

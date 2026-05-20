@@ -25,49 +25,130 @@ pnpm add @lobu/connector-sdk
 
 The package is published from this repo and tracks the same release line as `@lobu/cli` and the gateway.
 
-## Minimal connector
+## A typed connector, end to end
 
-A complete, working connector — fetches a list of form submissions from a small JSON endpoint, dedupes by ID, and emits one event per new submission:
+The example below pulls issues from a GitHub repository, polls incrementally with a typed checkpoint, and emits one `EventEnvelope` per issue. Every field has a real type — no `as any` casts, no `// biome-ignore` directives.
 
 ```ts
-import { ConnectorRuntime, type SyncContext } from "@lobu/connector-sdk";
+import {
+  ConnectorRuntime,
+  type ConnectorDefinition,
+  type EventEnvelope,
+  type SyncContext,
+  type SyncResult,
+} from "@lobu/connector-sdk";
 
-export default class FunnelFormConnector extends ConnectorRuntime {
-  readonly definition = {
-    key: "funnel-form",
-    name: "Funnel form",
+// User-supplied connection config (rendered as a form in the admin UI).
+interface GitHubConfig {
+  owner: string;
+  repo: string;
+}
+
+// The shape we persist between runs. Cursor-based pagination so re-runs
+// only fetch issues updated after the last successful sync.
+interface GitHubCheckpoint {
+  last_updated_at: string | null;
+}
+
+// Minimal subset of the GitHub REST API issue payload we actually read.
+interface GitHubIssue {
+  id: number;
+  number: number;
+  title: string;
+  body: string | null;
+  html_url: string;
+  updated_at: string;
+  user: { login: string } | null;
+}
+
+// Tiny typed helper so we never reach into `ctx.checkpoint` raw.
+function readCheckpoint(raw: SyncContext["checkpoint"]): GitHubCheckpoint {
+  const cp = (raw ?? {}) as Partial<GitHubCheckpoint>;
+  return { last_updated_at: cp.last_updated_at ?? null };
+}
+
+export default class GitHubIssuesConnector extends ConnectorRuntime {
+  readonly definition: ConnectorDefinition = {
+    key: "github-issues",
+    name: "GitHub issues",
     version: "1.0.0",
-    authSchema: { methods: [{ type: "none" as const }] },
-    feeds: { submissions: { key: "submissions", name: "Form submissions" } },
+    // Personal access token is collected once per connection and stored
+    // encrypted; the worker only ever sees a `lobu_secret_<uuid>` placeholder.
+    authSchema: {
+      methods: [
+        {
+          type: "env_keys",
+          fields: [
+            { key: "token", label: "GitHub PAT", secret: true, required: true },
+          ],
+        },
+      ],
+    },
+    feeds: {
+      issues: { key: "issues", name: "Issues" },
+    },
   };
 
-  async sync(ctx: SyncContext) {
-    const seen = new Set<string>((ctx.checkpoint as any)?.seen_ids ?? []);
-    const subs: any[] =
-      (await (await fetch(String(ctx.config.endpoint))).json()).submissions ?? [];
-    const fresh = subs.filter((s) => s?.id && !seen.has(s.id));
+  async sync(ctx: SyncContext): Promise<SyncResult> {
+    const config = ctx.config as unknown as GitHubConfig;
+    const checkpoint = readCheckpoint(ctx.checkpoint);
+    const token = (ctx.credentials?.accessToken ?? "") as string;
+
+    // GitHub returns issues updated *at or after* `since`; we want
+    // strictly after, so we filter by id below.
+    const since = checkpoint.last_updated_at ?? "1970-01-01T00:00:00Z";
+    const url =
+      `https://api.github.com/repos/${config.owner}/${config.repo}/issues` +
+      `?state=all&sort=updated&direction=asc&per_page=100&since=${since}`;
+
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`GitHub ${response.status}: ${await response.text()}`);
+    }
+
+    const issues = (await response.json()) as GitHubIssue[];
+    const fresh = issues.filter((i) => i.updated_at !== checkpoint.last_updated_at);
+
+    const events: EventEnvelope[] = fresh.map((issue) => ({
+      origin_id: String(issue.id),
+      origin_type: "issue",
+      title: `#${issue.number} ${issue.title}`,
+      payload_text: issue.body ?? "",
+      source_url: issue.html_url,
+      author_name: issue.user?.login,
+      occurred_at: new Date(issue.updated_at),
+    }));
 
     return {
-      events: fresh.map((s) => ({
-        origin_id: s.id,
-        origin_type: "form_submission",
-        title: s.company ? `Demo — ${s.company}` : `Demo — ${s.email}`,
-        payload_text: s.message ?? "",
-        author_name: s.name,
-        occurred_at: s.submitted_at ? new Date(s.submitted_at) : new Date(),
-        metadata: { company: s.company, email: s.email },
-      })),
-      checkpoint: { seen_ids: [...seen, ...fresh.map((s) => s.id)].slice(-1000) },
+      events,
+      // Always advance the checkpoint to the newest `updated_at` we saw.
+      // If the page was empty, return the previous value verbatim so the
+      // next run is still idempotent.
+      checkpoint: {
+        last_updated_at:
+          fresh.at(-1)?.updated_at ?? checkpoint.last_updated_at,
+      } satisfies GitHubCheckpoint,
     };
   }
 
-  async execute() {
-    return { success: false, error: "no actions" };
+  async execute(): Promise<{ success: false; error: string }> {
+    return { success: false, error: "github-issues is read-only" };
   }
 }
 ```
 
-Drop this file at `connectors/funnel-form.connector.ts` in your Lobu project. `lobu apply` ships the source to the gateway, which compiles and registers it; from there each `feeds.<key>` entry shows up as something a user can create a connection for in the admin UI.
+A few things to notice:
+
+- **`SyncContext["checkpoint"]` is `Record<string, unknown> | null`.** Wrap it once in a tiny typed reader (`readCheckpoint`) instead of casting at every call site.
+- **`ctx.credentials.accessToken` is a `lobu_secret_<uuid>` placeholder at runtime.** The gateway's secret proxy swaps it for the real PAT when the outbound HTTPS request leaves the worker, so the secret never lives in the worker's memory.
+- **Pagination via the `since` query param.** The GitHub `Link` header is the alternative for cursor-style paging when you need to walk a stable, ordered list; `since` is simpler when the source already gives you a monotonic timestamp.
+
+Drop this file at `connectors/github-issues.connector.ts` in your Lobu project. `lobu apply` ships the source to the gateway, which compiles and registers it; from there each `feeds.<key>` entry shows up as something a user can create a connection for in the admin UI.
 
 ## Concepts
 
@@ -77,7 +158,7 @@ The static metadata for your connector. Filed under `connector_definitions` in t
 
 | Field | Required | Description |
 |------|----------|-------------|
-| `key` | yes | Unique global key, e.g. `google.gmail`, `funnel-form` |
+| `key` | yes | Unique global key, e.g. `google.gmail`, `github-issues` |
 | `name` | yes | Human-readable label |
 | `version` | yes | Semver — bump to invalidate per-feed checkpoints if the event shape changes |
 | `authSchema` | no | How users authenticate this connector (see below) |
@@ -97,11 +178,13 @@ What `sync()` receives. Every field is read-only.
 | `feedKey` | Which feed Lobu is asking you to run |
 | `config` | The connection-level config the user filled in (typed by your `FeedDefinition.configSchema`) |
 | `checkpoint` | The last successful run's checkpoint, or `null` on the first run |
-| `credentials` | OAuth tokens for `oauth` auth, `null` otherwise |
+| `credentials` | OAuth tokens for `oauth` auth, or env-key credentials for `env_keys`; `null` for `none` |
 | `entityIds` | Entities this feed is linked to (rarely needed; useful for scoping the sync) |
 | `sessionState` | Browser cookies / tokens captured by `lobu memory browser-auth` for `browser` auth |
 | `emitEvents(events)` | Optional streaming hook — flush a chunk before the run ends |
 | `updateCheckpoint(cp)` | Optional progress-checkpoint hook for long-running syncs |
+
+`SyncContext` does not currently expose generics for `config` / `checkpoint`. Declare your own interfaces and convert at the boundary, as the example above does with `readCheckpoint`.
 
 ### `EventEnvelope`
 
@@ -109,16 +192,16 @@ The shape of one event in the stream. Each envelope becomes a row in the `events
 
 ```ts
 interface EventEnvelope {
-  origin_id: string;          // platform's unique ID for this item
-  origin_type?: string;       // source-native type (post, message, charge)
-  payload_text: string;       // main content
+  origin_id: string; // platform's unique ID for this item
+  origin_type?: string; // source-native type (post, message, charge)
+  payload_text: string; // main content
   payload_type?: "text" | "markdown" | "json_template" | "media" | "empty";
   title?: string;
   author_name?: string;
-  source_url?: string;        // permalink back to the original
-  occurred_at: Date;          // when the event actually happened
-  semantic_type?: string;     // content, note, summary, fact, etc.
-  score?: number;             // 0-100 engagement / relevance
+  source_url?: string; // permalink back to the original
+  occurred_at: Date; // when the event actually happened
+  semantic_type?: string; // content, note, summary, fact, etc.
+  score?: number; // 0-100 engagement / relevance
   metadata?: Record<string, unknown>;
 }
 ```
@@ -131,8 +214,12 @@ Only `origin_id`, `payload_text`, and `occurred_at` are required. The full surfa
 interface SyncResult {
   events: EventEnvelope[];
   checkpoint: Record<string, unknown> | null;
-  auth_update?: Record<string, unknown> | null; // for browser cookie rotation
-  metadata?: { items_found?: number; items_skipped?: number; [k: string]: unknown };
+  auth_update?: Record<string, unknown> | null;
+  metadata?: {
+    items_found?: number;
+    items_skipped?: number;
+    [key: string]: unknown;
+  };
 }
 ```
 
@@ -143,17 +230,26 @@ Return `events: []` plus the same `checkpoint` you received on a no-new-data tic
 If your connector also writes back (e.g. `assign_issue`, `send_email`), declare an `actions` map on the definition and implement `execute(ctx)`:
 
 ```ts
+import type { ActionContext, ActionResult } from "@lobu/connector-sdk";
+
+interface AssignIssueInput {
+  issueId: string;
+  assignee: string;
+}
+
 async execute(ctx: ActionContext): Promise<ActionResult> {
-  if (ctx.actionKey === "assign_issue") {
-    const { issueId, assignee } = ctx.input as { issueId: string; assignee: string };
-    await fetch(`https://api.example.com/issues/${issueId}`, {
-      method: "PATCH",
-      headers: { Authorization: `Bearer ${ctx.credentials?.accessToken}` },
-      body: JSON.stringify({ assignee }),
-    });
-    return { success: true, output: { issueId, assignee } };
+  if (ctx.actionKey !== "assign_issue") {
+    return { success: false, error: `unknown action ${ctx.actionKey}` };
   }
-  return { success: false, error: `unknown action ${ctx.actionKey}` };
+  const { issueId, assignee } = ctx.input as unknown as AssignIssueInput;
+  const token = (ctx.credentials?.accessToken ?? "") as string;
+
+  await fetch(`https://api.example.com/issues/${issueId}`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ assignee }),
+  });
+  return { success: true, output: { issueId, assignee } };
 }
 ```
 
@@ -180,20 +276,26 @@ Full breakdown at [`reference/connector-sdk` › ConnectorAuthSchema](/reference
 The checkpoint is your bookmark. It's persisted on the `feeds` row after every successful sync and handed back as `ctx.checkpoint` on the next run. Three common shapes:
 
 ```ts
-// Timestamp cursor (Stripe, GitHub):
-checkpoint: { last_created: data.at(-1)?.created ?? cursor }
+// Timestamp cursor (GitHub `since`, Stripe `created[gt]`):
+interface TimestampCheckpoint {
+  last_updated_at: string | null;
+}
 
 // Page token (Google APIs):
-checkpoint: { next_page_token: resp.nextPageToken ?? null }
+interface PageTokenCheckpoint {
+  next_page_token: string | null;
+}
 
 // Bounded ID set (idempotency, no native cursor):
-checkpoint: { seen_ids: [...seen, ...fresh.map((s) => s.id)].slice(-1000) }
+interface IdSetCheckpoint {
+  seen_ids: string[];
+}
 ```
 
 Rules of thumb:
 
 - **Always return a checkpoint**, even on the no-new-data case — return the previous one verbatim. Returning `null` tells the gateway to treat the next run as a fresh start.
-- **Cap unbounded structures** (ID sets, in-flight queues) before persisting. The example above keeps the last 1000 IDs — enough to dedupe across a sync window without bloating the row.
+- **Cap unbounded structures** (ID sets, in-flight queues) before persisting. Keep the last 1000 IDs — enough to dedupe across a sync window without bloating the row.
 - **Long-running syncs** can call `ctx.updateCheckpoint(...)` mid-flight so a crash doesn't lose progress.
 
 ## Where the file lives
@@ -204,17 +306,17 @@ In your Lobu project, drop `*.connector.ts` files under `connectors/`:
 my-agent/
 ├── lobu.toml
 ├── connectors/
-│   ├── funnel-form.connector.ts
+│   ├── github-issues.connector.ts
 │   └── stripe-charges.connector.ts
 └── agents/my-agent/...
 ```
 
 `lobu apply` discovers, type-checks, and ships them. Update the `version` field whenever the event shape changes so the gateway forces a fresh checkpoint.
 
-## Real-world examples
+## See it in production
 
-- [`examples/lobu-crm/connectors/funnel-form.connector.ts`](https://github.com/lobu-ai/lobu/blob/main/examples/lobu-crm/connectors/funnel-form.connector.ts) — small custom HTTP API, ID-set dedupe.
 - [`examples/ecommerce/connectors/stripe-charges.connector.ts`](https://github.com/lobu-ai/lobu/blob/main/examples/ecommerce/connectors/stripe-charges.connector.ts) — REST API, `env_keys` auth, timestamp checkpoint.
+- [`examples/lobu-crm/connectors/funnel-form.connector.ts`](https://github.com/lobu-ai/lobu/blob/main/examples/lobu-crm/connectors/funnel-form.connector.ts) — small custom HTTP API, ID-set dedupe.
 
 ## See also
 

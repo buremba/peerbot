@@ -3,7 +3,7 @@ title: Reaction SDK
 description: Run TypeScript code after a watcher extracts data — post to Slack, write derived events, update entities.
 ---
 
-A **reaction** is TypeScript code that runs *after* a watcher's LLM extraction completes. The default watcher path is: LLM extracts data → Lobu validates against the schema → result is persisted to memory. Adding a reaction lets you take imperative actions on top of that — post a Slack message, write a derived event, update an entity, send mail — before the run lands in the durable log.
+A **reaction** is TypeScript code that runs *after* a watcher's LLM extraction completes. The default watcher path is: LLM extracts data → Lobu validates against the schema → result is persisted to memory. Adding a reaction lets you take imperative actions on top of that — post a Slack message, write a derived event, mutate an external system — before the run lands in the durable log.
 
 Reactions are optional. A watcher without one is pure extraction; a watcher with one is extraction + a typed hook.
 
@@ -23,48 +23,70 @@ import type { ReactionContext } from "@lobu/connector-sdk";
 
 The `client` runtime is injected by the Lobu sandbox at execution time — there's nothing to import for it.
 
-## Minimal reaction
+## A typed reaction, end to end
 
 A reaction is a default-exported async function. The runtime invokes it with `(ctx, client)` after a watcher window completes.
+
+The example below pairs with a `critical-detection` watcher whose `extraction_schema` produces a `CriticalDetection` payload. When the LLM flags severity `critical`, the reaction posts to a Slack incoming webhook and writes a derived `incident` event so dashboards have a stable row to count.
 
 ```ts
 import type { ReactionContext } from "@lobu/connector-sdk";
 
-interface HealthData {
-  account_changes?: Array<{
-    account: string;
-    previous_risk: "low" | "medium" | "high";
-    current_risk: "low" | "medium" | "high";
-    signals: string[];
-  }>;
+// The shape the watcher's `extraction_schema` produces. The schema lives
+// in YAML; we mirror it as a TypeScript interface so the reaction is
+// fully typed against the same contract.
+interface CriticalDetection {
+  severity: "low" | "medium" | "high" | "critical";
+  summary: string;
+  evidence_event_ids?: number[];
 }
 
-const RISK_ORDER = { low: 0, medium: 1, high: 2 } as const;
+// Slack incoming webhook URL is provisioned per-org and surfaced to the
+// reaction via the watcher's metadata bag.
+interface ReactionParams {
+  slack_webhook_url?: string;
+}
 
-export default async (ctx: ReactionContext, client: any): Promise<void> => {
-  const data = ctx.extracted_data as HealthData;
-  const escalations = (data.account_changes ?? []).filter(
-    (c) => RISK_ORDER[c.current_risk] > RISK_ORDER[c.previous_risk]
-  );
-  if (escalations.length === 0) return;
+export default async (
+  ctx: ReactionContext,
+  client: { knowledge: { save: (input: Record<string, unknown>) => Promise<unknown> } },
+  params?: ReactionParams,
+): Promise<void> => {
+  const detection = ctx.extracted_data as unknown as CriticalDetection;
+  if (detection.severity !== "critical") return;
 
-  for (const c of escalations) {
-    await client.knowledge.save({
-      entity_ids: ctx.entities.map((e) => e.id),
-      content: `Account ${c.account}: risk ${c.previous_risk} → ${c.current_risk}\nSignals: ${c.signals.join("; ")}`,
-      semantic_type: "health_change",
-      metadata: {
-        account: c.account,
-        from: c.previous_risk,
-        to: c.current_risk,
-        window_id: ctx.window.id,
-      },
+  // 1. Notify Slack via the org's incoming webhook.
+  const webhook = params?.slack_webhook_url;
+  if (webhook) {
+    await fetch(webhook, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: `:rotating_light: *${ctx.watcher.name}* — ${detection.summary}`,
+      }),
     });
   }
+
+  // 2. Persist a derived `incident` event so the renewal-risk view and
+  //    weekly digest have a queryable record without re-extracting.
+  await client.knowledge.save({
+    entity_ids: ctx.entities.map((e) => e.id),
+    content: `[${detection.severity.toUpperCase()}] ${detection.summary}`,
+    semantic_type: "incident",
+    metadata: {
+      severity: detection.severity,
+      window_id: ctx.window.id,
+      evidence_event_ids: detection.evidence_event_ids ?? [],
+    },
+  });
 };
 ```
 
-This reaction sits alongside its watcher's account-health-monitor extraction and writes a `health_change` event only when risk gets worse, so the renewal-risk view and weekly digest have a stable, queryable record without re-deriving from the CRM stream.
+A few notes:
+
+- **The `client` argument is typed inline.** There is no exported `ClientSDK` type from `@lobu/connector-sdk` (the runtime shape lives in `packages/server/src/sandbox/client-sdk.ts`). Declare the subset you actually call — the example above pins just `client.knowledge.save` — and TypeScript will catch typos at the call site without any `as any`.
+- **`ctx.extracted_data` is typed as `Record<string, unknown>`** because the watcher's `extraction_schema` lives in YAML and TypeScript can't see it. Cast once to your interface at the top of the function and you're done.
+- **Network calls follow the gateway's egress policy.** The Slack webhook host must be in the agent's `WORKER_ALLOWED_DOMAINS` (or routed through the egress judge) — see [Network](https://github.com/lobu-ai/lobu/blob/main/AGENTS.md#network).
 
 ## `ReactionContext`
 
@@ -82,14 +104,16 @@ The full type is at [`reference/reaction-sdk` › ReactionContext](/reference/re
 
 ## The `client` runtime
 
-The second argument is a `ClientSDK` injected by the sandbox. The exact surface lives in `packages/server/src/sandbox/client-sdk.ts`, but the methods reactions reach for most often are:
+The second argument is a `ClientSDK` injected by the sandbox. The exact surface lives in `packages/server/src/sandbox/client-sdk.ts`. The most useful pieces for reactions:
 
 | API | What it does |
 |-----|--------------|
 | `client.knowledge.save({...})` | Append a new event to memory. Set `entity_ids` to attach to the right entities, `semantic_type` to classify it, `supersedes_event_id` to tombstone an earlier event. |
 | `client.knowledge.search({...})` | Hybrid (vector + full-text) search across the org's events. Use for "have I seen this before?" checks before writing duplicates. |
 | `client.knowledge.delete({...})` | Tombstone an event. Append-only: this writes a new superseding row, it never `DELETE`s. |
-| `client.actions.*` | Call any registered platform action — `client.actions.slack.postMessage`, `client.actions.linear.createIssue`, etc. Routed through the gateway's connector proxy, so your code never holds the OAuth token. |
+| `client.knowledge.read({...})` | Fetch a single event by id, or pull the events that were in the watcher's window. |
+
+For side effects on external systems (Slack, Linear, GitHub), call those APIs directly with `fetch` — credentials live in the connector's `auth_profile`, not on the reaction.
 
 The sandbox times reactions out, sandboxes their network access through the worker proxy (so the same `WORKER_ALLOWED_DOMAINS` rules apply), and captures stdout/stderr to the run log.
 
@@ -102,13 +126,13 @@ my-agent/
 ├── lobu.toml
 ├── models/
 │   ├── watchers/
-│   │   └── account-health-monitor.yaml
+│   │   └── critical-detection.yaml
 │   └── reactions/
-│       └── account-health-monitor.reaction.ts
+│       └── critical-detection.reaction.ts
 └── agents/my-agent/...
 ```
 
-**The filename is the pairing.** `account-health-monitor.reaction.ts` runs after the `account-health-monitor` watcher. No registry, no config block — the slug match is the wiring.
+**The filename is the pairing.** `critical-detection.reaction.ts` runs after the `critical-detection` watcher. No registry, no config block — the slug match is the wiring.
 
 If you don't want a reaction, don't create the file. The watcher's extraction still gets persisted; the reaction just doesn't fire.
 
@@ -117,12 +141,12 @@ If you don't want a reaction, don't create the file. The watcher's extraction st
 | Need | Reaction? |
 |------|-----------|
 | "Persist the LLM's output to memory" | No — the watcher already does that. |
-| "Notify Slack when the LLM flags X" | Yes — call `client.actions.slack.postMessage` inside the reaction. |
+| "Notify Slack when the LLM flags X" | Yes — `fetch` the Slack incoming webhook inside the reaction. |
 | "Write a derived, denormalized event for fast querying" | Yes — `client.knowledge.save` with a distinct `semantic_type`. |
-| "Mutate an external system based on extraction" | Yes — through `client.actions.*` so credentials stay in the gateway. |
-| "Suppress some extractions" | Conditional `return;` early — no `save` call, no Slack post. Note the extraction itself still lands in the watcher window record. |
+| "Mutate an external system based on extraction" | Yes — `fetch` the target API; the worker's egress policy still applies. |
+| "Suppress some extractions" | Conditional `return;` early — no `save` call, no notification. Note the extraction itself still lands in the watcher window record. |
 
-## Real-world example
+## See it in production
 
 - [`examples/sales/models/reactions/account-health-monitor.reaction.ts`](https://github.com/lobu-ai/lobu/blob/main/examples/sales/models/reactions/account-health-monitor.reaction.ts) — filters worsening risk transitions out of a watcher's account-changes extraction and persists each one as a typed `health_change` event.
 

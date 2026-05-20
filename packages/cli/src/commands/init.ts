@@ -718,12 +718,21 @@ export async function initCommand(
     const pkgJsonPath = join(projectDir, "package.json");
     let pkgJson: Record<string, unknown>;
     try {
-      pkgJson = JSON.parse(await readFile(pkgJsonPath, "utf-8")) as Record<string, unknown>;
+      pkgJson = JSON.parse(await readFile(pkgJsonPath, "utf-8")) as Record<
+        string,
+        unknown
+      >;
     } catch {
-      pkgJson = { name: projectName, version: "0.0.0", private: true, type: "module" };
+      pkgJson = {
+        name: projectName,
+        version: "0.0.0",
+        private: true,
+        type: "module",
+      };
     }
     pkgJson.devDependencies = {
-      ...((pkgJson.devDependencies as Record<string, string> | undefined) ?? {}),
+      ...((pkgJson.devDependencies as Record<string, string> | undefined) ??
+        {}),
       "@lobu/connector-sdk": `^${cliVersion}`,
     };
     await writeFile(pkgJsonPath, `${JSON.stringify(pkgJson, null, 2)}\n`);

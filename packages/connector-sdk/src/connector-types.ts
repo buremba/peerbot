@@ -472,14 +472,19 @@ export interface EventEnvelope {
 // =============================================================================
 
 /**
- * Context passed to ConnectorRuntime.sync()
+ * Context passed to ConnectorRuntime.sync().
+ *
+ * Generic parameters:
+ * - `C` — checkpoint shape (defaults to `Record<string, unknown>`)
+ * - `F` — feed config shape (defaults to `Record<string, unknown>`)
  */
-export interface SyncContext {
-  /** Feed configuration */
+export interface SyncContext<C = Record<string, unknown>, F = Record<string, unknown>> {
+  /** Feed key */
   feedKey: string;
-  config: Record<string, unknown>;
+  /** Feed configuration (typed via F) */
+  config: F;
   /** Previous checkpoint (null on first sync) */
-  checkpoint: Record<string, unknown> | null;
+  checkpoint: C | null;
   /** OAuth credentials (if applicable) */
   credentials: SyncCredentials | null;
   /** Entity IDs this feed is linked to */
@@ -489,7 +494,7 @@ export interface SyncContext {
   /** Optional hook for streaming event chunks while sync is in progress */
   emitEvents?: (events: EventEnvelope[]) => Promise<void>;
   /** Optional hook for persisting progress checkpoints during long syncs */
-  updateCheckpoint?: (checkpoint: Record<string, unknown> | null) => Promise<void>;
+  updateCheckpoint?: (checkpoint: C | null) => Promise<void>;
 }
 
 export interface SyncCredentials {
@@ -501,13 +506,15 @@ export interface SyncCredentials {
 }
 
 /**
- * Result from ConnectorRuntime.sync()
+ * Result from ConnectorRuntime.sync().
+ *
+ * Generic parameter `C` matches the connector's checkpoint shape.
  */
-export interface SyncResult {
+export interface SyncResult<C = Record<string, unknown>> {
   /** Events to write to the events table */
   events: EventEnvelope[];
   /** Updated checkpoint to persist */
-  checkpoint: Record<string, unknown> | null;
+  checkpoint: C | null;
   /** Updated auth state to persist on the linked auth profile (browser cookies, etc.) */
   auth_update?: Record<string, unknown> | null;
   /** Optional metadata about the sync */

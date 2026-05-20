@@ -18,6 +18,10 @@ import type {
 /**
  * ConnectorRuntime is the base class for all connectors.
  *
+ * Generic parameters:
+ * - `C` — checkpoint shape (defaults to `Record<string, unknown>`)
+ * - `F` — feed config shape (defaults to `Record<string, unknown>`)
+ *
  * Subclasses must:
  * - Set `definition` with connector metadata
  * - Implement `sync()` for feed data ingestion
@@ -29,20 +33,20 @@ import type {
  *
  * @example
  * ```ts
- * class GmailConnector extends ConnectorRuntime {
+ * interface MyCheckpoint { last_sync_at?: string }
+ * interface MyConfig { label?: string }
+ *
+ * class GmailConnector extends ConnectorRuntime<MyCheckpoint, MyConfig> {
  *   definition = { key: 'google.gmail', name: 'Gmail', version: '1.0.0', ... };
  *
- *   async sync(ctx: SyncContext): Promise<SyncResult> {
- *     // Fetch threads from Gmail API
- *   }
- *
- *   async execute(ctx: ActionContext): Promise<ActionResult> {
- *     // Create draft, send email, etc.
+ *   async sync(ctx: SyncContext<MyCheckpoint, MyConfig>): Promise<SyncResult<MyCheckpoint>> {
+ *     // ctx.checkpoint is typed as MyCheckpoint | null — no casts needed
+ *     // ctx.config is typed as MyConfig — no casts needed
  *   }
  * }
  * ```
  */
-export abstract class ConnectorRuntime {
+export abstract class ConnectorRuntime<C = Record<string, unknown>, F = Record<string, unknown>> {
   /** Connector definition with metadata, feed schemas, and action schemas */
   abstract readonly definition: ConnectorDefinition;
 
@@ -57,7 +61,7 @@ export abstract class ConnectorRuntime {
    * @param ctx - Sync context with feed config, checkpoint, and credentials
    * @returns Events and updated checkpoint
    */
-  abstract sync(ctx: SyncContext): Promise<SyncResult>;
+  abstract sync(ctx: SyncContext<C, F>): Promise<SyncResult<C>>;
 
   /**
    * Execute an action on the connected service.

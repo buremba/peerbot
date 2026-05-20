@@ -54,18 +54,24 @@ interface GmailThreadGetResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Checkpoint
+// Types
 // ---------------------------------------------------------------------------
 
 interface GmailCheckpoint {
   last_sync_at?: string;
 }
 
+interface GmailConfig {
+  label?: string;
+  max_results?: number;
+  lookback_days?: number;
+}
+
 // ---------------------------------------------------------------------------
 // Connector
 // ---------------------------------------------------------------------------
 
-export default class GmailConnector extends ConnectorRuntime {
+export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, GmailConfig> {
   readonly definition: ConnectorDefinition = {
     key: 'google.gmail',
     name: 'Gmail',
@@ -259,11 +265,11 @@ export default class GmailConnector extends ConnectorRuntime {
       throw new Error('Gmail requires Google OAuth credentials.');
     }
 
-    const label = (ctx.config.label as string) || 'INBOX';
-    const maxResults = Math.min((ctx.config.max_results as number) ?? 50, 500);
-    const lookbackDays = (ctx.config.lookback_days as number) ?? 30;
+    const label = ctx.config.label || 'INBOX';
+    const maxResults = Math.min(ctx.config.max_results ?? 50, 500);
+    const lookbackDays = ctx.config.lookback_days ?? 30;
 
-    const checkpoint = (ctx.checkpoint ?? {}) as GmailCheckpoint;
+    const checkpoint = ctx.checkpoint ?? {}
 
     // Determine the "after" date for the query
     const afterDate = checkpoint.last_sync_at
@@ -370,7 +376,7 @@ export default class GmailConnector extends ConnectorRuntime {
 
     return {
       events,
-      checkpoint: newCheckpoint as Record<string, unknown>,
+      checkpoint: newCheckpoint,
       metadata: {
         items_found: events.length,
       },

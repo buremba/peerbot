@@ -144,7 +144,9 @@ Override for one run with `PI_REVIEW_MIN_SIMPLICITY=<n>`.
 > **Independent axes.** `bug_free_confidence`, `slop`, and `simplicity` are
 > independent. A change can score high `bug_free_confidence` (works), high
 > `slop` (lots of unused code added), and low `simplicity` (overengineered).
-> All three must clear their thresholds for the `pi-review` status to pass.
+> The `pi-review` status requires all seven gates to pass: these three metrics,
+> `bugs == 0`, `blockers.length == 0`, `behavior_change_risk != "high"`, and
+> `tests_adequate == true`.
 
 ### `blockers` (array of strings)
 

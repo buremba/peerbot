@@ -1,0 +1,442 @@
+/**
+ * Shared server lifecycle spine.
+ *
+ * Both entry points — `server.ts` (Postgres) and `start-local.ts` (PGlite) —
+ * call into `createServerLifecycle()` so middleware ordering, route mounts,
+ * httpServer timeouts, shutdown sequence, and signal wiring stay identical
+ * by construction. Drift between the two modes was the root cause of #948;
+ * the only way to express a per-mode difference now is the four named hooks
+ * on `ServerLifecycleConfig`.
+ *
+ * Do not add `new Hono`, `app.use`, `app.route`, `http.createServer`, or
+ * `process.on('SIGTERM' | 'SIGINT', …)` to either entry — they belong here.
+ */
+
+import http from "node:http";
+import v8 from "node:v8";
+import { getRequestListener } from "@hono/node-server";
+import * as Sentry from "@sentry/node";
+import { Hono } from "hono";
+import { closeDbSingleton } from "./db/client";
+import { mountViteDev } from "./dev-vite";
+import type { Env } from "./index";
+import { app as mainApp } from "./index";
+import {
+	getLobuCoreServices,
+	initLobuGateway,
+	stopLobuGateway,
+} from "./lobu/gateway";
+import { startStaleRunReaper } from "./scheduled/check-stalled-executions";
+import { startEmbeddedConnectorWorker } from "./scheduled/embedded-connector-worker";
+import { bootTaskScheduler } from "./scheduled/jobs";
+import { isSentryReported, markSentryReported } from "./sentry";
+import logger from "./utils/logger";
+import { initWorkspaceProvider } from "./workspace";
+
+export type ServerMode = "postgres" | "pglite";
+
+export interface ServerLifecycleConfig {
+	mode: ServerMode;
+	env: Env;
+	host: string;
+	port: number;
+	/**
+	 * Runs before workspace/gateway init. Postgres asserts the migrations
+	 * ledger matches the bundled migrations dir; PGlite runs them.
+	 */
+	databaseReadiness: () => Promise<void>;
+	/**
+	 * Runs after gateway + scheduler boot, before `httpServer.listen()`.
+	 * PGlite uses this for `ensureInstallOperator` + `ensureDefaultAgent`.
+	 */
+	preListenHooks?: Array<() => Promise<void> | void>;
+	/**
+	 * Runs synchronously inside the `httpServer.listen()` callback, after the
+	 * listener is live but before the embedded connector worker starts.
+	 * Postgres uses this for the connector external-deps resolvability check.
+	 */
+	postListenHooks?: Array<() => void>;
+	/**
+	 * Runs during shutdown AFTER `stopLobuGateway` + `closeDbSingleton`, in
+	 * declared order, before `httpServer.close()`. PGlite uses this for the
+	 * embeddings child kill, socket-server stop, and PGlite db close.
+	 */
+	extraTeardown?: Array<() => Promise<void> | void>;
+}
+
+export interface ServerLifecycleHandles {
+	/** Starts the listener and registers signal handlers. Resolves once listening. */
+	start: () => Promise<void>;
+}
+
+/**
+ * Apply the LOBU_DEV_PROJECT_PATH fallback so downstream
+ * `buildGatewayConfig()` can derive worker paths even when the server is
+ * invoked from a package subdir (`cd packages/server && bun run dev`) or
+ * via `lobu run` from a project subdir. Both entries call this before
+ * lifecycle construction.
+ */
+export function applyDevProjectPathDefault(packageRepoRoot: string): void {
+	if (!process.env.LOBU_DEV_PROJECT_PATH) {
+		process.env.LOBU_DEV_PROJECT_PATH = packageRepoRoot;
+	}
+}
+
+/**
+ * Defensive error → plain-object serializer for the top-level boot catch.
+ *
+ * pino's logger registers `err` / `error` serializers, but
+ * `JSON.stringify(new Error('boom'))` returns `{}` because Error's own
+ * properties are non-enumerable. If anything drops the pino serializer
+ * config (older image, bundler tree-shake, etc.), Docker users see only
+ * `"error":{}` with zero signal — exactly what #766 reported. Walk the
+ * error manually so the log line always carries message + stack regardless
+ * of pino config, ZodError `issues`, AggregateError children, or wrapped
+ * `cause` chains.
+ */
+export function serializeBootError(err: unknown): Record<string, unknown> {
+	if (err === null || err === undefined) return { value: String(err) };
+	if (typeof err !== "object") return { value: String(err), type: typeof err };
+	const e = err as Error & {
+		code?: unknown;
+		cause?: unknown;
+		issues?: unknown;
+		errors?: unknown;
+	};
+	const out: Record<string, unknown> = {
+		type: e?.constructor?.name ?? "Error",
+		message: typeof e.message === "string" ? e.message : String(e),
+	};
+	if (typeof e.stack === "string") out.stack = e.stack;
+	if (e.code !== undefined) out.code = e.code;
+	if (Array.isArray(e.issues)) out.issues = e.issues;
+	if (Array.isArray(e.errors)) {
+		out.errors = e.errors.map((child) => serializeBootError(child));
+	}
+	if (e.cause !== undefined && e.cause !== err) {
+		out.cause = serializeBootError(e.cause);
+	}
+	return out;
+}
+
+/**
+ * Run from each entry's `main().catch(...)`. Logs structured + plain-text
+ * fallback, then `process.exit(1)`. Never returns.
+ */
+export function reportBootFailure(err: unknown): never {
+	const serialized = serializeBootError(err);
+	logger.error(
+		{ err: serialized, error: serialized },
+		"Failed to start server",
+	);
+	process.stderr.write(
+		`Failed to start server: ${serialized.type ?? "Error"}: ${serialized.message ?? ""}\n`,
+	);
+	if (typeof serialized.stack === "string") {
+		process.stderr.write(`${serialized.stack}\n`);
+	}
+	process.exit(1);
+}
+
+/**
+ * Build a Hono wrapper app with the canonical middleware stack and route
+ * mounts. Extracted so the contract test can assert middleware ordering
+ * without standing up the full lifecycle.
+ *
+ * Middleware order (locked):
+ *   1. peer-remote-address stash  (read `c.env.incoming.socket.remoteAddress`
+ *      BEFORE the env-inject middleware replaces shared fields)
+ *   2. env-inject                (`Object.assign(c.env, env)` — preserves
+ *      `c.env.incoming` so the Node adapter's `getConnInfo` keeps working)
+ *   3. sentry 5xx response capture (for inner-catch returns that never throw)
+ *   4. `app.onError` for thrown exceptions
+ *
+ * Route mounts:
+ *   - `/lobu` → `lobuApp` (only when non-null)
+ *   - `/`     → `mainApp`
+ */
+export function buildWrapperApp(
+	env: Env,
+	lobuApp: Hono | null,
+	mountedMainApp: Hono = mainApp,
+): Hono<{ Bindings: Env }> {
+	const wrapper = new Hono<{ Bindings: Env }>();
+
+	// 1. peer remote address stash — must run BEFORE env injection because
+	// env injection mutates `c.env` and could blow away the adapter field.
+	// @hono/node-server hands the request's IncomingMessage via `c.env.incoming`
+	// so `getConnInfo` can read `socket.remoteAddress`. Loopback-trust endpoints
+	// (e.g. `/api/local-init`) need this peer address to enforce their boundary.
+	wrapper.use("*", async (c, next) => {
+		const incoming = (
+			c.env as
+				| { incoming?: { socket?: { remoteAddress?: string } } }
+				| undefined
+		)?.incoming;
+		const peerRemoteAddress = incoming?.socket?.remoteAddress ?? null;
+		if (peerRemoteAddress) c.set("peerRemoteAddress", peerRemoteAddress);
+		return next();
+	});
+
+	// 2. Env injection — `Object.assign(c.env, env)` merges the app-wide
+	// config into the Hono adapter's `c.env` WITHOUT dropping adapter-set
+	// fields like `incoming`. The earlier replace-strategy
+	// (`c.env = env as Env`) silently broke `getConnInfo` and any other
+	// helper that read those fields. When `c.env` is undefined (only happens
+	// outside the Node adapter — e.g. in unit tests via `app.request()`),
+	// seed it with an empty object so the merge still works.
+	wrapper.use("*", async (c, next) => {
+		if (!c.env) c.env = {} as Env;
+		Object.assign(c.env, env);
+		return next();
+	});
+
+	// 3. Server-error capture. Two layers cover both shapes of failing route:
+	//   (a) routes that throw — handled by `app.onError` below.
+	//   (b) routes that try/catch internally and `return c.json(..., 500)` —
+	//       the framework never sees the exception, so onError doesn't fire.
+	//       This post-response middleware catches anything with status >= 500
+	//       so silent 500s still reach Sentry.
+	// Either layer marks the request reported so we don't double-count.
+	// `Sentry.captureMessage` no-ops when `Sentry.init` was skipped (no DSN),
+	// so this is safe to wire unconditionally.
+	wrapper.use("*", async (c, next) => {
+		await next();
+		if (c.res.status >= 500 && !isSentryReported(c)) {
+			let body: unknown = null;
+			try {
+				body = await c.res.clone().json();
+			} catch {
+				// response wasn't JSON; ignore
+			}
+			const message =
+				(body &&
+				typeof body === "object" &&
+				"error" in body &&
+				typeof (body as { error?: unknown }).error === "string"
+					? (body as { error: string }).error
+					: null) ?? `HTTP ${c.res.status} from ${c.req.method} ${c.req.path}`;
+			Sentry.captureMessage(message, {
+				level: "error",
+				tags: {
+					source: "http_response",
+					http_method: c.req.method,
+					http_status: String(c.res.status),
+				},
+				extra: {
+					path: c.req.path,
+					url: c.req.url,
+					response_body: body,
+				},
+			});
+			markSentryReported(c);
+		}
+	});
+
+	// 4. Catch-all error handler for thrown exceptions that bubble past route
+	// catches. Preserves the original stack trace.
+	wrapper.onError((err, c) => {
+		if (!isSentryReported(c)) {
+			Sentry.captureException(err, {
+				tags: {
+					source: "app_onError",
+					http_method: c.req.method,
+				},
+				extra: {
+					path: c.req.path,
+					url: c.req.url,
+				},
+			});
+			markSentryReported(c);
+		}
+		// `sentryReported:true` tells the pino → Sentry forwarder in logger.ts
+		// to skip — Sentry already has this exception via captureException above.
+		logger.error(
+			{ err, path: c.req.path, sentryReported: true },
+			"Unhandled error in HTTP handler",
+		);
+		return c.json({ error: "Internal server error" }, 500);
+	});
+
+	// Route mounts. `/lobu` is the public Agent API + bundled docs; without
+	// it `/lobu/api/v1/agents/*` returns 404 (this was the gap behind #940).
+	if (lobuApp) {
+		wrapper.route("/lobu", lobuApp);
+	}
+	wrapper.route("/", mountedMainApp);
+
+	return wrapper;
+}
+
+/**
+ * Optional SIGUSR2 → V8 heap snapshot wiring. Off by default because
+ * snapshots contain in-memory secrets (DB URL, OAuth tokens, secret-proxy
+ * cache). Operator opts in by setting `ALLOW_HEAP_SNAPSHOT=1`.
+ *
+ * Blocks the event loop for ~seconds (proportional to heap size) and
+ * requires ~heap-size extra memory while writing. Single-flight + fixed
+ * filename (`/tmp/lobu.heapsnapshot`) so a stuck-on flag can't fill tmpfs.
+ */
+function maybeWireHeapSnapshot(): void {
+	if (process.env.ALLOW_HEAP_SNAPSHOT !== "1") return;
+	const SNAPSHOT_PATH = "/tmp/lobu.heapsnapshot";
+	let inProgress = false;
+	process.on("SIGUSR2", () => {
+		if (inProgress) {
+			logger.warn("[heap] SIGUSR2 ignored — snapshot already in progress");
+			return;
+		}
+		inProgress = true;
+		logger.warn(
+			{ path: SNAPSHOT_PATH },
+			"[heap] SIGUSR2 received — writing heap snapshot (blocks event loop)",
+		);
+		try {
+			v8.writeHeapSnapshot(SNAPSHOT_PATH);
+			logger.warn({ path: SNAPSHOT_PATH }, "[heap] snapshot written");
+		} catch (err) {
+			logger.error({ err }, "[heap] writeHeapSnapshot failed");
+		} finally {
+			inProgress = false;
+		}
+	});
+	logger.warn(
+		"[heap] ALLOW_HEAP_SNAPSHOT=1 — SIGUSR2 will write heap dumps to " +
+			SNAPSHOT_PATH +
+			". Unset and roll the pod when done; snapshots contain secrets.",
+	);
+}
+
+/**
+ * Build the shared lifecycle. Returns a `start()` that boots the full stack
+ * per the canonical ordering. Both entries call this with mode-specific
+ * hooks; everything else is identical by construction.
+ */
+export function createServerLifecycle(
+	config: ServerLifecycleConfig,
+): ServerLifecycleHandles {
+	const {
+		mode,
+		env,
+		host,
+		port,
+		databaseReadiness,
+		preListenHooks = [],
+		postListenHooks = [],
+		extraTeardown = [],
+	} = config;
+
+	const start = async (): Promise<void> => {
+		// 1. Database readiness — Postgres asserts schema; PGlite runs migrations.
+		await databaseReadiness();
+
+		// 2. Workspace provider — required before gateway boot.
+		await initWorkspaceProvider();
+
+		// 3. Embedded Lobu gateway. Owns the public Agent API mounted at `/lobu`
+		// by `buildWrapperApp`.
+		const lobuApp = await initLobuGateway();
+
+		// 4. Task scheduler. Every periodic platform-internal job — token
+		// refresh, MCP DB cleanup, watcher automation — runs as a row in
+		// `public.runs` with cron-driven self-rescheduling.
+		const taskScheduler = await bootTaskScheduler(getLobuCoreServices(), env);
+
+		// 5. 30s connector-run heartbeat-lost reaper. Cross-pod coordinated
+		// via advisory lock; the TaskScheduler cron also calls reapStaleRuns()
+		// every 5min as a backstop without double-failing rows.
+		const stopReaper = startStaleRunReaper();
+
+		// 6. Wrapper app + HTTP server. Timeouts are locked at 75/76s so SSE
+		// streams (MCP) survive idle periods above the typical 60s LB timeout.
+		const wrapper = buildWrapperApp(env, lobuApp);
+		const honoListener = getRequestListener(wrapper.fetch);
+		const httpServer = http.createServer();
+		httpServer.keepAliveTimeout = 75_000;
+		httpServer.headersTimeout = 76_000;
+
+		// 7. Vite dev middleware in development; otherwise wire Hono directly.
+		const vite = await mountViteDev(httpServer, honoListener);
+		if (!vite) {
+			httpServer.on("request", honoListener);
+		}
+
+		// 8. Pre-listen hooks (PGlite: install-operator + default-agent).
+		for (const hook of preListenHooks) {
+			await hook();
+		}
+
+		// 9. Shutdown wiring — declared once, called from both SIGTERM and SIGINT.
+		// Embedded worker handle is captured in the listen callback below.
+		let embeddedWorker: ReturnType<typeof startEmbeddedConnectorWorker> = null;
+
+		const shutdown = async (signal: string): Promise<void> => {
+			logger.info(
+				{ signal, mode },
+				"Received shutdown signal, stopping gracefully...",
+			);
+			// Order matters:
+			//   a. Stop accepting new work from the embedded connector worker.
+			if (embeddedWorker) {
+				embeddedWorker.stop();
+				await embeddedWorker.wait(15_000);
+			}
+			//   b. Close Vite (HMR sockets) before tearing down the http server
+			//      so dev-mode listeners detach cleanly.
+			await vite?.close();
+			//   c. Stop the reaper poll loop.
+			stopReaper();
+			//   d. Stop the task scheduler dispatch loop.
+			taskScheduler.stop();
+			//   e. Drain MCP sessions / DB listeners / secret-proxy. Gateway
+			//      holds postgres.js connections that must be released before
+			//      mode-specific db teardown runs.
+			await stopLobuGateway();
+			//   f. Close the postgres.js singleton pool.
+			await closeDbSingleton();
+			//   g. Mode-specific teardown (PGlite kills embeddings child, stops
+			//      socket server, closes the in-process db).
+			for (const teardown of extraTeardown) {
+				await teardown();
+			}
+			//   h. Finally, close the listener. Matches the historical behavior of
+			//      not awaiting (server.ts:260; start-local.ts:322).
+			httpServer.close();
+			process.exit(0);
+		};
+		process.on("SIGTERM", () => {
+			void shutdown("SIGTERM");
+		});
+		process.on("SIGINT", () => {
+			void shutdown("SIGINT");
+		});
+
+		// 10. Optional heap-snapshot wiring (gated on ALLOW_HEAP_SNAPSHOT=1).
+		maybeWireHeapSnapshot();
+
+		// 11. Listen. Post-listen hooks fire inside the callback so any
+		// `require.resolve` walks they do (connector dep check) don't add to
+		// cold-boot/readiness latency. The embedded connector daemon waits for
+		// the listener because its boot-time health check hits `/api/health`.
+		logger.info({ host, port, mode }, "Starting server");
+		await new Promise<void>((resolve) => {
+			httpServer.listen(port, host, () => {
+				logger.info(
+					{ host, port, mode },
+					`Lobu running at http://${host}:${port}`,
+				);
+				for (const hook of postListenHooks) {
+					hook();
+				}
+				const daemonHost = host === "0.0.0.0" ? "127.0.0.1" : host;
+				embeddedWorker = startEmbeddedConnectorWorker(
+					env,
+					`http://${daemonHost}:${port}`,
+				);
+				resolve();
+			});
+		});
+	};
+
+	return { start };
+}

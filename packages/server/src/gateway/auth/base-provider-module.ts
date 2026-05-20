@@ -163,11 +163,19 @@ export abstract class BaseProviderModule
     agentId: string,
     context?: ProviderCredentialContext
   ): Promise<boolean> {
-    return this.authProfilesManager.hasProviderProfiles(
+    const hasProfile = await this.authProfilesManager.hasProviderProfiles(
       agentId,
       this.providerId,
       context
     );
+    if (hasProfile) return true;
+    // Mirror the resolution chain in `buildEnvVars`: when no per-user auth
+    // profile exists, an org-shared API key written by `lobu apply`
+    // (`provider:<id>:apiKey` in agent_secrets) is a valid credential too.
+    // Without this, `lobu apply`-provisioned providers report no credentials,
+    // so primary-provider detection (and thus the worker's defaultProvider /
+    // model resolution) silently fails until the gateway is restarted.
+    return (await readOrgSharedProviderKey(this.providerId, context)) !== null;
   }
 
   hasSystemKey(): boolean {

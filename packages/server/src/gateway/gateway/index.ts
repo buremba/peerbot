@@ -589,7 +589,8 @@ export class WorkerGateway {
         agentId || "",
         resolveEffectiveModelRef(agentSettings),
         baseUrl,
-        auth.token
+        auth.token,
+        auth.tokenData.organizationId
       );
 
       // Fetch enabled skills with content for worker filesystem sync
@@ -712,7 +713,8 @@ export class WorkerGateway {
     agentId: string,
     agentModel?: string,
     requestBaseUrl?: string,
-    workerToken?: string
+    workerToken?: string,
+    organizationId?: string
   ): Promise<{
     credentialEnvVarName?: string;
     defaultProvider?: string;
@@ -751,7 +753,7 @@ export class WorkerGateway {
       for (const candidate of effectiveProviders) {
         if (
           candidate.hasSystemKey() ||
-          (await candidate.hasCredentials(agentId))
+          (await candidate.hasCredentials(agentId, { organizationId }))
         ) {
           primaryProvider = candidate;
           break;
@@ -802,7 +804,10 @@ export class WorkerGateway {
     // the worker token so their placeholder *is* a verifiable credential.
     const credentialPlaceholders: Record<string, string> = {};
     for (const provider of effectiveProviders) {
-      if (provider.hasSystemKey() || (await provider.hasCredentials(agentId))) {
+      if (
+        provider.hasSystemKey() ||
+        (await provider.hasCredentials(agentId, { organizationId }))
+      ) {
         const credVar = provider.getCredentialEnvVarName();
         const placeholder = provider.buildCredentialPlaceholder
           ? await provider.buildCredentialPlaceholder(agentId, { workerToken })

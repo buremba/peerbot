@@ -38,19 +38,34 @@ export async function startEmbeddedBackend(): Promise<EmbeddedBackend> {
   // Each attempt gets a fresh datadir because initdb refuses a reused one.
   const { pg, port, dataDir } = await withFreePortRetry(async (candidate) => {
     const dir = mkdtempSync(join(tmpdir(), 'lobu-test-pg-'));
+    // embedded-postgres rejects start() with `undefined` on ANY early exit —
+    // a port collision included — so the OS-level EADDRINUSE never reaches the
+    // catch. Capture stderr and re-tag a bind failure as EADDRINUSE so the
+    // retry wrapper actually retries; surface anything else as a real error.
+    let log = '';
     const instance = new EmbeddedPostgres({
       databaseDir: dir,
       user: 'postgres',
       password: 'postgres',
       port: candidate,
       persistent: false,
+      onLog: (message) => {
+        log += message;
+      },
     });
     try {
       await instance.initialise();
       await instance.start();
     } catch (err) {
       rmSync(dir, { recursive: true, force: true });
-      throw err;
+      if (/address already in use|could not bind/i.test(log)) {
+        throw Object.assign(new Error(`embedded-postgres: port ${candidate} in use`), {
+          code: 'EADDRINUSE',
+        });
+      }
+      throw err instanceof Error
+        ? err
+        : new Error(`embedded-postgres failed to start: ${log.slice(-500) || 'no output'}`);
     }
     return { pg: instance, port: candidate, dataDir: dir };
   });

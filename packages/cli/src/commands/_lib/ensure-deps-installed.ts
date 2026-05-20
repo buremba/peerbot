@@ -80,6 +80,9 @@ export function ensureProjectDepsInstalled(
     );
   }
   log(`Installing connector dependencies in ${root}...`);
-  execFileSync("bun", ["install", "--ignore-scripts"], { cwd: root, stdio: "inherit" });
+  execFileSync("bun", ["install", "--ignore-scripts"], {
+    cwd: root,
+    stdio: "inherit",
+  });
   ensuredRoots.add(root);
 }

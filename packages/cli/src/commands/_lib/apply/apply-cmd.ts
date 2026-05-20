@@ -386,7 +386,10 @@ async function installConnectorDefinitions(
       // ride `runtime.nix.packages` and are provisioned at run time.
       ensureProjectDepsInstalled(def.sourceFile, printText);
       const compiledCode = await compileConnectorFromFile(def.sourceFile);
-      result = await client.installConnector({ sourceCode: compiledCode, compiled: true });
+      result = await client.installConnector({
+        sourceCode: compiledCode,
+        compiled: true,
+      });
     } else {
       result = await client.installConnector({ sourceUrl: def.sourceUrl });
     }

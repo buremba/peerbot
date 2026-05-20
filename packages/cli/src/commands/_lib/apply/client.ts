@@ -862,7 +862,10 @@ export class ApplyClient {
     }>({
       action: "install_connector",
       ...(payload.sourceCode !== undefined
-        ? { source_code: payload.sourceCode, compiled: payload.compiled ?? false }
+        ? {
+            source_code: payload.sourceCode,
+            compiled: payload.compiled ?? false,
+          }
         : {}),
       ...(payload.sourceUrl ? { source_url: payload.sourceUrl } : {}),
       ...(payload.sourceUri ? { source_uri: payload.sourceUri } : {}),

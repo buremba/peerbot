@@ -36,9 +36,13 @@ echo "typecheck=$TYPECHECK_EXIT unit=$UNIT_EXIT integration=$INTEGRATION_EXIT"
 tail -200 "$TYPECHECK_LOG" "$UNIT_LOG" "$INTEGRATION_LOG"
 ```
 
-A non-zero exit code on any of these is a hard `blocker`: set `bugs >= 1`,
-add a one-line entry to `blockers`, and quote the failing test names +
-short excerpts in `notes`.
+A non-zero exit code is **only** a `blocker` when the failing test (or the
+code it exercises) is in the diff. Failures in untouched code are
+pre-existing environmental issues — surface them in `notes` (prefix the
+line with `[env]`) but DO NOT add them to `blockers`, and DO NOT inflate
+`bugs`. To check: cross-reference failing test file paths against
+`git diff --name-only "$BASE_BRANCH...HEAD"`. If the failing test file
+(and the source it imports from) is not in the diff, it is environmental.
 
 If a log file is missing or empty (`$..._EXIT` is empty), the test step
 itself was skipped by the script — record that as a blocker
@@ -209,3 +213,8 @@ Most specific pattern wins.
 
 Exactly one JSON object matching the schema. Validate that it parses before
 you stop. No prose, no fences, no commentary.
+
+`bugs` counts only defects caused by the diff. Pre-existing breakage spotted
+while reviewing (test failures in untouched code, environment-level issues
+in the test setup, etc.) goes in `notes` with an `[env]` prefix — not in
+`bugs` and not in `blockers`.

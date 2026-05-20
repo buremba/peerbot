@@ -5,14 +5,13 @@ locally. `scripts/review.sh` drives the deterministic test suites in cwd,
 invokes `pi` against `git diff <base>...HEAD` (base defaults to `main`,
 override with `BASE=<branch>` or `--base <branch>`), and prints a JSON
 verdict matching this schema. If a PR exists for the current branch, the
-script also posts a `pi-review` check-run on HEAD plus a PR comment with
-the same verdict — that posting is a bonus, not a requirement. **GitHub
-Actions does not run review** — it's a local-driven shadow mode owned by
-the agent doing the work.
+script also posts an idempotent PR comment (marker-keyed upsert) with the
+verdict — that posting is a bonus, not a requirement. **GitHub Actions
+does not run review** — it's a local-driven shadow mode owned by the
+agent doing the work.
 
 A future merge bot will read this verdict and decide whether to auto-merge.
-For now the verdict is informational: the check-run always finishes with
-`conclusion: neutral`, never `failure`. **No gate logic exists yet.**
+For now the verdict is informational and **no gate logic exists yet**.
 
 The schema is reviewer-agnostic — a second independent reviewer can be
 added later without touching the shape below.
@@ -70,11 +69,19 @@ equivalent thresholds from any additional reviewer that gets wired in).
 
 ### `bugs` (integer, ≥0)
 
-Count of confirmed issues. A confirmed issue is **either** a non-zero exit
-code on a script-run test suite (typecheck, unit, integration) **or** a
-reproducible failure the reviewer observed exercising the system (boot
-probe, endpoint hit, narrow test re-run). Speculation is NOT a bug — it
-goes in `notes` as a concern. If you didn't verify, you don't get to count.
+Count of defects **caused by the diff**. A defect is **either** a failing
+test the diff itself broke **or** a reproducible failure the reviewer
+observed exercising the system (boot probe, endpoint hit, narrow test
+re-run) that maps back to a line the diff touches.
+
+Pre-existing environmental breakage spotted while reviewing — a failing
+test in code the diff does not touch, a broken test setup, a missing
+workspace export from an unrelated package — does NOT count. Surface it in
+`notes` with an `[env]` prefix so the operator sees it without inflating
+the bugs count.
+
+Speculation is also not a bug — it goes in `notes` as a concern. If you
+didn't verify, you don't get to count.
 
 Style nits and naming preferences do not count.
 
@@ -135,12 +142,18 @@ top-to-bottom is high simplicity.
 
 ### `blockers` (array of strings)
 
-One-line descriptions of issues that should block merge regardless of the
-other scores. Empty array if none. Examples:
+One-line descriptions of issues **caused by this diff** that should block
+merge regardless of the other scores. Empty array if none. Examples:
 
 - `"introduces a secret in a committed file"`
 - `"db migration is not idempotent"`
 - `"deletes a public export still used by @lobu/cli"`
+
+Pre-existing environmental failures (test suite broken on `main`, missing
+workspace export from an unrelated package, Postgres schema-ACL issue in
+test setup) are NOT blockers — they belong in `notes` with an `[env]`
+prefix. A failing test only blocks when the failing test, or the source
+code it exercises, appears in `git diff --name-only "$BASE_BRANCH...HEAD"`.
 
 **Future gate:** auto-merge will require `blockers.length == 0`.
 
@@ -196,8 +209,8 @@ instead.
 ### `notes` (string)
 
 A freeform paragraph (one paragraph, not a wall of text) summarizing the
-reviewer's overall take. This is what shows up in the check-run summary
-above the JSON. Keep it under ~500 chars.
+reviewer's overall take. This is what shows up in the PR comment above
+the JSON. Keep it under ~500 chars.
 
 ### `categories` (object)
 
@@ -224,13 +237,12 @@ When a path matches multiple patterns, the more specific one wins
 
 ## Shadow-mode reminder
 
-The reviewer posts `conclusion: neutral` regardless of scores. Merges are
-not gated by this check-run yet. The point of shadow mode is to observe how
-the verdicts track real-world PR outcomes so the gate thresholds above can
-be calibrated before they are wired up.
+Merges are not gated by this verdict yet. The point of shadow mode is to
+observe how the verdicts track real-world PR outcomes so the gate
+thresholds above can be calibrated before they are wired up.
 
 Today's flow: agent finishes a change → runs `make review` from the
 branch's worktree → pi reviews and prints the JSON verdict (and posts a
-check-run + PR comment if a PR exists) → human reads the verdict and
-decides whether to merge. A future merge bot will read the verdict and
-apply the gate thresholds above; that bot doesn't exist yet.
+PR comment if a PR exists) → human reads the verdict and decides whether
+to merge. A future merge bot will read the verdict and apply the gate
+thresholds above; that bot doesn't exist yet.

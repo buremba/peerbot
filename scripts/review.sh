@@ -10,12 +10,14 @@
 # Runs in $PWD — assumes deps installed, dist built, .env in place, postgres
 # reachable. Does NOT create a worktree, install deps, or manage the test DB.
 #
-# If a PR exists for the current branch, also posts a `pi-review` check-run
-# on HEAD + a PR comment with the verdict (both idempotent). If there's no
-# PR, posting is skipped — the verdict still prints locally.
+# If a PR exists for the current branch, also posts an idempotent PR comment
+# with the verdict (marker-keyed upsert). If there's no PR, posting is
+# skipped — the verdict still prints locally.
 #
 # Auth: uses the operator's ~/.pi/agent state for pi, `gh auth token` for
-# GitHub (optional — missing auth just skips posting).
+# GitHub (optional — missing auth just skips posting). Posting a check-run
+# is not attempted: `gh api check-runs` requires GitHub App auth, and a
+# user PAT cannot satisfy it.
 
 set -euo pipefail
 
@@ -207,25 +209,10 @@ else
   # shellcheck disable=SC2016
   SUMMARY="$(printf '**%s**\n\n%s%s%s\n\n<details><summary>Full verdict JSON</summary>\n\n```json\n%s\n```\n\n</details>\n\n_Shadow mode — verdict does not gate merges. See `docs/REVIEW_SCHEMA.md`._' \
     "$HEADLINE" "$NOTES" "$BLOCKERS_LIST" "$SUGGESTIONS_TABLE" "$PRETTY")"
-  TITLE="pi: $HEADLINE"
-
-  EXISTING_CHECK_ID="$(gh api "repos/lobu-ai/lobu/commits/$HEAD_SHA/check-runs" --jq '.check_runs[] | select(.name=="pi-review") | .id' 2>/dev/null | head -n1)"
-  CHECK_PAYLOAD="$(jq -n --arg head_sha "$HEAD_SHA" --arg title "$TITLE" --arg summary "$SUMMARY" \
-    '{name:"pi-review", head_sha:$head_sha, status:"completed", conclusion:"neutral", output:{title:$title, summary:$summary}}')"
-
-  if [ -n "$EXISTING_CHECK_ID" ]; then
-    echo ">> updating check-run $EXISTING_CHECK_ID"
-    CHECK_URL="$(echo "$CHECK_PAYLOAD" | gh api -X PATCH "repos/lobu-ai/lobu/check-runs/$EXISTING_CHECK_ID" --input - --jq .html_url)"
-  else
-    echo ">> creating check-run"
-    CHECK_URL="$(echo "$CHECK_PAYLOAD" | gh api -X POST "repos/lobu-ai/lobu/check-runs" --input - --jq .html_url)"
-  fi
 
   MARKER="<!-- pi-review-marker -->"
   COMMENT_BODY="$MARKER
-$SUMMARY
-
-[View check-run]($CHECK_URL)"
+$SUMMARY"
   EXISTING_COMMENT_ID="$(gh api "repos/lobu-ai/lobu/issues/$PR_NUMBER/comments" --paginate --jq ".[] | select(.body | startswith(\"$MARKER\")) | .id" | head -n1)"
   if [ -n "$EXISTING_COMMENT_ID" ]; then
     echo ">> updating PR comment $EXISTING_COMMENT_ID"
@@ -234,7 +221,7 @@ $SUMMARY
     echo ">> creating PR comment"
     jq -n --arg body "$COMMENT_BODY" '{body:$body}' | gh api -X POST "repos/lobu-ai/lobu/issues/$PR_NUMBER/comments" --input - >/dev/null
   fi
-  echo ">> posted on PR #$PR_NUMBER → $CHECK_URL"
+  echo ">> posted comment on PR #$PR_NUMBER"
 fi
 
 # Last line: machine-readable verdict for $(make review) capture.

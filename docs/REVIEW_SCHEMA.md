@@ -68,8 +68,8 @@ How sure the reviewer is that the change works correctly and won't break prod.
 **Calibration rule:** do not go above 90 unless the reviewer would genuinely
 stake the team on this.
 
-**Future gate:** auto-merge will require `bug_free_confidence >= 80` (and
-equivalent thresholds from any additional reviewer that gets wired in).
+**Gate:** `make review` passes only when `bug_free_confidence >= 80` by
+default. Override for one run with `PI_REVIEW_MIN_BUG_FREE=<n>`.
 
 ### `bugs` (integer, ≥0)
 
@@ -89,7 +89,7 @@ didn't verify, you don't get to count.
 
 Style nits and naming preferences do not count.
 
-**Future gate:** auto-merge will require `bugs == 0`.
+**Gate:** `make review` passes only when `bugs == 0`.
 
 ### `slop` (integer, 0–100)
 
@@ -144,7 +144,7 @@ Override for one run with `PI_REVIEW_MIN_SIMPLICITY=<n>`.
 > **Independent axes.** `bug_free_confidence`, `slop`, and `simplicity` are
 > independent. A change can score high `bug_free_confidence` (works), high
 > `slop` (lots of unused code added), and low `simplicity` (overengineered).
-> All three must clear their thresholds for auto-merge.
+> All three must clear their thresholds for the `pi-review` status to pass.
 
 ### `blockers` (array of strings)
 
@@ -161,7 +161,7 @@ test setup) are NOT blockers — they belong in `notes` with an `[env]`
 prefix. A failing test only blocks when the failing test, or the source
 code it exercises, appears in `git diff --name-only "$BASE_BRANCH...HEAD"`.
 
-**Future gate:** auto-merge will require `blockers.length == 0`.
+**Gate:** `make review` passes only when `blockers.length == 0`.
 
 ### `change_type` (enum)
 
@@ -172,8 +172,9 @@ Maps to conventional-commit prefix. Use the prefix that best describes the
 measure (e.g. `feat` + `test`), prefer `feat`. If you would split this PR,
 say so in `notes`.
 
-**Future use:** `docs` / `chore` / `test` PRs will get a more permissive gate
-than `feat` / `fix` / `refactor`.
+**Note:** the current `pi-review` status applies one gate policy to all change
+types. If a docs/chore/test PR needs an exception, use an explicit env override
+or admin merge.
 
 ### `behavior_change_risk` (enum)
 
@@ -189,8 +190,8 @@ One of: `none`, `low`, `medium`, `high`.
   data integrity, or anything with cross-system consequences (queue,
   scheduler, retry).
 
-**Future gate:** `high` will require human approval even if scores otherwise
-pass.
+**Gate:** `make review` fails when risk is `high`; that path requires human
+approval / admin merge even if scores otherwise pass.
 
 ### `tests_adequate` (boolean)
 
@@ -198,8 +199,8 @@ pass.
 are warranted because behavior_change_risk is `none`). `false` if a
 behavior change ships without test coverage.
 
-**Future gate:** `false` blocks auto-merge unless `change_type` is `docs` /
-`chore`.
+**Gate:** `make review` fails when `tests_adequate` is `false`. For docs/chore
+exceptions, use an explicit env override or admin merge.
 
 ### `suggested_fixes` (array of objects)
 
@@ -238,17 +239,14 @@ Path → category mapping:
 When a path matches multiple patterns, the more specific one wins
 (`__tests__/**` beats `packages/*/src/**`).
 
-**Future use:** the merge bot uses these to apply per-category gates (e.g.
-`docs`-only PRs skip the bugs/slop gates).
+**Note:** categories are currently informational and may be used for more
+nuanced gates later.
 
-## Shadow-mode reminder
+## Local gate flow
 
-Merges are not gated by this verdict yet. The point of shadow mode is to
-observe how the verdicts track real-world PR outcomes so the gate
-thresholds above can be calibrated before they are wired up.
-
-Today's flow: agent finishes a change → runs `make review` from the
-branch's worktree → pi reviews and prints the JSON verdict (and posts a
-PR comment if a PR exists) → human reads the verdict and decides whether
-to merge. A future merge bot will read the verdict and apply the gate
-thresholds above; that bot doesn't exist yet.
+Today's flow: agent finishes a change → opens a PR → runs `make review` from
+the branch's worktree → pi reviews and prints the JSON verdict → the script
+posts/updates the `pi-review` commit status and PR comment. Branch protection
+can require `pi-review`, so a new commit remains unmergeable until the local
+review runs and passes for that exact SHA. Human/admin merge remains the
+explicit escape hatch for intentional exceptions.

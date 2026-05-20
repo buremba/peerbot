@@ -153,9 +153,9 @@ function Hero() {
           style={{ color: "var(--color-page-text)" }}
         >
           <em class="not-italic" style={{ color: "var(--color-tg-accent)" }}>
-            Proactive
+            Build proactive agents
           </em>{" "}
-          AI agents on
+          on a
           <br />
           <em class="not-italic" style={{ color: "var(--color-tg-accent)" }}>
             self-building

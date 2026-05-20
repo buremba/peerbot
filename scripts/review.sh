@@ -11,13 +11,18 @@
 # reachable. Does NOT create a worktree, install deps, or manage the test DB.
 #
 # If a PR exists for the current branch, also posts an idempotent PR comment
-# with the verdict (marker-keyed upsert). If there's no PR, posting is
-# skipped — the verdict still prints locally.
+# with the verdict (marker-keyed upsert). It posts a commit status named by
+# PI_REVIEW_STATUS_CONTEXT (default: pi-review) whenever GitHub auth is
+# available, so branch protection can require the local agent review.
+# If there's no PR, the verdict still prints locally.
 #
 # Auth: uses the operator's ~/.pi/agent state for pi, `gh auth token` for
-# GitHub (optional — missing auth just skips posting). Posting a check-run
-# is not attempted: `gh api check-runs` requires GitHub App auth, and a
-# user PAT cannot satisfy it.
+# GitHub (optional — missing auth just skips posting). Pi is pinned to the
+# ChatGPT/Codex GPT-5.5 high-reasoning model family via PI_REVIEW_MODELS;
+# the default model scope includes all three local ChatGPT account providers so
+# the multi-account extension can pick/switch among linked account slots.
+# Commit statuses use the legacy Statuses API because `gh api check-runs`
+# requires GitHub App auth, and a user PAT cannot create check-runs.
 
 set -euo pipefail
 
@@ -37,6 +42,11 @@ fi
 # --- args -------------------------------------------------------------------
 
 BASE_BRANCH="${BASE:-main}"
+PI_REVIEW_MODELS="${PI_REVIEW_MODELS:-openai-codex/gpt-5.5:high,openai-codex-2/gpt-5.5:high,openai-codex-3/gpt-5.5:high}"
+PI_REVIEW_STATUS_CONTEXT="${PI_REVIEW_STATUS_CONTEXT:-pi-review}"
+PI_REVIEW_MIN_BUG_FREE="${PI_REVIEW_MIN_BUG_FREE:-80}"
+PI_REVIEW_MAX_SLOP="${PI_REVIEW_MAX_SLOP:-15}"
+PI_REVIEW_MIN_SIMPLICITY="${PI_REVIEW_MIN_SIMPLICITY:-70}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --base) BASE_BRANCH="$2"; shift 2 ;;
@@ -54,6 +64,35 @@ fi
 echo ">> cwd:  $(pwd)"
 echo ">> base: $BASE_BRANCH (merge-base $MERGE_BASE)"
 echo ">> head: $HEAD_SHA"
+
+post_review_status() {
+  [ "$GH_AVAILABLE" = "1" ] || return 0
+  local state="$1"
+  local description="$2"
+  local target_url="${3:-}"
+  local repo
+  repo="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
+  [ -n "$repo" ] || return 0
+
+  # GitHub commit status descriptions are capped at 140 chars.
+  description="${description:0:140}"
+  local args=(-f "state=$state" -f "context=$PI_REVIEW_STATUS_CONTEXT" -f "description=$description")
+  if [ -n "$target_url" ]; then
+    args+=(-f "target_url=$target_url")
+  fi
+  gh api -X POST "repos/$repo/statuses/$HEAD_SHA" "${args[@]}" >/dev/null 2>&1 \
+    || echo ">> warning: failed to post GitHub commit status '$PI_REVIEW_STATUS_CONTEXT'" >&2
+}
+
+REVIEW_STATUS_FINALIZED=0
+finalize_review_status() {
+  post_review_status "$1" "$2" "${3:-}"
+  REVIEW_STATUS_FINALIZED=1
+}
+
+trap 'ec=$?; if [ $ec -ne 0 ] && [ "${REVIEW_STATUS_FINALIZED:-0}" != "1" ]; then post_review_status error "pi review failed before verdict (exit $ec)"; fi' EXIT
+
+post_review_status pending "pi review running"
 
 # --- env --------------------------------------------------------------------
 
@@ -131,7 +170,7 @@ echo ">> suite exit codes: typecheck=$TYPECHECK_EXIT unit=$UNIT_EXIT integration
 PROMPT_FILE="$(pwd)/prompts/review-prompt.md"
 [ -f "$PROMPT_FILE" ] || { echo "prompt not found: $PROMPT_FILE" >&2; exit 2; }
 
-echo ">> invoking pi"
+echo ">> invoking pi (models: $PI_REVIEW_MODELS)"
 GH_TOKEN_VAL=""
 [ "$GH_AVAILABLE" = "1" ] && GH_TOKEN_VAL="$(gh auth token)"
 
@@ -144,7 +183,7 @@ RAW="$(
   INTEGRATION_LOG="$INTEGRATION_LOG" INTEGRATION_EXIT="$INTEGRATION_EXIT" \
   GH_TOKEN="$GH_TOKEN_VAL" \
   DATABASE_URL="$DATABASE_URL" \
-  pi --mode json --no-session -p "@${PROMPT_FILE}" "Review the diff. Emit only the JSON verdict." < /dev/null
+  pi --mode json --no-session --models "$PI_REVIEW_MODELS" -p "@${PROMPT_FILE}" "Review the diff. Emit only the JSON verdict." < /dev/null
 )"
 PI_EXIT=$?
 set -e
@@ -164,7 +203,20 @@ VERDICT="$(printf '%s\n' "$RAW" | jq -rs '
 [ -n "$VERDICT" ] || VERDICT="$RAW"
 VERDICT="$(printf '%s\n' "$VERDICT" | sed -e 's/^```json//' -e 's/^```//' -e 's/```$//')"
 
-if ! echo "$VERDICT" | jq -e '.bug_free_confidence != null and .bugs != null and .slop != null and .simplicity != null and (.blockers|type=="array")' >/dev/null 2>&1; then
+if ! echo "$VERDICT" | jq -e '
+  (.bug_free_confidence | type == "number" and floor == . and . >= 0 and . <= 100) and
+  (.bugs | type == "number" and floor == . and . >= 0) and
+  (.slop | type == "number" and floor == . and . >= 0 and . <= 100) and
+  (.simplicity | type == "number" and floor == . and . >= 0 and . <= 100) and
+  (.blockers | type == "array") and
+  (.change_type | IN("feat", "fix", "refactor", "docs", "chore", "test", "deps")) and
+  (.behavior_change_risk | IN("none", "low", "medium", "high")) and
+  (.tests_adequate | type == "boolean") and
+  (.suggested_fixes | type == "array") and
+  (.notes | type == "string") and
+  (.categories | type == "object")
+' >/dev/null 2>&1; then
+  finalize_review_status error "pi review did not produce a valid JSON verdict"
   echo "pi did not produce a valid JSON verdict. pi exit=$PI_EXIT" >&2
   echo "logs: $TYPECHECK_LOG $UNIT_LOG $INTEGRATION_LOG" >&2
   echo "raw output:" >&2
@@ -176,8 +228,25 @@ BUG_FREE="$(echo "$VERDICT" | jq -r .bug_free_confidence)"
 BUGS="$(echo "$VERDICT" | jq -r .bugs)"
 SLOP="$(echo "$VERDICT" | jq -r .slop)"
 SIMPLICITY="$(echo "$VERDICT" | jq -r .simplicity)"
+TESTS_ADEQUATE="$(echo "$VERDICT" | jq -r .tests_adequate)"
+RISK="$(echo "$VERDICT" | jq -r .behavior_change_risk)"
 BLOCKER_COUNT="$(echo "$VERDICT" | jq -r '.blockers|length')"
 HEADLINE="bug_free $BUG_FREE, simplicity $SIMPLICITY, slop $SLOP, bugs $BUGS, $BLOCKER_COUNT blockers"
+STATUS_STATE="success"
+STATUS_REASONS=()
+[ "$BUG_FREE" -ge "$PI_REVIEW_MIN_BUG_FREE" ] || STATUS_REASONS+=("bug_free<$PI_REVIEW_MIN_BUG_FREE")
+[ "$BUGS" -eq 0 ] || STATUS_REASONS+=("bugs>0")
+[ "$SLOP" -le "$PI_REVIEW_MAX_SLOP" ] || STATUS_REASONS+=("slop>$PI_REVIEW_MAX_SLOP")
+[ "$SIMPLICITY" -ge "$PI_REVIEW_MIN_SIMPLICITY" ] || STATUS_REASONS+=("simplicity<$PI_REVIEW_MIN_SIMPLICITY")
+[ "$BLOCKER_COUNT" -eq 0 ] || STATUS_REASONS+=("blockers>0")
+[ "$TESTS_ADEQUATE" = "true" ] || STATUS_REASONS+=("tests inadequate")
+[ "$RISK" != "high" ] || STATUS_REASONS+=("high risk needs human approval")
+if [ "${#STATUS_REASONS[@]}" -gt 0 ]; then
+  STATUS_STATE="failure"
+  STATUS_DESCRIPTION="$HEADLINE; $(IFS=', '; echo "${STATUS_REASONS[*]}")"
+else
+  STATUS_DESCRIPTION="$HEADLINE"
+fi
 
 echo ""
 echo "=========================================="
@@ -188,12 +257,17 @@ echo "=========================================="
 # --- optional GitHub post --------------------------------------------------
 
 PR_NUMBER=""
+PR_URL=""
 if [ "$GH_AVAILABLE" = "1" ]; then
-  PR_NUMBER="$(gh pr view --json number -q .number 2>/dev/null || true)"
+  PR_JSON="$(gh pr view --json number,url 2>/dev/null || true)"
+  PR_NUMBER="$(echo "$PR_JSON" | jq -r '.number // empty' 2>/dev/null || true)"
+  PR_URL="$(echo "$PR_JSON" | jq -r '.url // empty' 2>/dev/null || true)"
 fi
 
+finalize_review_status "$STATUS_STATE" "$STATUS_DESCRIPTION" "$PR_URL"
+
 if [ -z "$PR_NUMBER" ]; then
-  echo ">> no PR for current branch; skipping GitHub post"
+  echo ">> no PR for current branch; skipping GitHub comment"
 else
   NOTES="$(echo "$VERDICT" | jq -r '.notes // ""')"
   PRETTY="$(echo "$VERDICT" | jq .)"
@@ -207,7 +281,7 @@ else
     else "\n\n### Blockers\n\n" + ((.blockers // []) | map("- " + .) | join("\n"))
     end')"
   # shellcheck disable=SC2016
-  SUMMARY="$(printf '**%s**\n\n%s%s%s\n\n<details><summary>Full verdict JSON</summary>\n\n```json\n%s\n```\n\n</details>\n\n_Shadow mode — verdict does not gate merges. See `docs/REVIEW_SCHEMA.md`._' \
+  SUMMARY="$(printf '**%s**\n\n%s%s%s\n\n<details><summary>Full verdict JSON</summary>\n\n```json\n%s\n```\n\n</details>\n\n_Local review gate — branch protection can require the `pi-review` commit status. See `docs/REVIEW_SCHEMA.md`._' \
     "$HEADLINE" "$NOTES" "$BLOCKERS_LIST" "$SUGGESTIONS_TABLE" "$PRETTY")"
 
   MARKER="<!-- pi-review-marker -->"

@@ -125,6 +125,11 @@ Do not go above 90 unless you would genuinely stake the team on this.
 
 ### Slop rubric
 
+Slop avoidance is a primary goal of this review. Actively hunt for unnecessary
+AI-generated waste; don't bury it as a soft style note. If `slop > 0`, include
+specific removals/simplifications in `suggested_fixes` when you can name an
+exact file and line.
+
 0–100 score for "AI-generated waste in the diff." Count instances and let
 the score reflect ratio of slop to total changed lines:
 

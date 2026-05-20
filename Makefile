@@ -18,7 +18,7 @@ help:
 	@echo "  make task-clean NAME=<name> [FORCE=1]      - Remove the worktree, both branches, and the Lobu context (refuses if there's uncommitted/unpushed work unless FORCE=1)"
 	@echo "  make task-use NAME=<name|main>             - Point Chrome ext / Mac app symlinks at this worktree (or 'main' for the canonical checkout)"
 	@echo "  make bump SUBMODULE=<path> [TARGET=<ref>]  - Lightweight worktree + commit + PR for a trivial submodule pointer bump (skips bun install, .env, ports)"
-	@echo "  make review [BASE=<branch>]                - Run the local review (typecheck+unit+integration + pi) in cwd; posts pi-review check-run if a PR exists for the current branch"
+	@echo "  make review [BASE=<branch>]                - Run local review (typecheck+unit+integration + pi); posts pi-review status and PR comment"
 
 # Strict typecheck — mirrors the Dockerfile so local matches CI. Catches
 # what `build-packages` (relaxed, bundler-only) misses.
@@ -146,8 +146,8 @@ clean-workers:
 # Local-only: runs the deterministic suites in cwd, then invokes pi against
 # `git diff <BASE>...HEAD` (BASE defaults to main; override with BASE=<branch>
 # env or `--base <branch>` arg). Prints a JSON verdict on the last line. If
-# the current branch has an open PR, also posts a pi-review check-run + PR
-# comment. See docs/REVIEW_SCHEMA.md.
+# GitHub auth is available, posts a pi-review commit status; if the current
+# branch has an open PR, also posts/updates a PR comment. See docs/REVIEW_SCHEMA.md.
 
 review:
 	@./scripts/review.sh $(if $(BASE),--base $(BASE),)

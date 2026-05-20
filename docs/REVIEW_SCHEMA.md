@@ -4,14 +4,18 @@ After making changes on a feature branch, the agent runs `make review`
 locally. `scripts/review.sh` drives the deterministic test suites in cwd,
 invokes `pi` against `git diff <base>...HEAD` (base defaults to `main`,
 override with `BASE=<branch>` or `--base <branch>`), and prints a JSON
-verdict matching this schema. If a PR exists for the current branch, the
-script also posts an idempotent PR comment (marker-keyed upsert) with the
-verdict — that posting is a bonus, not a requirement. **GitHub Actions
-does not run review** — it's a local-driven shadow mode owned by the
-agent doing the work.
+verdict matching this schema. The script posts a `pi-review` commit status
+whenever GitHub auth is available; if a PR exists for the current branch, it
+also posts an idempotent PR comment (marker-keyed upsert) with the verdict.
+**GitHub Actions does not run review** — it's a local-driven gate owned by
+the agent doing the work.
 
-A future merge bot will read this verdict and decide whether to auto-merge.
-For now the verdict is informational and **no gate logic exists yet**.
+Branch protection can require the `pi-review` status. The status fails when
+any merge gate below fails: `bug_free_confidence < 80`, `bugs > 0`,
+`slop > 15`, `simplicity < 70`, `blockers` is non-empty,
+`tests_adequate == false`, or `behavior_change_risk == "high"`. Thresholds
+are tunable for one-off runs with `PI_REVIEW_MIN_BUG_FREE`,
+`PI_REVIEW_MAX_SLOP`, and `PI_REVIEW_MIN_SIMPLICITY`.
 
 The schema is reviewer-agnostic — a second independent reviewer can be
 added later without touching the shape below.
@@ -115,7 +119,8 @@ ratio of slop lines to total changed lines:
 diff; 50 = significant fraction of the diff is waste; 80+ = the diff is
 mostly waste.
 
-**Future gate:** auto-merge will require `slop <= 30`.
+**Gate:** `make review` passes only when `slop <= 15` by default. Override for
+one run with `PI_REVIEW_MAX_SLOP=<n>`.
 
 ### `simplicity` (integer, 0–100)
 
@@ -133,7 +138,8 @@ How elegant the change is for the goal it's pursuing. Higher = simpler.
 clever side effect is low simplicity. A 200-line change that reads
 top-to-bottom is high simplicity.
 
-**Future gate:** auto-merge will require `simplicity >= 60`.
+**Gate:** `make review` passes only when `simplicity >= 70` by default.
+Override for one run with `PI_REVIEW_MIN_SIMPLICITY=<n>`.
 
 > **Independent axes.** `bug_free_confidence`, `slop`, and `simplicity` are
 > independent. A change can score high `bug_free_confidence` (works), high

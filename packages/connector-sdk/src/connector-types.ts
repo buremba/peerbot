@@ -65,6 +65,15 @@ export interface ConnectorRuntimeInfo {
    * Optional — omit when the platform adapter needs no fine-grained scope list.
    */
   scopes?: string[];
+  /**
+   * Native system dependencies this connector needs on PATH at execution time,
+   * as nixpkgs attribute references (e.g. `["ffmpeg", "imagemagick"]`). npm
+   * dependencies are bundled into the connector at compile time and do NOT go
+   * here — only native tools the runtime must provision. Backends that can run
+   * native deps (embedded, container, machine) satisfy these via nix; backends
+   * that can't (e.g. edge workers) reject a connector that declares them.
+   */
+  nix?: { packages: string[] };
 }
 
 // =============================================================================

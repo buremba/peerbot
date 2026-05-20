@@ -22,7 +22,6 @@
 
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { build, type Plugin } from 'esbuild';
@@ -75,15 +74,28 @@ export function findBundledConnectorFile(
 }
 
 /**
- * Resolve the `@lobu/connector-sdk` module entry from this module's
- * perspective. Used as the esbuild `alias` target so connector code that
- * imports `from 'lobu'` or `from '@lobu/connector-sdk'` resolves to the
- * same physical file the runtime will import — avoiding the
- * `instanceof ConnectorRuntime` cross-realm trap.
+ * esbuild plugin that marks the connector SDK as **external** (runtime-provided)
+ * rather than bundling it in. The SDK pulls a large infra graph transitively
+ * (Sentry, OpenTelemetry, grpc, isomorphic-git, …); bundling it inflated every
+ * connector to multiple MB. The runtime that executes the connector already has
+ * `@lobu/connector-sdk` installed (it's a dependency of `@lobu/connector-worker`),
+ * so the bundle leaves it as a bare import and Node resolves it from the runtime's
+ * node_modules at load time — the standard "externalize the framework, bundle the
+ * user code" pattern (cf. AWS Lambda not bundling `@aws-sdk`).
+ *
+ * The `lobu` alias specifier is normalized to `@lobu/connector-sdk` so the emitted
+ * import resolves to a real package the runtime provides.
  */
-function resolveSdkEntry(): string {
-  const require_ = createRequire(import.meta.url);
-  return require_.resolve('@lobu/connector-sdk');
+function createSdkExternalPlugin(): Plugin {
+  return {
+    name: 'sdk-external',
+    setup(b) {
+      b.onResolve({ filter: /^(lobu|@lobu\/connector-sdk)(\/.*)?$/ }, (args) => ({
+        path: args.path.replace(/^lobu(?=$|\/)/, '@lobu/connector-sdk'),
+        external: true,
+      }));
+    },
+  };
 }
 
 interface NpmSpecifierPluginOptions {
@@ -128,21 +140,14 @@ export function createNpmSpecifierPlugin(options?: NpmSpecifierPluginOptions): P
 
 interface CompileOptions {
   /**
-   * Max entries kept in the mtime-keyed LRU. Each entry is the full
-   * compiled bundle (~13 MB today, smaller as transitive deps are
-   * externalised). Cap default 8 keeps memory bounded; pass a smaller
-   * value in memory-constrained environments.
+   * Max entries kept in the mtime-keyed LRU. Each entry is the compiled
+   * bundle — now just the connector's own code + its bundled npm deps,
+   * since the SDK and its infra graph are externalised. Cap default 8
+   * keeps memory bounded; pass a smaller value in memory-constrained
+   * environments.
    * @default 8
    */
   cacheMax?: number;
-  /**
-   * Override the `@lobu/connector-sdk` entry esbuild aliases against.
-   * Defaults to the SDK resolved from this module's `require.resolve`.
-   * Overriding is only useful when the caller knows of a more
-   * appropriate physical file (e.g. a server bundle that wants to point
-   * back at a sibling dist file).
-   */
-  sdkEntry?: string;
   /**
    * Hook fired when `npm:` specifiers fail to resolve and the import is
    * externalised. Forwarded to `createNpmSpecifierPlugin`.
@@ -158,19 +163,21 @@ const DEFAULT_CACHE_MAX = 8;
  *
  * The returned bundle:
  *   - is ESM (`format: 'esm'`, `target: 'node20'`);
- *   - aliases `lobu` and `@lobu/connector-sdk` to the SDK entry so
- *     connectors targeting either specifier resolve to the same module;
+ *   - externalises the connector SDK (`lobu` / `@lobu/connector-sdk`) — the
+ *     runtime provides it, keeping bundles to the connector's own code + deps;
  *   - has a banner injecting a CJS-compatible `require` shim;
  *   - externalises `EXTERNAL_RUNTIME_DEPS` (native deps + Playwright);
+ *   - emits an inline source map (`sourcesContent: false`) so connector stack
+ *     traces map to source lines without embedding the source in the artifact;
  *   - is mtime-cached: a repeat call with the same `filePath` whose
  *     mtime hasn't changed returns the cached bundle without hitting
  *     esbuild.
  */
 export function createConnectorCompiler(options?: CompileOptions) {
   const cacheMax = options?.cacheMax ?? DEFAULT_CACHE_MAX;
-  const sdkEntry = options?.sdkEntry ?? resolveSdkEntry();
   const compiledFileCache = new Map<string, { mtimeMs: number; code: string }>();
-  const plugin = createNpmSpecifierPlugin({ onUnresolved: options?.onUnresolvedNpm });
+  const npmPlugin = createNpmSpecifierPlugin({ onUnresolved: options?.onUnresolvedNpm });
+  const sdkExternalPlugin = createSdkExternalPlugin();
 
   function touchCacheEntry(filePath: string, entry: { mtimeMs: number; code: string }): void {
     compiledFileCache.delete(filePath);
@@ -206,15 +213,15 @@ export function createConnectorCompiler(options?: CompileOptions) {
         format: 'esm',
         platform: 'node',
         target: 'node20',
-        alias: { lobu: sdkEntry, '@lobu/connector-sdk': sdkEntry },
         banner: {
           js: `import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);`,
         },
-        plugins: [plugin],
+        plugins: [sdkExternalPlugin, npmPlugin],
         external: [...EXTERNAL_RUNTIME_DEPS],
         write: true,
         minify: false,
-        sourcemap: false,
+        sourcemap: 'inline',
+        sourcesContent: false,
       });
 
       const code = await readFile(outPath, 'utf-8');

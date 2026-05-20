@@ -6,14 +6,38 @@
  * This is not a hardened security sandbox.
  */
 
-import { fork } from 'node:child_process';
+import { type ChildProcess, fork, spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { EventEnvelope } from '@lobu/connector-sdk';
-import type { ExecutionHooks, ExecutorJob, ExecutorResult, SyncExecutor } from './interface.js';
+import type {
+  ExecutionHooks,
+  ExecutionOptions,
+  ExecutorJob,
+  ExecutorResult,
+  SyncExecutor,
+} from './interface.js';
 import { StreamRedactor, redactOutput } from './redact.js';
+
+/** Memoized nix-shell availability check. */
+let nixShellAvailable: boolean | null = null;
+function hasNixShell(): boolean {
+  if (nixShellAvailable === null) {
+    try {
+      nixShellAvailable = spawnSync('nix-shell', ['--version'], { stdio: 'ignore' }).status === 0;
+    } catch {
+      nixShellAvailable = false;
+    }
+  }
+  return nixShellAvailable;
+}
+
+/** Single-quote a string for safe embedding in a `nix-shell --run "..."` bash command. */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
 
 /**
  * exit_reason values surfaced to the runs table:
@@ -130,8 +154,17 @@ export class SubprocessExecutor implements SyncExecutor {
   async execute(
     compiledCode: string,
     job: ExecutorJob,
-    hooks?: ExecutionHooks
+    hooks?: ExecutionHooks,
+    options?: ExecutionOptions
   ): Promise<ExecutorResult> {
+    const nixPackages = options?.nixPackages ?? [];
+    if (nixPackages.length > 0 && !hasNixShell()) {
+      throw new Error(
+        `This connector requires native packages [${nixPackages.join(', ')}] but \`nix-shell\` ` +
+          `is not installed on this host. Install nix (https://nixos.org/download) or run the ` +
+          `connector on a backend that provisions native dependencies.`
+      );
+    }
     return new Promise<ExecutorResult>((resolve, reject) => {
       let childRunnerPath = join(__dirname, 'child-runner.js');
       const childRunnerTsPath = join(__dirname, 'child-runner.ts');
@@ -165,11 +198,30 @@ export class SubprocessExecutor implements SyncExecutor {
       // Node subprocess execution is process isolation, not a security sandbox.
       // Node --experimental-permission flags intentionally NOT enabled — the
       // connector runtime isn't compatible. Revisit if that changes.
-      const child = fork(childRunnerPath, [], {
-        stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
-        execArgv,
-        env: { ...pickSystemEnv(), ...jobEnv(job) } as NodeJS.ProcessEnv,
-      });
+      const env = { ...pickSystemEnv(), ...jobEnv(job) } as NodeJS.ProcessEnv;
+      let child: ChildProcess;
+      if (nixPackages.length > 0) {
+        // Wrap in nix-shell so the connector's declared native tools are on
+        // PATH. `exec node` replaces the shell with node so the IPC channel
+        // (fd 3 / NODE_CHANNEL_FD created by the 'ipc' stdio slot) and kill()
+        // reach the real process — without `exec`, kill() would hit the shell
+        // and orphan node. execArgv is rebuilt as inline flags. nix-shell's
+        // impure shell keeps the ambient PATH, so `node` still resolves.
+        const nodeCmd = ['exec', 'node', ...execArgv, shellQuote(childRunnerPath)].join(' ');
+        const nixArgs: string[] = [];
+        for (const pkg of nixPackages) nixArgs.push('-p', pkg);
+        nixArgs.push('--run', nodeCmd);
+        child = spawn('nix-shell', nixArgs, {
+          stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+          env,
+        });
+      } else {
+        child = fork(childRunnerPath, [], {
+          stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+          execArgv,
+          env,
+        });
+      }
 
       let resolved = false;
       let terminalMessageReceived = false;

@@ -69,6 +69,16 @@ export interface ExecutionHooks {
   ) => Promise<Record<string, unknown>>;
 }
 
+/** Per-run execution options independent of the job payload. */
+export interface ExecutionOptions {
+  /**
+   * Native system packages (nixpkgs attribute refs) the connector declared in
+   * its `runtime.nix.packages`. When non-empty, the embedded executor wraps the
+   * child process in `nix-shell -p <packages>` so the tools are on PATH.
+   */
+  nixPackages?: string[];
+}
+
 /**
  * Pluggable executor interface. The only implementation today is
  * `SubprocessExecutor`; the seam stays around so tests can stub it.
@@ -77,6 +87,7 @@ export interface SyncExecutor {
   execute(
     compiledCode: string,
     job: ExecutorJob,
-    hooks?: ExecutionHooks
+    hooks?: ExecutionHooks,
+    options?: ExecutionOptions
   ): Promise<ExecutorResult>;
 }

@@ -3,14 +3,15 @@
  *
  * Reads `~/.config/lobu/config.json` (owned by the CLI's
  * `packages/cli/src/internal/context.ts`) and returns the current context's
- * `server` block. The Mac app writes this file to point a stable local server
- * at a brew-managed Postgres without per-project `.env` plumbing.
+ * managed-server launch settings. The Mac app writes this file so a stable
+ * local server can be started for a selected context without per-project `.env`
+ * plumbing.
  *
  * Sync on purpose — start-local.ts reads env at module-load time, so this has
  * to resolve before the first env read. Cost is one ~1KB JSON file per boot.
  *
- * Schema is duplicated from the CLI's `LobuServerConfig` rather than imported
- * to keep `@lobu/server` free of a `@lobu/cli` dependency.
+ * Schema is duplicated from the CLI's context loader rather than imported to
+ * keep `@lobu/server` free of a `@lobu/cli` dependency.
  */
 
 import { readFileSync } from 'node:fs';
@@ -18,20 +19,20 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 export interface UserServerConfig {
-  databaseUrl?: string;
   port?: number;
   host?: string;
-  dataDir?: string;
+  cwd?: string;
   /// "managed" → the Mac menubar (or another lifecycle owner) spawns
   /// `lobu run` for this context. "external" → just connect; never
-  /// spawn or kill. Absent → infer from apiUrl: loopback ⇒ managed,
-  /// remote ⇒ external. Today only the Mac menubar reads this; the
-  /// CLI's `lobu run` ignores it.
+  /// spawn or kill. Absent → infer only at the lifecycle owner.
   lifecycle?: "managed" | "external";
 }
 
 interface StoredEntry {
+  url?: unknown;
   apiUrl?: unknown;
+  lifecycle?: unknown;
+  cwd?: unknown;
   server?: unknown;
 }
 
@@ -67,31 +68,50 @@ export function loadUserServerConfig(
   const entry = parsed.contexts?.[contextName];
   if (!entry) return undefined;
 
-  return normalizeServerConfig(entry.server);
+  return deriveManagedServerConfig(entry);
 }
 
-function normalizeServerConfig(raw: unknown): UserServerConfig | undefined {
-  if (!raw || typeof raw !== 'object') return undefined;
-  const src = raw as Record<string, unknown>;
-  const out: UserServerConfig = {};
+function deriveManagedServerConfig(entry: StoredEntry): UserServerConfig | undefined {
+  const lifecycle = normalizeLifecycle(entry.lifecycle) ?? normalizeLegacyLifecycle(entry.server);
+  if (lifecycle !== 'managed') return undefined;
 
-  if (typeof src.databaseUrl === 'string' && src.databaseUrl.trim()) {
-    out.databaseUrl = src.databaseUrl.trim();
-  }
-  if (typeof src.port === 'number' && Number.isInteger(src.port) && src.port > 0) {
-    out.port = src.port;
-  }
-  if (typeof src.host === 'string' && src.host.trim()) {
-    out.host = src.host.trim();
-  }
-  if (typeof src.dataDir === 'string' && src.dataDir.trim()) {
-    out.dataDir = src.dataDir.trim();
-  }
-  if (src.lifecycle === 'managed' || src.lifecycle === 'external') {
-    out.lifecycle = src.lifecycle;
+  const rawUrl = normalizeString(entry.url) ?? normalizeString(entry.apiUrl);
+  const out: UserServerConfig = { lifecycle };
+  const cwd = normalizeString(entry.cwd) ?? normalizeLegacyCwd(entry.server);
+  if (cwd) out.cwd = cwd;
+
+  if (rawUrl) {
+    try {
+      const parsed = new URL(rawUrl);
+      const port = parsed.port ? Number.parseInt(parsed.port, 10) : undefined;
+      if (port && Number.isInteger(port) && port > 0 && port <= 65535) {
+        out.port = port;
+      }
+      if (parsed.hostname) out.host = parsed.hostname;
+    } catch {
+      // Ignore malformed hand-edited URLs; context validation lives in the CLI.
+    }
   }
 
   return Object.keys(out).length === 0 ? undefined : out;
+}
+
+function normalizeLegacyLifecycle(raw: unknown): "managed" | "external" | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  return normalizeLifecycle((raw as Record<string, unknown>).lifecycle);
+}
+
+function normalizeLegacyCwd(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  return normalizeString((raw as Record<string, unknown>).cwd);
+}
+
+function normalizeLifecycle(value: unknown): "managed" | "external" | undefined {
+  return value === 'managed' || value === 'external' ? value : undefined;
+}
+
+function normalizeString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 /**
@@ -105,17 +125,11 @@ export function applyUserServerConfigToEnv(
   const cfg = loadUserServerConfig(configPath, contextOverride ?? process.env.LOBU_CONTEXT);
   if (!cfg) return undefined;
 
-  if (cfg.databaseUrl && !process.env.DATABASE_URL?.trim()) {
-    process.env.DATABASE_URL = cfg.databaseUrl;
-  }
   if (cfg.port && !process.env.PORT?.trim()) {
     process.env.PORT = String(cfg.port);
   }
   if (cfg.host && !process.env.HOST?.trim()) {
     process.env.HOST = cfg.host;
-  }
-  if (cfg.dataDir && !process.env.LOBU_DATA_DIR?.trim()) {
-    process.env.LOBU_DATA_DIR = cfg.dataDir;
   }
 
   return cfg;

@@ -151,7 +151,7 @@ Use named contexts to test against staging or production:
 
 ```bash
 # Add a staging context
-npx @lobu/cli@latest context add staging --api-url https://staging.example.com/api/v1
+npx @lobu/cli@latest context add staging --url https://staging.example.com/api/v1
 npx @lobu/cli@latest login -c staging
 
 # Chat with the staging agent

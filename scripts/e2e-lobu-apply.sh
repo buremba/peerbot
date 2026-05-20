@@ -188,7 +188,7 @@ export HOME="${CLI_HOME}"
 mkdir -p "${HOME}/.config/lobu"
 
 # Add a context pointing at our local server, then mark it current.
-${LOBU} context add e2e --api-url "${API_URL}" >/dev/null
+${LOBU} context add e2e --url "${API_URL}" >/dev/null
 ${LOBU} context use e2e >/dev/null
 
 # `lobu login --token <PAT>` saves the PAT verbatim (no OAuth round-trip).

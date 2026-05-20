@@ -16,7 +16,7 @@ export async function contextListCommand(): Promise<void> {
   console.log(chalk.bold("\n  Lobu contexts"));
   for (const [name, context] of Object.entries(config.contexts)) {
     const marker = name === currentContext ? chalk.green(" *") : "  ";
-    console.log(`${marker} ${name}  ${chalk.dim(context.apiUrl)}`);
+    console.log(`${marker} ${name}  ${chalk.dim(context.url)}`);
   }
 
   if (process.env.LOBU_CONTEXT || process.env.LOBU_API_URL) {
@@ -37,7 +37,7 @@ export async function contextCurrentCommand(): Promise<void> {
 
   console.log(chalk.bold("\n  Current context"));
   console.log(chalk.dim(`  Name: ${context.name}`));
-  console.log(chalk.dim(`  API URL: ${context.apiUrl}`));
+  console.log(chalk.dim(`  URL: ${context.apiUrl}`));
   if (context.source === "env") {
     console.log(chalk.dim("  Source: environment override"));
   }
@@ -46,29 +46,21 @@ export async function contextCurrentCommand(): Promise<void> {
 
 export async function contextAddCommand(options: {
   name: string;
-  apiUrl: string;
-  port?: number;
-  host?: string;
-  databaseUrl?: string;
-  dataDir?: string;
+  url: string;
   cwd?: string;
   lifecycle?: "managed" | "external";
 }): Promise<void> {
   const server: LobuServerConfig = {};
-  if (options.port !== undefined) server.port = options.port;
-  if (options.host) server.host = options.host;
-  if (options.databaseUrl) server.databaseUrl = options.databaseUrl;
-  if (options.dataDir) server.dataDir = options.dataDir;
   if (options.cwd) server.cwd = options.cwd;
   if (options.lifecycle) server.lifecycle = options.lifecycle;
 
   await addContext(
     options.name,
-    options.apiUrl,
+    options.url,
     Object.keys(server).length === 0 ? undefined : server
   );
   console.log(
-    chalk.green(`\n  Saved context ${options.name} -> ${options.apiUrl}\n`)
+    chalk.green(`\n  Saved context ${options.name} -> ${options.url}\n`)
   );
 }
 
@@ -87,5 +79,5 @@ export async function contextUseCommand(name: string): Promise<void> {
   }
 
   console.log(chalk.green(`\n  Switched to context ${trimmedName}`));
-  console.log(chalk.dim(`  API URL: ${context.apiUrl}\n`));
+  console.log(chalk.dim(`  URL: ${context.url}\n`));
 }

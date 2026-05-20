@@ -184,8 +184,7 @@ echo "$name" > "$worktree_dir/.task"
 # worktree is still useful even if the lobu CLI isn't on PATH yet.
 if command -v lobu >/dev/null 2>&1; then
   if lobu context add "$name" \
-       --api-url "http://localhost:$port" \
-       --port "$port" \
+       --url "http://localhost:$port" \
        --cwd "$worktree_dir" \
        --lifecycle managed >/dev/null; then
     echo "→ registered Lobu context '$name' (menubar can spawn its server)"

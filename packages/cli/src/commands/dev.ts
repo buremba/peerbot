@@ -82,13 +82,9 @@ export async function devCommand(
   // Precedence: shell > project .env > user config > defaults.
   const userServerConfig = await getServerConfig().catch(() => undefined);
   const userServerEnv: Record<string, string> = {};
-  if (userServerConfig?.databaseUrl)
-    userServerEnv.DATABASE_URL = userServerConfig.databaseUrl;
   if (userServerConfig?.port)
     userServerEnv.PORT = String(userServerConfig.port);
   if (userServerConfig?.host) userServerEnv.HOST = userServerConfig.host;
-  if (userServerConfig?.dataDir)
-    userServerEnv.LOBU_DATA_DIR = userServerConfig.dataDir;
 
   const mergedEnv = {
     ...userServerEnv,
@@ -98,14 +94,12 @@ export async function devCommand(
   const hasDatabaseUrl = Boolean(mergedEnv.DATABASE_URL?.trim());
 
   // Refuse to boot against a shared/non-local DATABASE_URL that came from the
-  // parent shell rather than the project's own .env or the user's config.
-  // A common footgun: "local lobu run" silently writes into prod / a
-  // teammate's tailnet DB. The project pinning its own DATABASE_URL, or the
-  // user persisting one in ~/.config/lobu/config.json, is explicit consent.
+  // parent shell rather than the project's own .env. A common footgun:
+  // "local lobu run" silently writes into prod / a teammate's tailnet DB.
+  // Project pinning in .env is explicit consent.
   if (
     hasDatabaseUrl &&
     !envVars.DATABASE_URL?.trim() &&
-    !userServerEnv.DATABASE_URL?.trim() &&
     isSharedDatabaseUrl(mergedEnv.DATABASE_URL!) &&
     !options.unsafeSharedDb
   ) {

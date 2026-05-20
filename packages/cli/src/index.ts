@@ -532,30 +532,7 @@ Memory:
   context
     .command("add <name>")
     .description("Add a named context")
-    .requiredOption("--api-url <url>", "API base URL for this context")
-    .option(
-      "--port <port>",
-      "Server port (when this context owns a managed lobu server)",
-      (value: string) => {
-        if (!/^\d+$/.test(value)) {
-          throw new Error(`--port must be an integer, got "${value}"`);
-        }
-        const n = Number.parseInt(value, 10);
-        if (n < 1 || n > 65535) {
-          throw new Error(`--port must be in 1-65535, got ${n}`);
-        }
-        return n;
-      }
-    )
-    .option("--host <host>", "Server host (default: 127.0.0.1)")
-    .option(
-      "--database-url <url>",
-      "Postgres DATABASE_URL for the managed server"
-    )
-    .option(
-      "--data-dir <path>",
-      "LOBU_DATA_DIR for the managed server (state, PGlite)"
-    )
+    .requiredOption("--url <url>", "Base URL for this context")
     .option(
       "--cwd <path>",
       "Working directory the lifecycle owner cd's into before spawning `lobu run` (used by per-worktree contexts)"
@@ -574,11 +551,7 @@ Memory:
       async (
         name: string,
         options: {
-          apiUrl: string;
-          port?: number;
-          host?: string;
-          databaseUrl?: string;
-          dataDir?: string;
+          url: string;
           cwd?: string;
           lifecycle?: "managed" | "external";
         }
@@ -586,11 +559,7 @@ Memory:
         const { contextAddCommand } = await import("./commands/context.js");
         await contextAddCommand({
           name,
-          apiUrl: options.apiUrl,
-          port: options.port,
-          host: options.host,
-          databaseUrl: options.databaseUrl,
-          dataDir: options.dataDir,
+          url: options.url,
           cwd: options.cwd,
           lifecycle: options.lifecycle,
         });

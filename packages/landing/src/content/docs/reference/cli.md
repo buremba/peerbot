@@ -87,7 +87,7 @@ Manage named API contexts.
 ```bash
 npx @lobu/cli@latest context list
 npx @lobu/cli@latest context current
-npx @lobu/cli@latest context add staging --api-url https://staging.example.com/api/v1
+npx @lobu/cli@latest context add staging --url https://staging.example.com/api/v1
 npx @lobu/cli@latest context use staging
 ```
 

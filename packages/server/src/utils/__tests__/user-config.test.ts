@@ -15,7 +15,7 @@ function writeConfig(payload: unknown): string {
   return path;
 }
 
-const ENV_KEYS = ['DATABASE_URL', 'PORT', 'HOST', 'LOBU_DATA_DIR', 'LOBU_CONTEXT'];
+const ENV_KEYS = ['PORT', 'HOST', 'LOBU_CONTEXT'];
 const saved: Record<string, string | undefined> = {};
 
 beforeEach(() => {
@@ -47,26 +47,22 @@ describe('loadUserServerConfig', () => {
     expect(loadUserServerConfig(path)).toBeUndefined();
   });
 
-  it('returns the current context server block', () => {
+  it('returns the current managed context settings', () => {
     const path = writeConfig({
       currentContext: 'local',
       contexts: {
         local: {
-          apiUrl: 'http://localhost:8787/api/v1',
-          server: {
-            databaseUrl: 'postgres://burakemre@localhost:5432/lobu',
-            port: 9000,
-            host: '0.0.0.0',
-            dataDir: '/tmp/lobu-data',
-          },
+          url: 'http://localhost:8787/api/v1',
+          lifecycle: 'managed',
+          cwd: '/tmp/lobu-worktree',
         },
       },
     });
     expect(loadUserServerConfig(path)).toEqual({
-      databaseUrl: 'postgres://burakemre@localhost:5432/lobu',
-      port: 9000,
-      host: '0.0.0.0',
-      dataDir: '/tmp/lobu-data',
+      lifecycle: 'managed',
+      cwd: '/tmp/lobu-worktree',
+      port: 8787,
+      host: 'localhost',
     });
   });
 
@@ -74,46 +70,68 @@ describe('loadUserServerConfig', () => {
     const path = writeConfig({
       contexts: {
         lobu: {
-          apiUrl: 'https://app.lobu.ai/api/v1',
-          server: { databaseUrl: 'postgres://x/y' },
+          url: 'http://localhost:8788/api/v1',
+          lifecycle: 'managed',
         },
       },
     });
-    expect(loadUserServerConfig(path)).toEqual({ databaseUrl: 'postgres://x/y' });
+    expect(loadUserServerConfig(path)).toEqual({
+      lifecycle: 'managed',
+      port: 8788,
+      host: 'localhost',
+    });
   });
 
   it('honors the context override', () => {
     const path = writeConfig({
       currentContext: 'prod',
       contexts: {
-        prod: { apiUrl: 'https://app.lobu.ai/api/v1', server: { port: 8080 } },
+        prod: { url: 'https://app.lobu.ai/api/v1', lifecycle: 'external' },
         local: {
-          apiUrl: 'http://localhost:8787/api/v1',
-          server: { databaseUrl: 'postgres://local/db' },
+          url: 'http://localhost:8789/api/v1',
+          lifecycle: 'managed',
         },
       },
     });
     expect(loadUserServerConfig(path, 'local')).toEqual({
-      databaseUrl: 'postgres://local/db',
+      lifecycle: 'managed',
+      port: 8789,
+      host: 'localhost',
     });
   });
 
-  it('returns undefined when the server block is empty / invalid', () => {
+  it('returns undefined when the context is external', () => {
+    const path = writeConfig({
+      currentContext: 'prod',
+      contexts: { prod: { url: 'https://app.lobu.ai/api/v1', lifecycle: 'external' } },
+    });
+    expect(loadUserServerConfig(path)).toBeUndefined();
+  });
+
+  it('returns undefined when the context has no lifecycle marker', () => {
+    const path = writeConfig({
+      currentContext: 'local',
+      contexts: { local: { url: 'http://localhost:8787/api/v1' } },
+    });
+    expect(loadUserServerConfig(path)).toBeUndefined();
+  });
+
+  it('reads legacy apiUrl + server lifecycle/cwd', () => {
     const path = writeConfig({
       currentContext: 'local',
       contexts: {
-        local: { apiUrl: 'http://localhost:8787/api/v1', server: { port: 'nope' } },
+        local: {
+          apiUrl: 'http://localhost:8790/api/v1',
+          server: { lifecycle: 'managed', cwd: '/tmp/legacy' },
+        },
       },
     });
-    expect(loadUserServerConfig(path)).toBeUndefined();
-  });
-
-  it('returns undefined when the context has no server block', () => {
-    const path = writeConfig({
-      currentContext: 'local',
-      contexts: { local: { apiUrl: 'http://localhost:8787/api/v1' } },
+    expect(loadUserServerConfig(path)).toEqual({
+      lifecycle: 'managed',
+      cwd: '/tmp/legacy',
+      port: 8790,
+      host: 'localhost',
     });
-    expect(loadUserServerConfig(path)).toBeUndefined();
   });
 });
 
@@ -123,30 +141,22 @@ describe('applyUserServerConfigToEnv', () => {
       currentContext: 'local',
       contexts: {
         local: {
-          apiUrl: 'http://localhost:8787/api/v1',
-          server: {
-            databaseUrl: 'postgres://from-config/db',
-            port: 9000,
-            host: 'cfg-host',
-            dataDir: '/cfg/data',
-          },
+          url: 'http://cfg-host:9000/api/v1',
+          lifecycle: 'managed',
         },
       },
     });
 
-    process.env.DATABASE_URL = 'postgres://from-env/db';
+    process.env.HOST = 'env-host';
 
     applyUserServerConfigToEnv(path);
 
-    expect(process.env.DATABASE_URL).toBe('postgres://from-env/db');
     expect(process.env.PORT).toBe('9000');
-    expect(process.env.HOST).toBe('cfg-host');
-    expect(process.env.LOBU_DATA_DIR).toBe('/cfg/data');
+    expect(process.env.HOST).toBe('env-host');
   });
 
   it('no-ops when no config file is present', () => {
     applyUserServerConfigToEnv(join(tmpdir(), 'missing.json'));
-    expect(process.env.DATABASE_URL).toBeUndefined();
     expect(process.env.PORT).toBeUndefined();
   });
 });

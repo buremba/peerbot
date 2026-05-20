@@ -1,6 +1,6 @@
 {
   "name": "@lobu/connectors",
-  "version": "8.0.0",
+  "version": "9.0.0",
   "license": "BUSL-1.1",
   "type": "module",
   "description": "Lobu memory connectors — third-party integration implementations built on @lobu/connector-sdk",

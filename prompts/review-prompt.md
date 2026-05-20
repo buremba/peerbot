@@ -17,10 +17,10 @@ gh pr diff "$PR_NUMBER"
 gh pr checks "$PR_NUMBER"
 ```
 
-## 2. Test results (already run by the workflow — read, don't re-run)
+## 2. Test results (already run by the script — read, don't re-run)
 
-The workflow ran the deterministic suites before invoking you. Read the
-logs. Do NOT re-run these — that's wasted budget and the workflow already
+The driver script ran the deterministic suites before invoking you. Read the
+logs. Do NOT re-run these — that's wasted budget and the script already
 captured the canonical output.
 
 - Typecheck: exit `$TYPECHECK_EXIT` (log: `$TYPECHECK_LOG`)
@@ -37,7 +37,7 @@ add a one-line entry to `blockers`, and quote the failing test names +
 short excerpts in `notes`.
 
 If a log file is missing or empty (`$..._EXIT` is empty), the test step
-itself was skipped by the workflow — record that as a blocker
+itself was skipped by the script — record that as a blocker
 (`"test suite skipped: <suite>"`) rather than inferring pass.
 
 ## 3. Additional exploratory verification (your discretion)
@@ -63,13 +63,13 @@ lie by omission.
 
 ## 4. Time and tool budget
 
-- ~15 min total compute budget on top of the workflow-run suites.
-- If the environment itself is broken beyond the suites the workflow
+- ~15 min total compute budget on top of the script-run suites.
+- If the environment itself is broken beyond the suites the script
   already ran (e.g. you can't even boot the server for an exploratory
   endpoint check), record that as a `blocker` and finish with a partial
   verdict. Do not retry indefinitely.
 - The numeric scores must reflect what you empirically verified — don't
-  inflate `bugs` from speculation. Confirmed by a failing workflow-run
+  inflate `bugs` from speculation. Confirmed by a failing script-run
   suite OR a failure you reproduced in exploration = a bug. "This looks
   suspicious but everything passed" = a note, not a bug.
 
@@ -95,11 +95,11 @@ lie by omission.
 
 ### Calibration
 
-- **confidence ≥ 90** only if every workflow-run suite passed AND your
+- **confidence ≥ 90** only if every script-run suite passed AND your
   exploratory probes lined up with expectations AND you would stake the
   team on this not breaking prod.
 - **confidence ≤ 30** only if you cannot understand the diff or a
-  workflow-run suite failed in a way the diff caused.
+  script-run suite failed in a way the diff caused.
 - Default range for clean PRs (suites green, no exploration surprises) is
   **70–89**.
 

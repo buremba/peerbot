@@ -1,8 +1,11 @@
 # PR Review Verdict Schema
 
-Every non-draft PR gets a single AI review check-run in **shadow mode**:
-`pi-review`. It emits exactly one JSON object matching this schema, posted
-as the `output.summary` of the check-run.
+After completing a PR, the agent runs `make pi-review PR=<n>` locally. The
+script (`scripts/run-pi-review.sh`) drives the deterministic test suites,
+invokes `pi` against the diff, and posts a `pi-review` check-run plus a PR
+comment with a JSON verdict matching this schema. **GitHub Actions does not
+run pi-review** — it's a local-driven shadow mode owned by the agent that
+landed the PR.
 
 A future merge bot will read this verdict and decide whether to auto-merge.
 For now the verdict is informational: the check-run always finishes with
@@ -64,7 +67,7 @@ thresholds from any additional reviewer that gets wired in).
 ### `bugs` (integer, ≥0)
 
 Count of confirmed issues. A confirmed issue is **either** a non-zero exit
-code on a workflow-run test suite (typecheck, unit, integration) **or** a
+code on a script-run test suite (typecheck, unit, integration) **or** a
 reproducible failure the reviewer observed exercising the system (boot
 probe, endpoint hit, narrow test re-run). Speculation is NOT a bug — it
 goes in `notes` as a concern. If you didn't verify, you don't get to count.
@@ -193,3 +196,8 @@ The reviewer posts `conclusion: neutral` regardless of scores. Merges are
 not gated by this check-run yet. The point of shadow mode is to observe how
 the verdicts track real-world PR outcomes so the gate thresholds above can
 be calibrated before they are wired up.
+
+Today's flow: agent finishes a PR → runs `make pi-review PR=<n>` locally →
+pi reviews + posts check-run + PR comment → human reads the verdict in the
+GitHub UI and merges. A future merge bot will read the verdict and apply
+the gate thresholds above; that bot doesn't exist yet.

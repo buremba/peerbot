@@ -249,7 +249,7 @@ Without an editor integration, biome's `--write` still rewrites files at commit 
 
 ### Validation after code changes
 
-Every non-draft PR gets a `pi-review` check-run in shadow mode (gpt-5.5 high via pi's openai-codex profile, restored from `PI_AUTH_BUNDLE` secret). Verdicts visible in Checks tab; do not gate merges yet. See `docs/REVIEW_SCHEMA.md`.
+**After completing a PR, run `make pi-review PR=<n>` locally** — pi reviews the diff, runs the affected test suites, exercises the system, and posts a `pi-review` check-run + PR comment with the JSON verdict. Verdicts do not gate merges yet (shadow mode). See `docs/REVIEW_SCHEMA.md`.
 
 **E2E before merge (hard gate).** For any bug-fix PR, do a red → fix → green cycle before opening:
 

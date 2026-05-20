@@ -143,8 +143,11 @@ clean-workers:
 	@echo "✅ Worker subprocesses stopped"
 
 # --- Shadow-mode AI reviewer -----------------------------------------------
-# Mirrors what .github/workflows/pi-review.yml runs in CI so a verdict can be
-# previewed locally before pushing. See docs/REVIEW_SCHEMA.md.
+# Local-only: the agent that landed a PR runs this after pushing. The script
+# spins up a per-PR worktree under ~/.pi-review-worktrees/, runs the test
+# suites, invokes pi (using local ~/.pi/agent state), and posts the JSON
+# verdict as a check-run + PR comment. GitHub Actions does not run pi-review.
+# See docs/REVIEW_SCHEMA.md.
 
 pi-review:
 	@: $${PR?Usage: make pi-review PR=<pr-number>}

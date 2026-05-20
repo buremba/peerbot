@@ -1,0 +1,111 @@
+# schema.yaml — The knowledge graph definition
+#
+# Three sections:
+#   1. entities    — What things exist (each becomes a table row with metadata)
+#   2. relationships — How entities connect (directed edges with metadata)
+#   3. watchers    — Scheduled LLM jobs that extract structured data from events
+#
+# After a watcher runs, its `reaction_script` fires with the extracted data
+# so you can persist enriched entities back to the knowledge graph.
+
+version: 2
+
+# ── Entities ──────────────────────────────────────────────────────────────────
+# Each entity gets: id, name, entity_type, metadata (your schema), timestamps.
+# The `metadata_schema` is JSON Schema — Lobu uses it for validation and UI.
+
+entities:
+  - slug: topic
+    name: Topic
+    description: A subject the agent tracks — e.g. a project, a person, a company
+    icon: hash
+    color: "#3B82F6"
+    metadata_schema:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          x-table-label: Name
+          x-table-column: true
+        summary:
+          type: string
+          description: Latest one-line summary from the watcher
+          x-table-label: Summary
+          x-table-column: true
+        last_seen:
+          type: string
+          format: date-time
+          x-table-label: Last seen
+          x-table-column: true
+        status:
+          type: string
+          enum: [active, stale, archived]
+          default: active
+          x-table-label: Status
+          x-table-column: true
+
+# ── Relationships ─────────────────────────────────────────────────────────────
+# Optional. Directed edges between entities. Each gets its own metadata_schema.
+
+relationships: []
+
+# ── Watchers ──────────────────────────────────────────────────────────────────
+# A watcher is a cron-scheduled LLM call that:
+#   1. Reads recent events (from connectors or prior watchers)
+#   2. Extracts structured data matching `extraction_schema`
+#   3. Passes the extracted data to `reaction_script` for side effects
+#
+# Fields:
+#   slug               — unique ID for this watcher
+#   agent              — which agent runs the LLM (must match lobu.toml)
+#   name               — human-readable label
+#   schedule           — cron expression (UTC)
+#   prompt             — instructions for the LLM
+#   extraction_schema  — JSON Schema the LLM must fill
+#   reaction_script    — (optional) TypeScript that runs after extraction
+
+watchers:
+  # ── Example: Daily digest watcher ───────────────────────────────────────
+  # Runs every morning at 9am. Reads new events, produces a summary.
+  # The reaction script persists the summary as topic entities.
+
+  - slug: daily-summary
+    agent: starter
+    name: Daily summary
+    schedule: "0 9 * * *"
+    notification_priority: normal
+    tags: [digest, daily]
+    min_cooldown_seconds: 3600
+    reaction_script: ./reactions/daily-summary.reaction.ts
+
+    prompt: |
+      Summarize the most important new events since the last run.
+
+      For each notable topic or theme:
+      1. Give it a short name
+      2. Write a one-line summary
+      3. Rate its importance (low/medium/high)
+
+      Skip noise (marketing emails, system notifications).
+      If nothing notable happened, return empty arrays.
+
+    extraction_schema:
+      type: object
+      required: [topics]
+      properties:
+        topics:
+          type: array
+          items:
+            type: object
+            required: [name, summary, importance]
+            properties:
+              name:
+                type: string
+                description: Short topic name
+              summary:
+                type: string
+                description: One-line summary of what's new
+              importance:
+                type: string
+                enum: [low, medium, high]

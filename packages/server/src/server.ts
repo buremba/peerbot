@@ -5,8 +5,9 @@
  *   - postgres:// URL     → connect to an external Postgres (prod, or a DB you run)
  *   - a path / file://    → spawn a local embedded Postgres rooted there
  *
- * Embedded boot lives in `./embedded-runtime` and is loaded ONLY via
- * `await import(...)` in the embedded branch, so the external/prod path never
+ * Embedded boot lives in `./embedded-runtime` (statically imported below); the
+ * heavy embedded deps — `embedded-postgres` + the pgvector injector — load via
+ * `await import(...)` *inside* that module, so the external/prod path never
  * resolves or loads the embedded-postgres binary. Everything after the backend
  * is chosen is identical — the shared spine (Hono wrapper, middleware, routes,
  * httpServer timeouts, Vite, scheduler, signal handlers, shutdown ordering)

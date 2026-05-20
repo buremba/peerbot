@@ -12,21 +12,21 @@
     "language": "yaml"
   },
   "watcher": {
-    "code": "watchers:\n  - slug: account-health-monitor\n    agent: sales\n    schedule: 0 */12 * * *\n    prompt: \"Poll CRM data for tracked accounts. Track expansion progress, risk level changes, and renewal timeline.\"\n    extraction_schema:\n      type: object\n      required: [risk_level, expansion_status, renewal_blockers, activity_delta]",
+    "code": "watchers:\n  - slug: board-action-tracker\n    agent: leadership\n    schedule: 0 8 * * *\n    prompt: \"Track board action items: check task delivery status, blocker resolution progress, and approaching deadlines for the next board packet.\"\n    extraction_schema:\n      type: object\n      required: [action_items, blocked_items, deadlines_approaching, completion_status]",
     "path": "models/schema.yaml",
-    "githubUrl": "https://github.com/lobu-ai/lobu/blob/main/examples/sales/models/schema.yaml",
+    "githubUrl": "https://github.com/lobu-ai/lobu/blob/main/examples/leadership/models/schema.yaml",
     "language": "yaml"
   },
   "reaction": {
-    "code": "/**\n * Reaction for the `account-health-monitor` watcher.\n *\n * When the watcher detects a material risk-level change on a tracked account,\n * persist a `health_change` event so the renewal-risk view + weekly digest\n * have a stable record without re-extracting from the CRM stream.\n */\nimport type { ReactionContext } from \"@lobu/connector-sdk\";\n\ninterface HealthData {\n  account_changes?: Array<{\n    account: string;\n    previous_risk: \"low\" | \"medium\" | \"high\";\n    current_risk: \"low\" | \"medium\" | \"high\";\n    signals: string[];\n  }>;\n}\n\nconst RISK_ORDER = { low: 0, medium: 1, high: 2 } as const;\n\nexport default async (ctx: ReactionContext, client: any): Promise<void> => {\n  const data = ctx.extracted_data as HealthData;\n  const changes = data.account_changes ?? [];\n  // Only persist *worsening* transitions — improvements are visible in the\n  // CRM stream and don't need a durable flag.\n  const escalations = changes.filter(\n    (c) => RISK_ORDER[c.current_risk] > RISK_ORDER[c.previous_risk]\n  );\n  if (escalations.length === 0) return;\n\n  for (const c of escalations) {\n    await client.knowledge.save({\n      entity_ids: ctx.entities.map((e) => e.id),\n      content: `Account ${c.account}: risk ${c.previous_risk} → ${c.current_risk}\\nSignals: ${c.signals.join(\"; \")}`,\n      semantic_type: \"health_change\",\n      metadata: {\n        account: c.account,\n        from: c.previous_risk,\n        to: c.current_risk,\n        window_id: ctx.window.id,\n      },\n    });\n  }\n};",
-    "path": "models/reactions/account-health-monitor.reaction.ts",
-    "githubUrl": "https://github.com/lobu-ai/lobu/blob/main/examples/sales/models/reactions/account-health-monitor.reaction.ts",
+    "code": "/**\n * Reaction for the `reconciliation-monitor` watcher.\n *\n * Persists variance events when unreconciled transactions or new anomalies\n * are detected during the daily reconciliation pass.\n */\nimport type { ReactionClient, ReactionContext } from \"@lobu/connector-sdk\";\n\ninterface ReconciliationData {\n  unreconciled_count: number;\n  new_variances: string[];\n  approaching_deadlines: string[];\n  payment_risks?: string[];\n}\n\nexport default async (\n  ctx: ReactionContext,\n  client: ReactionClient\n): Promise<void> => {\n  const data = ctx.extracted_data as ReconciliationData;\n\n  const hasIssues =\n    data.unreconciled_count > 0 ||\n    (data.new_variances?.length ?? 0) > 0 ||\n    (data.approaching_deadlines?.length ?? 0) > 0;\n\n  if (!hasIssues) return;\n\n  const parts: string[] = [];\n  if (data.unreconciled_count > 0) {\n    parts.push(`${data.unreconciled_count} unreconciled transactions`);\n  }\n  if (data.new_variances?.length) {\n    parts.push(`Variances: ${data.new_variances.join(\"; \")}`);\n  }\n  if (data.approaching_deadlines?.length) {\n    parts.push(`Deadlines: ${data.approaching_deadlines.join(\"; \")}`);\n  }\n\n  await client.knowledge.save({\n    entity_ids: ctx.entities.map((e) => e.id),\n    content: parts.join(\"\\n\"),\n    semantic_type: \"reconciliation_alert\",\n    metadata: {\n      window_id: ctx.window.id,\n      unreconciled_count: data.unreconciled_count,\n      variance_count: data.new_variances?.length ?? 0,\n    },\n  });\n};",
+    "path": "models/reactions/reconciliation-monitor.reaction.ts",
+    "githubUrl": "https://github.com/lobu-ai/lobu/blob/main/examples/finance/models/reactions/reconciliation-monitor.reaction.ts",
     "language": "typescript"
   },
   "agentToml": {
-    "code": "[agents.sales]\nname = \"sales\"\n[[agents.sales.providers]]\nid = \"anthropic\"\nmodel = \"claude/sonnet-4-5\"\nkey = \"$ANTHROPIC_API_KEY\"\n[memory]\nenabled = true\norg = \"sales\"\nmodels = \"./models\"\ndata = \"./data\"",
+    "code": "[agents.crm]\nname = \"crm\"\n[[agents.crm.providers]]\nid = \"z-ai\"\nmodel = \"z-ai/glm-4.7\"\nkey = \"$Z_AI_API_KEY\"\n[memory]\nenabled = true\norg = \"lobu-crm\"\nmodels = \"./models\"\ndata = \"./data\"",
     "path": "lobu.toml",
-    "githubUrl": "https://github.com/lobu-ai/lobu/blob/main/examples/sales/lobu.toml",
+    "githubUrl": "https://github.com/lobu-ai/lobu/blob/main/examples/lobu-crm/lobu.toml",
     "language": "toml"
   },
   "skill": {

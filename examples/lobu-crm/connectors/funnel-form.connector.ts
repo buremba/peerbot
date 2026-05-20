@@ -1,4 +1,8 @@
-import { ConnectorRuntime, type SyncContext, type SyncResult } from "@lobu/connector-sdk";
+import {
+  ConnectorRuntime,
+  type SyncContext,
+  type SyncResult,
+} from "@lobu/connector-sdk";
 
 interface FunnelCheckpoint {
   seen_ids: string[];
@@ -15,7 +19,10 @@ interface FunnelConfig {
  *
  * Demonstrates: ConnectorRuntime<C, F> with typed checkpoint + config.
  */
-export default class FunnelFormConnector extends ConnectorRuntime<FunnelCheckpoint, FunnelConfig> {
+export default class FunnelFormConnector extends ConnectorRuntime<
+  FunnelCheckpoint,
+  FunnelConfig
+> {
   readonly definition = {
     key: "funnel-form",
     name: "Funnel form",
@@ -24,21 +31,28 @@ export default class FunnelFormConnector extends ConnectorRuntime<FunnelCheckpoi
     feeds: { submissions: { key: "submissions", name: "Form submissions" } },
   };
 
-  async sync(ctx: SyncContext<FunnelCheckpoint, FunnelConfig>): Promise<SyncResult<FunnelCheckpoint>> {
+  async sync(
+    ctx: SyncContext<FunnelCheckpoint, FunnelConfig>
+  ): Promise<SyncResult<FunnelCheckpoint>> {
     const seen = new Set<string>(ctx.checkpoint?.seen_ids ?? []);
-    const subs: any[] = (await (await fetch(ctx.config.endpoint)).json()).submissions ?? [];
+    const subs: any[] =
+      (await (await fetch(ctx.config.endpoint)).json()).submissions ?? [];
     const fresh = subs.filter((s) => s?.id && !seen.has(s.id));
     return {
       events: fresh.map((s) => ({
         origin_id: s.id,
         origin_type: "form_submission",
-        title: s.company ? `Demo request — ${s.company}` : `Demo request — ${s.name ?? s.email ?? s.id}`,
+        title: s.company
+          ? `Demo request — ${s.company}`
+          : `Demo request — ${s.name ?? s.email ?? s.id}`,
         payload_text: s.message ?? "",
         author_name: s.name,
         occurred_at: s.submitted_at ? new Date(s.submitted_at) : new Date(),
         metadata: { company: s.company, email: s.email },
       })),
-      checkpoint: { seen_ids: [...seen, ...fresh.map((s) => s.id)].slice(-1000) },
+      checkpoint: {
+        seen_ids: [...seen, ...fresh.map((s) => s.id)].slice(-1000),
+      },
     };
   }
 

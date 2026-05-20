@@ -637,6 +637,16 @@ function ConnectorsSection() {
             <ProductLink href="/getting-started/connector-sdk/">
               Read the connector-sdk docs
             </ProductLink>
+            <div class="mt-4 flex flex-wrap gap-x-4 gap-y-1 text-[13px]" style={{ color: "var(--color-page-text-muted)" }}>
+              <span>Built-in:</span>
+              <a class="underline decoration-dotted underline-offset-2 transition-colors hover:text-[color:var(--color-tg-accent)]" href="/getting-started/connectors/github/">GitHub</a>
+              <a class="underline decoration-dotted underline-offset-2 transition-colors hover:text-[color:var(--color-tg-accent)]" href="/getting-started/connectors/linear/">Linear</a>
+              <a class="underline decoration-dotted underline-offset-2 transition-colors hover:text-[color:var(--color-tg-accent)]" href="/getting-started/connectors/slack/">Slack</a>
+              <a class="underline decoration-dotted underline-offset-2 transition-colors hover:text-[color:var(--color-tg-accent)]" href="/getting-started/connectors/telegram/">Telegram</a>
+              <a class="underline decoration-dotted underline-offset-2 transition-colors hover:text-[color:var(--color-tg-accent)]" href="/getting-started/connectors/discord/">Discord</a>
+              <a class="underline decoration-dotted underline-offset-2 transition-colors hover:text-[color:var(--color-tg-accent)]" href="/getting-started/connectors/whatsapp/">WhatsApp</a>
+              <a class="underline decoration-dotted underline-offset-2 transition-colors hover:text-[color:var(--color-tg-accent)]" href="/getting-started/connectors/x/">X</a>
+            </div>
           </div>
         }
         code={
@@ -753,9 +763,14 @@ function WatchersSection() {
                 </>,
               ]}
             />
-            <ProductLink href="/getting-started/reaction-sdk/">
-              Read the watchers guide
-            </ProductLink>
+            <div class="flex flex-wrap gap-x-4 gap-y-2">
+              <ProductLink href="/getting-started/watchers/">
+                Watchers guide
+              </ProductLink>
+              <ProductLink href="/getting-started/reaction-sdk/">
+                Reaction SDK docs
+              </ProductLink>
+            </div>
           </div>
         }
         code={
@@ -771,7 +786,7 @@ function WatchersSection() {
               badge="optional · typescript"
               snippet={snippets.reaction}
             />
-            <ExampleFooterLink slug="sales" />
+            <ExampleFooterLink slug="finance" />
           </div>
         }
       />
@@ -874,8 +889,13 @@ function AgentsSection() {
             <FeatureList
               items={[
                 <>
-                  <b>Every chat surface</b> — Slack, Telegram, Discord, Teams,
-                  WhatsApp, HTTP, MCP. Same{" "}
+                  <b>Every chat surface</b> —{" "}
+                  <a class="underline decoration-dotted underline-offset-2 transition-colors hover:text-[color:var(--color-tg-accent)]" href="/getting-started/channels/slack/">Slack</a>,{" "}
+                  <a class="underline decoration-dotted underline-offset-2 transition-colors hover:text-[color:var(--color-tg-accent)]" href="/getting-started/channels/telegram/">Telegram</a>,{" "}
+                  <a class="underline decoration-dotted underline-offset-2 transition-colors hover:text-[color:var(--color-tg-accent)]" href="/getting-started/channels/discord/">Discord</a>,{" "}
+                  <a class="underline decoration-dotted underline-offset-2 transition-colors hover:text-[color:var(--color-tg-accent)]" href="/getting-started/channels/teams/">Teams</a>,{" "}
+                  <a class="underline decoration-dotted underline-offset-2 transition-colors hover:text-[color:var(--color-tg-accent)]" href="/getting-started/channels/whatsapp/">WhatsApp</a>,{" "}
+                  HTTP, MCP. Same{" "}
                   <code class="font-mono text-[13px]">lobu.toml</code>.
                 </>,
                 <>
@@ -900,7 +920,7 @@ function AgentsSection() {
         code={
           <div>
             <CodeBlock badge="agent" snippet={snippets.agentToml} />
-            <ExampleFooterLink slug="sales" />
+            <ExampleFooterLink slug="lobu-crm" />
           </div>
         }
       />

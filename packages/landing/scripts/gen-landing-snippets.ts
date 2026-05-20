@@ -36,12 +36,12 @@ const PINNED = {
     path: "connectors/stripe-charges.connector.ts",
   },
   memorySchema: { slug: "sales", path: "models/schema.yaml" },
-  watcher: { slug: "sales", path: "models/schema.yaml" },
+  watcher: { slug: "leadership", path: "models/schema.yaml" },
   reaction: {
-    slug: "sales",
-    path: "models/reactions/account-health-monitor.reaction.ts",
+    slug: "finance",
+    path: "models/reactions/reconciliation-monitor.reaction.ts",
   },
-  agentToml: { slug: "sales", path: "lobu.toml" },
+  agentToml: { slug: "lobu-crm", path: "lobu.toml" },
   skill: {
     slug: "office-bot",
     path: "agents/food-ordering/skills/deliveroo-order/SKILL.md",

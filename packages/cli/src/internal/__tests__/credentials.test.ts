@@ -55,7 +55,7 @@ describe("credentials", () => {
     spyOn(fs, "mkdir").mockResolvedValue(undefined);
     spyOn(context, "resolveContext").mockImplementation(async () => ({
       name: currentContextName,
-      apiUrl: "https://app.lobu.ai/api/v1",
+      url: "https://app.lobu.ai/api/v1",
       source: "default",
     }));
   });
@@ -100,7 +100,7 @@ describe("credentials", () => {
   test("loadCredentials accepts legacy flat shape only for default context", async () => {
     spyOn(context, "resolveContext").mockResolvedValue({
       name: "lobu",
-      apiUrl: "https://app.lobu.ai/api/v1",
+      url: "https://app.lobu.ai/api/v1",
       source: "default",
     });
     const legacy = {
@@ -117,7 +117,7 @@ describe("credentials", () => {
   test("loadCredentials ignores legacy flat shape for non-default contexts", async () => {
     spyOn(context, "resolveContext").mockResolvedValue({
       name: "prod-non-default",
-      apiUrl: "https://prod.lobu.ai/api/v1",
+      url: "https://prod.lobu.ai/api/v1",
       source: "config",
     });
     const legacy = { accessToken: "legacy-token" };

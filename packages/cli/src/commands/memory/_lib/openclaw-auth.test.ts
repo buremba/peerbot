@@ -9,14 +9,14 @@ const CLOUD_MCP_URL = "https://lobu.ai/mcp";
 function mockProdMemoryContext() {
   spyOn(internal, "resolveContext").mockResolvedValue({
     name: "prod",
-    apiUrl: "https://community.lobu.ai/api/v1",
+    url: "https://community.lobu.ai/api/v1",
     source: "config",
   });
   spyOn(internal, "getMemoryUrl").mockImplementation(async () => CLOUD_MCP_URL);
   spyOn(internal, "getActiveOrg").mockImplementation(async () => "buremba");
   spyOn(internal, "findContextByMemoryUrl").mockResolvedValue({
     name: "lobu",
-    apiUrl: "https://app.lobu.ai/api/v1",
+    url: "https://app.lobu.ai/api/v1",
     source: "default",
   });
   spyOn(internal, "getToken").mockImplementation(async (contextName) =>

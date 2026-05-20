@@ -85,7 +85,7 @@ describe("context management", () => {
 
     const matched = await findContextByUrl("https://custom.lobu.ai/api/v1/");
     expect(matched?.name).toBe("custom");
-    expect(matched?.apiUrl).toBe("https://custom.lobu.ai/api/v1");
+    expect(matched?.url).toBe("https://custom.lobu.ai/api/v1");
 
     const none = await findContextByUrl("https://unknown.ai");
     expect(none).toBeUndefined();
@@ -172,6 +172,54 @@ describe("context management", () => {
     });
   });
 
+  test("derives default ports for scheme-only managed URLs", async () => {
+    const configData = {
+      currentContext: "secure",
+      contexts: {
+        secure: { url: "https://example.com/api/v1", lifecycle: "managed" },
+      },
+    };
+    readFileSpy.mockResolvedValue(JSON.stringify(configData));
+
+    expect(await getServerConfig("secure")).toEqual({
+      lifecycle: "managed",
+      port: 443,
+      host: "example.com",
+    });
+  });
+
+  test("derives port 80 for a scheme-only http managed URL", async () => {
+    const configData = {
+      currentContext: "plain",
+      contexts: {
+        plain: { url: "http://localhost/api/v1", lifecycle: "managed" },
+      },
+    };
+    readFileSpy.mockResolvedValue(JSON.stringify(configData));
+
+    expect(await getServerConfig("plain")).toEqual({
+      lifecycle: "managed",
+      port: 80,
+      host: "localhost",
+    });
+  });
+
+  test("strips IPv6 brackets from the derived managed host", async () => {
+    const configData = {
+      currentContext: "v6",
+      contexts: {
+        v6: { url: "http://[::1]:8787/api/v1", lifecycle: "managed" },
+      },
+    };
+    readFileSpy.mockResolvedValue(JSON.stringify(configData));
+
+    expect(await getServerConfig("v6")).toEqual({
+      lifecycle: "managed",
+      port: 8787,
+      host: "::1",
+    });
+  });
+
   test("external contexts do not produce server settings", async () => {
     const configData = {
       currentContext: "prod",
@@ -199,6 +247,43 @@ describe("context management", () => {
       cwd: "/Users/me/Code/lobu/.claude/worktrees/verify-flow",
       lifecycle: "managed",
     });
+  });
+
+  test("addContext rejects cwd on a non-managed context", async () => {
+    readFileSpy.mockResolvedValue(JSON.stringify({ contexts: {} }));
+
+    await expect(
+      addContext("ext", "http://localhost:8788", {
+        cwd: "/tmp/lobu-worktree",
+        lifecycle: "external",
+      })
+    ).rejects.toThrow(/`cwd` can only be set on managed contexts/);
+    expect(writeFileSpy.mock.calls.length).toBe(0);
+  });
+
+  test("addContext rejects cwd when lifecycle is absent", async () => {
+    readFileSpy.mockResolvedValue(JSON.stringify({ contexts: {} }));
+
+    await expect(
+      addContext("plain", "http://localhost:8788", {
+        cwd: "/tmp/lobu-worktree",
+      })
+    ).rejects.toThrow(/`cwd` can only be set on managed contexts/);
+    expect(writeFileSpy.mock.calls.length).toBe(0);
+  });
+
+  test("setServerConfig rejects cwd on a non-managed context", async () => {
+    readFileSpy.mockResolvedValue(
+      JSON.stringify({
+        currentContext: "local",
+        contexts: { local: { url: "http://localhost:8788/api/v1" } },
+      })
+    );
+
+    await expect(
+      setServerConfig({ cwd: "/tmp/lobu-worktree" }, "local")
+    ).rejects.toThrow(/`cwd` can only be set on managed contexts/);
+    expect(writeFileSpy.mock.calls.length).toBe(0);
   });
 
   test("addContext refuses to overwrite the default context", async () => {
@@ -265,6 +350,36 @@ describe("context management", () => {
     await expect(removeContext(DEFAULT_CONTEXT_NAME)).rejects.toThrow(
       /Cannot remove the default context/
     );
+  });
+
+  test("drops malformed stored URLs during normalization", async () => {
+    const configData = {
+      currentContext: "lobu",
+      contexts: {
+        lobu: { url: "https://app.lobu.ai/api/v1" },
+        broken: { url: "localhost:4111" },
+      },
+    };
+    readFileSpy.mockResolvedValue(JSON.stringify(configData));
+
+    const config = await loadContextConfig();
+    expect(config.contexts.broken).toBeUndefined();
+    expect(config.contexts.lobu).toBeDefined();
+  });
+
+  test("a malformed currentContext URL falls back to the default", async () => {
+    const configData = {
+      currentContext: "broken",
+      contexts: {
+        broken: { url: "localhost:4111" },
+      },
+    };
+    readFileSpy.mockResolvedValue(JSON.stringify(configData));
+
+    const config = await loadContextConfig();
+    // The malformed entry is dropped, so currentContext can't point at it.
+    expect(config.contexts.broken).toBeUndefined();
+    expect(config.currentContext).toBe(DEFAULT_CONTEXT_NAME);
   });
 
   test("drops invalid lifecycle fields during normalization", async () => {

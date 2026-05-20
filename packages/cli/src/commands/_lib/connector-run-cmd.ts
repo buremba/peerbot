@@ -171,7 +171,7 @@ export async function connectorRun(
   const explicitUrl = args.url?.trim();
   const apiBase = explicitUrl
     ? new URL(explicitUrl).origin
-    : apiBaseFrom(ctx.apiUrl);
+    : apiBaseFrom(ctx.url);
 
   const envToken = process.env.LOBU_API_TOKEN?.trim();
   let token: string;

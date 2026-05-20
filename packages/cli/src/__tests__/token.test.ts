@@ -12,7 +12,7 @@ describe("token create", () => {
   test("creates an org-scoped PAT using the current OAuth login", async () => {
     spyOn(context, "resolveContext").mockResolvedValue({
       name: "prod",
-      apiUrl: "https://app.lobu.ai/api/v1",
+      url: "https://app.lobu.ai/api/v1",
       source: "config",
     });
     spyOn(credentials, "getToken").mockResolvedValue("oauth-access-token");

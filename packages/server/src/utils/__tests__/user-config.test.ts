@@ -116,6 +116,57 @@ describe('loadUserServerConfig', () => {
     expect(loadUserServerConfig(path)).toBeUndefined();
   });
 
+  it('derives the default port for a scheme-only https URL', () => {
+    const path = writeConfig({
+      currentContext: 'prod',
+      contexts: {
+        prod: {
+          url: 'https://example.com/api/v1',
+          lifecycle: 'managed',
+        },
+      },
+    });
+    expect(loadUserServerConfig(path)).toEqual({
+      lifecycle: 'managed',
+      port: 443,
+      host: 'example.com',
+    });
+  });
+
+  it('derives the default port for a scheme-only http URL', () => {
+    const path = writeConfig({
+      currentContext: 'local',
+      contexts: {
+        local: {
+          url: 'http://localhost/api/v1',
+          lifecycle: 'managed',
+        },
+      },
+    });
+    expect(loadUserServerConfig(path)).toEqual({
+      lifecycle: 'managed',
+      port: 80,
+      host: 'localhost',
+    });
+  });
+
+  it('strips IPv6 brackets from the derived host', () => {
+    const path = writeConfig({
+      currentContext: 'local',
+      contexts: {
+        local: {
+          url: 'http://[::1]:8787/api/v1',
+          lifecycle: 'managed',
+        },
+      },
+    });
+    expect(loadUserServerConfig(path)).toEqual({
+      lifecycle: 'managed',
+      port: 8787,
+      host: '::1',
+    });
+  });
+
   it('reads legacy apiUrl + server lifecycle/cwd', () => {
     const path = writeConfig({
       currentContext: 'local',

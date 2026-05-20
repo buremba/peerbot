@@ -53,6 +53,34 @@ export function isSharedDatabaseUrl(databaseUrl: string): boolean {
   }
 }
 
+/**
+ * Decide whether `lobu run` must refuse to boot because the EFFECTIVE
+ * DATABASE_URL points at a shared/non-local DB the project never opted into.
+ *
+ * `mergedEnv` gives the shell higher precedence than the project's `.env`, so
+ * the project only "owns" the URL when its `.env` value is the exact one that
+ * survived the merge. Gating on project-`.env` *presence* alone (the old bug)
+ * let a shared/prod shell URL win silently whenever `.env` also happened to
+ * define its own DATABASE_URL — re-pointing "local dev" at shared/prod data.
+ *
+ * Exported for unit tests; the safety gate in `devCommand` is the consumer.
+ */
+export function shouldRefuseSharedDatabaseUrl(input: {
+  effectiveDatabaseUrl: string | undefined;
+  projectEnvDatabaseUrl: string | undefined;
+  unsafeSharedDb: boolean | undefined;
+}): boolean {
+  const effective = input.effectiveDatabaseUrl?.trim();
+  if (!effective) return false;
+  if (input.unsafeSharedDb) return false;
+
+  const projectEnv = input.projectEnvDatabaseUrl?.trim();
+  const projectEnvOwnsIt = !!projectEnv && projectEnv === effective;
+  if (projectEnvOwnsIt) return false;
+
+  return isSharedDatabaseUrl(effective);
+}
+
 type BackendBundleKind = "postgres" | "pglite";
 
 /**
@@ -91,17 +119,19 @@ export async function devCommand(
     ...envVars,
     ...(process.env as Record<string, string>),
   };
-  const hasDatabaseUrl = Boolean(mergedEnv.DATABASE_URL?.trim());
+  const effectiveDatabaseUrl = mergedEnv.DATABASE_URL?.trim();
+  const hasDatabaseUrl = Boolean(effectiveDatabaseUrl);
 
   // Refuse to boot against a shared/non-local DATABASE_URL that came from the
   // parent shell rather than the project's own .env. A common footgun:
   // "local lobu run" silently writes into prod / a teammate's tailnet DB.
   // Project pinning in .env is explicit consent.
   if (
-    hasDatabaseUrl &&
-    !envVars.DATABASE_URL?.trim() &&
-    isSharedDatabaseUrl(mergedEnv.DATABASE_URL!) &&
-    !options.unsafeSharedDb
+    shouldRefuseSharedDatabaseUrl({
+      effectiveDatabaseUrl,
+      projectEnvDatabaseUrl: envVars.DATABASE_URL,
+      unsafeSharedDb: options.unsafeSharedDb,
+    })
   ) {
     spinner.fail("DATABASE_URL inherited from shell points at a shared DB");
     console.error(

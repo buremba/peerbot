@@ -37,7 +37,7 @@ export async function contextCurrentCommand(): Promise<void> {
 
   console.log(chalk.bold("\n  Current context"));
   console.log(chalk.dim(`  Name: ${context.name}`));
-  console.log(chalk.dim(`  URL: ${context.apiUrl}`));
+  console.log(chalk.dim(`  URL: ${context.url}`));
   if (context.source === "env") {
     console.log(chalk.dim("  Source: environment override"));
   }

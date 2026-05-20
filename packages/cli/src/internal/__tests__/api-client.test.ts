@@ -69,14 +69,14 @@ describe("resolveApiClient", () => {
   test("resolves the token from the context that owns an overridden API URL", async () => {
     spyOn(context, "resolveContext").mockResolvedValue({
       name: "default",
-      apiUrl: "https://app.lobu.ai/api/v1",
+      url: "https://app.lobu.ai/api/v1",
       source: "default",
     });
     spyOn(context, "findContextByUrl").mockImplementation(async (url) => {
       if (url === "https://custom.lobu.ai/api/v1") {
         return {
           name: "custom",
-          apiUrl: "https://custom.lobu.ai/api/v1",
+          url: "https://custom.lobu.ai/api/v1",
           source: "config",
         };
       }
@@ -104,7 +104,7 @@ describe("resolveApiClient", () => {
   test("reads the active org from the resolved context", async () => {
     spyOn(context, "resolveContext").mockResolvedValue({
       name: "prod",
-      apiUrl: "https://app.lobu.ai/api/v1",
+      url: "https://app.lobu.ai/api/v1",
       source: "config",
     });
     spyOn(credentials, "getToken").mockResolvedValue("prod-token");
@@ -124,7 +124,7 @@ describe("resolveApiClient", () => {
   test("listOrganizations refuses unmatched URL overrides with stored credentials", async () => {
     spyOn(context, "resolveContext").mockResolvedValue({
       name: "default",
-      apiUrl: "https://app.lobu.ai/api/v1",
+      url: "https://app.lobu.ai/api/v1",
       source: "default",
     });
     spyOn(context, "findContextByUrl").mockResolvedValue(undefined);

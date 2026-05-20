@@ -126,7 +126,7 @@ describe("applyCommand --dry-run", () => {
     silenceOutput();
     spyOn(context, "resolveContext").mockResolvedValue({
       name: "prod",
-      apiUrl: "https://app.lobu.ai/api/v1",
+      url: "https://app.lobu.ai/api/v1",
       source: "config",
     });
     spyOn(credentials, "getToken").mockResolvedValue("tok");
@@ -219,7 +219,7 @@ describe("applyCommand org resolution", () => {
     silenceOutput();
     spyOn(context, "resolveContext").mockResolvedValue({
       name: "prod",
-      apiUrl: "https://app.lobu.ai/api/v1",
+      url: "https://app.lobu.ai/api/v1",
       source: "config",
     });
     spyOn(credentials, "getToken").mockResolvedValue("tok");
@@ -328,7 +328,7 @@ describe("applyCommand — missing lobu.toml", () => {
     silenceOutput();
     spyOn(context, "resolveContext").mockResolvedValue({
       name: "prod",
-      apiUrl: "https://app.lobu.ai/api/v1",
+      url: "https://app.lobu.ai/api/v1",
       source: "config",
     });
     spyOn(credentials, "getToken").mockResolvedValue("tok");

@@ -83,11 +83,24 @@ function deriveManagedServerConfig(entry: StoredEntry): UserServerConfig | undef
   if (rawUrl) {
     try {
       const parsed = new URL(rawUrl);
-      const port = parsed.port ? Number.parseInt(parsed.port, 10) : undefined;
+      // An explicit `:port` wins; otherwise fall back to the protocol default
+      // (80 for http, 443 for https) so a scheme-only context URL like
+      // `https://example.com/api/v1` doesn't drop the implied port.
+      const port = parsed.port
+        ? Number.parseInt(parsed.port, 10)
+        : parsed.protocol === 'http:'
+          ? 80
+          : parsed.protocol === 'https:'
+            ? 443
+            : undefined;
       if (port && Number.isInteger(port) && port > 0 && port <= 65535) {
         out.port = port;
       }
-      if (parsed.hostname) out.host = parsed.hostname;
+      // `new URL("http://[::1]:8787").hostname` keeps the brackets, which
+      // Node's `httpServer.listen({ host })` rejects with ENOTFOUND — strip
+      // them before exporting HOST.
+      const host = parsed.hostname.replace(/^\[|\]$/g, '');
+      if (host) out.host = host;
     } catch {
       // Ignore malformed hand-edited URLs; context validation lives in the CLI.
     }

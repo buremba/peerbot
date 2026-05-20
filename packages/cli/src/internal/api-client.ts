@@ -98,7 +98,7 @@ export async function resolveApiClient(
   options: ApiClientOptions = {}
 ): Promise<ResolvedApiClient> {
   const target = await resolveApiTarget(options);
-  const apiBaseUrl = apiBaseFromContextUrl(target.apiUrl);
+  const apiBaseUrl = apiBaseFromContextUrl(target.url);
   const token = process.env.LOBU_API_TOKEN || (await getToken(target.name));
 
   if (!token) {
@@ -139,7 +139,7 @@ export async function listOrganizations(
   return getOrganizationsFromUserInfo(
     target.name,
     token,
-    apiBaseFromContextUrl(target.apiUrl),
+    apiBaseFromContextUrl(target.url),
     options.fetchImpl,
     { useStoredUserInfoEndpoint: target.useStoredUserInfoEndpoint }
   );
@@ -163,7 +163,7 @@ async function resolveApiTarget(
   }
 
   const apiBaseUrl = apiBaseFromContextUrl(options.apiUrl);
-  const contextApiBaseUrl = apiBaseFromContextUrl(requested.apiUrl);
+  const contextApiBaseUrl = apiBaseFromContextUrl(requested.url);
   if (!process.env.LOBU_API_TOKEN && apiBaseUrl !== contextApiBaseUrl) {
     throw new ApiClientError(
       `Refusing to send stored context credentials for "${requested.name}" to ${apiBaseUrl}. Add a context for that URL or set LOBU_API_TOKEN explicitly.`
@@ -172,7 +172,7 @@ async function resolveApiTarget(
 
   return {
     ...requested,
-    apiUrl: options.apiUrl,
+    url: options.apiUrl,
     useStoredUserInfoEndpoint: apiBaseUrl === contextApiBaseUrl,
   };
 }

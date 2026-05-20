@@ -61,7 +61,7 @@ export async function orgCreateCommand(
   options?: { name?: string; context?: string }
 ): Promise<void> {
   const target = await resolveContext(options?.context);
-  const origin = new URL(target.apiUrl).origin;
+  const origin = new URL(target.url).origin;
   const name = options?.name?.trim() || slug;
   const url = `${origin}/orgs/new?slug=${encodeURIComponent(slug)}&name=${encodeURIComponent(name)}`;
   console.log(

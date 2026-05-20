@@ -83,7 +83,7 @@ export async function chatCommand(
     // gateway was running, or worse, hitting the wrong instance.
     const ctx = await resolveContext(options.context).catch(() => null);
     gatewayUrl = ctx
-      ? apiBaseFromContextUrl(ctx.apiUrl)
+      ? apiBaseFromContextUrl(ctx.url)
       : await resolveGatewayUrl({ cwd });
   }
   // The Agent API lives under `<origin>/lobu` on every Lobu deployment; the

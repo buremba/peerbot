@@ -163,9 +163,9 @@ export async function getToken(contextName?: string): Promise<string | null> {
  */
 async function tryLocalInit(contextName?: string): Promise<Credentials | null> {
   const target = await resolveContext(contextName);
-  if (!isLoopbackUrl(target.apiUrl)) return null;
+  if (!isLoopbackUrl(target.url)) return null;
   try {
-    const res = await fetch(`${target.apiUrl}/api/local-init`, {
+    const res = await fetch(`${target.url}/api/local-init`, {
       method: "POST",
       headers: { "X-Lobu-Client": "cli" },
     });

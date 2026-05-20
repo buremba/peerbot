@@ -39,7 +39,7 @@ interface LobuContextConfig {
 
 export interface ResolvedContext {
   name: string;
-  apiUrl: string;
+  url: string;
   source: "default" | "config" | "env";
 }
 
@@ -164,7 +164,7 @@ export async function resolveContext(
   if (envApiUrl) {
     return {
       name: requestedContext || (await getCurrentContextName()),
-      apiUrl: normalizeApiUrl(envApiUrl),
+      url: normalizeApiUrl(envApiUrl),
       source: "env",
     };
   }
@@ -201,8 +201,15 @@ export async function addContext(
     url: normalizeAndValidateApiUrl(url),
   };
   const lifecycle = normalizeLifecycle(server?.lifecycle);
+  const cwd = server?.cwd?.trim();
+  // `cwd` only takes effect for managed contexts — getServerConfig() drops
+  // everything else. Persisting it on a non-managed context would be a silent
+  // no-op, so reject the combination instead of saving dead config.
+  if (cwd && lifecycle !== "managed") {
+    throw new Error("`cwd` can only be set on managed contexts.");
+  }
   if (lifecycle) entry.lifecycle = lifecycle;
-  if (server?.cwd?.trim()) entry.cwd = server.cwd.trim();
+  if (cwd) entry.cwd = cwd;
 
   config.contexts[trimmedName] = entry;
   await saveContextConfig(config);
@@ -281,7 +288,19 @@ function normalizeContextEntry(
   const rawUrl = firstString(raw.url, raw.apiUrl);
   if (!rawUrl) return undefined;
 
-  const entry: LobuContextEntry = { url: normalizeApiUrl(rawUrl) };
+  // Reject hand-edited / malformed stored URLs (e.g. "localhost:4111" with no
+  // scheme) instead of letting them survive normalization. Every write path
+  // already validates, so a stored entry that fails validation is corrupt —
+  // dropping it keeps the invariant that resolveContext() returns a usable
+  // endpoint.
+  let normalizedUrl: string;
+  try {
+    normalizedUrl = normalizeAndValidateApiUrl(rawUrl);
+  } catch {
+    return undefined;
+  }
+
+  const entry: LobuContextEntry = { url: normalizedUrl };
   const activeOrg = normalizeString(raw.activeOrg);
   if (activeOrg) entry.activeOrg = activeOrg;
   const memoryUrl = normalizeString(raw.memoryUrl);
@@ -359,9 +378,15 @@ export async function setServerConfig(
     delete context.cwd;
   } else {
     const lifecycle = normalizeLifecycle(server.lifecycle);
+    const cwd = server.cwd?.trim();
+    // Same invariant as addContext: a non-managed context with a `cwd` is dead
+    // config — getServerConfig() never returns it.
+    if (cwd && lifecycle !== "managed") {
+      throw new Error("`cwd` can only be set on managed contexts.");
+    }
     if (lifecycle) context.lifecycle = lifecycle;
     else delete context.lifecycle;
-    if (server.cwd?.trim()) context.cwd = server.cwd.trim();
+    if (cwd) context.cwd = cwd;
     else delete context.cwd;
   }
   await saveContextConfig(config);
@@ -376,12 +401,13 @@ function deriveManagedServerConfig(
 
   try {
     const parsed = new URL(context.url);
-    const port = parsed.port ? Number.parseInt(parsed.port, 10) : undefined;
+    const port = derivePort(parsed);
     if (port && Number.isInteger(port) && port > 0 && port <= 65535) {
       out.port = port;
     }
-    if (parsed.hostname) {
-      out.host = parsed.hostname;
+    const host = stripIpv6Brackets(parsed.hostname);
+    if (host) {
+      out.host = host;
     }
   } catch {
     // URL validation happens when contexts are saved/loaded; ignore here so a
@@ -389,6 +415,27 @@ function deriveManagedServerConfig(
   }
 
   return Object.keys(out).length === 0 ? undefined : out;
+}
+
+/**
+ * Resolve the effective port for a parsed context URL. An explicit `:port`
+ * wins; otherwise fall back to the protocol default (80 for http, 443 for
+ * https) so callers that bind from this struct don't drift from a context URL
+ * like `http://localhost/api/v1` that already implies a port.
+ */
+function derivePort(parsed: URL): number | undefined {
+  if (parsed.port) return Number.parseInt(parsed.port, 10);
+  if (parsed.protocol === "http:") return 80;
+  if (parsed.protocol === "https:") return 443;
+  return undefined;
+}
+
+/**
+ * `new URL("http://[::1]:8787").hostname` returns `[::1]` with brackets, which
+ * Node's `server.listen({ host })` rejects. Strip them before exporting HOST.
+ */
+function stripIpv6Brackets(hostname: string): string {
+  return hostname.replace(/^\[|\]$/g, "");
 }
 
 function normalizeAndValidateApiUrl(apiUrl: string): string {
@@ -456,7 +503,7 @@ function contextToResolvedContext(
 ): ResolvedContext {
   return {
     name,
-    apiUrl: normalizeApiUrl(context.url),
+    url: normalizeApiUrl(context.url),
     source: name === DEFAULT_CONTEXT_NAME ? "default" : "config",
   };
 }

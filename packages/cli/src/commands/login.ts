@@ -77,7 +77,7 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 
   let discovery: OAuthDiscovery;
   try {
-    discovery = await discoverOAuth(target.apiUrl);
+    discovery = await discoverOAuth(target.url);
   } catch (err) {
     const message =
       err instanceof OAuthError ? err.message : String((err as Error).message);
@@ -300,7 +300,7 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
 }
 
 async function loginWithToken(
-  target: { apiUrl: string; name: string },
+  target: { url: string; name: string },
   rawToken: string
 ): Promise<void> {
   const token = rawToken.trim();

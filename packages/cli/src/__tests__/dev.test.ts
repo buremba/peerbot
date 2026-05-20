@@ -14,6 +14,7 @@ import {
   findEnclosingMonorepoRoot,
   isSharedDatabaseUrl,
   resolveBackendBundle,
+  shouldRefuseSharedDatabaseUrl,
 } from "../commands/dev";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -170,6 +171,75 @@ describe("lobu run backend bundle resolution", () => {
 
     // Garbage URL → not "shared" (the boot path will fail elsewhere).
     expect(isSharedDatabaseUrl("not-a-url")).toBe(false);
+  });
+
+  describe("shouldRefuseSharedDatabaseUrl", () => {
+    const SHARED = "postgres://u:p@db.example.com:5432/prod";
+    const LOCAL = "postgres://localhost:5432/proj_dev";
+
+    test("refuses when a shared shell URL overrides a loopback .env URL", () => {
+      // The footgun: .env pins a local DB, but the shell exports a prod URL
+      // that wins the merge. Gating on .env presence alone used to pass here.
+      expect(
+        shouldRefuseSharedDatabaseUrl({
+          effectiveDatabaseUrl: SHARED,
+          projectEnvDatabaseUrl: LOCAL,
+          unsafeSharedDb: false,
+        })
+      ).toBe(true);
+    });
+
+    test("allows when the project's own .env shared URL survives the merge", () => {
+      // Pinning the shared URL in .env is explicit consent — the effective
+      // value equals the project .env value, so the project owns it.
+      expect(
+        shouldRefuseSharedDatabaseUrl({
+          effectiveDatabaseUrl: SHARED,
+          projectEnvDatabaseUrl: SHARED,
+          unsafeSharedDb: false,
+        })
+      ).toBe(false);
+    });
+
+    test("refuses a shared shell URL when .env pins nothing", () => {
+      expect(
+        shouldRefuseSharedDatabaseUrl({
+          effectiveDatabaseUrl: SHARED,
+          projectEnvDatabaseUrl: undefined,
+          unsafeSharedDb: false,
+        })
+      ).toBe(true);
+    });
+
+    test("allows a loopback effective URL regardless of source", () => {
+      expect(
+        shouldRefuseSharedDatabaseUrl({
+          effectiveDatabaseUrl: LOCAL,
+          projectEnvDatabaseUrl: undefined,
+          unsafeSharedDb: false,
+        })
+      ).toBe(false);
+    });
+
+    test("--unsafe-shared-db bypasses the refusal", () => {
+      expect(
+        shouldRefuseSharedDatabaseUrl({
+          effectiveDatabaseUrl: SHARED,
+          projectEnvDatabaseUrl: LOCAL,
+          unsafeSharedDb: true,
+        })
+      ).toBe(false);
+    });
+
+    test("no effective URL means no refusal (PGlite path)", () => {
+      expect(
+        shouldRefuseSharedDatabaseUrl({
+          effectiveDatabaseUrl: undefined,
+          projectEnvDatabaseUrl: undefined,
+          unsafeSharedDb: false,
+        })
+      ).toBe(false);
+    });
   });
 
   test("CLI build copies local runtime assets for installed lobu run", () => {

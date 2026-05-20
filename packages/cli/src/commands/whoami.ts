@@ -21,20 +21,20 @@ export async function whoamiCommand(options?: {
         chalk.dim("\n  Authenticated via LOBU_API_TOKEN environment variable.")
       );
       console.log(chalk.dim(`  Context: ${target.name}`));
-      console.log(chalk.dim(`  API URL: ${target.apiUrl}`));
+      console.log(chalk.dim(`  API URL: ${target.url}`));
       console.log(chalk.dim("  Lobu Cloud is in early access.\n"));
       return;
     }
     console.log(chalk.dim("\n  Not logged in."));
     console.log(chalk.dim(`  Context: ${target.name}`));
-    console.log(chalk.dim(`  API URL: ${target.apiUrl}`));
+    console.log(chalk.dim(`  API URL: ${target.url}`));
     console.log(chalk.dim("  Run `lobu login` to authenticate.\n"));
     return;
   }
 
   console.log(chalk.bold("\n  Lobu CLI"));
   console.log(chalk.dim(`  Context: ${target.name}`));
-  console.log(chalk.dim(`  API URL: ${target.apiUrl}`));
+  console.log(chalk.dim(`  API URL: ${target.url}`));
   if (creds.name) {
     console.log(chalk.dim(`  Name: ${creds.name}`));
   }

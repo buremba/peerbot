@@ -118,7 +118,7 @@ RAW="$(
   INTEGRATION_LOG="$INTEGRATION_LOG" INTEGRATION_EXIT="$INTEGRATION_EXIT" \
   GH_TOKEN="$GH_TOKEN_VAL" \
   DATABASE_URL="$DATABASE_URL" \
-  pi --mode json --no-session -p "@${PROMPT_FILE}" "Review the diff. Emit only the JSON verdict."
+  pi --mode json --no-session -p "@${PROMPT_FILE}" "Review the diff. Emit only the JSON verdict." < /dev/null
 )"
 PI_EXIT=$?
 set -e

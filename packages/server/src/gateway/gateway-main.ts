@@ -11,6 +11,10 @@ import type { GatewayConfig } from "./config/index.js";
 import type { RuntimeProviderCredentialResolver } from "./embedded.js";
 import { type PlatformAdapter, platformRegistry } from "./platform.js";
 import { UnifiedThreadResponseConsumer } from "./platform/unified-thread-consumer.js";
+import {
+  startTurnTimeoutSweep,
+  stopTurnTimeoutSweep,
+} from "./orchestration/turn-liveness.js";
 import type { SecretStoreRegistry } from "./secrets/index.js";
 import { CoreServices } from "./services/core-services.js";
 
@@ -143,6 +147,11 @@ export class Gateway {
     );
     await this.unifiedConsumer.start();
 
+    // 6. Start the turn-liveness deadline sweep — the cross-replica backstop
+    // that fails a turn whose worker hung or whose pod died (the fast path in
+    // EmbeddedDeploymentManager covers an observed crash instantly).
+    startTurnTimeoutSweep();
+
     this.isRunning = true;
   }
 
@@ -154,6 +163,9 @@ export class Gateway {
    */
   async stop(): Promise<void> {
     logger.info("Stopping gateway...");
+
+    // Stop the turn-liveness deadline sweep (symmetric with start()).
+    stopTurnTimeoutSweep();
 
     // Stop unified consumer if running
     if (this.unifiedConsumer) {

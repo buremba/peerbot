@@ -19,6 +19,11 @@ import {
   buildDeploymentInfoSummary,
   getVeryOldThresholdDays,
 } from "../deployment-utils.js";
+import { failTurnsForDeployment } from "../turn-liveness.js";
+
+/** Surfaced to the client when a worker dies before producing a reply. */
+const WORKER_DIED_MESSAGE =
+  "The worker handling your request stopped unexpectedly before it could reply. Please retry in a moment.";
 
 const logger = createLogger("orchestrator");
 
@@ -503,6 +508,12 @@ export function nixPackageAttrRef(pkg: string): string {
 
 export class EmbeddedDeploymentManager extends BaseDeploymentManager {
   private workers: Map<string, EmbeddedWorkerEntry> = new Map();
+  /** Deployments currently being torn down deliberately (scale-to-0, idle
+   *  reap, delete) via {@link killWorker}. The exit handler consumes the entry
+   *  so a deliberate stop is NOT surfaced to the user as a worker crash; any
+   *  OTHER exit/spawn-error fails the deployment's in-flight turns. Pod-local
+   *  and pod-exclusive (this pod owns its own worker children). */
+  private intentionalExits: Set<string> = new Set();
 
   constructor(
     config: OrchestratorConfig,
@@ -789,6 +800,11 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
       );
       this.workers.delete(deploymentName);
       releaseLockOnce();
+      // A spawn error is never a deliberate stop. Fail any in-flight turn(s)
+      // for this deployment so the client gets a terminal error instead of a
+      // hang. No-op if nothing is in flight (markers already discharged).
+      this.intentionalExits.delete(deploymentName);
+      void failTurnsForDeployment(deploymentName, WORKER_DIED_MESSAGE);
     });
 
     child.stdout?.on("data", (data: Buffer) => {
@@ -809,6 +825,9 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
       // flag and is the authoritative release point — codex P1#3.
       this.workers.delete(deploymentName);
       releaseLockOnce();
+      // `delete` returns true iff killWorker marked this exit as deliberate.
+      // Consume the flag here (the exit is the single authoritative point).
+      const wasIntentional = this.intentionalExits.delete(deploymentName);
       if (signal) {
         logger.info(
           `Embedded worker ${deploymentName} exited with signal ${signal}`
@@ -819,6 +838,14 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
         );
       } else {
         logger.info(`Embedded worker ${deploymentName} exited cleanly`);
+      }
+      // Any exit that wasn't a deliberate teardown fails the deployment's
+      // in-flight turn(s) — gated on exit code is wrong: a clean `exit 0` that
+      // leaves a turn un-answered is still a failure (GPT-5.5 edge #3). The
+      // marker's presence is the source of truth, so this is a no-op when the
+      // worker had already replied (markers discharged) or was idle.
+      if (!wasIntentional) {
+        void failTurnsForDeployment(deploymentName, WORKER_DIED_MESSAGE);
       }
     });
 
@@ -909,6 +936,11 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
   ): Promise<void> {
     const child = entry.process;
 
+    // Mark this as a deliberate teardown so the spawnDeployment exit handler
+    // does NOT surface it to the user as a worker crash. The exit handler
+    // consumes (deletes) the flag.
+    this.intentionalExits.add(deploymentName);
+
     // Delete from the map up front so callers see an empty
     // listDeployments() the moment kill returns — the public contract
     // hasn't changed. The lock release is deliberately NOT touched here
@@ -921,7 +953,14 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
     // indicators here. `child.killed` is set the moment we *send* a signal,
     // so checking it would mis-treat "we just sent SIGTERM" as "already
     // exited" and skip the SIGKILL escalation below.
-    if (child.exitCode !== null || child.signalCode !== null) return;
+    if (child.exitCode !== null || child.signalCode !== null) {
+      // It exited on its own before we asked — the exit handler already ran
+      // (and, since the flag wasn't set then, correctly treated it as a crash
+      // and failed any in-flight turns). Drop the flag we just added so it
+      // can't suppress a future exit for a re-used deployment name.
+      this.intentionalExits.delete(deploymentName);
+      return;
+    }
 
     const exited = new Promise<void>((resolve) => {
       child.once("exit", () => resolve());

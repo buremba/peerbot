@@ -21,7 +21,11 @@ import type {
   IMessageQueue,
   QueueJob as SharedQueueJob,
 } from "../infrastructure/queue/index.js";
-import { RunsQueue } from "../infrastructure/queue/index.js";
+import {
+  RunsQueue,
+  TERMINAL_DELIVERY_SEND_OPTS,
+} from "../infrastructure/queue/index.js";
+import { armTurnTimeout, failTurnIfPending } from "./turn-liveness.js";
 import {
   type BaseDeploymentManager,
   buildCanonicalConversationKey,
@@ -228,6 +232,9 @@ export class MessageConsumer {
       // guardrail trips. We surface the trip reason to the user via the
       // `thread_response` queue (same path `trackFailedDeployment` uses)
       // and skip both the worker queue enqueue and the deployment ensure.
+      // The trip is captured here but DELIVERED below (outside the fail-open
+      // try-catch) so a delivery failure can't be swallowed into dispatch.
+      let inputTrip: { reason: string; guardrail: string } | null = null;
       if (
         this.guardrailRegistry &&
         this.agentSettingsStore &&
@@ -285,39 +292,14 @@ export class MessageConsumer {
                 reason: outcome.tripped.reason,
                 metadata: outcome.tripped.metadata,
               });
-              const reasonText =
-                outcome.tripped.reason ?? "blocked by policy";
-              const blockMessage = `Message rejected: ${reasonText}`;
-              try {
-                const responseQueue = "thread_response";
-                await this.queue.createQueue(responseQueue);
-                await this.queue.send(responseQueue, {
-                  messageId: data.messageId,
-                  userId: data.userId,
-                  channelId: data.channelId,
-                  conversationId: data.conversationId,
-                  platform: data.platform,
-                  platformMetadata: data.platformMetadata,
-                  content: blockMessage,
-                  processedMessageIds: [data.messageId],
-                });
-              } catch (notifyError) {
-                logger.error(
-                  { notifyError: String(notifyError) },
-                  "Failed to send guardrail block message to user"
-                );
-              }
-              logger.info(
-                {
-                  agentId: data.agentId,
-                  guardrail: outcome.tripped.guardrail,
-                  conversationId: effectiveConversationId,
-                },
-                "Input guardrail tripped — message dropped"
-              );
-              queueSpan?.setStatus({ code: SpanStatusCode.OK });
-              queueSpan?.end();
-              return;
+              // Capture the trip; the rejection is DELIVERED below, outside this
+              // fail-open try-catch. Delivering here would let a delivery
+              // failure be caught by the catch and fall through to dispatch the
+              // blocked input — the opposite of what a trip must do.
+              inputTrip = {
+                reason: outcome.tripped.reason ?? "blocked by policy",
+                guardrail: outcome.tripped.guardrail,
+              };
             }
           }
         } catch (err) {
@@ -332,6 +314,61 @@ export class MessageConsumer {
           );
         }
       }
+
+      // Deliver a guardrail rejection OUTSIDE the fail-open try-catch above. A
+      // delivery failure here MUST propagate so the `messages` run retries (the
+      // trip is deterministic) — it must never be swallowed and fall through to
+      // dispatching the blocked input. Routed via `error` (renders end-to-end:
+      // SSE error event + CLI exit 1; platforms post `Error: …`). No turn marker
+      // is armed for a rejected turn, so the message-queue retry is the backstop.
+      if (inputTrip) {
+        const responseQueue = "thread_response";
+        await this.queue.createQueue(responseQueue);
+        await this.queue.send(
+          responseQueue,
+          {
+            messageId: data.messageId,
+            userId: data.userId,
+            channelId: data.channelId,
+            conversationId: data.conversationId,
+            platform: data.platform,
+            platformMetadata: data.platformMetadata,
+            error: `Message rejected: ${inputTrip.reason}`,
+            processedMessageIds: [data.messageId],
+          },
+          TERMINAL_DELIVERY_SEND_OPTS
+        );
+        logger.info(
+          {
+            agentId: data.agentId,
+            guardrail: inputTrip.guardrail,
+            conversationId: effectiveConversationId,
+          },
+          "Input guardrail tripped — message dropped"
+        );
+        queueSpan?.setStatus({ code: SpanStatusCode.OK });
+        queueSpan?.end();
+        return;
+      }
+
+      // Arm the turn-liveness marker BEFORE the message is deliverable to the
+      // worker. The marker is the durable record that this turn owes the client
+      // a terminal event; it is discharged on the worker's reply and otherwise
+      // failed (fast path on crash, deadline backstop on hang/pod-death) into a
+      // terminal `error`. Arming first closes a race where an already-running
+      // worker could reply before the marker exists — the discharge would
+      // no-op, then a stale marker would be armed and the sweep would emit a
+      // spurious error after a successful turn.
+      await armTurnTimeout(this.queue, {
+        messageId: data.messageId,
+        channelId: data.channelId,
+        conversationId: effectiveConversationId,
+        userId: data.userId,
+        platform: data.platform,
+        platformMetadata: data.platformMetadata,
+        deploymentName,
+        organizationId: data.organizationId,
+      });
 
       // 1) Send to thread queue immediately (queue persists; worker will drain on attach)
       await Sentry.startSpan(
@@ -640,23 +677,14 @@ export class MessageConsumer {
       const userMessage =
         "Worker startup failed and your request could not be processed. Please retry in a moment.";
 
-      // Notify user that their message could not be processed
-      try {
-        const responseQueue = "thread_response";
-        await this.queue.createQueue(responseQueue);
-        await this.queue.send(responseQueue, {
-          messageId: data.messageId,
-          userId: data.userId,
-          channelId: data.channelId,
-          conversationId: data.conversationId,
-          platform: data.platform,
-          platformMetadata: data.platformMetadata,
-          content: userMessage,
-          processedMessageIds: [data.messageId],
-        });
-      } catch (notifyError) {
-        logger.error("Failed to send error notification to user:", notifyError);
-      }
+      // Emit the startup-failure notice through the first-writer-wins election
+      // (atomic delete-marker + enqueue-error in one tx). This is gated on the
+      // marker still being pending: if a still-attached worker raced a real
+      // terminal reply (which discharged the marker), this no-ops instead of
+      // double-signalling the client. Routes via `error` (renders end-to-end:
+      // SSE error event + CLI exit 1; platforms post `Error: …`). If the marker
+      // was never armed (arm failed) it also no-ops — logged at arm time.
+      await failTurnIfPending(deploymentName, data.messageId, userMessage);
     } catch (trackError) {
       // Don't fail the main flow if tracking fails
       logger.error("Failed to track deployment failure:", trackError);

@@ -59,6 +59,32 @@ export interface WatcherRunPayload {
  * @param env Environment bindings
  * @returns Run ID if created, null if skipped
  */
+/**
+ * A feed whose connector can't be resolved to runnable code is an orphan: the
+ * connector was archived/uninstalled, or its version was registered without
+ * compiled code and has no bundled source to compile on demand. Soft-delete it
+ * in-place so it stops appearing in CheckDueFeeds — a warn + return null would
+ * repeat at the same cadence forever (~1/min), and a large enough orphan set
+ * fills the CheckDueFeeds LIMIT 100 and starves legitimate feeds. Operators
+ * recover by registering connector code and clearing `deleted_at`.
+ */
+async function softDeleteOrphanFeed(
+  sql: DbClient,
+  feedId: number,
+  feed: { connector_key: string; organization_id: string },
+  reason: string
+): Promise<void> {
+  await sql`
+    UPDATE feeds
+    SET deleted_at = current_timestamp
+    WHERE id = ${feedId}
+  `;
+  logger.warn(
+    { feedId, connector_key: feed.connector_key, organization_id: feed.organization_id },
+    `[queue] Soft-deleted orphan feed — ${reason}`
+  );
+}
+
 async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<number | null> {
   // Check if there's already a pending/running run for this feed
   const existing = await sql`
@@ -109,29 +135,14 @@ async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<n
       LIMIT 1
     `;
     if (defRows.length === 0) {
-      // An orphan feed: the connector was archived/uninstalled in this org
-      // but the feed wasn't soft-deleted. Pre-fix this threw an Error on
-      // every CheckDueFeeds tick (1 / min), producing ~380 error logs / min
-      // for 33 feeds. Soft-delete the feed in-place so it stops appearing
-      // in CheckDueFeeds — otherwise warning + returning null would just
-      // produce a warn-level repeat at the same cadence forever, and a
-      // large enough orphan set could fill the CheckDueFeeds LIMIT 100
-      // and starve legitimate feeds.
-      //
-      // Operators can recover by clearing `deleted_at` after reinstalling
-      // the connector definition.
-      await sql`
-        UPDATE feeds
-        SET deleted_at = current_timestamp
-        WHERE id = ${feedId}
-      `;
-      logger.warn(
-        {
-          feedId,
-          connector_key: feed.connector_key,
-          organization_id: feed.organization_id,
-        },
-        '[queue] Soft-deleted orphan feed — no active connector_definition for (connector_key, org).'
+      // The connector was archived/uninstalled in this org but the feed wasn't
+      // soft-deleted (see softDeleteOrphanFeed for why we soft-delete rather
+      // than warn-and-return).
+      await softDeleteOrphanFeed(
+        sql,
+        feedId,
+        feed,
+        'no active connector_definition for (connector_key, org).'
       );
       return null;
     }
@@ -155,9 +166,18 @@ async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<n
     source_path: string | null;
   };
   if (!compiled_code && !findBundledConnectorFile(feed.connector_key)) {
-    throw new Error(
-      `Connector '${feed.connector_key}' has no compiled code and no bundled source file for version '${connectorVersion}'.`
+    // Version is registered but has neither persisted compiled code nor a
+    // bundled source file to compile on demand (e.g. a connector key like
+    // `chrome.tabs` that was never a standalone bundled connector). It can
+    // never run — treat it as an orphan so it stops storming CheckDueFeeds
+    // with a per-poll error instead of looping forever (#1012).
+    await softDeleteOrphanFeed(
+      sql,
+      feedId,
+      feed,
+      `no compiled code and no bundled source for version '${connectorVersion}'.`
     );
+    return null;
   }
 
   const inserted = await sql`

@@ -28,7 +28,7 @@ bun install --frozen-lockfile
 If that rewrites `bun.lock`, commit the regenerated lockfile in the same change.
 
 ### Frontend (owletto)
-When editing UI under `packages/owletto`, follow the design rules in @packages/owletto/DESIGN_GUIDELINES.md — confirmations, surfaces, empty states, selection, forms, page copy, radius, Sheet vs Dialog. Match the existing components and exemplar files referenced there; do not introduce new primitives without updating the guideline in the same PR.
+When editing UI under `packages/owletto`, first read `packages/owletto/DESIGN_GUIDELINES.md` (NOT auto-loaded — read it before UI changes) and follow its rules: confirmations, surfaces, empty states, selection, forms, page copy, radius, Sheet vs Dialog. Match the existing components and exemplar files referenced there; do not introduce new primitives without updating the guideline in the same PR.
 
 ### Architecture
 

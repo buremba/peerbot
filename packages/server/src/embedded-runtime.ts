@@ -27,6 +27,36 @@ import logger from "./utils/logger";
 const APP_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 
+/**
+ * Load `@lobu/pgvector-embedded`. It is a `private` package that is never
+ * published to npm. In the monorepo / dev it resolves from `node_modules`
+ * (workspace dev-dependency), but the published `@lobu/cli` ships it vendored
+ * under the server bundle's `dist/vendor/` (copied by the CLI `build.cjs`)
+ * because esbuild can't inline its prebuilt native binaries. Try the bare
+ * specifier first; on failure (the published CLI, where it isn't in
+ * node_modules) load the vendored copy by path relative to this bundle.
+ *
+ * AGENTS.md dynamic-import allow-list: `embedded-runtime.ts` already lazy-loads
+ * `@lobu/pgvector-embedded`; the vendored-path fallback below loads the SAME
+ * dependency from the CLI tarball instead of node_modules — no new dependency,
+ * same lazy-on-embedded-path cost profile.
+ */
+async function importPgvectorEmbedded(): Promise<
+	typeof import("@lobu/pgvector-embedded")
+> {
+	try {
+		return await import("@lobu/pgvector-embedded");
+	} catch {
+		const vendored = new URL(
+			"./vendor/pgvector-embedded/dist/index.js",
+			import.meta.url
+		).href;
+		return (await import(
+			vendored
+		)) as typeof import("@lobu/pgvector-embedded");
+	}
+}
+
 export interface EmbeddedRuntime {
 	/** TCP URL of the spawned cluster; already written to process.env.DATABASE_URL. */
 	databaseUrl: string;
@@ -96,9 +126,8 @@ export async function startEmbeddedRuntime(): Promise<EmbeddedRuntime> {
 	// Heavy deps stay behind dynamic import so the external/prod path never
 	// loads the embedded-postgres binary resolution or the pgvector injector.
 	const { default: EmbeddedPostgres } = await import("embedded-postgres");
-	const { injectPgvector, resolveEmbeddedNativeDir } = await import(
-		"@lobu/pgvector-embedded"
-	);
+	const { injectPgvector, resolveEmbeddedNativeDir } =
+		await importPgvectorEmbedded();
 
 	// embedded-postgres bundles pg_trgm but not pgvector — inject the host
 	// platform's prebuilt vector library into the binary tree before boot

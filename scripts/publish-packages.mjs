@@ -24,8 +24,12 @@ const PACKAGES = [
   { dir: "packages/connector-sdk", transform: rewriteWorkspaceRefs },
   { dir: "packages/agent-worker", transform: rewriteWorkspaceRefs },
   { dir: "packages/embeddings", transform: rewriteWorkspaceRefs },
-  // Before cli — cli depends on @lobu/pgvector-embedded (workspace:*).
-  { dir: "packages/pgvector-embedded", transform: rewriteWorkspaceRefs },
+  // @lobu/pgvector-embedded is NOT published: it's `private` and ships its
+  // prebuilt native binaries inside the @lobu/cli tarball (build.cjs copies it
+  // to dist/vendor/pgvector-embedded), so the bundled server resolves it at
+  // runtime without a registry fetch. esbuild can't inline the native
+  // binaries, hence it stays a runtime sidecar rather than part of
+  // server.bundle.mjs.
   { dir: "packages/cli", transform: rewriteWorkspaceRefs },
   {
     dir: "packages/openclaw-plugin",

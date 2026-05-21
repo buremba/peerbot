@@ -67,3 +67,33 @@ for (const bundleName of ["server.bundle.mjs"]) {
     );
   }
 }
+
+// Vendor @lobu/pgvector-embedded into the CLI tarball. It's `private` (never
+// published) but the bundled server needs it at runtime for embedded Postgres
+// + pgvector. esbuild can't inline its prebuilt native binaries, so we ship
+// the package's dist + prebuilt under dist/vendor/ (NOT node_modules, which
+// npm strips from tarballs). embedded-runtime.ts loads this copy by path when
+// the bare specifier isn't resolvable (i.e. in the published CLI). The `bun`
+// export condition is stripped so a bun runtime resolves dist/index.js rather
+// than the src/ that doesn't ship.
+const pgvSrc = "../pgvector-embedded";
+const pgvDest = "dist/vendor/pgvector-embedded";
+if (fs.existsSync(`${pgvSrc}/dist`) && fs.existsSync(`${pgvSrc}/prebuilt`)) {
+  copyDirIfExists(`${pgvSrc}/dist`, `${pgvDest}/dist`);
+  copyDirIfExists(`${pgvSrc}/prebuilt`, `${pgvDest}/prebuilt`);
+  const pgvPkg = JSON.parse(fs.readFileSync(`${pgvSrc}/package.json`, "utf8"));
+  if (pgvPkg.exports?.["."]?.bun) {
+    delete pgvPkg.exports["."].bun;
+  }
+  fs.mkdirSync(pgvDest, { recursive: true });
+  fs.writeFileSync(
+    `${pgvDest}/package.json`,
+    `${JSON.stringify(pgvPkg, null, 2)}\n`
+  );
+} else {
+  console.warn(
+    `[cli build] @lobu/pgvector-embedded dist/prebuilt missing at ${pgvSrc}; ` +
+      "embedded-Postgres pgvector will be unavailable in `lobu run`. Run " +
+      "`bun run --filter '@lobu/pgvector-embedded' build` (binaries are committed)."
+  );
+}

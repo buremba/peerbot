@@ -22,9 +22,7 @@
   "engines": {
     "node": ">=20"
   },
-  "publishConfig": {
-    "access": "public"
-  },
+  "private": true,
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lobu-ai/lobu.git",

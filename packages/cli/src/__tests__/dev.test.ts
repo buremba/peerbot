@@ -99,10 +99,18 @@ describe("lobu run backend bundle resolution", () => {
       expect(cliRuntimeDeps[name]).toBeDefined();
     }
 
-    // @lobu/pgvector-embedded is the one @lobu/* dep the bundle keeps EXTERNAL
-    // (it ships prebuilt binary assets esbuild can't inline), so the published
-    // CLI must declare it explicitly.
-    expect(cliRuntimeDeps["@lobu/pgvector-embedded"]).toBeDefined();
+    // @lobu/pgvector-embedded ships prebuilt native binaries esbuild can't
+    // inline, and it's `private` (never published). It must therefore NOT be a
+    // runtime/registry dependency of the published CLI — otherwise
+    // `npm i @lobu/cli` would 404 on it. Instead build.cjs vendors it into
+    // dist/vendor/pgvector-embedded, and embedded-runtime.ts loads it from
+    // there when the bare specifier isn't resolvable.
+    expect(cliRuntimeDeps["@lobu/pgvector-embedded"]).toBeUndefined();
+    const cliBuildScript = readFileSync(
+      join(repoRoot, "packages", "cli", "scripts", "build.cjs"),
+      "utf8"
+    );
+    expect(cliBuildScript).toContain("dist/vendor/pgvector-embedded");
 
     // Compiled connector code deliberately leaves these native/browser deps
     // external, so npx-installed CLIs must provide them too.

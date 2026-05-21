@@ -12,10 +12,8 @@ import { type Context, Hono } from 'hono';
 import { createDbClientFromEnv } from '../db/client';
 import type { Env } from '../index';
 import { errorMessage } from '../utils/errors';
-import { getClientIP, getRateLimiter } from '../utils/rate-limiter';
 import { resolveBaseUrl } from './base-url';
 import { createAuth } from './index';
-import { getLocalPasscode, verifyLocalPasscode } from './local-passcode';
 import { mcpAuth, requireAuth } from './middleware';
 import { OAuthClientsStore } from './oauth/clients';
 import { PersonalAccessTokenService } from './tokens';
@@ -544,84 +542,6 @@ credentialRoutes.post('/local-init', async (c) => {
       name: org.name,
     },
   });
-});
-
-/**
- * Web sign-in for a local install: mint a Better Auth session for the single
- * user, gated by the boot passcode. An "unlock", not a cloud account — so it
- * returns only `{ ok: true }` (the session cookie is the credential; no worker
- * PAT — browser sessions don't poll workers). Same loopback boundary as
- * /local-init, plus the passcode (constant-time) and rate-limiting.
- */
-credentialRoutes.post('/local-passcode', async (c) => {
-  const guardError = assertLoopbackClient(c);
-  if (guardError) {
-    return c.json(guardError, 403);
-  }
-
-  // Only on installs that minted a passcode at boot (embedded single-user).
-  if (!getLocalPasscode()) {
-    return c.json(
-      {
-        error: 'passcode_not_enabled',
-        error_description:
-          'This deployment has no local passcode; sign in with your account instead.',
-      },
-      404
-    );
-  }
-
-  // Defense-in-depth — the ~192-bit passcode already makes brute force infeasible.
-  const rl = getRateLimiter().checkLimit(`rate:local-passcode:${getClientIP(c.req.raw)}`, {
-    limit: 10,
-    windowSeconds: 300,
-    errorMessage: 'Too many passcode attempts. Wait a few minutes and try again.',
-  });
-  if (!rl.allowed) {
-    return c.json({ error: 'rate_limited', error_description: rl.errorMessage }, 429);
-  }
-
-  let body: { passcode?: unknown };
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: 'invalid_body', error_description: 'expected JSON' }, 400);
-  }
-  const submitted = typeof body.passcode === 'string' ? body.passcode.trim() : '';
-  if (!verifyLocalPasscode(submitted)) {
-    return c.json({ error: 'invalid_passcode', error_description: 'Incorrect passcode.' }, 401);
-  }
-
-  // Resolve the install's single user — same rule as /local-init (prefer the
-  // human over the synthetic install_operator; refuse if multiple humans).
-  const sql = createDbClientFromEnv(c.env);
-  const userRows = (await sql`
-    SELECT id, principal_kind
-      FROM "user"
-     WHERE id <> 'bootstrap-user'
-     ORDER BY
-       CASE WHEN principal_kind = 'install_operator' THEN 1 ELSE 0 END ASC,
-       "createdAt" ASC
-     LIMIT 2
-  `) as unknown as Array<{ id: string; principal_kind: string }>;
-  const humanRows = userRows.filter((r) => r.principal_kind !== 'install_operator');
-  if (userRows.length === 0 || humanRows.length > 1) {
-    return c.json(
-      {
-        error: 'not_single_user',
-        error_description: 'The local passcode flow is only for single-user installs.',
-      },
-      404
-    );
-  }
-  const user = humanRows[0] ?? userRows[0]!;
-
-  const minted = await mintSessionCookieValue(c, user.id);
-  if ('error' in minted) {
-    return c.json({ error: 'session_create_failed', error_description: minted.error }, 500);
-  }
-  c.header('Set-Cookie', minted.cookieHeader);
-  return c.json({ ok: true });
 });
 
 export { credentialRoutes };

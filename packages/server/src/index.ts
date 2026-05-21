@@ -285,9 +285,9 @@ app.use(
       return isAllowedCorsOrigin(origin, c.env, c.req.url) ? origin : undefined;
     },
     allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    // X-Lobu-Client is the CSRF gate on /api/local-passcode (+ /local-init);
-    // the SPA passcode form sends it, so it must survive a cross-origin preflight
-    // (Vite dev origin → gateway, or the extension iframe).
+    // X-Lobu-Client is the CSRF gate on /api/local-init; the SPA's local-install
+    // auto-sign-in sends it, so it must survive a cross-origin preflight (Vite
+    // dev origin → gateway, or the extension iframe).
     allowHeaders: ['Content-Type', 'Authorization', 'X-MCP-Format', 'X-Lobu-Client'],
     exposeHeaders: ['Content-Type'],
     credentials: true, // Required for better-auth cookies

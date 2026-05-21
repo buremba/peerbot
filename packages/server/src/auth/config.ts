@@ -3,6 +3,7 @@ import type { Env } from '../index';
 import { getPrimaryAuthProfileForKind, normalizeAuthValues } from '../utils/auth-profiles';
 import { TtlCache } from '../utils/ttl-cache';
 import { safeParseUrl } from './base-url';
+import { getLocalPasscode } from './local-passcode';
 
 interface AuthConfig {
   social: Record<string, boolean>;
@@ -18,6 +19,11 @@ interface AuthConfig {
   // routes `/` → /sign-up when this is false in single-user mode, so the
   // operator lands on the right page on first launch without typing a URL.
   hasUser: boolean;
+  // True iff this install minted a local sign-in passcode at boot (embedded
+  // single-user mode). When set, the SPA shows a single passcode field instead
+  // of the email/password/passkey/magic-link form — local installs are an
+  // "unlock", not a cloud sign-up.
+  passcodeRequired: boolean;
 }
 
 type TokenEndpointAuthMethod = 'client_secret_post' | 'client_secret_basic' | 'none';
@@ -443,5 +449,14 @@ export async function getAuthConfig(
     hasUser = false;
   }
 
-  return { social, magicLink, phone, emailPassword, passkey, singleUserMode, hasUser };
+  return {
+    social,
+    magicLink,
+    phone,
+    emailPassword,
+    passkey,
+    singleUserMode,
+    hasUser,
+    passcodeRequired: getLocalPasscode() !== null,
+  };
 }

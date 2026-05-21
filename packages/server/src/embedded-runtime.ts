@@ -18,6 +18,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureDefaultAgent } from "./auth/default-provisioning";
 import { ensureInstallOperator } from "./auth/install-operator";
+import { generateLocalPasscode } from "./auth/local-passcode";
 import {
 	listMigrationFiles,
 	loadMigrationUpSection,
@@ -142,6 +143,14 @@ export async function startEmbeddedRuntime(): Promise<EmbeddedRuntime> {
 					await ensureInstallOperator();
 				} catch (err) {
 					logger.error({ err }, "Install-operator provisioning failed");
+				}
+			},
+			// Single-user installs mint a local sign-in passcode (printed once +
+			// written to <dataRoot>/local-passcode, 0600). The web sign-in uses it
+			// instead of email/password. No-op on multi-user / cloud builds.
+			() => {
+				if (process.env.LOBU_SINGLE_USER === "1") {
+					generateLocalPasscode(dataRoot);
 				}
 			},
 			// Default-agent provisioning: resolve the personal org id each boot so

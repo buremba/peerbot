@@ -1,5 +1,40 @@
 # Changelog
 
+## [9.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v8.0.0...lobu-v9.0.0) (2026-05-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **server:** the local `lobu run` / test database engine is now a real embedded PostgreSQL instead of PGlite. Existing ~/.lobu PGlite data dirs are not migrated — a fresh embedded PG cluster is created. Production (external Postgres via DATABASE_URL) is unchanged.
+
+### Features
+
+* **cli:** flatten Lobu context config ([#955](https://github.com/lobu-ai/lobu/issues/955)) ([50dd706](https://github.com/lobu-ai/lobu/commit/50dd706d736af268dffed8b1c92c33ac3e2d093b))
+* **cli:** lobu call — generic dispatcher over admin REST tools ([#938](https://github.com/lobu-ai/lobu/issues/938)) ([17f0da9](https://github.com/lobu-ai/lobu/commit/17f0da929293444d6393770ba0e13398cd263b52))
+* **cli:** ship the owletto web UI bundle in lobu run ([#985](https://github.com/lobu-ai/lobu/issues/985)) ([2439747](https://github.com/lobu-ai/lobu/commit/2439747c7ee2269f92d59e49930e337d56ae3ab3))
+* **connectors:** user-declared connector dependencies (npm bundled + nix native) ([#973](https://github.com/lobu-ai/lobu/issues/973)) ([ac2ddbd](https://github.com/lobu-ai/lobu/commit/ac2ddbd5a379ee1f6808fa8db57d9bc533adcbf4))
+* **landing:** dev-focused rebuild — pinned examples, animated architecture, real cast ([#945](https://github.com/lobu-ai/lobu/issues/945)) ([8695c57](https://github.com/lobu-ai/lobu/commit/8695c57c51c917b830412571265becd1b0300a37))
+* **landing:** per-use-case snippet tabs, connector logo wall, drop asciinema, simplify nav ([#988](https://github.com/lobu-ai/lobu/issues/988)) ([ca889c6](https://github.com/lobu-ai/lobu/commit/ca889c6242429ed4c9fb84c9946ce64cca1c6ceb))
+* local review tool (make review) — shadow-mode multi-axis verdict ([#942](https://github.com/lobu-ai/lobu/issues/942)) ([dfb4958](https://github.com/lobu-ai/lobu/commit/dfb4958f0ee31a5a5cabcf2ea55aa657c9f5e1a5))
+* **server:** generalize list_runs for connection/device/feed run tables ([#963](https://github.com/lobu-ai/lobu/issues/963)) ([68cefde](https://github.com/lobu-ai/lobu/commit/68cefde3404238af906d0e7fc3362c1e036c2208))
+* **server:** PGlite-mode parity with Postgres for Agent API ([#940](https://github.com/lobu-ai/lobu/issues/940)) ([cb2a6f1](https://github.com/lobu-ai/lobu/commit/cb2a6f1cf5fd797e03f3174d07fb274ecf831d1a))
+* **server:** replace PGlite with embedded Postgres; bundle pgvector; earthdistance geo ([#965](https://github.com/lobu-ai/lobu/issues/965)) ([7793c56](https://github.com/lobu-ai/lobu/commit/7793c5605d7cb223983e3f161c69b425741916d4))
+
+
+### Bug Fixes
+
+* **auth:** unwedge PGlite sign-up by routing single-user guard through the transaction adapter ([#952](https://github.com/lobu-ai/lobu/issues/952)) ([521e6f7](https://github.com/lobu-ai/lobu/commit/521e6f7eee31e89059f987cf673a496ee2188f63))
+* **ci:** expose ClawHub token flag to login step ([03160db](https://github.com/lobu-ai/lobu/commit/03160db2d101c8f7522b8f5c47a371b09d8abffc)), closes [#953](https://github.com/lobu-ai/lobu/issues/953)
+* **cli/server:** zero-to-chat local-dev flow works without --org or browser sign-in ([#944](https://github.com/lobu-ai/lobu/issues/944)) ([e6f201b](https://github.com/lobu-ai/lobu/commit/e6f201b98191607881f614b3e6dfa868bd1dbc0c))
+* **gateway:** surface worker failures to chat clients as terminal errors ([#946](https://github.com/lobu-ai/lobu/issues/946)) ([#971](https://github.com/lobu-ai/lobu/issues/971)) ([c8553c1](https://github.com/lobu-ai/lobu/commit/c8553c1a57fbb86beb95e354ae99da04c4282965))
+* getting-started reliability (openrouter model routing + run auto-apply) ([#987](https://github.com/lobu-ai/lobu/issues/987)) ([86b3f17](https://github.com/lobu-ai/lobu/commit/86b3f17b4100d2f6a099dd2144e265350e795a8f))
+* prevent prod data wipe — non-destructive baseline down + test-DB guard ([#989](https://github.com/lobu-ai/lobu/issues/989)) ([df38fbf](https://github.com/lobu-ai/lobu/commit/df38fbf48b34ee7e73fe30d4705ec0cdb6aac6af))
+* **providers:** reliable routing for all config-driven LLM providers ([#992](https://github.com/lobu-ai/lobu/issues/992)) ([ada2219](https://github.com/lobu-ai/lobu/commit/ada2219767c32a356e3113f39e6ff5041a4c962b))
+* remove redundant getDb dynamic imports and fix $member entity FK violation ([#957](https://github.com/lobu-ai/lobu/issues/957) [#956](https://github.com/lobu-ai/lobu/issues/956)) ([#959](https://github.com/lobu-ai/lobu/issues/959)) ([9e61edd](https://github.com/lobu-ai/lobu/commit/9e61eddc5eda1d87dda8251ccdec92149b9b46ce))
+* **server:** apply takes effect without lobu run restart ([#993](https://github.com/lobu-ai/lobu/issues/993)) ([3012104](https://github.com/lobu-ai/lobu/commit/301210475c57916fb821708547d942d00f8865af))
+* **start-local:** close 7 PGlite/Postgres parity-hygiene risks ([#943](https://github.com/lobu-ai/lobu/issues/943)) ([e80f0c2](https://github.com/lobu-ai/lobu/commit/e80f0c2ad1a166a1ae7db2260d93c8de35ce2ffa))
+* **test:** tolerate non-owner of schema public in setupTestDatabase ([#961](https://github.com/lobu-ai/lobu/issues/961)) ([1600bc4](https://github.com/lobu-ai/lobu/commit/1600bc461ed3b958e7cd3f31c49b4af61327c475))
+
 ## [8.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v7.2.0...lobu-v8.0.0) (2026-05-19)
 
 

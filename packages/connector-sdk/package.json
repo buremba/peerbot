@@ -1,6 +1,6 @@
 {
   "name": "@lobu/connector-sdk",
-  "version": "9.1.0",
+  "version": "9.1.1",
   "description": "Lobu memory SDK — build pluggable connectors for Lobu memory",
   "type": "module",
   "main": "dist/index.js",

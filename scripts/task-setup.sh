@@ -174,10 +174,6 @@ echo "→ .env.local: PORT=$port WORKER_PROXY_PORT=$proxy"
 
 echo "$name" > "$worktree_dir/.task"
 
-# Auto-activate this worktree for the Chrome extension / Mac app (symlink swap).
-# Safe / idempotent — task-use.sh re-points existing symlinks each time.
-"$repo/scripts/task-use.sh" "$name" || true
-
 # Register the worktree as a Lobu CLI context so the Mac menubar can spawn
 # `lobu run` for it (lifecycle: managed) against the worktree's source. Safe to
 # re-run — `lobu context add` overwrites the existing entry. Non-fatal: the

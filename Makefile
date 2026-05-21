@@ -1,6 +1,6 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test clean dev build-packages ensure-submodule clean-workers test-unit test-integration test-e2e typecheck task-setup task-clean task-use bump review
+.PHONY: help setup build test clean dev build-packages ensure-submodule clean-workers test-unit test-integration test-e2e typecheck task-setup task-clean e2e-browser bump review
 
 # Default target
 help:
@@ -16,7 +16,7 @@ help:
 	@echo "  make typecheck                             - Strict typecheck (same as Dockerfile) for server + owletto"
 	@echo "  make task-setup NAME=<name>                - Create a paired worktree at .claude/worktrees/<name> (lobu + submodule on real branch, .env copied, ports auto-assigned, Lobu context registered)"
 	@echo "  make task-clean NAME=<name> [FORCE=1]      - Remove the worktree, both branches, and the Lobu context (refuses if there's uncommitted/unpushed work unless FORCE=1)"
-	@echo "  make task-use NAME=<name|main>             - Point Chrome ext / Mac app symlinks at this worktree (or 'main' for the canonical checkout)"
+	@echo "  make e2e-browser [RESTART=1]               - Launch/reuse the stable 'owletto' Chrome harness (extension from this worktree) for Chrome e2e"
 	@echo "  make bump SUBMODULE=<path> [TARGET=<ref>]  - Lightweight worktree + commit + PR for a trivial submodule pointer bump (skips bun install, .env, ports)"
 	@echo "  make review [BASE=<branch>]                - Run local review (typecheck+unit+integration + pi); posts pi-review status and PR comment"
 
@@ -89,9 +89,11 @@ task-clean:
 	@: $${NAME?Usage: make task-clean NAME=<name> [FORCE=1]}
 	@./scripts/task-clean.sh "$(NAME)" $$( [ "$(FORCE)" = "1" ] && echo --force )
 
-task-use:
-	@: $${NAME?Usage: make task-use NAME=<name|main>}
-	@./scripts/task-use.sh "$(NAME)"
+# Stable Owletto Chrome harness for e2e: one persistent profile, paired once,
+# reused from any agent session (mirrors the installed Mac app). Loads the
+# extension from the current worktree; RESTART=1 forces a fresh launch.
+e2e-browser:
+	@./scripts/e2e-browser.sh $$( [ "$(RESTART)" = "1" ] && echo --restart )
 
 # Lightweight shortcut for "trivial submodule pointer bump" work. Creates a
 # minimal worktree (no bun install, no .env copy, no port allocation), advances

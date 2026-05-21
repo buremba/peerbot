@@ -220,9 +220,9 @@ function isLoopbackAddress(addr: string): boolean {
 }
 
 /**
- * Shared loopback trust boundary for /local-init and /local-passcode. Returns
- * an error payload when the caller isn't a trusted loopback client, or null
- * when it passes. Layered checks: the TCP peer must be loopback (primary
+ * Loopback trust boundary for /local-init. Returns an error payload when the
+ * caller isn't a trusted loopback client, or null when it passes. Layered
+ * checks: the TCP peer must be loopback (primary
  * boundary), no forwarded-* headers (a proxy fronting the bind isn't local),
  * and an X-Lobu-Client header (CSRF gate — a foreign web page can't add it
  * without a preflight, which CORS rejects).
@@ -407,8 +407,7 @@ credentialRoutes.post('/local-init', async (c) => {
   // embedded runner binds 127.0.0.1, but an operator may override HOST=0.0.0.0
   // and expose this to the LAN — the peer check is the primary boundary, and
   // we fail CLOSED when peer metadata is absent (only in-process test fetches
-  // lack it, which opt in via LOBU_LOCAL_INIT_ALLOW_MISSING_PEER). Shared with
-  // /local-passcode via assertLoopbackClient so the two can't drift.
+  // lack it, which opt in via LOBU_LOCAL_INIT_ALLOW_MISSING_PEER).
   const guardError = assertLoopbackClient(c);
   if (guardError) {
     return c.json(guardError, 403);

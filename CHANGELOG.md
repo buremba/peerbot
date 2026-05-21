@@ -1,5 +1,12 @@
 # Changelog
 
+## [9.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v9.0.0...lobu-v9.1.0) (2026-05-21)
+
+
+### Bug Fixes
+
+* **cli:** vendor private @lobu/pgvector-embedded into the CLI tarball ([#1000](https://github.com/lobu-ai/lobu/issues/1000)) ([d8634e0](https://github.com/lobu-ai/lobu/commit/d8634e0998045d88d2fec359dfbb023443500951))
+
 ## [9.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v8.0.0...lobu-v9.0.0) (2026-05-21)
 
 

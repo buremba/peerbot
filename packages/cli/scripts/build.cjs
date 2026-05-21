@@ -35,6 +35,16 @@ if (fs.existsSync(providersSrc)) {
 // compiles them on demand when a workspace installs or runs one.
 copyDirIfExists("../connectors/src", "dist/connectors");
 
+// Vendor the precomputed catalog manifest the server build emits next to its
+// own bundled connectors (.catalog-manifest.json). With it, `lobu run` serves
+// the connector picker without compiling every connector on demand. CI builds
+// the server first, so it's present; if absent (local CLI build without
+// build:server) the runtime falls back to on-demand compilation — no regression.
+const catalogManifestSrc = "../server/dist/connectors/.catalog-manifest.json";
+if (fs.existsSync(catalogManifestSrc) && fs.existsSync("dist/connectors")) {
+  fs.cpSync(catalogManifestSrc, "dist/connectors/.catalog-manifest.json");
+}
+
 // Copy database migrations for the bundled PGlite local server.
 copyDirIfExists("../../db/migrations", "dist/db/migrations");
 

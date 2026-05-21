@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
-import { readdir, stat } from 'node:fs/promises';
-import { extname, relative, resolve } from 'node:path';
+import { readdir, readFile, stat } from 'node:fs/promises';
+import { extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   createConnectorCompiler,
@@ -43,7 +43,7 @@ type CachedMetadata =
     }
   | undefined;
 
-type ExtractedConnectorCatalogMetadata = {
+export type ExtractedConnectorCatalogMetadata = {
   key: string;
   name: string;
   description: string | null;
@@ -234,6 +234,129 @@ async function extractConnectorCatalogMetadata(
   }
 }
 
+const CATALOG_MANIFEST_VERSION = 1;
+
+/**
+ * Filename of the build-time catalog manifest written next to the bundled
+ * connector sources (see `scripts/build-connector-catalog-manifest.ts`). It maps
+ * each connector file (path relative to the catalog dir, POSIX separators) to its
+ * already-extracted metadata, so the runtime can serve the bundled catalog
+ * WITHOUT compiling ~35 connectors on demand. That cold per-pod scan (esbuild +
+ * a forked subprocess per connector, run serially) overran the request timeout
+ * on freshly-rolled, CPU-limited prod replicas and returned 503 to the "Add a
+ * connection" picker, which then rendered an empty "No connectors found".
+ *
+ * Files NOT covered by the manifest (custom `CONNECTOR_CATALOG_URIS` dirs, a
+ * missing/stale/corrupt manifest) still fall back to on-demand compilation, so
+ * the dynamic runtime path is fully preserved.
+ */
+export const CATALOG_MANIFEST_FILENAME = '.catalog-manifest.json';
+
+export interface CatalogManifest {
+  version: number;
+  // null = file carries no ConnectorRuntime class (utility/index file). Recorded
+  // so the runtime doesn't recompile it just to rediscover it's not a connector.
+  entries: Record<string, ExtractedConnectorCatalogMetadata | null>;
+}
+
+// mtime-keyed so a regenerated manifest (dev) is picked up, and a known-bad
+// manifest isn't re-warned on every request.
+const manifestCache = new Map<
+  string,
+  { mtimeMs: number; entries: CatalogManifest['entries'] | null }
+>();
+
+// Manifests are keyed by POSIX-relative path so a manifest built on Linux (CI)
+// matches lookups on any runtime OS; mismatches simply fall back to compilation.
+function toPosixRelative(dirPath: string, filePath: string): string {
+  return relative(dirPath, filePath).split(sep).join('/');
+}
+
+async function loadCatalogManifest(dirPath: string): Promise<CatalogManifest['entries'] | null> {
+  const manifestPath = join(dirPath, CATALOG_MANIFEST_FILENAME);
+  let mtimeMs: number;
+  try {
+    mtimeMs = (await stat(manifestPath)).mtimeMs;
+  } catch {
+    return null; // no manifest → on-demand compilation path
+  }
+
+  const cached = manifestCache.get(manifestPath);
+  if (cached && cached.mtimeMs === mtimeMs) return cached.entries;
+
+  try {
+    const parsed = JSON.parse(await readFile(manifestPath, 'utf-8')) as CatalogManifest;
+    if (parsed?.version !== CATALOG_MANIFEST_VERSION || typeof parsed.entries !== 'object') {
+      manifestCache.set(manifestPath, { mtimeMs, entries: null });
+      return null;
+    }
+    manifestCache.set(manifestPath, { mtimeMs, entries: parsed.entries });
+    return parsed.entries;
+  } catch (error) {
+    logger.warn(
+      {
+        manifest_path: manifestPath,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      'Ignoring unreadable connector catalog manifest; falling back to on-demand compilation'
+    );
+    manifestCache.set(manifestPath, { mtimeMs, entries: null });
+    return null;
+  }
+}
+
+/**
+ * Two-level scan of a catalog directory for connector source files. Shared by
+ * the runtime loader and the build-time manifest generator so the manifest
+ * covers exactly the set the runtime would scan. One level deep so primitive
+ * groupings like `browser/*.ts` are discovered alongside top-level service
+ * connectors; connectors don't currently nest deeper.
+ */
+async function collectConnectorSourceFiles(dirPath: string): Promise<string[]> {
+  const candidatePaths: string[] = [];
+  const topEntries = await readdir(dirPath, { withFileTypes: true });
+  for (const entry of topEntries.sort((a, b) => a.name.localeCompare(b.name))) {
+    const entryPath = resolve(dirPath, entry.name);
+    if (entry.isFile()) {
+      if (extname(entry.name) !== '.ts' || entry.name.endsWith('.d.ts')) continue;
+      candidatePaths.push(entryPath);
+      continue;
+    }
+    if (entry.isDirectory()) {
+      // Skip private / non-connector folders. `__tests__` ships test files that
+      // import `bun:test`, which esbuild can't resolve; any leading-underscore
+      // name is by convention not a connector grouping.
+      if (entry.name === '__tests__' || entry.name.startsWith('_')) continue;
+      try {
+        const subEntries = await readdir(entryPath, { withFileTypes: true });
+        for (const sub of subEntries.sort((a, b) => a.name.localeCompare(b.name))) {
+          if (!sub.isFile()) continue;
+          if (extname(sub.name) !== '.ts' || sub.name.endsWith('.d.ts')) continue;
+          candidatePaths.push(resolve(entryPath, sub.name));
+        }
+      } catch {
+        // Subdir unreadable — skip silently; don't fail the whole catalog.
+      }
+    }
+  }
+  return candidatePaths;
+}
+
+// Manifest hit → precomputed metadata (may be null = known non-connector, skip).
+// Manifest miss → compile + extract on demand (custom catalog dirs, or a bundled
+// file the manifest doesn't cover). Preserves the dynamic runtime path.
+async function resolveConnectorCatalogMetadata(
+  filePath: string,
+  dirPath: string,
+  manifest: CatalogManifest['entries'] | null
+): Promise<ExtractedConnectorCatalogMetadata | null> {
+  if (manifest) {
+    const rel = toPosixRelative(dirPath, filePath);
+    if (Object.hasOwn(manifest, rel)) return manifest[rel];
+  }
+  return extractConnectorCatalogMetadata(filePath);
+}
+
 export async function listCatalogConnectorDefinitions(
   rawUris?: string
 ): Promise<CatalogConnectorDefinition[]> {
@@ -260,40 +383,11 @@ export async function listCatalogConnectorDefinitions(
       continue;
     }
 
-    // Scan one level deep so primitive groupings like `browser/*.ts` are
-    // discovered alongside top-level service connectors. Two-level scan
-    // keeps the loader bounded — connectors don't currently nest deeper.
-    const candidatePaths: string[] = [];
-    const topEntries = await readdir(dirPath, { withFileTypes: true });
-    for (const entry of topEntries.sort((a, b) => a.name.localeCompare(b.name))) {
-      const entryPath = resolve(dirPath, entry.name);
-      if (entry.isFile()) {
-        if (extname(entry.name) !== '.ts' || entry.name.endsWith('.d.ts')) continue;
-        candidatePaths.push(entryPath);
-        continue;
-      }
-      if (entry.isDirectory()) {
-        // Skip private / non-connector folders. `__tests__` ships test files
-        // that import `bun:test`, which esbuild can't resolve and which
-        // surface as catalog-cold-scan warnings; any leading-underscore name
-        // is by convention not a connector grouping.
-        if (entry.name === '__tests__' || entry.name.startsWith('_')) continue;
-        try {
-          const subEntries = await readdir(entryPath, { withFileTypes: true });
-          for (const sub of subEntries.sort((a, b) => a.name.localeCompare(b.name))) {
-            if (!sub.isFile()) continue;
-            if (extname(sub.name) !== '.ts' || sub.name.endsWith('.d.ts')) continue;
-            candidatePaths.push(resolve(entryPath, sub.name));
-          }
-        } catch {
-          // Subdir unreadable — skip silently. Top-level scan still produced
-          // whatever it could; don't fail the whole catalog over one bad dir.
-        }
-      }
-    }
+    const manifest = await loadCatalogManifest(dirPath);
+    const candidatePaths = await collectConnectorSourceFiles(dirPath);
 
     for (const filePath of candidatePaths) {
-      const metadata = await extractConnectorCatalogMetadata(filePath);
+      const metadata = await resolveConnectorCatalogMetadata(filePath, dirPath, manifest);
       if (!metadata || seenKeys.has(metadata.key)) continue;
 
       seenKeys.add(metadata.key);
@@ -323,6 +417,20 @@ export async function listCatalogConnectorDefinitions(
   }
 
   return definitions.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Build-time: compile every bundled connector once and capture its metadata so
+ * the runtime serves the catalog without on-demand compilation. Non-connector
+ * files are stored as `null` so they aren't recompiled at runtime. Invoked by
+ * `scripts/build-connector-catalog-manifest.ts`.
+ */
+export async function generateCatalogManifest(dirPath: string): Promise<CatalogManifest> {
+  const entries: CatalogManifest['entries'] = {};
+  for (const filePath of await collectConnectorSourceFiles(dirPath)) {
+    entries[toPosixRelative(dirPath, filePath)] = await extractConnectorCatalogMetadata(filePath);
+  }
+  return { version: CATALOG_MANIFEST_VERSION, entries };
 }
 
 /** A bundled connector that runs on a device worker rather than the cloud fleet. */

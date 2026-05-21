@@ -78,7 +78,13 @@ for (const bundleName of ["server.bundle.mjs"]) {
 // than the src/ that doesn't ship.
 const pgvSrc = "../pgvector-embedded";
 const pgvDest = "dist/vendor/pgvector-embedded";
-if (fs.existsSync(`${pgvSrc}/dist`) && fs.existsSync(`${pgvSrc}/prebuilt`)) {
+function vendorPgvector() {
+  if (
+    !fs.existsSync(`${pgvSrc}/dist`) ||
+    !fs.existsSync(`${pgvSrc}/prebuilt`)
+  ) {
+    return false;
+  }
   copyDirIfExists(`${pgvSrc}/dist`, `${pgvDest}/dist`);
   copyDirIfExists(`${pgvSrc}/prebuilt`, `${pgvDest}/prebuilt`);
   const pgvPkg = JSON.parse(fs.readFileSync(`${pgvSrc}/package.json`, "utf8"));
@@ -90,10 +96,17 @@ if (fs.existsSync(`${pgvSrc}/dist`) && fs.existsSync(`${pgvSrc}/prebuilt`)) {
     `${pgvDest}/package.json`,
     `${JSON.stringify(pgvPkg, null, 2)}\n`
   );
-} else {
-  console.warn(
-    `[cli build] @lobu/pgvector-embedded dist/prebuilt missing at ${pgvSrc}; ` +
-      "embedded-Postgres pgvector will be unavailable in `lobu run`. Run " +
-      "`bun run --filter '@lobu/pgvector-embedded' build` (binaries are committed)."
+  return true;
+}
+if (!vendorPgvector()) {
+  // Fail HARD (don't warn-and-skip): the package is `private` (never
+  // published), so a CLI shipped without the vendored copy silently breaks
+  // `lobu run` embedded Postgres — exactly the 9.1.0 regression this guards.
+  // pgvector-embedded is built by `bun run build:packages` (and
+  // `make build-packages`) before the CLI; build it first if you hit this.
+  throw new Error(
+    `[cli build] could not vendor @lobu/pgvector-embedded: dist/prebuilt missing at ${pgvSrc}. ` +
+      "Run `bun run build:packages` (it builds pgvector-embedded before the CLI). " +
+      "The published CLI needs it for `lobu run` embedded Postgres and it is not on npm."
   );
 }

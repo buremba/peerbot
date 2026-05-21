@@ -144,6 +144,41 @@ entities:
     expect(state.memorySchema.entityTypes).toHaveLength(0);
     expect(state.watchers).toHaveLength(0);
   });
+
+  test("warns when connector files are present but memory is disabled", async () => {
+    const toml = `[agents.triage]
+name = "Triage"
+dir = "./agents/triage"
+
+[memory]
+enabled = false
+org = "dev"
+connectors = "./connectors"
+`;
+    const dir = mkProject(toml);
+    mkdirSync(join(dir, "connectors"), { recursive: true });
+    writeFileSync(join(dir, "connectors", ".gitkeep"), "");
+    writeFileSync(join(dir, "connectors", "acme.connector.ts"), "export {};");
+
+    const { state, warnings } = await loadDesiredState({ cwd: dir });
+    expect(state.connectors.definitions).toHaveLength(0);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("acme.connector.ts");
+    expect(warnings[0]).toContain("[memory] is disabled or missing");
+  });
+
+  test("does not warn for the scaffolded empty connectors directory", async () => {
+    const toml = `[agents.triage]
+name = "Triage"
+dir = "./agents/triage"
+`;
+    const dir = mkProject(toml);
+    mkdirSync(join(dir, "connectors"), { recursive: true });
+    writeFileSync(join(dir, "connectors", ".gitkeep"), "");
+
+    const { warnings } = await loadDesiredState({ cwd: dir });
+    expect(warnings).toEqual([]);
+  });
 });
 
 // ── No memory block ───────────────────────────────────────────────────────────

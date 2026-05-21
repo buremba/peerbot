@@ -1,6 +1,6 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, type Dirent } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import type {
   ConnectorAuthSchema,
   ConnectorDefinition,
@@ -1442,6 +1442,38 @@ const EMPTY_CONNECTORS: LoadedConnectors = {
   connections: [],
 };
 
+function isConnectorDeclarationFile(name: string): boolean {
+  return (
+    name.endsWith(".connector.ts") ||
+    name.endsWith(".yaml") ||
+    name.endsWith(".yml")
+  );
+}
+
+async function findIgnoredConnectorFiles(
+  config: LobuTomlConfig,
+  projectRoot: string
+): Promise<string[]> {
+  const mem = config.memory;
+  if (mem && mem.enabled !== false) return [];
+
+  const dirRel = mem?.connectors?.trim() || "./connectors";
+  const dirPath = resolve(projectRoot, dirRel);
+  let entries: Dirent[];
+  try {
+    entries = await readdir(dirPath, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  return entries
+    .filter((entry) => entry.isFile() && isConnectorDeclarationFile(entry.name))
+    .map(
+      (entry) => relative(projectRoot, join(dirPath, entry.name)) || entry.name
+    )
+    .sort();
+}
+
 /**
  * Load the `[memory].connectors` directory:
  *  - every `*.connector.ts` is auto-discovered as a connector definition
@@ -1918,7 +1950,7 @@ export interface LoadDesiredStateOptions {
 
 export async function loadDesiredState(
   opts: LoadDesiredStateOptions
-): Promise<{ state: DesiredState; configPath: string }> {
+): Promise<{ state: DesiredState; configPath: string; warnings: string[] }> {
   const result = await loadConfig(opts.cwd);
   if (isLoadError(result)) {
     const detail = result.details?.length
@@ -1929,6 +1961,15 @@ export async function loadDesiredState(
 
   const { config, path: configPath } = result;
   await rejectUnsupportedAgentShapes(opts.cwd);
+
+  const ignoredConnectorFiles = opts.only
+    ? []
+    : await findIgnoredConnectorFiles(config, opts.cwd);
+  const warnings = ignoredConnectorFiles.length
+    ? [
+        `Ignored ${ignoredConnectorFiles.length} connector ${ignoredConnectorFiles.length === 1 ? "file" : "files"} because [memory] is disabled or missing: ${ignoredConnectorFiles.join(", ")}. Enable [memory] (enabled = true) for lobu apply to load connectors/.`,
+      ]
+    : [];
 
   const env = opts.env ?? process.env;
   const requiredSecrets = new Set<string>();
@@ -2005,5 +2046,6 @@ export async function loadDesiredState(
       requiredSecrets: [...requiredSecrets].sort(),
     },
     configPath,
+    warnings,
   };
 }

@@ -1007,12 +1007,15 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
   // `lobu dev` does. Existing process.env values win (don't clobber the shell).
   await loadProjectEnvFile(cwd);
 
-  const { state, configPath } = await loadDesiredState({
+  const { state, configPath, warnings } = await loadDesiredState({
     cwd,
     ...(opts.only ? { only: opts.only } : {}),
   });
 
   printText(chalk.dim(`Config: ${configPath}`));
+  for (const warning of warnings) {
+    printText(chalk.yellow(`Warning: ${warning}`));
+  }
 
   // Required secrets gate: fail before any network mutation.
   const { missing } = checkRequiredSecrets(state);

@@ -102,9 +102,7 @@ export async function getMemoryUrl(contextName?: string): Promise<string> {
 
   const config = await loadContextConfig();
   const name = contextName || config.currentContext;
-  return normalizeApiUrl(
-    config.contexts[name]?.memoryUrl || DEFAULT_MEMORY_URL
-  );
+  return normalizeApiUrl(defaultMemoryUrlForContext(config.contexts[name]));
 }
 
 export async function setActiveOrg(
@@ -487,7 +485,7 @@ export async function findContextByMemoryUrl(
 
   for (const [name, context] of Object.entries(config.contexts)) {
     const candidate = normalizeMemoryBaseUrl(
-      context.memoryUrl || DEFAULT_MEMORY_URL
+      defaultMemoryUrlForContext(context)
     );
     if (candidate === normalizedSearch) {
       return contextToResolvedContext(name, context);
@@ -495,6 +493,31 @@ export async function findContextByMemoryUrl(
   }
 
   return undefined;
+}
+
+function defaultMemoryUrlForContext(
+  context: LobuContextEntry | undefined
+): string {
+  if (context?.memoryUrl) return context.memoryUrl;
+  if (context && isLoopbackContextUrl(context.url)) {
+    const url = new URL(context.url);
+    url.pathname = "/mcp";
+    url.search = "";
+    url.hash = "";
+    return url.toString().replace(/\/+$/, "");
+  }
+  return DEFAULT_MEMORY_URL;
+}
+
+function isLoopbackContextUrl(input: string): boolean {
+  try {
+    const { hostname } = new URL(input);
+    return (
+      hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1"
+    );
+  } catch {
+    return false;
+  }
 }
 
 function contextToResolvedContext(

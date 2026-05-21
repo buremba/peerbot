@@ -567,19 +567,20 @@ async function announceLocalSignIn(
       user?: { id?: string; email?: string; name?: string };
       organization?: { id?: string; slug?: string; name?: string };
     };
-    // CLI gets the worker-scoped PAT — works against /api/workers/* (used
-    // by lobu apply and everything else). The session_token is
-    // for the browser deep-link URL: exchange-token validates either, but
-    // the cookie path needs a session (we pass session_token in the URL
-    // so the SPA hook reaches /api/exchange-token → Better Auth session
-    // cookie).
-    const cliToken = body.device_token ?? body.session_token;
+    // CLI's default token is the Better Auth session token; session auth
+    // carries the user's org membership and works for admin REST + MCP calls.
+    // Persist the companion worker PAT too for the gateway agent API, which
+    // still authenticates that surface via worker/OAuth bearer tokens. The
+    // same session token is passed to the browser deep-link URL so the SPA
+    // hook reaches /api/exchange-token → Better Auth session cookie.
+    const cliToken = body.session_token ?? body.device_token;
     if (!cliToken) return false;
 
     const contextName = "local";
     await addContext(contextName, gatewayUrl);
     const creds: Credentials = {
       accessToken: cliToken,
+      ...(body.device_token ? { localWorkerToken: body.device_token } : {}),
       ...(body.user?.email ? { email: body.user.email } : {}),
       ...(body.user?.name ? { name: body.user.name } : {}),
       ...(body.user?.id ? { userId: body.user.id } : {}),

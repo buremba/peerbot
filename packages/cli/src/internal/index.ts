@@ -15,6 +15,7 @@ export {
   type Credentials,
   type OAuthClientInfo,
   clearCredentials,
+  getAgentApiToken,
   getToken,
   loadCredentials,
   refreshCredentials,

@@ -14,6 +14,7 @@ import {
   findContextByMemoryUrl,
   findContextByUrl,
   getActiveOrg,
+  getMemoryUrl,
   getServerConfig,
   loadContextConfig,
   removeContext,
@@ -140,6 +141,25 @@ describe("context management", () => {
     const matched = await findContextByMemoryUrl("http://localhost:8787/mcp");
 
     expect(matched?.name).toBe("local");
+  });
+
+  test("derives local memory URL from a loopback context URL", async () => {
+    const configData = {
+      currentContext: "local",
+      contexts: {
+        lobu: { url: "https://app.lobu.ai/api/v1" },
+        local: { url: "http://localhost:8787/api/v1" },
+      },
+    };
+    readFileSpy.mockResolvedValue(JSON.stringify(configData));
+
+    expect(await getMemoryUrl("local")).toBe("http://localhost:8787/mcp");
+    expect(
+      (await findContextByMemoryUrl("http://127.0.0.1:8787/mcp"))?.name
+    ).toBeUndefined();
+    expect(
+      (await findContextByMemoryUrl("http://localhost:8787/mcp"))?.name
+    ).toBe("local");
   });
 
   test("derives managed server settings from flat context fields", async () => {

@@ -5,8 +5,8 @@ import chalk from "chalk";
 import {
   agentApiBase,
   apiBaseFromContextUrl,
+  getAgentApiToken,
   getCurrentContextName,
-  getToken,
   resolveContext,
   resolveGatewayUrl,
 } from "../internal/index.js";
@@ -90,7 +90,7 @@ export async function chatCommand(
   // context apiUrl and `.env` PORT only give the origin.
   gatewayUrl = agentApiBase(gatewayUrl);
 
-  const authToken = await getToken(options.context);
+  const authToken = await getAgentApiToken(options.context);
   if (!authToken) {
     console.error(
       chalk.red("\n  Session expired or not logged in. Run `lobu login`.\n")

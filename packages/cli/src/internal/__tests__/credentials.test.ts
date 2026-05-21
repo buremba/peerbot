@@ -12,6 +12,7 @@ import * as context from "../context";
 import {
   clearCredentials,
   type Credentials,
+  getAgentApiToken,
   getToken,
   loadCredentials,
   refreshCredentials,
@@ -191,6 +192,102 @@ describe("credentials", () => {
     const token = await getToken();
 
     expect(token).toBeNull();
+  });
+
+  test("getToken local-init prefers the session token over the worker PAT", async () => {
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: currentContextName,
+      url: "http://localhost:8787/api/v1",
+      source: "config",
+    });
+    readFileSpy.mockRejectedValue(new Error("ENOENT"));
+    const fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          device_token: "worker-pat",
+          session_token: "session-token",
+          user: { id: "user-1", email: "u@example.com", name: "User" },
+          organization: { id: "org-1", slug: "local-org", name: "Local" },
+        }),
+        { status: 200 }
+      )
+    );
+
+    const token = await getToken(currentContextName);
+
+    expect(token).toBe("session-token");
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://localhost:8787/api/local-init",
+      {
+        method: "POST",
+        headers: { "X-Lobu-Client": "cli" },
+      }
+    );
+    const [, written] = writeFileSpy.mock.calls[0]!;
+    const persisted = JSON.parse(written as string) as {
+      contexts: Record<string, Credentials>;
+    };
+    expect(persisted.contexts[currentContextName]?.accessToken).toBe(
+      "session-token"
+    );
+    expect(persisted.contexts[currentContextName]?.localWorkerToken).toBe(
+      "worker-pat"
+    );
+  });
+
+  test("getAgentApiToken uses the local-init worker PAT when present", async () => {
+    const store = {
+      version: 2,
+      contexts: {
+        [currentContextName]: buildCreds({
+          accessToken: "session-token",
+          localWorkerToken: "worker-pat",
+        }),
+      },
+    };
+    readFileSpy.mockResolvedValue(JSON.stringify(store));
+
+    const token = await getAgentApiToken(currentContextName);
+
+    expect(token).toBe("worker-pat");
+  });
+
+  test("getToken heals stale local credentials that only stored the worker PAT", async () => {
+    spyOn(context, "resolveContext").mockResolvedValue({
+      name: currentContextName,
+      url: "http://localhost:8787/api/v1",
+      source: "config",
+    });
+    const store = {
+      version: 2,
+      contexts: {
+        [currentContextName]: buildCreds({ accessToken: "old-worker-pat" }),
+      },
+    };
+    readFileSpy.mockResolvedValue(JSON.stringify(store));
+    spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          device_token: "new-worker-pat",
+          session_token: "new-session-token",
+        }),
+        { status: 200 }
+      )
+    );
+
+    const token = await getToken(currentContextName);
+
+    expect(token).toBe("new-session-token");
+    const [, written] = writeFileSpy.mock.calls[0]!;
+    const persisted = JSON.parse(written as string) as {
+      contexts: Record<string, Credentials>;
+    };
+    expect(persisted.contexts[currentContextName]?.accessToken).toBe(
+      "new-session-token"
+    );
+    expect(persisted.contexts[currentContextName]?.localWorkerToken).toBe(
+      "new-worker-pat"
+    );
   });
 
   test("getToken returns the stored access token when not expired", async () => {

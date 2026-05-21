@@ -30,6 +30,8 @@ export interface Credentials {
   name?: string;
   userId?: string;
   agentId?: string;
+  /** Local-init worker PAT used only by the gateway agent API. */
+  localWorkerToken?: string;
   /** Registered OAuth client + endpoints used to mint these tokens. */
   oauth?: OAuthClientInfo;
 }
@@ -127,16 +129,51 @@ export async function clearCredentials(contextName?: string): Promise<void> {
  *
  * For loopback contexts with no stored creds, transparently POSTs
  * /api/local-init to mint a fresh Better Auth session for the
- * embedded bootstrap user — `lobu chat -c local` works without a
- * prior `lobu login`.
+ * embedded bootstrap user. Agent API callers should use getAgentApiToken(),
+ * which returns the companion worker PAT when local-init provides one.
  */
 export async function getToken(contextName?: string): Promise<string | null> {
   const envToken = process.env.LOBU_API_TOKEN;
   if (envToken) return envToken;
 
+  return getCredentialsToken(contextName);
+}
+
+/**
+ * Token for the gateway agent API (`/lobu/api/v1/agents/*`). Local embedded
+ * installs need the worker PAT from /api/local-init for that surface, while
+ * admin REST + MCP need the Better Auth session token returned by getToken().
+ */
+export async function getAgentApiToken(
+  contextName?: string
+): Promise<string | null> {
+  const envToken = process.env.LOBU_API_TOKEN;
+  if (envToken) return envToken;
+
+  const token = await getCredentialsToken(contextName);
+  if (!token) return null;
+
+  let creds = await loadCredentials(contextName);
+  if (!creds?.localWorkerToken && (await isLoopbackContext(contextName))) {
+    creds = await tryLocalInit(contextName);
+  }
+  return creds?.localWorkerToken ?? token;
+}
+
+async function getCredentialsToken(
+  contextName?: string
+): Promise<string | null> {
   let creds = await loadCredentials(contextName);
   if (!creds) {
     creds = await tryLocalInit(contextName);
+  } else if (
+    !creds.localWorkerToken &&
+    (await isLoopbackContext(contextName))
+  ) {
+    // Heal credentials saved by older CLIs that stored only the local-init
+    // worker PAT as accessToken. Re-mint so admin REST/MCP get the session
+    // token while chat keeps the companion worker PAT.
+    creds = (await tryLocalInit(contextName)) ?? creds;
   }
   if (!creds) return null;
   if (!needsRefresh(creds)) return creds.accessToken;
@@ -165,10 +202,13 @@ async function tryLocalInit(contextName?: string): Promise<Credentials | null> {
   const target = await resolveContext(contextName);
   if (!isLoopbackUrl(target.url)) return null;
   try {
-    const res = await fetch(`${target.url}/api/local-init`, {
-      method: "POST",
-      headers: { "X-Lobu-Client": "cli" },
-    });
+    const res = await fetch(
+      `${originFromContextUrl(target.url)}/api/local-init`,
+      {
+        method: "POST",
+        headers: { "X-Lobu-Client": "cli" },
+      }
+    );
     if (!res.ok) return null;
     const body = (await res.json()) as {
       device_token?: string;
@@ -176,14 +216,16 @@ async function tryLocalInit(contextName?: string): Promise<Credentials | null> {
       user?: { id?: string; email?: string; name?: string };
       organization?: { id?: string; slug?: string; name?: string };
     };
-    // Prefer device_token (PAT scoped with device_worker:run + mcp:*) so
-    // `lobu chat` / `lobu apply` / worker poll all pass the scope gate on
-    // /api/workers/*. Fall back to session_token only against older
-    // servers that don't issue a PAT.
-    const token = body.device_token ?? body.session_token;
+    // Prefer the Better Auth session token for CLI commands. The worker PAT
+    // from /api/local-init is intentionally device-scoped; session auth carries
+    // the user's org membership and works for admin REST + MCP calls. Fall back
+    // to device_token only against older local servers that did not return a
+    // session token.
+    const token = body.session_token ?? body.device_token;
     if (!token) return null;
     const creds: Credentials = {
       accessToken: token,
+      ...(body.device_token ? { localWorkerToken: body.device_token } : {}),
       ...(body.user?.email ? { email: body.user.email } : {}),
       ...(body.user?.name ? { name: body.user.name } : {}),
       ...(body.user?.id ? { userId: body.user.id } : {}),
@@ -221,6 +263,11 @@ async function tryLocalInit(contextName?: string): Promise<Credentials | null> {
   }
 }
 
+async function isLoopbackContext(contextName?: string): Promise<boolean> {
+  const target = await resolveContext(contextName);
+  return isLoopbackUrl(target.url);
+}
+
 function isLoopbackUrl(url: string): boolean {
   try {
     const { hostname } = new URL(url);
@@ -230,6 +277,14 @@ function isLoopbackUrl(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+function originFromContextUrl(input: string): string {
+  const url = new URL(input);
+  url.pathname = "";
+  url.search = "";
+  url.hash = "";
+  return url.toString().replace(/\/+$/, "");
 }
 
 export async function refreshCredentials(

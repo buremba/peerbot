@@ -1,12 +1,8 @@
 /**
- * Build-time generator for the connector catalog manifest.
- *
- * Compiles every bundled connector once (esbuild + a forked metadata-extract
- * subprocess each) and writes the result to dist/connectors/.catalog-manifest.json.
- * The server then serves the bundled connector catalog by reading this file
- * instead of recompiling every connector on demand — the cold per-pod scan that
- * overran the request timeout and returned 503 on the "Add a connection" picker
- * under prod's CPU limits (empty "No connectors found").
+ * Build-time generator for the connector catalog manifest. Compiles every
+ * bundled connector once and writes dist/connectors/.catalog-manifest.json so
+ * the server serves the catalog without recompiling on demand (see
+ * CATALOG_MANIFEST_FILENAME in connector-catalog.ts for the why).
  *
  * Runs after build-server-bundle.mjs (which copies the sources into
  * dist/connectors). Executed under `bun` so it can import the TS catalog code.

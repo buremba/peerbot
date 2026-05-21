@@ -53,13 +53,6 @@ export interface WatcherRunPayload {
 // ============================================
 
 /**
- * Create a pending sync run for a feed.
- *
- * @param feedId Feed ID
- * @param env Environment bindings
- * @returns Run ID if created, null if skipped
- */
-/**
  * A feed whose connector can't be resolved to runnable code is an orphan: the
  * connector was archived/uninstalled, or its version was registered without
  * compiled code and has no bundled source to compile on demand. Soft-delete it
@@ -85,6 +78,11 @@ async function softDeleteOrphanFeed(
   );
 }
 
+/**
+ * Create a pending sync run for a feed (within an existing client/tx). Returns
+ * the run ID, or null if skipped — a duplicate active sync run, or an
+ * unresolvable orphan feed that was soft-deleted (see softDeleteOrphanFeed).
+ */
 async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<number | null> {
   // Check if there's already a pending/running run for this feed
   const existing = await sql`

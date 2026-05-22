@@ -186,7 +186,42 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // they advertise, never the embedded-server connectors. So '' is excluded for them,
   // which means a bridge with no granted capabilities claims *nothing* instead
   // of hijacking-and-failing arbitrary embedded-server connector runs (e.g. hackernews).
-  const isUserScopedWorker = c.var.workerAuthMode === 'user';
+  // Local/personal-install fallback. When WORKER_API_TOKEN is unset, a device
+  // worker whose token fails auth doesn't 401 — the /api/workers/* middleware
+  // degrades it to `anonymous` (workerUserId = null), which previously skipped
+  // the device_workers upsert + reconcileDeviceCapabilities below, so device
+  // connectors (Screen Time, Photos, …) silently never wired up. In a non-cloud
+  // install, re-anchor an anonymous poll to the user that already owns this
+  // worker_id and treat it as a device worker END-TO-END (platform binding,
+  // capability allowlist, org-scoped claims, registration) — not as a
+  // trusted/anonymous fleet worker. Cloud (LOBU_CLOUD_MODE) stays strict: a poll
+  // must carry a user-scoped token, so a known worker_id can't be spoofed across
+  // tenants.
+  let anonLocalUserId: string | null = null;
+  let anonLocalOrgId: string | null = null;
+  if (c.var.workerAuthMode === 'anonymous' && worker_id && !isCloudMode()) {
+    const owner = (await sql`
+      SELECT user_id, organization_id FROM device_workers
+      WHERE worker_id = ${worker_id} LIMIT 1
+    `) as unknown as Array<{ user_id: string; organization_id: string | null }>;
+    if (owner.length > 0) {
+      anonLocalUserId = owner[0].user_id;
+      anonLocalOrgId = owner[0].organization_id;
+      logger.info(
+        { worker_id, user_id: anonLocalUserId },
+        '[pollWorkerJob] local (non-cloud) anonymous device poll → treating as device worker for existing owner'
+      );
+    }
+  }
+  // A re-anchored local poll is a device (user-scoped) worker for every check
+  // below, so platform binding / capability authorization / org-scoped claiming
+  // all apply exactly as for a signed-in device.
+  const isUserScopedWorker = c.var.workerAuthMode === 'user' || anonLocalUserId != null;
+  // Effective device identity: the token's user/org when user-scoped, else the
+  // re-anchored local owner.
+  const effectiveWorkerUserId = c.var.workerUserId ?? anonLocalUserId;
+  const effectiveWorkerOrgIds = c.var.workerOrgIds ?? (anonLocalOrgId ? [anonLocalOrgId] : null);
+  const effectiveTokenOrgId = c.var.organizationId ?? anonLocalOrgId;
   // User-scoped (device) callers must post a non-empty worker_id. An empty
   // or missing id would otherwise let a bound PAT (see below) sidestep the
   // binding check by claiming all worker rows under `(user_id, "")`.
@@ -217,10 +252,10 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // self-reported platform. We read the stored platform first, reject
   // mismatches, and use the stored value for authorization.
   let effectivePlatform: string | null = platform;
-  if (isUserScopedWorker && c.var.workerUserId && worker_id) {
+  if (isUserScopedWorker && effectiveWorkerUserId && worker_id) {
     const existing = (await sql`
       SELECT platform FROM device_workers
-      WHERE user_id = ${c.var.workerUserId} AND worker_id = ${worker_id}
+      WHERE user_id = ${effectiveWorkerUserId} AND worker_id = ${worker_id}
       LIMIT 1
     `) as unknown as Array<{ platform: string | null }>;
     if (existing.length > 0 && existing[0].platform) {
@@ -264,39 +299,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // connection is pinned to it (connections.device_worker_id) is claimable
   // regardless of the connector's required_capability — that's how an
   // otherwise-embedded connector (Reddit, …) ends up running on a chosen device.
-  const workerUserId = c.var.workerUserId;
-  // The org the device's token was issued for — the workspace the user picked on
-  // the OAuth device-authorization page. Falls back to the owner's personal
-  // workspace for tokens not bound to any org. Sets the device's home only on
-  // first registration; moving an existing device is the Devices-page action.
-  const workerTokenOrgId = c.var.organizationId ?? null;
-
-  // Local/personal-install fallback. When WORKER_API_TOKEN is unset, a device
-  // worker whose token fails auth doesn't 401 — the /api/workers/* middleware
-  // degrades it to `anonymous` (workerUserId = null). That silently skipped the
-  // registration below, so device connectors (Screen Time, Photos, …) never
-  // wired up even though the app showed "connected". In a non-cloud install,
-  // re-anchor an anonymous poll to the user that already owns this worker_id so
-  // an established local device keeps refreshing its capabilities (which drives
-  // reconcileDeviceCapabilities → connector wiring). Cloud stays strict: a poll
-  // must carry a user-scoped token to register, so a known worker_id can't be
-  // spoofed across tenants.
-  let registrationUserId = workerUserId;
-  let registrationOrgId = workerTokenOrgId;
-  if (!registrationUserId && worker_id && !isCloudMode()) {
-    const owner = (await sql`
-      SELECT user_id, organization_id FROM device_workers
-      WHERE worker_id = ${worker_id} LIMIT 1
-    `) as unknown as Array<{ user_id: string; organization_id: string | null }>;
-    if (owner.length > 0) {
-      registrationUserId = owner[0].user_id;
-      registrationOrgId = registrationOrgId ?? owner[0].organization_id;
-      logger.info(
-        { worker_id, user_id: registrationUserId },
-        '[pollWorkerJob] local (non-cloud) anonymous device poll → registering under existing owner'
-      );
-    }
-  }
+  // Device home org: the workspace the device's token was issued for (or, for a
+  // re-anchored local device, the org it already lives in). The upsert COALESCEs
+  // to the owner's personal org when null, and sets the home only on first
+  // registration; moving an existing device is the Devices-page action.
+  const registrationUserId = effectiveWorkerUserId;
+  const registrationOrgId = effectiveTokenOrgId;
 
   let deviceWorkerId: string | null = null;
   if (registrationUserId) {
@@ -393,16 +401,18 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // middleware. Trusted workers (matched WORKER_API_TOKEN) and anonymous
   // local-dev requests see all pending runs — preserving the existing
   // server-side worker fleet behavior.
-  const workerAuthMode = c.var.workerAuthMode;
-  const workerOrgIds = c.var.workerOrgIds;
-  if (workerAuthMode === 'user' && (!workerOrgIds || workerOrgIds.length === 0)) {
+  // Org scope applies to every device (user-scoped) worker — including a
+  // re-anchored local device, whose org is effectiveWorkerOrgIds. A signed-in
+  // worker with no org in scope can claim nothing; a re-anchored device with no
+  // org falls through to the empty-array gate (claims only by capability).
+  if (c.var.workerAuthMode === 'user' && (!effectiveWorkerOrgIds || effectiveWorkerOrgIds.length === 0)) {
     // No org in scope — nothing this worker can ever claim.
     return c.json({ next_poll_seconds: 30 });
   }
-  const orgScopeActive = workerAuthMode === 'user';
+  const orgScopeActive = isUserScopedWorker;
   // Always pass a non-empty array to ANY() to keep the SQL valid; the gate
   // below only activates when orgScopeActive is true.
-  const orgScopeIds = orgScopeActive && workerOrgIds ? workerOrgIds : [''];
+  const orgScopeIds = orgScopeActive && effectiveWorkerOrgIds ? effectiveWorkerOrgIds : [''];
 
   const claimNextPendingRun = async () =>
     sql.begin(async (tx) => {
@@ -659,7 +669,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
             worker_id: deviceWorkerId,
           },
           user: {
-            user_id: workerUserId ?? null,
+            user_id: effectiveWorkerUserId ?? null,
           },
         },
       },

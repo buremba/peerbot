@@ -11,6 +11,15 @@ export class AgentSession {
   readonly agentId: string;
   readonly token: string;
   readonly expiresAt: number;
+  /**
+   * The send/stream endpoints the server advertised for this session. `send`
+   * and `events` below route through the configured `baseUrl` + this session's
+   * `agentId` (the generated REST client is path-templated), which matches the
+   * server's same-origin URLs. These fields are surfaced for callers that need
+   * the exact server-advertised endpoints (e.g. a different public origin); a
+   * future server that advertised a divergent origin/path would require routing
+   * through them directly — tracked as a follow-up.
+   */
   readonly sseUrl: string;
   readonly messagesUrl: string;
 

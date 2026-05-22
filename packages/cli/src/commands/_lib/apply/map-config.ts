@@ -46,6 +46,24 @@ const CONNECTION_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const AUTH_PROFILE_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,79}$/;
 const MIN_CRON_INTERVAL_MS = 60_000;
 
+/** Throw on the first duplicate identifier in a collection (config parity). */
+function assertUniqueBy<T>(
+  items: readonly T[],
+  key: (item: T) => string,
+  label: string
+): void {
+  const seen = new Set<string>();
+  for (const item of items) {
+    const k = key(item);
+    if (seen.has(k)) {
+      throw new ValidationError(
+        `duplicate ${label} "${k}" in lobu.config.ts — each must be unique`
+      );
+    }
+    seen.add(k);
+  }
+}
+
 /** Error message if the cron is invalid or fires more than once a minute, else null. */
 function cronError(schedule: string): string | null {
   try {
@@ -460,6 +478,23 @@ function mapAgent(
       );
     }
     seenStableIds.add(p.stableId);
+    // Channel bindings are Slack-only and must be "<teamId>/<channelId>".
+    // Validate up front (the TOML loader did) so a bad binding fails the plan
+    // instead of erroring at syncPlatformChannels after platforms are mutated.
+    if (p.channels?.length) {
+      if (p.type !== "slack") {
+        throw new ValidationError(
+          `agent "${agent.id}" platform "${p.type}" declares channels, but channel bindings are only supported on slack`
+        );
+      }
+      for (const channel of p.channels) {
+        if (!/^[^/\s]+\/[^/\s]+$/.test(channel)) {
+          throw new ValidationError(
+            `agent "${agent.id}" slack platform has an invalid channel "${channel}" — expected "<teamId>/<channelId>"`
+          );
+        }
+      }
+    }
   }
 
   const metadata: DesiredAgentMetadata = {
@@ -651,6 +686,16 @@ export function mapProjectToDesiredState(
   const connections = only
     ? []
     : (project.connections ?? []).map(mapConnection);
+
+  // Reject duplicate identifiers per collection (the TOML/YAML loader did this;
+  // the TS path must keep parity). Duplicates otherwise generate duplicate plan
+  // rows that fail mid-apply or make the desired state ambiguous.
+  assertUniqueBy(agents, (a) => a.metadata.agentId, "agent id");
+  assertUniqueBy(entityTypes, (e) => e.slug, "entity type key");
+  assertUniqueBy(relationshipTypes, (r) => r.slug, "relationship type key");
+  assertUniqueBy(watchers, (w) => w.slug, "watcher slug");
+  assertUniqueBy(authProfiles, (p) => p.slug, "auth profile slug");
+  assertUniqueBy(connections, (c) => c.slug, "connection slug");
 
   const agentIds = new Set(project.agents.map((agent) => agent.id));
   for (const watcher of watchers) {

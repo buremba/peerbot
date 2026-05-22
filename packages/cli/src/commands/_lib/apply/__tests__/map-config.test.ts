@@ -114,6 +114,66 @@ describe("mapProjectToDesiredState", () => {
     ).toThrow(/same id|distinct names/i);
   });
 
+  test("rejects duplicate slugs across declarative collections (config parity)", () => {
+    const a = defineAgent({ id: "a" });
+    const e1 = defineEntityType({ key: "company", name: "C1" });
+    const e2 = defineEntityType({ key: "company", name: "C2" });
+    expect(() =>
+      mapProjectToDesiredState(
+        defineConfig({ org: "o", agents: [a], entities: [e1, e2] }),
+        env
+      )
+    ).toThrow(/duplicate entity type key "company"/i);
+
+    const c1 = defineConnection({ slug: "gh", connector: "github" });
+    const c2 = defineConnection({ slug: "gh", connector: "github" });
+    expect(() =>
+      mapProjectToDesiredState(
+        defineConfig({ org: "o", agents: [a], connections: [c1, c2] }),
+        env
+      )
+    ).toThrow(/duplicate connection slug "gh"/i);
+
+    const w1 = defineWatcher({
+      slug: "w",
+      agent: a,
+      prompt: "p",
+      extractionSchema: { type: "object" },
+    });
+    const w2 = defineWatcher({
+      slug: "w",
+      agent: a,
+      prompt: "p",
+      extractionSchema: { type: "object" },
+    });
+    expect(() =>
+      mapProjectToDesiredState(
+        defineConfig({ org: "o", agents: [a], watchers: [w1, w2] }),
+        env
+      )
+    ).toThrow(/duplicate watcher slug "w"/i);
+  });
+
+  test("rejects channels on a non-slack platform", () => {
+    const bot = defineAgent({
+      id: "bot",
+      platforms: [{ type: "telegram", config: {}, channels: ["T1/C1"] }],
+    });
+    expect(() =>
+      mapProjectToDesiredState(defineConfig({ org: "o", agents: [bot] }), env)
+    ).toThrow(/channel bindings are only supported on slack/i);
+  });
+
+  test("rejects a malformed slack channel string", () => {
+    const bot = defineAgent({
+      id: "bot",
+      platforms: [{ type: "slack", config: {}, channels: ["not-a-channel"] }],
+    });
+    expect(() =>
+      mapProjectToDesiredState(defineConfig({ org: "o", agents: [bot] }), env)
+    ).toThrow(/invalid channel|teamId.*channelId/i);
+  });
+
   test("maps entities + relationships with typed-handle slugs", () => {
     const person = defineEntityType({ key: "person", name: "Person" });
     const org = defineEntityType({ key: "org" });

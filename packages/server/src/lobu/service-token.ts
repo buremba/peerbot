@@ -27,6 +27,20 @@ export async function getLobuServiceToken(organizationId?: string): Promise<stri
 
     if (!user) return null;
 
+    // The internal service token is keyed to a `lobu-internal` oauth_client via
+    // oauth_tokens.client_id (FK → oauth_clients.id). That system client isn't
+    // created by any migration or signup flow, so on a fresh DB — notably the
+    // embedded `lobu run` one — the token INSERT below would fail the FK and
+    // every watcher dispatch / notification would error ("Failed to generate an
+    // embedded Lobu service token"). Ensure it exists (idempotent); it's a
+    // credential-less system client used only as the FK anchor for these
+    // short-lived internal tokens, never in a real OAuth grant.
+    await sql`
+      INSERT INTO oauth_clients (id, redirect_uris, client_name, token_endpoint_auth_method)
+      VALUES ('lobu-internal', '{}'::text[], 'Lobu Internal Service', 'none')
+      ON CONFLICT (id) DO NOTHING
+    `;
+
     const token = randomBytes(32).toString('base64url');
     const tokenHash = createHash('sha256').update(token).digest('hex');
     const id = randomBytes(16).toString('hex');

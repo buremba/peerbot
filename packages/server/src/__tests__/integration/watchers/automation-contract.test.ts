@@ -1106,6 +1106,19 @@ describe('watcher automation contract', () => {
       expect(String(row.status)).toBe('running');
     });
 
+    it('does not coarse-reap a live heartbeating run older than the 2h TTL', async () => {
+      // Claimed 3h ago but heartbeating fresh (30s) → still alive. The coarse
+      // 2h backstop must NOT touch it; only the (un-lapsed) fast path governs
+      // a heartbeating run. Guards against killing a legitimately long turn.
+      const { sql, runId } = await seedRunningWatcherRun({
+        claimedAgo: '3 hours',
+        heartbeatAgo: '30 seconds',
+      });
+      await sweepStaleWatcherRuns(sql);
+      const [row] = await sql`SELECT status FROM runs WHERE id = ${runId}`;
+      expect(String(row.status)).toBe('running');
+    });
+
     it('does not fast-reap a recent run that never heartbeats', async () => {
       // last_heartbeat_at == claimed_at (no beat) + only 30m old → the fast
       // path must NOT fire; it stays running until the 2h coarse backstop.

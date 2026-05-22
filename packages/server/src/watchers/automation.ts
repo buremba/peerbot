@@ -463,9 +463,14 @@ export async function sweepStaleWatcherRuns(
          AND last_heartbeat_at
              < current_timestamp - ${WATCHER_RUN_HEARTBEAT_STALE_INTERVAL}::interval)
         OR
-        -- Coarse backstop: never heartbeated (no-heartbeat clients).
-        COALESCE(claimed_at, created_at)
-            < current_timestamp - ${WATCHER_RUN_STALE_INTERVAL}::interval
+        -- Coarse backstop: ONLY for runs that never heartbeated. A heartbeating
+        -- run is governed solely by the fast path above — so a live one that
+        -- legitimately runs past 2h (fresh heartbeat) is never killed here.
+        ((last_heartbeat_at IS NULL
+          OR claimed_at IS NULL
+          OR last_heartbeat_at <= claimed_at)
+         AND COALESCE(claimed_at, created_at)
+             < current_timestamp - ${WATCHER_RUN_STALE_INTERVAL}::interval)
       )
   `;
   const timedOut = Number(result.count ?? 0);

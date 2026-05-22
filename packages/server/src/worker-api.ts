@@ -132,6 +132,19 @@ async function authorizeRunForWorker(
 }
 
 /**
+ * Truthy `LOBU_CLOUD_MODE` (`1`/`true`/`yes`, case-insensitive) marks a
+ * multi-tenant cloud deployment. Self-hosted / embedded single-tenant installs
+ * leave it unset. Mirrors the canonical reader in chat-instance-manager.ts;
+ * kept local to avoid coupling worker-api to the connections module.
+ */
+function isCloudMode(): boolean {
+  const raw = process.env.LOBU_CLOUD_MODE;
+  if (!raw) return false;
+  const v = raw.trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes';
+}
+
+/**
  * POST /api/workers/poll
  *
  * Worker polls for next available sync run.
@@ -257,8 +270,36 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   // workspace for tokens not bound to any org. Sets the device's home only on
   // first registration; moving an existing device is the Devices-page action.
   const workerTokenOrgId = c.var.organizationId ?? null;
+
+  // Local/personal-install fallback. When WORKER_API_TOKEN is unset, a device
+  // worker whose token fails auth doesn't 401 — the /api/workers/* middleware
+  // degrades it to `anonymous` (workerUserId = null). That silently skipped the
+  // registration below, so device connectors (Screen Time, Photos, …) never
+  // wired up even though the app showed "connected". In a non-cloud install,
+  // re-anchor an anonymous poll to the user that already owns this worker_id so
+  // an established local device keeps refreshing its capabilities (which drives
+  // reconcileDeviceCapabilities → connector wiring). Cloud stays strict: a poll
+  // must carry a user-scoped token to register, so a known worker_id can't be
+  // spoofed across tenants.
+  let registrationUserId = workerUserId;
+  let registrationOrgId = workerTokenOrgId;
+  if (!registrationUserId && worker_id && !isCloudMode()) {
+    const owner = (await sql`
+      SELECT user_id, organization_id FROM device_workers
+      WHERE worker_id = ${worker_id} LIMIT 1
+    `) as unknown as Array<{ user_id: string; organization_id: string | null }>;
+    if (owner.length > 0) {
+      registrationUserId = owner[0].user_id;
+      registrationOrgId = registrationOrgId ?? owner[0].organization_id;
+      logger.info(
+        { worker_id, user_id: registrationUserId },
+        '[pollWorkerJob] local (non-cloud) anonymous device poll → registering under existing owner'
+      );
+    }
+  }
+
   let deviceWorkerId: string | null = null;
-  if (workerUserId) {
+  if (registrationUserId) {
     try {
       const incomingCaps = authorizedCapabilities;
 
@@ -268,11 +309,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       const upserted = (await sql`
         INSERT INTO device_workers (user_id, worker_id, platform, app_version, capabilities, label, organization_id)
         VALUES (
-          ${workerUserId}, ${worker_id}, ${platform}, ${app_version},
+          ${registrationUserId}, ${worker_id}, ${platform}, ${app_version},
           ${sql.json(incomingCaps)}, ${label},
           COALESCE(
-            ${workerTokenOrgId}::text,
-            (SELECT id FROM organization WHERE (metadata::jsonb)->>'personal_org_for_user_id' = ${workerUserId} LIMIT 1)
+            ${registrationOrgId}::text,
+            (SELECT id FROM organization WHERE (metadata::jsonb)->>'personal_org_for_user_id' = ${registrationUserId} LIMIT 1)
           )
         )
         ON CONFLICT (user_id, worker_id) DO UPDATE SET
@@ -337,7 +378,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       // are present (cheap fast path, also heals partially-wired state), pause
       // the ones that have gone away. The just-upserted row above is already
       // visible to this query, so the polling device's capabilities count.
-      await reconcileDeviceCapabilities(workerUserId);
+      await reconcileDeviceCapabilities(registrationUserId);
     } catch (err) {
       logger.error(
         { worker_id, err: errorMessage(err) },

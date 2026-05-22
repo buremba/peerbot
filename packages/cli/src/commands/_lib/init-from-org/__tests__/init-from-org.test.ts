@@ -743,4 +743,58 @@ describe("lobu init --from-org", () => {
     expect(skillMd).toContain("judges:");
     expect(skillMd).toContain('careful: "Block anything risky."');
   });
+
+  test("relationship-type rules hydrate via list_rules (real list omits them)", async () => {
+    const dir = mkFixtureDir();
+    await initFromOrg({
+      targetDir: dir,
+      fetchImpl: buildFetch({
+        "/oauth/userinfo": () => ({
+          organizations: [{ id: "org-1", slug: "acme", name: "Acme Inc" }],
+        }),
+        "/agents/lone/config": () => ({ updatedAt: 0 }),
+        "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
+        "watchers?include_details": () => ({ watchers: [] }),
+        // The REAL server `list` action omits rules (only `list_rules` returns
+        // them). Branch on the action so this mirrors production: list → no
+        // rules; list_rules → the rule rows in the server's snake_case shape.
+        manage_entity_schema: (body) => {
+          if (body.action === "list_rules") {
+            return {
+              rules: [
+                {
+                  id: 1,
+                  source_entity_type_slug: "contact",
+                  target_entity_type_slug: "company",
+                },
+              ],
+            };
+          }
+          return {
+            entity_types: [
+              { slug: "contact", name: "Contact" },
+              { slug: "company", name: "Company" },
+            ],
+            relationship_types: [{ slug: "works-at", name: "Works at" }],
+          };
+        },
+        manage_auth_profiles: () => ({ auth_profiles: [] }),
+        manage_connections: () => ({ connections: [] }),
+      }),
+    });
+
+    const source = readFileSync(join(dir, "lobu.config.ts"), "utf-8");
+    // The rule was hydrated from list_rules and emitted, using the entity
+    // handles (not raw slugs) — proving the round-trip isn't lossy.
+    expect(source).toMatch(/rules:\s*\[/);
+    expect(source).toContain("source:");
+    expect(source).toContain("target:");
+
+    // Round-trips: the rule survives back into DesiredState.
+    const { state } = await loadDesiredStateFromConfig({ cwd: dir });
+    const rel = state.memorySchema.relationshipTypes.find(
+      (r) => r.slug === "works-at"
+    );
+    expect(rel?.rules).toEqual([{ source: "contact", target: "company" }]);
+  });
 });

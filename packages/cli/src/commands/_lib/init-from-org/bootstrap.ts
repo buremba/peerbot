@@ -855,6 +855,21 @@ async function fetchOrgState(client: ApplyClient): Promise<FetchedState> {
     client.listConnectorDefinitions(true).catch(() => []),
   ]);
 
+  // The relationship-type `list` action omits rules, so hydrate each type's
+  // rules (list_rules) before emitting — otherwise the generated config drops
+  // every `rules: [...]` binding and the round-trip is lossy. Best-effort per
+  // type so one failure doesn't abort the whole bootstrap.
+  for (const rt of relationshipTypes) {
+    try {
+      const rules = await client.listRelationshipTypeRules(rt.slug);
+      if (rules.length > 0) {
+        rt.rules = rules.map((r) => ({ source: r.source, target: r.target }));
+      }
+    } catch {
+      // leave rules undefined — emitRelationshipType simply omits the block
+    }
+  }
+
   const agents = await Promise.all(
     agentList
       .slice()

@@ -298,27 +298,26 @@ WATCHER_ID="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{c
 [ -n "$WATCHER_ID" ] || { cat "$WATCHERS" >&2; fail "no 'digest' watcher found after apply"; }
 echo "✓ apply created the digest watcher (id=$WATCHER_ID)"
 
-# Trigger the watcher (the dispatch path). This enqueues a watcher run; the
-# worker turn that would normally call complete_window is NOT relied upon (a
-# fixed-reply mock never produces the complete_window tool-call, and `lobu run`'s
-# embedded bootstrap doesn't seed the `lobu-internal` oauth_client the dispatcher
-# needs to mint a worker service token — a known dev-only limitation). So we
-# assert only the reliably-observable part: the trigger created a watcher run
-# row. The reaction's actual side effect is asserted deterministically below via
-# read_knowledge → complete_window.
+# Trigger the watcher — exercise the FULL dispatch path. This mints an internal
+# service token (needs the `lobu-internal` oauth_client, ensured by
+# getLobuServiceToken) and dispatches a watcher run to a spawned worker. We
+# assert the trigger returns a run_id, that dispatch did NOT fail on the service
+# token (the regression this guards — a missing `lobu-internal` client fails
+# every watcher run), and that a watcher worker session actually started.
 TW="$RUN_DIR/trigger-watcher.json"
-api manage_watchers "{\"action\":\"trigger\",\"watcher_id\":\"$WATCHER_ID\"}" > "$TW" 2>/dev/null || true
+api manage_watchers "{\"action\":\"trigger\",\"watcher_id\":\"$WATCHER_ID\"}" > "$TW" 2>/dev/null \
+  || { cat "$TW" >&2; fail "watcher trigger failed"; }
 TRIG_RUN_ID="$(jget run_id < "$TW" 2>/dev/null || echo)"
-if [ -n "$TRIG_RUN_ID" ]; then
-  echo "✓ watcher trigger dispatched a run (run_id=$TRIG_RUN_ID)"
-else
-  # Trigger errored (embedded service-token limitation) — confirm the run row was
-  # still created so we know the dispatch path reached the queue.
-  api list_watchers '{}' > "$RUN_DIR/watchers-after-trigger.json" 2>/dev/null || true
-  HAS_RUN="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let j;try{j=JSON.parse(s)}catch{process.stdout.write("");return}const arr=j.watchers||[];const w=arr.find(x=>x.slug==="digest")||arr[0];process.stdout.write(w&&w.watcher_run_id!=null?"1":"")})' < "$RUN_DIR/watchers-after-trigger.json" || echo)"
-  [ -n "$HAS_RUN" ] || { cat "$TW" >&2; fail "watcher trigger neither returned a run_id nor created a watcher run row"; }
-  echo "✓ watcher trigger enqueued a run (worker dispatch skipped: embedded service-token limitation)"
-fi
+[ -n "$TRIG_RUN_ID" ] || { cat "$TW" >&2; fail "watcher trigger did not dispatch a run (no run_id)"; }
+grep -qi "Failed to generate an embedded Lobu service token" "$RUN_LOG" \
+  && fail "watcher dispatch failed on the service token (lobu-internal oauth_client missing)"
+for _ in $(seq 1 30); do
+  grep -qiE "OpenClaw worker for session: session-[^ ]*watcher_${WATCHER_ID}_run" "$RUN_LOG" && break
+  sleep 1
+done
+grep -qiE "OpenClaw worker for session: session-[^ ]*watcher_${WATCHER_ID}_run" "$RUN_LOG" \
+  || fail "watcher run ${TRIG_RUN_ID} did not dispatch to a worker"
+echo "✓ watcher trigger dispatched a run to a worker (run_id=$TRIG_RUN_ID)"
 
 # Deterministic reaction drive: read_knowledge over the window holding the
 # connector events → window_token → complete_window with extracted_data. The

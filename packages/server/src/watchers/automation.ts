@@ -406,34 +406,71 @@ export async function reconcileWatcherRuns(db?: DbClient): Promise<ReconcileWatc
 }
 
 /**
- * Coarse backstop for watcher runs that never reached terminal state.
+ * Backstop for watcher runs that never reached terminal state.
  *
  * The primary lifecycle is driven by WatcherRunTracker (in-process completion
- * events) plus startup reconciliation on gateway boot. This sweeper only
- * catches truly stuck runs — the tracker entry was lost without a crash
- * (graceful shutdown mid-turn, queue message silently dropped, etc). TTL is
- * intentionally generous so long LLM turns are not killed.
+ * events) plus startup reconciliation on gateway boot. This sweeper catches
+ * stuck runs — the tracker entry was lost without a clean completion (graceful
+ * shutdown mid-turn, queue message silently dropped, the device executor
+ * crashing or its process being abandoned, etc).
+ *
+ * Two reap paths, both keyed on the run's OWN liveness so they're correct
+ * under N replicas (a run actively executing anywhere keeps its heartbeat
+ * fresh, so no replica's sweep touches it):
+ *
+ *  1. Heartbeat-stale (fast, ~minutes): a run whose executor heartbeats —
+ *     the device WatcherDispatcher beats every {@link WATCHER_HEARTBEAT_MS}ms
+ *     during the turn — and has gone silent past the window. We require
+ *     `last_heartbeat_at > claimed_at` (i.e. it beat at least once after being
+ *     claimed) so this NEVER fires for a client that doesn't heartbeat: the
+ *     claim sets `last_heartbeat_at == claimed_at`, so a non-heartbeating run
+ *     stays equal and falls through to the coarse path. Fully backward
+ *     compatible with older Mac apps.
+ *  2. Coarse TTL (generous, 2h): the legacy backstop for runs that never
+ *     heartbeat — measured from the claim/creation. Kept so a long but live
+ *     non-heartbeating turn isn't killed prematurely.
  */
 const WATCHER_RUN_STALE_INTERVAL = '2 hours';
+
+/** ~4 missed 30s device heartbeats. A heartbeating executor that goes silent
+ *  this long is crashed/abandoned; a live one (beats every ~30s) never lapses. */
+const WATCHER_RUN_HEARTBEAT_STALE_INTERVAL = '3 minutes';
 
 export async function sweepStaleWatcherRuns(
   db?: DbClient
 ): Promise<{ timedOut: number }> {
   const sql = db ?? getDb();
-  const errorMessage = `Watcher run exceeded ${WATCHER_RUN_STALE_INTERVAL} without reaching terminal state`;
+  const heartbeatError = `Watcher run heartbeat went silent for over ${WATCHER_RUN_HEARTBEAT_STALE_INTERVAL} — the executor crashed or was abandoned`;
+  const coarseError = `Watcher run exceeded ${WATCHER_RUN_STALE_INTERVAL} without reaching terminal state`;
   const result = await sql`
     UPDATE runs
     SET status = 'timeout',
         completed_at = current_timestamp,
-        error_message = ${errorMessage}
+        error_message = CASE
+          WHEN last_heartbeat_at IS NOT NULL
+               AND claimed_at IS NOT NULL
+               AND last_heartbeat_at > claimed_at
+            THEN ${heartbeatError}
+          ELSE ${coarseError}
+        END
     WHERE run_type = 'watcher'
       AND status IN ('running', 'claimed')
-      AND COALESCE(claimed_at, created_at)
-          < current_timestamp - ${WATCHER_RUN_STALE_INTERVAL}::interval
+      AND (
+        -- Fast path: the executor was heartbeating, then went silent.
+        (last_heartbeat_at IS NOT NULL
+         AND claimed_at IS NOT NULL
+         AND last_heartbeat_at > claimed_at
+         AND last_heartbeat_at
+             < current_timestamp - ${WATCHER_RUN_HEARTBEAT_STALE_INTERVAL}::interval)
+        OR
+        -- Coarse backstop: never heartbeated (no-heartbeat clients).
+        COALESCE(claimed_at, created_at)
+            < current_timestamp - ${WATCHER_RUN_STALE_INTERVAL}::interval
+      )
   `;
   const timedOut = Number(result.count ?? 0);
   if (timedOut > 0) {
-    logger.warn({ timedOut }, '[watchers] Swept stale watcher runs past coarse TTL');
+    logger.warn({ timedOut }, '[watchers] Swept stale watcher runs');
   }
   return { timedOut };
 }

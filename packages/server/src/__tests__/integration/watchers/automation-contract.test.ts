@@ -17,6 +17,7 @@ import { computePendingWindow } from '../../../utils/window-utils';
 import {
   dispatchPendingWatcherRuns,
   materializeDueWatcherRuns,
+  sweepStaleWatcherRuns,
 } from '../../../watchers/automation';
 import { generateSecureToken, hashToken } from '../../../auth/oauth/utils';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -1041,6 +1042,87 @@ describe('watcher automation contract', () => {
       ).getTime();
 
       expect(secondNextRunMs).toBe(firstNextRunMs);
+    });
+  });
+
+  describe('sweepStaleWatcherRuns liveness reaping', () => {
+    // Seed a `running` watcher run with controlled claim/heartbeat ages.
+    // Omitting `heartbeatAgo` mirrors a client that never heartbeats — the
+    // claim sets last_heartbeat_at == claimed_at, so the row must fall to the
+    // coarse 2h path, never the fast heartbeat path.
+    async function seedRunningWatcherRun(opts: {
+      claimedAgo: string;
+      heartbeatAgo?: string;
+    }) {
+      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
+      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+      const { windowStart, windowEnd } = await computePendingWindow(
+        dbClient,
+        watcherId,
+        granularity
+      );
+      const queued = await createWatcherRun({
+        organizationId: workspace.org.id,
+        watcherId,
+        agentId: agent.agentId,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+        dispatchSource: 'scheduled',
+        deviceWorkerId: '11111111-1111-1111-1111-111111111111',
+        agentKind: 'claude-code',
+      });
+      const heartbeatAgo = opts.heartbeatAgo ?? opts.claimedAgo;
+      await sql`
+        UPDATE runs
+        SET status = 'running',
+            claimed_by = 'mac-sweep-test',
+            claimed_at = NOW() - ${opts.claimedAgo}::interval,
+            last_heartbeat_at = NOW() - ${heartbeatAgo}::interval
+        WHERE id = ${queued.runId}
+      `;
+      return { sql, runId: queued.runId };
+    }
+
+    it('reaps a heartbeating run that went silent past the heartbeat window', async () => {
+      // Beat once after claim (10m ago > claim 1h ago), then silent >3min.
+      const { sql, runId } = await seedRunningWatcherRun({
+        claimedAgo: '1 hour',
+        heartbeatAgo: '10 minutes',
+      });
+      const { timedOut } = await sweepStaleWatcherRuns(sql);
+      expect(timedOut).toBeGreaterThanOrEqual(1);
+      const [row] = await sql`SELECT status, error_message FROM runs WHERE id = ${runId}`;
+      expect(String(row.status)).toBe('timeout');
+      expect(String(row.error_message ?? '')).toMatch(/heartbeat went silent/i);
+    });
+
+    it('leaves a run with a fresh heartbeat running', async () => {
+      const { sql, runId } = await seedRunningWatcherRun({
+        claimedAgo: '1 hour',
+        heartbeatAgo: '30 seconds',
+      });
+      await sweepStaleWatcherRuns(sql);
+      const [row] = await sql`SELECT status FROM runs WHERE id = ${runId}`;
+      expect(String(row.status)).toBe('running');
+    });
+
+    it('does not fast-reap a recent run that never heartbeats', async () => {
+      // last_heartbeat_at == claimed_at (no beat) + only 30m old → the fast
+      // path must NOT fire; it stays running until the 2h coarse backstop.
+      // Backward-compat guard for clients that do not heartbeat.
+      const { sql, runId } = await seedRunningWatcherRun({ claimedAgo: '30 minutes' });
+      await sweepStaleWatcherRuns(sql);
+      const [row] = await sql`SELECT status FROM runs WHERE id = ${runId}`;
+      expect(String(row.status)).toBe('running');
+    });
+
+    it('reaps a non-heartbeating run via the coarse 2h backstop', async () => {
+      const { sql, runId } = await seedRunningWatcherRun({ claimedAgo: '3 hours' });
+      const { timedOut } = await sweepStaleWatcherRuns(sql);
+      expect(timedOut).toBeGreaterThanOrEqual(1);
+      const [row] = await sql`SELECT status, error_message FROM runs WHERE id = ${runId}`;
+      expect(String(row.status)).toBe('timeout');
+      expect(String(row.error_message ?? '')).toMatch(/2 hours/i);
     });
   });
 });

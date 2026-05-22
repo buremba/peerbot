@@ -174,7 +174,11 @@ async function resolveToken(provider: TokenProvider): Promise<string> {
 }
 
 function normalizeBaseUrl(baseUrl: string): string {
-  const trimmed = baseUrl.trim().replace(/\/+$/, "");
+  // Strip trailing slashes without a regex — `/\/+$/` trips CodeQL's
+  // polynomial-ReDoS check on a long run of slashes, and a plain slice is both
+  // safe and clearer.
+  let trimmed = baseUrl.trim();
+  while (trimmed.endsWith("/")) trimmed = trimmed.slice(0, -1);
   if (!trimmed) throw new Error("Lobu baseUrl is required");
   return trimmed;
 }

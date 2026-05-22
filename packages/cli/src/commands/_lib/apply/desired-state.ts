@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Project } from "@lobu/sdk";
 import type {
@@ -744,7 +744,16 @@ function resolveReactionScript(
   }
   const baseDir = resolve(cwd);
   const abs = resolve(baseDir, trimmed);
-  if (!abs.startsWith(`${baseDir}/`) && abs !== baseDir) {
+  // Containment check via `relative` (cross-platform): a hard-coded `${baseDir}/`
+  // prefix uses POSIX `/` and wrongly rejects every path on Windows (backslash
+  // separators). `rel` is "" when abs === baseDir, starts with ".." when abs
+  // escapes baseDir, and is absolute when on a different drive.
+  const relPath = relative(baseDir, abs);
+  if (
+    relPath === ".." ||
+    relPath.startsWith(`..${sep}`) ||
+    isAbsolute(relPath)
+  ) {
     throw new ValidationError(
       `watcher "${watcherSlug}" \`reaction\` resolves outside the config directory (${abs})`
     );

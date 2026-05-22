@@ -80,8 +80,8 @@ describe("defineConnector", () => {
 		expect(res.checkpoint).toEqual({ seen: 1 });
 	});
 
-	test("sync throws for an unknown feed", () => {
-		expect(
+	test("sync throws for an unknown feed", async () => {
+		await expect(
 			new Github().sync({
 				feedKey: "nope",
 				config: {},

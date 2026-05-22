@@ -34,7 +34,7 @@ export interface EntityType {
 }
 
 export function defineEntityType(config: Omit<EntityType, "kind">): EntityType {
-  return { kind: "entityType", ...config };
+  return { ...config, kind: "entityType" };
 }
 
 export interface RelationshipType {
@@ -50,7 +50,7 @@ export interface RelationshipType {
 export function defineRelationshipType(
   config: Omit<RelationshipType, "kind">
 ): RelationshipType {
-  return { kind: "relationshipType", ...config };
+  return { ...config, kind: "relationshipType" };
 }
 
 // ---------------------------------------------------------------------------
@@ -81,7 +81,7 @@ export interface AuthProfile {
 export function defineAuthProfile(
   config: Omit<AuthProfile, "kind">
 ): AuthProfile {
-  return { kind: "authProfile", ...config };
+  return { ...config, kind: "authProfile" };
 }
 
 export interface ConnectionFeed {
@@ -109,7 +109,7 @@ export interface Connection {
 }
 
 export function defineConnection(config: Omit<Connection, "kind">): Connection {
-  return { kind: "connection", ...config };
+  return { ...config, kind: "connection" };
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +153,7 @@ export interface Watcher {
 }
 
 export function defineWatcher(config: Omit<Watcher, "kind">): Watcher {
-  return { kind: "watcher", ...config };
+  return { ...config, kind: "watcher" };
 }
 
 // ---------------------------------------------------------------------------
@@ -290,7 +290,7 @@ export interface Agent {
 }
 
 export function defineAgent(config: Omit<Agent, "kind">): Agent {
-  return { kind: "agent", ...config };
+  return { ...config, kind: "agent" };
 }
 
 // ---------------------------------------------------------------------------
@@ -323,5 +323,5 @@ export interface Project {
 }
 
 export function defineConfig(config: Omit<Project, "kind">): Project {
-  return { kind: "project", ...config };
+  return { ...config, kind: "project" };
 }

@@ -172,7 +172,7 @@ const opportunityMatcher = defineWatcher({
 });
 
 export default defineConfig({
-  org: "market",
+  org: "agent-community",
   orgName: "Agent Community",
   orgDescription:
     "Discover aligned members, explain why they should meet, and draft warm introductions",

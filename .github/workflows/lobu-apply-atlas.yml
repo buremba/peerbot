@@ -31,7 +31,7 @@ concurrency:
 jobs:
   apply:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -56,6 +56,27 @@ jobs:
         with:
           bun-version: 1.3.5
 
+      # `node packages/cli/bin/lobu.js` is the runtime entrypoint; Node 22 is the
+      # repo's supported major (see AGENTS.md prereqs).
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.skip != 'true'
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        if: steps.gate.outputs.skip != 'true'
+        run: bun install
+
+      # Build and run the WORKSPACE CLI from this commit, not `bunx @lobu/cli`
+      # (the published npm version). The atlas project is authored in
+      # lobu.config.ts (the TS authoring SDK); the published CLI lags the repo
+      # and predates the TS-config loader, so it would fail with
+      # "No lobu.toml found". `make build-packages` skips the owletto web build
+      # when the submodule is absent — a cloud apply doesn't need it.
+      - name: Build packages
+        if: steps.gate.outputs.skip != 'true'
+        run: make build-packages
+
       - name: Apply
         if: steps.gate.outputs.skip != 'true'
         working-directory: examples/atlas
@@ -65,8 +86,9 @@ jobs:
           LOBU_API_TOKEN: ${{ secrets.LOBU_TOKEN }}
           Z_AI_API_KEY: ${{ secrets.Z_AI_API_KEY }}
         run: |
+          LOBU="node $GITHUB_WORKSPACE/packages/cli/bin/lobu.js"
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            bunx --bun @lobu/cli apply --org atlas --dry-run
+            $LOBU apply --org atlas --dry-run
           else
-            bunx --bun @lobu/cli apply --org atlas --yes
+            $LOBU apply --org atlas --yes
           fi

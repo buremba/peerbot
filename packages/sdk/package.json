@@ -1,6 +1,6 @@
 {
   "name": "@lobu/sdk",
-  "version": "9.1.1",
+  "version": "9.2.0",
   "description": "Lobu authoring SDK — define agents, connectors, watchers, and connections in TypeScript",
   "type": "module",
   "main": "dist/index.js",

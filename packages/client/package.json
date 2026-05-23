@@ -1,6 +1,6 @@
 {
   "name": "@lobu/client",
-  "version": "9.1.1",
+  "version": "9.2.0",
   "description": "TypeScript client for the Lobu Agent API",
   "type": "module",
   "main": "dist/index.js",

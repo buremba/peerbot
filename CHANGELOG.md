@@ -1,5 +1,22 @@
 # Changelog
 
+## [9.2.0](https://github.com/lobu-ai/lobu/compare/lobu-v9.1.1...lobu-v9.2.0) (2026-05-23)
+
+
+### Features
+
+* **auth:** local sign-in passcode + /api/local-passcode (web/mac rework) ([#999](https://github.com/lobu-ai/lobu/issues/999)) ([7799c21](https://github.com/lobu-ai/lobu/commit/7799c211ba59a111292e913f6e03095ee18c731d))
+* **client:** add TypeScript SDK ([#1015](https://github.com/lobu-ai/lobu/issues/1015)) ([3993aad](https://github.com/lobu-ai/lobu/commit/3993aad2b29ed806553f0fd9dd26e4e8d4c25099))
+
+
+### Bug Fixes
+
+* **cli:** honor local context for memory and token auth ([#1011](https://github.com/lobu-ai/lobu/issues/1011)) ([176a3f1](https://github.com/lobu-ai/lobu/commit/176a3f13ecb1b566a80b87e526e9fb665707dc76)), closes [#1008](https://github.com/lobu-ai/lobu/issues/1008)
+* **cli:** warn when apply ignores connectors ([#1010](https://github.com/lobu-ai/lobu/issues/1010)) ([0b145cd](https://github.com/lobu-ai/lobu/commit/0b145cda338fcc535525cb6762061349b4186d77)), closes [#1009](https://github.com/lobu-ai/lobu/issues/1009)
+* **connectors:** serve catalog from a build-time manifest, stop cold-scan 503s ([#1013](https://github.com/lobu-ai/lobu/issues/1013)) ([4e5db74](https://github.com/lobu-ai/lobu/commit/4e5db742b4fe49c885058b0b9c6f1f63ea0f81ea))
+* **server:** heartbeat-aware reaping for orphaned watcher runs ([#1020](https://github.com/lobu-ai/lobu/issues/1020)) ([a0a15b9](https://github.com/lobu-ai/lobu/commit/a0a15b91fc03b6b4dab08fe41d52a3d33ae003c5))
+* **server:** register local device-worker capabilities even when poll is anonymous ([#1017](https://github.com/lobu-ai/lobu/issues/1017)) ([463a5a4](https://github.com/lobu-ai/lobu/commit/463a5a4b688e84228659006c25bc713136899d5e))
+
 ## [9.1.1](https://github.com/lobu-ai/lobu/compare/lobu-v9.1.0...lobu-v9.1.1) (2026-05-21)
 
 

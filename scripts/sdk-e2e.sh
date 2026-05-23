@@ -252,6 +252,38 @@ api() {
 # Extract a JSON field from stdin with node (no jq dependency).
 jget() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let v;try{v=JSON.parse(s)}catch{process.exit(2)};for(const k of process.argv[1].split("."))v=v?.[k];process.stdout.write(v==null?"":String(v))})' "$1"; }
 
+# 4b) Client SDK consumption — drive @lobu/client (the CONSUMPTION SDK) against
+#     the live gateway: create a session, send a message, stream the reply back.
+#     This is the path an external JS app takes; the rest of the gate chats via
+#     the `lobu chat` CLI, so without this the consumption SDK has no live-server
+#     coverage (only unit tests vs mocked fetch). The consumer installs the
+#     PACKED tarball into a throwaway project, proving the published artifact is
+#     self-contained (zero deps). The Agent API requires a `device_worker:run`
+#     token — an mcp PAT is rejected — so fetch the device_token from
+#     /api/local-init (the same worker PAT `lobu chat` uses via getAgentApiToken).
+CLIENT_DIR="$RUN_DIR/client-consumer"; mkdir -p "$CLIENT_DIR"
+( cd "$WT/packages/client" && bun pm pack --destination "$CLIENT_DIR" >/dev/null 2>&1 ) \
+  || fail "could not pack @lobu/client (was dist built by make build-packages?)"
+CLIENT_TGZ="$(ls "$CLIENT_DIR"/lobu-client-*.tgz 2>/dev/null | head -1)"
+[ -n "$CLIENT_TGZ" ] || fail "no @lobu/client tarball produced"
+cat > "$CLIENT_DIR/package.json" <<JSON
+{ "name": "sdk-e2e-consumer", "private": true, "type": "module", "dependencies": { "@lobu/client": "file:$CLIENT_TGZ" } }
+JSON
+cp "$HARNESS/client-consumer.mjs" "$CLIENT_DIR/consumer.mjs"
+( cd "$CLIENT_DIR" && bun install >/dev/null 2>&1 ) \
+  || fail "could not install the @lobu/client tarball into the consumer project"
+
+DEVTOKEN="$(curl -fsS -X POST "$GW/api/local-init" -H 'X-Lobu-Client: cli' | jget device_token)"
+[ -n "$DEVTOKEN" ] || fail "could not obtain an Agent-API token (device_token) from /api/local-init"
+
+CLIENT_OUT="$RUN_DIR/client-consumer.out"
+( cd "$CLIENT_DIR" && LOBU_BASE_URL="$GW/lobu" LOBU_TOKEN="$DEVTOKEN" LOBU_AGENT_ID="echo" \
+    timeout 90 node consumer.mjs > "$CLIENT_OUT" 2>&1 ) \
+  || { cat "$CLIENT_OUT" >&2; fail "@lobu/client consumer exited non-zero"; }
+grep -qF "$MOCK_REPLY" "$CLIENT_OUT" \
+  || { cat "$CLIENT_OUT" >&2; fail "@lobu/client stream did not return the agent reply '$MOCK_REPLY'"; }
+echo "✓ @lobu/client created a session, sent a message, and streamed the agent reply ($MOCK_REPLY)"
+
 # 6) Connector sync — prove the COMPILED connector actually RUNS and emits events.
 #    Find the feed manage_feeds created from the `pulse` connection, trigger an
 #    immediate sync, wait for the run to complete, then assert ≥1 event landed.

@@ -1,5 +1,12 @@
 # Changelog
 
+## [9.3.0](https://github.com/lobu-ai/lobu/compare/lobu-v9.2.0...lobu-v9.3.0) (2026-05-24)
+
+
+### Features
+
+* **cli:** fold @lobu/sdk into @lobu/cli/config ([#1026](https://github.com/lobu-ai/lobu/issues/1026)) ([06f3432](https://github.com/lobu-ai/lobu/commit/06f3432f4b0fb98693a93ef4982528950d298f2d))
+
 ## [9.2.0](https://github.com/lobu-ai/lobu/compare/lobu-v9.1.1...lobu-v9.2.0) (2026-05-23)
 
 

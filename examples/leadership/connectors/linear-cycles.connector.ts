@@ -8,7 +8,7 @@ export default class LinearCyclesConnector extends ConnectorRuntime {
     key: "linear-cycles",
     name: "Linear cycles",
     version: "1.0.0",
-    authSchema: { methods: [{ type: "oauth" as const, provider: "linear" }] },
+    authSchema: { methods: [{ type: "oauth" as const, provider: "linear", requiredScopes: ["read"] }] },
     feeds: { cycle_issues: { key: "cycle_issues", name: "Cycle issues" } },
   };
 
@@ -21,6 +21,7 @@ export default class LinearCyclesConnector extends ConnectorRuntime {
         origin_id: `${i.id}:${i.state.name}`,
         origin_type: "issue_state_changed",
         title: `${i.identifier} ${i.title} → ${i.state.name}`,
+        payload_text: `${i.identifier} ${i.title} is now ${i.state.name}`,
         source_url: i.url,
         occurred_at: new Date(i.updatedAt),
       })),

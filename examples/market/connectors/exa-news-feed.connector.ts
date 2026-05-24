@@ -6,7 +6,7 @@ export default class ExaNewsFeedConnector extends ConnectorRuntime {
     key: "exa-news-feed",
     name: "Exa news feed",
     version: "1.0.0",
-    authSchema: { methods: [{ type: "env" as const, fields: [{ name: "api_key" }] }] },
+    authSchema: { methods: [{ type: "env_keys" as const, fields: [{ key: "api_key", secret: true }] }] },
     feeds: { articles: { key: "articles", name: "Articles" } },
   };
 
@@ -19,6 +19,7 @@ export default class ExaNewsFeedConnector extends ConnectorRuntime {
         origin_id: x.id,
         origin_type: "article_published",
         title: x.title ?? x.url,
+        payload_text: x.text ?? x.title ?? x.url,
         author_name: x.author,
         source_url: x.url,
         occurred_at: x.publishedDate ? new Date(x.publishedDate) : new Date(),

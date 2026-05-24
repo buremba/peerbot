@@ -6,7 +6,7 @@ export default class DocuSignEnvelopesConnector extends ConnectorRuntime {
     key: "docusign-envelopes",
     name: "DocuSign envelopes",
     version: "1.0.0",
-    authSchema: { methods: [{ type: "oauth" as const, provider: "docusign" }] },
+    authSchema: { methods: [{ type: "oauth" as const, provider: "docusign", requiredScopes: ["signature"] }] },
     feeds: { envelopes: { key: "envelopes", name: "Envelope status changes" } },
   };
 
@@ -20,6 +20,7 @@ export default class DocuSignEnvelopesConnector extends ConnectorRuntime {
         origin_id: `${e.envelopeId}:${e.status}`,
         origin_type: "envelope_status_changed",
         title: `${e.emailSubject ?? e.envelopeId} → ${e.status}`,
+        payload_text: `Envelope ${e.emailSubject ?? e.envelopeId} is now ${e.status}`,
         occurred_at: new Date(e.statusChangedDateTime),
       })),
       checkpoint: { last_status_changed: envelopes.at(-1)?.statusChangedDateTime ?? since },

@@ -66,7 +66,7 @@ async function withPage<T>(fn: (page: import("playwright").Page) => Promise<T>):
   const browser = await chromium.launch({ headless: true });
   try {
     const context = await browser.newContext();
-    await context.addCookies(loadCookies() as Parameters<typeof context.addCookies>[0]);
+    await context.addCookies(loadCookies() as unknown as Parameters<typeof context.addCookies>[0]);
     const page = await context.newPage();
     return await fn(page);
   } finally {

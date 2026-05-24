@@ -1,0 +1,10 @@
+{
+  "name": "@lobu/example-finance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@lobu/cli": "^9.2.0",
+    "@lobu/connector-sdk": "^9.2.0"
+  }
+}

@@ -17,7 +17,7 @@ export default async (
   ctx: ReactionContext,
   client: ReactionClient
 ): Promise<void> => {
-  const data = ctx.extracted_data as ReconciliationData;
+  const data = ctx.extracted_data as unknown as ReconciliationData;
 
   const hasIssues =
     data.unreconciled_count > 0 ||

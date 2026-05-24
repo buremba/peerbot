@@ -6,7 +6,7 @@ export default class ShopifyOrdersConnector extends ConnectorRuntime {
     key: "shopify-orders",
     name: "Shopify orders",
     version: "1.0.0",
-    authSchema: { methods: [{ type: "env" as const, fields: [{ name: "access_token" }] }] },
+    authSchema: { methods: [{ type: "env_keys" as const, fields: [{ key: "access_token", secret: true }] }] },
     feeds: { orders: { key: "orders", name: "Order updates" } },
   };
 
@@ -19,6 +19,7 @@ export default class ShopifyOrdersConnector extends ConnectorRuntime {
         origin_id: `${o.id}:${o.updated_at}`,
         origin_type: "order_updated",
         title: `Order ${o.name} — ${o.fulfillment_status ?? "unfulfilled"}`,
+        payload_text: `Order ${o.name} is ${o.fulfillment_status ?? "unfulfilled"}`,
         source_url: `https://${ctx.config.shop}/admin/orders/${o.id}`,
         occurred_at: new Date(o.updated_at),
       })),

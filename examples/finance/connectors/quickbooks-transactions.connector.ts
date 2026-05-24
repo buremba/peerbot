@@ -6,7 +6,7 @@ export default class QuickBooksTransactionsConnector extends ConnectorRuntime {
     key: "quickbooks-transactions",
     name: "QuickBooks transactions",
     version: "1.0.0",
-    authSchema: { methods: [{ type: "oauth" as const, provider: "intuit" }] },
+    authSchema: { methods: [{ type: "oauth" as const, provider: "intuit", requiredScopes: ["com.intuit.quickbooks.accounting"] }] },
     feeds: { transactions: { key: "transactions", name: "Posted transactions" } },
   };
 
@@ -20,6 +20,7 @@ export default class QuickBooksTransactionsConnector extends ConnectorRuntime {
         origin_id: t.Id,
         origin_type: "transaction_posted",
         title: `${t.AccountRef?.name ?? "Bank"} — $${t.Amount.toFixed(2)}`,
+        payload_text: `${t.AccountRef?.name ?? "Bank"} transaction for $${t.Amount.toFixed(2)} on ${t.TxnDate}`,
         occurred_at: new Date(`${t.TxnDate}T00:00:00Z`),
       })),
       checkpoint: { last_txn_date: txns.at(-1)?.TxnDate ?? since },

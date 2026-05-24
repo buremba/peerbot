@@ -6,7 +6,7 @@ export default class SalesforcePipelineConnector extends ConnectorRuntime {
     key: "salesforce-pipeline",
     name: "Salesforce pipeline",
     version: "1.0.0",
-    authSchema: { methods: [{ type: "oauth" as const, provider: "salesforce" }] },
+    authSchema: { methods: [{ type: "oauth" as const, provider: "salesforce", requiredScopes: ["api", "refresh_token"] }] },
     feeds: { opportunities: { key: "opportunities", name: "Opportunities" } },
   };
 
@@ -20,6 +20,7 @@ export default class SalesforcePipelineConnector extends ConnectorRuntime {
         origin_id: o.Id,
         origin_type: "opportunity_updated",
         title: `${o.Name} → ${o.StageName}`,
+        payload_text: `${o.Name} moved to ${o.StageName}`,
         occurred_at: new Date(o.LastModifiedDate),
       })),
       checkpoint: { last_modified: records.at(-1)?.LastModifiedDate ?? since },

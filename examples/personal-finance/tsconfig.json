@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "Preserve",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": [
+    "lobu.config.ts",
+    "agents/**/*.ts",
+    "connectors/**/*.ts",
+    "reactions/**/*.ts",
+    "models/**/*.ts"
+  ]
+}

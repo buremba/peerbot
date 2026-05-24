@@ -12,6 +12,8 @@
     "@lobu/promptfoo-provider": "file:../../packages/promptfoo-provider"
   },
   "devDependencies": {
-    "promptfoo": "^0.121.0"
+    "promptfoo": "^0.121.0",
+    "@lobu/cli": "^9.2.0",
+    "@lobu/connector-sdk": "^9.2.0"
   }
 }

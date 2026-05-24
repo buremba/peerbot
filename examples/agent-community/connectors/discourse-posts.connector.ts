@@ -6,7 +6,7 @@ export default class DiscoursePostsConnector extends ConnectorRuntime {
     key: "discourse-posts",
     name: "Discourse posts",
     version: "1.0.0",
-    authSchema: { methods: [{ type: "env" as const, fields: [{ name: "api_key" }] }] },
+    authSchema: { methods: [{ type: "env_keys" as const, fields: [{ key: "api_key", secret: true }] }] },
     feeds: { posts: { key: "posts", name: "Forum posts" } },
   };
 
@@ -19,6 +19,7 @@ export default class DiscoursePostsConnector extends ConnectorRuntime {
         origin_id: String(p.id),
         origin_type: "post_created",
         title: p.topic_title ?? `Post by ${p.username}`,
+        payload_text: p.raw ?? p.cooked ?? `Post by ${p.username}`,
         author_name: p.username,
         source_url: `${ctx.config.base_url}/t/${p.topic_slug}/${p.topic_id}/${p.id}`,
         occurred_at: new Date(p.created_at),

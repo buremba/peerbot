@@ -34,7 +34,7 @@ typecheck:
 # Build all TypeScript packages in dependency order
 build-packages:
 	@echo "📦 Building all TypeScript packages..."
-	@for pkg in core pgvector-embedded connector-sdk client sdk agent-worker openclaw-plugin embeddings connector-worker promptfoo-provider; do \
+	@for pkg in core pgvector-embedded connector-sdk client agent-worker openclaw-plugin embeddings connector-worker promptfoo-provider; do \
 		echo "   📦 Building packages/$$pkg..."; \
 		( cd packages/$$pkg && bun run build ) || exit $$?; \
 	done

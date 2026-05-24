@@ -48,11 +48,6 @@
         },
         {
           "type": "json",
-          "path": "packages/connectors/package.json",
-          "jsonpath": "$.version"
-        },
-        {
-          "type": "json",
           "path": "packages/connector-worker/package.json",
           "jsonpath": "$.version"
         },

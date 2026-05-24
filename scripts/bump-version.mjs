@@ -10,7 +10,6 @@ const PACKAGES = [
   "packages/connector-sdk",
   "packages/client",
   "packages/openclaw-plugin",
-  "packages/connectors",
   "packages/connector-worker",
   "packages/embeddings",
 ];

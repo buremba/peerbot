@@ -237,6 +237,13 @@ async function publishToClawhub({ dir, clawhub }) {
       version,
       "--tags",
       "latest",
+      // The `lobu` ClawHub slug has a trusted-publisher config, so ClawHub
+      // treats this scripted CLI publish as a "manual" publish and requires an
+      // explicit override reason. The synchronized npm + ClawHub release is
+      // driven by this script (publish-packages.mjs) from the OIDC release
+      // workflow, so document that as the override reason.
+      "--manual-override-reason",
+      "synchronized npm + ClawHub release via scripts/publish-packages.mjs (publish-packages.yml)",
       "--source-repo",
       CLAWHUB_SOURCE_REPO,
       "--source-commit",

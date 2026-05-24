@@ -11,7 +11,7 @@ Use the `tools` field for two separate concerns:
 - **MCP approval bypass**: `preApproved`
 
 ```ts
-import { defineAgent } from "@lobu/sdk";
+import { defineAgent } from "@lobu/cli/config";
 
 const support = defineAgent({
   id: "support",

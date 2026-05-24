@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { Project } from "@lobu/sdk";
+import type { Project } from "../../../config/index.js";
 import type {
   ConnectorAuthSchema,
   ConnectorDefinition,
@@ -782,9 +782,9 @@ function resolveReactionScript(
  *
  * Uses jiti — the same runtime TypeScript loader Next.js/Nuxt use for their
  * `*.config.ts` — which transpiles on import and resolves the config's imports
- * (`@lobu/sdk`, `@lobu/connector-sdk`, relative reaction/connector files) from
- * the project. No bundling, no temp file. The dynamic `import("jiti")` is lazy
- * + allow-listed (AGENTS.md).
+ * (`@lobu/cli/config`, `@lobu/connector-sdk`, relative reaction/connector files)
+ * from the project. No bundling, no temp file. The dynamic `import("jiti")` is
+ * lazy + allow-listed (AGENTS.md).
  */
 export async function loadProjectConfig(
   cwd: string
@@ -800,15 +800,15 @@ export async function loadProjectConfig(
     project = await jiti.import(configPath, { default: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    // A fresh `lobu init` writes package.json declaring @lobu/sdk but doesn't
+    // A fresh `lobu init` writes package.json declaring @lobu/cli but doesn't
     // install — jiti then can't resolve the import. Point the user at the fix
     // instead of surfacing a raw module-resolution error.
     if (
-      /@lobu\/(sdk|connector-sdk)/.test(message) &&
+      /@lobu\/(cli|connector-sdk)/.test(message) &&
       !existsSync(resolve(cwd, "node_modules"))
     ) {
       throw new ValidationError(
-        `Failed to load lobu.config.ts — its @lobu/sdk import can't be resolved because dependencies aren't installed. Run \`bun install\` (or npm/pnpm install) in ${cwd} first.`
+        `Failed to load lobu.config.ts — its @lobu/cli/config import can't be resolved because dependencies aren't installed. Run \`bun install\` (or npm/pnpm install) in ${cwd} first.`
       );
     }
     throw new ValidationError(`Failed to load lobu.config.ts — ${message}`);

@@ -1,18 +1,18 @@
 ---
 title: lobu.config.ts reference
-description: Complete reference for the lobu.config.ts authoring file and the @lobu/sdk API.
+description: Complete reference for the lobu.config.ts authoring file and the @lobu/cli/config API.
 sidebar:
   order: 1
 ---
 
-`lobu.config.ts` is the project configuration file created by `lobu init`. It is a TypeScript module that default-exports `defineConfig({...})`. You author agents, providers, network access (including the LLM egress judge), guardrails, worker settings, the Lobu memory schema (entity types, relationship types, watchers), connections, and auth profiles by calling the `define*` functions from `@lobu/sdk`.
+`lobu.config.ts` is the project configuration file created by `lobu init`. It is a TypeScript module that default-exports `defineConfig({...})`. You author agents, providers, network access (including the LLM egress judge), guardrails, worker settings, the Lobu memory schema (entity types, relationship types, watchers), connections, and auth profiles by calling the `define*` functions from `@lobu/cli/config`.
 
-`lobu apply` (and `lobu run`) import this entrypoint, read the default export, and map it to your org's desired state. `lobu init` also scaffolds a `package.json` that declares `@lobu/sdk` and `@lobu/connector-sdk` as devDependencies, plus a `tsconfig.json`, so your editor and `lobu apply` can resolve the SDK imports.
+`lobu apply` (and `lobu run`) import this entrypoint, read the default export, and map it to your org's desired state. `lobu init` also scaffolds a `package.json` that declares `@lobu/cli` and `@lobu/connector-sdk` as devDependencies, plus a `tsconfig.json`, so your editor and `lobu apply` can resolve the config imports.
 
 ## Minimal example
 
 ```ts
-import { defineAgent, defineConfig, secret } from "@lobu/sdk";
+import { defineAgent, defineConfig, secret } from "@lobu/cli/config";
 
 const agent = defineAgent({
   id: "my-agent",
@@ -39,7 +39,7 @@ import {
   defineRelationshipType,
   defineWatcher,
   secret,
-} from "@lobu/sdk";
+} from "@lobu/cli/config";
 
 const assistant = defineAgent({
   id: "assistant",
@@ -149,9 +149,9 @@ export default defineConfig({
 });
 ```
 
-## The `@lobu/sdk` API
+## The `@lobu/cli/config` API
 
-Every authoring function is imported from `@lobu/sdk`:
+Every authoring function is imported from `@lobu/cli/config`:
 
 ```ts
 import {
@@ -164,7 +164,7 @@ import {
   defineAuthProfile,
   secret,
   Type,
-} from "@lobu/sdk";
+} from "@lobu/cli/config";
 ```
 
 Each `define*` returns a branded handle. Assign it to a `const` and pass that handle wherever a reference is needed (for example a `defineWatcher` takes the `defineAgent` handle as its `agent`).

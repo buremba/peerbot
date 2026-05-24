@@ -5,7 +5,7 @@ import {
   defineRelationshipType,
   defineWatcher,
   secret,
-} from "@lobu/sdk";
+} from "@lobu/cli/config";
 
 const SECTOR_ENUM = ["bio-health", "ai", "fintech", "crypto", "consumer"];
 

@@ -246,7 +246,7 @@ class ImportTracker {
   }
   render(): string {
     const names = IMPORTABLE.filter((n) => this.used.has(n)).sort();
-    return `import {\n${names.map((n) => `  ${n}`).join(",\n")},\n} from "@lobu/sdk";`;
+    return `import {\n${names.map((n) => `  ${n}`).join(",\n")},\n} from "@lobu/cli/config";`;
   }
 }
 

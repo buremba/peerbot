@@ -74,7 +74,7 @@ my-agents/
 `lobu.config.ts` references each agent's directory:
 
 ```ts
-import { defineAgent, defineConfig, secret } from "@lobu/sdk";
+import { defineAgent, defineConfig, secret } from "@lobu/cli/config";
 
 const supportBot = defineAgent({
   id: "support-bot",

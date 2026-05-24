@@ -4,7 +4,7 @@
  * packages/landing/src/generated/use-case-models.ts
  *
  * Each example ships a `lobu.config.ts` (a `defineConfig(...)` default export
- * from `@lobu/sdk`). We load it the same way the CLI does — via jiti, the
+ * from `@lobu/cli/config`). We load it the same way the CLI does — via jiti, the
  * runtime TypeScript loader (see
  * `packages/cli/src/commands/_lib/apply/desired-state.ts` `loadProjectConfig`)
  * — and project the SDK `Project` shape down to the minimal model the landing
@@ -23,8 +23,8 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { Project, ProviderConfig, Watcher } from "@lobu/sdk";
-import { isSecretRef } from "@lobu/sdk";
+import type { Project, ProviderConfig, Watcher } from "@lobu/cli/config";
+import { isSecretRef } from "@lobu/cli/config";
 import { createJiti } from "jiti";
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -39,7 +39,7 @@ const OUTPUT_PATH = join(
 /**
  * Import an example's `lobu.config.ts` and return its `defineConfig` default
  * export. Mirrors `loadProjectConfig` in the CLI: jiti transpiles the config on
- * import and resolves its `@lobu/sdk` import from the monorepo. Returns null
+ * import and resolves its `@lobu/cli/config` import from the monorepo. Returns null
  * when the example has no config (skipped, not an error).
  */
 async function loadExampleConfig(exampleDir: string): Promise<Project | null> {

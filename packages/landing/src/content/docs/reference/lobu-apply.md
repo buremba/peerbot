@@ -47,7 +47,7 @@ import {
   defineEntityType,
   defineRelationshipType,
   defineWatcher,
-} from "@lobu/sdk";
+} from "@lobu/cli/config";
 
 const account = defineEntityType({ key: "account", name: "Account" });
 const owns = defineRelationshipType({ key: "owns", name: "Owns" });

@@ -31,7 +31,7 @@ LOBU_TOKEN=$(npx @lobu/cli@latest token) bunx promptfoo eval \
 ```
 my-agent/
 ├── lobu.config.ts             # agents, providers, network, memory schema (TypeScript)
-├── package.json               # declares @lobu/sdk + @lobu/connector-sdk
+├── package.json               # declares @lobu/cli/config + @lobu/connector-sdk
 ├── tsconfig.json
 ├── .env                       # secrets (API keys, optional DATABASE_URL)
 ├── AGENTS.md                  # briefing for coding agents
@@ -81,7 +81,7 @@ See [Skills](/getting-started/skills/) for which coding agents this supports and
 
 ## Configuration
 
-`lobu.config.ts` plus the files under `agents/<id>/` are the source of truth: agents, providers, network policy, tool policy, MCP servers, and (optionally) the memory schema. `lobu.config.ts` is a TypeScript module that default-exports `defineConfig({...})` and imports its authoring functions from `@lobu/sdk`. Edit it locally and `lobu run` picks it up immediately.
+`lobu.config.ts` plus the files under `agents/<id>/` are the source of truth: agents, providers, network policy, tool policy, MCP servers, and (optionally) the memory schema. `lobu.config.ts` is a TypeScript module that default-exports `defineConfig({...})` and imports its authoring functions from `@lobu/cli/config`. Edit it locally and `lobu run` picks it up immediately.
 
 To run an agent on **Lobu Cloud**, push the same project up with `lobu apply`:
 

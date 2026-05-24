@@ -30,8 +30,8 @@ npx @lobu/cli@latest init my-agent
 
 Generates:
 
-- `lobu.config.ts`: the TypeScript project entrypoint (`defineConfig` from `@lobu/sdk`)
-- `package.json` + `tsconfig.json`: declare `@lobu/sdk` / `@lobu/connector-sdk` and give the editor type resolution
+- `lobu.config.ts`: the TypeScript project entrypoint (`defineConfig` from `@lobu/cli/config`)
+- `package.json` + `tsconfig.json`: declare `@lobu/cli` / `@lobu/connector-sdk` and give the editor type resolution
 - `.env` — local environment variables (API keys, optional external `DATABASE_URL`)
 - `agents/{name}/` — `IDENTITY.md`, `SOUL.md`, `USER.md`, local skills, and evals
 - `skills/` — shared local skills directory

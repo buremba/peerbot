@@ -42,7 +42,7 @@ Three primitives ship from the gateway and are registered at boot. Reference the
 List built-in (or globally-registered) guardrail names on the agent in [`lobu.config.ts`](/reference/lobu-config/):
 
 ```ts
-import { defineAgent } from "@lobu/sdk";
+import { defineAgent } from "@lobu/cli/config";
 
 const assistant = defineAgent({
   id: "assistant",

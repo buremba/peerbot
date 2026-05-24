@@ -7,7 +7,7 @@ import {
   defineRelationshipType,
   defineWatcher,
   secret,
-} from "@lobu/sdk";
+} from "@lobu/cli/config";
 
 const crm = defineAgent({
   id: "crm",

@@ -149,7 +149,7 @@ See [Memory](/getting-started/memory/) for the full model.
 With multiple agents in `lobu.config.ts`, each one gets its own workspace:
 
 ```ts
-import { defineAgent, defineConfig } from "@lobu/sdk";
+import { defineAgent, defineConfig } from "@lobu/cli/config";
 
 const support = defineAgent({
   id: "support",

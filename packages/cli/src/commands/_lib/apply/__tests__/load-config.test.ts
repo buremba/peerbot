@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { loadDesiredStateFromConfig } from "../desired-state.js";
 
 // Fixtures live under the worktree (next to this test) so that the externalized
-// `@lobu/sdk` import in the generated bundle resolves from node_modules.
+// `@lobu/cli/config` import in the generated bundle resolves from node_modules.
 describe("loadDesiredStateFromConfig", () => {
   let dir = "";
   afterEach(() => {
@@ -17,7 +17,7 @@ describe("loadDesiredStateFromConfig", () => {
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig, defineEntityType } from "@lobu/sdk";`,
+        `import { defineAgent, defineConfig, defineEntityType } from "@lobu/cli/config";`,
         `const person = defineEntityType({ key: "person" });`,
         `export default defineConfig({`,
         `  org: "test-org",`,
@@ -72,7 +72,7 @@ describe("loadDesiredStateFromConfig", () => {
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig, defineConnection } from "@lobu/sdk";`,
+        `import { defineAgent, defineConfig, defineConnection } from "@lobu/cli/config";`,
         `export default defineConfig({`,
         `  agents: [defineAgent({ id: "crm" })],`,
         `  connections: [defineConnection({ slug: "weather", connector: "weather" })],`,
@@ -107,7 +107,7 @@ describe("loadDesiredStateFromConfig", () => {
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig } from "@lobu/sdk";`,
+        `import { defineAgent, defineConfig } from "@lobu/cli/config";`,
         `export default defineConfig({ agents: [defineAgent({ id: "crm" })] });`,
         ``,
       ].join("\n")
@@ -142,7 +142,7 @@ describe("loadDesiredStateFromConfig", () => {
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig } from "@lobu/sdk";`,
+        `import { defineAgent, defineConfig } from "@lobu/cli/config";`,
         `export default defineConfig({ agents: [defineAgent({ id: "crm" })] });`,
         ``,
       ].join("\n")
@@ -177,7 +177,7 @@ describe("loadDesiredStateFromConfig", () => {
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig } from "@lobu/sdk";`,
+        `import { defineAgent, defineConfig } from "@lobu/cli/config";`,
         `export default defineConfig({`,
         `  agents: [defineAgent({ id: "crm", network: { allowed: ["github.com"] } })],`,
         `});`,
@@ -214,7 +214,7 @@ describe("loadDesiredStateFromConfig", () => {
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig } from "@lobu/sdk";`,
+        `import { defineAgent, defineConfig } from "@lobu/cli/config";`,
         `export default defineConfig({`,
         `  agents: [`,
         `    defineAgent({ id: "a", dir: "./custom-a" }),`,
@@ -255,7 +255,7 @@ describe("loadDesiredStateFromConfig", () => {
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig } from "@lobu/sdk";`,
+        `import { defineAgent, defineConfig } from "@lobu/cli/config";`,
         `export default defineConfig({ agents: [defineAgent({ id: "a" })] });`,
         ``,
       ].join("\n")
@@ -285,7 +285,7 @@ describe("loadDesiredStateFromConfig", () => {
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig, defineWatcher } from "@lobu/sdk";`,
+        `import { defineAgent, defineConfig, defineWatcher } from "@lobu/cli/config";`,
         `const crm = defineAgent({ id: "crm" });`,
         `export default defineConfig({`,
         `  agents: [crm],`,
@@ -310,7 +310,7 @@ describe("loadDesiredStateFromConfig", () => {
       writeFileSync(
         join(dir, "lobu.config.ts"),
         [
-          `import { defineAgent, defineConfig, defineWatcher } from "@lobu/sdk";`,
+          `import { defineAgent, defineConfig, defineWatcher } from "@lobu/cli/config";`,
           `const crm = defineAgent({ id: "crm" });`,
           `export default defineConfig({ agents: [crm], watchers: [defineWatcher({`,
           `  agent: crm, slug: "w", prompt: "p", extractionSchema: {}, reaction: ${JSON.stringify(reaction)},`,
@@ -347,7 +347,7 @@ describe("loadDesiredStateFromConfig", () => {
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig, defineWatcher } from "@lobu/sdk";`,
+        `import { defineAgent, defineConfig, defineWatcher } from "@lobu/cli/config";`,
         `const a = defineAgent({ id: "a" });`,
         `export default defineConfig({ agents: [a], watchers: [`,
         `  defineWatcher({ agent: a, slug: "first", prompt: "p", extractionSchema: {} }),`,
@@ -371,7 +371,7 @@ describe("loadDesiredStateFromConfig", () => {
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig } from "@lobu/sdk";`,
+        `import { defineAgent, defineConfig } from "@lobu/cli/config";`,
         `export default defineConfig({ agents: [defineAgent({ id: "crm" })] });`,
         ``,
       ].join("\n")

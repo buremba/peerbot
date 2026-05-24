@@ -4,7 +4,7 @@ import {
   defineEntityType,
   defineWatcher,
   secret,
-} from "@lobu/sdk";
+} from "@lobu/cli/config";
 
 const atlasCurator = defineAgent({
   id: "atlas-curator",

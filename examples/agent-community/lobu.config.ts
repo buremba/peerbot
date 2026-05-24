@@ -5,7 +5,7 @@ import {
   defineRelationshipType,
   defineWatcher,
   secret,
-} from "@lobu/sdk";
+} from "@lobu/cli/config";
 
 const agentCommunity = defineAgent({
   id: "agent-community",

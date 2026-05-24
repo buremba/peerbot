@@ -75,12 +75,12 @@ done
 curl -fsS -X POST "http://127.0.0.1:$MOCK_PORT/v1/chat/completions" -H 'content-type: application/json' -d '{}' >/dev/null 2>&1 || fail "mock server did not come up"
 echo "✓ mock provider up"
 
-# 2) Scaffold a project (inside the repo so jiti resolves the workspace @lobu/sdk).
+# 2) Scaffold a project (inside the repo so jiti resolves the workspace @lobu/cli/config).
 PROJ="$RUN_DIR/proj"; mkdir -p "$PROJ"
 ( cd "$PROJ" && $LOBU init . -y --here --provider gemini >/dev/null 2>&1 )
 rm -f "$PROJ/package.json"
 cat > "$PROJ/lobu.config.ts" <<'TS'
-import { defineAgent, defineConfig, defineConnection, defineEntityType, defineRelationshipType, defineWatcher, secret } from "@lobu/sdk";
+import { defineAgent, defineConfig, defineConnection, defineEntityType, defineRelationshipType, defineWatcher, secret } from "@lobu/cli/config";
 
 const agent = defineAgent({
   id: "echo", name: "Echo", dir: "./agents/echo",

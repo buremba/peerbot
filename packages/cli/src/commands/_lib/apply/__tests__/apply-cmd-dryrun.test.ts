@@ -46,7 +46,7 @@ function silenceOutput() {
 }
 
 // Fixtures live under the worktree (next to this test) so the externalized
-// `@lobu/sdk` import in the generated config bundle resolves from node_modules.
+// `@lobu/cli/config` import in the generated config bundle resolves from node_modules.
 function mkProject(config: string): string {
   const dir = mkdtempSync(join(import.meta.dir, "fixture-"));
   tempDirs.push(dir);
@@ -66,7 +66,7 @@ function minimalConfig(
   ]
     .filter(Boolean)
     .join("\n");
-  return `import { defineAgent, defineConfig } from "@lobu/sdk";
+  return `import { defineAgent, defineConfig } from "@lobu/cli/config";
 export default defineConfig({
 ${extra ? `${extra}\n` : ""}  agents: [defineAgent({ id: ${JSON.stringify(agentId)}, name: "Triage", dir: "./agents/${agentId}" })],
 });

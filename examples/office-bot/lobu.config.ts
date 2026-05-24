@@ -4,7 +4,7 @@ import {
   defineEntityType,
   defineWatcher,
   secret,
-} from "@lobu/sdk";
+} from "@lobu/cli/config";
 
 const DELIVEROO_JUDGE =
   "Allow GET requests that read restaurant listings, menus, item details, and the\ncurrent basket. Allow POST/PUT requests whose effect is limited to building or\nmodifying a basket / group order (adding, removing, changing quantity of items;\ncreating a shareable group-order link). DENY anything that completes checkout,\nsubmits payment, reads or writes saved payment methods, changes the delivery\naddress, or modifies the account profile. If the request's effect is unclear,\nfail closed and deny with a reason.\n";

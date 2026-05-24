@@ -186,9 +186,10 @@ export async function scaffoldProjectPackaging(
   }
   pkgJson.devDependencies = {
     ...((pkgJson.devDependencies as Record<string, string> | undefined) ?? {}),
-    // lobu.config.ts imports @lobu/sdk; connectors import @lobu/connector-sdk.
-    // Both must be declared so `lobu apply` (jiti) + the editor resolve them.
-    "@lobu/sdk": `^${cliVersion}`,
+    // lobu.config.ts imports @lobu/cli/config; connectors import
+    // @lobu/connector-sdk. Both must be declared so `lobu apply` (jiti) + the
+    // editor resolve them.
+    "@lobu/cli": `^${cliVersion}`,
     "@lobu/connector-sdk": `^${cliVersion}`,
   };
   await writeFile(pkgJsonPath, `${JSON.stringify(pkgJson, null, 2)}\n`);
@@ -334,7 +335,7 @@ export async function initCommand(
       url: options.url,
     });
     // Same package.json/tsconfig the blank scaffold writes, so the bootstrapped
-    // lobu.config.ts can resolve @lobu/sdk + re-apply outside this monorepo.
+    // lobu.config.ts can resolve @lobu/cli/config + re-apply outside this monorepo.
     await scaffoldProjectPackaging(projectDir, projectName, cliVersion);
     if (!here) {
       console.log(chalk.cyan(`\n  Next: cd ${projectName}\n`));
@@ -1078,7 +1079,7 @@ export async function generateLobuConfig(
     "// optional skills/ directory. Shared skills in the root skills/ directory",
     "// are available to every agent. Run `lobu apply` to sync this to your org.",
     "",
-    'import { defineAgent, defineConfig, secret } from "@lobu/sdk";',
+    'import { defineAgent, defineConfig, secret } from "@lobu/cli/config";',
     "",
     "const agent = defineAgent({",
     ...agentFields,

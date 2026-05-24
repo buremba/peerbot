@@ -23,7 +23,6 @@ const PACKAGES = [
   { dir: "packages/core", transform: transformCorePublish },
   { dir: "packages/connector-sdk", transform: rewriteWorkspaceRefs },
   { dir: "packages/client", transform: rewriteWorkspaceRefs },
-  { dir: "packages/sdk", transform: rewriteWorkspaceRefs },
   { dir: "packages/agent-worker", transform: rewriteWorkspaceRefs },
   { dir: "packages/embeddings", transform: rewriteWorkspaceRefs },
   // @lobu/pgvector-embedded is NOT published: it's `private` and ships its

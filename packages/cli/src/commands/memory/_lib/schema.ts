@@ -1,7 +1,7 @@
 /**
  * Schema + validation for `lobu memory seed` data records (`./data/*.yaml` —
  * seed entity + relationship instances). Entity/relationship/watcher *types*
- * are declared in `lobu.config.ts` (via `@lobu/sdk`), not here.
+ * are declared in `lobu.config.ts` (via `@lobu/cli/config`), not here.
  *
  * Bump CURRENT_SCHEMA_VERSION when making breaking changes.
  */

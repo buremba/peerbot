@@ -9,7 +9,7 @@ import {
   defineRelationshipType,
   defineWatcher,
   secret,
-} from "@lobu/sdk";
+} from "@lobu/cli/config";
 import {
   mapProjectToDesiredState,
   mergeAgentDirArtifacts,

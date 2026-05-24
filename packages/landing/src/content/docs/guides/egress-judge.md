@@ -30,7 +30,7 @@ The same shape is available to operators in [`lobu.config.ts`](/reference/lobu-c
 Operators layer a project-wide policy on top of whatever the skill author declared, via `defineAgent({ egress })`:
 
 ```ts
-import { defineAgent } from "@lobu/sdk";
+import { defineAgent } from "@lobu/cli/config";
 
 const assistant = defineAgent({
   id: "assistant",

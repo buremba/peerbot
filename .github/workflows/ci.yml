@@ -63,7 +63,6 @@ jobs:
         run: |
           cd packages/core && bun run build && cd ../..
           cd packages/connector-sdk && bun run build && cd ../..
-          cd packages/sdk && bun run build && cd ../..
           cd packages/embeddings && bun run build && cd ../..
           cd packages/connector-worker && bun run build && cd ../..
 

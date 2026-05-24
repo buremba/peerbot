@@ -97,11 +97,11 @@ describe("lobu init --yes", () => {
     );
     const env = readFileSync(join(proj, ".env"), "utf-8");
     expect(env.includes("SENTRY_DSN=")).toBe(false);
-    // The generated lobu.config.ts imports @lobu/sdk, so the scaffolded
-    // package.json MUST declare it — else `lobu apply` (jiti) can't resolve it
-    // outside this monorepo. Regression guard for that blocker.
+    // The generated lobu.config.ts imports @lobu/cli/config, so the scaffolded
+    // package.json MUST declare @lobu/cli — else `lobu apply` (jiti) can't
+    // resolve it outside this monorepo. Regression guard for that blocker.
     const pkg = JSON.parse(readFileSync(join(proj, "package.json"), "utf-8"));
-    expect(pkg.devDependencies["@lobu/sdk"]).toBeDefined();
+    expect(pkg.devDependencies["@lobu/cli"]).toBeDefined();
     expect(pkg.devDependencies["@lobu/connector-sdk"]).toBeDefined();
     const tsconfig = JSON.parse(
       readFileSync(join(proj, "tsconfig.json"), "utf-8")
@@ -110,7 +110,7 @@ describe("lobu init --yes", () => {
   });
 
   test("scaffolded lobu.config.ts loads into desired state", async () => {
-    // jiti resolves the externalized `@lobu/sdk` import relative to the config
+    // jiti resolves the externalized `@lobu/cli/config` import relative to the config
     // file, so scaffold inside the package tree (where node_modules is
     // reachable), not the tmpdir() used by the other init tests.
     const fixtureRoot = mkdtempSync(join(import.meta.dir, "init-load-"));
@@ -173,7 +173,7 @@ describe("agent scaffold", () => {
   test("scaffolds the agent dir and prints a defineAgent block", async () => {
     writeFileSync(
       join(cwd, "lobu.config.ts"),
-      'import { defineConfig } from "@lobu/sdk";\nexport default defineConfig({ agents: [] });\n'
+      'import { defineConfig } from "@lobu/cli/config";\nexport default defineConfig({ agents: [] });\n'
     );
     const logs: string[] = [];
     const original = console.log;
@@ -198,7 +198,7 @@ describe("agent scaffold", () => {
   test("escapes quotes in --name so the printed snippet stays valid TS", async () => {
     writeFileSync(
       join(cwd, "lobu.config.ts"),
-      'import { defineConfig } from "@lobu/sdk";\nexport default defineConfig({ agents: [] });\n'
+      'import { defineConfig } from "@lobu/cli/config";\nexport default defineConfig({ agents: [] });\n'
     );
     const logs: string[] = [];
     const original = console.log;

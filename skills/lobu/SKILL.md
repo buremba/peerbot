@@ -44,7 +44,7 @@ npx @lobu/cli@latest init <agent-name>
 cd <agent-name>
 ```
 
-The CLI generates the directory layout, including `lobu.config.ts`, `package.json`, and `tsconfig.json`. All authoring is TypeScript: import `defineConfig`, `defineAgent`, `defineEntityType`, `defineRelationshipType`, `defineWatcher`, `defineConnection`, `defineAuthProfile`, and `secret` from `@lobu/sdk`. Read `examples/lobu-crm/lobu.config.ts` in the lobu repo for a complete, working reference before editing. Then edit:
+The CLI generates the directory layout, including `lobu.config.ts`, `package.json`, and `tsconfig.json`. All authoring is TypeScript: import `defineConfig`, `defineAgent`, `defineEntityType`, `defineRelationshipType`, `defineWatcher`, `defineConnection`, `defineAuthProfile`, and `secret` from `@lobu/cli/config`. Read `examples/lobu-crm/lobu.config.ts` in the lobu repo for a complete, working reference before editing. Then edit:
 
 - **`lobu.config.ts`** — set the agent name + description from question 1 on `defineAgent`; add the chosen provider with `providers: [{ id, model, key: secret("X_API_KEY") }]`; set `org` / `orgName` in `defineConfig` from a slug of the user's choice.
 - **`.env`** — fill in `DATABASE_URL` and the provider API key from Phase 1.
@@ -78,7 +78,7 @@ If anything fails, do not silently move on — surface the error, propose a fix,
 ## Core Model
 
 - **Lobu** is the agent framework, runtime, deployment layer, and memory surface.
-- Keep framework configuration in `lobu.config.ts` (TypeScript, `defineConfig` from `@lobu/sdk`).
+- Keep framework configuration in `lobu.config.ts` (TypeScript, `defineConfig` from `@lobu/cli/config`).
 - Keep agent identity and behavior in `IDENTITY.md`, `SOUL.md`, and `USER.md`.
 - Keep reusable capability bundles in `skills/<name>/SKILL.md` or `agents/<agent>/skills/<name>/SKILL.md`.
 - Use `lobu login` for CLI authentication. Do not use a separate memory login command.
@@ -117,7 +117,7 @@ Your long-term memory is powered by Lobu. Do NOT use local files (memory/, MEMOR
 Configure project-scoped memory in `lobu.config.ts` by setting the org on `defineConfig` and declaring the schema with the `define*` helpers:
 
 ```ts
-import { defineConfig, defineEntityType } from "@lobu/sdk";
+import { defineConfig, defineEntityType } from "@lobu/cli/config";
 
 const ticket = defineEntityType({
   key: "ticket",

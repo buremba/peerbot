@@ -9,7 +9,7 @@
  *
  * Network is stubbed through an injected fetch impl returning the canned
  * responses listAgents / listEntityTypes / etc. produce. The fixture dir lives
- * UNDER `import.meta.dir` so jiti resolves the externalized `@lobu/sdk`.
+ * UNDER `import.meta.dir` so jiti resolves the externalized `@lobu/cli/config`.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -618,7 +618,7 @@ describe("lobu init --from-org", () => {
     expect(source).not.toContain("super-secret");
     // ...AND the `secret` import is present so the file compiles.
     expect(source).toMatch(
-      /import\s*\{[^}]*\bsecret\b[^}]*\}\s*from\s*"@lobu\/sdk"/s
+      /import\s*\{[^}]*\bsecret\b[^}]*\}\s*from\s*"@lobu\/cli\/config"/s
     );
 
     // Round-trips: jiti loads the regenerated config without a missing-import

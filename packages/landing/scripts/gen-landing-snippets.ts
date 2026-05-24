@@ -4,7 +4,7 @@
  * landing page imports at build time.
  *
  * The whole declarative project now lives in a single TypeScript file per
- * example: `examples/<slug>/lobu.config.ts` (using `@lobu/sdk`:
+ * example: `examples/<slug>/lobu.config.ts` (using `@lobu/cli/config`:
  * `defineConfig`, `defineAgent`, `defineEntityType`, `defineWatcher`, ...).
  * The landing page shows SOURCE CODE, so we slice the raw `.ts` text into
  * budget-sized sections; we never import/execute the config.
@@ -122,7 +122,7 @@ function githubTreeUrl(slug: string): string {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Slice the leading `import ... from "@lobu/sdk";` block out of a config file.
+ * Slice the leading `import ... from "@lobu/cli/config";` block out of a config file.
  * Returns the import statement lines (the first `import` through its closing
  * `from "...";`), or an empty array if none is found.
  */

@@ -4,6 +4,18 @@
   "description": "CLI for deploying and managing AI agents on Lobu",
   "type": "module",
   "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./config": {
+      "types": "./dist/config/index.d.ts",
+      "bun": "./src/config/index.ts",
+      "import": "./dist/config/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
     "lobu": "bin/lobu.js"
   },
@@ -43,7 +55,6 @@
     "@lobu/connector-worker": "workspace:*",
     "@lobu/core": "workspace:*",
     "@lobu/embeddings": "workspace:*",
-    "@lobu/sdk": "workspace:*",
     "@lobu/worker": "workspace:*",
     "@mariozechner/pi-ai": "^0.51.6",
     "@modelcontextprotocol/sdk": "^1.27.1",
@@ -104,7 +115,8 @@
   "files": [
     "dist",
     "bin",
-    "README.md"
+    "README.md",
+    "src/config"
   ],
   "engines": {
     "node": ">=22 <25"

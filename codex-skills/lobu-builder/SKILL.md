@@ -14,7 +14,7 @@ If you are inside the Lobu monorepo rather than a generated Lobu project, follow
 ## First Pass
 
 1. Read `AGENTS.md` first. If it redirects to another file such as `@TESTING.md`, open that too.
-2. Read `lobu.config.ts`. It is TypeScript: `defineConfig` from `@lobu/sdk` is the default export.
+2. Read `lobu.config.ts`. It is TypeScript: `defineConfig` from `@lobu/cli/config` is the default export.
 3. Enumerate agent directories under `agents/` and inspect the target agent's `IDENTITY.md`, `SOUL.md`, and `USER.md`.
 4. Check whether the repo has shared `skills/` or agent-local `agents/<id>/skills/`.
 5. Look for evals under `agents/<id>/evals/promptfooconfig.yaml` (the project may also have legacy YAML files — those don't run).
@@ -26,7 +26,7 @@ Do not assume there is only one agent or one platform connection.
 - `IDENTITY.md`: who the agent is
 - `SOUL.md`: rules, workflows, guardrails
 - `USER.md`: user or tenant context
-- `lobu.config.ts`: providers, connections, enabled skills, MCP servers, network allowlist (authored with `define*` from `@lobu/sdk`)
+- `lobu.config.ts`: providers, connections, enabled skills, MCP servers, network allowlist (authored with `define*` from `@lobu/cli/config`)
 - `skills/.../SKILL.md`: shared reusable capabilities
 - `agents/<id>/skills/.../SKILL.md`: agent-specific capabilities
 - `agents/<id>/evals/promptfooconfig.yaml`: promptfoo eval suite (runs via `bunx promptfoo eval` with `@lobu/promptfoo-provider`)

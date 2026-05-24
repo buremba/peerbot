@@ -24,7 +24,7 @@
     "language": "typescript"
   },
   "agentConfig": {
-    "code": "import {\n  defineAgent,\n  defineConfig,\n  defineEntityType,\n  defineRelationshipType,\n  defineWatcher,\n  secret,\n} from \"@lobu/sdk\";\n\nconst sales = defineAgent({\n  id: \"sales\",\n  name: \"sales\",\n  description:\n    \"Help revenue teams track account health, rollout progress, and renewal signals\",\n  dir: \"./agents/sales\",\n  providers: [\n    {\n      id: \"anthropic\",\n      model: \"claude/sonnet-4-5\",\n      key: secret(\"ANTHROPIC_API_KEY\"),\n    },\n  ],\n  network: {\n    allowed: [\n      \"github.com\",\n      \".github.com\",\n      \".githubusercontent.com\",\n      \"registry.npmjs.org\",\n      \".npmjs.org\",\n    ],\n  },\n});",
+    "code": "import {\n  defineAgent,\n  defineConfig,\n  defineEntityType,\n  defineRelationshipType,\n  defineWatcher,\n  secret,\n} from \"@lobu/cli/config\";\n\nconst sales = defineAgent({\n  id: \"sales\",\n  name: \"sales\",\n  description:\n    \"Help revenue teams track account health, rollout progress, and renewal signals\",\n  dir: \"./agents/sales\",\n  providers: [\n    {\n      id: \"anthropic\",\n      model: \"claude/sonnet-4-5\",\n      key: secret(\"ANTHROPIC_API_KEY\"),\n    },\n  ],\n  network: {\n    allowed: [\n      \"github.com\",\n      \".github.com\",\n      \".githubusercontent.com\",\n      \"registry.npmjs.org\",\n      \".npmjs.org\",\n    ],\n  },\n});",
     "path": "lobu.config.ts",
     "githubUrl": "https://github.com/lobu-ai/lobu/blob/main/examples/sales/lobu.config.ts",
     "language": "typescript"

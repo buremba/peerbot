@@ -1,6 +1,6 @@
 /**
- * Map a `@lobu/sdk` authoring project (the default export of `lobu.config.ts`,
- * built by `defineConfig`) to the apply `DesiredState`.
+ * Map an authoring project (the default export of `lobu.config.ts`, built by
+ * `defineConfig` from `@lobu/cli/config`) to the apply `DesiredState`.
  *
  * `DesiredState` is an apply-internal IR and stays CLI-private; this is the one
  * place that translates the public authoring objects into it. The mapping is
@@ -20,8 +20,8 @@ import type {
   Project,
   RelationshipType,
   Watcher,
-} from "@lobu/sdk";
-import { isSecretRef } from "@lobu/sdk";
+} from "../../../config/index.js";
+import { isSecretRef } from "../../../config/index.js";
 import { CronExpressionParser } from "cron-parser";
 import { ValidationError } from "../../memory/_lib/errors.js";
 import type {
@@ -660,7 +660,7 @@ function mapConnection(connection: Connection): DesiredConnection {
 }
 
 /**
- * Translate a `@lobu/sdk` project into the apply `DesiredState`. When `only` is
+ * Translate an authoring project into the apply `DesiredState`. When `only` is
  * set, connector definitions/connections/auth-profiles are skipped (and their
  * secrets not collected), matching the TOML loader's `--only` behavior so
  * `lobu apply --only agents` doesn't demand connector secrets.

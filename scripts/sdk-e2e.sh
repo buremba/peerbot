@@ -205,6 +205,28 @@ TS
 
 export LOBU_PROVIDER_REGISTRY_PATH="$HARNESS/providers.json"
 
+# 2c) Static CLI checks (no server needed): the typed-config validator and the
+# doctor health check. doctor must NOT false-fail the DB check on the scaffold's
+# embedded `DATABASE_URL=file://.` — it once fed that path straight to
+# postgres(), which parses host "." and dies with `getaddrinfo ENOTFOUND .`.
+# We assert the embedded backend is recognized and that no connect error is
+# printed. doctor's own exit code is ignored: the gateway isn't up yet, so its
+# "server unreachable" check is expected to trip independently of the DB line.
+VALIDATE_OUT="$RUN_DIR/validate.out"
+( cd "$PROJ" && $LOBU validate > "$VALIDATE_OUT" 2>&1 ) || { cat "$VALIDATE_OUT" >&2; fail "lobu validate failed on the fixture config"; }
+grep -qi "is valid" "$VALIDATE_OUT" || { cat "$VALIDATE_OUT" >&2; fail "lobu validate did not report the config valid"; }
+echo "✓ lobu validate accepts the fixture config"
+
+DOCTOR_OUT="$RUN_DIR/doctor.out"
+( cd "$PROJ" && $LOBU doctor > "$DOCTOR_OUT" 2>&1 ) || true  # non-zero ok (gateway not up yet)
+if grep -qiE "connect failed|ENOTFOUND" "$DOCTOR_OUT"; then cat "$DOCTOR_OUT" >&2; fail "lobu doctor false-failed the DB check (embedded file:// fed to postgres())"; fi
+# The embedded-recognition message only applies when running against embedded PG
+# (the default). With an external DATABASE_URL, doctor connects for real instead.
+if [ -z "${DATABASE_URL:-}" ]; then
+  grep -qi "embedded Postgres" "$DOCTOR_OUT" || { cat "$DOCTOR_OUT" >&2; fail "lobu doctor did not recognize the embedded Postgres backend"; }
+fi
+echo "✓ lobu doctor reports a healthy DB (no false connect failure on embedded file://)"
+
 # 3) Boot lobu run — it auto-applies the project (the apply + prune E2E).
 ( cd "$PROJ" && $LOBU run --port "$GW_PORT" > "$RUN_LOG" 2>&1 ) &
 for _ in $(seq 1 80); do

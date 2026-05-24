@@ -54,6 +54,19 @@ export async function mountViteDev(
   honoListener: HttpListener
 ): Promise<{ close: () => Promise<void> } | null> {
   if (process.env.NODE_ENV !== 'development') return null;
+  // A bundled CLI (`lobu run` from an npm install) ships the prebuilt SPA and
+  // points WEB_DIST_DIR at it; the Hono app serves that statically. There is no
+  // SPA *source* to run Vite against — and no HMR wanted for a prebuilt run — so
+  // skip Vite entirely. Otherwise we'd probe for `packages/owletto`, fail, and
+  // log a misleading "frontend will not be available" error even though the
+  // frontend is in fact served from the bundle.
+  if (process.env.WEB_DIST_DIR?.trim()) {
+    logger.info(
+      { webDistDir: process.env.WEB_DIST_DIR.trim() },
+      'Serving prebuilt SPA from WEB_DIST_DIR — skipping Vite dev server'
+    );
+    return null;
+  }
   try {
     const { createServer } = await import('vite');
     const vite = await createServer({

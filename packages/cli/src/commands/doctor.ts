@@ -5,7 +5,11 @@ import chalk from "chalk";
 import postgres from "postgres";
 import { checkMemoryHealth } from "./memory/_lib/openclaw-cmd.js";
 import { resolveServerUrl } from "./memory/_lib/openclaw-auth.js";
-import { isPortFree } from "./dev.js";
+import {
+  isExternalDatabaseUrl,
+  isPortFree,
+  resolveEmbeddedDataRoot,
+} from "./dev.js";
 import { parseEnvContent } from "../internal/env-file.js";
 import { loadProviderRegistry } from "./providers/registry.js";
 import { loadProjectConfig } from "./_lib/apply/desired-state.js";
@@ -203,8 +207,21 @@ export async function doctorCommand(
   checks.push(checkBinaryExists("git"));
 
   const databaseUrl = env.DATABASE_URL ?? process.env.DATABASE_URL;
-  if (databaseUrl) {
+  if (databaseUrl && isExternalDatabaseUrl(databaseUrl)) {
     checks.push(...(await checkDatabaseAndPgvector(databaseUrl)));
+  } else if (databaseUrl) {
+    // Embedded Postgres: DATABASE_URL is a filesystem path (often `file://<dir>`,
+    // the scaffold default `file://.`), not a connection string. `lobu run`
+    // boots a self-contained PG18 + bundled pgvector under `<root>/.lobu/pgdata`,
+    // so there is nothing to dial until it's running. Report the resolved data
+    // root instead of feeding the path to postgres() — `postgres("file://.")`
+    // parses host "." and fails with `getaddrinfo ENOTFOUND .`.
+    const root = resolveEmbeddedDataRoot(databaseUrl);
+    checks.push({
+      name: "database",
+      status: "ok",
+      detail: `local embedded Postgres (data: ${join(root, ".lobu", "pgdata")})`,
+    });
   } else {
     checks.push({
       name: "database",

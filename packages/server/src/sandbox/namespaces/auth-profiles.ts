@@ -20,7 +20,8 @@ export type AuthProfileKind =
   | "env"
   | "oauth_app"
   | "oauth_account"
-  | "browser_session";
+  | "browser_session"
+  | "oauth_broker";
 
 export interface AuthProfileCreateInput {
   profile_kind: AuthProfileKind;

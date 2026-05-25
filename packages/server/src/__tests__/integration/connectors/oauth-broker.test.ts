@@ -19,9 +19,10 @@
  *      token + client secret never appear in the response.
  *   3. Scope: a PAT for org B cannot fetch org A's connection token (403). No
  *      PAT → 401, bad PAT → 401, malformed body → 400.
- *   4. End-to-end runtime hook: a LOCAL broker-backed connection (oauth_app =
- *      `__broker` ref, broker.url = the in-process broker server) resolves its
- *      access token through the broker via `resolveExecutionAuth`.
+ *   4. End-to-end runtime hook: a LOCAL broker-backed connection (app profile =
+ *      a first-class `oauth_broker` profile whose typed fields point broker_url
+ *      at the in-process broker server) resolves its access token through the
+ *      broker via `resolveExecutionAuth`.
  */
 
 import { serve } from "@hono/node-server";
@@ -29,6 +30,8 @@ import { Hono } from "hono";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { brokerRoutes } from "../../../connect/broker-routes";
 import type { Env } from "../../../index";
+import { manageAuthProfiles } from "../../../tools/admin/manage_auth_profiles";
+import type { ToolContext } from "../../../tools/registry";
 import { createAuthProfile } from "../../../utils/auth-profiles";
 import { resolveExecutionAuth } from "../../../utils/execution-context";
 import { initWorkspaceProvider } from "../../../workspace";
@@ -376,24 +379,33 @@ describe("SPIKE: grant-on-broker — local runtime hook", () => {
 			organizationId: localOrg.id,
 			connectorKey: "demo.oauth",
 			displayName: "Broker-backed Demo App",
-			profileKind: "oauth_app",
+			profileKind: "oauth_broker",
 			provider: "demo",
 			authData: {
-				__broker: {
-					url: brokerBaseUrl,
-					org: "broker-org",
-					pat: broker.pat,
-					connection_id: broker.connectionId,
-				},
+				broker_url: brokerBaseUrl,
+				broker_org: "broker-org",
+				broker_pat: broker.pat,
+				broker_connection_id: broker.connectionId,
 			},
 		});
 
-		// The broker-ref must survive normalization (no client_id/secret keys).
+		// The typed broker fields survive normalization (and there are NO
+		// client_id/secret keys and NO `__`-prefixed magic keys on the profile).
 		const stored = (await sql`
-      SELECT auth_data FROM auth_profiles WHERE id = ${brokerProfile.id}
-    `) as unknown as Array<{ auth_data: Record<string, unknown> }>;
-		expect((stored[0].auth_data as { __broker?: unknown }).__broker).toBeTruthy();
+      SELECT profile_kind, auth_data FROM auth_profiles WHERE id = ${brokerProfile.id}
+    `) as unknown as Array<{
+			profile_kind: string;
+			auth_data: Record<string, unknown>;
+		}>;
+		expect(stored[0].profile_kind).toBe("oauth_broker");
+		expect(stored[0].auth_data.broker_url).toBe(brokerBaseUrl);
+		expect(stored[0].auth_data.broker_org).toBe("broker-org");
+		expect(stored[0].auth_data.broker_pat).toBe(broker.pat);
+		expect(stored[0].auth_data.broker_connection_id).toBe(broker.connectionId);
 		expect(stored[0].auth_data.DEMO_CLIENT_ID).toBeUndefined();
+		expect(
+			Object.keys(stored[0].auth_data).some((k) => k.startsWith("__")),
+		).toBe(false);
 
 		// A local connection backed by the broker-ref app profile (no grant locally).
 		const localConnRows = (await sql`
@@ -421,5 +433,114 @@ describe("SPIKE: grant-on-broker — local runtime hook", () => {
 		// No local refresh token / secret ever materialized.
 		expect(resolved.credentials?.refreshToken).toBeNull();
 		expect(resolved.connectionCredentials).toEqual({});
+	});
+});
+
+function ctxFor(organizationId: string, userId: string): ToolContext {
+	return {
+		organizationId,
+		userId,
+		memberRole: "owner",
+		agentId: null,
+		isAuthenticated: true,
+		clientId: null,
+		scopes: ["mcp:read", "mcp:write", "mcp:admin"],
+		tokenType: "oauth",
+		scopedToOrg: true,
+		allowCrossOrg: false,
+	} as ToolContext;
+}
+
+describe("oauth_broker profile — create validation via manage_auth_profiles", () => {
+	beforeEach(async () => {
+		await cleanupTestDatabase();
+	});
+
+	async function seedOrgWithConnector(): Promise<{
+		ctx: ToolContext;
+		orgId: string;
+	}> {
+		const org = await createTestOrganization({ name: "Broker Validate Org" });
+		const user = await createTestUser({ name: "Broker Validate User" });
+		await addUserToOrganization(user.id, org.id, "owner");
+		await createTestConnectorDefinition({
+			key: "demo.oauth",
+			name: "Demo OAuth",
+			organization_id: org.id,
+			auth_schema: {
+				methods: [
+					{
+						type: "oauth",
+						provider: "demo",
+						requiredScopes: ["read"],
+						clientIdKey: "DEMO_CLIENT_ID",
+						clientSecretKey: "DEMO_CLIENT_SECRET",
+					},
+				],
+			},
+			feeds_schema: { items: {} },
+		});
+		return { ctx: ctxFor(org.id, user.id), orgId: org.id };
+	}
+
+	it("creates an oauth_broker profile when all typed broker fields are present", async () => {
+		const { ctx, orgId } = await seedOrgWithConnector();
+		const res = await manageAuthProfiles(
+			{
+				action: "create_auth_profile",
+				connector_key: "demo.oauth",
+				profile_kind: "oauth_broker",
+				display_name: "Broker Ref",
+				slug: "broker-ref",
+				auth_data: {
+					broker_url: "https://broker.lobu.ai",
+					broker_org: "broker-org",
+					broker_pat: "owl_pat_example",
+					broker_connection_id: 42,
+				},
+			},
+			TEST_ENV,
+			ctx,
+		);
+		expect("auth_profile" in res && res.auth_profile).toBeTruthy();
+		if ("auth_profile" in res) {
+			expect(res.auth_profile.profile_kind).toBe("oauth_broker");
+		}
+
+		// Persisted with the typed fields and trailing-slash-normalized URL; the
+		// PAT is never echoed back in the serialized profile.
+		const sql = getTestDb();
+		const rows = (await sql`
+      SELECT auth_data FROM auth_profiles
+      WHERE organization_id = ${orgId} AND slug = 'broker-ref'
+    `) as unknown as Array<{ auth_data: Record<string, unknown> }>;
+		expect(rows).toHaveLength(1);
+		expect(rows[0].auth_data.broker_connection_id).toBe(42);
+		expect(rows[0].auth_data.broker_pat).toBe("owl_pat_example");
+		expect(JSON.stringify(res)).not.toContain("owl_pat_example");
+	});
+
+	it("rejects an oauth_broker profile missing required fields", async () => {
+		const { ctx } = await seedOrgWithConnector();
+		const res = await manageAuthProfiles(
+			{
+				action: "create_auth_profile",
+				connector_key: "demo.oauth",
+				profile_kind: "oauth_broker",
+				display_name: "Incomplete Broker Ref",
+				slug: "incomplete-broker-ref",
+				// Missing broker_pat + broker_connection_id.
+				auth_data: {
+					broker_url: "https://broker.lobu.ai",
+					broker_org: "broker-org",
+				},
+			},
+			TEST_ENV,
+			ctx,
+		);
+		expect("error" in res).toBe(true);
+		if ("error" in res) {
+			expect(res.error).toContain("broker_pat");
+		}
 	});
 });

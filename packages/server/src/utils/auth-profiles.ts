@@ -6,7 +6,8 @@ export type AuthProfileKind =
   | 'oauth_app'
   | 'oauth_account'
   | 'browser_session'
-  | 'interactive';
+  | 'interactive'
+  | 'oauth_broker';
 export type AuthProfileStatus = 'active' | 'pending_auth' | 'error' | 'revoked';
 
 export type BrowserKind = 'chrome' | 'brave' | 'arc' | 'edge';
@@ -48,15 +49,15 @@ interface BrowserSessionReadiness extends BrowserSessionSummary {
 }
 
 /**
- * Reference to a remote Lobu "broker" instance that OWNS the OAuth grant for a
- * connection. Encoded inside an `oauth_app` profile's `auth_data` under the
- * `__broker` key (instead of client_id/secret). The broker holds the managed
- * client_id/secret AND the user's grant (oauth_account); the local instance
- * fetches a fresh access token at runtime from the broker over HTTP (POST
- * `/broker/oauth/token`), authenticating with `pat`. `connection_id` is the
- * broker-side connection whose grant backs this local connection.
+ * The typed broker descriptor carried by an `oauth_broker` profile. The whole
+ * profile IS the broker reference: a remote Lobu "broker" instance OWNS the
+ * OAuth grant for a connection. The broker holds the managed client_id/secret
+ * AND the user's grant (oauth_account); the local instance fetches a fresh
+ * access token at runtime from the broker over HTTP (POST `/broker/oauth/token`),
+ * authenticating with `pat`. `connectionId` is the broker-side connection whose
+ * stored grant backs this local connection.
  */
-export interface BrokerRef {
+export interface BrokerCredential {
   /** Broker base URL, e.g. `https://broker.lobu.ai` (no `/broker` suffix). */
   url: string;
   /** Broker org slug the managed oauth_app lives under (informational). */
@@ -64,33 +65,58 @@ export interface BrokerRef {
   /** Lobu Personal Access Token (`owl_pat_*`) the broker authenticates. */
   pat: string;
   /** The broker-side connection id whose stored grant backs this profile. */
-  connection_id: number;
+  connectionId: number;
 }
 
 /**
- * Extract a {@link BrokerRef} from an `oauth_app` profile's `auth_data`, or
- * `null` when the profile carries local client credentials instead. A
- * broker-ref profile has a `__broker` object with `url`/`org`/`pat`/
- * `connection_id` and NO client_id/secret keys.
+ * The two ways a connection's app-level credentials can resolve, discriminated
+ * by the backing `app_auth_profile`'s `profile_kind`:
+ *
+ *   - `local`  → an `oauth_app` profile holding client_id/secret on this org.
+ *   - `broker` → an `oauth_broker` profile; the grant lives on a remote broker
+ *                and a fresh access token is fetched at runtime.
+ *
+ * Readers branch on `kind` — never sniff keys out of the credential blob.
  */
-export function getBrokerRef(authData: unknown): BrokerRef | null {
+export type CredentialSource =
+  | { kind: 'local'; clientId: string | null; clientSecret: string | null }
+  | { kind: 'broker'; broker: BrokerCredential };
+
+/** Field keys an `oauth_broker` profile's auth_data must carry. */
+export const BROKER_AUTH_DATA_KEYS = {
+  url: 'broker_url',
+  org: 'broker_org',
+  pat: 'broker_pat',
+  connectionId: 'broker_connection_id',
+} as const;
+
+/**
+ * Parse the typed broker fields out of an `oauth_broker` profile's `auth_data`.
+ * Returns the validated {@link BrokerCredential}, or `null` when any required
+ * field is missing/malformed. No `__`-prefixed keys: every field is named.
+ */
+export function parseBrokerCredential(authData: unknown): BrokerCredential | null {
   if (typeof authData === 'string') {
     try {
-      return getBrokerRef(JSON.parse(authData));
+      return parseBrokerCredential(JSON.parse(authData));
     } catch {
       return null;
     }
   }
   if (!authData || typeof authData !== 'object' || Array.isArray(authData)) return null;
-  const broker = (authData as Record<string, unknown>).__broker;
-  if (!broker || typeof broker !== 'object' || Array.isArray(broker)) return null;
-  const { url, org, pat, connection_id } = broker as Record<string, unknown>;
-  const connectionId = typeof connection_id === 'number' ? connection_id : Number(connection_id);
+  const data = authData as Record<string, unknown>;
+  const url = data[BROKER_AUTH_DATA_KEYS.url];
+  const org = data[BROKER_AUTH_DATA_KEYS.org];
+  const pat = data[BROKER_AUTH_DATA_KEYS.pat];
+  const rawConnectionId = data[BROKER_AUTH_DATA_KEYS.connectionId];
+  const connectionId =
+    typeof rawConnectionId === 'number' ? rawConnectionId : Number(rawConnectionId);
   if (
     typeof url !== 'string' ||
     typeof org !== 'string' ||
     typeof pat !== 'string' ||
     url.trim().length === 0 ||
+    org.trim().length === 0 ||
     pat.trim().length === 0 ||
     !Number.isInteger(connectionId) ||
     connectionId <= 0
@@ -101,7 +127,7 @@ export function getBrokerRef(authData: unknown): BrokerRef | null {
     url: url.trim().replace(/\/+$/, ''),
     org: org.trim(),
     pat: pat.trim(),
-    connection_id: connectionId,
+    connectionId,
   };
 }
 
@@ -131,15 +157,21 @@ function normalizeAuthData(
   profileKind: AuthProfileKind,
   raw: unknown
 ): Record<string, unknown> {
-  if (profileKind === 'oauth_app') {
-    // A broker-ref oauth_app carries a `__broker` object instead of string
-    // client credentials. normalizeAuthValues() would strip the object, so
-    // preserve it explicitly while still normalizing any sibling string keys.
-    const broker = getBrokerRef(raw);
-    const normalized = normalizeAuthValues(raw);
-    return broker ? { ...normalized, __broker: broker } : normalized;
+  if (profileKind === 'oauth_broker') {
+    // The whole profile IS the broker descriptor. Persist the typed fields:
+    // broker_url/broker_org/broker_pat are strings (normalized), and
+    // broker_connection_id is a number that normalizeAuthValues() would strip,
+    // so store it explicitly as an integer.
+    const broker = parseBrokerCredential(raw);
+    if (!broker) return {};
+    return {
+      [BROKER_AUTH_DATA_KEYS.url]: broker.url,
+      [BROKER_AUTH_DATA_KEYS.org]: broker.org,
+      [BROKER_AUTH_DATA_KEYS.pat]: broker.pat,
+      [BROKER_AUTH_DATA_KEYS.connectionId]: broker.connectionId,
+    };
   }
-  if (profileKind === 'env') {
+  if (profileKind === 'env' || profileKind === 'oauth_app') {
     return normalizeAuthValues(raw);
   }
 
@@ -374,6 +406,45 @@ export async function getAuthProfileById(
   `;
 
   return rows.length > 0 ? (rows[0] as AuthProfileRow) : null;
+}
+
+/**
+ * Resolve a connection's app-level {@link CredentialSource} from its
+ * `app_auth_profile`. Branches on the profile's `profile_kind`:
+ *
+ *   - `oauth_broker` → `{ kind: 'broker', broker }` with the typed broker ref
+ *     parsed from the profile's named fields.
+ *   - `oauth_app`    → `{ kind: 'local', clientId, clientSecret }` (best-effort
+ *     extraction; the actual client keys are connector-schema-specific and the
+ *     local path reads them by key in execution-context, so these are only the
+ *     conventional `*_CLIENT_ID`/`*_CLIENT_SECRET` lookups when present).
+ *
+ * Returns `null` when there's no app profile, the broker profile is malformed,
+ * or the profile is some other kind. Readers MUST branch on the returned `kind`
+ * and never sniff the raw `auth_data`.
+ */
+export async function resolveCredentialSource(
+  organizationId: string,
+  appAuthProfileId: number | null | undefined
+): Promise<CredentialSource | null> {
+  const profile = await getAuthProfileById(organizationId, appAuthProfileId ?? null);
+  if (!profile) return null;
+
+  if (profile.profile_kind === 'oauth_broker') {
+    const broker = parseBrokerCredential(profile.auth_data ?? null);
+    return broker ? { kind: 'broker', broker } : null;
+  }
+
+  if (profile.profile_kind === 'oauth_app') {
+    const values = normalizeAuthValues(profile.auth_data ?? {});
+    const clientId =
+      Object.entries(values).find(([key]) => /_CLIENT_ID$/.test(key))?.[1] ?? null;
+    const clientSecret =
+      Object.entries(values).find(([key]) => /_CLIENT_SECRET$/.test(key))?.[1] ?? null;
+    return { kind: 'local', clientId, clientSecret };
+  }
+
+  return null;
 }
 
 export async function createAuthProfile(params: {

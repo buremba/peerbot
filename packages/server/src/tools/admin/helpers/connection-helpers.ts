@@ -456,15 +456,25 @@ export async function resolveConnectionAuthSelection(params: {
     return EMPTY_SELECTION({ oauthMethod, envMethod, browserMethod, preferredMethodType });
   }
 
-  // 2. For OAuth accounts, also resolve the app credentials profile.
+  // 2. For OAuth accounts, also resolve the app credentials profile. The
+  //    explicitly-supplied app profile slug may be an `oauth_app` (local client
+  //    credentials) OR an `oauth_broker` (the grant lives on a remote broker);
+  //    both attach via the same `app_auth_profile_id` FK. Resolve the slug
+  //    without pinning a kind, then accept only those two app-level kinds.
   const needsAppAuth = authProfile.profile_kind === 'oauth_account' || !!params.appAuthProfileSlug;
-  const appAuthProfile = needsAppAuth
-    ? ((await resolveAuthProfileSlugToId({
+  const explicitAppProfile = params.appAuthProfileSlug
+    ? await resolveAuthProfileSlugToId({
         organizationId,
         slug: params.appAuthProfileSlug,
-        expectedKind: 'oauth_app',
         connectorKey,
-      })) ??
+      })
+    : null;
+  const appAuthProfile = needsAppAuth
+    ? ((explicitAppProfile &&
+      (explicitAppProfile.profile_kind === 'oauth_app' ||
+        explicitAppProfile.profile_kind === 'oauth_broker')
+        ? explicitAppProfile
+        : null) ??
       (oauthMethod && authProfile.profile_kind === 'oauth_account'
         ? await getPrimaryAuthProfileForKind({
             organizationId,

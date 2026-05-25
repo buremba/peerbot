@@ -1,7 +1,12 @@
 import { CredentialService } from '../auth/credentials';
 import { getBuiltinProviderConfig } from '../connect/oauth-providers';
 import { type DbClient, getDb } from '../db/client';
-import { type BrokerRef, getAuthProfileById, getBrokerRef, normalizeAuthValues } from './auth-profiles';
+import {
+  type BrokerCredential,
+  getAuthProfileById,
+  normalizeAuthValues,
+  parseBrokerCredential,
+} from './auth-profiles';
 import { getOAuthAuthMethods, normalizeConnectorAuthSchema } from './connector-auth';
 import { parseJsonObject } from '@lobu/core';
 import { errorMessage } from './errors';
@@ -43,12 +48,17 @@ export async function resolveExecutionAuth(
 
   let credentials: ExecutionOAuthCredentials | null = null;
 
-  // Broker-backed connection: the grant lives on a REMOTE Lobu "broker", which
-  // holds the managed client_id/secret + the user's refresh token. Fetch a
+  // Broker-backed connection: the app_auth_profile is a first-class
+  // `oauth_broker` profile whose typed fields describe a REMOTE Lobu "broker"
+  // that holds the managed client_id/secret + the user's refresh token. Fetch a
   // fresh access token from the broker at runtime instead of reading/refreshing
-  // a local grant. ONLY this branch changes for broker-backed connections; the
-  // local (non-broker) path below is unchanged.
-  const broker = getBrokerRef(appAuthProfile?.auth_data ?? null);
+  // a local grant. ONLY this branch (gated on profile_kind === 'oauth_broker')
+  // changes for broker-backed connections; the local (non-broker) path below is
+  // unchanged.
+  const broker =
+    appAuthProfile?.profile_kind === 'oauth_broker'
+      ? parseBrokerCredential(appAuthProfile.auth_data ?? null)
+      : null;
   if (broker) {
     const accessToken = await fetchBrokerAccessToken(broker, {
       ...params.logContext,
@@ -147,17 +157,18 @@ export async function resolveExecutionAuth(
  * Fetch a fresh access token for a broker-backed connection from the remote
  * broker. The broker holds the grant + client secret and refreshes server-side;
  * we only ever receive `{ access_token, expires_at }`. No caller-supplied URLs:
- * the broker base URL + PAT + connection id come from the trusted broker-ref
- * stored on the org's own oauth_app profile. Returns null on any failure so the
+ * the broker base URL + PAT + connection id come from the trusted typed
+ * `oauth_broker` profile on the org. Returns null on any failure so the
  * connection simply resolves without credentials (fail-soft, like the local
  * path).
  *
- * The `__broker.pat` MUST be minted with the `broker:token` scope — the broker's
- * `/broker/oauth/token` gate rejects (403) any PAT lacking it, so a broad member
- * PAT cannot be used here. Mint with `lobu token create --scope broker:token`.
+ * The broker `pat` (the profile's `broker_pat` field) MUST be minted with the
+ * `broker:token` scope — the broker's `/broker/oauth/token` gate rejects (403)
+ * any PAT lacking it, so a broad member PAT cannot be used here. Mint with
+ * `lobu token create --scope broker:token`.
  */
 async function fetchBrokerAccessToken(
-  broker: BrokerRef,
+  broker: BrokerCredential,
   logContext: Record<string, unknown>
 ): Promise<{ access_token: string; expires_at: string | null } | null> {
   try {
@@ -167,7 +178,7 @@ async function fetchBrokerAccessToken(
         'Content-Type': 'application/json',
         Authorization: `Bearer ${broker.pat}`,
       },
-      body: JSON.stringify({ connection_id: broker.connection_id }),
+      body: JSON.stringify({ connection_id: broker.connectionId }),
     });
     if (!response.ok) {
       logger.warn(

@@ -25,7 +25,6 @@ import {
   listAuthProfiles,
   normalizeAuthProfileSlug,
   normalizeAuthValues,
-  parseBrokerCredential,
   revokeOAuthAppProfileAtomic,
   setDefaultAuthProfileForConnector,
   summarizeBrowserSessionAuthData,
@@ -61,7 +60,6 @@ const ListAuthProfilesAction = Type.Object({
       Type.Literal('oauth_app'),
       Type.Literal('oauth_account'),
       Type.Literal('browser_session'),
-      Type.Literal('oauth_broker'),
     ])
   ),
 });
@@ -89,7 +87,6 @@ const CreateAuthProfileAction = Type.Object({
     Type.Literal('oauth_app'),
     Type.Literal('oauth_account'),
     Type.Literal('browser_session'),
-    Type.Literal('oauth_broker'),
   ]),
   display_name: Type.String({ description: 'User-facing auth profile name' }),
   slug: Type.Optional(
@@ -494,39 +491,6 @@ async function handleCreateAuthProfile(
   }
   const connectorKey: string = args.connector_key;
 
-  // oauth_broker: a first-class broker descriptor. The whole profile IS the
-  // broker ref — its auth_data holds the typed, named fields (broker_url,
-  // broker_org, broker_connection_id) plus the PAT (broker_pat). Validate that
-  // all four are present and well-formed; reject otherwise. The broker fields
-  // arrive via `auth_data` (broker_connection_id is numeric, so the string-only
-  // `credentials` map can't carry it).
-  if (args.profile_kind === 'oauth_broker') {
-    const broker = parseBrokerCredential(args.auth_data ?? {});
-    if (!broker) {
-      return {
-        error:
-          'oauth_broker auth profiles require broker_url, broker_org, broker_pat, and a positive integer broker_connection_id in auth_data.',
-      };
-    }
-    const provider = getOAuthMethods(connector.auth_schema)[0]?.provider ?? null;
-    const authProfile = await createAuthProfile({
-      organizationId: ctx.organizationId,
-      connectorKey,
-      displayName: args.display_name,
-      slug: args.slug,
-      profileKind: 'oauth_broker',
-      authData: {
-        broker_url: broker.url,
-        broker_org: broker.org,
-        broker_pat: broker.pat,
-        broker_connection_id: broker.connectionId,
-      },
-      provider: provider ? provider.toLowerCase() : null,
-      createdBy: ctx.userId ?? 'api',
-    });
-    return { action: 'create_auth_profile', auth_profile: serializeAuthProfile(authProfile) };
-  }
-
   if (args.profile_kind === 'oauth_account') {
     const oauthMethod = getOAuthMethods(connector.auth_schema)[0];
     if (!oauthMethod) {
@@ -754,23 +718,6 @@ async function handleUpdateAuthProfile(
       : args.credentials
         ? normalizeAuthValues(args.credentials)
         : undefined;
-
-  // oauth_broker profiles must always carry a complete, well-formed broker
-  // descriptor. Validate the payload that will actually be persisted (not just
-  // `args.auth_data`): a partial/bad update — e.g. `credentials` that can't
-  // carry the numeric broker_connection_id — would otherwise make
-  // normalizeAuthData silently wipe the profile. An update that omits the
-  // payload entirely (re-normalizing the existing valid broker fields) is fine.
-  if (
-    existingForRoleCheck?.profile_kind === 'oauth_broker' &&
-    updateAuthDataPayload !== undefined &&
-    !parseBrokerCredential(updateAuthDataPayload)
-  ) {
-    return {
-      error:
-        'oauth_broker auth profiles require broker_url, broker_org, broker_pat, and a positive integer broker_connection_id in auth_data.',
-    };
-  }
 
   let authProfile = await updateAuthProfile({
     organizationId: ctx.organizationId,

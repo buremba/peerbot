@@ -21,7 +21,7 @@ import { mcpAuth } from './auth/middleware';
 import { oauthRoutes } from './auth/oauth/routes';
 import { findExistingPersonalOrg } from './auth/personal-org-provisioning';
 import { credentialRoutes } from './auth/routes';
-import { brokerRoutes } from './connect/broker-routes';
+import { connectionTokenRoutes } from './connect/connection-token-route';
 import { connectRoutes } from './connect/routes';
 import { getDb } from './db/client';
 import * as invalidationEmitter from './events/emitter';
@@ -553,13 +553,14 @@ app.route('/mcp', oauthRoutes);
 app.route('/connect', connectRoutes);
 
 /**
- * OAuth Broker route (SPIKE) — PAT-gated, grant-on-broker. A remote Lobu
- * instance acting as a broker OWNS the OAuth grant + managed client secret; a
- * local instance whose oauth_app profile is a broker-ref fetches a fresh access
- * token at runtime via POST /broker/oauth/token. The client_secret + refresh
- * token never leave the broker.
+ * Managed-connector connection-token route — PAT-gated. A managed connector
+ * lives in a PUBLIC org with a managed `oauth_app`; a user joins it and
+ * connects normally (a connection owned by them). Their LOCAL Lobu fetches a
+ * fresh access token for its OWN user's connection via POST
+ * /oauth/connection-token, authenticating with the user's cloud PAT. The
+ * managed client secret + refresh token never leave the cloud.
  */
-app.route('/broker', brokerRoutes);
+app.route('/', connectionTokenRoutes);
 
 /**
  * Logo endpoint for MCP/OAuth client metadata.

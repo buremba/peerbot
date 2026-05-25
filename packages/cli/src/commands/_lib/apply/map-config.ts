@@ -644,6 +644,13 @@ function mapConnection(connection: Connection): DesiredConnection {
   });
   const authSlug = authProfileSlug(connection.authProfile);
   const appAuthSlug = authProfileSlug(connection.appAuthProfile);
+  // A managed connection's grant lives in a cloud (public) org. Fold the
+  // `managedBy` descriptor into the persisted connection `config` so the server
+  // resolver (execution-context.ts) can detect it and fetch the user's token
+  // from the cloud at runtime — no new column or CRUD field needed.
+  const config = connection.managedBy
+    ? { ...(connection.config ?? {}), managedBy: { ...connection.managedBy } }
+    : connection.config;
   return {
     slug: connection.slug,
     connector: connectorKey(connection.connector),
@@ -652,7 +659,7 @@ function mapConnection(connection: Connection): DesiredConnection {
     ...(connection.name ? { name: connection.name } : {}),
     ...(authSlug ? { authProfileSlug: authSlug } : {}),
     ...(appAuthSlug ? { appAuthProfileSlug: appAuthSlug } : {}),
-    ...(connection.config ? { config: connection.config } : {}),
+    ...(config ? { config } : {}),
     ...(connection.deviceWorkerId
       ? { deviceWorkerId: connection.deviceWorkerId }
       : {}),

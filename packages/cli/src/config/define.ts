@@ -92,6 +92,22 @@ export interface ConnectionFeed {
   config?: Record<string, unknown>;
 }
 
+/**
+ * Marks a connection as MANAGED by a cloud (public) org. The OAuth grant lives
+ * in the cloud: a user joins the public `org`, connects normally (consent
+ * against the managed app → a connection owned by them), and the local instance
+ * fetches a fresh access token for its own user's connection at runtime via
+ * `POST /oauth/connection-token`, authenticating with the instance's cloud PAT
+ * (`LOBU_CLOUD_PAT`). The managed client secret + refresh token never leave the
+ * cloud.
+ */
+export interface ManagedBy {
+  /** The cloud (public) org the managed connector lives under. */
+  org: string;
+  /** Override the cloud base URL (defaults to the instance's `LOBU_CLOUD_URL`). */
+  url?: string;
+}
+
 export interface Connection {
   readonly kind: "connection";
   /** Stable slug — diff key. */
@@ -103,6 +119,12 @@ export interface Connection {
   /** OAuth-app auth profile (handle or slug). */
   appAuthProfile?: AuthProfile | string;
   config?: Record<string, unknown>;
+  /**
+   * Mark this connection as managed by a cloud (public) org — the grant lives
+   * in the cloud and the local instance fetches its token at runtime. See
+   * {@link ManagedBy}.
+   */
+  managedBy?: ManagedBy;
   /** UUID pinning syncs/actions to a specific device worker. */
   deviceWorkerId?: string;
   feeds?: ConnectionFeed[];

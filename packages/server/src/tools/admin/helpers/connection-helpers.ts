@@ -424,11 +424,9 @@ export async function resolveConnectionAuthSelection(params: {
   const browserMethod = getBrowserMethods(params.authSchema)[0] ?? null;
   const preferredMethodType = getPreferredAuthMethodType(params.authSchema);
 
-  // 0. An explicit app profile slug may point at an `oauth_app` (local client
-  //    credentials) OR an `oauth_broker` (the grant lives on a remote broker);
-  //    both attach via the same `app_auth_profile_id` FK. Resolve it once,
-  //    without pinning a kind, so it can be honored both as the broker-backed
-  //    auth (below) and as the oauth_account app profile (step 2).
+  // 0. An explicit app profile slug points at an `oauth_app` (local client
+  //    credentials). Resolve it once so it can be honored as the oauth_account
+  //    app profile (step 2).
   const explicitAppProfile = params.appAuthProfileSlug
     ? await resolveAuthProfileSlugToId({
         organizationId,
@@ -436,24 +434,6 @@ export async function resolveConnectionAuthSelection(params: {
         connectorKey,
       })
     : null;
-
-  // 0b. Broker-backed connection: an `oauth_broker` app profile satisfies the
-  //     connection's auth on its OWN — there is NO local `oauth_account` grant
-  //     (the grant lives on the broker, and a fresh access token is fetched at
-  //     runtime). Honor it BEFORE the no-auth-profile early-return below: the
-  //     broker app profile IS the connection's app credentials, attached via
-  //     `app_auth_profile_id`, with no runtime auth profile.
-  if (explicitAppProfile?.profile_kind === 'oauth_broker') {
-    return {
-      selectedKind: 'oauth_broker',
-      authProfile: null,
-      appAuthProfile: explicitAppProfile,
-      oauthMethod,
-      envMethod,
-      browserMethod,
-      preferredMethodType,
-    };
-  }
 
   // 1. Resolve explicitly selected auth profile, or auto-select the primary
   //    auth profile for the connector's preferred auth method.
@@ -488,9 +468,8 @@ export async function resolveConnectionAuthSelection(params: {
   }
 
   // 2. For OAuth accounts, also resolve the app credentials profile. The
-  //    explicit app profile (resolved in step 0) may be an `oauth_app` (local
-  //    client credentials) or an `oauth_broker` (handled in step 0b above);
-  //    here we accept only `oauth_app` since the broker case already returned.
+  //    explicit app profile (resolved in step 0) is an `oauth_app` (local
+  //    client credentials); here we accept only `oauth_app`.
   const needsAppAuth = authProfile.profile_kind === 'oauth_account' || !!params.appAuthProfileSlug;
   const appAuthProfile = needsAppAuth
     ? ((explicitAppProfile && explicitAppProfile.profile_kind === 'oauth_app'

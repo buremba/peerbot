@@ -1,0 +1,498 @@
+/**
+ * Managed-connector connection-token endpoint + local resolver.
+ *
+ * The model: a managed connector lives in a PUBLIC org with a managed
+ * `oauth_app`. A user JOINS the org (a `member` row) and CONNECTS normally —
+ * consent against the managed app mints a connection OWNED by them
+ * (`connections.created_by`). The managed client secret + refresh token stay in
+ * the cloud. The user's LOCAL Lobu fetches a fresh ACCESS token for its own
+ * user's connection at runtime via `POST /oauth/connection-token`, with the
+ * instance's cloud PAT.
+ *
+ * Proven here without a real external provider:
+ *
+ *   1. A public org has a connector (whose oauth method `tokenUrl` points at a
+ *      LOCAL fake provider), a managed `oauth_app` (fake client_id/secret), an
+ *      `oauth_account` profile + `account` row holding an EXPIRING access token
+ *      + a refresh token, and a connection OWNED by a member (`created_by`).
+ *   2. `POST /oauth/connection-token` is PAT-gated. The owner's PAT → the cloud
+ *      resolves the managed app + connector endpoint, REFRESHES the expiring
+ *      token with its secret, and returns ONLY `{ access_token, expires_at }` —
+ *      never the refresh token or client secret.
+ *   3. Owner-scope: a DIFFERENT member's PAT for the SAME org cannot fetch the
+ *      owner's connection token (404). A NON-member PAT → 403. No PAT → 401, bad
+ *      PAT → 401, malformed body → 400.
+ *   4. Local resolver: a `managedBy` connection resolves its access token by
+ *      calling the cloud endpoint (cloud = the in-process server in-test).
+ */
+
+import { serve } from "@hono/node-server";
+import { Hono } from "hono";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { connectionTokenRoutes } from "../../../connect/connection-token-route";
+import type { Env } from "../../../index";
+import { createAuthProfile } from "../../../utils/auth-profiles";
+import { resolveExecutionAuth } from "../../../utils/execution-context";
+import { initWorkspaceProvider } from "../../../workspace";
+import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
+import {
+	addUserToOrganization,
+	createTestConnectorDefinition,
+	createTestOrganization,
+	createTestPAT,
+	createTestUser,
+} from "../../setup/test-fixtures";
+
+const TEST_ENV = {
+	ENVIRONMENT: "test",
+	DATABASE_URL: process.env.DATABASE_URL,
+} as unknown as Env;
+
+// Canned tokens the fake provider returns on refresh. Distinct from the stored
+// (expiring) token so a successful refresh is observable.
+const REFRESHED = {
+	access_token: "refreshed-access-token-123",
+	refresh_token: "managed-refresh-token-456",
+	expires_in: 3600,
+};
+const STALE_ACCESS_TOKEN = "stale-access-token-000";
+const MANAGED_SECRET = "managed-secret";
+
+// Fake OAuth provider token endpoint the public org's connector points at.
+let providerServer: ReturnType<typeof serve> | null = null;
+let providerTokenUrl = "";
+let lastRefreshBody: Record<string, string> = {};
+
+// Cloud app served on a real port so the local resolver's `fetch` reaches it.
+let cloudServer: ReturnType<typeof serve> | null = null;
+let cloudBaseUrl = "";
+
+// Saved instance cloud-config env so afterAll can restore it.
+let savedCloudUrl: string | undefined;
+let savedCloudPat: string | undefined;
+
+function buildCloudApp(): Hono<{ Bindings: Env }> {
+	const app = new Hono<{ Bindings: Env }>();
+	app.route("/", connectionTokenRoutes);
+	return app;
+}
+
+beforeAll(async () => {
+	await initWorkspaceProvider();
+
+	// Fake provider: a refresh_token grant returns canned refreshed tokens. Record
+	// the form body so we can assert the cloud authed with its own secret.
+	const providerApp = new Hono();
+	providerApp.post("/token", async (c) => {
+		const text = await c.req.text();
+		lastRefreshBody = Object.fromEntries(new URLSearchParams(text));
+		return c.json({
+			access_token: REFRESHED.access_token,
+			refresh_token: REFRESHED.refresh_token,
+			expires_in: REFRESHED.expires_in,
+		});
+	});
+	providerServer = await new Promise((resolve) => {
+		const s = serve(
+			{ fetch: providerApp.fetch, hostname: "127.0.0.1", port: 0 },
+			(info) => {
+				providerTokenUrl = `http://127.0.0.1:${info.port}/token`;
+				resolve(s);
+			},
+		);
+	});
+
+	// Cloud app on a real port (Env carries DATABASE_URL so handlers hit test DB).
+	const cloudApp = buildCloudApp();
+	cloudServer = await new Promise((resolve) => {
+		const s = serve(
+			{
+				fetch: (req: Request) => cloudApp.fetch(req, TEST_ENV),
+				hostname: "127.0.0.1",
+				port: 0,
+			},
+			(info) => {
+				cloudBaseUrl = `http://127.0.0.1:${info.port}`;
+				resolve(s);
+			},
+		);
+	});
+
+	savedCloudUrl = process.env.LOBU_CLOUD_URL;
+	savedCloudPat = process.env.LOBU_CLOUD_PAT;
+});
+
+afterAll(async () => {
+	if (savedCloudUrl === undefined) delete process.env.LOBU_CLOUD_URL;
+	else process.env.LOBU_CLOUD_URL = savedCloudUrl;
+	if (savedCloudPat === undefined) delete process.env.LOBU_CLOUD_PAT;
+	else process.env.LOBU_CLOUD_PAT = savedCloudPat;
+	await new Promise<void>((done) =>
+		providerServer ? providerServer.close(() => done()) : done(),
+	);
+	await new Promise<void>((done) =>
+		cloudServer ? cloudServer.close(() => done()) : done(),
+	);
+});
+
+interface SeededManagedConnection {
+	orgId: string;
+	/** The connection OWNER (created_by). */
+	ownerId: string;
+	/** The owner's PAT (member of the public org). */
+	ownerPat: string;
+	connectorKey: string;
+	connectionId: number;
+}
+
+/**
+ * Seed a PUBLIC org with a managed `oauth_app`, an `oauth_account` grant (an
+ * `account` row with an EXPIRING access token + refresh token), a connector
+ * whose tokenUrl points at the fake provider, and a connection OWNED by a
+ * member. The connector endpoints live in the org's OWN metadata — the cloud
+ * resolves them server-side; the caller never supplies them.
+ */
+async function seedManagedConnection(
+	orgName: string,
+): Promise<SeededManagedConnection> {
+	const sql = getTestDb();
+	const org = await createTestOrganization({
+		name: orgName,
+		visibility: "public",
+	});
+	const owner = await createTestUser({ name: `${orgName} Owner` });
+	await addUserToOrganization(owner.id, org.id, "member");
+
+	const connectorKey = "demo.oauth";
+	await createTestConnectorDefinition({
+		key: connectorKey,
+		name: "Demo OAuth",
+		organization_id: org.id,
+		auth_schema: {
+			methods: [
+				{
+					type: "oauth",
+					provider: "demo",
+					requiredScopes: ["read"],
+					authorizationUrl: "https://demo.example/authorize",
+					tokenUrl: providerTokenUrl,
+					tokenEndpointAuthMethod: "client_secret_post",
+					clientIdKey: "DEMO_CLIENT_ID",
+					clientSecretKey: "DEMO_CLIENT_SECRET",
+				},
+			],
+		},
+		feeds_schema: { items: {} },
+	});
+
+	// Managed oauth_app holds the REAL client_id/secret (never leaves the cloud).
+	const appProfile = await createAuthProfile({
+		organizationId: org.id,
+		connectorKey,
+		displayName: "Managed Demo App",
+		profileKind: "oauth_app",
+		provider: "demo",
+		authData: {
+			DEMO_CLIENT_ID: "managed-cid",
+			DEMO_CLIENT_SECRET: MANAGED_SECRET,
+		},
+	});
+
+	// The grant: an account row with an EXPIRING access token + a refresh token.
+	const accountId = `acct_${org.id}`;
+	const expiringSoon = new Date(Date.now() + 60 * 1000).toISOString(); // < 5min buffer
+	await sql`
+    INSERT INTO "account" (
+      id, "accountId", "providerId", "userId",
+      "accessToken", "refreshToken", "accessTokenExpiresAt",
+      scope, "createdAt", "updatedAt"
+    ) VALUES (
+      ${accountId}, ${accountId}, 'demo', ${owner.id},
+      ${STALE_ACCESS_TOKEN}, ${"managed-refresh-token-original"}, ${expiringSoon},
+      'read', NOW(), NOW()
+    )
+  `;
+
+	const accountProfile = await createAuthProfile({
+		organizationId: org.id,
+		connectorKey,
+		displayName: "Demo Account",
+		profileKind: "oauth_account",
+		provider: "demo",
+		accountId,
+	});
+
+	// Connection OWNED by the member (created_by), wiring the grant + managed app.
+	const connRows = (await sql`
+    INSERT INTO connections (
+      organization_id, connector_key, slug, display_name, status,
+      account_id, auth_profile_id, app_auth_profile_id, created_by,
+      created_at, updated_at
+    ) VALUES (
+      ${org.id}, ${connectorKey}, ${`demo-${org.id}`}, 'Demo Connection', 'active',
+      ${accountId}, ${accountProfile.id}, ${appProfile.id}, ${owner.id},
+      NOW(), NOW()
+    )
+    RETURNING id
+  `) as unknown as Array<{ id: number }>;
+
+	const ownerPat = await createTestPAT(owner.id, org.id, {
+		scope: "mcp:read mcp:write",
+	});
+	return {
+		orgId: org.id,
+		ownerId: owner.id,
+		ownerPat: ownerPat.token,
+		connectorKey,
+		connectionId: Number(connRows[0].id),
+	};
+}
+
+function tokenRequest(
+	app: Hono<{ Bindings: Env }>,
+	opts: { pat?: string; body?: unknown },
+): Promise<Response> {
+	const headers: Record<string, string> = {
+		"Content-Type": "application/json",
+	};
+	if (opts.pat) headers.Authorization = `Bearer ${opts.pat}`;
+	return app.fetch(
+		new Request("http://cloud.local/oauth/connection-token", {
+			method: "POST",
+			headers,
+			body: JSON.stringify(opts.body ?? {}),
+		}),
+		TEST_ENV,
+	);
+}
+
+describe("managed connector — POST /oauth/connection-token", () => {
+	beforeEach(async () => {
+		await cleanupTestDatabase();
+		lastRefreshBody = {};
+	});
+
+	it("returns a fresh access token to the OWNER, refreshed server-side with the managed secret", async () => {
+		const { ownerPat, orgId, connectorKey } =
+			await seedManagedConnection("Public Org");
+		const app = buildCloudApp();
+
+		const res = await tokenRequest(app, {
+			pat: ownerPat,
+			body: { org: orgId, connector_key: connectorKey },
+		});
+
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as Record<string, unknown>;
+		// The access token is the REFRESHED one — proves the cloud refreshed via
+		// its own tokenUrl + secret (not the stored stale token).
+		expect(body.access_token).toBe(REFRESHED.access_token);
+		expect(typeof body.expires_at).toBe("string");
+
+		// The cloud authed the refresh with ITS managed client_id/secret.
+		expect(lastRefreshBody.client_id).toBe("managed-cid");
+		expect(lastRefreshBody.client_secret).toBe(MANAGED_SECRET);
+		expect(lastRefreshBody.grant_type).toBe("refresh_token");
+
+		// The response leaks NEITHER the refresh token NOR the client secret.
+		const serialized = JSON.stringify(body);
+		expect(serialized).not.toContain(REFRESHED.refresh_token);
+		expect(serialized).not.toContain("managed-refresh-token-original");
+		expect(serialized).not.toContain(MANAGED_SECRET);
+		expect(body.refresh_token).toBeUndefined();
+	});
+
+	it("rejects a DIFFERENT member's PAT for the SAME org (404 — owner-scoped)", async () => {
+		const seeded = await seedManagedConnection("Public Org");
+
+		// A second member of the SAME public org — NOT the connection owner.
+		const other = await createTestUser({ name: "Other Member" });
+		await addUserToOrganization(other.id, seeded.orgId, "member");
+		const otherPat = await createTestPAT(other.id, seeded.orgId, {
+			scope: "mcp:read mcp:write",
+		});
+
+		const app = buildCloudApp();
+		const res = await tokenRequest(app, {
+			pat: otherPat.token,
+			body: { org: seeded.orgId, connector_key: seeded.connectorKey },
+		});
+
+		// Member of the org, but does NOT own the connection → 404 (owner-scope).
+		expect(res.status).toBe(404);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body.error).toBe("not_found");
+
+		// Sanity: the refresh provider was never contacted.
+		expect(lastRefreshBody).toEqual({});
+	});
+
+	it("rejects a NON-member PAT (403)", async () => {
+		const seeded = await seedManagedConnection("Public Org");
+
+		// A user with their OWN private org — NOT a member of the public org.
+		const outsider = await createTestUser({ name: "Outsider" });
+		const outsiderOrg = await createTestOrganization({ name: "Outsider Org" });
+		await addUserToOrganization(outsider.id, outsiderOrg.id, "owner");
+		const outsiderPat = await createTestPAT(outsider.id, outsiderOrg.id, {
+			scope: "mcp:read mcp:write",
+		});
+
+		const app = buildCloudApp();
+		const res = await tokenRequest(app, {
+			pat: outsiderPat.token,
+			body: { org: seeded.orgId, connector_key: seeded.connectorKey },
+		});
+
+		expect(res.status).toBe(403);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body.error).toBe("forbidden");
+	});
+
+	it("rejects a malformed body (400) — validated, not cast", async () => {
+		const { ownerPat } = await seedManagedConnection("Public Org");
+		const app = buildCloudApp();
+
+		const res = await tokenRequest(app, {
+			pat: ownerPat,
+			body: { org: "", connector_key: 42 },
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body.error).toBe("bad_request");
+	});
+
+	it("rejects no PAT (401)", async () => {
+		const { orgId, connectorKey } = await seedManagedConnection("Public Org");
+		const app = buildCloudApp();
+		const res = await tokenRequest(app, {
+			body: { org: orgId, connector_key: connectorKey },
+		});
+		expect(res.status).toBe(401);
+	});
+
+	it("rejects an invalid PAT (401)", async () => {
+		const { orgId, connectorKey } = await seedManagedConnection("Public Org");
+		const app = buildCloudApp();
+		const res = await tokenRequest(app, {
+			pat: "owl_pat_totally-bogus-token",
+			body: { org: orgId, connector_key: connectorKey },
+		});
+		expect(res.status).toBe(401);
+	});
+
+	it("404 when the user owns no active connection for the connector in the org", async () => {
+		const { ownerPat, orgId } = await seedManagedConnection("Public Org");
+		const app = buildCloudApp();
+		const res = await tokenRequest(app, {
+			pat: ownerPat,
+			body: { org: orgId, connector_key: "demo.nonexistent" },
+		});
+		expect(res.status).toBe(404);
+	});
+});
+
+describe("managed connector — local resolver", () => {
+	beforeEach(async () => {
+		await cleanupTestDatabase();
+		lastRefreshBody = {};
+		process.env.LOBU_CLOUD_URL = cloudBaseUrl;
+	});
+
+	it("a `managedBy` connection resolves its access token via the cloud endpoint", async () => {
+		// Cloud side: public org + managed app + grant + owner-owned connection +
+		// the owner's PAT (the instance's cloud PAT in this single-user case).
+		const cloud = await seedManagedConnection("Cloud Org");
+		// The instance's cloud PAT is the user's OWN credential.
+		process.env.LOBU_CLOUD_PAT = cloud.ownerPat;
+
+		// Local side: a separate org with a local connection marked `managedBy`
+		// (config.managedBy points at the cloud org). No local grant.
+		const sql = getTestDb();
+		const localOrg = await createTestOrganization({ name: "Local Org" });
+		const localUser = await createTestUser({ name: "Local User" });
+		await addUserToOrganization(localUser.id, localOrg.id, "owner");
+		await createTestConnectorDefinition({
+			key: "demo.oauth",
+			name: "Demo OAuth Local",
+			organization_id: localOrg.id,
+			auth_schema: {
+				methods: [
+					{ type: "oauth", provider: "demo", requiredScopes: ["read"] },
+				],
+			},
+			feeds_schema: { items: {} },
+		});
+
+		const localConnRows = (await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status,
+        config, created_at, updated_at
+      ) VALUES (
+        ${localOrg.id}, 'demo.oauth', 'demo-local', 'Local Demo', 'active',
+        ${sql.json({ managedBy: { org: cloud.orgId } })}, NOW(), NOW()
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+
+		// The runtime token-resolution path: detects `managedBy`, fetches the
+		// access token from the cloud, and returns it as the connection's creds.
+		const resolved = await resolveExecutionAuth({
+			organizationId: localOrg.id,
+			connectionId: Number(localConnRows[0].id),
+			authProfileId: null,
+			appAuthProfileId: null,
+			credentialDb: sql,
+		});
+
+		expect(resolved.credentials?.accessToken).toBe(REFRESHED.access_token);
+		// No local refresh token / secret ever materialized.
+		expect(resolved.credentials?.refreshToken).toBeNull();
+		expect(resolved.connectionCredentials).toEqual({});
+	});
+
+	it("a non-managed (local) connection ignores the cloud path entirely", async () => {
+		// No managedBy on config → resolver must NOT call the cloud (no refresh).
+		process.env.LOBU_CLOUD_PAT = "owl_pat_unused";
+		const sql = getTestDb();
+		const localOrg = await createTestOrganization({ name: "Plain Local Org" });
+		const localUser = await createTestUser({ name: "Plain Local User" });
+		await addUserToOrganization(localUser.id, localOrg.id, "owner");
+		await createTestConnectorDefinition({
+			key: "demo.plain",
+			name: "Demo Plain",
+			organization_id: localOrg.id,
+			auth_schema: { methods: [{ type: "env_keys", keys: ["DEMO_API_KEY"] }] },
+			feeds_schema: { items: {} },
+		});
+		const envProfile = await createAuthProfile({
+			organizationId: localOrg.id,
+			connectorKey: "demo.plain",
+			displayName: "Demo Env",
+			profileKind: "env",
+			authData: { DEMO_API_KEY: "local-key-123" },
+		});
+		const connRows = (await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status,
+        auth_profile_id, created_at, updated_at
+      ) VALUES (
+        ${localOrg.id}, 'demo.plain', 'demo-plain', 'Plain Local', 'active',
+        ${envProfile.id}, NOW(), NOW()
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+
+		const resolved = await resolveExecutionAuth({
+			organizationId: localOrg.id,
+			connectionId: Number(connRows[0].id),
+			authProfileId: envProfile.id,
+			appAuthProfileId: null,
+			credentialDb: sql,
+		});
+
+		// Local env credentials resolve unchanged; the cloud was never contacted.
+		expect(resolved.connectionCredentials.DEMO_API_KEY).toBe("local-key-123");
+		expect(lastRefreshBody).toEqual({});
+	});
+});

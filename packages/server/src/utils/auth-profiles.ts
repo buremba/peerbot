@@ -6,8 +6,7 @@ export type AuthProfileKind =
   | 'oauth_app'
   | 'oauth_account'
   | 'browser_session'
-  | 'interactive'
-  | 'oauth_broker';
+  | 'interactive';
 export type AuthProfileStatus = 'active' | 'pending_auth' | 'error' | 'revoked';
 
 export type BrowserKind = 'chrome' | 'brave' | 'arc' | 'edge';
@@ -48,88 +47,6 @@ interface BrowserSessionReadiness extends BrowserSessionSummary {
   resolved_cdp_url: string | null;
 }
 
-/**
- * The typed broker descriptor carried by an `oauth_broker` profile. The whole
- * profile IS the broker reference: a remote Lobu "broker" instance OWNS the
- * OAuth grant for a connection. The broker holds the managed client_id/secret
- * AND the user's grant (oauth_account); the local instance fetches a fresh
- * access token at runtime from the broker over HTTP (POST `/broker/oauth/token`),
- * authenticating with `pat`. `connectionId` is the broker-side connection whose
- * stored grant backs this local connection.
- */
-export interface BrokerCredential {
-  /** Broker base URL, e.g. `https://broker.lobu.ai` (no `/broker` suffix). */
-  url: string;
-  /** Broker org slug the managed oauth_app lives under (informational). */
-  org: string;
-  /** Lobu Personal Access Token (`owl_pat_*`) the broker authenticates. */
-  pat: string;
-  /** The broker-side connection id whose stored grant backs this profile. */
-  connectionId: number;
-}
-
-/** Field keys an `oauth_broker` profile's auth_data must carry. */
-export const BROKER_AUTH_DATA_KEYS = {
-  url: 'broker_url',
-  org: 'broker_org',
-  pat: 'broker_pat',
-  connectionId: 'broker_connection_id',
-} as const;
-
-/**
- * Parse the typed broker fields out of an `oauth_broker` profile's `auth_data`.
- * Returns the validated {@link BrokerCredential}, or `null` when any required
- * field is missing/malformed. No `__`-prefixed keys: every field is named.
- */
-export function parseBrokerCredential(authData: unknown): BrokerCredential | null {
-  if (typeof authData === 'string') {
-    try {
-      return parseBrokerCredential(JSON.parse(authData));
-    } catch {
-      return null;
-    }
-  }
-  if (!authData || typeof authData !== 'object' || Array.isArray(authData)) return null;
-  const data = authData as Record<string, unknown>;
-  const url = data[BROKER_AUTH_DATA_KEYS.url];
-  const org = data[BROKER_AUTH_DATA_KEYS.org];
-  const pat = data[BROKER_AUTH_DATA_KEYS.pat];
-  const rawConnectionId = data[BROKER_AUTH_DATA_KEYS.connectionId];
-  const connectionId =
-    typeof rawConnectionId === 'number' ? rawConnectionId : Number(rawConnectionId);
-  if (
-    typeof url !== 'string' ||
-    typeof org !== 'string' ||
-    typeof pat !== 'string' ||
-    url.trim().length === 0 ||
-    org.trim().length === 0 ||
-    pat.trim().length === 0 ||
-    !Number.isInteger(connectionId) ||
-    connectionId <= 0
-  ) {
-    return null;
-  }
-  // The broker base URL is fetched at runtime, so it MUST be an absolute
-  // http:/https: URL — reject relative paths, missing schemes, or non-HTTP
-  // protocols (file:, javascript:, etc.). Closes the broker-URL hardening gap.
-  const trimmedUrl = url.trim();
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(trimmedUrl);
-  } catch {
-    return null;
-  }
-  if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-    return null;
-  }
-  return {
-    url: trimmedUrl.replace(/\/+$/, ''),
-    org: org.trim(),
-    pat: pat.trim(),
-    connectionId,
-  };
-}
-
 export function normalizeAuthValues(raw: unknown): Record<string, string> {
   if (typeof raw === 'string') {
     try {
@@ -156,20 +73,6 @@ function normalizeAuthData(
   profileKind: AuthProfileKind,
   raw: unknown
 ): Record<string, unknown> {
-  if (profileKind === 'oauth_broker') {
-    // The whole profile IS the broker descriptor. Persist the typed fields:
-    // broker_url/broker_org/broker_pat are strings (normalized), and
-    // broker_connection_id is a number that normalizeAuthValues() would strip,
-    // so store it explicitly as an integer.
-    const broker = parseBrokerCredential(raw);
-    if (!broker) return {};
-    return {
-      [BROKER_AUTH_DATA_KEYS.url]: broker.url,
-      [BROKER_AUTH_DATA_KEYS.org]: broker.org,
-      [BROKER_AUTH_DATA_KEYS.pat]: broker.pat,
-      [BROKER_AUTH_DATA_KEYS.connectionId]: broker.connectionId,
-    };
-  }
   if (profileKind === 'env' || profileKind === 'oauth_app') {
     return normalizeAuthValues(raw);
   }
@@ -405,23 +308,6 @@ export async function getAuthProfileById(
   `;
 
   return rows.length > 0 ? (rows[0] as AuthProfileRow) : null;
-}
-
-/**
- * Resolve the typed {@link BrokerCredential} for a connection from its
- * `app_auth_profile`, or `null` when that profile is NOT an `oauth_broker`
- * (i.e. the connection uses the local/unchanged credential path) or the broker
- * descriptor is malformed. This is the single seam for the broker branch:
- * callers gate the broker path on a non-null result and otherwise fall through
- * to their existing local path. Never sniffs raw `auth_data` keys.
- */
-export async function resolveBrokerCredentialForConnection(
-  organizationId: string,
-  appAuthProfileId: number | null | undefined
-): Promise<BrokerCredential | null> {
-  const profile = await getAuthProfileById(organizationId, appAuthProfileId ?? null);
-  if (!profile || profile.profile_kind !== 'oauth_broker') return null;
-  return parseBrokerCredential(profile.auth_data ?? null);
 }
 
 export async function createAuthProfile(params: {

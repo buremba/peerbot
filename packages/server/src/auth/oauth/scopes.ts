@@ -12,11 +12,6 @@ export const AVAILABLE_SCOPES = [
   'mcp:admin',
   'profile:read',
   'device_worker:run',
-  // Least-privilege scope for the OAuth broker runtime token fetch
-  // (POST /broker/oauth/token). Deliberately NOT in DEFAULT_SCOPES so a broad
-  // member PAT cannot exfiltrate connection access tokens — a broker-ref's PAT
-  // must be minted explicitly with this scope.
-  'broker:token',
 ] as const;
 
 /** Default scopes for MCP access */

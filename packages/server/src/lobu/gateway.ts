@@ -123,9 +123,9 @@ function ensureEmbeddedGatewaySecrets(): void {
  *   1. Better Auth session (cookie or bearer session-token) — original path.
  *   2. Personal Access Token (`Authorization: Bearer owl_pat_*`) — needed so
  *      `lobu chat` / device-flow PATs reach `/lobu/api/v1/agents/*`. Verified
- *      via the shared `authenticatePat` (also used by the OAuth broker router),
- *      which enforces the tenant-membership check (a PAT for org A must verify
- *      the user is still a member of org A).
+ *      via the shared `authenticatePat` (also used by the managed-connector
+ *      connection-token router), which enforces the tenant-membership check (a
+ *      PAT for org A must verify the user is still a member of org A).
  *
  * PAT validation runs BEFORE Better Auth so a stale/invalid PAT in the
  * `Authorization` header cannot be silently masked by a still-valid session
@@ -143,7 +143,7 @@ export function createLobuAuthBridge() {
     //    `Bearer owl_pat_*`. Validate first so an invalid PAT cannot fall
     //    through to a cooked Better Auth cookie: invalid PAT short-circuits
     //    here rather than masking the failure with a still-valid session
-    //    cookie. Shared with the broker router via `authenticatePat`.
+    //    cookie. Shared with the connection-token router via `authenticatePat`.
     const bearerValue = extractPatBearer(c.req.header('Authorization'));
     if (bearerValue) {
       const result = await authenticatePat(getDb(), bearerValue);

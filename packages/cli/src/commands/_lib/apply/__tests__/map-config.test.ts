@@ -304,6 +304,37 @@ describe("mapProjectToDesiredState", () => {
     expect(dc?.feeds).toEqual([{ feedKey: "stars", schedule: "0 */6 * * *" }]);
   });
 
+  test("folds `managedBy` into the connection config", () => {
+    const conn = defineConnection({
+      slug: "gh-managed",
+      connector: "github",
+      config: { existing: true },
+      managedBy: { org: "lobu-managed", url: "https://app.lobu.ai" },
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [], connections: [conn] })
+    );
+    const dc = state.connectors.connections[0];
+    expect(dc?.config).toEqual({
+      existing: true,
+      managedBy: { org: "lobu-managed", url: "https://app.lobu.ai" },
+    });
+  });
+
+  test("a connection without `managedBy` carries no managedBy in config", () => {
+    const conn = defineConnection({
+      slug: "gh-plain",
+      connector: "github",
+      config: { existing: true },
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [], connections: [conn] })
+    );
+    const dc = state.connectors.connections[0];
+    expect(dc?.config).toEqual({ existing: true });
+    expect(dc?.config?.managedBy).toBeUndefined();
+  });
+
   test("rejects an invalid connection slug", () => {
     const conn = defineConnection({ slug: "Bad_Slug", connector: "github" });
     expect(() =>

@@ -1,5 +1,12 @@
 # Changelog
 
+## [9.4.1](https://github.com/lobu-ai/lobu/compare/lobu-v9.4.0...lobu-v9.4.1) (2026-05-25)
+
+
+### Bug Fixes
+
+* **chart+metrics:** ServiceMonitor path /lobu/metrics + rename label job→task ([#1053](https://github.com/lobu-ai/lobu/issues/1053)) ([a5c3de6](https://github.com/lobu-ai/lobu/commit/a5c3de6d713d4d14a3ef31faddd17ffa22882a64))
+
 ## [9.4.0](https://github.com/lobu-ai/lobu/compare/lobu-v9.3.0...lobu-v9.4.0) (2026-05-25)
 
 

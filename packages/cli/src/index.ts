@@ -427,7 +427,7 @@ Memory:
       await tokenCommand(options);
     });
 
-  withCommonOpts(
+  const tokenCreate = withCommonOpts(
     token
       .command("create")
       .description("Create an org-scoped personal access token for servers/CI"),
@@ -451,22 +451,15 @@ Memory:
       }
     )
     .option("--raw", "Print token only")
-    .option("--json", "Print JSON response")
-    .action(
-      async (options: {
-        context?: string;
-        org?: string;
-        name?: string;
-        description?: string;
-        scope?: string;
-        expiresInDays?: number;
-        raw?: boolean;
-        json?: boolean;
-      }) => {
-        const { tokenCreateCommand } = await import("./commands/token.js");
-        await tokenCreateCommand(options);
-      }
-    );
+    .option("--json", "Print JSON response");
+  // `-c/--context` is declared on both `token` and `token create`. Commander
+  // binds a flag shared by parent and child to the *parent*, so the child's
+  // local `.opts()` never sees `context` — read `optsWithGlobals()` to merge
+  // the ancestor's value back in (otherwise `-c` is silently ignored, #1023).
+  tokenCreate.action(async () => {
+    const { tokenCreateCommand } = await import("./commands/token.js");
+    await tokenCreateCommand(tokenCreate.optsWithGlobals());
+  });
 
   token
     .command("revoke <jti>")

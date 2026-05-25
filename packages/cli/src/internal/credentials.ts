@@ -1,5 +1,13 @@
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import {
+  type BaseCredential,
+  credentialCanRefresh,
+  credentialNeedsRefresh,
+  deleteContextCredential,
+  type OAuthClientInfo,
+  readContextCredential,
+  writeContextCredential,
+} from "@lobu/core";
 import {
   DEFAULT_CONTEXT_NAME,
   getCurrentContextName,
@@ -12,33 +20,15 @@ import { refreshTokens } from "./oauth.js";
 
 const CREDENTIALS_FILE = join(LOBU_CONFIG_DIR, "credentials.json");
 
-export interface OAuthClientInfo {
-  clientId: string;
-  clientSecret?: string;
-  /** Cached so refresh/logout don't have to re-discover. */
-  tokenEndpoint?: string;
-  revocationEndpoint?: string;
-  userinfoEndpoint?: string;
-}
+export type { OAuthClientInfo };
 
-export interface Credentials {
-  accessToken: string;
-  refreshToken?: string;
-  /** Epoch ms when the access token expires. */
-  expiresAt?: number;
+export interface Credentials extends BaseCredential {
   email?: string;
   name?: string;
   userId?: string;
   agentId?: string;
   /** Local-init worker PAT used only by the gateway agent API. */
   localWorkerToken?: string;
-  /** Registered OAuth client + endpoints used to mint these tokens. */
-  oauth?: OAuthClientInfo;
-}
-
-interface CredentialsStore {
-  version: 2;
-  contexts: Record<string, Credentials>;
 }
 
 // Per-process cache. `lobu apply` calls `getToken()` once per request; without
@@ -61,24 +51,11 @@ export async function loadCredentials(
     return credentialsCache.get(target.name) ?? null;
   }
 
-  let creds: Credentials | null = null;
-  try {
-    const raw = await readFile(CREDENTIALS_FILE, "utf-8");
-    const parsed = JSON.parse(raw) as
-      | CredentialsStore
-      | (Partial<Credentials> & { accessToken?: string });
-
-    const stored = isCredentialsStore(parsed)
-      ? parsed.contexts[target.name]
-      : target.name === DEFAULT_CONTEXT_NAME
-        ? parsed
-        : null;
-
-    creds = normalizeCredentials(stored);
-  } catch {
-    creds = null;
-  }
-
+  const creds = await readContextCredential<Credentials>(
+    CREDENTIALS_FILE,
+    target.name,
+    DEFAULT_CONTEXT_NAME
+  );
   credentialsCache.set(target.name, creds);
   return creds;
 }
@@ -88,39 +65,23 @@ export async function saveCredentials(
   contextName?: string
 ): Promise<void> {
   const target = await resolveContext(contextName);
-  const store = await loadCredentialStore();
-  store.contexts[target.name] = creds;
-
-  await mkdir(LOBU_CONFIG_DIR, { recursive: true });
-  await writeFile(CREDENTIALS_FILE, JSON.stringify(store, null, 2), {
-    mode: 0o600,
-  });
-  // writeFile's `mode` only applies on file creation; if the file existed
-  // with looser perms (e.g. from an older CLI release), the mode would
-  // silently stay 0o644. chmod after write makes the perms unconditional.
-  await chmod(CREDENTIALS_FILE, 0o600).catch(() => undefined);
+  await writeContextCredential<Credentials>(
+    CREDENTIALS_FILE,
+    target.name,
+    DEFAULT_CONTEXT_NAME,
+    creds
+  );
   credentialsCache.set(target.name, creds);
 }
 
 export async function clearCredentials(contextName?: string): Promise<void> {
   const target = await resolveContext(contextName);
-  const store = await loadCredentialStore();
-  delete store.contexts[target.name];
+  await deleteContextCredential<Credentials>(
+    CREDENTIALS_FILE,
+    target.name,
+    DEFAULT_CONTEXT_NAME
+  );
   credentialsCache.set(target.name, null);
-
-  if (Object.keys(store.contexts).length === 0) {
-    try {
-      await rm(CREDENTIALS_FILE);
-    } catch {
-      // File doesn't exist, nothing to clear.
-    }
-    return;
-  }
-
-  await writeFile(CREDENTIALS_FILE, JSON.stringify(store, null, 2), {
-    mode: 0o600,
-  });
-  await chmod(CREDENTIALS_FILE, 0o600).catch(() => undefined);
 }
 
 /**
@@ -176,9 +137,9 @@ async function getCredentialsToken(
     creds = (await tryLocalInit(contextName)) ?? creds;
   }
   if (!creds) return null;
-  if (!needsRefresh(creds)) return creds.accessToken;
+  if (!credentialNeedsRefresh(creds)) return creds.accessToken;
 
-  if (!canRefresh(creds)) {
+  if (!credentialCanRefresh(creds)) {
     await clearCredentials(contextName);
     return null;
   }
@@ -311,7 +272,7 @@ async function doRefreshCredentials(
 ): Promise<Credentials | null> {
   const creds = existing ?? (await loadCredentials(target.name));
   if (!creds) return null;
-  if (!canRefresh(creds)) return creds;
+  if (!credentialCanRefresh(creds)) return creds;
 
   const result = await attemptRefresh(target, creds);
   if (result) return result;
@@ -323,7 +284,7 @@ async function doRefreshCredentials(
   if (
     freshCreds?.accessToken &&
     freshCreds.accessToken !== creds.accessToken &&
-    !needsRefresh(freshCreds)
+    !credentialNeedsRefresh(freshCreds)
   ) {
     return freshCreds;
   }
@@ -331,7 +292,7 @@ async function doRefreshCredentials(
   if (
     freshCreds?.refreshToken &&
     freshCreds.refreshToken !== creds.refreshToken &&
-    canRefresh(freshCreds)
+    credentialCanRefresh(freshCreds)
   ) {
     return attemptRefresh(target, freshCreds);
   }
@@ -343,7 +304,7 @@ async function attemptRefresh(
   target: { name: string },
   creds: Credentials
 ): Promise<Credentials | null> {
-  if (!canRefresh(creds)) return null;
+  if (!credentialCanRefresh(creds)) return null;
 
   const refreshed = await refreshTokens(
     creds.oauth.tokenEndpoint,
@@ -364,65 +325,4 @@ async function attemptRefresh(
 
   await saveCredentials(updated, target.name);
   return updated;
-}
-
-function needsRefresh(creds: Credentials): boolean {
-  return (
-    typeof creds.expiresAt === "number" &&
-    creds.expiresAt - 60_000 <= Date.now()
-  );
-}
-
-function canRefresh(creds: Credentials): creds is Credentials & {
-  refreshToken: string;
-  oauth: OAuthClientInfo & { tokenEndpoint: string };
-} {
-  return Boolean(
-    creds.refreshToken && creds.oauth?.tokenEndpoint && creds.oauth.clientId
-  );
-}
-
-async function loadCredentialStore(): Promise<CredentialsStore> {
-  try {
-    const raw = await readFile(CREDENTIALS_FILE, "utf-8");
-    const parsed = JSON.parse(raw) as
-      | CredentialsStore
-      | (Partial<Credentials> & { accessToken?: string });
-
-    if (isCredentialsStore(parsed)) {
-      return {
-        version: 2,
-        contexts: Object.fromEntries(
-          Object.entries(parsed.contexts)
-            .map(([name, value]) => [name, normalizeCredentials(value)])
-            .filter((entry): entry is [string, Credentials] => !!entry[1])
-        ),
-      };
-    }
-
-    const legacy = normalizeCredentials(parsed);
-    return {
-      version: 2,
-      contexts: legacy ? { [DEFAULT_CONTEXT_NAME]: legacy } : {},
-    };
-  } catch {
-    return { version: 2, contexts: {} };
-  }
-}
-
-function isCredentialsStore(value: unknown): value is CredentialsStore {
-  return (
-    !!value &&
-    typeof value === "object" &&
-    "contexts" in value &&
-    !!(value as { contexts?: unknown }).contexts &&
-    typeof (value as { contexts?: unknown }).contexts === "object"
-  );
-}
-
-function normalizeCredentials(
-  value: Partial<Credentials> | null | undefined
-): Credentials | null {
-  if (!value || typeof value !== "object" || !value.accessToken) return null;
-  return { ...value, accessToken: value.accessToken };
 }

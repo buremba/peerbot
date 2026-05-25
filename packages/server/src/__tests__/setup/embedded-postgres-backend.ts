@@ -56,6 +56,15 @@ export async function startEmbeddedBackend(): Promise<EmbeddedBackend> {
     try {
       await instance.initialise();
       await instance.start();
+      // Create a dedicated, test-named database. The harness runs
+      // `DROP SCHEMA public CASCADE`, guarded by assertSafeTestDatabaseUrl which
+      // only accepts databases whose name marks them as test/CI. The embedded
+      // cluster's default db is `postgres`, which the guard (rightly) rejects —
+      // so without this, `make test`/`make review` against the ephemeral backend
+      // fail before a single test runs. A `*_test` name satisfies the guard
+      // naturally, keeping the prod-wipe protection intact (no destructive
+      // override needed).
+      await instance.createDatabase('lobu_test');
     } catch (err) {
       rmSync(dir, { recursive: true, force: true });
       if (/address already in use|could not bind/i.test(log)) {
@@ -70,7 +79,7 @@ export async function startEmbeddedBackend(): Promise<EmbeddedBackend> {
     return { pg: instance, port: candidate, dataDir: dir };
   });
 
-  const url = `postgresql://postgres:postgres@127.0.0.1:${port}/postgres?sslmode=disable`;
+  const url = `postgresql://postgres:postgres@127.0.0.1:${port}/lobu_test?sslmode=disable`;
   active = {
     url,
     stop: async () => {

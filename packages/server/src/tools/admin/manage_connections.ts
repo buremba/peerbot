@@ -487,6 +487,46 @@ export async function manageConnections(
 }
 
 // ============================================
+// Managed-connector detection (public-org delegation)
+// ============================================
+
+/**
+ * Is this connect happening against a MANAGED connector in a PUBLIC org?
+ *
+ * Managed connectors live in a `visibility='public'` org with a managed
+ * org-level `oauth_app` profile (the client secret stays in the cloud). When a
+ * member connects one here, the resulting connection must be CONSENT-ONLY: it
+ * holds the OAuth grant for delegation (the local instance fetches a fresh
+ * access token at runtime via /oauth/connection-token) but has NO feeds, so the
+ * cloud never syncs a copy — the managed connector's data lives only on the
+ * member's local instance.
+ *
+ * Signal (the cleanest available, no new schema): the org is public AND the
+ * connector resolves to an org-level managed `oauth_app` profile for the OAuth
+ * method's provider. We only mark consent-only on the OAuth path — env-key /
+ * browser connectors aren't delegated this way.
+ */
+async function isManagedPublicOrgConnect(params: {
+  organizationId: string;
+  connectorKey: string;
+  provider: string;
+}): Promise<boolean> {
+  const sql = getDb();
+  const orgRows = (await sql`
+    SELECT visibility FROM "organization" WHERE id = ${params.organizationId} LIMIT 1
+  `) as unknown as Array<{ visibility: string | null }>;
+  if (orgRows[0]?.visibility !== 'public') return false;
+
+  const managedApp = await getPrimaryAuthProfileForKind({
+    organizationId: params.organizationId,
+    connectorKey: params.connectorKey,
+    profileKind: 'oauth_app',
+    provider: params.provider,
+  });
+  return !!managedApp && managedApp.status === 'active';
+}
+
+// ============================================
 // Action Handlers
 // ============================================
 
@@ -1440,6 +1480,27 @@ async function handleConnect(
     };
   }
 
+  // Managed-connector path: a member connecting a managed connector in a PUBLIC
+  // org gets a CONSENT-ONLY connection — it holds the OAuth grant for delegation
+  // but has no feeds, so the cloud never syncs a copy (the data lives only on
+  // the member's local instance). The consent_only flag lives in the trusted
+  // connection `config` (where managedBy lives), and the manage_feeds guard
+  // already refuses to create feeds on a consent_only connection.
+  const isManagedConnect = authSelection.oauthMethod
+    ? await isManagedPublicOrgConnect({
+        organizationId,
+        connectorKey: args.connector_key,
+        provider: authSelection.oauthMethod.provider,
+      })
+    : false;
+  const connectionConfigToInsert =
+    isManagedConnect || splitConfig.connectionConfig
+      ? {
+          ...(splitConfig.connectionConfig ?? {}),
+          ...(isManagedConnect ? { consent_only: true } : {}),
+        }
+      : null;
+
   const connectSlugResult = await resolveNewConnectionSlug({
     organizationId,
     connectorKey: args.connector_key,
@@ -1468,7 +1529,7 @@ async function handleConnect(
           ${connectionStatus},
           ${authSelection.authProfile?.id ?? null},
           ${authSelection.appAuthProfile?.id ?? null},
-          ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null},
+          ${connectionConfigToInsert ? sql.json(connectionConfigToInsert) : null},
           ${userId},
           ${connectVisibility},
           ${effectiveDeviceWorkerIdConnect}

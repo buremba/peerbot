@@ -31,7 +31,7 @@ import logger from "../utils/logger";
 
 type ConnectionTokenEnv = {
 	Bindings: Env;
-	Variables: { authedUserId: string; authedOrgId: string };
+	Variables: { authedUserId: string };
 };
 
 const connectionTokenRoutes = new Hono<ConnectionTokenEnv>();
@@ -86,7 +86,6 @@ connectionTokenRoutes.use("/oauth/connection-token", async (c, next) => {
 	}
 
 	c.set("authedUserId", result.userId);
-	c.set("authedOrgId", result.organizationId);
 	return next();
 });
 

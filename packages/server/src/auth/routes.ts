@@ -104,7 +104,16 @@ credentialRoutes.get('/agents', requireAuth, async (c) => {
 // Org-scoped Personal Access Token Routes
 // ============================================
 
-const AVAILABLE_PAT_SCOPES = new Set(['mcp:read', 'mcp:write', 'mcp:admin', 'profile:read']);
+// `connections:token` lets a PAT call POST /oauth/connection-token to fetch a
+// managed connector's access token (the local instance's LOBU_CLOUD_PAT is
+// minted with it). Mintable here, but NOT a default scope.
+const AVAILABLE_PAT_SCOPES = new Set([
+  'mcp:read',
+  'mcp:write',
+  'mcp:admin',
+  'profile:read',
+  'connections:token',
+]);
 const DEFAULT_PAT_SCOPE = 'mcp:read mcp:write';
 const MAX_PAT_EXPIRY_DAYS = 3650;
 

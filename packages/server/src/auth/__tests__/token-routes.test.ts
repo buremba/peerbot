@@ -48,6 +48,27 @@ describe('org-scoped token creation route', () => {
     expect(verified?.scopes).toEqual(['mcp:read', 'mcp:write']);
   });
 
+  it('lets an org owner mint a connections:token PAT (managed-connector token fetch)', async () => {
+    const org = await createTestOrganization({ slug: 'token-conn-scope' });
+    const user = await createTestUser({ email: 'token-conn@test.example.com' });
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const client = await createTestOAuthClient();
+    const { token: oauthToken } = await createTestAccessToken(user.id, org.id, client.client_id, {
+      scope: 'mcp:read mcp:write mcp:admin profile:read',
+    });
+
+    const response = await post(`/api/${org.slug}/tokens`, {
+      token: oauthToken,
+      body: { name: 'cloud-pat', scope: 'connections:token' },
+    });
+
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.token.scope).toBe('connections:token');
+    const verified = await new PersonalAccessTokenService(getTestDb()).verify(body.token.token);
+    expect(verified?.scopes).toEqual(['connections:token']);
+  });
+
   it('rejects OAuth tokens without mcp:admin scope', async () => {
     const org = await createTestOrganization({ slug: 'token-no-admin-scope' });
     const user = await createTestUser({ email: 'token-no-admin@test.example.com' });

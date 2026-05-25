@@ -132,6 +132,13 @@ describe('watcher CRUD', () => {
     };
     expect(findRow(after, watcherId)?.execution_config).toEqual({ timeout_seconds: 300 });
 
+    // Passing null clears the saved config back to NULL/defaults.
+    await owner.watchers.update({ watcher_id: watcherId, execution_config: null });
+    const cleared = (await owner.watchers.list({ entity_id: entityId })) as {
+      watchers?: Array<{ watcher_id: string; execution_config?: Record<string, unknown> | null }>;
+    };
+    expect(findRow(cleared, watcherId)?.execution_config ?? null).toBeNull();
+
     await owner.watchers.delete([watcherId]);
   });
 

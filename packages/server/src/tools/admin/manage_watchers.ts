@@ -407,14 +407,19 @@ export const ManageWatchersSchema = Type.Object({
   ),
   model_config: Type.Optional(Type.Any({ description: '[create/update] AI model configuration' })),
   execution_config: Type.Optional(
-    Type.Object(
-      {
-        timeout_seconds: Type.Optional(
-          Type.Integer({
-            minimum: 1,
-            description: 'Wall-clock cap for the device-worker CLI run (default 600).',
-          })
-        ),
+    // Union with Null so `update` can clear a previously-saved config back to
+    // NULL/defaults — omitted = unchanged, null = clear, object = replace. The
+    // UPDATE path already maps null → SQL NULL via toJsonParam.
+    Type.Union([
+      Type.Null(),
+      Type.Object(
+        {
+          timeout_seconds: Type.Optional(
+            Type.Integer({
+              minimum: 1,
+              description: 'Wall-clock cap for the device-worker CLI run (default 600).',
+            })
+          ),
         max_budget_usd: Type.Optional(
           Type.Number({
             minimum: 0,
@@ -443,12 +448,13 @@ export const ManageWatchersSchema = Type.Object({
           })
         ),
       },
-      {
-        additionalProperties: false,
-        description:
-          '[create/update] Per-watcher device-worker CLI execution settings. Omitted fields fall back to dispatcher/CLI defaults.',
-      }
-    )
+        {
+          additionalProperties: false,
+          description:
+            '[create/update] Per-watcher device-worker CLI execution settings. Omitted fields fall back to dispatcher/CLI defaults.',
+        }
+      ),
+    ])
   ),
   tags: Type.Optional(Type.Array(Type.String(), { description: '[create] Tags for filtering' })),
 

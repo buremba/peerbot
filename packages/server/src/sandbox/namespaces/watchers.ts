@@ -83,7 +83,8 @@ export interface WatcherUpdateInput {
   agent_id?: string;
   scheduler_client_id?: string;
   model_config?: Record<string, unknown>;
-  execution_config?: WatcherExecutionConfig;
+  /** `null` clears a previously-saved config back to NULL/defaults. */
+  execution_config?: WatcherExecutionConfig | null;
   sources?: Source[];
 }
 

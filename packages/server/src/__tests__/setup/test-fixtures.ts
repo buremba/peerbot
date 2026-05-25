@@ -542,6 +542,14 @@ export async function createTestConnection(options: {
   slug?: string;
   created_by?: string;
   visibility?: 'org' | 'private';
+  /** Persisted into the connection `config` JSONB (e.g. `{ managedBy: { org } }`). */
+  config?: Record<string, unknown>;
+  /**
+   * Whether to create the default feed (true = the historical behavior). Pass
+   * `false` for consent-only / managed-grant connections, which must have no
+   * feeds.
+   */
+  createDefaultFeed?: boolean;
 }): Promise<TestConnection> {
   const sql = getTestDb();
 
@@ -557,7 +565,7 @@ export async function createTestConnection(options: {
   const [inserted] = await sql`
     INSERT INTO connections (
       organization_id, connector_key, slug, display_name, status,
-      created_by, visibility, created_at, updated_at
+      created_by, visibility, config, created_at, updated_at
     ) VALUES (
       ${options.organization_id},
       ${options.connector_key},
@@ -566,24 +574,27 @@ export async function createTestConnection(options: {
       ${options.status ?? 'active'},
       ${options.created_by ?? null},
       ${options.visibility ?? 'org'},
+      ${options.config ? sql.json(options.config as Record<string, string>) : null},
       NOW(), NOW()
     )
     RETURNING id, connector_key, status
   `;
 
-  await sql`
-    INSERT INTO feeds (
-      organization_id, connection_id, feed_key, status, entity_ids, created_at, updated_at
-    ) VALUES (
-      ${options.organization_id},
-      ${inserted.id},
-      'default',
-      ${options.status ?? 'active'},
-      ${entityIdsLiteral}::bigint[],
-      NOW(),
-      NOW()
-    )
-  `;
+  if (options.createDefaultFeed !== false) {
+    await sql`
+      INSERT INTO feeds (
+        organization_id, connection_id, feed_key, status, entity_ids, created_at, updated_at
+      ) VALUES (
+        ${options.organization_id},
+        ${inserted.id},
+        'default',
+        ${options.status ?? 'active'},
+        ${entityIdsLiteral}::bigint[],
+        NOW(),
+        NOW()
+      )
+    `;
+  }
 
   return {
     id: Number(inserted.id),

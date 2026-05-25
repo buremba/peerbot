@@ -610,9 +610,14 @@ export function validateConnectionAgainstConnector(
   // Validate against `{}` when config is omitted too — that surfaces missing
   // required keys instead of letting an empty config slip through.
   if (schemas?.optionsSchema) {
+    // `managedBy` is Lobu metadata (cloud-grant delegation), not a connector
+    // option — strip it before validating against the connector's option schema
+    // so a strict (additionalProperties:false) schema doesn't reject it.
+    const optionConfig = { ...(connection.config ?? {}) };
+    delete optionConfig.managedBy;
     validateAgainstSchema(
       schemas.optionsSchema,
-      connection.config ?? {},
+      optionConfig,
       `${connection.sourceFile}: connection "${connection.slug}" config`
     );
   }

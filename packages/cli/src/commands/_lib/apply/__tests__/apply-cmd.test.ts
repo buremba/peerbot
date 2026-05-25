@@ -5,7 +5,12 @@ import {
   validateConnectorState,
 } from "../apply-cmd.js";
 import type { RemoteConnectorDefinition } from "../client.js";
-import type { DesiredState } from "../desired-state.js";
+import { validateConnectionAgainstConnector } from "../desired-state.js";
+import type {
+  DesiredConnection,
+  DesiredState,
+  ResolvedConnectorSchemas,
+} from "../desired-state.js";
 
 // Minimal DesiredState with just the connectors slice populated.
 function stateWith(connectors: DesiredState["connectors"]): DesiredState {
@@ -23,6 +28,47 @@ function makeResponse(body: string): Response {
   // Use the real Web Response so it exposes a streaming `body`.
   return new Response(body, { headers: { "content-type": "text/plain" } });
 }
+
+describe("validateConnectionAgainstConnector — managedBy is not a connector option", () => {
+  const strictSchemas: ResolvedConnectorSchemas = {
+    optionsSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { region: { type: "string" } },
+    },
+    feedKeys: new Set<string>(),
+    feedConfigSchemas: new Map(),
+    authKinds: new Set<string>(["oauth_account"]),
+  };
+
+  test("a strict optionsSchema accepts a managedBy connection", () => {
+    const connection: DesiredConnection = {
+      slug: "spotify",
+      connector: "spotify",
+      // managedBy is Lobu metadata folded into config — it must be stripped
+      // before option-schema validation or a strict schema rejects it.
+      config: { managedBy: { org: "lobu-public" } },
+      feeds: [],
+      sourceFile: "lobu.config.ts",
+    };
+    expect(() =>
+      validateConnectionAgainstConnector(connection, new Map(), strictSchemas)
+    ).not.toThrow();
+  });
+
+  test("a genuinely unknown option still fails the strict schema", () => {
+    const connection: DesiredConnection = {
+      slug: "spotify",
+      connector: "spotify",
+      config: { bogusOption: true },
+      feeds: [],
+      sourceFile: "lobu.config.ts",
+    };
+    expect(() =>
+      validateConnectionAgainstConnector(connection, new Map(), strictSchemas)
+    ).toThrow();
+  });
+});
 
 describe("readBoundedBody (#3 — bounded source_url fetch)", () => {
   test("reads a small body in full", async () => {

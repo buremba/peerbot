@@ -969,8 +969,19 @@ async function handleCreate(
     !Array.isArray(incomingConfig.managedBy)
       ? (incomingConfig.managedBy as Record<string, unknown>).org
       : undefined;
-  const isManagedByConnection =
+  const managedByRequested =
     typeof managedByOrg === 'string' && managedByOrg.trim().length > 0;
+  // managedBy delegates to a cloud OAuth grant, so it only applies to OAuth
+  // connectors. On a non-OAuth connector (env/browser/none) treating it as
+  // managed would bypass a real local auth requirement, so reject it instead of
+  // creating an unauthenticated connection.
+  if (managedByRequested && !authMethods.some((m) => m.type === 'oauth')) {
+    return {
+      error:
+        'managedBy is only valid for OAuth connectors (the managed grant is an OAuth token fetched from the cloud); this connector has no OAuth auth method.',
+    };
+  }
+  const isManagedByConnection = managedByRequested;
 
   // Leave `authSelection` null for managed (and interactive) connections so the
   // entire auth-profile validation + binding chain below is uniformly bypassed —
@@ -1961,6 +1972,16 @@ async function handleUpdate(
           'This connection has feeds; a consent-only connection cannot have feeds. Remove its feeds first.',
       };
     }
+  }
+  // Reverse direction: a consent-only grant-holder (the cloud OAuth grant behind
+  // a managed connector) must STAY consent-only. Stripping the flag would let
+  // feeds be added, so the cloud would start syncing the grant-holder's data —
+  // breaking the "data stays local" invariant. Reject the removal.
+  if (existingConfig.consent_only === true && !willBeConsentOnly) {
+    return {
+      error:
+        'This connection is consent-only (holds an OAuth grant for delegation); the consent-only flag cannot be removed.',
+    };
   }
 
   // Slug is only ever changed when the caller passes one explicitly — a

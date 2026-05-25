@@ -21,6 +21,7 @@ import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
+  createTestConnection,
   createTestConnectorDefinition,
   createTestOrganization,
   createTestUser,
@@ -236,6 +237,74 @@ describe('Stage 5 — local managed connection has feeds', () => {
     expect(result.connection?.id).toBeUndefined();
   });
 
+  it('rejects managedBy on a NON-OAuth connector', async () => {
+    // managedBy delegates to a cloud OAuth grant — it makes no sense on a
+    // no-auth/browser/env connector and must not bypass their auth path.
+    const org = await createTestOrganization({ name: 'NonOAuth Managed Org' });
+    const user = await createTestUser({ name: 'NonOAuth Managed User' });
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const ctx = ctxFor(org.id, user.id);
+
+    await createTestConnectorDefinition({
+      key: 'demo.noauth',
+      name: 'Demo NoAuth',
+      organization_id: org.id,
+      auth_schema: { methods: [{ type: 'none' }] },
+      feeds_schema: { items: {} },
+    });
+
+    const result = (await manageConnections(
+      {
+        action: 'create',
+        connector_key: 'demo.noauth',
+        slug: 'noauth-managed',
+        config: { managedBy: { org: 'cloud-public-org' } },
+      },
+      TEST_ENV,
+      ctx
+    )) as { connection?: { id?: number }; error?: string };
+
+    expect(result.error).toMatch(/only valid for OAuth/i);
+    expect(result.connection?.id).toBeUndefined();
+  });
+
+  it('a consent_only connection cannot have its consent_only flag removed', async () => {
+    // Reverse of the feed guard: a consent-only grant-holder must STAY
+    // consent-only — stripping it would let feeds be added so the cloud syncs
+    // the grant-holder's data.
+    const org = await createTestOrganization({ name: 'Consent Lock Org' });
+    const user = await createTestUser({ name: 'Consent Lock User' });
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const ctx = ctxFor(org.id, user.id);
+
+    await createTestConnectorDefinition({
+      key: 'demo.oauth',
+      name: 'Demo OAuth',
+      organization_id: org.id,
+      auth_schema: {
+        methods: [{ type: 'oauth', provider: 'demo', requiredScopes: ['read'] }],
+      },
+      feeds_schema: { items: {} },
+    });
+    const conn = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'demo.oauth',
+      slug: 'consent-lock',
+      display_name: 'Consent Lock',
+      created_by: user.id,
+      config: { consent_only: true },
+      createDefaultFeed: false,
+    });
+
+    // Replace the config with one that drops consent_only.
+    const result = (await manageConnections(
+      { action: 'update', connection_id: conn.id, config: {}, replace_config: true },
+      TEST_ENV,
+      ctx
+    )) as { error?: string };
+    expect(result.error).toMatch(/cannot be removed/i);
+  });
+
   it('a local managedBy connection (not consent_only) can create a feed that syncs locally', async () => {
     const org = await createTestOrganization({ name: 'Local Managed Org' });
     const user = await createTestUser({ name: 'Local Managed User' });
@@ -253,20 +322,19 @@ describe('Stage 5 — local managed connection has feeds', () => {
     });
 
     const sql = getTestDb();
-    // The local managedBy connection — the shape `lobu connect` /
-    // `defineConnection({ managedBy })` produce. NOTE: managedBy, NOT
-    // consent_only — the cloud holds the grant; the local copy syncs.
-    const connRows = (await sql`
-      INSERT INTO connections (
-        organization_id, connector_key, slug, display_name, status, config, created_by,
-        created_at, updated_at
-      ) VALUES (
-        ${org.id}, 'demo.oauth', 'demo-managed-local', 'Managed Local', 'active',
-        ${sql.json({ managedBy: { org: 'cloud-public-org' } })}, ${user.id}, NOW(), NOW()
-      )
-      RETURNING id
-    `) as unknown as Array<{ id: number }>;
-    const connectionId = Number(connRows[0].id);
+    // The local managedBy connection — the shape `defineConnection({ managedBy })`
+    // produces. NOTE: managedBy, NOT consent_only — the cloud holds the grant;
+    // the local copy syncs. No default feed (the test creates its own below).
+    const conn = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'demo.oauth',
+      slug: 'demo-managed-local',
+      display_name: 'Managed Local',
+      created_by: user.id,
+      config: { managedBy: { org: 'cloud-public-org' } },
+      createDefaultFeed: false,
+    });
+    const connectionId = conn.id;
 
     const result = (await manageFeeds(
       { action: 'create_feed', connection_id: connectionId, feed_key: 'items' },
@@ -307,20 +375,18 @@ describe('Stage 5 — local managed connection has feeds', () => {
       feeds_schema: { items: {} },
     });
 
-    const sql = getTestDb();
-    const connRows = (await sql`
-      INSERT INTO connections (
-        organization_id, connector_key, slug, display_name, status, config, created_by,
-        created_at, updated_at
-      ) VALUES (
-        ${org.id}, 'demo.oauth', 'demo-consent-only', 'Consent Only', 'active',
-        ${sql.json({ consent_only: true })}, ${user.id}, NOW(), NOW()
-      )
-      RETURNING id
-    `) as unknown as Array<{ id: number }>;
+    const conn = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'demo.oauth',
+      slug: 'demo-consent-only',
+      display_name: 'Consent Only',
+      created_by: user.id,
+      config: { consent_only: true },
+      createDefaultFeed: false,
+    });
 
     const result = (await manageFeeds(
-      { action: 'create_feed', connection_id: Number(connRows[0].id), feed_key: 'items' },
+      { action: 'create_feed', connection_id: conn.id, feed_key: 'items' },
       TEST_ENV,
       ctx
     )) as { error?: string };

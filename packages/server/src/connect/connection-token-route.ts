@@ -8,15 +8,17 @@
  * managed client secret + refresh token stay in the cloud and never leave it.
  *
  * At RUNTIME the user's LOCAL Lobu instance fetches a fresh ACCESS token for
- * its own user's connection via this endpoint, authenticating with that user's
- * own cloud PAT (`owl_pat_*`). The token is resolved/refreshed server-side via
+ * its own user's connection via this endpoint, authenticating with any valid
+ * bearer carrying the `connections:token` scope — in practice the user's own
+ * `lobu login` OAuth access token (verified via `provider.verifyAccessToken`),
+ * or an explicitly-scoped PAT. The token is resolved/refreshed server-side via
  * the existing `CredentialService` (`resolveExecutionAuth`) and ONLY the access
  * token + expiry are returned — never the refresh token or client secret.
  *
  * Owner-scoped: the lookup is keyed on `created_by = <authed user>`, so a user
  * can only fetch tokens for connections they own.
  *
- * Endpoint (PAT-gated):
+ * Endpoint (bearer with `connections:token` scope):
  *   - POST /oauth/connection-token  { org, connector_key }
  */
 

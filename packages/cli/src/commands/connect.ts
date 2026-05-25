@@ -81,7 +81,8 @@ export async function connectCommand(
     return;
   }
 
-  const cloudContextName = options.cloudContext?.trim() || DEFAULT_CLOUD_CONTEXT;
+  const cloudContextName =
+    options.cloudContext?.trim() || DEFAULT_CLOUD_CONTEXT;
   const cloud = await resolveContext(cloudContextName);
   const cloudOrigin = apiBaseFromContextUrl(cloud.url);
 
@@ -90,7 +91,9 @@ export async function connectCommand(
     console.error(
       chalk.red(
         `\n  Not logged in to "${cloudContextName}". Run \`lobu login${
-          cloudContextName === DEFAULT_CLOUD_CONTEXT ? "" : ` --context ${cloudContextName}`
+          cloudContextName === DEFAULT_CLOUD_CONTEXT
+            ? ""
+            : ` --context ${cloudContextName}`
         }\` first.\n`
       )
     );
@@ -147,7 +150,9 @@ export async function connectCommand(
         process.exitCode = 1;
         return;
       }
-      await delay(Math.min(POLL_INTERVAL_MS, Math.max(deadline - Date.now(), 0)));
+      await delay(
+        Math.min(POLL_INTERVAL_MS, Math.max(deadline - Date.now(), 0))
+      );
     }
   } finally {
     if (!connected) spinner?.stop();
@@ -157,7 +162,9 @@ export async function connectCommand(
     const msg = "Timed out waiting for the connection to be completed.";
     if (spinner) spinner.fail(msg);
     else console.error(chalk.red(`  ${msg}`));
-    console.log(chalk.dim("  Re-run `lobu connect` after finishing in the browser.\n"));
+    console.log(
+      chalk.dim("  Re-run `lobu connect` after finishing in the browser.\n")
+    );
     process.exitCode = 1;
     return;
   }
@@ -181,10 +188,16 @@ export async function connectCommand(
     )
   );
   if (feeds.length > 0) {
-    console.log(chalk.dim(`  Feeds: ${feeds.join(", ")} — the connection will sync locally.`));
+    console.log(
+      chalk.dim(
+        `  Feeds: ${feeds.join(", ")} — the connection will sync locally.`
+      )
+    );
   } else {
     console.log(
-      chalk.dim("  No feeds declared. Pass `--feed <key>` to make the connection sync.")
+      chalk.dim(
+        "  No feeds declared. Pass `--feed <key>` to make the connection sync."
+      )
     );
   }
   console.log();
@@ -219,9 +232,14 @@ export async function pollConnectionToken(
     });
   } catch (err) {
     // Network blip — keep polling.
-    return { ok: false, terminal: false, message: String((err as Error).message) };
+    return {
+      ok: false,
+      terminal: false,
+      message: String((err as Error).message),
+    };
   }
-  if (response.status === 200) return { ok: true, terminal: false, message: "" };
+  if (response.status === 200)
+    return { ok: true, terminal: false, message: "" };
   if (response.status === 404) {
     // Not connected yet (consent not completed) — keep polling.
     return { ok: false, terminal: false, message: "" };
@@ -230,7 +248,8 @@ export async function pollConnectionToken(
     error_description?: string;
     error?: string;
   } | null;
-  const detail = data?.error_description ?? data?.error ?? `HTTP ${response.status}`;
+  const detail =
+    data?.error_description ?? data?.error ?? `HTTP ${response.status}`;
   if (response.status === 403) {
     return {
       ok: false,
@@ -262,13 +281,19 @@ async function upsertLocalManagedConnection(params: {
   name?: string;
   feeds: string[];
 }): Promise<void> {
-  const { client, orgSlug } = await resolveApiClient({ context: params.context });
+  const { client, orgSlug } = await resolveApiClient({
+    context: params.context,
+  });
   const connectionsPath = `/api/${orgSlug}/manage_connections`;
   const feedsPath = `/api/${orgSlug}/manage_feeds`;
 
   const config = { managedBy: { org: params.org } };
 
-  const existing = await findConnectionBySlug(client, connectionsPath, params.slug);
+  const existing = await findConnectionBySlug(
+    client,
+    connectionsPath,
+    params.slug
+  );
   let connectionId: number;
   if (existing) {
     await client.post(connectionsPath, {
@@ -279,13 +304,16 @@ async function upsertLocalManagedConnection(params: {
     });
     connectionId = existing.id;
   } else {
-    const created = await client.post<{ connection?: { id?: number } }>(connectionsPath, {
-      action: "create",
-      connector_key: params.connectorKey,
-      slug: params.slug,
-      ...(params.name ? { display_name: params.name } : {}),
-      config,
-    });
+    const created = await client.post<{ connection?: { id?: number } }>(
+      connectionsPath,
+      {
+        action: "create",
+        connector_key: params.connectorKey,
+        slug: params.slug,
+        ...(params.name ? { display_name: params.name } : {}),
+        config,
+      }
+    );
     const id = created.connection?.id;
     if (typeof id !== "number") {
       throw new Error("Local connection creation returned no connection id.");
@@ -314,10 +342,9 @@ async function findConnectionBySlug(
   connectionsPath: string,
   slug: string
 ): Promise<{ id: number } | null> {
-  const body = await client.post<{ connections?: Array<{ id: number; slug: string }> }>(
-    connectionsPath,
-    { action: "list", limit: 500 }
-  );
+  const body = await client.post<{
+    connections?: Array<{ id: number; slug: string }>;
+  }>(connectionsPath, { action: "list", limit: 500 });
   const match = (body.connections ?? []).find((c) => c.slug === slug);
   return match ? { id: match.id } : null;
 }

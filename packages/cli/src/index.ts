@@ -424,12 +424,18 @@ Memory:
       .description(
         "Connect a managed connector from a public Lobu Cloud org (cloud auth, local data)"
       )
-      .requiredOption("--org <public-org>", "Public cloud org the connector lives under")
+      .requiredOption(
+        "--org <public-org>",
+        "Public cloud org the connector lives under"
+      )
       .option(
         "--cloud-context <name>",
         "Cloud context for the public org + login (default: lobu)"
       )
-      .option("--slug <slug>", "Local connection slug (default: derived from the connector)")
+      .option(
+        "--slug <slug>",
+        "Local connection slug (default: derived from the connector)"
+      )
       .option("--name <name>", "Local connection display name")
       .option(
         "--feed <key>",
@@ -437,7 +443,10 @@ Memory:
         (value: string, prev: string[]) => [...prev, value],
         [] as string[]
       )
-      .option("--no-open", "Do not open the browser; print the connect URL only")
+      .option(
+        "--no-open",
+        "Do not open the browser; print the connect URL only"
+      )
       .option(
         "--timeout <seconds>",
         "Max seconds to poll for consent completion",

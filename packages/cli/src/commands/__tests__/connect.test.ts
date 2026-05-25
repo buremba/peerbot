@@ -39,35 +39,64 @@ describe("pollConnectionToken", () => {
     const fetchMock = mock(async () =>
       jsonResponse(200, { access_token: "tok", expires_at: null })
     );
-    const result = await pollConnectionToken(url, "login-token", body, fetchMock as typeof fetch);
+    const result = await pollConnectionToken(
+      url,
+      "login-token",
+      body,
+      fetchMock as typeof fetch
+    );
     expect(result.ok).toBe(true);
     expect(result.terminal).toBe(false);
     // It sent the login token as a Bearer to the connection-token endpoint.
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer login-token");
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      "Bearer login-token"
+    );
     expect(JSON.parse(init.body as string)).toEqual(body);
   });
 
   test("404 → keep polling (not connected yet, non-terminal)", async () => {
-    const fetchMock = mock(async () => jsonResponse(404, { error: "not_found" }));
-    const result = await pollConnectionToken(url, "t", body, fetchMock as typeof fetch);
+    const fetchMock = mock(async () =>
+      jsonResponse(404, { error: "not_found" })
+    );
+    const result = await pollConnectionToken(
+      url,
+      "t",
+      body,
+      fetchMock as typeof fetch
+    );
     expect(result.ok).toBe(false);
     expect(result.terminal).toBe(false);
   });
 
   test("403 → terminal (membership / scope problem)", async () => {
     const fetchMock = mock(async () =>
-      jsonResponse(403, { error: "forbidden", error_description: "Not a member of this organization" })
+      jsonResponse(403, {
+        error: "forbidden",
+        error_description: "Not a member of this organization",
+      })
     );
-    const result = await pollConnectionToken(url, "t", body, fetchMock as typeof fetch);
+    const result = await pollConnectionToken(
+      url,
+      "t",
+      body,
+      fetchMock as typeof fetch
+    );
     expect(result.ok).toBe(false);
     expect(result.terminal).toBe(true);
     expect(result.message).toMatch(/Not a member/);
   });
 
   test("401 → terminal (auth failed)", async () => {
-    const fetchMock = mock(async () => jsonResponse(401, { error: "invalid_token" }));
-    const result = await pollConnectionToken(url, "t", body, fetchMock as typeof fetch);
+    const fetchMock = mock(async () =>
+      jsonResponse(401, { error: "invalid_token" })
+    );
+    const result = await pollConnectionToken(
+      url,
+      "t",
+      body,
+      fetchMock as typeof fetch
+    );
     expect(result.ok).toBe(false);
     expect(result.terminal).toBe(true);
     expect(result.message).toMatch(/Authentication failed/);
@@ -77,7 +106,12 @@ describe("pollConnectionToken", () => {
     const fetchMock = mock(async () => {
       throw new Error("ECONNREFUSED");
     });
-    const result = await pollConnectionToken(url, "t", body, fetchMock as typeof fetch);
+    const result = await pollConnectionToken(
+      url,
+      "t",
+      body,
+      fetchMock as typeof fetch
+    );
     expect(result.ok).toBe(false);
     expect(result.terminal).toBe(false);
   });

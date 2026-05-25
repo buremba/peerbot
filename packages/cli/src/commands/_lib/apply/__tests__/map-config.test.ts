@@ -323,6 +323,25 @@ describe("mapProjectToDesiredState", () => {
     });
   });
 
+  test("a managedBy connection KEEPS its feeds (local data syncs)", () => {
+    // Stage 5: the LOCAL managedBy connection is NOT consent-only, so it keeps
+    // its feeds — `lobu apply` creates them locally and the connection syncs.
+    const conn = defineConnection({
+      slug: "gh-managed-feeds",
+      connector: "github",
+      managedBy: { org: "lobu-managed" },
+      feeds: [{ feed: "stars", schedule: "0 */6 * * *" }],
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [], connections: [conn] })
+    );
+    const dc = state.connectors.connections[0];
+    expect(dc?.config).toEqual({ managedBy: { org: "lobu-managed" } });
+    // consent_only is NOT set — the local managed connection can have feeds.
+    expect(dc?.config?.consent_only).toBeUndefined();
+    expect(dc?.feeds).toEqual([{ feedKey: "stars", schedule: "0 */6 * * *" }]);
+  });
+
   test("a connection without `managedBy` carries no managedBy in config", () => {
     const conn = defineConnection({
       slug: "gh-plain",

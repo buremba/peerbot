@@ -75,9 +75,6 @@ const MANAGED_SECRET = "managed-secret";
 let providerServer: ReturnType<typeof serve> | null = null;
 let providerTokenUrl = "";
 let lastRefreshBody: Record<string, string> = {};
-// Count provider /token hits so a cache HIT (no fetch) vs MISS (a fetch) is
-// observable — used by the managed-token cache-isolation test.
-let providerHits = 0;
 
 // Cloud app served on a real port so the local resolver's `fetch` reaches it.
 let cloudServer: ReturnType<typeof serve> | null = null;
@@ -100,7 +97,6 @@ beforeAll(async () => {
 	// the form body so we can assert the cloud authed with its own secret.
 	const providerApp = new Hono();
 	providerApp.post("/token", async (c) => {
-		providerHits += 1;
 		const text = await c.req.text();
 		lastRefreshBody = Object.fromEntries(new URLSearchParams(text));
 		return c.json({
@@ -514,7 +510,6 @@ describe("managed connector — local resolver (env LOBU_CLOUD_PAT fallback)", (
 	beforeEach(async () => {
 		await cleanupTestDatabase();
 		lastRefreshBody = {};
-		providerHits = 0;
 		process.env.LOBU_CLOUD_URL = cloudBaseUrl;
 		// Point the resolver's config dir at an EMPTY throwaway dir so it finds no
 		// stored `lobu login` credential and falls back to LOBU_CLOUD_PAT /
@@ -679,108 +674,6 @@ describe("managed connector — local resolver (env LOBU_CLOUD_PAT fallback)", (
 		// Local env credentials resolve unchanged; the cloud was never contacted.
 		expect(resolved.connectionCredentials.DEMO_API_KEY).toBe("local-key-123");
 		expect(lastRefreshBody).toEqual({});
-	});
-
-	it("does NOT serve one credential's cached token to a DIFFERENT credential (cache-isolation)", async () => {
-		// Two cloud owners, each owning their OWN consent-only connection for the
-		// same connector in the same public org. The managed-token cache key
-		// includes a credential fingerprint, so resolving the SAME local connection
-		// with credential A then credential B must MISS the cache for B (a fresh
-		// provider fetch) rather than serve A's cached token. Without the
-		// fingerprint in the key, B would read A's token under the shared
-		// [org, connectorKey, baseUrl].
-		const cloud = await seedManagedConnection("Cache Iso Org");
-
-		// A second owner with their OWN consent-only connection in the SAME org.
-		const ownerB = await createTestUser({ name: "Cache Iso Owner B" });
-		await addUserToOrganization(ownerB.id, cloud.orgId, "member");
-		const sql = getTestDb();
-		const accountIdB = `acct_b_${cloud.orgId}`;
-		const expiringSoon = new Date(Date.now() + 60 * 1000).toISOString();
-		await sql`
-      INSERT INTO "account" (
-        id, "accountId", "providerId", "userId",
-        "accessToken", "refreshToken", "accessTokenExpiresAt", scope, "createdAt", "updatedAt"
-      ) VALUES (
-        ${accountIdB}, ${accountIdB}, 'demo', ${ownerB.id},
-        'stale-b', 'refresh-b', ${expiringSoon}, 'read', NOW(), NOW()
-      )
-    `;
-		// Reuse owner B's grant via a new oauth_account + app profile reference.
-		const appProfileRows = (await sql`
-      SELECT id FROM auth_profiles
-      WHERE organization_id = ${cloud.orgId} AND profile_kind = 'oauth_app' LIMIT 1
-    `) as unknown as Array<{ id: number }>;
-		const accountProfileBRows = (await sql`
-      INSERT INTO auth_profiles (
-        organization_id, slug, display_name, connector_key, profile_kind, status,
-        account_id, provider, created_by, created_at, updated_at
-      ) VALUES (
-        ${cloud.orgId}, ${`demo-acct-b-${cloud.orgId}`}, 'Demo Account B', ${cloud.connectorKey},
-        'oauth_account', 'active', ${accountIdB}, 'demo', ${ownerB.id}, NOW(), NOW()
-      ) RETURNING id
-    `) as unknown as Array<{ id: number }>;
-		await sql`
-      INSERT INTO connections (
-        organization_id, connector_key, slug, display_name, status,
-        account_id, auth_profile_id, app_auth_profile_id, created_by, config, created_at, updated_at
-      ) VALUES (
-        ${cloud.orgId}, ${cloud.connectorKey}, ${`demo-b-${cloud.orgId}`}, 'Demo B', 'active',
-        ${accountIdB}, ${accountProfileBRows[0].id}, ${appProfileRows[0].id}, ${ownerB.id},
-        ${sql.json({ consent_only: true })}, NOW(), NOW()
-      )
-    `;
-		const ownerBPat = await createTestPAT(ownerB.id, cloud.orgId, {
-			scope: "mcp:read mcp:write connections:token",
-		});
-
-		// One LOCAL managedBy connection pointing at the cloud org.
-		const localOrg = await createTestOrganization({ name: "Cache Iso Local" });
-		const localUser = await createTestUser({ name: "Cache Iso Local User" });
-		await addUserToOrganization(localUser.id, localOrg.id, "owner");
-		await createTestConnectorDefinition({
-			key: "demo.oauth",
-			name: "Demo OAuth Cache Iso",
-			organization_id: localOrg.id,
-			auth_schema: {
-				methods: [{ type: "oauth", provider: "demo", requiredScopes: ["read"] }],
-			},
-			feeds_schema: { items: {} },
-		});
-		const localConnRows = (await sql`
-      INSERT INTO connections (
-        organization_id, connector_key, slug, display_name, status, config, created_at, updated_at
-      ) VALUES (
-        ${localOrg.id}, 'demo.oauth', 'demo-cache-iso', 'Cache Iso', 'active',
-        ${sql.json({ managedBy: { org: cloud.orgId } })}, NOW(), NOW()
-      ) RETURNING id
-    `) as unknown as Array<{ id: number }>;
-		const connectionId = Number(localConnRows[0].id);
-
-		// Resolve with credential A → 1 provider hit, cache populated for A.
-		process.env.LOBU_CLOUD_PAT = cloud.ownerPat;
-		await resolveExecutionAuth({
-			organizationId: localOrg.id,
-			connectionId,
-			authProfileId: null,
-			appAuthProfileId: null,
-			credentialDb: sql,
-		});
-		expect(providerHits).toBe(1);
-
-		// Resolve the SAME local connection with credential B → must MISS A's cache
-		// (different fingerprint) and fetch again. If the key ignored the
-		// credential, this would be a cache HIT (providerHits stays 1) and B would
-		// receive A's token.
-		process.env.LOBU_CLOUD_PAT = ownerBPat.token;
-		await resolveExecutionAuth({
-			organizationId: localOrg.id,
-			connectionId,
-			authProfileId: null,
-			appAuthProfileId: null,
-			credentialDb: sql,
-		});
-		expect(providerHits).toBe(2);
 	});
 });
 

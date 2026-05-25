@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { CredentialService } from '../auth/credentials';
 import { resolveCloudCredential } from '../connect/cloud-credential';
 import { getBuiltinProviderConfig } from '../connect/oauth-providers';
@@ -56,14 +55,10 @@ export async function resolveExecutionAuth(
     params.connectionId
   );
   if (managed) {
-    const accessToken = await fetchManagedConnectionToken(
-      managed,
-      { organizationId: params.organizationId, connectionId: params.connectionId },
-      {
-        ...params.logContext,
-        connection_id: params.connectionId,
-      }
-    );
+    const accessToken = await fetchManagedConnectionToken(managed, {
+      ...params.logContext,
+      connection_id: params.connectionId,
+    });
     if (accessToken) {
       credentials = {
         provider: appAuthProfile?.provider ?? 'managed',
@@ -226,56 +221,20 @@ async function resolveManagedByForConnection(
 }
 
 /**
- * Per-instance cache of fetched managed access tokens. Keyed by a
- * JSON.stringify'd tuple that includes a CREDENTIAL DISCRIMINATOR (a hash of the
- * bearer credential) alongside the local org + connection id — never just
- * [org, connectorKey, baseUrl]. The cloud returns a token for THE CALLER's own
- * cloud connection (resolved from the bearer), so two different local users (or
- * a relogged-in user with a different login token) sharing one process + the
- * same [org, connectorKey, baseUrl] must NOT read each other's cached cloud
- * token. Cached until shortly before expiry so a burst of runs doesn't re-fetch.
- * Pod-local by design (a cache miss simply re-fetches), so this holds under N>1
- * replicas.
- */
-const MANAGED_TOKEN_CACHE = new Map<
-  string,
-  { accessToken: string; expiresAt: string | null; expiresAtMs: number }
->();
-/** Refresh a cached token this long before its stated expiry. */
-const MANAGED_TOKEN_EXPIRY_BUFFER_MS = 60_000;
-
-/** Stable, non-reversible discriminator for a bearer credential (cache key only). */
-function credentialFingerprint(token: string): string {
-  return createHash('sha256').update(token).digest('hex');
-}
-
-/**
  * Fetch a fresh access token for a managed connection from the cloud via POST
  * /oauth/connection-token. The cloud holds the managed grant + secret and
  * refreshes server-side; we only ever receive `{ access_token, expires_at }`.
- * Caches until near expiry. Returns null on any failure so the connection
- * resolves without credentials (fail-soft, like the local path).
+ * Returns null on any failure so the connection resolves without credentials
+ * (fail-soft, like the local path).
+ *
+ * Deliberately uncached: this resolves once per worker run / feed sync (not per
+ * message), so a fresh fetch is cheap — and skipping a process-shared token
+ * cache means one caller's cloud token can never be served to another.
  */
 async function fetchManagedConnectionToken(
   managed: ManagedByDescriptor,
-  cacheScope: { organizationId: string; connectionId: number },
   logContext: Record<string, unknown>
 ): Promise<{ access_token: string; expires_at: string | null } | null> {
-  // The credential fingerprint + local (org, connection) keep one caller's
-  // cloud token from ever being served to another caller (see cache comment).
-  const cacheKey = JSON.stringify([
-    cacheScope.organizationId,
-    cacheScope.connectionId,
-    managed.org,
-    managed.connectorKey,
-    managed.baseUrl,
-    credentialFingerprint(managed.token),
-  ]);
-  const cached = MANAGED_TOKEN_CACHE.get(cacheKey);
-  if (cached && cached.expiresAtMs - MANAGED_TOKEN_EXPIRY_BUFFER_MS > Date.now()) {
-    return { access_token: cached.accessToken, expires_at: cached.expiresAt };
-  }
-
   let tokenUrl: string;
   try {
     tokenUrl = new URL(`${managed.baseUrl}/oauth/connection-token`).toString();
@@ -305,14 +264,7 @@ async function fetchManagedConnectionToken(
       expires_at?: string | null;
     };
     if (!body.access_token) return null;
-    const expiresAt = body.expires_at ?? null;
-    const expiresAtMs = expiresAt ? new Date(expiresAt).getTime() : Number.POSITIVE_INFINITY;
-    MANAGED_TOKEN_CACHE.set(cacheKey, {
-      accessToken: body.access_token,
-      expiresAt,
-      expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : Number.POSITIVE_INFINITY,
-    });
-    return { access_token: body.access_token, expires_at: expiresAt };
+    return { access_token: body.access_token, expires_at: body.expires_at ?? null };
   } catch (error) {
     logger.warn(
       { ...logContext, error: errorMessage(error) },

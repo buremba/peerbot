@@ -127,14 +127,6 @@ export interface Connection {
    * {@link ManagedBy}.
    */
   managedBy?: ManagedBy;
-  /**
-   * Consent-only connections exist solely to hold an OAuth grant for delegation
-   * (the cloud grant-holder behind a managed connector); they cannot have feeds,
-   * so they never sync. This is the by-construction guarantee that a managed
-   * connector's data only ever lives on the local instance — feed creation is
-   * rejected for a connection whose persisted `config.consent_only === true`.
-   */
-  consentOnly?: boolean;
   /** UUID pinning syncs/actions to a specific device worker. */
   deviceWorkerId?: string;
   feeds?: ConnectionFeed[];

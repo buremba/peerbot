@@ -69,6 +69,9 @@ let lastRefreshBody: Record<string, string> = {};
 let brokerServer: ReturnType<typeof serve> | null = null;
 let brokerBaseUrl = "";
 
+// Saved value of LOBU_ALLOWED_BROKER_ORIGINS so afterAll can restore it.
+let savedAllowedBrokerOrigins: string | undefined;
+
 function buildBrokerApp(): Hono<{ Bindings: Env }> {
 	const app = new Hono<{ Bindings: Env }>();
 	app.route("/broker", brokerRoutes);
@@ -115,9 +118,20 @@ beforeAll(async () => {
 			},
 		);
 	});
+
+	// SSRF control: the runtime broker fetch enforces an operator-configured
+	// origin allowlist (fail-closed when unset). Allowlist the in-test
+	// self-broker's loopback origin so the runtime-hook tests can fetch.
+	savedAllowedBrokerOrigins = process.env.LOBU_ALLOWED_BROKER_ORIGINS;
+	process.env.LOBU_ALLOWED_BROKER_ORIGINS = new URL(brokerBaseUrl).origin;
 });
 
 afterAll(async () => {
+	if (savedAllowedBrokerOrigins === undefined) {
+		delete process.env.LOBU_ALLOWED_BROKER_ORIGINS;
+	} else {
+		process.env.LOBU_ALLOWED_BROKER_ORIGINS = savedAllowedBrokerOrigins;
+	}
 	await new Promise<void>((done) =>
 		providerServer ? providerServer.close(() => done()) : done(),
 	);
@@ -434,6 +448,114 @@ describe("SPIKE: grant-on-broker — local runtime hook", () => {
 		// No local refresh token / secret ever materialized.
 		expect(resolved.credentials?.refreshToken).toBeNull();
 		expect(resolved.connectionCredentials).toEqual({});
+	});
+
+	/**
+	 * Seed a local broker-backed connection whose oauth_broker profile points at
+	 * `brokerUrl`, and return the local connection id + org. Reused by the SSRF
+	 * allowlist cases below.
+	 */
+	async function seedLocalBrokerConnection(
+		orgName: string,
+		brokerUrl: string,
+	): Promise<{
+		localOrgId: string;
+		localConnectionId: number;
+		appAuthProfileId: number;
+	}> {
+		const broker = await seedBrokerConnection(`${orgName} Broker`);
+		const sql = getTestDb();
+		const localOrg = await createTestOrganization({ name: orgName });
+		const localUser = await createTestUser({ name: `${orgName} User` });
+		await addUserToOrganization(localUser.id, localOrg.id, "owner");
+		await createTestConnectorDefinition({
+			key: "demo.oauth",
+			name: "Demo OAuth Local",
+			organization_id: localOrg.id,
+			auth_schema: {
+				methods: [{ type: "oauth", provider: "demo", requiredScopes: ["read"] }],
+			},
+			feeds_schema: { items: {} },
+		});
+		const brokerProfile = await createAuthProfile({
+			organizationId: localOrg.id,
+			connectorKey: "demo.oauth",
+			displayName: "Broker-backed Demo App",
+			profileKind: "oauth_broker",
+			provider: "demo",
+			authData: {
+				broker_url: brokerUrl,
+				broker_org: "broker-org",
+				broker_pat: broker.pat,
+				broker_connection_id: broker.connectionId,
+			},
+		});
+		const localConnRows = (await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status,
+        app_auth_profile_id, created_at, updated_at
+      ) VALUES (
+        ${localOrg.id}, 'demo.oauth', ${`demo-local-${localOrg.id}`}, 'Local Demo', 'active',
+        ${brokerProfile.id}, NOW(), NOW()
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+		return {
+			localOrgId: localOrg.id,
+			localConnectionId: Number(localConnRows[0].id),
+			appAuthProfileId: brokerProfile.id,
+		};
+	}
+
+	it("rejects the broker fetch when broker_url's origin is NOT allowlisted (no outbound request)", async () => {
+		// The allowlist contains the self-broker origin (set in beforeAll), but
+		// this profile points at a different origin — a stand-in for an internal
+		// service / metadata endpoint an attacker-controlled profile might target.
+		const { localOrgId, localConnectionId, appAuthProfileId } =
+			await seedLocalBrokerConnection(
+				"Not Allowlisted Org",
+				"http://169.254.169.254",
+			);
+
+		const resolved = await resolveExecutionAuth({
+			organizationId: localOrgId,
+			connectionId: localConnectionId,
+			authProfileId: null,
+			appAuthProfileId,
+			credentialDb: getTestDb(),
+		});
+
+		// The fetch is rejected at the allowlist boundary → no credentials, and
+		// the broker (hence the fake provider) was never contacted.
+		expect(resolved.credentials).toBeNull();
+		expect(lastRefreshBody).toEqual({});
+	});
+
+	it("rejects the broker fetch when LOBU_ALLOWED_BROKER_ORIGINS is unset (fail-closed)", async () => {
+		// Point at the real self-broker origin, but with NO allowlist configured —
+		// fail-closed means even a reachable broker must not be fetched.
+		const { localOrgId, localConnectionId, appAuthProfileId } =
+			await seedLocalBrokerConnection("Fail Closed Org", brokerBaseUrl);
+
+		const previous = process.env.LOBU_ALLOWED_BROKER_ORIGINS;
+		delete process.env.LOBU_ALLOWED_BROKER_ORIGINS;
+		try {
+			const resolved = await resolveExecutionAuth({
+				organizationId: localOrgId,
+				connectionId: localConnectionId,
+				authProfileId: null,
+				appAuthProfileId,
+				credentialDb: getTestDb(),
+			});
+			expect(resolved.credentials).toBeNull();
+			expect(lastRefreshBody).toEqual({});
+		} finally {
+			if (previous === undefined) {
+				delete process.env.LOBU_ALLOWED_BROKER_ORIGINS;
+			} else {
+				process.env.LOBU_ALLOWED_BROKER_ORIGINS = previous;
+			}
+		}
 	});
 });
 

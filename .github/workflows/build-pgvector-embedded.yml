@@ -3,7 +3,7 @@ name: Build pgvector-embedded artifacts
 # Rebuilds the prebuilt pgvector artifacts vendored in
 # packages/pgvector-embedded/prebuilt/<platform>/ for every platform
 # embedded-postgres supports. Run on demand (bump pgvector / PG major) or when
-# the build script changes. embedded-postgres ships vanilla PG 18 with no
+# build.sh changes on main. embedded-postgres ships vanilla PG 18 with no
 # pgvector, so each cell compiles pgvector against a same-major PostgreSQL (the
 # extension ABI is stable within a major) and uploads the result; a final job
 # opens a PR with the regenerated artifacts.
@@ -18,9 +18,15 @@ on:
         description: pgvector git tag to build
         default: v0.8.1
   push:
+    # Branch-scoped on purpose: a bare `paths` filter also matches tag pushes,
+    # and GitHub can't diff a freshly-created ref so it ignores the filter and
+    # runs anyway — which meant every release-please tag (`lobu-vX.Y.Z`) kicked
+    # off a rebuild and opened a churn PR (the builds aren't byte-reproducible).
+    # Restricting to `main` excludes tag refs. Only build.sh affects the
+    # artifacts, so the workflow file itself is intentionally not a path here.
+    branches: [main]
     paths:
       - packages/pgvector-embedded/scripts/build.sh
-      - .github/workflows/build-pgvector-embedded.yml
 
 permissions:
   contents: write

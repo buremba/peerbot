@@ -13,6 +13,7 @@ import { createRequire } from 'node:module';
 import { startDaemon } from './daemon/index.js';
 import { buildConnectorWorkerEnv } from './env.js';
 import { assertExternalDepsResolvable } from './runtime-deps.js';
+import { printSelfCheckResult, runConnectorRuntimeSelfCheck } from './self-check/index.js';
 
 function printUsage(): void {
   console.log(`
@@ -22,12 +23,15 @@ Usage:
   connector-worker <command> [options]
 
 Commands:
-  daemon    Start worker daemon (polls backend for jobs)
+  daemon       Start worker daemon (polls backend for jobs)
+  self-check   Run the connector-runtime parity self-check (artifact/packaging
+               assertions only; no network/DB). Exits non-zero on failure.
 
 Options:
-  --api-url <url>    Backend API URL (required)
+  --api-url <url>    Backend API URL (required for daemon)
   --worker-id <id>   Worker ID (default: auto-generated UUID)
   --version <ver>    Worker version (default: 1.0.0)
+  --json             (self-check) Emit machine-readable JSON to stdout
   --help             Show this help message
 
 Environment Variables:
@@ -44,6 +48,9 @@ Environment Variables:
 Examples:
   # Worker daemon
   connector-worker daemon --api-url https://api.example.com
+
+  # Connector-runtime parity self-check (CI smoke gate)
+  connector-worker self-check --json
 `);
 }
 
@@ -80,6 +87,21 @@ async function main(): Promise<void> {
   if (!command || command === '--help' || options.help) {
     printUsage();
     process.exit(0);
+  }
+
+  // Self-check needs no backend — handle it before the --api-url requirement.
+  // This is one of the two parity entrypoints (the other is the CLI's
+  // `lobu connector runtime-self-check`); both call the SAME
+  // runConnectorRuntimeSelfCheck() so the worker image and the built CLI assert
+  // the identical compile + SubprocessExecutor invariant.
+  if (command === 'self-check') {
+    const result = await runConnectorRuntimeSelfCheck({ surface: 'worker' });
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    } else {
+      printSelfCheckResult(result);
+    }
+    process.exit(result.ok ? 0 : 1);
   }
 
   const apiUrl = options['api-url'] || process.env.API_URL;

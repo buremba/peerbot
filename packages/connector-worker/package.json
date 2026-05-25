@@ -27,6 +27,10 @@
     "./compile": {
       "import": "./dist/compile/index.js",
       "types": "./dist/compile/index.d.ts"
+    },
+    "./self-check": {
+      "import": "./dist/self-check/index.js",
+      "types": "./dist/self-check/index.d.ts"
     }
   },
   "files": [

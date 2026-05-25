@@ -8,254 +8,212 @@
  *
  * Auth handshake: the local instance calls with `Authorization: Bearer
  * <owl_pat_*>`. The broker verifies the PAT (resolving the authenticated org +
- * tenant membership, exactly as the embedded Agent API does in
- * `createLobuAuthBridge`) and uses THAT org's managed `oauth_app` profile to
- * read the real client_id/secret. The broker performs the build/exchange/
- * refresh and returns ONLY the user's tokens — the client_secret never leaves
- * the broker.
+ * tenant membership via the shared `authenticatePat`, exactly as the embedded
+ * Agent API does) and uses THAT org's managed `oauth_app` profile to read the
+ * real client_id/secret. The broker performs the build/exchange/refresh and
+ * returns ONLY the user's tokens — the client_secret never leaves the broker.
  *
  * Endpoints (all POST, all PAT-gated):
  *   - /broker/oauth/authorize-url → buildAuthorizationUrl with broker's client_id
  *   - /broker/oauth/exchange      → exchangeCodeForTokens with broker's secret
  *   - /broker/oauth/refresh       → CredentialService.refreshTokenGeneric
+ *
+ * The OAuth endpoints + credential key names are resolved SERVER-SIDE from the
+ * broker org's own connector metadata (`resolveConnectorOAuthMethod`). The
+ * caller never supplies them — that is the security premise (otherwise a caller
+ * with any valid PAT could redirect the broker's client_secret to an attacker).
  */
 
-import type { Env } from '@lobu/connector-sdk';
-import { Hono } from 'hono';
-import { CredentialService } from '../auth/credentials';
-import { PersonalAccessTokenService } from '../auth/tokens';
-import { getDb } from '../db/client';
-import { getPrimaryAuthProfileForKind, normalizeAuthValues } from '../utils/auth-profiles';
-import { getOAuthAuthMethods, normalizeConnectorAuthSchema } from '../utils/connector-auth';
-import logger from '../utils/logger';
-import { buildAuthorizationUrl, exchangeCodeForTokens } from './oauth-providers';
-
-type OAuthTokenEndpointAuthMethod = 'client_secret_post' | 'client_secret_basic' | 'none';
+import type { Env } from "@lobu/connector-sdk";
+import { type Static, type TObject, Type } from "@sinclair/typebox";
+import { TypeCompiler } from "@sinclair/typebox/compiler";
+import { type Context, Hono } from "hono";
+import { CredentialService } from "../auth/credentials";
+import { authenticatePat, extractPatBearer } from "../auth/pat-auth";
+import { getDb } from "../db/client";
+import type { ConnectorAuthOAuthMethod } from "../utils/connector-auth";
+import logger from "../utils/logger";
+import {
+	buildAuthorizationUrl,
+	exchangeCodeForTokens,
+} from "./oauth-providers";
+import {
+	resolveConnectorOAuthMethod,
+	resolveOAuthClientCredentials,
+} from "./oauth-resolution";
 
 type BrokerEnv = {
-  Bindings: Env;
-  Variables: { brokerOrgId: string };
+	Bindings: Env;
+	Variables: { brokerOrgId: string };
 };
-
-/**
- * The OAuth endpoints + auth-method the broker will hit, resolved SERVER-SIDE
- * from the broker org's own connector metadata. The caller never supplies
- * these — that is the security premise of the broker (otherwise a caller with
- * any valid PAT could redirect the broker's client_secret to an attacker).
- */
-interface BrokerProviderConfig {
-  provider: string;
-  authorizationUrl?: string;
-  tokenUrl?: string;
-  userinfoUrl?: string;
-  authParams?: Record<string, string>;
-  tokenEndpointAuthMethod?: OAuthTokenEndpointAuthMethod;
-  clientIdKey?: string;
-  clientSecretKey?: string;
-}
 
 const brokerRoutes = new Hono<BrokerEnv>();
 
 /**
- * PAT auth for broker calls. Mirrors the authoritative PAT path in
- * `createLobuAuthBridge` (gateway.ts): verify the `owl_pat_*` bearer, reject
- * null-org or non-member tokens, and stash the resolved org on the context.
- * This IS the auth gate — no/invalid/cross-tenant PAT short-circuits 401/403.
+ * PAT auth for broker calls — the single shared `authenticatePat` gate. No /
+ * invalid / null-org / cross-tenant PAT short-circuits 401/403; on success the
+ * resolved org is stashed on the context.
  */
-brokerRoutes.use('/oauth/*', async (c, next) => {
-  const authHeader = c.req.header('Authorization');
-  const bearerMatch = authHeader ? /^bearer\s+(.*)$/i.exec(authHeader) : null;
-  const bearerValue = bearerMatch ? (bearerMatch[1] ?? '').trim() : null;
+brokerRoutes.use("/oauth/*", async (c, next) => {
+	const bearerValue = extractPatBearer(c.req.header("Authorization"));
+	if (!bearerValue) {
+		return c.json(
+			{ error: "unauthorized", error_description: "Bearer PAT required" },
+			401,
+		);
+	}
 
-  if (!bearerValue || bearerValue.slice(0, 8).toLowerCase() !== 'owl_pat_') {
-    return c.json({ error: 'unauthorized', error_description: 'Bearer PAT required' }, 401);
-  }
+	const result = await authenticatePat(getDb(), bearerValue);
+	if (!result.ok) {
+		return c.json(
+			{ error: result.error, error_description: result.error_description },
+			result.status,
+		);
+	}
 
-  const sql = getDb();
-  const patInfo = await new PersonalAccessTokenService(sql).verify(bearerValue);
-  if (!patInfo?.userId) {
-    return c.json({ error: 'invalid_token', error_description: 'PAT invalid/expired/revoked' }, 401);
-  }
-  if (!patInfo.organizationId) {
-    return c.json(
-      { error: 'invalid_token', error_description: 'PAT not scoped to an organization' },
-      401
-    );
-  }
-
-  // Tenant-membership check — a PAT for org A must still belong to org A.
-  const memberRows = (await sql`
-    SELECT 1 FROM "member"
-    WHERE "userId" = ${patInfo.userId}
-      AND "organizationId" = ${patInfo.organizationId}
-    LIMIT 1
-  `) as unknown as Array<unknown>;
-  if (memberRows.length === 0) {
-    return c.json(
-      { error: 'forbidden', error_description: 'Token owner is not a member of this organization' },
-      403
-    );
-  }
-
-  c.set('brokerOrgId', patInfo.organizationId);
-  return next();
+	c.set("brokerOrgId", result.organizationId);
+	return next();
 });
 
 /**
- * Resolve the OAuth provider config (endpoints, auth method, credential keys)
- * SERVER-SIDE from the broker org's `connector_definitions` row for
- * `connectorKey`, matching the oauth method by `provider`. Returns `null` when
- * the connector or a matching oauth method isn't found in the broker org — the
- * broker refuses to act on a connector it doesn't manage. The caller cannot
- * influence these endpoints (no token_url/authorization_url in the request).
+ * Parse + validate a JSON request body against a typebox schema. Returns the
+ * typed value, or sends a 400 with the validation errors. The endpoints supply
+ * the schema, so malformed/missing fields are rejected (not cast).
  */
-async function resolveBrokerProviderConfig(params: {
-  organizationId: string;
-  connectorKey: string;
-  provider: string;
-}): Promise<BrokerProviderConfig | null> {
-  const sql = getDb();
-  const rows = await sql`
-    SELECT auth_schema
-    FROM connector_definitions
-    WHERE key = ${params.connectorKey}
-      AND status = 'active'
-      AND (organization_id = ${params.organizationId} OR organization_id IS NULL)
-    ORDER BY CASE WHEN organization_id = ${params.organizationId} THEN 0 ELSE 1 END
-    LIMIT 1
-  `;
-  if (rows.length === 0) return null;
+async function parseBody<S extends TObject>(
+	c: Context<BrokerEnv>,
+	validator: ReturnType<typeof TypeCompiler.Compile<S>>,
+): Promise<Static<S> | { _error: Response }> {
+	const raw = await c.req.json().catch(() => null);
+	if (!validator.Check(raw)) {
+		const detail = [...validator.Errors(raw)]
+			.map((e) => `${e.path || "/"} ${e.message}`)
+			.join("; ");
+		return {
+			_error: c.json(
+				{
+					error: "bad_request",
+					error_description: detail || "Invalid request body",
+				},
+				400,
+			),
+		};
+	}
+	return raw as Static<S>;
+}
 
-  const authSchema = normalizeConnectorAuthSchema(
-    (rows[0] as { auth_schema: unknown }).auth_schema
-  );
-  const method = getOAuthAuthMethods(authSchema).find(
-    (m) => m.provider.toLowerCase() === params.provider.toLowerCase()
-  );
-  if (!method) return null;
-
-  return {
-    provider: method.provider,
-    authorizationUrl: method.authorizationUrl,
-    tokenUrl: method.tokenUrl,
-    userinfoUrl: method.userinfoUrl,
-    authParams: method.authParams,
-    tokenEndpointAuthMethod: method.tokenEndpointAuthMethod,
-    clientIdKey: method.clientIdKey,
-    clientSecretKey: method.clientSecretKey,
-  };
+function isBodyError<T>(
+	parsed: T | { _error: Response },
+): parsed is { _error: Response } {
+	return typeof parsed === "object" && parsed !== null && "_error" in parsed;
 }
 
 /**
- * Resolve the broker org's managed `oauth_app` client credentials. The broker
- * reads its OWN org's profile — the local caller never sees these values. The
- * credential KEY NAMES come from the server-resolved connector config (not the
- * request), with the provider-uppercase default as a fallback.
+ * Resolve the broker org's OAuth method + managed client credentials in one
+ * step. Returns an error Response when the connector/provider is unmanaged or
+ * no managed app exists, so each endpoint can early-return uniformly.
  */
-async function resolveBrokerClientCredentials(params: {
-  organizationId: string;
-  provider: string;
-  connectorKey: string;
-  clientIdKey?: string;
-  clientSecretKey?: string;
-}): Promise<{ clientId: string | null; clientSecret: string | null }> {
-  const providerUpper = params.provider.toUpperCase();
-  const clientIdKey = params.clientIdKey || `${providerUpper}_CLIENT_ID`;
-  const clientSecretKey = params.clientSecretKey || `${providerUpper}_CLIENT_SECRET`;
+async function resolveBrokerConfig(
+	c: Context<BrokerEnv>,
+	body: { connector_key: string; provider: string },
+): Promise<
+	| {
+			method: ConnectorAuthOAuthMethod;
+			clientId: string;
+			clientSecret: string | null;
+	  }
+	| { _error: Response }
+> {
+	const organizationId = c.get("brokerOrgId");
+	const method = await resolveConnectorOAuthMethod({
+		organizationId,
+		connectorKey: body.connector_key,
+		provider: body.provider,
+	});
+	if (!method) {
+		return {
+			_error: c.json(
+				{
+					error: "unknown_connector",
+					error_description: `Broker org does not manage connector '${body.connector_key}' / provider '${body.provider}'`,
+				},
+				400,
+			),
+		};
+	}
 
-  const appProfile = await getPrimaryAuthProfileForKind({
-    organizationId: params.organizationId,
-    connectorKey: params.connectorKey,
-    profileKind: 'oauth_app',
-    provider: params.provider,
-  });
+	const { clientId, clientSecret } = await resolveOAuthClientCredentials({
+		organizationId,
+		connectorKey: body.connector_key,
+		provider: body.provider,
+		clientIdKey: method.clientIdKey,
+		clientSecretKey: method.clientSecretKey,
+	});
+	if (!clientId) {
+		return {
+			_error: c.json(
+				{
+					error: "no_managed_app",
+					error_description: `No managed oauth_app for ${body.provider}`,
+				},
+				400,
+			),
+		};
+	}
 
-  const authValues = normalizeAuthValues(appProfile?.auth_data ?? {});
-  return {
-    clientId: authValues[clientIdKey] ?? null,
-    clientSecret: authValues[clientSecretKey] ?? null,
-  };
+	return { method, clientId, clientSecret };
 }
 
-interface AuthorizeUrlBody {
-  connector_key?: string;
-  provider?: string;
-  redirect_uri?: string;
-  scopes?: string[];
-  state?: string;
-  code_challenge?: string;
-}
+const AuthorizeUrlBody = Type.Object({
+	connector_key: Type.String({ minLength: 1 }),
+	provider: Type.String({ minLength: 1 }),
+	redirect_uri: Type.String({ minLength: 1 }),
+	state: Type.String({ minLength: 1 }),
+	scopes: Type.Optional(Type.Array(Type.String())),
+	code_challenge: Type.Optional(Type.String()),
+});
+const authorizeUrlValidator = TypeCompiler.Compile(AuthorizeUrlBody);
 
 /**
  * POST /broker/oauth/authorize-url
  * Build the provider authorization URL using the broker org's managed client_id
  * and SERVER-RESOLVED authorization endpoint (never caller-supplied).
  */
-brokerRoutes.post('/oauth/authorize-url', async (c) => {
-  const orgId = c.get('brokerOrgId');
-  const body = await c.req.json<AuthorizeUrlBody>().catch(() => null);
-  if (!body?.provider || !body.connector_key || !body.redirect_uri || !body.state) {
-    return c.json(
-      {
-        error: 'bad_request',
-        error_description: 'provider, connector_key, redirect_uri, state required',
-      },
-      400
-    );
-  }
+brokerRoutes.post("/oauth/authorize-url", async (c) => {
+	const body = await parseBody(c, authorizeUrlValidator);
+	if (isBodyError(body)) return body._error;
 
-  const providerConfig = await resolveBrokerProviderConfig({
-    organizationId: orgId,
-    connectorKey: body.connector_key,
-    provider: body.provider,
-  });
-  if (!providerConfig) {
-    return c.json(
-      {
-        error: 'unknown_connector',
-        error_description: `Broker org does not manage connector '${body.connector_key}' / provider '${body.provider}'`,
-      },
-      400
-    );
-  }
+	const resolved = await resolveBrokerConfig(c, body);
+	if (isBodyError(resolved)) return resolved._error;
 
-  const { clientId } = await resolveBrokerClientCredentials({
-    organizationId: orgId,
-    provider: body.provider,
-    connectorKey: body.connector_key,
-    clientIdKey: providerConfig.clientIdKey,
-  });
-  if (!clientId) {
-    return c.json(
-      { error: 'no_managed_app', error_description: `No managed oauth_app for ${body.provider}` },
-      400
-    );
-  }
+	const authorizationUrl = buildAuthorizationUrl({
+		provider: body.provider,
+		clientId: resolved.clientId,
+		redirectUri: body.redirect_uri,
+		scopes: body.scopes ?? [],
+		state: body.state,
+		authorizationUrl: resolved.method.authorizationUrl,
+		authParams: resolved.method.authParams,
+		codeChallenge: body.code_challenge,
+	});
+	if (!authorizationUrl) {
+		return c.json(
+			{ error: "unsupported_provider", error_description: body.provider },
+			400,
+		);
+	}
 
-  const authorizationUrl = buildAuthorizationUrl({
-    provider: body.provider,
-    clientId,
-    redirectUri: body.redirect_uri,
-    scopes: body.scopes ?? [],
-    state: body.state,
-    authorizationUrl: providerConfig.authorizationUrl,
-    authParams: providerConfig.authParams,
-    codeChallenge: body.code_challenge,
-  });
-  if (!authorizationUrl) {
-    return c.json({ error: 'unsupported_provider', error_description: body.provider }, 400);
-  }
-
-  return c.json({ authorization_url: authorizationUrl });
+	return c.json({ authorization_url: authorizationUrl });
 });
 
-interface ExchangeBody {
-  connector_key?: string;
-  provider?: string;
-  code?: string;
-  redirect_uri?: string;
-  code_verifier?: string;
-}
+const ExchangeBody = Type.Object({
+	connector_key: Type.String({ minLength: 1 }),
+	provider: Type.String({ minLength: 1 }),
+	code: Type.String({ minLength: 1 }),
+	redirect_uri: Type.String({ minLength: 1 }),
+	code_verifier: Type.Optional(Type.String()),
+});
+const exchangeValidator = TypeCompiler.Compile(ExchangeBody);
 
 /**
  * POST /broker/oauth/exchange
@@ -264,141 +222,94 @@ interface ExchangeBody {
  * otherwise a caller could redirect the client_secret to an attacker). Returns
  * ONLY the user's tokens — never the client_secret.
  */
-brokerRoutes.post('/oauth/exchange', async (c) => {
-  const orgId = c.get('brokerOrgId');
-  const body = await c.req.json<ExchangeBody>().catch(() => null);
-  if (!body?.provider || !body.connector_key || !body.code || !body.redirect_uri) {
-    return c.json(
-      {
-        error: 'bad_request',
-        error_description: 'provider, connector_key, code, redirect_uri required',
-      },
-      400
-    );
-  }
+brokerRoutes.post("/oauth/exchange", async (c) => {
+	const body = await parseBody(c, exchangeValidator);
+	if (isBodyError(body)) return body._error;
 
-  const providerConfig = await resolveBrokerProviderConfig({
-    organizationId: orgId,
-    connectorKey: body.connector_key,
-    provider: body.provider,
-  });
-  if (!providerConfig) {
-    return c.json(
-      {
-        error: 'unknown_connector',
-        error_description: `Broker org does not manage connector '${body.connector_key}' / provider '${body.provider}'`,
-      },
-      400
-    );
-  }
+	const resolved = await resolveBrokerConfig(c, body);
+	if (isBodyError(resolved)) return resolved._error;
 
-  const { clientId, clientSecret } = await resolveBrokerClientCredentials({
-    organizationId: orgId,
-    provider: body.provider,
-    connectorKey: body.connector_key,
-    clientIdKey: providerConfig.clientIdKey,
-    clientSecretKey: providerConfig.clientSecretKey,
-  });
-  if (!clientId) {
-    return c.json(
-      { error: 'no_managed_app', error_description: `No managed oauth_app for ${body.provider}` },
-      400
-    );
-  }
+	const tokens = await exchangeCodeForTokens({
+		provider: body.provider,
+		code: body.code,
+		clientId: resolved.clientId,
+		clientSecret: resolved.clientSecret,
+		redirectUri: body.redirect_uri,
+		tokenUrl: resolved.method.tokenUrl,
+		tokenEndpointAuthMethod: resolved.method.tokenEndpointAuthMethod,
+		codeVerifier: body.code_verifier,
+	});
+	if (!tokens) {
+		return c.json(
+			{ error: "exchange_failed", error_description: "Token exchange failed" },
+			502,
+		);
+	}
 
-  const tokens = await exchangeCodeForTokens({
-    provider: body.provider,
-    code: body.code,
-    clientId,
-    clientSecret,
-    redirectUri: body.redirect_uri,
-    tokenUrl: providerConfig.tokenUrl,
-    tokenEndpointAuthMethod: providerConfig.tokenEndpointAuthMethod,
-    codeVerifier: body.code_verifier,
-  });
-  if (!tokens) {
-    return c.json({ error: 'exchange_failed', error_description: 'Token exchange failed' }, 502);
-  }
-
-  return c.json({
-    access_token: tokens.accessToken,
-    refresh_token: tokens.refreshToken,
-    expires_in: tokens.expiresIn,
-    scope: tokens.scope,
-    token_type: tokens.tokenType,
-  });
+	return c.json({
+		access_token: tokens.accessToken,
+		refresh_token: tokens.refreshToken,
+		expires_in: tokens.expiresIn,
+		scope: tokens.scope,
+		token_type: tokens.tokenType,
+	});
 });
 
-interface RefreshBody {
-  connector_key?: string;
-  provider?: string;
-  refresh_token?: string;
-}
+const RefreshBody = Type.Object({
+	connector_key: Type.String({ minLength: 1 }),
+	provider: Type.String({ minLength: 1 }),
+	refresh_token: Type.String({ minLength: 1 }),
+});
+const refreshValidator = TypeCompiler.Compile(RefreshBody);
 
 /**
  * POST /broker/oauth/refresh
  * Refresh an access token using the broker org's managed client_id/secret and
  * SERVER-RESOLVED token endpoint (never caller-supplied).
  */
-brokerRoutes.post('/oauth/refresh', async (c) => {
-  const orgId = c.get('brokerOrgId');
-  const body = await c.req.json<RefreshBody>().catch(() => null);
-  if (!body?.provider || !body.connector_key || !body.refresh_token) {
-    return c.json(
-      {
-        error: 'bad_request',
-        error_description: 'provider, connector_key, refresh_token required',
-      },
-      400
-    );
-  }
+brokerRoutes.post("/oauth/refresh", async (c) => {
+	const body = await parseBody(c, refreshValidator);
+	if (isBodyError(body)) return body._error;
 
-  const providerConfig = await resolveBrokerProviderConfig({
-    organizationId: orgId,
-    connectorKey: body.connector_key,
-    provider: body.provider,
-  });
-  if (!providerConfig?.tokenUrl) {
-    return c.json(
-      {
-        error: 'unknown_connector',
-        error_description: `Broker org does not manage connector '${body.connector_key}' / provider '${body.provider}' (no token endpoint)`,
-      },
-      400
-    );
-  }
+	const resolved = await resolveBrokerConfig(c, body);
+	if (isBodyError(resolved)) return resolved._error;
 
-  const { clientId, clientSecret } = await resolveBrokerClientCredentials({
-    organizationId: orgId,
-    provider: body.provider,
-    connectorKey: body.connector_key,
-    clientIdKey: providerConfig.clientIdKey,
-    clientSecretKey: providerConfig.clientSecretKey,
-  });
-  if (!clientId) {
-    return c.json(
-      { error: 'no_managed_app', error_description: `No managed oauth_app for ${body.provider}` },
-      400
-    );
-  }
+	if (!resolved.method.tokenUrl) {
+		return c.json(
+			{
+				error: "unknown_connector",
+				error_description: `Broker org does not manage connector '${body.connector_key}' / provider '${body.provider}' (no token endpoint)`,
+			},
+			400,
+		);
+	}
 
-  const refreshed = await new CredentialService(getDb()).refreshTokenGeneric({
-    tokenUrl: providerConfig.tokenUrl,
-    clientId,
-    clientSecret: clientSecret ?? undefined,
-    refreshToken: body.refresh_token,
-    authMethod: providerConfig.tokenEndpointAuthMethod,
-  });
-  if (!refreshed) {
-    return c.json({ error: 'refresh_failed', error_description: 'Token refresh failed' }, 502);
-  }
+	const refreshed = await new CredentialService(getDb()).refreshTokenGeneric({
+		tokenUrl: resolved.method.tokenUrl,
+		clientId: resolved.clientId,
+		clientSecret: resolved.clientSecret ?? undefined,
+		refreshToken: body.refresh_token,
+		authMethod: resolved.method.tokenEndpointAuthMethod,
+	});
+	if (!refreshed) {
+		return c.json(
+			{ error: "refresh_failed", error_description: "Token refresh failed" },
+			502,
+		);
+	}
 
-  logger.info({ provider: body.provider, organizationId: orgId }, 'Broker refreshed token');
-  return c.json({
-    access_token: refreshed.accessToken,
-    refresh_token: refreshed.refreshToken ?? null,
-    expires_in: Math.max(0, Math.round((refreshed.expiresAt.getTime() - Date.now()) / 1000)),
-  });
+	logger.info(
+		{ provider: body.provider, organizationId: c.get("brokerOrgId") },
+		"Broker refreshed token",
+	);
+	return c.json({
+		access_token: refreshed.accessToken,
+		refresh_token: refreshed.refreshToken ?? null,
+		expires_in: Math.max(
+			0,
+			Math.round((refreshed.expiresAt.getTime() - Date.now()) / 1000),
+		),
+	});
 });
 
 export { brokerRoutes };

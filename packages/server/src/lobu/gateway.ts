@@ -12,7 +12,7 @@ import path from 'node:path';
 import type { Hono } from 'hono';
 import { Hono as HonoApp } from 'hono';
 import { createAuth } from '../auth';
-import { PersonalAccessTokenService } from '../auth/tokens';
+import { authenticatePat, extractPatBearer } from '../auth/pat-auth';
 import { ApiPlatform } from '../gateway/api/platform';
 import { createGatewayApp } from '../gateway/cli/gateway';
 import { ChatInstanceManager } from '../gateway/connections/chat-instance-manager';
@@ -122,10 +122,10 @@ function ensureEmbeddedGatewaySecrets(): void {
  *
  *   1. Better Auth session (cookie or bearer session-token) — original path.
  *   2. Personal Access Token (`Authorization: Bearer owl_pat_*`) — needed so
- *      `lobu chat` / device-flow PATs reach `/lobu/api/v1/agents/*`.
- *   3. Tenant membership check — a PAT for org A must verify the user is still
- *      a member of org A; the canonical pattern lives at
- *      `workspace/multi-tenant.ts:425`.
+ *      `lobu chat` / device-flow PATs reach `/lobu/api/v1/agents/*`. Verified
+ *      via the shared `authenticatePat` (also used by the OAuth broker router),
+ *      which enforces the tenant-membership check (a PAT for org A must verify
+ *      the user is still a member of org A).
  *
  * PAT validation runs BEFORE Better Auth so a stale/invalid PAT in the
  * `Authorization` header cannot be silently masked by a still-valid session
@@ -139,120 +139,40 @@ export function createLobuAuthBridge() {
     c.set('user', null);
     c.set('session', null);
 
-    const authHeader = c.req.header('Authorization');
-    // RFC 7235 §2.1 — the auth scheme token is case-insensitive. A request
-    // sending `Authorization: bearer owl_pat_*` with a valid Better Auth
-    // cookie would otherwise skip PAT validation entirely (lowercase fails
-    // the `Bearer ` literal match) and fall through to the cookie path,
-    // silently masking an invalid/revoked PAT (codex round-2 finding).
-    // Token VALUE comparison stays case-sensitive — PAT hashes are.
-    const bearerMatch = authHeader ? /^bearer\s+(.*)$/i.exec(authHeader) : null;
-    const bearerValue = bearerMatch ? (bearerMatch[1] ?? '').trim() : null;
-    // PAT prefix detection is case-insensitive so `Bearer OWL_PAT_*` is
-    // recognized as a PAT and validated, not silently masked behind cookie
-    // auth (codex round-3 finding). The token VALUE handed to verify() is
-    // unchanged — PAT hashes are case-sensitive on the bytes.
-    const isPatBearer =
-      bearerValue !== null && bearerValue.slice(0, 8).toLowerCase() === 'owl_pat_';
-
     // 1. PAT path — authoritative when the Authorization header carries
     //    `Bearer owl_pat_*`. Validate first so an invalid PAT cannot fall
-    //    through to a cooked Better Auth cookie (codex finding #2). On any
-    //    failure return 401 immediately rather than masking it with a
-    //    different identity.
-    if (isPatBearer) {
-      let patInfo: Awaited<ReturnType<PersonalAccessTokenService['verify']>> | null = null;
-      try {
-        const sql = getDb();
-        patInfo = await new PersonalAccessTokenService(sql).verify(bearerValue);
-      } catch (err) {
-        logger.warn(
-          { err: err instanceof Error ? err.message : String(err) },
-          '[Lobu] PAT verification failed'
-        );
-        return c.json({ error: 'invalid_token', error_description: 'PAT verification failed' }, 401);
-      }
-
-      if (!patInfo?.userId) {
+    //    through to a cooked Better Auth cookie: invalid PAT short-circuits
+    //    here rather than masking the failure with a still-valid session
+    //    cookie. Shared with the broker router via `authenticatePat`.
+    const bearerValue = extractPatBearer(c.req.header('Authorization'));
+    if (bearerValue) {
+      const result = await authenticatePat(getDb(), bearerValue);
+      if (!result.ok) {
         return c.json(
-          { error: 'invalid_token', error_description: 'PAT is invalid, expired, or revoked' },
-          401
+          { error: result.error, error_description: result.error_description },
+          result.status
         );
       }
 
-      // Reject PATs with null organization_id on the embedded Agent API
-      // path (codex finding #3). The FK is `ON DELETE SET NULL`, so a PAT
-      // bound to a since-deleted org would otherwise silently re-resolve to
-      // an unrelated org via `resolveDefaultOrgId`.
-      if (!patInfo.organizationId) {
-        return c.json(
-          {
-            error: 'invalid_token',
-            error_description:
-              'PAT is not scoped to an organization — re-mint via `lobu token`',
-          },
-          401
-        );
-      }
-
-      const sql = getDb();
-      const rows = (await sql`
-        SELECT id, name, email, "emailVerified"
-        FROM "user"
-        WHERE id = ${patInfo.userId}
-        LIMIT 1
-      `) as unknown as Array<{
-        id: string;
-        name: string;
-        email: string;
-        emailVerified: boolean;
-      }>;
-      const userRow = rows[0];
-      if (!userRow) {
-        return c.json(
-          { error: 'invalid_token', error_description: 'PAT user no longer exists' },
-          401
-        );
-      }
-
-      // Enforce tenant membership (codex finding #1). Mirrors the canonical
-      // check in workspace/multi-tenant.ts: 403 + `forbidden` when the PAT
-      // owner is no longer a member of the org the PAT is bound to.
-      const memberRows = (await sql`
-        SELECT 1
-        FROM "member"
-        WHERE "userId" = ${userRow.id}
-          AND "organizationId" = ${patInfo.organizationId}
-        LIMIT 1
-      `) as unknown as Array<{ '?column?': number }>;
-      if (memberRows.length === 0) {
-        return c.json(
-          {
-            error: 'forbidden',
-            error_description: 'Token owner is not a member of this organization',
-          },
-          403
-        );
-      }
-
+      const { user, patInfo, organizationId } = result;
       const expiresAt =
         patInfo.expiresAt === Number.MAX_SAFE_INTEGER
           ? new Date(Date.now() + 86_400_000)
           : new Date(patInfo.expiresAt * 1000);
       c.set('user', {
-        id: userRow.id,
-        name: userRow.name,
-        email: userRow.email,
-        emailVerified: userRow.emailVerified,
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        emailVerified: user.emailVerified,
       });
       c.set('session', {
         id: `pat:${patInfo.clientId}`,
-        userId: userRow.id,
+        userId: user.id,
         token: bearerValue,
         expiresAt,
-        activeOrganizationId: patInfo.organizationId,
+        activeOrganizationId: organizationId,
       });
-      c.set('organizationId', patInfo.organizationId);
+      c.set('organizationId', organizationId);
 
       await next();
       return;

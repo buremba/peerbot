@@ -18,3 +18,18 @@ export class LobuApiError extends Error {
     this.response = response;
   }
 }
+
+/**
+ * Thrown by {@link AgentSession.ask} when the agent reports an error for the
+ * message being awaited (an `error`/`agent-error` SSE event). Distinct from
+ * {@link LobuApiError}, which signals an HTTP-transport failure.
+ */
+export class LobuAgentError extends Error {
+  readonly messageId: string | undefined;
+
+  constructor(message: string, messageId?: string) {
+    super(message);
+    this.name = "LobuAgentError";
+    this.messageId = messageId;
+  }
+}

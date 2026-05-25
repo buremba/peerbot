@@ -23,6 +23,6 @@ export class Lobu {
   createSession(input: CreateSessionRequest): Promise<AgentSession> {
     return this.rest
       .createSession(input)
-      .then((response) => new AgentSession(this.rest, response));
+      .then((response) => new AgentSession(this.rest, response, input));
   }
 }

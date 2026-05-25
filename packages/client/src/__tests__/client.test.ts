@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Lobu } from "../client.js";
+import { LobuAgentError } from "../errors.js";
 
 describe("Lobu", () => {
   test("creates a session and sends with the session token", async () => {
@@ -47,7 +48,7 @@ describe("Lobu", () => {
     });
     const result = await session.send("hello", { messageId: "msg_1" });
 
-    expect(session.agentId).toBe("support_user_1");
+    expect(session.conversationId).toBe("support_user_1");
     expect(result.queued).toBe(true);
     expect(calls[0]).toMatchObject({
       url: "https://lobu.test/lobu/api/v1/agents",
@@ -206,6 +207,197 @@ describe("Lobu", () => {
 
     // The loop must EXIT (not hang) after the abort; the first event arrived.
     expect(collected).toEqual([{ event: "text", data: "first", retry: 3000 }]);
+  });
+
+  test("refresh() re-mints the token via the resume path and updates it in place", async () => {
+    const agentsBodies: unknown[] = [];
+    let mint = 0;
+    const fetchImpl = (async (input, init) => {
+      const request =
+        input instanceof Request ? input : new Request(input, init);
+      if (request.url.endsWith("/api/v1/agents")) {
+        agentsBodies.push(JSON.parse(await request.clone().text()));
+        mint += 1;
+        return json(
+          {
+            success: true,
+            agentId: "support_user_1",
+            token: `session-token-${mint}`,
+            expiresAt: 1000 * mint,
+            sseUrl:
+              "https://lobu.test/lobu/api/v1/agents/support_user_1/events",
+            messagesUrl:
+              "https://lobu.test/lobu/api/v1/agents/support_user_1/messages",
+          },
+          201
+        );
+      }
+      return json({ success: true, messageId: "m", queued: true });
+    }) as typeof fetch;
+
+    const lobu = new Lobu({
+      baseUrl: "https://lobu.test/lobu",
+      token: "api-token",
+      fetch: fetchImpl,
+    });
+
+    const input = { agentId: "support", userId: "user_1", forceNew: true };
+    const session = await lobu.sessions.create(input);
+    expect(session.token).toBe("session-token-1");
+    expect(session.expiresAt).toBe(1000);
+
+    // Mutating the caller's object must not change what refresh replays.
+    input.agentId = "evil";
+
+    const returned = await session.refresh();
+    expect(returned).toBe(session);
+    expect(session.token).toBe("session-token-2");
+    expect(session.expiresAt).toBe(2000);
+
+    // refresh normalizes to the resume path with the ORIGINAL agentId.
+    expect(agentsBodies[1]).toMatchObject({
+      agentId: "support",
+      userId: "user_1",
+      forceNew: false,
+    });
+  });
+
+  test("ask() sends after `connected`, concatenates output, resolves on complete", async () => {
+    const messagesBodies: unknown[] = [];
+    const fetchImpl = (async (input, init) => {
+      const request =
+        input instanceof Request ? input : new Request(input, init);
+      if (request.url.endsWith("/api/v1/agents")) {
+        return json(
+          {
+            success: true,
+            agentId: "support_user_1",
+            token: "session-token",
+            expiresAt: Date.now() + 60_000,
+            sseUrl:
+              "https://lobu.test/lobu/api/v1/agents/support_user_1/events",
+            messagesUrl:
+              "https://lobu.test/lobu/api/v1/agents/support_user_1/messages",
+          },
+          201
+        );
+      }
+      if (request.url.endsWith("/messages")) {
+        messagesBodies.push(JSON.parse(await request.clone().text()));
+        return json({ success: true, messageId: "ask_1", queued: true });
+      }
+      // SSE: connected, a stale delta for another id (must be ignored), our
+      // deltas, then complete for ask_1.
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            const enc = new TextEncoder();
+            controller.enqueue(
+              enc.encode(
+                'event: connected\ndata: {"agentId":"support","timestamp":1}\n\n'
+              )
+            );
+            controller.enqueue(
+              enc.encode(
+                'event: output\ndata: {"type":"delta","content":"stale","messageId":"other","timestamp":2}\n\n'
+              )
+            );
+            controller.enqueue(
+              enc.encode(
+                'event: output\ndata: {"type":"delta","content":"Hello ","messageId":"ask_1","timestamp":3}\n\n'
+              )
+            );
+            controller.enqueue(
+              enc.encode(
+                'event: output\ndata: {"type":"delta","content":"world","messageId":"ask_1","timestamp":4}\n\n'
+              )
+            );
+            controller.enqueue(
+              enc.encode(
+                'event: complete\ndata: {"type":"complete","messageId":"ask_1","timestamp":5}\n\n'
+              )
+            );
+            controller.close();
+          },
+        }),
+        { status: 200, headers: { "content-type": "text/event-stream" } }
+      );
+    }) as typeof fetch;
+
+    const lobu = new Lobu({
+      baseUrl: "https://lobu.test/lobu",
+      token: "api-token",
+      fetch: fetchImpl,
+    });
+    const session = await lobu.sessions.create({});
+
+    const result = await session.ask("hi", { messageId: "ask_1" });
+
+    expect(result).toEqual({ text: "Hello world", messageId: "ask_1" });
+    // The message was actually sent, tagged with our correlation id.
+    expect(messagesBodies).toEqual([{ content: "hi", messageId: "ask_1" }]);
+  });
+
+  test("ask() rejects with LobuAgentError on agent-error for the message", async () => {
+    const fetchImpl = (async (input, init) => {
+      const request =
+        input instanceof Request ? input : new Request(input, init);
+      if (request.url.endsWith("/api/v1/agents")) {
+        return json(
+          {
+            success: true,
+            agentId: "support_user_1",
+            token: "session-token",
+            expiresAt: Date.now() + 60_000,
+            sseUrl:
+              "https://lobu.test/lobu/api/v1/agents/support_user_1/events",
+            messagesUrl:
+              "https://lobu.test/lobu/api/v1/agents/support_user_1/messages",
+          },
+          201
+        );
+      }
+      if (request.url.endsWith("/messages")) {
+        return json({ success: true, messageId: "ask_1", queued: true });
+      }
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            const enc = new TextEncoder();
+            controller.enqueue(
+              enc.encode(
+                'event: connected\ndata: {"agentId":"support","timestamp":1}\n\n'
+              )
+            );
+            controller.enqueue(
+              enc.encode(
+                'event: agent-error\ndata: {"type":"error","error":"boom","messageId":"ask_1","timestamp":2}\n\n'
+              )
+            );
+            controller.close();
+          },
+        }),
+        { status: 200, headers: { "content-type": "text/event-stream" } }
+      );
+    }) as typeof fetch;
+
+    const lobu = new Lobu({
+      baseUrl: "https://lobu.test/lobu",
+      token: "api-token",
+      fetch: fetchImpl,
+    });
+    const session = await lobu.sessions.create({});
+
+    let threw: unknown;
+    try {
+      await session.ask("hi", { messageId: "ask_1" });
+    } catch (error) {
+      threw = error;
+    }
+
+    expect(threw).toBeInstanceOf(LobuAgentError);
+    expect((threw as LobuAgentError).message).toBe("boom");
+    expect((threw as LobuAgentError).messageId).toBe("ask_1");
   });
 });
 

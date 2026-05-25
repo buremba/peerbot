@@ -151,14 +151,22 @@ interface SeededManagedConnection {
  * whose tokenUrl points at the fake provider, and a connection OWNED by a
  * member. The connector endpoints live in the org's OWN metadata — the cloud
  * resolves them server-side; the caller never supplies them.
+ *
+ * By default the org is PUBLIC and the connection is a consent-only managed
+ * grant-holder (the only shape the token endpoint will delegate). The `opts`
+ * let a test seed the rejected shapes — a private org, or a non-consent-only
+ * connection — to prove they are NOT exported (404).
  */
 async function seedManagedConnection(
 	orgName: string,
+	opts?: { visibility?: "public" | "private"; consentOnly?: boolean },
 ): Promise<SeededManagedConnection> {
 	const sql = getTestDb();
+	const visibility = opts?.visibility ?? "public";
+	const consentOnly = opts?.consentOnly ?? true;
 	const org = await createTestOrganization({
 		name: orgName,
-		visibility: "public",
+		visibility,
 	});
 	const owner = await createTestUser({ name: `${orgName} Owner` });
 	await addUserToOrganization(owner.id, org.id, "member");
@@ -223,14 +231,16 @@ async function seedManagedConnection(
 	});
 
 	// Connection OWNED by the member (created_by), wiring the grant + managed app.
+	// Consent-only managed grant-holders carry `config.consent_only = true`.
 	const connRows = (await sql`
     INSERT INTO connections (
       organization_id, connector_key, slug, display_name, status,
-      account_id, auth_profile_id, app_auth_profile_id, created_by,
+      account_id, auth_profile_id, app_auth_profile_id, created_by, config,
       created_at, updated_at
     ) VALUES (
       ${org.id}, ${connectorKey}, ${`demo-${org.id}`}, 'Demo Connection', 'active',
       ${accountId}, ${accountProfile.id}, ${appProfile.id}, ${owner.id},
+      ${consentOnly ? sql.json({ consent_only: true }) : null},
       NOW(), NOW()
     )
     RETURNING id
@@ -390,6 +400,45 @@ describe("managed connector — POST /oauth/connection-token", () => {
 		});
 		expect(res.status).toBe(404);
 	});
+
+	it("does NOT export the owner's own NON-consent-only connection (404)", async () => {
+		// Same owner + public org, but the connection is an ordinary (non
+		// consent-only) connection — NOT a managed grant-holder. The endpoint must
+		// refuse to delegate it, so a user's normal connection tokens can't leak.
+		const { ownerPat, orgId, connectorKey } = await seedManagedConnection(
+			"Public Org NonConsent",
+			{ consentOnly: false },
+		);
+		const app = buildCloudApp();
+		const res = await tokenRequest(app, {
+			pat: ownerPat,
+			body: { org: orgId, connector_key: connectorKey },
+		});
+		expect(res.status).toBe(404);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body.error).toBe("not_found");
+		// The refresh provider was never contacted — no token resolution at all.
+		expect(lastRefreshBody).toEqual({});
+	});
+
+	it("does NOT export a consent-only connection in a PRIVATE org (404)", async () => {
+		// Consent-only, owned by the caller, but the org is PRIVATE — managed
+		// connectors only live in public orgs, so a private-org connection (even a
+		// consent-only one) must not be exported.
+		const { ownerPat, orgId, connectorKey } = await seedManagedConnection(
+			"Private Org Consent",
+			{ visibility: "private", consentOnly: true },
+		);
+		const app = buildCloudApp();
+		const res = await tokenRequest(app, {
+			pat: ownerPat,
+			body: { org: orgId, connector_key: connectorKey },
+		});
+		expect(res.status).toBe(404);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body.error).toBe("not_found");
+		expect(lastRefreshBody).toEqual({});
+	});
 });
 
 describe("managed connector — local resolver", () => {
@@ -449,6 +498,57 @@ describe("managed connector — local resolver", () => {
 		// No local refresh token / secret ever materialized.
 		expect(resolved.credentials?.refreshToken).toBeNull();
 		expect(resolved.connectionCredentials).toEqual({});
+	});
+
+	it("ignores a connection-supplied `managedBy.url` — the PAT always goes to LOBU_CLOUD_URL", async () => {
+		// LOBU_CLOUD_URL is the real in-process cloud (set in beforeEach). The
+		// connection config carries a bogus `url` (a stand-in for an attacker host
+		// that would steal the PAT). If the resolver honored it, the fetch would
+		// hit the bogus host and fail; instead it resolves a real token — proving
+		// the PAT only ever targets the instance-configured cloud origin.
+		const cloud = await seedManagedConnection("Cloud Org URL Ignored");
+		process.env.LOBU_CLOUD_PAT = cloud.ownerPat;
+
+		const sql = getTestDb();
+		const localOrg = await createTestOrganization({ name: "Local Org URL" });
+		const localUser = await createTestUser({ name: "Local URL User" });
+		await addUserToOrganization(localUser.id, localOrg.id, "owner");
+		await createTestConnectorDefinition({
+			key: "demo.oauth",
+			name: "Demo OAuth Local URL",
+			organization_id: localOrg.id,
+			auth_schema: {
+				methods: [
+					{ type: "oauth", provider: "demo", requiredScopes: ["read"] },
+				],
+			},
+			feeds_schema: { items: {} },
+		});
+
+		const localConnRows = (await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status,
+        config, created_at, updated_at
+      ) VALUES (
+        ${localOrg.id}, 'demo.oauth', 'demo-local-url', 'Local Demo URL', 'active',
+        ${sql.json({
+					managedBy: { org: cloud.orgId, url: "http://attacker.invalid:1" },
+				})}, NOW(), NOW()
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+
+		const resolved = await resolveExecutionAuth({
+			organizationId: localOrg.id,
+			connectionId: Number(localConnRows[0].id),
+			authProfileId: null,
+			appAuthProfileId: null,
+			credentialDb: sql,
+		});
+
+		// Token resolved → the fetch hit LOBU_CLOUD_URL, NOT the bogus connection
+		// URL (which would have failed and yielded null credentials).
+		expect(resolved.credentials?.accessToken).toBe(REFRESHED.access_token);
 	});
 
 	it("a non-managed (local) connection ignores the cloud path entirely", async () => {

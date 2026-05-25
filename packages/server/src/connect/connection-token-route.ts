@@ -81,10 +81,13 @@ const tokenValidator = TypeCompiler.Compile(TokenBody);
  * managed secret when the token is expiring. Secrets + the refresh token are
  * held server-side and never returned.
  *
- * Authorization:
+ * Authorization (narrow by design — this delegates ONLY managed grant-holders,
+ * never a user's ordinary connection tokens):
  *   - 403 if the authed user is not a `member` of `org`.
- *   - The connection lookup is owner-scoped (`created_by = <authed user>`), so
- *     a user can only fetch tokens for connections they own. 404 if none.
+ *   - 404 unless the connection is the user's OWN (`created_by`), in a PUBLIC
+ *     org (`organization.visibility = 'public'`), and a consent-only managed
+ *     grant-holder (`config.consent_only = true`). The not-found shape is the
+ *     same regardless of which condition failed (no leak).
  */
 connectionTokenRoutes.post("/oauth/connection-token", async (c) => {
 	const raw = await c.req.json().catch(() => null);
@@ -125,17 +128,28 @@ connectionTokenRoutes.post("/oauth/connection-token", async (c) => {
 		);
 	}
 
-	// Owner-scoped connection lookup: a user can only fetch tokens for
-	// connections they OWN (`created_by`). A connection owned by another member
-	// of the same org is indistinguishable from "not found".
+	// Scoped connection lookup. This endpoint exists ONLY to delegate a managed
+	// grant-holder's token, so the lookup is deliberately narrow — it must NOT be
+	// usable to export a user's ordinary connection tokens:
+	//   - owner-scoped: the user must OWN the connection (`created_by`); a
+	//     connection owned by another member is indistinguishable from not-found;
+	//   - the org must be a PUBLIC org (`organization.visibility = 'public'`) —
+	//     where managed connectors live — never a user's private org;
+	//   - the connection must be a consent-only managed grant-holder
+	//     (`config.consent_only = true`).
+	// Any connection that isn't all three → 404 (same not-found shape; we don't
+	// leak which condition failed).
 	const rows = (await sql`
-    SELECT id, auth_profile_id, app_auth_profile_id
-    FROM connections
-    WHERE organization_id = ${raw.org}
-      AND connector_key = ${raw.connector_key}
-      AND created_by = ${authedUserId}
-      AND deleted_at IS NULL
-      AND status = 'active'
+    SELECT c.id, c.auth_profile_id, c.app_auth_profile_id
+    FROM connections c
+    JOIN "organization" o ON o.id = c.organization_id
+    WHERE c.organization_id = ${raw.org}
+      AND c.connector_key = ${raw.connector_key}
+      AND c.created_by = ${authedUserId}
+      AND c.deleted_at IS NULL
+      AND c.status = 'active'
+      AND o.visibility = 'public'
+      AND c.config->>'consent_only' = 'true'
     LIMIT 1
   `) as unknown as Array<{
 		id: number;
@@ -146,7 +160,7 @@ connectionTokenRoutes.post("/oauth/connection-token", async (c) => {
 		return c.json(
 			{
 				error: "not_found",
-				error_description: "No active connection found for this connector",
+				error_description: "No active managed connection found for this connector",
 			},
 			404,
 		);

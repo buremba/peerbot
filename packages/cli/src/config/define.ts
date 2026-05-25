@@ -100,12 +100,14 @@ export interface ConnectionFeed {
  * `POST /oauth/connection-token`, authenticating with the instance's cloud PAT
  * (`LOBU_CLOUD_PAT`). The managed client secret + refresh token never leave the
  * cloud.
+ *
+ * The cloud origin is fixed by the instance's `LOBU_CLOUD_URL` — a connection
+ * CANNOT supply a URL, so a malicious config can never redirect where the cloud
+ * PAT is sent.
  */
 export interface ManagedBy {
   /** The cloud (public) org the managed connector lives under. */
   org: string;
-  /** Override the cloud base URL (defaults to the instance's `LOBU_CLOUD_URL`). */
-  url?: string;
 }
 
 export interface Connection {

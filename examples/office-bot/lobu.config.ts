@@ -15,8 +15,8 @@ const foodOrdering = defineAgent({
   name: "food-ordering",
   description:
     "Runs the office lunch order — presence check, recommendations, options poll, order collection, Deliveroo basket handoff",
-  dir: "./agents/food-ordering",
-  skills: [skillFromFile("./agents/food-ordering/skills/deliveroo-order")],
+  dir: ".",
+  skills: [skillFromFile("./skills/deliveroo-order")],
   providers: [
     {
       id: "z-ai",

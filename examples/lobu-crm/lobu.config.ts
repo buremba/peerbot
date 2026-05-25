@@ -13,10 +13,11 @@ import {
 
 const crm = defineAgent({
   id: "crm",
+  dir: ".",
   name: "crm",
   description:
     "Maintains Lobu's funnel CRM — leads, pilots, inbound triage, weekly digest",
-  skills: [skillFromFile("./agents/crm/skills/crm-ops")],
+  skills: [skillFromFile("./skills/crm-ops")],
   providers: [
     {
       id: "z-ai",

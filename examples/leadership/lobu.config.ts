@@ -13,7 +13,7 @@ const leadership = defineAgent({
   name: "leadership",
   description:
     "Help leadership teams turn memos, decisions, and board materials into reusable operating context",
-  dir: "./agents/leadership",
+  dir: ".",
   providers: [
     {
       id: "anthropic",

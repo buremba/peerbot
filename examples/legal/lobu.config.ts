@@ -13,7 +13,7 @@ const legalReview = defineAgent({
   name: "legal-review",
   description:
     "Review contracts, summarize risk, and surface missing protections",
-  dir: "./agents/legal",
+  dir: ".",
   providers: [
     {
       id: "anthropic",

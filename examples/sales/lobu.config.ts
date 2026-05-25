@@ -13,7 +13,7 @@ const sales = defineAgent({
   name: "sales",
   description:
     "Help revenue teams track account health, rollout progress, and renewal signals",
-  dir: "./agents/sales",
+  dir: ".",
   providers: [
     {
       id: "anthropic",

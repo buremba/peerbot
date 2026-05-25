@@ -55,7 +55,7 @@ const PINNED = {
   },
   skill: {
     slug: "office-bot",
-    path: "agents/food-ordering/skills/deliveroo-order/SKILL.md",
+    path: "skills/deliveroo-order/SKILL.md",
   },
 } as const;
 

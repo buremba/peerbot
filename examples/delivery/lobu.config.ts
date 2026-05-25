@@ -13,7 +13,7 @@ const delivery = defineAgent({
   name: "delivery",
   description:
     "Help delivery teams keep milestones, blockers, owners, and artifacts aligned",
-  dir: "./agents/delivery",
+  dir: ".",
   providers: [
     {
       id: "anthropic",

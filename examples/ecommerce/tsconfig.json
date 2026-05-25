@@ -7,10 +7,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": [
-    "lobu.config.ts",
-    "agents/**/*.ts",
-    "**/*.connector.ts",
-    "**/*.reaction.ts"
-  ]
+  "include": ["**/*.ts"]
 }

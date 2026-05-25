@@ -90,7 +90,7 @@ If anything fails, do not silently move on — surface the error, propose a fix,
 2. Read the active agent files under `agents/<id>/`.
 3. Check local skills under `skills/` and `agents/<id>/skills/`.
 4. Use `lobu validate` after config changes.
-5. When prompt or behavior changes, run evals via promptfoo (see `examples/personal-finance/agents/personal-finance/evals/promptfooconfig.yaml`). The in-house `lobu eval` command has been removed.
+5. When prompt or behavior changes, run evals via promptfoo (see `examples/personal-finance/evals/promptfooconfig.yaml`). The in-house `lobu eval` command has been removed.
 
 ## Common Commands
 

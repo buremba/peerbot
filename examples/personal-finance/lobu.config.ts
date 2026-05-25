@@ -9,6 +9,7 @@ import {
 
 const personal_finance = defineAgent({
   id: "personal-finance",
+  dir: ".",
   name: "personal-finance",
   description:
     "Help individuals capture wages, expenses, savings, dividends, capital gains and pension contributions across the tax year and assemble a UK Self Assessment (SA100) return.",

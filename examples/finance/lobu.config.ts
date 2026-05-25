@@ -13,7 +13,7 @@ const finance = defineAgent({
   name: "finance",
   description:
     "Help finance teams reconcile data, explain variance, and prepare reporting runs",
-  dir: "./agents/finance",
+  dir: ".",
   providers: [
     {
       id: "anthropic",

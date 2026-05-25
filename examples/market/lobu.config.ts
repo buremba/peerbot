@@ -15,7 +15,7 @@ const vcTracking = defineAgent({
   name: "vc-tracking",
   description:
     "Track companies, founders, and investment opportunities for venture firms",
-  dir: "./agents/vc-tracking",
+  dir: ".",
   providers: [
     {
       id: "anthropic",

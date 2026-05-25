@@ -13,7 +13,7 @@ const agentCommunity = defineAgent({
   name: "agent-community",
   description:
     "Discover aligned members, explain why they should meet, and draft warm introductions",
-  dir: "./agents/agent-community",
+  dir: ".",
   providers: [
     {
       id: "anthropic",

@@ -13,7 +13,7 @@ const ecommerceOps = defineAgent({
   name: "ecommerce-ops",
   description:
     "Manage subscriptions, process order changes, and resolve customer requests",
-  dir: "./agents/ecommerce-ops",
+  dir: ".",
   providers: [
     {
       id: "anthropic",

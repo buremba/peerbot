@@ -79,7 +79,7 @@
 ### ⚠ BREAKING CHANGES
 
 * **core:** drop unused module-lifecycle public types; consolidate wire + session-file utilities ([#930](https://github.com/lobu-ai/lobu/issues/930))
-* **evals:** The in-house `lobu eval` command and YAML eval schema are removed. Migrate evals to promptfoo + @lobu/promptfoo-provider; see examples/personal-finance/agents/personal-finance/evals/promptfooconfig.yaml for the new pattern.
+* **evals:** The in-house `lobu eval` command and YAML eval schema are removed. Migrate evals to promptfoo + @lobu/promptfoo-provider; see examples/personal-finance/evals/promptfooconfig.yaml for the new pattern.
 
 ### Features
 

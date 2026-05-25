@@ -6,16 +6,15 @@ Use this as a starting point for new projects. It shows every Lobu concept in on
 ## Structure
 
 ```
-lobu-crm/
+lobu-crm/                                  # single agent → dir: "." keeps it flat
 ├── lobu.config.ts                         # Agent, entities, relationships, watchers, connections, auth profiles
+├── SOUL.md                                # Agent personality
+├── IDENTITY.md                            # Agent identity
+├── USER.md                                # User context
 ├── funnel-form.connector.ts               # Custom connector (connectorFromFile)
 ├── inbound-triage.reaction.ts             # Runs after watcher extraction
 ├── funnel-digest.reaction.ts              # Runs after watcher extraction
-└── agents/crm/
-    ├── SOUL.md                            # Agent personality
-    ├── IDENTITY.md                        # Agent identity
-    ├── USER.md                            # User context
-    └── skills/crm-ops/SKILL.md            # Agent skill (skillFromFile)
+└── skills/crm-ops/SKILL.md                # Agent skill (skillFromFile)
 ```
 
 The built-in GitHub, X, Hacker News, and website connections are declared inline in

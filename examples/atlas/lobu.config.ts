@@ -11,7 +11,7 @@ const atlasCurator = defineAgent({
   name: "atlas-curator",
   description:
     "Curate Atlas reference data — countries, cities, regions, industries, technologies, universities",
-  dir: "./agents/atlas-curator",
+  dir: ".",
   providers: [
     {
       id: "z-ai",

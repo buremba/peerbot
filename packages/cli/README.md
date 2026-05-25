@@ -32,7 +32,7 @@ docker run -d --name lobu-pg -p 5432:5432 \
 - `lobu agent scaffold <id>` — add a second/third agent to an existing project.
 - `lobu telemetry {status,on,off}` — Sentry is off by default; toggle here.
 
-> Note: Lobu's in-house YAML eval runner has been removed. Author evals with [promptfoo](https://www.promptfoo.dev) + `@lobu/promptfoo-provider`; see `examples/personal-finance/agents/personal-finance/evals/promptfooconfig.yaml` for the new pattern.
+> Note: Lobu's in-house YAML eval runner has been removed. Author evals with [promptfoo](https://www.promptfoo.dev) + `@lobu/promptfoo-provider`; see `examples/personal-finance/evals/promptfooconfig.yaml` for the new pattern.
 
 ## License
 

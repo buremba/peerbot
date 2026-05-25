@@ -3,7 +3,7 @@ title: Agent Workspace
 description: How agent files are organized across prompt files, local skills, evals, and lobu.config.ts.
 ---
 
-Every Lobu agent has a workspace directory such as `agents/my-agent/`. `lobu.config.ts` points each agent at that directory with `dir: "./agents/my-agent"`.
+Every Lobu agent has a workspace directory such as `agents/my-agent/`. `lobu.config.ts` points each agent at that directory with `dir: "./agents/my-agent"`. A **single-agent** project can set `dir: "."` to keep the prompt files at the project root instead (the bundled examples do this); multi-agent projects give each agent its own directory.
 
 The workspace contains the agent's prompt files plus any agent-local skills and evals. Operator-controlled configuration such as providers, connections, network policy, tool policy, and enabled registry skills lives in [`lobu.config.ts`](/reference/lobu-config/).
 

@@ -12,10 +12,10 @@
  * Each primitive section shows ONE canonical pinned example, used as the
  * generic fallback when no use case is selected:
  *
- *   connector    -> examples/ecommerce/connectors/stripe-charges.connector.ts
+ *   connector    -> examples/ecommerce/stripe-charges.connector.ts
  *   memorySchema -> examples/sales/lobu.config.ts        (defineEntityType slice)
  *   watcher      -> examples/sales/lobu.config.ts         (defineWatcher slice)
- *   reaction     -> examples/finance/models/reactions/reconciliation-monitor.reaction.ts
+ *   reaction     -> examples/finance/reconciliation-monitor.reaction.ts
  *   agentConfig  -> examples/sales/lobu.config.ts         (imports + defineAgent slice)
  *   skill        -> examples/office-bot/.../SKILL.md
  *
@@ -44,14 +44,14 @@ const CONFIG_FILE = "lobu.config.ts";
 const PINNED = {
   connector: {
     slug: "ecommerce",
-    path: "connectors/stripe-charges.connector.ts",
+    path: "stripe-charges.connector.ts",
   },
   agentConfig: { slug: "sales" },
   memorySchema: { slug: "sales" },
   watcher: { slug: "sales" },
   reaction: {
     slug: "finance",
-    path: "models/reactions/reconciliation-monitor.reaction.ts",
+    path: "reconciliation-monitor.reaction.ts",
   },
   skill: {
     slug: "office-bot",
@@ -94,7 +94,7 @@ type LandingSnippets = {
 
 /** Slugs that get per-use-case connector / memory / watcher snippets. The id
  *  equals the example directory name. Each dir has exactly one
- *  connectors/*.connector.ts and a lobu.config.ts. */
+ *  *.connector.ts and a lobu.config.ts. */
 const USE_CASE_SLUGS = [
   "legal",
   "finance",
@@ -399,12 +399,10 @@ function listExamples(): ExampleEntry[] {
 }
 
 function findConnectorFile(slug: string): { rel: string } {
-  const connectorsDir = resolve(examplesDir, slug, "connectors");
-  const file = readdirSync(connectorsDir).find((f) =>
-    f.endsWith(".connector.ts")
-  );
-  if (!file) throw new Error(`No *.connector.ts in ${connectorsDir}`);
-  return { rel: `connectors/${file}` };
+  const exampleDir = resolve(examplesDir, slug);
+  const file = readdirSync(exampleDir).find((f) => f.endsWith(".connector.ts"));
+  if (!file) throw new Error(`No *.connector.ts in ${exampleDir}`);
+  return { rel: file };
 }
 
 function buildUseCases(): Record<string, UseCaseSnippets> {

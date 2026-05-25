@@ -112,6 +112,24 @@ export function defineConnection(config: Omit<Connection, "kind">): Connection {
   return { ...config, kind: "connection" };
 }
 
+/**
+ * A local connector source file to compile and ship at `lobu apply`. Built with
+ * {@link connectorFromFile} and listed in {@link Project.connectors}. This is
+ * explicit — only listed connectors are compiled and uploaded; there is no
+ * `./connectors` directory auto-discovery. Connections reference the connector
+ * by key (or its `defineConnector` class), independent of this list.
+ */
+export interface ConnectorSource {
+  readonly kind: "connectorSource";
+  /** Path to a `*.connector.ts`, relative to the config file. */
+  path: string;
+}
+
+/** Reference a local connector source file to compile + ship at apply time. */
+export function connectorFromFile(path: string): ConnectorSource {
+  return { kind: "connectorSource", path };
+}
+
 // ---------------------------------------------------------------------------
 // Watchers (reaction handlers are wired in a later slice)
 // ---------------------------------------------------------------------------
@@ -402,6 +420,12 @@ export interface Project {
   connections?: Connection[];
   authProfiles?: AuthProfile[];
   watchers?: Watcher[];
+  /**
+   * Local connector source files (`*.connector.ts`) to compile and ship,
+   * built with {@link connectorFromFile}. Explicit list, no `./connectors`
+   * auto-discovery; only listed connectors are uploaded.
+   */
+  connectors?: ConnectorSource[];
 }
 
 export function defineConfig(config: Omit<Project, "kind">): Project {

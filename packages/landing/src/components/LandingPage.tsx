@@ -47,7 +47,7 @@ const SETUP_PROMPT = `I want to build a Lobu agent.
 
 2. Walk me through the skill's onboarding interview (it asks what the agent should do, who uses it, where data comes from, where I'll talk to it, what should run on a schedule). Pause at every real decision and ask me, don't fake credentials, don't guess.
 
-3. Scaffold the project per my answers (lobu.config.ts, connectors/, models/reactions/), boot it locally, send a test message via the chosen channel, and show me the memory event that was written.
+3. Scaffold the project per my answers (lobu.config.ts plus any connector, reaction, and skill files it references), boot it locally, send a test message via the chosen channel, and show me the memory event that was written.
 
 Lobu is an open-source event-sourced backend for AI agents: connectors emit events, memory keeps the structured record, agents react in real time and dream on cron. Repo: https://github.com/lobu-ai/lobu. Docs: https://lobu.ai/docs/`;
 

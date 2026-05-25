@@ -185,6 +185,7 @@ The default export of `lobu.config.ts`.
 | `connections` | `Connection[]` | no | Connections (from `defineConnection`) |
 | `authProfiles` | `AuthProfile[]` | no | Auth profiles (from `defineAuthProfile`) |
 | `watchers` | `Watcher[]` | no | Watchers (from `defineWatcher`) |
+| `connectors` | `ConnectorSource[]` | no | Local connector source files to compile + ship (from `connectorFromFile`). Explicit list, no `./connectors` auto-discovery |
 
 Connections, the memory schema, and watchers are declared at the project level (in `defineConfig`), not inside `defineAgent`. A watcher names its owning agent through its own `agent` field.
 

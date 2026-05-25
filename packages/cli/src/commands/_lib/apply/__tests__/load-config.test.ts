@@ -55,11 +55,10 @@ describe("loadDesiredStateFromConfig", () => {
     );
   });
 
-  test("ships local connectors/*.connector.ts source referenced by a connection", async () => {
+  test("ships a connectorFromFile source referenced by a connection", async () => {
     dir = mkdtempSync(join(import.meta.dir, "connector-"));
-    mkdirSync(join(dir, "connectors"));
     writeFileSync(
-      join(dir, "connectors", "weather.connector.ts"),
+      join(dir, "weather.connector.ts"),
       [
         `import { defineConnector } from "@lobu/connector-sdk/define-connector";`,
         `export default defineConnector({`,
@@ -72,9 +71,10 @@ describe("loadDesiredStateFromConfig", () => {
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig, defineConnection } from "@lobu/cli/config";`,
+        `import { connectorFromFile, defineAgent, defineConfig, defineConnection } from "@lobu/cli/config";`,
         `export default defineConfig({`,
         `  agents: [defineAgent({ id: "crm" })],`,
+        `  connectors: [connectorFromFile("./weather.connector.ts")],`,
         `  connections: [defineConnection({ slug: "weather", connector: "weather" })],`,
         `});`,
         ``,
@@ -85,7 +85,7 @@ describe("loadDesiredStateFromConfig", () => {
     expect(state.connectors.definitions).toHaveLength(1);
     const def = state.connectors.definitions[0];
     expect(def?.key).toBeNull();
-    expect(def?.sourceFile).toBe("connectors/weather.connector.ts");
+    expect(def?.sourceFile).toBe("weather.connector.ts");
     expect(def?.sourcePath).toContain("weather.connector.ts");
     expect(def?.sourceCode).toContain("defineConnector");
     // The connection references the connector by key; the server resolves the
@@ -93,11 +93,10 @@ describe("loadDesiredStateFromConfig", () => {
     expect(state.connectors.connections[0]?.connector).toBe("weather");
   });
 
-  test("--only agents skips local connector definitions", async () => {
+  test("--only agents skips connector definitions", async () => {
     dir = mkdtempSync(join(import.meta.dir, "only-"));
-    mkdirSync(join(dir, "connectors"));
     writeFileSync(
-      join(dir, "connectors", "weather.connector.ts"),
+      join(dir, "weather.connector.ts"),
       [
         `import { defineConnector } from "@lobu/connector-sdk/define-connector";`,
         `export default defineConnector({ key: "weather", feeds: { current: { sync: async () => [] } } });`,
@@ -107,8 +106,11 @@ describe("loadDesiredStateFromConfig", () => {
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig } from "@lobu/cli/config";`,
-        `export default defineConfig({ agents: [defineAgent({ id: "crm" })] });`,
+        `import { connectorFromFile, defineAgent, defineConfig } from "@lobu/cli/config";`,
+        `export default defineConfig({`,
+        `  agents: [defineAgent({ id: "crm" })],`,
+        `  connectors: [connectorFromFile("./weather.connector.ts")],`,
+        `});`,
         ``,
       ].join("\n")
     );
@@ -120,39 +122,67 @@ describe("loadDesiredStateFromConfig", () => {
     expect(state.connectors.definitions).toHaveLength(0);
   });
 
-  test("discovers multiple .connector.ts files sorted, ignoring non-matching files and subdirs", async () => {
+  test("connector definitions are sorted by sourceFile", async () => {
     dir = mkdtempSync(join(import.meta.dir, "multi-"));
-    mkdirSync(join(dir, "connectors"));
-    const connectorSrc = `import { defineConnector } from "@lobu/connector-sdk/define-connector";\nexport default defineConnector({ key: "x", feeds: {} });\n`;
-    // Out-of-order on disk; result must be sorted by sourceFile.
-    writeFileSync(join(dir, "connectors", "beta.connector.ts"), connectorSrc);
-    writeFileSync(join(dir, "connectors", "alpha.connector.ts"), connectorSrc);
-    // Non-matching files are ignored.
-    writeFileSync(
-      join(dir, "connectors", "helper.ts"),
-      `export const x = 1;\n`
-    );
-    writeFileSync(join(dir, "connectors", "README.md"), `# connectors\n`);
-    // Nested .connector.ts is ignored (scan is non-recursive).
-    mkdirSync(join(dir, "connectors", "nested"));
-    writeFileSync(
-      join(dir, "connectors", "nested", "deep.connector.ts"),
-      connectorSrc
-    );
+    const src = `import { defineConnector } from "@lobu/connector-sdk/define-connector";\nexport default defineConnector({ key: "x", feeds: {} });\n`;
+    writeFileSync(join(dir, "beta.connector.ts"), src);
+    writeFileSync(join(dir, "alpha.connector.ts"), src);
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig } from "@lobu/cli/config";`,
-        `export default defineConfig({ agents: [defineAgent({ id: "crm" })] });`,
+        `import { connectorFromFile, defineAgent, defineConfig } from "@lobu/cli/config";`,
+        `export default defineConfig({`,
+        `  agents: [defineAgent({ id: "crm" })],`,
+        `  connectors: [`,
+        `    connectorFromFile("./beta.connector.ts"),`,
+        `    connectorFromFile("./alpha.connector.ts"),`,
+        `  ],`,
+        `});`,
         ``,
       ].join("\n")
     );
 
     const { state } = await loadDesiredStateFromConfig({ cwd: dir });
     expect(state.connectors.definitions.map((d) => d.sourceFile)).toEqual([
-      "connectors/alpha.connector.ts",
-      "connectors/beta.connector.ts",
+      "alpha.connector.ts",
+      "beta.connector.ts",
     ]);
+  });
+
+  test("connectorFromFile with a missing file fails clearly", async () => {
+    dir = mkdtempSync(join(import.meta.dir, "missingconn-"));
+    writeFileSync(
+      join(dir, "lobu.config.ts"),
+      [
+        `import { connectorFromFile, defineAgent, defineConfig } from "@lobu/cli/config";`,
+        `export default defineConfig({`,
+        `  agents: [defineAgent({ id: "crm" })],`,
+        `  connectors: [connectorFromFile("./nope.connector.ts")],`,
+        `});`,
+        ``,
+      ].join("\n")
+    );
+    await expect(loadDesiredStateFromConfig({ cwd: dir })).rejects.toThrow(
+      /connectorFromFile.*does not exist/
+    );
+  });
+
+  test("connectorFromFile rejects a path escaping the config dir", async () => {
+    dir = mkdtempSync(join(import.meta.dir, "escconn-"));
+    writeFileSync(
+      join(dir, "lobu.config.ts"),
+      [
+        `import { connectorFromFile, defineAgent, defineConfig } from "@lobu/cli/config";`,
+        `export default defineConfig({`,
+        `  agents: [defineAgent({ id: "crm" })],`,
+        `  connectors: [connectorFromFile("../evil.connector.ts")],`,
+        `});`,
+        ``,
+      ].join("\n")
+    );
+    await expect(loadDesiredStateFromConfig({ cwd: dir })).rejects.toThrow(
+      /must not contain `\.\.`|resolves outside/
+    );
   });
 
   test("loads agent-dir markdown + a file skill, merging skill network/nix", async () => {

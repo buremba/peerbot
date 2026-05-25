@@ -204,7 +204,7 @@ const catalogStalenessChecker = defineWatcher({
   notification: { priority: "low" },
   tags: ["atlas", "reference", "weekly"],
   minCooldownSeconds: 3600,
-  reaction: "./models/reactions/catalog-staleness-checker.reaction.ts",
+  reaction: "./catalog-staleness-checker.reaction.ts",
   prompt:
     'Sweep the atlas reference catalog for entries that haven\'t been\nupdated in 90+ days. List the stalest 10 across cities, countries,\nindustries, technologies, and universities. Suggest a re-verification\naction for each (e.g. "country/PL: confirm population from latest census").\n',
   extractionSchema: {

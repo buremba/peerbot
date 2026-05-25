@@ -159,7 +159,7 @@ If you don't want a reaction, omit the `reaction` field. The watcher's extractio
 
 ## See it in production
 
-- [`examples/sales/models/reactions/account-health-monitor.reaction.ts`](https://github.com/lobu-ai/lobu/blob/main/examples/sales/models/reactions/account-health-monitor.reaction.ts) — filters worsening risk transitions out of a watcher's account-changes extraction and persists each one as a typed `health_change` event.
+- [`examples/sales/account-health-monitor.reaction.ts`](https://github.com/lobu-ai/lobu/blob/main/examples/sales/account-health-monitor.reaction.ts) — filters worsening risk transitions out of a watcher's account-changes extraction and persists each one as a typed `health_change` event.
 
 ## See also
 

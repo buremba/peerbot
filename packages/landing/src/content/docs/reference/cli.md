@@ -33,9 +33,9 @@ Generates:
 - `lobu.config.ts`: the TypeScript project entrypoint (`defineConfig` from `@lobu/cli/config`)
 - `package.json` + `tsconfig.json`: declare `@lobu/cli` / `@lobu/connector-sdk` and give the editor type resolution
 - `.env` — local environment variables (API keys, optional external `DATABASE_URL`)
-- `agents/{name}/` — `IDENTITY.md`, `SOUL.md`, `USER.md`, local skills, and evals
-- `skills/` — shared local skills directory
-- `connectors/`: custom `*.connector.ts` files
+- `agents/{name}/` — `IDENTITY.md`, `SOUL.md`, `USER.md`, skill files, and evals
+- `*.connector.ts` — custom connectors, referenced from `lobu.config.ts` via `connectorFromFile`
+- `*.reaction.ts` — watcher reaction scripts, referenced via `defineWatcher({ reaction })`
 - `AGENTS.md`, `TESTING.md`, `README.md`, `.gitignore`
 
 Interactive prompts guide you through provider, platform, network access policy, gateway port, public URL, and memory configuration. Local runs use bundled PGlite by default; set `DATABASE_URL` when you want to use external Postgres with pgvector.

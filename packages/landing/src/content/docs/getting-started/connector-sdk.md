@@ -152,7 +152,18 @@ A few things to notice:
 - **The PAT is a `lobu_secret_<uuid>` placeholder at runtime.** The gateway's secret proxy swaps it for the real value when the outbound HTTPS request leaves the worker, so the secret never lives in the worker's memory.
 - **Pagination via the `since` query param.** The GitHub `Link` header is the alternative for cursor-style paging when you need to walk a stable, ordered list; `since` is simpler when the source already gives you a monotonic timestamp.
 
-Drop this file at `connectors/github-issues.connector.ts` in your Lobu project. `lobu apply` ships the source to the gateway, which compiles and registers it; from there each `feeds.<key>` entry shows up as something a user can create a connection for in the admin UI.
+Save this file in your Lobu project (e.g. `github-issues.connector.ts` next to `lobu.config.ts`) and list it in your config:
+
+```ts
+import { connectorFromFile, defineConfig } from "@lobu/cli/config";
+
+export default defineConfig({
+  connectors: [connectorFromFile("./github-issues.connector.ts")],
+  // ...agents, connections, etc.
+});
+```
+
+`lobu apply` ships the source to the gateway, which compiles and registers it; from there each `feeds.<key>` entry shows up as something a user can create a connection for in the admin UI.
 
 ## Concepts
 
@@ -305,18 +316,17 @@ Rules of thumb:
 
 ## Where the file lives
 
-In your Lobu project, drop `*.connector.ts` files under `connectors/`:
+A `*.connector.ts` file can live anywhere in your Lobu project; reference each one explicitly with `connectorFromFile` in `defineConfig({ connectors })`:
 
 ```
 my-agent/
-├── lobu.config.ts
-├── connectors/
-│   ├── github-issues.connector.ts
-│   └── stripe-charges.connector.ts
+├── lobu.config.ts          # connectors: [connectorFromFile("./github-issues.connector.ts")]
+├── github-issues.connector.ts
+├── stripe-charges.connector.ts
 └── agents/my-agent/...
 ```
 
-`lobu apply` discovers, type-checks, and ships them. Update the `version` field whenever the event shape changes so the gateway forces a fresh checkpoint.
+`lobu apply` type-checks and ships only the listed connectors (there is no `./connectors` auto-discovery). Update the `version` field whenever the event shape changes so the gateway forces a fresh checkpoint.
 
 ## Dependencies
 
@@ -354,8 +364,8 @@ The rule of thumb: **npm is bundled (compile-time), native is nix (run-time).** 
 
 ## See it in production
 
-- [`examples/ecommerce/connectors/stripe-charges.connector.ts`](https://github.com/lobu-ai/lobu/blob/main/examples/ecommerce/connectors/stripe-charges.connector.ts) — REST API, `env_keys` auth, timestamp checkpoint.
-- [`examples/lobu-crm/connectors/funnel-form.connector.ts`](https://github.com/lobu-ai/lobu/blob/main/examples/lobu-crm/connectors/funnel-form.connector.ts) — small custom HTTP API, ID-set dedupe.
+- [`examples/ecommerce/stripe-charges.connector.ts`](https://github.com/lobu-ai/lobu/blob/main/examples/ecommerce/stripe-charges.connector.ts) — REST API, `env_keys` auth, timestamp checkpoint.
+- [`examples/lobu-crm/funnel-form.connector.ts`](https://github.com/lobu-ai/lobu/blob/main/examples/lobu-crm/funnel-form.connector.ts) — small custom HTTP API, ID-set dedupe.
 
 ## See also
 

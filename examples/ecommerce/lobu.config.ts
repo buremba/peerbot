@@ -1,4 +1,5 @@
 import {
+  connectorFromFile,
   defineAgent,
   defineConfig,
   defineEntityType,
@@ -186,6 +187,7 @@ const customerActivityTracker = defineWatcher({
 });
 
 export default defineConfig({
+  connectors: [connectorFromFile("./stripe-charges.connector.ts")],
   org: "ecommerce",
   orgName: "Ecommerce",
   orgDescription:

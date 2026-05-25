@@ -1,4 +1,5 @@
 import {
+  connectorFromFile,
   defineAgent,
   defineConfig,
   defineEntityType,
@@ -205,6 +206,7 @@ const boardActionTracker = defineWatcher({
 });
 
 export default defineConfig({
+  connectors: [connectorFromFile("./linear-cycles.connector.ts")],
   org: "leadership",
   orgName: "Leadership",
   orgDescription:

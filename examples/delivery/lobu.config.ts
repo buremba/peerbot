@@ -1,4 +1,5 @@
 import {
+  connectorFromFile,
   defineAgent,
   defineConfig,
   defineEntityType,
@@ -175,6 +176,7 @@ const phoenixRolloutTracker = defineWatcher({
 });
 
 export default defineConfig({
+  connectors: [connectorFromFile("./shopify-orders.connector.ts")],
   org: "delivery",
   orgName: "Delivery",
   orgDescription:

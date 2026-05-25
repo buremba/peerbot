@@ -49,9 +49,9 @@ The CLI generates the directory layout, including `lobu.config.ts`, `package.jso
 - **`lobu.config.ts`** — set the agent name + description from question 1 on `defineAgent`; add the chosen provider with `providers: [{ id, model, key: secret("X_API_KEY") }]`; set `org` / `orgName` in `defineConfig` from a slug of the user's choice.
 - **`.env`** — fill in `DATABASE_URL` and the provider API key from Phase 1.
 - **Entity types** — declare the entity types from question 3 with `defineEntityType({ key, name, properties })` and list them in `defineConfig({ entities: [...] })`. Each property is a JSON Schema fragment; add `"x-table-label"` / `"x-table-column": true` to surface a column in the admin UI.
-- **`connectors/<name>.connector.ts`** — only if the source from question 4 is not a bundled connector. Model it on `examples/lobu-crm/connectors/funnel-form.connector.ts` in the lobu repo.
+- **`<name>.connector.ts`** — only if the source from question 4 is not a bundled connector. Model it on `examples/lobu-crm/funnel-form.connector.ts` in the lobu repo, then list it with `connectorFromFile("./<name>.connector.ts")` in `defineConfig({ connectors: [...] })`.
 - **Watchers** — add one watcher with `defineWatcher({ agent, slug, prompt, extractionSchema, schedule? })` and list it in `defineConfig({ watchers: [...] })`. Use the cron `schedule` from question 6 if the user wants one.
-- **`reactions/<name>.reaction.ts`** — only if the watcher needs to call actions after extracting (post to Slack, update an entity, etc.). Point the watcher at it with `reaction: "./reactions/<name>.reaction.ts"`. Default path (no `reaction`) just writes the extracted data to memory.
+- **`<name>.reaction.ts`** — only if the watcher needs to call actions after extracting (post to Slack, update an entity, etc.). Point the watcher at it with `reaction: "./<name>.reaction.ts"`. Default (no `reaction`) just writes the extracted data to memory.
 
 Then boot:
 

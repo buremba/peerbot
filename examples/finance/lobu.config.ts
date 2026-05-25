@@ -1,4 +1,5 @@
 import {
+  connectorFromFile,
   defineAgent,
   defineConfig,
   defineEntityType,
@@ -171,7 +172,7 @@ const reconciliationMonitor = defineWatcher({
   notification: { priority: "high", channel: "both" },
   tags: ["finance", "reconciliation", "daily"],
   minCooldownSeconds: 3600,
-  reaction: "./models/reactions/reconciliation-monitor.reaction.ts",
+  reaction: "./reconciliation-monitor.reaction.ts",
   prompt:
     "Check accounts for unreconciled transactions, new variances, and approaching reporting deadlines. Lead with exceptions that need review.\n",
   extractionSchema: {
@@ -187,6 +188,7 @@ const reconciliationMonitor = defineWatcher({
 });
 
 export default defineConfig({
+  connectors: [connectorFromFile("./quickbooks-transactions.connector.ts")],
   org: "finance",
   orgName: "Finance",
   orgDescription:

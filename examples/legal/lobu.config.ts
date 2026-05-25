@@ -1,4 +1,5 @@
 import {
+  connectorFromFile,
   defineAgent,
   defineConfig,
   defineEntityType,
@@ -196,6 +197,7 @@ const contractReviewTracker = defineWatcher({
 });
 
 export default defineConfig({
+  connectors: [connectorFromFile("./docusign-envelopes.connector.ts")],
   org: "legal-review",
   orgName: "Legal",
   orgDescription:

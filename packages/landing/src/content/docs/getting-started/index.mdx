@@ -41,13 +41,15 @@ my-agent/
 │   ├── IDENTITY.md            # who the agent is
 │   ├── SOUL.md                # instructions, rules, workflows
 │   ├── USER.md                # per-user context and preferences
-│   ├── skills/                # skills scoped to this agent only
+│   ├── skills/                # SKILL.md files, referenced via skillFromFile
 │   └── evals/
 │       └── promptfooconfig.yaml  # test cases for agent quality (promptfoo)
-├── connectors/                # custom *.connector.ts (optional)
-├── data/                      # local runtime data; memory seeds when enabled
-└── skills/                    # skills shared across all agents
+├── my-feed.connector.ts       # custom connector, referenced via connectorFromFile
+├── my-watcher.reaction.ts     # watcher reaction, referenced via reaction:
+└── data/                      # local runtime data; memory seeds when enabled
 ```
+
+Connectors, reaction scripts, and skill files are referenced explicitly from `lobu.config.ts` (`connectorFromFile` / `defineWatcher({ reaction })` / `skillFromFile`), so they can live anywhere — next to the config for small agents, or in folders as you grow. There is no directory auto-discovery.
 
 The memory schema (entity types, relationship types, watchers) lives directly in `lobu.config.ts` via `defineEntityType` / `defineRelationshipType` / `defineWatcher`.
 
@@ -55,9 +57,9 @@ The memory schema (entity types, relationship types, watchers) lives directly in
 |------|------|
 | `lobu.config.ts` | [lobu.config.ts reference](/reference/lobu-config/) |
 | `agents/*/IDENTITY.md`, `SOUL.md`, `USER.md` | [Agent Workspace](/guides/agent-prompts/) |
-| `agents/*/skills/`, `skills/` | [SKILL.md reference](/reference/skill-md/), [Skills](/getting-started/skills/) |
+| `*/SKILL.md` (via `skillFromFile`) | [SKILL.md reference](/reference/skill-md/), [Skills](/getting-started/skills/) |
 | `agents/*/evals/` | [Evaluations](/guides/evals/) |
-| `connectors/` | [Connector SDK](/getting-started/connector-sdk/) |
+| `*.connector.ts` (via `connectorFromFile`) | [Connector SDK](/getting-started/connector-sdk/) |
 | `.env` | [CLI reference](/reference/cli/) |
 
 ## Develop your agent

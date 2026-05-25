@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type {
@@ -10,7 +10,7 @@ import type {
 import type { AgentSettings } from "@lobu/core";
 import Ajv from "ajv";
 import addFormats from "ajv-formats";
-import type { Project, Skill } from "../../../config/index.js";
+import type { ConnectorSource, Project, Skill } from "../../../config/index.js";
 import { ValidationError } from "../../memory/_lib/errors.js";
 import {
   mapProjectToDesiredState,
@@ -732,35 +732,66 @@ export interface LoadDesiredStateOptions {
  * mapper resolves the key from `definition.key`, so a typo can't silently bind
  * the connection to a different (bundled/remote) connector.
  */
-async function discoverLocalConnectorDefinitions(
+/**
+ * Resolve the project's explicit `connectors: [connectorFromFile(...)]` list
+ * into connector definitions to compile + ship. Replaces directory
+ * auto-discovery: only listed connectors are uploaded. Paths are relative to
+ * the config dir and guarded (no absolute, `..`, or backslash escapes),
+ * mirroring `resolveReactionScript`. Source ships with `key: null`; `apply-cmd`
+ * compiles each `sourcePath` on the CLI and the server resolves the key.
+ */
+function resolveConnectorSources(
+  sources: ConnectorSource[],
   cwd: string
-): Promise<DesiredConnectorDefinition[]> {
-  const dirPath = resolve(cwd, "connectors");
-  let entries: string[];
-  try {
-    entries = (await readdir(dirPath)).sort();
-  } catch {
-    // No `./connectors` dir — a project may declare no local connectors.
-    return [];
-  }
-
+): DesiredConnectorDefinition[] {
+  const baseDir = resolve(cwd);
   const defs: DesiredConnectorDefinition[] = [];
-  for (const entry of entries) {
-    if (!entry.endsWith(".connector.ts")) continue;
-    const entryPath = join(dirPath, entry);
-    let entryStat;
-    try {
-      entryStat = await stat(entryPath);
-    } catch {
-      continue;
+  for (const src of sources) {
+    const rel = src.path.trim();
+    if (!rel) {
+      throw new ValidationError(
+        "connectorFromFile() requires a path to a `*.connector.ts` file"
+      );
     }
-    if (!entryStat.isFile()) continue;
-    const sourceCode = await readFile(entryPath, "utf-8");
+    if (rel.startsWith("/") || rel.includes("\\")) {
+      throw new ValidationError(
+        `connectorFromFile(${JSON.stringify(rel)}) must be a relative POSIX path (./foo.connector.ts) — absolute paths and backslashes are not allowed`
+      );
+    }
+    if (rel.split("/").some((seg) => seg === "..")) {
+      throw new ValidationError(
+        `connectorFromFile(${JSON.stringify(rel)}) must not contain \`..\` segments — keep the connector under the config directory`
+      );
+    }
+    if (!rel.endsWith(".ts")) {
+      throw new ValidationError(
+        `connectorFromFile(${JSON.stringify(rel)}) must point at a \`.ts\` file`
+      );
+    }
+    const abs = resolve(baseDir, rel);
+    const relPath = relative(baseDir, abs);
+    if (
+      relPath === ".." ||
+      relPath.startsWith(`..${sep}`) ||
+      isAbsolute(relPath)
+    ) {
+      throw new ValidationError(
+        `connectorFromFile(${JSON.stringify(rel)}) resolves outside the config directory (${abs})`
+      );
+    }
+    let sourceCode: string;
+    try {
+      sourceCode = readFileSync(abs, "utf-8");
+    } catch {
+      throw new ValidationError(
+        `connectorFromFile(${JSON.stringify(rel)}) does not exist (resolved to ${abs})`
+      );
+    }
     defs.push({
       key: null,
-      sourcePath: entryPath,
+      sourcePath: abs,
       sourceCode,
-      sourceFile: `connectors/${entry}`,
+      sourceFile: rel.replace(/^\.\//, ""),
     });
   }
   return defs.sort((a, b) => a.sourceFile.localeCompare(b.sourceFile));
@@ -935,7 +966,8 @@ export async function loadDesiredStateFromConfig(
   // `--only agents|memory` skips connectors (matching the mapper), so don't
   // ship local connector source for those runs either.
   if (!opts.only) {
-    state.connectors.definitions = await discoverLocalConnectorDefinitions(
+    state.connectors.definitions = resolveConnectorSources(
+      typedProject.connectors ?? [],
       opts.cwd
     );
   }

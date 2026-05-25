@@ -8,17 +8,14 @@ Use this as a starting point for new projects. It shows every Lobu concept in on
 ```
 lobu-crm/
 ├── lobu.config.ts                         # Agent, entities, relationships, watchers, connections, auth profiles
-├── connectors/
-│   └── funnel-form.connector.ts           # Custom connector implementation
-├── models/
-│   └── reactions/
-│       ├── inbound-triage.reaction.ts     # Runs after watcher extraction
-│       └── funnel-digest.reaction.ts      # Runs after watcher extraction
+├── funnel-form.connector.ts               # Custom connector (connectorFromFile)
+├── inbound-triage.reaction.ts             # Runs after watcher extraction
+├── funnel-digest.reaction.ts              # Runs after watcher extraction
 └── agents/crm/
     ├── SOUL.md                            # Agent personality
     ├── IDENTITY.md                        # Agent identity
     ├── USER.md                            # User context
-    └── skills/crm-ops/SKILL.md            # Agent skill
+    └── skills/crm-ops/SKILL.md            # Agent skill (skillFromFile)
 ```
 
 The built-in GitHub, X, Hacker News, and website connections are declared inline in
@@ -29,5 +26,5 @@ The built-in GitHub, X, Hacker News, and website connections are declared inline
 | File | What it shows |
 |------|--------------|
 | `lobu.config.ts` | Agent config, providers, network allowlist, entity + relationship + watcher definitions, connections, auth profiles |
-| `connectors/funnel-form.connector.ts` | Custom connector with typed checkpoint + config |
-| `models/reactions/inbound-triage.reaction.ts` | Reaction script with typed `ReactionClient` |
+| `funnel-form.connector.ts` | Custom connector with typed checkpoint + config (listed via `connectorFromFile`) |
+| `inbound-triage.reaction.ts` | Reaction script with typed `ReactionClient` |

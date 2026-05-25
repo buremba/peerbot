@@ -1,4 +1,5 @@
 import {
+  connectorFromFile,
   defineAgent,
   defineConfig,
   defineEntityType,
@@ -183,7 +184,7 @@ const accountHealthMonitor = defineWatcher({
   notification: { priority: "high", channel: "both" },
   tags: ["sales", "health", "renewals"],
   minCooldownSeconds: 1800,
-  reaction: "./models/reactions/account-health-monitor.reaction.ts",
+  reaction: "./account-health-monitor.reaction.ts",
   prompt:
     "Poll CRM data for tracked accounts. Track expansion progress, risk level changes, and renewal timeline.\n",
   extractionSchema: {
@@ -204,6 +205,7 @@ const accountHealthMonitor = defineWatcher({
 });
 
 export default defineConfig({
+  connectors: [connectorFromFile("./salesforce-pipeline.connector.ts")],
   org: "sales",
   orgName: "Sales",
   orgDescription:

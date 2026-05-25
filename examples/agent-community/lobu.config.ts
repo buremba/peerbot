@@ -1,4 +1,5 @@
 import {
+  connectorFromFile,
   defineAgent,
   defineConfig,
   defineEntityType,
@@ -146,7 +147,7 @@ const opportunityMatcher = defineWatcher({
   notification: { priority: "normal" },
   tags: ["community", "matching"],
   minCooldownSeconds: 300,
-  reaction: "./models/reactions/opportunity-matcher.reaction.ts",
+  reaction: "./opportunity-matcher.reaction.ts",
   prompt:
     "Monitor connected profiles, newsletters, websites, and member updates for new launches, posts, hiring signals, funding news, and project changes. Identify which members are likely to care, explain why, and queue approved intro or outreach drafts.\n",
   extractionSchema: {
@@ -172,6 +173,7 @@ const opportunityMatcher = defineWatcher({
 });
 
 export default defineConfig({
+  connectors: [connectorFromFile("./discourse-posts.connector.ts")],
   org: "agent-community",
   orgName: "Agent Community",
   orgDescription:

@@ -45,7 +45,6 @@ import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readdir, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
 import { extname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {

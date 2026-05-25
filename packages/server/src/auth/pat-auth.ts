@@ -1,11 +1,12 @@
 /**
  * Shared Personal Access Token (PAT) authentication.
  *
- * One implementation of the `owl_pat_*` bearer path used by both the embedded
- * Agent API auth bridge (`createLobuAuthBridge`) and the managed-connector
- * connection-token router: verify the token, reject null-org / cross-tenant
- * PATs, and resolve the authenticated user + org. Keeps the auth gate in a
- * single place so the two callers cannot drift.
+ * One implementation of the `owl_pat_*` bearer path used by the embedded Agent
+ * API auth bridge (`createLobuAuthBridge`): verify the token, reject null-org /
+ * cross-tenant PATs, and resolve the authenticated user + org. (The managed-
+ * connector connection-token router does NOT use this — it verifies OAuth
+ * access tokens via `provider.verifyAccessToken`, since the local resolver
+ * sends the user's `lobu login` token, not a PAT.)
  */
 
 import type { DbClient } from "../db/client";

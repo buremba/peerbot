@@ -622,13 +622,14 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
           400
         );
       }
-      // Interactive login grants (the device-code / authorization-code flows
-      // behind `lobu login` + the web session) get `connections:token` for free
-      // so the LOCAL instance's managed-connector resolver can fetch managed
-      // tokens with the user's OWN login credential. Non-interactive PATs do not
-      // (the PAT mint route never adds it by default), so the connection-token
-      // endpoint's scope gate stays meaningful against a broad CI PAT.
-      params.scope = grantConnectionsTokenScope(filtered) ?? filtered;
+      // NOTE: `connections:token` is deliberately NOT granted here. The
+      // authorization-code consent path is used by arbitrary third-party MCP
+      // clients (Claude Desktop, Cursor, ChatGPT, …); granting it here would
+      // silently widen their tokens beyond the scopes they requested/consented
+      // to. Only the first-party `lobu login` device-code grant gets it (see
+      // POST /oauth/device/approve) — that is the credential the local
+      // instance's managed-connector resolver uses.
+      params.scope = filtered;
     }
 
     const code = await provider.createAuthorizationCode(params, user.id, organizationId);

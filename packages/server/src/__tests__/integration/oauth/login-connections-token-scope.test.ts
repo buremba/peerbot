@@ -1,21 +1,27 @@
 /**
- * Stage 1 — interactive login tokens carry `connections:token`.
+ * Stage 1 — the `lobu login` device-code grant carries `connections:token`.
  *
  * The LOCAL instance's managed-connector resolver fetches managed tokens with
- * the USER's own login credential (Stage 2). For that to pass the
- * connection-token endpoint's scope gate, the device-code / authorization-code
- * grant behind `lobu login` (+ the web session) must carry `connections:token`.
+ * the USER's own `lobu login` credential (Stage 2). For that to pass the
+ * connection-token endpoint's scope gate, the device-code grant behind
+ * `lobu login` must carry `connections:token`.
  *
- * This drives the real device-code grant end-to-end against the mounted
- * `oauthRoutes`:
- *   register client → device_authorization → device/approve (with a real
- *   session) → token exchange → assert the issued access token's stored scope
- *   includes `connections:token`.
+ * Crucially, the scope is granted ONLY on the first-party device-code path —
+ * NOT on the generic authorization-code consent path, which arbitrary
+ * third-party MCP clients use; granting it there would silently widen their
+ * tokens beyond what they requested.
  *
- * It also proves the gate stays meaningful: a PAT minted via the token route
- * with the DEFAULT scope does NOT get `connections:token`.
+ * This drives the real grants end-to-end against the mounted `oauthRoutes`:
+ *   - device-code:  register → device_authorization → device/approve → token
+ *     → assert the stored scope INCLUDES `connections:token`.
+ *   - auth-code:    register → authorize (consent) → token → assert the stored
+ *     scope does NOT include `connections:token`.
+ *
+ * It also proves the gate stays meaningful: a profile-only device grant does
+ * NOT get `connections:token`.
  */
 
+import { createHash, randomBytes } from 'node:crypto';
 import { Hono } from 'hono';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { hashToken } from '../../../auth/oauth/utils';
@@ -153,6 +159,78 @@ describe('Stage 1 — login token carries connections:token', () => {
     // Sanity: the regular login scopes are still present.
     expect((rows[0].scope ?? '').split(' ')).toContain('mcp:read');
     expect((rows[0].scope ?? '').split(' ')).toContain('mcp:admin');
+  });
+
+  it('an authorization-code grant does NOT get connections:token (no third-party over-grant)', async () => {
+    // The authorization-code consent path is used by arbitrary third-party MCP
+    // clients (Claude Desktop, Cursor, …). Approving the SAME MCP scopes the CLI
+    // requests must NOT silently add connections:token — only `lobu login`
+    // (device-code) gets it.
+    const app = buildApp();
+    const sql = getTestDb();
+
+    const org = await createTestOrganization({ name: 'AuthCode Org' });
+    const user = await createTestUser({ name: 'AuthCode User' });
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const session = await createTestSession(user.id);
+
+    const redirectUri = `${ORIGIN}/callback`;
+    const reg = await call(app, 'POST', '/oauth/register', {
+      body: {
+        client_name: 'Third-party MCP client',
+        redirect_uris: [redirectUri],
+        grant_types: ['authorization_code', 'refresh_token'],
+        token_endpoint_auth_method: 'none',
+      },
+    });
+    expect(reg.status).toBe(201);
+    const client = (await reg.json()) as { client_id: string };
+
+    // PKCE (S256).
+    const verifier = randomBytes(32).toString('base64url');
+    const challenge = createHash('sha256').update(verifier).digest('base64url');
+
+    // Consent — approve the same MCP scopes `lobu login` requests.
+    const authorize = await call(app, 'POST', '/oauth/authorize/consent', {
+      body: {
+        client_id: client.client_id,
+        redirect_uri: redirectUri,
+        scope: 'mcp:read mcp:write mcp:admin profile:read',
+        code_challenge: challenge,
+        code_challenge_method: 'S256',
+        resource: `${ORIGIN}/mcp/${org.slug}`,
+        approved: true,
+      },
+      headers: { Cookie: session.cookieHeader },
+    });
+    expect(authorize.status).toBe(200);
+    const { redirect_url } = (await authorize.json()) as { redirect_url: string };
+    const code = new URL(redirect_url).searchParams.get('code');
+    expect(code).toBeTruthy();
+
+    const tokenRes = await call(app, 'POST', '/oauth/token', {
+      body: {
+        grant_type: 'authorization_code',
+        code,
+        client_id: client.client_id,
+        redirect_uri: redirectUri,
+        code_verifier: verifier,
+      },
+    });
+    expect(tokenRes.status).toBe(200);
+    const tokens = (await tokenRes.json()) as { access_token: string };
+
+    const rows = (await sql`
+      SELECT scope FROM oauth_tokens
+      WHERE token_hash = ${hashToken(tokens.access_token)}
+        AND token_type = 'access'
+      LIMIT 1
+    `) as unknown as Array<{ scope: string | null }>;
+    expect(rows.length).toBe(1);
+    // The requested MCP scopes are present...
+    expect((rows[0].scope ?? '').split(' ')).toContain('mcp:read');
+    // ...but connections:token was NOT silently added to a third-party token.
+    expect((rows[0].scope ?? '').split(' ')).not.toContain('connections:token');
   });
 
   it('a profile:read-only device grant (no MCP scopes) does NOT get connections:token', async () => {

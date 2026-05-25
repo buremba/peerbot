@@ -1,4 +1,5 @@
 import { CredentialService } from '../auth/credentials';
+import { resolveCloudCredential } from '../connect/cloud-credential';
 import { getBuiltinProviderConfig } from '../connect/oauth-providers';
 import { type DbClient, getDb } from '../db/client';
 import { getAuthProfileById, normalizeAuthValues } from './auth-profiles';
@@ -160,8 +161,12 @@ interface ManagedByDescriptor {
   connectorKey: string;
   /** Cloud base URL (no trailing `/oauth/connection-token`). */
   baseUrl: string;
-  /** The instance's cloud PAT (`owl_pat_*`), the user's own credential. */
-  pat: string;
+  /**
+   * The cloud bearer credential — the user's OWN device-login access token
+   * (`lobu login`, carrying `connections:token`), or the headless/CI fallback
+   * `LOBU_CLOUD_PAT`. Resolved by `resolveCloudCredential`.
+   */
+  token: string;
 }
 
 /**
@@ -169,14 +174,15 @@ interface ManagedByDescriptor {
  * connection is NOT managed (i.e. it uses the local/unchanged credential path).
  *
  * A connection opts into the managed path by carrying `config.managedBy = {
- * org }` (set via `defineConnection({ connector, managedBy })`). The cloud PAT
- * AND the cloud base URL are sourced ONLY from the INSTANCE config
- * (`LOBU_CLOUD_PAT` / `LOBU_CLOUD_URL`) — a single credential + a single fixed,
- * trusted origin for the local instance. The connection config supplies ONLY
- * the `org`; it CANNOT influence where the PAT is sent (a connection-controlled
- * URL would let a malicious config exfiltrate the cloud PAT). Returns `null`
- * (so the connection falls through to the local path) when the descriptor, the
- * instance cloud PAT, or the instance cloud URL is missing.
+ * org }` (set via `defineConnection({ connector, managedBy })`). The cloud
+ * bearer credential AND the cloud base URL are sourced ONLY from the local
+ * instance's own login (`resolveCloudCredential`: the stored `lobu login`
+ * device credential, falling back to `LOBU_CLOUD_PAT`/`LOBU_CLOUD_URL` for
+ * headless/CI). The connection config supplies ONLY the `org`; it CANNOT
+ * influence where the credential is sent (a connection-controlled URL would let
+ * a malicious config exfiltrate the cloud credential). Returns `null` (so the
+ * connection falls through to the local path) when the descriptor or the cloud
+ * credential is missing.
  */
 async function resolveManagedByForConnection(
   organizationId: string,
@@ -205,15 +211,13 @@ async function resolveManagedByForConnection(
   const org = typeof managedBy.org === 'string' ? managedBy.org.trim() : '';
   if (!org) return null;
 
-  const pat = process.env.LOBU_CLOUD_PAT?.trim();
-  if (!pat) return null;
+  // The credential + base URL come from the local instance's OWN login (or the
+  // env fallback), never from the connection config — so a malicious config
+  // can't redirect where the credential is sent.
+  const cloud = await resolveCloudCredential();
+  if (!cloud) return null;
 
-  // The PAT is ALWAYS sent to the instance-configured cloud origin only. The
-  // connection config never supplies a URL, so it cannot redirect the PAT.
-  const baseUrl = (process.env.LOBU_CLOUD_URL?.trim() ?? '').replace(/\/+$/, '');
-  if (!baseUrl) return null;
-
-  return { org, connectorKey: rows[0].connector_key, baseUrl, pat };
+  return { org, connectorKey: rows[0].connector_key, baseUrl: cloud.baseUrl, token: cloud.token };
 }
 
 /**
@@ -260,7 +264,7 @@ async function fetchManagedConnectionToken(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${managed.pat}`,
+        Authorization: `Bearer ${managed.token}`,
       },
       body: JSON.stringify({ org: managed.org, connector_key: managed.connectorKey }),
     });

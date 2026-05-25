@@ -24,7 +24,7 @@ import type { Env } from "@lobu/connector-sdk";
 import { Type } from "@sinclair/typebox";
 import { TypeCompiler } from "@sinclair/typebox/compiler";
 import { Hono } from "hono";
-import { authenticatePat, extractPatBearer } from "../auth/pat-auth";
+import { OAuthProvider } from "../auth/oauth/provider";
 import { getDb } from "../db/client";
 import { resolveExecutionAuth } from "../utils/execution-context";
 import logger from "../utils/logger";
@@ -37,55 +37,82 @@ type ConnectionTokenEnv = {
 const connectionTokenRoutes = new Hono<ConnectionTokenEnv>();
 
 /**
- * The least-privilege scope a PAT must carry to mint a managed-connection
+ * The least-privilege scope a credential must carry to mint a managed-connection
  * access token via this endpoint. Deliberately separate from the default
- * `mcp:*` scopes so a broad org-member PAT cannot mint connection tokens — only
- * a PAT minted explicitly with `connections:token` is authorized. The local
- * instance's `LOBU_CLOUD_PAT` must carry it: `lobu token create --scope
- * connections:token`.
+ * `mcp:*` scopes so a broad org-member credential cannot mint connection tokens.
+ *
+ * Two credential shapes carry it:
+ *   - a USER's device-login access token (`lobu login`) — granted the scope
+ *     automatically at login (auth/oauth/scopes.ts); this is the default path
+ *     for the local instance's managed-connector resolver.
+ *   - a PAT minted EXPLICITLY with `--scope connections:token` (the headless /
+ *     CI fallback, `LOBU_CLOUD_PAT`).
+ *
+ * A default `mcp:read mcp:write` member PAT is NOT enough — the gate stays
+ * meaningful against a broad CI PAT.
  */
 const CONNECTIONS_TOKEN_SCOPE = "connections:token";
 
 /**
- * PAT auth for the connection-token endpoint — the single shared
- * `authenticatePat` gate (verifies the token, rejects null-org / cross-tenant
- * PATs, resolves the user + org). Org membership ALONE is not enough: the PAT
- * must also carry the `connections:token` scope (403 otherwise), so a broad
- * member PAT cannot reach the token-minting endpoint. On success the
- * authenticated user + org are stashed on the context for the handler's
- * owner-scoped lookup.
+ * Auth for the connection-token endpoint. Accepts ANY valid bearer
+ * (`verifyAccessToken` handles both OAuth 2.1 login tokens and `owl_pat_*`
+ * PATs), then requires:
+ *   - the token to be bound to an organization (null-org → 401), and
+ *   - the `connections:token` scope (403 otherwise), before any org/connection
+ *     lookup.
+ * The resolved user is stashed on the context for the handler's owner-scoped
+ * lookup; the handler verifies membership of the BODY's `org` explicitly.
  */
 connectionTokenRoutes.use("/oauth/connection-token", async (c, next) => {
-	const bearerValue = extractPatBearer(c.req.header("Authorization"));
+	const authHeader = c.req.header("Authorization");
+	const bearerMatch = authHeader ? /^bearer\s+(.*)$/i.exec(authHeader) : null;
+	const bearerValue = bearerMatch ? (bearerMatch[1] ?? "").trim() : "";
 	if (!bearerValue) {
 		return c.json(
-			{ error: "unauthorized", error_description: "Bearer PAT required" },
+			{ error: "unauthorized", error_description: "Bearer token required" },
 			401,
 		);
 	}
 
-	const result = await authenticatePat(getDb(), bearerValue);
-	if (!result.ok) {
+	const sql = getDb();
+	const provider = new OAuthProvider(sql, "");
+	let authInfo: Awaited<ReturnType<OAuthProvider["verifyAccessToken"]>>;
+	try {
+		authInfo = await provider.verifyAccessToken(bearerValue);
+	} catch {
+		authInfo = null;
+	}
+	if (!authInfo?.userId) {
 		return c.json(
-			{ error: result.error, error_description: result.error_description },
-			result.status,
+			{ error: "invalid_token", error_description: "Invalid, expired, or revoked token" },
+			401,
+		);
+	}
+	// A token with no org binding cannot be a managed-connector login credential.
+	if (!authInfo.organizationId) {
+		return c.json(
+			{
+				error: "invalid_token",
+				error_description: "Token is not scoped to an organization",
+			},
+			401,
 		);
 	}
 
-	// Least-privilege: a valid, org-scoped PAT is necessary but not sufficient —
-	// it must also be granted `connections:token`. A default `mcp:read mcp:write`
-	// member PAT is rejected here (403) before any org/connection is looked up.
-	if (!result.scopes.includes(CONNECTIONS_TOKEN_SCOPE)) {
+	// Least-privilege: a valid, org-scoped credential is necessary but not
+	// sufficient — it must also carry `connections:token`. A default
+	// `mcp:read mcp:write` PAT is rejected here (403) before any lookup.
+	if (!authInfo.scopes.includes(CONNECTIONS_TOKEN_SCOPE)) {
 		return c.json(
 			{
 				error: "insufficient_scope",
-				error_description: `PAT is missing the '${CONNECTIONS_TOKEN_SCOPE}' scope`,
+				error_description: `Token is missing the '${CONNECTIONS_TOKEN_SCOPE}' scope`,
 			},
 			403,
 		);
 	}
 
-	c.set("authedUserId", result.userId);
+	c.set("authedUserId", authInfo.userId);
 	return next();
 });
 

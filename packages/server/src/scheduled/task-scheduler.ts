@@ -256,13 +256,16 @@ export class TaskScheduler {
         payload: data.payload,
         taskRunId: Number(job.id),
       });
+      // Label is `task`, NOT `job`: Prometheus reserves `job` for the scrape
+      // target and overwrites any same-named metric label, which silently
+      // collapses per-task series (and broke the watcher-automation alert).
       incrementCounter('lobu_scheduled_job_runs_total', {
-        job: data.name,
+        task: data.name,
         outcome: 'success',
       });
     } catch (err) {
       incrementCounter('lobu_scheduled_job_runs_total', {
-        job: data.name,
+        task: data.name,
         outcome: 'error',
       });
       throw err;

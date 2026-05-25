@@ -23,7 +23,7 @@ spec:
         # replicas down / never scraped).
         - alert: WatcherAutomationSilent
           expr: |
-            (sum(increase(lobu_scheduled_job_runs_total{job="watcher-automation",outcome="success"}[15m])) or on() vector(0)) == 0
+            (sum(increase(lobu_scheduled_job_runs_total{task="watcher-automation",outcome="success"}[15m])) or on() vector(0)) == 0
           for: 15m
           labels:
             severity: critical
@@ -46,12 +46,12 @@ spec:
         # A critical scheduled job erroring repeatedly (e.g. the stale-run reaper).
         - alert: LobuScheduledJobFailing
           expr: |
-            sum(increase(lobu_scheduled_job_runs_total{job=~"watcher-automation|check-stalled-executions",outcome="error"}[15m])) by (job) > 0
+            sum(increase(lobu_scheduled_job_runs_total{task=~"watcher-automation|check-stalled-executions",outcome="error"}[15m])) by (task) > 0
           for: 15m
           labels:
             severity: warning
             service: lobu
           annotations:
-            summary: "Lobu scheduled job {{`{{ $labels.job }}`}} is failing"
-            description: "The {{`{{ $labels.job }}`}} cron task threw on every run over 15m."
+            summary: "Lobu scheduled job {{`{{ $labels.task }}`}} is failing"
+            description: "The {{`{{ $labels.task }}`}} cron task threw on every run over 15m."
 {{- end }}

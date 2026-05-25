@@ -72,7 +72,7 @@ function initializeMetrics() {
   // handled by rate()/increase().
   registerMetric(
     "lobu_scheduled_job_runs_total",
-    "Scheduled (cron) task ticks by job name and outcome (success|error)",
+    "Scheduled (cron) task ticks by task name and outcome (success|error)",
     "counter"
   );
   registerMetric(

@@ -544,12 +544,18 @@ connectRoutes.get('/:token/oauth/start', requireConnectToken, async (c) => {
   }
 
   // Broker delegation: when the backing oauth_app profile is a broker-ref, the
-  // broker holds the client_id, so build the authorization URL remotely.
+  // broker holds the client_id + resolves the provider endpoints server-side,
+  // so build the authorization URL remotely.
   const brokerRef = await resolveBrokerRefForToken(tokenRow, authConfig);
   if (brokerRef) {
     const baseUrl = getBaseUrl(c);
     const redirectUri = `${baseUrl}/connect/oauth/callback`;
-    const pkceCodeVerifier = authConfig.usePkce ? buildPkceVerifier() : undefined;
+    // Reuse the persisted verifier if one exists; only generate (and persist)
+    // when missing. The challenge MUST derive from the SAME verifier that the
+    // callback will send, so the start/callback pair stays consistent.
+    const pkceCodeVerifier = authConfig.usePkce
+      ? (authConfig.pkceCodeVerifier ?? buildPkceVerifier())
+      : undefined;
 
     const needsUpdate =
       authConfig.redirectUri !== redirectUri ||
@@ -576,9 +582,6 @@ connectRoutes.get('/:token/oauth/start', requireConnectToken, async (c) => {
         redirect_uri: redirectUri,
         scopes: authConfig.scopes ?? [],
         state: token,
-        authorization_url: authConfig.authorizationUrl,
-        auth_params: authConfig.authParams,
-        client_id_key: authConfig.clientIdKey,
         ...(pkceCodeVerifier ? { code_challenge: buildPkceChallenge(pkceCodeVerifier) } : {}),
       }
     );
@@ -614,7 +617,13 @@ connectRoutes.get('/:token/oauth/start', requireConnectToken, async (c) => {
 
   const baseUrl = getBaseUrl(c);
   const redirectUri = `${baseUrl}/connect/oauth/callback`;
-  const pkceCodeVerifier = authConfig.usePkce ? buildPkceVerifier() : undefined;
+  // Reuse the persisted verifier if one exists; only generate (and persist)
+  // when missing. Regenerating on a repeat /oauth/start would build the
+  // challenge from a verifier the callback never sees (the persisted one is
+  // unchanged when needsUpdate is false), breaking the PKCE handshake.
+  const pkceCodeVerifier = authConfig.usePkce
+    ? (authConfig.pkceCodeVerifier ?? buildPkceVerifier())
+    : undefined;
 
   const needsUpdate =
     authConfig.redirectUri !== redirectUri || (authConfig.usePkce && !authConfig.pkceCodeVerifier);
@@ -751,8 +760,9 @@ async function handleOAuthCallback(
   const baseUrl = getBaseUrl(c);
 
   // Broker delegation: when the backing oauth_app profile is a broker-ref, the
-  // broker holds the client_secret, so exchange the code remotely and use the
-  // returned user tokens. Storage below is identical to the local path.
+  // broker holds the client_secret + resolves the token endpoint server-side,
+  // so exchange the code remotely and use the returned user tokens. Storage
+  // below is identical to the local path.
   const brokerRef = await resolveBrokerRefForToken(tokenRow, authConfig);
 
   let tokens: Awaited<ReturnType<typeof exchangeCodeForTokens>> = null;
@@ -768,10 +778,6 @@ async function handleOAuthCallback(
       provider: authConfig.provider,
       code,
       redirect_uri: redirectUri,
-      token_url: authConfig.tokenUrl,
-      token_endpoint_auth_method: authConfig.tokenEndpointAuthMethod,
-      client_id_key: authConfig.clientIdKey,
-      client_secret_key: authConfig.clientSecretKey,
       ...(authConfig.pkceCodeVerifier ? { code_verifier: authConfig.pkceCodeVerifier } : {}),
     });
     if (exchanged?.access_token) {

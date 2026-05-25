@@ -26,13 +26,33 @@ import { CredentialService } from '../auth/credentials';
 import { PersonalAccessTokenService } from '../auth/tokens';
 import { getDb } from '../db/client';
 import { getPrimaryAuthProfileForKind, normalizeAuthValues } from '../utils/auth-profiles';
+import { getOAuthAuthMethods, normalizeConnectorAuthSchema } from '../utils/connector-auth';
 import logger from '../utils/logger';
 import { buildAuthorizationUrl, exchangeCodeForTokens } from './oauth-providers';
+
+type OAuthTokenEndpointAuthMethod = 'client_secret_post' | 'client_secret_basic' | 'none';
 
 type BrokerEnv = {
   Bindings: Env;
   Variables: { brokerOrgId: string };
 };
+
+/**
+ * The OAuth endpoints + auth-method the broker will hit, resolved SERVER-SIDE
+ * from the broker org's own connector metadata. The caller never supplies
+ * these — that is the security premise of the broker (otherwise a caller with
+ * any valid PAT could redirect the broker's client_secret to an attacker).
+ */
+interface BrokerProviderConfig {
+  provider: string;
+  authorizationUrl?: string;
+  tokenUrl?: string;
+  userinfoUrl?: string;
+  authParams?: Record<string, string>;
+  tokenEndpointAuthMethod?: OAuthTokenEndpointAuthMethod;
+  clientIdKey?: string;
+  clientSecretKey?: string;
+}
 
 const brokerRoutes = new Hono<BrokerEnv>();
 
@@ -82,9 +102,55 @@ brokerRoutes.use('/oauth/*', async (c, next) => {
 });
 
 /**
- * Resolve the broker org's managed `oauth_app` client credentials for a
- * provider/connector. The broker reads its OWN org's profile — the local
- * caller never sees these values.
+ * Resolve the OAuth provider config (endpoints, auth method, credential keys)
+ * SERVER-SIDE from the broker org's `connector_definitions` row for
+ * `connectorKey`, matching the oauth method by `provider`. Returns `null` when
+ * the connector or a matching oauth method isn't found in the broker org — the
+ * broker refuses to act on a connector it doesn't manage. The caller cannot
+ * influence these endpoints (no token_url/authorization_url in the request).
+ */
+async function resolveBrokerProviderConfig(params: {
+  organizationId: string;
+  connectorKey: string;
+  provider: string;
+}): Promise<BrokerProviderConfig | null> {
+  const sql = getDb();
+  const rows = await sql`
+    SELECT auth_schema
+    FROM connector_definitions
+    WHERE key = ${params.connectorKey}
+      AND status = 'active'
+      AND (organization_id = ${params.organizationId} OR organization_id IS NULL)
+    ORDER BY CASE WHEN organization_id = ${params.organizationId} THEN 0 ELSE 1 END
+    LIMIT 1
+  `;
+  if (rows.length === 0) return null;
+
+  const authSchema = normalizeConnectorAuthSchema(
+    (rows[0] as { auth_schema: unknown }).auth_schema
+  );
+  const method = getOAuthAuthMethods(authSchema).find(
+    (m) => m.provider.toLowerCase() === params.provider.toLowerCase()
+  );
+  if (!method) return null;
+
+  return {
+    provider: method.provider,
+    authorizationUrl: method.authorizationUrl,
+    tokenUrl: method.tokenUrl,
+    userinfoUrl: method.userinfoUrl,
+    authParams: method.authParams,
+    tokenEndpointAuthMethod: method.tokenEndpointAuthMethod,
+    clientIdKey: method.clientIdKey,
+    clientSecretKey: method.clientSecretKey,
+  };
+}
+
+/**
+ * Resolve the broker org's managed `oauth_app` client credentials. The broker
+ * reads its OWN org's profile — the local caller never sees these values. The
+ * credential KEY NAMES come from the server-resolved connector config (not the
+ * request), with the provider-uppercase default as a fallback.
  */
 async function resolveBrokerClientCredentials(params: {
   organizationId: string;
@@ -118,14 +184,12 @@ interface AuthorizeUrlBody {
   scopes?: string[];
   state?: string;
   code_challenge?: string;
-  authorization_url?: string;
-  auth_params?: Record<string, string>;
-  client_id_key?: string;
 }
 
 /**
  * POST /broker/oauth/authorize-url
- * Build the provider authorization URL using the broker org's managed client_id.
+ * Build the provider authorization URL using the broker org's managed client_id
+ * and SERVER-RESOLVED authorization endpoint (never caller-supplied).
  */
 brokerRoutes.post('/oauth/authorize-url', async (c) => {
   const orgId = c.get('brokerOrgId');
@@ -140,11 +204,26 @@ brokerRoutes.post('/oauth/authorize-url', async (c) => {
     );
   }
 
+  const providerConfig = await resolveBrokerProviderConfig({
+    organizationId: orgId,
+    connectorKey: body.connector_key,
+    provider: body.provider,
+  });
+  if (!providerConfig) {
+    return c.json(
+      {
+        error: 'unknown_connector',
+        error_description: `Broker org does not manage connector '${body.connector_key}' / provider '${body.provider}'`,
+      },
+      400
+    );
+  }
+
   const { clientId } = await resolveBrokerClientCredentials({
     organizationId: orgId,
     provider: body.provider,
     connectorKey: body.connector_key,
-    clientIdKey: body.client_id_key,
+    clientIdKey: providerConfig.clientIdKey,
   });
   if (!clientId) {
     return c.json(
@@ -159,8 +238,8 @@ brokerRoutes.post('/oauth/authorize-url', async (c) => {
     redirectUri: body.redirect_uri,
     scopes: body.scopes ?? [],
     state: body.state,
-    authorizationUrl: body.authorization_url,
-    authParams: body.auth_params,
+    authorizationUrl: providerConfig.authorizationUrl,
+    authParams: providerConfig.authParams,
     codeChallenge: body.code_challenge,
   });
   if (!authorizationUrl) {
@@ -176,16 +255,14 @@ interface ExchangeBody {
   code?: string;
   redirect_uri?: string;
   code_verifier?: string;
-  token_url?: string;
-  token_endpoint_auth_method?: 'client_secret_post' | 'client_secret_basic' | 'none';
-  client_id_key?: string;
-  client_secret_key?: string;
 }
 
 /**
  * POST /broker/oauth/exchange
  * Exchange an authorization code for tokens using the broker org's managed
- * client_id/secret. Returns ONLY the user's tokens — never the client_secret.
+ * client_id/secret and SERVER-RESOLVED token endpoint (never caller-supplied —
+ * otherwise a caller could redirect the client_secret to an attacker). Returns
+ * ONLY the user's tokens — never the client_secret.
  */
 brokerRoutes.post('/oauth/exchange', async (c) => {
   const orgId = c.get('brokerOrgId');
@@ -200,12 +277,27 @@ brokerRoutes.post('/oauth/exchange', async (c) => {
     );
   }
 
+  const providerConfig = await resolveBrokerProviderConfig({
+    organizationId: orgId,
+    connectorKey: body.connector_key,
+    provider: body.provider,
+  });
+  if (!providerConfig) {
+    return c.json(
+      {
+        error: 'unknown_connector',
+        error_description: `Broker org does not manage connector '${body.connector_key}' / provider '${body.provider}'`,
+      },
+      400
+    );
+  }
+
   const { clientId, clientSecret } = await resolveBrokerClientCredentials({
     organizationId: orgId,
     provider: body.provider,
     connectorKey: body.connector_key,
-    clientIdKey: body.client_id_key,
-    clientSecretKey: body.client_secret_key,
+    clientIdKey: providerConfig.clientIdKey,
+    clientSecretKey: providerConfig.clientSecretKey,
   });
   if (!clientId) {
     return c.json(
@@ -220,8 +312,8 @@ brokerRoutes.post('/oauth/exchange', async (c) => {
     clientId,
     clientSecret,
     redirectUri: body.redirect_uri,
-    tokenUrl: body.token_url,
-    tokenEndpointAuthMethod: body.token_endpoint_auth_method,
+    tokenUrl: providerConfig.tokenUrl,
+    tokenEndpointAuthMethod: providerConfig.tokenEndpointAuthMethod,
     codeVerifier: body.code_verifier,
   });
   if (!tokens) {
@@ -241,24 +333,36 @@ interface RefreshBody {
   connector_key?: string;
   provider?: string;
   refresh_token?: string;
-  token_url?: string;
-  token_endpoint_auth_method?: 'client_secret_post' | 'client_secret_basic' | 'none';
-  client_id_key?: string;
-  client_secret_key?: string;
 }
 
 /**
  * POST /broker/oauth/refresh
- * Refresh an access token using the broker org's managed client_id/secret.
+ * Refresh an access token using the broker org's managed client_id/secret and
+ * SERVER-RESOLVED token endpoint (never caller-supplied).
  */
 brokerRoutes.post('/oauth/refresh', async (c) => {
   const orgId = c.get('brokerOrgId');
   const body = await c.req.json<RefreshBody>().catch(() => null);
-  if (!body?.provider || !body.connector_key || !body.refresh_token || !body.token_url) {
+  if (!body?.provider || !body.connector_key || !body.refresh_token) {
     return c.json(
       {
         error: 'bad_request',
-        error_description: 'provider, connector_key, refresh_token, token_url required',
+        error_description: 'provider, connector_key, refresh_token required',
+      },
+      400
+    );
+  }
+
+  const providerConfig = await resolveBrokerProviderConfig({
+    organizationId: orgId,
+    connectorKey: body.connector_key,
+    provider: body.provider,
+  });
+  if (!providerConfig?.tokenUrl) {
+    return c.json(
+      {
+        error: 'unknown_connector',
+        error_description: `Broker org does not manage connector '${body.connector_key}' / provider '${body.provider}' (no token endpoint)`,
       },
       400
     );
@@ -268,8 +372,8 @@ brokerRoutes.post('/oauth/refresh', async (c) => {
     organizationId: orgId,
     provider: body.provider,
     connectorKey: body.connector_key,
-    clientIdKey: body.client_id_key,
-    clientSecretKey: body.client_secret_key,
+    clientIdKey: providerConfig.clientIdKey,
+    clientSecretKey: providerConfig.clientSecretKey,
   });
   if (!clientId) {
     return c.json(
@@ -279,11 +383,11 @@ brokerRoutes.post('/oauth/refresh', async (c) => {
   }
 
   const refreshed = await new CredentialService(getDb()).refreshTokenGeneric({
-    tokenUrl: body.token_url,
+    tokenUrl: providerConfig.tokenUrl,
     clientId,
     clientSecret: clientSecret ?? undefined,
     refreshToken: body.refresh_token,
-    authMethod: body.token_endpoint_auth_method,
+    authMethod: providerConfig.tokenEndpointAuthMethod,
   });
   if (!refreshed) {
     return c.json({ error: 'refresh_failed', error_description: 'Token refresh failed' }, 502);

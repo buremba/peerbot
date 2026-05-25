@@ -22,15 +22,12 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '../../../index';
 import { manageConnections } from '../../../tools/admin/manage_connections';
 import { manageFeeds } from '../../../tools/admin/manage_feeds';
-import type { ToolContext } from '../../../tools/registry';
 import { createAuthProfile } from '../../../utils/auth-profiles';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
-  addUserToOrganization,
   createTestConnectorDefinition,
-  createTestOrganization,
-  createTestUser,
+  seedOwnerContext,
 } from '../../setup/test-fixtures';
 
 const TEST_ENV = {
@@ -38,33 +35,17 @@ const TEST_ENV = {
   DATABASE_URL: process.env.DATABASE_URL,
 } as unknown as Env;
 
-function ctxFor(organizationId: string, userId: string): ToolContext {
-  return {
-    organizationId,
-    userId,
-    memberRole: 'owner',
-    agentId: null,
-    isAuthenticated: true,
-    clientId: null,
-    scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
-    tokenType: 'oauth',
-    scopedToOrg: true,
-    allowCrossOrg: false,
-  } as ToolContext;
-}
-
 /**
  * Seed an org (public by default) with an OAuth connector + an active managed
- * `oauth_app` profile (the client secret the cloud holds). Returns the org +
- * the member who connects.
+ * `oauth_app` profile (the client secret the cloud holds). Returns the owner's
+ * tool context + the connector key.
  */
 async function seedManagedConnector(opts: { visibility: 'public' | 'private' }) {
-  const org = await createTestOrganization({
-    name: `Managed ${opts.visibility} Org`,
+  const { org, ctx } = await seedOwnerContext({
+    orgName: `Managed ${opts.visibility} Org`,
+    userName: 'Connecting Member',
     visibility: opts.visibility,
   });
-  const user = await createTestUser({ name: 'Connecting Member' });
-  await addUserToOrganization(user.id, org.id, 'owner');
 
   const connectorKey = 'demo.oauth';
   await createTestConnectorDefinition({
@@ -97,7 +78,7 @@ async function seedManagedConnector(opts: { visibility: 'public' | 'private' }) 
     authData: { DEMO_CLIENT_ID: 'managed-cid', DEMO_CLIENT_SECRET: 'managed-secret' },
   });
 
-  return { org, user, connectorKey };
+  return { ctx, connectorKey };
 }
 
 describe('Stage 3 — managed-connect creates a consent-only connection', () => {
@@ -110,8 +91,7 @@ describe('Stage 3 — managed-connect creates a consent-only connection', () => 
   });
 
   it('a managed connector in a PUBLIC org yields a consent_only connection with no feeds', async () => {
-    const { org, user, connectorKey } = await seedManagedConnector({ visibility: 'public' });
-    const ctx = ctxFor(org.id, user.id);
+    const { ctx, connectorKey } = await seedManagedConnector({ visibility: 'public' });
 
     const result = (await manageConnections(
       { action: 'connect', connector_key: connectorKey },
@@ -146,8 +126,7 @@ describe('Stage 3 — managed-connect creates a consent-only connection', () => 
   });
 
   it('a managed connector in a PRIVATE org is an ordinary connection (no consent_only)', async () => {
-    const { org, user, connectorKey } = await seedManagedConnector({ visibility: 'private' });
-    const ctx = ctxFor(org.id, user.id);
+    const { ctx, connectorKey } = await seedManagedConnector({ visibility: 'private' });
 
     const result = (await manageConnections(
       { action: 'connect', connector_key: connectorKey },

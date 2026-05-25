@@ -15,37 +15,19 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '../../../index';
 import { manageConnections } from '../../../tools/admin/manage_connections';
 import { manageFeeds } from '../../../tools/admin/manage_feeds';
-import type { ToolContext } from '../../../tools/registry';
 import { createAuthProfile } from '../../../utils/auth-profiles';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
-  addUserToOrganization,
   createTestConnection,
   createTestConnectorDefinition,
-  createTestOrganization,
-  createTestUser,
+  seedOwnerContext,
 } from '../../setup/test-fixtures';
 
 const TEST_ENV = {
   ENVIRONMENT: 'test',
   DATABASE_URL: process.env.DATABASE_URL,
 } as unknown as Env;
-
-function ctxFor(organizationId: string, userId: string): ToolContext {
-  return {
-    organizationId,
-    userId,
-    memberRole: 'owner',
-    agentId: null,
-    isAuthenticated: true,
-    clientId: null,
-    scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
-    tokenType: 'oauth',
-    scopedToOrg: true,
-    allowCrossOrg: false,
-  } as ToolContext;
-}
 
 describe('Stage 5 — local managed connection has feeds', () => {
   beforeAll(async () => {
@@ -61,10 +43,10 @@ describe('Stage 5 — local managed connection has feeds', () => {
     // create with config.managedBy for an OAuth connector that has NO local
     // auth profile (the grant lives in the cloud). It must be created active —
     // not rejected with "Select or create an OAuth account profile".
-    const org = await createTestOrganization({ name: 'Create Managed Org' });
-    const user = await createTestUser({ name: 'Create Managed User' });
-    await addUserToOrganization(user.id, org.id, 'owner');
-    const ctx = ctxFor(org.id, user.id);
+    const { org, ctx } = await seedOwnerContext({
+      orgName: 'Create Managed Org',
+      userName: 'Create Managed User',
+    });
 
     await createTestConnectorDefinition({
       key: 'demo.oauth',
@@ -121,10 +103,10 @@ describe('Stage 5 — local managed connection has feeds', () => {
     // Managed connections never select/bind a local auth profile — even when an
     // active oauth_account + oauth_app exist for this connector. Without the fix,
     // the auto-selector would bind the managed connection to the local grant.
-    const org = await createTestOrganization({ name: 'Existing Profile Org' });
-    const user = await createTestUser({ name: 'Existing Profile User' });
-    await addUserToOrganization(user.id, org.id, 'owner');
-    const ctx = ctxFor(org.id, user.id);
+    const { org, user, ctx } = await seedOwnerContext({
+      orgName: 'Existing Profile Org',
+      userName: 'Existing Profile User',
+    });
 
     await createTestConnectorDefinition({
       key: 'demo.oauth',
@@ -207,10 +189,10 @@ describe('Stage 5 — local managed connection has feeds', () => {
     // skip the auth-profile requirement and create an active unauthenticated
     // connection. It falls through to the normal OAuth requirement and is
     // rejected.
-    const org = await createTestOrganization({ name: 'Empty Org Managed' });
-    const user = await createTestUser({ name: 'Empty Org User' });
-    await addUserToOrganization(user.id, org.id, 'owner');
-    const ctx = ctxFor(org.id, user.id);
+    const { org, ctx } = await seedOwnerContext({
+      orgName: 'Empty Org Managed',
+      userName: 'Empty Org User',
+    });
 
     await createTestConnectorDefinition({
       key: 'demo.oauth',
@@ -240,10 +222,10 @@ describe('Stage 5 — local managed connection has feeds', () => {
   it('rejects managedBy on a NON-OAuth connector', async () => {
     // managedBy delegates to a cloud OAuth grant — it makes no sense on a
     // no-auth/browser/env connector and must not bypass their auth path.
-    const org = await createTestOrganization({ name: 'NonOAuth Managed Org' });
-    const user = await createTestUser({ name: 'NonOAuth Managed User' });
-    await addUserToOrganization(user.id, org.id, 'owner');
-    const ctx = ctxFor(org.id, user.id);
+    const { org, ctx } = await seedOwnerContext({
+      orgName: 'NonOAuth Managed Org',
+      userName: 'NonOAuth Managed User',
+    });
 
     await createTestConnectorDefinition({
       key: 'demo.noauth',
@@ -272,10 +254,10 @@ describe('Stage 5 — local managed connection has feeds', () => {
     // Reverse of the feed guard: a consent-only grant-holder must STAY
     // consent-only — stripping it would let feeds be added so the cloud syncs
     // the grant-holder's data.
-    const org = await createTestOrganization({ name: 'Consent Lock Org' });
-    const user = await createTestUser({ name: 'Consent Lock User' });
-    await addUserToOrganization(user.id, org.id, 'owner');
-    const ctx = ctxFor(org.id, user.id);
+    const { org, user, ctx } = await seedOwnerContext({
+      orgName: 'Consent Lock Org',
+      userName: 'Consent Lock User',
+    });
 
     await createTestConnectorDefinition({
       key: 'demo.oauth',
@@ -306,10 +288,10 @@ describe('Stage 5 — local managed connection has feeds', () => {
   });
 
   it('a local managedBy connection (not consent_only) can create a feed that syncs locally', async () => {
-    const org = await createTestOrganization({ name: 'Local Managed Org' });
-    const user = await createTestUser({ name: 'Local Managed User' });
-    await addUserToOrganization(user.id, org.id, 'owner');
-    const ctx = ctxFor(org.id, user.id);
+    const { org, user, ctx } = await seedOwnerContext({
+      orgName: 'Local Managed Org',
+      userName: 'Local Managed User',
+    });
 
     await createTestConnectorDefinition({
       key: 'demo.oauth',
@@ -360,10 +342,10 @@ describe('Stage 5 — local managed connection has feeds', () => {
   it('a consent_only connection (cloud grant-holder) still cannot have feeds', async () => {
     // Contrast: the CLOUD-side consent-only connection is still blocked, so the
     // managed-vs-consent_only distinction is the thing that gates syncing.
-    const org = await createTestOrganization({ name: 'Consent Cloud Org' });
-    const user = await createTestUser({ name: 'Consent Cloud User' });
-    await addUserToOrganization(user.id, org.id, 'owner');
-    const ctx = ctxFor(org.id, user.id);
+    const { org, user, ctx } = await seedOwnerContext({
+      orgName: 'Consent Cloud Org',
+      userName: 'Consent Cloud User',
+    });
 
     await createTestConnectorDefinition({
       key: 'demo.oauth',

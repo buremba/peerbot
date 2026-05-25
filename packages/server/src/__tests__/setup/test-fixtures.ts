@@ -11,6 +11,7 @@ import { generateSecureToken, hashToken } from '../../auth/oauth/utils';
 import { pgBigintArray, pgTextArray } from '../../db/client';
 import { ensureUniqueConnectionSlug } from '../../utils/connections';
 import { generateSlug } from '../../utils/entity-management';
+import type { ToolContext } from '../../tools/registry';
 import { getTestDb } from './test-db';
 
 const TEST_SYSTEM_ORG_ID = 'default';
@@ -112,6 +113,45 @@ export async function addUserToOrganization(
   `;
 
   return memberId;
+}
+
+/**
+ * A `ToolContext` for an org owner with full MCP scopes — the shape connector
+ * admin-tool tests need to call `manageConnections` / `manageFeeds` as the
+ * connection owner.
+ */
+export function ownerToolContext(organizationId: string, userId: string): ToolContext {
+  return {
+    organizationId,
+    userId,
+    memberRole: 'owner',
+    agentId: null,
+    isAuthenticated: true,
+    clientId: null,
+    scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
+    tokenType: 'oauth',
+    scopedToOrg: true,
+    allowCrossOrg: false,
+  } as ToolContext;
+}
+
+/**
+ * Seed an org with `user` as owner, returning both plus a ready owner
+ * `ToolContext`. Collapses the org + user + membership + context boilerplate
+ * that connector admin-tool tests otherwise repeat per case.
+ */
+export async function seedOwnerContext(opts?: {
+  orgName?: string;
+  userName?: string;
+  visibility?: 'public' | 'private';
+}): Promise<{ org: TestOrganization; user: TestUser; ctx: ToolContext }> {
+  const org = await createTestOrganization({
+    name: opts?.orgName ?? 'Test Org',
+    ...(opts?.visibility ? { visibility: opts.visibility } : {}),
+  });
+  const user = await createTestUser({ name: opts?.userName ?? 'Test User' });
+  await addUserToOrganization(user.id, org.id, 'owner');
+  return { org, user, ctx: ownerToolContext(org.id, user.id) };
 }
 
 export async function createTestAgent(options: {

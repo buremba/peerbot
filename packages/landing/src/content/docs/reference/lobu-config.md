@@ -195,7 +195,8 @@ Connections, the memory schema, and watchers are declared at the project level (
 | `id` | string | yes | Agent ID. Must match `^[a-z0-9][a-z0-9-]*$` (lowercase alphanumeric with hyphens) |
 | `name` | string | no | Display name shown in the admin UI |
 | `description` | string | no | Short description shown in the admin UI |
-| `dir` | string | no | Path to the agent content directory holding `IDENTITY.md`, `SOUL.md`, `USER.md`, and an optional `skills/` folder. Relative to the config file; defaults to `./agents/<id>` |
+| `dir` | string | no | Path to the agent content directory holding `IDENTITY.md`, `SOUL.md`, `USER.md`. Relative to the config file; defaults to `./agents/<id>` |
+| `skills` | `Skill[]` | no | Skills the agent can use, built with `defineSkill(...)` (inline) or `skillFromFile(...)` (a `SKILL.md`). Explicit list, deduped by name; no folder auto-discovery |
 | `providers` | `ProviderConfig[]` | no | LLM provider list (order = priority) |
 | `network` | `NetworkConfig` | no | Network access policy + LLM egress-judge config |
 | `egress` | `EgressConfig` | no | Operator overrides for the LLM egress judge on this agent |

@@ -35,8 +35,7 @@ skills/
 | Agent identity | `agents/<agent>/IDENTITY.md` | Short description of who the agent is |
 | Agent behavior | `agents/<agent>/SOUL.md` | Rules, workflows, constraints, tone |
 | User or deployment context | `agents/<agent>/USER.md` | Shared context injected into every conversation |
-| Agent-local skills | `agents/<agent>/skills/<name>/SKILL.md` | Available only to one agent |
-| Shared skills | `skills/<name>/SKILL.md` | Available to all agents in the project |
+| Skill files | `agents/<agent>/skills/<name>/SKILL.md` or `skills/<name>/SKILL.md` | Referenced from `lobu.config.ts` with `skillFromFile(...)`; not auto-loaded |
 | Evaluations | `agents/<agent>/evals/` | Test cases for behavior and quality |
 | Providers, connections, network, tool policy, enabled registry skills | `lobu.config.ts` | Operator-controlled runtime config |
 
@@ -117,12 +116,9 @@ This file is optional and can be left empty.
 
 ## Skills
 
-Local skills live in one of two places:
+A skill is declared on the agent in `lobu.config.ts`, either inline with `defineSkill(...)` or loaded from a `SKILL.md` with `skillFromFile(...)`. There is no folder auto-discovery, so a `SKILL.md` can live anywhere you reference it from. The conventional spots are `agents/<agent>/skills/<name>/SKILL.md` (kept next to one agent) and `skills/<name>/SKILL.md` (shared, referenced by more than one agent).
 
-- `agents/<agent>/skills/<name>/SKILL.md` for agent-specific skills
-- `skills/<name>/SKILL.md` for shared project-level skills
-
-Use this page to understand where those files live. Use the [`SKILL.md` Reference](/reference/skill-md/) for the skill file format, frontmatter, packages, MCP servers, and network declarations.
+See [Skills](/getting-started/skills/) for declaring them and the [`SKILL.md` Reference](/reference/skill-md/) for the file format, frontmatter, packages, MCP servers, and network declarations.
 
 ## lobu.config.ts
 

@@ -12,7 +12,7 @@ A **skill** is a reusable capability bundle for an agent. In Lobu, skills can ad
 - system packages
 - network requirements
 
-Lobu discovers local `SKILL.md` files at runtime. Bundled skills are enabled from the agent settings UI; local skills live in your project so you can commit and customize them.
+You declare an agent's skills explicitly in `lobu.config.ts`. Bundled skills are enabled from the agent settings UI; local skills live in your project so you can commit and customize them.
 
 ## Lobu Starter Skill
 
@@ -30,20 +30,34 @@ The [vercel-labs/skills](https://github.com/vercel-labs/skills) CLI auto-detects
 
 ### In a Lobu agent
 
-Enable the bundled skill from the agent settings UI in [app.lobu.ai](https://app.lobu.ai). Local `SKILL.md` files under `skills/` and `agents/<id>/skills/` are also loaded at runtime — see [Local Skill Locations](#local-skill-locations) below.
+Enable the bundled skill from the agent settings UI in [app.lobu.ai](https://app.lobu.ai). Local skills are declared on the agent in `lobu.config.ts`; see [Declaring Skills](#declaring-skills) below.
 
 <SkillsRegistryTable client:load />
 
-## Local Skill Locations
+## Declaring Skills
 
-Lobu supports two local skill locations:
+List an agent's skills explicitly via `defineAgent({ skills: [...] })`. Build each one two ways, both producing the same skill:
 
-| Type | Path | Scope |
-|---|---|---|
-| Shared skill | `skills/<name>/SKILL.md` | Available to all agents |
-| Agent skill | `agents/<agent>/skills/<name>/SKILL.md` | Available to one agent |
+```ts
+import { defineAgent, defineSkill, skillFromFile } from "@lobu/cli/config";
 
-If the file exists, Lobu loads it automatically at startup.
+defineAgent({
+  id: "support",
+  skills: [
+    // Inline: the body is a string, the rest is frontmatter as fields.
+    defineSkill({
+      name: "greet",
+      description: "Greet a customer.",
+      content: "Generate a warm, personalized greeting.",
+    }),
+    // From a file: reads a SKILL.md (a folder holding one, or a .md path),
+    // resolved relative to lobu.config.ts.
+    skillFromFile("./agents/support/skills/internal-api"),
+  ],
+});
+```
+
+Share a skill across agents by referencing the same handle in more than one agent's `skills`. Skills are deduped by name. There is no folder auto-discovery: a `SKILL.md` is loaded only when an agent references it with `skillFromFile`.
 
 ## Minimal Example
 

@@ -17,12 +17,18 @@ Tool policy does **not** live in `SKILL.md`. Configure that in [`lobu.config.ts`
 
 ## Where Skills Live
 
-Lobu discovers local skills from:
+A `SKILL.md` is loaded when an agent references it from [`lobu.config.ts`](/reference/lobu-config/) with `skillFromFile`:
 
-- `skills/<name>/SKILL.md` for shared project-level skills
-- `agents/<agent>/skills/<name>/SKILL.md` for agent-specific skills
+```ts
+import { defineAgent, skillFromFile } from "@lobu/cli/config";
 
-If the file exists, Lobu loads it automatically at startup.
+defineAgent({
+  id: "support",
+  skills: [skillFromFile("./agents/support/skills/internal-api")],
+});
+```
+
+The path is a folder holding a `SKILL.md` (or a `.md` file directly), resolved relative to `lobu.config.ts`. There is no folder auto-discovery. To declare a skill without a file, use `defineSkill({ name, content, ... })` instead; see [Skills](/getting-started/skills/).
 
 ## Minimal example
 

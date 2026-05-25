@@ -7,6 +7,7 @@ import {
   defineRelationshipType,
   defineWatcher,
   secret,
+  skillFromFile,
 } from "@lobu/cli/config";
 
 const crm = defineAgent({
@@ -14,6 +15,7 @@ const crm = defineAgent({
   name: "crm",
   description:
     "Maintains Lobu's funnel CRM — leads, pilots, inbound triage, weekly digest",
+  skills: [skillFromFile("./agents/crm/skills/crm-ops")],
   providers: [
     {
       id: "z-ai",

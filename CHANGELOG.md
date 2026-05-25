@@ -1,5 +1,25 @@
 # Changelog
 
+## [9.4.0](https://github.com/lobu-ai/lobu/compare/lobu-v9.3.0...lobu-v9.4.0) (2026-05-25)
+
+
+### Features
+
+* **agent-worker:** support before_tool_call/after_tool_call plugin hooks ([#1036](https://github.com/lobu-ai/lobu/issues/1036)) ([846d173](https://github.com/lobu-ai/lobu/commit/846d173943d14b1b4c6e4aba875ef97941d7fca9)), closes [#1022](https://github.com/lobu-ai/lobu/issues/1022)
+* **cli:** inline skills via defineSkill/skillFromFile; drop dir auto-discovery ([#1039](https://github.com/lobu-ai/lobu/issues/1039)) ([5e488ce](https://github.com/lobu-ai/lobu/commit/5e488ce5e52366263e421c3c9c019860b98cef51))
+* **connect:** managed connectors via public org — cloud auth, local data ([#1038](https://github.com/lobu-ai/lobu/issues/1038)) ([cae142a](https://github.com/lobu-ai/lobu/commit/cae142a32adc71aeb6c31d485ba8ae6fc933b26b))
+* **server:** watcher/scheduler health metrics + ServiceMonitor/PrometheusRule ([#1047](https://github.com/lobu-ai/lobu/issues/1047)) ([60c6e73](https://github.com/lobu-ai/lobu/commit/60c6e73618c4ef0ba15918e24111f72723de6377))
+
+
+### Bug Fixes
+
+* **ci:** migrate sdk-e2e fixture to connectorFromFile ([#1043](https://github.com/lobu-ai/lobu/issues/1043) dropped ./connectors scan) ([#1048](https://github.com/lobu-ai/lobu/issues/1048)) ([d8454a9](https://github.com/lobu-ai/lobu/commit/d8454a983a8d0275cf522b683f76bf056fb31885))
+* **cli:** doctor recognizes embedded file:// Postgres; quiet bundled-SPA Vite log ([#1033](https://github.com/lobu-ai/lobu/issues/1033)) ([0b53bd9](https://github.com/lobu-ai/lobu/commit/0b53bd92987134d9fc24970b85492bb2dc11961d))
+* **release:** pass --manual-override-reason to ClawHub publish ([#1030](https://github.com/lobu-ai/lobu/issues/1030)) ([1e9fe29](https://github.com/lobu-ai/lobu/commit/1e9fe290f462476fb8b80eb1b1840c21584d1899))
+* **server:** unwedge watchers (array-binding bug) + hardening ([#1046](https://github.com/lobu-ai/lobu/issues/1046)) ([c524b42](https://github.com/lobu-ai/lobu/commit/c524b428806a787d121002b05443aa8c8fc81cf0))
+* **test:** ephemeral embedded backend uses a lobu_test database ([#1050](https://github.com/lobu-ai/lobu/issues/1050)) ([2be43e0](https://github.com/lobu-ai/lobu/commit/2be43e0f431deff5fd8e217b00e367b74ba8a43a))
+* **worker:** copy packages/core into worker runtime image ([#1035](https://github.com/lobu-ai/lobu/issues/1035)) ([3d9175c](https://github.com/lobu-ai/lobu/commit/3d9175c558ee413d40e49eaf0b65fc08900a886d))
+
 ## [9.3.0](https://github.com/lobu-ai/lobu/compare/lobu-v9.2.0...lobu-v9.3.0) (2026-05-24)
 
 

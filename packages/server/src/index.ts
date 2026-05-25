@@ -21,6 +21,7 @@ import { mcpAuth } from './auth/middleware';
 import { oauthRoutes } from './auth/oauth/routes';
 import { findExistingPersonalOrg } from './auth/personal-org-provisioning';
 import { credentialRoutes } from './auth/routes';
+import { brokerRoutes } from './connect/broker-routes';
 import { connectRoutes } from './connect/routes';
 import { getDb } from './db/client';
 import * as invalidationEmitter from './events/emitter';
@@ -550,6 +551,14 @@ app.route('/mcp', oauthRoutes);
  * Used by MCP clients to complete OAuth/env_keys auth for connections
  */
 app.route('/connect', connectRoutes);
+
+/**
+ * OAuth Broker routes (SPIKE) — PAT-gated. A remote Lobu instance acting as a
+ * broker performs the secret-requiring OAuth steps (authorize-url / exchange /
+ * refresh) on behalf of a local instance whose oauth_app profile is a
+ * broker-ref. The client_secret never leaves the broker.
+ */
+app.route('/broker', brokerRoutes);
 
 /**
  * Logo endpoint for MCP/OAuth client metadata.

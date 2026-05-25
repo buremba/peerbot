@@ -47,6 +47,52 @@ interface BrowserSessionReadiness extends BrowserSessionSummary {
   resolved_cdp_url: string | null;
 }
 
+/**
+ * Reference to a remote Lobu "broker" instance that holds the real provider
+ * OAuth app credentials. Encoded inside an `oauth_app` profile's `auth_data`
+ * under the `__broker` key (instead of client_id/secret). The local instance
+ * delegates the secret-requiring OAuth steps (authorize-url build, code
+ * exchange, refresh) to the broker over HTTP, authenticating with `pat`.
+ */
+export interface BrokerRef {
+  /** Broker base URL, e.g. `https://broker.lobu.ai` (no `/broker` suffix). */
+  url: string;
+  /** Broker org slug the managed oauth_app lives under (informational). */
+  org: string;
+  /** Lobu Personal Access Token (`owl_pat_*`) the broker authenticates. */
+  pat: string;
+}
+
+/**
+ * Extract a {@link BrokerRef} from an `oauth_app` profile's `auth_data`, or
+ * `null` when the profile carries local client credentials instead. A
+ * broker-ref profile has a `__broker` object with `url`/`org`/`pat` and NO
+ * client_id/secret keys.
+ */
+export function getBrokerRef(authData: unknown): BrokerRef | null {
+  if (typeof authData === 'string') {
+    try {
+      return getBrokerRef(JSON.parse(authData));
+    } catch {
+      return null;
+    }
+  }
+  if (!authData || typeof authData !== 'object' || Array.isArray(authData)) return null;
+  const broker = (authData as Record<string, unknown>).__broker;
+  if (!broker || typeof broker !== 'object' || Array.isArray(broker)) return null;
+  const { url, org, pat } = broker as Record<string, unknown>;
+  if (
+    typeof url !== 'string' ||
+    typeof org !== 'string' ||
+    typeof pat !== 'string' ||
+    url.trim().length === 0 ||
+    pat.trim().length === 0
+  ) {
+    return null;
+  }
+  return { url: url.trim().replace(/\/+$/, ''), org: org.trim(), pat: pat.trim() };
+}
+
 export function normalizeAuthValues(raw: unknown): Record<string, string> {
   if (typeof raw === 'string') {
     try {
@@ -73,7 +119,15 @@ function normalizeAuthData(
   profileKind: AuthProfileKind,
   raw: unknown
 ): Record<string, unknown> {
-  if (profileKind === 'env' || profileKind === 'oauth_app') {
+  if (profileKind === 'oauth_app') {
+    // A broker-ref oauth_app carries a `__broker` object instead of string
+    // client credentials. normalizeAuthValues() would strip the object, so
+    // preserve it explicitly while still normalizing any sibling string keys.
+    const broker = getBrokerRef(raw);
+    const normalized = normalizeAuthValues(raw);
+    return broker ? { ...normalized, __broker: broker } : normalized;
+  }
+  if (profileKind === 'env') {
     return normalizeAuthValues(raw);
   }
 

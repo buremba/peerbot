@@ -5,6 +5,7 @@ const SPA_ALLOWED_PATHS = new Set(['/oauth/consent', '/oauth/device']);
 const SPA_EXCLUDED_PREFIXES = [
   '/.well-known',
   '/api',
+  '/broker',
   '/connect',
   '/health',
   '/legal',

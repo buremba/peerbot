@@ -48,11 +48,13 @@ interface BrowserSessionReadiness extends BrowserSessionSummary {
 }
 
 /**
- * Reference to a remote Lobu "broker" instance that holds the real provider
- * OAuth app credentials. Encoded inside an `oauth_app` profile's `auth_data`
- * under the `__broker` key (instead of client_id/secret). The local instance
- * delegates the secret-requiring OAuth steps (authorize-url build, code
- * exchange, refresh) to the broker over HTTP, authenticating with `pat`.
+ * Reference to a remote Lobu "broker" instance that OWNS the OAuth grant for a
+ * connection. Encoded inside an `oauth_app` profile's `auth_data` under the
+ * `__broker` key (instead of client_id/secret). The broker holds the managed
+ * client_id/secret AND the user's grant (oauth_account); the local instance
+ * fetches a fresh access token at runtime from the broker over HTTP (POST
+ * `/broker/oauth/token`), authenticating with `pat`. `connection_id` is the
+ * broker-side connection whose grant backs this local connection.
  */
 export interface BrokerRef {
   /** Broker base URL, e.g. `https://broker.lobu.ai` (no `/broker` suffix). */
@@ -61,13 +63,15 @@ export interface BrokerRef {
   org: string;
   /** Lobu Personal Access Token (`owl_pat_*`) the broker authenticates. */
   pat: string;
+  /** The broker-side connection id whose stored grant backs this profile. */
+  connection_id: number;
 }
 
 /**
  * Extract a {@link BrokerRef} from an `oauth_app` profile's `auth_data`, or
  * `null` when the profile carries local client credentials instead. A
- * broker-ref profile has a `__broker` object with `url`/`org`/`pat` and NO
- * client_id/secret keys.
+ * broker-ref profile has a `__broker` object with `url`/`org`/`pat`/
+ * `connection_id` and NO client_id/secret keys.
  */
 export function getBrokerRef(authData: unknown): BrokerRef | null {
   if (typeof authData === 'string') {
@@ -80,17 +84,25 @@ export function getBrokerRef(authData: unknown): BrokerRef | null {
   if (!authData || typeof authData !== 'object' || Array.isArray(authData)) return null;
   const broker = (authData as Record<string, unknown>).__broker;
   if (!broker || typeof broker !== 'object' || Array.isArray(broker)) return null;
-  const { url, org, pat } = broker as Record<string, unknown>;
+  const { url, org, pat, connection_id } = broker as Record<string, unknown>;
+  const connectionId = typeof connection_id === 'number' ? connection_id : Number(connection_id);
   if (
     typeof url !== 'string' ||
     typeof org !== 'string' ||
     typeof pat !== 'string' ||
     url.trim().length === 0 ||
-    pat.trim().length === 0
+    pat.trim().length === 0 ||
+    !Number.isInteger(connectionId) ||
+    connectionId <= 0
   ) {
     return null;
   }
-  return { url: url.trim().replace(/\/+$/, ''), org: org.trim(), pat: pat.trim() };
+  return {
+    url: url.trim().replace(/\/+$/, ''),
+    org: org.trim(),
+    pat: pat.trim(),
+    connection_id: connectionId,
+  };
 }
 
 export function normalizeAuthValues(raw: unknown): Record<string, string> {

@@ -1,36 +1,36 @@
 /**
- * SPIKE: broker-delegated oauth_app profiles.
+ * SPIKE: grant-on-broker managed OAuth.
  *
- * Proves the local↔broker AUTH handshake for Nango-style managed OAuth without
- * a real external provider:
+ * The grant lives on the BROKER. The broker holds the managed app creds + the
+ * user's grant (oauth_account → account row) and runs consent/refresh through
+ * its OWN existing flow + CredentialService. The LOCAL instance only fetches a
+ * fresh ACCESS token at runtime via `POST /broker/oauth/token`.
  *
- *   1. A "broker" org holds a managed `oauth_app` (fake client_id/secret) for a
- *      test connector whose oauth method's `tokenUrl`/`authorizationUrl` point
- *      at a LOCAL fake provider server that returns canned tokens. Those
- *      endpoints live in the broker org's OWN connector metadata — the broker
- *      resolves them SERVER-SIDE; the caller never supplies them.
- *   2. The broker's `POST /broker/oauth/exchange` is PAT-gated. A valid PAT for
- *      the broker org → the broker resolves ITS managed app + ITS connector
- *      endpoints, uses the secret, and returns ONLY the user's tokens. No /
- *      invalid PAT → 401.
- *   3. A caller-supplied `token_url` in the body is IGNORED (the broker hits
- *      its own connector's tokenUrl), so the client_secret can never be
- *      redirected to an attacker.
- *   4. End-to-end: a LOCAL connect token whose oauth_app profile is a
- *      `__broker` ref drives `GET /connect/oauth/callback`; the callback
- *      delegates the code exchange to the broker (broker.url = self) and stores
- *      the broker-returned tokens on the `account` row — never touching a local
- *      client_secret.
+ * Proven here without a real external provider:
+ *
+ *   1. A "broker" org has a connector (whose oauth method `tokenUrl` points at a
+ *      LOCAL fake provider), a managed `oauth_app` (fake client_id/secret), an
+ *      `oauth_account` profile + `account` row holding an EXPIRING access token
+ *      and a refresh token, and a connection wiring them together.
+ *   2. `POST /broker/oauth/token` is PAT-gated. A valid PAT for the broker org +
+ *      the broker connection id → the broker resolves its managed app + connector
+ *      endpoint, REFRESHES the expiring token with its secret (against its own
+ *      tokenUrl), and returns ONLY `{ access_token, expires_at }`. The refresh
+ *      token + client secret never appear in the response.
+ *   3. Scope: a PAT for org B cannot fetch org A's connection token (403). No
+ *      PAT → 401, bad PAT → 401, malformed body → 400.
+ *   4. End-to-end runtime hook: a LOCAL broker-backed connection (oauth_app =
+ *      `__broker` ref, broker.url = the in-process broker server) resolves its
+ *      access token through the broker via `resolveExecutionAuth`.
  */
 
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { brokerRoutes } from "../../../connect/broker-routes";
-import { connectRoutes } from "../../../connect/routes";
 import type { Env } from "../../../index";
 import { createAuthProfile } from "../../../utils/auth-profiles";
-import { createConnectToken } from "../../../utils/connect-tokens";
+import { resolveExecutionAuth } from "../../../utils/execution-context";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
@@ -46,24 +46,22 @@ const TEST_ENV = {
 	DATABASE_URL: process.env.DATABASE_URL,
 } as unknown as Env;
 
-const CANNED = {
-	access_token: "canned-access-token-123",
-	refresh_token: "canned-refresh-token-456",
+// Canned tokens the fake provider returns on refresh. Distinct from the stored
+// (expiring) token so a successful refresh is observable.
+const REFRESHED = {
+	access_token: "refreshed-access-token-123",
+	refresh_token: "broker-refresh-token-456",
 	expires_in: 3600,
-	scope: "read write",
-	token_type: "Bearer",
 };
+const STALE_ACCESS_TOKEN = "stale-access-token-000";
+const BROKER_SECRET = "broker-secret";
 
-// Fake OAuth provider: the tokenUrl the broker org's connector points at. A
-// SECOND fake server stands in for an "attacker" endpoint — if the broker ever
-// honored a caller-supplied token_url it would POST the client_secret here.
+// Fake OAuth provider token endpoint the broker org's connector points at.
 let providerServer: ReturnType<typeof serve> | null = null;
 let providerTokenUrl = "";
-let attackerServer: ReturnType<typeof serve> | null = null;
-let attackerTokenUrl = "";
-let attackerHits = 0;
+let lastRefreshBody: Record<string, string> = {};
 
-// Broker app served on a real port so the local callback's `fetch` reaches it.
+// Broker app served on a real port so the local runtime hook's `fetch` reaches it.
 let brokerServer: ReturnType<typeof serve> | null = null;
 let brokerBaseUrl = "";
 
@@ -76,30 +74,23 @@ function buildBrokerApp(): Hono<{ Bindings: Env }> {
 beforeAll(async () => {
 	await initWorkspaceProvider();
 
-	// Fake provider token endpoint — returns canned tokens for any code.
+	// Fake provider: a refresh_token grant returns canned refreshed tokens. Record
+	// the form body so we can assert the broker authed with its own secret.
 	const providerApp = new Hono();
-	providerApp.post("/token", (c) => c.json(CANNED));
+	providerApp.post("/token", async (c) => {
+		const text = await c.req.text();
+		lastRefreshBody = Object.fromEntries(new URLSearchParams(text));
+		return c.json({
+			access_token: REFRESHED.access_token,
+			refresh_token: REFRESHED.refresh_token,
+			expires_in: REFRESHED.expires_in,
+		});
+	});
 	providerServer = await new Promise((resolve) => {
 		const s = serve(
 			{ fetch: providerApp.fetch, hostname: "127.0.0.1", port: 0 },
 			(info) => {
 				providerTokenUrl = `http://127.0.0.1:${info.port}/token`;
-				resolve(s);
-			},
-		);
-	});
-
-	// "Attacker" endpoint — records any hit. Must stay at 0 hits.
-	const attackerApp = new Hono();
-	attackerApp.post("/token", (c) => {
-		attackerHits += 1;
-		return c.json(CANNED);
-	});
-	attackerServer = await new Promise((resolve) => {
-		const s = serve(
-			{ fetch: attackerApp.fetch, hostname: "127.0.0.1", port: 0 },
-			(info) => {
-				attackerTokenUrl = `http://127.0.0.1:${info.port}/token`;
 				resolve(s);
 			},
 		);
@@ -127,22 +118,32 @@ afterAll(async () => {
 		providerServer ? providerServer.close(() => done()) : done(),
 	);
 	await new Promise<void>((done) =>
-		attackerServer ? attackerServer.close(() => done()) : done(),
-	);
-	await new Promise<void>((done) =>
 		brokerServer ? brokerServer.close(() => done()) : done(),
 	);
 });
 
+interface SeededConnection {
+	orgId: string;
+	userId: string;
+	pat: string;
+	connectionId: number;
+}
+
 /**
- * Seed a broker org with a managed oauth_app (fake creds) for `demo`. The
- * connector's auth_schema carries the OAuth endpoints — the broker resolves
- * `tokenUrl`/`authorizationUrl` from HERE, not from the request.
+ * Seed a broker org with a managed `oauth_app`, an `oauth_account` grant (an
+ * `account` row with an EXPIRING access token + refresh token), a connector
+ * whose tokenUrl points at the fake provider, and a connection wiring them. The
+ * connector endpoints live in the org's OWN metadata — the broker resolves them
+ * server-side; the caller never supplies them.
  */
-async function seedBrokerOrg() {
-	const org = await createTestOrganization({ name: "Broker Org" });
-	const user = await createTestUser({ name: "Broker Admin" });
+async function seedBrokerConnection(
+	orgName: string,
+): Promise<SeededConnection> {
+	const sql = getTestDb();
+	const org = await createTestOrganization({ name: orgName });
+	const user = await createTestUser({ name: `${orgName} Admin` });
 	await addUserToOrganization(user.id, org.id, "owner");
+
 	await createTestConnectorDefinition({
 		key: "demo.oauth",
 		name: "Demo OAuth",
@@ -155,6 +156,7 @@ async function seedBrokerOrg() {
 					requiredScopes: ["read"],
 					authorizationUrl: "https://demo.example/authorize",
 					tokenUrl: providerTokenUrl,
+					tokenEndpointAuthMethod: "client_secret_post",
 					clientIdKey: "DEMO_CLIENT_ID",
 					clientSecretKey: "DEMO_CLIENT_SECRET",
 				},
@@ -162,223 +164,178 @@ async function seedBrokerOrg() {
 		},
 		feeds_schema: { items: {} },
 	});
+
 	// Managed oauth_app holds the REAL client_id/secret (never leaves the broker).
-	await createAuthProfile({
+	const appProfile = await createAuthProfile({
 		organizationId: org.id,
 		connectorKey: "demo.oauth",
 		displayName: "Managed Demo App",
-		slug: "managed-demo",
 		profileKind: "oauth_app",
 		provider: "demo",
 		authData: {
 			DEMO_CLIENT_ID: "broker-cid",
-			DEMO_CLIENT_SECRET: "broker-secret",
+			DEMO_CLIENT_SECRET: BROKER_SECRET,
 		},
 	});
+
+	// The grant: an account row with an EXPIRING access token + a refresh token.
+	const accountId = `acct_${org.id}`;
+	const expiringSoon = new Date(Date.now() + 60 * 1000).toISOString(); // < 5min buffer
+	await sql`
+    INSERT INTO "account" (
+      id, "accountId", "providerId", "userId",
+      "accessToken", "refreshToken", "accessTokenExpiresAt",
+      scope, "createdAt", "updatedAt"
+    ) VALUES (
+      ${accountId}, ${accountId}, 'demo', ${user.id},
+      ${STALE_ACCESS_TOKEN}, ${"broker-refresh-token-original"}, ${expiringSoon},
+      'read', NOW(), NOW()
+    )
+  `;
+
+	// oauth_account profile pointing at the grant.
+	const accountProfile = await createAuthProfile({
+		organizationId: org.id,
+		connectorKey: "demo.oauth",
+		displayName: "Demo Account",
+		profileKind: "oauth_account",
+		provider: "demo",
+		accountId,
+	});
+
+	// Connection wiring the grant (auth_profile_id) + managed app (app_auth_profile_id).
+	const connRows = (await sql`
+    INSERT INTO connections (
+      organization_id, connector_key, slug, display_name, status,
+      account_id, auth_profile_id, app_auth_profile_id, created_at, updated_at
+    ) VALUES (
+      ${org.id}, 'demo.oauth', ${`demo-${org.id}`}, 'Demo Connection', 'active',
+      ${accountId}, ${accountProfile.id}, ${appProfile.id}, NOW(), NOW()
+    )
+    RETURNING id
+  `) as unknown as Array<{ id: number }>;
+
 	const pat = await createTestPAT(user.id, org.id);
-	return { org, user, pat };
+	return {
+		orgId: org.id,
+		userId: user.id,
+		pat: pat.token,
+		connectionId: Number(connRows[0].id),
+	};
 }
 
-describe("SPIKE: broker-delegated oauth_app — exchange handshake", () => {
+function tokenRequest(
+	app: Hono<{ Bindings: Env }>,
+	opts: { pat?: string; body?: unknown },
+): Promise<Response> {
+	const headers: Record<string, string> = { "Content-Type": "application/json" };
+	if (opts.pat) headers.Authorization = `Bearer ${opts.pat}`;
+	return app.fetch(
+		new Request("http://broker.local/broker/oauth/token", {
+			method: "POST",
+			headers,
+			body: JSON.stringify(opts.body ?? {}),
+		}),
+		TEST_ENV,
+	);
+}
+
+describe("SPIKE: grant-on-broker — POST /broker/oauth/token", () => {
 	beforeEach(async () => {
 		await cleanupTestDatabase();
-		attackerHits = 0;
+		lastRefreshBody = {};
 	});
 
-	it("PAT-gated exchange resolves the broker managed app + connector endpoint and returns user tokens", async () => {
-		const { pat } = await seedBrokerOrg();
+	it("returns a fresh access token, refreshed server-side with the broker secret", async () => {
+		const { pat, connectionId } = await seedBrokerConnection("Broker Org");
 		const app = buildBrokerApp();
 
-		const res = await app.fetch(
-			new Request("http://broker.local/broker/oauth/exchange", {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${pat.token}`,
-				},
-				body: JSON.stringify({
-					connector_key: "demo.oauth",
-					provider: "demo",
-					code: "auth-code-abc",
-					redirect_uri: "http://local.example/connect/oauth/callback",
-				}),
-			}),
-			TEST_ENV,
-		);
+		const res = await tokenRequest(app, {
+			pat,
+			body: { connection_id: connectionId },
+		});
 
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as Record<string, unknown>;
-		expect(body.access_token).toBe(CANNED.access_token);
-		expect(body.refresh_token).toBe(CANNED.refresh_token);
-		expect(body.expires_in).toBe(CANNED.expires_in);
-		expect(body.scope).toBe(CANNED.scope);
-		// The broker never leaks the client_secret back to the caller.
-		expect(JSON.stringify(body)).not.toContain("broker-secret");
+		// The access token is the REFRESHED one — proves the broker refreshed via
+		// its own tokenUrl + secret (not the stored stale token).
+		expect(body.access_token).toBe(REFRESHED.access_token);
+		expect(typeof body.expires_at).toBe("string");
+
+		// The broker authed the refresh with ITS managed client_id/secret.
+		expect(lastRefreshBody.client_id).toBe("broker-cid");
+		expect(lastRefreshBody.client_secret).toBe(BROKER_SECRET);
+		expect(lastRefreshBody.grant_type).toBe("refresh_token");
+
+		// The response leaks NEITHER the refresh token NOR the client secret.
+		const serialized = JSON.stringify(body);
+		expect(serialized).not.toContain(REFRESHED.refresh_token);
+		expect(serialized).not.toContain("broker-refresh-token-original");
+		expect(serialized).not.toContain(BROKER_SECRET);
+		expect(body.refresh_token).toBeUndefined();
 	});
 
-	it("ignores a caller-supplied token_url — secret can NOT be redirected to an attacker", async () => {
-		const { pat } = await seedBrokerOrg();
+	it("rejects a cross-org connection (403) — a PAT for org B cannot fetch org A's token", async () => {
+		const orgA = await seedBrokerConnection("Org A");
+		const orgB = await seedBrokerConnection("Org B");
 		const app = buildBrokerApp();
 
-		const res = await app.fetch(
-			new Request("http://broker.local/broker/oauth/exchange", {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${pat.token}`,
-				},
-				body: JSON.stringify({
-					connector_key: "demo.oauth",
-					provider: "demo",
-					code: "auth-code-abc",
-					redirect_uri: "http://local.example/connect/oauth/callback",
-					// Malicious: try to redirect the secret-bearing exchange elsewhere.
-					token_url: attackerTokenUrl,
-					token_endpoint_auth_method: "client_secret_basic",
-					client_secret_key: "DEMO_CLIENT_SECRET",
-				}),
-			}),
-			TEST_ENV,
-		);
+		// Org B's PAT asking for Org A's connection id.
+		const res = await tokenRequest(app, {
+			pat: orgB.pat,
+			body: { connection_id: orgA.connectionId },
+		});
 
-		// The broker hits ITS OWN connector's tokenUrl and returns canned tokens;
-		// the attacker endpoint is never touched.
-		expect(res.status).toBe(200);
+		expect(res.status).toBe(403);
 		const body = (await res.json()) as Record<string, unknown>;
-		expect(body.access_token).toBe(CANNED.access_token);
-		expect(attackerHits).toBe(0);
+		expect(body.error).toBe("forbidden");
 	});
 
-	it("rejects exchange for a connector the broker org does not manage (400)", async () => {
-		const { pat } = await seedBrokerOrg();
+	it("rejects a malformed body (400) — validated, not cast", async () => {
+		const { pat } = await seedBrokerConnection("Broker Org");
 		const app = buildBrokerApp();
-		const res = await app.fetch(
-			new Request("http://broker.local/broker/oauth/exchange", {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${pat.token}`,
-				},
-				body: JSON.stringify({
-					connector_key: "not.a.real.connector",
-					provider: "demo",
-					code: "x",
-					redirect_uri: "http://local.example/cb",
-				}),
-			}),
-			TEST_ENV,
-		);
-		expect(res.status).toBe(400);
-		expect(attackerHits).toBe(0);
-	});
 
-	it("rejects a malformed body — missing required fields — with 400 (validated, not cast)", async () => {
-		const { pat } = await seedBrokerOrg();
-		const app = buildBrokerApp();
-		const res = await app.fetch(
-			new Request("http://broker.local/broker/oauth/exchange", {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${pat.token}`,
-				},
-				// Missing `code` and `redirect_uri` — must 400 before any resolution.
-				body: JSON.stringify({ connector_key: "demo.oauth", provider: "demo" }),
-			}),
-			TEST_ENV,
-		);
+		const res = await tokenRequest(app, {
+			pat,
+			body: { connection_id: "not-a-number" },
+		});
 		expect(res.status).toBe(400);
 		const body = (await res.json()) as Record<string, unknown>;
 		expect(body.error).toBe("bad_request");
-		expect(attackerHits).toBe(0);
 	});
 
-	it("rejects exchange with no PAT (401)", async () => {
-		await seedBrokerOrg();
+	it("rejects no PAT (401)", async () => {
+		const { connectionId } = await seedBrokerConnection("Broker Org");
 		const app = buildBrokerApp();
-		const res = await app.fetch(
-			new Request("http://broker.local/broker/oauth/exchange", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					connector_key: "demo.oauth",
-					provider: "demo",
-					code: "x",
-					redirect_uri: "http://local.example/cb",
-				}),
-			}),
-			TEST_ENV,
-		);
+		const res = await tokenRequest(app, { body: { connection_id: connectionId } });
 		expect(res.status).toBe(401);
 	});
 
-	it("rejects exchange with an invalid PAT (401)", async () => {
-		await seedBrokerOrg();
+	it("rejects an invalid PAT (401)", async () => {
+		const { connectionId } = await seedBrokerConnection("Broker Org");
 		const app = buildBrokerApp();
-		const res = await app.fetch(
-			new Request("http://broker.local/broker/oauth/exchange", {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: "Bearer owl_pat_totally-bogus-token",
-				},
-				body: JSON.stringify({
-					connector_key: "demo.oauth",
-					provider: "demo",
-					code: "x",
-					redirect_uri: "http://local.example/cb",
-				}),
-			}),
-			TEST_ENV,
-		);
+		const res = await tokenRequest(app, {
+			pat: "owl_pat_totally-bogus-token",
+			body: { connection_id: connectionId },
+		});
 		expect(res.status).toBe(401);
-	});
-
-	it("authorize-url builds the provider consent URL with the broker client_id + server-resolved endpoint", async () => {
-		const { pat } = await seedBrokerOrg();
-		const app = buildBrokerApp();
-		const res = await app.fetch(
-			new Request("http://broker.local/broker/oauth/authorize-url", {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${pat.token}`,
-				},
-				body: JSON.stringify({
-					connector_key: "demo.oauth",
-					provider: "demo",
-					redirect_uri: "http://local.example/connect/oauth/callback",
-					scopes: ["read"],
-					state: "state-xyz",
-				}),
-			}),
-			TEST_ENV,
-		);
-		expect(res.status).toBe(200);
-		const body = (await res.json()) as { authorization_url: string };
-		const url = new URL(body.authorization_url);
-		// Endpoint comes from the broker org's connector metadata, not the request.
-		expect(`${url.origin}${url.pathname}`).toBe(
-			"https://demo.example/authorize",
-		);
-		expect(url.searchParams.get("client_id")).toBe("broker-cid");
-		expect(url.searchParams.get("state")).toBe("state-xyz");
 	});
 });
 
-describe("SPIKE: broker-delegated oauth_app — end-to-end local delegation", () => {
+describe("SPIKE: grant-on-broker — local runtime hook", () => {
 	beforeEach(async () => {
 		await cleanupTestDatabase();
-		attackerHits = 0;
+		lastRefreshBody = {};
 	});
 
-	it("local callback delegates code exchange to the broker and stores broker tokens", async () => {
-		// Broker side: managed app + connector endpoints + PAT (broker.url = the
+	it("a broker-backed local connection resolves its access token via the broker", async () => {
+		// Broker side: managed app + grant + connection + PAT (broker.url = the
 		// in-process broker server).
-		const { pat } = await seedBrokerOrg();
+		const broker = await seedBrokerConnection("Broker Org");
 
 		// Local side: a separate org whose oauth_app profile is a broker-ref (no
-		// local client_id/secret) plus a connect token bound to it.
+		// local client_id/secret) pointing at the broker connection.
+		const sql = getTestDb();
 		const localOrg = await createTestOrganization({ name: "Local Org" });
 		const localUser = await createTestUser({ name: "Local User" });
 		await addUserToOrganization(localUser.id, localOrg.id, "owner");
@@ -387,9 +344,7 @@ describe("SPIKE: broker-delegated oauth_app — end-to-end local delegation", ()
 			name: "Demo OAuth Local",
 			organization_id: localOrg.id,
 			auth_schema: {
-				methods: [
-					{ type: "oauth", provider: "demo", requiredScopes: ["read"] },
-				],
+				methods: [{ type: "oauth", provider: "demo", requiredScopes: ["read"] }],
 			},
 			feeds_schema: { items: {} },
 		});
@@ -397,75 +352,50 @@ describe("SPIKE: broker-delegated oauth_app — end-to-end local delegation", ()
 			organizationId: localOrg.id,
 			connectorKey: "demo.oauth",
 			displayName: "Broker-backed Demo App",
-			slug: "local-broker-app",
 			profileKind: "oauth_app",
 			provider: "demo",
 			authData: {
-				__broker: { url: brokerBaseUrl, org: "broker-org", pat: pat.token },
+				__broker: {
+					url: brokerBaseUrl,
+					org: "broker-org",
+					pat: broker.pat,
+					connection_id: broker.connectionId,
+				},
 			},
 		});
 
 		// The broker-ref must survive normalization (no client_id/secret keys).
-		const sql = getTestDb();
 		const stored = (await sql`
       SELECT auth_data FROM auth_profiles WHERE id = ${brokerProfile.id}
     `) as unknown as Array<{ auth_data: Record<string, unknown> }>;
-		expect(
-			(stored[0].auth_data as { __broker?: unknown }).__broker,
-		).toBeTruthy();
+		expect((stored[0].auth_data as { __broker?: unknown }).__broker).toBeTruthy();
 		expect(stored[0].auth_data.DEMO_CLIENT_ID).toBeUndefined();
 
-		// Connect token (oauth) bound to the local broker-ref app profile. The
-		// local instance has NO tokenUrl/secret — the broker resolves the endpoint
-		// server-side. created_by set so the callback skips session lookup.
-		const tokenRow = await createConnectToken({
+		// A local connection backed by the broker-ref app profile (no grant locally).
+		const localConnRows = (await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status,
+        app_auth_profile_id, created_at, updated_at
+      ) VALUES (
+        ${localOrg.id}, 'demo.oauth', 'demo-local', 'Local Demo', 'active',
+        ${brokerProfile.id}, NOW(), NOW()
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+
+		// The runtime token-resolution path: detects the broker-ref, fetches the
+		// access token from the broker, and returns it as the connection's creds.
+		const resolved = await resolveExecutionAuth({
 			organizationId: localOrg.id,
-			connectorKey: "demo.oauth",
-			authType: "oauth",
-			authConfig: {
-				provider: "demo",
-				scopes: ["read"],
-				redirectUri: "http://local.example/connect/oauth/callback",
-				clientIdKey: "DEMO_CLIENT_ID",
-				clientSecretKey: "DEMO_CLIENT_SECRET",
-			},
-			createdBy: localUser.id,
+			connectionId: Number(localConnRows[0].id),
+			authProfileId: null,
+			appAuthProfileId: brokerProfile.id,
+			credentialDb: sql,
 		});
 
-		// Drive the stable callback. The local instance has no client_secret; it
-		// POSTs the broker /exchange (which uses the broker's secret + endpoint)
-		// and stores the broker-returned tokens.
-		const app = new Hono<{ Bindings: Env }>();
-		app.route("/connect", connectRoutes);
-		const res = await app.fetch(
-			new Request(
-				`http://local.example/connect/oauth/callback?state=${tokenRow.token}&code=auth-code-e2e`,
-				{ method: "GET", redirect: "manual" },
-			),
-			TEST_ENV,
-		);
-		// Callback ends in a redirect (302) once tokens are stored.
-		expect(res.status).toBe(302);
-
-		// The account row must carry the broker-returned canned tokens — proof the
-		// exchange was delegated and no local secret was needed.
-		const accounts = (await sql`
-      SELECT "accessToken", "refreshToken", "providerId"
-      FROM "account"
-      WHERE "userId" = ${localUser.id} AND "providerId" = 'demo'
-    `) as unknown as Array<{
-			accessToken: string;
-			refreshToken: string;
-			providerId: string;
-		}>;
-		expect(accounts).toHaveLength(1);
-		expect(accounts[0].accessToken).toBe(CANNED.access_token);
-		expect(accounts[0].refreshToken).toBe(CANNED.refresh_token);
-
-		// Connect token consumed.
-		const tk = (await sql`
-      SELECT status FROM connect_tokens WHERE token = ${tokenRow.token}
-    `) as unknown as Array<{ status: string }>;
-		expect(tk[0].status).toBe("completed");
+		expect(resolved.credentials?.accessToken).toBe(REFRESHED.access_token);
+		// No local refresh token / secret ever materialized.
+		expect(resolved.credentials?.refreshToken).toBeNull();
+		expect(resolved.connectionCredentials).toEqual({});
 	});
 });

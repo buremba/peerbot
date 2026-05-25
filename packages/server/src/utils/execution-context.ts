@@ -1,7 +1,7 @@
 import { CredentialService } from '../auth/credentials';
 import { getBuiltinProviderConfig } from '../connect/oauth-providers';
 import { type DbClient, getDb } from '../db/client';
-import { getAuthProfileById, normalizeAuthValues } from './auth-profiles';
+import { type BrokerRef, getAuthProfileById, getBrokerRef, normalizeAuthValues } from './auth-profiles';
 import { getOAuthAuthMethods, normalizeConnectorAuthSchema } from './connector-auth';
 import { parseJsonObject } from '@lobu/core';
 import { errorMessage } from './errors';
@@ -42,6 +42,34 @@ export async function resolveExecutionAuth(
   );
 
   let credentials: ExecutionOAuthCredentials | null = null;
+
+  // Broker-backed connection: the grant lives on a REMOTE Lobu "broker", which
+  // holds the managed client_id/secret + the user's refresh token. Fetch a
+  // fresh access token from the broker at runtime instead of reading/refreshing
+  // a local grant. ONLY this branch changes for broker-backed connections; the
+  // local (non-broker) path below is unchanged.
+  const broker = getBrokerRef(appAuthProfile?.auth_data ?? null);
+  if (broker) {
+    const accessToken = await fetchBrokerAccessToken(broker, {
+      ...params.logContext,
+      connection_id: params.connectionId,
+    });
+    if (accessToken) {
+      credentials = {
+        provider: appAuthProfile?.provider ?? 'broker',
+        accessToken: accessToken.access_token,
+        refreshToken: null,
+        expiresAt: accessToken.expires_at ?? null,
+        scope: null,
+      };
+    }
+    return {
+      credentials,
+      connectionCredentials: {},
+      sessionState: null,
+      browserUserDataDir: null,
+    };
+  }
 
   if (authProfile?.profile_kind === 'oauth_account' && authProfile.account_id) {
     try {
@@ -113,6 +141,47 @@ export async function resolveExecutionAuth(
     sessionState,
     browserUserDataDir,
   };
+}
+
+/**
+ * Fetch a fresh access token for a broker-backed connection from the remote
+ * broker. The broker holds the grant + client secret and refreshes server-side;
+ * we only ever receive `{ access_token, expires_at }`. No caller-supplied URLs:
+ * the broker base URL + PAT + connection id come from the trusted broker-ref
+ * stored on the org's own oauth_app profile. Returns null on any failure so the
+ * connection simply resolves without credentials (fail-soft, like the local
+ * path).
+ */
+async function fetchBrokerAccessToken(
+  broker: BrokerRef,
+  logContext: Record<string, unknown>
+): Promise<{ access_token: string; expires_at: string | null } | null> {
+  try {
+    const response = await fetch(`${broker.url}/broker/oauth/token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${broker.pat}`,
+      },
+      body: JSON.stringify({ connection_id: broker.connection_id }),
+    });
+    if (!response.ok) {
+      logger.warn(
+        { ...logContext, status: response.status },
+        'Broker token fetch failed'
+      );
+      return null;
+    }
+    const body = (await response.json()) as {
+      access_token?: string;
+      expires_at?: string | null;
+    };
+    if (!body.access_token) return null;
+    return { access_token: body.access_token, expires_at: body.expires_at ?? null };
+  } catch (error) {
+    logger.warn({ ...logContext, error: errorMessage(error) }, 'Broker token fetch error');
+    return null;
+  }
 }
 
 async function resolveExecutionOAuthConfig(

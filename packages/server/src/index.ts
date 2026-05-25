@@ -553,10 +553,11 @@ app.route('/mcp', oauthRoutes);
 app.route('/connect', connectRoutes);
 
 /**
- * OAuth Broker routes (SPIKE) — PAT-gated. A remote Lobu instance acting as a
- * broker performs the secret-requiring OAuth steps (authorize-url / exchange /
- * refresh) on behalf of a local instance whose oauth_app profile is a
- * broker-ref. The client_secret never leaves the broker.
+ * OAuth Broker route (SPIKE) — PAT-gated, grant-on-broker. A remote Lobu
+ * instance acting as a broker OWNS the OAuth grant + managed client secret; a
+ * local instance whose oauth_app profile is a broker-ref fetches a fresh access
+ * token at runtime via POST /broker/oauth/token. The client_secret + refresh
+ * token never leave the broker.
  */
 app.route('/broker', brokerRoutes);
 

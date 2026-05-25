@@ -21,10 +21,8 @@ import { createAuth } from '../auth';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import {
-  type BrokerRef,
   ensureUniqueAuthProfileSlug,
   getAuthProfileById,
-  getBrokerRef,
   getPrimaryAuthProfileForKind,
   normalizeAuthProfileSlug,
   normalizeAuthValues,
@@ -36,7 +34,6 @@ import { mergeOAuthScopeAuthData, normalizeScopeList } from '../auth/oauth/scope
 import { createSyncRun } from '../utils/queue-helpers';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 import { buildConnectionsUrl, getOrganizationSlug, getPublicWebUrl } from '../utils/url-builder';
-import { resolveOAuthClientCredentials } from './oauth-resolution';
 import {
   buildAuthorizationUrl,
   exchangeCodeForTokens,
@@ -544,56 +541,9 @@ connectRoutes.get('/:token/oauth/start', requireConnectToken, async (c) => {
     return c.json({ error: 'OAuth provider not configured for this connector' }, 400);
   }
 
-  const source = await resolveCredentialSource(tokenRow, authConfig);
+  const { clientId, clientSecret } = await resolveOAuthCredentialsForToken(tokenRow, authConfig);
 
-  const baseUrl = getBaseUrl(c);
-  const redirectUri = `${baseUrl}/connect/oauth/callback`;
-  // Reuse the persisted verifier if one exists; only generate (and persist)
-  // when missing. Regenerating on a repeat /oauth/start would build the
-  // challenge from a verifier the callback never sees (the persisted one is
-  // unchanged when needsUpdate is false), breaking the PKCE handshake.
-  const pkceCodeVerifier = authConfig.usePkce
-    ? (authConfig.pkceCodeVerifier ?? buildPkceVerifier())
-    : undefined;
-
-  const needsUpdate =
-    authConfig.redirectUri !== redirectUri || (authConfig.usePkce && !authConfig.pkceCodeVerifier);
-  if (needsUpdate) {
-    const sql = getDb();
-    await sql`
-      UPDATE connect_tokens
-      SET auth_config = ${sql.json({
-        ...authConfig,
-        redirectUri,
-        ...(pkceCodeVerifier ? { pkceCodeVerifier } : {}),
-      })}
-      WHERE token = ${token}
-    `;
-  }
-
-  // Broker delegation: when the backing oauth_app profile is a broker-ref, the
-  // broker holds the client_id + resolves the provider endpoints server-side,
-  // so build the authorization URL remotely. Otherwise use local credentials.
-  if (source.kind === 'broker') {
-    const brokerResult = await callBroker<{ authorization_url: string }>(
-      source.broker,
-      'authorize-url',
-      {
-        connector_key: tokenRow.connector_key,
-        provider: authConfig.provider,
-        redirect_uri: redirectUri,
-        scopes: authConfig.scopes ?? [],
-        state: token,
-        ...(pkceCodeVerifier ? { code_challenge: buildPkceChallenge(pkceCodeVerifier) } : {}),
-      }
-    );
-    if (!brokerResult?.authorization_url) {
-      return c.json({ error: 'Broker failed to build authorization URL' }, 502);
-    }
-    return c.redirect(brokerResult.authorization_url);
-  }
-
-  if (!source.clientId) {
+  if (!clientId) {
     return c.json(
       {
         error:
@@ -604,7 +554,7 @@ connectRoutes.get('/:token/oauth/start', requireConnectToken, async (c) => {
     );
   }
 
-  if (authConfig.tokenEndpointAuthMethod !== 'none' && !source.clientSecret) {
+  if (authConfig.tokenEndpointAuthMethod !== 'none' && !clientSecret) {
     return c.json(
       {
         error:
@@ -615,9 +565,30 @@ connectRoutes.get('/:token/oauth/start', requireConnectToken, async (c) => {
     );
   }
 
+  const baseUrl = getBaseUrl(c);
+  const redirectUri = `${baseUrl}/connect/oauth/callback`;
+  const pkceCodeVerifier = authConfig.usePkce ? buildPkceVerifier() : undefined;
+
+  const needsUpdate =
+    authConfig.redirectUri !== redirectUri || (authConfig.usePkce && !authConfig.pkceCodeVerifier);
+
+  if (needsUpdate) {
+    const effectiveAuthConfig = {
+      ...authConfig,
+      redirectUri,
+      ...(pkceCodeVerifier ? { pkceCodeVerifier } : {}),
+    };
+    const sql = getDb();
+    await sql`
+      UPDATE connect_tokens
+      SET auth_config = ${sql.json(effectiveAuthConfig)}
+      WHERE token = ${token}
+    `;
+  }
+
   const authUrl = buildAuthorizationUrl({
     provider: authConfig.provider,
-    clientId: source.clientId,
+    clientId,
     redirectUri,
     scopes: authConfig.scopes ?? [],
     state: token,
@@ -730,53 +701,24 @@ async function handleOAuthCallback(
   }
 
   const sql = getDb();
+  const { clientId, clientSecret } = await resolveOAuthCredentialsForToken(tokenRow, authConfig);
+
+  if (!clientId) {
+    return c.json({ error: 'OAuth client credentials not found' }, 500);
+  }
+
   const baseUrl = getBaseUrl(c);
 
-  // Broker delegation: when the backing oauth_app profile is a broker-ref, the
-  // broker holds the client_secret + resolves the token endpoint server-side,
-  // so exchange the code remotely and use the returned user tokens. Storage
-  // below is identical to the local path.
-  const source = await resolveCredentialSource(tokenRow, authConfig);
-
-  let tokens: Awaited<ReturnType<typeof exchangeCodeForTokens>> = null;
-  if (source.kind === 'broker') {
-    const exchanged = await callBroker<{
-      access_token: string;
-      refresh_token: string | null;
-      expires_in: number | null;
-      scope: string | null;
-      token_type?: string;
-    }>(source.broker, 'exchange', {
-      connector_key: tokenRow.connector_key,
-      provider: authConfig.provider,
-      code,
-      redirect_uri: redirectUri,
-      ...(authConfig.pkceCodeVerifier ? { code_verifier: authConfig.pkceCodeVerifier } : {}),
-    });
-    if (exchanged?.access_token) {
-      tokens = {
-        accessToken: exchanged.access_token,
-        refreshToken: exchanged.refresh_token ?? null,
-        expiresIn: exchanged.expires_in ?? null,
-        scope: exchanged.scope ?? null,
-        tokenType: exchanged.token_type ?? 'Bearer',
-      };
-    }
-  } else {
-    if (!source.clientId) {
-      return c.json({ error: 'OAuth client credentials not found' }, 500);
-    }
-    tokens = await exchangeCodeForTokens({
-      provider: authConfig.provider,
-      code,
-      clientId: source.clientId,
-      clientSecret: source.clientSecret,
-      redirectUri,
-      tokenUrl: authConfig.tokenUrl,
-      tokenEndpointAuthMethod: authConfig.tokenEndpointAuthMethod,
-      codeVerifier: authConfig.pkceCodeVerifier,
-    });
-  }
+  const tokens = await exchangeCodeForTokens({
+    provider: authConfig.provider,
+    code,
+    clientId,
+    clientSecret,
+    redirectUri,
+    tokenUrl: authConfig.tokenUrl,
+    tokenEndpointAuthMethod: authConfig.tokenEndpointAuthMethod,
+    codeVerifier: authConfig.pkceCodeVerifier,
+  });
 
   if (!tokens) {
     return c.redirect(`${baseUrl}/connect/${token}?error=token_exchange_failed`);
@@ -964,83 +906,22 @@ async function handleOAuthCallback(
   return c.redirect(`${baseUrl}`);
 }
 
-/**
- * The credential source backing a connect token's OAuth flow — the single seam
- * the start + callback paths branch on:
- *   - `local`  → the org holds the client_id/secret directly.
- *   - `broker` → the backing oauth_app profile is a broker-ref; the
- *     secret-requiring steps are delegated to that remote broker, which holds
- *     the client_id/secret and resolves the provider endpoints server-side.
- */
-type CredentialSource =
-  | { kind: 'local'; clientId: string | null; clientSecret: string | null }
-  | { kind: 'broker'; broker: BrokerRef };
-
-/**
- * Resolve the {@link CredentialSource} for a connect token in ONE lookup of the
- * backing oauth_app profile (selected app profile first, then the org's primary
- * managed oauth_app for the connector/provider). A `__broker` ref short-circuits
- * to broker delegation; otherwise the profile's local client credentials are
- * returned. This replaces the previously scattered broker-ref checks.
- */
-async function resolveCredentialSource(
+async function resolveOAuthCredentialsForToken(
   tokenRow: { connection_id: number | null; organization_id: string; connector_key: string },
   authConfig: OAuthAuthConfig
-): Promise<CredentialSource> {
+): Promise<{ clientId: string | null; clientSecret: string | null }> {
   const appAuthProfileId = await fetchAppAuthProfileId(
     tokenRow.connection_id,
     tokenRow.organization_id
   );
-  const appProfile =
-    (appAuthProfileId
-      ? await getAuthProfileById(tokenRow.organization_id, appAuthProfileId)
-      : null) ??
-    (await getPrimaryAuthProfileForKind({
-      organizationId: tokenRow.organization_id,
-      connectorKey: tokenRow.connector_key,
-      profileKind: 'oauth_app',
-      provider: authConfig.provider,
-    }));
-
-  const broker = getBrokerRef(appProfile?.auth_data ?? null);
-  if (broker) return { kind: 'broker', broker };
-
-  const { clientId, clientSecret } = await resolveOAuthClientCredentials({
-    organizationId: tokenRow.organization_id,
-    connectorKey: tokenRow.connector_key,
-    provider: authConfig.provider,
+  return resolveOAuthClientCredentials(
+    authConfig.provider,
+    tokenRow.connector_key,
+    tokenRow.organization_id,
     appAuthProfileId,
-    clientIdKey: authConfig.clientIdKey,
-    clientSecretKey: authConfig.clientSecretKey,
-  });
-  return { kind: 'local', clientId, clientSecret };
-}
-
-/** POST a JSON body to a broker endpoint with the broker PAT. */
-async function callBroker<T>(
-  broker: BrokerRef,
-  endpoint: string,
-  body: Record<string, unknown>
-): Promise<T | null> {
-  try {
-    const response = await fetch(`${broker.url}/broker/oauth/${endpoint}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${broker.pat}`,
-      },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) {
-      const text = await response.text();
-      logger.error({ endpoint, status: response.status, body: text }, 'Broker OAuth call failed');
-      return null;
-    }
-    return (await response.json()) as T;
-  } catch (error) {
-    logger.error({ endpoint, error }, 'Broker OAuth call error');
-    return null;
-  }
+    authConfig.clientIdKey,
+    authConfig.clientSecretKey
+  );
 }
 
 async function fetchAppAuthProfileId(
@@ -1059,6 +940,39 @@ async function fetchAppAuthProfileId(
   return rows.length > 0
     ? Number((rows[0] as { app_auth_profile_id: unknown }).app_auth_profile_id) || null
     : null;
+}
+
+/**
+ * Resolve OAuth client ID/secret from:
+ * 1. Selected OAuth app auth profile
+ * 2. Primary org-level OAuth app auth profile for the connector/provider
+ */
+async function resolveOAuthClientCredentials(
+  provider: string,
+  connectorKey: string,
+  organizationId: string,
+  appAuthProfileId?: number | null,
+  clientIdKey?: string,
+  clientSecretKey?: string
+): Promise<{ clientId: string | null; clientSecret: string | null }> {
+  const providerUpper = provider.toUpperCase();
+  const resolvedClientIdKey = clientIdKey || `${providerUpper}_CLIENT_ID`;
+  const resolvedClientSecretKey = clientSecretKey || `${providerUpper}_CLIENT_SECRET`;
+
+  const appProfile =
+    (appAuthProfileId ? await getAuthProfileById(organizationId, appAuthProfileId) : null) ??
+    (await getPrimaryAuthProfileForKind({
+      organizationId,
+      connectorKey,
+      profileKind: 'oauth_app',
+      provider,
+    }));
+
+  const authValues = normalizeAuthValues(appProfile?.auth_data ?? {});
+  const clientId = authValues[resolvedClientIdKey] ?? null;
+  const clientSecret = authValues[resolvedClientSecretKey] ?? null;
+
+  return { clientId, clientSecret };
 }
 
 export { connectRoutes };

@@ -577,8 +577,10 @@ export async function materializeDueWatcherRuns(
     LIMIT 100
   `;
 
-  // Count (cheap, tiny table) due active watchers that were filtered out for
-  // lacking a runnable executor — for visibility in the tick summary.
+  // Count (cheap, tiny table) due active watchers that this tick filtered out
+  // SOLELY for lacking a runnable executor — for visibility in the tick summary.
+  // Mirrors the dueWatchers predicate (incl. the no-active-run clause) so a ghost
+  // watcher that already has an in-flight run isn't double-counted here.
   const [unrunnableRow] = await sql<{ count: number }>`
     SELECT count(*)::int AS count
     FROM watchers w
@@ -591,6 +593,12 @@ export async function materializeDueWatcherRuns(
         SELECT 1 FROM agents a
         WHERE a.id = w.agent_id
           AND a.organization_id = w.organization_id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM runs r
+        WHERE r.watcher_id = w.id
+          AND r.run_type = 'watcher'
+          AND r.status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
       )
   `;
   const unrunnable = unrunnableRow?.count ?? 0;

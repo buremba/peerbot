@@ -19,6 +19,7 @@ import {
   dispatchPendingWatcherRuns,
   materializeDueWatcherRuns,
   reconcileWatcherRuns,
+  runWatcherAutomationTick,
   sweepStaleWatcherRuns,
 } from '../../../watchers/automation';
 import { generateSecureToken, hashToken } from '../../../auth/oauth/utils';
@@ -1091,6 +1092,95 @@ describe('watcher automation contract', () => {
     // Pre-fix this rejects with `malformed array literal`; post-fix it resolves.
     const result = await reconcileWatcherRuns(getDb());
     expect(result.reconciled).toBe(0);
+  });
+
+  describe('watcher-automation tick orchestration', () => {
+    // End-to-end regression for the 12-day outage: a stuck active run carrying a
+    // dispatched_message_id used to make reconcile throw `malformed array literal`,
+    // which (pre phase-isolation) aborted materialize + dispatch every tick. The
+    // tick must now (a) not surface a reconcile error and (b) still materialize a
+    // separate due watcher.
+    it('survives a wedging in-flight run and still materializes other due watchers', async () => {
+      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
+
+      // Watcher A: a stuck active run with a dispatched_message_id and no window —
+      // the exact shape of prod run 146501 that wedged reconcile.
+      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+      const { windowStart, windowEnd } = await computePendingWindow(dbClient, watcherId, granularity);
+      const stuck = await createWatcherRun({
+        organizationId: workspace.org.id,
+        watcherId,
+        agentId: agent.agentId,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+        dispatchSource: 'scheduled',
+      });
+      await sql`
+        UPDATE runs
+        SET status = 'running', claimed_at = NOW(), claimed_by = ${`lobu:${agent.agentId}`},
+            dispatched_message_id = 'f7623d32-b589-4085-9504-edbf30925961'
+        WHERE id = ${stuck.runId}
+      `;
+
+      // Watcher B: due, no active run, valid agent → must materialize this tick.
+      const entityB = await createTestEntity({
+        name: 'Tick Entity B',
+        organization_id: workspace.org.id,
+        created_by: workspace.users.owner.id,
+      });
+      const watcherB = (await workspace.owner.watchers.create({
+        entity_id: entityB.id,
+        slug: 'tick-watcher-b',
+        name: 'Tick Watcher B',
+        prompt: 'Summarize content for {{entities}}.',
+        extraction_schema: {
+          type: 'object',
+          properties: { summary: { type: 'string' } },
+          required: ['summary'],
+        },
+        schedule: '0 9 * * *',
+        agent_id: agent.agentId,
+      })) as { watcher_id: string };
+      const watcherBId = Number(watcherB.watcher_id);
+      await sql`UPDATE watchers SET next_run_at = NOW() - INTERVAL '10 minutes' WHERE id = ${watcherBId}`;
+
+      const result = await runWatcherAutomationTick({} as Env);
+
+      // No phase threw — the bind fix means reconcile handles the dispatched-id
+      // array, and isolation means a phase failure wouldn't starve the rest.
+      expect(result.errors).toEqual([]);
+      // Watcher B materialized despite watcher A's stuck run.
+      expect(result.runsCreated).toBeGreaterThanOrEqual(1);
+      const [runB] = await sql`
+        SELECT status FROM runs
+        WHERE watcher_id = ${watcherBId} AND run_type = 'watcher'
+      `;
+      expect(runB).toBeDefined();
+    });
+
+    // Item 1: a watcher whose assigned agent no longer exists (and isn't device
+    // pinned) must NOT be scheduled — no doomed run per tick — and be counted as
+    // unrunnable for visibility. Mirrors prod orgs lobu-crm / lobu-team.
+    it('does not schedule a watcher whose agent does not exist; counts it unrunnable', async () => {
+      const { sql, watcherId } = await createAutomatedWatcher();
+
+      // Point the watcher at a non-existent agent, no device pin, due now.
+      await sql`
+        UPDATE watchers
+        SET agent_id = 'ghost-agent-deleted', device_worker_id = NULL,
+            next_run_at = NOW() - INTERVAL '10 minutes'
+        WHERE id = ${watcherId}
+      `;
+
+      const result = await materializeDueWatcherRuns({} as Env);
+
+      expect(result.runsCreated).toBe(0);
+      expect(result.unrunnable).toBeGreaterThanOrEqual(1);
+      const runs = await sql`
+        SELECT id FROM runs WHERE watcher_id = ${watcherId} AND run_type = 'watcher'
+      `;
+      expect(runs).toHaveLength(0);
+    });
   });
 
   describe('sweepStaleWatcherRuns liveness reaping', () => {

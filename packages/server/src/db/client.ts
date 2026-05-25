@@ -103,6 +103,55 @@ interface CreatedDbClient {
   raw: Sql;
 }
 
+/**
+ * postgres.js options that control how VALUES are (de)serialized — as opposed
+ * to pool/connection knobs. These MUST be shared verbatim by every client that
+ * stands in for prod (notably the integration-test client, `getTestDb()`):
+ * `fetch_types: false` changes type inference, and a query whose correctness
+ * depends on it (e.g. `= ANY(${jsArray})`, which needs `pgTextArray(...)::text[]`)
+ * behaves differently between a fetch-types client and this one. Tests that run
+ * against a different value-serialization config silently mask that class of bug.
+ */
+export const PROD_PG_VALUE_OPTIONS = {
+  fetch_types: false,
+  transform: {
+    value: {
+      // IMPORTANT: fetch_types: false means postgres.js doesn't auto-parse
+      // JSON/JSONB columns. This transform runs on every value in every row
+      // (both tagged-template and sql.unsafe() queries) and parses any
+      // JSON/JSONB column based on its PostgreSQL OID. This is the single
+      // source of truth for JSONB parsing — no per-field workarounds needed.
+      from: (value: unknown, column: { type: number }) => {
+        if (
+          (column.type === PG_OID_JSON || column.type === PG_OID_JSONB) &&
+          typeof value === 'string'
+        ) {
+          try {
+            return JSON.parse(value);
+          } catch {
+            return value;
+          }
+        }
+        return value;
+      },
+    },
+  },
+  types: {
+    bigint: {
+      to: 20,
+      from: [20],
+      parse: (value: string) => {
+        const num = Number(value);
+        if (process.env.NODE_ENV === 'development' && !Number.isSafeInteger(num)) {
+          logger.warn({ value, parsed: num }, 'BIGINT value exceeds safe integer range');
+        }
+        return num;
+      },
+      serialize: (value: number) => String(value),
+    },
+  },
+};
+
 function createDbClient(connectionString: string, maxConnections?: number): CreatedDbClient {
   const poolMax = maxConnections ?? parseInt(process.env.DB_POOL_MAX || '20', 10);
 
@@ -118,43 +167,7 @@ function createDbClient(connectionString: string, maxConnections?: number): Crea
     connection: {
       application_name: 'server',
     },
-    fetch_types: false,
-    transform: {
-      value: {
-        // IMPORTANT: fetch_types: false means postgres.js doesn't auto-parse
-        // JSON/JSONB columns. This transform runs on every value in every row
-        // (both tagged-template and sql.unsafe() queries) and parses any
-        // JSON/JSONB column based on its PostgreSQL OID. This is the single
-        // source of truth for JSONB parsing — no per-field workarounds needed.
-        from: (value: unknown, column: { type: number }) => {
-          if (
-            (column.type === PG_OID_JSON || column.type === PG_OID_JSONB) &&
-            typeof value === 'string'
-          ) {
-            try {
-              return JSON.parse(value);
-            } catch {
-              return value;
-            }
-          }
-          return value;
-        },
-      },
-    },
-    types: {
-      bigint: {
-        to: 20,
-        from: [20],
-        parse: (value: string) => {
-          const num = Number(value);
-          if (process.env.NODE_ENV === 'development' && !Number.isSafeInteger(num)) {
-            logger.warn({ value, parsed: num }, 'BIGINT value exceeds safe integer range');
-          }
-          return num;
-        },
-        serialize: (value: number) => String(value),
-      },
-    },
+    ...PROD_PG_VALUE_OPTIONS,
   });
 
   // Hand back the raw postgres.js client directly. An earlier serialization

@@ -267,10 +267,26 @@ export function stopStaleRunReaper(): void {
 export async function checkStalledExecutions(_env: Env): Promise<void> {
   const sql = getDb();
 
-  await reconcileWatcherRuns(sql);
-  await sweepStaleWatcherRuns(sql);
-
-  await reapStaleRuns();
+  // Isolate each phase: this cron is the safety net that reaps stuck runs, so a
+  // throw in watcher reconcile/sweep (e.g. the `malformed array literal` bug,
+  // lobu#1046) must NOT prevent reapStaleRuns from running — otherwise the reaper
+  // that would clear the very run triggering the throw is itself disabled
+  // (self-deadlock).
+  try {
+    await reconcileWatcherRuns(sql);
+  } catch (error) {
+    logger.error({ error }, '[StalledRuns] reconcileWatcherRuns failed');
+  }
+  try {
+    await sweepStaleWatcherRuns(sql);
+  } catch (error) {
+    logger.error({ error }, '[StalledRuns] sweepStaleWatcherRuns failed');
+  }
+  try {
+    await reapStaleRuns();
+  } catch (error) {
+    logger.error({ error }, '[StalledRuns] reapStaleRuns failed');
+  }
 
   try {
     const expiredCount = await expireStaleConnectTokens();

@@ -10,12 +10,7 @@ import type { Env } from '@lobu/connector-sdk';
 import type { CoreServices } from '../gateway/services/core-services';
 import { cleanupExpiredMcpSessions } from '../mcp-handler';
 import logger from '../utils/logger';
-import {
-  dispatchPendingWatcherRuns,
-  materializeDueWatcherRuns,
-  reconcileWatcherRuns,
-  resetOrphanedWatcherRuns,
-} from '../watchers/automation';
+import { runWatcherAutomationTick } from '../watchers/automation';
 import { checkStalledExecutions } from './check-stalled-executions';
 import { runClassificationReconciliation } from './classification-reconciliation';
 import { registerScheduledJobsTicker } from './scheduled-jobs-service';
@@ -145,28 +140,16 @@ function registerMaintenanceTasks(
   // Watcher automation: reconcile in-flight runs, materialize newly-due runs,
   // dispatch pending runs. The orphaned-runs reset is bounded and idempotent
   // so it runs every tick — no per-pod first-tick latch needed.
+  //
+  // Each phase is isolated: a throw in one (e.g. the `malformed array literal`
+  // bug that wedged reconcile, lobu#1046) must NOT abort the later phases —
+  // otherwise a single fault stops materialize+dispatch and no watcher fires.
   scheduler.register(
     'watcher-automation',
     async () => {
-      const { reset } = await resetOrphanedWatcherRuns();
-      if (reset > 0) {
-        logger.info({ reset }, '[task] watcher-automation: reset orphaned runs');
-      }
-      const reconciliation = await reconcileWatcherRuns();
-      const materialize = await materializeDueWatcherRuns(env);
-      const dispatch = await dispatchPendingWatcherRuns(env);
-
+      const { errors, ...summary } = await runWatcherAutomationTick(env);
       logger.info(
-        {
-          reconciled: reconciliation.reconciled,
-          dueWatchers: materialize.dueWatchers,
-          runsCreated: materialize.runsCreated,
-          skipped: materialize.skipped,
-          claimed: dispatch.claimed,
-          dispatched: dispatch.dispatched,
-          dispatchReconciled: dispatch.reconciled,
-          failed: dispatch.failed,
-        },
+        { ...summary, ...(errors.length > 0 ? { errors } : {}) },
         '[task] watcher-automation completed',
       );
     },

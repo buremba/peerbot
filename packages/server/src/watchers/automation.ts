@@ -55,6 +55,11 @@ interface MaterializeDueWatcherRunsResult {
   dueWatchers: number;
   runsCreated: number;
   skipped: number;
+  /** Due active watchers NOT scheduled because they have no runnable executor
+   *  (no device pin AND no matching agents row). Surfaced so a misconfigured
+   *  watcher whose agent was deleted is visible in the tick summary instead of
+   *  silently never running. */
+  unrunnable: number;
 }
 
 interface DispatchWatcherRunsResult {
@@ -535,15 +540,33 @@ export async function materializeDueWatcherRuns(
 ): Promise<MaterializeDueWatcherRunsResult> {
   const sql = db ?? getDb();
 
+  // Only schedule watchers we can actually execute: either device-pinned (an
+  // external/device worker claims it via the poll lane — no cloud agent row
+  // needed) OR the assigned agent still exists in the org. A watcher whose
+  // `agents` row was deleted is otherwise materialized every cron tick and fails
+  // at dispatch ("Assigned agent ... does not exist"). Skipping at the source is
+  // self-healing: it resumes automatically if the agent is recreated. The
+  // dispatch-time `ensureWatcherAgentExists` check stays as a delete-after-select
+  // backstop.
   const dueWatchers = await sql<DueWatcherRow>`
     SELECT w.id, w.organization_id, w.agent_id, w.schedule,
            w.device_worker_id::text AS device_worker_id, w.agent_kind
     FROM watchers w
     WHERE w.status = 'active'
-      AND w.agent_id IS NOT NULL
       AND w.schedule IS NOT NULL
       AND w.next_run_at IS NOT NULL
       AND w.next_run_at <= current_timestamp
+      AND (
+        w.device_worker_id IS NOT NULL
+        OR (
+          w.agent_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM agents a
+            WHERE a.id = w.agent_id
+              AND a.organization_id = w.organization_id
+          )
+        )
+      )
       AND NOT EXISTS (
         SELECT 1 FROM runs r
         WHERE r.watcher_id = w.id
@@ -554,8 +577,26 @@ export async function materializeDueWatcherRuns(
     LIMIT 100
   `;
 
+  // Count (cheap, tiny table) due active watchers that were filtered out for
+  // lacking a runnable executor — for visibility in the tick summary.
+  const [unrunnableRow] = await sql<{ count: number }>`
+    SELECT count(*)::int AS count
+    FROM watchers w
+    WHERE w.status = 'active'
+      AND w.schedule IS NOT NULL
+      AND w.next_run_at IS NOT NULL
+      AND w.next_run_at <= current_timestamp
+      AND w.device_worker_id IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM agents a
+        WHERE a.id = w.agent_id
+          AND a.organization_id = w.organization_id
+      )
+  `;
+  const unrunnable = unrunnableRow?.count ?? 0;
+
   if (dueWatchers.length === 0) {
-    return { dueWatchers: 0, runsCreated: 0, skipped: 0 };
+    return { dueWatchers: 0, runsCreated: 0, skipped: 0, unrunnable };
   }
 
   let runsCreated = 0;
@@ -582,6 +623,64 @@ export async function materializeDueWatcherRuns(
     dueWatchers: dueWatchers.length,
     runsCreated,
     skipped,
+    unrunnable,
+  };
+}
+
+export interface WatcherAutomationTickResult {
+  reset: number | null;
+  reconciled: number | null;
+  dueWatchers: number | null;
+  runsCreated: number | null;
+  skipped: number | null;
+  unrunnable: number | null;
+  claimed: number | null;
+  dispatched: number | null;
+  dispatchReconciled: number | null;
+  failed: number | null;
+  /** Phases that threw this tick (empty on a clean tick). */
+  errors: string[];
+}
+
+/**
+ * One watcher-automation tick: reset orphaned runs → reconcile in-flight →
+ * materialize newly-due → dispatch pending. Each phase is isolated so a throw in
+ * one cannot abort the others — the regression that wedged prod (lobu#1046) was a
+ * throw in `reconcile` taking down `materialize`+`dispatch` for 12 days. Returns
+ * a summary (nulls for phases that threw) plus the names of any failed phases.
+ *
+ * Extracted from the scheduler registration so the orchestration is unit/integration
+ * testable without standing up the full TaskScheduler.
+ */
+export async function runWatcherAutomationTick(env: Env): Promise<WatcherAutomationTickResult> {
+  const errors: string[] = [];
+  const phase = async <T>(name: string, fn: () => Promise<T>): Promise<T | null> => {
+    try {
+      return await fn();
+    } catch (err) {
+      errors.push(name);
+      logger.error({ err, phase: name }, '[watcher-automation] phase failed');
+      return null;
+    }
+  };
+
+  const reset = await phase('reset', () => resetOrphanedWatcherRuns());
+  const reconciliation = await phase('reconcile', () => reconcileWatcherRuns());
+  const materialize = await phase('materialize', () => materializeDueWatcherRuns(env));
+  const dispatch = await phase('dispatch', () => dispatchPendingWatcherRuns(env));
+
+  return {
+    reset: reset?.reset ?? null,
+    reconciled: reconciliation?.reconciled ?? null,
+    dueWatchers: materialize?.dueWatchers ?? null,
+    runsCreated: materialize?.runsCreated ?? null,
+    skipped: materialize?.skipped ?? null,
+    unrunnable: materialize?.unrunnable ?? null,
+    claimed: dispatch?.claimed ?? null,
+    dispatched: dispatch?.dispatched ?? null,
+    dispatchReconciled: dispatch?.reconciled ?? null,
+    failed: dispatch?.failed ?? null,
+    errors,
   };
 }
 

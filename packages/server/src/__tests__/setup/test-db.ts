@@ -8,6 +8,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import postgres from 'postgres';
+import { PROD_PG_VALUE_OPTIONS } from '../../db/client';
 import { listMigrationFiles, loadMigrationUpSection } from '../../db/migration-loader';
 import { clearInMemoryMcpSessionsForTests } from '../../mcp-session-state';
 import { clearMultiTenantCachesForTests } from '../../workspace/multi-tenant-caches';
@@ -101,6 +102,11 @@ export function getTestDb(): postgres.Sql {
       // Integration tests trigger many CASCADE/TRUNCATE notices; suppress them to
       // reduce noisy output and hook slowdowns.
       onnotice: () => {},
+      // Share prod's value-serialization config (fetch_types:false + JSON/bigint
+      // handling) so tests exercise the SAME client behavior as production. A
+      // forgiving test client masked the `= ANY(${jsArray})` bug that wedged
+      // watchers for 12 days (it only throws under fetch_types:false).
+      ...PROD_PG_VALUE_OPTIONS,
     });
   }
   return sql;

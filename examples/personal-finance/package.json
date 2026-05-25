@@ -5,7 +5,7 @@
   "description": "Lobu example: personal-finance agent + promptfoo evals.",
   "type": "module",
   "scripts": {
-    "evals": "promptfoo eval -c agents/personal-finance/evals/promptfooconfig.yaml",
+    "evals": "promptfoo eval -c evals/promptfooconfig.yaml",
     "evals:view": "promptfoo view"
   },
   "dependencies": {

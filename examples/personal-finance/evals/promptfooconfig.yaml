@@ -3,7 +3,7 @@
 # Quick start (from examples/personal-finance):
 #   bun install
 #   export LOBU_TOKEN=$(lobu token)
-#   bun run evals          # promptfoo eval -c agents/personal-finance/evals/promptfooconfig.yaml
+#   bun run evals          # promptfoo eval -c evals/promptfooconfig.yaml
 #   bun run evals:view     # comparison grid in the browser
 #
 # Single-turn tests use `vars.query` rendered through the prompt template.

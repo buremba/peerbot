@@ -4,6 +4,7 @@ metadata:
   name: {{ include "lobu.fullname" . }}-app
   labels:
     {{- include "lobu.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
 spec:
   type: {{ .Values.service.type }}
   {{- with .Values.service.sessionAffinity }}

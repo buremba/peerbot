@@ -42,6 +42,7 @@
 
 import { createLogger } from '@lobu/core';
 import * as Sentry from '@sentry/node';
+import { incrementCounter } from '../gateway/metrics/prometheus';
 import type { IMessageQueue, QueueJob } from '../gateway/infrastructure/queue/types';
 import { nextRunAt } from '../utils/cron';
 
@@ -246,10 +247,26 @@ export class TaskScheduler {
       await this.seedNextCronTick(reg, new Date(fromTick.getTime() + 1));
     }
 
-    await reg.handler({
-      payload: data.payload,
-      taskRunId: Number(job.id),
-    });
+    // Per-tick outcome counter — the scheduler heartbeat that backs the
+    // "watcher-automation silent / failing" alerts. Counts every dispatched
+    // task; alerts filter by job name. Re-throw is preserved so the runs-queue
+    // retry path is unchanged.
+    try {
+      await reg.handler({
+        payload: data.payload,
+        taskRunId: Number(job.id),
+      });
+      incrementCounter('lobu_scheduled_job_runs_total', {
+        job: data.name,
+        outcome: 'success',
+      });
+    } catch (err) {
+      incrementCounter('lobu_scheduled_job_runs_total', {
+        job: data.name,
+        outcome: 'error',
+      });
+      throw err;
+    }
   }
 
   /** Insert (or no-op if already present) a row for this task's next cron

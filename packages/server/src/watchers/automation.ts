@@ -3,6 +3,7 @@ import { generateWorkerToken } from '@lobu/core';
 import { inferWatcherGranularityFromSchedule } from '@lobu/connector-sdk';
 import type { DbClient } from '../db/client';
 import { getDb, pgTextArray } from '../db/client';
+import { incrementCounter, setGauge } from '../gateway/metrics/prometheus';
 import type { Env } from '../index';
 import {
   getLobuCoreServices,
@@ -676,6 +677,19 @@ export async function runWatcherAutomationTick(env: Env): Promise<WatcherAutomat
   const reconciliation = await phase('reconcile', () => reconcileWatcherRuns());
   const materialize = await phase('materialize', () => materializeDueWatcherRuns(env));
   const dispatch = await phase('dispatch', () => dispatchPendingWatcherRuns(env));
+
+  // Emit health metrics. The scheduler-level success/error counter can't see
+  // these because this tick swallows phase errors (returns them in `errors`),
+  // so surface phase failures + materialization health explicitly for alerting.
+  for (const failedPhase of errors) {
+    incrementCounter('lobu_watcher_automation_phase_failures_total', { phase: failedPhase });
+  }
+  if (materialize?.runsCreated) {
+    incrementCounter('lobu_watcher_runs_created_total', {}, materialize.runsCreated);
+  }
+  if (materialize) {
+    setGauge('lobu_watchers_unrunnable', materialize.unrunnable);
+  }
 
   return {
     reset: reset?.reset ?? null,

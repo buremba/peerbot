@@ -1,0 +1,57 @@
+{{- if .Values.metrics.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "lobu.fullname" . }}-watchers
+  {{- with .Values.metrics.prometheusRule.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    {{- include "lobu.labels" . | nindent 4 }}
+    {{- /* kube-prometheus-stack selects rules by ruleSelector: release=kube-prometheus-stack */}}
+    {{- with .Values.metrics.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: lobu-watchers
+      rules:
+        # Heartbeat / dead-man's-switch. The 12-day outage (lobu#1046) was a
+        # SILENT one: the app was healthy but watcher-automation produced zero
+        # successful ticks. Alert on the ABSENCE of success, not just on errors.
+        # `or on() vector(0)` makes it fire even if the series disappears (all
+        # replicas down / never scraped).
+        - alert: WatcherAutomationSilent
+          expr: |
+            (sum(increase(lobu_scheduled_job_runs_total{job="watcher-automation",outcome="success"}[15m])) or on() vector(0)) == 0
+          for: 15m
+          labels:
+            severity: critical
+            service: lobu
+          annotations:
+            summary: "Lobu watcher-automation has produced no successful tick in 15m"
+            description: "The watcher scheduler is silent or failing on every tick across all replicas. Watchers are not firing. See runs table (run_type='watcher') and app logs for `[task] watcher-automation`."
+        # Internal phase failures. Post-hardening the tick swallows phase errors
+        # (so the scheduler-level counter shows success); this surfaces them.
+        - alert: WatcherAutomationPhaseFailing
+          expr: |
+            sum(increase(lobu_watcher_automation_phase_failures_total[15m])) by (phase) > 0
+          for: 15m
+          labels:
+            severity: warning
+            service: lobu
+          annotations:
+            summary: "Lobu watcher-automation phase {{`{{ $labels.phase }}`}} is failing"
+            description: "The {{`{{ $labels.phase }}`}} phase of watcher-automation threw repeatedly over 15m. Check app logs for `[watcher-automation] phase failed`."
+        # A critical scheduled job erroring repeatedly (e.g. the stale-run reaper).
+        - alert: LobuScheduledJobFailing
+          expr: |
+            sum(increase(lobu_scheduled_job_runs_total{job=~"watcher-automation|check-stalled-executions",outcome="error"}[15m])) by (job) > 0
+          for: 15m
+          labels:
+            severity: warning
+            service: lobu
+          annotations:
+            summary: "Lobu scheduled job {{`{{ $labels.job }}`}} is failing"
+            description: "The {{`{{ $labels.job }}`}} cron task threw on every run over 15m."
+{{- end }}

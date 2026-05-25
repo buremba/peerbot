@@ -64,7 +64,34 @@ function initializeMetrics() {
     "gauge"
   );
 
-  setGauge("lobu_process_start_time_seconds", Math.floor(Date.now() / 1000));
+  // Scheduler + watcher-automation health. These back the prod alerting rules
+  // (charts/lobu PrometheusRule): a silent scheduler / failing watcher tick is
+  // exactly the failure mode that went undetected for 12 days (lobu#1046).
+  // Per-pod in-memory counters are the correct Prometheus model — each pod's
+  // /metrics is scraped and summed across pods; counter resets on restart are
+  // handled by rate()/increase().
+  registerMetric(
+    "lobu_scheduled_job_runs_total",
+    "Scheduled (cron) task ticks by job name and outcome (success|error)",
+    "counter"
+  );
+  registerMetric(
+    "lobu_watcher_automation_phase_failures_total",
+    "watcher-automation phases that threw, by phase (reset|reconcile|materialize|dispatch)",
+    "counter"
+  );
+  registerMetric(
+    "lobu_watcher_runs_created_total",
+    "Watcher runs materialized (enqueued) by the scheduler",
+    "counter"
+  );
+  registerMetric(
+    "lobu_watchers_unrunnable",
+    "Due active watchers skipped this tick for lacking a runnable executor (no device pin, no agent row)",
+    "gauge"
+  );
+
+  setGaugeInternal("lobu_process_start_time_seconds", Math.floor(Date.now() / 1000));
   logger.info("Prometheus metrics initialized");
 }
 
@@ -76,7 +103,7 @@ function registerMetric(
   metrics.set(name, { name, help, type, values: [] });
 }
 
-function setGauge(
+function setGaugeInternal(
   name: string,
   value: number,
   labels: Record<string, string> = {}
@@ -95,6 +122,35 @@ function setGauge(
     existing.value = value;
   } else {
     metric.values.push({ value, labels });
+  }
+}
+
+export function setGauge(
+  name: string,
+  value: number,
+  labels: Record<string, string> = {}
+): void {
+  setGaugeInternal(name, value, labels);
+}
+
+export function incrementCounter(
+  name: string,
+  labels: Record<string, string> = {},
+  by = 1
+): void {
+  const metric = metrics.get(name);
+  if (!metric || metric.type !== "counter") {
+    logger.warn(`Counter metric ${name} not found`);
+    return;
+  }
+  const labelKey = JSON.stringify(labels);
+  const existing = metric.values.find(
+    (entry) => JSON.stringify(entry.labels) === labelKey
+  );
+  if (existing) {
+    existing.value += by;
+  } else {
+    metric.values.push({ value: by, labels });
   }
 }
 

@@ -219,3 +219,20 @@ releaseGates:
       conversationIdPrefix: "smoke-"
       timeoutSeconds: 90
       intervalSeconds: 3
+
+# Prometheus metrics scraping + alerting. Requires the prometheus-operator CRDs
+# (kube-prometheus-stack). Both default OFF so the chart installs without the
+# operator; the prod overlay (owletto-deploy) turns them on. The Prometheus in
+# this cluster selects by `release: kube-prometheus-stack`, so set that under
+# additionalLabels when enabling.
+metrics:
+  serviceMonitor:
+    enabled: false
+    # namespace: ""        # defaults to the release namespace
+    interval: 30s
+    scrapeTimeout: 10s
+    additionalLabels: {}   # e.g. { release: kube-prometheus-stack }
+  prometheusRule:
+    enabled: false
+    # namespace: ""
+    additionalLabels: {}   # e.g. { release: kube-prometheus-stack }

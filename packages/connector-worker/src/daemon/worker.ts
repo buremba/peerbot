@@ -19,7 +19,7 @@ export interface DaemonConfig {
   version?: string;
 }
 
-const DEFAULT_CAPABILITIES: WorkerCapabilities = { browser: false };
+const DEFAULT_CAPABILITIES: WorkerCapabilities = {};
 const DEFAULT_EXECUTOR_TIMEOUT_MS = 600000;
 
 /**

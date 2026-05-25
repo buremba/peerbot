@@ -30,6 +30,7 @@ import {
 } from "../secrets/index.js";
 import { resolveAgentOptions } from "../services/platform-helpers.js";
 import { orgContext, tryGetOrgId } from "../../lobu/stores/org-context.js";
+import { isCloudMode } from "../../utils/cloud-mode.js";
 import {
   ConversationStateStore,
   type HistoryEntry,
@@ -93,21 +94,6 @@ function configsEqual(
 
 const logger = createLogger("chat-instance-manager");
 
-/**
- * Read `LOBU_CLOUD_MODE` from the env. Truthy values (`1`, `true`, `yes`,
- * case-insensitive) enable cloud-mode guardrails that don't apply to
- * self-hosters running the same gateway in a single-tenant install.
- *
- * Re-read on every call so a process running in a test harness can flip
- * the flag without restart. Embedded gateways check it on every
- * connection-create, which is cold-path enough to skip caching.
- */
-function isCloudMode(): boolean {
-  const raw = process.env.LOBU_CLOUD_MODE;
-  if (!raw) return false;
-  const v = raw.trim().toLowerCase();
-  return v === "1" || v === "true" || v === "yes";
-}
 
 /**
  * `mode: "polling"` is the only config that forces long-polling regardless

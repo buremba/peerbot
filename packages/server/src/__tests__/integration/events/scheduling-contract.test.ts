@@ -151,8 +151,8 @@ describe('scheduler and worker ingestion contracts', () => {
     `;
 
     const [responseA, responseB] = await Promise.all([
-      post('/api/workers/poll', { body: { worker_id: 'worker-a', capabilities: { browser: false } } }),
-      post('/api/workers/poll', { body: { worker_id: 'worker-b', capabilities: { browser: false } } }),
+      post('/api/workers/poll', { body: { worker_id: 'worker-a', capabilities: {} } }),
+      post('/api/workers/poll', { body: { worker_id: 'worker-b', capabilities: {} } }),
     ]);
     const bodies = [await responseA.json(), await responseB.json()];
     const running = bodies.filter((body) => typeof body.run_id === 'number');

@@ -109,9 +109,7 @@ async function main(): Promise<void> {
           workerId,
           version,
           workerApiToken: process.env.WORKER_API_TOKEN,
-          capabilities: {
-            browser: true,
-          },
+          capabilities: {},
           ...(Number.isFinite(maxConcurrentJobs) ? { maxConcurrentJobs } : {}),
         },
         env

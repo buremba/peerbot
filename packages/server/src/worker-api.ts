@@ -27,6 +27,7 @@ import {
 } from './connectors/repair-agent';
 import { captureServerError } from './sentry';
 import { autoLinkEvent } from './utils/auto-linker';
+import { isCloudMode } from './utils/cloud-mode';
 import { nextRunAt as nextRunAtFromCron } from './utils/cron';
 import { advanceWatcherSchedule, enqueueWatcherRunForWatcher } from './watchers/automation';
 import {
@@ -62,10 +63,7 @@ function normalizeAdvertisedCapabilities(capabilities: Record<string, boolean>):
     new Set(
       Object.entries(capabilities)
         .map(([key, value]) => [key.trim(), value] as const)
-        .filter(
-          ([key, value]) =>
-            value === true && key !== 'browser' && WORKER_CAPABILITY_NAME_RE.test(key)
-        )
+        .filter(([key, value]) => value === true && WORKER_CAPABILITY_NAME_RE.test(key))
         .map(([key]) => key)
     )
   );
@@ -132,19 +130,6 @@ async function authorizeRunForWorker(
 }
 
 /**
- * Truthy `LOBU_CLOUD_MODE` (`1`/`true`/`yes`, case-insensitive) marks a
- * multi-tenant cloud deployment. Self-hosted / embedded single-tenant installs
- * leave it unset. Mirrors the canonical reader in chat-instance-manager.ts;
- * kept local to avoid coupling worker-api to the connections module.
- */
-function isCloudMode(): boolean {
-  const raw = process.env.LOBU_CLOUD_MODE;
-  if (!raw) return false;
-  const v = raw.trim().toLowerCase();
-  return v === '1' || v === 'true' || v === 'yes';
-}
-
-/**
  * POST /api/workers/poll
  *
  * Worker polls for next available sync run.
@@ -173,9 +158,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     return c.json({ error: 'Invalid or missing JSON body' }, 400);
   }
   const sql = getDb();
-  const hasBrowser = capabilities.browser ?? false;
-  // Capability set the worker advertised (excluding browser, which has its
-  // own legacy gate via connector_definitions.api_type). Used to filter on
+  // Capability set the worker advertised, used to filter on
   // connector_definitions.required_capability.
   const advertisedCapabilities = normalizeAdvertisedCapabilities(capabilities);
   // Trusted fleet workers (WORKER_API_TOKEN) run the no-capability cloud
@@ -422,7 +405,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         FROM runs r
         LEFT JOIN connections con ON con.id = r.connection_id
         LEFT JOIN LATERAL (
-          SELECT cd.api_type, cd.required_capability
+          SELECT cd.required_capability
           FROM connector_definitions cd
           WHERE cd.key = r.connector_key
             AND cd.organization_id = r.organization_id
@@ -434,10 +417,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           AND (r.approval_status = 'auto' OR r.approval_status = 'approved')
           AND (
             -- (1) Connector-worker lanes: sync / action / embed_backfill / auth.
-            --     Browser-only connectors require the browser capability.
             (
               r.run_type IN ('sync', 'action', 'embed_backfill', 'auth')
-              AND (${hasBrowser} OR COALESCE(cd.api_type, 'api') = 'api')
               AND (
                 -- (1A) trusted/anonymous fleet worker: the no-capability cloud
                 --      connectors plus any capability it happens to advertise,

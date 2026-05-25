@@ -45,9 +45,8 @@ export interface ExecutorClient {
 // Types
 // ============================================
 
-export interface WorkerCapabilities {
-  browser: boolean;
-}
+/** Capability strings the worker advertises, keyed by name (e.g. `browser.debugger`). */
+export type WorkerCapabilities = Record<string, boolean>;
 
 export interface OAuthCredentials {
   accessToken: string;

@@ -22,7 +22,6 @@ export interface FeedRecord {
   connection_config: Record<string, unknown>;
   checkpoint: Record<string, unknown> | null;
   compiled_code: string | null;
-  api_type: string | null;
   auth_profile_id: number | null;
   app_auth_profile_id: number | null;
 }
@@ -48,13 +47,12 @@ export async function fetchFeeds(filter?: FeedFilter): Promise<FeedRecord[]> {
       COALESCE(c.config, '{}'::jsonb) AS connection_config,
       f.checkpoint,
       cv.compiled_code,
-      resolved_def.api_type,
       c.auth_profile_id,
       c.app_auth_profile_id
     FROM feeds f
     JOIN connections c ON c.id = f.connection_id
     LEFT JOIN LATERAL (
-      SELECT d.version, d.api_type
+      SELECT d.version
       FROM connector_definitions d
       WHERE d.key = c.connector_key
         AND d.status = 'active'

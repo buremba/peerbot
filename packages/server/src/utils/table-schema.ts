@@ -331,7 +331,6 @@ export const QUERYABLE_SCHEMA = {
         'created_at',
         'updated_at',
         'login_enabled',
-        'api_type',
         'favicon_domain',
         'default_repair_agent_id',
         'required_capability',

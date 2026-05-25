@@ -63,7 +63,7 @@ export function startEmbeddedConnectorWorker(
       apiUrl,
       workerId,
       workerApiToken: serverEnv.WORKER_API_TOKEN,
-      capabilities: { browser: false },
+      capabilities: {},
       pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
       maxConcurrentJobs: 1,
     },

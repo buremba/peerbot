@@ -1,15 +1,16 @@
 // Standalone @lobu/client consumer used by scripts/sdk-e2e.sh.
 //
-// Proves the CONSUMPTION SDK round-trip against a live `lobu run`: create a
-// session, send a message, and stream the agent's reply back over SSE — the
-// path an external JS app takes, distinct from the `lobu chat` CLI the rest of
-// the gate exercises. Runs from a throwaway project that installed the PACKED
-// @lobu/client tarball, so it also proves the published artifact is
+// Proves the CONSUMPTION SDK round-trip against a live `lobu run`: open a
+// session, `ask()` the agent and await the streamed reply, then `refresh()` the
+// session token and `ask()` again to prove the re-minted token still works —
+// the path an external JS app takes, distinct from the `lobu chat` CLI the rest
+// of the gate exercises. Runs from a throwaway project that installed the
+// PACKED @lobu/client tarball, so it also proves the published artifact is
 // self-contained (zero deps).
 //
 // Env: LOBU_BASE_URL (origin + /lobu), LOBU_TOKEN (Agent-API token), LOBU_AGENT_ID.
-// Prints the streamed answer to stdout; exits non-zero on an empty answer so
-// the caller can grep for the expected reply and fail the gate on a miss.
+// Prints the agent's answer to stdout; exits non-zero on an empty answer so the
+// caller can grep for the expected reply and fail the gate on a miss.
 
 import { Lobu } from "@lobu/client";
 
@@ -29,69 +30,36 @@ const session = await lobu.sessions.create({
   agentId,
   userId: "sdk-e2e-consumer",
 });
-console.log(`[client] session=${session.agentId} sse=${session.sseUrl}`);
+console.log(
+  `[client] conversation=${session.conversationId} sse=${session.sseUrl}`
+);
 
-const sent = await session.send(question);
-console.log(`[client] sent messageId=${sent.messageId} queued=${sent.queued}`);
+// ask(): send + await the streamed reply (connected handshake, messageId
+// correlation, output accumulation, resolve-on-complete) in one call.
+const first = await session.ask(question, { timeoutMs: 90_000 });
+console.log(`[client] ask#1 messageId=${first.messageId}`);
+process.stdout.write(first.text);
 
-const ac = new AbortController();
-const timeout = setTimeout(() => ac.abort(), 90_000);
+// refresh(): re-mint the session token via the resume path, then prove the new
+// token still drives a working turn on the same conversation.
+const tokenBefore = session.token;
+await session.refresh();
+console.log(
+  `[client] refreshed token changed=${session.token !== tokenBefore} expiresAt=${session.expiresAt}`
+);
+const second = await session.ask(question, { timeoutMs: 90_000 });
+console.log(`[client] ask#2 (post-refresh) messageId=${second.messageId}`);
 
-let answer = "";
-let complete = false;
-try {
-  for await (const ev of session.events({
-    signal: ac.signal,
-    maxRetryAttempts: 2,
-  })) {
-    let data = ev.data;
-    if (typeof data === "string") {
-      try {
-        data = JSON.parse(data);
-      } catch {
-        // non-JSON payload — treat the raw string as content below
-      }
-    }
-    // Correlate to our message when the server tags events with a messageId.
-    if (
-      data?.messageId &&
-      sent.messageId &&
-      data.messageId !== sent.messageId
-    ) {
-      continue;
-    }
-    // Assistant text arrives as `event: output` with `data.content`. Accept a
-    // couple of fallback shapes so a benign server-side rename can't silently
-    // turn a real answer into an empty one.
-    const chunk =
-      ev.event === "output" || ev.event === "text" || ev.event === "message"
-        ? typeof data === "string"
-          ? data
-          : typeof data?.content === "string"
-            ? data.content
-            : typeof data?.text === "string"
-              ? data.text
-              : ""
-        : "";
-    if (chunk) {
-      answer += chunk;
-      process.stdout.write(chunk);
-    } else if (ev.event === "complete") {
-      complete = true;
-      break;
-    } else if (ev.event === "error") {
-      console.error(`\n[client] stream error: ${JSON.stringify(data)}`);
-      break;
-    }
-  }
-} finally {
-  clearTimeout(timeout);
-  ac.abort();
+console.log(
+  `\n[client] ANSWER: ${first.text.trim()} | post-refresh: ${second.text.trim()}`
+);
+if (!first.text.trim()) {
+  console.error("[client] FAIL: empty answer from ask()");
+  process.exit(1);
 }
-
-console.log(`\n[client] complete=${complete} answer_len=${answer.length}`);
-console.log(`[client] ANSWER: ${answer.trim()}`);
-if (!answer.trim()) {
-  console.error("[client] FAIL: empty answer via @lobu/client");
+if (!second.text.trim()) {
+  console.error(
+    "[client] FAIL: empty answer after refresh() — re-minted token rejected?"
+  );
   process.exit(1);
 }

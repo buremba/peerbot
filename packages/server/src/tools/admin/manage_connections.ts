@@ -926,7 +926,13 @@ async function handleCreate(
   if (authSelection) {
     const requiresAuth =
       !!authSelection.oauthMethod || !!authSelection.envMethod || !!authSelection.browserMethod;
-    if (requiresAuth && !authSelection.authProfile) {
+    // A broker-backed connection's auth is fully satisfied by its `oauth_broker`
+    // app profile alone — there is NO local runtime auth profile (the grant
+    // lives on the broker; a fresh access token is fetched at runtime). Treat it
+    // as satisfied so an OAuth connector doesn't reject for a missing
+    // oauth_account.
+    const brokerSatisfied = authSelection.appAuthProfile?.profile_kind === 'oauth_broker';
+    if (requiresAuth && !authSelection.authProfile && !brokerSatisfied) {
       return {
         error: authSelection.browserMethod
           ? 'Select or create a browser auth profile before creating the connection.'

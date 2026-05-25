@@ -31,6 +31,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { brokerRoutes } from "../../../connect/broker-routes";
 import type { Env } from "../../../index";
 import { manageAuthProfiles } from "../../../tools/admin/manage_auth_profiles";
+import { manageConnections } from "../../../tools/admin/manage_connections";
 import type { ToolContext } from "../../../tools/registry";
 import { createAuthProfile } from "../../../utils/auth-profiles";
 import { resolveExecutionAuth } from "../../../utils/execution-context";
@@ -542,5 +543,75 @@ describe("oauth_broker profile — create validation via manage_auth_profiles", 
 		if ("error" in res) {
 			expect(res.error).toContain("broker_pat");
 		}
+	});
+
+	it("creates an ACTIVE broker-backed connection through manage_connections referencing an oauth_broker profile", async () => {
+		const { ctx, orgId } = await seedOrgWithConnector();
+
+		// Admin sets up the broker app profile (the grant lives on the broker).
+		const profRes = await manageAuthProfiles(
+			{
+				action: "create_auth_profile",
+				connector_key: "demo.oauth",
+				profile_kind: "oauth_broker",
+				display_name: "Broker App",
+				slug: "broker-app",
+				auth_data: {
+					broker_url: "https://broker.lobu.ai",
+					broker_org: "broker-org",
+					broker_pat: "owl_pat_example",
+					broker_connection_id: 7,
+				},
+			},
+			TEST_ENV,
+			ctx,
+		);
+		expect("auth_profile" in profRes && profRes.auth_profile).toBeTruthy();
+
+		// Create the connection THROUGH the tool (not raw SQL) — the OAuth
+		// connector has no local oauth_account, but the oauth_broker app profile
+		// satisfies auth on its own, so the connection must land ACTIVE.
+		const connRes = await manageConnections(
+			{
+				action: "create",
+				connector_key: "demo.oauth",
+				slug: "broker-conn",
+				display_name: "Broker Connection",
+				app_auth_profile_slug: "broker-app",
+			},
+			TEST_ENV,
+			ctx,
+		);
+		expect("error" in connRes).toBe(false);
+		if ("connection" in connRes) {
+			expect((connRes.connection as { status: string }).status).toBe(
+				"active",
+			);
+			expect(
+				(connRes.connection as { app_auth_profile_slug: string })
+					.app_auth_profile_slug,
+			).toBe("broker-app");
+		}
+
+		// The FK points at the oauth_broker profile.
+		const sql = getTestDb();
+		const rows = (await sql`
+      SELECT c.status, app.profile_kind AS app_kind, app.slug AS app_slug,
+             c.auth_profile_id
+      FROM connections c
+      JOIN auth_profiles app ON app.id = c.app_auth_profile_id
+      WHERE c.organization_id = ${orgId} AND c.slug = 'broker-conn'
+    `) as unknown as Array<{
+			status: string;
+			app_kind: string;
+			app_slug: string;
+			auth_profile_id: number | null;
+		}>;
+		expect(rows).toHaveLength(1);
+		expect(rows[0].status).toBe("active");
+		expect(rows[0].app_kind).toBe("oauth_broker");
+		expect(rows[0].app_slug).toBe("broker-app");
+		// No local runtime auth profile — the broker app profile alone satisfies auth.
+		expect(rows[0].auth_profile_id ?? null).toBeNull();
 	});
 });

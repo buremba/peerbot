@@ -85,18 +85,18 @@ async function loadContextConfig(): Promise<StoredContextConfig | null> {
 	}
 }
 
-function activeContextName(
-	override: string | undefined,
-	config: StoredContextConfig | null,
-): string {
-	const fromConfig =
-		typeof config?.currentContext === "string" && config.currentContext.trim()
-			? config.currentContext.trim()
-			: undefined;
+/**
+ * The context whose `lobu login` identifies the CLOUD a managed token is fetched
+ * from. Deliberately NOT the active/current context: under `lobu run` the active
+ * context is the local loopback instance itself, and we must never POST the local
+ * session token to the local `/oauth/connection-token`. Defaults to the canonical
+ * `lobu` (app.lobu.ai) context; override with the arg or `LOBU_CLOUD_CONTEXT` for
+ * a self-hosted cloud.
+ */
+function cloudContextName(override: string | undefined): string {
 	return (
 		override?.trim() ||
-		process.env.LOBU_CONTEXT?.trim() ||
-		fromConfig ||
+		process.env.LOBU_CLOUD_CONTEXT?.trim() ||
 		DEFAULT_CONTEXT_NAME
 	);
 }
@@ -132,8 +132,9 @@ function resolveContextBaseUrl(
  * Resolve the cloud credential for the managed-connector token fetch.
  *
  * Order:
- *   1. The stored device-login for the active context (`lobu login`), refreshed
- *      when near expiry. baseUrl from the context URL's origin.
+ *   1. The stored device-login for the CLOUD context (`lobu login`) — the
+ *      explicit cloud, never the active/local context — refreshed when near
+ *      expiry. baseUrl from that context URL's origin.
  *   2. Fallback: `LOBU_CLOUD_PAT` + `LOBU_CLOUD_URL` env (headless/CI).
  *
  * Returns null when neither is available (the connection falls through to the
@@ -143,7 +144,7 @@ export async function resolveCloudCredential(
 	contextOverride?: string,
 ): Promise<CloudCredential | null> {
 	const config = await loadContextConfig();
-	const contextName = activeContextName(contextOverride, config);
+	const contextName = cloudContextName(contextOverride);
 
 	const stored = await readContextCredential(
 		credentialsPath(),

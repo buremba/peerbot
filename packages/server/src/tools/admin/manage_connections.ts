@@ -968,14 +968,20 @@ async function handleCreate(
   // local instance fetches the token at runtime (execution-context.ts) and never
   // holds a local auth profile. So skip the local auth-profile requirement for
   // these; they are created `active` with null local auth profiles. The signal
-  // is the trusted `config.managedBy` (set by `lobu connect` / `defineConnection
-  // ({ managedBy })`); it is never auth_data-derived.
+  // is the trusted `config.managedBy` (set by `defineConnection({ managedBy })`
+  // via `lobu apply`); it is never auth_data-derived. The org must be a non-empty
+  // string — an empty `org` is not a valid managed connection, so it falls
+  // through to the normal auth-profile requirement instead of being created
+  // active+unauthenticated.
   const incomingConfig = parseJsonObject(args.config);
-  const isManagedByConnection =
+  const managedByOrg =
     !!incomingConfig.managedBy &&
     typeof incomingConfig.managedBy === 'object' &&
-    !Array.isArray(incomingConfig.managedBy) &&
-    typeof (incomingConfig.managedBy as Record<string, unknown>).org === 'string';
+    !Array.isArray(incomingConfig.managedBy)
+      ? (incomingConfig.managedBy as Record<string, unknown>).org
+      : undefined;
+  const isManagedByConnection =
+    typeof managedByOrg === 'string' && managedByOrg.trim().length > 0;
 
   if (authSelection && !isManagedByConnection) {
     const requiresAuth =

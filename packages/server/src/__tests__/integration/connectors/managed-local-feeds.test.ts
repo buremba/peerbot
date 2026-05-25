@@ -115,6 +115,41 @@ describe('Stage 5 — local managed connection has feeds', () => {
     expect(feedResult.feed?.id).toBeDefined();
   });
 
+  it('rejects a create with an EMPTY managedBy.org (not treated as managed)', async () => {
+    // An empty/whitespace `org` is not a valid managed connection — it must NOT
+    // skip the auth-profile requirement and create an active unauthenticated
+    // connection. It falls through to the normal OAuth requirement and is
+    // rejected.
+    const org = await createTestOrganization({ name: 'Empty Org Managed' });
+    const user = await createTestUser({ name: 'Empty Org User' });
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const ctx = ctxFor(org.id, user.id);
+
+    await createTestConnectorDefinition({
+      key: 'demo.oauth',
+      name: 'Demo OAuth',
+      organization_id: org.id,
+      auth_schema: {
+        methods: [{ type: 'oauth', provider: 'demo', requiredScopes: ['read'] }],
+      },
+      feeds_schema: { items: {} },
+    });
+
+    const result = (await manageConnections(
+      {
+        action: 'create',
+        connector_key: 'demo.oauth',
+        slug: 'empty-managed',
+        config: { managedBy: { org: '   ' } },
+      },
+      TEST_ENV,
+      ctx
+    )) as { connection?: { id?: number }; error?: string };
+
+    expect(result.error).toBeTruthy();
+    expect(result.connection?.id).toBeUndefined();
+  });
+
   it('a local managedBy connection (not consent_only) can create a feed that syncs locally', async () => {
     const org = await createTestOrganization({ name: 'Local Managed Org' });
     const user = await createTestUser({ name: 'Local Managed User' });

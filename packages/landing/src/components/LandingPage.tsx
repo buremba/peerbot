@@ -998,7 +998,7 @@ function RunAnywhereSection() {
           style={{ color: "var(--color-page-text-muted)" }}
         >
           Same <code class="font-mono text-[13px]">lobu.config.ts</code> +{" "}
-          <code class="font-mono text-[13px]">connectors/</code> +{" "}
+          <code class="font-mono text-[13px]">*.connector.ts</code> +{" "}
           <code class="font-mono text-[13px]">agents/</code>. One command to
           boot embedded; Docker + Helm for self-hosting; Lobu Cloud when you
           don't want to run it yourself.

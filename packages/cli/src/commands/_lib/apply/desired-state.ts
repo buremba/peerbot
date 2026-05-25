@@ -215,8 +215,8 @@ export interface DesiredState {
   /** Watchers declared via `defineWatcher`. */
   watchers: DesiredWatcher[];
   /**
-   * Connectors: local `*.connector.ts` definitions (discovered under
-   * `./connectors`), `defineConnection`s, and `defineAuthProfile`s.
+   * Connectors: local `*.connector.ts` definitions (declared via
+   * `connectorFromFile`), `defineConnection`s, and `defineAuthProfile`s.
    */
   connectors: {
     definitions: DesiredConnectorDefinition[];
@@ -707,38 +707,21 @@ export interface LoadDesiredStateOptions {
 }
 
 /**
- * Discover local connector definitions for the TypeScript config path.
- *
- * A `lobu.config.ts` references connectors by key (or via the class returned by
- * `defineConnector`); the source the server compiles lives in
- * `./connectors/*.connector.ts`. We ship each file's source with `key: null` —
- * the server compiles it and resolves the real key, the same contract the YAML
- * loader used for auto-discovered `.connector.ts` files. `apply-cmd` then
- * compiles each `sourcePath` on the CLI (where the project's node_modules is
- * available) and uploads it via `install_connector`.
- *
- * We intentionally do NOT compile/instantiate the connector here to resolve its
- * key eagerly: that would force a full esbuild + module load (and installed
- * project deps, and any module-load side effects) on every load — including
- * `--dry-run` — for no benefit, since the server is the source of truth for the
- * compiled key. The cost is deferred to post-confirmation install in apply-cmd.
- *
- * Caveat (shared with YAML auto-discovery, see `locallyDeclaredConnectorKeys`):
- * because the shipped key is `null`, a connection's config is validated against
- * the *fresh* catalog only after install, and a connection that references a
- * connector by a bare *string* key relies on that string matching the file's
- * compiled `definition.key`. Reference the connector by its `defineConnector`
- * class instead (`connector: myConnector`) to make that match exact — the
- * mapper resolves the key from `definition.key`, so a typo can't silently bind
- * the connection to a different (bundled/remote) connector.
- */
-/**
  * Resolve the project's explicit `connectors: [connectorFromFile(...)]` list
  * into connector definitions to compile + ship. Replaces directory
  * auto-discovery: only listed connectors are uploaded. Paths are relative to
  * the config dir and guarded (no absolute, `..`, or backslash escapes),
- * mirroring `resolveReactionScript`. Source ships with `key: null`; `apply-cmd`
- * compiles each `sourcePath` on the CLI and the server resolves the key.
+ * mirroring `resolveReactionScript`.
+ *
+ * Each source ships with `key: null`; `apply-cmd` compiles each `sourcePath` on
+ * the CLI (where the project's node_modules is available) and the server
+ * resolves the real key. We intentionally do NOT compile/instantiate here to
+ * resolve the key eagerly — that would force a full esbuild + module load on
+ * every load (including `--dry-run`) for no benefit, since the server is the
+ * source of truth for the compiled key. A connection that references a
+ * connector by a bare *string* key relies on that string matching the file's
+ * compiled `definition.key`; reference it by its `defineConnector` class
+ * (`connector: myConnector`) to make that match exact.
  */
 function resolveConnectorSources(
   sources: ConnectorSource[],

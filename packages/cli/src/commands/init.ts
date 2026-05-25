@@ -212,9 +212,9 @@ export async function scaffoldProjectPackaging(
           },
           include: [
             "lobu.config.ts",
-            "connectors/**/*.ts",
-            "reactions/**/*.ts",
             "agents/**/*.ts",
+            "**/*.connector.ts",
+            "**/*.reaction.ts",
           ],
         },
         null,

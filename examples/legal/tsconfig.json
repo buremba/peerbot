@@ -10,8 +10,7 @@
   "include": [
     "lobu.config.ts",
     "agents/**/*.ts",
-    "connectors/**/*.ts",
-    "reactions/**/*.ts",
-    "models/**/*.ts"
+    "**/*.connector.ts",
+    "**/*.reaction.ts"
   ]
 }

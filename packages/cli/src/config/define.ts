@@ -304,6 +304,18 @@ export function defineAgent(config: Omit<Agent, "kind">): Agent {
 // ---------------------------------------------------------------------------
 
 /**
+ * MCP server a skill declares. Skills support the basic transport shape only;
+ * for servers that need auth (custom headers or OAuth), declare them on the
+ * agent via `defineAgent({ mcpServers })`, which has full secret support.
+ */
+export interface SkillMcpServer {
+  url?: string;
+  command?: string;
+  args?: string[];
+  type?: "sse" | "streamable-http" | "stdio";
+}
+
+/**
  * A skill an agent can use — an instruction block (`content`) plus the egress,
  * nix, and MCP it declares. Skills are referenced explicitly from
  * {@link Agent.skills}; there is no directory auto-discovery.
@@ -334,8 +346,11 @@ export interface Skill {
   nixPackages?: string[];
   /** Egress the skill needs — merged into the agent's network allowlist. */
   network?: NetworkConfig;
-  /** MCP servers the skill declares, keyed by id. */
-  mcpServers?: Record<string, McpServer>;
+  /**
+   * MCP servers the skill declares, keyed by id. Basic transport shape only; a
+   * server that needs auth (headers/OAuth) belongs on the agent's `mcpServers`.
+   */
+  mcpServers?: Record<string, SkillMcpServer>;
   /**
    * Load body + frontmatter from a `SKILL.md`, relative to the config file. Set
    * by {@link skillFromFile}; resolved by the loader. Mutually exclusive with

@@ -233,6 +233,35 @@ describe("loadDesiredStateFromConfig", () => {
     ]);
   });
 
+  test("an inline skill MCP server merges into agent mcpServers", async () => {
+    dir = mkdtempSync(join(import.meta.dir, "skillmcp-"));
+    writeFileSync(
+      join(dir, "lobu.config.ts"),
+      [
+        `import { defineAgent, defineConfig, defineSkill } from "@lobu/cli/config";`,
+        `const api = defineSkill({`,
+        `  name: "api",`,
+        `  content: "Use the API.",`,
+        `  mcpServers: { "support-api": { url: "https://api.example.com/mcp", type: "sse" } },`,
+        `});`,
+        `export default defineConfig({`,
+        `  agents: [defineAgent({ id: "a", skills: [api] })],`,
+        `});`,
+        ``,
+      ].join("\n")
+    );
+
+    const { state } = await loadDesiredStateFromConfig({ cwd: dir });
+    const mcp = (state.agents[0]?.settings.mcpServers ?? {}) as Record<
+      string,
+      { url?: string; type?: string }
+    >;
+    expect(mcp["support-api"]).toEqual({
+      url: "https://api.example.com/mcp",
+      type: "sse",
+    });
+  });
+
   test("two agents: custom + default dirs keep index alignment", async () => {
     dir = mkdtempSync(join(import.meta.dir, "multiagent-"));
     // Agent "a" uses a custom dir; agent "b" uses the default ./agents/b.

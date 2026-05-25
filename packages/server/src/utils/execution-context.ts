@@ -151,6 +151,10 @@ export async function resolveExecutionAuth(
  * stored on the org's own oauth_app profile. Returns null on any failure so the
  * connection simply resolves without credentials (fail-soft, like the local
  * path).
+ *
+ * The `__broker.pat` MUST be minted with the `broker:token` scope — the broker's
+ * `/broker/oauth/token` gate rejects (403) any PAT lacking it, so a broad member
+ * PAT cannot be used here. Mint with `lobu token create --scope broker:token`.
  */
 async function fetchBrokerAccessToken(
   broker: BrokerRef,

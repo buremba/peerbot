@@ -38,9 +38,20 @@ type BrokerEnv = {
 const brokerRoutes = new Hono<BrokerEnv>();
 
 /**
+ * The least-privilege scope a PAT must carry to fetch connection access tokens
+ * from the broker. Deliberately separate from the default `mcp:*` scopes so a
+ * broad org-member PAT cannot exfiltrate every connection's tokens — only a PAT
+ * minted explicitly with `broker:token` (the scope a broker-ref's PAT is
+ * expected to carry; see execution-context.ts) is authorized.
+ */
+const BROKER_TOKEN_SCOPE = "broker:token";
+
+/**
  * PAT auth for broker calls — the single shared `authenticatePat` gate. No /
  * invalid / null-org / cross-tenant PAT short-circuits 401/403; on success the
- * resolved org is stashed on the context.
+ * resolved org is stashed on the context. Org membership ALONE is not enough:
+ * the PAT must also carry the `broker:token` scope (403 otherwise), so a broad
+ * member PAT cannot reach the connection-token endpoint.
  */
 brokerRoutes.use("/oauth/*", async (c, next) => {
 	const bearerValue = extractPatBearer(c.req.header("Authorization"));
@@ -56,6 +67,19 @@ brokerRoutes.use("/oauth/*", async (c, next) => {
 		return c.json(
 			{ error: result.error, error_description: result.error_description },
 			result.status,
+		);
+	}
+
+	// Least-privilege: a valid, org-scoped PAT is necessary but not sufficient —
+	// it must also be granted `broker:token`. A `mcp:read mcp:write` member PAT
+	// is rejected here (403) before any connection is looked up.
+	if (!result.scopes.includes(BROKER_TOKEN_SCOPE)) {
+		return c.json(
+			{
+				error: "insufficient_scope",
+				error_description: `PAT is missing the '${BROKER_TOKEN_SCOPE}' scope`,
+			},
+			403,
 		);
 	}
 

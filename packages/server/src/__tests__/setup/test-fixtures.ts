@@ -447,7 +447,11 @@ interface TestPAT {
   organizationId: string;
 }
 
-export async function createTestPAT(userId: string, organizationId: string): Promise<TestPAT> {
+export async function createTestPAT(
+  userId: string,
+  organizationId: string,
+  options?: { scope?: string }
+): Promise<TestPAT> {
   const sql = getTestDb();
   const token = `owl_pat_${generateSecureToken(24)}`;
   const tokenHash = hashToken(token);
@@ -455,9 +459,9 @@ export async function createTestPAT(userId: string, organizationId: string): Pro
 
   await sql`
     INSERT INTO personal_access_tokens (
-      token_hash, token_prefix, user_id, organization_id, name, created_at, updated_at
+      token_hash, token_prefix, user_id, organization_id, name, scope, created_at, updated_at
     ) VALUES (
-      ${tokenHash}, ${tokenPrefix}, ${userId}, ${organizationId}, 'Test PAT', NOW(), NOW()
+      ${tokenHash}, ${tokenPrefix}, ${userId}, ${organizationId}, 'Test PAT', ${options?.scope ?? null}, NOW(), NOW()
     )
   `;
 

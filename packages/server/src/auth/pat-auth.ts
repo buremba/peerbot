@@ -25,6 +25,8 @@ export interface PatAuthSuccess {
 	ok: true;
 	userId: string;
 	organizationId: string;
+	/** The PAT's granted scopes, so callers can enforce least-privilege gates. */
+	scopes: string[];
 	/** The resolved user row, so callers can hydrate their session context. */
 	user: PatUserRow;
 	/** Raw verify() output (clientId/expiresAt/scopes) for session hydration. */
@@ -148,6 +150,7 @@ export async function authenticatePat(
 		ok: true,
 		userId: user.id,
 		organizationId: patInfo.organizationId,
+		scopes: patInfo.scopes,
 		user,
 		patInfo,
 	};

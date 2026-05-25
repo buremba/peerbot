@@ -125,7 +125,10 @@ afterAll(async () => {
 interface SeededConnection {
 	orgId: string;
 	userId: string;
+	/** PAT minted WITH the `broker:token` scope — the authorized happy-path PAT. */
 	pat: string;
+	/** PAT for the SAME org/user but WITHOUT `broker:token` — must be rejected (403). */
+	patNoScope: string;
 	connectionId: number;
 }
 
@@ -215,11 +218,18 @@ async function seedBrokerConnection(
     RETURNING id
   `) as unknown as Array<{ id: number }>;
 
-	const pat = await createTestPAT(user.id, org.id);
+	// The broker-ref's PAT carries the least-privilege `broker:token` scope; a
+	// sibling PAT for the same org/user WITHOUT it proves org membership alone is
+	// insufficient.
+	const pat = await createTestPAT(user.id, org.id, { scope: "broker:token" });
+	const patNoScope = await createTestPAT(user.id, org.id, {
+		scope: "mcp:read mcp:write",
+	});
 	return {
 		orgId: org.id,
 		userId: user.id,
 		pat: pat.token,
+		patNoScope: patNoScope.token,
 		connectionId: Number(connRows[0].id),
 	};
 }
@@ -319,6 +329,20 @@ describe("SPIKE: grant-on-broker — POST /broker/oauth/token", () => {
 			body: { connection_id: connectionId },
 		});
 		expect(res.status).toBe(401);
+	});
+
+	it("rejects a valid org-member PAT WITHOUT the broker:token scope (403)", async () => {
+		// Same org + same connection as the happy path, but the PAT carries only
+		// `mcp:read mcp:write`. Org membership is not enough — least-privilege.
+		const { patNoScope, connectionId } = await seedBrokerConnection("Broker Org");
+		const app = buildBrokerApp();
+		const res = await tokenRequest(app, {
+			pat: patNoScope,
+			body: { connection_id: connectionId },
+		});
+		expect(res.status).toBe(403);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body.error).toBe("insufficient_scope");
 	});
 });
 

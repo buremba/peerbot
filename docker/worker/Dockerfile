@@ -82,6 +82,11 @@ RUN useradd -m -s /bin/bash worker && \
 COPY --from=builder --chown=worker:worker /app/node_modules ./node_modules
 COPY --from=builder --chown=worker:worker /app/package.json ./
 COPY --from=builder --chown=worker:worker /app/tsconfig.json ./
+# connector-sdk imports @lobu/core (logger/retry); the bun workspace symlink
+# points at packages/core, so the runtime stage must include it or the symlink
+# dangles -> "ENOENT reading .../connector-sdk/node_modules/@lobu/core" at feed
+# sync. Mirrors docker/app/Dockerfile, which already copies core.
+COPY --from=builder --chown=worker:worker /app/packages/core ./packages/core
 COPY --from=builder --chown=worker:worker /app/packages/connector-sdk ./packages/connector-sdk
 COPY --from=builder --chown=worker:worker /app/packages/connectors ./packages/connectors
 COPY --from=builder --chown=worker:worker /app/packages/embeddings ./packages/embeddings

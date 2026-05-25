@@ -964,7 +964,20 @@ async function handleCreate(
         deviceWorkerId: deviceBinding.deviceWorkerId,
       });
 
-  if (authSelection) {
+  // A `managedBy` connection's OAuth grant lives in a cloud (public) org — the
+  // local instance fetches the token at runtime (execution-context.ts) and never
+  // holds a local auth profile. So skip the local auth-profile requirement for
+  // these; they are created `active` with null local auth profiles. The signal
+  // is the trusted `config.managedBy` (set by `lobu connect` / `defineConnection
+  // ({ managedBy })`); it is never auth_data-derived.
+  const incomingConfig = parseJsonObject(args.config);
+  const isManagedByConnection =
+    !!incomingConfig.managedBy &&
+    typeof incomingConfig.managedBy === 'object' &&
+    !Array.isArray(incomingConfig.managedBy) &&
+    typeof (incomingConfig.managedBy as Record<string, unknown>).org === 'string';
+
+  if (authSelection && !isManagedByConnection) {
     const requiresAuth =
       !!authSelection.oauthMethod || !!authSelection.envMethod || !!authSelection.browserMethod;
     if (requiresAuth && !authSelection.authProfile) {

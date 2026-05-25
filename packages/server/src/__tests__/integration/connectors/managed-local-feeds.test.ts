@@ -13,6 +13,7 @@
 
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '../../../index';
+import { manageConnections } from '../../../tools/admin/manage_connections';
 import { manageFeeds } from '../../../tools/admin/manage_feeds';
 import type { ToolContext } from '../../../tools/registry';
 import { initWorkspaceProvider } from '../../../workspace';
@@ -51,6 +52,67 @@ describe('Stage 5 — local managed connection has feeds', () => {
 
   beforeEach(async () => {
     await cleanupTestDatabase();
+  });
+
+  it('creates a managedBy OAuth connection via `create` with NO local auth profile, then a feed', async () => {
+    // The path `lobu connect` and `lobu apply` actually use: manage_connections
+    // create with config.managedBy for an OAuth connector that has NO local
+    // auth profile (the grant lives in the cloud). It must be created active —
+    // not rejected with "Select or create an OAuth account profile".
+    const org = await createTestOrganization({ name: 'Create Managed Org' });
+    const user = await createTestUser({ name: 'Create Managed User' });
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const ctx = ctxFor(org.id, user.id);
+
+    await createTestConnectorDefinition({
+      key: 'demo.oauth',
+      name: 'Demo OAuth',
+      organization_id: org.id,
+      auth_schema: {
+        methods: [{ type: 'oauth', provider: 'demo', requiredScopes: ['read'] }],
+      },
+      feeds_schema: { items: {} },
+    });
+
+    const created = (await manageConnections(
+      {
+        action: 'create',
+        connector_key: 'demo.oauth',
+        slug: 'gcal-managed',
+        config: { managedBy: { org: 'cloud-public-org' } },
+      },
+      TEST_ENV,
+      ctx
+    )) as { connection?: { id?: number; status?: string }; error?: string };
+
+    // Created active (not rejected for a missing local OAuth account profile).
+    expect(created.error).toBeUndefined();
+    expect(created.connection?.id).toBeDefined();
+    expect(created.connection?.status).toBe('active');
+
+    const connectionId = Number(created.connection?.id);
+    const sql = getTestDb();
+    const row = (await sql`
+      SELECT config, auth_profile_id, app_auth_profile_id, status
+      FROM connections WHERE id = ${connectionId} LIMIT 1
+    `) as unknown as Array<{
+      config: Record<string, unknown> | null;
+      auth_profile_id: number | null;
+      app_auth_profile_id: number | null;
+      status: string;
+    }>;
+    expect((row[0].config?.managedBy as { org?: string })?.org).toBe('cloud-public-org');
+    expect(row[0].auth_profile_id).toBeNull();
+    expect(row[0].app_auth_profile_id).toBeNull();
+
+    // And it can sync — a feed is allowed (not consent_only).
+    const feedResult = (await manageFeeds(
+      { action: 'create_feed', connection_id: connectionId, feed_key: 'items' },
+      TEST_ENV,
+      ctx
+    )) as { feed?: { id?: number }; error?: string };
+    expect(feedResult.error).toBeUndefined();
+    expect(feedResult.feed?.id).toBeDefined();
   });
 
   it('a local managedBy connection (not consent_only) can create a feed that syncs locally', async () => {

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { CredentialService } from '../auth/credentials';
 import { resolveCloudCredential } from '../connect/cloud-credential';
 import { getBuiltinProviderConfig } from '../connect/oauth-providers';
@@ -55,10 +56,14 @@ export async function resolveExecutionAuth(
     params.connectionId
   );
   if (managed) {
-    const accessToken = await fetchManagedConnectionToken(managed, {
-      ...params.logContext,
-      connection_id: params.connectionId,
-    });
+    const accessToken = await fetchManagedConnectionToken(
+      managed,
+      { organizationId: params.organizationId, connectionId: params.connectionId },
+      {
+        ...params.logContext,
+        connection_id: params.connectionId,
+      }
+    );
     if (accessToken) {
       credentials = {
         provider: appAuthProfile?.provider ?? 'managed',
@@ -222,10 +227,15 @@ async function resolveManagedByForConnection(
 
 /**
  * Per-instance cache of fetched managed access tokens. Keyed by a
- * JSON.stringify'd [org, connectorKey, baseUrl] tuple so field boundaries are
- * unambiguous and values can't collide across keys; cached until shortly before
- * expiry so a burst of runs doesn't re-fetch on every resolution. Pod-local by
- * design (a cache miss simply re-fetches), so this holds under N>1 replicas.
+ * JSON.stringify'd tuple that includes a CREDENTIAL DISCRIMINATOR (a hash of the
+ * bearer credential) alongside the local org + connection id — never just
+ * [org, connectorKey, baseUrl]. The cloud returns a token for THE CALLER's own
+ * cloud connection (resolved from the bearer), so two different local users (or
+ * a relogged-in user with a different login token) sharing one process + the
+ * same [org, connectorKey, baseUrl] must NOT read each other's cached cloud
+ * token. Cached until shortly before expiry so a burst of runs doesn't re-fetch.
+ * Pod-local by design (a cache miss simply re-fetches), so this holds under N>1
+ * replicas.
  */
 const MANAGED_TOKEN_CACHE = new Map<
   string,
@@ -233,6 +243,11 @@ const MANAGED_TOKEN_CACHE = new Map<
 >();
 /** Refresh a cached token this long before its stated expiry. */
 const MANAGED_TOKEN_EXPIRY_BUFFER_MS = 60_000;
+
+/** Stable, non-reversible discriminator for a bearer credential (cache key only). */
+function credentialFingerprint(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
 
 /**
  * Fetch a fresh access token for a managed connection from the cloud via POST
@@ -243,9 +258,19 @@ const MANAGED_TOKEN_EXPIRY_BUFFER_MS = 60_000;
  */
 async function fetchManagedConnectionToken(
   managed: ManagedByDescriptor,
+  cacheScope: { organizationId: string; connectionId: number },
   logContext: Record<string, unknown>
 ): Promise<{ access_token: string; expires_at: string | null } | null> {
-  const cacheKey = JSON.stringify([managed.org, managed.connectorKey, managed.baseUrl]);
+  // The credential fingerprint + local (org, connection) keep one caller's
+  // cloud token from ever being served to another caller (see cache comment).
+  const cacheKey = JSON.stringify([
+    cacheScope.organizationId,
+    cacheScope.connectionId,
+    managed.org,
+    managed.connectorKey,
+    managed.baseUrl,
+    credentialFingerprint(managed.token),
+  ]);
   const cached = MANAGED_TOKEN_CACHE.get(cacheKey);
   if (cached && cached.expiresAtMs - MANAGED_TOKEN_EXPIRY_BUFFER_MS > Date.now()) {
     return { access_token: cached.accessToken, expires_at: cached.expiresAt };

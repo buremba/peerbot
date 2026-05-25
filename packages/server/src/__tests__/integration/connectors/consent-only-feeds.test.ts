@@ -21,6 +21,7 @@ import { Hono } from 'hono';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { connectionTokenRoutes } from '../../../connect/connection-token-route';
 import type { Env } from '../../../index';
+import { manageConnections } from '../../../tools/admin/manage_connections';
 import { manageFeeds } from '../../../tools/admin/manage_feeds';
 import type { ToolContext } from '../../../tools/registry';
 import { createAuthProfile } from '../../../utils/auth-profiles';
@@ -303,5 +304,116 @@ describe('consent-only connections — feed creation is rejected by construction
     const serialized = JSON.stringify(body);
     expect(serialized).not.toContain(REFRESHED.refresh_token);
     expect(serialized).not.toContain(MANAGED_SECRET);
+  });
+});
+
+describe('consent-only connections — making a connection consent-only is bidirectional', () => {
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+  });
+
+  async function seedNormalConnection(orgName: string): Promise<{
+    orgId: string;
+    userId: string;
+    ctx: ToolContext;
+    connectionId: number;
+  }> {
+    const org = await createTestOrganization({ name: orgName });
+    const user = await createTestUser({ name: `${orgName} User` });
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const ctx = ctxFor(org.id, user.id);
+
+    await createTestConnectorDefinition({
+      key: 'demo.oauth',
+      name: 'Demo OAuth',
+      organization_id: org.id,
+      auth_schema: {
+        methods: [{ type: 'oauth', provider: 'demo', requiredScopes: ['read'] }],
+      },
+      feeds_schema: { items: {} },
+    });
+
+    const sql = getTestDb();
+    const connRows = (await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status, config, created_by,
+        created_at, updated_at
+      ) VALUES (
+        ${org.id}, 'demo.oauth', ${`demo-${org.id}`}, 'Demo Connection', 'active',
+        ${sql.json({})}, ${user.id}, NOW(), NOW()
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+    return { orgId: org.id, userId: user.id, ctx, connectionId: Number(connRows[0].id) };
+  }
+
+  it('rejects making a connection that HAS a feed consent-only; the feed stays untouched', async () => {
+    const { orgId, ctx, connectionId } = await seedNormalConnection('Has Feed Org');
+
+    // Give the connection an active feed.
+    const feedRes = await manageFeeds(
+      { action: 'create_feed', connection_id: connectionId, feed_key: 'items', display_name: 'A Feed' },
+      TEST_ENV,
+      ctx
+    );
+    expect('error' in feedRes).toBe(false);
+
+    // Attempt to flip it to consent-only → must be rejected.
+    const updateRes = await manageConnections(
+      { action: 'update', connection_id: connectionId, config: { consent_only: true } },
+      TEST_ENV,
+      ctx
+    );
+    expect('error' in updateRes).toBe(true);
+    if ('error' in updateRes) {
+      expect(updateRes.error).toBe(
+        'This connection has feeds; a consent-only connection cannot have feeds. Remove its feeds first.'
+      );
+    }
+
+    const sql = getTestDb();
+    // The connection was NOT flipped to consent_only.
+    const connRows = await sql`
+      SELECT config FROM connections WHERE id = ${connectionId} AND organization_id = ${orgId}
+    `;
+    expect((connRows[0] as { config: Record<string, unknown> | null }).config?.consent_only).not.toBe(
+      true
+    );
+    // The feed is untouched (still present + active).
+    const feedRows = await sql`
+      SELECT status FROM feeds WHERE connection_id = ${connectionId} AND deleted_at IS NULL
+    `;
+    expect(feedRows).toHaveLength(1);
+    expect((feedRows[0] as { status: string }).status).toBe('active');
+  });
+
+  it('allows making a connection with NO feeds consent-only', async () => {
+    const { orgId, ctx, connectionId } = await seedNormalConnection('No Feed Org');
+
+    const updateRes = await manageConnections(
+      { action: 'update', connection_id: connectionId, config: { consent_only: true } },
+      TEST_ENV,
+      ctx
+    );
+    expect('error' in updateRes).toBe(false);
+
+    const sql = getTestDb();
+    const connRows = await sql`
+      SELECT config FROM connections WHERE id = ${connectionId} AND organization_id = ${orgId}
+    `;
+    expect((connRows[0] as { config: Record<string, unknown> | null }).config?.consent_only).toBe(true);
+
+    // And now feed creation on it is rejected too (the other direction).
+    const feedRes = await manageFeeds(
+      { action: 'create_feed', connection_id: connectionId, feed_key: 'items', display_name: 'Nope' },
+      TEST_ENV,
+      ctx
+    );
+    expect('error' in feedRes).toBe(true);
+    if ('error' in feedRes) {
+      expect(feedRes.error).toBe(
+        'This connection is consent-only (holds an OAuth grant for delegation) and cannot have feeds.'
+      );
+    }
   });
 });

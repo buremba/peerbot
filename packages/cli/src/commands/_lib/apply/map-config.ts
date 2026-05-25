@@ -659,7 +659,7 @@ function mapConnection(connection: Connection): DesiredConnection {
   // from the cloud at runtime — no new column or CRUD field needed. The
   // `consent_only` flag is folded the same way: it lives in the trusted
   // connection `config` (where `managedBy` lives), never in `auth_data`.
-  const baseConfig =
+  const config =
     connection.managedBy || connection.consentOnly
       ? {
           ...(connection.config ?? {}),
@@ -669,7 +669,6 @@ function mapConnection(connection: Connection): DesiredConnection {
           ...(connection.consentOnly ? { consent_only: true } : {}),
         }
       : connection.config;
-  const config = baseConfig;
   return {
     slug: connection.slug,
     connector: connectorKey(connection.connector),

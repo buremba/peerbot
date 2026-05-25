@@ -20,6 +20,7 @@
  * - update_connector_auth: Update reusable default auth profiles for an installed org connector
  */
 
+import { parseJsonObject } from '@lobu/core';
 import { type Static, Type } from '@sinclair/typebox';
 import { getDb } from '../../db/client';
 import type { Env } from '../../index';
@@ -1623,7 +1624,7 @@ async function handleUpdate(
 
   // Verify ownership
   const existingRows = await sql`
-    SELECT c.id, c.connector_key, c.auth_profile_id, c.app_auth_profile_id, c.created_by, cd.auth_schema, cd.feeds_schema
+    SELECT c.id, c.connector_key, c.auth_profile_id, c.app_auth_profile_id, c.created_by, c.config, cd.auth_schema, cd.feeds_schema
     FROM connections c
     LEFT JOIN LATERAL (
       SELECT auth_schema, feeds_schema
@@ -1650,6 +1651,7 @@ async function handleUpdate(
     auth_profile_id: number | null;
     app_auth_profile_id: number | null;
     created_by: string | null;
+    config: Record<string, unknown> | null;
   };
 
   const hasAuthProfileArg = Object.hasOwn(args, 'auth_profile_slug');
@@ -1846,6 +1848,35 @@ async function handleUpdate(
   // is preserved for the web UI / partial updates.
   const replaceConfig = args.replace_config === true && args.config !== undefined;
   const connectionConfigForReplace = splitConfig.connectionConfig ?? {};
+
+  // Consent-only is enforced BIDIRECTIONALLY: the feed-creation guard stops a
+  // consent-only connection from gaining feeds, and this stops a feed-having
+  // connection from becoming consent-only. Compute the consent_only flag the
+  // UPDATE below would land on — replace = exactly the new config; merge =
+  // existing config overlaid with the incoming keys — and reject the flip when
+  // the connection still has feeds, so the "data stays local" invariant holds.
+  const existingConfig = parseJsonObject(existing.config);
+  const resultingConfig = replaceConfig
+    ? connectionConfigForReplace
+    : splitConfig.connectionConfig
+      ? { ...existingConfig, ...splitConfig.connectionConfig }
+      : existingConfig;
+  const willBeConsentOnly = parseJsonObject(resultingConfig).consent_only === true;
+  if (willBeConsentOnly && existingConfig.consent_only !== true) {
+    const feedRows = await sql`
+      SELECT 1 FROM feeds
+      WHERE connection_id = ${args.connection_id}
+        AND organization_id = ${organizationId}
+        AND deleted_at IS NULL
+      LIMIT 1
+    `;
+    if (feedRows.length > 0) {
+      return {
+        error:
+          'This connection has feeds; a consent-only connection cannot have feeds. Remove its feeds first.',
+      };
+    }
+  }
 
   // Slug is only ever changed when the caller passes one explicitly — a
   // display_name change never touches it (that's the whole point of a stable

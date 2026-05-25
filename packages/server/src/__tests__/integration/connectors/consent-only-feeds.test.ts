@@ -283,7 +283,9 @@ describe('consent-only connections — feed creation is rejected by construction
       )
     `;
 
-    const ownerPat = await createTestPAT(owner.id, org.id, { scope: 'mcp:read mcp:write' });
+    const ownerPat = await createTestPAT(owner.id, org.id, {
+      scope: 'mcp:read mcp:write connections:token',
+    });
     const app = buildCloudApp();
     const res = await app.fetch(
       new Request('http://cloud.local/oauth/connection-token', {

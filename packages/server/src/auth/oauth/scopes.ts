@@ -12,6 +12,12 @@ export const AVAILABLE_SCOPES = [
   'mcp:admin',
   'profile:read',
   'device_worker:run',
+  // Least-privilege scope for the managed-connector runtime token fetch
+  // (POST /oauth/connection-token). Deliberately NOT in DEFAULT_SCOPES so a
+  // broad member PAT cannot mint managed-connection access tokens — the local
+  // instance's LOBU_CLOUD_PAT must be minted explicitly with this scope
+  // (`lobu token create --scope connections:token`).
+  'connections:token',
 ] as const;
 
 /** Default scopes for MCP access */

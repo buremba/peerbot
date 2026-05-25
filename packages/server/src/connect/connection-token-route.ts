@@ -37,10 +37,23 @@ type ConnectionTokenEnv = {
 const connectionTokenRoutes = new Hono<ConnectionTokenEnv>();
 
 /**
+ * The least-privilege scope a PAT must carry to mint a managed-connection
+ * access token via this endpoint. Deliberately separate from the default
+ * `mcp:*` scopes so a broad org-member PAT cannot mint connection tokens — only
+ * a PAT minted explicitly with `connections:token` is authorized. The local
+ * instance's `LOBU_CLOUD_PAT` must carry it: `lobu token create --scope
+ * connections:token`.
+ */
+const CONNECTIONS_TOKEN_SCOPE = "connections:token";
+
+/**
  * PAT auth for the connection-token endpoint — the single shared
  * `authenticatePat` gate (verifies the token, rejects null-org / cross-tenant
- * PATs, resolves the user + org). On success the authenticated user + org are
- * stashed on the context for the handler's owner-scoped lookup.
+ * PATs, resolves the user + org). Org membership ALONE is not enough: the PAT
+ * must also carry the `connections:token` scope (403 otherwise), so a broad
+ * member PAT cannot reach the token-minting endpoint. On success the
+ * authenticated user + org are stashed on the context for the handler's
+ * owner-scoped lookup.
  */
 connectionTokenRoutes.use("/oauth/connection-token", async (c, next) => {
 	const bearerValue = extractPatBearer(c.req.header("Authorization"));
@@ -56,6 +69,19 @@ connectionTokenRoutes.use("/oauth/connection-token", async (c, next) => {
 		return c.json(
 			{ error: result.error, error_description: result.error_description },
 			result.status,
+		);
+	}
+
+	// Least-privilege: a valid, org-scoped PAT is necessary but not sufficient —
+	// it must also be granted `connections:token`. A default `mcp:read mcp:write`
+	// member PAT is rejected here (403) before any org/connection is looked up.
+	if (!result.scopes.includes(CONNECTIONS_TOKEN_SCOPE)) {
+		return c.json(
+			{
+				error: "insufficient_scope",
+				error_description: `PAT is missing the '${CONNECTIONS_TOKEN_SCOPE}' scope`,
+			},
+			403,
 		);
 	}
 
@@ -83,7 +109,10 @@ const tokenValidator = TypeCompiler.Compile(TokenBody);
  *
  * Authorization (narrow by design — this delegates ONLY managed grant-holders,
  * never a user's ordinary connection tokens):
- *   - 403 if the authed user is not a `member` of `org`.
+ *   - 403 `insufficient_scope` if the PAT lacks `connections:token` (enforced in
+ *     the auth middleware, before any lookup).
+ *   - 403 if the authed user is not a `member` of `org` (`org` matches an
+ *     organization id OR slug).
  *   - 404 unless the connection is the user's OWN (`created_by`), in a PUBLIC
  *     org (`organization.visibility = 'public'`), and a consent-only managed
  *     grant-holder (`config.consent_only = true`). The not-found shape is the
@@ -107,6 +136,27 @@ connectionTokenRoutes.post("/oauth/connection-token", async (c) => {
 	const authedUserId = c.get("authedUserId");
 	const sql = getDb();
 
+	// Resolve `org` by EITHER id or slug → the canonical org id, used uniformly
+	// in the membership + connection queries below. A caller may pass either.
+	const orgRows = (await sql`
+    SELECT id
+    FROM "organization"
+    WHERE id = ${raw.org} OR slug = ${raw.org}
+    LIMIT 1
+  `) as unknown as Array<{ id: string }>;
+	const organizationId = orgRows[0]?.id ?? null;
+	if (!organizationId) {
+		// Unknown org is indistinguishable from "not a member" → same 403 shape so
+		// org existence can't be probed.
+		return c.json(
+			{
+				error: "forbidden",
+				error_description: "Not a member of this organization",
+			},
+			403,
+		);
+	}
+
 	// Membership check: the authed user must be a member of the target org. A
 	// PAT's own org binding does NOT imply membership in an ARBITRARY `org` in
 	// the body — managed connectors live in a separate public org the user has
@@ -115,7 +165,7 @@ connectionTokenRoutes.post("/oauth/connection-token", async (c) => {
     SELECT 1
     FROM "member"
     WHERE "userId" = ${authedUserId}
-      AND "organizationId" = ${raw.org}
+      AND "organizationId" = ${organizationId}
     LIMIT 1
   `) as unknown as Array<unknown>;
 	if (memberRows.length === 0) {
@@ -143,7 +193,7 @@ connectionTokenRoutes.post("/oauth/connection-token", async (c) => {
     SELECT c.id, c.auth_profile_id, c.app_auth_profile_id
     FROM connections c
     JOIN "organization" o ON o.id = c.organization_id
-    WHERE c.organization_id = ${raw.org}
+    WHERE c.organization_id = ${organizationId}
       AND c.connector_key = ${raw.connector_key}
       AND c.created_by = ${authedUserId}
       AND c.deleted_at IS NULL
@@ -169,12 +219,12 @@ connectionTokenRoutes.post("/oauth/connection-token", async (c) => {
 	const connection = rows[0];
 
 	const { credentials } = await resolveExecutionAuth({
-		organizationId: raw.org,
+		organizationId,
 		connectionId: Number(connection.id),
 		authProfileId: connection.auth_profile_id,
 		appAuthProfileId: connection.app_auth_profile_id,
 		credentialDb: sql,
-		logContext: { org: raw.org, connector_key: raw.connector_key },
+		logContext: { org: organizationId, connector_key: raw.connector_key },
 		logMessage: "Failed to resolve managed connection token",
 	});
 
@@ -189,7 +239,7 @@ connectionTokenRoutes.post("/oauth/connection-token", async (c) => {
 	}
 
 	logger.info(
-		{ org: raw.org, connector_key: raw.connector_key, connection_id: Number(connection.id) },
+		{ org: organizationId, connector_key: raw.connector_key, connection_id: Number(connection.id) },
 		"Resolved managed connection token",
 	);
 

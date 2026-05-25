@@ -137,10 +137,14 @@ afterAll(async () => {
 
 interface SeededManagedConnection {
 	orgId: string;
+	/** The org slug (callers may pass id OR slug as `org`). */
+	orgSlug: string;
 	/** The connection OWNER (created_by). */
 	ownerId: string;
-	/** The owner's PAT (member of the public org). */
+	/** The owner's PAT — member of the public org, WITH `connections:token`. */
 	ownerPat: string;
+	/** Same owner/org, but WITHOUT `connections:token` — must be rejected (403). */
+	ownerPatNoScope: string;
 	connectorKey: string;
 	connectionId: number;
 }
@@ -246,13 +250,20 @@ async function seedManagedConnection(
     RETURNING id
   `) as unknown as Array<{ id: number }>;
 
+	// Happy-path PAT carries the least-privilege `connections:token` scope; a
+	// sibling PAT for the same owner/org WITHOUT it proves the scope gate.
 	const ownerPat = await createTestPAT(owner.id, org.id, {
+		scope: "mcp:read mcp:write connections:token",
+	});
+	const ownerPatNoScope = await createTestPAT(owner.id, org.id, {
 		scope: "mcp:read mcp:write",
 	});
 	return {
 		orgId: org.id,
+		orgSlug: org.slug,
 		ownerId: owner.id,
 		ownerPat: ownerPat.token,
+		ownerPatNoScope: ownerPatNoScope.token,
 		connectorKey,
 		connectionId: Number(connRows[0].id),
 	};
@@ -312,14 +323,51 @@ describe("managed connector — POST /oauth/connection-token", () => {
 		expect(body.refresh_token).toBeUndefined();
 	});
 
+	it("rejects a valid owner PAT that LACKS `connections:token` (403)", async () => {
+		// Right user, right org, owns the connection — but the PAT carries only the
+		// default `mcp:read mcp:write`. The scope gate (before any lookup) rejects
+		// it, so a default member PAT can never mint a managed-connection token.
+		const { ownerPatNoScope, orgId, connectorKey } =
+			await seedManagedConnection("Public Org");
+		const app = buildCloudApp();
+
+		const res = await tokenRequest(app, {
+			pat: ownerPatNoScope,
+			body: { org: orgId, connector_key: connectorKey },
+		});
+
+		expect(res.status).toBe(403);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body.error).toBe("insufficient_scope");
+		// Rejected before any token resolution — the provider was never contacted.
+		expect(lastRefreshBody).toEqual({});
+	});
+
+	it("resolves `org` passed as a SLUG (200), same as by id", async () => {
+		const { ownerPat, orgSlug, connectorKey } =
+			await seedManagedConnection("Public Org Slug");
+		const app = buildCloudApp();
+
+		const res = await tokenRequest(app, {
+			pat: ownerPat,
+			body: { org: orgSlug, connector_key: connectorKey },
+		});
+
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body.access_token).toBe(REFRESHED.access_token);
+	});
+
 	it("rejects a DIFFERENT member's PAT for the SAME org (404 — owner-scoped)", async () => {
 		const seeded = await seedManagedConnection("Public Org");
 
-		// A second member of the SAME public org — NOT the connection owner.
+		// A second member of the SAME public org — NOT the connection owner. PAT
+		// carries `connections:token` so the scope gate passes and we exercise the
+		// downstream owner-scope check.
 		const other = await createTestUser({ name: "Other Member" });
 		await addUserToOrganization(other.id, seeded.orgId, "member");
 		const otherPat = await createTestPAT(other.id, seeded.orgId, {
-			scope: "mcp:read mcp:write",
+			scope: "mcp:read mcp:write connections:token",
 		});
 
 		const app = buildCloudApp();
@@ -340,12 +388,14 @@ describe("managed connector — POST /oauth/connection-token", () => {
 	it("rejects a NON-member PAT (403)", async () => {
 		const seeded = await seedManagedConnection("Public Org");
 
-		// A user with their OWN private org — NOT a member of the public org.
+		// A user with their OWN private org — NOT a member of the public org. PAT
+		// carries `connections:token` so the scope gate passes and we exercise the
+		// downstream membership check.
 		const outsider = await createTestUser({ name: "Outsider" });
 		const outsiderOrg = await createTestOrganization({ name: "Outsider Org" });
 		await addUserToOrganization(outsider.id, outsiderOrg.id, "owner");
 		const outsiderPat = await createTestPAT(outsider.id, outsiderOrg.id, {
-			scope: "mcp:read mcp:write",
+			scope: "mcp:read mcp:write connections:token",
 		});
 
 		const app = buildCloudApp();

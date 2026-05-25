@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { generateWorkerToken } from '@lobu/core';
 import { inferWatcherGranularityFromSchedule } from '@lobu/connector-sdk';
 import type { DbClient } from '../db/client';
-import { getDb } from '../db/client';
+import { getDb, pgTextArray } from '../db/client';
 import type { Env } from '../index';
 import {
   getLobuCoreServices,
@@ -388,7 +388,7 @@ export async function reconcileWatcherRuns(db?: DbClient): Promise<ReconcileWatc
      AND rp.payload->'processedMessageIds' ? r.dispatched_message_id
     WHERE r.run_type = 'watcher'
       AND r.status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
-      AND r.dispatched_message_id = ANY(${pendingDispatchIds})
+      AND r.dispatched_message_id = ANY(${pgTextArray(pendingDispatchIds)}::text[])
     ORDER BY r.dispatched_message_id ASC
     LIMIT 100
   `;

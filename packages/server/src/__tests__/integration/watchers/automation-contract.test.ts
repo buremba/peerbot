@@ -10,6 +10,7 @@
 import { inferWatcherGranularityFromSchedule } from '@lobu/connector-sdk';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../../db/client';
+import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
 import { generateWindowToken } from '../../../utils/jwt';
 import { createWatcherRun } from '../../../utils/queue-helpers';
@@ -17,6 +18,7 @@ import { computePendingWindow } from '../../../utils/window-utils';
 import {
   dispatchPendingWatcherRuns,
   materializeDueWatcherRuns,
+  reconcileWatcherRuns,
   sweepStaleWatcherRuns,
 } from '../../../watchers/automation';
 import { generateSecureToken, hashToken } from '../../../auth/oauth/utils';
@@ -1043,6 +1045,52 @@ describe('watcher automation contract', () => {
 
       expect(secondNextRunMs).toBe(firstNextRunMs);
     });
+  });
+
+  // Regression: an active watcher run carrying a `dispatched_message_id` must
+  // not crash reconciliation. The dispatched-id containment query bound the JS
+  // array straight into `= ANY(${ids})`. The production pool (db/client.ts) runs
+  // with `fetch_types: false`, so postgres.js can't infer the array element type
+  // and ships the lone element as a scalar — PG then throws
+  // `malformed array literal: "<uuid>"`. Because `watcher-automation` (every
+  // tick) AND `check-stalled-executions` both call reconcileWatcherRuns, a single
+  // such run wedged BOTH jobs — watchers stopped firing in prod for 12 days (run
+  // 146501 stuck `running` since 2026-05-13, which also blocked the reaper that
+  // would have cleared it). Fix: bind via pgTextArray(...)::text[], the same
+  // explicit-literal idiom every other ANY() in this file already uses.
+  //
+  // NOTE: this MUST exercise getDb() (the prod pool with fetch_types:false), not
+  // the test-harness client — the latter fetches types and silently masks the
+  // bug. Both clients point at the same DATABASE_URL test database here.
+  it('reconciles without crashing when an active run carries a dispatched_message_id', async () => {
+    const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
+    const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+    const { windowStart, windowEnd } = await computePendingWindow(dbClient, watcherId, granularity);
+    const queued = await createWatcherRun({
+      organizationId: workspace.org.id,
+      watcherId,
+      agentId: agent.agentId,
+      windowStart: windowStart.toISOString(),
+      windowEnd: windowEnd.toISOString(),
+      dispatchSource: 'scheduled',
+    });
+
+    // Move the run to an active state with a dispatched_message_id and NO
+    // watcher_windows row — mirrors prod's stuck run 146501 exactly, so the
+    // first reconcile query is a no-op and execution reaches the buggy
+    // dispatched-id containment query.
+    await sql`
+      UPDATE runs
+      SET status = 'running',
+          claimed_at = NOW(),
+          claimed_by = ${`lobu:${agent.agentId}`},
+          dispatched_message_id = 'f7623d32-b589-4085-9504-edbf30925961'
+      WHERE id = ${queued.runId}
+    `;
+
+    // Pre-fix this rejects with `malformed array literal`; post-fix it resolves.
+    const result = await reconcileWatcherRuns(getDb());
+    expect(result.reconciled).toBe(0);
   });
 
   describe('sweepStaleWatcherRuns liveness reaping', () => {

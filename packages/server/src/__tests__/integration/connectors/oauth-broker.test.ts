@@ -545,6 +545,33 @@ describe("oauth_broker profile — create validation via manage_auth_profiles", 
 		}
 	});
 
+	it("rejects an oauth_broker profile whose broker_url is not an absolute http(s) URL", async () => {
+		const { ctx } = await seedOrgWithConnector();
+		for (const badUrl of ["broker.lobu.ai", "/broker", "ftp://broker.lobu.ai"]) {
+			const res = await manageAuthProfiles(
+				{
+					action: "create_auth_profile",
+					connector_key: "demo.oauth",
+					profile_kind: "oauth_broker",
+					display_name: "Bad URL Broker",
+					slug: "bad-url-broker",
+					auth_data: {
+						broker_url: badUrl,
+						broker_org: "broker-org",
+						broker_pat: "owl_pat_example",
+						broker_connection_id: 7,
+					},
+				},
+				TEST_ENV,
+				ctx,
+			);
+			expect("error" in res).toBe(true);
+			if ("error" in res) {
+				expect(res.error).toContain("broker_url");
+			}
+		}
+	});
+
 	it("creates an ACTIVE broker-backed connection through manage_connections referencing an oauth_broker profile", async () => {
 		const { ctx, orgId } = await seedOrgWithConnector();
 

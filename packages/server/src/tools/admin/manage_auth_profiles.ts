@@ -743,19 +743,33 @@ async function handleUpdateAuthProfile(
       };
     }
 
-    // oauth_broker profiles must always carry a complete, well-formed broker
-    // descriptor. An update that supplies auth_data must keep all four typed
-    // fields valid — otherwise normalizeAuthData would silently wipe them.
-    if (
-      existingForRoleCheck.profile_kind === 'oauth_broker' &&
-      args.auth_data !== undefined &&
-      !parseBrokerCredential(args.auth_data)
-    ) {
-      return {
-        error:
-          'oauth_broker auth profiles require broker_url, broker_org, broker_pat, and a positive integer broker_connection_id in auth_data.',
-      };
-    }
+  }
+
+  // The payload that will actually be persisted: an explicit `auth_data` wins,
+  // else `credentials` (normalized to a string map), else undefined (leave the
+  // existing auth_data as-is).
+  const updateAuthDataPayload: Record<string, unknown> | undefined =
+    args.auth_data !== undefined
+      ? (args.auth_data as Record<string, unknown>)
+      : args.credentials
+        ? normalizeAuthValues(args.credentials)
+        : undefined;
+
+  // oauth_broker profiles must always carry a complete, well-formed broker
+  // descriptor. Validate the payload that will actually be persisted (not just
+  // `args.auth_data`): a partial/bad update — e.g. `credentials` that can't
+  // carry the numeric broker_connection_id — would otherwise make
+  // normalizeAuthData silently wipe the profile. An update that omits the
+  // payload entirely (re-normalizing the existing valid broker fields) is fine.
+  if (
+    existingForRoleCheck?.profile_kind === 'oauth_broker' &&
+    updateAuthDataPayload !== undefined &&
+    !parseBrokerCredential(updateAuthDataPayload)
+  ) {
+    return {
+      error:
+        'oauth_broker auth profiles require broker_url, broker_org, broker_pat, and a positive integer broker_connection_id in auth_data.',
+    };
   }
 
   let authProfile = await updateAuthProfile({
@@ -763,12 +777,7 @@ async function handleUpdateAuthProfile(
     slug: args.auth_profile_slug,
     displayName: args.display_name,
     nextSlug: args.slug,
-    authData:
-      args.auth_data !== undefined
-        ? (args.auth_data as Record<string, unknown>)
-        : args.credentials
-          ? normalizeAuthValues(args.credentials)
-          : undefined,
+    authData: updateAuthDataPayload,
     status: args.status as AuthProfileStatus | undefined,
   });
 

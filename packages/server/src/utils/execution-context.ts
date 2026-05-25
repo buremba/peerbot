@@ -5,7 +5,7 @@ import {
   type BrokerCredential,
   getAuthProfileById,
   normalizeAuthValues,
-  resolveCredentialSource,
+  resolveBrokerCredentialForConnection,
 } from './auth-profiles';
 import { getOAuthAuthMethods, normalizeConnectorAuthSchema } from './connector-auth';
 import { parseJsonObject } from '@lobu/core';
@@ -48,17 +48,17 @@ export async function resolveExecutionAuth(
 
   let credentials: ExecutionOAuthCredentials | null = null;
 
-  // The single typed seam for app-level credentials: branch on the
-  // CredentialSource kind, never on raw auth_data keys. `broker` → fetch a fresh
-  // access token from the remote broker (the grant lives there); `local` → fall
-  // through to the unchanged oauth_app/oauth_account path below. ONLY the broker
-  // branch changes for broker-backed connections; the local path is unchanged.
-  const credentialSource = await resolveCredentialSource(
+  // The single seam for the broker branch: a non-null result means the
+  // connection's app profile is an `oauth_broker`, so fetch a fresh access token
+  // from the remote broker (the grant lives there). A null result means the
+  // connection uses the local credential path below, which is unchanged. Never
+  // sniffs raw auth_data keys.
+  const broker = await resolveBrokerCredentialForConnection(
     params.organizationId,
     params.appAuthProfileId ?? null
   );
-  if (credentialSource?.kind === 'broker') {
-    const accessToken = await fetchBrokerAccessToken(credentialSource.broker, {
+  if (broker) {
+    const accessToken = await fetchBrokerAccessToken(broker, {
       ...params.logContext,
       connection_id: params.connectionId,
     });

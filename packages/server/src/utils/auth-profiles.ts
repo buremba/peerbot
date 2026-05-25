@@ -68,20 +68,6 @@ export interface BrokerCredential {
   connectionId: number;
 }
 
-/**
- * The two ways a connection's app-level credentials can resolve, discriminated
- * by the backing `app_auth_profile`'s `profile_kind`:
- *
- *   - `local`  → an `oauth_app` profile holding client_id/secret on this org.
- *   - `broker` → an `oauth_broker` profile; the grant lives on a remote broker
- *                and a fresh access token is fetched at runtime.
- *
- * Readers branch on `kind` — never sniff keys out of the credential blob.
- */
-export type CredentialSource =
-  | { kind: 'local'; clientId: string | null; clientSecret: string | null }
-  | { kind: 'broker'; broker: BrokerCredential };
-
 /** Field keys an `oauth_broker` profile's auth_data must carry. */
 export const BROKER_AUTH_DATA_KEYS = {
   url: 'broker_url',
@@ -123,8 +109,21 @@ export function parseBrokerCredential(authData: unknown): BrokerCredential | nul
   ) {
     return null;
   }
+  // The broker base URL is fetched at runtime, so it MUST be an absolute
+  // http:/https: URL — reject relative paths, missing schemes, or non-HTTP
+  // protocols (file:, javascript:, etc.). Closes the broker-URL hardening gap.
+  const trimmedUrl = url.trim();
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(trimmedUrl);
+  } catch {
+    return null;
+  }
+  if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+    return null;
+  }
   return {
-    url: url.trim().replace(/\/+$/, ''),
+    url: trimmedUrl.replace(/\/+$/, ''),
     org: org.trim(),
     pat: pat.trim(),
     connectionId,
@@ -409,42 +408,20 @@ export async function getAuthProfileById(
 }
 
 /**
- * Resolve a connection's app-level {@link CredentialSource} from its
- * `app_auth_profile`. Branches on the profile's `profile_kind`:
- *
- *   - `oauth_broker` → `{ kind: 'broker', broker }` with the typed broker ref
- *     parsed from the profile's named fields.
- *   - `oauth_app`    → `{ kind: 'local', clientId, clientSecret }` (best-effort
- *     extraction; the actual client keys are connector-schema-specific and the
- *     local path reads them by key in execution-context, so these are only the
- *     conventional `*_CLIENT_ID`/`*_CLIENT_SECRET` lookups when present).
- *
- * Returns `null` when there's no app profile, the broker profile is malformed,
- * or the profile is some other kind. Readers MUST branch on the returned `kind`
- * and never sniff the raw `auth_data`.
+ * Resolve the typed {@link BrokerCredential} for a connection from its
+ * `app_auth_profile`, or `null` when that profile is NOT an `oauth_broker`
+ * (i.e. the connection uses the local/unchanged credential path) or the broker
+ * descriptor is malformed. This is the single seam for the broker branch:
+ * callers gate the broker path on a non-null result and otherwise fall through
+ * to their existing local path. Never sniffs raw `auth_data` keys.
  */
-export async function resolveCredentialSource(
+export async function resolveBrokerCredentialForConnection(
   organizationId: string,
   appAuthProfileId: number | null | undefined
-): Promise<CredentialSource | null> {
+): Promise<BrokerCredential | null> {
   const profile = await getAuthProfileById(organizationId, appAuthProfileId ?? null);
-  if (!profile) return null;
-
-  if (profile.profile_kind === 'oauth_broker') {
-    const broker = parseBrokerCredential(profile.auth_data ?? null);
-    return broker ? { kind: 'broker', broker } : null;
-  }
-
-  if (profile.profile_kind === 'oauth_app') {
-    const values = normalizeAuthValues(profile.auth_data ?? {});
-    const clientId =
-      Object.entries(values).find(([key]) => /_CLIENT_ID$/.test(key))?.[1] ?? null;
-    const clientSecret =
-      Object.entries(values).find(([key]) => /_CLIENT_SECRET$/.test(key))?.[1] ?? null;
-    return { kind: 'local', clientId, clientSecret };
-  }
-
-  return null;
+  if (!profile || profile.profile_kind !== 'oauth_broker') return null;
+  return parseBrokerCredential(profile.auth_data ?? null);
 }
 
 export async function createAuthProfile(params: {

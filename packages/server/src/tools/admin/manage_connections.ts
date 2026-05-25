@@ -953,25 +953,14 @@ async function handleCreate(
   // that emits artifacts (qr/code/etc.) for the UI to render.
   const interactiveMethod = getInteractiveMethods(connector.auth_schema)[0] ?? null;
 
-  const authSelection = interactiveMethod
-    ? null
-    : await resolveConnectionAuthSelection({
-        organizationId,
-        connectorKey: args.connector_key,
-        authSchema: connector.auth_schema,
-        authProfileSlug: args.auth_profile_slug,
-        appAuthProfileSlug: args.app_auth_profile_slug,
-        deviceWorkerId: deviceBinding.deviceWorkerId,
-      });
-
   // A `managedBy` connection's OAuth grant lives in a cloud (public) org — the
   // local instance fetches the token at runtime (execution-context.ts) and never
-  // holds a local auth profile. So skip the local auth-profile requirement for
-  // these; they are created `active` with null local auth profiles. The signal
-  // is the trusted `config.managedBy` (set by `defineConnection({ managedBy })`
-  // via `lobu apply`); it is never auth_data-derived. The org must be a non-empty
-  // string — an empty `org` is not a valid managed connection, so it falls
-  // through to the normal auth-profile requirement instead of being created
+  // holds a LOCAL auth profile. The trusted `config.managedBy.org` signal (set by
+  // `defineConnection({ managedBy })` via `lobu apply`) puts the connection on a
+  // dedicated path: local auth-profile selection is skipped ENTIRELY (no binding,
+  // requirement, status gating, or oauth sync), and it is created `active` with
+  // null local auth profiles. An empty `org` is not a valid managed connection,
+  // so it falls through to the normal auth path rather than being created
   // active+unauthenticated.
   const incomingConfig = parseJsonObject(args.config);
   const managedByOrg =
@@ -983,7 +972,23 @@ async function handleCreate(
   const isManagedByConnection =
     typeof managedByOrg === 'string' && managedByOrg.trim().length > 0;
 
-  if (authSelection && !isManagedByConnection) {
+  // Leave `authSelection` null for managed (and interactive) connections so the
+  // entire auth-profile validation + binding chain below is uniformly bypassed —
+  // a managed connection is created with null `auth_profile_id` /
+  // `app_auth_profile_id` regardless of any local profile that happens to exist.
+  const authSelection =
+    interactiveMethod || isManagedByConnection
+      ? null
+      : await resolveConnectionAuthSelection({
+          organizationId,
+          connectorKey: args.connector_key,
+          authSchema: connector.auth_schema,
+          authProfileSlug: args.auth_profile_slug,
+          appAuthProfileSlug: args.app_auth_profile_slug,
+          deviceWorkerId: deviceBinding.deviceWorkerId,
+        });
+
+  if (authSelection) {
     const requiresAuth =
       !!authSelection.oauthMethod || !!authSelection.envMethod || !!authSelection.browserMethod;
     if (requiresAuth && !authSelection.authProfile) {

@@ -16,6 +16,7 @@ import type { Env } from '../../../index';
 import { manageConnections } from '../../../tools/admin/manage_connections';
 import { manageFeeds } from '../../../tools/admin/manage_feeds';
 import type { ToolContext } from '../../../tools/registry';
+import { createAuthProfile } from '../../../utils/auth-profiles';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
@@ -113,6 +114,91 @@ describe('Stage 5 — local managed connection has feeds', () => {
     )) as { feed?: { id?: number }; error?: string };
     expect(feedResult.error).toBeUndefined();
     expect(feedResult.feed?.id).toBeDefined();
+  });
+
+  it('a managedBy create ignores an existing local OAuth profile (null binding)', async () => {
+    // Managed connections never select/bind a local auth profile — even when an
+    // active oauth_account + oauth_app exist for this connector. Without the fix,
+    // the auto-selector would bind the managed connection to the local grant.
+    const org = await createTestOrganization({ name: 'Existing Profile Org' });
+    const user = await createTestUser({ name: 'Existing Profile User' });
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const ctx = ctxFor(org.id, user.id);
+
+    await createTestConnectorDefinition({
+      key: 'demo.oauth',
+      name: 'Demo OAuth',
+      organization_id: org.id,
+      auth_schema: {
+        methods: [
+          {
+            type: 'oauth',
+            provider: 'demo',
+            requiredScopes: ['read'],
+            clientIdKey: 'DEMO_CLIENT_ID',
+            clientSecretKey: 'DEMO_CLIENT_SECRET',
+          },
+        ],
+      },
+      feeds_schema: { items: {} },
+    });
+    // Active local profiles the auto-selector would otherwise bind.
+    const sql = getTestDb();
+    const accountId = `local-acct-${org.id}`;
+    await sql`
+      INSERT INTO "account" (
+        id, "accountId", "providerId", "userId",
+        "accessToken", "refreshToken", "accessTokenExpiresAt", scope, "createdAt", "updatedAt"
+      ) VALUES (
+        ${accountId}, ${accountId}, 'demo', ${user.id},
+        'local-grant', 'local-refresh', ${new Date(Date.now() + 3600_000).toISOString()},
+        'read', NOW(), NOW()
+      )
+    `;
+    await createAuthProfile({
+      organizationId: org.id,
+      connectorKey: 'demo.oauth',
+      displayName: 'Local App',
+      profileKind: 'oauth_app',
+      provider: 'demo',
+      status: 'active',
+      authData: { DEMO_CLIENT_ID: 'cid', DEMO_CLIENT_SECRET: 'secret' },
+    });
+    await createAuthProfile({
+      organizationId: org.id,
+      connectorKey: 'demo.oauth',
+      displayName: 'Local Account',
+      profileKind: 'oauth_account',
+      provider: 'demo',
+      status: 'active',
+      accountId,
+      createdBy: user.id,
+    });
+
+    const created = (await manageConnections(
+      {
+        action: 'create',
+        connector_key: 'demo.oauth',
+        slug: 'managed-despite-local',
+        config: { managedBy: { org: 'cloud-public-org' } },
+      },
+      TEST_ENV,
+      ctx
+    )) as { connection?: { id?: number; status?: string }; error?: string };
+
+    expect(created.error).toBeUndefined();
+    expect(created.connection?.status).toBe('active');
+
+    const row = (await sql`
+      SELECT auth_profile_id, app_auth_profile_id
+      FROM connections WHERE id = ${Number(created.connection?.id)} LIMIT 1
+    `) as unknown as Array<{
+      auth_profile_id: number | null;
+      app_auth_profile_id: number | null;
+    }>;
+    // Null despite the existing local profiles — not bound to the local grant.
+    expect(row[0].auth_profile_id).toBeNull();
+    expect(row[0].app_auth_profile_id).toBeNull();
   });
 
   it('rejects a create with an EMPTY managedBy.org (not treated as managed)', async () => {

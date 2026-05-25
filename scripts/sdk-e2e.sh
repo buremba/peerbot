@@ -80,7 +80,7 @@ PROJ="$RUN_DIR/proj"; mkdir -p "$PROJ"
 ( cd "$PROJ" && $LOBU init . -y --here --provider gemini >/dev/null 2>&1 )
 rm -f "$PROJ/package.json"
 cat > "$PROJ/lobu.config.ts" <<'TS'
-import { defineAgent, defineConfig, defineConnection, defineEntityType, defineRelationshipType, defineWatcher, secret } from "@lobu/cli/config";
+import { connectorFromFile, defineAgent, defineConfig, defineConnection, defineEntityType, defineRelationshipType, defineWatcher, secret } from "@lobu/cli/config";
 
 const agent = defineAgent({
   id: "echo", name: "Echo", dir: "./agents/echo",
@@ -90,10 +90,12 @@ const company = defineEntityType({ key: "company", name: "Company" });
 const contact = defineEntityType({ key: "contact", name: "Contact" });
 const worksAt = defineRelationshipType({ key: "works-at", name: "Works at", rules: [{ source: contact, target: company }] });
 
-// A local connector (./connectors/pulse.connector.ts) + a connection that wires
-// its single feed. The gate triggers a sync via the API and asserts the
-// connector's compiled code actually RAN and emitted ≥1 event — proving the
-// whole compile→install→spawn→sync→persist path, not just that apply mapped it.
+// A local connector (./connectors/pulse.connector.ts) declared explicitly via
+// connectorFromFile (the ./connectors auto-scan was dropped in #1043) + a
+// connection that wires its single feed. The gate triggers a sync via the API
+// and asserts the connector's compiled code actually RAN and emitted ≥1 event —
+// proving the whole compile→install→spawn→sync→persist path, not just that
+// apply mapped it.
 const pulseConn = defineConnection({
   slug: "pulse", connector: "sdke2e-pulse", name: "SDK e2e pulse",
   feeds: [{ feed: "pulse", name: "Pulse" }],
@@ -118,7 +120,7 @@ const digest = defineWatcher({
 
 // prune:true so the gate exercises the destructive path on every run (this is
 // what catches the system-type $member halt class of bug).
-export default defineConfig({ prune: true, agents: [agent], entities: [company, contact], relationships: [worksAt], connections: [pulseConn], watchers: [digest] });
+export default defineConfig({ prune: true, agents: [agent], entities: [company, contact], relationships: [worksAt], connectors: [connectorFromFile("./connectors/pulse.connector.ts")], connections: [pulseConn], watchers: [digest] });
 TS
 
 # Local connector: deterministic, zero-dep, no network. `sync()` returns one

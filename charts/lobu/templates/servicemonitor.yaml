@@ -23,8 +23,11 @@ spec:
     matchLabels:
       {{- include "lobu.appSelectorLabels" . | nindent 6 }}
   endpoints:
+      # The Prometheus exporter lives on the gateway, which the unified server
+      # mounts under /lobu — so metrics are at /lobu/metrics, not /metrics
+      # (root /metrics 302-redirects to the SPA → scrape fails on Content-Type).
     - port: http
-      path: /metrics
+      path: {{ .Values.metrics.serviceMonitor.path }}
       interval: {{ .Values.metrics.serviceMonitor.interval }}
       scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout }}
 {{- end }}

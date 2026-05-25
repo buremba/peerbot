@@ -229,6 +229,9 @@ metrics:
   serviceMonitor:
     enabled: false
     # namespace: ""        # defaults to the release namespace
+    # Metrics are exposed by the gateway, mounted under /lobu by the unified
+    # server — so the scrape path is /lobu/metrics (root /metrics redirects).
+    path: /lobu/metrics
     interval: 30s
     scrapeTimeout: 10s
     additionalLabels: {}   # e.g. { release: kube-prometheus-stack }

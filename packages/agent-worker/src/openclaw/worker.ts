@@ -59,6 +59,7 @@ import {
   runPluginHooks,
   startPluginServices,
   stopPluginServices,
+  wrapToolsWithPluginToolHooks,
 } from "./plugin-loader";
 import { OpenClawProgressProcessor } from "./processor";
 import { checkSandboxLeak } from "./sandbox-leak";
@@ -1336,7 +1337,20 @@ Use it when the user references past discussions or you need context.`);
         cwd: workspaceDir,
         model,
         tools,
-        customTools,
+        // Wrap custom tools (plugin + MCP) so plugin before_tool_call/
+        // after_tool_call hooks fire around in-process execution — these never
+        // hit the gateway proxy, so this is the only place the hooks can run.
+        // Built-in tools (bash/read/edit/write) are intentionally NOT gated
+        // here: createAgentSession() uses the `tools` option only to derive
+        // active tool names and rebuilds the base tools internally, so wrapped
+        // built-ins would be ignored. Gating them would require constructing
+        // AgentSession with baseToolsOverride directly. Built-ins remain
+        // governed by Lobu's own tool policy.
+        customTools: wrapToolsWithPluginToolHooks(
+          customTools,
+          loadedPlugins,
+          pluginHookContext
+        ),
         sessionManager,
         settingsManager,
         authStorage,

@@ -17,12 +17,52 @@ import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 
 const logger = createLogger("openclaw-plugin-loader");
 
-type PluginHookName = "before_agent_start" | "agent_end";
+type PluginHookName =
+  | "before_agent_start"
+  | "agent_end"
+  | "before_tool_call"
+  | "after_tool_call";
+
+const PLUGIN_HOOK_NAMES: readonly PluginHookName[] = [
+  "before_agent_start",
+  "agent_end",
+  "before_tool_call",
+  "after_tool_call",
+];
+
+function isPluginHookName(value: unknown): value is PluginHookName {
+  return (
+    typeof value === "string" &&
+    (PLUGIN_HOOK_NAMES as readonly string[]).includes(value)
+  );
+}
 
 type PluginHookHandler = (
   event: Record<string, unknown>,
   ctx: Record<string, unknown>
 ) => unknown | Promise<unknown>;
+
+/**
+ * Subset of OpenClaw's `PluginHookBeforeToolCallResult` that this shim honors.
+ * `requireApproval` is captured but mapped to a soft block (see
+ * {@link wrapToolsWithPluginToolHooks}) — OpenClaw's documented fallback when
+ * the host cannot drive native platform approval.
+ */
+interface BeforeToolCallResult {
+  params?: Record<string, unknown>;
+  block?: boolean;
+  blockReason?: string;
+  requireApproval?: { title?: string; description?: string };
+}
+
+function emptyHooks(): Record<PluginHookName, PluginHookHandler[]> {
+  return {
+    before_agent_start: [],
+    agent_end: [],
+    before_tool_call: [],
+    after_tool_call: [],
+  };
+}
 
 interface PluginService {
   id: string;
@@ -70,9 +110,10 @@ export async function loadPlugins(
           parts.push(`${loaded.tools.length} tool(s)`);
         if (loaded.providers.length > 0)
           parts.push(`${loaded.providers.length} provider(s)`);
-        const hookCount =
-          loaded.hooks.before_agent_start.length +
-          loaded.hooks.agent_end.length;
+        const hookCount = Object.values(loaded.hooks).reduce(
+          (n, handlers) => n + handlers.length,
+          0
+        );
         if (hookCount > 0) parts.push(`${hookCount} hook(s)`);
         if (loaded.services.length > 0)
           parts.push(`${loaded.services.length} service(s)`);
@@ -115,10 +156,8 @@ async function loadSinglePlugin(
 
   const capturedTools: ToolDefinition[] = [];
   const capturedProviders: ProviderRegistration[] = [];
-  const capturedHooks: Record<PluginHookName, PluginHookHandler[]> = {
-    before_agent_start: [],
-    agent_end: [],
-  };
+  const capturedHooks: Record<PluginHookName, PluginHookHandler[]> =
+    emptyHooks();
   const capturedServices: PluginService[] = [];
   const shimApi = createShimApi({
     source,
@@ -243,10 +282,7 @@ function createShimApi(params: {
     logger: shimLogger,
 
     on(eventName: unknown, handler: unknown) {
-      if (
-        (eventName === "before_agent_start" || eventName === "agent_end") &&
-        typeof handler === "function"
-      ) {
+      if (isPluginHookName(eventName) && typeof handler === "function") {
         capturedHooks[eventName].push(handler as PluginHookHandler);
         return;
       }
@@ -371,6 +407,155 @@ export async function runPluginHooks(params: {
     }
   }
   return results;
+}
+
+type LooseToolResult = { content: unknown[]; details: unknown };
+type LooseToolExecute = (
+  toolCallId: string,
+  params: Record<string, unknown>,
+  signal: AbortSignal | undefined,
+  onUpdate: unknown,
+  ctx: unknown
+) => Promise<LooseToolResult>;
+
+/** Minimal structural shape this wrapper needs from a tool. */
+interface WrappableTool {
+  name: string;
+  execute: (...args: never[]) => Promise<unknown>;
+}
+
+/**
+ * Wrap each tool so plugin `before_tool_call` / `after_tool_call` hooks run
+ * around its execution. Tools execute in-process and never traverse the gateway
+ * MCP proxy, so this wrapper is the only place those OpenClaw hooks can fire.
+ *
+ * Generic over the tool type so it wraps both built-in tools (`AgentTool`) and
+ * plugin/MCP custom tools (`ToolDefinition`) — OpenClaw fires `before_tool_call`
+ * for every tool, including bash/read/edit/write, so a plugin policy hook must
+ * see them all.
+ *
+ * `before_tool_call` runs sequentially and honors:
+ *  - `params` — shallow-merged into the tool args before execution
+ *  - `block` + `blockReason` — the tool is NOT executed; the reason is returned
+ *    to the agent. `block: true` is terminal (skips lower-priority handlers).
+ *  - `requireApproval` — mapped to a soft block using the description/title.
+ *    This is OpenClaw's documented fallback when the host cannot drive native
+ *    platform approval; `block` takes precedence over it. (Live platform
+ *    approval is intentionally out of scope here.)
+ * A handler that throws fails closed (blocks the call).
+ *
+ * `after_tool_call` is a fire-and-forget notification (returns void upstream).
+ *
+ * Tools are returned unchanged when no plugin registered tool hooks.
+ */
+export function wrapToolsWithPluginToolHooks<T extends WrappableTool>(
+  tools: T[],
+  plugins: LoadedPlugin[],
+  ctx: Record<string, unknown>
+): T[] {
+  const beforeHandlers = plugins.flatMap((p) => p.hooks.before_tool_call);
+  const afterHandlers = plugins.flatMap((p) => p.hooks.after_tool_call);
+  if (beforeHandlers.length === 0 && afterHandlers.length === 0) {
+    return tools;
+  }
+
+  return tools.map((tool) => {
+    const toolName = tool.name;
+    const originalExecute = tool.execute.bind(tool) as LooseToolExecute;
+
+    const wrappedExecute: LooseToolExecute = async (
+      toolCallId,
+      params,
+      signal,
+      onUpdate,
+      execCtx
+    ) => {
+      let mergedParams: Record<string, unknown> = { ...(params ?? {}) };
+      let blockReason: string | undefined;
+      let approvalReason: string | undefined;
+
+      for (const handler of beforeHandlers) {
+        let result: unknown;
+        try {
+          result = await Promise.resolve(
+            handler({ toolName, params: mergedParams, toolCallId }, ctx)
+          );
+        } catch (err) {
+          // Fail closed: a throwing pre-tool hook blocks the call.
+          blockReason = `before_tool_call hook threw: ${err instanceof Error ? err.message : String(err)}`;
+          break;
+        }
+        if (!result || typeof result !== "object") continue;
+        const r = result as BeforeToolCallResult;
+        if (r.params && typeof r.params === "object") {
+          mergedParams = { ...mergedParams, ...r.params };
+        }
+        if (r.block === true) {
+          blockReason = r.blockReason?.trim() || "Blocked by plugin policy.";
+          break; // block is terminal — skip lower-priority handlers
+        }
+        if (r.requireApproval && approvalReason === undefined) {
+          const ra = r.requireApproval;
+          approvalReason =
+            ra.description?.trim() ||
+            ra.title?.trim() ||
+            "This tool call requires human approval.";
+          // not terminal: a later handler may still hard-block
+        }
+      }
+
+      // `block` takes precedence over `requireApproval`.
+      const denyReason = blockReason ?? approvalReason;
+      if (denyReason !== undefined) {
+        logger.info(
+          `Plugin before_tool_call blocked "${toolName}": ${denyReason}`
+        );
+        return {
+          content: [{ type: "text" as const, text: `⛔ ${denyReason}` }],
+          details: undefined,
+        };
+      }
+
+      const execResult = await originalExecute(
+        toolCallId,
+        mergedParams,
+        signal,
+        onUpdate,
+        execCtx
+      );
+
+      // after_tool_call is a fire-and-forget notification: it must not delay
+      // the tool result, and a handler that throws (sync or async) must never
+      // fail a tool that already ran. Dispatch detached in a microtask (so
+      // synchronous throws become catchable rejections) and don't await.
+      for (const handler of afterHandlers) {
+        Promise.resolve()
+          .then(() =>
+            handler(
+              {
+                toolName,
+                params: mergedParams,
+                toolCallId,
+                result: execResult,
+              },
+              ctx
+            )
+          )
+          .catch((err) =>
+            logger.error(
+              `after_tool_call hook failed for "${toolName}": ${err instanceof Error ? err.message : String(err)}`
+            )
+          );
+      }
+
+      return execResult;
+    };
+
+    return {
+      ...tool,
+      execute: wrappedExecute,
+    } as unknown as T;
+  });
 }
 
 export async function startPluginServices(

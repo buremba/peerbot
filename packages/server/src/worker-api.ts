@@ -527,7 +527,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         w.slug AS watcher_slug,
         w.agent_kind AS watcher_agent_kind,
         w.notification_channel AS watcher_notification_channel,
-        w.notification_priority AS watcher_notification_priority
+        w.notification_priority AS watcher_notification_priority,
+        w.execution_config AS watcher_execution_config
       FROM runs r
       LEFT JOIN feeds f ON f.id = r.feed_id
       LEFT JOIN connections conn ON conn.id = r.connection_id
@@ -602,6 +603,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     watcher_agent_kind: string | null;
     watcher_notification_channel: string | null;
     watcher_notification_priority: string | null;
+    watcher_execution_config: Record<string, unknown> | null;
     // Auth run fields
     run_auth_profile_id: number | null;
     auth_profile_auth_data: Record<string, unknown> | null;
@@ -639,6 +641,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           agent_kind: agentKindFromPayload ?? row.watcher_agent_kind ?? null,
           notification_channel: row.watcher_notification_channel ?? 'canvas',
           notification_priority: row.watcher_notification_priority ?? 'normal',
+          execution_config: row.watcher_execution_config ?? null,
         },
         event: {
           trigger_event_id: null,

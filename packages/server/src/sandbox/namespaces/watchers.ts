@@ -23,6 +23,30 @@ type WatcherActionInput = Omit<ManageWatchersArgs, "action" | "watcher_id"> & {
   watcher_id?: WatcherId;
 };
 
+/**
+ * Per-watcher device-worker CLI execution settings (mirrors the
+ * `watchers.execution_config` jsonb and the manage_watchers TypeBox schema).
+ * Every field is optional; omitted fields fall back to dispatcher/CLI defaults.
+ */
+export interface WatcherExecutionConfig {
+  /** Wall-clock cap in seconds for the device-worker CLI run (default 600). */
+  timeout_seconds?: number;
+  /** Per-run dollar ceiling (claude: --max-budget-usd). */
+  max_budget_usd?: number;
+  /** Model alias/id passed to the CLI (--model). */
+  model?: string;
+  /** Tool permission mode (claude: --permission-mode). */
+  permission_mode?:
+    | "acceptEdits"
+    | "auto"
+    | "bypassPermissions"
+    | "default"
+    | "dontAsk"
+    | "plan";
+  /** Reasoning effort (claude: --effort). */
+  effort?: "low" | "medium" | "high";
+}
+
 export interface WatcherListFilter {
   entity_id?: number;
   status?: "active" | "paused" | "draft";
@@ -49,6 +73,7 @@ export interface WatcherCreateInput {
   agent_id?: string;
   scheduler_client_id?: string;
   model_config?: Record<string, unknown>;
+  execution_config?: WatcherExecutionConfig;
   tags?: string[];
 }
 
@@ -58,6 +83,7 @@ export interface WatcherUpdateInput {
   agent_id?: string;
   scheduler_client_id?: string;
   model_config?: Record<string, unknown>;
+  execution_config?: WatcherExecutionConfig;
   sources?: Source[];
 }
 

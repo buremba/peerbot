@@ -45,6 +45,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readdir, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import { extname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
@@ -384,15 +385,21 @@ export async function runConnectorRuntimeSelfCheck(
     }
   })();
 
+  // @lobu/core is consumed by @lobu/connector-sdk (logger/retry), NOT by
+  // connector-worker directly (it's not in connector-worker's deps). Resolve it
+  // ANCHORED AT THE SDK — the way the SDK does — to reproduce the exact prod
+  // edge that dangled: `.../connector-sdk/node_modules/@lobu/core`. Anchoring at
+  // connector-worker here would be a non-contract that only resolves in the
+  // hoisted dev workspace and falsely fails in the isolated-linker image.
   record('resolve:@lobu/core', () => {
-    require_.resolve('@lobu/core');
+    const sdkRequire = createRequire(require_.resolve('@lobu/connector-sdk'));
+    sdkRequire.resolve('@lobu/core');
   });
   await (async () => {
     try {
-      // This is the EXACT transitive edge that dangled in prod:
-      // @lobu/connector-sdk → @lobu/core. Import it directly through the same
-      // runtime resolver the SDK uses.
-      await import('@lobu/core');
+      const sdkRequire = createRequire(require_.resolve('@lobu/connector-sdk'));
+      const corePath = sdkRequire.resolve('@lobu/core');
+      await import(pathToFileURL(corePath).href);
       checks.push({ name: 'import:@lobu/core', ok: true, detail: 'ok' });
     } catch (err) {
       checks.push({

@@ -1,0 +1,307 @@
+/**
+ * Consent-only connections — the by-construction "data stays local" guarantee.
+ *
+ * A managed connector's OAuth grant is held by a connection in a PUBLIC cloud
+ * org. That cloud grant-holder must be CONSENT-ONLY: it exists solely to hold
+ * the grant for delegation (the local instance fetches a short-lived token from
+ * it via POST /oauth/connection-token), and it can NEVER have feeds — so the
+ * cloud worker never syncs, so the data only ever lives on the local instance.
+ *
+ * This is enforced by construction, not convention: a connection whose
+ * persisted `config.consent_only === true` rejects feed creation. These tests
+ * pin that invariant:
+ *   1. Creating a feed on a consent-only connection → rejected with a clear error.
+ *   2. Creating a feed on a normal connection → still works (unchanged).
+ *   3. A consent-only connection still resolves an access token via
+ *      /oauth/connection-token (consent-only blocks feeds, not auth).
+ */
+
+import { serve } from '@hono/node-server';
+import { Hono } from 'hono';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { connectionTokenRoutes } from '../../../connect/connection-token-route';
+import type { Env } from '../../../index';
+import { manageFeeds } from '../../../tools/admin/manage_feeds';
+import type { ToolContext } from '../../../tools/registry';
+import { createAuthProfile } from '../../../utils/auth-profiles';
+import { initWorkspaceProvider } from '../../../workspace';
+import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
+import {
+  addUserToOrganization,
+  createTestConnectorDefinition,
+  createTestOrganization,
+  createTestPAT,
+  createTestUser,
+} from '../../setup/test-fixtures';
+
+const TEST_ENV = {
+  ENVIRONMENT: 'test',
+  DATABASE_URL: process.env.DATABASE_URL,
+} as unknown as Env;
+
+const REFRESHED = {
+  access_token: 'consent-only-refreshed-token',
+  refresh_token: 'consent-only-refresh-token',
+  expires_in: 3600,
+};
+const MANAGED_SECRET = 'consent-only-secret';
+
+let providerServer: ReturnType<typeof serve> | null = null;
+let providerTokenUrl = '';
+
+function ctxFor(organizationId: string, userId: string): ToolContext {
+  return {
+    organizationId,
+    userId,
+    memberRole: 'owner',
+    agentId: null,
+    isAuthenticated: true,
+    clientId: null,
+    scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
+    tokenType: 'oauth',
+    scopedToOrg: true,
+    allowCrossOrg: false,
+  } as ToolContext;
+}
+
+function buildCloudApp(): Hono<{ Bindings: Env }> {
+  const app = new Hono<{ Bindings: Env }>();
+  app.route('/', connectionTokenRoutes);
+  return app;
+}
+
+beforeAll(async () => {
+  await initWorkspaceProvider();
+
+  // Fake OAuth provider for the token-resolution test: a refresh_token grant
+  // returns canned tokens.
+  const providerApp = new Hono();
+  providerApp.post('/token', async (c) =>
+    c.json({
+      access_token: REFRESHED.access_token,
+      refresh_token: REFRESHED.refresh_token,
+      expires_in: REFRESHED.expires_in,
+    })
+  );
+  providerServer = await new Promise((resolve) => {
+    const s = serve({ fetch: providerApp.fetch, hostname: '127.0.0.1', port: 0 }, (info) => {
+      providerTokenUrl = `http://127.0.0.1:${info.port}/token`;
+      resolve(s);
+    });
+  });
+});
+
+afterAll(async () => {
+  await new Promise<void>((done) =>
+    providerServer ? providerServer.close(() => done()) : done()
+  );
+});
+
+describe('consent-only connections — feed creation is rejected by construction', () => {
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+  });
+
+  it('rejects creating a feed on a consent-only connection with a clear error', async () => {
+    const org = await createTestOrganization({ name: 'Consent Only Org' });
+    const user = await createTestUser({ name: 'Consent Only User' });
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const ctx = ctxFor(org.id, user.id);
+
+    await createTestConnectorDefinition({
+      key: 'demo.oauth',
+      name: 'Demo OAuth',
+      organization_id: org.id,
+      auth_schema: {
+        methods: [{ type: 'oauth', provider: 'demo', requiredScopes: ['read'] }],
+      },
+      feeds_schema: { items: {} },
+    });
+
+    const sql = getTestDb();
+    // A consent-only connection: holds the grant for delegation, no feeds ever.
+    const connRows = (await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status, config, created_by,
+        created_at, updated_at
+      ) VALUES (
+        ${org.id}, 'demo.oauth', 'demo-consent', 'Consent Only Connection', 'active',
+        ${sql.json({ consent_only: true })}, ${user.id}, NOW(), NOW()
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+
+    const res = await manageFeeds(
+      {
+        action: 'create_feed',
+        connection_id: Number(connRows[0].id),
+        feed_key: 'items',
+        display_name: 'Should Not Exist',
+      },
+      TEST_ENV,
+      ctx
+    );
+
+    expect('error' in res).toBe(true);
+    if ('error' in res) {
+      expect(res.error).toBe(
+        'This connection is consent-only (holds an OAuth grant for delegation) and cannot have feeds.'
+      );
+    }
+
+    // No feed row was created.
+    const feedRows = await sql`
+      SELECT id FROM feeds WHERE organization_id = ${org.id} AND connection_id = ${Number(connRows[0].id)}
+    `;
+    expect(feedRows).toHaveLength(0);
+  });
+
+  it('still allows creating a feed on a normal (non-consent-only) connection', async () => {
+    const org = await createTestOrganization({ name: 'Normal Org' });
+    const user = await createTestUser({ name: 'Normal User' });
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const ctx = ctxFor(org.id, user.id);
+
+    await createTestConnectorDefinition({
+      key: 'demo.oauth',
+      name: 'Demo OAuth',
+      organization_id: org.id,
+      auth_schema: {
+        methods: [{ type: 'oauth', provider: 'demo', requiredScopes: ['read'] }],
+      },
+      feeds_schema: { items: {} },
+    });
+
+    const sql = getTestDb();
+    // A normal connection: no consent_only flag (config carries an unrelated key).
+    const connRows = (await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status, config, created_by,
+        created_at, updated_at
+      ) VALUES (
+        ${org.id}, 'demo.oauth', 'demo-normal', 'Normal Connection', 'active',
+        ${sql.json({ some_setting: 'x' })}, ${user.id}, NOW(), NOW()
+      )
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+
+    const res = await manageFeeds(
+      {
+        action: 'create_feed',
+        connection_id: Number(connRows[0].id),
+        feed_key: 'items',
+        display_name: 'Normal Feed',
+      },
+      TEST_ENV,
+      ctx
+    );
+
+    expect('error' in res).toBe(false);
+    if ('feed' in res) {
+      expect((res.feed as { status: string }).status).toBe('active');
+    }
+
+    const feedRows = await sql`
+      SELECT id FROM feeds WHERE organization_id = ${org.id} AND connection_id = ${Number(connRows[0].id)} AND deleted_at IS NULL
+    `;
+    expect(feedRows).toHaveLength(1);
+  });
+
+  it('a consent-only connection still resolves an access token via /oauth/connection-token', async () => {
+    // The consent-only connection holds the grant; consent_only blocks feeds,
+    // NOT auth delegation. The token endpoint must still mint a fresh token.
+    const sql = getTestDb();
+    const org = await createTestOrganization({ name: 'Consent Token Org', visibility: 'public' });
+    const owner = await createTestUser({ name: 'Consent Token Owner' });
+    await addUserToOrganization(owner.id, org.id, 'member');
+
+    const connectorKey = 'demo.oauth';
+    await createTestConnectorDefinition({
+      key: connectorKey,
+      name: 'Demo OAuth',
+      organization_id: org.id,
+      auth_schema: {
+        methods: [
+          {
+            type: 'oauth',
+            provider: 'demo',
+            requiredScopes: ['read'],
+            authorizationUrl: 'https://demo.example/authorize',
+            tokenUrl: providerTokenUrl,
+            tokenEndpointAuthMethod: 'client_secret_post',
+            clientIdKey: 'DEMO_CLIENT_ID',
+            clientSecretKey: 'DEMO_CLIENT_SECRET',
+          },
+        ],
+      },
+      feeds_schema: { items: {} },
+    });
+
+    const appProfile = await createAuthProfile({
+      organizationId: org.id,
+      connectorKey,
+      displayName: 'Managed Demo App',
+      profileKind: 'oauth_app',
+      provider: 'demo',
+      authData: { DEMO_CLIENT_ID: 'managed-cid', DEMO_CLIENT_SECRET: MANAGED_SECRET },
+    });
+
+    const accountId = `acct_${org.id}`;
+    const expiringSoon = new Date(Date.now() + 60 * 1000).toISOString();
+    await sql`
+      INSERT INTO "account" (
+        id, "accountId", "providerId", "userId",
+        "accessToken", "refreshToken", "accessTokenExpiresAt",
+        scope, "createdAt", "updatedAt"
+      ) VALUES (
+        ${accountId}, ${accountId}, 'demo', ${owner.id},
+        ${'stale-token'}, ${'refresh-original'}, ${expiringSoon},
+        'read', NOW(), NOW()
+      )
+    `;
+    const accountProfile = await createAuthProfile({
+      organizationId: org.id,
+      connectorKey,
+      displayName: 'Demo Account',
+      profileKind: 'oauth_account',
+      provider: 'demo',
+      accountId,
+    });
+
+    // The grant-holder connection is CONSENT-ONLY (config.consent_only) AND
+    // owned by the member — the token endpoint must still serve it.
+    await sql`
+      INSERT INTO connections (
+        organization_id, connector_key, slug, display_name, status,
+        account_id, auth_profile_id, app_auth_profile_id, created_by, config,
+        created_at, updated_at
+      ) VALUES (
+        ${org.id}, ${connectorKey}, ${`demo-${org.id}`}, 'Demo Connection', 'active',
+        ${accountId}, ${accountProfile.id}, ${appProfile.id}, ${owner.id},
+        ${sql.json({ consent_only: true })}, NOW(), NOW()
+      )
+    `;
+
+    const ownerPat = await createTestPAT(owner.id, org.id, { scope: 'mcp:read mcp:write' });
+    const app = buildCloudApp();
+    const res = await app.fetch(
+      new Request('http://cloud.local/oauth/connection-token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerPat.token}`,
+        },
+        body: JSON.stringify({ org: org.id, connector_key: connectorKey }),
+      }),
+      TEST_ENV
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.access_token).toBe(REFRESHED.access_token);
+    // Still never leaks the refresh token or secret.
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain(REFRESHED.refresh_token);
+    expect(serialized).not.toContain(MANAGED_SECRET);
+  });
+});

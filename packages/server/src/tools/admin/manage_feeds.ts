@@ -12,6 +12,7 @@
  * - trigger_feed: Trigger an immediate sync for a feed
  */
 
+import { parseJsonObject } from '@lobu/core';
 import { type Static, Type } from '@sinclair/typebox';
 import { getDb, pgBigintArray } from '../../db/client';
 import type { Env } from '../../index';
@@ -284,7 +285,7 @@ async function handleCreateFeed(
   const { organizationId } = ctx;
 
   const connRows = await sql`
-    SELECT c.id, c.connector_key, c.status, c.auth_profile_id, cd.feeds_schema
+    SELECT c.id, c.connector_key, c.status, c.auth_profile_id, c.config, cd.feeds_schema
     FROM connections c
     LEFT JOIN LATERAL (
       SELECT feeds_schema
@@ -303,6 +304,18 @@ async function handleCreateFeed(
   }
 
   const conn = connRows[0] as any;
+  // Consent-only connections exist solely to hold an OAuth grant for delegation
+  // (the cloud grant-holder behind a managed connector); they cannot have feeds,
+  // so they never sync. This is the by-construction guarantee that a managed
+  // connector's data only ever lives on the local instance — a consent-only
+  // cloud connection can never get a feed, so the cloud worker never syncs it.
+  const connConfig = parseJsonObject(conn.config);
+  if (connConfig.consent_only === true) {
+    return {
+      error:
+        'This connection is consent-only (holds an OAuth grant for delegation) and cannot have feeds.',
+    };
+  }
   // A `pending_auth` connection is OK — the feed is created `paused` (the
   // `feeds.status` CHECK only allows active|paused|error). The OAuth/connect
   // callback un-pauses the connection's feeds when it activates the connection.

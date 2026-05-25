@@ -642,15 +642,34 @@ function mapConnection(connection: Connection): DesiredConnection {
       ...(feed.config ? { config: feed.config } : {}),
     };
   });
+  // A consent-only connection exists solely to hold an OAuth grant for
+  // delegation (the cloud grant-holder behind a managed connector); it cannot
+  // have feeds, so it never syncs. Reject feeds at authoring time too — the
+  // server enforces the same invariant on feed creation.
+  if (connection.consentOnly && feeds.length > 0) {
+    throw new ValidationError(
+      `connection "${connection.slug}" is consent-only (holds an OAuth grant for delegation) and cannot have feeds`
+    );
+  }
   const authSlug = authProfileSlug(connection.authProfile);
   const appAuthSlug = authProfileSlug(connection.appAuthProfile);
   // A managed connection's grant lives in a cloud (public) org. Fold the
   // `managedBy` descriptor into the persisted connection `config` so the server
   // resolver (execution-context.ts) can detect it and fetch the user's token
-  // from the cloud at runtime — no new column or CRUD field needed.
-  const config = connection.managedBy
-    ? { ...(connection.config ?? {}), managedBy: { ...connection.managedBy } }
-    : connection.config;
+  // from the cloud at runtime — no new column or CRUD field needed. The
+  // `consent_only` flag is folded the same way: it lives in the trusted
+  // connection `config` (where `managedBy` lives), never in `auth_data`.
+  const baseConfig =
+    connection.managedBy || connection.consentOnly
+      ? {
+          ...(connection.config ?? {}),
+          ...(connection.managedBy
+            ? { managedBy: { ...connection.managedBy } }
+            : {}),
+          ...(connection.consentOnly ? { consent_only: true } : {}),
+        }
+      : connection.config;
+  const config = baseConfig;
   return {
     slug: connection.slug,
     connector: connectorKey(connection.connector),

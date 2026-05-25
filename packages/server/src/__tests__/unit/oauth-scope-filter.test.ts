@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { filterScopeByRole } from '../../auth/oauth/scopes';
+import { filterScopeByRole, grantConnectionsTokenScope } from '../../auth/oauth/scopes';
 
 describe('filterScopeByRole', () => {
   it('keeps mcp:admin when the user is an owner', () => {
@@ -63,5 +63,32 @@ describe('filterScopeByRole', () => {
   it('collapses extra whitespace', () => {
     const result = filterScopeByRole('  mcp:read   mcp:admin   ', 'owner');
     expect(result).toBe('mcp:read mcp:admin');
+  });
+});
+
+describe('grantConnectionsTokenScope', () => {
+  it('appends connections:token to an MCP-scoped login grant', () => {
+    expect(grantConnectionsTokenScope('mcp:read mcp:write')).toBe(
+      'mcp:read mcp:write connections:token'
+    );
+  });
+
+  it('is idempotent — never duplicates the scope', () => {
+    expect(grantConnectionsTokenScope('mcp:read connections:token mcp:write')).toBe(
+      'mcp:read connections:token mcp:write'
+    );
+  });
+
+  it('preserves the original token order, appending at the end', () => {
+    expect(grantConnectionsTokenScope('mcp:admin profile:read')).toBe(
+      'mcp:admin profile:read connections:token'
+    );
+  });
+
+  it('leaves a null/empty/scope-less grant untouched (no connection-token scope)', () => {
+    expect(grantConnectionsTokenScope(null)).toBeNull();
+    expect(grantConnectionsTokenScope(undefined)).toBeNull();
+    expect(grantConnectionsTokenScope('')).toBe('');
+    expect(grantConnectionsTokenScope('   ')).toBe('   ');
   });
 });

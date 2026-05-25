@@ -15,7 +15,7 @@ import { createAuth } from '../index';
 import { requireAuth } from '../middleware';
 import { findExistingPersonalOrg } from '../personal-org-provisioning';
 import { OAuthProvider } from './provider';
-import { DEFAULT_SCOPES_STRING, filterScopeByRole } from './scopes';
+import { DEFAULT_SCOPES_STRING, filterScopeByRole, grantConnectionsTokenScope } from './scopes';
 import type { AuthorizationParams, OAuthClientMetadata, TokenRequestParams } from './types';
 import { createOAuthError, validateRedirectUri } from './utils';
 import { getConfiguredPublicOrigin } from '../../utils/public-origin';
@@ -622,7 +622,13 @@ oauthRoutes.post('/oauth/authorize/consent', requireAuth, async (c) => {
           400
         );
       }
-      params.scope = filtered;
+      // Interactive login grants (the device-code / authorization-code flows
+      // behind `lobu login` + the web session) get `connections:token` for free
+      // so the LOCAL instance's managed-connector resolver can fetch managed
+      // tokens with the user's OWN login credential. Non-interactive PATs do not
+      // (the PAT mint route never adds it by default), so the connection-token
+      // endpoint's scope gate stays meaningful against a broad CI PAT.
+      params.scope = grantConnectionsTokenScope(filtered) ?? filtered;
     }
 
     const code = await provider.createAuthorizationCode(params, user.id, organizationId);
@@ -761,6 +767,9 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
         400
       );
     }
+    // Device-code logins (`lobu login`) get `connections:token` automatically —
+    // same rationale as the consent (authorization-code) path above.
+    scopeOverride = grantConnectionsTokenScope(scopeOverride);
   }
 
   const approved = await provider.approveDeviceCode(

@@ -4,6 +4,7 @@ import {
   defineEntityType,
   defineWatcher,
   secret,
+  skillFromFile,
 } from "@lobu/cli/config";
 
 const DELIVEROO_JUDGE =
@@ -15,6 +16,7 @@ const foodOrdering = defineAgent({
   description:
     "Runs the office lunch order — presence check, recommendations, options poll, order collection, Deliveroo basket handoff",
   dir: "./agents/food-ordering",
+  skills: [skillFromFile("./agents/food-ordering/skills/deliveroo-order")],
   providers: [
     {
       id: "z-ai",

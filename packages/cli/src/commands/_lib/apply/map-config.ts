@@ -9,6 +9,7 @@
  */
 
 import type { AgentSettings } from "@lobu/core";
+import { CronExpressionParser } from "cron-parser";
 import type {
   Agent,
   AuthProfile,
@@ -16,13 +17,12 @@ import type {
   ConnectorRef,
   EntityType,
   McpServer,
-  ProviderConfig,
   Project,
+  ProviderConfig,
   RelationshipType,
   Watcher,
 } from "../../../config/index.js";
 import { isSecretRef } from "../../../config/index.js";
-import { CronExpressionParser } from "cron-parser";
 import { ValidationError } from "../../memory/_lib/errors.js";
 import type {
   DesiredAgent,
@@ -173,7 +173,7 @@ function resolveCredentialValue(
   return value;
 }
 
-/** Skill entries produced by `buildLocalSkills` (agent-dir + project `skills/`). */
+/** Skill entries resolved from `defineAgent({ skills })` (inline + file). */
 type LocalSkills = NonNullable<AgentSettings["skillsConfig"]>["skills"];
 
 /** Agent-dir prompt markdown (read by the loader from SOUL/IDENTITY/USER.md). */
@@ -184,9 +184,10 @@ export interface AgentMarkdown {
 }
 
 /**
- * Merge agent-directory artifacts (prompt markdown + local skills) into the
- * already-mapped agent settings. Pure (no file IO — the loader reads the files
- * and passes the results in) so it can be unit-tested directly.
+ * Merge an agent's file-resolved artifacts (prompt markdown from its dir +
+ * skills declared via `defineAgent({ skills })`) into the already-mapped agent
+ * settings. Pure (no file IO — the loader reads the files and passes the
+ * results in) so it can be unit-tested directly.
  *
  * Mirrors `buildAgentSettings`'s skill-merge semantics exactly: agent-level
  * network/nix/mcp is laid down first (already in `settings`), then skills are

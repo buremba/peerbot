@@ -17,7 +17,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { AgentSettings } from "@lobu/core";
 import chalk from "chalk";
-import { resolveApplyClient } from "../apply/client.js";
+import { printText } from "../../memory/_lib/output.js";
 import type {
   ApplyClient,
   RemoteAgent,
@@ -30,7 +30,7 @@ import type {
   RemoteRelationshipType,
   RemoteWatcher,
 } from "../apply/client.js";
-import { printText } from "../../memory/_lib/output.js";
+import { resolveApplyClient } from "../apply/client.js";
 
 export interface InitFromOrgOptions {
   /** Target directory to scaffold into (must be empty / not a Lobu project). */
@@ -236,6 +236,7 @@ const IMPORTABLE = [
   "defineConnection",
   "defineAuthProfile",
   "secret",
+  "skillFromFile",
 ] as const;
 type Importable = (typeof IMPORTABLE)[number];
 
@@ -395,13 +396,21 @@ function emitAgent(
     });
   }
 
-  // Local skills → skills/<name>/SKILL.md (with frontmatter for net/nix/mcp).
+  // Local skills → skills/<name>/SKILL.md (with frontmatter for net/nix/mcp),
+  // referenced explicitly via `skillFromFile` so the apply loader picks them up
+  // (there is no directory auto-discovery). System/runtime skills are skipped.
+  const skillRefs: string[] = [];
   for (const skill of settings?.skillsConfig?.skills ?? []) {
-    if (skill.repo && !skill.repo.startsWith("local/")) continue;
+    if (skill.system) continue;
     files.push({
       relPath: `${dir}/skills/${skill.name}/SKILL.md`,
       body: emitSkillFile(skill),
     });
+    skillRefs.push(`skillFromFile(${str(`./${dir}/skills/${skill.name}`)})`);
+  }
+  if (skillRefs.length > 0) {
+    imports.use("skillFromFile");
+    fields.push(`skills: [\n    ${skillRefs.join(",\n    ")},\n  ]`);
   }
 
   // platforms ← live platform bindings. The route stores `platform` inside

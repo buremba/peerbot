@@ -261,11 +261,17 @@ export interface Agent {
   name?: string;
   description?: string;
   /**
-   * Agent directory holding `SOUL.md` / `IDENTITY.md` / `USER.md` and a
-   * `skills/` folder. Relative to the config file; defaults to
-   * `./agents/<id>`.
+   * Agent directory holding `SOUL.md` / `IDENTITY.md` / `USER.md`. Relative to
+   * the config file; defaults to `./agents/<id>`. (Skills are referenced
+   * explicitly via {@link Agent.skills}, not auto-discovered from this dir.)
    */
   dir?: string;
+  /**
+   * Skills this agent can use — built inline with {@link defineSkill} or loaded
+   * from a `SKILL.md` with {@link skillFromFile}. Explicit list, no directory
+   * auto-discovery; deduped by name.
+   */
+  skills?: Skill[];
   providers?: ProviderConfig[];
   network?: NetworkConfig;
   egress?: EgressConfig;
@@ -291,6 +297,67 @@ export interface Agent {
 
 export function defineAgent(config: Omit<Agent, "kind">): Agent {
   return { ...config, kind: "agent" };
+}
+
+// ---------------------------------------------------------------------------
+// Skills
+// ---------------------------------------------------------------------------
+
+/**
+ * A skill an agent can use — an instruction block (`content`) plus the egress,
+ * nix, and MCP it declares. Skills are referenced explicitly from
+ * {@link Agent.skills}; there is no directory auto-discovery.
+ *
+ * Build one of two ways, both producing this same object:
+ *   - {@link defineSkill} — inline: `content` is a string, the rest is JSON.
+ *   - {@link skillFromFile} — from a `SKILL.md` file (a directory containing
+ *     one, or a `.md` path). The loader reads it at `lobu apply` and fills the
+ *     fields from its frontmatter + body. `path` is mutually exclusive with the
+ *     inline fields.
+ *
+ * The frontmatter a skill declares (`network`, `nixPackages`, `mcpServers`) is
+ * merged into the agent's worker sandbox at apply time — that's why skills are
+ * resolved eagerly, not loaded by the worker at run time.
+ */
+export interface Skill {
+  readonly kind: "skill";
+  /**
+   * Skill name — the reference and dedup key. Required for inline skills. For
+   * {@link skillFromFile}, derived from the file's frontmatter `name` (or its
+   * folder name) when omitted.
+   */
+  name?: string;
+  description?: string;
+  /** The skill body (markdown instructions shown to the agent). */
+  content?: string;
+  /** Nix packages provisioned into the worker when this skill is present. */
+  nixPackages?: string[];
+  /** Egress the skill needs — merged into the agent's network allowlist. */
+  network?: NetworkConfig;
+  /** MCP servers the skill declares, keyed by id. */
+  mcpServers?: Record<string, McpServer>;
+  /**
+   * Load body + frontmatter from a `SKILL.md`, relative to the config file. Set
+   * by {@link skillFromFile}; resolved by the loader. Mutually exclusive with
+   * the inline fields above.
+   */
+  path?: string;
+}
+
+/** Declare a skill inline — `content` is the body, the rest is JSON frontmatter. */
+export function defineSkill(
+  config: Omit<Skill, "kind" | "path"> & { name: string }
+): Skill {
+  return { ...config, kind: "skill" };
+}
+
+/**
+ * Reference a skill stored as a `SKILL.md` file. `path` is a directory holding
+ * `SKILL.md` (or a `.md` file directly), relative to the config file. The
+ * loader reads it at apply time; pass `name` to override the frontmatter name.
+ */
+export function skillFromFile(path: string, opts?: { name?: string }): Skill {
+  return { kind: "skill", path, ...(opts?.name ? { name: opts.name } : {}) };
 }
 
 // ---------------------------------------------------------------------------

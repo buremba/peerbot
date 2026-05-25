@@ -155,7 +155,7 @@ describe("loadDesiredStateFromConfig", () => {
     ]);
   });
 
-  test("loads agent-dir markdown + skills and merges skill network config", async () => {
+  test("loads agent-dir markdown + a file skill, merging skill network/nix", async () => {
     dir = mkdtempSync(join(import.meta.dir, "agentdir-"));
     const agentDir = join(dir, "agents", "crm");
     mkdirSync(join(agentDir, "skills", "crm-ops"), { recursive: true });
@@ -177,9 +177,15 @@ describe("loadDesiredStateFromConfig", () => {
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig } from "@lobu/cli/config";`,
+        `import { defineAgent, defineConfig, skillFromFile } from "@lobu/cli/config";`,
         `export default defineConfig({`,
-        `  agents: [defineAgent({ id: "crm", network: { allowed: ["github.com"] } })],`,
+        `  agents: [`,
+        `    defineAgent({`,
+        `      id: "crm",`,
+        `      network: { allowed: ["github.com"] },`,
+        `      skills: [skillFromFile("./agents/crm/skills/crm-ops")],`,
+        `    }),`,
+        `  ],`,
         `});`,
         ``,
       ].join("\n")
@@ -198,19 +204,42 @@ describe("loadDesiredStateFromConfig", () => {
     expect(settings?.nixConfig?.packages).toEqual(["jq"]);
   });
 
-  test("two agents: custom + default dirs keep index alignment; project ./skills applies to all", async () => {
+  test("an inline defineSkill carries content + network with no files", async () => {
+    dir = mkdtempSync(join(import.meta.dir, "inline-"));
+    writeFileSync(
+      join(dir, "lobu.config.ts"),
+      [
+        `import { defineAgent, defineConfig, defineSkill } from "@lobu/cli/config";`,
+        `const greet = defineSkill({`,
+        `  name: "greet",`,
+        `  description: "Greet someone.",`,
+        `  content: "Generate a warm greeting.",`,
+        `  network: { allowed: ["api.greet.com"] },`,
+        `});`,
+        `export default defineConfig({`,
+        `  agents: [defineAgent({ id: "a", skills: [greet] })],`,
+        `});`,
+        ``,
+      ].join("\n")
+    );
+
+    const { state } = await loadDesiredStateFromConfig({ cwd: dir });
+    const skill = state.agents[0]?.settings.skillsConfig?.skills[0];
+    expect(skill?.name).toBe("greet");
+    expect(skill?.content).toBe("Generate a warm greeting.");
+    expect(skill?.description).toBe("Greet someone.");
+    expect(state.agents[0]?.settings.networkConfig?.allowedDomains).toEqual([
+      "api.greet.com",
+    ]);
+  });
+
+  test("two agents: custom + default dirs keep index alignment", async () => {
     dir = mkdtempSync(join(import.meta.dir, "multiagent-"));
     // Agent "a" uses a custom dir; agent "b" uses the default ./agents/b.
     mkdirSync(join(dir, "custom-a"), { recursive: true });
     mkdirSync(join(dir, "agents", "b"), { recursive: true });
     writeFileSync(join(dir, "custom-a", "SOUL.md"), "Agent A soul.\n");
     writeFileSync(join(dir, "agents", "b", "SOUL.md"), "Agent B soul.\n");
-    // Project-level shared skill (applies to every agent).
-    mkdirSync(join(dir, "skills", "shared"), { recursive: true });
-    writeFileSync(
-      join(dir, "skills", "shared", "SKILL.md"),
-      "---\nname: shared\n---\nShared.\n"
-    );
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
@@ -231,7 +260,31 @@ describe("loadDesiredStateFromConfig", () => {
     expect(state.agents[0]?.settings.soulMd).toBe("Agent A soul.");
     expect(state.agents[1]?.metadata.agentId).toBe("b");
     expect(state.agents[1]?.settings.soulMd).toBe("Agent B soul.");
-    // The project-level skill is merged into both agents.
+  });
+
+  test("a skill shared by two agents via skillFromFile lands on both", async () => {
+    dir = mkdtempSync(join(import.meta.dir, "shared-"));
+    mkdirSync(join(dir, "skills", "shared"), { recursive: true });
+    writeFileSync(
+      join(dir, "skills", "shared", "SKILL.md"),
+      "---\nname: shared\n---\nShared.\n"
+    );
+    writeFileSync(
+      join(dir, "lobu.config.ts"),
+      [
+        `import { defineAgent, defineConfig, skillFromFile } from "@lobu/cli/config";`,
+        `const shared = skillFromFile("./skills/shared");`,
+        `export default defineConfig({`,
+        `  agents: [`,
+        `    defineAgent({ id: "a", skills: [shared] }),`,
+        `    defineAgent({ id: "b", skills: [shared] }),`,
+        `  ],`,
+        `});`,
+        ``,
+      ].join("\n")
+    );
+
+    const { state } = await loadDesiredStateFromConfig({ cwd: dir });
     expect(state.agents[0]?.settings.skillsConfig?.skills[0]?.name).toBe(
       "shared"
     );
@@ -240,33 +293,41 @@ describe("loadDesiredStateFromConfig", () => {
     );
   });
 
-  test("agent-dir skill overrides a project skill of the same name", async () => {
-    dir = mkdtempSync(join(import.meta.dir, "skilloverride-"));
-    mkdirSync(join(dir, "skills", "ops"), { recursive: true });
-    mkdirSync(join(dir, "agents", "a", "skills", "ops"), { recursive: true });
-    writeFileSync(
-      join(dir, "skills", "ops", "SKILL.md"),
-      "---\nname: ops\n---\nProject ops.\n"
-    );
-    writeFileSync(
-      join(dir, "agents", "a", "skills", "ops", "SKILL.md"),
-      "---\nname: ops\n---\nAgent ops.\n"
-    );
+  test("rejects duplicate skill names within an agent", async () => {
+    dir = mkdtempSync(join(import.meta.dir, "dup-"));
     writeFileSync(
       join(dir, "lobu.config.ts"),
       [
-        `import { defineAgent, defineConfig } from "@lobu/cli/config";`,
-        `export default defineConfig({ agents: [defineAgent({ id: "a" })] });`,
+        `import { defineAgent, defineConfig, defineSkill } from "@lobu/cli/config";`,
+        `export default defineConfig({`,
+        `  agents: [defineAgent({ id: "a", skills: [`,
+        `    defineSkill({ name: "ops", content: "one" }),`,
+        `    defineSkill({ name: "ops", content: "two" }),`,
+        `  ] })],`,
+        `});`,
         ``,
       ].join("\n")
     );
+    await expect(loadDesiredStateFromConfig({ cwd: dir })).rejects.toThrow(
+      /duplicate skill "ops"/
+    );
+  });
 
-    const { state } = await loadDesiredStateFromConfig({ cwd: dir });
-    const skills = state.agents[0]?.settings.skillsConfig?.skills;
-    // loadSkillFiles reads [./skills, <agentDir>/skills] in order, deduping by
-    // name — the agent-dir skill (read last) wins.
-    expect(skills).toHaveLength(1);
-    expect(skills?.[0]?.content).toBe("Agent ops.");
+  test("skillFromFile with a missing SKILL.md fails clearly", async () => {
+    dir = mkdtempSync(join(import.meta.dir, "missing-"));
+    writeFileSync(
+      join(dir, "lobu.config.ts"),
+      [
+        `import { defineAgent, defineConfig, skillFromFile } from "@lobu/cli/config";`,
+        `export default defineConfig({`,
+        `  agents: [defineAgent({ id: "a", skills: [skillFromFile("./nope")] })],`,
+        `});`,
+        ``,
+      ].join("\n")
+    );
+    await expect(loadDesiredStateFromConfig({ cwd: dir })).rejects.toThrow(
+      /no SKILL\.md found/
+    );
   });
 
   test("loads a watcher reaction script (raw source) referenced by path", async () => {

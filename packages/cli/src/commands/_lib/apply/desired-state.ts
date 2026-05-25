@@ -1,8 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { Project } from "../../../config/index.js";
 import type {
   ConnectorAuthSchema,
   ConnectorDefinition,
@@ -11,6 +10,7 @@ import type {
 import type { AgentSettings } from "@lobu/core";
 import Ajv from "ajv";
 import addFormats from "ajv-formats";
+import type { Project, Skill } from "../../../config/index.js";
 import { ValidationError } from "../../memory/_lib/errors.js";
 import {
   mapProjectToDesiredState,
@@ -254,12 +254,6 @@ interface SkillFrontmatter {
   >;
 }
 
-interface LoadedSkillFile {
-  name: string;
-  content: string;
-  frontmatter?: SkillFrontmatter;
-}
-
 function normalizeDomainPattern(pattern: string): string {
   const trimmed = pattern.trim().toLowerCase();
   if (!trimmed) return "";
@@ -290,103 +284,167 @@ async function parseSkillFrontmatter(raw: string): Promise<{
   };
 }
 
-async function loadSkillFiles(dirs: string[]): Promise<LoadedSkillFile[]> {
-  const skillMap = new Map<string, LoadedSkillFile>();
+type SkillConfigEntry = NonNullable<
+  AgentSettings["skillsConfig"]
+>["skills"][number];
 
-  for (const dir of dirs) {
-    let entries: string[];
-    try {
-      entries = (await readdir(resolve(dir))).sort();
-    } catch {
-      continue;
-    }
+type SkillMcpInput = Record<
+  string,
+  { url?: string; type?: string; command?: string; args?: string[] }
+>;
 
-    for (const entry of entries) {
-      const entryPath = join(dir, entry);
-      let entryStat;
-      try {
-        entryStat = await stat(entryPath);
-      } catch {
-        continue;
-      }
+/**
+ * Map a resolved skill (inline `defineSkill` or file-loaded `skillFromFile`)
+ * into a `SkillConfig` entry — the shape stored on agent settings and synced to
+ * the worker's `.skills/`. The network/nix/mcp here merge into the agent's
+ * worker sandbox at apply time, which is why skills resolve eagerly.
+ */
+function skillToConfig(args: {
+  name: string;
+  content: string;
+  source: "inline" | "file";
+  description?: string;
+  nixPackages?: string[];
+  allow?: string[];
+  deny?: string[];
+  judged?: Array<{ domain: string; judge?: string }>;
+  judges?: Record<string, string>;
+  mcpServers?: SkillMcpInput;
+}): SkillConfigEntry {
+  const skill: SkillConfigEntry = {
+    repo: `${args.source}/${args.name}`,
+    name: args.name,
+    content: args.content,
+    enabled: true,
+  };
+  if (args.description) skill.description = args.description;
+  if (args.nixPackages?.length) skill.nixPackages = args.nixPackages;
 
-      if (entryStat.isDirectory()) {
-        try {
-          const raw = await readFile(join(entryPath, "SKILL.md"), "utf-8");
-          if (!raw.trim()) continue;
-          const { frontmatter, body } = await parseSkillFrontmatter(raw.trim());
-          const name = frontmatter?.name || entry;
-          skillMap.set(name, {
-            name,
-            content: body,
-            ...(frontmatter ? { frontmatter } : {}),
-          });
-        } catch {
-          // Directory without a SKILL.md is not a local skill.
-        }
-        continue;
-      }
-
-      if (!entry.endsWith(".md")) continue;
-      try {
-        const content = await readFile(entryPath, "utf-8");
-        if (content.trim()) {
-          skillMap.set(entry.slice(0, -3), {
-            name: entry.slice(0, -3),
-            content: content.trim(),
-          });
-        }
-      } catch {
-        // Skip unreadable files.
-      }
-    }
+  const judgedDomains = (args.judged ?? []).map((entry) => ({
+    domain: normalizeDomainPattern(entry.domain),
+    ...(entry.judge ? { judge: entry.judge } : {}),
+  }));
+  const allowedDomains = normalizeDomainPatterns(args.allow);
+  const deniedDomains = normalizeDomainPatterns(args.deny);
+  if (
+    allowedDomains ||
+    deniedDomains ||
+    judgedDomains.length > 0 ||
+    args.judges
+  ) {
+    skill.networkConfig = {
+      allowedDomains,
+      deniedDomains,
+      ...(judgedDomains.length > 0 ? { judgedDomains } : {}),
+      ...(args.judges ? { judges: args.judges } : {}),
+    };
   }
 
-  return Array.from(skillMap.values());
+  const mcpEntries = Object.entries(args.mcpServers ?? {});
+  if (mcpEntries.length > 0) {
+    skill.mcpServers = mcpEntries.map(([id, mcp]) => ({
+      id,
+      url: mcp.url,
+      type: mcp.type as "sse" | "stdio" | undefined,
+      command: mcp.command,
+      args: mcp.args,
+    }));
+  }
+  return skill;
 }
 
-function buildLocalSkills(
-  skillFiles: LoadedSkillFile[]
-): NonNullable<AgentSettings["skillsConfig"]>["skills"] {
-  return skillFiles.map((skillFile) => {
-    const skill: NonNullable<AgentSettings["skillsConfig"]>["skills"][number] =
-      {
-        repo: `local/${skillFile.name}`,
-        name: skillFile.name,
-        content: skillFile.content,
-        enabled: true,
-      };
-    const fm = skillFile.frontmatter;
-    if (!fm) return skill;
-    if (fm.description) skill.description = fm.description;
-    if (fm.nixPackages?.length) skill.nixPackages = fm.nixPackages;
-    if (fm.network || fm.judges) {
-      const judgedDomains = (fm.network?.judge ?? []).map((entry) =>
-        typeof entry === "string"
-          ? { domain: normalizeDomainPattern(entry) }
-          : {
-              domain: normalizeDomainPattern(entry.domain),
-              ...(entry.judge ? { judge: entry.judge } : {}),
-            }
-      );
-      skill.networkConfig = {
-        allowedDomains: normalizeDomainPatterns(fm.network?.allow),
-        deniedDomains: normalizeDomainPatterns(fm.network?.deny),
-        ...(judgedDomains.length > 0 ? { judgedDomains } : {}),
-        ...(fm.judges ? { judges: fm.judges } : {}),
-      };
-    }
-    if (fm.mcpServers && Object.keys(fm.mcpServers).length > 0) {
-      skill.mcpServers = Object.entries(fm.mcpServers).map(([id, mcp]) => ({
-        id,
-        url: mcp.url,
-        type: mcp.type as "sse" | "stdio" | undefined,
-        command: mcp.command,
-        args: mcp.args,
-      }));
-    }
-    return skill;
+/** Read a `SKILL.md` (a dir holding one, or a `.md` path) for `skillFromFile`. */
+async function readSkillFile(
+  cwd: string,
+  relPath: string,
+  nameOverride?: string
+): Promise<{ name: string; content: string; fm?: SkillFrontmatter }> {
+  const abs = resolve(cwd, relPath);
+  const filePath = abs.endsWith(".md") ? abs : join(abs, "SKILL.md");
+  let raw: string;
+  try {
+    raw = (await readFile(filePath, "utf-8")).trim();
+  } catch {
+    throw new ValidationError(
+      `skillFromFile("${relPath}"): no SKILL.md found at ${filePath}`
+    );
+  }
+  if (!raw) {
+    throw new ValidationError(
+      `skillFromFile("${relPath}"): ${filePath} is empty`
+    );
+  }
+  const { frontmatter, body } = await parseSkillFrontmatter(raw);
+  const name =
+    nameOverride ?? frontmatter?.name ?? basename(abs.replace(/\.md$/, ""));
+  return { name, content: body, ...(frontmatter ? { fm: frontmatter } : {}) };
+}
+
+/** Resolve one declared skill (inline `defineSkill` or `skillFromFile`). */
+async function resolveSkill(
+  skill: Skill,
+  cwd: string
+): Promise<SkillConfigEntry> {
+  if (skill.path !== undefined) {
+    const { name, content, fm } = await readSkillFile(
+      cwd,
+      skill.path,
+      skill.name
+    );
+    return skillToConfig({
+      name,
+      content,
+      source: "file",
+      description: fm?.description,
+      nixPackages: fm?.nixPackages,
+      allow: fm?.network?.allow,
+      deny: fm?.network?.deny,
+      judged: (fm?.network?.judge ?? []).map((e) =>
+        typeof e === "string"
+          ? { domain: e }
+          : { domain: e.domain, ...(e.judge ? { judge: e.judge } : {}) }
+      ),
+      judges: fm?.judges,
+      mcpServers: fm?.mcpServers,
+    });
+  }
+  if (!skill.name) {
+    throw new ValidationError("defineSkill requires a `name`.");
+  }
+  const net = skill.network;
+  return skillToConfig({
+    name: skill.name,
+    content: skill.content ?? "",
+    source: "inline",
+    description: skill.description,
+    nixPackages: skill.nixPackages,
+    allow: net?.allowed,
+    deny: net?.denied,
+    judged: net?.judged,
+    judges: net?.judges,
+    mcpServers: skill.mcpServers,
   });
+}
+
+/**
+ * Resolve an agent's declared `skills` into `SkillConfig` entries, deduped by
+ * name (a duplicate is an authoring error — explicit lists shouldn't collide).
+ */
+async function resolveAgentSkills(
+  skills: Skill[],
+  cwd: string
+): Promise<SkillConfigEntry[]> {
+  const resolved = await Promise.all(skills.map((s) => resolveSkill(s, cwd)));
+  const byName = new Map<string, SkillConfigEntry>();
+  for (const skill of resolved) {
+    if (byName.has(skill.name)) {
+      throw new ValidationError(
+        `duplicate skill "${skill.name}" — skill names must be unique within an agent.`
+      );
+    }
+    byName.set(skill.name, skill);
+  }
+  return [...byName.values()];
 }
 
 async function readMarkdown(
@@ -840,21 +898,20 @@ export async function loadDesiredStateFromConfig(
   );
   const state = mapProjectToDesiredState(typedProject, env, opts.only);
 
-  // Agent-directory artifacts: SOUL/IDENTITY/USER.md + local skills. The
-  // mapper stays pure (no file IO); we read the files here and merge them into
-  // each agent's settings, mirroring the TOML loader (project `./skills` +
-  // per-agent `<dir>/skills`; default dir `./agents/<id>`).
+  // Agent artifacts: SOUL/IDENTITY/USER.md (convention, from the agent dir) +
+  // skills (explicit `defineAgent({ skills })`, inline or `skillFromFile`). The
+  // mapper stays pure (no file IO); we read the files here and merge them in.
   await Promise.all(
     typedProject.agents.map(async (agent, i) => {
       const settings = state.agents[i]?.settings;
       if (!settings) return;
       const agentDir = resolve(opts.cwd, agent.dir ?? join("agents", agent.id));
       const markdown = await readMarkdown(agentDir);
-      const skillFiles = await loadSkillFiles([
-        join(opts.cwd, "skills"),
-        join(agentDir, "skills"),
-      ]);
-      mergeAgentDirArtifacts(settings, markdown, buildLocalSkills(skillFiles));
+      const localSkills = await resolveAgentSkills(
+        agent.skills ?? [],
+        opts.cwd
+      );
+      mergeAgentDirArtifacts(settings, markdown, localSkills);
     })
   );
 

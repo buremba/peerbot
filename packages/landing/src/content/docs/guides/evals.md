@@ -97,7 +97,7 @@ Each row's fields become `vars` available as `{{var_name}}` substitutions in pro
 
 ## A worked example in the repo
 
-The canonical reference is [`examples/personal-finance/evals/promptfooconfig.yaml`](https://github.com/lobu-ai/lobu/blob/main/examples/personal-finance/evals/promptfooconfig.yaml). It exercises a real agent with two single-turn evals — `ping` (persona check) and `tax-year-anchoring` (UK fiscal-year boundary — two independent cases).
+The canonical reference is [`examples/personal-finance/evals/promptfooconfig.yaml`](https://github.com/lobu-ai/lobu/blob/main/examples/personal-finance/evals/promptfooconfig.yaml). It exercises a real agent with two single-turn evals: `ping` (persona check) and `tax-year-anchoring` (UK fiscal-year boundary, two independent cases).
 
 ## Known limitations
 

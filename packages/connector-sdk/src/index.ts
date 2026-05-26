@@ -153,6 +153,7 @@ export type {
   KnowledgeReadInput,
   KnowledgeSaveInput,
   KnowledgeSearchInput,
+  NotificationsSendInput,
 } from './reaction-client-types.js';
 export type { Env } from './types.js';
 

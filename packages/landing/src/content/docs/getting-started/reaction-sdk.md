@@ -132,14 +132,14 @@ my-agent/
 **The watcher names its reaction.** Point a watcher at a reaction with the `reaction` field in `defineWatcher`:
 
 ```ts
-import { defineWatcher } from "@lobu/cli/config";
+import { defineWatcher, reactionFromFile } from "@lobu/cli/config";
 
 const criticalDetection = defineWatcher({
   agent: myAgent,
   slug: "critical-detection",
   prompt: "Flag any critical incidents.",
   extractionSchema: { type: "object", properties: {} },
-  reaction: "./reactions/critical-detection.reaction.ts",
+  reaction: reactionFromFile("./reactions/critical-detection.reaction.ts"),
 });
 ```
 

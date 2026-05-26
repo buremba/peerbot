@@ -160,6 +160,7 @@ import {
   defineEntityType,
   defineRelationshipType,
   defineWatcher,
+  reactionFromFile,
   defineConnection,
   defineAuthProfile,
   secret,

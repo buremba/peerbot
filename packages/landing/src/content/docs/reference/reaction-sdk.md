@@ -140,7 +140,7 @@ When you need to call a third-party API that an installed connector already auth
 ## Lifecycle
 
 1. **Watcher window closes.** The watcher's prompt + `extraction_schema` runs against the events in the window; the extracted JSON is validated.
-2. **Lobu runs the watcher's reaction.** The watcher's `reaction` script (the `.ts` file referenced by `defineWatcher({ reaction: "./account-health-monitor.reaction.ts" })`) runs. If the watcher declares no `reaction`, the run ends here.
+2. **Lobu runs the watcher's reaction.** The watcher's `reaction` script (the `.ts` file referenced by `defineWatcher({ reaction: reactionFromFile("./account-health-monitor.reaction.ts") })`) runs. If the watcher declares no `reaction`, the run ends here.
 3. **Sandbox boots the reaction.** Isolated worker, network restricted by the agent's `WORKER_ALLOWED_DOMAINS`, stdout/stderr captured into the run record, hard timeout.
 4. **Reaction runs.** Any `client.knowledge.save` calls append events; outbound `fetch` calls go through the worker HTTP proxy.
 5. **Result lands.** Success or failure is recorded on the watcher run; partial side effects (events already saved before a throw) stay in place — they're real events in the durable log.

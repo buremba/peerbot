@@ -1,4 +1,7 @@
 {{- if .Values.embeddings.enabled }}
+{{- if and (gt (int .Values.embeddings.replicaCount) 1) .Values.embeddings.cache.enabled }}
+{{- fail "embeddings.replicaCount > 1 requires embeddings.cache.enabled=false: the embeddings cache PVC is ReadWriteOnce and cannot be mounted by multiple pods at once (a second replica would hit a Multi-Attach error). Disable the cache or keep a single embeddings replica." }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

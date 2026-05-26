@@ -166,7 +166,19 @@ export async function generateEmbeddings(texts: string[], env: Env): Promise<num
       throw new Error(`Embeddings service returned invalid embedding at index ${invalidIndex}`);
     }
 
+    // Version-stamp guard: the query vector we are about to compare against
+    // stored rows MUST come from the same model those rows are scoped to. If the
+    // service reports a different model, fail loud rather than silently
+    // comparing across incompatible vector spaces.
     if (payload.model) {
+      const configuredModel = getConfiguredEmbeddingModel();
+      if (payload.model !== configuredModel) {
+        throw new Error(
+          `Embeddings service returned model '${payload.model}' but this deployment is ` +
+            `configured for '${configuredModel}'. Refusing to compare across incompatible ` +
+            `vector spaces — align EMBEDDINGS_MODEL on the server and the embeddings service.`
+        );
+      }
       logger.debug({ model: payload.model }, '[Embeddings] Service model');
     }
 

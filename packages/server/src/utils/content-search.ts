@@ -1612,14 +1612,15 @@ async function searchContentBySingleQuery(
   const textMatchExpr = `(LENGTH($1) > 0 AND (f.payload_text ILIKE '%' || $1 || '%' OR COALESCE(${textDocumentExpr} @@ ${TSQUERY_SQL}, false)))`;
   const vecParam = vectorParamIdx ? `$${vectorParamIdx}::vector` : 'NULL::vector';
   const minSimilarityParam = `$${minSimilarityParamIdx}::numeric`;
-  // Vector-space integrity: only compare against rows stamped with the model
-  // this deployment is configured for (NULL = legacy, assumed to match — they
-  // predate stamping). A same-dimension model swap therefore never compares the
-  // query embedding against vectors from a different model. The model is server
+  // Vector-space integrity: only compare against rows stamped with the EXACT
+  // model this deployment is configured for. A NULL stamp (legacy row written
+  // before stamping) is NOT comparable — its true model is unknown, so comparing
+  // it against the configured query vector could mix incompatible spaces. Such
+  // rows are excluded from vector ranking until the backfill restamps them (see
+  // trigger-embed-backfill, which treats NULL as stale). The model is server
   // config, inlined as a validated literal (`<alias>` substituted per CTE).
   const configuredModelLiteral = configuredEmbeddingModelSqlLiteral();
-  const modelScopeFor = (alias: string) =>
-    `(${alias}.embedding_model = ${configuredModelLiteral} OR ${alias}.embedding_model IS NULL)`;
+  const modelScopeFor = (alias: string) => `${alias}.embedding_model = ${configuredModelLiteral}`;
   const matchCondition = hasEmbedding
     ? `(${textMatchExpr} OR (f.embedding IS NOT NULL AND ${modelScopeFor('f')} AND 1 - (f.embedding <=> ${vecParam}) >= ${minSimilarityParam}))`
     : textMatchExpr;

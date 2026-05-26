@@ -10,6 +10,7 @@ import { hashClientSecret } from '../../auth/oauth/clients';
 import { generateSecureToken, hashToken } from '../../auth/oauth/utils';
 import { pgBigintArray, pgTextArray } from '../../db/client';
 import { ensureUniqueConnectionSlug } from '../../utils/connections';
+import { getConfiguredEmbeddingModel } from '../../utils/embeddings';
 import { generateSlug } from '../../utils/entity-management';
 import type { ToolContext } from '../../tools/registry';
 import { getTestDb } from './test-db';
@@ -661,6 +662,9 @@ export async function createTestEvent(options: {
   occurred_at?: Date;
   origin_id?: string;
   embedding?: number[];
+  /** Model stamp for the embedding. Defaults to the configured model (mirrors
+   *  real ingestion, which always stamps); set null to simulate a legacy row. */
+  embedding_model?: string | null;
   semantic_type?: string;
   connector_key?: string;
   entity_ids?: number[];
@@ -707,9 +711,16 @@ export async function createTestEvent(options: {
   `;
 
   if (options.embedding) {
+    // Stamp the configured model by default so vector-scoped search (which only
+    // compares same-model rows) sees these fixtures; pass embedding_model: null
+    // to deliberately simulate a legacy unstamped row.
+    const stamp =
+      options.embedding_model === undefined
+        ? getConfiguredEmbeddingModel()
+        : options.embedding_model;
     await sql`
-      INSERT INTO event_embeddings (event_id, embedding)
-      VALUES (${inserted.id}, ${JSON.stringify(options.embedding)}::vector)
+      INSERT INTO event_embeddings (event_id, embedding, embedding_model)
+      VALUES (${inserted.id}, ${JSON.stringify(options.embedding)}::vector, ${stamp})
     `;
   }
 

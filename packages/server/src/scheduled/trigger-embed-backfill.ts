@@ -26,14 +26,16 @@ interface OrgBatch {
   event_count: number;
 }
 
-// A row needs (re)embedding when it has no embedding at all, OR its stamp is a
-// DIFFERENT non-NULL model than the configured one (a model swap left it in an
-// incompatible vector space). NULL stamps are legacy rows assumed to match the
-// configured model — they are not force-re-embedded. The configured model is
-// server config, inlined as a validated literal.
+// A row needs (re)embedding when it has no embedding at all, OR its stamp is
+// not the configured model — including a NULL stamp (legacy row whose true
+// model is unknown, written before stamping). Search excludes those NULL/stale
+// rows from vector comparison, so the backfill must restamp them to make them
+// searchable again. `IS DISTINCT FROM` makes NULL count as different from the
+// (non-NULL) configured model. The model is server config, inlined as a
+// validated literal.
 function needsEmbeddingPredicate(): string {
   const model = configuredEmbeddingModelSqlLiteral();
-  return `(emb.event_id IS NULL OR (emb.embedding_model IS NOT NULL AND emb.embedding_model <> ${model}))`;
+  return `(emb.event_id IS NULL OR emb.embedding_model IS DISTINCT FROM ${model})`;
 }
 
 export async function triggerEmbedBackfill(_env: Env): Promise<BackfillResult> {

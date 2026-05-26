@@ -147,8 +147,7 @@ describe('embedding model swap E2E (Finding #3)', () => {
       FROM current_event_records ev
       LEFT JOIN event_embeddings emb ON emb.event_id = ev.id
       WHERE ev.id = ${eventId}
-        AND (emb.event_id IS NULL
-             OR (emb.embedding_model IS NOT NULL AND emb.embedding_model <> ${MODEL_B}))
+        AND (emb.event_id IS NULL OR emb.embedding_model IS DISTINCT FROM ${MODEL_B})
     `) as Array<{ id: number }>;
     expect(staleRows.map((r) => Number(r.id))).toContain(eventId);
 
@@ -158,8 +157,7 @@ describe('embedding model swap E2E (Finding #3)', () => {
       FROM current_event_records ev
       LEFT JOIN event_embeddings emb ON emb.event_id = ev.id
       WHERE ev.id = ${eventId}
-        AND (emb.event_id IS NULL
-             OR (emb.embedding_model IS NOT NULL AND emb.embedding_model <> ${MODEL_A}))
+        AND (emb.event_id IS NULL OR emb.embedding_model IS DISTINCT FROM ${MODEL_A})
     `) as Array<{ id: number }>;
     expect(freshRows).toHaveLength(0);
   });
@@ -186,5 +184,48 @@ describe('embedding model swap E2E (Finding #3)', () => {
     `) as Array<{ embedding_model: string | null }>;
     expect(rows).toHaveLength(1);
     expect(rows[0]!.embedding_model).toBe(MODEL_B);
+  });
+
+  it('a NULL-stamp (legacy) row is excluded from vector search and flagged stale', async () => {
+    process.env.EMBEDDINGS_MODEL = MODEL_A;
+    const sql = getTestDb();
+
+    // Legacy row: embedding present but no model stamp (predates stamping).
+    const legacy = await insertEvent(
+      {
+        entityIds: [entityId],
+        organizationId: orgId,
+        originId: `legacy-${Date.now()}`,
+        title: 'Legacy event',
+        content: 'legacy content with an unstamped embedding',
+        occurredAt: new Date(),
+        semanticType: 'content',
+        originType: 'content',
+        connectorKey: 'model-swap-connector',
+        connectionId,
+        embedding: unitVec(),
+        // embeddingModel intentionally omitted → NULL stamp
+      },
+      { onConflictUpdate: true }
+    );
+
+    // Excluded from vector search under the configured model (unknown true model).
+    const res = await searchContentByText('', {
+      organization_id: orgId,
+      query_embedding: unitVec(),
+      min_similarity: 0.5,
+      limit: 10,
+    });
+    expect(res.content.map((r) => Number(r.id))).not.toContain(legacy.id);
+
+    // Flagged stale by the backfill predicate so it gets restamped.
+    const staleRows = (await sql`
+      SELECT ev.id
+      FROM current_event_records ev
+      LEFT JOIN event_embeddings emb ON emb.event_id = ev.id
+      WHERE ev.id = ${legacy.id}
+        AND (emb.event_id IS NULL OR emb.embedding_model IS DISTINCT FROM ${MODEL_A})
+    `) as Array<{ id: number }>;
+    expect(staleRows.map((r) => Number(r.id))).toContain(legacy.id);
   });
 });

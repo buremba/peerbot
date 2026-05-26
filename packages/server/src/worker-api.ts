@@ -1631,11 +1631,12 @@ export async function fetchEventsForEmbedding(c: Context<{ Bindings: Env }>) {
       return c.json({ events: [] });
     }
 
-    // Return events with no embedding OR a stale embedding stamped with a
-    // DIFFERENT non-NULL model (a model swap left it in an incompatible vector
-    // space). NULL stamps are legacy rows assumed to match the configured model
-    // and are not re-embedded. The model is server config, inlined as a
-    // validated literal.
+    // Return events with no embedding OR an embedding whose stamp is not the
+    // configured model — including NULL (legacy row, unknown model). Search
+    // excludes those rows from vector comparison, so they must be restamped.
+    // `IS DISTINCT FROM` makes NULL count as different from the (non-NULL)
+    // configured model. The model is server config, inlined as a validated
+    // literal.
     const modelLiteral = configuredEmbeddingModelSqlLiteral();
     const placeholders = safeIds.map((_, i) => `$${i + 1}`).join(',');
     const rows = await sql.unsafe(
@@ -1643,8 +1644,7 @@ export async function fetchEventsForEmbedding(c: Context<{ Bindings: Env }>) {
        FROM events e
        LEFT JOIN event_embeddings emb ON emb.event_id = e.id
        WHERE e.id IN (${placeholders})
-         AND (emb.event_id IS NULL
-              OR (emb.embedding_model IS NOT NULL AND emb.embedding_model <> ${modelLiteral}))`,
+         AND (emb.event_id IS NULL OR emb.embedding_model IS DISTINCT FROM ${modelLiteral})`,
       safeIds
     );
 

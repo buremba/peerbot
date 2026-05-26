@@ -15,7 +15,7 @@ import {
 import { clearMcpSessions } from '../../../__tests__/setup/mcp-session-cache';
 import { post } from '../../../__tests__/setup/test-helpers';
 import { closeDbSingleton } from '../../../db/client';
-import { generateEmbeddings } from '../../../utils/embeddings';
+import { generateEmbeddings, getConfiguredEmbeddingModel } from '../../../utils/embeddings';
 import type {
   BenchmarkAdapter,
   BenchmarkSuite,
@@ -622,14 +622,17 @@ export class LobuInprocessBenchmarkAdapter implements BenchmarkAdapter {
       EMBEDDINGS_TIMEOUT_MS: process.env.EMBEDDINGS_TIMEOUT_MS,
     });
 
+    // Stamp the configured model so these rows are visible to model-scoped
+    // vector search (which only compares same-model rows).
+    const embeddingModel = getConfiguredEmbeddingModel();
     for (let index = 0; index < rows.length; index += 1) {
       const row = rows[index] as { id: number };
       const embedding = embeddings[index];
       if (!embedding) continue;
       const vectorStr = `[${embedding.join(',')}]`;
       await sql.unsafe(
-        'INSERT INTO event_embeddings (event_id, embedding) VALUES ($1, $2::vector) ON CONFLICT (event_id) DO NOTHING',
-        [row.id, vectorStr]
+        'INSERT INTO event_embeddings (event_id, embedding, embedding_model) VALUES ($1, $2::vector, $3) ON CONFLICT (event_id) DO NOTHING',
+        [row.id, vectorStr, embeddingModel]
       );
     }
   }

@@ -116,6 +116,19 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
     return;
   }
 
+  // For --email, fail before creating an OAuth client / device code on a server
+  // that can't deliver the email claim anyway.
+  if (options.email && !discovery.claimEmailEndpoint) {
+    console.log(
+      chalk.red(
+        `\n  ${discovery.issuer} does not support email login (no agent_auth.claim_email_endpoint).`
+      )
+    );
+    console.log(chalk.dim("  Use plain `lobu login` or `--token <pat>`.\n"));
+    process.exitCode = 1;
+    return;
+  }
+
   console.log(chalk.dim(`\n  Context: ${target.name}`));
   console.log(chalk.dim(`  Issuer:  ${discovery.issuer}`));
 
@@ -134,16 +147,7 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
   // `--email`. Approval happens out of band, so we then poll regardless of TTY.
   const emailClaim = Boolean(options.email);
   if (emailClaim) {
-    if (!discovery.claimEmailEndpoint) {
-      console.log(
-        chalk.red(
-          `\n  ${discovery.issuer} does not support email login (no agent_auth.claim_email_endpoint).`
-        )
-      );
-      console.log(chalk.dim("  Use plain `lobu login` or `--token <pat>`.\n"));
-      process.exitCode = 1;
-      return;
-    }
+    // Support was already verified above, before client/device-code creation.
     // tryOAuthStep returns the callback's value or undefined on error;
     // sendEmailClaim resolves void, so return a truthy sentinel to distinguish
     // success from the error case (otherwise we'd bail before polling).

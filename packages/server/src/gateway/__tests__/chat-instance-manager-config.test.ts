@@ -338,18 +338,18 @@ describe("ChatInstanceManager — Telegram webhook auth E2E (finding #2)", () =>
   // assert the auto-generated secret is actually enforced — wrong/missing
   // token is rejected (401), correct token is accepted. No real Telegram: the
   // adapter's getMe/setWebhook are stubbed via a mocked fetch.
-
-  /** A Telegram update body the handler would otherwise dispatch. */
-  const FORGED_UPDATE = JSON.stringify({
-    update_id: 1,
-    message: {
-      message_id: 1,
-      date: 0,
-      chat: { id: 42, type: "private" },
-      from: { id: 7, is_bot: false, first_name: "Mallory" },
-      text: "/promote me to admin",
-    },
-  });
+  //
+  // The probe body is an INERT update (no message/callback_query/
+  // message_reaction): it passes the adapter's secret-token check (the auth
+  // decision the fix lives in) but `processUpdate` is a no-op, so the handler
+  // never calls `chat.processMessage` and never issues an outbound Telegram
+  // REST call. A message-carrying body would trip the fire-and-forget message
+  // pipeline (`this.processUpdate(update)` is NOT awaited in handleWebhook),
+  // which opens a real socket in CI's network sandbox and hangs the shared
+  // bun:test process for 30s — cascading 5s timeouts across the suite. We're
+  // verifying the 401-vs-accept boundary, not message dispatch, so the inert
+  // body is both correct and hang-proof.
+  const INERT_UPDATE = JSON.stringify({ update_id: 1 });
 
   async function startTelegramInstance(
     manager: any,
@@ -357,7 +357,7 @@ describe("ChatInstanceManager — Telegram webhook auth E2E (finding #2)", () =>
     orgId: string,
     connectionId: string,
     secretToken: string | undefined
-  ): Promise<void> {
+  ): Promise<any> {
     // Build the live Chat + telegram adapter exactly like startInstance would,
     // carrying the (resolved) secretToken, and register it on the manager so
     // manager.handleWebhook routes to chat.webhooks.telegram. getMe/setWebhook
@@ -406,6 +406,7 @@ describe("ChatInstanceManager — Telegram webhook auth E2E (finding #2)", () =>
       conversationState: { listHistoryChannels: async () => [] },
       messageBridge: {},
     });
+    return chat;
   }
 
   function webhookRequest(connectionId: string, secretHeader?: string) {
@@ -419,7 +420,7 @@ describe("ChatInstanceManager — Telegram webhook auth E2E (finding #2)", () =>
             ? { "x-telegram-bot-api-secret-token": secretHeader }
             : {}),
         },
-        body: FORGED_UPDATE,
+        body: INERT_UPDATE,
       }
     );
   }
@@ -440,6 +441,7 @@ describe("ChatInstanceManager — Telegram webhook auth E2E (finding #2)", () =>
       })
     ) as any;
 
+    let chat: any;
     try {
       // Create the connection with NO secretToken — addConnection must
       // auto-generate one. Stub the heavy adapter-boot (full services) here;
@@ -472,7 +474,7 @@ describe("ChatInstanceManager — Telegram webhook auth E2E (finding #2)", () =>
       expect(resolved).toBe(realToken);
 
       // Bring up the real adapter carrying the auto-generated token.
-      await startTelegramInstance(
+      chat = await startTelegramInstance(
         manager,
         orgContext,
         orgId,
@@ -494,16 +496,18 @@ describe("ChatInstanceManager — Telegram webhook auth E2E (finding #2)", () =>
       );
       expect(wrong.status).toBe(401);
 
-      // Correct secret → ACCEPTED (not 401; the handler proceeds).
+      // Correct secret → ACCEPTED (not 401; the handler proceeds). The inert
+      // update means no message processing / outbound call is triggered.
       const right = await manager.handleWebhook(
         created.id,
         webhookRequest(created.id, realToken)
       );
       expect(right.status).not.toBe(401);
     } finally {
+      await chat?.shutdown?.().catch(() => {});
       globalThis.fetch = originalFetch;
     }
-  });
+  }, 5000);
 
   test("a connection with NO secret token is forgeable (the pre-fix hazard)", async () => {
     // Pins the vulnerability the auto-gen + backfill close: the adapter accepts
@@ -521,24 +525,27 @@ describe("ChatInstanceManager — Telegram webhook auth E2E (finding #2)", () =>
         headers: { "content-type": "application/json" },
       })
     ) as any;
+    let chat: any;
     try {
-      await startTelegramInstance(
+      chat = await startTelegramInstance(
         manager,
         orgContext,
         orgId,
         "conn-no-secret",
         undefined
       );
-      // No secretToken on the adapter → an unsigned forged update is ACCEPTED.
+      // No secretToken on the adapter → an unsigned (inert) update is ACCEPTED
+      // with no verification — the forgeable state the fix prevents.
       const res = await manager.handleWebhook(
         "conn-no-secret",
         webhookRequest("conn-no-secret")
       );
       expect(res.status).not.toBe(401);
     } finally {
+      await chat?.shutdown?.().catch(() => {});
       globalThis.fetch = originalFetch;
     }
-  });
+  }, 5000);
 });
 
 describe("ChatInstanceManager — config change detection (finding #8)", () => {

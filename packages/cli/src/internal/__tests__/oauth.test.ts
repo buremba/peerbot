@@ -122,7 +122,8 @@ describe("oauth", () => {
           token_endpoint: "https://issuer.example.com/token",
           agent_auth: {
             flows_supported: ["user_claimed"],
-            claim_email_endpoint: "https://issuer.example.com/oauth/device/email",
+            claim_email_endpoint:
+              "https://issuer.example.com/oauth/device/email",
           },
         })
       );

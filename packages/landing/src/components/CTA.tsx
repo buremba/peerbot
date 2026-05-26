@@ -1,4 +1,5 @@
 import { getLobuBaseUrl } from "../use-case-showcases";
+import { ScheduleCallButton, ScheduleCallIcon } from "./ScheduleDialog";
 
 function HexCluster() {
   return (
@@ -76,6 +77,16 @@ export function CTA({ startUrl = getLobuBaseUrl() }: { startUrl?: string }) {
             >
               Read the docs
             </a>
+            <ScheduleCallButton
+              class="inline-flex items-center gap-2 text-[14px] font-medium px-5 h-10 rounded-lg transition-colors hover:bg-[color:var(--color-page-surface-dim)]"
+              style={{
+                color: "var(--color-page-text)",
+                border: "1px solid var(--color-page-border)",
+              }}
+            >
+              <ScheduleCallIcon />
+              Schedule a call
+            </ScheduleCallButton>
           </div>
         </div>
         <div class="hidden md:flex items-center justify-center p-10">

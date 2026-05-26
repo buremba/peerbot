@@ -97,10 +97,29 @@ embeddings:
 
   resources:
     requests:
-      cpu: 500m
+      # Bumped from 500m: the local embedding model runs CPU-bound and inline, so
+      # 500m starved it — batches blocked the event loop long enough to trip the
+      # liveness probe (prod backfill -> SIGKILL -> failed embeddings + restart loop).
+      cpu: 1000m
       memory: 1Gi
     limits:
       memory: 3Gi
+
+  # The embeddings service runs the model INLINE on a single-threaded event loop, so
+  # a heavy batch blocks /health. The app's shared probe (3s timeout x3) killed a
+  # busy-but-healthy service mid-request in prod. Liveness must detect a DEAD process,
+  # not a BUSY one, so the embeddings service gets its own tolerant probe.
+  healthCheck:
+    readinessProbe:
+      initialDelaySeconds: 10
+      periodSeconds: 15
+      timeoutSeconds: 10
+      failureThreshold: 6
+    livenessProbe:
+      initialDelaySeconds: 45
+      periodSeconds: 30
+      timeoutSeconds: 15
+      failureThreshold: 8
 
   env: {}
 

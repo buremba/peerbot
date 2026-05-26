@@ -9,24 +9,24 @@
  * The landing page shows SOURCE CODE, so we slice the raw `.ts` text into
  * budget-sized sections; we never import/execute the config.
  *
- * Each primitive section shows ONE canonical pinned example, used as the
- * generic fallback when no use case is selected:
+ * Every primitive section is pinned to the single `sales` example so the
+ * homepage tells one coherent story (shown config-first on the page):
  *
- *   connector    -> examples/ecommerce/stripe-charges.connector.ts
+ *   connector    -> examples/sales/salesforce-pipeline.connector.ts
  *   memorySchema -> examples/sales/lobu.config.ts        (defineEntityType slice)
  *   watcher      -> examples/sales/lobu.config.ts         (defineWatcher slice)
- *   reaction     -> examples/finance/reconciliation-monitor.reaction.ts
+ *   reaction     -> examples/sales/account-health-monitor.reaction.ts
  *   agentConfig  -> examples/sales/lobu.config.ts         (imports + defineAgent slice)
- *   skill        -> examples/office-bot/.../SKILL.md
+ *   skill        -> examples/sales/skills/account-brief/SKILL.md
  *
  * Plus a list of every `examples/*\/lobu.config.ts` for BrowseExamplesSection:
  *
  *   examples     -> [{ slug, label, description, githubUrl }]
  *
  * And, under `useCases`, per-use-case connector / memorySchema / watcher
- * snippets keyed by the example dir slug. The interactive use-case tab strip
- * on the landing page swaps these three sections; everything else stays
- * generic. Hero copy is not part of this manifest.
+ * snippets keyed by the example dir slug. The /for/<useCase> SEO pages use
+ * these route-specific snippets; the homepage stays pinned to sales. Hero
+ * copy is not part of this manifest.
  *
  * Output: packages/landing/src/generated/landing-snippets.json
  */
@@ -41,21 +41,26 @@ const outFile = resolve(__dirname, "../src/generated/landing-snippets.json");
 
 const CONFIG_FILE = "lobu.config.ts";
 
+// Every pinned snippet comes from the one `sales` example so the homepage reads
+// as a single coherent app (Salesforce connector -> account/renewal entities ->
+// health watcher -> reaction -> agent + skill), shown config-first. The
+// per-use-case route data (useCases below) still spans many examples for the
+// /for/<useCase> SEO pages.
 const PINNED = {
   connector: {
-    slug: "ecommerce",
-    path: "stripe-charges.connector.ts",
+    slug: "sales",
+    path: "salesforce-pipeline.connector.ts",
   },
   agentConfig: { slug: "sales" },
   memorySchema: { slug: "sales" },
   watcher: { slug: "sales" },
   reaction: {
-    slug: "finance",
-    path: "reconciliation-monitor.reaction.ts",
+    slug: "sales",
+    path: "account-health-monitor.reaction.ts",
   },
   skill: {
-    slug: "office-bot",
-    path: "skills/deliveroo-order/SKILL.md",
+    slug: "sales",
+    path: "skills/account-brief/SKILL.md",
   },
 } as const;
 
@@ -336,21 +341,16 @@ function trimSkillMarkdown(raw: string): string {
       continue;
     }
 
-    // A judge policy (`<name>: >` block scalar under judges), keep a short
-    // folded block scalar (valid YAML that reads naturally) in place of the
-    // full multi-line policy text.
+    // A judge policy (`<name>: >` block scalar under judges): keep it as a
+    // folded block scalar but cap it at the first 2 non-empty lines of the
+    // real policy text so the snippet stays compact. Authors keep landing
+    // policies <=2 lines so nothing is cut mid-sentence.
     const blockScalar = /^(\s*)([\w-]+):\s*[>|][+-]?\s*$/.exec(line);
     if (blockScalar) {
       const baseIndent = blockScalar[1].length;
       const policyName = blockScalar[2];
-      const childPad = " ".repeat(baseIndent + 2);
       out.push(`${" ".repeat(baseIndent)}${policyName}: >`);
-      out.push(
-        `${childPad}Allow reads and basket changes. Deny checkout, payment,`
-      );
-      out.push(
-        `${childPad}saved cards, address, or profile changes. Fail closed if unclear.`
-      );
+      let kept = 0;
       let j = i + 1;
       while (j < fm.length) {
         const child = fm[j];
@@ -360,6 +360,10 @@ function trimSkillMarkdown(raw: string): string {
         }
         const childIndent = child.length - child.trimStart().length;
         if (childIndent <= baseIndent) break;
+        if (kept < 2) {
+          out.push(child);
+          kept++;
+        }
         j++;
       }
       i = j;

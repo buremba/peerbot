@@ -11,6 +11,7 @@ import {
 	invitationSubject,
 } from "../email/templates/invitation";
 import {
+	authorizeAppSubject,
 	MagicLinkEmail,
 	magicLinkSubject,
 } from "../email/templates/magic-link";
@@ -531,12 +532,28 @@ export async function createAuth(env: Env, request?: Request) {
 							"Magic-link email delivery is not configured (RESEND_API_KEY missing). Check server logs for the generated link.",
 						);
 					}
+					// A magic link whose callbackURL targets the device consent page
+					// is an agent/app authorization request (POST /oauth/device/email),
+					// not a routine login — frame the email accordingly so the user
+					// doesn't grant third-party access thinking they're just signing in.
+					let isAuthorizeRequest = false;
+					try {
+						const callbackUrl = new URL(url).searchParams.get("callbackURL") ?? "";
+						isAuthorizeRequest = decodeURIComponent(callbackUrl).includes("/oauth/device");
+					} catch {
+						isAuthorizeRequest = false;
+					}
 					await sendTransactionalEmail({
 						env,
 						to: email,
 						category: "auth",
-						subject: magicLinkSubject,
-						react: <MagicLinkEmail url={url} />,
+						subject: isAuthorizeRequest ? authorizeAppSubject : magicLinkSubject,
+						react: (
+							<MagicLinkEmail
+								url={url}
+								mode={isAuthorizeRequest ? "authorize" : "sign-in"}
+							/>
+						),
 					});
 				},
 				expiresIn: 60 * 15, // 15 minutes

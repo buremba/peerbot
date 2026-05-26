@@ -48,7 +48,7 @@ function Header() {
         class="font-display text-[1.85rem] font-bold leading-[1.1] tracking-tight sm:text-[2.25rem]"
         style={{ color: "var(--color-page-text)" }}
       >
-        Events in. Entities out. Agents on top.
+        Raw events in. Typed memory out. Agents act.
       </h2>
       <p
         class="mx-auto mt-3 max-w-2xl text-[15px] leading-relaxed"

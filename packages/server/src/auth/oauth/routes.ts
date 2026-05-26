@@ -815,6 +815,32 @@ oauthRoutes.post('/oauth/device/email', async (c) => {
 // No API route needed — the web app and API share the same origin.
 
 /**
+ * GET /oauth/device/info?user_code=...
+ * Returns the requesting client + scopes for a pending device code so the
+ * consent page can show the user WHO is asking and WHAT they will get — rather
+ * than approving a blind code. Auth-gated: only the (authenticated) user on the
+ * consent page needs this, and it avoids leaking client/scope by user_code.
+ */
+oauthRoutes.get('/oauth/device/info', requireAuth, async (c) => {
+  const userCode = c.req.query('user_code')?.trim();
+  if (!userCode) {
+    return c.json(createOAuthError('invalid_request', 'user_code is required'), 400);
+  }
+  const provider = getProvider(c);
+  const deviceCode = await provider.getDeviceCodeByUserCode(userCode);
+  if (!deviceCode) {
+    return c.json(createOAuthError('invalid_grant', 'Invalid or expired user code'), 400);
+  }
+  const client = await provider.clientsStore.getClient(deviceCode.client_id);
+  return c.json({
+    client_name: client?.client_name ?? null,
+    client_id: deviceCode.client_id,
+    scopes: (deviceCode.scope ?? '').split(' ').filter(Boolean),
+    resource: deviceCode.resource,
+  });
+});
+
+/**
  * POST /oauth/device/approve
  * Device Code Approval Endpoint
  *

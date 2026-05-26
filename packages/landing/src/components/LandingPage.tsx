@@ -1,16 +1,11 @@
 import { useState } from "preact/hooks";
 import connectorsManifest from "../generated/connectors.json";
 import snippetsManifest from "../generated/landing-snippets.json";
-import {
-  DEFAULT_LANDING_USE_CASE_ID,
-  getLobuBaseUrl,
-  landingUseCaseShowcases,
-} from "../use-case-showcases";
+import { getLobuBaseUrl } from "../use-case-showcases";
 import { ArchitectureDiagram } from "./ArchitectureDiagram";
 import { CodeBlock, type CodeSnippet } from "./CodeBlock";
 import { CTA } from "./CTA";
 import { LatestBlogPosts, type LatestBlogPost } from "./LatestBlogPosts";
-import { UseCaseTabs } from "./UseCaseTabs";
 
 type ExampleEntry = {
   slug: string;
@@ -57,10 +52,11 @@ export function LandingPage(props: {
   latestPosts?: LatestBlogPost[];
   defaultUseCaseId?: string;
 }) {
-  const [activeUseCase, setActiveUseCase] = useState<string>(
-    props.defaultUseCaseId ?? DEFAULT_LANDING_USE_CASE_ID
-  );
-
+  // The homepage tells one coherent story (the `sales` example), shown
+  // config-first. The /for/<useCase> SEO pages pass defaultUseCaseId to swap
+  // the connector / memory / watcher snippets to that use case; the rest stays
+  // pinned to sales.
+  const activeUseCase = props.defaultUseCaseId ?? "sales";
   const uc = snippets.useCases[activeUseCase];
   const connectorSnippet = uc?.connector ?? snippets.connector;
   const memorySchemaSnippet = uc?.memorySchema ?? snippets.memorySchema;
@@ -72,22 +68,11 @@ export function LandingPage(props: {
       <Container className="py-14 sm:py-20">
         <ArchitectureDiagram />
       </Container>
-      <Container className="pt-2 pb-2">
-        <UseCaseTabs
-          label="See it for your use case"
-          tabs={landingUseCaseShowcases.map((s) => ({
-            id: s.id,
-            label: s.label,
-          }))}
-          activeId={activeUseCase}
-          onSelect={setActiveUseCase}
-        />
-      </Container>
-      <ConnectorsSection connector={connectorSnippet} slug={activeUseCase} />
-      <MemorySection memorySchema={memorySchemaSnippet} slug={activeUseCase} />
-      <WatchersSection watcher={watcherSnippet} slug={activeUseCase} />
-      <SkillsSection />
       <AgentsSection />
+      <ConnectorsSection connector={connectorSnippet} slug={activeUseCase} />
+      <WatchersSection watcher={watcherSnippet} slug={activeUseCase} />
+      <MemorySection memorySchema={memorySchemaSnippet} slug={activeUseCase} />
+      <SkillsSection />
       <BrowseExamplesSection />
       <RunAnywhereSection />
       <CTA startUrl={getLobuBaseUrl()} />
@@ -450,6 +435,7 @@ function ConnectorsSection({
   return (
     <Container className="py-16 sm:py-20">
       <ProductGrid
+        reverse
         text={
           <div>
             <Eyebrow>Connectors</Eyebrow>
@@ -460,10 +446,9 @@ function ConnectorsSection({
               class="mt-4 max-w-[28rem] text-[16px] leading-[1.6]"
               style={{ color: "var(--color-page-text-muted)" }}
             >
-              Bring event data in three ways: a built-in connector, your own in
-              TypeScript with{" "}
+              Three ways in: a built-in connector, your own in TypeScript with{" "}
               <code class="font-mono text-[14px]">@lobu/connector-sdk</code>, or
-              any MCP server.
+              any MCP server wrapped as a connector.
             </p>
             <FeatureList
               items={[
@@ -478,17 +463,6 @@ function ConnectorsSection({
                 <>
                   <b>Durable checkpointing</b>: connectors resume from the last
                   cursor after restart. No missed events.
-                </>,
-                <>
-                  <b>MCP proxy</b>: wrap any MCP server (Stripe, GitHub,
-                  internal) as a Lobu connector.
-                </>,
-                <>
-                  <b>Custom in TypeScript</b>: drop a{" "}
-                  <code class="font-mono text-[13px]">*.connector.ts</code> in
-                  your repo,{" "}
-                  <code class="font-mono text-[13px]">lobu apply</code> picks it
-                  up.
                 </>,
               ]}
             />
@@ -597,11 +571,6 @@ function MemorySection({
                   supersede; nothing is destroyed.
                 </>,
                 <>
-                  <b>Agent-assisted modeling</b>: paste the setup prompt into
-                  Claude Code or Cursor; it interviews you and drafts{" "}
-                  <code class="font-mono text-[13px]">lobu.config.ts</code>.
-                </>,
-                <>
                   <b>Per-user / per-org isolation</b>: your agents only see the
                   memory they're scoped to.
                 </>,
@@ -665,18 +634,9 @@ function WatchersSection({
                   <b>No-code ETL</b>: the prompt is your transformation; the
                   schema is your output type.
                 </>,
-                <>
-                  <b>Reactions are optional</b>: drop in a{" "}
-                  <code class="font-mono text-[13px]">*.reaction.ts</code> only
-                  when you need imperative code on top.
-                </>,
-                <>
-                  <b>Auditable</b>: every run lands as events in the durable
-                  log.
-                </>,
               ]}
             />
-            <div class="flex flex-wrap gap-x-4 gap-y-2">
+            <div class="mb-6 flex flex-wrap gap-x-4 gap-y-2">
               <ProductLink href="/getting-started/watchers/">
                 Watchers guide
               </ProductLink>
@@ -684,11 +644,11 @@ function WatchersSection({
                 Reaction SDK docs
               </ProductLink>
             </div>
+            <CodeBlock badge="reactive + dreaming" snippet={watcher} />
           </div>
         }
         code={
           <div class="space-y-3.5">
-            <CodeBlock badge="reactive + dreaming" snippet={watcher} />
             <p
               class="text-[13px]"
               style={{ color: "var(--color-page-text-muted)" }}
@@ -708,17 +668,16 @@ function WatchersSection({
 }
 
 /* -------------------------------------------------------------------------- */
-/*  Skills section: snippet is the YAML frontmatter of the deliveroo-order    */
-/*  SKILL.md, trimmed at build time by gen-landing-snippets.ts (the example   */
-/*  that exercises every field the pitch promises: nixPackages,               */
-/*  network.allow, network.judge, judges.default).                            */
+/*  Skills section: snippet is the YAML frontmatter of the sales account-brief */
+/*  SKILL.md, trimmed at build time by gen-landing-snippets.ts (it exercises   */
+/*  every field the pitch promises: nixPackages, network.allow, network.judge, */
+/*  judges).                                                                   */
 /* -------------------------------------------------------------------------- */
 
 function SkillsSection() {
   return (
     <Container id="skills" className="py-16 sm:py-20">
       <ProductGrid
-        reverse
         text={
           <div>
             <Eyebrow>Skills</Eyebrow>
@@ -774,7 +733,7 @@ function SkillsSection() {
               Plus the markdown body, instructions for when and how the agent
               should use this skill.
             </p>
-            <ExampleFooterLink slug="office-bot" />
+            <ExampleFooterLink slug="sales" />
           </div>
         }
       />
@@ -786,21 +745,26 @@ function AgentsSection() {
   return (
     <Container className="py-16 sm:py-20">
       <ProductGrid
-        reverse
         text={
           <div>
-            <Eyebrow>Agents</Eyebrow>
-            <SectionHeading>One agent. Every chat surface.</SectionHeading>
+            <Eyebrow>lobu.config.ts</Eyebrow>
+            <SectionHeading>Your whole agent in one file.</SectionHeading>
             <p
               class="mt-4 max-w-[28rem] text-[16px] leading-[1.6]"
               style={{ color: "var(--color-page-text-muted)" }}
             >
-              Declare your agent in{" "}
-              <code class="font-mono text-[14px]">lobu.config.ts</code>:
-              provider, model, skills. One config, every surface below.
+              One typed config declares the agent, the entities it remembers,
+              the watchers that run, and the connectors it reads.{" "}
+              <code class="font-mono text-[14px]">lobu apply</code> deploys it;
+              the sections below zoom into each piece.
             </p>
             <FeatureList
               items={[
+                <>
+                  <b>One declarative file</b>: agent, entities, watchers, and
+                  connectors, all wired in{" "}
+                  <code class="font-mono text-[13px]">lobu.config.ts</code>.
+                </>,
                 <>
                   <b>Every chat surface</b>:{" "}
                   <a
@@ -848,10 +812,6 @@ function AgentsSection() {
                   <b>Per-user isolation</b>: workers scoped by user/channel.
                   Secrets stay in the proxy.
                 </>,
-                <>
-                  <b>Durable &amp; audited</b>: every agent action is an event
-                  in the log.
-                </>,
               ]}
             />
             <ProductLink href="/getting-started/">
@@ -861,7 +821,7 @@ function AgentsSection() {
         }
         code={
           <div>
-            <CodeBlock badge="agent" snippet={snippets.agentConfig} />
+            <CodeBlock badge="lobu.config.ts" snippet={snippets.agentConfig} />
             <ExampleFooterLink slug="sales" />
           </div>
         }

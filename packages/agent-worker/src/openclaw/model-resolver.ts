@@ -184,6 +184,16 @@ export function resolveModelRef(
   // the anthropic/openai provider". Splitting on "/" here would mis-route them.
   if (defaultProvider) {
     let modelId = modelRef;
+    // Strip a redundant leading "<configured-provider>/" prefix. Lobu refers to
+    // models as "provider/model" (e.g. "z-ai/glm-4.7"), but the upstream
+    // provider's own namespace is just the bare code ("glm-4.7") — sending the
+    // Lobu prefix makes z.ai (and other sdkCompat:openai providers) 400 with
+    // "Unknown Model". Only strip the configured provider's OWN id, so a
+    // foreign namespace slug (OpenRouter's "anthropic/claude-sonnet-4") is left
+    // intact and still routes correctly.
+    if (modelId.startsWith(`${defaultProvider}/`)) {
+      modelId = modelId.slice(defaultProvider.length + 1);
+    }
     // Resolve "auto" to the configured provider's default model.
     if (modelId === "auto") {
       const fallback = DEFAULT_PROVIDER_MODELS[defaultProvider];

@@ -92,9 +92,6 @@ describe("lobu init --yes", () => {
     expect(existsSync(join(proj, "lobu.config.ts"))).toBe(true);
     expect(existsSync(join(proj, ".env"))).toBe(true);
     expect(existsSync(join(proj, "agents", "demo", "IDENTITY.md"))).toBe(true);
-    expect(existsSync(join(proj, "agents", "demo", "evals", "ping.yaml"))).toBe(
-      true
-    );
     const env = readFileSync(join(proj, ".env"), "utf-8");
     expect(env.includes("SENTRY_DSN=")).toBe(false);
     // The generated lobu.config.ts imports @lobu/cli/config, so the scaffolded

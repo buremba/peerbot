@@ -262,6 +262,73 @@ describe("ChatInstanceManager — Telegram webhook secret (finding #2)", () => {
     );
     expect(secondConnection.config.secretToken).toBe(token);
   });
+
+  test("concurrent backfills for the same connection converge on one token (multi-replica)", async () => {
+    const orgId = "org-tg-concurrent";
+    const agentId = "agent-tg-concurrent";
+    const { manager, connectionStore, secretStore, orgContext } =
+      await buildManager(orgId, agentId);
+
+    await orgContext.run({ organizationId: orgId }, async () => {
+      await connectionStore.saveConnection({
+        id: "conn-concurrent-tg",
+        platform: "telegram",
+        agentId,
+        organizationId: orgId,
+        config: { platform: "telegram", botToken: "123456:fake-token" },
+        settings: { allowGroups: true },
+        metadata: {},
+        status: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    });
+
+    // Two simulated replicas backfill the SAME legacy connection at once. The
+    // row-locked claim must serialize them so both runtime configs (and the
+    // persisted row) end up with one identical token — never divergent ones
+    // that would leave a pod verifying a token Telegram no longer sends.
+    const makeRuntime = () => ({
+      id: "conn-concurrent-tg",
+      platform: "telegram",
+      agentId,
+      organizationId: orgId,
+      config: { platform: "telegram", botToken: "123456:fake-token" } as any,
+      settings: { allowGroups: true },
+      metadata: {},
+      status: "active" as const,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    // Several replicas race at once: a naive get-then-save lets multiple see
+    // "no token" before any persists, so they diverge. The row lock serializes
+    // them.
+    const replicas = Array.from({ length: 8 }, makeRuntime);
+    await orgContext.run({ organizationId: orgId }, () =>
+      Promise.all(
+        replicas.map((r) => manager.ensureTelegramWebhookSecret(r))
+      )
+    );
+
+    const tokens = replicas.map((r) => r.config.secretToken as string);
+    for (const t of tokens) {
+      expect(typeof t).toBe("string");
+      expect(t.length).toBeGreaterThanOrEqual(32);
+    }
+    // Every replica converged on a single token (no divergence).
+    expect(new Set(tokens).size).toBe(1);
+
+    // And it matches the single persisted row's token.
+    const stored = await orgContext.run({ organizationId: orgId }, () =>
+      connectionStore.getConnection("conn-concurrent-tg")
+    );
+    const storedRef = (stored!.config as any).secretToken as string;
+    const resolvedStored = await orgContext.run(
+      { organizationId: orgId },
+      () => secretStore.get(storedRef)
+    );
+    expect(resolvedStored).toBe(tokens[0]);
+  });
 });
 
 describe("ChatInstanceManager — config change detection (finding #8)", () => {

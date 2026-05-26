@@ -31,6 +31,7 @@ import {
 import { resolveAgentOptions } from "../services/platform-helpers.js";
 import { orgContext, tryGetOrgId } from "../../lobu/stores/org-context.js";
 import { isCloudMode } from "../../utils/cloud-mode.js";
+import { getDb } from "../../db/client.js";
 import {
   ConversationStateStore,
   type HistoryEntry,
@@ -905,12 +906,19 @@ export class ChatInstanceManager {
   }
 
   /**
-   * Ensure a started Telegram connection has a webhook `secretToken`. Mutates
-   * `connection.config` in place (so this boot's adapter + webhook registration
-   * use the token) and persists it as a `secret://` ref. Re-reads the stored
-   * row first so that if another replica already backfilled a token, we adopt
-   * that one and converge instead of clobbering it. No-op for non-Telegram
-   * connections and for ones that already carry a secretToken.
+   * Ensure a started Telegram connection has a webhook `secretToken`, then
+   * assign the effective (plaintext) token onto `connection.config` so this
+   * boot's adapter verifies it and configurePlatformWebhook registers it.
+   * No-op for non-Telegram connections and for ones that already carry a token.
+   *
+   * Multi-replica safety: the claim is row-locked. Every replica boots every
+   * connection (initialize() starts them all), so a naive get-then-save would
+   * let two pods generate DIFFERENT tokens, persist+register whichever wrote
+   * last, and leave the other pod's adapter verifying a stale token (transient
+   * 401s). Instead we `SELECT ... FOR UPDATE` the row inside a transaction: the
+   * first pod generates + persists the secret ref under the lock and writes it
+   * into the row's config; later pods see the ref and adopt it — so every pod
+   * and Telegram converge on a single token.
    *
    * `connection.config` here is already resolved to plaintext (caller runs
    * resolveConfigForRuntime first), so a present secretToken is the real value.
@@ -922,29 +930,81 @@ export class ChatInstanceManager {
     const current = connection.config.secretToken;
     if (typeof current === "string" && current.length > 0) return;
 
-    // Adopt a token another replica may have persisted between this boot's
-    // initial load and now (resolve the stored ref to plaintext to compare).
-    const stored = await this.connectionStore.getConnection(connection.id);
-    if (stored && isTelegramConfig(stored.config as PlatformAdapterConfig)) {
-      const resolved = (await this.resolveConfigForRuntime(
-        connection.id,
-        stored.config as PlatformAdapterConfig
-      )) as TelegramAdapterConfig;
-      if (
-        typeof resolved.secretToken === "string" &&
-        resolved.secretToken.length > 0
-      ) {
-        connection.config.secretToken = resolved.secretToken;
-        return;
+    const secretStore = this.services.getSecretStore();
+    const secretName = `connections/${connection.id}/secretToken`;
+    let generated = false;
+
+    // Row-locked claim: read the stored config under FOR UPDATE; if it still
+    // lacks a secretToken, generate + persist a ref and write it back in the
+    // same transaction. Concurrent replicas serialize on the row lock, so only
+    // the first writer generates and the rest read its ref. Returns the
+    // effective `secret://` ref, or null when there is no stored row to lock.
+    const tokenRef = await getDb().begin(async (tx) => {
+      const rows = await tx<{ config: Record<string, unknown> | null }>`
+        SELECT config FROM agent_connections
+        WHERE id = ${connection.id}
+        FOR UPDATE
+      `;
+      const row = rows[0];
+      if (!row) {
+        return null;
       }
+      const storedConfig = (row.config ?? {}) as Record<string, unknown>;
+      const existingRef = storedConfig.secretToken;
+      if (typeof existingRef === "string" && existingRef.length > 0) {
+        return existingRef;
+      }
+      const ref = await persistSecretValue(
+        secretStore,
+        secretName,
+        generateTelegramSecretToken()
+      );
+      await tx`
+        UPDATE agent_connections
+        SET config = jsonb_set(
+              COALESCE(config, '{}'::jsonb),
+              '{secretToken}',
+              to_jsonb(${ref}::text),
+              true
+            ),
+            updated_at = now()
+        WHERE id = ${connection.id}
+      `;
+      generated = true;
+      return ref;
+    });
+
+    let effectiveRef = tokenRef;
+    if (effectiveRef === null) {
+      // No stored row to lock (a freshly-built in-memory connection the caller
+      // hasn't persisted — the boot/restart paths always have a row). Persist
+      // via the normal path and adopt the stored ref.
+      connection.config.secretToken = generateTelegramSecretToken();
+      await this.persistConnection(connection);
+      generated = true;
+      const reread = await this.connectionStore.getConnection(connection.id);
+      const rereadRef =
+        reread && typeof (reread.config as any).secretToken === "string"
+          ? ((reread.config as any).secretToken as string)
+          : null;
+      effectiveRef = rereadRef;
     }
 
-    connection.config.secretToken = generateTelegramSecretToken();
-    await this.persistConnection(connection);
-    logger.info(
-      { id: connection.id },
-      "Backfilled Telegram webhook secret token for existing connection"
-    );
+    // Resolve the winning ref to plaintext for the adapter + webhook.
+    const resolved =
+      effectiveRef && isSecretRef(effectiveRef)
+        ? await resolveSecretValue(secretStore, effectiveRef)
+        : effectiveRef;
+    if (typeof resolved === "string" && resolved.length > 0) {
+      connection.config.secretToken = resolved;
+    }
+
+    if (generated) {
+      logger.info(
+        { id: connection.id },
+        "Backfilled Telegram webhook secret token for existing connection"
+      );
+    }
   }
 
   private async createStateAdapter(): Promise<any> {

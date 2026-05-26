@@ -945,10 +945,21 @@ export async function loadDesiredStateFromConfig(
     if (watcher.reaction === undefined) return;
     const dw = state.watchers[i];
     if (!dw) return;
+    // `reaction` is typed ReactionSource, but jiti evaluates the config without
+    // typechecking, so a stale `reaction: "./x.reaction.ts"` string slips
+    // through and would read `.path` as undefined. Reject it with a clear
+    // message instead of a downstream TypeError. (An empty `reactionFromFile("")`
+    // keeps a string path and still reaches the validator, which rejects it.)
+    const reactionPath = (watcher.reaction as { path?: unknown }).path;
+    if (typeof reactionPath !== "string") {
+      throw new Error(
+        `Watcher "${watcher.slug}": set reaction with reactionFromFile("./x.reaction.ts"), not a bare string path.`
+      );
+    }
     dw.reactionScript = resolveReactionScript(
       opts.cwd,
       watcher.slug,
-      watcher.reaction.path
+      reactionPath
     );
   });
 

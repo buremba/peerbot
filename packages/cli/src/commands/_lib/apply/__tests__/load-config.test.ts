@@ -457,6 +457,27 @@ describe("loadDesiredStateFromConfig", () => {
     await expect(write("./notes.md")).rejects.toThrow(/must end in `\.ts`/);
   });
 
+  test("rejects a bare-string reaction with a clear reactionFromFile message", async () => {
+    // jiti evaluates the config without typechecking, so a stale
+    // `reaction: "./x.reaction.ts"` string slips through. It must fail with
+    // guidance to use reactionFromFile(), not a downstream TypeError.
+    dir = mkdtempSync(join(import.meta.dir, "strreaction-"));
+    writeFileSync(
+      join(dir, "lobu.config.ts"),
+      [
+        `import { defineAgent, defineConfig, defineWatcher } from "@lobu/cli/config";`,
+        `const crm = defineAgent({ id: "crm" });`,
+        `export default defineConfig({ agents: [crm], watchers: [defineWatcher({`,
+        `  agent: crm, slug: "w", prompt: "p", extractionSchema: {}, reaction: "./reactions/x.reaction.ts",`,
+        `})] });`,
+        ``,
+      ].join("\n")
+    );
+    await expect(loadDesiredStateFromConfig({ cwd: dir })).rejects.toThrow(
+      /reactionFromFile/
+    );
+  });
+
   test("attaches the reaction to the right watcher when only one of several has one", async () => {
     dir = mkdtempSync(join(import.meta.dir, "reactionidx-"));
     mkdirSync(join(dir, "reactions"));

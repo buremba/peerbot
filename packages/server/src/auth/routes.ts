@@ -16,6 +16,7 @@ import { resolveBaseUrl } from './base-url';
 import { createAuth } from './index';
 import { mcpAuth, requireAuth } from './middleware';
 import { OAuthClientsStore } from './oauth/clients';
+import { OAuthProvider } from './oauth/provider';
 import { PersonalAccessTokenService } from './tokens';
 
 const credentialRoutes = new Hono<{ Bindings: Env }>();
@@ -346,25 +347,28 @@ async function mintSessionCookieValue(
 }
 
 /**
- * Resolve a `?token=…` deep-link credential to a user id.
+ * Resolve a `?token=…` deep-link credential to a user id. Accepts all three
+ * credential shapes the deep-link callers hold:
+ *   - Personal Access Tokens (`owl_pat_*`, `personal_access_tokens`)
+ *   - OAuth 2.1 access tokens (`oauth_tokens`) — what the Owletto extension's
+ *     device-code pairing issues; without this the cloud-paired iframe 401s at
+ *     /api/exchange-token and renders signed-out
+ *   - Better Auth session tokens (`session`) — the macOS menu bar / local-init
+ *     hold one and deep-link into the SPA without ever issuing a PAT
  *
- * Accepts either a Personal Access Token (`owl_pat_*`, validated against
- * `personal_access_tokens`) or a Better Auth session token (looked up in
- * `session`). The session-token path lets the macOS menu bar — which holds
- * a session token from POST /api/local-init — deep-link the user into
- * the SPA without ever issuing a PAT.
+ * OAuthProvider.verifyAccessToken already covers the first two; the session
+ * lookup is the fallback for the third.
  */
 async function resolveDeepLinkToken(
   c: Context<{ Bindings: Env }>,
   token: string
 ): Promise<string | null> {
-  if (token.startsWith('owl_pat_')) {
-    const sql = createDbClientFromEnv(c.env);
-    const authInfo = await new PersonalAccessTokenService(sql).verify(token);
-    return authInfo?.userId ?? null;
-  }
-  // Treat anything else as a session token. Better Auth's adapter looks it up
-  // by the raw token (the unsigned half of the cookie value).
+  const sql = createDbClientFromEnv(c.env);
+  const baseUrl = resolveBaseUrl({ request: c.req.raw });
+  const authInfo = await new OAuthProvider(sql, baseUrl).verifyAccessToken(token);
+  if (authInfo?.userId) return authInfo.userId;
+  // Otherwise treat it as a Better Auth session token. Better Auth's adapter
+  // looks it up by the raw token (the unsigned half of the cookie value).
   const auth = await createAuth(c.env, c.req.raw);
   const ctx = await auth.$context;
   const session = await ctx.internalAdapter.findSession(token);

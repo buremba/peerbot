@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { cleanupTestDatabase } from '../../__tests__/setup/test-db';
 import {
   addUserToOrganization,
+  createTestAccessToken,
+  createTestOAuthClient,
   createTestOrganization,
   createTestPAT,
   createTestUser,
@@ -36,6 +38,24 @@ describe('exchange-token cookie posture', () => {
     expect(cookie).toMatch(/SameSite=None/i);
     expect(cookie).toMatch(/Secure/i);
     expect(cookie).toMatch(/Partitioned/i);
+  });
+
+  it('POST resolves an OAuth device-code access token (cloud pairing path)', async () => {
+    // The extension's cloud (OAuth device-code) pairing stores an oauth_tokens
+    // access token, NOT an owl_pat_ PAT — exchange-token must resolve it or the
+    // cloud iframe 401s and renders signed-out.
+    const org = await createTestOrganization({ slug: 'xt-oauth-org' });
+    const user = await createTestUser({ email: 'xt-oauth@test.example.com' });
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const client = await createTestOAuthClient();
+    const { token } = await createTestAccessToken(user.id, org.id, client.client_id, {
+      scope: 'profile:read',
+    });
+    expect(token.startsWith('owl_pat_')).toBe(false); // genuinely an OAuth access token
+
+    const res = await postForm('/api/exchange-token', { token, next: '/' });
+    expect(res.status).toBe(302);
+    expect(res.headers.get('set-cookie') ?? '').toMatch(/Partitioned/i);
   });
 
   it('GET keeps a first-party Lax cookie — never Partitioned/None (CLI/menu-bar)', async () => {

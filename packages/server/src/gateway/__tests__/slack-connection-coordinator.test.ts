@@ -8,7 +8,8 @@ import type {
 function createSlackConnection(
   id: string,
   metadata: Record<string, unknown> = {},
-  config: Record<string, unknown> = {}
+  config: Record<string, unknown> = {},
+  settings: PlatformConnection["settings"] = { allowGroups: true }
 ): PlatformConnection {
   return {
     id,
@@ -21,7 +22,7 @@ function createSlackConnection(
       clientSecret: "client-secret",
       ...config,
     } as any,
-    settings: { allowGroups: true },
+    settings,
     metadata,
     status: "active",
     createdAt: 0,
@@ -251,15 +252,22 @@ describe("SlackConnectionCoordinator", () => {
     expect(await response.text()).toBe("conn-byo");
   });
 
-  test("handleAppWebhook falls back to the default Slack connection", async () => {
+  test("handleAppWebhook falls back to the shared preview Slack connection", async () => {
     const body = JSON.stringify({ type: "url_verification" });
     const coordinator = new SlackConnectionCoordinator(
       makeDeps({
         forwardWebhook: mock(async (connectionId: string, request: Request) => {
           return new Response(`${connectionId}:${await request.text()}`);
         }),
+        // The shared/hosted connection is the only safe no-team-match default:
+        // it is explicitly previewMode and carries no teamId.
         listSlackConnections: async () => [
-          createSlackConnection("conn-default"),
+          createSlackConnection(
+            "conn-default",
+            {},
+            {},
+            { allowGroups: true, previewMode: true }
+          ),
         ],
       })
     );
@@ -274,6 +282,40 @@ describe("SlackConnectionCoordinator", () => {
 
     expect(response.status).toBe(200);
     expect(await response.text()).toBe(`conn-default:${body}`);
+  });
+
+  test("getDefaultConnection refuses a non-preview tenant connection without a team match", async () => {
+    // A plain tenant connection (no previewMode, no teamId) must never be the
+    // no-team-match default — forwarding an unmatched-team webhook to it would
+    // cross tenants (its own bot token). The fallback must fail closed.
+    const coordinator = new SlackConnectionCoordinator(
+      makeDeps({
+        listSlackConnections: async () => [
+          createSlackConnection("conn-tenant"),
+        ],
+      })
+    );
+
+    expect(await coordinator.getDefaultConnection()).toBeNull();
+  });
+
+  test("getDefaultConnection returns the previewMode connection", async () => {
+    const coordinator = new SlackConnectionCoordinator(
+      makeDeps({
+        listSlackConnections: async () => [
+          createSlackConnection("conn-tenant", { teamId: "T1" }),
+          createSlackConnection(
+            "conn-preview",
+            {},
+            {},
+            { allowGroups: true, previewMode: true }
+          ),
+        ],
+      })
+    );
+
+    const def = await coordinator.getDefaultConnection();
+    expect(def?.id).toBe("conn-preview");
   });
 
   test("handleAppWebhook sends a welcome DM for team_join events", async () => {

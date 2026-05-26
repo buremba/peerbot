@@ -200,4 +200,36 @@ describe("multi-tenant gateway/connections — Slack routing isolation", () => {
     expect(fallback).not.toBeNull();
     expect(fallback!.id).toBe("conn-preview");
   });
+
+  test("the no-team-match fallback refuses a non-preview org row with empty metadata", async () => {
+    const { manager, connectionStore, orgContext } = await buildManager();
+
+    // A BYO connection created without an OAuth install carries no
+    // metadata.teamId, yet it is still that org's tenant row (its own bot
+    // token). Absence of teamId alone must NOT make it the shared default —
+    // only the explicit previewMode marker does. Fail closed.
+    await seedAgentRow("agent-byo", { organizationId: "org-byo" });
+    await orgContext.run({ organizationId: "org-byo" }, async () => {
+      await connectionStore.saveConnection({
+        id: "conn-byo",
+        platform: "slack",
+        agentId: "agent-byo",
+        organizationId: "org-byo",
+        config: {
+          platform: "slack",
+          botToken: "xoxb-byo-tenant",
+          signingSecret: "byo-signing",
+        },
+        // Not previewMode; empty metadata (no teamId).
+        settings: { allowGroups: true },
+        metadata: {},
+        status: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    });
+
+    const fallback = await manager.getDefaultSlackConnection();
+    expect(fallback).toBeNull();
+  });
 });

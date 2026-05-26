@@ -138,6 +138,34 @@ function assistantWithToolCall(
   };
 }
 
+/** An assistant message that emits several tool calls in one turn (one batch). */
+function assistantWithToolCalls(
+  calls: Array<{ name: string; args: Record<string, unknown>; id: string }>
+): AssistantMessage {
+  return {
+    role: "assistant",
+    content: calls.map((c) => ({
+      type: "toolCall",
+      id: c.id,
+      name: c.name,
+      arguments: c.args,
+    })),
+    api: "openai-completions",
+    provider: "test",
+    model: "test-model",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "toolUse",
+    timestamp: Date.now(),
+  };
+}
+
 function plainAssistant(text: string): AssistantMessage {
   return {
     role: "assistant",
@@ -271,6 +299,59 @@ describe("turn force-terminate via TurnController + real Agent loop", () => {
       (m) => (m as { role: string }).role === "toolResult"
     );
     expect(toolResults.length).toBe(1);
+  });
+
+  test("sibling tool calls in the SAME assistant message after AskUser are short-circuited", async () => {
+    // Regression: agent-loop has no signal check between tools in one batch, so
+    // a single assistant message of [AskUser, otherTool] would otherwise run
+    // `otherTool` after AskUser terminated the turn. The guard short-circuits
+    // every tool once the turn is terminated.
+    const controller = new TurnController();
+
+    let askUserBody = 0;
+    let siblingBody = 0;
+    const askUser = makeRecordingTool("AskUserQuestion", () => {
+      askUserBody += 1;
+      controller.terminate("ask-user", "posted");
+    });
+    const sibling = makeRecordingTool("noop", () => {
+      siblingBody += 1;
+    });
+
+    let streamCalls = 0;
+    const agent = new Agent({
+      streamFn: ((
+        _model: unknown,
+        _ctx: unknown,
+        options?: { signal?: AbortSignal }
+      ) => {
+        if (options?.signal?.aborted) {
+          return abortedStream() as never;
+        }
+        streamCalls += 1;
+        // One message, TWO tool calls: AskUser first, then a sibling.
+        return scriptedStream(
+          assistantWithToolCalls([
+            {
+              name: "AskUserQuestion",
+              args: { question: "Which?", options: ["a", "b"] },
+              id: "call-ask",
+            },
+            { name: "noop", args: {}, id: "call-sib" },
+          ])
+        ) as never;
+      }) as never,
+    });
+    agent.setModel(MODEL as never);
+    wireGuardedTools(agent, controller, [askUser, sibling]);
+
+    await agent.prompt("help me");
+
+    // AskUser ran once; the sibling in the same batch did NOT run its body.
+    expect(askUserBody).toBe(1);
+    expect(siblingBody).toBe(0);
+    expect(controller.isTerminated).toBe(true);
+    expect(streamCalls).toBeLessThanOrEqual(2);
   });
 
   test("a runaway identical-tool loop is cut off TIGHTLY by the loop cap", async () => {

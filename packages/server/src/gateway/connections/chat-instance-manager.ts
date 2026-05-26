@@ -536,11 +536,12 @@ export class ChatInstanceManager {
   }
 
   /**
-   * Post a plain-text message to a channel as the bot — a one-shot outbound
-   * post, NOT an inbound message that triggers an agent run (that's
+   * Post a markdown message to a channel as the bot — a one-shot outbound post,
+   * NOT an inbound message that triggers an agent run (that's
    * `routePlatformMessage`). Used by the notification fan-out
    * (`deliverToBotConnections`) to surface a watcher digest / approval in a
-   * bound channel.
+   * bound channel. `{ markdown }` is converted to each platform's native format
+   * (Slack `markdown_text`, etc.) rather than HTML-escaped like raw text.
    *
    * `channelKey` is the platform-prefixed channel id, e.g. "slack:C0123ABCD".
    * Multi-replica: a connection created or restarted on another replica has no
@@ -549,10 +550,10 @@ export class ChatInstanceManager {
    * revive a `stopped` connection). That lets any pod that fires the
    * notification deliver it — no cross-pod routing needed.
    */
-  async postNotificationToChannel(
+  async postMessageToChannel(
     connectionId: string,
     channelKey: string,
-    text: string
+    markdown: string
   ): Promise<void> {
     const running = await this.ensureConnectionRunning(connectionId);
     const instance = running ? this.instances.get(connectionId) : undefined;
@@ -567,7 +568,7 @@ export class ChatInstanceManager {
         `Could not resolve channel ${channelKey} for connection ${connectionId}`
       );
     }
-    await channel.post({ raw: text, files: [] });
+    await channel.post({ markdown });
   }
 
   /**

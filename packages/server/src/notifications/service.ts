@@ -112,7 +112,7 @@ async function deliverToBotConnections(
     await Promise.allSettled(
       targets.map(async ({ connectionId, channelKey }) => {
         try {
-          await manager.postNotificationToChannel(connectionId, channelKey, text);
+          await manager.postMessageToChannel(connectionId, channelKey, text);
         } catch (err) {
           logger.warn(
             { err, connectionId, channelKey },

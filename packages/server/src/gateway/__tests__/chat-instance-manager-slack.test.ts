@@ -192,7 +192,7 @@ describe("ChatInstanceManager Slack marketplace support", () => {
   });
 });
 
-describe("ChatInstanceManager.postNotificationToChannel", () => {
+describe("ChatInstanceManager.postMessageToChannel", () => {
   test("posts plain text to the resolved channel as the bot", async () => {
     const ChatInstanceManager = await loadChatInstanceManager();
     const manager = new ChatInstanceManager() as any;
@@ -200,14 +200,14 @@ describe("ChatInstanceManager.postNotificationToChannel", () => {
     const channel = mock((_key: string) => ({ post }));
     manager.instances.set("conn-1", { chat: { channel } });
 
-    await manager.postNotificationToChannel(
+    await manager.postMessageToChannel(
       "conn-1",
       "slack:C0123ABCD",
       "Weekly funnel digest"
     );
 
     expect(channel).toHaveBeenCalledWith("slack:C0123ABCD");
-    expect(post).toHaveBeenCalledWith({ raw: "Weekly funnel digest", files: [] });
+    expect(post).toHaveBeenCalledWith({ markdown: "Weekly funnel digest" });
   });
 
   test("lazily starts the connection when it isn't loaded on this pod, then posts", async () => {
@@ -224,11 +224,11 @@ describe("ChatInstanceManager.postNotificationToChannel", () => {
       manager.instances.set(id, { chat: { channel } });
     });
 
-    await manager.postNotificationToChannel("conn-x", "slack:C9", "hi");
+    await manager.postMessageToChannel("conn-x", "slack:C9", "hi");
 
     expect(manager.restartConnection).toHaveBeenCalledWith("conn-x");
     expect(channel).toHaveBeenCalledWith("slack:C9");
-    expect(post).toHaveBeenCalledWith({ raw: "hi", files: [] });
+    expect(post).toHaveBeenCalledWith({ markdown: "hi" });
   });
 
   test("throws when the connection is stopped and cannot be started", async () => {
@@ -238,7 +238,7 @@ describe("ChatInstanceManager.postNotificationToChannel", () => {
       getConnection: async () => ({ id: "missing", status: "stopped" }),
     };
     await expect(
-      manager.postNotificationToChannel("missing", "slack:C0", "x")
+      manager.postMessageToChannel("missing", "slack:C0", "x")
     ).rejects.toThrow(/No active chat instance/);
   });
 });

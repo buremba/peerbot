@@ -529,7 +529,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         w.agent_kind AS watcher_agent_kind,
         w.notification_channel AS watcher_notification_channel,
         w.notification_priority AS watcher_notification_priority,
-        w.execution_config AS watcher_execution_config
+        w.execution_config AS watcher_execution_config,
+        wv.prompt AS watcher_prompt
       FROM runs r
       LEFT JOIN feeds f ON f.id = r.feed_id
       LEFT JOIN connections conn ON conn.id = r.connection_id
@@ -540,6 +541,9 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         AND cd.status = 'active'
       LEFT JOIN auth_profiles ap ON ap.id = r.auth_profile_id
       LEFT JOIN watchers w ON w.id = r.watcher_id
+      LEFT JOIN watcher_versions wv
+        ON wv.id = COALESCE((r.approved_input->>'version_id')::bigint, w.current_version_id)
+        AND wv.watcher_id = w.watcher_group_id
       WHERE r.id = ${runId}
       LIMIT 1
     `;
@@ -605,6 +609,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     watcher_notification_channel: string | null;
     watcher_notification_priority: string | null;
     watcher_execution_config: Record<string, unknown> | null;
+    watcher_prompt: string | null;
     // Auth run fields
     run_auth_profile_id: number | null;
     auth_profile_auth_data: Record<string, unknown> | null;
@@ -643,6 +648,16 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           notification_channel: row.watcher_notification_channel ?? 'canvas',
           notification_priority: row.watcher_notification_priority ?? 'normal',
           execution_config: row.watcher_execution_config ?? null,
+          // The prompt of the version this run was pinned to at creation
+          // (run's snapshotted approved_input.version_id, else the watcher's
+          // current_version_id) — same source complete_window validates
+          // against, so a watcher edited after the run was queued doesn't swap
+          // the prompt mid-flight. Device-local executors had no other channel
+          // for the watcher's instructions (the payload shipped only
+          // id/name/slug), so a scheduled watcher's local CLI got a bare
+          // "process this" and improvised; shipping it lets the device run the
+          // real prompt. Null only if the watcher has no version row.
+          prompt: row.watcher_prompt ?? null,
         },
         event: {
           trigger_event_id: null,

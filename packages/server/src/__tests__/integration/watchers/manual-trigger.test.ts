@@ -13,11 +13,29 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../../db/client';
+import type { Env } from '../../../index';
 import { generateSecureToken, hashToken } from '../../../auth/oauth/utils';
+import { manageWatchers } from '../../../tools/admin/manage_watchers';
+import type { ToolContext } from '../../../tools/registry';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity } from '../../setup/test-fixtures';
 import { post } from '../../setup/test-helpers';
 import { TestWorkspace } from '../../setup/test-mcp-client';
+
+function ownerCtx(workspace: TestWorkspace): ToolContext {
+  return {
+    organizationId: workspace.org.id,
+    userId: workspace.users.owner.id,
+    memberRole: 'owner',
+    agentId: null,
+    isAuthenticated: true,
+    clientId: null,
+    scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
+    tokenType: 'oauth',
+    scopedToOrg: true,
+    allowCrossOrg: false,
+  };
+}
 
 /**
  * Mint a PAT bound to a specific device worker_id with `device_worker:run`
@@ -337,5 +355,47 @@ describe('POST /api/workers/me/watchers/:watcher_id/trigger', () => {
     };
     expect(job.run_type).toBe('watcher');
     expect(job.payload?.watcher?.execution_config).toEqual(execCfg);
+  });
+
+  it('poll payload carries the run-pinned version prompt, not a later edit', async () => {
+    const ctx = await setupDevicePinnedWatcher({ workerId: 'mac-poll-prompt' });
+    const { token } = await createWorkerBoundPat(
+      ctx.workspace.users.owner.id,
+      ctx.workspace.org.id,
+      'mac-poll-prompt'
+    );
+
+    // Queue a run: createWatcherRun snapshots the current version (prompt v1)
+    // into approved_input.version_id.
+    const trig = await post(`/api/workers/me/watchers/${ctx.watcherId}/trigger`, { token });
+    expect(trig.status).toBe(200);
+
+    // Edit the watcher AFTER the run is queued: a new current version with a
+    // different prompt. The already-queued run must NOT pick this up.
+    const v2 = (await manageWatchers(
+      {
+        action: 'create_version',
+        watcher_id: String(ctx.watcherId),
+        prompt: 'EDITED-AFTER-QUEUE prompt v2.',
+        change_notes: 'edit after queue',
+      } as never,
+      {} as Env,
+      ownerCtx(ctx.workspace)
+    )) as { version: number };
+    expect(v2.version).toBe(2);
+
+    // The poll must deliver the prompt of the version snapshotted at queue time
+    // (v1) — the same version complete_window validates against — not the edit.
+    const pollRes = await post('/api/workers/poll', {
+      token,
+      body: { worker_id: 'mac-poll-prompt', capabilities: {} },
+    });
+    expect(pollRes.status).toBe(200);
+    const job = (await pollRes.json()) as {
+      run_type?: string;
+      payload?: { watcher?: { prompt?: string } };
+    };
+    expect(job.run_type).toBe('watcher');
+    expect(job.payload?.watcher?.prompt).toBe('Summarize {{entities}}.');
   });
 });

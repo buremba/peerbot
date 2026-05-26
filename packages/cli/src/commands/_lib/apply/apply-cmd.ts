@@ -584,7 +584,7 @@ export async function pushProviderApiKeys(
   }
 }
 
-async function executePlan(
+export async function executePlan(
   ctx: ApplyContext,
   pendingAuth: PendingAuthEntry[]
 ): Promise<void> {
@@ -1286,24 +1286,30 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     }
   }
 
+  const hasResourceWork =
+    plan.counts.create > 0 || plan.counts.update > 0 || plan.counts.delete > 0;
+
   const pendingAuth: PendingAuthEntry[] = [];
   let applyErr: unknown;
   try {
-    // Provider keys first — they live outside the resource diff (idempotent
-    // PUT), so push them on any confirmed apply (including a pending-auth-only
-    // plan). Done here, not inside executePlan, so the all-noop short-circuit
-    // above can push them too without double-pushing.
+    // Resources FIRST: executePlan does `upsertAgent` for created agents, and
+    // `setProviderApiKey` targets `/agents/<id>/providers/...` — pushing keys
+    // before the agent exists 404s on a first apply. So run the plan, then push
+    // keys. (The all-noop / key-only short-circuit above pushes keys directly:
+    // there are no agent creates there, so the agents already exist remotely.)
+    if (hasResourceWork) {
+      printText(chalk.bold("\nApplying:"));
+      await executePlan({ client, state, plan, remote }, pendingAuth);
+    }
+    // Provider keys live outside the resource diff (idempotent PUT), so push
+    // them on any confirmed apply (including a pending-auth-only plan). Done
+    // here, not inside executePlan, so the all-noop short-circuit above can push
+    // them too without double-pushing.
     if (hasProviderKeys) {
       printText(chalk.bold("\nApplying provider keys:"));
       await pushProviderApiKeys(client, state.agents);
     }
-    if (
-      plan.counts.create > 0 ||
-      plan.counts.update > 0 ||
-      plan.counts.delete > 0
-    ) {
-      printText(chalk.bold("\nApplying:"));
-      await executePlan({ client, state, plan, remote }, pendingAuth);
+    if (hasResourceWork) {
       printText(chalk.green("\nApply complete."));
     }
   } catch (err) {

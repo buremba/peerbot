@@ -364,7 +364,7 @@ export class ChatResponseBridge implements ResponseRenderer {
     const ctx = this.extractResponseContext(payload);
     if (!ctx) return;
 
-    const { connectionId, strategy, channelId } = ctx;
+    const { connectionId, strategy, channelId, instance } = ctx;
     const key = `${channelId}:${payload.conversationId}`;
 
     // If a guardrail blocked this stream mid-flight, skip completion
@@ -407,7 +407,48 @@ export class ChatResponseBridge implements ResponseRenderer {
     // is intentionally skipped (re-posting would duplicate).
     const canDeliverFromFinalText =
       strategy.deliversAtCompletion && !!payload.finalText?.trim();
-    if (stream || canDeliverFromFinalText) {
+
+    // Output guardrail for the post-once path. A post-once strategy delivers
+    // here from the full text, so the per-delta scan in handleDelta is NOT a
+    // sufficient guard under N>1 replicas: this completing pod may have scanned
+    // no deltas (cross-pod) or only the subset it claimed, and a secret split
+    // across deltas that scattered to different pods trips no per-delta scan.
+    // `blockedStreams` is pod-local and cannot protect a cross-replica
+    // completion. So scan the full delivered text once here; on a trip, post
+    // the block message and suppress both delivery and history. (Live-streaming
+    // strategies can't defer — they already streamed per-delta — so this only
+    // runs for deliversAtCompletion strategies.)
+    let blockedAtCompletion = false;
+    if (strategy.deliversAtCompletion) {
+      const completionText = payload.finalText ?? stream?.buffer ?? "";
+      if (completionText.trim()) {
+        const trip = await this.runOutputGuardrails(completionText, payload, ctx);
+        if (trip) {
+          blockedAtCompletion = true;
+          const blockText = `Message blocked by guardrail: ${trip.reason ?? trip.guardrail}`;
+          try {
+            const target = await this.resolveTarget(
+              instance,
+              channelId,
+              payload.conversationId,
+              platformMetadataString(
+                payload.platformMetadata,
+                "responseThreadId"
+              ),
+              readPlatformMetadata(payload.platformMetadata)
+            );
+            if (target) await target.post(blockText);
+          } catch (err) {
+            logger.error(
+              { err: String(err) },
+              "Failed to post guardrail block message at completion"
+            );
+          }
+        }
+      }
+    }
+
+    if (!blockedAtCompletion && (stream || canDeliverFromFinalText)) {
       await strategy.handleCompletion({ ctx, payload, stream: stream ?? null });
     }
     if (stream) this.streams.delete(key);
@@ -424,7 +465,7 @@ export class ChatResponseBridge implements ResponseRenderer {
     // replicas `stream?.buffer` is null (cross-pod) or only the subset of
     // deltas this pod claimed, so persisting it would store a truncated reply.
     const historyText = payload.finalText ?? stream?.buffer;
-    if (historyText?.trim() && conversationState) {
+    if (!blockedAtCompletion && historyText?.trim() && conversationState) {
       try {
         await conversationState.appendHistory(connectionId, channelId, {
           role: "assistant",

@@ -16,7 +16,7 @@
  * a sleep — fire-and-forget audit writes are explicitly awaitable.
  */
 
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Guardrail } from '@lobu/core';
 import { generateWorkerToken, GuardrailRegistry } from '@lobu/core';
 import { AgentSettingsStore } from '../gateway/auth/settings/agent-settings-store';
@@ -348,6 +348,67 @@ describe('ChatResponseBridge — wired output guardrail', () => {
         's'
       );
     });
+
+    await flushPendingGuardrailAudits();
+    const rows = await fetchGuardrailEvents(orgId, 'output');
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.metadata.guardrail).toBe('secret-scan');
+  });
+
+  it('scans payload.finalText at completion for a post-once (Slack) reply with no local stream (cross-replica)', async () => {
+    // Under N>1 replicas the terminal row can be claimed by a pod that never
+    // saw the delta rows, so the per-delta scan never ran here. The Slack
+    // completion path delivers payload.finalText, so it must be scanned at
+    // completion or a secret would post unguarded. No handleDelta is called —
+    // this mirrors the cross-pod terminal-only delivery.
+    const { target, posted } = createCapturingTarget();
+    const slackPostMessage = vi.fn(async () => ({ ok: true, ts: '1.1' }));
+    const manager = {
+      getInstance: () => ({
+        connection: { agentId, organizationId: orgId, platform: 'slack' },
+        chat: {
+          channel: () => target,
+          getAdapter: (name: string) =>
+            name === 'slack'
+              ? { client: { chat: { postMessage: slackPostMessage } } }
+              : undefined,
+        },
+        conversationState: undefined,
+      }),
+      has: () => true,
+    };
+    const bridge = new ChatResponseBridge(manager as any);
+
+    const registry = new GuardrailRegistry();
+    registerBuiltinGuardrails(registry);
+    const settingsStore = new AgentSettingsStore(createPostgresAgentConfigStore());
+    bridge.setGuardrails(registry, settingsStore);
+
+    const payload = {
+      messageId: 'm1',
+      channelId: 'slack:C123',
+      conversationId: 'slack:C123',
+      userId: 'u1',
+      teamId: 't1',
+      timestamp: 0,
+      platform: 'slack',
+      platformMetadata: { connectionId: 'conn-1', chatId: 'slack:C123' },
+      finalText: 'here is sk-abcdefghij0123456789AB please',
+      processedMessageIds: ['m1'],
+    };
+
+    await orgContext.run({ organizationId: orgId }, async () => {
+      await bridge.handleCompletion(payload, 's');
+    });
+
+    // The secret must NOT reach Slack; only the block message is posted.
+    expect(slackPostMessage).not.toHaveBeenCalled();
+    expect(posted).toEqual([
+      expect.objectContaining({
+        text: expect.stringContaining('Message blocked by guardrail'),
+      }),
+    ]);
+    expect(posted[0]?.text).toMatch(/openai-key/);
 
     await flushPendingGuardrailAudits();
     const rows = await fetchGuardrailEvents(orgId, 'output');

@@ -616,6 +616,36 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
       typeof messageData?.organizationId === "string"
         ? messageData.organizationId
         : null;
+    // A turn writes a SHARED snapshot only when it carries a `runId` (the
+    // worker's `writeSnapshot` bails otherwise — see the runId comment in
+    // MessageConsumer.handleMessage). Legacy direct-enqueue / unit-test
+    // turns leave `runId` undefined, never write a shared snapshot, and so
+    // can never produce the divergent-snapshot race the cross-pod lock
+    // guards against — they are safe to spawn without the lock even with no
+    // org/conversationId.
+    const writesSharedSnapshot =
+      snapshotModeEnabled && typeof messageData?.runId === "number";
+    // A snapshot-writing turn with org OR conversationId missing CANNOT take
+    // the cross-pod lock (the lock key is (org, agent, conversationId)). The
+    // old code silently SKIPPED the lock in that case, so two pods could
+    // both hydrate the same `completed` snapshot and write divergent next
+    // snapshots — one reply silently wins. Refuse to spawn instead: a
+    // re-queueable failure (mirrors the lock-busy throw below) so the runs
+    // queue retries rather than running an unguarded, divergence-prone
+    // worker. This is a misconfiguration in practice (snapshot turns always
+    // carry org + conversationId), so surfacing it beats silently diverging.
+    if (writesSharedSnapshot && (!organizationId || !conversationId)) {
+      logger.error(
+        `Refusing to spawn snapshot-mode worker ${deploymentName}: ` +
+          `cross-pod conversation lock requires both organizationId and ` +
+          `conversationId (org=${organizationId ?? "<missing>"}, ` +
+          `conv=${conversationId ?? "<missing>"})`
+      );
+      throw new OrchestratorError(
+        ErrorCode.DEPLOYMENT_CREATE_FAILED,
+        "Cannot acquire per-conversation lock: snapshot-mode turn is missing organizationId or conversationId"
+      );
+    }
     let convLock: { release: () => Promise<void> } | null = null;
     if (snapshotModeEnabled && organizationId && conversationId) {
       try {

@@ -51,6 +51,48 @@ interface NotificationRow {
  * without failing the others. A connection bound to several channels posts to
  * each.
  */
+export interface BotDeliveryTarget {
+  connectionId: string;
+  platform: string;
+  /** Platform-prefixed channel id ready for `chat.channel()`, e.g. "slack:C0123ABCD". */
+  channelKey: string;
+}
+
+/**
+ * Resolve where a notification should be posted: the org's active chat
+ * connections JOINed to their channel bindings. A connection with no binding
+ * has no target and is omitted; a connection bound to several channels yields
+ * one target each. Exported for testing the delivery path against a real DB.
+ */
+export async function resolveBotDeliveryTargets(
+  organizationId: string,
+  connectionId?: string | null
+): Promise<BotDeliveryTarget[]> {
+  const sql = getDb();
+  const rows = (await sql`
+    SELECT ac.id, ac.platform, b.channel_id
+    FROM agent_connections ac
+    JOIN agent_channel_bindings b
+      ON b.organization_id = ac.organization_id
+     AND b.agent_id = ac.agent_id
+     AND b.platform = ac.platform
+    WHERE ac.organization_id = ${organizationId}
+      AND ac.status = 'active'
+      ${connectionId ? sql`AND ac.id = ${connectionId}` : sql``}
+    ORDER BY b.created_at ASC
+  `) as Array<{ id: string; platform: string; channel_id: string }>;
+
+  return rows.map((row) => ({
+    connectionId: row.id,
+    platform: row.platform,
+    // Bindings store the platform-prefixed id ("slack:C0123ABCD"); older rows
+    // may hold the bare id, so prefix defensively.
+    channelKey: row.channel_id.includes(':')
+      ? row.channel_id
+      : `${row.platform}:${row.channel_id}`,
+  }));
+}
+
 async function deliverToBotConnections(
   params: Omit<CreateNotificationParams, 'userId'>
 ): Promise<void> {
@@ -59,36 +101,21 @@ async function deliverToBotConnections(
   if (!manager) return;
 
   const text = params.body ? `${params.title}\n\n${params.body}` : params.title;
-  const sql = getDb();
 
   try {
-    const rows = (await sql`
-      SELECT ac.id, ac.platform, b.channel_id
-      FROM agent_connections ac
-      JOIN agent_channel_bindings b
-        ON b.organization_id = ac.organization_id
-       AND b.agent_id = ac.agent_id
-       AND b.platform = ac.platform
-      WHERE ac.organization_id = ${params.organizationId}
-        AND ac.status = 'active'
-        ${params.connectionId ? sql`AND ac.id = ${params.connectionId}` : sql``}
-      ORDER BY b.created_at ASC
-    `) as Array<{ id: string; platform: string; channel_id: string }>;
-
-    if (rows.length === 0) return;
+    const targets = await resolveBotDeliveryTargets(
+      params.organizationId,
+      params.connectionId
+    );
+    if (targets.length === 0) return;
 
     await Promise.allSettled(
-      rows.map(async (row) => {
-        // Bindings store the platform-prefixed id ("slack:C0123ABCD"); older
-        // rows may hold the bare id, so prefix defensively.
-        const channelKey = row.channel_id.includes(':')
-          ? row.channel_id
-          : `${row.platform}:${row.channel_id}`;
+      targets.map(async ({ connectionId, channelKey }) => {
         try {
-          await manager.postNotificationToChannel(row.id, channelKey, text);
+          await manager.postNotificationToChannel(connectionId, channelKey, text);
         } catch (err) {
           logger.warn(
-            { err, connectionId: row.id, channelKey },
+            { err, connectionId, channelKey },
             '[Notifications] Failed to post to bot connection channel'
           );
         }

@@ -1,13 +1,7 @@
 /**
- * ClientSDK `notifications` namespace. Thin wrapper over the `notify` tool.
- *
- * Lets watcher reactions (and `run_sdk` scripts) deliver a notification:
- * `createNotificationForUsers` writes an `agent_message` notification event and
- * fans it out to the org's active bot connections (Slack/Telegram) via
- * `deliverToBotConnections`. This restores the `notify` capability the legacy
- * `ReactionSDK` had before reactions were consolidated onto the ClientSDK
- * (PR #348 carried `notify` over only as an agent-facing MCP tool, not onto the
- * reaction client) — so a reaction can now push its digest to Slack directly.
+ * ClientSDK `notifications` namespace — a thin wrapper over the `notify` tool
+ * that lets reactions (and `run_sdk` scripts) write a notification to the inbox
+ * and fan it out to the org's bot connections (Slack/Telegram).
  */
 
 import type { Env } from "../../index";

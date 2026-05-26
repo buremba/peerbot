@@ -180,11 +180,7 @@ describe("pushProviderApiKeys (#11 — provider keys pushed on a noop-only apply
           createdAgents.add(meta.agentId);
           order.push(`upsertAgent:${meta.agentId}`);
         },
-        async setProviderApiKey(
-          agentId: string,
-          providerId: string,
-          _value: string
-        ) {
+        async setProviderApiKey(agentId: string, providerId: string) {
           if (!createdAgents.has(agentId)) {
             // Mirror the server: the agent must exist first.
             throw new Error(`Agent not found: ${agentId}`);

@@ -563,8 +563,10 @@ interface ApplyContext {
  * just those with a settings diff) — the secret value isn't part of the
  * settings JSON, so a row can need a key even when every resource is noop (e.g.
  * first apply after the gateway picked up support, or a key-only `.env`
- * change/rotation). Runs UNCONDITIONALLY (before the all-noop short-circuit),
- * so it must NOT be re-run inside `executePlan`.
+ * change/rotation). Callers invoke this AFTER executePlan (so a just-created
+ * agent exists before its `/agents/<id>/providers/...` key push), and also in
+ * the all-noop / key-only branch (no agent creates there). Kept outside
+ * `executePlan` so both paths can call it without double-pushing.
  */
 export async function pushProviderApiKeys(
   client: ApplyClient,

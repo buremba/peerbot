@@ -1,5 +1,42 @@
 # Changelog
 
+## [10.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v9.4.1...lobu-v10.0.0) (2026-05-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **client:** AgentSession.agentId is renamed to conversationId.
+
+### Features
+
+* **client:** @lobu/client v1.1 — refresh(), ask(), typed SSE events, conversationId ([#1055](https://github.com/lobu-ai/lobu/issues/1055)) ([615cca6](https://github.com/lobu-ai/lobu/commit/615cca6d7b20b2fbdcf26c17f39e07260ac3d0b2)), closes [#1032](https://github.com/lobu-ai/lobu/issues/1032)
+* **cli:** typed reactionFromFile() + connectorFromFile() for watchers and connectors ([#1082](https://github.com/lobu-ai/lobu/issues/1082)) ([91d2c08](https://github.com/lobu-ai/lobu/commit/91d2c084ae0a5f5f554553f1ecf16cacf029121f))
+* **connect:** managed-connector full integration — login-scoped fetch, consent deep-link, local feeds ([#1049](https://github.com/lobu-ai/lobu/issues/1049)) ([6e2a94b](https://github.com/lobu-ai/lobu/commit/6e2a94b59c9f6148e4dc1d7d12ad124585f5a91e))
+* **landing:** config-first homepage on a single sales example ([#1076](https://github.com/lobu-ai/lobu/issues/1076)) ([9615eff](https://github.com/lobu-ai/lobu/commit/9615eff24c3029da1d89ea637d8734c2d87ab6bb))
+* **reactions:** notify from reactions + repair the bot-delivery path ([#1064](https://github.com/lobu-ai/lobu/issues/1064)) ([2011695](https://github.com/lobu-ai/lobu/commit/20116958537e3e1b836e65f8baa986a5502f177d))
+* **server,cli:** auth.md discovery + lobu login --email headless claim ([#1073](https://github.com/lobu-ai/lobu/issues/1073)) ([56fbe94](https://github.com/lobu-ai/lobu/commit/56fbe949e8d47fbe1553bf6cd65c5612d3cefb39))
+* **server:** agent account-claim via emailed device authorization ([#1071](https://github.com/lobu-ai/lobu/issues/1071)) ([6889f8f](https://github.com/lobu-ai/lobu/commit/6889f8f1ec5ccb32e75f8b0bb245c88544592234))
+* **server:** informed consent for agent user_claimed flow ([#1081](https://github.com/lobu-ai/lobu/issues/1081)) ([48cd6ea](https://github.com/lobu-ai/lobu/commit/48cd6ea456d531e6b7b31bf8430894d7ab7ffa1c))
+* **server:** ship watcher current-version prompt in device poll payload ([#1088](https://github.com/lobu-ai/lobu/issues/1088)) ([073cf8d](https://github.com/lobu-ai/lobu/commit/073cf8dc87cadf856c06d93ae9e39edc139e9cbd))
+* **server:** tunable per-watcher execution_config for device-worker runs ([#1058](https://github.com/lobu-ai/lobu/issues/1058)) ([9bd5d10](https://github.com/lobu-ai/lobu/commit/9bd5d10a5073d9daaf7e3b2a0e627692d92561d5))
+
+
+### Bug Fixes
+
+* **agent-worker:** log the failure reason when a worker run fails ([#1078](https://github.com/lobu-ai/lobu/issues/1078)) ([6eb19f4](https://github.com/lobu-ai/lobu/commit/6eb19f4c926b5d838daf35370dfd078e9c52dd87))
+* **agent-worker:** strip provider self-prefix AFTER auto-resolution (close gap) ([#1085](https://github.com/lobu-ai/lobu/issues/1085)) ([217367e](https://github.com/lobu-ai/lobu/commit/217367e40db646464e9bea7459a9c0851d423dfb))
+* **agent-worker:** strip redundant provider self-prefix from model code ([#1083](https://github.com/lobu-ai/lobu/issues/1083)) ([6aa3e96](https://github.com/lobu-ai/lobu/commit/6aa3e96c1f68533d5d989e12ece695341e615ea6))
+* **agent-worker:** worker bash secret leak, SESSION_TIMEOUT UX, dead sandbox-leak redaction ([#1070](https://github.com/lobu-ai/lobu/issues/1070)) ([12ec940](https://github.com/lobu-ai/lobu/commit/12ec9400259b4c1fd396c84b6bdd3a93b3910ea3))
+* **cli:** token create honors --context/-c flag ([#1023](https://github.com/lobu-ai/lobu/issues/1023)) ([#1054](https://github.com/lobu-ai/lobu/issues/1054)) ([26efe00](https://github.com/lobu-ai/lobu/commit/26efe00abd41166e617418d66aebd299f368e869))
+* **embeddings:** stamp legacy embedding_model + stop liveness probe killing the embeddings service ([#1080](https://github.com/lobu-ai/lobu/issues/1080)) ([b9ba6c9](https://github.com/lobu-ai/lobu/commit/b9ba6c9db4b665eccd99b377fda076999a5f547f))
+* **embeddings:** version-stamp embeddings and batch the sync embed path ([#1069](https://github.com/lobu-ai/lobu/issues/1069)) ([e8c354b](https://github.com/lobu-ai/lobu/commit/e8c354bf7fd8ff481041c92078170f4c249fe894))
+* **examples:** use valid event kinds in lobu-crm reactions ([#1072](https://github.com/lobu-ai/lobu/issues/1072)) ([a680342](https://github.com/lobu-ai/lobu/commit/a68034281f143c0ad3e445837c9715bf50bf5a22))
+* four small confirmed findings (token timing, apply provider keys, worker probes, dead AsyncLock) ([#1066](https://github.com/lobu-ai/lobu/issues/1066)) ([96a6df7](https://github.com/lobu-ai/lobu/commit/96a6df706f2cf303ff706a189b775ba4e7eb40ab))
+* **gateway:** deliver Slack reply from worker finalText under multi-replica ([#1087](https://github.com/lobu-ai/lobu/issues/1087)) ([6741aed](https://github.com/lobu-ai/lobu/commit/6741aed2b88e37097fdf1b1492d9c53a71b809a5))
+* **server:** orchestration cleanup — dead dischargeTurn + cross-pod spawn gate ([#1068](https://github.com/lobu-ai/lobu/issues/1068)) ([7bf6d8a](https://github.com/lobu-ai/lobu/commit/7bf6d8afb27fb8e88b3f7b0ad89dc69313564012))
+* **server:** resolve Slack OAuth/preview config from env, not pod-local instance ([#1065](https://github.com/lobu-ai/lobu/issues/1065)) ([56b6cff](https://github.com/lobu-ai/lobu/commit/56b6cffe32fcd1fc7432f9faaaf1981a4bd68df3))
+* **server:** watcher device-pin authz + table-schema drift test runs in CI ([#1062](https://github.com/lobu-ai/lobu/issues/1062)) ([75c52a0](https://github.com/lobu-ai/lobu/commit/75c52a02b22e192fa3bc11fc506638cf28bc0c9c))
+
 ## [9.4.1](https://github.com/lobu-ai/lobu/compare/lobu-v9.4.0...lobu-v9.4.1) (2026-05-25)
 
 

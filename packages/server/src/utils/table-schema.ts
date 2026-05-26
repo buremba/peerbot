@@ -324,6 +324,11 @@ export const QUERYABLE_SCHEMA = {
         'name',
         'description',
         'version',
+        // Non-secret discriminator ('api' | 'mcp' | 'openapi') selecting which
+        // *_config blob a definition uses; parity with the other scalar
+        // connector_definitions metadata columns. The blobs themselves stay in
+        // INTENTIONALLY_OMITTED (drift test).
+        'api_type',
         'auth_schema',
         'feeds_schema',
         'actions_schema',

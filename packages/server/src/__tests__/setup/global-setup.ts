@@ -10,15 +10,29 @@
  * migrations, fixtures, and assertions are identical either way.
  */
 
+import type { GlobalSetupContext } from 'vitest/node';
 import { closeDbSingleton } from '../../db/client';
 import { type EmbeddedBackend, startEmbeddedBackend } from './embedded-postgres-backend';
 import { closeTestDb, setupTestDatabase } from './test-db';
 
+// Make the resolved test DATABASE_URL available to forked test workers via
+// vitest's `inject()`. Env-var propagation from this setup process to forks
+// is timing-dependent (and was the reason the table-schema drift test could
+// silently self-skip in CI); `provide`/`inject` is the vitest-blessed,
+// transport-level channel that always reaches the workers.
+declare module 'vitest' {
+  interface ProvidedContext {
+    /** Connectable Postgres URL for the suite, or null when DB setup was skipped. */
+    databaseUrl: string | null;
+  }
+}
+
 let embedded: EmbeddedBackend | null = null;
 
-export async function setup(): Promise<void> {
+export async function setup({ provide }: GlobalSetupContext): Promise<void> {
   if (process.env.SKIP_TEST_DB_SETUP === '1') {
     console.log('\n⚠️  Skipping test database setup (SKIP_TEST_DB_SETUP=1).\n');
+    provide('databaseUrl', null);
     return;
   }
 
@@ -33,6 +47,9 @@ export async function setup(): Promise<void> {
     process.env.PGSSLMODE = 'disable';
     console.log(`✅ Embedded Postgres ready at ${embedded.url}`);
   }
+
+  // Authoritative signal for forks (see ProvidedContext augmentation above).
+  provide('databaseUrl', process.env.DATABASE_URL ?? null);
 
   // Deterministic 32-byte hex key for AES-256-GCM in tests. Same value the
   // gateway's secret-store test harness uses so behavior is aligned.

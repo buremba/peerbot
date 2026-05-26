@@ -94,6 +94,21 @@ describe("resolveModelRef", () => {
     expect(result.modelId).toBe("anthropic/claude-sonnet-4");
   });
 
+  test("configured provider: a redundant self-prefix is stripped (z-ai/glm-4.7 → glm-4.7)", () => {
+    // Lobu names models "provider/model", but the upstream namespace is the
+    // bare code. Sending "z-ai/glm-4.7" to z.ai 400s "Unknown Model" — strip
+    // the configured provider's OWN id so the API receives "glm-4.7".
+    const result = resolveModelRef("z-ai/glm-4.7", { defaultProvider: "z-ai" });
+    expect(result.provider).toBe("z-ai");
+    expect(result.modelId).toBe("glm-4.7");
+  });
+
+  test("configured provider: a bare model code is left untouched", () => {
+    const result = resolveModelRef("glm-4.7", { defaultProvider: "z-ai" });
+    expect(result.provider).toBe("z-ai");
+    expect(result.modelId).toBe("glm-4.7");
+  });
+
   test("configured provider + 'auto' resolves to that provider's default model", () => {
     const result = resolveModelRef("auto", { defaultProvider: "anthropic" });
     expect(result.provider).toBe("anthropic");

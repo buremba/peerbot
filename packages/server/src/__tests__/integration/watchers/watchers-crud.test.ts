@@ -14,19 +14,25 @@ import {
   createTestUser,
 } from '../../setup/test-fixtures';
 import { TestApiClient } from '../../setup/test-mcp-client';
-import { cleanupTestDatabase } from '../../setup/test-db';
+import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 
 describe('watcher CRUD', () => {
   let owner: TestApiClient;
   let intruder: TestApiClient;
   let entityId: number;
   let agentId: string;
+  let ownerOrgId: string;
+  let ownerUserId: string;
+  let otherOrgId: string;
+  let otherUserId: string;
 
   beforeAll(async () => {
     await cleanupTestDatabase();
     const org = await createTestOrganization({ name: 'Watcher Test Org' });
     const user = await createTestUser({ email: 'watcher-owner@test.com' });
     await addUserToOrganization(user.id, org.id, 'owner');
+    ownerOrgId = org.id;
+    ownerUserId = user.id;
     owner = await TestApiClient.for({
       organizationId: org.id,
       userId: user.id,
@@ -38,6 +44,8 @@ describe('watcher CRUD', () => {
     const otherOrg = await createTestOrganization({ name: 'Watcher Other Org' });
     const otherUser = await createTestUser({ email: 'watcher-other@test.com' });
     await addUserToOrganization(otherUser.id, otherOrg.id, 'owner');
+    otherOrgId = otherOrg.id;
+    otherUserId = otherUser.id;
     intruder = await TestApiClient.for({
       organizationId: otherOrg.id,
       userId: otherUser.id,
@@ -287,5 +295,117 @@ describe('watcher CRUD', () => {
     await expect(member.watchers.delete([created.watcher_id])).rejects.toThrow(
       /admin|owner|access/i
     );
+  });
+
+  // Issue #1060: a device pin (watchers.device_worker_id) runs the watcher's
+  // agent CLI on the device owner's machine, so create/update must verify the
+  // caller may target that device. The exhaustive role × ownership matrix is in
+  // src/__tests__/unit/watcher-device-access.test.ts; this proves the gate is
+  // wired into the handlers end-to-end (device_worker_id only reaches the
+  // handler via the raw `manage()` escape hatch — the typed input omits it).
+  describe('device_worker_id ownership gate', () => {
+    async function seedDevice(opts: {
+      userId: string;
+      organizationId: string | null;
+      worker: string;
+    }): Promise<string> {
+      const sql = getTestDb();
+      const rows = (await sql`
+        INSERT INTO device_workers (user_id, worker_id, platform, capabilities, label, organization_id)
+        VALUES (${opts.userId}, ${opts.worker}, 'macos', ${sql.json([])}, 'Seed Device', ${opts.organizationId})
+        RETURNING id
+      `) as unknown as Array<{ id: string }>;
+      return String(rows[0].id);
+    }
+
+    it('lets an org owner pin a foreign device attached to their org', async () => {
+      // A different user's device, but it lives in the owner's org → allowed
+      // for an owner/admin role.
+      const deviceId = await seedDevice({
+        userId: otherUserId,
+        organizationId: ownerOrgId,
+        worker: 'dev-in-org',
+      });
+      const created = (await owner.watchers.manage({
+        action: 'create',
+        entity_id: entityId,
+        slug: 'device-pin-allowed',
+        name: 'Device Pin Allowed',
+        prompt: 'x',
+        extraction_schema: { type: 'object', properties: {} },
+        agent_id: agentId,
+        device_worker_id: deviceId,
+      })) as { watcher_id: string };
+      expect(created.watcher_id).toBeDefined();
+
+      const got = (await owner.watchers.get(created.watcher_id)) as {
+        watcher?: { device_worker_id?: string | null };
+      };
+      expect(got.watcher?.device_worker_id).toBe(deviceId);
+      await owner.watchers.delete([created.watcher_id]);
+    });
+
+    it("rejects pinning to a device in another org (create)", async () => {
+      // Device owned by another user AND attached to another org — even an owner
+      // cannot pin it; this is the privilege-escalation case.
+      const foreignDeviceId = await seedDevice({
+        userId: otherUserId,
+        organizationId: otherOrgId,
+        worker: 'dev-foreign-org',
+      });
+      await expect(
+        owner.watchers.manage({
+          action: 'create',
+          entity_id: entityId,
+          slug: 'device-pin-foreign',
+          name: 'Device Pin Foreign',
+          prompt: 'x',
+          extraction_schema: { type: 'object', properties: {} },
+          agent_id: agentId,
+          device_worker_id: foreignDeviceId,
+        })
+      ).rejects.toThrow(/device you own|not found or not accessible/i);
+    });
+
+    it('rejects pinning to a nonexistent device (create)', async () => {
+      await expect(
+        owner.watchers.manage({
+          action: 'create',
+          entity_id: entityId,
+          slug: 'device-pin-missing',
+          name: 'Device Pin Missing',
+          prompt: 'x',
+          extraction_schema: { type: 'object', properties: {} },
+          agent_id: agentId,
+          device_worker_id: '00000000-0000-0000-0000-000000000000',
+        })
+      ).rejects.toThrow(/not found or not accessible/i);
+    });
+
+    it('rejects re-pinning an existing watcher to a foreign-org device (update)', async () => {
+      const created = (await owner.watchers.create({
+        entity_id: entityId,
+        slug: 'device-pin-update',
+        name: 'Device Pin Update',
+        prompt: 'x',
+        extraction_schema: { type: 'object', properties: {} },
+        agent_id: agentId,
+      })) as { watcher_id: string };
+
+      const foreignDeviceId = await seedDevice({
+        userId: otherUserId,
+        organizationId: otherOrgId,
+        worker: 'dev-foreign-update',
+      });
+      await expect(
+        owner.watchers.manage({
+          action: 'update',
+          watcher_id: created.watcher_id,
+          device_worker_id: foreignDeviceId,
+        })
+      ).rejects.toThrow(/device you own|not found or not accessible/i);
+
+      await owner.watchers.delete([created.watcher_id]);
+    });
   });
 });

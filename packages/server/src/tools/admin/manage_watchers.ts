@@ -61,6 +61,7 @@ import { validateTemplate } from '../../watchers/renderer';
 import { validateClassifierSourcePaths, validateExtractionSchema } from '../../watchers/validator';
 import type { ToolContext } from '../registry';
 import { routeAction } from './action-router';
+import { assertDeviceWorkerAccess } from './watcher-device-access';
 import {
   assertValidExecutionConfig,
   WatcherExecutionConfigSchema,
@@ -953,6 +954,10 @@ async function handleCreate(
     throw new ToolUserError('extraction_schema is required for create action');
   }
   assertValidExecutionConfig(args.execution_config, ctx);
+  // A device pin runs the watcher's agent CLI on the device owner's machine —
+  // validate the caller may target this device (own it, or org owner/admin
+  // over a device attached to the org) before storing it.
+  await assertDeviceWorkerAccess(sql, args.device_worker_id, ctx);
 
   // entity_id is optional: omit it for an org-scoped/global watcher.
   const entityId = args.entity_id;
@@ -1286,6 +1291,10 @@ async function handleUpdate(
     throw new Error('watcher_id is required for update action');
   }
   assertValidExecutionConfig(args.execution_config, ctx);
+  // Re-pinning to a device targets that device owner's machine — validate the
+  // caller may pin it (own it, or org owner/admin over an org-attached device).
+  // undefined = unchanged and null = clear the pin both pass without a lookup.
+  await assertDeviceWorkerAccess(sql, args.device_worker_id, ctx);
 
   await requireExists(sql, 'watchers', args.watcher_id, 'Watcher');
 

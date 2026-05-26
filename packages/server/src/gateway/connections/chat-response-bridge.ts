@@ -547,6 +547,18 @@ export class ChatResponseBridge implements ResponseRenderer {
       return;
     }
 
+    // Session timeouts are retried automatically by the runs queue. The worker
+    // deliberately suppresses its own user-facing crash delta for them, so the
+    // platform fallback must stay silent too — otherwise the user sees a raw
+    // "Error: SESSION_TIMEOUT" for a turn that is about to be retried.
+    if (payload.errorCode === "SESSION_TIMEOUT") {
+      logger.debug(
+        { connectionId, channelId },
+        "Skipping fallback error text — session timed out and will be retried"
+      );
+      return;
+    }
+
     // For known error codes, render user-facing guidance without sending users
     // to the retired end-user settings UI.
     if (payload.errorCode === "NO_MODEL_CONFIGURED") {

@@ -547,9 +547,18 @@ export class OpenClawWorker implements WorkerExecutor {
         }
       }
 
-      logger.info(
-        `Worker completed with ${result.success ? "success" : "failure"}`
-      );
+      if (result.success) {
+        logger.info("Worker completed with success");
+      } else {
+        // Log the actual failure reason. Without this the run is marked
+        // failed (and the reply silently dropped) with no clue why — the
+        // `error`/`exitCode` came back from runAISession but were never
+        // surfaced, making prod failures undiagnosable from logs alone.
+        logger.error(
+          { err: result.error, exitCode: result.exitCode },
+          "Worker completed with failure"
+        );
+      }
     } catch (error) {
       await handleExecutionError(error, this.workerTransport);
     }

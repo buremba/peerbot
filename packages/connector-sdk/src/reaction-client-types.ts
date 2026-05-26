@@ -80,15 +80,36 @@ export interface EntityListFilter {
   sort_order?: "asc" | "desc";
 }
 
+export interface NotificationsSendInput {
+  /** Notification title (≤200 chars). */
+  title: string;
+  /** Body text (≤1000 chars). */
+  body?: string;
+  /**
+   * Who to notify. `"admins"` (default): org admins/owners. `"all"`: every
+   * member. Or an array of specific user IDs.
+   */
+  recipients?: "admins" | "all" | string[];
+  /** Relative URL the notification links to (e.g. `/acme/entities`). */
+  resource_url?: string;
+  /** Deliver only through this specific bot connection (its id). */
+  connection_id?: string;
+  /** Arbitrary JSON payload appended to the body as formatted JSON. */
+  data?: Record<string, unknown>;
+  /** Attribution when sent from a watcher reaction. */
+  watcher_source?: { watcher_id: number; window_id: number };
+}
+
 // ── Client ───────────────────────────────────────────────────────────────────
 
 /**
  * The client object available in reaction scripts.
  *
- * `client.knowledge`  — read/write/search knowledge events
- * `client.entities`   — CRUD entities and relationships
- * `client.query`      — raw SQL (results as JSON rows)
- * `client.log`        — structured logging (appears in watcher run logs)
+ * `client.knowledge`     — read/write/search knowledge events
+ * `client.entities`      — CRUD entities and relationships
+ * `client.notifications` — push a notification to the org's inbox + bot connections (Slack/Telegram)
+ * `client.query`         — raw SQL (results as JSON rows)
+ * `client.log`           — structured logging (appears in watcher run logs)
  */
 export interface ReactionClient {
   knowledge: {
@@ -123,6 +144,15 @@ export interface ReactionClient {
       offset?: number;
     }): Promise<unknown>;
     search(query: string, options?: { limit?: number }): Promise<unknown>;
+  };
+
+  notifications: {
+    /**
+     * Send a notification: writes it to the org inbox and fans it out to the
+     * org's active bot connections (Slack/Telegram). This is how a reaction
+     * surfaces its digest to a chat channel.
+     */
+    send(input: NotificationsSendInput): Promise<{ notified_count: number }>;
   };
 
   /** Run a read-only SQL query against the org's Postgres. */

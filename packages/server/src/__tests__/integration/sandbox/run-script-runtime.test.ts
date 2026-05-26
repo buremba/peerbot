@@ -92,6 +92,37 @@ describe("sandbox runtime", () => {
     expect(result.sdkCalls).toBe(1);
   });
 
+  it("dispatches client.notifications.send from a reaction script", async () => {
+    // Guards the gap fix: before `notifications.send` was added to the SDK +
+    // method-metadata, the sandbox proxy wouldn't advertise it and a reaction
+    // calling it threw. This proves a reaction can now push a notification.
+    let captured: unknown;
+    const stubSdk = {
+      notifications: {
+        send: async (input: unknown) => {
+          captured = input;
+          return { notified_count: 1 };
+        },
+      },
+      log: () => undefined,
+    } as unknown as ClientSDK;
+
+    const result = await runScript({
+      source:
+        "export default async (ctx, client) => client.notifications.send({ title: 'Digest', body: 'x', watcher_source: { watcher_id: 7, window_id: 9 } });",
+      sdk: stubSdk,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.returnValue).toEqual({ notified_count: 1 });
+    expect(result.sdkCalls).toBe(1);
+    expect(captured).toEqual({
+      title: "Digest",
+      body: "x",
+      watcher_source: { watcher_id: 7, window_id: 9 },
+    });
+  });
+
   it("enforces wall-clock timeout while awaiting SDK calls", async () => {
     const stubSdk = {
       entities: {

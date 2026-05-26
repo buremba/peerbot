@@ -25,6 +25,7 @@ import {
   buildEntitySchemaNamespace,
   buildFeedsNamespace,
   buildKnowledgeNamespace,
+  buildNotificationsNamespace,
   buildOperationsNamespace,
   buildOrganizationsNamespace,
   buildViewTemplatesNamespace,
@@ -37,6 +38,7 @@ import type { EntitiesNamespace } from "./namespaces/entities";
 import type { EntitySchemaNamespace } from "./namespaces/entity-schema";
 import type { FeedsNamespace } from "./namespaces/feeds";
 import type { KnowledgeNamespace } from "./namespaces/knowledge";
+import type { NotificationsNamespace } from "./namespaces/notifications";
 import type { OperationsNamespace } from "./namespaces/operations";
 import type { OrganizationsNamespace } from "./namespaces/organizations";
 import type { ViewTemplatesNamespace } from "./namespaces/view-templates";
@@ -53,6 +55,7 @@ export interface ClientSDK {
   classifiers: ClassifiersNamespace;
   viewTemplates: ViewTemplatesNamespace;
   knowledge: KnowledgeNamespace;
+  notifications: NotificationsNamespace;
   organizations: OrganizationsNamespace;
 
   org(slugOrId: string): Promise<ClientSDK>;
@@ -168,6 +171,7 @@ export function buildClientSDK(
     classifiers: buildClassifiersNamespace(ctx, env),
     viewTemplates: buildViewTemplatesNamespace(ctx, env),
     knowledge: buildKnowledgeNamespace(ctx, env),
+    notifications: buildNotificationsNamespace(ctx, env),
     organizations: buildOrganizationsNamespace(ctx),
   };
 

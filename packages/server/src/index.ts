@@ -18,6 +18,7 @@ import { LOBU_LOGO_PNG_BASE64 } from './assets/logo';
 import { createAuth } from './auth';
 import { getAuthConfig as getAuthConfigFromEnv } from './auth/config';
 import { mcpAuth } from './auth/middleware';
+import { compareWorkerToken } from './auth/worker-token';
 import { oauthRoutes } from './auth/oauth/routes';
 import { findExistingPersonalOrg } from './auth/personal-org-provisioning';
 import { credentialRoutes } from './auth/routes';
@@ -680,7 +681,7 @@ app.use('/api/workers/*', async (c, next) => {
   const expected = c.env.WORKER_API_TOKEN;
   const provided = c.req.header('Authorization')?.replace('Bearer ', '');
 
-  if (expected && provided === expected) {
+  if (compareWorkerToken(provided, expected)) {
     c.set('workerAuthMode', 'trusted');
     c.set('workerUserId', null);
     c.set('workerOrgIds', null);

@@ -5,8 +5,6 @@ description: Run automated quality checks against your Lobu agent using promptfo
 
 Evals for Lobu agents run through [promptfoo](https://www.promptfoo.dev) — a mature, vendor-neutral LLM eval framework — via the published `@lobu/promptfoo-provider` package. promptfoo handles the runner, assertion library (regex / contains / `llm-rubric` / `factuality` / `context-recall` / etc.), reporter, web viewer, and CI integration. Our provider connects it to your Lobu agent.
 
-> Lobu previously shipped an in-house YAML eval runner (`lobu eval`). It has been removed in favour of promptfoo. The shape of the YAML config is similar — assertions, parametric tests, llm-rubric grading — so migration is mostly a mechanical translation.
-
 ## Quick start
 
 ```bash

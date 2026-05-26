@@ -774,9 +774,6 @@ export async function initCommand(
     await mkdir(join(agentDir, "skills"), { recursive: true });
     await writeFile(join(agentDir, "skills", ".gitkeep"), "");
 
-    await mkdir(join(agentDir, "evals"), { recursive: true });
-    await writeFile(join(agentDir, "evals", "ping.yaml"), DEFAULT_EVAL_YAML);
-
     await mkdir(join(projectDir, "skills"), { recursive: true });
     await writeFile(join(projectDir, "skills", ".gitkeep"), "");
 
@@ -850,25 +847,6 @@ export async function initCommand(
     throw error;
   }
 }
-
-const DEFAULT_EVAL_YAML = `version: 1
-name: ping
-description: Agent responds to a simple greeting
-trials: 3
-timeout: 30
-tags: [smoke, fast]
-
-turns:
-  - content: "Hello, are you there?"
-    assert:
-      - type: contains
-        value: "hello"
-        options: { case_insensitive: true }
-        weight: 0.3
-      - type: llm-rubric
-        value: "Response is friendly and acknowledges the greeting"
-        weight: 0.7
-`;
 
 function validateProjectName(value: string): string | true {
   if (!PROJECT_NAME_PATTERN.test(value)) {

@@ -301,10 +301,12 @@ describe("ChatInstanceManager — Telegram webhook secret (finding #2)", () => {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     });
-    // Several replicas race at once: a naive get-then-save lets multiple see
-    // "no token" before any persists, so they diverge. The row lock serializes
-    // them.
-    const replicas = Array.from({ length: 8 }, makeRuntime);
+    // Two replicas race at once: a naive get-then-save lets both see "no token"
+    // before either persists, so they diverge. The row lock serializes them.
+    // Two is enough to prove convergence; piling more concurrent row-locked
+    // backfills onto CI's constrained Postgres pool starves the rest of the
+    // suite (every later test's DB setup blocks until its hook timeout).
+    const replicas = Array.from({ length: 2 }, makeRuntime);
     await orgContext.run({ organizationId: orgId }, () =>
       Promise.all(
         replicas.map((r) => manager.ensureTelegramWebhookSecret(r))
@@ -329,9 +331,9 @@ describe("ChatInstanceManager — Telegram webhook secret (finding #2)", () => {
       () => secretStore.get(storedRef)
     );
     expect(resolvedStored).toBe(tokens[0]);
-    // 8 concurrent row-locked backfills serialize on the connection row; on
-    // CI's slower Postgres that can exceed the 5s default, so allow headroom.
-  }, 20000);
+    // Two row-locked backfills serialize on the connection row; allow headroom
+    // over the 5s default for CI's slower Postgres.
+  }, 15000);
 });
 
 describe("ChatInstanceManager — Telegram webhook auth E2E (finding #2)", () => {

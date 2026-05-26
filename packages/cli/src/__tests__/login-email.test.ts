@@ -26,8 +26,12 @@ describe("login --email (user_claimed)", () => {
           registration_endpoint: "https://lobu.test/oauth/register",
           device_authorization_endpoint:
             "https://lobu.test/oauth/device_authorization",
-          grant_types_supported: ["urn:ietf:params:oauth:grant-type:device_code"],
-          agent_auth: { claim_email_endpoint: "https://lobu.test/oauth/device/email" },
+          grant_types_supported: [
+            "urn:ietf:params:oauth:grant-type:device_code",
+          ],
+          agent_auth: {
+            claim_email_endpoint: "https://lobu.test/oauth/device/email",
+          },
         });
       }
       if (url.endsWith("/oauth/register")) {
@@ -104,11 +108,14 @@ describe("login --email (user_claimed)", () => {
           registration_endpoint: "https://lobu.test/oauth/register",
           device_authorization_endpoint:
             "https://lobu.test/oauth/device_authorization",
-          grant_types_supported: ["urn:ietf:params:oauth:grant-type:device_code"],
+          grant_types_supported: [
+            "urn:ietf:params:oauth:grant-type:device_code",
+          ],
           // no agent_auth → email claim unsupported
         });
       }
-      if (url.endsWith("/oauth/register")) return jsonResponse({ client_id: "c" });
+      if (url.endsWith("/oauth/register"))
+        return jsonResponse({ client_id: "c" });
       if (url.endsWith("/oauth/device_authorization")) {
         return jsonResponse({
           device_code: "d",

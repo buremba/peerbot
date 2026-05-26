@@ -86,6 +86,8 @@ export async function resolveBotDeliveryTargets(
     WHERE ac.organization_id = ${organizationId}
       AND ac.status = 'active'
       ${connectionId ? sql`AND ac.id = ${connectionId}` : sql``}
+    -- Deliver in binding-creation order so earlier bindings (the primary
+    -- channel) are attempted first when an agent is bound to several.
     ORDER BY b.created_at ASC
   `) as Array<{ id: string; platform: string; channel_id: string }>;
 

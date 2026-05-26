@@ -189,6 +189,27 @@ describe("ChatResponseBridge.handleDelta — AsyncIterable streaming", () => {
     expect(plainPosts).toContain("Error: boom");
   });
 
+  test("handleError suppresses the fallback for SESSION_TIMEOUT (silent retry)", async () => {
+    // A timed-out turn is retried automatically by the runs queue and the
+    // worker deliberately emits no user-facing crash delta, so the platform
+    // fallback must also stay silent — otherwise the user sees a raw
+    // "Error: SESSION_TIMEOUT" for a turn that is about to be retried.
+    const { target, plainPosts } = createStreamingTarget();
+    const { manager } = createHarness(target);
+    const bridge = new ChatResponseBridge(manager as any);
+
+    await bridge.handleError(
+      {
+        ...basePayload,
+        error: "SESSION_TIMEOUT",
+        errorCode: "SESSION_TIMEOUT",
+      },
+      "s"
+    );
+
+    expect(plainPosts).toEqual([]);
+  });
+
   test("isFullReplacement closes prior stream and opens a new one", async () => {
     const { target } = createStreamingTarget();
     const { manager } = createHarness(target);

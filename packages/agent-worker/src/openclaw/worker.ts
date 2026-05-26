@@ -1989,8 +1989,9 @@ ${fileListing}
    *
    * The content has normally already been streamed delta-by-delta, so the
    * no-leak path does NOT re-send (that would duplicate the message). The final
-   * result is set by runAISession() on the success path — see Finding #18; it
-   * used to be null in production, leaving checkSandboxLeak() dead.
+   * result must be populated by runAISession() on the success path (via
+   * progressProcessor.setFinalResult) — when it is left null, getFinalResult()
+   * returns null here and the leak check never runs.
    */
   private async deliverFinalResult(
     sawUploadedFileEvent: boolean

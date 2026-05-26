@@ -60,7 +60,12 @@ CREATE OR REPLACE VIEW public.current_event_records AS
 
 -- migrate:down
 
-CREATE OR REPLACE VIEW public.current_event_records AS
+-- CREATE OR REPLACE VIEW cannot REMOVE a column from an existing view (Postgres
+-- only allows appending columns at the end). Drop and recreate
+-- current_event_records WITHOUT embedding_model; the recreated view no longer
+-- references the column, so the subsequent DROP COLUMN succeeds.
+DROP VIEW IF EXISTS public.current_event_records;
+CREATE VIEW public.current_event_records AS
  SELECT e.id,
     e.organization_id,
     e.entity_ids,

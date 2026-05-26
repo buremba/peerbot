@@ -10,7 +10,11 @@
  * config and references.
  */
 
-import type { ConnectorClass } from "@lobu/connector-sdk";
+import type {
+  ConnectorClass,
+  ReactionClient,
+  ReactionContext,
+} from "@lobu/connector-sdk";
 import type { SecretRef } from "./secret.js";
 
 /** A connector referenced by its key, or by the class produced by `defineConnector`. */
@@ -155,8 +159,52 @@ export function connectorFromFile(path: string): ConnectorSource {
 }
 
 // ---------------------------------------------------------------------------
-// Watchers (reaction handlers are wired in a later slice)
+// Watchers
 // ---------------------------------------------------------------------------
+
+/**
+ * The shape a watcher reaction module's default export must satisfy:
+ * `export default async (ctx, client, params?) => …`. Used to type-check the
+ * `<Handler>` generic on {@link reactionFromFile} against the referenced module.
+ */
+export type ReactionHandler = (
+  ctx: ReactionContext,
+  client: ReactionClient,
+  params?: Record<string, unknown>
+) => Promise<unknown>;
+
+/**
+ * A local reaction source file to compile + run in a sandboxed isolate when the
+ * watcher fires. Built with {@link reactionFromFile} and set on
+ * {@link Watcher.reaction}. Like {@link ConnectorSource}, this carries only the
+ * path as plain data — the handler module is NOT imported at config-eval time;
+ * `lobu apply` reads the raw source and the server compiles it.
+ */
+export interface ReactionSource {
+  readonly kind: "reactionSource";
+  /** Path to a `*.reaction.ts`, relative to the config file. */
+  path: string;
+}
+
+/**
+ * Reference a local reaction source file to compile + ship at apply time.
+ *
+ * Pass the handler's module type via the generic for go-to-def / rename and a
+ * `tsc` error if the module's default export drifts from {@link ReactionHandler}:
+ *
+ * ```ts
+ * import type triage from "./inbound-triage.reaction.ts";
+ * reaction: reactionFromFile<typeof triage>("./inbound-triage.reaction.ts"),
+ * ```
+ *
+ * The `import type` is erased at compile time (zero runtime cost; jiti drops it),
+ * so the handler module is never imported during config eval.
+ */
+export function reactionFromFile<
+  _Handler extends ReactionHandler = ReactionHandler,
+>(path: string): ReactionSource {
+  return { kind: "reactionSource", path };
+}
 
 export interface WatcherNotification {
   channel?: "canvas" | "notification" | "both";
@@ -185,13 +233,14 @@ export interface Watcher {
   /** Agent-kind override for firings (e.g. "background", "notifier"). */
   agentKind?: string;
   /**
-   * Relative POSIX path to a sibling `.ts` reaction script
-   * (`./reactions/foo.reaction.ts`), compiled + run in a sandboxed isolate when
-   * the watcher fires. The script must `export default async (ctx, client) =>
-   * …`. Kept in its own file (not inline) so your IDE type-checks it; the path
-   * must stay under the config directory.
+   * A sibling `.ts` reaction script (`./reactions/foo.reaction.ts`) compiled +
+   * run in a sandboxed isolate when the watcher fires, built with
+   * {@link reactionFromFile}. The script must `export default async (ctx,
+   * client, params?) => …` ({@link ReactionHandler}). Kept in its own file (not
+   * inline) so your IDE type-checks it; the path must stay under the config
+   * directory.
    */
-  reaction?: string;
+  reaction?: ReactionSource;
 }
 
 export function defineWatcher(config: Omit<Watcher, "kind">): Watcher {

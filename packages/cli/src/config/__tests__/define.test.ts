@@ -10,6 +10,7 @@ import {
   defineRelationshipType,
   defineWatcher,
   type EntityType,
+  reactionFromFile,
 } from "../define.js";
 import { isSecretRef, secret } from "../secret.js";
 
@@ -56,6 +57,24 @@ describe("authoring producers", () => {
     });
     expect(w.kind).toBe("watcher");
     expect((w.agent as Agent).id).toBe("crm");
+  });
+
+  test("reactionFromFile carries the path as a branded marker (no import)", () => {
+    const r = reactionFromFile("./reactions/health.reaction.ts");
+    expect(r).toEqual({
+      kind: "reactionSource",
+      path: "./reactions/health.reaction.ts",
+    });
+
+    const w = defineWatcher({
+      agent: "crm",
+      slug: "health",
+      prompt: "assess",
+      extractionSchema: { type: "object" },
+      reaction: reactionFromFile("./reactions/health.reaction.ts"),
+    });
+    expect(w.reaction?.kind).toBe("reactionSource");
+    expect(w.reaction?.path).toBe("./reactions/health.reaction.ts");
   });
 
   test("connection + auth profile wire by handle", () => {

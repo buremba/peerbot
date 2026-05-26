@@ -3,8 +3,10 @@ import {
   defineConfig,
   defineEntityType,
   defineWatcher,
+  reactionFromFile,
   secret,
 } from "@lobu/cli/config";
+import type catalogStalenessCheckerReaction from "./catalog-staleness-checker.reaction.ts";
 
 const atlasCurator = defineAgent({
   id: "atlas-curator",
@@ -204,7 +206,9 @@ const catalogStalenessChecker = defineWatcher({
   notification: { priority: "low" },
   tags: ["atlas", "reference", "weekly"],
   minCooldownSeconds: 3600,
-  reaction: "./catalog-staleness-checker.reaction.ts",
+  reaction: reactionFromFile<typeof catalogStalenessCheckerReaction>(
+    "./catalog-staleness-checker.reaction.ts"
+  ),
   prompt:
     'Sweep the atlas reference catalog for entries that haven\'t been\nupdated in 90+ days. List the stalest 10 across cities, countries,\nindustries, technologies, and universities. Suggest a re-verification\naction for each (e.g. "country/PL: confirm population from latest census").\n',
   extractionSchema: {

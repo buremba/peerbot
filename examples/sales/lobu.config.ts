@@ -5,8 +5,10 @@ import {
   defineEntityType,
   defineRelationshipType,
   defineWatcher,
+  reactionFromFile,
   secret,
 } from "@lobu/cli/config";
+import type accountHealthMonitorReaction from "./account-health-monitor.reaction.ts";
 
 const sales = defineAgent({
   id: "sales",
@@ -184,7 +186,9 @@ const accountHealthMonitor = defineWatcher({
   notification: { priority: "high", channel: "both" },
   tags: ["sales", "health", "renewals"],
   minCooldownSeconds: 1800,
-  reaction: "./account-health-monitor.reaction.ts",
+  reaction: reactionFromFile<typeof accountHealthMonitorReaction>(
+    "./account-health-monitor.reaction.ts"
+  ),
   prompt:
     "Poll CRM data for tracked accounts. Track expansion progress, risk level changes, and renewal timeline.\n",
   extractionSchema: {

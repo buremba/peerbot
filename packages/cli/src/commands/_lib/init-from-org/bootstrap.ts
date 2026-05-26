@@ -235,6 +235,7 @@ const IMPORTABLE = [
   "defineWatcher",
   "defineConnection",
   "defineAuthProfile",
+  "reactionFromFile",
   "secret",
   "skillFromFile",
 ] as const;
@@ -689,7 +690,8 @@ function emitWatcher(
   let reactionFile: { relPath: string; body: string } | undefined;
   if (reactionScript) {
     const rel = `reactions/${w.slug}.reaction.ts`;
-    fields.push(`reaction: ${str(`./${rel}`)}`);
+    imports.use("reactionFromFile");
+    fields.push(`reaction: reactionFromFile(${str(`./${rel}`)})`);
     reactionFile = {
       relPath: rel,
       body: ensureTrailingNewline(reactionScript),

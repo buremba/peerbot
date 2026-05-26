@@ -5,8 +5,10 @@ import {
   defineEntityType,
   defineRelationshipType,
   defineWatcher,
+  reactionFromFile,
   secret,
 } from "@lobu/cli/config";
+import type founderActivityTrackerReaction from "./founder-activity-tracker.reaction.ts";
 
 const SECTOR_ENUM = ["bio-health", "ai", "fintech", "crypto", "consumer"];
 
@@ -457,7 +459,9 @@ const founderActivityTracker = defineWatcher({
   notification: { priority: "normal" },
   tags: ["vc", "founders", "daily"],
   minCooldownSeconds: 600,
-  reaction: "./founder-activity-tracker.reaction.ts",
+  reaction: reactionFromFile<typeof founderActivityTrackerReaction>(
+    "./founder-activity-tracker.reaction.ts"
+  ),
   prompt:
     "You are a venture capital analyst tracking the public activity of startup founders in your portfolio.\n\n## Founders\n{{#each entities}}\n- {{name}} ({{entity_type}}, ID: {{id}})\n{{/each}}\n\n## Recent Founder Activity\n{{#if sources.founder_posts}}\n{{sources.founder_posts}}\n{{/if}}\n\n---\n\nProduce a structured founder activity report:\n1. **Executive Summary**: 2-3 sentence overview of founder activity and signals.\n2. **Per-Founder Analysis**: For each active founder, summarize their messaging themes, engagement level, and signals about company direction.\n3. **Cross-Portfolio Patterns**: Themes multiple founders discuss.\n4. **Notable Signals**: Flag potential announcements, strategic shifts, or concerns.\n\nBe specific and cite actual tweets/posts as evidence.\n",
   sources: {

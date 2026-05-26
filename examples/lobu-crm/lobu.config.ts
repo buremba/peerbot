@@ -7,9 +7,12 @@ import {
   defineEntityType,
   defineRelationshipType,
   defineWatcher,
+  reactionFromFile,
   secret,
   skillFromFile,
 } from "@lobu/cli/config";
+import type funnelDigestReaction from "./funnel-digest.reaction.ts";
+import type inboundTriageReaction from "./inbound-triage.reaction.ts";
 
 const crm = defineAgent({
   id: "crm",
@@ -156,7 +159,9 @@ const funnel_digestWatcher = defineWatcher({
   notification: { channel: "both", priority: "high" },
   minCooldownSeconds: 3600,
   tags: ["crm", "weekly"],
-  reaction: "./funnel-digest.reaction.ts",
+  reaction: reactionFromFile<typeof funnelDigestReaction>(
+    "./funnel-digest.reaction.ts"
+  ),
   prompt:
     'Produce the weekly funnel digest and post it to Slack. Keep it short.\n\n1. The single recommended action for the week, on the first line. Pick the\n   move that does the most to get pilot #1 closer (almost always: follow up\n   with the warmest lead in "conversation", or progress whichever pilot\n   conversation is furthest along).\n2. Funnel snapshot: count of `lead` entities per stage; what moved since the\n   last digest (new leads, stage changes, new/updated `pilot` entities).\n3. Top-of-funnel since last digest: new GitHub stars, X mentions/replies,\n   HN/PH activity.\n4. Stale: any lead in `conversation` with no `lead:interaction` in 7+ days —\n   list them for follow-up.\n5. One gap callout if there is one (e.g. "18 new stars, 0 became leads —\n   is inbound-triage catching the right signal?").\n\nTone: a checklist a busy founder reads in 30 seconds. End on the next action,\nnot the status. Remember: the metric that matters is customer conversations\nthis week — if that number is below 3, say so plainly.\n',
   extractionSchema: {
@@ -202,7 +207,9 @@ const inbound_triageWatcher = defineWatcher({
   notification: { priority: "normal" },
   minCooldownSeconds: 300,
   tags: ["crm", "triage"],
-  reaction: "./inbound-triage.reaction.ts",
+  reaction: reactionFromFile<typeof inboundTriageReaction>(
+    "./inbound-triage.reaction.ts"
+  ),
   prompt:
     'Look for new top-of-funnel signals since the last run, across the connectors\nin this org:\n  - GitHub: new stargazers on lobu-ai/lobu; new issues / issue comments /\n    PR comments — especially anything with deployment, self-host, multi-tenant,\n    "how do I", or evaluation language.\n  - X: new @-mentions of Lobu, replies to Burak\'s Lobu threads, quote-tweets.\n  - Hacker News / Product Hunt: new comments or posts mentioning Lobu or OpenClaw.\n\nFor each signal that looks like a real person (not a bot, not a casual star):\n  1. search_memory for an existing `lead` (match github handle / x handle / email).\n  2. If none, create a `lead` entity at the lowest stage the evidence supports\n     (a bare star → "signal"; a deployment-flavored issue comment or a\n     "how do I deploy this for my team" mention → "trial" or "conversation"),\n     with source set to where it came from, and entity_ids linking to the\n     source event. Then save a `lead:created` event.\n  3. If a lead exists, enrich it (add the handle, bump the stage if the new\n     signal warrants it, update last_touch) and save a `lead:interaction` or\n     `lead:stage_changed` event as appropriate.\n\nThen post to Slack: the new/updated leads, ranked by closeness-to-a-paying-pilot,\neach with a one-line recommended next action (e.g. "reply on the issue and offer\na 20-min call"). If nothing notable, post nothing — don\'t manufacture noise.\n',
   extractionSchema: {

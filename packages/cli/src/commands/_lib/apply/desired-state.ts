@@ -68,8 +68,8 @@ export interface DesiredWatcher {
   /**
    * Reaction script — TypeScript source compiled + executed in an isolate at
    * watcher-firing time. Authored as a sibling `.ts` file referenced by
-   * `defineWatcher({ reaction: "./reactions/foo.reaction.ts" })`; the CLI reads
-   * it and pushes raw source via `set_reaction_script`.
+   * `defineWatcher({ reaction: reactionFromFile("./reactions/foo.reaction.ts") })`;
+   * the CLI reads it and pushes raw source via `set_reaction_script`.
    */
   reactionScript?: { sourcePath: string; sourceCode: string };
   /** LLM guidance for the watcher's downstream reaction agent. */
@@ -788,10 +788,10 @@ function resolveConnectorSources(
 const REACTION_SCRIPT_MAX_BYTES = 256 * 1024;
 
 /**
- * Resolve + read a watcher reaction script (`defineWatcher({ reaction })`):
- * relative POSIX path under the config directory, ends in `.ts`, no `..` /
- * absolute / backslash segments, ≤256KB. Ships RAW source — the server compiles
- * it on receipt via `set_reaction_script`.
+ * Resolve + read a watcher reaction script (`reactionFromFile(path)`): relative
+ * POSIX path under the config directory, ends in `.ts`, no `..` / absolute /
+ * backslash segments, ≤256KB. Ships RAW source — the server compiles it on
+ * receipt via `set_reaction_script`.
  */
 function resolveReactionScript(
   cwd: string,
@@ -801,7 +801,7 @@ function resolveReactionScript(
   const trimmed = rel.trim();
   if (!trimmed) {
     throw new ValidationError(
-      `watcher "${watcherSlug}" \`reaction\` must be a path to a sibling .ts file (e.g. \`reaction: "./reactions/foo.reaction.ts"\`)`
+      `watcher "${watcherSlug}" \`reaction\` must be a path to a sibling .ts file (e.g. \`reaction: reactionFromFile("./reactions/foo.reaction.ts")\`)`
     );
   }
   if (trimmed.startsWith("/") || trimmed.includes("\\")) {
@@ -939,15 +939,16 @@ export async function loadDesiredStateFromConfig(
   // it) and attach it. state.watchers[i] aligns with typedProject.watchers[i]
   // (the mapper maps them in order).
   (typedProject.watchers ?? []).forEach((watcher, i) => {
-    // Gate on absence, not truthiness — a present-but-empty `reaction: ""`
-    // must reach the validator (which rejects it), matching parseWatcher.
+    // Gate on absence, not truthiness — a present-but-empty
+    // `reactionFromFile("")` must reach the validator (which rejects it),
+    // matching parseWatcher.
     if (watcher.reaction === undefined) return;
     const dw = state.watchers[i];
     if (!dw) return;
     dw.reactionScript = resolveReactionScript(
       opts.cwd,
       watcher.slug,
-      watcher.reaction
+      watcher.reaction.path
     );
   });
 

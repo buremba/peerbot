@@ -7,6 +7,7 @@ import {
   defineWatcher,
   secret,
 } from "@lobu/cli/config";
+import type LinearCyclesConnector from "./linear-cycles.connector.ts";
 
 const leadership = defineAgent({
   id: "leadership",
@@ -206,7 +207,11 @@ const boardActionTracker = defineWatcher({
 });
 
 export default defineConfig({
-  connectors: [connectorFromFile("./linear-cycles.connector.ts")],
+  connectors: [
+    connectorFromFile<typeof LinearCyclesConnector>(
+      "./linear-cycles.connector.ts"
+    ),
+  ],
   org: "leadership",
   orgName: "Leadership",
   orgDescription:

@@ -7,6 +7,7 @@ import {
   defineWatcher,
   secret,
 } from "@lobu/cli/config";
+import type StripeChargesConnector from "./stripe-charges.connector.ts";
 
 const ecommerceOps = defineAgent({
   id: "ecommerce-ops",
@@ -187,7 +188,11 @@ const customerActivityTracker = defineWatcher({
 });
 
 export default defineConfig({
-  connectors: [connectorFromFile("./stripe-charges.connector.ts")],
+  connectors: [
+    connectorFromFile<typeof StripeChargesConnector>(
+      "./stripe-charges.connector.ts"
+    ),
+  ],
   org: "ecommerce",
   orgName: "Ecommerce",
   orgDescription:

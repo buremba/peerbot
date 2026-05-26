@@ -8,6 +8,7 @@ import {
   reactionFromFile,
   secret,
 } from "@lobu/cli/config";
+import type ExaNewsFeedConnector from "./exa-news-feed.connector.ts";
 import type founderActivityTrackerReaction from "./founder-activity-tracker.reaction.ts";
 
 const SECTOR_ENUM = ["bio-health", "ai", "fintech", "crypto", "consumer"];
@@ -587,7 +588,11 @@ const opportunityMatcher = defineWatcher({
 });
 
 export default defineConfig({
-  connectors: [connectorFromFile("./exa-news-feed.connector.ts")],
+  connectors: [
+    connectorFromFile<typeof ExaNewsFeedConnector>(
+      "./exa-news-feed.connector.ts"
+    ),
+  ],
   org: "market",
   orgName: "Market",
   orgDescription:

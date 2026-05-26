@@ -133,17 +133,20 @@ my-agent/
 
 ```ts
 import { defineWatcher, reactionFromFile } from "@lobu/cli/config";
+import type criticalDetectionReaction from "./reactions/critical-detection.reaction.ts";
 
 const criticalDetection = defineWatcher({
   agent: myAgent,
   slug: "critical-detection",
   prompt: "Flag any critical incidents.",
   extractionSchema: { type: "object", properties: {} },
-  reaction: reactionFromFile("./reactions/critical-detection.reaction.ts"),
+  reaction: reactionFromFile<typeof criticalDetectionReaction>(
+    "./reactions/critical-detection.reaction.ts"
+  ),
 });
 ```
 
-The path is relative to the config file and must stay under the project directory. Keeping the reaction in its own `.ts` file (not inline) means your editor type-checks it.
+The path is relative to the config file and must stay under the project directory. Passing the handler's type via the generic (`import type` + `reactionFromFile<typeof criticalDetectionReaction>`) is optional — bare `reactionFromFile("./reactions/critical-detection.reaction.ts")` still works — but it gives you go-to-definition, rename, and a `tsc` error if the reaction's default export drifts from the `(ctx, client, params?)` handler signature. The `import type` is erased at compile time, so the reaction module is never loaded while your config is evaluated.
 
 If you don't want a reaction, omit the `reaction` field. The watcher's extraction still gets persisted; the reaction just doesn't fire.
 

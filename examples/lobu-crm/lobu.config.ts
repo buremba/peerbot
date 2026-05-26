@@ -11,6 +11,7 @@ import {
   secret,
   skillFromFile,
 } from "@lobu/cli/config";
+import type FunnelFormConnector from "./funnel-form.connector.ts";
 import type funnelDigestReaction from "./funnel-digest.reaction.ts";
 import type inboundTriageReaction from "./inbound-triage.reaction.ts";
 
@@ -387,7 +388,9 @@ const x_mentionsConn = defineConnection({
 });
 
 export default defineConfig({
-  connectors: [connectorFromFile("./funnel-form.connector.ts")],
+  connectors: [
+    connectorFromFile<typeof FunnelFormConnector>("./funnel-form.connector.ts"),
+  ],
   org: "lobu-crm",
   orgName: "Lobu CRM",
   orgDescription:

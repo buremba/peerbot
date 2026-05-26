@@ -186,7 +186,7 @@ The default export of `lobu.config.ts`.
 | `connections` | `Connection[]` | no | Connections (from `defineConnection`) |
 | `authProfiles` | `AuthProfile[]` | no | Auth profiles (from `defineAuthProfile`) |
 | `watchers` | `Watcher[]` | no | Watchers (from `defineWatcher`) |
-| `connectors` | `ConnectorSource[]` | no | Local connector source files to compile + ship (from `connectorFromFile`). Explicit list, no `./connectors` auto-discovery |
+| `connectors` | `ConnectorSource[]` | no | Local connector source files to compile + ship (from `connectorFromFile`; pass `connectorFromFile<typeof MyConnector>(...)` with an `import type` for go-to-def + a `tsc` check on the default export). Explicit list, no `./connectors` auto-discovery |
 
 Connections, the memory schema, and watchers are declared at the project level (in `defineConfig`), not inside `defineAgent`. A watcher names its owning agent through its own `agent` field.
 
@@ -401,7 +401,7 @@ Declares a scheduled watcher. Pass it to `defineConfig({ watchers: [...] })`.
 | `tags` | `string[]` | no | Free-form tags |
 | `reactionsGuidance` | string | no | LLM guidance for the watcher's downstream reaction agent |
 | `agentKind` | string | no | Agent-kind override for firings (e.g. `background`, `notifier`) |
-| `reaction` | `ReactionSource` | no | A sibling `.ts` reaction script referenced with `reactionFromFile("./reactions/foo.reaction.ts")`, compiled and run in a sandboxed isolate when the watcher fires. The script must `export default async (ctx, client) => …`. See the [Reaction SDK](/getting-started/reaction-sdk/) |
+| `reaction` | `ReactionSource` | no | A sibling `.ts` reaction script referenced with `reactionFromFile("./reactions/foo.reaction.ts")` (pass `reactionFromFile<typeof handler>(...)` with an `import type` for go-to-def + a `tsc` check on the default export), compiled and run in a sandboxed isolate when the watcher fires. The script must `export default async (ctx, client) => …`. See the [Reaction SDK](/getting-started/reaction-sdk/) |
 
 ```ts
 const digest = defineWatcher({

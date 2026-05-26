@@ -8,6 +8,7 @@ import {
   reactionFromFile,
   secret,
 } from "@lobu/cli/config";
+import type DiscoursePostsConnector from "./discourse-posts.connector.ts";
 import type opportunityMatcherReaction from "./opportunity-matcher.reaction.ts";
 
 const agentCommunity = defineAgent({
@@ -177,7 +178,11 @@ const opportunityMatcher = defineWatcher({
 });
 
 export default defineConfig({
-  connectors: [connectorFromFile("./discourse-posts.connector.ts")],
+  connectors: [
+    connectorFromFile<typeof DiscoursePostsConnector>(
+      "./discourse-posts.connector.ts"
+    ),
+  ],
   org: "agent-community",
   orgName: "Agent Community",
   orgDescription:

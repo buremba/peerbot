@@ -7,6 +7,7 @@ import {
   defineWatcher,
   secret,
 } from "@lobu/cli/config";
+import type ShopifyOrdersConnector from "./shopify-orders.connector.ts";
 
 const delivery = defineAgent({
   id: "delivery",
@@ -176,7 +177,11 @@ const phoenixRolloutTracker = defineWatcher({
 });
 
 export default defineConfig({
-  connectors: [connectorFromFile("./shopify-orders.connector.ts")],
+  connectors: [
+    connectorFromFile<typeof ShopifyOrdersConnector>(
+      "./shopify-orders.connector.ts"
+    ),
+  ],
   org: "delivery",
   orgName: "Delivery",
   orgDescription:

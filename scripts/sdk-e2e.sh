@@ -81,6 +81,7 @@ PROJ="$RUN_DIR/proj"; mkdir -p "$PROJ"
 rm -f "$PROJ/package.json"
 cat > "$PROJ/lobu.config.ts" <<'TS'
 import { connectorFromFile, defineAgent, defineConfig, defineConnection, defineEntityType, defineRelationshipType, defineWatcher, reactionFromFile, secret } from "@lobu/cli/config";
+import type PulseConnector from "./connectors/pulse.connector.ts";
 import type digestReaction from "./reactions/digest.reaction.ts";
 
 const agent = defineAgent({
@@ -121,7 +122,7 @@ const digest = defineWatcher({
 
 // prune:true so the gate exercises the destructive path on every run (this is
 // what catches the system-type $member halt class of bug).
-export default defineConfig({ prune: true, agents: [agent], entities: [company, contact], relationships: [worksAt], connectors: [connectorFromFile("./connectors/pulse.connector.ts")], connections: [pulseConn], watchers: [digest] });
+export default defineConfig({ prune: true, agents: [agent], entities: [company, contact], relationships: [worksAt], connectors: [connectorFromFile<typeof PulseConnector>("./connectors/pulse.connector.ts")], connections: [pulseConn], watchers: [digest] });
 TS
 
 # Local connector: deterministic, zero-dep, no network. `sync()` returns one

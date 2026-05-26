@@ -7,6 +7,7 @@ import {
   defineWatcher,
   secret,
 } from "@lobu/cli/config";
+import type DocuSignEnvelopesConnector from "./docusign-envelopes.connector.ts";
 
 const legalReview = defineAgent({
   id: "legal-review",
@@ -197,7 +198,11 @@ const contractReviewTracker = defineWatcher({
 });
 
 export default defineConfig({
-  connectors: [connectorFromFile("./docusign-envelopes.connector.ts")],
+  connectors: [
+    connectorFromFile<typeof DocuSignEnvelopesConnector>(
+      "./docusign-envelopes.connector.ts"
+    ),
+  ],
   org: "legal-review",
   orgName: "Legal",
   orgDescription:

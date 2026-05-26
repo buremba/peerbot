@@ -8,6 +8,7 @@ import {
   reactionFromFile,
   secret,
 } from "@lobu/cli/config";
+import type SalesforcePipelineConnector from "./salesforce-pipeline.connector.ts";
 import type accountHealthMonitorReaction from "./account-health-monitor.reaction.ts";
 
 const sales = defineAgent({
@@ -209,7 +210,11 @@ const accountHealthMonitor = defineWatcher({
 });
 
 export default defineConfig({
-  connectors: [connectorFromFile("./salesforce-pipeline.connector.ts")],
+  connectors: [
+    connectorFromFile<typeof SalesforcePipelineConnector>(
+      "./salesforce-pipeline.connector.ts"
+    ),
+  ],
   org: "sales",
   orgName: "Sales",
   orgDescription:

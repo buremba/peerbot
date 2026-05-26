@@ -12,6 +12,7 @@
 
 import type {
   ConnectorClass,
+  ConnectorRuntime,
   ReactionClient,
   ReactionContext,
 } from "@lobu/connector-sdk";
@@ -141,6 +142,22 @@ export function defineConnection(config: Omit<Connection, "kind">): Connection {
 }
 
 /**
+ * The shape a connector module's default export must satisfy: a class extending
+ * {@link ConnectorRuntime} (`export default class Foo extends ConnectorRuntime
+ * {…}`). Used to type-check the `<Connector>` generic on
+ * {@link connectorFromFile} against the referenced module.
+ */
+// The connector's checkpoint/config type params appear in both variance
+// positions (the contravariant `sync(ctx: SyncContext<C, F>)` and the covariant
+// `SyncResult<C>`), so `any` is the only instantiation that accepts every
+// concrete subclass; `unknown`/`never` reject real connectors typed
+// `ConnectorRuntime<MyCheckpoint, MyConfig>`. Only the constructor shape is
+// load-bearing here, never the type params.
+export type ConnectorClassExport = new (
+  ...args: never[]
+) => ConnectorRuntime<any, any>;
+
+/**
  * A local connector source file to compile and ship at `lobu apply`. Built with
  * {@link connectorFromFile} and listed in {@link Project.connectors}. This is
  * explicit — only listed connectors are compiled and uploaded; there is no
@@ -153,8 +170,24 @@ export interface ConnectorSource {
   path: string;
 }
 
-/** Reference a local connector source file to compile + ship at apply time. */
-export function connectorFromFile(path: string): ConnectorSource {
+/**
+ * Reference a local connector source file to compile + ship at apply time.
+ *
+ * Pass the connector's module type via the generic for go-to-def / rename and a
+ * `tsc` error if the module's default export drifts from
+ * {@link ConnectorClassExport} (a {@link ConnectorRuntime} subclass):
+ *
+ * ```ts
+ * import type StripeCharges from "./stripe-charges.connector.ts";
+ * connectorFromFile<typeof StripeCharges>("./stripe-charges.connector.ts"),
+ * ```
+ *
+ * The `import type` is erased at compile time (zero runtime cost; jiti drops it),
+ * so the connector module is never imported during config eval.
+ */
+export function connectorFromFile<
+  _Connector extends ConnectorClassExport = ConnectorClassExport,
+>(path: string): ConnectorSource {
   return { kind: "connectorSource", path };
 }
 

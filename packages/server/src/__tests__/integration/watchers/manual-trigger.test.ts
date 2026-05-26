@@ -307,4 +307,35 @@ describe('POST /api/workers/me/watchers/:watcher_id/trigger', () => {
     });
     expect(response.status).toBe(404);
   });
+
+  it('poll payload carries the watcher execution_config', async () => {
+    const ctx = await setupDevicePinnedWatcher({ workerId: 'mac-poll-exec' });
+    const execCfg = { timeout_seconds: 1800, model: 'opus', permission_mode: 'plan' };
+    await ctx.sql`
+      UPDATE watchers SET execution_config = ${ctx.sql.json(execCfg)} WHERE id = ${ctx.watcherId}
+    `;
+    const { token } = await createWorkerBoundPat(
+      ctx.workspace.users.owner.id,
+      ctx.workspace.org.id,
+      'mac-poll-exec'
+    );
+
+    // Trigger queues a pending run pinned to this device.
+    const trig = await post(`/api/workers/me/watchers/${ctx.watcherId}/trigger`, { token });
+    expect(trig.status).toBe(200);
+
+    // The device poll claims it and gets the payload envelope the dispatcher
+    // builds its CLI invocation from — execution_config must round-trip.
+    const pollRes = await post('/api/workers/poll', {
+      token,
+      body: { worker_id: 'mac-poll-exec', capabilities: {} },
+    });
+    expect(pollRes.status).toBe(200);
+    const job = (await pollRes.json()) as {
+      run_type?: string;
+      payload?: { watcher?: { execution_config?: Record<string, unknown> } };
+    };
+    expect(job.run_type).toBe('watcher');
+    expect(job.payload?.watcher?.execution_config).toEqual(execCfg);
+  });
 });

@@ -61,6 +61,10 @@ import { validateTemplate } from '../../watchers/renderer';
 import { validateClassifierSourcePaths, validateExtractionSchema } from '../../watchers/validator';
 import type { ToolContext } from '../registry';
 import { routeAction } from './action-router';
+import {
+  assertValidExecutionConfig,
+  WatcherExecutionConfigSchema,
+} from './watcher-execution-config';
 import { getNextNumericId, requireExists } from './helpers/db-helpers';
 
 // Initialize AJV for JSON Schema validation
@@ -406,56 +410,11 @@ export const ManageWatchersSchema = Type.Object({
     })
   ),
   model_config: Type.Optional(Type.Any({ description: '[create/update] AI model configuration' })),
-  execution_config: Type.Optional(
-    // Union with Null so `update` can clear a previously-saved config back to
-    // NULL/defaults — omitted = unchanged, null = clear, object = replace. The
-    // UPDATE path already maps null → SQL NULL via toJsonParam.
-    Type.Union([
-      Type.Null(),
-      Type.Object(
-        {
-          timeout_seconds: Type.Optional(
-            Type.Integer({
-              minimum: 1,
-              description: 'Wall-clock cap for the device-worker CLI run (default 600).',
-            })
-          ),
-        max_budget_usd: Type.Optional(
-          Type.Number({
-            minimum: 0,
-            description: 'Per-run dollar ceiling (claude only: --max-budget-usd). No-op on other CLIs.',
-          })
-        ),
-        model: Type.Optional(
-          Type.String({ description: 'Model alias/id passed to the CLI (--model).' })
-        ),
-        permission_mode: Type.Optional(
-          Type.Union(
-            [
-              Type.Literal('acceptEdits'),
-              Type.Literal('auto'),
-              Type.Literal('bypassPermissions'),
-              Type.Literal('default'),
-              Type.Literal('dontAsk'),
-              Type.Literal('plan'),
-            ],
-            { description: 'Tool permission mode (claude only: --permission-mode).' }
-          )
-        ),
-        effort: Type.Optional(
-          Type.Union([Type.Literal('low'), Type.Literal('medium'), Type.Literal('high')], {
-            description: 'Reasoning effort (claude only: --effort).',
-          })
-        ),
-      },
-        {
-          additionalProperties: false,
-          description:
-            '[create/update] Per-watcher device-worker CLI execution settings. Omitted fields fall back to dispatcher/CLI defaults.',
-        }
-      ),
-    ])
-  ),
+  // Union with Null so `update` can clear a previously-saved config back to
+  // NULL/defaults — omitted = unchanged, null = clear, object = replace. The
+  // object shape lives in WatcherExecutionConfigSchema (below) so it can also
+  // be compiled into a runtime validator (assertValidExecutionConfig).
+  execution_config: Type.Optional(Type.Union([Type.Null(), WatcherExecutionConfigSchema])),
   tags: Type.Optional(Type.Array(Type.String(), { description: '[create] Tags for filtering' })),
 
   // Version management
@@ -769,7 +728,7 @@ export async function manageWatchers(
 
   return routeAction<ManageWatchersResult>('manage_watchers', args.action, ctx, {
     create: () => handleCreate(args, env, ctx),
-    update: () => handleUpdate(args, env),
+    update: () => handleUpdate(args, env, ctx),
     create_version: () => handleCreateVersion(args, env, ctx),
     upgrade: () => handleUpgrade(args, env),
     complete_window: () => handleCompleteWindow(args, env, ctx),
@@ -993,6 +952,7 @@ async function handleCreate(
   if (!args.extraction_schema) {
     throw new ToolUserError('extraction_schema is required for create action');
   }
+  assertValidExecutionConfig(args.execution_config, ctx);
 
   // entity_id is optional: omit it for an org-scoped/global watcher.
   const entityId = args.entity_id;
@@ -1317,13 +1277,15 @@ async function handleCreateFromVersion(
 
 async function handleUpdate(
   args: ManageWatchersArgs,
-  _env: Env
+  _env: Env,
+  ctx: ToolContext
 ): Promise<{ action: 'update'; watcher_id: string; updated_fields: string[] }> {
   const sql = getDb();
 
   if (!args.watcher_id) {
     throw new Error('watcher_id is required for update action');
   }
+  assertValidExecutionConfig(args.execution_config, ctx);
 
   await requireExists(sql, 'watchers', args.watcher_id, 'Watcher');
 

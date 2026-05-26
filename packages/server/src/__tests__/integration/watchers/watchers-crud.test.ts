@@ -164,6 +164,45 @@ describe('watcher CRUD', () => {
     await owner.watchers.delete([created.watcher_id]);
   });
 
+  it('rejects an invalid execution_config (type/range/unknown-key)', async () => {
+    const base = {
+      entity_id: entityId,
+      name: 'Bad Exec',
+      prompt: 'x',
+      extraction_schema: { type: 'object', properties: {} },
+      agent_id: agentId,
+    };
+    // timeout_seconds below minimum
+    await expect(
+      owner.watchers.create({ ...base, slug: 'bad-1', execution_config: { timeout_seconds: 0 } })
+    ).rejects.toThrow(/execution_config/i);
+    // wrong type (string where integer expected) — would otherwise brick the
+    // Swift payload decode at run time.
+    await expect(
+      owner.watchers.create({
+        ...base,
+        slug: 'bad-2',
+        execution_config: { timeout_seconds: '600' },
+      } as never)
+    ).rejects.toThrow(/execution_config/i);
+    // unknown key (additionalProperties: false)
+    await expect(
+      owner.watchers.create({
+        ...base,
+        slug: 'bad-3',
+        execution_config: { bogus: true },
+      } as never)
+    ).rejects.toThrow(/execution_config/i);
+    // above maximum
+    await expect(
+      owner.watchers.create({
+        ...base,
+        slug: 'bad-4',
+        execution_config: { timeout_seconds: 999_999 },
+      })
+    ).rejects.toThrow(/execution_config/i);
+  });
+
   it('creates an org-scoped watcher with no entity_id', async () => {
     const created = (await owner.watchers.create({
       slug: 'org-scoped-watcher',

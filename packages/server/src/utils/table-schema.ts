@@ -129,6 +129,7 @@ export const QUERYABLE_SCHEMA = {
         'agent_id',
         'scheduler_client_id',
         'model_config',
+        'execution_config',
         'status',
         'created_at',
         'updated_at',

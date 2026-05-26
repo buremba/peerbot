@@ -24,9 +24,9 @@
  *   examples     -> [{ slug, label, description, githubUrl }]
  *
  * And, under `useCases`, per-use-case connector / memorySchema / watcher
- * snippets keyed by the example dir slug. The interactive use-case tab strip
- * on the landing page swaps these three sections; everything else stays
- * generic. Hero copy is not part of this manifest.
+ * snippets keyed by the example dir slug. The /for/<useCase> SEO pages use
+ * these route-specific snippets; the homepage stays pinned to sales. Hero
+ * copy is not part of this manifest.
  *
  * Output: packages/landing/src/generated/landing-snippets.json
  */
@@ -44,7 +44,7 @@ const CONFIG_FILE = "lobu.config.ts";
 // Every pinned snippet comes from the one `sales` example so the homepage reads
 // as a single coherent app (Salesforce connector -> account/renewal entities ->
 // health watcher -> reaction -> agent + skill), shown config-first. The
-// per-use-case tab data (useCases below) still spans many examples for the
+// per-use-case route data (useCases below) still spans many examples for the
 // /for/<useCase> SEO pages.
 const PINNED = {
   connector: {

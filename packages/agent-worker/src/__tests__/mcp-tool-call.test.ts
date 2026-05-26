@@ -232,7 +232,7 @@ describe("callMcpTool", () => {
 });
 
 // ---------------------------------------------------------------------------
-// AskUserQuestion edge cases
+// ask_user edge cases
 // ---------------------------------------------------------------------------
 
 describe("askUserQuestion edge cases", () => {
@@ -268,7 +268,7 @@ describe("askUserQuestion edge cases", () => {
 });
 
 // ---------------------------------------------------------------------------
-// UploadUserFile edge cases
+// upload_file edge cases
 // ---------------------------------------------------------------------------
 
 describe("uploadUserFile edge cases", () => {
@@ -321,7 +321,7 @@ describe("uploadUserFile edge cases", () => {
 });
 
 // ---------------------------------------------------------------------------
-// GetChannelHistory edge cases
+// get_channel_history edge cases
 // ---------------------------------------------------------------------------
 
 describe("getChannelHistory edge cases", () => {

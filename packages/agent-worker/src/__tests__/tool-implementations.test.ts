@@ -73,7 +73,7 @@ describe("tool implementations", () => {
       );
       expect(uploaded).toEqual([
         {
-          tool: "UploadUserFile",
+          tool: "upload_file",
           platform: "telegram",
           fileId: "file-123",
           name: "e2e.txt",
@@ -117,7 +117,7 @@ describe("tool implementations", () => {
       );
       expect(uploaded).toEqual([
         {
-          tool: "UploadUserFile",
+          tool: "upload_file",
           platform: "telegram",
           fileId: "artifact-123",
           artifactId: "artifact-123",

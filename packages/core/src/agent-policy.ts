@@ -13,23 +13,23 @@ export interface ToolIntentRule {
 }
 
 export const CUSTOM_TOOL_METADATA: Record<string, CustomToolMetadata> = {
-  UploadUserFile: {
+  upload_file: {
     description:
       "Use this whenever you create a visualization, chart, image, document, report, or any file that helps answer the user's request. When the user asks you to send, share, attach, export, or upload a file, create it and then call this tool so the user can actually receive it in-thread. Do not substitute local paths, workspace paths, or sandbox links.",
   },
-  GenerateImage: {
+  generate_image: {
     description:
       "Generate an image from a text prompt and send it to the user. Use when the user asks for image generation, visual concepts, posters, illustrations, or edits that can be done from prompt instructions.",
   },
-  GenerateAudio: {
+  generate_audio: {
     description:
       "Generate audio from text (text-to-speech). Use when you want to respond with a voice message, read content aloud, or when the user asks for audio output.",
   },
-  GetChannelHistory: {
+  get_channel_history: {
     description:
       "Fetch previous messages from this conversation thread. Use when the user references past discussions, asks 'what did we talk about', or you need context.",
   },
-  AskUserQuestion: {
+  ask_user: {
     description:
       "Posts a question with button options to the user. Session ends after posting. The user's response will arrive as a new message in the next session.",
   },
@@ -39,11 +39,11 @@ export const TOOL_INTENT_RULES: ToolIntentRule[] = [
   {
     id: "structured-user-choices",
     title: "Structured User Choices",
-    tools: ["AskUserQuestion"],
+    tools: ["ask_user"],
     instructionLines: [
-      "Use AskUserQuestion when you need the user to choose from a short list of options or approvals.",
+      "Use ask_user when you need the user to choose from a short list of options or approvals.",
       "Use plain text only for open-ended clarifications or when you need a free-form value.",
-      "After calling AskUserQuestion, stop. The user's answer arrives as the next message.",
+      "After calling ask_user, stop. The user's answer arrives as the next message.",
     ],
     patterns: [],
     priority: 10,
@@ -52,10 +52,10 @@ export const TOOL_INTENT_RULES: ToolIntentRule[] = [
   {
     id: "share-generated-files",
     title: "Share Created Files",
-    tools: ["UploadUserFile"],
+    tools: ["upload_file"],
     instructionLines: [
-      "If you create a file that helps answer the request, use UploadUserFile so the user can access it in-thread.",
-      "Never claim a file was sent unless UploadUserFile actually succeeded in this turn.",
+      "If you create a file that helps answer the request, use upload_file so the user can access it in-thread.",
+      "Never claim a file was sent unless upload_file actually succeeded in this turn.",
       "Never show sandbox:, workspace, or local filesystem links to the user as if they are downloadable attachments.",
     ],
     patterns: [],
@@ -65,11 +65,11 @@ export const TOOL_INTENT_RULES: ToolIntentRule[] = [
   {
     id: "file-delivery",
     title: "Deliver Files To The User",
-    tools: ["UploadUserFile"],
+    tools: ["upload_file"],
     instructionLines: [
-      "If the user asks to receive, download, attach, upload, export, or share a file, you must use UploadUserFile after creating the file.",
+      "If the user asks to receive, download, attach, upload, export, or share a file, you must use upload_file after creating the file.",
       "Creating the file locally is not enough; the user cannot access sandbox, workspace, or local filesystem paths.",
-      "For file delivery requests, use this sequence: create the file, call UploadUserFile, then tell the user it was sent only if the tool succeeds.",
+      "For file delivery requests, use this sequence: create the file, call upload_file, then tell the user it was sent only if the tool succeeds.",
     ],
     patterns: [
       /\b(send|share|attach|upload|export|deliver|give)\b.*\b(file|document|csv|pdf|report|spreadsheet|image|audio)\b/i,
@@ -82,9 +82,9 @@ export const TOOL_INTENT_RULES: ToolIntentRule[] = [
   {
     id: "conversation-history",
     title: "Thread History",
-    tools: ["GetChannelHistory"],
+    tools: ["get_channel_history"],
     instructionLines: [
-      "Use GetChannelHistory when the user references earlier discussion or you need prior thread context.",
+      "Use get_channel_history when the user references earlier discussion or you need prior thread context.",
     ],
     patterns: [
       /\b(earlier|previous|past)\b.*\b(thread|message|messages|discussion|conversation)\b/i,
@@ -97,9 +97,9 @@ export const TOOL_INTENT_RULES: ToolIntentRule[] = [
   {
     id: "image-generation",
     title: "Image Generation",
-    tools: ["GenerateImage"],
+    tools: ["generate_image"],
     instructionLines: [
-      "If the user asks to generate or create an image, use GenerateImage.",
+      "If the user asks to generate or create an image, use generate_image.",
       "Do not claim image generation is unavailable unless the tool call fails and you report the actual failure.",
     ],
     priority: 70,

@@ -243,7 +243,7 @@ describe("chatCommand example integration", () => {
             {
               event: "file-uploaded",
               data: {
-                tool: "UploadUserFile",
+                tool: "upload_file",
                 platform: "telegram",
                 fileId: "file-123",
                 name: "e2e.txt",
@@ -273,7 +273,7 @@ describe("chatCommand example integration", () => {
     expect(stdout.join("")).toContain("Uploaded e2e.txt successfully");
     expect(stderr.join("")).toContain('"event":"file-uploaded"');
     expect(stderr.join("")).toContain('"name":"e2e.txt"');
-    expect(stderr.join("")).toContain('"tool":"UploadUserFile"');
+    expect(stderr.join("")).toContain('"tool":"upload_file"');
   });
 
   test("warns when a sandbox link is streamed without a file-uploaded event", async () => {

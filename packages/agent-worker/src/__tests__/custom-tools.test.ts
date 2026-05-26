@@ -24,15 +24,15 @@ describe("createOpenClawCustomTools", () => {
     });
 
     expect(tools.map((tool) => tool.name)).toEqual([
-      "UploadUserFile",
-      "GenerateImage",
-      "GenerateAudio",
-      "GetChannelHistory",
-      "AskUserQuestion",
+      "upload_file",
+      "generate_image",
+      "generate_audio",
+      "get_channel_history",
+      "ask_user",
     ]);
   });
 
-  test("UploadUserFile emits a file-uploaded custom event after a successful upload", async () => {
+  test("upload_file emits a file-uploaded custom event after a successful upload", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "lobu-custom-tool-"));
     const filePath = join(tempDir, "proof.txt");
     writeFileSync(filePath, "proof");
@@ -61,7 +61,7 @@ describe("createOpenClawCustomTools", () => {
         onCustomEvent: (name, data) => {
           events.push({ name, data });
         },
-      }).find((tool) => tool.name === "UploadUserFile");
+      }).find((tool) => tool.name === "upload_file");
 
       expect(uploadTool).toBeDefined();
 
@@ -76,7 +76,7 @@ describe("createOpenClawCustomTools", () => {
         {
           name: "file-uploaded",
           data: {
-            tool: "UploadUserFile",
+            tool: "upload_file",
             platform: "telegram",
             fileId: "file-123",
             name: "proof.txt",
@@ -90,7 +90,7 @@ describe("createOpenClawCustomTools", () => {
     }
   });
 
-  test("AskUserQuestion invokes onAskUserPosted after a successful post", async () => {
+  test("ask_user invokes onAskUserPosted after a successful post", async () => {
     globalThis.fetch = mock(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (!url.endsWith("/internal/interactions/create")) {
@@ -108,7 +108,7 @@ describe("createOpenClawCustomTools", () => {
       platform: "slack",
       workspaceDir: "/tmp/test-workspace",
       onAskUserPosted: () => posted++,
-    }).find((tool) => tool.name === "AskUserQuestion");
+    }).find((tool) => tool.name === "ask_user");
 
     expect(askTool).toBeDefined();
 

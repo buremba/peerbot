@@ -2,7 +2,7 @@
  * Internal Audio Routes
  *
  * Worker-facing endpoints for audio generation (TTS).
- * Used by the GenerateAudio custom MCP tool.
+ * Used by the generate_audio custom MCP tool.
  */
 
 import { createLogger } from "@lobu/core";

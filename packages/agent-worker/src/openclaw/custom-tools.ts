@@ -50,14 +50,14 @@ export function createOpenClawCustomTools(params: {
   channelId: string;
   conversationId: string;
   platform?: string;
-  /** Session workspace directory. Required — UploadUserFile resolves relative paths against it. */
+  /** Session workspace directory. Required — upload_file resolves relative paths against it. */
   workspaceDir: string;
   onCustomEvent?: (
     name: string,
     data: Record<string, unknown>
   ) => Promise<void> | void;
   /**
-   * Invoked after AskUserQuestion successfully posts its question. The worker
+   * Invoked after ask_user successfully posts its question. The worker
    * wires this to force the agent turn to end immediately so a weak model can't
    * re-post the same question in a loop. Optional so non-worker callers (tests)
    * can omit it.
@@ -75,8 +75,8 @@ export function createOpenClawCustomTools(params: {
 
   const tools: ToolDefinition[] = [
     defineTool({
-      name: "UploadUserFile",
-      description: getCustomToolDescription("UploadUserFile"),
+      name: "upload_file",
+      description: getCustomToolDescription("upload_file"),
       parameters: Type.Object({
         file_path: Type.String({
           description:
@@ -96,8 +96,8 @@ export function createOpenClawCustomTools(params: {
     }),
 
     defineTool({
-      name: "GenerateImage",
-      description: getCustomToolDescription("GenerateImage"),
+      name: "generate_image",
+      description: getCustomToolDescription("generate_image"),
       parameters: Type.Object({
         prompt: Type.String({
           description: "The image prompt to generate",
@@ -153,8 +153,8 @@ export function createOpenClawCustomTools(params: {
     }),
 
     defineTool({
-      name: "GenerateAudio",
-      description: getCustomToolDescription("GenerateAudio"),
+      name: "generate_audio",
+      description: getCustomToolDescription("generate_audio"),
       parameters: Type.Object({
         text: Type.String({
           description: "The text to convert to speech (max 4096 characters)",
@@ -175,8 +175,8 @@ export function createOpenClawCustomTools(params: {
     }),
 
     defineTool({
-      name: "GetChannelHistory",
-      description: getCustomToolDescription("GetChannelHistory"),
+      name: "get_channel_history",
+      description: getCustomToolDescription("get_channel_history"),
       parameters: Type.Object({
         limit: Type.Optional(
           Type.Number({
@@ -194,8 +194,8 @@ export function createOpenClawCustomTools(params: {
     }),
 
     defineTool({
-      name: "AskUserQuestion",
-      description: getCustomToolDescription("AskUserQuestion"),
+      name: "ask_user",
+      description: getCustomToolDescription("ask_user"),
       parameters: Type.Object({
         question: Type.String({
           description: "The question to ask the user",

@@ -249,7 +249,7 @@ describe("turn force-terminate via TurnController + real Agent loop", () => {
     const controller = new TurnController();
 
     let askUserExecCount = 0;
-    const askUser = makeRecordingTool("AskUserQuestion", () => {
+    const askUser = makeRecordingTool("ask_user", () => {
       askUserExecCount += 1;
       // This is exactly what the worker's onAskUserPosted does after the
       // gateway POST succeeds.
@@ -272,7 +272,7 @@ describe("turn force-terminate via TurnController + real Agent loop", () => {
         streamCalls += 1;
         return scriptedStream(
           assistantWithToolCall(
-            "AskUserQuestion",
+            "ask_user",
             { question: "Which option?", options: ["a", "b"] },
             `call-${streamCalls}`
           )
@@ -310,7 +310,7 @@ describe("turn force-terminate via TurnController + real Agent loop", () => {
 
     let askUserBody = 0;
     let siblingBody = 0;
-    const askUser = makeRecordingTool("AskUserQuestion", () => {
+    const askUser = makeRecordingTool("ask_user", () => {
       askUserBody += 1;
       controller.terminate("ask-user", "posted");
     });
@@ -333,7 +333,7 @@ describe("turn force-terminate via TurnController + real Agent loop", () => {
         return scriptedStream(
           assistantWithToolCalls([
             {
-              name: "AskUserQuestion",
+              name: "ask_user",
               args: { question: "Which?", options: ["a", "b"] },
               id: "call-ask",
             },

@@ -2,7 +2,7 @@
  * Detects and redacts "sandbox leaks" — cases where the agent presents a
  * local workspace path (or a Claude `sandbox://` URL) as if it were a
  * user-downloadable artifact, without having actually called
- * `UploadUserFile`.
+ * `upload_file`.
  *
  * Catches three structural delivery patterns (links, sandbox:// URLs,
  * HTML attributes) plus a semantic pattern: a workspace path presented as
@@ -51,7 +51,7 @@ interface LeakCheckResult {
 /**
  * Inspect the agent's final user-facing message for unfulfilled file-delivery
  * claims. If `sawUploadedFileEvent` is true (the agent actually called
- * UploadUserFile during this turn), no check is performed — the agent did
+ * upload_file during this turn), no check is performed — the agent did
  * deliver something, and any remaining path references are assumed
  * descriptive.
  */
@@ -89,12 +89,12 @@ export function checkSandboxLeak(
   );
   redacted = redacted.replace(
     DELIVERY_PHRASE_RE,
-    "[file was created but not uploaded — use `UploadUserFile` to deliver it]"
+    "[file was created but not uploaded — use `upload_file` to deliver it]"
   );
 
   const note =
     "\n\n_Note: I referenced a local file but did not actually upload it. " +
-    "Ask me to retry and I will use `UploadUserFile` to deliver it._";
+    "Ask me to retry and I will use `upload_file` to deliver it._";
 
   return { leaked: true, redactedText: `${redacted}${note}` };
 }

@@ -6,15 +6,13 @@ import {
 } from "../agent-policy";
 
 describe("agent-policy file delivery guidance", () => {
-  test("detects file delivery prompts and prioritizes UploadUserFile", () => {
+  test("detects file delivery prompts and prioritizes upload_file", () => {
     const rules = detectToolIntentRules(
       "Create a PDF summary and send the file to me as an attachment"
     );
 
     expect(rules.map((rule) => rule.id)).toContain("file-delivery");
-    expect(rules.some((rule) => rule.tools.includes("UploadUserFile"))).toBe(
-      true
-    );
+    expect(rules.some((rule) => rule.tools.includes("upload_file"))).toBe(true);
   });
 
   test("renders explicit create-then-upload guidance for file delivery", () => {
@@ -23,14 +21,14 @@ describe("agent-policy file delivery guidance", () => {
     );
 
     expect(instructions).toContain("Deliver Files To The User");
-    expect(instructions).toContain("UploadUserFile");
+    expect(instructions).toContain("upload_file");
     expect(instructions).toContain(
-      "create the file, call UploadUserFile, then tell the user it was sent"
+      "create the file, call upload_file, then tell the user it was sent"
     );
   });
 
-  test("UploadUserFile description forbids local path substitutes", () => {
-    expect(getCustomToolDescription("UploadUserFile")).toContain(
+  test("upload_file description forbids local path substitutes", () => {
+    expect(getCustomToolDescription("upload_file")).toContain(
       "Do not substitute local paths, workspace paths, or sandbox links"
     );
   });

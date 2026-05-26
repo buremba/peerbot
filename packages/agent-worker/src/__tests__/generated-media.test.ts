@@ -23,7 +23,7 @@ describe("generated media upload flow", () => {
     mock.restore();
   });
 
-  test("GenerateImage uploads the generated image to the gateway", async () => {
+  test("generate_image uploads the generated image to the gateway", async () => {
     const fetchMock = mock(
       async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
@@ -79,7 +79,7 @@ describe("generated media upload flow", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  test("GenerateAudio uploads synthesized speech as a voice message", async () => {
+  test("generate_audio uploads synthesized speech as a voice message", async () => {
     const fetchMock = mock(
       async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);

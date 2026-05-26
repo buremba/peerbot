@@ -64,7 +64,7 @@ describe("audio provider suggestions", () => {
   });
 });
 
-describe("GenerateAudio dynamic provider messaging", () => {
+describe("generate_audio dynamic provider messaging", () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
     mock.restore();

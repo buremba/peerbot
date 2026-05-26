@@ -14,7 +14,7 @@ describe("checkSandboxLeak", () => {
     expect(res.redactedText).toBe("");
   });
 
-  test("suppresses check when UploadUserFile event was seen", () => {
+  test("suppresses check when upload_file event was seen", () => {
     const text =
       "Here is your report. Also my notes live at /app/workspaces/foo/bar.md.";
     const res = checkSandboxLeak(text, true);
@@ -146,7 +146,7 @@ describe("checkSandboxLeak", () => {
     expect(res.leaked).toBe(false);
   });
 
-  test("suppresses delivery-phrase check when UploadUserFile was used", () => {
+  test("suppresses delivery-phrase check when upload_file was used", () => {
     const text =
       "I saved the file to `/workspace/output/data.csv` and uploaded it.";
     const res = checkSandboxLeak(text, true);

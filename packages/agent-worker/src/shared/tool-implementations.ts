@@ -194,7 +194,7 @@ async function formDataToBuffer(formData: FormData): Promise<Buffer> {
 }
 
 // ============================================================================
-// UploadUserFile
+// upload_file
 // ============================================================================
 
 export async function uploadUserFile(
@@ -202,7 +202,7 @@ export async function uploadUserFile(
   args: { file_path: string; description?: string },
   hooks?: {
     onUploaded?: (payload: {
-      tool: "UploadUserFile";
+      tool: "upload_file";
       platform: string;
       fileId: string;
       name: string;
@@ -329,7 +329,7 @@ export async function uploadUserFile(
       `Successfully showed file to user: ${result.fileId} - ${result.name}`
     );
     await hooks?.onUploaded?.({
-      tool: "UploadUserFile",
+      tool: "upload_file",
       platform: gw.platform || "unknown",
       fileId: result.fileId,
       name: result.name || fileName,
@@ -343,7 +343,7 @@ export async function uploadUserFile(
 }
 
 // ============================================================================
-// AskUserQuestion
+// ask_user
 // ============================================================================
 
 export async function askUserQuestion(
@@ -361,8 +361,8 @@ export async function askUserQuestion(
     onPosted?: () => void;
   }
 ): Promise<TextResult> {
-  return withErrorHandling("AskUserQuestion", async () => {
-    logger.info(`AskUserQuestion: ${args.question}`);
+  return withErrorHandling("ask_user", async () => {
+    logger.info(`ask_user: ${args.question}`);
 
     const { error } = await gatewayFetch<{ id: string }>(
       gw,
@@ -385,7 +385,7 @@ export async function askUserQuestion(
     hooks?.onPosted?.();
 
     return textResult(
-      "Question posted with buttons. Your turn is now ending — the user's click will arrive as a new inbound message that resumes this session. Do not call AskUserQuestion again."
+      "Question posted with buttons. Your turn is now ending — the user's click will arrive as a new inbound message that resumes this session. Do not call ask_user again."
     );
   });
 }
@@ -647,7 +647,7 @@ async function uploadGeneratedFile(
 }
 
 // ============================================================================
-// GenerateImage
+// generate_image
 // ============================================================================
 
 function imageExtFromMime(mimeType: string): string {
@@ -666,8 +666,8 @@ export async function generateImage(
     format?: "png" | "jpeg" | "webp";
   }
 ): Promise<TextResult> {
-  return withErrorHandling("GenerateImage", async () => {
-    logger.info(`GenerateImage: ${args.prompt.substring(0, 80)}...`);
+  return withErrorHandling("generate_image", async () => {
+    logger.info(`generate_image: ${args.prompt.substring(0, 80)}...`);
 
     const capResponse = await fetch(
       `${gw.gatewayUrl}/internal/images/capabilities`,
@@ -757,7 +757,7 @@ export async function generateImage(
 }
 
 // ============================================================================
-// GenerateAudio
+// generate_audio
 // ============================================================================
 
 function audioExtFromMime(mimeType: string): string {
@@ -770,8 +770,8 @@ export async function generateAudio(
   gw: GatewayParams,
   args: { text: string; voice?: string; speed?: number }
 ): Promise<TextResult> {
-  return withErrorHandling("GenerateAudio", async () => {
-    logger.info(`GenerateAudio: ${args.text.substring(0, 50)}...`);
+  return withErrorHandling("generate_audio", async () => {
+    logger.info(`generate_audio: ${args.text.substring(0, 50)}...`);
 
     const suggestions = await fetchAudioProviderSuggestions({
       gatewayUrl: gw.gatewayUrl,
@@ -849,18 +849,18 @@ export async function generateAudio(
 }
 
 // ============================================================================
-// GetChannelHistory
+// get_channel_history
 // ============================================================================
 
 export async function getChannelHistory(
   gw: GatewayParams,
   args: { limit?: number; before?: string }
 ): Promise<TextResult> {
-  return withErrorHandling("GetChannelHistory", async () => {
+  return withErrorHandling("get_channel_history", async () => {
     const limit = Math.min(Math.max(args.limit || 50, 1), 100);
     const platform = gw.platform || "slack";
     logger.info(
-      `GetChannelHistory: limit=${limit}, before=${args.before || "none"}`
+      `get_channel_history: limit=${limit}, before=${args.before || "none"}`
     );
 
     const params = new URLSearchParams({

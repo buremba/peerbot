@@ -61,12 +61,12 @@ describe("renderAlwaysOnToolPolicyRules", () => {
     );
   });
 
-  test("includes AskUserQuestion rule (always-on)", () => {
-    expect(renderAlwaysOnToolPolicyRules()).toContain("AskUserQuestion");
+  test("includes ask_user rule (always-on)", () => {
+    expect(renderAlwaysOnToolPolicyRules()).toContain("ask_user");
   });
 
-  test("includes UploadUserFile rule (always-on)", () => {
-    expect(renderAlwaysOnToolPolicyRules()).toContain("UploadUserFile");
+  test("includes upload_file rule (always-on)", () => {
+    expect(renderAlwaysOnToolPolicyRules()).toContain("upload_file");
   });
 
   test("does NOT include image-generation rule (not alwaysInclude)", () => {
@@ -85,30 +85,30 @@ describe("renderAlwaysOnToolPolicyRules", () => {
 // ── getCustomToolDescription ──────────────────────────────────────────────────
 
 describe("getCustomToolDescription", () => {
-  test("returns the registered description for UploadUserFile", () => {
-    const desc = getCustomToolDescription("UploadUserFile");
+  test("returns the registered description for upload_file", () => {
+    const desc = getCustomToolDescription("upload_file");
     expect(desc.length).toBeGreaterThan(0);
-    expect(desc).not.toBe("UploadUserFile");
+    expect(desc).not.toBe("upload_file");
   });
 
-  test("returns the registered description for GenerateImage", () => {
-    const desc = getCustomToolDescription("GenerateImage");
+  test("returns the registered description for generate_image", () => {
+    const desc = getCustomToolDescription("generate_image");
     expect(desc.length).toBeGreaterThan(0);
-    expect(desc).not.toBe("GenerateImage");
+    expect(desc).not.toBe("generate_image");
   });
 
-  test("returns the registered description for GenerateAudio", () => {
-    const desc = getCustomToolDescription("GenerateAudio");
+  test("returns the registered description for generate_audio", () => {
+    const desc = getCustomToolDescription("generate_audio");
     expect(desc).toContain("audio");
   });
 
-  test("returns the registered description for GetChannelHistory", () => {
-    const desc = getCustomToolDescription("GetChannelHistory");
+  test("returns the registered description for get_channel_history", () => {
+    const desc = getCustomToolDescription("get_channel_history");
     expect(desc.length).toBeGreaterThan(0);
   });
 
-  test("returns the registered description for AskUserQuestion", () => {
-    const desc = getCustomToolDescription("AskUserQuestion");
+  test("returns the registered description for ask_user", () => {
+    const desc = getCustomToolDescription("ask_user");
     expect(desc.length).toBeGreaterThan(0);
   });
 
@@ -217,7 +217,7 @@ describe("renderDetectedToolIntentRules", () => {
     const out = renderDetectedToolIntentRules(
       "generate an image of a mountain"
     );
-    expect(out).toContain("GenerateImage");
+    expect(out).toContain("generate_image");
   });
 
   test("is deterministic for same input", () => {

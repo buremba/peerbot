@@ -90,10 +90,10 @@ Every Lobu agent ships with tools for autonomous execution and persistence:
 | Feature | Built-in Tools |
 | --- | --- |
 | **Autonomous scheduling** — one-time or cron | `ScheduleReminder`, `ListReminders`, `CancelReminder` |
-| **Human-in-the-loop** — pause on button input, resume on answer | `AskUserQuestion` |
+| **Human-in-the-loop** — pause on button input, resume on answer | `ask_user` |
 | **Full Linux toolbox** — sandboxed shell, file edit, search | `bash`, `read`, `write`, `edit`, `grep`, `find`, `ls` |
-| **Conversation context** — pull earlier thread messages | `GetChannelHistory` |
-| **File & media delivery** — share reports, charts, audio | `UploadUserFile`, `GenerateAudio` |
+| **Conversation context** — pull earlier thread messages | `get_channel_history` |
+| **File & media delivery** — share reports, charts, audio | `upload_file`, `generate_audio`, `generate_image` |
 | **Skills** — extend via `lobu.config.ts` or admin settings | `lobu.config.ts`, Settings UI |
 | **Connected APIs** — GitHub, Google, etc. with Lobu-managed OAuth | MCP tools via Lobu |
 | **Managed MCP proxy** — any MCP server with secret injection | [MCP Proxy](docs/SECURITY.md#credentials) |

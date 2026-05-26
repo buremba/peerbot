@@ -14,8 +14,8 @@ describe("OpenClawCoreInstructionProvider", () => {
 
     expect(instructions).toContain("## Baseline Policy");
     expect(instructions).toContain("## Built-In Tool Policies");
-    expect(instructions).toContain("AskUserQuestion");
-    expect(instructions).toContain("UploadUserFile");
+    expect(instructions).toContain("ask_user");
+    expect(instructions).toContain("upload_file");
   });
 
   test("includes grounding and internal detail guardrails", async () => {
@@ -43,9 +43,9 @@ describe("OpenClawPromptIntentInstructionProvider", () => {
       "## Priority Tool Guidance For This Request"
     );
     expect(instructions).toContain("Deliver Files To The User");
-    expect(instructions).toContain("UploadUserFile");
+    expect(instructions).toContain("upload_file");
     expect(instructions).toContain(
-      "create the file, call UploadUserFile, then tell the user it was sent"
+      "create the file, call upload_file, then tell the user it was sent"
     );
   });
 

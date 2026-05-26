@@ -44,7 +44,7 @@ export interface TurnControllerOptions {
  * the model voluntarily stopping (a weak model ignores "end your turn now"
  * instructions). Two independent triggers, both ending in `agent.abort()`:
  *
- *  1. AskUser/AskUserQuestion — the moment the question is posted, the turn is
+ *  1. ask_user — the moment the question is posted, the turn is
  *     terminal. The session resumes naturally later when the user's click
  *     arrives as a fresh inbound message (a new prompt → a new turn).
  *  2. Runaway guard — if any tool is called with identical args more than

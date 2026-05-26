@@ -58,11 +58,11 @@ describe("TurnController", () => {
     controller.startTurn();
 
     const args = { question: "Which one?", options: ["a", "b"] };
-    expect(controller.recordToolCall("AskUserQuestion", args)).toBe(false);
-    expect(controller.recordToolCall("AskUserQuestion", args)).toBe(false);
-    expect(controller.recordToolCall("AskUserQuestion", args)).toBe(false);
+    expect(controller.recordToolCall("ask_user", args)).toBe(false);
+    expect(controller.recordToolCall("ask_user", args)).toBe(false);
+    expect(controller.recordToolCall("ask_user", args)).toBe(false);
     // 4th identical call trips the guard.
-    expect(controller.recordToolCall("AskUserQuestion", args)).toBe(true);
+    expect(controller.recordToolCall("ask_user", args)).toBe(true);
     expect(controller.isTerminated).toBe(true);
     expect(controller.reason).toBe("identical-tool-loop");
     expect(aborts).toBe(1);

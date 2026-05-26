@@ -261,7 +261,7 @@ export interface PlatformAdapter {
 
   /**
    * Get conversation history for a channel/thread.
-   * Used by the GetChannelHistory tool to fetch past messages.
+   * Used by the get_channel_history tool to fetch past messages.
    *
    * @param channelId - Channel/chat identifier
    * @param conversationId - Conversation identifier (optional)

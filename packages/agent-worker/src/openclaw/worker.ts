@@ -1190,7 +1190,7 @@ Replace "YOUR_PROMPT_HERE" with the user's request. These agents can read/write 
 
     instructionParts.push(`## Conversation History
 
-You have access to GetChannelHistory to view previous messages in this thread.
+You have access to get_channel_history to view previous messages in this thread.
 Use it when the user references past discussions or you need context.`);
 
     // Owns the decision to force-end a turn so it never depends on the model
@@ -1217,7 +1217,7 @@ Use it when the user references past discussions or you need context.`);
       onAskUserPosted: () =>
         turnController.terminate(
           "ask-user",
-          "AskUserQuestion posted — ending the turn so the model can't re-post."
+          "ask_user posted — ending the turn so the model can't re-post."
         ),
     });
 
@@ -1927,10 +1927,10 @@ Use it when the user references past discussions or you need context.`);
     const fileOutputRules = `
 **Mandatory workflow for ANY file you create or generate:**
 1. Write the file to disk (e.g. \`output/report.pdf\`).
-2. Call \`UploadUserFile\` with the file path — this is the ONLY way the user can access it.
-3. Confirm delivery ONLY after \`UploadUserFile\` succeeds.
+2. Call \`upload_file\` with the file path — this is the ONLY way the user can access it.
+3. Confirm delivery ONLY after \`upload_file\` succeeds.
 
-**Workspace paths are not accessible to users.** Paths like \`/workspace/...\` or \`/app/workspaces/...\` are internal sandbox paths. Never show them as file locations, download links, or "saved at" references. The user cannot reach them. Always use \`UploadUserFile\` instead.`;
+**Workspace paths are not accessible to users.** Paths like \`/workspace/...\` or \`/app/workspaces/...\` are internal sandbox paths. Never show them as file locations, download links, or "saved at" references. The user cannot reach them. Always use \`upload_file\` instead.`;
 
     const common = `
 

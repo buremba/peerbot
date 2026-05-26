@@ -327,7 +327,7 @@ A `*.connector.ts` file can live anywhere in your Lobu project; reference each o
 
 ```
 my-agent/
-├── lobu.config.ts          # connectors: [connectorFromFile("./github-issues.connector.ts")]
+├── lobu.config.ts          # connectors: [connectorFromFile<typeof GitHubIssuesConnector>(...)]
 ├── github-issues.connector.ts
 ├── stripe-charges.connector.ts
 └── agents/my-agent/...

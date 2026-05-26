@@ -404,6 +404,8 @@ Declares a scheduled watcher. Pass it to `defineConfig({ watchers: [...] })`.
 | `reaction` | `ReactionSource` | no | A sibling `.ts` reaction script referenced with `reactionFromFile("./reactions/foo.reaction.ts")` (pass `reactionFromFile<typeof handler>(...)` with an `import type` for go-to-def + a `tsc` check on the default export), compiled and run in a sandboxed isolate when the watcher fires. The script must `export default async (ctx, client) => …`. See the [Reaction SDK](/getting-started/reaction-sdk/) |
 
 ```ts
+import type weeklyDigestReaction from "./reactions/weekly-digest.reaction.ts";
+
 const digest = defineWatcher({
   agent: crm,
   slug: "weekly-digest",
@@ -412,7 +414,9 @@ const digest = defineWatcher({
   notification: { channel: "both", priority: "high" },
   minCooldownSeconds: 3600,
   tags: ["crm", "weekly"],
-  reaction: reactionFromFile("./reactions/weekly-digest.reaction.ts"),
+  reaction: reactionFromFile<typeof weeklyDigestReaction>(
+    "./reactions/weekly-digest.reaction.ts"
+  ),
   prompt: "Produce the weekly digest and post it to Slack. Keep it short.",
   extractionSchema: {
     type: "object",

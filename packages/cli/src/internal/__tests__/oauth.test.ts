@@ -116,6 +116,34 @@ describe("oauth", () => {
       expect(meta.issuer).toBe("https://issuer.example.com");
     });
 
+    test("parses the auth.md claim_email_endpoint from the agent_auth block", async () => {
+      setFetch(() =>
+        jsonResponse({
+          token_endpoint: "https://issuer.example.com/token",
+          agent_auth: {
+            flows_supported: ["user_claimed"],
+            claim_email_endpoint: "https://issuer.example.com/oauth/device/email",
+          },
+        })
+      );
+
+      const meta = await discoverOAuth("https://api.example.com/v1");
+
+      expect(meta.claimEmailEndpoint).toBe(
+        "https://issuer.example.com/oauth/device/email"
+      );
+    });
+
+    test("leaves claimEmailEndpoint undefined when agent_auth is absent", async () => {
+      setFetch(() =>
+        jsonResponse({ token_endpoint: "https://issuer.example.com/token" })
+      );
+
+      const meta = await discoverOAuth("https://api.example.com/v1");
+
+      expect(meta.claimEmailEndpoint).toBeUndefined();
+    });
+
     test("falls back to origin when issuer field is absent", async () => {
       setFetch(() =>
         jsonResponse({

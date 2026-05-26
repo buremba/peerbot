@@ -774,6 +774,20 @@ export class OAuthProvider {
       code_challenge_methods_supported: ['S256'],
       userinfo_endpoint: `${this.baseUrl}/oauth/userinfo`,
       service_documentation: `${this.baseUrl}/docs`,
+      // auth.md agent-registration discovery. We support the "user_claimed"
+      // flow only: the agent supplies an email and the user confirms via a
+      // magic link. The ID-JAG "agent_verified" zero-touch flow is not offered
+      // yet, so it is intentionally absent from flows_supported. The human/
+      // agent-readable walkthrough is the auth.md file linked below.
+      agent_auth: {
+        flows_supported: ['user_claimed'],
+        claim_methods_supported: ['email'],
+        registration_endpoint: `${this.baseUrl}/oauth/register`,
+        device_authorization_endpoint: `${this.baseUrl}/oauth/device_authorization`,
+        claim_email_endpoint: `${this.baseUrl}/oauth/device/email`,
+        token_endpoint: `${this.baseUrl}/oauth/token`,
+        auth_md: `${this.baseUrl}/auth.md`,
+      },
     };
   }
 
@@ -788,6 +802,10 @@ export class OAuthProvider {
       bearer_methods_supported: ['header'],
       resource_name: 'Lobu',
       resource_documentation: `${this.baseUrl}/docs`,
+      // Pointer to the auth.md agent-registration walkthrough (RFC 9728 allows
+      // extra members). Agents that hit a 401 here can follow this to learn how
+      // to register on a user's behalf.
+      auth_md: `${this.baseUrl}/auth.md`,
     };
   }
 }

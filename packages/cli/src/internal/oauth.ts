@@ -31,6 +31,8 @@ export interface OAuthDiscovery {
   revocationEndpoint?: string;
   userinfoEndpoint?: string;
   grantTypesSupported: string[];
+  /** auth.md `agent_auth.claim_email_endpoint` — present when the server supports the email user_claimed flow. */
+  claimEmailEndpoint?: string;
 }
 
 export interface RegisteredClient {
@@ -104,6 +106,10 @@ export async function discoverOAuth(apiUrl: string): Promise<OAuthDiscovery> {
           (g) => typeof g === "string"
         ) as string[])
       : [],
+    claimEmailEndpoint: pickString(
+      (meta.agent_auth ?? {}) as Record<string, unknown>,
+      "claim_email_endpoint"
+    ),
   };
 }
 

@@ -14,6 +14,7 @@ import { resolveBaseUrl, safeOrigin, safeParseUrl } from '../base-url';
 import { createAuth } from '../index';
 import { requireAuth } from '../middleware';
 import { findExistingPersonalOrg } from '../personal-org-provisioning';
+import { buildAuthMd } from './auth-md';
 import { OAuthProvider } from './provider';
 import { DEFAULT_SCOPES_STRING, filterScopeByRole } from './scopes';
 import type { AuthorizationParams, OAuthClientMetadata, TokenRequestParams } from './types';
@@ -283,6 +284,19 @@ oauthRoutes.get('/.well-known/openid-configuration', (c) => {
 oauthRoutes.get('/.well-known/oauth-authorization-server', (c) => {
   const provider = getProvider(c);
   return c.json(provider.getAuthorizationServerMetadata());
+});
+
+/**
+ * GET /auth.md
+ * The auth.md agent-registration walkthrough (https://auth.md style), as
+ * Markdown. Discovered via the `agent_auth.auth_md` pointer in the AS metadata.
+ * Generated from the deployment base URL so examples are correct for
+ * self-hosted installs too.
+ */
+oauthRoutes.get('/auth.md', (c) => {
+  return c.body(buildAuthMd(getBaseUrl(c)), 200, {
+    'Content-Type': 'text/markdown; charset=utf-8',
+  });
 });
 
 // ============================================

@@ -101,6 +101,15 @@ npx @lobu/cli@latest validate
 npx @lobu/cli@latest login
 ```
 
+## Authentication
+
+- Interactive (human at a terminal): `lobu login` runs the device-code flow with a browser approval.
+- CI / your own automation: `LOBU_API_TOKEN`, or `lobu login --token <pat>`.
+- Local `lobu run`: the CLI mints credentials automatically over loopback — no prompt.
+- Headless, on a *user's* behalf: `lobu login --email <address>`. The server emails the user a one-click approval link and the CLI polls until they approve, then stores the scoped credential — no TTY, no pre-minted token. This is the auth.md "user_claimed" flow.
+
+An external agent not using this CLI can drive the same flow over HTTP: read `<origin>/auth.md` (linked from the `agent_auth` block in `<origin>/.well-known/oauth-authorization-server`) for the endpoints. Today only the email user_claimed flow exists (no zero-touch ID-JAG). Never fabricate a token.
+
 <!-- lobu-memory-guidance:start -->
 ## Memory Defaults
 

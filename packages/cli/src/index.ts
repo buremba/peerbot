@@ -389,12 +389,17 @@ Memory:
       "-q, --quiet",
       "Suppress spinner; bail immediately if non-interactive (CI / backgrounded shells)"
     )
+    .option(
+      "--email <address>",
+      "Headless login on a user's behalf: the server emails them an approval link (auth.md user_claimed flow)"
+    )
     .action(
       async (options: {
         token?: string;
         context?: string;
         force?: boolean;
         quiet?: boolean;
+        email?: string;
       }) => {
         const { loginCommand } = await import("./commands/login.js");
         await loginCommand({ ...options, cliVersion: version });

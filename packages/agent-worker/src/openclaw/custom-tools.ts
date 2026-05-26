@@ -56,6 +56,13 @@ export function createOpenClawCustomTools(params: {
     name: string,
     data: Record<string, unknown>
   ) => Promise<void> | void;
+  /**
+   * Invoked after AskUserQuestion successfully posts its question. The worker
+   * wires this to force the agent turn to end immediately so a weak model can't
+   * re-post the same question in a loop. Optional so non-worker callers (tests)
+   * can omit it.
+   */
+  onAskUserPosted?: () => void;
 }): ToolDefinition[] {
   const gw: GatewayParams = {
     gatewayUrl: params.gatewayUrl,
@@ -197,7 +204,8 @@ export function createOpenClawCustomTools(params: {
           description: "Array of button labels for the user to choose from",
         }),
       }),
-      run: (args) => askUserQuestion(gw, args),
+      run: (args) =>
+        askUserQuestion(gw, args, { onPosted: params.onAskUserPosted }),
     }),
   ];
 

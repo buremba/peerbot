@@ -89,4 +89,35 @@ describe("createOpenClawCustomTools", () => {
       await rm(tempDir, { recursive: true, force: true });
     }
   });
+
+  test("AskUserQuestion invokes onAskUserPosted after a successful post", async () => {
+    globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (!url.endsWith("/internal/interactions/create")) {
+        throw new Error(`Unexpected fetch: ${url}`);
+      }
+      return Response.json({ id: "question-1" });
+    }) as unknown as typeof fetch;
+
+    let posted = 0;
+    const askTool = createOpenClawCustomTools({
+      gatewayUrl: "http://gateway",
+      workerToken: "worker-token",
+      channelId: "channel-1",
+      conversationId: "conversation-1",
+      platform: "slack",
+      workspaceDir: "/tmp/test-workspace",
+      onAskUserPosted: () => posted++,
+    }).find((tool) => tool.name === "AskUserQuestion");
+
+    expect(askTool).toBeDefined();
+
+    const result = await askTool!.execute("tool-call-1", {
+      question: "Which one?",
+      options: ["a", "b"],
+    });
+
+    expect(posted).toBe(1);
+    expect(result.content[0]?.text).toContain("Question posted with buttons");
+  });
 });

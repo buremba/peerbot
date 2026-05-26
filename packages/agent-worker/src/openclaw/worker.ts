@@ -41,6 +41,7 @@ import {
   createMcpToolDefinitions,
   createOpenClawCustomTools,
 } from "./custom-tools";
+import { TurnController, wrapToolsWithTurnGuard } from "./turn-controller";
 import {
   OpenClawCoreInstructionProvider,
   OpenClawPromptIntentInstructionProvider,
@@ -1192,6 +1193,17 @@ Replace "YOUR_PROMPT_HERE" with the user's request. These agents can read/write 
 You have access to GetChannelHistory to view previous messages in this thread.
 Use it when the user references past discussions or you need context.`);
 
+    // Owns the decision to force-end a turn so it never depends on the model
+    // voluntarily stopping. AskUser calls `terminate("ask-user")` after posting
+    // (via onAskUserPosted); the runaway guards (identical-tool loop + total
+    // tool-call cap) trip inside the synchronous tool-execute wrapper applied
+    // below. The abort function is attached once the session exists.
+    const turnController = new TurnController({
+      onTerminate: ({ message }) => {
+        logger.warn(`Turn force-terminated: ${message}`);
+      },
+    });
+
     const customTools = createOpenClawCustomTools({
       ...gwParams,
       workspaceDir,
@@ -1202,6 +1214,11 @@ Use it when the user references past discussions or you need context.`);
           timestamp: Date.now(),
         });
       },
+      onAskUserPosted: () =>
+        turnController.terminate(
+          "ask-user",
+          "AskUserQuestion posted — ending the turn so the model can't re-post."
+        ),
     });
 
     // Register first-class MCP tools + auth tools. Skipped entirely in CLI
@@ -1306,17 +1323,24 @@ Use it when the user references past discussions or you need context.`);
         // Lobu instances after construction so the agent's bash actually runs
         // with the spawnHook that strips WORKER_TOKEN/DISPATCHER_URL and with
         // the embedded BashOperations + tool policy wired in above.
-        tools,
+        // Wrap built-ins with the synchronous runaway guard so the per-turn
+        // tool-call cap and identical-call guard bound bash/read/edit/write
+        // too. The guard runs inside execute (before the tool body), so the
+        // bound is tight — unlike the agent's async tool_execution_start event,
+        // which lags several turns behind real execution.
+        tools: wrapToolsWithTurnGuard(tools, turnController),
         // Wrap custom tools (plugin + MCP) so plugin before_tool_call/
         // after_tool_call hooks fire around in-process execution — these never
         // hit the gateway proxy, so this is the only place the hooks can run.
-        // Built-in tools (bash/read/edit/write) remain governed by Lobu's own
-        // tool policy (applied to the instances passed via `tools` above), not
-        // the plugin hooks.
-        customTools: wrapToolsWithPluginToolHooks(
-          customTools,
-          loadedPlugins,
-          pluginHookContext
+        // Then layer the runaway guard on top so AskUser/MCP/plugin tools are
+        // bounded identically.
+        customTools: wrapToolsWithTurnGuard(
+          wrapToolsWithPluginToolHooks(
+            customTools,
+            loadedPlugins,
+            pluginHookContext
+          ),
+          turnController
         ),
         sessionManager,
         settingsManager,
@@ -1324,6 +1348,16 @@ Use it when the user references past discussions or you need context.`);
         modelRegistry,
       });
       session = createdSession.session;
+
+      // Wire the turn controller's abort to the live agent. `agent.abort()`
+      // fires the shared AbortController: the in-flight/next LLM stream sees the
+      // aborted signal and the loop emits `agent_end` with NO further model
+      // iteration. Tool results recorded before the abort are already persisted
+      // to the session, so the resume path (next inbound message → new turn) is
+      // unaffected.
+      turnController.attachAbort(() => {
+        createdSession.session.agent.abort();
+      });
 
       // Pi-coding-agent's base prompt opens with "You are an expert coding
       // assistant operating inside pi, a coding agent harness…" — that anchor
@@ -1391,6 +1425,10 @@ Use it when the user references past discussions or you need context.`);
         turnNonce += 1;
         const currentTurnNonce = turnNonce;
 
+        // Reset per-turn runaway guards so cap/identical-call tracking is scoped
+        // to this turn only.
+        turnController.startTurn();
+
         const turnDone = new Promise<void>((resolve) => {
           resolveTurnDone = () => {
             if (currentTurnNonce !== turnNonce) {
@@ -1445,7 +1483,9 @@ Use it when the user references past discussions or you need context.`);
         }
 
         // Capture the input args at tool start so we can attach them when the
-        // matching end event fires.
+        // matching end event fires. (The runaway guard runs synchronously in
+        // the tool-execute wrapper, not here — this event stream lags several
+        // turns behind real execution.)
         if (event.type === "tool_execution_start") {
           pendingToolArgs.set(event.toolCallId, event.args);
         }

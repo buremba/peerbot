@@ -348,7 +348,18 @@ export async function uploadUserFile(
 
 export async function askUserQuestion(
   gw: GatewayParams,
-  args: { question: string; options: unknown }
+  args: { question: string; options: unknown },
+  hooks?: {
+    /**
+     * Invoked exactly once after the question is successfully posted. The
+     * worker uses this to force the agent turn to END immediately (abort the
+     * loop) rather than trusting the model to comply with the "end your turn"
+     * instruction below — a weaker model ignores prose and re-posts the same
+     * question dozens of times. The session resumes naturally when the user's
+     * click arrives as a new inbound message.
+     */
+    onPosted?: () => void;
+  }
 ): Promise<TextResult> {
   return withErrorHandling("AskUserQuestion", async () => {
     logger.info(`AskUserQuestion: ${args.question}`);
@@ -368,8 +379,13 @@ export async function askUserQuestion(
     );
     if (error) return error;
 
+    // The post succeeded — terminating the turn here is the deterministic
+    // guarantee. The prose instruction is kept only as a hint for models that
+    // read the tool result before the abort lands.
+    hooks?.onPosted?.();
+
     return textResult(
-      "Question posted with buttons. End your turn now — the user's click will arrive as a new inbound message that resumes this session."
+      "Question posted with buttons. Your turn is now ending — the user's click will arrive as a new inbound message that resumes this session. Do not call AskUserQuestion again."
     );
   });
 }

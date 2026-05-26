@@ -164,6 +164,41 @@ describe("tool implementations", () => {
     );
   });
 
+  test("askUserQuestion fires onPosted exactly once after a successful post", async () => {
+    globalThis.fetch = mock(async () =>
+      Response.json({ id: "question-1" })
+    ) as unknown as typeof fetch;
+
+    let posted = 0;
+    const result = await askUserQuestion(
+      gw,
+      { question: "Pick one", options: ["A", "B"] },
+      { onPosted: () => posted++ }
+    );
+
+    expect(posted).toBe(1);
+    expect(extractText(result as any)).toContain(
+      "Question posted with buttons"
+    );
+  });
+
+  test("askUserQuestion does NOT fire onPosted when the post fails", async () => {
+    globalThis.fetch = mock(async () =>
+      Response.json({ error: "nope" }, { status: 500 })
+    ) as unknown as typeof fetch;
+
+    let posted = 0;
+    const result = await askUserQuestion(
+      gw,
+      { question: "Pick one", options: ["A", "B"] },
+      { onPosted: () => posted++ }
+    );
+
+    // A failed post must not end the turn — the model should be free to react.
+    expect(posted).toBe(0);
+    expect(extractText(result as any)).toContain("Error");
+  });
+
   test("getChannelHistory returns note responses and formatted history", async () => {
     globalThis.fetch = mock(async () =>
       Response.json({ note: "History unavailable" })

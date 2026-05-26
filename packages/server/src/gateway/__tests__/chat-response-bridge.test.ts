@@ -526,6 +526,46 @@ describe("ChatResponseBridge.handleCompletion — multi-replica finalText", () =
     ]);
   });
 
+  test("two pods: pod A buffers deltas, pod B completes — reply delivered exactly once", async () => {
+    // Faithful two-replica reproducer. Each ChatResponseBridge has its own
+    // pod-local `streams` Map, so two instances model two pods. The competitive
+    // SKIP-LOCKED queue can route a run's deltas to pod A and its terminal row
+    // to pod B. On origin/main pod B has no local stream and drops the Slack
+    // reply (the bug); with finalText, pod B delivers and pod A — which never
+    // receives the terminal row — never posts, so the reply lands exactly once.
+    const slackPostA = mock(async () => ({ ok: true, ts: "a.1" }));
+    const slackPostB = mock(async () => ({ ok: true, ts: "b.1" }));
+    const { target: targetA } = createStreamingTarget();
+    const { target: targetB } = createStreamingTarget();
+    const podA = new ChatResponseBridge(
+      createHarness(targetA, "slack", slackPostA).manager as any
+    );
+    const podB = new ChatResponseBridge(
+      createHarness(targetB, "slack", slackPostB).manager as any
+    );
+
+    // Pod A claims the delta rows and buffers them locally.
+    await podA.handleDelta({ ...slackPayload, delta: "hello " }, "s");
+    await podA.handleDelta({ ...slackPayload, delta: "world" }, "s");
+
+    // Pod B claims the terminal row (it never saw the deltas).
+    await podB.handleCompletion(
+      {
+        ...slackPayload,
+        finalText: "hello world",
+        processedMessageIds: ["m1"],
+      },
+      "s"
+    );
+
+    // Exactly-once: pod B posted the full reply; pod A never did.
+    expect(slackPostB).toHaveBeenCalledTimes(1);
+    expect(slackPostB.mock.calls[0]?.[0]).toMatchObject({
+      markdown_text: "hello world",
+    });
+    expect(slackPostA).not.toHaveBeenCalled();
+  });
+
   test("live-streaming (Telegram) completion with NO local stream does NOT re-post finalText", async () => {
     // Default strategy streamed its deltas on whichever replica claimed them.
     // Re-posting finalText here would duplicate the reply, so a stream-less

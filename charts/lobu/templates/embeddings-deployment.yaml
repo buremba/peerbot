@@ -61,18 +61,18 @@ spec:
             httpGet:
               path: /health
               port: {{ .Values.embeddings.service.port }}
-            initialDelaySeconds: {{ .Values.healthCheck.readinessProbe.initialDelaySeconds }}
-            periodSeconds: {{ .Values.healthCheck.readinessProbe.periodSeconds }}
-            timeoutSeconds: {{ .Values.healthCheck.readinessProbe.timeoutSeconds }}
-            failureThreshold: {{ .Values.healthCheck.readinessProbe.failureThreshold }}
+            initialDelaySeconds: {{ .Values.embeddings.healthCheck.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.embeddings.healthCheck.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.embeddings.healthCheck.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.embeddings.healthCheck.readinessProbe.failureThreshold }}
           livenessProbe:
             httpGet:
               path: /health
               port: {{ .Values.embeddings.service.port }}
-            initialDelaySeconds: {{ .Values.healthCheck.livenessProbe.initialDelaySeconds }}
-            periodSeconds: {{ .Values.healthCheck.livenessProbe.periodSeconds }}
-            timeoutSeconds: {{ .Values.healthCheck.livenessProbe.timeoutSeconds }}
-            failureThreshold: {{ .Values.healthCheck.livenessProbe.failureThreshold }}
+            initialDelaySeconds: {{ .Values.embeddings.healthCheck.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.embeddings.healthCheck.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.embeddings.healthCheck.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.embeddings.healthCheck.livenessProbe.failureThreshold }}
           {{- if .Values.embeddings.cache.enabled }}
           volumeMounts:
             - name: embeddings-cache

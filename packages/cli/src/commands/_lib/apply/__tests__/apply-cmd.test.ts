@@ -1,12 +1,14 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import {
   locallyDeclaredConnectorKeys,
+  pushProviderApiKeys,
   readBoundedBody,
   validateConnectorState,
 } from "../apply-cmd.js";
-import type { RemoteConnectorDefinition } from "../client.js";
+import type { ApplyClient, RemoteConnectorDefinition } from "../client.js";
 import { validateConnectionAgainstConnector } from "../desired-state.js";
 import type {
+  DesiredAgent,
   DesiredConnection,
   DesiredState,
   ResolvedConnectorSchemas,
@@ -108,6 +110,56 @@ describe("readBoundedBody (#3 — bounded source_url fetch)", () => {
       throw new Error("should not overflow");
     });
     expect(ok).toBe(euros);
+  });
+});
+
+describe("pushProviderApiKeys (#11 — provider keys pushed on a noop-only apply)", () => {
+  function agentWithKeys(
+    agentId: string,
+    providerKeys: { providerId: string; value: string }[]
+  ): DesiredAgent {
+    return {
+      metadata: { agentId, name: agentId },
+      settings: {},
+      platforms: [],
+      providerKeys,
+    };
+  }
+
+  test("pushes setProviderApiKey for every declared key (otherwise-noop agents)", async () => {
+    const setProviderApiKey = mock(async () => {
+      /* resolve void */
+    });
+    const client = { setProviderApiKey } as unknown as ApplyClient;
+    const agents = [
+      agentWithKeys("a1", [
+        { providerId: "anthropic", value: "k-anthropic" },
+        { providerId: "openai", value: "k-openai" },
+      ]),
+      agentWithKeys("a2", [{ providerId: "zai", value: "k-zai" }]),
+    ];
+
+    await pushProviderApiKeys(client, agents);
+
+    expect(setProviderApiKey).toHaveBeenCalledTimes(3);
+    expect(setProviderApiKey).toHaveBeenCalledWith(
+      "a1",
+      "anthropic",
+      "k-anthropic"
+    );
+    expect(setProviderApiKey).toHaveBeenCalledWith("a1", "openai", "k-openai");
+    expect(setProviderApiKey).toHaveBeenCalledWith("a2", "zai", "k-zai");
+  });
+
+  test("no-op when no agent declares a provider key", async () => {
+    const setProviderApiKey = mock(async () => {
+      /* resolve void */
+    });
+    const client = { setProviderApiKey } as unknown as ApplyClient;
+
+    await pushProviderApiKeys(client, [agentWithKeys("a1", [])]);
+
+    expect(setProviderApiKey).not.toHaveBeenCalled();
   });
 });
 

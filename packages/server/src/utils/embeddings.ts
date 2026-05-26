@@ -12,6 +12,40 @@ import type { Env } from '../index';
 import logger from '../utils/logger';
 
 const EMBEDDING_DIMENSIONS = 768;
+// Must match @lobu/embeddings DEFAULT_MODEL_NAME (the local pipeline + service
+// fall back to this when EMBEDDINGS_MODEL is unset).
+const DEFAULT_EMBEDDING_MODEL = 'Xenova/bge-base-en-v1.5';
+// Allowlist mirroring the embeddings service's MODEL_NAME_PATTERN. Used to
+// reject anything unsafe before inlining the configured model into SQL.
+const MODEL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/:-]{0,127}$/;
+
+/**
+ * The embedding model this deployment is configured to produce/consume. Every
+ * freshly-written event_embeddings row is stamped with this, and similarity
+ * queries scope to it so a same-dimension model swap can't compare vectors
+ * across incompatible spaces. Reads the same env var (with the same default)
+ * as the worker and the embeddings service.
+ */
+export function getConfiguredEmbeddingModel(): string {
+  return process.env.EMBEDDINGS_MODEL || DEFAULT_EMBEDDING_MODEL;
+}
+
+/**
+ * SQL-safe string literal for the configured model, for inlining into a query
+ * builder where threading another bound parameter would be error-prone. The
+ * value is server config (not user input); we still validate it against the
+ * service's model-name allowlist and reject otherwise — fail closed rather than
+ * risk injection.
+ */
+export function configuredEmbeddingModelSqlLiteral(): string {
+  const model = getConfiguredEmbeddingModel();
+  if (!MODEL_NAME_PATTERN.test(model)) {
+    throw new Error(
+      `EMBEDDINGS_MODEL '${model}' is not a valid model identifier (allowed: ${MODEL_NAME_PATTERN}).`
+    );
+  }
+  return `'${model}'`;
+}
 const DEFAULT_TIMEOUT_MS = 30000;
 
 function resolveEmbeddingServiceUrl(env: Env): string {

@@ -173,10 +173,17 @@ async function upsertEmbedding(
 ): Promise<void> {
   if (!embedding || embedding.length === 0) return;
   const vectorLiteral = `[${embedding.join(',')}]`;
+  // On conflict, REPLACE a stale-model row with the freshly-embedded vector +
+  // stamp; the WHERE makes a same-model re-submit a no-op (idempotent), so a
+  // re-ingest of unchanged content under the same model never churns the row.
   await sql`
     INSERT INTO event_embeddings (event_id, embedding, embedding_model)
     VALUES (${eventId}, ${vectorLiteral}::vector, ${embeddingModel ?? null})
-    ON CONFLICT (event_id) DO NOTHING
+    ON CONFLICT (event_id) DO UPDATE
+      SET embedding = EXCLUDED.embedding,
+          embedding_model = EXCLUDED.embedding_model,
+          created_at = now()
+      WHERE event_embeddings.embedding_model IS DISTINCT FROM EXCLUDED.embedding_model
   `;
 }
 

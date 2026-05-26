@@ -17,7 +17,7 @@ import {
   groupClassificationFilters,
 } from './content-query-filters';
 import { parseDateAlias, toEndOfDay } from './date-aliases';
-import { generateEmbeddings } from './embeddings';
+import { configuredEmbeddingModelSqlLiteral, generateEmbeddings } from './embeddings';
 import { toVectorLiteral } from './entity-management';
 import logger from './logger';
 import { validateNumericId } from './sql-validation';
@@ -1612,8 +1612,16 @@ async function searchContentBySingleQuery(
   const textMatchExpr = `(LENGTH($1) > 0 AND (f.payload_text ILIKE '%' || $1 || '%' OR COALESCE(${textDocumentExpr} @@ ${TSQUERY_SQL}, false)))`;
   const vecParam = vectorParamIdx ? `$${vectorParamIdx}::vector` : 'NULL::vector';
   const minSimilarityParam = `$${minSimilarityParamIdx}::numeric`;
+  // Vector-space integrity: only compare against rows stamped with the model
+  // this deployment is configured for (NULL = legacy, assumed to match — they
+  // predate stamping). A same-dimension model swap therefore never compares the
+  // query embedding against vectors from a different model. The model is server
+  // config, inlined as a validated literal (`<alias>` substituted per CTE).
+  const configuredModelLiteral = configuredEmbeddingModelSqlLiteral();
+  const modelScopeFor = (alias: string) =>
+    `(${alias}.embedding_model = ${configuredModelLiteral} OR ${alias}.embedding_model IS NULL)`;
   const matchCondition = hasEmbedding
-    ? `(${textMatchExpr} OR (f.embedding IS NOT NULL AND 1 - (f.embedding <=> ${vecParam}) >= ${minSimilarityParam}))`
+    ? `(${textMatchExpr} OR (f.embedding IS NOT NULL AND ${modelScopeFor('f')} AND 1 - (f.embedding <=> ${vecParam}) >= ${minSimilarityParam}))`
     : textMatchExpr;
 
   const searchWhereSQL = `${matchCondition}
@@ -1647,8 +1655,13 @@ async function searchContentBySingleQuery(
         '[content-search] weights'
       );
     }
-    similarityExpr = `CASE WHEN fi.embedding IS NOT NULL THEN 1 - (fi.embedding <=> ${vecParam}) ELSE NULL END`;
-    combinedScoreExpr = `COALESCE((${textRankExpr}) * ${textWeight} + (1 - (fi.embedding <=> ${vecParam})) * ${vectorWeight}, ${textRankExpr})`;
+    // Same model scope as matchCondition: a row whose stamp differs from the
+    // configured model contributes no vector similarity (NULL → COALESCE falls
+    // back to the text-only score), so stale-model rows can never rank via an
+    // incompatible <=> comparison.
+    const fiVectorComparable = `fi.embedding IS NOT NULL AND ${modelScopeFor('fi')}`;
+    similarityExpr = `CASE WHEN ${fiVectorComparable} THEN 1 - (fi.embedding <=> ${vecParam}) ELSE NULL END`;
+    combinedScoreExpr = `COALESCE((${textRankExpr}) * ${textWeight} + (CASE WHEN ${fiVectorComparable} THEN 1 - (fi.embedding <=> ${vecParam}) ELSE NULL END) * ${vectorWeight}, ${textRankExpr})`;
     searchExtraColumns =
       'rs.text_rank, rs.similarity, rs.combined_score, rs.total_count, rs.cursor_fetched_count';
     orderByExpr = preferChronologicalOrdering
@@ -1727,6 +1740,7 @@ async function searchContentBySingleQuery(
           JOIN current_event_records f ON f.id = emb.event_id
           ${candidateFilterJoins}
           WHERE ${standardFiltersSQL}
+            AND ${modelScopeFor('emb')}
             AND (1 - (emb.embedding <=> ${vecParam})) >= ${minSimilarityParam}
           ORDER BY emb.embedding <=> ${vecParam}
           LIMIT ${CANDIDATE_VECTOR_LIMIT}`);
@@ -1760,7 +1774,7 @@ async function searchContentBySingleQuery(
   }
 
   const nonDateFilteredIdsCteSql = `filtered_ids AS (
-        SELECT f.id, f.score, f.occurred_at, f.title, f.payload_text, f.embedding, f.search_tsv
+        SELECT f.id, f.score, f.occurred_at, f.title, f.payload_text, f.embedding, f.embedding_model, f.search_tsv
         FROM current_event_records f
         ${useCandidatePath ? 'JOIN search_candidates sc ON sc.id = f.id' : ''}
         LEFT JOIN connections c ON c.id = f.connection_id
@@ -1774,7 +1788,7 @@ async function searchContentBySingleQuery(
   const querySQL = useDateFeed
     ? `
       WITH RECURSIVE filtered_ids AS (
-        SELECT f.id, f.score, f.occurred_at, f.title, f.payload_text, f.embedding, f.search_tsv
+        SELECT f.id, f.score, f.occurred_at, f.title, f.payload_text, f.embedding, f.embedding_model, f.search_tsv
         FROM current_event_records f
         LEFT JOIN connections c ON c.id = f.connection_id
         LEFT JOIN watcher_window_events iwf

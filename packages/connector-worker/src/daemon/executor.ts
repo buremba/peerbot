@@ -7,7 +7,7 @@
 
 import type { Env, EventEnvelope } from '@lobu/connector-sdk';
 import { compileConnectorFromFile, findBundledConnectorFile } from '../compile-connector.js';
-import { batchGenerateEmbeddings, generateEmbedding } from '../embeddings.js';
+import { batchGenerateEmbeddings } from '../embeddings.js';
 import { executeCompiledConnector } from '../executor/runtime.js';
 import { SubprocessExecutor } from '../executor/subprocess.js';
 import type { ContentItem, ExecutorClient, PollResponse } from './client.js';
@@ -232,8 +232,8 @@ async function executeSyncRun(
           }
         },
         onEventChunk: async (events) => {
-          for (const event of events) {
-            const contentItem = await processEvent(event, cfg.generateEmbeddings);
+          const contentItems = await processEventChunk(events, cfg.generateEmbeddings);
+          for (const contentItem of contentItems) {
             batch.push(contentItem);
             itemsCollectedSoFar++;
 
@@ -637,13 +637,13 @@ async function executeEmbedBackfillRun(
       }))
       .filter((p) => p.text.length > 0);
 
-    const results: Array<{ event_id: number; embedding: number[] }> = [];
+    const results: Array<{ event_id: number; embedding: number[]; embedding_model: string }> = [];
     try {
-      const embeddings = await batchGenerateEmbeddings(pending.map((p) => p.text));
+      const { embeddings, model } = await batchGenerateEmbeddings(pending.map((p) => p.text));
       for (let i = 0; i < pending.length; i++) {
         const embedding = embeddings[i];
         if (embedding) {
-          results.push({ event_id: pending[i]!.event_id, embedding });
+          results.push({ event_id: pending[i]!.event_id, embedding, embedding_model: model });
         }
       }
     } catch (err) {
@@ -698,18 +698,15 @@ function mergeEnv(
 
 /**
  * Convert a V1 EventEnvelope (the SDK's standard sync output) into the
- * gateway-bound ContentItem shape, optionally generating an embedding.
+ * gateway-bound ContentItem shape (without an embedding).
  */
-async function processEvent(
-  event: EventEnvelope,
-  generateEmbeddings: boolean
-): Promise<ContentItem> {
+function toContentItem(event: EventEnvelope): ContentItem {
   const occurredAtIso =
     event.occurred_at instanceof Date
       ? event.occurred_at.toISOString()
       : (event.occurred_at as unknown as string);
 
-  const contentItem: ContentItem = {
+  return {
     id: event.origin_id,
     title: event.title,
     payload_text: event.payload_text,
@@ -722,20 +719,56 @@ async function processEvent(
     origin_type: event.origin_type,
     semantic_type: event.semantic_type ?? event.origin_type,
   };
+}
 
-  if (generateEmbeddings) {
-    try {
-      const textForEmbedding = [event.title, event.payload_text]
-        .filter(Boolean)
-        .join(' ')
-        .trim();
-      if (textForEmbedding) {
-        contentItem.embedding = await generateEmbedding(textForEmbedding);
-      }
-    } catch (err) {
-      console.error(`[executor] Embedding generation failed for ${event.origin_id}:`, err);
+/**
+ * Convert a chunk of events into ContentItems, generating embeddings for the
+ * whole chunk in a single batch call (one HTTP round-trip / vectorized local
+ * pass) instead of one per event. Vectors are mapped back to their source
+ * event by index; events with empty text get no embedding. A batch failure is
+ * logged and the items stream through without embeddings (same fail-open
+ * behaviour as the previous per-event path).
+ */
+async function processEventChunk(
+  events: EventEnvelope[],
+  generateEmbeddings: boolean
+): Promise<ContentItem[]> {
+  const contentItems = events.map(toContentItem);
+
+  if (!generateEmbeddings || contentItems.length === 0) {
+    return contentItems;
+  }
+
+  // Collect the embeddable texts and remember which ContentItem each maps to,
+  // so vectors line up after the batch call even though empty-text items are
+  // skipped.
+  const targets: number[] = [];
+  const texts: string[] = [];
+  for (let i = 0; i < events.length; i++) {
+    const text = [events[i]!.title, events[i]!.payload_text].filter(Boolean).join(' ').trim();
+    if (text) {
+      targets.push(i);
+      texts.push(text);
     }
   }
 
-  return contentItem;
+  if (texts.length === 0) {
+    return contentItems;
+  }
+
+  try {
+    const { embeddings, model } = await batchGenerateEmbeddings(texts);
+    for (let j = 0; j < targets.length; j++) {
+      const embedding = embeddings[j];
+      if (embedding) {
+        const item = contentItems[targets[j]!]!;
+        item.embedding = embedding;
+        item.embedding_model = model;
+      }
+    }
+  } catch (err) {
+    console.error('[executor] Batch embedding generation failed for chunk:', err);
+  }
+
+  return contentItems;
 }

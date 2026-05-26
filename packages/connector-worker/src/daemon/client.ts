@@ -139,6 +139,8 @@ export interface ContentItem {
   metadata?: Record<string, unknown>;
   origin_parent_id?: string;
   embedding?: number[];
+  /** Model/version stamp that produced `embedding`; persisted so vector spaces never mix. */
+  embedding_model?: string;
   origin_type?: string;
   semantic_type?: string;
 }
@@ -185,7 +187,7 @@ export interface EmbedEvent {
 export interface CompleteEmbeddingsRequest {
   run_id: number;
   worker_id: string;
-  embeddings: Array<{ event_id: number; embedding: number[] }>;
+  embeddings: Array<{ event_id: number; embedding: number[]; embedding_model?: string }>;
   error_message?: string;
 }
 

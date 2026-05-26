@@ -8,11 +8,20 @@
 import {
   DEFAULT_DIMENSIONS,
   batchGenerateLocalEmbeddings,
+  getLocalModelName,
   validateEmbeddingDimensions,
 } from '@lobu/embeddings';
+import { resolveServiceModel } from './embeddings-model.js';
 
 const DEFAULT_BATCH_SIZE = 32;
 const DEFAULT_TIMEOUT_MS = 30000;
+
+/** Embeddings plus the model/version stamp that produced them. */
+export interface EmbeddingResult {
+  embeddings: number[][];
+  /** Model identifier persisted on each row so different vector spaces never mix. */
+  model: string;
+}
 
 function getExpectedDimensions(): number {
   const raw = process.env.EMBEDDINGS_DIMENSIONS;
@@ -20,12 +29,21 @@ function getExpectedDimensions(): number {
   return Number.isFinite(parsed) ? parsed : DEFAULT_DIMENSIONS;
 }
 
+/**
+ * The model this worker is configured to produce/consume. Both backends read
+ * the same env var (with the same default), so this is the authoritative
+ * expectation the service must match — see {@link resolveServiceModel}.
+ */
+export function getExpectedEmbeddingModel(): string {
+  return getLocalModelName();
+}
+
 function getTimeoutMs(): number {
   const parsed = Number.parseInt(process.env.EMBEDDINGS_TIMEOUT_MS || '', 10);
   return Number.isFinite(parsed) ? parsed : DEFAULT_TIMEOUT_MS;
 }
 
-async function fetchEmbeddingsFromService(texts: string[]): Promise<number[][]> {
+async function fetchEmbeddingsFromService(texts: string[]): Promise<EmbeddingResult> {
   const baseUrl = process.env.EMBEDDINGS_SERVICE_URL;
   if (!baseUrl) {
     throw new Error('EMBEDDINGS_SERVICE_URL is required for service backend');
@@ -60,6 +78,7 @@ async function fetchEmbeddingsFromService(texts: string[]): Promise<number[][]> 
     const payload = (await response.json()) as {
       embeddings?: number[][];
       dimensions?: number;
+      model?: string;
     };
 
     if (!Array.isArray(payload.embeddings)) {
@@ -78,27 +97,30 @@ async function fetchEmbeddingsFromService(texts: string[]): Promise<number[][]> 
       );
     }
 
+    // Fail loud on a model mismatch; otherwise resolve the stamp to persist.
+    const model = resolveServiceModel(payload.model, getExpectedEmbeddingModel());
+
     for (const embedding of payload.embeddings) {
       validateEmbeddingDimensions(embedding, getExpectedDimensions(), 'Embeddings service');
     }
 
-    return payload.embeddings;
+    return { embeddings: payload.embeddings, model };
   } finally {
     clearTimeout(timeout);
   }
 }
 
 export async function generateEmbedding(text: string): Promise<number[]> {
-  const [embedding] = await batchGenerateEmbeddings([text]);
-  return embedding;
+  const { embeddings } = await batchGenerateEmbeddings([text]);
+  return embeddings[0]!;
 }
 
 export async function batchGenerateEmbeddings(
   texts: string[],
   batchSize: number = DEFAULT_BATCH_SIZE
-): Promise<number[][]> {
+): Promise<EmbeddingResult> {
   if (texts.length === 0) {
-    return [];
+    return { embeddings: [], model: getExpectedEmbeddingModel() };
   }
 
   if (process.env.EMBEDDINGS_SERVICE_URL) {
@@ -109,5 +131,5 @@ export async function batchGenerateEmbeddings(
   for (const embedding of embeddings) {
     validateEmbeddingDimensions(embedding, getExpectedDimensions(), 'Local embeddings');
   }
-  return embeddings;
+  return { embeddings, model: getLocalModelName() };
 }

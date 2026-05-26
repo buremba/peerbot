@@ -24,9 +24,10 @@ const executeCompiledConnectorMock = mock<AnyFn>(async () => ({
   output: { ok: true },
 }));
 
-const batchGenerateEmbeddingsMock = mock<AnyFn>(async (texts: string[]) =>
-  texts.map(() => [0.1, 0.2, 0.3])
-);
+const batchGenerateEmbeddingsMock = mock<AnyFn>(async (texts: string[]) => ({
+  embeddings: texts.map(() => [0.1, 0.2, 0.3]),
+  model: 'test-model',
+}));
 
 mock.module('../executor/runtime.js', () => ({
   executeCompiledConnector: executeCompiledConnectorMock,
@@ -163,7 +164,7 @@ describe('executor heartbeats (lobu#860)', () => {
 
     batchGenerateEmbeddingsMock.mockImplementationOnce(async (texts: string[]) => {
       await fireIntervalTicks(2);
-      return texts.map(() => [0.1, 0.2, 0.3]);
+      return { embeddings: texts.map(() => [0.1, 0.2, 0.3]), model: 'test-model' };
     });
 
     const job = {

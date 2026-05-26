@@ -819,6 +819,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
         origin_parent_id?: string;
         origin_type?: string;
         embedding?: number[];
+        embedding_model?: string;
         semantic_type?: string;
       }>;
       checkpoint?: Record<string, unknown>;
@@ -933,6 +934,7 @@ export async function streamContent(c: Context<{ Bindings: Env }>) {
             occurredAt: item.occurred_at,
             score: item.score,
             embedding: item.embedding,
+            embeddingModel: item.embedding_model,
             metadata: item.metadata as Record<string, unknown> | undefined,
             semanticType: itemSemanticType,
             originType: itemOriginType,
@@ -1661,7 +1663,7 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
     const req = await c.req.json<{
       run_id: number;
       worker_id: string;
-      embeddings: Array<{ event_id: number; embedding: number[] }>;
+      embeddings: Array<{ event_id: number; embedding: number[]; embedding_model?: string }>;
       error_message?: string;
     }>();
 
@@ -1694,8 +1696,8 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
         // pgvector expects '[0.1,0.2,...]' format
         const vectorStr = `[${item.embedding.join(',')}]`;
         const result = await sql.unsafe(
-          'INSERT INTO event_embeddings (event_id, embedding) VALUES ($1, $2::vector) ON CONFLICT (event_id) DO NOTHING',
-          [item.event_id, vectorStr]
+          'INSERT INTO event_embeddings (event_id, embedding, embedding_model) VALUES ($1, $2::vector, $3) ON CONFLICT (event_id) DO NOTHING',
+          [item.event_id, vectorStr, item.embedding_model ?? null]
         );
         if (result.count > 0) updated++;
       } catch (err) {

@@ -97,3 +97,4 @@ packages/*/~/
 .lobu-dev/
 .sdk-e2e-run/
 .managed-e2e-run/
+.cli-smoke-run/

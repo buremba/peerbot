@@ -1,6 +1,6 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test clean dev build-packages ensure-submodule clean-workers test-unit test-integration test-e2e test-e2e-sdk typecheck task-setup task-clean e2e-browser bump review
+.PHONY: help setup build test clean dev build-packages ensure-submodule clean-workers test-unit test-integration test-e2e test-e2e-sdk test-e2e-cli typecheck task-setup task-clean e2e-browser bump review
 
 # Default target
 help:
@@ -12,6 +12,7 @@ help:
 	@echo "  make test-unit                             - Run the CI unit suite (no Postgres needed)"
 	@echo "  make test-integration                      - Run the CI integration suite (needs DATABASE_URL with pgvector)"
 	@echo "  make test-e2e                              - Boot the dev server + run openclaw-plugin e2e against it"
+	@echo "  make test-e2e-cli                          - Boot lobu run + walk every CLI command (the CI cli-smoke gate)"
 	@echo "  make clean-workers                         - Stop any running embedded worker subprocesses"
 	@echo "  make typecheck                             - Strict typecheck (same as Dockerfile) for server + owletto"
 	@echo "  make task-setup NAME=<name>                - Create a paired worktree at .claude/worktrees/<name> (lobu + submodule on real branch, .env copied, ports auto-assigned, Lobu context registered)"
@@ -147,6 +148,13 @@ test-e2e:
 # the CI `sdk-e2e` gate; run it locally the same way.
 test-e2e-sdk:
 	@./scripts/sdk-e2e.sh
+
+# CLI command-coverage smoke: boots one `lobu run` (embedded Postgres + mock
+# provider) under an isolated HOME and walks EVERY `lobu` command/subcommand
+# once, asserting each runs (or fails gracefully). Self-contained, no key. This
+# is the CI `cli-smoke` gate; run it locally the same way.
+test-e2e-cli:
+	@./scripts/cli-smoke.sh
 
 # Stop any embedded worker subprocesses left over from a crashed gateway.
 # Workers are normally cleaned up when the gateway exits; this target is a

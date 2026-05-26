@@ -685,6 +685,118 @@ oauthRoutes.post('/oauth/device_authorization', async (c) => {
   return c.json(result);
 });
 
+/**
+ * POST /oauth/device/email
+ * Agent-initiated account claim (delivers a device authorization by email).
+ *
+ * The agent starts a normal device_authorization (RFC 8628), then calls this
+ * with the resulting `user_code` and the `email` it wants to act on behalf of.
+ * We trigger a Better Auth magic link whose callbackURL is the device consent
+ * page for that user_code — one click both authenticates the user (creating
+ * the account + personal org on first sign-in, via databaseHooks.user.create)
+ * and lands them on the existing consent screen, where Approve runs the
+ * standard POST /oauth/device/approve path. The agent meanwhile polls
+ * /oauth/token and collects the credential once approved.
+ *
+ * This is intentionally a thin delivery shim over the existing device-code
+ * engine — no new credential type, no new pending-state table.
+ *
+ * Security:
+ *   - The magic link signs the recipient in AS the claimed email, so only the
+ *     inbox owner can land on the consent page — no separate identity check.
+ *   - Approval still requires an explicit authenticated POST, so a prefetched
+ *     link cannot silently approve.
+ *   - The response is opaque: it never reveals whether the email has an
+ *     account (no enumeration). A bad/expired user_code is the agent's own
+ *     error, so 400 there leaks nothing about any user.
+ *   - Rate limited per IP because it sends mail to a caller-supplied address.
+ */
+oauthRoutes.post('/oauth/device/email', async (c) => {
+  // Same abuse posture as /oauth/register: an unauthenticated endpoint that
+  // sends email to an arbitrary address. ON by default; fail CLOSED.
+  if (c.env.RATE_LIMIT_ENABLED !== 'false') {
+    try {
+      const rateLimiter = getRateLimiter();
+      const clientIP = getClientIP(c.req.raw);
+      const rateLimit = await rateLimiter.checkLimit(
+        `rate:oauth:device-email:${clientIP}`,
+        RateLimitPresets.DEVICE_EMAIL_PER_IP_HOUR
+      );
+      if (!rateLimit.allowed) {
+        return c.json(createOAuthError('invalid_request', rateLimit.errorMessage), 429);
+      }
+    } catch (err) {
+      console.warn('[OAuth] Device-email rate limit check failed:', err);
+      return c.json(createOAuthError('server_error', 'Temporarily unavailable'), 503);
+    }
+  }
+
+  const parsed = await parseRequestBody(c);
+  if (parsed instanceof Response) return parsed;
+  const body = parsed as { user_code?: unknown; email?: unknown };
+
+  // Guard on `typeof string` rather than `?.trim()`: a malformed non-string
+  // value (e.g. `{"user_code": 123}`) would otherwise throw an uncaught 500.
+  const userCode = typeof body.user_code === 'string' ? body.user_code.trim() : undefined;
+  const email = typeof body.email === 'string' ? body.email.trim() : undefined;
+  if (!userCode || !email) {
+    return c.json(
+      createOAuthError('invalid_request', 'user_code and email are required'),
+      400
+    );
+  }
+  // Minimal shape check; Better Auth validates the address downstream.
+  if (!email.includes('@')) {
+    return c.json(createOAuthError('invalid_request', 'email is invalid'), 400);
+  }
+
+  // The user_code is the agent's own pending authorization — a bad one is the
+  // agent's error, not account-existence info, so it is safe to 400 here.
+  const provider = getProvider(c);
+  const deviceCode = await provider.getDeviceCodeByUserCode(userCode);
+  if (!deviceCode) {
+    return c.json(createOAuthError('invalid_grant', 'Invalid or expired user code'), 400);
+  }
+
+  // Land the magic link on the existing device consent page for this code.
+  // Relative + same-origin, so Better Auth resolves it against our base URL.
+  const consentPath = `/oauth/device?user_code=${encodeURIComponent(userCode)}`;
+  try {
+    const auth = await createAuth(c.env, c.req.raw);
+    // createAuth() returns a cache-widened betterAuth type (see authCache:
+    // TtlCache<ReturnType<typeof betterAuth>>) that erases plugin endpoint
+    // signatures, so the magic-link endpoint is present at runtime but not in
+    // the static type. Narrowly type just the call we make.
+    const magicLinkApi = auth.api as unknown as {
+      signInMagicLink: (args: {
+        body: { email: string; callbackURL?: string; newUserCallbackURL?: string };
+        headers: Headers;
+      }) => Promise<unknown>;
+    };
+    await magicLinkApi.signInMagicLink({
+      body: {
+        email,
+        callbackURL: consentPath,
+        newUserCallbackURL: consentPath,
+      },
+      headers: c.req.raw.headers,
+    });
+  } catch (err) {
+    // Swallow: delivery failures and the install-operator carve-out must not
+    // reveal whether the address is deliverable/registered. Logged, opaque 202.
+    console.warn('[OAuth] Device-email magic link send failed (opaque):', err);
+  }
+
+  return c.json(
+    {
+      status: 'pending',
+      message:
+        'If the address is valid, a confirmation email has been sent. Poll the token endpoint to collect the credential once approved.',
+    },
+    202
+  );
+});
+
 // GET /oauth/device is served by the SPA fallback (packages/owletto/src/app/oauth/device.tsx).
 // No API route needed — the web app and API share the same origin.
 

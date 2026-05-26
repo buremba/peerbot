@@ -166,6 +166,14 @@ export const RateLimitPresets = {
       'OAuth client registration rate limit exceeded. Maximum 10 registrations per hour.',
   } as RateLimitConfig,
 
+  /** Agent device-claim email: 10/hour per IP (sends a login email to a caller-supplied address) */
+  DEVICE_EMAIL_PER_IP_HOUR: {
+    limit: 10,
+    windowSeconds: 3600,
+    errorMessage:
+      'Device email rate limit exceeded. Maximum 10 confirmation emails per hour.',
+  } as RateLimitConfig,
+
   /** Invitation preview lookup: 5/minute per IP (unauthenticated) */
   INVITATION_PREVIEW_PER_IP_MINUTE: {
     limit: 5,

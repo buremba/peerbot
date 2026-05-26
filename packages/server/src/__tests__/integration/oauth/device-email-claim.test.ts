@@ -1,0 +1,108 @@
+/**
+ * Agent device-claim email tests (POST /oauth/device/email)
+ *
+ * The agent starts a standard device_authorization, then delivers it to a user
+ * by email instead of having them type a user_code. We assert the endpoint
+ * triggers a Better Auth magic link (a `verification` row is created before
+ * delivery), stays opaque about whether the email has an account, and rejects
+ * the agent's own bad input.
+ *
+ * Email delivery is best-effort and offline here: testEnv sets no
+ * RESEND_API_KEY, so the magic-link send callback throws *after* the
+ * verification value is persisted — the handler swallows that and still
+ * returns the opaque 202.
+ */
+
+import { beforeAll, describe, expect, it } from 'vitest';
+import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
+import { createTestDeviceCode, createTestOAuthClient, createTestUser } from '../../setup/test-fixtures';
+import { post } from '../../setup/test-helpers';
+
+const DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code';
+
+async function pendingUserCode(): Promise<string> {
+  const client = await createTestOAuthClient({
+    grant_types: [DEVICE_GRANT, 'refresh_token'],
+  });
+  const device = await createTestDeviceCode(client.client_id, {
+    scope: 'mcp:read mcp:write',
+  });
+  return device.userCode;
+}
+
+async function verificationExistsFor(email: string): Promise<boolean> {
+  const sql = getTestDb();
+  const rows = (await sql`
+    SELECT 1 FROM verification WHERE value LIKE ${`%${email}%`} LIMIT 1
+  `) as unknown as Array<unknown>;
+  return rows.length === 1;
+}
+
+describe('POST /oauth/device/email — agent account claim', () => {
+  beforeAll(async () => {
+    await cleanupTestDatabase();
+  });
+
+  it('triggers a magic link for a pending user_code and returns an opaque 202', async () => {
+    const userCode = await pendingUserCode();
+    const email = `claim-${Date.now()}@example.com`;
+
+    const res = await post('/oauth/device/email', {
+      body: { user_code: userCode, email },
+    });
+
+    expect(res.status).toBe(202);
+    expect((await res.json()).status).toBe('pending');
+
+    // signInMagicLink persists the verification value before invoking the send
+    // callback, so a row proves the magic link was triggered for this address.
+    expect(await verificationExistsFor(email)).toBe(true);
+  });
+
+  it('returns the same opaque 202 whether or not the email already has an account', async () => {
+    const existing = await createTestUser({ email: `existing-${Date.now()}@example.com` });
+    const fresh = `new-${Date.now()}@example.com`;
+
+    const resExisting = await post('/oauth/device/email', {
+      body: { user_code: await pendingUserCode(), email: existing.email },
+    });
+    const resNew = await post('/oauth/device/email', {
+      body: { user_code: await pendingUserCode(), email: fresh },
+    });
+
+    expect(resExisting.status).toBe(202);
+    expect(resNew.status).toBe(202);
+    expect((await resExisting.json()).status).toBe('pending');
+    expect((await resNew.json()).status).toBe('pending');
+  });
+
+  it('rejects an unknown or expired user_code with 400 (the agent\'s own error)', async () => {
+    const res = await post('/oauth/device/email', {
+      body: { user_code: 'NOPE-NOPE', email: 'x@example.com' },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe('invalid_grant');
+  });
+
+  it('requires user_code, email, and a plausible address', async () => {
+    const userCode = await pendingUserCode();
+
+    const noEmail = await post('/oauth/device/email', { body: { user_code: userCode } });
+    expect(noEmail.status).toBe(400);
+
+    const noCode = await post('/oauth/device/email', { body: { email: 'x@example.com' } });
+    expect(noCode.status).toBe(400);
+
+    const badEmail = await post('/oauth/device/email', {
+      body: { user_code: userCode, email: 'not-an-email' },
+    });
+    expect(badEmail.status).toBe(400);
+  });
+
+  it('rejects malformed non-string inputs with 400 (not an uncaught 500)', async () => {
+    const res = await post('/oauth/device/email', {
+      body: { user_code: 123, email: { nested: true } },
+    });
+    expect(res.status).toBe(400);
+  });
+});

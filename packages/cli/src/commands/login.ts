@@ -144,13 +144,17 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    const sent = await tryOAuthStep(() =>
-      sendEmailClaim(
+    // tryOAuthStep returns the callback's value or undefined on error;
+    // sendEmailClaim resolves void, so return a truthy sentinel to distinguish
+    // success from the error case (otherwise we'd bail before polling).
+    const sent = await tryOAuthStep(async () => {
+      await sendEmailClaim(
         discovery.claimEmailEndpoint as string,
         authorization.userCode,
         options.email as string
-      )
-    );
+      );
+      return true;
+    });
     if (!sent) return;
     console.log(
       chalk.dim(

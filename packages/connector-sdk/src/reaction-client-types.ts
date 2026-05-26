@@ -12,11 +12,19 @@
  *     await client.knowledge.save({ content: "...", semantic_type: "digest" });
  *   };
  */
-import type { CardElement } from "chat";
 import type { ReactionContext } from "./reaction-sdk.js";
 
-export type { CardElement } from "chat";
 export type { ReactionContext };
+
+/**
+ * A rich card for chat delivery, as a plain serializable object — a `chat`
+ * `CardElement` built with the card primitives (`Card`, `Section`, `Field`,
+ * `Actions`, `Button`, `Select`, …). Typed loosely here so the SDK's published
+ * declarations don't force consumers to install `chat`; the gateway validates
+ * and renders it to each platform's native format (Block Kit / Adaptive Cards /
+ * Google Chat Cards).
+ */
+export type CardElement = Record<string, unknown>;
 
 // ── Knowledge ────────────────────────────────────────────────────────────────
 

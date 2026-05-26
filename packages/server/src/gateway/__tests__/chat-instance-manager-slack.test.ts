@@ -209,7 +209,7 @@ describe("ChatInstanceManager.postMessageToChannel", () => {
   });
 
   test("posts a rich card built with the chat primitives", async () => {
-    const { Card, Section, Field, Fields, Actions, LinkButton } = await import("chat");
+    const { Card, Field, Fields, Actions, LinkButton } = await import("chat");
     const ChatInstanceManager = await loadChatInstanceManager();
     const manager = new ChatInstanceManager() as any;
     const post = mock(async () => ({ ts: "2.0" }));
@@ -223,7 +223,6 @@ describe("ChatInstanceManager.postMessageToChannel", () => {
         Actions([LinkButton({ url: "https://app.lobu.ai/lobu-crm/entities", label: "View leads" })]),
       ],
     });
-    void Section; // imported to assert availability of the primitive set
 
     await manager.postMessageToChannel("conn-1", "slack:C0123ABCD", { card });
 

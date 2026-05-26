@@ -915,38 +915,12 @@ export class ChatInstanceManager {
     }
   }
 
-  private findRunningInstanceByPlatform(
-    platform: string
-  ): ManagedInstance | undefined {
-    return Array.from(this.instances.values()).find(
-      (instance) => instance.connection.platform === platform
-    );
-  }
-
   private buildSlackCoordinator(): SlackConnectionCoordinator {
     return new SlackConnectionCoordinator({
       addConnection: this.addConnection.bind(this),
       createStateAdapter: this.createStateAdapter.bind(this),
       ensureConnectionRunning: this.ensureConnectionRunning.bind(this),
       forwardWebhook: this.handleWebhook.bind(this),
-      getCurrentSlackConfig: () => {
-        const slackInstance = this.findRunningInstanceByPlatform("slack");
-        const currentConfig = (slackInstance?.connection.config || {}) as
-          | Record<string, any>
-          | undefined;
-
-        return {
-          signingSecret: currentConfig?.signingSecret,
-          clientId: currentConfig?.clientId,
-          clientSecret: currentConfig?.clientSecret,
-          encryptionKey: currentConfig?.encryptionKey,
-          installationKeyPrefix: currentConfig?.installationKeyPrefix,
-          userName:
-            currentConfig?.userName ||
-            slackInstance?.connection.metadata?.botUsername,
-          botToken: currentConfig?.botToken,
-        };
-      },
       getRunningChat: (connectionId) => this.getInstance(connectionId)?.chat,
       hasConnection: this.has.bind(this),
       listSlackConnections: () => this.listConnections({ platform: "slack" }),

@@ -16,9 +16,12 @@
  * backfill only looked for missing (not stale) embeddings.
  */
 
+import type { Context } from 'hono';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { searchContentByText } from '../../../utils/content-search';
+import type { Env } from '../../../index';
 import { insertEvent } from '../../../utils/insert-event';
+import { completeEmbeddings } from '../../../worker-api';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
@@ -40,6 +43,23 @@ function unitVec(): number[] {
   const v = new Array(EMBEDDING_DIM).fill(0);
   v[0] = 1;
   return v;
+}
+
+// Minimal Hono Context to drive worker-api handlers directly: completeEmbeddings
+// only reads the JSON body and calls c.json() on the success path (no c.env).
+function mockEmbeddingsCtx(body: unknown): {
+  ctx: Context<{ Bindings: Env }>;
+  result: () => { body: unknown; status: number };
+} {
+  let captured: { body: unknown; status: number } = { body: undefined, status: 200 };
+  const ctx = {
+    req: { json: async () => body },
+    json: (b: unknown, status?: number) => {
+      captured = { body: b, status: status ?? 200 };
+      return captured as unknown as Response;
+    },
+  } as unknown as Context<{ Bindings: Env }>;
+  return { ctx, result: () => captured };
 }
 
 describe('embedding model swap E2E (Finding #3)', () => {
@@ -227,5 +247,55 @@ describe('embedding model swap E2E (Finding #3)', () => {
         AND (emb.event_id IS NULL OR emb.embedding_model IS DISTINCT FROM ${MODEL_A})
     `) as Array<{ id: number }>;
     expect(staleRows.map((r) => Number(r.id))).toContain(legacy.id);
+  });
+
+  it('completeEmbeddings (real handler) replaces a stale-model row and is idempotent on re-submit', async () => {
+    const sql = getTestDb();
+
+    // Fresh event stamped MODEL_A, independent of mutations in earlier tests.
+    const ev = await insertEvent(
+      {
+        entityIds: [entityId],
+        organizationId: orgId,
+        originId: `complete-emb-${Date.now()}`,
+        title: 'Handler upsert event',
+        content: 'content routed through the real completeEmbeddings handler',
+        occurredAt: new Date(),
+        semanticType: 'content',
+        originType: 'content',
+        connectorKey: 'model-swap-connector',
+        connectionId,
+        embedding: unitVec(),
+        embeddingModel: MODEL_A,
+      },
+      { onConflictUpdate: true }
+    );
+
+    const newVec = new Array(EMBEDDING_DIM).fill(0);
+    newVec[2] = 1; // distinct from unitVec so the replacement is observable
+
+    // Drive the REAL handler: submit a model-B embedding for the model-A row.
+    const first = mockEmbeddingsCtx({
+      run_id: -1, // no matching run row → the handler's run UPDATE is a harmless no-op
+      worker_id: 'test-worker',
+      embeddings: [{ event_id: ev.id, embedding: newVec, embedding_model: MODEL_B }],
+    });
+    await completeEmbeddings(first.ctx);
+    expect(first.result()).toMatchObject({ body: { success: true, updated: 1 } });
+
+    const afterReplace = (await sql`
+      SELECT embedding_model FROM event_embeddings WHERE event_id = ${ev.id}
+    `) as Array<{ embedding_model: string | null }>;
+    expect(afterReplace).toHaveLength(1);
+    expect(afterReplace[0]!.embedding_model).toBe(MODEL_B); // stale model-A row was replaced
+
+    // Re-submit the SAME model → idempotent no-op (the ON CONFLICT WHERE blocks it).
+    const second = mockEmbeddingsCtx({
+      run_id: -1,
+      worker_id: 'test-worker',
+      embeddings: [{ event_id: ev.id, embedding: newVec, embedding_model: MODEL_B }],
+    });
+    await completeEmbeddings(second.ctx);
+    expect(second.result()).toMatchObject({ body: { success: true, updated: 0 } });
   });
 });

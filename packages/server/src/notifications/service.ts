@@ -1,6 +1,6 @@
+import type { CardElement } from 'chat';
 import { getDb, pgTextArray } from '../db/client';
-import { isLobuGatewayRunning } from '../lobu/gateway';
-import { getLobuServiceToken } from '../lobu/service-token';
+import { getChatInstanceManager, isLobuGatewayRunning } from '../lobu/gateway';
 import logger from '../utils/logger';
 
 interface CreateNotificationParams {
@@ -20,6 +20,12 @@ interface CreateNotificationParams {
   resourceUrl?: string | null;
   /** When set, deliver only through this specific bot connection */
   connectionId?: string | null;
+  /**
+   * Optional rich card (`chat` `CardElement`) for bot-connection delivery. When
+   * set, the bound channel gets this card instead of the markdown body; the
+   * in-app inbox entry still uses title/body.
+   */
+  card?: CardElement | null;
 }
 
 interface NotificationRow {
@@ -37,84 +43,97 @@ interface NotificationRow {
 }
 
 /**
- * Forward a notification to active bot connections via Lobu's messaging API.
+ * Forward a notification to the org's active chat-bot connections so it lands
+ * in the bound channel — e.g. a watcher digest posting to #leads.
  *
- * Fetches active connections and their default targets from Lobu's internal API,
- * then sends via /api/v1/messaging/send with platform-specific routing.
+ * Resolves connections + their channel bindings straight from Postgres and
+ * posts in-process via the chat manager. Every app pod loads every active
+ * connection at boot, so the locally-held instance can post regardless of
+ * which pod fired the notification — correct under N>1 replicas, no cross-pod
+ * routing needed. (The previous implementation called `/api/internal/connections`
+ * + `/api/v1/messaging/send` over HTTP — both removed in #846, so it had been
+ * a silent no-op.)
+ *
+ * Best-effort: a connection with no live instance or no binding is skipped
+ * without failing the others. A connection bound to several channels posts to
+ * each.
  */
+export interface BotDeliveryTarget {
+  connectionId: string;
+  platform: string;
+  /** Platform-prefixed channel id ready for `chat.channel()`, e.g. "slack:C0123ABCD". */
+  channelKey: string;
+}
+
+/**
+ * Resolve where a notification should be posted: the org's active chat
+ * connections JOINed to their channel bindings. A connection with no binding
+ * has no target and is omitted; a connection bound to several channels yields
+ * one target each. Exported for testing the delivery path against a real DB.
+ */
+export async function resolveBotDeliveryTargets(
+  organizationId: string,
+  connectionId?: string | null
+): Promise<BotDeliveryTarget[]> {
+  const sql = getDb();
+  const rows = (await sql`
+    SELECT ac.id, ac.platform, b.channel_id
+    FROM agent_connections ac
+    JOIN agent_channel_bindings b
+      ON b.organization_id = ac.organization_id
+     AND b.agent_id = ac.agent_id
+     AND b.platform = ac.platform
+    WHERE ac.organization_id = ${organizationId}
+      AND ac.status = 'active'
+      ${connectionId ? sql`AND ac.id = ${connectionId}` : sql``}
+    -- Deliver in binding-creation order so earlier bindings (the primary
+    -- channel) are attempted first when an agent is bound to several.
+    ORDER BY b.created_at ASC
+  `) as Array<{ id: string; platform: string; channel_id: string }>;
+
+  return rows.map((row) => ({
+    connectionId: row.id,
+    platform: row.platform,
+    // Bindings store the platform-prefixed id ("slack:C0123ABCD"); older rows
+    // may hold the bare id, so prefix defensively.
+    channelKey: row.channel_id.includes(':')
+      ? row.channel_id
+      : `${row.platform}:${row.channel_id}`,
+  }));
+}
+
 async function deliverToBotConnections(
   params: Omit<CreateNotificationParams, 'userId'>
 ): Promise<void> {
   if (!isLobuGatewayRunning()) return;
-
-  const port = process.env.PORT || '8787';
-  const lobuBaseUrl = `http://127.0.0.1:${port}/lobu`;
+  const manager = getChatInstanceManager();
+  if (!manager) return;
 
   const text = params.body ? `${params.title}\n\n${params.body}` : params.title;
+  // A rich card takes precedence over the markdown body for the channel post.
+  const content = params.card ? { card: params.card } : { markdown: text };
 
   try {
-    // Fetch connections and targets in parallel
-    const [connRes, targetsRes] = await Promise.all([
-      fetch(`${lobuBaseUrl}/api/internal/connections`),
-      fetch(`${lobuBaseUrl}/api/internal/connections/test-targets`),
-    ]);
-    if (!connRes.ok) return;
-
-    const connBody = (await connRes.json()) as {
-      connections: Array<{
-        id: string;
-        platform: string;
-        agentId: string;
-        status: string;
-      }>;
-    };
-    const targets = targetsRes.ok
-      ? ((await targetsRes.json()) as Array<{ platform: string; defaultTarget: string }>)
-      : [];
-
-    const targetMap = new Map(targets.map((t) => [t.platform, t.defaultTarget]));
-
-    let connections = connBody.connections.filter((c) => c.status === 'active');
-    if (params.connectionId) {
-      connections = connections.filter((c) => c.id === params.connectionId);
-    }
-    if (connections.length === 0) return;
-
-    // Mint the service token once per org (it's org-scoped, not per-connection).
-    const token = await getLobuServiceToken(params.organizationId);
+    const targets = await resolveBotDeliveryTargets(
+      params.organizationId,
+      params.connectionId
+    );
+    if (targets.length === 0) return;
 
     await Promise.allSettled(
-      connections.map((conn) => {
-        const target = targetMap.get(conn.platform);
-        // Platform-specific routing
-        const routing: Record<string, unknown> = {};
-        if (conn.platform === 'telegram' && target) {
-          routing.telegram = { chatId: target };
-        } else if (conn.platform === 'slack' && target) {
-          routing.slack = { channel: target };
-        }
-        return fetch(`${lobuBaseUrl}/api/v1/messaging/send`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-          body: JSON.stringify({
-            agentId: conn.agentId,
-            message: text,
-            platform: conn.platform,
-            ...routing,
-          }),
-        }).catch((err) =>
+      targets.map(async ({ connectionId, channelKey }) => {
+        try {
+          await manager.postMessageToChannel(connectionId, channelKey, content);
+        } catch (err) {
           logger.warn(
-            { err, connectionId: conn.id },
-            '[Notifications] Failed to send via Lobu connection'
-          )
-        );
+            { err, connectionId, channelKey },
+            '[Notifications] Failed to post to bot connection channel'
+          );
+        }
       })
     );
   } catch (err) {
-    logger.warn({ err }, '[Notifications] Failed to deliver to embedded Lobu');
+    logger.warn({ err }, '[Notifications] Failed to deliver to bot connections');
   }
 }
 

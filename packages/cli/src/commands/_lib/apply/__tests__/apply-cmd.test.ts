@@ -1,12 +1,16 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import {
+  executePlan,
   locallyDeclaredConnectorKeys,
+  pushProviderApiKeys,
   readBoundedBody,
   validateConnectorState,
 } from "../apply-cmd.js";
-import type { RemoteConnectorDefinition } from "../client.js";
+import type { ApplyClient, RemoteConnectorDefinition } from "../client.js";
+import type { DiffPlan, RemoteSnapshot } from "../diff.js";
 import { validateConnectionAgainstConnector } from "../desired-state.js";
 import type {
+  DesiredAgent,
   DesiredConnection,
   DesiredState,
   ResolvedConnectorSchemas,
@@ -108,6 +112,138 @@ describe("readBoundedBody (#3 — bounded source_url fetch)", () => {
       throw new Error("should not overflow");
     });
     expect(ok).toBe(euros);
+  });
+});
+
+describe("pushProviderApiKeys (#11 — provider keys pushed on a noop-only apply)", () => {
+  function agentWithKeys(
+    agentId: string,
+    providerKeys: { providerId: string; value: string }[]
+  ): DesiredAgent {
+    return {
+      metadata: { agentId, name: agentId },
+      settings: {},
+      platforms: [],
+      providerKeys,
+    };
+  }
+
+  test("pushes setProviderApiKey for every declared key (otherwise-noop agents)", async () => {
+    const setProviderApiKey = mock(async () => {
+      /* resolve void */
+    });
+    const client = { setProviderApiKey } as unknown as ApplyClient;
+    const agents = [
+      agentWithKeys("a1", [
+        { providerId: "anthropic", value: "k-anthropic" },
+        { providerId: "openai", value: "k-openai" },
+      ]),
+      agentWithKeys("a2", [{ providerId: "zai", value: "k-zai" }]),
+    ];
+
+    await pushProviderApiKeys(client, agents);
+
+    expect(setProviderApiKey).toHaveBeenCalledTimes(3);
+    expect(setProviderApiKey).toHaveBeenCalledWith(
+      "a1",
+      "anthropic",
+      "k-anthropic"
+    );
+    expect(setProviderApiKey).toHaveBeenCalledWith("a1", "openai", "k-openai");
+    expect(setProviderApiKey).toHaveBeenCalledWith("a2", "zai", "k-zai");
+  });
+
+  test("no-op when no agent declares a provider key", async () => {
+    const setProviderApiKey = mock(async () => {
+      /* resolve void */
+    });
+    const client = { setProviderApiKey } as unknown as ApplyClient;
+
+    await pushProviderApiKeys(client, [agentWithKeys("a1", [])]);
+
+    expect(setProviderApiKey).not.toHaveBeenCalled();
+  });
+
+  // Regression: provider keys target `/agents/<id>/providers/...`, so on a
+  // FIRST apply the agent must be created (executePlan) BEFORE the key push, or
+  // the server 404s ("Agent not found"). This models that constraint and proves
+  // the helpers compose in the correct order.
+  describe("ordering with a first-apply create plan", () => {
+    function recordingClient(): {
+      client: ApplyClient;
+      order: string[];
+    } {
+      const createdAgents = new Set<string>();
+      const order: string[] = [];
+      const client = {
+        async upsertAgent(meta: { agentId: string }) {
+          createdAgents.add(meta.agentId);
+          order.push(`upsertAgent:${meta.agentId}`);
+        },
+        async setProviderApiKey(agentId: string, providerId: string) {
+          if (!createdAgents.has(agentId)) {
+            // Mirror the server: the agent must exist first.
+            throw new Error(`Agent not found: ${agentId}`);
+          }
+          order.push(`setProviderApiKey:${agentId}/${providerId}`);
+        },
+      } as unknown as ApplyClient;
+      return { client, order };
+    }
+
+    const desiredAgent = agentWithKeys("new-agent", [
+      { providerId: "anthropic", value: "k-anthropic" },
+    ]);
+    const state: DesiredState = {
+      agents: [desiredAgent],
+      prune: false,
+      memorySchema: { entityTypes: [], relationshipTypes: [] },
+      watchers: [],
+      connectors: { definitions: [], authProfiles: [], connections: [] },
+      requiredSecrets: [],
+    };
+    const plan: DiffPlan = {
+      rows: [
+        {
+          kind: "agent",
+          verb: "create",
+          id: "new-agent",
+          desired: desiredAgent.metadata,
+        },
+      ],
+      counts: { create: 1, update: 0, noop: 0, drift: 0, delete: 0 },
+      notes: [],
+    };
+    const remote = {
+      agents: [],
+      agentSettings: new Map(),
+      platformsByAgent: new Map(),
+      entityTypes: [],
+      relationshipTypes: [],
+      watchers: [],
+      connectorDefinitions: [],
+      authProfiles: [],
+      connections: [],
+      feedsByConnectionId: new Map(),
+    } as unknown as RemoteSnapshot;
+
+    test("executePlan THEN pushProviderApiKeys succeeds (agent exists first)", async () => {
+      const { client, order } = recordingClient();
+      await executePlan({ client, state, plan, remote }, []);
+      await pushProviderApiKeys(client, state.agents);
+      expect(order).toEqual([
+        "upsertAgent:new-agent",
+        "setProviderApiKey:new-agent/anthropic",
+      ]);
+    });
+
+    test("the reverse order (keys before create) reproduces the 404", async () => {
+      const { client } = recordingClient();
+      // Negative control: pushing keys before executePlan is the bug pi caught.
+      await expect(pushProviderApiKeys(client, state.agents)).rejects.toThrow(
+        /Agent not found/
+      );
+    });
   });
 });
 

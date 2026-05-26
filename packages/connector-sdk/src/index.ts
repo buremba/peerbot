@@ -146,6 +146,7 @@ export { browserNetworkSync } from './browser-network.js';
 export type { ReactionContext } from './reaction-sdk.js';
 export type { ReactionClient } from './reaction-client-types.js';
 export type {
+  CardElement,
   EntityCreateInput,
   EntityLinkInput,
   EntityListFilter,
@@ -153,6 +154,7 @@ export type {
   KnowledgeReadInput,
   KnowledgeSaveInput,
   KnowledgeSearchInput,
+  NotificationsSendInput,
 } from './reaction-client-types.js';
 export type { Env } from './types.js';
 

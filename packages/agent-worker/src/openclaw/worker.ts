@@ -14,7 +14,6 @@ import {
 import { getModel, type ImageContent } from "@mariozechner/pi-ai";
 import {
   AuthStorage,
-  createAgentSession,
   ModelRegistry,
   SettingsManager,
 } from "@mariozechner/pi-coding-agent";
@@ -63,6 +62,7 @@ import {
 } from "./plugin-loader";
 import { OpenClawProgressProcessor } from "./processor";
 import { checkSandboxLeak } from "./sandbox-leak";
+import { buildAgentSession } from "./session-builder";
 import { getOpenClawSessionContext } from "./session-context";
 import {
   buildToolPolicy,
@@ -513,53 +513,7 @@ export class OpenClawWorker implements WorkerExecutor {
         // Hydrate skips non-completed snapshots, so getting this right is
         // what stops a failed turn from poisoning the next attempt.
         this.terminalStatus = "completed";
-        const outputSnapshot = this.progressProcessor.getOutputSnapshot();
-        const hintGatewayUrl = process.env.DISPATCHER_URL;
-        const hintWorkerToken = process.env.WORKER_TOKEN;
-        const audioPermissionHint =
-          hintGatewayUrl && hintWorkerToken
-            ? await this.maybeBuildAudioPermissionHintMessage(
-                outputSnapshot,
-                hintGatewayUrl,
-                hintWorkerToken
-              )
-            : null;
-        const finalResult = this.progressProcessor.getFinalResult();
-        if (finalResult) {
-          const leakCheck = checkSandboxLeak(
-            finalResult.text,
-            sawUploadedFileEvent
-          );
-          if (leakCheck.leaked) {
-            logger.warn(
-              "Detected unfulfilled file-delivery claim in final message; redacting link targets"
-            );
-          }
-          const finalText = audioPermissionHint
-            ? `${leakCheck.redactedText}\n\n${audioPermissionHint}`
-            : leakCheck.redactedText;
-          logger.info(
-            `📤 Sending final result (${finalText.length} chars) with deduplication flag`
-          );
-          // When a leak was redacted, the already-streamed content contains the
-          // pre-redaction URLs — a delta-append would leave them on the client.
-          // Force a full replacement so the client discards the leaky prefix.
-          await this.workerTransport.sendStreamDelta(
-            finalText,
-            leakCheck.leaked,
-            finalResult.isFinal
-          );
-        } else if (audioPermissionHint) {
-          logger.info("📤 Sending audio permission settings hint to user");
-          await this.workerTransport.sendStreamDelta(
-            `\n\n${audioPermissionHint}`,
-            false
-          );
-        } else {
-          logger.info(
-            "Session completed successfully - all content already streamed"
-          );
-        }
+        await this.deliverFinalResult(sawUploadedFileEvent);
         await this.workerTransport.signalDone();
       } else {
         const errorMsg = result.error || "Unknown error";
@@ -659,7 +613,7 @@ export class OpenClawWorker implements WorkerExecutor {
   }
 
   private async maybeRunPreCompactionMemoryFlush(params: {
-    session: Awaited<ReturnType<typeof createAgentSession>>["session"];
+    session: Awaited<ReturnType<typeof buildAgentSession>>["session"];
     sessionManager: Awaited<ReturnType<typeof openOrCreateSessionManager>>;
     settingsManager: SettingsManager;
     memoryFlushConfig: ResolvedMemoryFlushConfig;
@@ -1324,7 +1278,7 @@ Use it when the user references past discussions or you need context.`);
     let heartbeatTimer: Timer | null = null;
     let deltaTimer: Timer | null = null;
     let session:
-      | Awaited<ReturnType<typeof createAgentSession>>["session"]
+      | Awaited<ReturnType<typeof buildAgentSession>>["session"]
       | null = null;
     const pluginHookContext: Record<string, unknown> = {
       cwd: workspaceDir,
@@ -1333,19 +1287,23 @@ Use it when the user references past discussions or you need context.`);
     };
 
     try {
-      const createdSession = await createAgentSession({
+      const createdSession = await buildAgentSession({
         cwd: workspaceDir,
         model,
+        // pi's createAgentSession() uses `tools` only to derive active tool
+        // names and rebuilds the base tools internally (bash via getShellEnv()
+        // = {...process.env}, no env strip, no embedded BashOperations).
+        // buildAgentSession() swaps those rebuilt built-ins back to these
+        // Lobu instances after construction so the agent's bash actually runs
+        // with the spawnHook that strips WORKER_TOKEN/DISPATCHER_URL and with
+        // the embedded BashOperations + tool policy wired in above.
         tools,
         // Wrap custom tools (plugin + MCP) so plugin before_tool_call/
         // after_tool_call hooks fire around in-process execution — these never
         // hit the gateway proxy, so this is the only place the hooks can run.
-        // Built-in tools (bash/read/edit/write) are intentionally NOT gated
-        // here: createAgentSession() uses the `tools` option only to derive
-        // active tool names and rebuilds the base tools internally, so wrapped
-        // built-ins would be ignored. Gating them would require constructing
-        // AgentSession with baseToolsOverride directly. Built-ins remain
-        // governed by Lobu's own tool policy.
+        // Built-in tools (bash/read/edit/write) remain governed by Lobu's own
+        // tool policy (applied to the instances passed via `tools` above), not
+        // the plugin hooks.
         customTools: wrapToolsWithPluginToolHooks(
           customTools,
           loadedPlugins,
@@ -1742,6 +1700,15 @@ Use it when the user references past discussions or you need context.`);
         ctx: pluginHookContext,
       });
 
+      // Hand the fully-streamed assistant output to the progress processor so
+      // the success path's checkSandboxLeak() (worker.execute) actually runs
+      // against user-facing text. Without this, getFinalResult() is always
+      // null in production and the sandbox-leak redaction never fires.
+      this.progressProcessor.setFinalResult({
+        text: this.progressProcessor.getOutputSnapshot(),
+        isFinal: true,
+      });
+
       return {
         success: true,
         exitCode: 0,
@@ -2013,6 +1980,66 @@ ${fileListing}
     }
 
     return results;
+  }
+
+  /**
+   * Finalize a successful turn: run the sandbox-leak safety net against the
+   * agent's user-facing output and, when a leak is detected, re-send a redacted
+   * full-replacement so the client discards the already-streamed leaky prefix.
+   *
+   * The content has normally already been streamed delta-by-delta, so the
+   * no-leak path does NOT re-send (that would duplicate the message). The final
+   * result must be populated by runAISession() on the success path (via
+   * progressProcessor.setFinalResult) — when it is left null, getFinalResult()
+   * returns null here and the leak check never runs.
+   */
+  private async deliverFinalResult(
+    sawUploadedFileEvent: boolean
+  ): Promise<void> {
+    const outputSnapshot = this.progressProcessor.getOutputSnapshot();
+    const hintGatewayUrl = process.env.DISPATCHER_URL;
+    const hintWorkerToken = process.env.WORKER_TOKEN;
+    const audioPermissionHint =
+      hintGatewayUrl && hintWorkerToken
+        ? await this.maybeBuildAudioPermissionHintMessage(
+            outputSnapshot,
+            hintGatewayUrl,
+            hintWorkerToken
+          )
+        : null;
+    const finalResult = this.progressProcessor.getFinalResult();
+    const leakCheck = finalResult
+      ? checkSandboxLeak(finalResult.text, sawUploadedFileEvent)
+      : null;
+    if (leakCheck?.leaked && finalResult) {
+      logger.warn(
+        "Detected unfulfilled file-delivery claim in final message; redacting link targets"
+      );
+      // The already-streamed content still contains the pre-redaction URLs —
+      // a delta-append would leave them on the client. Force a full
+      // replacement so the client discards the leaky prefix.
+      const finalText = audioPermissionHint
+        ? `${leakCheck.redactedText}\n\n${audioPermissionHint}`
+        : leakCheck.redactedText;
+      logger.info(
+        `📤 Re-sending redacted final result (${finalText.length} chars) as full replacement`
+      );
+      await this.workerTransport.sendStreamDelta(
+        finalText,
+        true,
+        finalResult.isFinal
+      );
+    } else if (audioPermissionHint) {
+      logger.info("📤 Sending audio permission settings hint to user");
+      await this.workerTransport.sendStreamDelta(
+        `\n\n${audioPermissionHint}`,
+        false
+      );
+    } else {
+      logger.info(
+        "Session completed successfully - all content already streamed"
+      );
+    }
   }
 
   private maybeBuildAuthHintMessage(

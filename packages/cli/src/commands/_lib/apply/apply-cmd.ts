@@ -556,7 +556,37 @@ interface ApplyContext {
   remote: RemoteSnapshot;
 }
 
-async function executePlan(
+/**
+ * Push provider API keys as org-shared `agent_secrets` rows so the worker can
+ * inject them at runtime without a per-user auth profile. Idempotent (PUT):
+ * same value → 200, different value → rotation. Walks all desired agents (not
+ * just those with a settings diff) — the secret value isn't part of the
+ * settings JSON, so a row can need a key even when every resource is noop (e.g.
+ * first apply after the gateway picked up support, or a key-only `.env`
+ * change/rotation). Callers invoke this AFTER executePlan (so a just-created
+ * agent exists before its `/agents/<id>/providers/...` key push), and also in
+ * the all-noop / key-only branch (no agent creates there). Kept outside
+ * `executePlan` so both paths can call it without double-pushing.
+ */
+export async function pushProviderApiKeys(
+  client: ApplyClient,
+  agents: DesiredState["agents"]
+): Promise<void> {
+  for (const desired of agents) {
+    for (const { providerId, value } of desired.providerKeys) {
+      await client.setProviderApiKey(
+        desired.metadata.agentId,
+        providerId,
+        value
+      );
+      printText(
+        chalk.dim(`  ↻ provider-key ${desired.metadata.agentId}/${providerId}`)
+      );
+    }
+  }
+}
+
+export async function executePlan(
   ctx: ApplyContext,
   pendingAuth: PendingAuthEntry[]
 ): Promise<void> {
@@ -615,25 +645,6 @@ async function executePlan(
         row.changedFields ? `(${row.changedFields.join(", ")})` : undefined
       )
     );
-  }
-
-  // 2b) Provider API keys — pushed as org-shared `agent_secrets` rows so the
-  // worker can inject them at runtime without a per-user auth profile. Idempotent
-  // (PUT); same value → 200, different value → rotation. Walk all desired agents
-  // (not just those with a settings diff) — the secret value isn't part of the
-  // settings JSON, so a row can need a key even when settings are noop (e.g.
-  // first apply after the gateway picked up support, or a key rotation).
-  for (const desired of ctx.state.agents) {
-    for (const { providerId, value } of desired.providerKeys) {
-      await ctx.client.setProviderApiKey(
-        desired.metadata.agentId,
-        providerId,
-        value
-      );
-      printText(
-        chalk.dim(`  ↻ provider-key ${desired.metadata.agentId}/${providerId}`)
-      );
-    }
   }
 
   // 3) Platforms — upsert only the platforms the diff flagged (create / config
@@ -1231,13 +1242,27 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     (r) => r.kind === "auth-profile" && "needsAuth" in r && r.needsAuth
   );
 
+  // Provider API keys live outside the resource diff (the secret value isn't
+  // serialized into any plan row), so a key-only `.env` change produces an
+  // all-noop plan. Detect declared keys so the apply isn't short-circuited and
+  // the keys aren't silently dropped.
+  const hasProviderKeys = state.agents.some((a) => a.providerKeys.length > 0);
+
   if (
     plan.counts.create === 0 &&
     plan.counts.update === 0 &&
     plan.counts.delete === 0 &&
     !hasPendingAuth
   ) {
-    printText(chalk.green("\nNothing to apply."));
+    // Nothing in the resource diff — but a declared provider key still needs to
+    // be pushed (idempotent PUT). This is the key-only `.env` change path.
+    if (hasProviderKeys) {
+      printText(chalk.bold("\nApplying provider keys:"));
+      await pushProviderApiKeys(client, state.agents);
+      printText(chalk.green("\nProvider keys applied; nothing else to apply."));
+    } else {
+      printText(chalk.green("\nNothing to apply."));
+    }
     return;
   }
 
@@ -1263,24 +1288,38 @@ export async function applyCommand(opts: ApplyOptions = {}): Promise<void> {
     }
   }
 
+  const hasResourceWork =
+    plan.counts.create > 0 || plan.counts.update > 0 || plan.counts.delete > 0;
+
   const pendingAuth: PendingAuthEntry[] = [];
   let applyErr: unknown;
-  if (
-    plan.counts.create > 0 ||
-    plan.counts.update > 0 ||
-    plan.counts.delete > 0
-  ) {
-    printText(chalk.bold("\nApplying:"));
-    try {
+  try {
+    // Resources FIRST: executePlan does `upsertAgent` for created agents, and
+    // `setProviderApiKey` targets `/agents/<id>/providers/...` — pushing keys
+    // before the agent exists 404s on a first apply. So run the plan, then push
+    // keys. (The all-noop / key-only short-circuit above pushes keys directly:
+    // there are no agent creates there, so the agents already exist remotely.)
+    if (hasResourceWork) {
+      printText(chalk.bold("\nApplying:"));
       await executePlan({ client, state, plan, remote }, pendingAuth);
-      printText(chalk.green("\nApply complete."));
-    } catch (err) {
-      applyErr = err;
-      printError(`\n${err instanceof Error ? err.message : String(err)}`);
-      printError(
-        "Apply halted on first failure. Re-run `lobu apply` once the underlying issue is resolved — every endpoint is idempotent."
-      );
     }
+    // Provider keys live outside the resource diff (idempotent PUT), so push
+    // them on any confirmed apply (including a pending-auth-only plan). Done
+    // here, not inside executePlan, so the all-noop short-circuit above can push
+    // them too without double-pushing.
+    if (hasProviderKeys) {
+      printText(chalk.bold("\nApplying provider keys:"));
+      await pushProviderApiKeys(client, state.agents);
+    }
+    if (hasResourceWork) {
+      printText(chalk.green("\nApply complete."));
+    }
+  } catch (err) {
+    applyErr = err;
+    printError(`\n${err instanceof Error ? err.message : String(err)}`);
+    printError(
+      "Apply halted on first failure. Re-run `lobu apply` once the underlying issue is resolved — every endpoint is idempotent."
+    );
   }
 
   // Always render the punch-list — even on partial failure, so the operator

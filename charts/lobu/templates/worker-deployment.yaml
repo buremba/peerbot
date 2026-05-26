@@ -1,4 +1,7 @@
 {{- if .Values.worker.enabled }}
+{{- if and (gt (int .Values.worker.replicaCount) 1) .Values.worker.cache.enabled }}
+{{- fail "worker.replicaCount > 1 requires worker.cache.enabled=false: the worker cache PVC is ReadWriteOnce and cannot be mounted by multiple pods at once (a second replica would hit a Multi-Attach error). Disable the cache or keep a single worker replica." }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -121,6 +124,22 @@ spec:
             - name: worker-cache
               mountPath: /app/.cache
           {{- end }}
+          # The worker daemon is a poll loop with no HTTP server, so there's no
+          # endpoint to httpGet. Liveness is an exec probe that confirms the
+          # daemon process (PID 1, `bun src/bin.ts daemon` per docker/worker)
+          # is still its own command line — if the loop crashes hard the
+          # container exits and PID 1 is gone, so kubelet restarts it. Reuses
+          # the chart's healthCheck.livenessProbe timing.
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - grep -qa daemon /proc/1/cmdline
+            initialDelaySeconds: {{ .Values.healthCheck.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.livenessProbe.failureThreshold }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
       {{- if .Values.worker.cache.enabled }}

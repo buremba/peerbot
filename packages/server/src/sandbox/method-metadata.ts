@@ -205,6 +205,23 @@ export default async (_ctx, client) => {
 };`,
   },
 
+  // notifications
+  "notifications.send": {
+    summary:
+      "Send a notification to org users. Writes an `agent_message` notification (in-app inbox) and fans it out to the org's active bot connections (Slack/Telegram) — the way a watcher reaction surfaces its digest to a chat channel. Pass an optional `card` (a `chat` CardElement) for rich cross-platform rendering, and `watcher_source` when firing from a reaction.",
+    access: "write",
+    example:
+      "await client.notifications.send({ title: 'Weekly funnel digest', body: '3 new leads...', watcher_source: { watcher_id: ctx.window.watcher_id, window_id: ctx.window.id } });",
+    usageExample: `// Push a watcher digest to the org's Slack/Telegram connections + inbox.
+export default async (ctx, client) => {
+  await client.notifications.send({
+    title: 'Weekly funnel digest',
+    body: 'Top action: send the Acme pilot offer\\nNew leads: 3',
+    watcher_source: { watcher_id: ctx.window.watcher_id, window_id: ctx.window.id },
+  });
+};`,
+  },
+
   // watchers
   "watchers.manage": {
     summary:

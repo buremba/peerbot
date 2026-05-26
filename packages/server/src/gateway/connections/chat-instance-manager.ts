@@ -14,7 +14,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
-import { Chat } from "chat";
+import { type AdapterPostableMessage, Chat } from "chat";
 import type {
   AgentConnectionStore,
   StoredConnection,
@@ -585,6 +585,46 @@ export class ChatInstanceManager {
 
   getInstance(id: string): ManagedInstance | undefined {
     return this.instances.get(id);
+  }
+
+  /**
+   * Post a message to a channel as the bot — a one-shot outbound post, NOT an
+   * inbound message that triggers an agent run (that's `routePlatformMessage`).
+   * Used by the notification fan-out (`deliverToBotConnections`) to surface a
+   * watcher digest / approval in a bound channel.
+   *
+   * `content` is any `chat` `AdapterPostableMessage` — `{ markdown }` (rendered
+   * to each platform's native format rather than HTML-escaped), `{ card }` (a
+   * `CardElement` → Block Kit / Adaptive Cards / Google Chat Cards), or plain
+   * text. All ride the same Chat SDK primitives, so one call works across every
+   * connected platform.
+   *
+   * `channelKey` is the platform-prefixed channel id, e.g. "slack:C0123ABCD".
+   * Multi-replica: a connection created or restarted on another replica has no
+   * live instance on this pod, so we lazily start it from the store first
+   * (`ensureConnectionRunning` is a no-op when it's already running and won't
+   * revive a `stopped` connection). That lets any pod that fires the
+   * notification deliver it — no cross-pod routing needed.
+   */
+  async postMessageToChannel(
+    connectionId: string,
+    channelKey: string,
+    content: AdapterPostableMessage
+  ): Promise<void> {
+    const running = await this.ensureConnectionRunning(connectionId);
+    const instance = running ? this.instances.get(connectionId) : undefined;
+    if (!instance) {
+      throw new Error(
+        `No active chat instance for connection ${connectionId} (could not start it on this pod)`
+      );
+    }
+    const channel = instance.chat?.channel?.(channelKey);
+    if (!channel) {
+      throw new Error(
+        `Could not resolve channel ${channelKey} for connection ${connectionId}`
+      );
+    }
+    await channel.post(content);
   }
 
   /**

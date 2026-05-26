@@ -9,6 +9,7 @@ export { buildEntitiesNamespace } from "./entities";
 export { buildEntitySchemaNamespace } from "./entity-schema";
 export { buildFeedsNamespace } from "./feeds";
 export { buildKnowledgeNamespace } from "./knowledge";
+export { buildNotificationsNamespace } from "./notifications";
 export { buildOperationsNamespace } from "./operations";
 export { buildOrganizationsNamespace } from "./organizations";
 export { buildViewTemplatesNamespace } from "./view-templates";

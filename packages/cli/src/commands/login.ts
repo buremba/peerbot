@@ -31,6 +31,13 @@ interface LoginOptions {
   cliVersion?: string;
   /** Suppress spinner output; bail out non-interactively if the server rejects polling. */
   quiet?: boolean;
+  /**
+   * Headless email "user_claimed" login (auth.md): the server emails this
+   * address a one-click approval link instead of showing a code, and we keep
+   * polling without a TTY. Lets an agent log in on a user's behalf without a
+   * pre-minted PAT. Requires the server to advertise `agent_auth.claim_email_endpoint`.
+   */
+  email?: string;
 }
 
 /**
@@ -109,6 +116,19 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
     return;
   }
 
+  // For --email, fail before creating an OAuth client / device code on a server
+  // that can't deliver the email claim anyway.
+  if (options.email && !discovery.claimEmailEndpoint) {
+    console.log(
+      chalk.red(
+        `\n  ${discovery.issuer} does not support email login (no agent_auth.claim_email_endpoint).`
+      )
+    );
+    console.log(chalk.dim("  Use plain `lobu login` or `--token <pat>`.\n"));
+    process.exitCode = 1;
+    return;
+  }
+
   console.log(chalk.dim(`\n  Context: ${target.name}`));
   console.log(chalk.dim(`  Issuer:  ${discovery.issuer}`));
 
@@ -122,42 +142,73 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
   );
   if (!authorization) return;
 
-  const verificationUrl =
-    authorization.verificationUriComplete ?? authorization.verificationUri;
-
-  console.log(chalk.dim("\n  Open this URL to approve the login:"));
-  console.log(chalk.cyan(`  ${verificationUrl}`));
-  console.log(chalk.dim(`  Code: ${chalk.bold.white(authorization.userCode)}`));
-  if (
-    authorization.verificationUriComplete &&
-    authorization.verificationUriComplete !== authorization.verificationUri
-  ) {
-    console.log(chalk.dim(`  Or visit: ${authorization.verificationUri}\n`));
+  // Headless email "user_claimed" login (auth.md): instead of showing a code
+  // for a human at this terminal, ask the server to email an approval link to
+  // `--email`. Approval happens out of band, so we then poll regardless of TTY.
+  const emailClaim = Boolean(options.email);
+  if (emailClaim) {
+    // Support was already verified above, before client/device-code creation.
+    // tryOAuthStep returns the callback's value or undefined on error;
+    // sendEmailClaim resolves void, so return a truthy sentinel to distinguish
+    // success from the error case (otherwise we'd bail before polling).
+    const sent = await tryOAuthStep(async () => {
+      await sendEmailClaim(
+        discovery.claimEmailEndpoint as string,
+        authorization.userCode,
+        options.email as string
+      );
+      return true;
+    });
+    if (!sent) return;
+    console.log(
+      chalk.dim(
+        `\n  Sent a confirmation link to ${chalk.white(options.email as string)}.`
+      )
+    );
+    console.log(
+      chalk.dim("  Waiting for the user to approve from their email...\n")
+    );
   } else {
-    console.log();
-  }
+    const verificationUrl =
+      authorization.verificationUriComplete ?? authorization.verificationUri;
 
-  // Refuse to hand a non-https URL (e.g. javascript:, data:, file:) to the
-  // OS's `open` handler. A compromised/misconfigured discovery endpoint
-  // could otherwise redirect the user's browser into running attacker code.
-  let canOpen = false;
-  try {
-    canOpen = new URL(verificationUrl).protocol === "https:";
-  } catch {
-    canOpen = false;
-  }
-  if (canOpen) {
+    console.log(chalk.dim("\n  Open this URL to approve the login:"));
+    console.log(chalk.cyan(`  ${verificationUrl}`));
+    console.log(
+      chalk.dim(`  Code: ${chalk.bold.white(authorization.userCode)}`)
+    );
+    if (
+      authorization.verificationUriComplete &&
+      authorization.verificationUriComplete !== authorization.verificationUri
+    ) {
+      console.log(chalk.dim(`  Or visit: ${authorization.verificationUri}\n`));
+    } else {
+      console.log();
+    }
+
+    // Refuse to hand a non-https URL (e.g. javascript:, data:, file:) to the
+    // OS's `open` handler. A compromised/misconfigured discovery endpoint
+    // could otherwise redirect the user's browser into running attacker code.
+    let canOpen = false;
     try {
-      await open(verificationUrl);
+      canOpen = new URL(verificationUrl).protocol === "https:";
     } catch {
-      // The URL is printed above; opening is best-effort.
+      canOpen = false;
+    }
+    if (canOpen) {
+      try {
+        await open(verificationUrl);
+      } catch {
+        // The URL is printed above; opening is best-effort.
+      }
     }
   }
 
   // Both ends of the stdio pair must be a TTY for the device-code prompt to
   // make sense — a backgrounded shell or CI runner has neither stdin to
   // approve from nor stdout to spin on. Require both, plus the absence of
-  // `--quiet`, before treating the call as interactive.
+  // `--quiet`, before treating the call as interactive. Email-claim approval
+  // is out of band, so it polls even without a TTY.
   const isInteractive =
     process.stdout.isTTY === true &&
     process.stdin.isTTY === true &&
@@ -225,15 +276,18 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
       );
 
       if (result.status === "pending") {
-        // Non-interactive callers (CI, backgrounded shells) can't approve
-        // the device code, so a `pending` poll is the terminal answer —
-        // bail out instead of looping until expiry.
-        if (!isInteractive) {
+        // Non-interactive callers (CI, backgrounded shells) can't approve a
+        // terminal device code, so a `pending` poll is the terminal answer —
+        // bail instead of looping until expiry. Email-claim is the exception:
+        // approval rides an emailed link, so we keep polling without a TTY.
+        if (!isInteractive && !emailClaim) {
           console.log(
             chalk.red("  Device-code login requires an interactive terminal.")
           );
           console.log(
-            chalk.dim("  Use `--token <pat>` for non-interactive auth.\n")
+            chalk.dim(
+              "  Use `--token <pat>`, or `--email <addr>` for headless approval.\n"
+            )
           );
           process.exitCode = 1;
           return;
@@ -296,6 +350,40 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
     process.exitCode = 1;
   } finally {
     detach();
+  }
+}
+
+/**
+ * POST the device `user_code` + target email to the auth.md claim endpoint so
+ * the server emails the user a one-click approval link. The endpoint is opaque
+ * (202) about whether the address has an account; only a real 4xx/5xx (bad
+ * user_code, rate limit) is surfaced.
+ */
+async function sendEmailClaim(
+  endpoint: string,
+  userCode: string,
+  email: string
+): Promise<void> {
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_code: userCode, email }),
+  });
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const body = (await res.json()) as {
+        error_description?: string;
+        error?: string;
+      };
+      detail = body.error_description ?? body.error ?? "";
+    } catch {
+      // non-JSON error body — status alone is enough
+    }
+    throw new OAuthError(
+      "email_claim_failed",
+      `Email login request failed (${res.status})${detail ? `: ${detail}` : ""}.`
+    );
   }
 }
 

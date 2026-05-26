@@ -13,8 +13,17 @@ function formatErrorMessage(error: unknown): string {
     : `💥 Worker crashed (${name}): ${error.message}`;
 }
 
+/**
+ * Sentinel thrown by the worker when a session exceeds its time budget
+ * (exit code 124). The run is retried automatically by the gateway, so the
+ * timeout must NOT surface to the user as a crash — we only signal the error
+ * for bookkeeping/cleanup.
+ */
+const SESSION_TIMEOUT_MESSAGE = "SESSION_TIMEOUT";
+
 function classifyError(error: unknown): string | undefined {
   if (!(error instanceof Error)) return undefined;
+  if (error.message === SESSION_TIMEOUT_MESSAGE) return "SESSION_TIMEOUT";
   if (
     error.message.includes("No model configured") ||
     error.message.includes("No provider specified")
@@ -35,6 +44,9 @@ export async function handleExecutionError(
 
   try {
     if (code) {
+      // Classified errors (incl. SESSION_TIMEOUT, which is retried silently)
+      // signal the error for bookkeeping but never emit a user-facing crash
+      // delta.
       await transport.signalError(errorInstance, code);
     } else {
       await transport.sendStreamDelta(formatErrorMessage(error), true, true);

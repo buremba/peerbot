@@ -19,7 +19,6 @@ import { RunsQueue } from "../infrastructure/queue/runs-queue.js";
 import {
   armTurnTimeout,
   commitTerminalReply,
-  dischargeTurn,
   extendTurnDeadlines,
   failTurnIfPending,
   failTurnsForDeployment,
@@ -92,12 +91,25 @@ async function expireAllMarkers(): Promise<void> {
     WHERE queue_name = ${TURN_TIMEOUT_QUEUE}`;
 }
 
+function reply(deploymentName: string, messageId: string) {
+  return {
+    messageId,
+    conversationId: `conv-${deploymentName}`,
+    platform: "api",
+    teamId: "api",
+    processedMessageIds: [messageId],
+    timestamp: Date.now(),
+  };
+}
+
 describe("turn-liveness", () => {
   test("arm then discharge: a real reply leaves no marker and no error", async () => {
     await armTurnTimeout(queue, routing("dep-1", "m1"));
     expect(await markerCount("dep-1")).toBe(1);
 
-    await dischargeTurn("dep-1", "m1");
+    // A real terminal reply discharges the marker via the production path
+    // (commitTerminalReply atomically deletes the marker + inserts the reply).
+    await commitTerminalReply("dep-1", ["m1"], reply("dep-1", "m1"), null);
     expect(await markerCount("dep-1")).toBe(0);
     expect(await errorRowCount()).toBe(0);
   });
@@ -128,23 +140,14 @@ describe("turn-liveness", () => {
 
   test("failTurnIfPending does NOT double-signal when a worker already replied", async () => {
     await armTurnTimeout(queue, routing("dep-4", "m"));
-    // Worker raced a real terminal reply → marker discharged.
-    await dischargeTurn("dep-4", "m");
+    // Worker raced a real terminal reply → marker discharged via the production
+    // commitTerminalReply path.
+    await commitTerminalReply("dep-4", ["m"], reply("dep-4", "m"), null);
 
     expect(await failTurnIfPending("dep-4", "m", "startup failed")).toBe(false);
+    // commitTerminalReply emitted a (non-error) reply; no error row.
     expect(await errorRowCount()).toBe(0);
   });
-
-  function reply(deploymentName: string, messageId: string) {
-    return {
-      messageId,
-      conversationId: `conv-${deploymentName}`,
-      platform: "api",
-      teamId: "api",
-      processedMessageIds: [messageId],
-      timestamp: Date.now(),
-    };
-  }
 
   test("commitTerminalReply atomically discharges the marker and enqueues the reply", async () => {
     await armTurnTimeout(queue, routing("dep-5", "m"));
@@ -201,8 +204,9 @@ describe("turn-liveness", () => {
     await armTurnTimeout(queue, routing("dep-B", "same"));
     expect(await markerCount()).toBe(2);
 
-    // Discharging one conversation must not touch the other's marker.
-    await dischargeTurn("dep-A", "same");
+    // Discharging one conversation (via the production commitTerminalReply
+    // path) must not touch the other's marker.
+    await commitTerminalReply("dep-A", ["same"], reply("dep-A", "same"), null);
     expect(await markerCount("dep-A")).toBe(0);
     expect(await markerCount("dep-B")).toBe(1);
   });

@@ -129,36 +129,6 @@ export async function armTurnTimeout(
 }
 
 /**
- * Discharge a turn's obligation on a real terminal reply (worker success or an
- * explicit worker error). Deletes the marker so neither the fast path nor the
- * sweep emits a spurious error. Idempotent.
- */
-export async function dischargeTurn(
-  deploymentName: string,
-  messageId: string
-): Promise<void> {
-  const key = turnMarkerKey(deploymentName, messageId);
-  try {
-    const sql = getDb();
-    // `status = 'pending'` is required for the planner to use the PARTIAL index
-    // `runs_idempotency_key_uniq` (WHERE … status IN ('pending','claimed',
-    // 'running')) — without a status constraint it falls back to a seq scan
-    // over the full `runs` table. Markers are always pending (never claimed).
-    await sql`
-      DELETE FROM public.runs
-      WHERE idempotency_key = ${key}
-        AND status = 'pending'
-        AND queue_name = ${TURN_TIMEOUT_QUEUE}
-    `;
-  } catch (err) {
-    logger.warn(
-      { key, err: String(err) },
-      "Failed to discharge turn-timeout marker"
-    );
-  }
-}
-
-/**
  * Push the deadline forward for all in-flight turns of a deployment. Called on
  * the worker's heartbeat ACK — a worker-driven liveness signal, so a live but
  * slow worker keeps its markers fresh while a silent one lapses.

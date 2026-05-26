@@ -111,6 +111,36 @@ export const post = (path: string, options?: Parameters<typeof testRequest>[2]) 
 export const del = (path: string, options?: Omit<Parameters<typeof testRequest>[2], 'body'>) =>
   testRequest('DELETE', path, options);
 
+/**
+ * POST an `application/x-www-form-urlencoded` body — what a browser <form>
+ * submit sends. Exercises routes that read via `c.req.parseBody()` (e.g. the
+ * extension-bootstrap → /api/exchange-token handoff), which JSON bodies don't.
+ */
+export async function postForm(
+  path: string,
+  form: Record<string, string>,
+  options?: { cookie?: string; env?: Partial<Env> }
+): Promise<TestResponse> {
+  await ensureWorkspaceProvider();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/x-www-form-urlencoded',
+  };
+  if (options?.cookie) headers.Cookie = options.cookie;
+  const request = new Request(`http://localhost${path}`, {
+    method: 'POST',
+    headers,
+    body: new URLSearchParams(form).toString(),
+  });
+  const env = { ...testEnv, ...options?.env };
+  const response = await app.fetch(request, env);
+  return {
+    status: response.status,
+    headers: response.headers,
+    json: () => response.json(),
+    text: () => response.text(),
+  };
+}
+
 // ============================================
 // MCP Session Management
 // ============================================

@@ -83,15 +83,34 @@ export interface PlatformResponseStrategy {
   }): Promise<StreamState | null>;
 
   /**
-   * Handle completion for a stream. Called after the bridge has closed the
-   * stream's iterator and awaited the adapter's streamPromise. Responsible
-   * for any platform-specific final post (e.g. Slack's `markdown_text`).
+   * Handle completion. For a live-streaming strategy this runs after the
+   * bridge has closed the stream's iterator and awaited the adapter's
+   * streamPromise. `stream` is `null` when no local streaming state exists on
+   * this replica — under N>1 replicas the delta rows can be claimed by a
+   * different pod than the terminal row (the `thread_response` queue is drained
+   * competitively with no per-conversation affinity), so a post-once strategy
+   * must render from `payload.finalText` instead. Post-once strategies should
+   * therefore prefer `payload.finalText` over `stream.buffer` even when a local
+   * stream exists, because that buffer may hold only the subset of deltas this
+   * pod happened to claim.
    */
   handleCompletion(args: {
     ctx: StrategyContext;
     payload: ThreadResponsePayload;
-    stream: StreamState;
+    stream: StreamState | null;
   }): Promise<void>;
+
+  /**
+   * True when the strategy delivers the reply only at completion from the full
+   * text (no live streaming to the platform during deltas) — i.e. Slack, which
+   * buffers deltas and posts once via `chat.postMessage`. Such strategies can
+   * render from `payload.finalText` with no local stream (a different replica
+   * claimed the deltas), since nothing was posted on any other replica. Live-
+   * streaming strategies set this false: their deltas already posted on the
+   * streaming replica, so re-posting the final text from another replica would
+   * duplicate — and a row with no local stream is simply nothing left to do.
+   */
+  readonly deliversAtCompletion: boolean;
 }
 
 /**
@@ -100,6 +119,10 @@ export interface PlatformResponseStrategy {
  * platform-specific buffering requirements.
  */
 class DefaultResponseStrategy implements PlatformResponseStrategy {
+  // Streams live to the platform during deltas — the reply is already posted
+  // on the replica that streamed it, so no cross-replica completion fallback.
+  readonly deliversAtCompletion = false;
+
   async disposeOnFullReplacement(existing: StreamState): Promise<void> {
     // Close current stream and await delivery so a new one can open cleanly.
     existing.iterator.close();
@@ -180,9 +203,15 @@ class DefaultResponseStrategy implements PlatformResponseStrategy {
   }: {
     ctx: StrategyContext;
     payload: ThreadResponsePayload;
-    stream: StreamState;
+    stream: StreamState | null;
   }): Promise<void> {
     const { connectionId, channelId } = ctx;
+    // No local stream means this replica never claimed any delta rows for the
+    // run. A live-streaming strategy has nothing buffered to flush and must not
+    // re-post from finalText (deltas already streamed on the claiming replica),
+    // so there is nothing to do here. The bridge gates on deliversAtCompletion
+    // and won't normally call us stream-less; guard defensively regardless.
+    if (!stream) return;
     if (stream.streamFailed && stream.buffer.trim() && stream.target) {
       // Fallback: when native streaming rejected (e.g. Slack's chatStream
       // requires a recipient user/team id that the public-API send path
@@ -361,6 +390,12 @@ async function postSlackMarkdown(
  * markdown-native rendering.
  */
 class SlackResponseStrategy implements PlatformResponseStrategy {
+  // Slack never streams live — it buffers deltas and posts once at completion.
+  // So it renders from the worker's authoritative `payload.finalText`, which
+  // makes the terminal row self-contained and correct under N>1 replicas (where
+  // delta rows scatter across pods and no single replica holds the full buffer).
+  readonly deliversAtCompletion = true;
+
   async disposeOnFullReplacement(_existing: StreamState): Promise<void> {
     // Slack never opens a real streaming target — no async teardown needed.
     // The bridge simply drops the prior state so the next delta opens a
@@ -409,12 +444,17 @@ class SlackResponseStrategy implements PlatformResponseStrategy {
   }: {
     ctx: StrategyContext;
     payload: ThreadResponsePayload;
-    stream: StreamState;
+    stream: StreamState | null;
   }): Promise<void> {
     const { connectionId, instance, channelId } = ctx;
-    if (!stream.buffer.trim()) return;
+    // Prefer the worker's authoritative full text. `stream?.buffer` is only the
+    // subset of deltas THIS replica claimed (or absent entirely cross-pod), so
+    // it's not trustworthy under N>1 — finalText is. Fall back to the buffer
+    // only when finalText is absent (e.g. a pre-finalText worker).
+    const text = payload.finalText ?? stream?.buffer ?? "";
+    if (!text.trim()) return;
 
-    const cleaned = stripEmptyLinks(decodeHtmlEntities(stream.buffer));
+    const cleaned = stripEmptyLinks(decodeHtmlEntities(text));
     try {
       const handled = await postSlackMarkdown(
         instance,
@@ -427,7 +467,7 @@ class SlackResponseStrategy implements PlatformResponseStrategy {
           { connectionId, channelId, length: cleaned.length },
           "Posted Slack response via markdown_text with paragraph chunking"
         );
-      } else if (stream.target) {
+      } else if (stream?.target) {
         // Adapter unavailable — fall back to the SDK so we still deliver.
         await stream.target.post(cleaned);
       }
@@ -436,7 +476,7 @@ class SlackResponseStrategy implements PlatformResponseStrategy {
         { connectionId, error: String(error) },
         "Slack markdown_text post failed; falling back to SDK"
       );
-      if (stream.target) {
+      if (stream?.target) {
         try {
           await stream.target.post(cleaned);
         } catch (fallbackError) {

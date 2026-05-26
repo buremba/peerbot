@@ -431,6 +431,122 @@ describe("ChatResponseBridge.handleDelta — Slack markdown_text path", () => {
   });
 });
 
+describe("ChatResponseBridge.handleCompletion — multi-replica finalText", () => {
+  // Under N>1 replicas the `thread_response` queue is drained competitively
+  // (FOR UPDATE SKIP LOCKED, no per-conversation affinity), so a run's delta
+  // rows and its terminal row can land on different pods. A post-once renderer
+  // (Slack) that completes on a pod which buffered no/partial deltas must
+  // render from the worker's authoritative `finalText`, not the local buffer.
+  const slackPayload = {
+    ...basePayload,
+    platform: "slack",
+    channelId: "slack:C123",
+    conversationId: "slack:C123:1700000000.123456",
+    platformMetadata: {
+      connectionId: "conn-1",
+      chatId: "slack:C123",
+    },
+  };
+
+  test("Slack completion with NO local stream posts payload.finalText", async () => {
+    // Simulates the terminal row arriving on a replica that never claimed any
+    // delta rows — `this.streams` has no entry for this key.
+    const { target } = createStreamingTarget();
+    const slackPost = mock(async () => ({ ok: true, ts: "1.1" }));
+    const { manager } = createHarness(target, "slack", slackPost);
+    const bridge = new ChatResponseBridge(manager as any);
+
+    await bridge.handleCompletion(
+      {
+        ...slackPayload,
+        finalText: "full reply from the worker",
+        processedMessageIds: ["m1"],
+      },
+      "s"
+    );
+
+    expect(target.post).not.toHaveBeenCalled();
+    expect(slackPost).toHaveBeenCalledTimes(1);
+    expect(slackPost.mock.calls[0]?.[0]).toMatchObject({
+      channel: "C123",
+      thread_ts: "1700000000.123456",
+      markdown_text: "full reply from the worker",
+    });
+  });
+
+  test("Slack completion prefers finalText over a partial local buffer", async () => {
+    // This replica claimed only a subset of the deltas, so its buffer is
+    // incomplete. finalText is authoritative and must win.
+    const { target } = createStreamingTarget();
+    const slackPost = mock(async () => ({ ok: true, ts: "1.1" }));
+    const { manager } = createHarness(target, "slack", slackPost);
+    const bridge = new ChatResponseBridge(manager as any);
+
+    await bridge.handleDelta(
+      { ...slackPayload, delta: "partial " },
+      "s"
+    );
+    await bridge.handleCompletion(
+      {
+        ...slackPayload,
+        finalText: "partial reply complete and whole",
+        processedMessageIds: ["m1"],
+      },
+      "s"
+    );
+
+    expect(slackPost).toHaveBeenCalledTimes(1);
+    expect(slackPost.mock.calls[0]?.[0]).toMatchObject({
+      markdown_text: "partial reply complete and whole",
+    });
+  });
+
+  test("Slack completion persists finalText to history with no local stream", async () => {
+    const { target } = createStreamingTarget();
+    const slackPost = mock(async () => ({ ok: true, ts: "1.1" }));
+    const { conversationState, manager } = createHarness(
+      target,
+      "slack",
+      slackPost
+    );
+    const bridge = new ChatResponseBridge(manager as any);
+
+    await bridge.handleCompletion(
+      {
+        ...slackPayload,
+        finalText: "persisted full reply",
+        processedMessageIds: ["m1"],
+      },
+      "s"
+    );
+
+    const history = await conversationState.getHistory("conn-1", "slack:C123");
+    expect(history).toEqual([
+      { role: "assistant", content: "persisted full reply", name: undefined },
+    ]);
+  });
+
+  test("live-streaming (Telegram) completion with NO local stream does NOT re-post finalText", async () => {
+    // Default strategy streamed its deltas on whichever replica claimed them.
+    // Re-posting finalText here would duplicate the reply, so a stream-less
+    // completion is a no-op for live-streaming platforms.
+    const { target } = createStreamingTarget();
+    const { manager } = createHarness(target, "telegram");
+    const bridge = new ChatResponseBridge(manager as any);
+
+    await bridge.handleCompletion(
+      {
+        ...basePayload,
+        finalText: "should not be posted again",
+        processedMessageIds: ["m1"],
+      },
+      "s"
+    );
+
+    expect(target.post).not.toHaveBeenCalled();
+  });
+});
+
 describe("ChatResponseBridge.handleEphemeral", () => {
   test("renders settings links as native buttons for Chat SDK targets", async () => {
     const posts: unknown[] = [];

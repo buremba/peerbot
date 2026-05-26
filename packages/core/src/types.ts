@@ -491,6 +491,14 @@ export interface ThreadResponsePayload {
   delta?: string;
   isFullReplacement?: boolean;
   processedMessageIds?: string[];
+  /**
+   * Full final assistant text, set on the TERMINAL completion row by the
+   * worker. Lets a renderer deliver the reply without the per-pod streaming
+   * buffer (which only exists on the pod that consumed the delta rows) — so a
+   * post-once platform (Slack) renders correctly even when the completion is
+   * drained by a different replica than the one that buffered the deltas.
+   */
+  finalText?: string;
   error?: string;
   errorCode?: string;
   timestamp: number;

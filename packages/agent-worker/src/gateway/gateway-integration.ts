@@ -138,9 +138,16 @@ export class HttpWorkerTransport implements WorkerTransport {
   }
 
   async signalCompletion(): Promise<void> {
+    // Carry the full assistant text on the terminal row. The reply text is
+    // otherwise only in the gateway's per-pod streaming buffer (built from the
+    // delta rows on whichever replica drained them); a post-once renderer
+    // (Slack) that completes on a different replica has no buffer and would
+    // drop the reply. `finalText` makes the completion self-contained so any
+    // replica can deliver it. (Empty string when nothing was streamed.)
     await this.sendResponse(
       this.buildBaseResponse({
         processedMessageIds: this.processedMessageIds,
+        finalText: this.accumulatedStreamContent.join(""),
       })
     );
   }

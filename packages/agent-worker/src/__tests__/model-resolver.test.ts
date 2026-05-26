@@ -103,6 +103,18 @@ describe("resolveModelRef", () => {
     expect(result.modelId).toBe("glm-4.7");
   });
 
+  test("configured provider: 'auto' resolving to a PREFIXED default is also stripped (nvidia)", () => {
+    // The gap behind the first prefix fix: DEFAULT_PROVIDER_MODELS.nvidia is
+    // itself prefixed ("nvidia/moonshotai/kimi-k2.5"). Stripping must run AFTER
+    // auto-resolution, or an auto agent on nvidia ships the redundant prefix.
+    const result = resolveModelRef("auto", { defaultProvider: "nvidia" });
+    expect(result.provider).toBe("nvidia");
+    expect(result.modelId).toBe(
+      DEFAULT_PROVIDER_MODELS.nvidia.replace(/^nvidia\//, "")
+    );
+    expect(result.modelId.startsWith("nvidia/")).toBe(false);
+  });
+
   test("configured provider: a bare model code is left untouched", () => {
     const result = resolveModelRef("glm-4.7", { defaultProvider: "z-ai" });
     expect(result.provider).toBe("z-ai");

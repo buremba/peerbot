@@ -184,23 +184,25 @@ export function resolveModelRef(
   // the anthropic/openai provider". Splitting on "/" here would mis-route them.
   if (defaultProvider) {
     let modelId = modelRef;
-    // Strip a redundant leading "<configured-provider>/" prefix. Lobu refers to
-    // models as "provider/model" (e.g. "z-ai/glm-4.7"), but the upstream
-    // provider's own namespace is just the bare code ("glm-4.7") — sending the
-    // Lobu prefix makes z.ai (and other sdkCompat:openai providers) 400 with
-    // "Unknown Model". Only strip the configured provider's OWN id, so a
-    // foreign namespace slug (OpenRouter's "anthropic/claude-sonnet-4") is left
-    // intact and still routes correctly.
-    if (modelId.startsWith(`${defaultProvider}/`)) {
-      modelId = modelId.slice(defaultProvider.length + 1);
-    }
-    // Resolve "auto" to the configured provider's default model.
+    // Resolve "auto" to the configured provider's default model FIRST — the
+    // default itself may carry a redundant prefix (e.g. nvidia →
+    // "nvidia/moonshotai/kimi-k2.5"), so stripping has to run after this.
     if (modelId === "auto") {
       const fallback = DEFAULT_PROVIDER_MODELS[defaultProvider];
       if (fallback) {
         logger.info(`Resolved auto model for ${defaultProvider}: ${fallback}`);
         modelId = fallback;
       }
+    }
+    // Then strip a redundant leading "<configured-provider>/" self-prefix. Lobu
+    // names models "provider/model" ("z-ai/glm-4.7"), but the upstream
+    // provider's own namespace is the bare code ("glm-4.7") — shipping the Lobu
+    // prefix makes z.ai (and other sdkCompat:openai providers) 400 "Unknown
+    // Model". Only the configured provider's OWN id is stripped, so a foreign
+    // namespace slug (OpenRouter's "anthropic/claude-sonnet-4") stays intact.
+    // Runs after the auto-resolution above so a prefixed default is covered too.
+    if (modelId.startsWith(`${defaultProvider}/`)) {
+      modelId = modelId.slice(defaultProvider.length + 1);
     }
     return { provider: defaultProvider, modelId };
   }

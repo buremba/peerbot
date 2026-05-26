@@ -15,7 +15,7 @@ import { createAuth } from '../index';
 import { requireAuth } from '../middleware';
 import { findExistingPersonalOrg } from '../personal-org-provisioning';
 import { OAuthProvider } from './provider';
-import { DEFAULT_SCOPES_STRING, filterScopeByRole, grantConnectionsTokenScope } from './scopes';
+import { DEFAULT_SCOPES_STRING, filterScopeByRole } from './scopes';
 import type { AuthorizationParams, OAuthClientMetadata, TokenRequestParams } from './types';
 import { createOAuthError, validateRedirectUri } from './utils';
 import { getConfiguredPublicOrigin } from '../../utils/public-origin';
@@ -768,9 +768,15 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
         400
       );
     }
-    // Device-code logins (`lobu login`) get `connections:token` automatically —
-    // same rationale as the consent (authorization-code) path above.
-    scopeOverride = grantConnectionsTokenScope(scopeOverride);
+    // NOTE: `connections:token` is NOT auto-appended here. Device-code
+    // registration is open (DCR), so auto-granting it to any device client
+    // would silently widen its token beyond what it requested — the same
+    // scope-creep we removed from the authorization-code path. The first-party
+    // `lobu login` requests `connections:token` explicitly in its
+    // device_authorization scope (see `packages/cli/src/internal/oauth.ts`);
+    // `filterScopeByRole` only strips `mcp:admin`, so an explicitly-requested
+    // `connections:token` survives in `deviceCode.scope` and is granted. A
+    // device client that did NOT request it simply doesn't get it.
   }
 
   const approved = await provider.approveDeviceCode(

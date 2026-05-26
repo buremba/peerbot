@@ -105,10 +105,20 @@ function cloudContextName(override: string | undefined): string {
  * The cloud base ORIGIN for a context (the host the OAuth + connection-token
  * endpoints are mounted at the root of). The stored context URL is an API URL
  * (e.g. `https://app.lobu.ai/api/v1`); we want only its origin.
+ *
+ * `isCanonicalDefault` guards the hardcoded `app.lobu.ai` fallback: it is only
+ * applied when the resolved context is the canonical `lobu` context AND no
+ * cloud override (`contextOverride` arg / `LOBU_CLOUD_CONTEXT` /
+ * `LOBU_CLOUD_URL`) is in play. Without this guard a self-hoster whose
+ * config.json lacks an explicit context URL would have their stored login token
+ * POSTed to app.lobu.ai — a credential leak to a host they never configured. In
+ * the non-canonical / overridden case we return null instead, so the resolver
+ * falls through to the env fallback (or no credential at all).
  */
 function resolveContextBaseUrl(
 	contextName: string,
 	config: StoredContextConfig | null,
+	isCanonicalDefault: boolean,
 ): string | null {
 	const entry = config?.contexts?.[contextName];
 	const rawUrl =
@@ -116,9 +126,12 @@ function resolveContextBaseUrl(
 		(typeof entry?.apiUrl === "string" && entry.apiUrl) ||
 		null;
 	if (!rawUrl) {
-		// The default context always resolves to the canonical cloud origin even
-		// when config.json is absent (a fresh install).
-		if (contextName === DEFAULT_CONTEXT_NAME) return "https://app.lobu.ai";
+		// The canonical default context resolves to the canonical cloud origin
+		// even when config.json is absent (a fresh install) — but ONLY when no
+		// override points the cloud somewhere else.
+		if (contextName === DEFAULT_CONTEXT_NAME && isCanonicalDefault) {
+			return "https://app.lobu.ai";
+		}
 		return null;
 	}
 	try {
@@ -145,6 +158,14 @@ export async function resolveCloudCredential(
 ): Promise<CloudCredential | null> {
 	const config = await loadContextConfig();
 	const contextName = cloudContextName(contextOverride);
+	// The hardcoded app.lobu.ai fallback in resolveContextBaseUrl applies ONLY
+	// when nothing redirects the cloud elsewhere. Any override — an explicit
+	// context arg, LOBU_CLOUD_CONTEXT, or a configured LOBU_CLOUD_URL — means a
+	// self-hoster's token must NOT be sent to app.lobu.ai by default.
+	const isCanonicalDefault =
+		!contextOverride?.trim() &&
+		!process.env.LOBU_CLOUD_CONTEXT?.trim() &&
+		!process.env.LOBU_CLOUD_URL?.trim();
 
 	const stored = await readContextCredential(
 		credentialsPath(),
@@ -189,7 +210,11 @@ export async function resolveCloudCredential(
 				});
 			}
 		}
-		const baseUrl = resolveContextBaseUrl(contextName, config);
+		const baseUrl = resolveContextBaseUrl(
+			contextName,
+			config,
+			isCanonicalDefault,
+		);
 		if (baseUrl) {
 			return {
 				token: active.accessToken,

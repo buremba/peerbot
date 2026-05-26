@@ -86,18 +86,61 @@ describe("credential store I/O", () => {
     expect((await readCredentialStore(file, DEFAULT)).contexts).toEqual({});
   });
 
-  test("entries without an accessToken are dropped on read", async () => {
+  test("entries without an accessToken (or an EMPTY-string one) are dropped on read", async () => {
     const { writeFile } = await import("node:fs/promises");
     await writeFile(
       file,
       JSON.stringify({
         version: 2,
-        contexts: { lobu: { accessToken: "ok" }, bad: { refreshToken: "x" } },
+        contexts: {
+          lobu: { accessToken: "ok" },
+          bad: { refreshToken: "x" },
+          // An empty-string accessToken is invalid — `lobu login` is the
+          // load-bearing primitive and must treat "" as no credential.
+          empty: { accessToken: "" },
+        },
       })
     );
     const store = await readCredentialStore(file, DEFAULT);
     expect(store.contexts.lobu?.accessToken).toBe("ok");
     expect(store.contexts.bad).toBeUndefined();
+    expect(store.contexts.empty).toBeUndefined();
+  });
+
+  test("concurrent writes never corrupt the store and leave no temp files", async () => {
+    // The server's refresh write-back and the CLI can write the store at the
+    // same time. The atomic temp-file + rename write guarantees a reader always
+    // sees ONE writer's COMPLETE file (never a half-written/interleaved one) and
+    // no `.tmp-*` turds are left behind. (It is last-writer-wins on the rename —
+    // we don't merge concurrent read-modify-writes — so not every context is
+    // guaranteed to survive; the invariant being proven here is no CORRUPTION,
+    // not no-lost-update.)
+    const { readdir } = await import("node:fs/promises");
+    await Promise.all(
+      Array.from({ length: 25 }, (_, i) =>
+        writeContextCredential(file, `ctx-${i % 5}`, DEFAULT, {
+          accessToken: `token-${i}`,
+        })
+      )
+    );
+
+    // The file parses cleanly (no interleaved/truncated JSON) — every surviving
+    // entry is a valid credential.
+    const store = await readCredentialStore(file, DEFAULT);
+    expect(Object.keys(store.contexts).length).toBeGreaterThan(0);
+    for (const cred of Object.values(store.contexts)) {
+      expect(typeof cred.accessToken).toBe("string");
+      expect(cred.accessToken.length).toBeGreaterThan(0);
+    }
+
+    // Perms survive concurrent overwrites.
+    const { stat } = await import("node:fs/promises");
+    expect((await stat(file)).mode & 0o777).toBe(0o600);
+
+    // No leftover temp files in the dir.
+    const entries = await readdir(dir);
+    expect(entries.filter((n) => n.includes(".tmp-"))).toEqual([]);
+    expect(entries).toContain("credentials.json");
   });
 
   test("delete removes one context; deletes the file when none remain", async () => {

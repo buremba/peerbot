@@ -263,7 +263,9 @@ describe("oauth", () => {
       >;
       expect(body.client_id).toBe("client-1");
       expect(body.client_secret).toBe("shh");
-      expect(body.scope).toBe("mcp:read mcp:write mcp:admin profile:read");
+      expect(body.scope).toBe(
+        "mcp:read mcp:write mcp:admin profile:read connections:token"
+      );
     });
 
     test("clamps interval to a minimum of 1 and uses 600s default expires_in", async () => {

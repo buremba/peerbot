@@ -10,8 +10,8 @@ import {
 import * as fs from "node:fs/promises";
 import * as context from "../context";
 import {
-  clearCredentials,
   type Credentials,
+  clearCredentials,
   getAgentApiToken,
   getToken,
   loadCredentials,
@@ -54,6 +54,12 @@ describe("credentials", () => {
     writeFileSpy = spyOn(fs, "writeFile").mockResolvedValue(undefined);
     rmSpy = spyOn(fs, "rm").mockResolvedValue(undefined);
     spyOn(fs, "mkdir").mockResolvedValue(undefined);
+    // The credential store is written atomically (temp file + rename, with a
+    // chmod on the temp before the rename). Mock both so the atomic write
+    // resolves without touching the real filesystem; the assertions still read
+    // the serialized data from the writeFile spy's payload arg.
+    spyOn(fs, "rename").mockResolvedValue(undefined);
+    spyOn(fs, "chmod").mockResolvedValue(undefined);
     spyOn(context, "resolveContext").mockImplementation(async () => ({
       name: currentContextName,
       url: "https://app.lobu.ai/api/v1",

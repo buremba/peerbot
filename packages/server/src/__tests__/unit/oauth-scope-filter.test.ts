@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { filterScopeByRole, grantConnectionsTokenScope } from '../../auth/oauth/scopes';
+import { filterScopeByRole } from '../../auth/oauth/scopes';
 
 describe('filterScopeByRole', () => {
   it('keeps mcp:admin when the user is an owner', () => {
@@ -64,31 +64,22 @@ describe('filterScopeByRole', () => {
     const result = filterScopeByRole('  mcp:read   mcp:admin   ', 'owner');
     expect(result).toBe('mcp:read mcp:admin');
   });
-});
 
-describe('grantConnectionsTokenScope', () => {
-  it('appends connections:token to an MCP-scoped login grant', () => {
-    expect(grantConnectionsTokenScope('mcp:read mcp:write')).toBe(
-      'mcp:read mcp:write connections:token'
+  it('preserves an explicitly-requested connections:token for any role', () => {
+    // `lobu login` requests `connections:token` explicitly; role filtering only
+    // strips `mcp:admin`, so a regular member's login still carries it.
+    const member = filterScopeByRole(
+      'mcp:read mcp:write profile:read connections:token',
+      'member'
     );
-  });
+    expect((member as string).split(' ')).toContain('connections:token');
+    expect((member as string).split(' ')).not.toContain('mcp:admin');
 
-  it('is idempotent — never duplicates the scope', () => {
-    expect(grantConnectionsTokenScope('mcp:read connections:token mcp:write')).toBe(
-      'mcp:read connections:token mcp:write'
+    const owner = filterScopeByRole(
+      'mcp:read mcp:write mcp:admin connections:token',
+      'owner'
     );
-  });
-
-  it('preserves the original token order, appending at the end', () => {
-    expect(grantConnectionsTokenScope('mcp:admin profile:read')).toBe(
-      'mcp:admin profile:read connections:token'
-    );
-  });
-
-  it('leaves a null/empty/scope-less grant untouched (no connection-token scope)', () => {
-    expect(grantConnectionsTokenScope(null)).toBeNull();
-    expect(grantConnectionsTokenScope(undefined)).toBeNull();
-    expect(grantConnectionsTokenScope('')).toBe('');
-    expect(grantConnectionsTokenScope('   ')).toBe('   ');
+    expect((owner as string).split(' ')).toContain('connections:token');
+    expect((owner as string).split(' ')).toContain('mcp:admin');
   });
 });

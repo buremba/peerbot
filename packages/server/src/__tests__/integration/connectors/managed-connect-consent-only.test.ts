@@ -40,9 +40,14 @@ const TEST_ENV = {
  * `oauth_app` profile (the client secret the cloud holds). Returns the owner's
  * tool context + the connector key.
  */
-async function seedManagedConnector(opts: { visibility: 'public' | 'private' }) {
-  const { org, ctx } = await seedOwnerContext({
-    orgName: `Managed ${opts.visibility} Org`,
+async function seedManagedConnector(opts: {
+  visibility: 'public' | 'private';
+  /** Managed oauth_app state: 'active' (default) | 'revoked' | 'absent'. */
+  appState?: 'active' | 'revoked' | 'absent';
+}) {
+  const appState = opts.appState ?? 'active';
+  const { org, user, ctx } = await seedOwnerContext({
+    orgName: `Managed ${opts.visibility} ${appState} Org`,
     userName: 'Connecting Member',
     visibility: opts.visibility,
   });
@@ -68,17 +73,22 @@ async function seedManagedConnector(opts: { visibility: 'public' | 'private' }) 
     feeds_schema: { items: {} },
   });
 
-  // The managed oauth_app — the signal that this connector is "managed".
-  await createAuthProfile({
-    organizationId: org.id,
-    connectorKey,
-    displayName: 'Managed Demo App',
-    profileKind: 'oauth_app',
-    provider: 'demo',
-    authData: { DEMO_CLIENT_ID: 'managed-cid', DEMO_CLIENT_SECRET: 'managed-secret' },
-  });
+  // The managed oauth_app — the signal that this connector is "managed". A
+  // non-active (revoked) or absent app means the connector is NOT managed in
+  // this org, so the consent_only marking must not apply.
+  if (appState !== 'absent') {
+    await createAuthProfile({
+      organizationId: org.id,
+      connectorKey,
+      displayName: 'Managed Demo App',
+      profileKind: 'oauth_app',
+      provider: 'demo',
+      authData: { DEMO_CLIENT_ID: 'managed-cid', DEMO_CLIENT_SECRET: 'managed-secret' },
+      status: appState === 'revoked' ? 'revoked' : 'active',
+    });
+  }
 
-  return { ctx, connectorKey };
+  return { org, user, ctx, connectorKey };
 }
 
 describe('Stage 3 — managed-connect creates a consent-only connection', () => {
@@ -143,5 +153,124 @@ describe('Stage 3 — managed-connect creates a consent-only connection', () => 
     `) as unknown as Array<{ config: Record<string, unknown> | null }>;
     // Not a public org → not managed → no consent_only marking.
     expect(connRows[0]?.config?.consent_only).toBeUndefined();
+  });
+
+  it('a PUBLIC org whose managed oauth_app is REVOKED is NOT treated as managed (no consent_only connection)', async () => {
+    // T3: the public-org signal alone is not enough — there must be an ACTIVE
+    // managed oauth_app. A revoked app means the connector isn't actually
+    // managed here, so the connect flow must NOT skip the app requirement and
+    // mint a consent_only connection. (Without an active app the connect can't
+    // build its consent URL, so it errors — and crucially no consent_only
+    // connection is created.)
+    const { org, ctx, connectorKey } = await seedManagedConnector({
+      visibility: 'public',
+      appState: 'revoked',
+    });
+
+    const result = (await manageConnections(
+      { action: 'connect', connector_key: connectorKey },
+      TEST_ENV,
+      ctx
+    )) as { connection_id?: number; error?: string };
+
+    // Not treated as managed → the normal OAuth-app requirement applies.
+    expect(result.error).toMatch(/OAuth app profile not configured/i);
+
+    const sql = getTestDb();
+    const connRows = (await sql`
+      SELECT config FROM connections
+      WHERE organization_id = ${org.id} AND connector_key = ${connectorKey}
+    `) as unknown as Array<{ config: Record<string, unknown> | null }>;
+    // No consent_only connection exists for this connector.
+    expect(connRows.some((r) => r.config?.consent_only === true)).toBe(false);
+  });
+
+  it('a PUBLIC org with NO managed oauth_app is NOT treated as managed (no consent_only connection)', async () => {
+    // T3 (absent variant): public org, OAuth connector, but no managed app at
+    // all → not managed → the connect flow errors on the missing app rather
+    // than minting a consent_only connection.
+    const { org, ctx, connectorKey } = await seedManagedConnector({
+      visibility: 'public',
+      appState: 'absent',
+    });
+
+    const result = (await manageConnections(
+      { action: 'connect', connector_key: connectorKey },
+      TEST_ENV,
+      ctx
+    )) as { connection_id?: number; error?: string };
+
+    expect(result.error).toMatch(/OAuth app profile not configured/i);
+
+    const sql = getTestDb();
+    const connRows = (await sql`
+      SELECT config FROM connections
+      WHERE organization_id = ${org.id} AND connector_key = ${connectorKey}
+    `) as unknown as Array<{ config: Record<string, unknown> | null }>;
+    expect(connRows.some((r) => r.config?.consent_only === true)).toBe(false);
+  });
+
+  it('the `create` path also marks consent_only for a managed connector in a PUBLIC org, and feeds are rejected', async () => {
+    // T5 / FIX 5: handleConnect already marks consent_only, but a member could
+    // `create` (action:'create') an OAuth connection with their own
+    // oauth_account in the same managed public org. Without the fix that
+    // connection would NOT be consent_only, so feeds could be attached and the
+    // cloud would sync the member's data — breaking "data stays local". The
+    // create path must mark it consent_only just like connect.
+    const { org, user, ctx, connectorKey } = await seedManagedConnector({
+      visibility: 'public',
+    });
+
+    // The member's OWN oauth_account grant (the thing `create` would bind).
+    const sql = getTestDb();
+    const accountId = `member-acct-${org.id}`;
+    await sql`
+      INSERT INTO "account" (
+        id, "accountId", "providerId", "userId",
+        "accessToken", "refreshToken", "accessTokenExpiresAt", scope, "createdAt", "updatedAt"
+      ) VALUES (
+        ${accountId}, ${accountId}, 'demo', ${user.id},
+        'member-grant', 'member-refresh', ${new Date(Date.now() + 3600_000).toISOString()},
+        'read', NOW(), NOW()
+      )
+    `;
+    await createAuthProfile({
+      organizationId: org.id,
+      connectorKey,
+      displayName: 'Member Account',
+      profileKind: 'oauth_account',
+      provider: 'demo',
+      status: 'active',
+      accountId,
+      createdBy: user.id,
+    });
+
+    const created = (await manageConnections(
+      {
+        action: 'create',
+        connector_key: connectorKey,
+        slug: 'member-managed-create',
+      },
+      TEST_ENV,
+      ctx
+    )) as { connection?: { id?: number }; error?: string };
+
+    expect(created.error).toBeUndefined();
+    expect(created.connection?.id).toBeDefined();
+    const connectionId = Number(created.connection?.id);
+
+    const connRows = (await sql`
+      SELECT config FROM connections WHERE id = ${connectionId} LIMIT 1
+    `) as unknown as Array<{ config: Record<string, unknown> | null }>;
+    // The create path marked it consent_only (managed public org + OAuth).
+    expect(connRows[0]?.config?.consent_only).toBe(true);
+
+    // And the feed guard holds: no feed can be added to it.
+    const feedResult = (await manageFeeds(
+      { action: 'create_feed', connection_id: connectionId, feed_key: 'items' },
+      TEST_ENV,
+      ctx
+    )) as { error?: string };
+    expect(feedResult.error).toMatch(/consent-only/i);
   });
 });

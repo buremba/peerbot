@@ -27,33 +27,21 @@ export const DEFAULT_SCOPES = ['mcp:read', 'mcp:write'] as const;
  * The least-privilege scope a token must carry to fetch a managed connector's
  * access token via POST /oauth/connection-token.
  *
- * Interactive logins (the device-code / authorization-code grants behind
- * `lobu login` and the web session) get this scope automatically — see
- * {@link grantConnectionsTokenScope} — because the LOCAL instance's managed
- * resolver uses the user's own login credential to fetch managed tokens. A
- * non-interactive PAT (`lobu token create`) does NOT get it by default; it must
- * be requested explicitly (`--scope connections:token`), so a broad `mcp` CI
- * PAT still can't mint managed-connection tokens and the endpoint gate stays
- * meaningful.
+ * It is granted ONLY on the first-party `lobu login` device-code grant, and
+ * only when that grant EXPLICITLY REQUESTS it (the CLI now includes
+ * `connections:token` in the scope it sends to the device-authorization
+ * endpoint; see `packages/cli/src/internal/oauth.ts`). The device-approve
+ * handler grants exactly the requested scope — it is NOT auto-appended.
+ *
+ * It is NEVER granted on the generic authorization-code consent path (the one
+ * arbitrary third-party MCP clients use — Claude Desktop, Cursor, …), and it is
+ * never silently widened onto any device client that did not request it. A
+ * non-interactive PAT (`lobu token create`) likewise does NOT get it by
+ * default; it must be requested explicitly (`--scope connections:token`). This
+ * keeps a broad `mcp` CI PAT — or any DCR-registered device client — from
+ * minting managed-connection tokens, so the endpoint gate stays meaningful.
  */
 export const CONNECTIONS_TOKEN_SCOPE = 'connections:token';
-
-/**
- * Append {@link CONNECTIONS_TOKEN_SCOPE} to a granted scope string for an
- * interactive OAuth login grant (device code / authorization code). Idempotent
- * — never duplicates the scope. Preserves the original token order so the
- * stored scope stays stable. A null/empty scope is returned unchanged (a
- * profile-only or scope-less grant doesn't get the connection-token scope).
- */
-export function grantConnectionsTokenScope(scope: string | null | undefined): string | null {
-  if (scope === null || scope === undefined) return scope ?? null;
-  const scopes = scope.split(' ').map((s) => s.trim()).filter(Boolean);
-  if (scopes.length === 0) return scope;
-  if (!scopes.includes(CONNECTIONS_TOKEN_SCOPE)) {
-    scopes.push(CONNECTIONS_TOKEN_SCOPE);
-  }
-  return scopes.join(' ');
-}
 
 /** Default scopes as a space-separated string (for OAuth params) */
 export const DEFAULT_SCOPES_STRING = DEFAULT_SCOPES.join(' ');

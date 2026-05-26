@@ -11,8 +11,16 @@
  * local-init, context resolution) on top.
  */
 
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { randomBytes } from "node:crypto";
+import {
+  chmod,
+  mkdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 export interface OAuthClientInfo {
   clientId: string;
@@ -51,7 +59,8 @@ export function normalizeCredential<C extends BaseCredential = BaseCredential>(
   if (
     !value ||
     typeof value !== "object" ||
-    typeof value.accessToken !== "string"
+    typeof value.accessToken !== "string" ||
+    value.accessToken === ""
   ) {
     return null;
   }
@@ -110,9 +119,38 @@ export async function readContextCredential<
 }
 
 /**
+ * Atomically write `data` to `file` with 0600 perms. Writes to a sibling temp
+ * file (same dir, so `rename` is on the same filesystem and therefore atomic on
+ * POSIX), chmods the temp BEFORE the rename so the published file never has a
+ * window of looser perms, then renames over the target. This makes concurrent
+ * writers (CLI `lobu login` + the server's token-refresh write-back) safe: each
+ * writer commits its whole-file image in a single atomic `rename`, so a reader
+ * always sees one writer's complete file — never a half-written / interleaved
+ * one. (Last-writer-wins on the rename; we don't merge, but neither writer can
+ * corrupt the store.)
+ */
+async function atomicWriteFile(file: string, data: string): Promise<void> {
+  await mkdir(dirname(file), { recursive: true });
+  const tmp = join(
+    dirname(file),
+    `${".tmp-"}${process.pid}.${randomBytes(6).toString("hex")}`
+  );
+  try {
+    await writeFile(tmp, data, { mode: 0o600 });
+    await chmod(tmp, 0o600).catch(() => undefined);
+    await rename(tmp, file);
+  } catch (error) {
+    await rm(tmp).catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
  * Write one context's credential into the store, preserving other contexts.
- * `writeFile`'s `mode` only applies on creation, so `chmod` afterwards makes the
- * 0600 perms unconditional even if the file pre-existed with looser perms.
+ * The write is atomic (temp-file + `rename`) so a concurrent writer (e.g. the
+ * server's refresh write-back) can never observe a half-written store. 0600
+ * perms are set on the temp file before the rename, so the published file is
+ * never world-readable even momentarily.
  */
 export async function writeContextCredential<
   C extends BaseCredential = BaseCredential,
@@ -124,9 +162,7 @@ export async function writeContextCredential<
 ): Promise<void> {
   const store = await readCredentialStore<C>(file, defaultContextName);
   store.contexts[contextName] = credential;
-  await mkdir(dirname(file), { recursive: true });
-  await writeFile(file, JSON.stringify(store, null, 2), { mode: 0o600 });
-  await chmod(file, 0o600).catch(() => undefined);
+  await atomicWriteFile(file, JSON.stringify(store, null, 2));
 }
 
 /** Remove one context. Deletes the file entirely when no contexts remain. */
@@ -143,8 +179,7 @@ export async function deleteContextCredential<
     await rm(file).catch(() => undefined);
     return;
   }
-  await writeFile(file, JSON.stringify(store, null, 2), { mode: 0o600 });
-  await chmod(file, 0o600).catch(() => undefined);
+  await atomicWriteFile(file, JSON.stringify(store, null, 2));
 }
 
 export function credentialNeedsRefresh(

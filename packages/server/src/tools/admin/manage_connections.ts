@@ -1129,6 +1129,34 @@ async function handleCreate(
     };
   }
 
+  // Managed-connector path (mirrors handleConnect): a member creating an OAuth
+  // connection for a managed connector in a PUBLIC org gets a CONSENT-ONLY
+  // connection — it holds the OAuth grant for cloud-delegated token fetch but
+  // has no feeds, so the cloud never syncs a copy (the member's data lives only
+  // on their local instance; the manage_feeds guard refuses feeds on a
+  // consent_only connection). Without this, `create` (vs `connect`) would mint a
+  // non-consent-only grant-holder a member could attach feeds to, breaking the
+  // "data stays local" invariant.
+  //
+  // Deliberately NOT marked for: a `managedBy` connection (its grant lives in
+  // the cloud but it SYNCS LOCALLY — consent_only and managedBy are mutually
+  // exclusive), a non-OAuth method, or any non-managed / non-public-org create.
+  const isManagedCreate =
+    !isManagedByConnection && authSelection?.oauthMethod
+      ? await isManagedPublicOrgConnect({
+          organizationId,
+          connectorKey: args.connector_key,
+          provider: authSelection.oauthMethod.provider,
+        })
+      : false;
+  const connectionConfigToInsert =
+    isManagedCreate || splitConfig.connectionConfig
+      ? {
+          ...(splitConfig.connectionConfig ?? {}),
+          ...(isManagedCreate ? { consent_only: true } : {}),
+        }
+      : null;
+
   // Interactive auth: always create a fresh `interactive` auth profile scoped to
   // this connection. Connection starts in pending_auth; feed is paused; an auth
   // run drives the authenticate() lifecycle which writes credentials on success.
@@ -1231,7 +1259,7 @@ async function handleCreate(
           ${connectionStatus},
           ${interactiveAuthProfileId ?? authSelection?.authProfile?.id ?? null},
           ${authSelection?.appAuthProfile?.id ?? null},
-          ${splitConfig.connectionConfig ? sql.json(splitConfig.connectionConfig) : null},
+          ${connectionConfigToInsert ? sql.json(connectionConfigToInsert) : null},
           ${effectiveCreatedBy},
           ${visibility},
           ${effectiveDeviceWorkerId}

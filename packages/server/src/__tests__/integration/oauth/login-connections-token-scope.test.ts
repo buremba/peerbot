@@ -6,19 +6,22 @@
  * connection-token endpoint's scope gate, the device-code grant behind
  * `lobu login` must carry `connections:token`.
  *
- * Crucially, the scope is granted ONLY on the first-party device-code path —
- * NOT on the generic authorization-code consent path, which arbitrary
- * third-party MCP clients use; granting it there would silently widen their
- * tokens beyond what they requested.
+ * Crucially, the scope is granted ONLY when the first-party `lobu login`
+ * device-code grant EXPLICITLY REQUESTS it (the CLI now includes
+ * `connections:token` in its requested scope). The server no longer
+ * auto-appends it on the device path — so a device client that does NOT request
+ * it (or the generic authorization-code consent path arbitrary third-party MCP
+ * clients use) never gets it, and tokens are never silently widened.
  *
  * This drives the real grants end-to-end against the mounted `oauthRoutes`:
- *   - device-code:  register → device_authorization → device/approve → token
- *     → assert the stored scope INCLUDES `connections:token`.
+ *   - device-code:  register → device_authorization (requesting
+ *     `connections:token`) → device/approve → token → assert the stored scope
+ *     INCLUDES `connections:token`.
  *   - auth-code:    register → authorize (consent) → token → assert the stored
  *     scope does NOT include `connections:token`.
  *
- * It also proves the gate stays meaningful: a profile-only device grant does
- * NOT get `connections:token`.
+ * It also proves the gate stays meaningful: a profile-only device grant that
+ * does NOT request `connections:token` does NOT get it.
  */
 
 import { createHash, randomBytes } from 'node:crypto';
@@ -112,11 +115,13 @@ describe('Stage 1 — login token carries connections:token', () => {
     const client = (await reg.json()) as { client_id: string };
 
     // 2. Device authorization — request the same scopes `lobu login` does,
-    //    resource binds the grant to the user's org via /mcp/<slug>.
+    //    INCLUDING `connections:token` (the CLI now requests it explicitly; the
+    //    server no longer auto-appends it). Resource binds the grant to the
+    //    user's org via /mcp/<slug>.
     const deviceAuth = await call(app, 'POST', '/oauth/device_authorization', {
       body: {
         client_id: client.client_id,
-        scope: 'mcp:read mcp:write mcp:admin profile:read',
+        scope: 'mcp:read mcp:write mcp:admin profile:read connections:token',
         resource: `${ORIGIN}/mcp/${org.slug}`,
       },
     });

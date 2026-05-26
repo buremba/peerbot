@@ -27,6 +27,7 @@ import { Type } from "@sinclair/typebox";
 import { TypeCompiler } from "@sinclair/typebox/compiler";
 import { Hono } from "hono";
 import { OAuthProvider } from "../auth/oauth/provider";
+import { CONNECTIONS_TOKEN_SCOPE } from "../auth/oauth/scopes";
 import { getDb } from "../db/client";
 import { resolveExecutionAuth } from "../utils/execution-context";
 import logger from "../utils/logger";
@@ -38,22 +39,18 @@ type ConnectionTokenEnv = {
 
 const connectionTokenRoutes = new Hono<ConnectionTokenEnv>();
 
-/**
- * The least-privilege scope a credential must carry to mint a managed-connection
- * access token via this endpoint. Deliberately separate from the default
- * `mcp:*` scopes so a broad org-member credential cannot mint connection tokens.
- *
- * Two credential shapes carry it:
- *   - a USER's device-login access token (`lobu login`) — granted the scope
- *     automatically at login (auth/oauth/scopes.ts); this is the default path
- *     for the local instance's managed-connector resolver.
- *   - a PAT minted EXPLICITLY with `--scope connections:token` (the headless /
- *     CI fallback, `LOBU_CLOUD_PAT`).
- *
- * A default `mcp:read mcp:write` member PAT is NOT enough — the gate stays
- * meaningful against a broad CI PAT.
- */
-const CONNECTIONS_TOKEN_SCOPE = "connections:token";
+// The least-privilege scope a credential must carry to mint a managed-connection
+// access token via this endpoint is `CONNECTIONS_TOKEN_SCOPE`, imported from the
+// auth/oauth/scopes single source of truth. Deliberately separate from the
+// default `mcp:*` scopes so a broad org-member credential cannot mint connection
+// tokens. Two credential shapes carry it:
+//   - a USER's device-login access token (`lobu login`) — which requests the
+//     scope EXPLICITLY (auth/oauth/scopes.ts); the default path for the local
+//     instance's managed-connector resolver.
+//   - a PAT minted EXPLICITLY with `--scope connections:token` (the headless /
+//     CI fallback, `LOBU_CLOUD_PAT`).
+// A default `mcp:read mcp:write` member PAT is NOT enough — the gate stays
+// meaningful against a broad CI PAT.
 
 /**
  * Auth for the connection-token endpoint. Accepts ANY valid bearer

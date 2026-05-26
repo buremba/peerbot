@@ -8,7 +8,13 @@
 
 const CLIENT_NAME = "Lobu CLI";
 const SOFTWARE_ID = "lobu-cli";
-const SCOPE = "mcp:read mcp:write mcp:admin profile:read";
+// `connections:token` is requested explicitly so the resulting login token can
+// fetch managed-connector access tokens from the cloud (POST
+// /oauth/connection-token). The server grants exactly the requested scope on the
+// device-code path — it is NOT auto-appended — so `lobu login` must ask for it
+// here. The endpoint's scope gate stays meaningful because nothing widens a
+// token onto this scope unless the grant explicitly requested it.
+const SCOPE = "mcp:read mcp:write mcp:admin profile:read connections:token";
 const GRANT_DEVICE_CODE = "urn:ietf:params:oauth:grant-type:device_code";
 const GRANT_REFRESH_TOKEN = "refresh_token";
 /** RFC 8628 §3.5: on `slow_down`, the device MUST increase the interval by 5s. */

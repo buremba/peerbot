@@ -2,8 +2,9 @@
  * Reaction for the `inbound-triage` watcher.
  *
  * Fires every 2h after the watcher LLM extracts new and enriched leads from
- * GitHub/X/HN signals. Persists a `lead_interaction` event per run so the next
- * digest can count them, and — when the run is notable — pushes the recommended
+ * GitHub/X/HN signals. Persists an `observation` event (tagged `metadata.kind:
+ * "lead_interaction"`) per run so the next digest can count them, and — when
+ * the run is notable — pushes the recommended
  * actions to the team via `client.notifications.send` (fans out to the #leads
  * Slack connection + the in-app inbox).
  */
@@ -38,8 +39,11 @@ export default async (
   await client.knowledge.save({
     entity_ids: ctx.entities.map((e) => e.id),
     content: summary,
-    semantic_type: "lead_interaction",
+    // `semantic_type` must be a registered event kind; "observation" fits a
+    // triage note. The domain label lives in metadata so it stays queryable.
+    semantic_type: "observation",
     metadata: {
+      kind: "lead_interaction",
       window_id: ctx.window.id,
       new_lead_count: data.new_leads?.length ?? 0,
       action_count: actions.length,

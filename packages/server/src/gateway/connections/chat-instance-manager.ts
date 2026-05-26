@@ -78,18 +78,39 @@ function telegramApiBase(config: TelegramAdapterConfig): string {
     : "https://api.telegram.org";
 }
 
-/** Shallow structural equality for plain config objects. */
+/**
+ * Stable canonical JSON serialization: object keys sorted recursively so two
+ * structurally-equal configs serialize identically regardless of key insertion
+ * order. Arrays preserve order (order is significant for things like scope
+ * lists). Used by `configsEqual` to deep-compare nested config (Discord/Teams
+ * OAuth blocks, scope arrays) — a shallow `!==` compares nested objects by
+ * reference and never sees a changed inner field, so a stale config would
+ * persist without restarting the adapter.
+ */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "null";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+  const entries = Object.keys(value as Record<string, unknown>)
+    .sort()
+    .map(
+      (key) =>
+        `${JSON.stringify(key)}:${stableStringify(
+          (value as Record<string, unknown>)[key]
+        )}`
+    );
+  return `{${entries.join(",")}}`;
+}
+
+/** Deep structural equality for plain config objects (nested-aware). */
 function configsEqual(
   a: Record<string, unknown>,
   b: Record<string, unknown>
 ): boolean {
-  const aKeys = Object.keys(a);
-  const bKeys = Object.keys(b);
-  if (aKeys.length !== bKeys.length) return false;
-  for (const key of aKeys) {
-    if (a[key] !== b[key]) return false;
-  }
-  return true;
+  return stableStringify(a) === stableStringify(b);
 }
 
 const logger = createLogger("chat-instance-manager");
@@ -329,6 +350,29 @@ export class ChatInstanceManager {
       throw new Error(
         "Polling mode is not supported in Lobu Cloud — use webhook mode, or self-host."
       );
+    }
+
+    // Telegram's inbound webhook is authenticated solely by the adapter
+    // comparing `x-telegram-bot-api-secret-token` against the configured
+    // `secretToken` — and the adapter accepts the request when no token is
+    // set. The public `POST /api/v1/webhooks/:connectionId` route only checks
+    // the connection exists, so a Telegram connection created without a
+    // secretToken has an unauthenticated, forgeable webhook. Auto-generate a
+    // strong random token when the caller didn't supply one so
+    // configurePlatformWebhook always registers it and the adapter always
+    // verifies. The field name matches `isSecretField`, so it's persisted as
+    // a `secret://` ref like any other credential.
+    if (platform === "telegram") {
+      const tgConfig = config as TelegramAdapterConfig;
+      if (
+        typeof tgConfig.secretToken !== "string" ||
+        tgConfig.secretToken.length === 0
+      ) {
+        tgConfig.secretToken = `${randomUUID()}${randomUUID()}`.replace(
+          /-/g,
+          ""
+        );
+      }
     }
 
     const id = stableId ?? randomUUID().replace(/-/g, "").slice(0, 16);

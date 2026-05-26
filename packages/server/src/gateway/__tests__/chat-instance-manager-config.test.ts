@@ -1,0 +1,361 @@
+/**
+ * Reproducers for two gateway/connections config-handling bugs:
+ *
+ *   #2 (security) — Telegram webhook forgeable when `secretToken` is unset.
+ *       The adapter only verifies `x-telegram-bot-api-secret-token` when a
+ *       secretToken is configured, and the public webhook route only checks
+ *       the connection exists. `addConnection` must auto-generate a strong
+ *       secretToken for Telegram connections created without one, persist it,
+ *       and `configurePlatformWebhook` must register it via setWebhook so the
+ *       adapter always verifies.
+ *
+ *   #8 — `configsEqual` was shallow (`!==` on top-level values), so a changed
+ *       NESTED config field (e.g. an OAuth block or scopes array) compared
+ *       equal by reference and `needsRestart` stayed false → a stale config
+ *       persisted without restarting the adapter. The comparison must be deep.
+ *
+ * Uses the embedded Postgres gateway test harness; no network (fetch mocked).
+ */
+
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test";
+import {
+  ensureDbForGatewayTests,
+  resetTestDatabase,
+  seedAgentRow,
+} from "./helpers/db-setup.js";
+
+const TEST_ENCRYPTION_KEY =
+  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+beforeAll(async () => {
+  await ensureDbForGatewayTests();
+  process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
+}, 60_000);
+
+beforeEach(async () => {
+  await resetTestDatabase();
+}, 30_000);
+
+async function buildManager(orgId: string, agentId: string) {
+  await seedAgentRow(agentId, { organizationId: orgId });
+
+  const { ChatInstanceManager } = await import(
+    "../connections/chat-instance-manager.js"
+  );
+  const { createPostgresAgentConnectionStore } = await import(
+    "../../lobu/stores/postgres-stores.js"
+  );
+  const { PostgresSecretStore } = await import(
+    "../../lobu/stores/postgres-secret-store.js"
+  );
+  const { SecretStoreRegistry } = await import("../secrets/index.js");
+  const { orgContext } = await import("../../lobu/stores/org-context.js");
+
+  const connectionStore = createPostgresAgentConnectionStore();
+  const postgresSecretStore = new PostgresSecretStore();
+  const secretStore = new SecretStoreRegistry(postgresSecretStore, {
+    secret: postgresSecretStore,
+  });
+
+  const services = {
+    getPublicGatewayUrl: () => "",
+    getSecretStore: () => secretStore,
+    getConnectionStore: () => connectionStore,
+    getChannelBindingService: () => ({ getBinding: async () => null }),
+    getCommandRegistry: () => undefined,
+  } as any;
+
+  const manager = new ChatInstanceManager() as any;
+  manager.services = services;
+  manager.publicGatewayUrl = "";
+  manager.connectionStore = connectionStore;
+  manager.slackCoordinator = manager.buildSlackCoordinator();
+
+  return { manager, connectionStore, secretStore, orgContext };
+}
+
+describe("ChatInstanceManager — Telegram webhook secret (finding #2)", () => {
+  test("addConnection auto-generates and persists a secretToken when none is supplied", async () => {
+    const orgId = "org-tg-secret";
+    const agentId = "agent-tg-secret";
+    const { manager, connectionStore, secretStore, orgContext } =
+      await buildManager(orgId, agentId);
+
+    // Stub the adapter-boot side of addConnection so we exercise only the
+    // auto-gen + persist path (booting a real Telegram adapter would hit the
+    // network). The auto-gen happens before persistConnection regardless.
+    manager.startInstance = async () => {
+      /* no-op */
+    };
+
+    const created = await orgContext.run({ organizationId: orgId }, () =>
+      manager.addConnection(
+        "telegram",
+        agentId,
+        { platform: "telegram", botToken: "123456:fake-token" },
+        { allowGroups: true }
+      )
+    );
+
+    // The returned connection carries a strong (>=32 char) secretToken.
+    const generated = created.config.secretToken as string;
+    expect(typeof generated).toBe("string");
+    expect(generated.length).toBeGreaterThanOrEqual(32);
+
+    // It is persisted (as a `secret://` ref — "secretToken" is a secret field)
+    // and resolves back to the generated value.
+    const stored = await orgContext.run({ organizationId: orgId }, () =>
+      connectionStore.getConnection(created.id)
+    );
+    expect(stored).not.toBeNull();
+    const storedToken = (stored!.config as any).secretToken as string;
+    expect(typeof storedToken).toBe("string");
+    expect(storedToken.length).toBeGreaterThan(0);
+    expect(storedToken.startsWith("secret://")).toBe(true);
+
+    // The persisted ref resolves back to the generated value — so the adapter
+    // gets the real token at boot and registers it via setWebhook.
+    const resolved = await orgContext.run({ organizationId: orgId }, () =>
+      secretStore.get(storedToken)
+    );
+    expect(resolved).toBe(generated);
+  });
+
+  test("addConnection preserves a caller-supplied secretToken", async () => {
+    const orgId = "org-tg-keep";
+    const agentId = "agent-tg-keep";
+    const { manager, orgContext } = await buildManager(orgId, agentId);
+    manager.startInstance = async () => {
+      /* no-op */
+    };
+
+    const created = await orgContext.run({ organizationId: orgId }, () =>
+      manager.addConnection(
+        "telegram",
+        agentId,
+        {
+          platform: "telegram",
+          botToken: "123456:fake-token",
+          secretToken: "caller-chosen-secret-token-value-1234",
+        },
+        { allowGroups: true }
+      )
+    );
+    expect(created.config.secretToken).toBe(
+      "caller-chosen-secret-token-value-1234"
+    );
+  });
+
+  test("configurePlatformWebhook registers the secret_token via setWebhook", async () => {
+    const orgId = "org-tg-hook";
+    const agentId = "agent-tg-hook";
+    const { manager } = await buildManager(orgId, agentId);
+
+    const originalFetch = globalThis.fetch;
+    const fetchMock = mock(async () => new Response("{}", { status: 200 }));
+    globalThis.fetch = fetchMock as any;
+    try {
+      await manager.configurePlatformWebhook(
+        {
+          id: "conn-hook",
+          platform: "telegram",
+          config: {
+            platform: "telegram",
+            botToken: "123456:fake-token",
+            secretToken: "the-generated-secret-token-abcdef0123",
+          },
+          settings: { allowGroups: true },
+          metadata: {},
+          status: "active",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+        "https://gw.example.com/api/v1/webhooks/conn-hook"
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const call = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(String(call[0])).toContain("/setWebhook");
+    const sentBody = JSON.parse(String(call[1].body));
+    expect(sentBody.secret_token).toBe("the-generated-secret-token-abcdef0123");
+    expect(sentBody.url).toBe(
+      "https://gw.example.com/api/v1/webhooks/conn-hook"
+    );
+  });
+});
+
+describe("ChatInstanceManager — config change detection (finding #8)", () => {
+  // updateConnection restarts only `active` connections. We seed the row as
+  // `stopped` so no adapter boot is attempted; we observe needsRestart's effect
+  // indirectly via whether stopInstance/startInstance run. Cleaner: spy on the
+  // private startInstance + stopInstance and assert they fire (or not) for a
+  // nested change. We keep status `active` but stub both lifecycle hooks.
+  let restored: (() => void) | null = null;
+  afterEach(() => {
+    restored?.();
+    restored = null;
+  });
+
+  async function seedActiveConnection(
+    manager: any,
+    connectionStore: any,
+    orgContext: any,
+    orgId: string,
+    agentId: string,
+    config: Record<string, unknown>
+  ): Promise<string> {
+    const id = "conn-cfg";
+    await orgContext.run({ organizationId: orgId }, async () => {
+      await connectionStore.saveConnection({
+        id,
+        platform: config.platform,
+        agentId,
+        organizationId: orgId,
+        config,
+        settings: { allowGroups: true },
+        metadata: {},
+        status: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    });
+    // Pretend the instance is warm so updateConnection's `active` branch runs.
+    manager.instances.set(id, {
+      connection: {
+        id,
+        platform: config.platform,
+        agentId,
+        organizationId: orgId,
+        config,
+        settings: { allowGroups: true },
+        metadata: {},
+        status: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+      chat: {},
+      conversationState: {},
+      messageBridge: {},
+    });
+    return id;
+  }
+
+  test("a changed NESTED config field flips needsRestart to true", async () => {
+    const orgId = "org-cfg-nested";
+    const agentId = "agent-cfg-nested";
+    const { manager, connectionStore, orgContext } = await buildManager(
+      orgId,
+      agentId
+    );
+
+    // Discord config with a nested object/array that differs only deep down.
+    const initialConfig = {
+      platform: "discord",
+      botToken: "tok-1",
+      mentionRoleIds: ["role-A", "role-B"],
+    };
+    const id = await seedActiveConnection(
+      manager,
+      connectionStore,
+      orgContext,
+      orgId,
+      agentId,
+      initialConfig
+    );
+
+    let stopped = 0;
+    let started = 0;
+    const origStop = manager.stopInstance.bind(manager);
+    const origStart = manager.startInstance.bind(manager);
+    manager.stopInstance = async (cid: string) => {
+      stopped++;
+      manager.instances.delete(cid);
+    };
+    manager.startInstance = async () => {
+      started++;
+    };
+    restored = () => {
+      manager.stopInstance = origStop;
+      manager.startInstance = origStart;
+    };
+
+    // Change only a nested array element. A shallow compare sees the array
+    // reference differ from the resolved-previous (also reconstructed), but the
+    // ORIGINAL bug compared the *same* nested reference and missed real changes.
+    // Concretely: re-applying an identical config must NOT restart, while a
+    // genuine nested change MUST restart. Test the genuine-change direction.
+    await orgContext.run({ organizationId: orgId }, () =>
+      manager.updateConnection(id, {
+        config: {
+          platform: "discord",
+          botToken: "tok-1",
+          mentionRoleIds: ["role-A", "role-CHANGED"],
+        },
+      })
+    );
+
+    expect(started).toBe(1);
+    expect(stopped).toBe(1);
+  });
+
+  test("re-applying an identical nested config does NOT restart", async () => {
+    const orgId = "org-cfg-same";
+    const agentId = "agent-cfg-same";
+    const { manager, connectionStore, orgContext } = await buildManager(
+      orgId,
+      agentId
+    );
+
+    const config = {
+      platform: "discord",
+      botToken: "tok-1",
+      mentionRoleIds: ["role-A", "role-B"],
+    };
+    const id = await seedActiveConnection(
+      manager,
+      connectionStore,
+      orgContext,
+      orgId,
+      agentId,
+      config
+    );
+
+    let restartFired = false;
+    const origStop = manager.stopInstance.bind(manager);
+    const origStart = manager.startInstance.bind(manager);
+    manager.stopInstance = async () => {
+      restartFired = true;
+    };
+    manager.startInstance = async () => {
+      restartFired = true;
+    };
+    restored = () => {
+      manager.stopInstance = origStop;
+      manager.startInstance = origStart;
+    };
+
+    await orgContext.run({ organizationId: orgId }, () =>
+      manager.updateConnection(id, {
+        config: {
+          platform: "discord",
+          botToken: "tok-1",
+          // Same values, NEW array reference + different key order.
+          mentionRoleIds: ["role-A", "role-B"],
+        },
+      })
+    );
+
+    expect(restartFired).toBe(false);
+  });
+});

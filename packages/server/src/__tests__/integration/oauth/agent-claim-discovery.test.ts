@@ -21,6 +21,8 @@ import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase } from '../../setup/test-db';
 import {
   addUserToOrganization,
+  createTestDeviceCode,
+  createTestOAuthClient,
   createTestOrganization,
   createTestSession,
   createTestUser,
@@ -161,5 +163,47 @@ describe('user_claimed flow — full loop', () => {
     const tokens = (await tokenRes.json()) as { access_token: string; scope?: string };
     expect(tokens.access_token).toBeTruthy();
     expect((tokens.scope ?? '').split(' ')).toContain('mcp:read');
+  });
+});
+
+describe('GET /oauth/device/info — informed consent (who + scopes)', () => {
+  it('returns the requesting client name + scopes for a pending code (authed)', async () => {
+    const app = buildApp();
+    const user = await createTestUser({ name: 'Info User' });
+    const session = await createTestSession(user.id);
+    const client = await createTestOAuthClient({
+      client_name: 'Acme Agent',
+      grant_types: [DEVICE_GRANT, 'refresh_token'],
+    });
+    const device = await createTestDeviceCode(client.client_id, {
+      scope: 'mcp:read mcp:write',
+    });
+
+    const res = await call(app, 'GET', `/oauth/device/info?user_code=${device.userCode}`, {
+      headers: { Cookie: session.cookieHeader },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { client_name: string; scopes: string[] };
+    expect(body.client_name).toBe('Acme Agent');
+    expect(body.scopes).toContain('mcp:read');
+    expect(body.scopes).toContain('mcp:write');
+  });
+
+  it('requires authentication', async () => {
+    const app = buildApp();
+    const client = await createTestOAuthClient({ grant_types: [DEVICE_GRANT, 'refresh_token'] });
+    const device = await createTestDeviceCode(client.client_id);
+    const res = await call(app, 'GET', `/oauth/device/info?user_code=${device.userCode}`);
+    expect(res.status).toBe(401);
+  });
+
+  it('400s for an unknown user_code', async () => {
+    const app = buildApp();
+    const user = await createTestUser({ name: 'Info User 2' });
+    const session = await createTestSession(user.id);
+    const res = await call(app, 'GET', '/oauth/device/info?user_code=NOPE-NOPE', {
+      headers: { Cookie: session.cookieHeader },
+    });
+    expect(res.status).toBe(400);
   });
 });

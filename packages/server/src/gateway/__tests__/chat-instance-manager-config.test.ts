@@ -331,6 +331,216 @@ describe("ChatInstanceManager — Telegram webhook secret (finding #2)", () => {
   });
 });
 
+describe("ChatInstanceManager — Telegram webhook auth E2E (finding #2)", () => {
+  // End-to-end: create a Telegram connection with no secretToken, then drive
+  // the real webhook handler (manager.handleWebhook → the live Chat SDK
+  // telegram adapter, the exact path POST /api/v1/webhooks/:id reaches) and
+  // assert the auto-generated secret is actually enforced — wrong/missing
+  // token is rejected (401), correct token is accepted. No real Telegram: the
+  // adapter's getMe/setWebhook are stubbed via a mocked fetch.
+
+  /** A Telegram update body the handler would otherwise dispatch. */
+  const FORGED_UPDATE = JSON.stringify({
+    update_id: 1,
+    message: {
+      message_id: 1,
+      date: 0,
+      chat: { id: 42, type: "private" },
+      from: { id: 7, is_bot: false, first_name: "Mallory" },
+      text: "/promote me to admin",
+    },
+  });
+
+  async function startTelegramInstance(
+    manager: any,
+    orgContext: any,
+    orgId: string,
+    connectionId: string,
+    secretToken: string | undefined
+  ): Promise<void> {
+    // Build the live Chat + telegram adapter exactly like startInstance would,
+    // carrying the (resolved) secretToken, and register it on the manager so
+    // manager.handleWebhook routes to chat.webhooks.telegram. getMe/setWebhook
+    // are no-ops via the mocked fetch.
+    const { Chat } = await import("chat");
+    const { createTelegramAdapter } = await import("@chat-adapter/telegram");
+    const { createGatewayStateAdapter } = await import(
+      "../connections/state-adapter.js"
+    );
+
+    const adapter = createTelegramAdapter({
+      platform: "telegram",
+      botToken: "123456:fake-token",
+      mode: "webhook",
+      ...(secretToken ? { secretToken } : {}),
+    } as any);
+    const stateAdapter = await orgContext.run(
+      { organizationId: orgId },
+      () => createGatewayStateAdapter()
+    );
+    const chat = new Chat({
+      userName: `bot-${connectionId}`,
+      adapters: { telegram: adapter },
+      state: stateAdapter,
+      logger: "warn",
+    });
+    await chat.initialize();
+
+    manager.instances.set(connectionId, {
+      connection: {
+        id: connectionId,
+        platform: "telegram",
+        organizationId: orgId,
+        config: {
+          platform: "telegram",
+          botToken: "123456:fake-token",
+          ...(secretToken ? { secretToken } : {}),
+        },
+        settings: { allowGroups: true },
+        metadata: {},
+        status: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+      chat,
+      conversationState: { listHistoryChannels: async () => [] },
+      messageBridge: {},
+    });
+  }
+
+  function webhookRequest(connectionId: string, secretHeader?: string) {
+    return new Request(
+      `https://gw.example.com/api/v1/webhooks/${connectionId}`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(secretHeader
+            ? { "x-telegram-bot-api-secret-token": secretHeader }
+            : {}),
+        },
+        body: FORGED_UPDATE,
+      }
+    );
+  }
+
+  test("auto-generated secret is enforced: wrong/missing rejected, correct accepted", async () => {
+    const orgId = "org-tg-e2e";
+    const agentId = "agent-tg-e2e";
+    const { manager, connectionStore, secretStore, orgContext } =
+      await buildManager(orgId, agentId);
+
+    const originalFetch = globalThis.fetch;
+    // Stub Telegram REST (getMe / setWebhook) so adapter init + webhook
+    // registration never touch the network.
+    globalThis.fetch = mock(async () =>
+      new Response(JSON.stringify({ ok: true, result: { id: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    ) as any;
+
+    try {
+      // Create the connection with NO secretToken — addConnection must
+      // auto-generate one. Stub the heavy adapter-boot (full services) here;
+      // we drive the real webhook handler separately below.
+      manager.startInstance = async () => {
+        /* exercised via startTelegramInstance below */
+      };
+      const created = await orgContext.run({ organizationId: orgId }, () =>
+        manager.addConnection(
+          "telegram",
+          agentId,
+          { platform: "telegram", botToken: "123456:fake-token" },
+          { allowGroups: true }
+        )
+      );
+
+      const realToken = created.config.secretToken as string;
+      expect(typeof realToken).toBe("string");
+      expect(realToken.length).toBeGreaterThanOrEqual(32);
+
+      // Persisted as a resolvable ref.
+      const stored = await orgContext.run({ organizationId: orgId }, () =>
+        connectionStore.getConnection(created.id)
+      );
+      const storedRef = (stored!.config as any).secretToken as string;
+      expect(storedRef.startsWith("secret://")).toBe(true);
+      const resolved = await orgContext.run({ organizationId: orgId }, () =>
+        secretStore.get(storedRef)
+      );
+      expect(resolved).toBe(realToken);
+
+      // Bring up the real adapter carrying the auto-generated token.
+      await startTelegramInstance(
+        manager,
+        orgContext,
+        orgId,
+        created.id,
+        realToken
+      );
+
+      // No secret header → forged webhook REJECTED (401), not dispatched.
+      const noHeader = await manager.handleWebhook(
+        created.id,
+        webhookRequest(created.id)
+      );
+      expect(noHeader.status).toBe(401);
+
+      // Wrong secret → REJECTED.
+      const wrong = await manager.handleWebhook(
+        created.id,
+        webhookRequest(created.id, "definitely-not-the-secret")
+      );
+      expect(wrong.status).toBe(401);
+
+      // Correct secret → ACCEPTED (not 401; the handler proceeds).
+      const right = await manager.handleWebhook(
+        created.id,
+        webhookRequest(created.id, realToken)
+      );
+      expect(right.status).not.toBe(401);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("a connection with NO secret token is forgeable (the pre-fix hazard)", async () => {
+    // Pins the vulnerability the auto-gen + backfill close: the adapter accepts
+    // an unsigned webhook when no secretToken is configured. This is why
+    // addConnection auto-generates and startInstance backfills — so this state
+    // is never reached in practice.
+    const orgId = "org-tg-e2e-vuln";
+    const agentId = "agent-tg-e2e-vuln";
+    const { manager, orgContext } = await buildManager(orgId, agentId);
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock(async () =>
+      new Response(JSON.stringify({ ok: true, result: { id: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    ) as any;
+    try {
+      await startTelegramInstance(
+        manager,
+        orgContext,
+        orgId,
+        "conn-no-secret",
+        undefined
+      );
+      // No secretToken on the adapter → an unsigned forged update is ACCEPTED.
+      const res = await manager.handleWebhook(
+        "conn-no-secret",
+        webhookRequest("conn-no-secret")
+      );
+      expect(res.status).not.toBe(401);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 describe("ChatInstanceManager — config change detection (finding #8)", () => {
   // updateConnection restarts only `active` connections. We seed the row as
   // `stopped` so no adapter boot is attempted; we observe needsRestart's effect

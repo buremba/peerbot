@@ -191,3 +191,30 @@ describe("ChatInstanceManager Slack marketplace support", () => {
     );
   });
 });
+
+describe("ChatInstanceManager.postNotificationToChannel", () => {
+  test("posts plain text to the resolved channel as the bot", async () => {
+    const ChatInstanceManager = await loadChatInstanceManager();
+    const manager = new ChatInstanceManager() as any;
+    const post = mock(async () => ({ ts: "1.2" }));
+    const channel = mock((_key: string) => ({ post }));
+    manager.instances.set("conn-1", { chat: { channel } });
+
+    await manager.postNotificationToChannel(
+      "conn-1",
+      "slack:C0123ABCD",
+      "Weekly funnel digest"
+    );
+
+    expect(channel).toHaveBeenCalledWith("slack:C0123ABCD");
+    expect(post).toHaveBeenCalledWith({ raw: "Weekly funnel digest", files: [] });
+  });
+
+  test("throws when the connection has no live instance on this pod", async () => {
+    const ChatInstanceManager = await loadChatInstanceManager();
+    const manager = new ChatInstanceManager() as any;
+    await expect(
+      manager.postNotificationToChannel("missing", "slack:C0", "x")
+    ).rejects.toThrow(/No active chat instance/);
+  });
+});

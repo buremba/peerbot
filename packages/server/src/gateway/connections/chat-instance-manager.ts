@@ -536,6 +536,38 @@ export class ChatInstanceManager {
   }
 
   /**
+   * Post a plain-text message to a channel as the bot — a one-shot outbound
+   * post, NOT an inbound message that triggers an agent run (that's
+   * `routePlatformMessage`). Used by the notification fan-out
+   * (`deliverToBotConnections`) to surface a watcher digest / approval in a
+   * bound channel.
+   *
+   * `channelKey` is the platform-prefixed channel id, e.g. "slack:C0123ABCD".
+   * Multi-replica: every pod loads every active connection at boot, so the
+   * locally-held instance is present regardless of which pod fired the
+   * notification — no cross-pod routing needed.
+   */
+  async postNotificationToChannel(
+    connectionId: string,
+    channelKey: string,
+    text: string
+  ): Promise<void> {
+    const instance = this.instances.get(connectionId);
+    if (!instance) {
+      throw new Error(
+        `No active chat instance for connection ${connectionId} on this pod`
+      );
+    }
+    const channel = instance.chat?.channel?.(channelKey);
+    if (!channel) {
+      throw new Error(
+        `Could not resolve channel ${channelKey} for connection ${connectionId}`
+      );
+    }
+    await channel.post({ raw: text, files: [] });
+  }
+
+  /**
    * Surface the channels with stored history for a given connection. Used
    * by the local-test-default-target route; falls back to constructing a
    * fresh state-store when the connection isn't currently active.

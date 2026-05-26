@@ -543,19 +543,22 @@ export class ChatInstanceManager {
    * bound channel.
    *
    * `channelKey` is the platform-prefixed channel id, e.g. "slack:C0123ABCD".
-   * Multi-replica: every pod loads every active connection at boot, so the
-   * locally-held instance is present regardless of which pod fired the
-   * notification — no cross-pod routing needed.
+   * Multi-replica: a connection created or restarted on another replica has no
+   * live instance on this pod, so we lazily start it from the store first
+   * (`ensureConnectionRunning` is a no-op when it's already running and won't
+   * revive a `stopped` connection). That lets any pod that fires the
+   * notification deliver it — no cross-pod routing needed.
    */
   async postNotificationToChannel(
     connectionId: string,
     channelKey: string,
     text: string
   ): Promise<void> {
-    const instance = this.instances.get(connectionId);
+    const running = await this.ensureConnectionRunning(connectionId);
+    const instance = running ? this.instances.get(connectionId) : undefined;
     if (!instance) {
       throw new Error(
-        `No active chat instance for connection ${connectionId} on this pod`
+        `No active chat instance for connection ${connectionId} (could not start it on this pod)`
       );
     }
     const channel = instance.chat?.channel?.(channelKey);

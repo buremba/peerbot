@@ -210,9 +210,33 @@ describe("ChatInstanceManager.postNotificationToChannel", () => {
     expect(post).toHaveBeenCalledWith({ raw: "Weekly funnel digest", files: [] });
   });
 
-  test("throws when the connection has no live instance on this pod", async () => {
+  test("lazily starts the connection when it isn't loaded on this pod, then posts", async () => {
+    // Multi-replica: the connection was created/restarted on another pod, so
+    // this pod has no live instance until we start it from the store.
     const ChatInstanceManager = await loadChatInstanceManager();
     const manager = new ChatInstanceManager() as any;
+    const post = mock(async () => ({ ts: "9.9" }));
+    const channel = mock((_key: string) => ({ post }));
+    manager.connectionStore = {
+      getConnection: async () => ({ id: "conn-x", status: "active" }),
+    };
+    manager.restartConnection = mock(async (id: string) => {
+      manager.instances.set(id, { chat: { channel } });
+    });
+
+    await manager.postNotificationToChannel("conn-x", "slack:C9", "hi");
+
+    expect(manager.restartConnection).toHaveBeenCalledWith("conn-x");
+    expect(channel).toHaveBeenCalledWith("slack:C9");
+    expect(post).toHaveBeenCalledWith({ raw: "hi", files: [] });
+  });
+
+  test("throws when the connection is stopped and cannot be started", async () => {
+    const ChatInstanceManager = await loadChatInstanceManager();
+    const manager = new ChatInstanceManager() as any;
+    manager.connectionStore = {
+      getConnection: async () => ({ id: "missing", status: "stopped" }),
+    };
     await expect(
       manager.postNotificationToChannel("missing", "slack:C0", "x")
     ).rejects.toThrow(/No active chat instance/);

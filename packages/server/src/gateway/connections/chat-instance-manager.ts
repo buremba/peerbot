@@ -14,7 +14,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
-import { Chat } from "chat";
+import { type AdapterPostableMessage, Chat } from "chat";
 import type {
   AgentConnectionStore,
   StoredConnection,
@@ -536,12 +536,16 @@ export class ChatInstanceManager {
   }
 
   /**
-   * Post a markdown message to a channel as the bot — a one-shot outbound post,
-   * NOT an inbound message that triggers an agent run (that's
-   * `routePlatformMessage`). Used by the notification fan-out
-   * (`deliverToBotConnections`) to surface a watcher digest / approval in a
-   * bound channel. `{ markdown }` is converted to each platform's native format
-   * (Slack `markdown_text`, etc.) rather than HTML-escaped like raw text.
+   * Post a message to a channel as the bot — a one-shot outbound post, NOT an
+   * inbound message that triggers an agent run (that's `routePlatformMessage`).
+   * Used by the notification fan-out (`deliverToBotConnections`) to surface a
+   * watcher digest / approval in a bound channel.
+   *
+   * `content` is any `chat` `AdapterPostableMessage` — `{ markdown }` (rendered
+   * to each platform's native format rather than HTML-escaped), `{ card }` (a
+   * `CardElement` → Block Kit / Adaptive Cards / Google Chat Cards), or plain
+   * text. All ride the same Chat SDK primitives, so one call works across every
+   * connected platform.
    *
    * `channelKey` is the platform-prefixed channel id, e.g. "slack:C0123ABCD".
    * Multi-replica: a connection created or restarted on another replica has no
@@ -553,7 +557,7 @@ export class ChatInstanceManager {
   async postMessageToChannel(
     connectionId: string,
     channelKey: string,
-    markdown: string
+    content: AdapterPostableMessage
   ): Promise<void> {
     const running = await this.ensureConnectionRunning(connectionId);
     const instance = running ? this.instances.get(connectionId) : undefined;
@@ -568,7 +572,7 @@ export class ChatInstanceManager {
         `Could not resolve channel ${channelKey} for connection ${connectionId}`
       );
     }
-    await channel.post({ markdown });
+    await channel.post(content);
   }
 
   /**

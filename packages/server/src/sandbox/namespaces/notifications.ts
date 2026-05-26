@@ -4,6 +4,7 @@
  * and fan it out to the org's bot connections (Slack/Telegram).
  */
 
+import type { CardElement } from "chat";
 import type { Env } from "../../index";
 import { notify } from "../../tools/admin/notify";
 import type { ToolContext } from "../../tools/registry";
@@ -14,6 +15,11 @@ export interface NotificationsSendInput {
   title: string;
   /** Body text (≤1000 chars). */
   body?: string;
+  /**
+   * Optional rich card (`chat` `CardElement`) for bot-connection delivery,
+   * rendered to each platform's native format (Block Kit / Adaptive Cards / …).
+   */
+  card?: CardElement;
   /**
    * Who to notify. `"admins"` (default): org admins/owners. `"all"`: every
    * member. Or an array of specific user IDs.

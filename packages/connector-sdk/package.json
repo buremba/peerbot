@@ -55,10 +55,14 @@
     "tar": "^7.4.3"
   },
   "peerDependencies": {
+    "chat": "^4.26.0",
     "playwright": "npm:patchright@^1.57.0",
     "playwright-vanilla": "npm:playwright@^1.60.0"
   },
   "peerDependenciesMeta": {
+    "chat": {
+      "optional": true
+    },
     "playwright": {
       "optional": true
     },
@@ -69,6 +73,7 @@
   "devDependencies": {
     "@types/node": "^20.10.0",
     "@types/tar": "^6.1.13",
+    "chat": "^4.26.0",
     "typescript": "^5.3.3"
   },
   "engines": {

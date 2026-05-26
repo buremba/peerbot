@@ -12,8 +12,10 @@
  *     await client.knowledge.save({ content: "...", semantic_type: "digest" });
  *   };
  */
+import type { CardElement } from "chat";
 import type { ReactionContext } from "./reaction-sdk.js";
 
+export type { CardElement } from "chat";
 export type { ReactionContext };
 
 // ── Knowledge ────────────────────────────────────────────────────────────────
@@ -85,6 +87,14 @@ export interface NotificationsSendInput {
   title: string;
   /** Body text (≤1000 chars). */
   body?: string;
+  /**
+   * Optional rich card built with the `chat` card primitives (`Card`,
+   * `Section`, `Field`, `Actions`, `Button`, `Select`, …). When set,
+   * bot-connection delivery posts this card — rendered to each platform's
+   * native format (Slack Block Kit, Teams Adaptive Cards, Google Chat Cards) —
+   * instead of the markdown body; the in-app inbox entry still uses title/body.
+   */
+  card?: CardElement;
   /**
    * Who to notify. `"admins"` (default): org admins/owners. `"all"`: every
    * member. Or an array of specific user IDs.

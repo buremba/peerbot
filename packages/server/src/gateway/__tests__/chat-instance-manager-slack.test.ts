@@ -193,21 +193,42 @@ describe("ChatInstanceManager Slack marketplace support", () => {
 });
 
 describe("ChatInstanceManager.postMessageToChannel", () => {
-  test("posts plain text to the resolved channel as the bot", async () => {
+  test("posts markdown to the resolved channel as the bot", async () => {
     const ChatInstanceManager = await loadChatInstanceManager();
     const manager = new ChatInstanceManager() as any;
     const post = mock(async () => ({ ts: "1.2" }));
     const channel = mock((_key: string) => ({ post }));
     manager.instances.set("conn-1", { chat: { channel } });
 
-    await manager.postMessageToChannel(
-      "conn-1",
-      "slack:C0123ABCD",
-      "Weekly funnel digest"
-    );
+    await manager.postMessageToChannel("conn-1", "slack:C0123ABCD", {
+      markdown: "Weekly funnel digest",
+    });
 
     expect(channel).toHaveBeenCalledWith("slack:C0123ABCD");
     expect(post).toHaveBeenCalledWith({ markdown: "Weekly funnel digest" });
+  });
+
+  test("posts a rich card built with the chat primitives", async () => {
+    const { Card, Section, Field, Fields, Actions, LinkButton } = await import("chat");
+    const ChatInstanceManager = await loadChatInstanceManager();
+    const manager = new ChatInstanceManager() as any;
+    const post = mock(async () => ({ ts: "2.0" }));
+    const channel = mock((_key: string) => ({ post }));
+    manager.instances.set("conn-1", { chat: { channel } });
+
+    const card = Card({
+      title: "Weekly funnel digest",
+      children: [
+        Fields([Field({ label: "New leads", value: "3" })]),
+        Actions([LinkButton({ url: "https://app.lobu.ai/lobu-crm/entities", label: "View leads" })]),
+      ],
+    });
+    void Section; // imported to assert availability of the primitive set
+
+    await manager.postMessageToChannel("conn-1", "slack:C0123ABCD", { card });
+
+    expect(post).toHaveBeenCalledWith({ card });
+    expect(card.type).toBe("card");
   });
 
   test("lazily starts the connection when it isn't loaded on this pod, then posts", async () => {
@@ -224,7 +245,7 @@ describe("ChatInstanceManager.postMessageToChannel", () => {
       manager.instances.set(id, { chat: { channel } });
     });
 
-    await manager.postMessageToChannel("conn-x", "slack:C9", "hi");
+    await manager.postMessageToChannel("conn-x", "slack:C9", { markdown: "hi" });
 
     expect(manager.restartConnection).toHaveBeenCalledWith("conn-x");
     expect(channel).toHaveBeenCalledWith("slack:C9");
@@ -238,7 +259,7 @@ describe("ChatInstanceManager.postMessageToChannel", () => {
       getConnection: async () => ({ id: "missing", status: "stopped" }),
     };
     await expect(
-      manager.postMessageToChannel("missing", "slack:C0", "x")
+      manager.postMessageToChannel("missing", "slack:C0", { markdown: "x" })
     ).rejects.toThrow(/No active chat instance/);
   });
 });

@@ -8,6 +8,7 @@
  */
 
 import { type Static, Type } from '@sinclair/typebox';
+import type { CardElement } from 'chat';
 import { getDb, pgTextArray } from '../../db/client';
 import { emit } from '../../events/emitter';
 import type { Env } from '../../index';
@@ -51,6 +52,12 @@ const SendAction = Type.Object({
   data: Type.Optional(
     Type.Record(Type.String(), Type.Any(), {
       description: 'Arbitrary JSON payload stored in notification body as formatted JSON',
+    })
+  ),
+  card: Type.Optional(
+    Type.Record(Type.String(), Type.Any(), {
+      description:
+        'A `chat` CardElement (built with the card primitives) for rich bot-connection delivery. When set, the bound channel gets this card instead of the markdown body.',
     })
   ),
   watcher_source: Type.Optional(
@@ -134,6 +141,7 @@ async function handleSend(
     body,
     resourceUrl: args.resource_url ?? null,
     connectionId: args.connection_id ?? null,
+    card: (args.card as CardElement | undefined) ?? null,
   });
 
   emit(ctx.organizationId, { keys: ['notifications', 'notifications-unread-count'] });

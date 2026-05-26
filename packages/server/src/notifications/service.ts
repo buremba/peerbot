@@ -1,3 +1,4 @@
+import type { CardElement } from 'chat';
 import { getDb, pgTextArray } from '../db/client';
 import { getChatInstanceManager, isLobuGatewayRunning } from '../lobu/gateway';
 import logger from '../utils/logger';
@@ -19,6 +20,12 @@ interface CreateNotificationParams {
   resourceUrl?: string | null;
   /** When set, deliver only through this specific bot connection */
   connectionId?: string | null;
+  /**
+   * Optional rich card (`chat` `CardElement`) for bot-connection delivery. When
+   * set, the bound channel gets this card instead of the markdown body; the
+   * in-app inbox entry still uses title/body.
+   */
+  card?: CardElement | null;
 }
 
 interface NotificationRow {
@@ -101,6 +108,8 @@ async function deliverToBotConnections(
   if (!manager) return;
 
   const text = params.body ? `${params.title}\n\n${params.body}` : params.title;
+  // A rich card takes precedence over the markdown body for the channel post.
+  const content = params.card ? { card: params.card } : { markdown: text };
 
   try {
     const targets = await resolveBotDeliveryTargets(
@@ -112,7 +121,7 @@ async function deliverToBotConnections(
     await Promise.allSettled(
       targets.map(async ({ connectionId, channelKey }) => {
         try {
-          await manager.postMessageToChannel(connectionId, channelKey, text);
+          await manager.postMessageToChannel(connectionId, channelKey, content);
         } catch (err) {
           logger.warn(
             { err, connectionId, channelKey },

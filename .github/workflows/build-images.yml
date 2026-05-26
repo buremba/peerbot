@@ -43,6 +43,10 @@ jobs:
   connector-parity-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # Builds + runs the image locally (push: false), so it never needs the
+    # top-level `packages: write`. Drop to read-only for least privilege.
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

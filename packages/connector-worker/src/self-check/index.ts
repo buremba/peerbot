@@ -164,14 +164,13 @@ async function collectConnectorSourceFiles(dirPath: string): Promise<string[]> {
 			entry.name !== "__tests__" &&
 			!entry.name.startsWith("_")
 		) {
-			try {
-				for (const sub of await readdir(entryPath, { withFileTypes: true })) {
-					if (sub.isFile() && isConnectorFile(sub.name)) {
-						paths.push(resolve(entryPath, sub.name));
-					}
+			// An unreadable connector subdir IS a packaging defect for a parity
+			// gate, so let the readdir error propagate (caught by the enclosing
+			// `connectors-instantiate` check) rather than silently skipping it.
+			for (const sub of await readdir(entryPath, { withFileTypes: true })) {
+				if (sub.isFile() && isConnectorFile(sub.name)) {
+					paths.push(resolve(entryPath, sub.name));
 				}
-			} catch {
-				// Subdir unreadable — skip; don't fail the whole scan.
 			}
 		}
 	}
@@ -334,9 +333,17 @@ export async function runConnectorRuntimeSelfCheck(
 	);
 
 	// External runtime deps (native binaries + Playwright) must be installed
-	// wherever compiled connectors execute.
+	// wherever compiled connectors execute. `child-runner` stages the bundle UNDER cwd, so the
+	// bundle's bare imports of these externalized deps resolve from cwd's
+	// node_modules — not connector-worker's. Anchor the probe the same way (a
+	// require rooted at a cwd module path; the file need not exist for `.resolve`)
+	// so the check fails exactly where a real connector would, instead of falsely
+	// passing off connector-worker's hoisted dev tree.
+	const cwdRequire = createRequire(
+		pathToFileURL(join(process.cwd(), "self-check-resolver.mjs")).href,
+	);
 	for (const dep of EXTERNAL_RUNTIME_DEPS) {
-		await check(`resolve:${dep}`, () => require_.resolve(dep));
+		await check(`resolve:${dep}`, () => cwdRequire.resolve(dep));
 	}
 
 	const candidates =

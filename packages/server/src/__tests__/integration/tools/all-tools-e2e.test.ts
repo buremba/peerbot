@@ -7,19 +7,19 @@
  * REST proxy uses — `executeTool(name, args, env, authCtx)` — with a real org,
  * a real owner, and a real embedded Postgres. No LLM is involved: each tool is
  * driven with valid minimal arguments and asserted to return a structured
- * result (success OR a handled/structured error), never an unhandled crash.
+ * result without throwing — anything thrown (validation rejection on valid
+ * args, TypeError, DB crash, "Tool not found") fails the test.
  *
  * Auto-coverage of future tools: the test fails if any registry tool is missing
  * from the per-tool ARGS fixture below. Adding a tool to the registry without
  * adding coverage here turns this suite red — by design, so nobody can ship an
  * un-exercised agent tool.
  *
- * Coverage classes (per tool, documented in TOOL_PLAN):
+ * Coverage classes (documentary `coverage` field on each plan entry):
  *   - 'round-trip': performs a real mutation/read whose effect we assert
- *     (e.g. manage_entity create→delete, watcher create→get).
- *   - 'reachable':  invoked with valid minimal args; we assert it returns a
- *     structured result without throwing an unhandled error. A handled
- *     ToolUserError (structured input validation) also counts as reachable.
+ *     (e.g. manage_entity create→delete, watcher create→get-versions).
+ *   - 'reachable':  invoked with valid minimal args and asserted to return a
+ *     structured result.
  *
  * None of the 23 tools genuinely require a live model to reach — `run_sdk` is
  * driven with `dry_run: true` (reads + previews writes, no mutation, no model),
@@ -31,7 +31,6 @@ import type { Env } from "../../../index";
 import type { AuthContext } from "../../../tools/execute";
 import { executeTool } from "../../../tools/execute";
 import { getAllTools } from "../../../tools/registry";
-import { ToolUserError } from "../../../utils/errors";
 import { initWorkspaceProvider } from "../../../workspace";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
 import {
@@ -357,27 +356,20 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 			authCtx,
 		);
 
-		// Verify it's actually gone (soft-delete still removes it from get).
-		const after = (await executeTool(
-			"manage_entity",
-			{ action: "get", entity_id: id },
-			TEST_ENV,
-			authCtx,
-		).catch((err) => ({ __error: String(err) }))) as Record<string, unknown>;
-		const entityRow = (after as { entity?: unknown }).entity;
-		expect(entityRow == null || "__error" in after).toBe(true);
-
+		// Authoritative check that the delete landed: the row is either
+		// hard-deleted (gone) or soft-deleted (deleted_at set). Asserting on PG
+		// directly avoids re-running a `get` that logs an expected "not found".
 		const sql = getTestDb();
 		const rows = await sql<{ deleted_at: Date | null }[]>`
       SELECT deleted_at FROM entities WHERE id = ${id}
     `;
-		// Either hard-deleted (no row) or soft-deleted (deleted_at set).
 		expect(rows.length === 0 || rows[0].deleted_at !== null).toBe(true);
 	});
 
-	// One test per registry tool, generated from the plan. Each asserts the tool
-	// is reachable model-free: it returns a structured result OR throws a handled
-	// ToolUserError (structured input validation). An unhandled crash fails.
+	// One test per registry tool, generated from the plan. Every tool is driven
+	// with valid minimal args, so it MUST return a structured result — it must
+	// not throw at all (an input-validation rejection on valid args is itself a
+	// regression we want to catch, not tolerate).
 	const plan = (): Record<string, ToolPlan> => toolPlan();
 	for (const name of Object.keys(
 		// Build once at collection time for stable test names; args factories are
@@ -388,24 +380,10 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 			const entry = plan()[name];
 			const args = typeof entry.args === "function" ? entry.args() : entry.args;
 
-			let result: unknown;
-			try {
-				result = await executeTool(name, args, TEST_ENV, authCtx);
-			} catch (err) {
-				// A handled, structured input-validation error is still "reachable":
-				// the tool ran, parsed its args, and rejected them cleanly. Anything
-				// else (TypeError, undefined access, DB crash, "Tool not found") is a
-				// real failure.
-				if (err instanceof ToolUserError) {
-					expect(entry.coverage).toBe("reachable");
-					return;
-				}
-				throw err;
-			}
-
-			// Structured success: a non-undefined result. Most tools return an
-			// object; a few (rare) return strings/arrays — all are acceptable as
-			// long as the handler produced a value without throwing.
+			// Structured success: a non-undefined result, no thrown error. Most
+			// tools return an object; a few (rare) return strings/arrays — all are
+			// acceptable as long as the handler produced a value without throwing.
+			const result = await executeTool(name, args, TEST_ENV, authCtx);
 			expect(result, `${name} returned undefined`).toBeDefined();
 		});
 	}

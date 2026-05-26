@@ -71,6 +71,16 @@ function telegramBotToken(config: TelegramAdapterConfig): string | undefined {
   return typeof config.botToken === "string" ? config.botToken : undefined;
 }
 
+/**
+ * Generate a strong (64 hex char) Telegram webhook secret token. Telegram's
+ * `secret_token` allows 1-256 chars of `A-Za-z0-9_-`; hex is a safe subset.
+ * Two UUIDs (128 bits of randomness each) with hyphens stripped easily clear
+ * the >=32 char bar we want for a non-guessable token.
+ */
+function generateTelegramSecretToken(): string {
+  return `${randomUUID()}${randomUUID()}`.replace(/-/g, "");
+}
+
 /** Read `apiBaseUrl` from a Telegram connection config (with default). */
 function telegramApiBase(config: TelegramAdapterConfig): string {
   return typeof config.apiBaseUrl === "string" && config.apiBaseUrl
@@ -368,10 +378,7 @@ export class ChatInstanceManager {
         typeof tgConfig.secretToken !== "string" ||
         tgConfig.secretToken.length === 0
       ) {
-        tgConfig.secretToken = `${randomUUID()}${randomUUID()}`.replace(
-          /-/g,
-          ""
-        );
+        tgConfig.secretToken = generateTelegramSecretToken();
       }
     }
 
@@ -739,6 +746,17 @@ export class ChatInstanceManager {
         connection.config
       );
 
+      // Backfill a Telegram webhook secret for connections persisted before
+      // auto-generation existed (addConnection only protects newly-created
+      // rows). Without a secretToken the adapter accepts unsigned webhook
+      // payloads, so an EXISTING no-token row would stay forgeable across
+      // deploys/restarts. Generate + persist one here so this boot's adapter
+      // verifies it and configurePlatformWebhook registers it. Re-read after
+      // persisting so concurrent replicas converge on whichever token landed
+      // first rather than each booting with its own (the security property —
+      // a token is always required — holds regardless of which value wins).
+      await this.ensureTelegramWebhookSecret(connection);
+
       const adapter = await this.createAdapter(connection);
       const stateAdapter = await this.createStateAdapter();
       const conversationState = new ConversationStateStore(stateAdapter);
@@ -884,6 +902,49 @@ export class ChatInstanceManager {
       throw new Error(`No adapter factory for: ${connection.platform}`);
     }
     return factory(connection.config);
+  }
+
+  /**
+   * Ensure a started Telegram connection has a webhook `secretToken`. Mutates
+   * `connection.config` in place (so this boot's adapter + webhook registration
+   * use the token) and persists it as a `secret://` ref. Re-reads the stored
+   * row first so that if another replica already backfilled a token, we adopt
+   * that one and converge instead of clobbering it. No-op for non-Telegram
+   * connections and for ones that already carry a secretToken.
+   *
+   * `connection.config` here is already resolved to plaintext (caller runs
+   * resolveConfigForRuntime first), so a present secretToken is the real value.
+   */
+  private async ensureTelegramWebhookSecret(
+    connection: PlatformConnection
+  ): Promise<void> {
+    if (!isTelegramConfig(connection.config)) return;
+    const current = connection.config.secretToken;
+    if (typeof current === "string" && current.length > 0) return;
+
+    // Adopt a token another replica may have persisted between this boot's
+    // initial load and now (resolve the stored ref to plaintext to compare).
+    const stored = await this.connectionStore.getConnection(connection.id);
+    if (stored && isTelegramConfig(stored.config as PlatformAdapterConfig)) {
+      const resolved = (await this.resolveConfigForRuntime(
+        connection.id,
+        stored.config as PlatformAdapterConfig
+      )) as TelegramAdapterConfig;
+      if (
+        typeof resolved.secretToken === "string" &&
+        resolved.secretToken.length > 0
+      ) {
+        connection.config.secretToken = resolved.secretToken;
+        return;
+      }
+    }
+
+    connection.config.secretToken = generateTelegramSecretToken();
+    await this.persistConnection(connection);
+    logger.info(
+      { id: connection.id },
+      "Backfilled Telegram webhook secret token for existing connection"
+    );
   }
 
   private async createStateAdapter(): Promise<any> {

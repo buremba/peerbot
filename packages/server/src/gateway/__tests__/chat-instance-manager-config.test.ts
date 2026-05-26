@@ -193,6 +193,75 @@ describe("ChatInstanceManager — Telegram webhook secret (finding #2)", () => {
       "https://gw.example.com/api/v1/webhooks/conn-hook"
     );
   });
+
+  test("ensureTelegramWebhookSecret backfills + persists a token for an existing no-token connection", async () => {
+    const orgId = "org-tg-backfill";
+    const agentId = "agent-tg-backfill";
+    const { manager, connectionStore, orgContext } = await buildManager(
+      orgId,
+      agentId
+    );
+
+    // Seed a Telegram row WITHOUT a secretToken — the pre-fix forgeable shape
+    // for connections created before auto-generation existed.
+    await orgContext.run({ organizationId: orgId }, async () => {
+      await connectionStore.saveConnection({
+        id: "conn-legacy-tg",
+        platform: "telegram",
+        agentId,
+        organizationId: orgId,
+        config: { platform: "telegram", botToken: "123456:fake-token" },
+        settings: { allowGroups: true },
+        metadata: {},
+        status: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    });
+
+    // Drive the backfill the way startInstanceUnscoped does (config already
+    // resolved to plaintext; here it has no secretToken).
+    const runtimeConnection: any = {
+      id: "conn-legacy-tg",
+      platform: "telegram",
+      agentId,
+      organizationId: orgId,
+      config: { platform: "telegram", botToken: "123456:fake-token" },
+      settings: { allowGroups: true },
+      metadata: {},
+      status: "active",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    await orgContext.run({ organizationId: orgId }, () =>
+      manager.ensureTelegramWebhookSecret(runtimeConnection)
+    );
+
+    // In-memory config now carries a strong plaintext token (so this boot's
+    // adapter verifies it and configurePlatformWebhook registers it).
+    const token = runtimeConnection.config.secretToken as string;
+    expect(typeof token).toBe("string");
+    expect(token.length).toBeGreaterThanOrEqual(32);
+
+    // The stored row gained a persisted (secret://-ref) token.
+    const stored = await orgContext.run({ organizationId: orgId }, () =>
+      connectionStore.getConnection("conn-legacy-tg")
+    );
+    const storedToken = (stored!.config as any).secretToken as string;
+    expect(typeof storedToken).toBe("string");
+    expect(storedToken.startsWith("secret://")).toBe(true);
+
+    // A second backfill (e.g. another replica / a later restart) adopts the
+    // already-persisted token instead of generating a fresh one.
+    const secondConnection: any = {
+      ...runtimeConnection,
+      config: { platform: "telegram", botToken: "123456:fake-token" },
+    };
+    await orgContext.run({ organizationId: orgId }, () =>
+      manager.ensureTelegramWebhookSecret(secondConnection)
+    );
+    expect(secondConnection.config.secretToken).toBe(token);
+  });
 });
 
 describe("ChatInstanceManager — config change detection (finding #8)", () => {

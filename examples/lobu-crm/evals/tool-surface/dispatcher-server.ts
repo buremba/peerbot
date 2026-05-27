@@ -68,10 +68,11 @@ const server = createServer((req, res) => {
       const out = await dispatchTool(scn.ctx, body.tool, body.args);
       send(res, { ok: true, out });
     } catch (err) {
-      send(res, {
-        ok: false,
-        err: err instanceof Error ? err.message : String(err),
-      });
+      // Log the detail to the dispatcher's own stderr (captured by the parent
+      // harness) instead of returning it over the wire — avoids leaking
+      // internal error/stack detail to the caller (CodeQL js/stack-trace-exposure).
+      console.error("[dispatcher] request handler error:", err);
+      send(res, { ok: false, err: "internal dispatcher error" });
     }
   })();
 });

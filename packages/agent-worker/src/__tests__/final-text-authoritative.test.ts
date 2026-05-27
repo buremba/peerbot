@@ -42,10 +42,11 @@ beforeEach(() => {
   originalFetch = globalThis.fetch;
   sentPayloads = [];
   // Capture every payload POSTed to the gateway's /worker/response endpoint.
-  globalThis.fetch = (async (
-    _url: string | URL | Request,
-    init?: RequestInit
-  ) => {
+  // `fetch(url, init)` — we only need `init` (the second positional arg), so
+  // bind the args via rest and read index 1 rather than naming an unused URL
+  // parameter.
+  globalThis.fetch = (async (...args: Parameters<typeof globalThis.fetch>) => {
+    const init = args[1];
     if (init?.body) {
       sentPayloads.push(JSON.parse(init.body as string));
     }

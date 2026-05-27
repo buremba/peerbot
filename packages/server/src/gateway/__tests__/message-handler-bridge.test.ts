@@ -429,7 +429,12 @@ describe("MessageHandlerBridge.handleMessage — thread backfill", () => {
 });
 
 describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", () => {
-  function makePreviewHarness(opts: { binding?: { agentId: string } | null }) {
+  function makePreviewHarness(opts: {
+    binding?: { agentId: string } | null;
+    commandDispatcher?: {
+      tryHandleSlashText: (...args: any[]) => Promise<boolean>;
+    };
+  }) {
     const state = new InMemoryStateAdapter();
     const conversationState = new ConversationStateStore(state);
     const connection: PlatformConnection = {
@@ -463,7 +468,12 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
       has: () => true,
       getInstance: () => ({ connection, conversationState }),
     } as any;
-    const bridge = new MessageHandlerBridge(connection, services, manager);
+    const bridge = new MessageHandlerBridge(
+      connection,
+      services,
+      manager,
+      opts.commandDispatcher as never
+    );
     return { bridge, enqueueMessage };
   }
 
@@ -496,5 +506,36 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
         (c: unknown[]) => !String(c[0]).includes("/lobu link")
       )
     ).toBe(true);
+  });
+
+  test("`/lobu link <code>` DM message dispatches the command before the preview menu", async () => {
+    // On a previewMode bot, an unlinked DM normally gets the demo-agent menu.
+    // But a `/lobu link <code>` arrives as plain message text in an AI-app DM
+    // (Slack won't run slash commands there), so it MUST reach the dispatcher
+    // and bind — not be preempted by the menu.
+    const tryHandleSlashText = mock(async () => true);
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      binding: null,
+      commandDispatcher: { tryHandleSlashText },
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(
+      thread,
+      makeMessage({ text: "/lobu link crm-ABC123" }),
+      "dm"
+    );
+
+    expect(tryHandleSlashText).toHaveBeenCalledTimes(1);
+    expect(String(tryHandleSlashText.mock.calls[0]?.[0])).toContain(
+      "/lobu link crm-ABC123"
+    );
+    // The preview menu was NOT posted, and no agent run was queued.
+    expect(
+      thread.post.mock.calls.every(
+        (c: unknown[]) => !String(c[0]).includes("/lobu link")
+      )
+    ).toBe(true);
+    expect(enqueueMessage).not.toHaveBeenCalled();
   });
 });

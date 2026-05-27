@@ -416,13 +416,18 @@ export class MessageHandlerBridge {
       return;
     }
 
-    // Preview-link redemption as plain message text. In an AI-app DM Slack
-    // won't deliver `/lobu link <code>` as a slash command, so accept the code
-    // as a message — `link <code>` or a bare `<slug>-<CODE>` paste — and redeem
-    // via the same `link` command. Runs before the worker enqueue (and before
-    // the previewMode menu below) so a pasted code binds instead of being
-    // treated as chat.
-    if (!sessionReset && this.commandDispatcher) {
+    // Preview-link redemption as plain message text — preview connections only.
+    // In an AI-app DM Slack won't deliver `/lobu link <code>` as a slash command,
+    // so a hosted preview bot accepts the code as a message — `link <code>` or a
+    // bare `<slug>-<CODE>` paste — and redeems via the same `link` command. Gated
+    // to previewMode so a normal agent bot's DMs (where a code-looking message is
+    // just chat for the agent) are never swallowed. Runs before the worker
+    // enqueue and the previewMode menu so a pasted code binds.
+    if (
+      !sessionReset &&
+      this.commandDispatcher &&
+      this.connection.settings?.previewMode === true
+    ) {
       const linkCode = parsePreviewLinkCode(messageText, isGroup);
       if (linkCode) {
         const handled = await this.commandDispatcher.tryHandle(

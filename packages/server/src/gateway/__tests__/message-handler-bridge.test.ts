@@ -465,6 +465,7 @@ describe("MessageHandlerBridge.handleMessage — thread backfill", () => {
 describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", () => {
   function makePreviewHarness(opts: {
     binding?: { agentId: string } | null;
+    previewMode?: boolean;
     commandDispatcher?: {
       tryHandleSlashText?: (...args: any[]) => Promise<boolean>;
       tryHandle?: (...args: any[]) => Promise<boolean>;
@@ -477,7 +478,7 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
       platform: "slack",
       agentId: TEMPLATE_AGENT_ID,
       config: { platform: "slack" } as any,
-      settings: { allowGroups: true, previewMode: true },
+      settings: { allowGroups: true, previewMode: opts.previewMode ?? true },
       metadata: { botUsername: "testbot", botUserId: "U_BOT" },
       status: "active",
       createdAt: 1,
@@ -595,5 +596,30 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     expect(tryHandle.mock.calls[0]?.[0]).toBe("link");
     expect(tryHandle.mock.calls[0]?.[1]).toBe("crm-ABC123");
     expect(enqueueMessage).not.toHaveBeenCalled();
+  });
+
+  test("non-preview connection: a code-looking DM goes to the agent, not link", async () => {
+    // The plain-text link parsing is gated to previewMode bots. On a normal
+    // agent bot, `crm-ABC123` is just a message for the agent — it must NOT be
+    // swallowed by the link command.
+    const tryHandle = mock(async () => true);
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      binding: null,
+      previewMode: false,
+      commandDispatcher: {
+        tryHandle,
+        tryHandleSlashText: mock(async () => false),
+      },
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(
+      thread,
+      makeMessage({ text: "crm-ABC123" }),
+      "dm"
+    );
+
+    expect(tryHandle).not.toHaveBeenCalled();
+    expect(enqueueMessage).toHaveBeenCalledTimes(1);
   });
 });

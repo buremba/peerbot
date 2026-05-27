@@ -90,10 +90,10 @@ export function exceedsValidationLimits(
     }
 
     if (node === null || typeof node !== 'object') {
-      // Primitive: count toward the byte budget. (`undefined` / functions are
-      // not valid JSON metadata; treat them as zero-cost — they're dropped on
-      // persist anyway.)
-      if (node === null || typeof node !== 'undefined') {
+      // Primitive: count toward the byte budget. `undefined` carries no JSON
+      // weight (it's dropped on serialize/persist), so skip it; everything else
+      // (string/number/boolean/null) contributes.
+      if (node !== undefined) {
         bytes += primitiveByteSize(node as string | number | boolean | null);
         if (bytes > maxBytes) {
           return true;

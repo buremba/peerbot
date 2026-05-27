@@ -8,6 +8,7 @@
 import { getDb } from '../db/client';
 import type { ToolContext } from '../tools/registry';
 import { formatAjvError, getAjv } from './ajv-singleton';
+import { exceedsValidationLimits } from './metadata-limits';
 
 // ============================================
 // Types
@@ -84,6 +85,16 @@ export async function validateEntityMetadata(
   // No schema defined - allow any metadata
   if (!schema || Object.keys(schema).length === 0) {
     return { valid: true };
+  }
+
+  // Bound untrusted input before handing it to AJV. Pathologically deep/large
+  // metadata is a DoS vector regardless of AJV config, so reject it as a
+  // normal validation failure rather than spending CPU/memory validating it.
+  if (exceedsValidationLimits(metadata)) {
+    return {
+      valid: false,
+      errors: [{ path: '/', message: 'metadata exceeds size/nesting limits' }],
+    };
   }
 
   // Validate metadata against schema

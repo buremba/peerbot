@@ -11,6 +11,7 @@
 
 import { getDb } from '../db/client';
 import { formatAjvError, getAjv } from './ajv-singleton';
+import { exceedsValidationLimits } from './metadata-limits';
 
 // ============================================
 // Types
@@ -223,6 +224,21 @@ function validateKindAgainstDefinitions(
       errors: [],
       validKinds,
       expectedSchema: metadataSchema ?? null,
+      suggestion: null,
+    };
+  }
+
+  // Bound untrusted input before handing it to AJV. Pathologically deep/large
+  // metadata is a DoS vector regardless of AJV config, so reject it as a
+  // normal validation failure rather than spending CPU/memory validating it.
+  if (exceedsValidationLimits(metadata)) {
+    return {
+      valid: false,
+      errors: [
+        `Metadata validation failed for kind '${kind}': metadata exceeds size/nesting limits`,
+      ],
+      validKinds,
+      expectedSchema: metadataSchema,
       suggestion: null,
     };
   }

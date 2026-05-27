@@ -356,14 +356,22 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 			authCtx,
 		);
 
-		// Authoritative check that the delete landed: the row is either
-		// hard-deleted (gone) or soft-deleted (deleted_at set). Asserting on PG
-		// directly avoids re-running a `get` that logs an expected "not found".
+		// Authoritative check that the delete landed. A non-force `delete` is a
+		// SOFT delete by contract (entity-management.ts:deleteEntity) — the row
+		// MUST stay present with `deleted_at` set, preserving event history. We
+		// enforce that exact contract rather than loosely accepting "gone OR
+		// soft-deleted": a row that vanished here would be an unexpected hard
+		// delete and a real regression we want this test to catch. Asserting on
+		// PG directly avoids re-running a `get` that logs an expected "not found".
 		const sql = getTestDb();
 		const rows = await sql<{ deleted_at: Date | null }[]>`
       SELECT deleted_at FROM entities WHERE id = ${id}
     `;
-		expect(rows.length === 0 || rows[0].deleted_at !== null).toBe(true);
+		expect(rows, "soft delete must leave the row present").toHaveLength(1);
+		expect(
+			rows[0].deleted_at,
+			"soft delete must stamp deleted_at",
+		).not.toBeNull();
 	});
 
 	// One test per registry tool, generated from the plan. Every tool is driven

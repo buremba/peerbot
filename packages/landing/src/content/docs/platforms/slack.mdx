@@ -52,7 +52,7 @@ When a user completes the install flow, Lobu exchanges the OAuth code, stores th
 - **Block Kit rendering** — cards, sections, action buttons, and link buttons are emitted as real Slack Block Kit by the `@chat-adapter/slack` adapter. Agents never author Block Kit JSON directly; they post platform-agnostic chat elements and the adapter converts.
 - **Thread streaming** using Slack streaming APIs for incremental responses.
 - **Tool approval UI** — the gateway intercepts destructive MCP tool calls and renders an in-thread approval card (`Allow once / 1h / 24h / Always / Deny`) before executing. See below.
-- **AskUser** — agents can prompt the user with an action-button card (`ask_user(question, options[])`); each option renders as a Block Kit button in-thread.
+- **ask_user** — agents can prompt the user with an action-button card (`ask_user(question, options[])`); each option renders as a Block Kit button in-thread.
 - **MCP tool access** — workers discover MCP tools at startup and call them through the gateway proxy; responses render inline as system messages.
 - **Settings/auth links** rendered as platform-scoped link buttons.
 - **Thread status indicator** (`is running..`) with rotating progress messages.

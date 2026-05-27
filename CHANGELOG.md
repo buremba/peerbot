@@ -1,5 +1,21 @@
 # Changelog
 
+## [10.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v10.0.0...lobu-v10.1.0) (2026-05-27)
+
+
+### Features
+
+* **gateway:** accept `/lobu link <code>` as a DM message, not only a slash command ([#1101](https://github.com/lobu-ai/lobu/issues/1101)) ([94d2db4](https://github.com/lobu-ai/lobu/commit/94d2db4d75fa5ed682b8a375a2b773848f957f5c))
+
+
+### Bug Fixes
+
+* **agent-worker:** force-end the turn after AskUser + cap runaway tool loops ([#1090](https://github.com/lobu-ai/lobu/issues/1090)) ([19e61de](https://github.com/lobu-ai/lobu/commit/19e61deadf50897e3ef814ebe9f5ebb6ae321103))
+* **auth:** deliver the session cookie to the Owletto extension iframe (CHIPS) ([#1092](https://github.com/lobu-ai/lobu/issues/1092)) ([f779068](https://github.com/lobu-ai/lobu/commit/f779068bb8b63c027efada6bc84eac7fe7a5c5e1))
+* garbled finalText under divergent-final ([#1099](https://github.com/lobu-ai/lobu/issues/1099)) ([5451e1f](https://github.com/lobu-ai/lobu/commit/5451e1f8c43f1fe9bb60c6b22cddfad738fa1f4c))
+* **gateway:** hydrate connection on per-connection webhook under multi-replica ([#1098](https://github.com/lobu-ai/lobu/issues/1098)) ([9ce0716](https://github.com/lobu-ai/lobu/commit/9ce07168857f5262995689b187455764feda01a5))
+* review follow-ups — AJV deep-traversal DoS guard, snake_case doc label, e2e test rigor ([#1100](https://github.com/lobu-ai/lobu/issues/1100)) ([2668147](https://github.com/lobu-ai/lobu/commit/26681474cc3778c259196e8f045ce9fb0de210bd))
+
 ## [10.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v9.4.1...lobu-v10.0.0) (2026-05-26)
 
 

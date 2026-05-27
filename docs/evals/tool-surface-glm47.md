@@ -90,7 +90,7 @@ boundary as in prod.
 ## Results
 
 Real glm-4.7 over z-ai. **6 tasks × 2 arms × 3 trials = 36 real model runs.**
-Raw per-cell metrics in `examples/lobu-crm/evals/tool-surface/last-run.json`.
+Raw per-cell metrics are written to `last-run.json` by the harness (gitignored — re-run the harness to regenerate).
 
 **Overall by arm**
 
@@ -158,7 +158,7 @@ then stop." Root cause was a harness bug, not the model: Arm A's custom-tool
 success checks (read-pipeline now requires the correct count *adjacent to* each
 stage; open-pilot now requires the `converted-to` link, which the prompt asks
 for), and the whole 36-run battery was re-run against those stricter checks — the
-numbers in this doc are from that final run (`last-run.json`). The first clean
+numbers in this doc are from that final run (written to `last-run.json`, gitignored). The first clean
 pass scored A 28% / B 0%; the final stricter pass A 17% / B 0% — the conclusion
 is unchanged and the two passes agree on the qualitative result.
 

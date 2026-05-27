@@ -98,3 +98,4 @@ packages/*/~/
 .sdk-e2e-run/
 .managed-e2e-run/
 .cli-smoke-run/
+examples/lobu-crm/evals/tool-surface/last-run.json

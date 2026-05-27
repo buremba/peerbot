@@ -43,16 +43,42 @@ interface CellMetrics {
   failNote: string;
 }
 
-function parseArgs() {
+type Arm = "A" | "B";
+
+function parseArgs(): { trials: number; tasks: string[]; arms: Arm[] } {
   const args = process.argv.slice(2);
   const get = (flag: string, def: string) => {
     const i = args.indexOf(flag);
     return i >= 0 && args[i + 1] ? args[i + 1]! : def;
   };
+
+  const trials = Number(get("--trials", "3"));
+  if (!Number.isInteger(trials) || trials < 1) {
+    throw new Error(
+      `--trials must be a positive integer, got "${get("--trials", "3")}"`
+    );
+  }
+
+  // Validate --arms against the known set rather than casting arbitrary strings
+  // to Arm — a typo like "C" would otherwise silently produce empty cells.
+  const rawArms = get("--arms", "A,B").split(",").filter(Boolean);
+  const arms: Arm[] = [];
+  for (const a of rawArms) {
+    if (a !== "A" && a !== "B") {
+      throw new Error(
+        `--arms must be a comma list of A|B, got invalid value "${a}"`
+      );
+    }
+    if (!arms.includes(a)) arms.push(a);
+  }
+  if (arms.length === 0) {
+    throw new Error("--arms produced no valid arms (expected A and/or B)");
+  }
+
   return {
-    trials: Number(get("--trials", "3")),
+    trials,
     tasks: get("--tasks", "").split(",").filter(Boolean),
-    arms: get("--arms", "A,B").split(",").filter(Boolean),
+    arms,
   };
 }
 
@@ -87,80 +113,85 @@ async function runCell(
   const ws = `/tmp/lobu-tse/${arm}-${task.id}-${trial}-${Date.now()}`;
   const built = arm === "A" ? await buildArmA(org) : await buildArmB(org, ws);
 
-  // Metric collection from the live event stream.
-  let toolCalls = 0;
-  let erroredCalls = 0;
-  let turns = 0;
-  let usedLobu = false;
-  const callSig: string[] = [];
-  built.session.subscribe((ev: { type: string; [k: string]: unknown }) => {
-    if (ev.type === "tool_execution_start") {
-      toolCalls++;
-      const name = String(ev.toolName);
-      const sig = `${name}:${JSON.stringify(ev.args ?? {})}`;
-      callSig.push(sig);
-      if (arm === "B" && name === "bash") {
-        const cmd = String((ev.args as { command?: string })?.command ?? "");
-        if (/\blobu\b/.test(cmd)) usedLobu = true;
-      }
-    } else if (ev.type === "tool_execution_end") {
-      if (ev.isError) erroredCalls++;
-    } else if (ev.type === "turn_start") {
-      turns++;
-    }
-  });
-
-  const t0 = Date.now();
-  let failNote = "";
+  // Dispose the session/dispatcher no matter how the cell ends (prompt throw,
+  // check throw, timeout). Arm B's dispatcher is a child process — leaking it
+  // orphans a Postgres pool per cell.
   try {
-    await Promise.race([
-      built.session.prompt(task.prompt(seeded)),
-      new Promise((_r, rej) =>
-        setTimeout(() => rej(new Error("turn timeout (240s)")), 240_000)
-      ),
-    ]);
-  } catch (err) {
-    failNote = err instanceof Error ? err.message : String(err);
+    // Metric collection from the live event stream.
+    let toolCalls = 0;
+    let erroredCalls = 0;
+    let turns = 0;
+    let usedLobu = false;
+    const callSig: string[] = [];
+    built.session.subscribe((ev: { type: string; [k: string]: unknown }) => {
+      if (ev.type === "tool_execution_start") {
+        toolCalls++;
+        const name = String(ev.toolName);
+        const sig = `${name}:${JSON.stringify(ev.args ?? {})}`;
+        callSig.push(sig);
+        if (arm === "B" && name === "bash") {
+          const cmd = String((ev.args as { command?: string })?.command ?? "");
+          if (/\blobu\b/.test(cmd)) usedLobu = true;
+        }
+      } else if (ev.type === "tool_execution_end") {
+        if (ev.isError) erroredCalls++;
+      } else if (ev.type === "turn_start") {
+        turns++;
+      }
+    });
+
+    const t0 = Date.now();
+    let failNote = "";
+    try {
+      await Promise.race([
+        built.session.prompt(task.prompt(seeded)),
+        new Promise((_r, rej) =>
+          setTimeout(() => rej(new Error("turn timeout (240s)")), 240_000)
+        ),
+      ]);
+    } catch (err) {
+      failNote = err instanceof Error ? err.message : String(err);
+    }
+    const elapsedMs = Date.now() - t0;
+
+    // Longest run of identical consecutive tool calls (loop/runaway signal).
+    let maxIdenticalRun = 1;
+    let cur = 1;
+    for (let i = 1; i < callSig.length; i++) {
+      if (callSig[i] === callSig[i - 1]) {
+        cur++;
+        maxIdenticalRun = Math.max(maxIdenticalRun, cur);
+      } else cur = 1;
+    }
+    if (callSig.length === 0) maxIdenticalRun = 0;
+
+    const reply = lastAssistantText(built.session);
+    const stateRes = await task.check(org, seeded);
+    const replyRes = replyCheck(task.id, reply);
+    const replyPass = replyRes ? replyRes.pass : null;
+    // A task passes if the state check passes AND (no reply check, or it passes).
+    const pass = stateRes.pass && (replyPass === null || replyPass === true);
+
+    return {
+      arm: built.arm,
+      taskId: task.id,
+      trial,
+      statePass: stateRes.pass,
+      replyPass,
+      pass,
+      toolCalls,
+      erroredCalls,
+      maxIdenticalRun,
+      turns,
+      elapsedMs,
+      usedLobuSurface: arm === "B" ? usedLobu : null,
+      stateDetail: stateRes.detail,
+      replyDetail: replyRes?.detail ?? "",
+      failNote,
+    };
+  } finally {
+    built.dispose?.();
   }
-  const elapsedMs = Date.now() - t0;
-
-  // Longest run of identical consecutive tool calls (loop/runaway signal).
-  let maxIdenticalRun = 1;
-  let cur = 1;
-  for (let i = 1; i < callSig.length; i++) {
-    if (callSig[i] === callSig[i - 1]) {
-      cur++;
-      maxIdenticalRun = Math.max(maxIdenticalRun, cur);
-    } else cur = 1;
-  }
-  if (callSig.length === 0) maxIdenticalRun = 0;
-
-  const reply = lastAssistantText(built.session);
-  const stateRes = await task.check(org, seeded);
-  const replyRes = replyCheck(task.id, reply);
-  const replyPass = replyRes ? replyRes.pass : null;
-  // A task passes if the state check passes AND (no reply check, or it passes).
-  const pass = stateRes.pass && (replyPass === null || replyPass === true);
-
-  built.dispose?.();
-
-  return {
-    arm: built.arm,
-    taskId: task.id,
-    trial,
-    statePass: stateRes.pass,
-    replyPass,
-    pass,
-    toolCalls,
-    erroredCalls,
-    maxIdenticalRun,
-    turns,
-    elapsedMs,
-    usedLobuSurface: arm === "B" ? usedLobu : null,
-    stateDetail: stateRes.detail,
-    replyDetail: replyRes?.detail ?? "",
-    failNote,
-  };
 }
 
 function pct(n: number, d: number): string {
@@ -178,10 +209,19 @@ async function main() {
   await ensureMigrated();
 
   const opts = parseArgs();
+  if (opts.tasks.length) {
+    const known = new Set(TASKS.map((t) => t.id));
+    const unknown = opts.tasks.filter((id) => !known.has(id));
+    if (unknown.length) {
+      throw new Error(
+        `--tasks has unknown id(s): ${unknown.join(", ")}. Known: ${[...known].join(", ")}`
+      );
+    }
+  }
   const tasks = opts.tasks.length
     ? TASKS.filter((t) => opts.tasks.includes(t.id))
     : TASKS;
-  const arms = opts.arms as Array<"A" | "B">;
+  const arms = opts.arms;
 
   console.log(
     `\n=== Tool-surface eval: glm-4.7 via z-ai ===\n` +

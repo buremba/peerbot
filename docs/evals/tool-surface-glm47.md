@@ -23,7 +23,7 @@ agreed: A 17–28% / 0 fumbles, B 0% / ~50% fumbles.) See numbers below.
 The worker chooses the surface from `mcpExposure` in
 `packages/agent-worker/src/openclaw/worker.ts`:
 
-```
+```ts
 const mcpExposure =
   toolsConfig?.mcpExposure === "cli" || process.env.LOBU_MCP_EXPOSURE === "cli"
     ? "cli"   // Arm B — one bash tool, MCP tools as `lobu <tool>` CLIs

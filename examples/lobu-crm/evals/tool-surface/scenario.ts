@@ -54,25 +54,34 @@ export interface ScenarioOrg {
 /** Tools that need the isolated-vm sandbox; unreachable in this harness. */
 const SANDBOX_TOOLS = new Set(["run_sdk", "query_sdk", "search_sdk"]);
 
+// Track migration and connection state separately. A single shared flag would
+// let an earlier connect-only init (`ensureConnected`) mark setup "done" and
+// silently skip the destructive migration step a later `ensureMigrated` needs.
 let migrated = false;
+let connected = false;
 
-/** Run migrations once against the test DB. */
+/** Run migrations once against the test DB, then bring up the workspace provider. */
 export async function ensureMigrated(): Promise<void> {
-  if (migrated) return;
-  await setupTestDatabase();
-  await initWorkspaceProvider();
-  migrated = true;
+  if (!migrated) {
+    await setupTestDatabase();
+    migrated = true;
+  }
+  if (!connected) {
+    await initWorkspaceProvider();
+    connected = true;
+  }
 }
 
 /**
  * Connect-only init for child processes that share a DB already migrated by the
  * parent. Skips the destructive DROP SCHEMA + migrations; just brings up the
- * workspace provider so URL-building handlers work.
+ * workspace provider so URL-building handlers work. Does NOT set `migrated`, so
+ * a later `ensureMigrated()` in the same process still runs migrations.
  */
 export async function ensureConnected(): Promise<void> {
-  if (migrated) return;
+  if (connected) return;
   await initWorkspaceProvider();
-  migrated = true;
+  connected = true;
 }
 
 export function db(): Sql {

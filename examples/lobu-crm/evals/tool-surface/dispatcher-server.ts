@@ -77,7 +77,10 @@ const server = createServer((req, res) => {
   })();
 });
 
-server.listen(Number(process.env.DISPATCHER_PORT || 0), () => {
+// Bind to loopback ONLY. This is an unauthenticated tool-dispatch endpoint
+// reached solely by the parent harness on the same host (http://localhost:<port>);
+// binding all interfaces would expose it to the local network.
+server.listen(Number(process.env.DISPATCHER_PORT || 0), "127.0.0.1", () => {
   const addr = server.address();
   const port = typeof addr === "object" && addr ? addr.port : 0;
   // Tell the parent which port we bound.

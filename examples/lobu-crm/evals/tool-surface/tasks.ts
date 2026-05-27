@@ -44,7 +44,9 @@ async function leadByCompany(
   metadata: Record<string, unknown>;
 } | null> {
   // Match on metadata.company OR the entity name containing the company (the
-  // model legitimately stores the company in either place).
+  // model legitimately stores the company in either place). Constrained to the
+  // `lead` entity type so a pilot (which also carries metadata.company =
+  // "AcmeCo") can never satisfy a lead-stage check and mis-score a task.
   const rows = await sql<
     {
       id: number;
@@ -53,15 +55,17 @@ async function leadByCompany(
       metadata: Record<string, unknown>;
     }[]
   >`
-    SELECT id, name, metadata->>'stage' AS stage, metadata
-    FROM entities
-    WHERE organization_id = ${orgId}
-      AND deleted_at IS NULL
+    SELECT e.id, e.name, e.metadata->>'stage' AS stage, e.metadata
+    FROM entities e
+    JOIN entity_types t ON t.id = e.entity_type_id
+    WHERE e.organization_id = ${orgId}
+      AND e.deleted_at IS NULL
+      AND t.slug = 'lead'
       AND (
-        lower(metadata->>'company') = ${company.toLowerCase()}
-        OR lower(name) LIKE ${`%${company.toLowerCase()}%`}
+        lower(e.metadata->>'company') = ${company.toLowerCase()}
+        OR lower(e.name) LIKE ${`%${company.toLowerCase()}%`}
       )
-    ORDER BY id DESC
+    ORDER BY e.id DESC
     LIMIT 1
   `;
   return rows[0] ?? null;
@@ -369,28 +373,64 @@ export const TASKS: EvalTask[] = [
 export function replyCheck(taskId: string, reply: string): TaskResult | null {
   const r = reply.toLowerCase();
   if (taskId === "read-pipeline") {
-    // Require the CORRECT count adjacent to each stage name (within ~40 chars),
-    // not just "some 2 plus the stage words". This catches a reply that lists
-    // the stages but with wrong/missing counts. Accept "stage: N", "stage = N",
-    // "stage (N)", "stage - N", or "N <stage>".
-    const adjacent = (stage: string, count: number): boolean => {
-      const n = `(?:${count}|${["zero", "one", "two", "three", "four", "five"][count] ?? count})`;
-      // "stage: N" / "stage (N)" / "stage - N" — punctuation only between.
-      const after = new RegExp(`${stage}[^0-9a-z]{0,40}\\b${n}\\b`, "i");
-      // "N <stage>" or "N leads in <stage>" — allow a few words between, but no
-      // OTHER digit (so we don't bridge across a different stage's count).
-      const before = new RegExp(`\\b${n}\\b[^0-9]{0,40}${stage}`, "i");
-      return after.test(r) || before.test(r);
+    // Verify the model reported the ACTUAL per-stage counts (signal=2, trial=1,
+    // conversation=1) — not just that the right digit appears somewhere near a
+    // stage word. For each stage we extract the number the reply associates with
+    // it and require it to EQUAL the expected count; a stage stated with the
+    // wrong count fails, and a stage stated with no adjacent count fails.
+    const words = ["zero", "one", "two", "three", "four", "five"];
+    const toNum = (tok: string): number | null => {
+      const w = words.indexOf(tok.toLowerCase());
+      if (w >= 0) return w;
+      const d = Number.parseInt(tok, 10);
+      return Number.isNaN(d) ? null : d;
     };
-    const ok =
-      adjacent("signal", 2) &&
-      adjacent("trial", 1) &&
-      adjacent("conversation", 1);
+    const numTok = `(\\d+|${words.join("|")})`;
+    // Reported count for a stage = the number paired with it WITHIN THE SAME
+    // CLAUSE. The gap may hold words ("leads in") and table pipes ("| signal | 2
+    // |") but no digit and no clause boundary (comma / semicolon / newline), so
+    // a match can't bridge into a neighbouring stage's count — e.g. "2 leads in
+    // signal, 1 in trial" reads signal=2 (the "1" is past the comma) and trial=1
+    // (markdown table rows are newline-separated, so a pipe can't bridge rows).
+    // We take the nearer in-clause number, preferring the one AFTER the stage on
+    // ties ("stage: N" is the common form).
+    const gap = "[^0-9,;\\n]";
+    const reported = (stage: string): number | null => {
+      const before = new RegExp(
+        `\\b${numTok}\\b(${gap}{0,20}?)${stage}`,
+        "i"
+      ).exec(r);
+      const after = new RegExp(
+        `${stage}(${gap}{0,20}?)\\b${numTok}\\b`,
+        "i"
+      ).exec(r);
+      const beforeGap = before ? before[2]!.length : Number.POSITIVE_INFINITY;
+      const afterGap = after ? after[1]!.length : Number.POSITIVE_INFINITY;
+      if (
+        beforeGap === Number.POSITIVE_INFINITY &&
+        afterGap === Number.POSITIVE_INFINITY
+      ) {
+        return null;
+      }
+      return beforeGap < afterGap ? toNum(before![1]!) : toNum(after![2]!);
+    };
+    const expected: Record<string, number> = {
+      signal: 2,
+      trial: 1,
+      conversation: 1,
+    };
+    const got: Record<string, number | null> = {};
+    let ok = true;
+    for (const [stage, want] of Object.entries(expected)) {
+      const n = reported(stage);
+      got[stage] = n;
+      if (n !== want) ok = false;
+    }
     return {
       pass: ok,
       detail: ok
         ? "reply states signal=2, trial=1, conversation=1"
-        : "reply did not state each stage with its correct count (signal=2/trial=1/conversation=1)",
+        : `reply counts wrong/missing: got ${JSON.stringify(got)}, want {signal:2,trial:1,conversation:1}`,
     };
   }
   if (taskId === "stale-leads") {

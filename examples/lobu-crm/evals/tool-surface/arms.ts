@@ -308,78 +308,87 @@ export async function buildArmB(
 
   const dispatcher = await startDispatcher();
 
-  // Swap the gateway HTTP callTool for an HTTP call to the out-of-process
-  // dispatcher. This mirrors production's `callMcpTool` exactly: the just-bash
-  // command issues a fetch and the DB work runs in another process, so it never
-  // touches the `Error.stackTraceLimit` that just-bash hardens during command
-  // execution (the in-process dead-end documented in dispatcher-server.ts).
-  const cliCommands = buildMcpCliCommands(ref, gw, {
-    callTool: async (_gw, _mcpId, toolName, args) => {
-      const res = await fetch(dispatcher.url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          ctx: scn.ctx,
-          tool: toolName,
-          args: args ?? {},
-        }),
-      });
-      const j = (await res.json()) as {
-        ok: boolean;
-        out?: unknown;
-        err?: string;
-      };
-      if (!j.ok) throw new Error(j.err || "dispatch failed");
-      const text = typeof j.out === "string" ? j.out : JSON.stringify(j.out);
-      return { content: [{ type: "text" as const, text }] };
-    },
-  });
+  // Everything after the dispatcher is spawned must tear it down on failure, or
+  // a construction error (bad bashOps, session-build throw) leaks the child
+  // process (each holds a Postgres pool).
+  try {
+    // Swap the gateway HTTP callTool for an HTTP call to the out-of-process
+    // dispatcher. This mirrors production's `callMcpTool` exactly: the just-bash
+    // command issues a fetch and the DB work runs in another process, so it
+    // never touches the `Error.stackTraceLimit` that just-bash hardens during
+    // command execution (the in-process dead-end in dispatcher-server.ts).
+    const cliCommands = buildMcpCliCommands(ref, gw, {
+      callTool: async (_gw, _mcpId, toolName, args) => {
+        const res = await fetch(dispatcher.url, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            ctx: scn.ctx,
+            tool: toolName,
+            args: args ?? {},
+          }),
+        });
+        const j = (await res.json()) as {
+          ok: boolean;
+          out?: unknown;
+          err?: string;
+        };
+        if (!j.ok) throw new Error(j.err || "dispatch failed");
+        const text = typeof j.out === "string" ? j.out : JSON.stringify(j.out);
+        return { content: [{ type: "text" as const, text }] };
+      },
+    });
 
-  // We can't call createEmbeddedBashOps directly: it builds buildMcpCliCommands
-  // from the real gateway HTTP `callTool` (no override hook), so it would try to
-  // reach a gateway that isn't running. Instead we drive the SAME just-bash
-  // primitives (Bash + ReadWriteFs + defineCommand + the identical exec limits)
-  // with the CLI commands we built above (dispatcher-backed). The model-facing
-  // surface — heredoc/quoting/`lobu <tool>` parsing — is byte-for-byte the worker's.
-  const bashOps = await buildEmbeddedBashWithCliCommands(
-    workspaceDir,
-    cliCommands,
-    dispatcher.url
-  );
+    // We can't call createEmbeddedBashOps directly: it builds buildMcpCliCommands
+    // from the real gateway HTTP `callTool` (no override hook), so it would try
+    // to reach a gateway that isn't running. Instead we drive the SAME just-bash
+    // primitives (Bash + ReadWriteFs + defineCommand + the identical exec limits)
+    // with the CLI commands we built above (dispatcher-backed). The model-facing
+    // surface — heredoc/quoting/`lobu <tool>` parsing — is byte-for-byte the
+    // worker's.
+    const bashOps = await buildEmbeddedBashWithCliCommands(
+      workspaceDir,
+      cliCommands,
+      dispatcher.url
+    );
 
-  // Build the worker's real tool set (read/write/edit/bash/grep/find/ls) with
-  // our embedded bashOps wired into bash, then keep only the bash tool — Arm B's
-  // whole point is "one bash tool". createAgentSession rebuilds built-ins from
-  // the active-name list, so we swap our hardened bash back in afterward.
-  const openClawTools = createOpenClawTools(workspaceDir, {
-    bashOperations: bashOps,
-  });
-  const bashTool = openClawTools.find((t) => t.name === "bash");
-  if (!bashTool) throw new Error("bash tool not built");
+    // Build the worker's real tool set (read/write/edit/bash/grep/find/ls) with
+    // our embedded bashOps wired into bash, then keep only the bash tool — Arm
+    // B's whole point is "one bash tool". createAgentSession rebuilds built-ins
+    // from the active-name list, so we swap our hardened bash back in afterward.
+    const openClawTools = createOpenClawTools(workspaceDir, {
+      bashOperations: bashOps,
+    });
+    const bashTool = openClawTools.find((t) => t.name === "bash");
+    if (!bashTool) throw new Error("bash tool not built");
 
-  const result = await createAgentSession({
-    cwd: workspaceDir,
-    model: model as never,
-    authStorage,
-    modelRegistry,
-    tools: [bashTool as never],
-    customTools: [],
-  });
-  // Arm B's whole point is "ONE bash tool" (MCP reachable as `lobu <tool>`).
-  // createAgentSession also auto-activates pi's process/subagent/read/write/edit
-  // built-ins; drop them all and keep only our embedded bash, so the agent's
-  // only path to the CRM is the MCP-as-CLI surface.
-  result.session.agent.setTools([bashTool as never]);
+    const result = await createAgentSession({
+      cwd: workspaceDir,
+      model: model as never,
+      authStorage,
+      modelRegistry,
+      tools: [bashTool as never],
+      customTools: [],
+    });
+    // Arm B's whole point is "ONE bash tool" (MCP reachable as `lobu <tool>`).
+    // createAgentSession also auto-activates pi's process/subagent/read/write/
+    // edit built-ins; drop them all and keep only our embedded bash, so the
+    // agent's only path to the CRM is the MCP-as-CLI surface.
+    result.session.agent.setTools([bashTool as never]);
 
-  const cliInstructions = buildMcpCliInstructions(mcpStatus);
-  result.session.agent.setSystemPrompt(
-    `${SYSTEM_PROMPT_BASE}\n\n${cliInstructions}`
-  );
-  return {
-    session: result.session,
-    arm: "B-bash-cli",
-    dispose: dispatcher.dispose,
-  };
+    const cliInstructions = buildMcpCliInstructions(mcpStatus);
+    result.session.agent.setSystemPrompt(
+      `${SYSTEM_PROMPT_BASE}\n\n${cliInstructions}`
+    );
+    return {
+      session: result.session,
+      arm: "B-bash-cli",
+      dispose: dispatcher.dispose,
+    };
+  } catch (err) {
+    dispatcher.dispose();
+    throw err;
+  }
 }
 
 /**

@@ -5,13 +5,14 @@ reliable when the ~23 Lobu MCP tools are exposed as **(A) discrete first-class
 tools** or **(B) a single `bash` tool where MCP tools are invoked as
 `lobu <tool> <<<'{json}'`** (the embedded "MCP-as-CLI" surface)?
 
-**Answer (short).** Discrete MCP (Arm A) is the better surface for glm-4.7, but
-the dominant result is that **glm-4.7 is an unreliable agent for multi-step CRM
-ops on either surface** — it tends to make a single exploratory tool call and
-stop. Arm B adds a second, larger failure mode on top: glm-4.7 frequently does
-not discover or use the `lobu` CLI at all (it reaches for `sqlite3` / local
-files), and when it does use it, malformed shell/heredoc quoting drives a high
-errored-call rate. See numbers below.
+**Answer (short).** Discrete MCP (Arm A) is clearly the better surface for
+glm-4.7 — **28% (5/18) pass with 0 fumbled calls**, versus **0% (0/18) pass with
+a 50% fumble rate** for MCP-as-CLI (Arm B). On Arm A glm-4.7 forms valid tool
+calls; its failures are procedural (it does part of a multi-step skill and
+stops). On Arm B it fumbles roughly half of every `lobu <tool>` invocation
+(shell/heredoc/JSON quoting) and sometimes doesn't discover the CLI at all,
+burning ~2.2× the calls/turns for zero completions. Underneath both,
+glm-4.7 is a weak multi-step agent for these CRM ops. See numbers below.
 
 > This is a research finding. **No production agent config was changed.** The
 > recommendation is the output.

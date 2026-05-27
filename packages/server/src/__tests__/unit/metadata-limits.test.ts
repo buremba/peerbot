@@ -33,6 +33,20 @@ describe('exceedsValidationLimits', () => {
     expect(performance.now() - start).toBeLessThan(50);
   });
 
+  it('bails at maxDepth without traversing/serializing a hugely deep chain', () => {
+    // Regression for the bounded-guard contract: a 100k-deep object must NOT be
+    // fully walked or serialized — the guard must bail the instant it passes
+    // maxDepth. (An earlier version JSON.stringify'd the whole value first and
+    // took ~half a second on this input.)
+    let deep: Record<string, unknown> = { leaf: true };
+    for (let i = 0; i < 100_000; i++) {
+      deep = { a: deep };
+    }
+    const start = performance.now();
+    expect(exceedsValidationLimits(deep)).toBe(true);
+    expect(performance.now() - start).toBeLessThan(20);
+  });
+
   it('rejects too many nodes (wide fan-out)', () => {
     const wide: Record<string, number> = {};
     for (let i = 0; i < DEFAULT_METADATA_LIMITS.maxNodes + 1; i++) {
@@ -48,10 +62,14 @@ describe('exceedsValidationLimits', () => {
     expect(performance.now() - start).toBeLessThan(50);
   });
 
-  it('rejects unserializable input (circular references)', () => {
+  it('rejects circular references without hanging (bails at maxDepth)', () => {
     const circular: Record<string, unknown> = {};
     circular.self = circular;
+    const start = performance.now();
+    // A cycle re-descends the same node forever in principle, but the depth
+    // guard caps it: it bails at maxDepth rather than looping.
     expect(exceedsValidationLimits(circular)).toBe(true);
+    expect(performance.now() - start).toBeLessThan(20);
   });
 
   it('accepts a payload sitting just under every limit', () => {

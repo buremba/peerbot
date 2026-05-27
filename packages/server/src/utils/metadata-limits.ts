@@ -9,10 +9,14 @@
  * deeply-nested object still costs CPU/memory proportional to the input, and a
  * malformed schema could amplify it. Bounding the input first caps that cost.
  *
- * CRITICAL: the guard itself must be bounded. The traversal is iterative (an
- * explicit stack, no recursion) and bails the instant any limit is crossed, so
- * the guard can never become the DoS it defends against — it visits at most
- * `maxNodes` nodes and never descends past `maxDepth`.
+ * CRITICAL: the guard itself must be bounded. It does a single iterative
+ * traversal (explicit stack, no recursion) that enforces depth, node-count, and
+ * an approximate byte budget *together*, bailing the instant any limit is
+ * crossed. It never calls `JSON.stringify` on the whole value — doing so would
+ * itself be the DoS for a deeply-nested or huge input. The traversal visits at
+ * most `maxNodes` values, never descends past `maxDepth`, and stops accumulating
+ * bytes the moment `maxBytes` is exceeded, so it runs in O(min(nodes, maxNodes))
+ * time with bounded stack and cannot itself be exploited.
  */
 
 export interface MetadataLimits {
@@ -20,7 +24,7 @@ export interface MetadataLimits {
   maxDepth: number;
   /** Maximum number of values visited (keys + array elements) before bailing. */
   maxNodes: number;
-  /** Maximum serialized size in UTF-8 bytes. */
+  /** Maximum approximate size in UTF-8 bytes (keys + primitive values). */
   maxBytes: number;
 }
 
@@ -34,9 +38,9 @@ export interface MetadataLimits {
  *   10k caps adversarial fan-out (e.g. 10k sibling keys crafted to maximize
  *   AJV error allocation) without rejecting any plausible payload.
  * - maxBytes 262_144 (256 KiB): metadata is descriptive, not bulk storage;
- *   256 KiB is comfortably above any honest payload and the byte check is the
- *   cheap first gate (one JSON.stringify) that short-circuits huge inputs
- *   before any traversal.
+ *   256 KiB is comfortably above any honest payload. We accumulate an
+ *   approximate byte count during the same traversal (key + primitive value
+ *   lengths) and bail as soon as it is crossed — no full serialization pass.
  */
 export const DEFAULT_METADATA_LIMITS: MetadataLimits = {
   maxDepth: 32,
@@ -45,12 +49,25 @@ export const DEFAULT_METADATA_LIMITS: MetadataLimits = {
 };
 
 /**
+ * Approximate UTF-8 byte size of a primitive JSON value. Used to accumulate a
+ * running byte budget cheaply during traversal without serializing the whole
+ * structure. Strings dominate real payloads; numbers/booleans/null contribute a
+ * small constant. This is an estimate (it ignores quotes/commas/braces), but it
+ * only needs to be order-of-magnitude accurate to gate a 256 KiB ceiling.
+ */
+function primitiveByteSize(value: string | number | boolean | null): number {
+  if (typeof value === 'string') {
+    return Buffer.byteLength(value, 'utf8');
+  }
+  // number / boolean / null — bounded constant.
+  return String(value).length;
+}
+
+/**
  * Returns true if `value` exceeds any of the given limits.
  *
- * The traversal is iterative and short-circuits: it stops and returns true as
- * soon as a limit is crossed, visiting at most `maxNodes` values and never
- * recording a frame deeper than `maxDepth`. This guarantees the guard runs in
- * O(min(nodes, maxNodes)) time and bounded stack, so it cannot itself be a DoS.
+ * Single iterative pass enforcing all three limits together; returns true the
+ * moment any is crossed. See the file header for why this is itself bounded.
  */
 export function exceedsValidationLimits(
   value: unknown,
@@ -58,48 +75,71 @@ export function exceedsValidationLimits(
 ): boolean {
   const { maxDepth, maxNodes, maxBytes } = limits;
 
-  // Cheap first gate: serialized size. A single pass that short-circuits huge
-  // payloads before any structural traversal. Unserializable values (cycles,
-  // BigInt) throw — treat those as exceeding limits since they can't be
-  // validated or persisted anyway.
-  let serialized: string;
-  try {
-    serialized = JSON.stringify(value) ?? '';
-  } catch {
-    return true;
-  }
-  if (Buffer.byteLength(serialized, 'utf8') > maxBytes) {
-    return true;
-  }
-
-  // Iterative depth/node-count traversal with an explicit stack.
   const stack: Array<{ node: unknown; depth: number }> = [{ node: value, depth: 0 }];
   let visited = 0;
+  let bytes = 0;
 
   while (stack.length > 0) {
     // biome-ignore lint/style/noNonNullAssertion: stack.length > 0 guards this.
     const { node, depth } = stack.pop()!;
 
+    // Depth is checked first and before any per-node work, so a pathologically
+    // deep chain bails immediately at maxDepth rather than being traversed.
     if (depth > maxDepth) {
       return true;
     }
 
     if (node === null || typeof node !== 'object') {
+      // Primitive: count toward the byte budget. (`undefined` / functions are
+      // not valid JSON metadata; treat them as zero-cost — they're dropped on
+      // persist anyway.)
+      if (node === null || typeof node !== 'undefined') {
+        bytes += primitiveByteSize(node as string | number | boolean | null);
+        if (bytes > maxBytes) {
+          return true;
+        }
+      }
       continue;
     }
 
-    const children = Array.isArray(node) ? node : Object.values(node);
-    visited += children.length;
+    const childDepth = depth + 1;
+
+    if (Array.isArray(node)) {
+      visited += node.length;
+      if (visited > maxNodes) {
+        return true;
+      }
+      for (const child of node) {
+        if (child !== null && typeof child === 'object') {
+          stack.push({ node: child, depth: childDepth });
+        } else {
+          bytes += primitiveByteSize(child as string | number | boolean | null);
+          if (bytes > maxBytes) {
+            return true;
+          }
+        }
+      }
+      continue;
+    }
+
+    // Plain object: count keys toward both node count and byte budget.
+    const entries = Object.entries(node as Record<string, unknown>);
+    visited += entries.length;
     if (visited > maxNodes) {
       return true;
     }
-
-    const childDepth = depth + 1;
-    for (const child of children) {
-      // Only push container children — primitives are counted above and need
-      // no further traversal, keeping the stack small.
+    for (const [key, child] of entries) {
+      bytes += Buffer.byteLength(key, 'utf8');
+      if (bytes > maxBytes) {
+        return true;
+      }
       if (child !== null && typeof child === 'object') {
         stack.push({ node: child, depth: childDepth });
+      } else {
+        bytes += primitiveByteSize(child as string | number | boolean | null);
+        if (bytes > maxBytes) {
+          return true;
+        }
       }
     }
   }

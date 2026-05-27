@@ -39,7 +39,22 @@ export class CommandDispatcher {
   ): Promise<boolean> {
     const match = rawText.trim().match(/^\/(\w+)(?:\s+(.*))?$/);
     if (!match?.[1]) return false;
-    return this.tryHandle(match[1], match[2]?.trim() || "", input);
+    let commandName = match[1];
+    let commandArgs = match[2]?.trim() || "";
+    // Slack registers a single `/lobu` wrapper, so its subcommands arrive as
+    // `/lobu link <code>`. Slack only dispatches that as a native slash command
+    // in channels — in an "Agents & AI Apps" DM it is delivered as plain
+    // message text instead (no slash-command UI). Unwrap the wrapper here so
+    // `/lobu link <code>` typed or pasted from `lobu run` in a DM dispatches the
+    // `link` subcommand, matching the native slash-command path.
+    if (commandName.toLowerCase() === "lobu" && commandArgs) {
+      const sub = commandArgs.match(/^(\S+)(?:\s+(.*))?$/);
+      if (sub?.[1]) {
+        commandName = sub[1];
+        commandArgs = sub[2]?.trim() || "";
+      }
+    }
+    return this.tryHandle(commandName, commandArgs, input);
   }
 
   async tryHandle(

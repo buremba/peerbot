@@ -32,6 +32,16 @@ export class HttpWorkerTransport implements WorkerTransport {
   private platformMetadata?: Record<string, unknown>;
   private accumulatedStreamContent: string[] = [];
   private lastStreamDelta: string = "";
+  // The authoritative full assistant text, recorded whenever the worker sees
+  // an explicit final result (the `isFinal` delta). `signalCompletion()` sends
+  // THIS as `finalText` rather than re-deriving it from the append-only
+  // `accumulatedStreamContent` dedupe buffer. The buffer can hold
+  // partial_stream + full_final in the divergent-final case (when the final
+  // result is neither identical to nor a prefix-extension of what was
+  // streamed), which would garble the cross-pod/history `finalText`.
+  // `undefined` until an explicit final is seen — pure-streaming turns fall
+  // back to the accumulation (which IS the final text there).
+  private finalText?: string;
 
   constructor(config: WorkerTransportConfig) {
     this.gatewayUrl = config.gatewayUrl;
@@ -68,6 +78,12 @@ export class HttpWorkerTransport implements WorkerTransport {
 
     // Handle final result with deduplication
     if (isFinal) {
+      // `delta` is the complete final assistant text. Record it as the
+      // authoritative `finalText` regardless of which dedupe branch we take
+      // below — the dedupe only controls what (if anything) is *streamed* to
+      // the client, never what the terminal completion row carries cross-pod.
+      this.finalText = delta;
+
       logger.info(`🔍 Processing final result with deduplication`);
       logger.info(`Final text length: ${delta.length} chars`);
       const accumulatedStr = this.accumulatedStreamContent.join("");
@@ -144,10 +160,16 @@ export class HttpWorkerTransport implements WorkerTransport {
     // (Slack) that completes on a different replica has no buffer and would
     // drop the reply. `finalText` makes the completion self-contained so any
     // replica can deliver it. (Empty string when nothing was streamed.)
+    //
+    // Prefer the authoritative final recorded from the `isFinal` delta. Only
+    // fall back to the accumulated stream buffer when no explicit final was
+    // seen (a pure-streaming turn, where the accumulation IS the final text).
+    // Re-deriving from the buffer unconditionally would garble the divergent-
+    // final case, where it holds partial_stream + full_final.
     await this.sendResponse(
       this.buildBaseResponse({
         processedMessageIds: this.processedMessageIds,
-        finalText: this.accumulatedStreamContent.join(""),
+        finalText: this.finalText ?? this.accumulatedStreamContent.join(""),
       })
     );
   }

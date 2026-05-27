@@ -15,6 +15,19 @@ all, burning ~1.8× the calls/turns for zero completions. Underneath both, glm-4
 is a weak multi-step agent for these CRM ops. (Two independent 36-run passes
 agreed: A 17–28% / 0 fumbles, B 0% / ~50% fumbles.) See numbers below.
 
+> **Update (post-review scoring correction).** A CodeRabbit review found the
+> `read-pipeline` success check was too loose/under-counting. After tightening it
+> (constrain `leadByCompany` to `lead` entities; verify per-stage counts), a
+> partial re-run scored **Arm A ≈ 33% (6/18)** — create-lead 3/3, read-pipeline
+> 3/3, and the four multi-step tasks (advance-stage, log-interaction, open-pilot,
+> stale-leads) 0/3 — still **0 fumbled calls**. The corrected check raises Arm A
+> (the old check under-credited read-pipeline); it does not lift Arm B, which
+> stays at 0%. The final Arm B re-run was cut short, but 0% held across both prior
+> full batteries plus the partial. Net: the conclusion is unchanged and slightly
+> **stronger** (Arm A's edge over Arm B is wider). The per-arm tables below are
+> from the earlier full batteries (pre-correction scoring); read Arm A's true pass
+> rate as ~33%.
+
 > This is a research finding. **No production agent config was changed.** The
 > recommendation is the output.
 

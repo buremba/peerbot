@@ -8,7 +8,7 @@
 import { getDb } from '../db/client';
 import type { ToolContext } from '../tools/registry';
 import { formatAjvError, getAjv } from './ajv-singleton';
-import { exceedsValidationLimits } from './metadata-limits';
+import { exceedsValidationLimits, isEmptyObject } from './metadata-limits';
 
 // ============================================
 // Types
@@ -74,8 +74,10 @@ export async function validateEntityMetadata(
   metadata: Record<string, unknown> | undefined | null,
   ctx: ToolContext
 ): Promise<ValidationResult> {
-  // No metadata provided - valid (defaults to empty object)
-  if (!metadata || Object.keys(metadata).length === 0) {
+  // No metadata provided - valid (defaults to empty object). Allocation-free
+  // emptiness check so a huge untrusted object isn't materialized via
+  // Object.keys before the size guard below runs.
+  if (!metadata || isEmptyObject(metadata)) {
     return { valid: true };
   }
 

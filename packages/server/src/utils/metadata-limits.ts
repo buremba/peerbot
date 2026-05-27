@@ -54,13 +54,39 @@ export const DEFAULT_METADATA_LIMITS: MetadataLimits = {
  * structure. Strings dominate real payloads; numbers/booleans/null contribute a
  * small constant. This is an estimate (it ignores quotes/commas/braces), but it
  * only needs to be order-of-magnitude accurate to gate a 256 KiB ceiling.
+ *
+ * For strings we first compare the cheap UTF-16 length against the remaining
+ * budget: a UTF-8 byte count is always >= the UTF-16 code-unit count, so if the
+ * code-unit length already blows the budget we reject without paying for a full
+ * `Buffer.byteLength` scan of a multi-megabyte attacker string.
  */
-function primitiveByteSize(value: string | number | boolean | null): number {
+function primitiveByteSize(
+  value: string | number | boolean | null,
+  remainingBudget: number
+): number {
   if (typeof value === 'string') {
+    if (value.length > remainingBudget) {
+      // Lower bound already exceeds the budget — no need to measure exactly.
+      return value.length;
+    }
     return Buffer.byteLength(value, 'utf8');
   }
   // number / boolean / null — bounded constant.
   return String(value).length;
+}
+
+/**
+ * Allocation-free emptiness check for a plain object. `Object.keys(o).length`
+ * materializes the whole key array just to test for zero — a needless O(keys)
+ * allocation on untrusted input. `for...in` with the first own key short-circuits.
+ */
+export function isEmptyObject(o: Record<string, unknown>): boolean {
+  for (const key in o) {
+    if (Object.hasOwn(o, key)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -94,7 +120,10 @@ export function exceedsValidationLimits(
       // weight (it's dropped on serialize/persist), so skip it; everything else
       // (string/number/boolean/null) contributes.
       if (node !== undefined) {
-        bytes += primitiveByteSize(node as string | number | boolean | null);
+        bytes += primitiveByteSize(
+          node as string | number | boolean | null,
+          maxBytes - bytes
+        );
         if (bytes > maxBytes) {
           return true;
         }
@@ -105,15 +134,19 @@ export function exceedsValidationLimits(
     const childDepth = depth + 1;
 
     if (Array.isArray(node)) {
-      visited += node.length;
-      if (visited > maxNodes) {
-        return true;
-      }
+      // Count each element as we go, bailing the moment maxNodes is crossed —
+      // never materializing a derived array of the children.
       for (const child of node) {
+        if (++visited > maxNodes) {
+          return true;
+        }
         if (child !== null && typeof child === 'object') {
           stack.push({ node: child, depth: childDepth });
         } else {
-          bytes += primitiveByteSize(child as string | number | boolean | null);
+          bytes += primitiveByteSize(
+            child as string | number | boolean | null,
+            maxBytes - bytes
+          );
           if (bytes > maxBytes) {
             return true;
           }
@@ -122,21 +155,30 @@ export function exceedsValidationLimits(
       continue;
     }
 
-    // Plain object: count keys toward both node count and byte budget.
-    const entries = Object.entries(node as Record<string, unknown>);
-    visited += entries.length;
-    if (visited > maxNodes) {
-      return true;
-    }
-    for (const [key, child] of entries) {
-      bytes += Buffer.byteLength(key, 'utf8');
+    // Plain object: iterate own enumerable keys with `for...in` so we never
+    // allocate an Object.entries/keys array up front for an attacker with huge
+    // fan-out — each key is counted incrementally and we bail at the first
+    // limit crossed.
+    const obj = node as Record<string, unknown>;
+    for (const key in obj) {
+      if (!Object.hasOwn(obj, key)) {
+        continue;
+      }
+      if (++visited > maxNodes) {
+        return true;
+      }
+      bytes += primitiveByteSize(key, maxBytes - bytes);
       if (bytes > maxBytes) {
         return true;
       }
+      const child = obj[key];
       if (child !== null && typeof child === 'object') {
         stack.push({ node: child, depth: childDepth });
       } else {
-        bytes += primitiveByteSize(child as string | number | boolean | null);
+        bytes += primitiveByteSize(
+          child as string | number | boolean | null,
+          maxBytes - bytes
+        );
         if (bytes > maxBytes) {
           return true;
         }

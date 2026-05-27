@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   DEFAULT_METADATA_LIMITS,
   exceedsValidationLimits,
+  isEmptyObject,
 } from '../../utils/metadata-limits';
 
 describe('exceedsValidationLimits', () => {
@@ -113,5 +114,50 @@ describe('exceedsValidationLimits', () => {
         maxBytes: 1000,
       })
     ).toBe(false);
+  });
+
+  it('bails on wide object fan-out without materializing all keys', () => {
+    // for...in iteration must increment/check the node budget incrementally;
+    // a wildly wide object should bail fast at maxNodes.
+    const wide: Record<string, number> = {};
+    for (let i = 0; i < DEFAULT_METADATA_LIMITS.maxNodes + 5000; i++) {
+      wide[`k${i}`] = i;
+    }
+    const start = performance.now();
+    expect(exceedsValidationLimits(wide)).toBe(true);
+    expect(performance.now() - start).toBeLessThan(250);
+  });
+
+  it('rejects a single oversized string fast via the length short-circuit', () => {
+    // The string is > maxBytes; we must reject without a full Buffer.byteLength
+    // scan being the dominant cost.
+    const huge = { blob: 'y'.repeat(8 * 1024 * 1024) }; // 8 MiB
+    const start = performance.now();
+    expect(exceedsValidationLimits(huge)).toBe(true);
+    expect(performance.now() - start).toBeLessThan(250);
+  });
+});
+
+describe('isEmptyObject', () => {
+  it('detects empty objects', () => {
+    expect(isEmptyObject({})).toBe(true);
+  });
+
+  it('detects non-empty objects without scanning all keys', () => {
+    expect(isEmptyObject({ a: 1 })).toBe(false);
+    const wide: Record<string, number> = {};
+    for (let i = 0; i < 100_000; i++) {
+      wide[`k${i}`] = i;
+    }
+    const start = performance.now();
+    expect(isEmptyObject(wide)).toBe(false);
+    // Short-circuits on the first key regardless of object size.
+    expect(performance.now() - start).toBeLessThan(50);
+  });
+
+  it('ignores inherited enumerable properties', () => {
+    const proto = { inherited: true };
+    const obj = Object.create(proto) as Record<string, unknown>;
+    expect(isEmptyObject(obj)).toBe(true);
   });
 });

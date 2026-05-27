@@ -54,6 +54,30 @@ function deriveFilename(
 }
 
 /**
+ * Detect a preview-link redemption in plain message text. Slack blocks slash
+ * commands in an "Agents & AI Apps" DM, so `lobu run`'s `/lobu link <code>`
+ * can't be sent as a slash command there — Slack either rejects it ("not
+ * supported in threads") or, for a bot that registers `/lobu`, never delivers
+ * it as a message. So accept the code as plain text: `link <code>`, the
+ * `/lobu link <code>` / `/link <code>` forms when they do arrive as text, and a
+ * bare `<slug>-<CODE>` paste. Codes always contain a hyphen (`slug-SUFFIX`), so
+ * we require one to avoid matching chatter like "link me". The bare form is
+ * gated to DMs to avoid matching stray channel messages. Returns the code, or
+ * null. The native channel slash command and `tryHandleSlashText` still handle
+ * the `/`-prefixed forms.
+ */
+export function parsePreviewLinkCode(
+  text: string,
+  isGroup: boolean
+): string | null {
+  const t = text.trim();
+  const explicit = t.match(/^(?:\/?lobu\s+)?\/?link\s+(\S+)$/i);
+  if (explicit?.[1] && explicit[1].includes("-")) return explicit[1];
+  if (!isGroup && /^[a-z][a-z0-9-]*-[A-Z0-9]{6}$/.test(t)) return t;
+  return null;
+}
+
+/**
  * Inbound chat SDK attachment shape (loose subset of `chat.Attachment`).
  * Defined here so that this module — and its tests — don't have to take a
  * runtime dependency on the chat SDK.
@@ -390,6 +414,33 @@ export class MessageHandlerBridge {
       );
       await thread.post({ text: "Chat history cleared." });
       return;
+    }
+
+    // Preview-link redemption as plain message text. In an AI-app DM Slack
+    // won't deliver `/lobu link <code>` as a slash command, so accept the code
+    // as a message — `link <code>` or a bare `<slug>-<CODE>` paste — and redeem
+    // via the same `link` command. Runs before the worker enqueue (and before
+    // the previewMode menu below) so a pasted code binds instead of being
+    // treated as chat.
+    if (!sessionReset && this.commandDispatcher) {
+      const linkCode = parsePreviewLinkCode(messageText, isGroup);
+      if (linkCode) {
+        const handled = await this.commandDispatcher.tryHandle(
+          "link",
+          linkCode,
+          {
+            platform,
+            userId,
+            channelId,
+            teamId,
+            isGroup,
+            conversationId,
+            connectionId: this.connection.id,
+            reply: createChatReply((content) => thread.post(content)),
+          }
+        );
+        if (handled) return;
+      }
     }
 
     // Slash command dispatch — intercept before queueing to worker

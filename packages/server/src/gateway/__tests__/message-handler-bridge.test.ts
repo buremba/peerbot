@@ -5,6 +5,7 @@ import {
   ingestInboundAttachments,
   isSenderAllowed,
   MessageHandlerBridge,
+  parsePreviewLinkCode,
 } from "../connections/message-handler-bridge.js";
 import type { PlatformConnection } from "../connections/types.js";
 import { InMemoryStateAdapter } from "./fixtures/in-memory-state-adapter.js";
@@ -13,6 +14,39 @@ import {
   createArtifactTestEnv,
   TEST_GATEWAY_URL,
 } from "./setup.js";
+
+describe("parsePreviewLinkCode", () => {
+  test("bare code paste in a DM", () => {
+    expect(parsePreviewLinkCode("crm-TGHE0Z", false)).toBe("crm-TGHE0Z");
+  });
+  test("multi-segment slug bare code", () => {
+    expect(parsePreviewLinkCode("food-ordering-ABC123", false)).toBe(
+      "food-ordering-ABC123"
+    );
+  });
+  test("`link <code>`", () => {
+    expect(parsePreviewLinkCode("link crm-TGHE0Z", false)).toBe("crm-TGHE0Z");
+  });
+  test("`/lobu link <code>` delivered as text", () => {
+    expect(parsePreviewLinkCode("/lobu link crm-TGHE0Z", false)).toBe(
+      "crm-TGHE0Z"
+    );
+  });
+  test("`/link <code>`", () => {
+    expect(parsePreviewLinkCode("/link crm-TGHE0Z", false)).toBe("crm-TGHE0Z");
+  });
+  test("bare code is ignored in a channel (false-positive guard)", () => {
+    expect(parsePreviewLinkCode("crm-TGHE0Z", true)).toBeNull();
+  });
+  test("`link me` (no hyphenated code) is not a link", () => {
+    expect(parsePreviewLinkCode("link me", false)).toBeNull();
+  });
+  test("normal chatter is ignored", () => {
+    expect(
+      parsePreviewLinkCode("can you help me link the accounts", false)
+    ).toBeNull();
+  });
+});
 
 describe("isSenderAllowed", () => {
   test.each([
@@ -432,7 +466,8 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
   function makePreviewHarness(opts: {
     binding?: { agentId: string } | null;
     commandDispatcher?: {
-      tryHandleSlashText: (...args: any[]) => Promise<boolean>;
+      tryHandleSlashText?: (...args: any[]) => Promise<boolean>;
+      tryHandle?: (...args: any[]) => Promise<boolean>;
     };
   }) {
     const state = new InMemoryStateAdapter();
@@ -508,15 +543,16 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     ).toBe(true);
   });
 
-  test("`/lobu link <code>` DM message dispatches the command before the preview menu", async () => {
+  test("`/lobu link <code>` DM message dispatches link before the preview menu", async () => {
     // On a previewMode bot, an unlinked DM normally gets the demo-agent menu.
-    // But a `/lobu link <code>` arrives as plain message text in an AI-app DM
-    // (Slack won't run slash commands there), so it MUST reach the dispatcher
-    // and bind — not be preempted by the menu.
-    const tryHandleSlashText = mock(async () => true);
+    // A `/lobu link <code>` arrives as plain message text in an AI-app DM (Slack
+    // won't run slash commands there), so it MUST reach the dispatcher and bind
+    // — not be preempted by the menu. parsePreviewLinkCode routes it to `link`.
+    const tryHandle = mock(async () => true);
+    const tryHandleSlashText = mock(async () => false);
     const { bridge, enqueueMessage } = makePreviewHarness({
       binding: null,
-      commandDispatcher: { tryHandleSlashText },
+      commandDispatcher: { tryHandle, tryHandleSlashText },
     });
     const thread = makeThread(undefined);
 
@@ -526,16 +562,38 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
       "dm"
     );
 
-    expect(tryHandleSlashText).toHaveBeenCalledTimes(1);
-    expect(String(tryHandleSlashText.mock.calls[0]?.[0])).toContain(
-      "/lobu link crm-ABC123"
-    );
+    expect(tryHandle).toHaveBeenCalledTimes(1);
+    expect(tryHandle.mock.calls[0]?.[0]).toBe("link");
+    expect(tryHandle.mock.calls[0]?.[1]).toBe("crm-ABC123");
     // The preview menu was NOT posted, and no agent run was queued.
     expect(
       thread.post.mock.calls.every(
         (c: unknown[]) => !String(c[0]).includes("/lobu link")
       )
     ).toBe(true);
+    expect(enqueueMessage).not.toHaveBeenCalled();
+  });
+
+  test("a bare preview-code paste in a DM dispatches link, not the menu", async () => {
+    const tryHandle = mock(async () => true);
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      binding: null,
+      commandDispatcher: {
+        tryHandle,
+        tryHandleSlashText: mock(async () => false),
+      },
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(
+      thread,
+      makeMessage({ text: "crm-ABC123" }),
+      "dm"
+    );
+
+    expect(tryHandle).toHaveBeenCalledTimes(1);
+    expect(tryHandle.mock.calls[0]?.[0]).toBe("link");
+    expect(tryHandle.mock.calls[0]?.[1]).toBe("crm-ABC123");
     expect(enqueueMessage).not.toHaveBeenCalled();
   });
 });

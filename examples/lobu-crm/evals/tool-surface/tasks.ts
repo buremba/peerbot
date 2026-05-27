@@ -9,6 +9,7 @@
  */
 
 import type { Sql } from "postgres";
+import { pgBigintArray } from "../../../../packages/server/src/db/client";
 import { db, seedInteraction, seedLead, type ScenarioOrg } from "./scenario";
 
 export interface TaskResult {
@@ -272,13 +273,19 @@ export const TASKS: EvalTask[] = [
         return { pass: false, detail: "no pilot entity created for AcmeCo" };
       const lead = await leadByCompany(sql, org.org.id, "AcmeCo");
       const stageOk = lead?.stage === "pilot";
-      // converted-to relationship from lead -> pilot
+      const pilotIds = pilots.map((p) => p.id);
+      // The prompt explicitly asks to "link it to the lead", so the
+      // `converted-to` relationship between the lead and the created pilot is
+      // required for success. Accept the link in either direction (lead↔pilot).
       const links = await sql<{ n: number }[]>`
         SELECT count(*)::int AS n FROM entity_relationships er
         JOIN entity_relationship_types rt ON rt.id = er.relationship_type_id
         WHERE er.organization_id = ${org.org.id}
           AND rt.slug = 'converted-to'
-          AND er.from_entity_id = ${leadId}
+          AND (
+            (er.from_entity_id = ${leadId} AND er.to_entity_id = ANY(${pgBigintArray(pilotIds)}::bigint[]))
+            OR (er.to_entity_id = ${leadId} AND er.from_entity_id = ANY(${pgBigintArray(pilotIds)}::bigint[]))
+          )
       `.catch(() => [{ n: -1 }]);
       const linkN = links[0]?.n ?? 0;
       const parts = [
@@ -286,10 +293,9 @@ export const TASKS: EvalTask[] = [
         `leadStage=${lead?.stage}`,
         `convertedToLink=${linkN}`,
       ];
-      // Core success = pilot entity exists AND lead advanced to pilot. The
-      // converted-to link is a bonus (skill-faithful) but its table shape can
-      // vary; we report it but don't hard-fail on it alone.
-      const pass = pilots.length > 0 && stageOk;
+      // Full success = pilot entity exists AND lead advanced to "pilot" AND the
+      // requested converted-to link exists.
+      const pass = pilots.length > 0 && stageOk && linkN > 0;
       return { pass, detail: parts.join(", ") };
     },
   },
@@ -363,19 +369,28 @@ export const TASKS: EvalTask[] = [
 export function replyCheck(taskId: string, reply: string): TaskResult | null {
   const r = reply.toLowerCase();
   if (taskId === "read-pipeline") {
-    // Expect it to convey signal=2, trial=1, conversation=1.
-    const has2 = /\b2\b|\btwo\b/.test(r);
-    const mentionsSignal = r.includes("signal");
+    // Require the CORRECT count adjacent to each stage name (within ~40 chars),
+    // not just "some 2 plus the stage words". This catches a reply that lists
+    // the stages but with wrong/missing counts. Accept "stage: N", "stage = N",
+    // "stage (N)", "stage - N", or "N <stage>".
+    const adjacent = (stage: string, count: number): boolean => {
+      const n = `(?:${count}|${["zero", "one", "two", "three", "four", "five"][count] ?? count})`;
+      // "stage: N" / "stage (N)" / "stage - N" — punctuation only between.
+      const after = new RegExp(`${stage}[^0-9a-z]{0,40}\\b${n}\\b`, "i");
+      // "N <stage>" or "N leads in <stage>" — allow a few words between, but no
+      // OTHER digit (so we don't bridge across a different stage's count).
+      const before = new RegExp(`\\b${n}\\b[^0-9]{0,40}${stage}`, "i");
+      return after.test(r) || before.test(r);
+    };
     const ok =
-      has2 &&
-      mentionsSignal &&
-      r.includes("trial") &&
-      r.includes("conversation");
+      adjacent("signal", 2) &&
+      adjacent("trial", 1) &&
+      adjacent("conversation", 1);
     return {
       pass: ok,
       detail: ok
-        ? "reply names stages with counts"
-        : "reply did not clearly state signal=2/trial=1/conversation=1",
+        ? "reply states signal=2, trial=1, conversation=1"
+        : "reply did not state each stage with its correct count (signal=2/trial=1/conversation=1)",
     };
   }
   if (taskId === "stale-leads") {

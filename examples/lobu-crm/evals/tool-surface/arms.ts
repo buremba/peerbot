@@ -185,12 +185,31 @@ async function startDispatcher(): Promise<{
   );
   const proc = spawn("bun", [script], {
     env: { ...process.env, DISPATCHER_PORT: "0" },
+    // Own process group so we can signal the whole tree; SIGTERM alone doesn't
+    // reliably stop the http-server event loop, leaving orphaned children that
+    // each hold a Postgres pool.
+    detached: true,
     stdio: ["ignore", "pipe", "inherit"],
   });
+  // SIGKILL the whole process group on dispose, with a SIGTERM first chance.
+  const dispose = () => {
+    try {
+      process.kill(-proc.pid!, "SIGTERM");
+    } catch {
+      // already gone
+    }
+    setTimeout(() => {
+      try {
+        process.kill(-proc.pid!, "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }, 500).unref();
+  };
   return new Promise((resolve, reject) => {
     let buf = "";
     const timer = setTimeout(() => {
-      proc.kill();
+      dispose();
       reject(new Error("dispatcher did not become ready within 30s"));
     }, 30_000);
     proc.stdout.on("data", (chunk: Buffer) => {
@@ -198,10 +217,7 @@ async function startDispatcher(): Promise<{
       const m = buf.match(/DISPATCHER_READY (\d+)/);
       if (m) {
         clearTimeout(timer);
-        resolve({
-          url: `http://localhost:${m[1]}`,
-          dispose: () => proc.kill(),
-        });
+        resolve({ url: `http://localhost:${m[1]}`, dispose });
       }
     });
     proc.on("exit", () => {

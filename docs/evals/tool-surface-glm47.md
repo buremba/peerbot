@@ -6,13 +6,14 @@ tools** or **(B) a single `bash` tool where MCP tools are invoked as
 `lobu <tool> <<<'{json}'`** (the embedded "MCP-as-CLI" surface)?
 
 **Answer (short).** Discrete MCP (Arm A) is clearly the better surface for
-glm-4.7 — **28% (5/18) pass with 0 fumbled calls**, versus **0% (0/18) pass with
-a 50% fumble rate** for MCP-as-CLI (Arm B). On Arm A glm-4.7 forms valid tool
-calls; its failures are procedural (it does part of a multi-step skill and
-stops). On Arm B it fumbles roughly half of every `lobu <tool>` invocation
-(shell/heredoc/JSON quoting) and sometimes doesn't discover the CLI at all,
-burning ~2.2× the calls/turns for zero completions. Underneath both,
-glm-4.7 is a weak multi-step agent for these CRM ops. See numbers below.
+glm-4.7 — **17% (3/18) pass with 0 fumbled calls (0/92)**, versus **0% (0/18)
+pass with a 49% fumble rate (81/167)** for MCP-as-CLI (Arm B). On Arm A glm-4.7
+forms valid tool calls; its failures are procedural (it does part of a multi-step
+skill and stops). On Arm B it fumbles roughly half of every `lobu <tool>`
+invocation (shell/heredoc/JSON quoting) and sometimes doesn't discover the CLI at
+all, burning ~1.8× the calls/turns for zero completions. Underneath both, glm-4.7
+is a weak multi-step agent for these CRM ops. (Two independent 36-run passes
+agreed: A 17–28% / 0 fumbles, B 0% / ~50% fumbles.) See numbers below.
 
 > This is a research finding. **No production agent config was changed.** The
 > recommendation is the output.
@@ -95,25 +96,25 @@ Raw per-cell metrics in `examples/lobu-crm/evals/tool-surface/last-run.json`.
 
 | arm | pass rate | mean calls | fumble rate | mean turns | mean sec |
 |---|---|---|---|---|---|
-| A — discrete MCP | **28% (5/18)** | 4.3 | **0% (0/77)** | 5.1 | 32 |
-| B — bash / MCP-as-CLI | **0% (0/18)** | 9.5 | **50% (86/171)** | 10.5 | 34 |
+| A — discrete MCP | **17% (3/18)** | 5.1 | **0% (0/92)** | 5.4 | 38 |
+| B — bash / MCP-as-CLI | **0% (0/18)** | 9.3 | **49% (81/167)** | 10.3 | 46 |
 
 **By arm × task (pass rate / mean calls / mean fumbles)**
 
 | arm | task | pass rate | mean calls | mean fumbles |
 |---|---|---|---|---|
-| A-discrete | create-lead | 100% (3/3) | 3.7 | 0.0 |
-| A-discrete | read-pipeline | 33% (1/3) | 4.7 | 0.0 |
-| A-discrete | advance-stage | 0% (0/3) | 2.3 | 0.0 |
-| A-discrete | log-interaction | 0% (0/3) | 2.7 | 0.0 |
-| A-discrete | open-pilot | 0% (0/3) | 4.0 | 0.0 |
-| A-discrete | stale-leads | 33% (1/3) | 8.3 | 0.0 |
-| B-bash-cli | create-lead | 0% (0/3) | 8.0 | 4.3 |
-| B-bash-cli | read-pipeline | 0% (0/3) | 10.0 | 4.7 |
-| B-bash-cli | advance-stage | 0% (0/3) | 12.0 | 6.3 |
-| B-bash-cli | log-interaction | 0% (0/3) | 9.7 | 4.3 |
-| B-bash-cli | open-pilot | 0% (0/3) | 8.7 | 5.0 |
-| B-bash-cli | stale-leads | 0% (0/3) | 8.7 | 4.0 |
+| A-discrete | create-lead | 67% (2/3) | 5.3 | 0.0 |
+| A-discrete | read-pipeline | 33% (1/3) | 3.0 | 0.0 |
+| A-discrete | advance-stage | 0% (0/3) | 2.0 | 0.0 |
+| A-discrete | log-interaction | 0% (0/3) | 2.0 | 0.0 |
+| A-discrete | open-pilot | 0% (0/3) | 5.3 | 0.0 |
+| A-discrete | stale-leads | 0% (0/3) | 13.0 | 0.0 |
+| B-bash-cli | create-lead | 0% (0/3) | 15.3 | 5.3 |
+| B-bash-cli | read-pipeline | 0% (0/3) | 5.0 | 3.0 |
+| B-bash-cli | advance-stage | 0% (0/3) | 5.3 | 3.3 |
+| B-bash-cli | log-interaction | 0% (0/3) | 10.0 | 5.0 |
+| B-bash-cli | open-pilot | 0% (0/3) | 11.0 | 5.3 |
+| B-bash-cli | stale-leads | 0% (0/3) | 9.0 | 5.0 |
 
 **Reading the numbers**
 
@@ -143,7 +144,7 @@ Raw per-cell metrics in `examples/lobu-crm/evals/tool-surface/last-run.json`.
   (`lobu=false`). The MCP-as-CLI surface is not self-evident to it.
 - **Arm B — shell/quoting fumbles (dominant Arm B failure):** when it does use
   `lobu`, malformed heredocs / JSON-in-shell quoting / wrong sub-commands errored
-  **50% of all tool calls (86/171)**. It burned ~2.2× the calls and turns of Arm
+  **49% of all tool calls (81/167)**. It burned ~1.8× the calls and turns of Arm
   A and still completed nothing.
 
 ### Harness bug found and fixed mid-eval (disclosure)
@@ -153,8 +154,13 @@ then stop." Root cause was a harness bug, not the model: Arm A's custom-tool
 `execute` returned `{ output, isError }`, but pi's `AgentTool` requires
 `{ content: [{type:"text", text}], details }` — so the model received
 `undefined` as every tool result and stopped. Fixed to mirror the worker's
-`toToolResult`; re-ran clean (the 28% above). Documented here so the reported
-numbers aren't mistaken for the buggy first pass.
+`toToolResult`; re-ran clean. Two later code-review findings then tightened the
+success checks (read-pipeline now requires the correct count *adjacent to* each
+stage; open-pilot now requires the `converted-to` link, which the prompt asks
+for), and the whole 36-run battery was re-run against those stricter checks — the
+numbers in this doc are from that final run (`last-run.json`). The first clean
+pass scored A 28% / B 0%; the final stricter pass A 17% / B 0% — the conclusion
+is unchanged and the two passes agree on the qualitative result.
 
 ## Recommendation
 

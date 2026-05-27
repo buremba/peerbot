@@ -647,7 +647,22 @@ export class ChatInstanceManager {
     connectionId: string,
     request: Request
   ): Promise<Response> {
-    const instance = this.instances.get(connectionId);
+    // Multi-replica: the per-connection webhook route (`/api/v1/webhooks/:id`)
+    // calls us directly — unlike the Slack `/slack/events` coordinator path,
+    // which pre-warms the connection via `ensureConnectionRunning` before
+    // forwarding here. A connection created or restarted on another replica has
+    // no live instance on this pod, so lazily start it from the store first;
+    // otherwise an inbound webhook (a platform event OR a slash command) that
+    // lands on a pod which hasn't warmed this connection 404s. Slack events
+    // mostly survive that via Slack's retries, but a one-shot slash command
+    // (e.g. `/lobu link <code>`) does not. `ensureConnectionRunning` is a no-op
+    // when the instance is already running, so the coordinator's existing
+    // pre-call stays harmless. Mirrors `postMessageToChannel`.
+    let instance = this.instances.get(connectionId);
+    if (!instance) {
+      const running = await this.ensureConnectionRunning(connectionId);
+      instance = running ? this.instances.get(connectionId) : undefined;
+    }
     if (!instance) {
       return new Response("Connection not found", { status: 404 });
     }

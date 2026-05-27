@@ -262,3 +262,58 @@ describe("ChatInstanceManager.postMessageToChannel", () => {
     ).rejects.toThrow(/No active chat instance/);
   });
 });
+
+describe("ChatInstanceManager.handleWebhook (multi-replica)", () => {
+  test("lazily starts the connection on this pod before handling the webhook", async () => {
+    // Regression: the per-connection webhook route (`/api/v1/webhooks/:id`)
+    // calls handleWebhook directly, unlike the Slack coordinator which
+    // pre-warms via ensureConnectionRunning. Under `app.replicaCount > 1` a
+    // webhook (a platform event OR a one-shot `/lobu link` slash command) can
+    // land on a pod that hasn't warmed this connection. It must hydrate from
+    // the store, not 404. Mirrors postMessageToChannel's lazy-start.
+    const ChatInstanceManager = await loadChatInstanceManager();
+    const manager = new ChatInstanceManager() as any;
+    const webhookHandler = mock(
+      async () => new Response("handled", { status: 200 })
+    );
+    manager.connectionStore = {
+      getConnection: async () => ({ id: "conn-cold", status: "active" }),
+    };
+    manager.restartConnection = mock(async (id: string) => {
+      manager.instances.set(id, {
+        connection: { platform: "slack" },
+        chat: { webhooks: { slack: webhookHandler } },
+      });
+    });
+
+    const request = new Request(
+      "https://gw.example.com/api/v1/webhooks/conn-cold",
+      {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: "command=%2Flobu&text=link+crm-ABC123",
+      }
+    );
+    const response = await manager.handleWebhook("conn-cold", request);
+
+    expect(manager.restartConnection).toHaveBeenCalledWith("conn-cold");
+    expect(webhookHandler).toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("handled");
+  });
+
+  test("404s when the connection is stopped and cannot be started", async () => {
+    const ChatInstanceManager = await loadChatInstanceManager();
+    const manager = new ChatInstanceManager() as any;
+    manager.connectionStore = {
+      getConnection: async () => ({ id: "stopped-conn", status: "stopped" }),
+    };
+    const response = await manager.handleWebhook(
+      "stopped-conn",
+      new Request("https://gw.example.com/api/v1/webhooks/stopped-conn", {
+        method: "POST",
+      })
+    );
+    expect(response.status).toBe(404);
+  });
+});

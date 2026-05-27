@@ -81,22 +81,24 @@ export async function validateEntityMetadata(
     return { valid: true };
   }
 
+  // Bound untrusted input before ANY expensive work. The guard is cheap and
+  // short-circuits, so rejecting an oversized/deeply-nested payload here also
+  // saves the schema-fetch DB round-trip below — and avoids handing a DoS
+  // payload to AJV. Pathologically large metadata is a vector regardless of
+  // AJV config, so reject it as a normal validation failure.
+  if (exceedsValidationLimits(metadata)) {
+    return {
+      valid: false,
+      errors: [{ path: '/', message: 'metadata exceeds size/nesting limits' }],
+    };
+  }
+
   // Fetch schema for this entity type
   const schema = await getEntityTypeSchema(entityType, ctx);
 
   // No schema defined - allow any metadata
   if (!schema || Object.keys(schema).length === 0) {
     return { valid: true };
-  }
-
-  // Bound untrusted input before handing it to AJV. Pathologically deep/large
-  // metadata is a DoS vector regardless of AJV config, so reject it as a
-  // normal validation failure rather than spending CPU/memory validating it.
-  if (exceedsValidationLimits(metadata)) {
-    return {
-      valid: false,
-      errors: [{ path: '/', message: 'metadata exceeds size/nesting limits' }],
-    };
   }
 
   // Validate metadata against schema

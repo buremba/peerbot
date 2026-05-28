@@ -74,8 +74,9 @@ const agent = defineAgent({
 ### Chat platforms (where people talk to it)
 
 Where people message the agent is declared on the agent via `platforms`, NOT as a
-`defineConnection` (connections are data sources). `config` values are `secret(...)`
-refs resolved from `.env`:
+`defineConnection` (connections are data sources). Chat-platform `config` values are
+`secret(...)` refs resolved from `.env`. The `rest` platform exposes the HTTP Agent
+API (POST to `/lobu/api/v1/agents/<id>/messages`) and takes an empty `config: {}`:
 
 ```ts
 const agent = defineAgent({
@@ -83,7 +84,8 @@ const agent = defineAgent({
   // ...providers...
   platforms: [
     { type: "slack", config: { botToken: secret("SLACK_BOT_TOKEN") } },
-    // type: "telegram" | "slack" | "discord" | "whatsapp" | "teams" | "google_chat" | "rest"
+    { type: "rest", config: {} }, // HTTP API — no secret needed; always config: {}
+    // other chat types: telegram | discord | whatsapp | teams | google_chat
     // Slack only: optional channels: ["<teamId>/<channelId>"]
   ],
 });

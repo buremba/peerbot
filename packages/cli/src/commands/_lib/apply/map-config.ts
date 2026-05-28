@@ -462,7 +462,7 @@ function mapAgent(
     // provider keys + auth-profile credentials. The config row never holds
     // cleartext at rest; the secret name is collected for the secrets gate.
     config: Object.fromEntries(
-      Object.entries(p.config).map(([k, v]) => [
+      Object.entries(p.config ?? {}).map(([k, v]) => [
         k,
         resolveCredentialValue(v, required, env),
       ])

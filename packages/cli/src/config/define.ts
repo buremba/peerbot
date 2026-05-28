@@ -363,9 +363,10 @@ export interface Platform {
   /**
    * Platform config (e.g. `{ botToken: secret("TELEGRAM_BOT_TOKEN") }`). Values
    * are `secret(...)` refs or literal `$VAR` strings; `lobu apply` keeps the
-   * `$VAR` placeholder in the stored config and resolves it at egress.
+   * `$VAR` placeholder in the stored config and resolves it at egress. Optional —
+   * the `rest` (HTTP API) platform needs no config.
    */
-  config: Record<string, string | SecretRef>;
+  config?: Record<string, string | SecretRef>;
   /** Declarative channel bindings (`"<teamId>/<channelId>"`); Slack only. */
   channels?: string[];
 }

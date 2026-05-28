@@ -557,57 +557,6 @@ function ExampleFooterLink({ slug }: { slug: string }) {
   );
 }
 
-function ProductGrid(props: {
-  reverse?: boolean;
-  text: preact.ComponentChildren;
-  code: preact.ComponentChildren;
-}) {
-  return (
-    <div
-      class={`grid items-start gap-10 md:gap-16 ${
-        props.reverse
-          ? "md:grid-cols-[1.15fr_1fr]"
-          : "md:grid-cols-[1fr_1.15fr]"
-      }`}
-    >
-      {props.reverse ? (
-        <>
-          <div class="min-w-0">{props.code}</div>
-          <div class="min-w-0">{props.text}</div>
-        </>
-      ) : (
-        <>
-          <div class="min-w-0">{props.text}</div>
-          <div class="min-w-0">{props.code}</div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function FeatureList(props: { items: Array<preact.ComponentChildren> }) {
-  return (
-    <ul class="my-5 grid gap-2.5">
-      {props.items.map((item, i) => (
-        <li
-          key={i}
-          class="relative pl-6 text-[14.5px] leading-[1.55]"
-          style={{ color: "var(--color-page-text)" }}
-        >
-          <span
-            aria-hidden="true"
-            class="absolute left-0 top-0 font-bold"
-            style={{ color: "var(--color-tg-accent)" }}
-          >
-            →
-          </span>
-          {item}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
 function ProductLink(props: {
   href: string;
   children: preact.ComponentChildren;

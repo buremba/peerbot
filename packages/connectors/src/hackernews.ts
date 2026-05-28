@@ -149,6 +149,38 @@ export default class HackerNewsConnector extends ConnectorRuntime {
           },
         },
       },
+      front_page: {
+        key: 'front_page',
+        name: 'Front Page',
+        description:
+          'The current Hacker News front page — the live homepage, not a keyword search. No search query.',
+        configSchema: {
+          type: 'object',
+          properties: {
+            min_score: {
+              type: 'integer',
+              minimum: 0,
+              default: 0,
+              description: 'Only include front-page stories with at least this many points.',
+            },
+          },
+        },
+        eventKinds: {
+          story: {
+            description: 'A Hacker News front-page story',
+            metadataSchema: {
+              type: 'object',
+              properties: {
+                story_type: { type: 'string', description: 'story, ask_hn, or show_hn' },
+                tags: { type: 'array', items: { type: 'string' } },
+                external_url: { type: 'string', format: 'uri' },
+                score: { type: 'number', description: 'HN points' },
+                reply_count: { type: 'number' },
+              },
+            },
+          },
+        },
+      },
       comments: {
         key: 'comments',
         name: 'Comments',
@@ -236,28 +268,35 @@ export default class HackerNewsConnector extends ConnectorRuntime {
   // -------------------------------------------------------------------------
 
   async sync(ctx: SyncContext): Promise<SyncResult> {
+    // Front page is the live HN homepage (Algolia `tags=front_page`): no search
+    // query, no lookback — it returns the stories currently ranked on the front
+    // page. Everything else is a keyword search over the Algolia archive.
+    const isFrontPage = ctx.feedKey === 'front_page';
     const searchQuery = ctx.config.search_query as string;
     const contentType =
       ctx.feedKey === 'comments' ? 'comment' : ((ctx.config.story_type as string) ?? 'story');
     const lookbackDays = (ctx.config.lookback_days as number) ?? 365;
+    const minScore = (ctx.config.min_score as number) ?? 0;
     const searchFields =
       (ctx.config.search_fields as string[] | undefined) ??
       (contentType === 'comment' ? ['comment_text'] : ['title']);
 
     const lookbackTimestamp = Math.floor((Date.now() - lookbackDays * 86400000) / 1000);
-    const tag = CONTENT_TYPE_TAG[contentType] ?? 'story';
+    const tag = isFrontPage ? 'front_page' : (CONTENT_TYPE_TAG[contentType] ?? 'story');
 
     const events: EventEnvelope[] = [];
     let page = 0;
     let hasMore = true;
 
     while (hasMore && page < this.MAX_PAGES) {
-      const url =
-        `${this.BASE_URL}/search?query=${encodeURIComponent(searchQuery)}` +
-        `&tags=${tag}&hitsPerPage=100&page=${page}` +
-        '&typoTolerance=false' +
-        `&restrictSearchableAttributes=${encodeURIComponent(searchFields.join(','))}` +
-        `&numericFilters=${encodeURIComponent(`created_at_i>${lookbackTimestamp}`)}`;
+      const url = isFrontPage
+        ? `${this.BASE_URL}/search?tags=front_page&hitsPerPage=100&page=${page}` +
+          (minScore > 0 ? `&numericFilters=${encodeURIComponent(`points>=${minScore}`)}` : '')
+        : `${this.BASE_URL}/search?query=${encodeURIComponent(searchQuery)}` +
+          `&tags=${tag}&hitsPerPage=100&page=${page}` +
+          '&typoTolerance=false' +
+          `&restrictSearchableAttributes=${encodeURIComponent(searchFields.join(','))}` +
+          `&numericFilters=${encodeURIComponent(`created_at_i>${lookbackTimestamp}`)}`;
 
       const response = await fetch(url);
 

@@ -38,13 +38,13 @@ Generates:
 - `*.reaction.ts` — watcher reaction scripts, referenced via `defineWatcher({ reaction })`
 - `AGENTS.md`, `TESTING.md`, `README.md`, `.gitignore`
 
-Interactive prompts guide you through provider, platform, network access policy, gateway port, public URL, and memory configuration. Local runs use bundled PGlite by default; set `DATABASE_URL` when you want to use external Postgres with pgvector.
+Interactive prompts guide you through provider, platform, network access policy, gateway port, public URL, and memory configuration. Local runs use an embedded Postgres (PG18 + pgvector) by default; set `DATABASE_URL` when you want to use an external Postgres.
 
 ---
 
 ### `run` (aliases: `dev`, `start`)
 
-Run the embedded Lobu stack. `lobu.config.ts` is not required. With no `DATABASE_URL`, the command starts bundled local PGlite and stores data under `~/.lobu/data` (override with `LOBU_DATA_DIR`). If `DATABASE_URL` is set in the environment or `.env`, Lobu uses that external Postgres instead.
+Run the embedded Lobu stack. `lobu.config.ts` is not required. With no `DATABASE_URL`, the command starts an embedded Postgres (PG18 + pgvector) and stores data under `~/.lobu/data` (override with `LOBU_DATA_DIR`). If `DATABASE_URL` is set in the environment or `.env`, Lobu uses that external Postgres instead.
 
 ```bash
 npx @lobu/cli@latest run
@@ -324,6 +324,6 @@ cd my-agent
 npx @lobu/cli@latest validate
 npx @lobu/cli@latest apply --org my-org
 
-# 4. Run locally (PGlite by default; external Postgres if DATABASE_URL is set)
+# 4. Run locally (embedded Postgres by default; external Postgres if DATABASE_URL is set)
 npx @lobu/cli@latest run
 ```

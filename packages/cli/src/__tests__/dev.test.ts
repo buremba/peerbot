@@ -242,7 +242,7 @@ describe("lobu run backend bundle resolution", () => {
       ).toBe(false);
     });
 
-    test("no effective URL means no refusal (PGlite path)", () => {
+    test("no effective URL means no refusal (embedded-Postgres path)", () => {
       expect(
         shouldRefuseSharedDatabaseUrl({
           effectiveDatabaseUrl: undefined,

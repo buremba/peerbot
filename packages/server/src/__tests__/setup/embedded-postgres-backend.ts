@@ -6,7 +6,7 @@
  * needs no external Postgres, exactly like `lobu run`. Same binary + pgvector
  * injection as the production embedded path (src/embedded-runtime.ts), so tests
  * exercise the real engine (prepared statements, multi-conn pool, LISTEN/NOTIFY,
- * cube/earthdistance, pgvector) with no PGlite-specific quirks.
+ * cube/earthdistance, pgvector).
  */
 
 import { mkdtempSync, rmSync } from 'node:fs';

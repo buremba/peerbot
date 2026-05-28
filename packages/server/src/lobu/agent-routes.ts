@@ -1070,10 +1070,10 @@ const STABLE_PLATFORM_LOCK_NAMESPACE = 0x73746263; // "stbc"
 /**
  * FNV-1a 32-bit hash of the stable ID. Computed in JS (rather than calling
  * Postgres's `hashtext()`) so the parameter passed to pg_advisory_xact_lock
- * is a plain int — postgres-js's parameter type inference and PGlite's
- * extended-query plan cache get tangled when nesting `hashtext(text)::int`
- * inside the lock's `(int, int)` signature. The deterministic JS hash gives
- * us the same contract: same stable ID → same lock key.
+ * is a plain int — postgres-js's parameter type inference gets tangled
+ * when nesting `hashtext(text)::int` inside the lock's `(int, int)`
+ * signature. The deterministic JS hash gives us the same contract: same
+ * stable ID → same lock key.
  */
 function hashStableId(stableId: string): number {
   let hash = 0x811c9dc5;
@@ -1112,9 +1112,8 @@ const stablePlatformLockChains: Map<string, Promise<unknown>> = new Map();
  *
  * Wrapping the whole flow in a single `sql.begin(...)` is not viable: the
  * tx connection plus parent-pool writes via `connectionStore` /
- * `chatManager.addConnection` would self-deadlock both on the pglite-mode
- * serialized-client queue and on row-level locks against an uncommitted
- * placeholder row from a different connection.
+ * `chatManager.addConnection` would self-deadlock on row-level locks
+ * against an uncommitted placeholder row from a different connection.
  */
 async function withStablePlatformLock<T>(stableId: string, fn: () => Promise<T>): Promise<T> {
   const lockKey = hashStableId(stableId);
@@ -1122,7 +1121,7 @@ async function withStablePlatformLock<T>(stableId: string, fn: () => Promise<T>)
   const work = previous.then(async () => {
     // Touch the DB-side advisory lock so multi-host writers serialize too.
     // Inlined via unsafe() because the `(int, int)` overload confuses
-    // PGlite's extended-query plan cache when other queries on the same
+    // postgres-js's parameter type inference when other queries on the same
     // backend cycle through different parameter type oids; both inputs are
     // validated int32s, no SQL injection surface. Failure here is non-fatal —
     // the in-process chain still serializes for the embedded case.

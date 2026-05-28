@@ -134,7 +134,7 @@ export async function setupTestDatabase(): Promise<void> {
   //
   // Postgres 15+ removed the implicit CREATE privilege on schema `public` from
   // the `public` role: only the schema OWNER can run DDL there (including
-  // DROP/CREATE SCHEMA). PGlite and superuser/owner connections can recreate
+  // DROP/CREATE SCHEMA). Embedded Postgres and superuser/owner connections can recreate
   // the whole schema; a plain (non-owner) connection user against a real PG15+
   // server cannot, and `DROP SCHEMA IF EXISTS public CASCADE` fails with
   // `must be owner of schema public`. Reset gracefully across all three.
@@ -196,7 +196,7 @@ export async function setupTestDatabase(): Promise<void> {
 /**
  * Reset schema `public` to a clean slate, working whether the connection user
  * owns the schema or not. Returns whether the connection user ends up owning
- * `public` (true on PGlite / superuser / schema-owner connections).
+ * `public` (true on embedded Postgres / superuser / schema-owner connections).
  *
  * Preferred path (owner / superuser): take ownership of `public` if we can,
  * then DROP/CREATE the whole schema — the historical behaviour, which also

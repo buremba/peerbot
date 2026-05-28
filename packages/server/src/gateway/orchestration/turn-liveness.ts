@@ -229,16 +229,11 @@ export async function sweepExpiredTurns(
   try {
     const sql = getDb();
     const failed = await sql.begin(async (tx: DbClient) => {
-      // Literal queue_name (no bound params) on the claim to avoid a PGlite
-      // quirk where parameterized RETURNING statements intermittently report a
-      // parameter-count mismatch (see runs-queue stale sweep). The emit insert
-      // below DOES use params but has no RETURNING, so it's unaffected.
       const rows = await tx.unsafe<{ action_input: unknown }>(
         // status + run_type match the partial predicate and leading column of
         // `runs_lobu_claim_idx`, so the inner SELECT is an index range scan
         // (run_type, queue_name, …, run_at) — not a full scan of `runs` (which
-        // retains 30 days of completed rows). Literals only (no bound params)
-        // to dodge the PGlite parameterized-RETURNING quirk.
+        // retains 30 days of completed rows).
         `DELETE FROM public.runs
          WHERE id IN (
            SELECT id FROM public.runs

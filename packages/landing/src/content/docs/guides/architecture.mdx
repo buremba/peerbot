@@ -21,7 +21,7 @@ Lobu is embedded-only: the gateway, agent workers, the embeddings model, and the
 
 - **Gateway**: orchestration, OAuth, secrets, domain policy, routing — all in the host Node process.
 - **Worker**: model execution, tools, workspace state — a sandboxed subprocess that never sees real credentials.
-- **Postgres (with pgvector)**: the only external dependency Lobu ever needs. Holds the run queue, agent settings, grants, secrets, chat history, and MCP proxy sessions. Scaffolded projects (`lobu init` / `lobu run`) default to an **in-process PGlite** database, so `DATABASE_URL` is optional there; only the monorepo `make dev` requires an external Postgres. There is no Redis anywhere.
+- **Postgres (with pgvector)**: the only external dependency Lobu ever needs. Holds the run queue, agent settings, grants, secrets, chat history, and MCP proxy sessions. Scaffolded projects (`lobu init` / `lobu run`) default to an **embedded Postgres** (PG18 + pgvector, runs in-process), so `DATABASE_URL` is optional there; only the monorepo `make dev` requires an external Postgres. There is no Redis anywhere.
 
 ## Persistent Memory
 

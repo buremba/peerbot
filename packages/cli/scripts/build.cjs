@@ -45,7 +45,7 @@ if (fs.existsSync(catalogManifestSrc) && fs.existsSync("dist/connectors")) {
   fs.cpSync(catalogManifestSrc, "dist/connectors/.catalog-manifest.json");
 }
 
-// Copy database migrations for the bundled PGlite local server.
+// Copy database migrations for the bundled embedded-Postgres local server.
 copyDirIfExists("../../db/migrations", "dist/db/migrations");
 
 // Copy the built owletto web UI (admin/console SPA) next to the server bundle

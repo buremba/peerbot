@@ -16,7 +16,7 @@
  * External: bare specifiers stay external (loaded from node_modules at
  * runtime). Published `@lobu/cli` declares those runtime dependencies
  * directly so Node's resolver finds them from the CLI install. Native addons
- * (isolated-vm), PGlite native/WASM assets, and packages with
+ * (isolated-vm), embedded-postgres + pgvector binaries, and packages with
  * require-in-the-middle hooks (Sentry, OpenTelemetry, pino) MUST stay external
  * to keep their runtime hooks working.
  */

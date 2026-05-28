@@ -29,7 +29,7 @@ export default defineConfig({
     ],
     testTimeout: 30_000,
     hookTimeout: 60_000,
-    // Integration tests share one Postgres/PGlite. Running multiple files in
+    // Integration tests share one Postgres. Running multiple files in
     // parallel means one file's `cleanupTestDatabase()` can wipe another file's
     // fixtures mid-run. Serialize files so fixtures stay stable.
     pool: "forks",

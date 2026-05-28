@@ -635,22 +635,10 @@ export async function createAuth(env: Env, request?: Request) {
 			user: {
 				create: {
 					before: async (user, ctx) => {
-						// Single-user-mode chokepoint. The /api/auth/* URL filter
-						// in index.ts blocks /api/auth/sign-up/*, but Better Auth
-						// also creates users on magic-link verify and OAuth
-						// callbacks — paths the URL guard never sees. This hook
-						// fires before every user INSERT, so it's the one place
-						// that closes the fork-via-magic-link / fork-via-OAuth
-						// backdoor.
-						//
-						// The count goes through ctx.internalAdapter so it joins
-						// the in-flight transaction connection. Calling getDb()
-						// here would request a second pool connection while
-						// sign-up's runWithTransaction holds the only one —
-						// deadlock in PGlite mode (pool max=1). See #947.
-						// Missing ctx (called outside the BA endpoint pipeline)
-						// throws via `ctx!` → BA returns FAILED_TO_CREATE_USER,
-						// which is the fail-closed posture we want.
+						// Single-user-mode chokepoint. The URL filter in index.ts
+						// blocks /api/auth/sign-up/*, but Better Auth also creates
+						// users on magic-link verify and OAuth callbacks; this hook
+						// fires before every user INSERT.
 						if (env.LOBU_SINGLE_USER === "1") {
 							// Exclude the synthetic install_operator row
 							// (auto-provisioned by ensureInstallOperator) so the
@@ -757,13 +745,6 @@ export async function createAuth(env: Env, request?: Request) {
 						// password-hash row at boot. See
 						// docs/install-operator-bootstrap.md.
 						if (account.providerId !== "credential") {
-							// Route through ctx.internalAdapter so the lookup
-							// shares the in-flight transaction connection on the
-							// one path that wraps in runWithTransaction —
-							// createOAuthUser, called from OAuth callback for new
-							// users. Avoids the PGlite pool-max=1 deadlock; see
-							// #947. `/link-social` and existing-user callback
-							// links aren't transactional today but stay safe.
 							const linkedUser =
 								await ctx!.context.internalAdapter.findUserById(account.userId);
 							const principalKind = (

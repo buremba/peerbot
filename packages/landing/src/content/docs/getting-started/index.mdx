@@ -7,14 +7,14 @@ Lobu is the open-source backend for multi-user AI agents. It gives every user or
 
 ## Quick start
 
-Lobu boots as a single Node process. By default it uses local PGlite with pgvector enabled, so you can start without Docker or a separate Postgres. Set `DATABASE_URL` only when you want to use an external Postgres.
+Lobu boots as a single Node process. By default it uses an embedded Postgres (PG18 + pgvector), so you can start without Docker or a separate Postgres. Set `DATABASE_URL` only when you want to use an external Postgres.
 
 ```bash
 # 1. Scaffold
 npx @lobu/cli@latest init my-agent
 cd my-agent
 
-# 2. Boot locally (uses PGlite by default)
+# 2. Boot locally (uses embedded Postgres by default)
 npx @lobu/cli@latest run
 
 # 3. Chat with your agent (in another terminal)

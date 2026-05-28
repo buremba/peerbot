@@ -1,6 +1,6 @@
 /**
- * Integration tests for turn-liveness (#946) against a real Postgres (PGlite in
- * CI). Exercises the durable election marker end to end: arm, discharge,
+ * Integration tests for turn-liveness (#946) against a real Postgres (embedded
+ * PG18 in CI). Exercises the durable election marker end to end: arm, discharge,
  * fast-path failure, the first-writer-wins election (failTurnIfPending),
  * atomic terminal-reply commit, the deadline sweep + exactly-once, and the
  * globally-unique (deploymentName:messageId) marker key.

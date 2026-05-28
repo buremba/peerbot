@@ -223,9 +223,8 @@
 --   DROP TABLE public.organization_lobu_links_d20260519;
 --   -- ... etc.
 --
--- Fresh DBs (local dev, PGlite, CI): no surgery, no backups; dbmate
--- applies this file from scratch. Wipe local PGlite dirs
--- (`rm -rf <workspace>/data`) to take advantage of the squash.
+-- Fresh DBs (local dev, CI): no surgery, no backups; dbmate
+-- applies this file from scratch.
 -- =============================================================================
 
 --

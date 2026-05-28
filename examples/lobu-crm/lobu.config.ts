@@ -1,4 +1,5 @@
 import {
+  connectorFromFile,
   defineAgent,
   defineAuthProfile,
   defineConfig,
@@ -10,6 +11,7 @@ import {
   secret,
   skillFromFile,
 } from "@lobu/cli/config";
+import type NpmDownloadsConnector from "./npm-downloads.connector.ts";
 import type funnelDigestReaction from "./funnel-digest.reaction.ts";
 import type inboundTriageReaction from "./inbound-triage.reaction.ts";
 
@@ -370,7 +372,27 @@ const x_mentionsConn = defineConnection({
   ],
 });
 
+const npm_downloadsConn = defineConnection({
+  slug: "npm-downloads-lobu-cli",
+  connector: "npm-downloads",
+  name: "npm downloads — @lobu/cli",
+  config: { package: "@lobu/cli" },
+  feeds: [
+    {
+      feed: "weekly",
+      name: "Weekly downloads — @lobu/cli",
+      schedule: "0 8 * * 1",
+      config: { package: "@lobu/cli" },
+    },
+  ],
+});
+
 export default defineConfig({
+  connectors: [
+    connectorFromFile<typeof NpmDownloadsConnector>(
+      "./npm-downloads.connector.ts"
+    ),
+  ],
   org: "lobu-crm",
   orgName: "Lobu CRM",
   orgDescription:
@@ -382,6 +404,7 @@ export default defineConfig({
     competitor_changelogsConn,
     github_lobuConn,
     hn_lobuConn,
+    npm_downloadsConn,
     x_mentionsConn,
   ],
   authProfiles: [github_accountAuth, github_appAuth, x_accountAuth],

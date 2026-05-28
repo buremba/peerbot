@@ -155,7 +155,8 @@ export function checkToolAccess(toolName: string, args: unknown, authCtx: AuthCo
  * `_id: Type.Number` round-trip fields and `additionalProperties: false`
  * schemas that lenient handlers tolerated, so flipping strict validation on
  * for them could 400 previously-working external MCP calls. Widening this set
- * requires a per-tool audit (tracked in a follow-up issue).
+ * requires a per-tool audit — tracked in lobu#1137
+ * ("Audit + enable global tool-arg validation safely").
  */
 const VALIDATED_TOOLS = new Set(['query_sdk', 'run_sdk']);
 
@@ -253,7 +254,7 @@ export async function executeTool(
   // fields and `additionalProperties: false` schemas that lenient handlers
   // historically tolerated, and live external MCP clients may rely on that.
   // Rolling validation out globally needs a per-tool round-trip audit first —
-  // tracked separately (see "Audit + enable global tool-arg validation safely").
+  // tracked in lobu#1137.
   if (VALIDATED_TOOLS.has(toolName)) {
     validateToolArgs(toolName, tool.inputSchema, args);
   }

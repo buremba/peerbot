@@ -117,18 +117,6 @@ export async function hasOrgSentinel(
 }
 
 /**
- * Provision the default Owletto agent for the given org, exactly once.
- *
- * Three guards stack:
- *   1. Sentinel in `organization.metadata` (deletion stickiness).
- *   2. No existing agents in the org (don't graft Owletto's defaults onto an
- *      org that's already curated agents by hand).
- *   3. ON CONFLICT (organization_id, id) DO NOTHING on the agents PK.
- *
- * Best-effort: a thrown error is logged and swallowed. A failure here must
- * not break the boot path that called us.
- */
-/**
  * Backfill an existing default-agent row to the shape this code expects:
  *   - owner_platform / owner_user_id populated to the personal-org owner
  *     (legacy installs wrote `'lobu', NULL` which fails the per-user
@@ -217,6 +205,22 @@ async function backfillDefaultAgent(
   }
 }
 
+/**
+ * Provision the default Owletto agent for the given org, exactly once. Also
+ * runs `backfillDefaultAgent` on every call so legacy installs (where the
+ * row was inserted before this code populated owner/providers) heal in
+ * place — that part is idempotent and only writes on divergence.
+ *
+ * Three guards stack on the create path:
+ *   1. Sentinel in `organization.metadata` (deletion stickiness — a deleted
+ *      default agent is NOT auto-recreated).
+ *   2. No existing agents in the org (don't graft Owletto's defaults onto an
+ *      org that's already curated agents by hand).
+ *   3. ON CONFLICT (organization_id, id) DO NOTHING on the agents PK.
+ *
+ * Best-effort: a thrown error is logged and swallowed. A failure here must
+ * not break the boot path that called us.
+ */
 export async function ensureDefaultAgent(
   organizationId: string,
   sql?: DbClient

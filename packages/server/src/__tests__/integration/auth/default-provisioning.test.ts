@@ -98,6 +98,107 @@ describe('ensureDefaultAgent', () => {
     expect(agents).toHaveLength(0);
   });
 
+  it('stamps owner_user_id + installed_providers + agent_users on insert', async () => {
+    const orgId = `org-owner-${generateSecureToken(4)}`;
+    await seedOrg(orgId);
+
+    // Mark the org as personal_org_for_user_id = <ownerUserId> — this is the
+    // marker ensureDefaultAgent reads to figure out who the agent belongs to.
+    const ownerUserId = `user_${generateSecureToken(4)}`;
+    const sql = getTestDb();
+    await sql`
+      INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+      VALUES (${ownerUserId}, 'Owner', ${`${ownerUserId}@test.local`}, true, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+    `;
+    await sql`
+      UPDATE "organization"
+         SET metadata = ${JSON.stringify({ personal_org_for_user_id: ownerUserId })}
+       WHERE id = ${orgId}
+    `;
+
+    await ensureDefaultAgent(orgId);
+
+    const rows = await sql`
+      SELECT owner_platform, owner_user_id, installed_providers
+        FROM agents
+       WHERE organization_id = ${orgId} AND id = ${DEFAULT_AGENT_ID}
+    `;
+    expect(rows).toHaveLength(1);
+    expect(String(rows[0].owner_platform)).toBe('external');
+    expect(String(rows[0].owner_user_id)).toBe(ownerUserId);
+    // installed_providers shape: array of { providerId, installedAt }.
+    // We don't pin a count because system keys depend on test env vars;
+    // we just assert the column is now a JSON array (object/array, never
+    // null/empty-string).
+    expect(Array.isArray(rows[0].installed_providers)).toBe(true);
+
+    const userAgents = await sql`
+      SELECT platform, user_id
+        FROM agent_users
+       WHERE organization_id = ${orgId} AND agent_id = ${DEFAULT_AGENT_ID}
+    `;
+    expect(userAgents).toHaveLength(1);
+    expect(String(userAgents[0].platform)).toBe('external');
+    expect(String(userAgents[0].user_id)).toBe(ownerUserId);
+  });
+
+  it('backfills owner + agent_users on a legacy row past the sentinel', async () => {
+    // Simulate a legacy install: the row exists with the old
+    // owner_platform='lobu', owner_user_id=NULL, installed_providers='[]'
+    // shape, and the sentinel is already set so the fast-path would skip.
+    const orgId = `org-backfill-${generateSecureToken(4)}`;
+    await seedOrg(orgId);
+
+    const ownerUserId = `user_${generateSecureToken(4)}`;
+    const sql = getTestDb();
+    await sql`
+      INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+      VALUES (${ownerUserId}, 'Legacy Owner', ${`${ownerUserId}@test.local`}, true, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+    `;
+    await sql`
+      UPDATE "organization"
+         SET metadata = ${JSON.stringify({
+           personal_org_for_user_id: ownerUserId,
+           [DEFAULT_AGENT_SENTINEL]: new Date().toISOString(),
+         })}
+       WHERE id = ${orgId}
+    `;
+    await sql`
+      INSERT INTO agents (
+        id, organization_id, name, owner_platform, owner_user_id,
+        installed_providers, created_at, updated_at
+      ) VALUES (
+        ${DEFAULT_AGENT_ID}, ${orgId}, 'Owletto Personal',
+        'lobu', NULL,
+        '[]'::jsonb,
+        NOW(), NOW()
+      )
+    `;
+
+    // Sentinel is set, so the create path is short-circuited, but backfill
+    // still runs.
+    const result = await ensureDefaultAgent(orgId);
+    expect(result.created).toBe(false);
+    expect(result.reason).toBe('sentinel');
+
+    const rows = await sql`
+      SELECT owner_platform, owner_user_id
+        FROM agents
+       WHERE organization_id = ${orgId} AND id = ${DEFAULT_AGENT_ID}
+    `;
+    expect(String(rows[0].owner_platform)).toBe('external');
+    expect(String(rows[0].owner_user_id)).toBe(ownerUserId);
+
+    const userAgents = await sql`
+      SELECT user_id FROM agent_users
+       WHERE organization_id = ${orgId} AND agent_id = ${DEFAULT_AGENT_ID}
+    `;
+    expect(userAgents).toHaveLength(1);
+    expect(String(userAgents[0].user_id)).toBe(ownerUserId);
+  });
+
   it('skips creation (but stamps sentinel) when other agents already exist', async () => {
     const orgId = `org-provision-${generateSecureToken(4)}`;
     await seedOrg(orgId);

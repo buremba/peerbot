@@ -510,15 +510,18 @@ async function handleCreateAuthProfile(
       : null;
     // When no slug was provided, repeat clicks from the UI ("create OAuth
     // account") would otherwise hit the partial unique index
-    // `auth_profiles_pending_unique` and leak a raw PG error to the user.
-    // Reuse any existing pending row for this (connector, oauth_account,
-    // provider) instead — same behavior as the slug-keyed branch.
+    // `auth_profiles_pending_oauth_account_unique` and leak a raw PG error
+    // to the user. Reuse any existing pending row this caller already owns
+    // for the (connector, provider) tuple instead — same behavior as the
+    // slug-keyed branch. The index is keyed per-user, so two members can
+    // still run parallel OAuth flows for the same connector.
     if (!existing && !args.slug) {
       existing = await findPendingAuthProfile({
         organizationId: ctx.organizationId,
         connectorKey,
         profileKind: 'oauth_account',
         provider: oauthMethod.provider,
+        createdBy: ctx.userId ?? null,
       });
     }
     if (existing) {

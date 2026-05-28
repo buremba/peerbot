@@ -5,10 +5,10 @@ import { isUniqueViolation } from './pg-errors';
 
 /**
  * Thrown when an INSERT into auth_profiles with status='pending_auth' collides
- * with the partial unique index `auth_profiles_pending_unique` (one pending
- * profile per org+connector+kind+provider). Carries the existing row so callers
- * can choose to recover (return the existing profile) instead of surfacing the
- * error.
+ * with the partial unique index `auth_profiles_pending_oauth_account_unique`
+ * (one pending oauth_account profile per org+connector+provider+user).
+ * Carries the existing row so callers can choose to recover (return the
+ * existing profile) instead of surfacing the error.
  */
 export class PendingAuthConflictError extends ToolUserError {
   readonly existing: AuthProfileRow;
@@ -393,18 +393,23 @@ export async function createAuthProfile(params: {
       RETURNING ${sql.unsafe(AUTH_PROFILE_COLUMNS)}
     `;
   } catch (err) {
-    // Partial unique index `auth_profiles_pending_unique` enforces one
-    // pending row per (org, connector_key, profile_kind, provider). Translate
-    // a raw 23505 into a structured error carrying the existing row so
-    // callers can recover (idempotent reuse) or surface a clean message
-    // instead of leaking the constraint name to the UI.
-    if (isUniqueViolation(err, 'auth_profiles_pending_unique')) {
-      if (params.connectorKey !== null && normalizedProvider !== null) {
+    // Partial unique index `auth_profiles_pending_oauth_account_unique`
+    // enforces one pending oauth_account row per (org, connector_key,
+    // provider, created_by). Translate a raw 23505 into a structured error
+    // carrying the existing row so callers can recover (idempotent reuse)
+    // or surface a clean message instead of leaking the constraint name.
+    if (isUniqueViolation(err, 'auth_profiles_pending_oauth_account_unique')) {
+      if (
+        params.profileKind === 'oauth_account' &&
+        params.connectorKey !== null &&
+        normalizedProvider !== null
+      ) {
         const existing = await findPendingAuthProfile({
           organizationId: params.organizationId,
           connectorKey: params.connectorKey,
-          profileKind: params.profileKind,
+          profileKind: 'oauth_account',
           provider: normalizedProvider,
+          createdBy: params.createdBy ?? null,
         });
         if (existing) throw new PendingAuthConflictError(existing);
       }
@@ -416,17 +421,19 @@ export async function createAuthProfile(params: {
 }
 
 /**
- * Find the existing pending_auth profile that the partial unique index
- * `auth_profiles_pending_unique` would collide with. Returns null when no
- * pending row exists for the tuple.
+ * Find the existing pending_auth profile that the partial unique index would
+ * collide with. For `oauth_account`, that's keyed per-user; pass `createdBy`
+ * so the lookup matches the index. Returns null when no pending row exists.
  */
 export async function findPendingAuthProfile(params: {
   organizationId: string;
   connectorKey: string;
   profileKind: AuthProfileKind;
   provider: string;
+  createdBy?: string | null;
 }): Promise<AuthProfileRow | null> {
   const sql = getDb();
+  const restrictByUser = params.profileKind === 'oauth_account';
   const rows = await sql`
     SELECT ${sql.unsafe(AUTH_PROFILE_COLUMNS)}
     FROM auth_profiles
@@ -435,6 +442,7 @@ export async function findPendingAuthProfile(params: {
       AND profile_kind = ${params.profileKind}
       AND provider = ${params.provider.toLowerCase()}
       AND status = 'pending_auth'
+      ${restrictByUser ? sql`AND created_by IS NOT DISTINCT FROM ${params.createdBy ?? null}` : sql``}
     LIMIT 1
   `;
   return rows.length > 0 ? (rows[0] as AuthProfileRow) : null;

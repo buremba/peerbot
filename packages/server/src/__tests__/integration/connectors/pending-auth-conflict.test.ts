@@ -163,6 +163,72 @@ describe('auth profiles — pending-auth conflict handling', () => {
     expect(collide.error).toContain('demo-account-a');
   });
 
+  it('two users in the same org can run parallel pending oauth_account flows', async () => {
+    const org = await createTestOrganization({ name: 'Parallel Flows Org' });
+    const userA = await createTestUser({ name: 'User A' });
+    const userB = await createTestUser({ name: 'User B' });
+    await addUserToOrganization(userA.id, org.id, 'owner');
+    await addUserToOrganization(userB.id, org.id, 'admin');
+    await setupOAuthConnector(org.id);
+
+    const resA = await manageAuthProfiles(
+      {
+        action: 'create_auth_profile',
+        connector_key: 'demo.oauth',
+        profile_kind: 'oauth_account',
+        display_name: 'A Account',
+      },
+      TEST_ENV,
+      ctxFor(org.id, userA.id)
+    );
+    expect('auth_profile' in resA).toBe(true);
+    if (!('auth_profile' in resA)) throw new Error('A missing auth_profile');
+
+    const resB = await manageAuthProfiles(
+      {
+        action: 'create_auth_profile',
+        connector_key: 'demo.oauth',
+        profile_kind: 'oauth_account',
+        display_name: 'B Account',
+      },
+      TEST_ENV,
+      ctxFor(org.id, userB.id)
+    );
+    expect('auth_profile' in resB).toBe(true);
+    if (!('auth_profile' in resB)) throw new Error('B missing auth_profile');
+
+    expect(resB.auth_profile.id).not.toBe(resA.auth_profile.id);
+    expect(resA.auth_profile.created_by).toBe(userA.id);
+    expect(resB.auth_profile.created_by).toBe(userB.id);
+
+    // Both pending rows must coexist — the new index is per-user.
+    const sql = getTestDb();
+    const rows = await sql`
+      SELECT id, created_by FROM auth_profiles
+      WHERE organization_id = ${org.id}
+        AND connector_key = 'demo.oauth'
+        AND profile_kind = 'oauth_account'
+        AND status = 'pending_auth'
+      ORDER BY id
+    `;
+    expect(rows).toHaveLength(2);
+
+    // User B repeating without a slug still reuses *their own* pending row,
+    // not A's — per-user dedup.
+    const resBAgain = await manageAuthProfiles(
+      {
+        action: 'create_auth_profile',
+        connector_key: 'demo.oauth',
+        profile_kind: 'oauth_account',
+        display_name: 'B Account again',
+      },
+      TEST_ENV,
+      ctxFor(org.id, userB.id)
+    );
+    if (!('auth_profile' in resBAgain)) throw new Error('B repeat missing auth_profile');
+    expect(resBAgain.auth_profile.id).toBe(resB.auth_profile.id);
+  });
+
   it('createAuthProfile throws PendingAuthConflictError carrying the existing row', async () => {
     const org = await createTestOrganization({ name: 'Pending Conflict Org 3' });
     const user = await createTestUser({ name: 'Pending Conflict User 3' });

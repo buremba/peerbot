@@ -4,11 +4,12 @@
  * Used by both the MCP Streamable HTTP handler and the REST API proxy.
  */
 
+import { TypeCompiler, type TypeCheck } from '@sinclair/typebox/compiler';
 import type { Context } from 'hono';
 import { getRequiredAccessLevel, hasRequiredMcpScope, isPublicReadable } from '../auth/tool-access';
 import type { Env } from '../index';
 import { trackMCPToolCall } from '../sentry';
-import { ToolNotRegisteredError } from '../utils/errors';
+import { ToolNotRegisteredError, ToolUserError } from '../utils/errors';
 import { getConfiguredPublicOrigin } from '../utils/public-origin';
 import { recordToolInvocationAudit } from './audit';
 import { listOrganizations } from './organizations';
@@ -146,6 +147,57 @@ export function checkToolAccess(toolName: string, args: unknown, authCtx: AuthCo
 }
 
 /**
+ * Per-tool compiled TypeBox validator cache.
+ *
+ * Tool registrations carry their TypeBox schema as `inputSchema`. Without
+ * validating at the boundary, a missing/mistyped field tunnels into the
+ * handler and surfaces as a stack trace from deep inside the implementation
+ * (e.g. `query_sdk` without `script` exploded as
+ * `Cannot read properties of undefined (reading 'replace')` from the sandbox
+ * compiler). Compiling once and reusing is what every other validator in
+ * this codebase does — see `manage_schedules.ts`, `watcher-execution-config.ts`.
+ *
+ * Tools whose schema isn't a TypeBox object (e.g. unusual hand-rolled JSON
+ * Schema) fall back to no validation rather than crashing the boundary; the
+ * handler stays responsible for its own input checks in that case.
+ */
+const validatorCache = new Map<string, TypeCheck<any> | null>();
+
+function getValidator(toolName: string, schema: unknown): TypeCheck<any> | null {
+  if (validatorCache.has(toolName)) {
+    return validatorCache.get(toolName) ?? null;
+  }
+  let validator: TypeCheck<any> | null = null;
+  try {
+    validator = TypeCompiler.Compile(schema as any);
+  } catch {
+    validator = null;
+  }
+  validatorCache.set(toolName, validator);
+  return validator;
+}
+
+function validateToolArgs(toolName: string, schema: unknown, args: unknown): void {
+  if (!schema || typeof schema !== 'object') return;
+  const validator = getValidator(toolName, schema);
+  if (!validator) return;
+  if (validator.Check(args)) return;
+  // Deduplicate by path — TypeBox emits both `Expected required property` and
+  // `Expected <type>` against the same missing field, which would otherwise
+  // duplicate the field name in the error message.
+  const seen = new Set<string>();
+  const errs: string[] = [];
+  for (const e of validator.Errors(args)) {
+    const path = e.path || '/';
+    if (seen.has(path)) continue;
+    seen.add(path);
+    errs.push(`${path}: ${e.message}`);
+    if (errs.length >= 3) break;
+  }
+  throw new ToolUserError(`Invalid arguments for ${toolName}: ${errs.join('; ')}`);
+}
+
+/**
  * Execute a tool by name with access control and Sentry tracking.
  * Returns the raw tool result (caller decides formatting).
  */
@@ -175,6 +227,11 @@ export async function executeTool(
   const tool = getTool(toolName)!;
   const toolContext = toToolContext(authCtx);
   const startTime = Date.now();
+
+  // Validate args against the tool's TypeBox schema BEFORE the handler runs,
+  // so a missing/mistyped field returns a clean 400 with the offending name
+  // rather than a stack-trace from deep inside the handler.
+  validateToolArgs(toolName, tool.inputSchema, args);
 
   try {
     const result = await trackMCPToolCall(toolName, args, () => tool.handler(args, env, toolContext));

@@ -87,22 +87,21 @@ jobs:
 
   build-app:
     runs-on: ubuntu-latest
-    # Runs IN PARALLEL with build-worker + build-embeddings-service.
+    # Runs IN PARALLEL with build-worker + build-embeddings-service, but
+    # KEEPS the connector-parity-smoke gate that protects against shipping
+    # a broken worker image.
     #
-    # Flux's ImageUpdateAutomation only watches the app image policy. When
-    # Flux sees a new app tag, it bumps the Kustomization manifest to use
-    # that tag for app, worker, AND embeddings — so worker/embeddings need
-    # to exist on the registry by the time kubelet actually pulls them.
-    #
-    # The previous workflow gated build-app on build-worker +
-    # build-embeddings-service to guarantee this, costing ~7-10min of
-    # critical-path time. In practice, build-app is the longest job (the
-    # multi-step app Dockerfile + Playwright + Chrome) and runs ~2-3min
-    # past build-worker even when launched in parallel. So by the time
-    # the new app tag exists on ghcr, worker/embeddings are already up.
-    # kubelet's image-pull retry handles the brief outlier where they
-    # aren't (back-off + retry, no pod is permanently broken).
-    needs: [generate-tag]
+    # Two separate gates were collapsed into one `needs` chain before:
+    #   1. connector-parity-smoke — runtime self-check of the worker
+    #      image. Without this we can ship a worker that crashes on boot
+    #      (the exact failure mode added in #774). MUST stay.
+    #   2. build-worker + build-embeddings-service — purely so the Flux-
+    #      watched app tag never appears before its sibling tags. Drops
+    #      ~7-10min of critical path. In practice build-app is the
+    #      longest job and finishes 2-3min after the others when launched
+    #      in parallel, so the app tag still appears LAST. kubelet's
+    #      image-pull back-off handles the rare outlier.
+    needs: [generate-tag, connector-parity-smoke]
     permissions:
       contents: read
       packages: write

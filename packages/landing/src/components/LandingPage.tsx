@@ -35,16 +35,25 @@ const snippets = snippetsManifest as LandingSnippets;
 
 const EXAMPLE_BASE_URL = "https://github.com/lobu-ai/lobu/tree/main/examples";
 
-const SETUP_PROMPT = `I want to build a Lobu agent.
+const SETUP_PROMPT = `I want to build a Lobu agent with you. Lobu is an open-source, event-sourced backend for AI agents: connectors emit events, memory keeps a structured knowledge graph, and agents react in real time and run on a schedule. Set it up with me end to end.
 
-1. Install the Lobu skill so you have the project conventions and tooling:
-   /plugin install lobu
+First, check I can run it: Node 22-24 (25+ isn't supported), a reachable Postgres with pgvector, and one LLM provider key (Anthropic, OpenAI, or Z.ai). If something's missing, stop and help me set it up before continuing.
 
-2. Walk me through the skill's onboarding interview (it asks what the agent should do, who uses it, where data comes from, where I'll talk to it, what should run on a schedule). Pause at every real decision and ask me, don't fake credentials, don't guess.
+1. Interview me, one question at a time. Wait for my answer before the next. Don't batch them, don't guess, and don't fake any credentials:
+   - What is the agent for? (one sentence)
+   - Who uses it: just me, my team, or each of my customers (multi-tenant)?
+   - What should it remember? (we'll model this as 1-3 entity types)
+   - Where does its data come from? (Slack, Gmail, GitHub, a webhook, a CSV: pick one to start)
+   - Where do people talk to it? (Slack, Telegram, Discord, WhatsApp, web/HTTP, or MCP)
+   - Anything on a schedule? (optional: one watcher, e.g. a daily summary)
 
-3. Scaffold the project per my answers (lobu.config.ts plus any connector, reaction, and skill files it references), boot it locally, send a test message via the chosen channel, and show me the memory event that was written.
+2. Scaffold it: run npx @lobu/cli@latest init (it asks for a name and the provider from above), then read the AGENTS.md it writes into the project. That file is your guide to the config API (the define* helpers, connectors, auth, watchers, memory). Follow it, and read examples/lobu-crm/lobu.config.ts before writing any connection, watcher, or reaction so you match the real field names instead of guessing.
 
-Lobu is an open-source event-sourced backend for AI agents: connectors emit events, memory keeps the structured record, agents react in real time and dream on cron. Repo: https://github.com/lobu-ai/lobu. Docs: https://lobu.ai/docs/`;
+3. Build it from my answers: edit lobu.config.ts plus any connector, reaction, and skill files it needs. When you need a secret (API key, OAuth client id/secret, token), ask me and add it to .env as a secret(...) placeholder. Never invent one, and for OAuth sources authorize the account in the admin UI rather than hand-crafting a token.
+
+4. Run and verify: run npx @lobu/cli@latest validate and fix any errors, then boot with npx @lobu/cli@latest run. Send a test message on the channel I chose, trigger the data source manually (don't wait on a poll or cron), and show me the memory event that was written plus the admin UI at http://localhost:8787.
+
+Repo: https://github.com/lobu-ai/lobu. Docs: https://lobu.ai/docs/`;
 
 const GITHUB_URL = "https://github.com/lobu-ai/lobu";
 

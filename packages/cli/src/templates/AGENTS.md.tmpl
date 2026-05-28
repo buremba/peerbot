@@ -1,1 +1,193 @@
+# {{PROJECT_NAME}} — Lobu project guide
+
+This file is auto-loaded by your coding agent and is the source of truth for how
+to build and run this Lobu project. Follow it — you do not need any separately
+installed skill or plugin.
+
+## What Lobu is
+
+An open-source, event-sourced backend for AI agents:
+
+- **Connectors** pull from external sources (GitHub, Slack, a website, a webhook,
+  a CSV) and emit **events**.
+- **Memory** turns events into a structured, append-only knowledge graph of typed
+  **entities** and **relationships**.
+- **Agents** react to messages in real time and answer over chat platforms, HTTP,
+  and MCP.
+- **Watchers** are scheduled prompts that read the graph and act (a daily digest,
+  inbound triage, etc.).
+
+`lobu run` boots the whole thing (gateway + worker + memory) as one Node process
+on http://localhost:{{GATEWAY_PORT}}.
+
+## Prerequisites
+
+Before `lobu run`, the host needs: Node 22-24 (25+ is rejected — `isolated-vm` has
+no build), a reachable Postgres with the `pgvector` extension, and one LLM provider
+key in `.env`. `lobu run` starts an embedded PostgreSQL by default; set
+`DATABASE_URL` only to use an external Postgres instead. If a prerequisite is
+missing, stop and help the user install it — don't work around it.
+
+## Layout
+
+- `lobu.config.ts` — the entire project as TypeScript. Source of truth; the only
+  file `lobu apply` reads.
+- `agents/<id>/IDENTITY.md`, `SOUL.md`, `USER.md` — agent persona / behavior /
+  user context.
+- `connectors/*.connector.ts` — custom data sources (only when no bundled
+  connector fits).
+- `*.reaction.ts` — code a watcher runs after extraction (post to Slack, update
+  an entity).
+- `skills/<name>/SKILL.md` — reusable capability bundles for the agent.
+- `.env` — secrets (`DATABASE_URL`, provider keys, OAuth creds). Never commit real
+  values; never invent them.
+
+## Config API
+
+Author everything in `lobu.config.ts` with helpers from `@lobu/cli/config`:
+`defineConfig`, `defineAgent`, `defineEntityType`, `defineRelationshipType`,
+`defineWatcher`, `defineConnection`, `defineAuthProfile`, `secret`, plus
+`connectorFromFile`, `reactionFromFile`, `skillFromFile`.
+
+Read the complete, working reference before editing:
+https://github.com/lobu-ai/lobu/blob/main/examples/lobu-crm/lobu.config.ts
+
+### Agent
+
+```ts
+const agent = defineAgent({
+  id: "{{PROJECT_NAME}}",
+  dir: ".",
+  name: "{{PROJECT_NAME}}",
+  description: "<one sentence: what it does>",
+  providers: [
+    { id: "anthropic", model: "anthropic/claude-...", key: secret("ANTHROPIC_API_KEY") },
+  ],
+  // skills: [skillFromFile("./skills/<name>")],
+  // network: { allowed: ["api.example.com"] }, // egress allowlist
+});
+```
+
+### Chat platforms (where people talk to it)
+
+Where people message the agent is declared on the agent via `platforms`, NOT as a
+`defineConnection` (connections are data sources). `config` values are `secret(...)`
+refs resolved from `.env`:
+
+```ts
+const agent = defineAgent({
+  id: "{{PROJECT_NAME}}",
+  // ...providers...
+  platforms: [
+    { type: "slack", config: { botToken: secret("SLACK_BOT_TOKEN") } },
+    // type: "telegram" | "slack" | "discord" | "whatsapp" | "teams" | "google_chat" | "rest"
+    // Slack only: optional channels: ["<teamId>/<channelId>"]
+  ],
+});
+```
+
+### Entity types (what it remembers)
+
+```ts
+const ticket = defineEntityType({
+  key: "ticket",
+  name: "Ticket",
+  required: ["subject"],
+  properties: {
+    subject: { type: "string", "x-table-label": "Subject", "x-table-column": true },
+    status: { type: "string", enum: ["open", "closed"], "x-table-label": "Status", "x-table-column": true },
+  },
+});
+```
+
+Each property is a JSON Schema fragment. `"x-table-column": true` surfaces it as a
+column in the admin UI.
+
+### Connection (a bundled connector — preferred)
+
+```ts
+const gh = defineConnection({
+  slug: "github-main",
+  connector: "github",
+  name: "GitHub",
+  authProfile: defineAuthProfile({ slug: "gh", connector: "github", authKind: "oauth_account", name: "GitHub" }),
+  config: { repo_owner: "you", repo_name: "repo" },
+  feeds: [{ feed: "issues", name: "Issues", schedule: "0 */6 * * *", config: { repo_owner: "you", repo_name: "repo" } }],
+});
+```
+
+**Bundled connector keys** — use the exact key (Gmail is `google_gmail`, not
+`gmail`): `github`, `google_gmail`, `google_calendar`, `microsoft_outlook`,
+`website`, `rss`, `hackernews`, `reddit`, `x`, `linkedin`, `youtube`, `spotify`,
+`producthunt`, `g2`, `capterra`, `glassdoor`, `trustpilot`, `revolut`, `gmaps`,
+plus on-device connectors (`apple_health`, `apple_photos`, `apple_screen_time`,
+`chrome*`, `local_directory`, `whatsapp_local`).
+
+Each connector defines its own `config` keys and feed keys — don't guess them. If
+you're unsure of a connector's config shape, ask the user or read its definition;
+`npx @lobu/cli@latest connector run <key> --check` resolves and validates a config
+without executing it.
+
+If the source has no bundled connector, write `connectors/<name>.connector.ts`
+(model it on `examples/lobu-crm/funnel-form.connector.ts` in the repo) and
+reference it with `connectorFromFile("./connectors/<name>.connector.ts")`.
+
+### Auth profiles & secrets
+
+Integrations authenticate via `defineAuthProfile` (`oauth_account` = the user logs
+in interactively; `oauth_app` = your own OAuth app, creds passed as `secret(...)`).
+Every credential is a `secret("ENV_NAME")` placeholder resolved from `.env` — never
+paste a real key into the config, and never fabricate one. If a secret is missing,
+ask the user to add it to `.env`.
+
+### Watcher (scheduled prompt) + reaction
+
+```ts
+const digest = defineWatcher({
+  agent,
+  slug: "daily-digest",
+  name: "Daily digest",
+  schedule: "0 9 * * *", // cron
+  prompt: "Summarize yesterday's tickets by root cause and post to Slack.",
+  extractionSchema: { type: "object", properties: { summary: { type: "string" } } },
+  // reaction: reactionFromFile<typeof reactionMod>("./daily-digest.reaction.ts"),
+});
+```
+
+No `reaction` → the extracted data is written to memory. A `reaction` lets the
+watcher act (post a message, update entities).
+
+### Wire it together
+
+```ts
+export default defineConfig({
+  org: "<slug>",
+  orgName: "<Display name>",
+  agents: [agent],
+  entities: [ticket],
+  connections: [gh],
+  authProfiles: [/* ... */],
+  watchers: [digest],
+});
+```
+
+## Commands
+
+```bash
+npx @lobu/cli@latest run        # boot locally on http://localhost:{{GATEWAY_PORT}}
+npx @lobu/cli@latest validate   # check the config before running
+npx @lobu/cli@latest login      # auth the CLI (device-code flow)
+npx @lobu/cli@latest apply      # push this config to a Lobu org (cloud or self-host)
+```
+
+## Conventions
+
+- **Never fabricate credentials, tokens, or API keys.** Ask the user; store them in
+  `.env` and reference them with `secret(...)`.
+- **Pause at every real decision and ask the user** — don't guess what to build.
+- **`events` is append-only** — never delete rows; supersede/tombstone instead.
+- **Search before create** to avoid duplicate entities.
+- Run `lobu validate` after editing the config; boot with `lobu run` and verify a
+  real message plus the resulting memory event before calling it done.
+
 @TESTING.md

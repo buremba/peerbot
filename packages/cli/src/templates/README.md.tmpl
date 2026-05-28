@@ -4,7 +4,7 @@ Lobu instance created with `@lobu/cli` v{{CLI_VERSION}}
 
 ## Quick Start
 
-Lobu boots as a single Node process. By default `lobu run` uses local PGlite with pgvector enabled and stores data under `~/.lobu/data` (override with `LOBU_DATA_DIR`). Set `DATABASE_URL` in `.env` only when you want to use an external Postgres instead.
+Lobu boots as a single Node process. By default `lobu run` starts an embedded PostgreSQL (with pgvector) and stores data under `~/.lobu/data` (override with `LOBU_DATA_DIR`). Set `DATABASE_URL` in `.env` only when you want to use an external Postgres instead.
 
 ```bash
 # 1. Boot Lobu (gateway + workers + memory backend in one Node process)
@@ -33,7 +33,7 @@ Compare your `.env` with the latest `.env.example` in the [Lobu repo](https://gi
 
 Edit `.env` to configure:
 
-- `DATABASE_URL` — optional external Postgres connection string (with pgvector). If unset, `lobu run` uses local PGlite.
+- `DATABASE_URL` — optional external Postgres connection string (with pgvector). If unset, `lobu run` uses its embedded PostgreSQL.
 - `PUBLIC_GATEWAY_URL` — Public URL for OAuth callbacks
 - `WORKER_ALLOWED_DOMAINS` — Allowed domains for worker network access
 

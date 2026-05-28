@@ -131,14 +131,14 @@ lobu memory health --url <mcp-url> --org <org-slug>
 
 ## Browser-Authenticated Connectors
 
-For connectors that need cookies from a local browser session:
+For connectors that need a real browser session, `browser-auth` launches a dedicated Chrome with remote debugging, stores its CDP endpoint on the auth profile, and the connector attaches over CDP at sync time (harvesting cookies live):
 
 ```bash
 lobu memory browser-auth --connector <key> --auth-profile-slug <slug>
 lobu memory browser-auth --connector <key> --auth-profile-slug <slug> --check
 ```
 
-Use `--chrome-profile`, `--launch-cdp`, and `--dedicated-profile` only when the user needs a specific browser profile or dedicated remote-debugging profile.
+Use `--dedicated-profile` only when you want a non-default dedicated Chrome profile directory; use `--remote-debug-port` to customize the CDP port (default `9222`).
 
 ## Tool Discipline
 

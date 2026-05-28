@@ -1,6 +1,6 @@
 # lobu-crm — Reference example
 
-A funnel CRM agent that tracks GitHub stars, X mentions, HN posts, and demo-form submissions.
+A funnel CRM agent that tracks GitHub stars, X mentions, and HN posts.
 Use this as a starting point for new projects. It shows every Lobu concept in one place.
 
 ## Structure
@@ -11,7 +11,6 @@ lobu-crm/                                  # single agent → dir: "." keeps it 
 ├── SOUL.md                                # Agent personality
 ├── IDENTITY.md                            # Agent identity
 ├── USER.md                                # User context
-├── funnel-form.connector.ts               # Custom connector (connectorFromFile)
 ├── inbound-triage.reaction.ts             # Runs after watcher extraction
 ├── funnel-digest.reaction.ts              # Runs after watcher extraction
 └── skills/crm-ops/SKILL.md                # Agent skill (skillFromFile)
@@ -25,5 +24,4 @@ The built-in GitHub, X, Hacker News, and website connections are declared inline
 | File | What it shows |
 |------|--------------|
 | `lobu.config.ts` | Agent config, providers, network allowlist, entity + relationship + watcher definitions, connections, auth profiles |
-| `funnel-form.connector.ts` | Custom connector with typed checkpoint + config (listed via `connectorFromFile`) |
 | `inbound-triage.reaction.ts` | Reaction script with typed `ReactionClient` |

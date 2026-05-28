@@ -1,5 +1,4 @@
 import {
-  connectorFromFile,
   defineAgent,
   defineAuthProfile,
   defineConfig,
@@ -11,7 +10,6 @@ import {
   secret,
   skillFromFile,
 } from "@lobu/cli/config";
-import type FunnelFormConnector from "./funnel-form.connector.ts";
 import type funnelDigestReaction from "./funnel-digest.reaction.ts";
 import type inboundTriageReaction from "./inbound-triage.reaction.ts";
 
@@ -298,21 +296,6 @@ const competitor_changelogsConn = defineConnection({
   ],
 });
 
-const funnel_form_submissionsConn = defineConnection({
-  slug: "funnel-form-submissions",
-  connector: "funnel-form",
-  name: "Demo-request form submissions",
-  config: { endpoint: "https://lobu.ai/api/demo-requests" },
-  feeds: [
-    {
-      feed: "submissions",
-      name: "Form submissions",
-      schedule: "*/15 * * * *",
-      config: { endpoint: "https://lobu.ai/api/demo-requests" },
-    },
-  ],
-});
-
 const github_lobuConn = defineConnection({
   slug: "github-lobu",
   connector: "github",
@@ -388,9 +371,6 @@ const x_mentionsConn = defineConnection({
 });
 
 export default defineConfig({
-  connectors: [
-    connectorFromFile<typeof FunnelFormConnector>("./funnel-form.connector.ts"),
-  ],
   org: "lobu-crm",
   orgName: "Lobu CRM",
   orgDescription:
@@ -400,7 +380,6 @@ export default defineConfig({
   relationships: [converted_to],
   connections: [
     competitor_changelogsConn,
-    funnel_form_submissionsConn,
     github_lobuConn,
     hn_lobuConn,
     x_mentionsConn,

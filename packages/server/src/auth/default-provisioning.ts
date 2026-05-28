@@ -128,12 +128,110 @@ export async function hasOrgSentinel(
  * Best-effort: a thrown error is logged and swallowed. A failure here must
  * not break the boot path that called us.
  */
+/**
+ * Backfill an existing default-agent row to the shape this code expects:
+ *   - owner_platform / owner_user_id populated to the personal-org owner
+ *     (legacy installs wrote `'lobu', NULL` which fails the per-user
+ *     ownership check in `verifyOwnedAgentAccess`).
+ *   - agent_users mapping for that (platform, user_id) so `ownsAgent`
+ *     returns true on the PAT-session path.
+ *   - installed_providers populated with all currently-available
+ *     system-key providers when empty. Never removes existing entries
+ *     and never overwrites a non-empty list — admins may have curated
+ *     the list intentionally.
+ *
+ * Idempotent and only writes when there's something to fix. Returns
+ * silently when the row is absent (caller decides whether to INSERT).
+ */
+async function backfillDefaultAgent(
+  organizationId: string,
+  client: DbClient
+): Promise<void> {
+  const rows = (await client`
+    SELECT owner_platform, owner_user_id, installed_providers
+      FROM agents
+     WHERE organization_id = ${organizationId}
+       AND id = ${DEFAULT_AGENT_ID}
+     LIMIT 1
+  `) as unknown as Array<{
+    owner_platform: string | null;
+    owner_user_id: string | null;
+    installed_providers: unknown;
+  }>;
+  const row = rows[0];
+  if (!row) return;
+
+  const ownerLookup = (await client`
+    SELECT (metadata::jsonb)->>'personal_org_for_user_id' AS owner_user_id
+      FROM "organization"
+     WHERE id = ${organizationId}
+     LIMIT 1
+  `) as unknown as Array<{ owner_user_id: string | null }>;
+  const ownerUserId = ownerLookup[0]?.owner_user_id ?? null;
+
+  const installedNow = Array.isArray(row.installed_providers)
+    ? (row.installed_providers as Array<{ providerId: string }>)
+    : [];
+  const installedIds = new Set(installedNow.map((p) => p.providerId));
+  const missingSystemProviders = getModelProviderModules()
+    .filter((m) => m.hasSystemKey() && !installedIds.has(m.providerId))
+    .map((m) => ({ providerId: m.providerId, installedAt: Date.now() }));
+
+  const needsOwnerFix =
+    ownerUserId &&
+    (row.owner_user_id !== ownerUserId || row.owner_platform !== 'external');
+  const needsProvidersFix =
+    installedNow.length === 0 && missingSystemProviders.length > 0;
+
+  if (needsOwnerFix || needsProvidersFix) {
+    const nextProviders = needsProvidersFix
+      ? missingSystemProviders
+      : installedNow;
+    await client`
+      UPDATE agents SET
+        owner_platform = ${needsOwnerFix ? 'external' : row.owner_platform},
+        owner_user_id = ${needsOwnerFix ? ownerUserId : row.owner_user_id},
+        installed_providers = ${client.json(nextProviders)},
+        updated_at = NOW()
+      WHERE organization_id = ${organizationId}
+        AND id = ${DEFAULT_AGENT_ID}
+    `;
+    logger.info(
+      {
+        organizationId,
+        agentId: DEFAULT_AGENT_ID,
+        ownerFixed: !!needsOwnerFix,
+        providersAdded: needsProvidersFix
+          ? missingSystemProviders.map((p) => p.providerId)
+          : [],
+      },
+      '[default-provisioning] Backfilled default agent'
+    );
+  }
+
+  if (ownerUserId) {
+    await client`
+      INSERT INTO agent_users (organization_id, agent_id, platform, user_id, created_at)
+      VALUES (${organizationId}, ${DEFAULT_AGENT_ID}, 'external', ${ownerUserId}, now())
+      ON CONFLICT (organization_id, agent_id, platform, user_id) DO NOTHING
+    `;
+  }
+}
+
 export async function ensureDefaultAgent(
   organizationId: string,
   sql?: DbClient
 ): Promise<{ created: boolean; reason: 'sentinel' | 'has_agents' | 'inserted' }> {
   const client = sql ?? getDb();
   try {
+    // Always run the backfill — it's idempotent and only writes when there's
+    // a divergence to fix. Legacy installs that ran ensureDefaultAgent before
+    // this PR have the row but with `owner_user_id = NULL` and
+    // `installed_providers = []`; the sentinel-fast-path would have skipped
+    // them otherwise, and `lobu chat -c local` would still hit 403 / "No
+    // model configured" on those installs.
+    await backfillDefaultAgent(organizationId, client);
+
     const provisioned = await hasOrgSentinel(organizationId, DEFAULT_AGENT_SENTINEL, client);
     if (provisioned) {
       return { created: false, reason: 'sentinel' };

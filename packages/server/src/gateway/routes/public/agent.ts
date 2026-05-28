@@ -705,9 +705,18 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     // Uses _ separator (colons not allowed in BullMQ custom IDs). Watcher
     // automation gets one deterministic one-shot session per run and never
     // resumes human/API sessions such as marketing_marketing.
+    //
+    // Tenant-scope: include tokenOrganizationId so default-agent sessions
+    // (DEFAULT_AGENT_ID is a global constant) AND pinned-agent sessions
+    // (agentId is a per-org-unique row id, but two orgs can share the same
+    // id string) never collide across tenants in the in-memory session
+    // store. The resume guard below catches in-flight collisions; the org
+    // suffix prevents `forceNew` from silently overwriting another tenant's
+    // session at setSession time.
+    const orgScope = tokenOrganizationId ? `_${tokenOrganizationId}` : "";
     const conversationId = effectiveThread
-      ? `${agentId}_${userId}_${effectiveThread}`
-      : `${agentId}_${userId}`;
+      ? `${agentId}_${userId}${orgScope}_${effectiveThread}`
+      : `${agentId}_${userId}${orgScope}`;
     const channelId = `api_${userId}`;
     const deploymentName = `api-${agentId.slice(0, 8)}`;
 

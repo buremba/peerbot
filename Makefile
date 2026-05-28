@@ -1,6 +1,6 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test clean dev build-packages ensure-submodule clean-workers test-unit test-integration test-e2e test-e2e-sdk test-e2e-cli typecheck task-setup task-clean e2e-browser bump review
+.PHONY: help setup build test clean dev build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e test-e2e-sdk test-e2e-cli typecheck task-setup task-clean e2e-browser bump review
 
 # Default target
 help:
@@ -14,6 +14,7 @@ help:
 	@echo "  make test-e2e                              - Boot the dev server + run openclaw-plugin e2e against it"
 	@echo "  make test-e2e-cli                          - Boot lobu run + walk every CLI command (the CI cli-smoke gate)"
 	@echo "  make clean-workers                         - Stop any running embedded worker subprocesses"
+	@echo "  make clean-test-pg                         - Reap orphaned lobu-test-pg embedded-Postgres clusters (frees macOS shm slots)"
 	@echo "  make typecheck                             - Strict typecheck (same as Dockerfile) for server + owletto"
 	@echo "  make task-setup NAME=<name>                - Create a paired worktree at .claude/worktrees/<name> (lobu + submodule on real branch, .env copied, ports auto-assigned, Lobu context registered)"
 	@echo "  make task-clean NAME=<name> [FORCE=1]      - Remove the worktree, both branches, and the Lobu context (refuses if there's uncommitted/unpushed work unless FORCE=1)"
@@ -164,6 +165,18 @@ clean-workers:
 	@pkill -f 'packages/agent-worker/src/index.ts' 2>/dev/null || true
 	@pkill -f '@lobu/worker' 2>/dev/null || true
 	@echo "✅ Worker subprocesses stopped"
+
+# Orphaned `lobu-test-pg-*` embedded-Postgres clusters from other worktrees'
+# integration runs eat macOS shared-memory slots (SHMMNI=32), and `lobu run` /
+# `make review`'s integration suite then fail with "could not create shared
+# memory segment: No space left on device" (shmget). Reap them.
+clean-test-pg:
+	@echo "🧹 Reaping orphaned lobu-test-pg embedded-Postgres clusters..."
+	@pkill -f 'lobu-test-pg' 2>/dev/null || true
+	@pkill -f '@embedded-postgres' 2>/dev/null || true
+	@sleep 1
+	@echo "shm segments now: $$(ipcs -m 2>/dev/null | awk '/^m/{c++} END{print c+0}') / 32"
+	@echo "✅ Test-PG clusters reaped"
 
 # --- Local AI review gate ---------------------------------------------------
 # Local-only: runs the deterministic suites in cwd, then invokes pi against

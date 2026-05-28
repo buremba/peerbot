@@ -11,7 +11,7 @@
  * - No real credentials in resolver output
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
   DEFAULT_PROVIDER_BASE_URL_ENV,
   DEFAULT_PROVIDER_MODELS,

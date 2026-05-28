@@ -244,37 +244,6 @@ describe("agent_transcript_snapshot — snapshot route", () => {
     expect(out).toBe(big);
   });
 
-  test("opt-out: no snapshot rows ever created when LOBU_SESSION_STORE=file", async () => {
-    // Phase 5 flipped the default: snapshot mode is on unless explicitly
-    // opted out via LOBU_SESSION_STORE=file. The route layer doesn't
-    // check the env (writes are always honoured if the JWT is valid), but
-    // /agent-history's readLatestSnapshotJsonl is the consumer of that
-    // env gate via its callers. With no snapshot row in either mode, the
-    // resolver returns null and the existing disk-read fallback runs.
-    const previous = process.env.LOBU_SESSION_STORE;
-    process.env.LOBU_SESSION_STORE = "file";
-    try {
-      const orgId = await seedAgentRow("agent-off", {
-        organizationId: "org_off",
-      });
-      const sql = getDb();
-      const rows = (await sql`
-        SELECT count(*)::int AS n
-        FROM public.agent_transcript_snapshot
-        WHERE organization_id = ${orgId}
-      `) as Array<{ n: number }>;
-      expect(rows[0]!.n).toBe(0);
-      const out = await readLatestSnapshotJsonl("agent-off", orgId);
-      expect(out).toBeNull();
-    } finally {
-      if (previous === undefined) {
-        delete process.env.LOBU_SESSION_STORE;
-      } else {
-        process.env.LOBU_SESSION_STORE = previous;
-      }
-    }
-  });
-
   test("failed-run-not-replayed: hydrate skips failed snapshots and uses latest completed", async () => {
     const orgId = await seedAgentRow("agent-fail", {
       organizationId: "org_fail",
@@ -1118,11 +1087,6 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
          ${bJsonl}, ${Buffer.byteLength(bJsonl, "utf-8")}, 'completed')
     `;
 
-    // Snapshot mode on for this test — the /history fallback only
-    // consults the PG snapshot when this env is set.
-    const previousMode = process.env.LOBU_SESSION_STORE;
-    process.env.LOBU_SESSION_STORE = "snapshot";
-
     try {
       // Authenticate as the shared user. The /history route's
       // ownership resolver should pin the org via agent_users; the
@@ -1182,11 +1146,6 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
       }
     } finally {
       setAuthProvider(null);
-      if (previousMode === undefined) {
-        delete process.env.LOBU_SESSION_STORE;
-      } else {
-        process.env.LOBU_SESSION_STORE = previousMode;
-      }
     }
   });
 

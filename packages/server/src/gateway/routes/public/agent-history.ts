@@ -38,9 +38,6 @@ import { verifySettingsSession } from "./settings-auth.js";
  *   - `organizationId` is empty / undefined (no scope to query under)
  *   - no completed snapshot exists for `(org, agent)`
  *
- * Only fires when snapshot mode is active (the default in Phase 5+).
- * LOBU_SESSION_STORE=file opts out and keeps reading workspaces/*
- * untouched for legacy/local-dev single-replica deploys.
  */
 export async function readLatestSnapshotJsonl(
   agentId: string,
@@ -130,15 +127,14 @@ async function readSessionMessages(
   limit: number,
   organizationId: string | undefined
 ) {
-  // In snapshot mode (the Phase 5 default), the disk file may be empty
-  // (a fresh pod has no workspaces/ tree on a multi-replica gateway).
-  // Try the PG snapshot first; fall through to the disk read if the
-  // snapshot is missing so local-dev workspaces/* trees keep working
-  // without DB migrations. LOBU_SESSION_STORE=file opts back to disk-only.
-  let content: string | null = null;
-  if (process.env.LOBU_SESSION_STORE !== "file") {
-    content = await readLatestSnapshotJsonl(agentId, organizationId);
-  }
+  // The disk file may be empty (a fresh pod has no workspaces/ tree on
+  // a multi-replica gateway). Try the PG snapshot first; fall through
+  // to the disk read if the snapshot is missing so local-dev
+  // workspaces/* trees keep working without DB migrations.
+  let content: string | null = await readLatestSnapshotJsonl(
+    agentId,
+    organizationId
+  );
   if (content === null) {
     const sessionPath = await findSessionFile(agentId);
     if (!sessionPath) {
@@ -181,12 +177,12 @@ async function readSessionStats(
   agentId: string,
   organizationId: string | undefined
 ) {
-  // Same fallback shape as readSessionMessages — DB first in snapshot mode
-  // (Phase 5 default), disk read if absent. LOBU_SESSION_STORE=file opts out.
-  let content: string | null = null;
-  if (process.env.LOBU_SESSION_STORE !== "file") {
-    content = await readLatestSnapshotJsonl(agentId, organizationId);
-  }
+  // Same fallback shape as readSessionMessages — DB first, disk read if
+  // absent.
+  let content: string | null = await readLatestSnapshotJsonl(
+    agentId,
+    organizationId
+  );
   if (content === null) {
     const sessionPath = await findSessionFile(agentId);
     if (!sessionPath) {
@@ -332,14 +328,11 @@ export function createAgentHistoryRoutes(deps: {
     // Same fallback shape as readSessionMessages: snapshot first, disk
     // second. Avoids reporting `connected: false` when the worker is dead
     // but a PG snapshot is recoverable.
-    let hasSessionFile = false;
-    if (process.env.LOBU_SESSION_STORE !== "file") {
-      hasSessionFile =
-        (await readLatestSnapshotJsonl(
-          resolvedAgentId,
-          scope.organizationId
-        )) !== null;
-    }
+    let hasSessionFile =
+      (await readLatestSnapshotJsonl(
+        resolvedAgentId,
+        scope.organizationId
+      )) !== null;
     if (!hasSessionFile) {
       hasSessionFile = !!(await findSessionFile(resolvedAgentId));
     }

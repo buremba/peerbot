@@ -33,7 +33,7 @@ export interface SandboxStrategy {
   path?: string;
 }
 
-export interface SandboxWrapOptions {
+interface SandboxWrapOptions {
   /** Workspace dir on the host FS. Wrapped child gets rw access here only. */
   workspaceDir: string;
   /**

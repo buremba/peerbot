@@ -36,15 +36,13 @@ app:
   env:
     NODE_ENV: production
 
-  # Persistent workspaces volume. The embedded worker used to store
-  # session state below /app/workspaces/<agentId>/.openclaw/session.jsonl,
-  # but Phase 5 (LOBU_SESSION_STORE default-on, snapshot mode) moved
-  # the durable transcript into Postgres (`agent_transcript_snapshot`)
-  # and made the rest of {WORKSPACE_DIR} (input/output/temp) pod-local
-  # ephemeral — a per-conversation advisory lock pins runs to one pod
-  # for the run lifetime. Disable by default so the deployment can
-  # roll across replicas; flip to `true` only if you have a specific
-  # reason to persist scratch files across restarts.
+  # Persistent workspaces volume. The embedded worker stores the
+  # durable transcript in Postgres (`agent_transcript_snapshot`); the
+  # rest of {WORKSPACE_DIR} (input/output/temp) is pod-local ephemeral
+  # — a per-conversation advisory lock pins runs to one pod for the
+  # run lifetime. Disable by default so the deployment can roll across
+  # replicas; flip to `true` only if you have a specific reason to
+  # persist scratch files across restarts.
   workspaces:
     enabled: false
     size: 20Gi

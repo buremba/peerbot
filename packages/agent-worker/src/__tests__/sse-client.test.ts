@@ -124,9 +124,8 @@ describe("GatewayClient heartbeat ACKs", () => {
 
   test("payloadToWorkerConfig leaves runId/runJobToken undefined when absent (legacy direct-enqueue path)", async () => {
     // Backwards-compat: legacy direct-enqueue paths don't set runId. The
-    // worker handles this by skipping the snapshot POST when
-    // LOBU_SESSION_STORE=file. The fields must survive end-to-end as
-    // `undefined`, not be coerced into NaN/empty-string.
+    // fields must survive end-to-end as `undefined`, not be coerced into
+    // NaN/empty-string.
     const client = new GatewayClient(
       "https://gateway.example.com",
       "worker-token",

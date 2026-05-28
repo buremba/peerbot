@@ -280,15 +280,8 @@ describe("EmbeddedDeploymentManager", () => {
     // conversationId is missing, the lock CANNOT be keyed, so the old code
     // silently skipped it and spawned an UNGUARDED worker. The manager must
     // now REFUSE to spawn instead (re-queueable failure), never run unguarded.
-    describe("snapshot-mode cross-pod gate", () => {
-      const snapshotBefore = process.env.LOBU_SESSION_STORE;
-      afterEach(() => {
-        if (snapshotBefore === undefined) delete process.env.LOBU_SESSION_STORE;
-        else process.env.LOBU_SESSION_STORE = snapshotBefore;
-      });
-
+    describe("snapshot cross-pod gate", () => {
       test("refuses to spawn a snapshot-writing turn when organizationId is missing", async () => {
-        delete process.env.LOBU_SESSION_STORE; // snapshot mode (default)
         const msg = createTestMessagePayload({
           runId: 42, // snapshot-writing turn
           organizationId: undefined, // org missing → lock cannot be keyed
@@ -303,7 +296,6 @@ describe("EmbeddedDeploymentManager", () => {
       });
 
       test("refuses to spawn a snapshot-writing turn when conversationId is missing", async () => {
-        delete process.env.LOBU_SESSION_STORE;
         const msg = createTestMessagePayload({
           runId: 42,
           organizationId: "org-1",
@@ -316,20 +308,8 @@ describe("EmbeddedDeploymentManager", () => {
       });
 
       test("legacy direct-enqueue turn (no runId) still spawns even with no org — never writes a shared snapshot", async () => {
-        delete process.env.LOBU_SESSION_STORE; // snapshot mode on
         const msg = createTestMessagePayload({
           runId: undefined, // no shared snapshot write → no divergence risk
-          organizationId: undefined,
-          conversationId: "conv-1",
-        });
-        await manager.ensureDeployment("worker-1", "user-1", "user-1", msg);
-        expect(mockChildProcesses).toHaveLength(1);
-      });
-
-      test("file-mode (snapshot opted out) turn still spawns even with no org", async () => {
-        process.env.LOBU_SESSION_STORE = "file"; // legacy RWO-PVC single-writer
-        const msg = createTestMessagePayload({
-          runId: 42,
           organizationId: undefined,
           conversationId: "conv-1",
         });
@@ -344,7 +324,6 @@ describe("EmbeddedDeploymentManager", () => {
       // snapshots (one reply silently wins). Post-fix, BOTH refuse: zero
       // duplicate spawns, so the divergent-snapshot race can't occur.
       test("two pods both refuse an org-less snapshot turn — no duplicate spawn across replicas", async () => {
-        delete process.env.LOBU_SESSION_STORE; // snapshot mode on both pods
         const pod1 = new EmbeddedDeploymentManager(TEST_CONFIG);
         const pod2 = new EmbeddedDeploymentManager(TEST_CONFIG);
         const msg = createTestMessagePayload({

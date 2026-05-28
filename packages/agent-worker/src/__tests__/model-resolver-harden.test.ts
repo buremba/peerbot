@@ -11,7 +11,7 @@
  * - No real credentials in resolver output
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_PROVIDER_BASE_URL_ENV,
   DEFAULT_PROVIDER_MODELS,
@@ -24,26 +24,6 @@ import {
 const PREFIX = `test-${process.pid}-${Date.now()}`;
 
 describe("resolveModelRef — edge cases", () => {
-  let origDefaultModel: string | undefined;
-  let origDefaultProvider: string | undefined;
-
-  beforeEach(() => {
-    origDefaultModel = process.env.AGENT_DEFAULT_MODEL;
-    origDefaultProvider = process.env.AGENT_DEFAULT_PROVIDER;
-    delete process.env.AGENT_DEFAULT_MODEL;
-    delete process.env.AGENT_DEFAULT_PROVIDER;
-  });
-
-  afterEach(() => {
-    if (origDefaultModel !== undefined)
-      process.env.AGENT_DEFAULT_MODEL = origDefaultModel;
-    else delete process.env.AGENT_DEFAULT_MODEL;
-
-    if (origDefaultProvider !== undefined)
-      process.env.AGENT_DEFAULT_PROVIDER = origDefaultProvider;
-    else delete process.env.AGENT_DEFAULT_PROVIDER;
-  });
-
   test("multi-segment model: nvidia/org/model-id", () => {
     const result = resolveModelRef("nvidia/moonshotai/kimi-k2.5");
     expect(result.provider).toBe("nvidia");
@@ -77,8 +57,7 @@ describe("resolveModelRef — edge cases", () => {
     expect(result.modelId).not.toBe("auto");
   });
 
-  test("overrides.defaultModel takes priority over env var", () => {
-    process.env.AGENT_DEFAULT_MODEL = "google/gemini-2.5-pro";
+  test("overrides.defaultModel applies when rawModelRef is empty", () => {
     const result = resolveModelRef("", {
       defaultModel: "anthropic/claude-sonnet-4-20250514",
     });
@@ -86,8 +65,7 @@ describe("resolveModelRef — edge cases", () => {
     expect(result.modelId).toBe("claude-sonnet-4-20250514");
   });
 
-  test("overrides.defaultProvider takes priority over env var", () => {
-    process.env.AGENT_DEFAULT_PROVIDER = "google";
+  test("overrides.defaultProvider applies to bare model IDs", () => {
     const result = resolveModelRef("some-model", {
       defaultProvider: "openai",
     });
@@ -95,9 +73,10 @@ describe("resolveModelRef — edge cases", () => {
     expect(result.modelId).toBe("some-model");
   });
 
-  test("whitespace-only rawModelRef falls back to env vars", () => {
-    process.env.AGENT_DEFAULT_MODEL = "openai/gpt-4.1";
-    const result = resolveModelRef("   ");
+  test("whitespace-only rawModelRef falls back to overrides", () => {
+    const result = resolveModelRef("   ", {
+      defaultModel: "openai/gpt-4.1",
+    });
     expect(result.provider).toBe("openai");
     expect(result.modelId).toBe("gpt-4.1");
   });
@@ -115,26 +94,6 @@ describe("resolveModelRef — edge cases", () => {
 });
 
 describe("resolveModelRef — configured provider wins over slug split", () => {
-  let origDefaultModel: string | undefined;
-  let origDefaultProvider: string | undefined;
-
-  beforeEach(() => {
-    origDefaultModel = process.env.AGENT_DEFAULT_MODEL;
-    origDefaultProvider = process.env.AGENT_DEFAULT_PROVIDER;
-    delete process.env.AGENT_DEFAULT_MODEL;
-    delete process.env.AGENT_DEFAULT_PROVIDER;
-  });
-
-  afterEach(() => {
-    if (origDefaultModel !== undefined)
-      process.env.AGENT_DEFAULT_MODEL = origDefaultModel;
-    else delete process.env.AGENT_DEFAULT_MODEL;
-
-    if (origDefaultProvider !== undefined)
-      process.env.AGENT_DEFAULT_PROVIDER = origDefaultProvider;
-    else delete process.env.AGENT_DEFAULT_PROVIDER;
-  });
-
   test("openrouter + anthropic/claude-sonnet-4 → openrouter, slug intact", () => {
     const result = resolveModelRef("anthropic/claude-sonnet-4", {
       defaultProvider: "openrouter",
@@ -151,9 +110,10 @@ describe("resolveModelRef — configured provider wins over slug split", () => {
     expect(result.modelId).toBe("openai/gpt-4o");
   });
 
-  test("AGENT_DEFAULT_PROVIDER env also wins over slug split", () => {
-    process.env.AGENT_DEFAULT_PROVIDER = "openrouter";
-    const result = resolveModelRef("google/gemini-2.0-flash");
+  test("defaultProvider override also wins over slug split", () => {
+    const result = resolveModelRef("google/gemini-2.0-flash", {
+      defaultProvider: "openrouter",
+    });
     expect(result.provider).toBe("openrouter");
     expect(result.modelId).toBe("google/gemini-2.0-flash");
   });

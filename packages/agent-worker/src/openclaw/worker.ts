@@ -369,27 +369,20 @@ export class OpenClawWorker implements WorkerExecutor {
     // throws and is reassigned in the catch block.
     this.terminalStatus = "failed";
 
-    // Fail loud when snapshot mode is enabled but the per-run scope the
-    // gateway is supposed to provide hasn't reached this job. A silent
-    // skip in cleanup() would hide a configuration bug across many
-    // turns; throwing here surfaces it on the first turn and the runs
-    // queue's retry path handles re-delivery. Codex round 2 quality
-    // win D on PR #865.
-    //
-    // Phase 5: snapshot is the default; setting LOBU_SESSION_STORE=file
-    // opts out (legacy / local-dev path that keeps reading session.jsonl
-    // straight off disk without writing to Postgres).
-    if (process.env.LOBU_SESSION_STORE !== "file") {
-      if (typeof this.config.runId !== "number") {
-        throw new Error(
-          "Snapshot mode (LOBU_SESSION_STORE != 'file') but WorkerConfig.runId is missing — runs-queue dispatch did not stamp runId on the job payload"
-        );
-      }
-      if (!this.config.runJobToken) {
-        throw new Error(
-          "Snapshot mode (LOBU_SESSION_STORE != 'file') but WorkerConfig.runJobToken is missing — MessageConsumer did not mint a per-run worker token"
-        );
-      }
+    // Fail loud when the per-run scope the gateway is supposed to
+    // provide hasn't reached this job. A silent skip in cleanup() would
+    // hide a configuration bug across many turns; throwing here surfaces
+    // it on the first turn and the runs queue's retry path handles
+    // re-delivery. Codex round 2 quality win D on PR #865.
+    if (typeof this.config.runId !== "number") {
+      throw new Error(
+        "WorkerConfig.runId is missing — runs-queue dispatch did not stamp runId on the job payload"
+      );
+    }
+    if (!this.config.runJobToken) {
+      throw new Error(
+        "WorkerConfig.runJobToken is missing — MessageConsumer did not mint a per-run worker token"
+      );
     }
 
     try {
@@ -570,8 +563,7 @@ export class OpenClawWorker implements WorkerExecutor {
     // (possibly on a different pod) can hydrate from it. Hydrate filters
     // `terminal_status='completed'`, so we ONLY POST on the success path
     // — writing `failed`/`timeout`/`cancelled` rows is pure network
-    // waste (codex round 2 quality win C on PR #865). Default-on in
-    // Phase 5; LOBU_SESSION_STORE=file opts out for legacy/local-dev.
+    // waste (codex round 2 quality win C on PR #865).
     //
     // The runs queue has already moved this run to a terminal state by
     // the time cleanup() fires (sse-client.ts:865 finally block runs
@@ -579,11 +571,7 @@ export class OpenClawWorker implements WorkerExecutor {
     // breath; the gateway-side advisory lock held by the spawner is
     // released when the subprocess exits, so by the next claim's boot
     // this snapshot is the visible "latest" row.
-    if (
-      process.env.LOBU_SESSION_STORE !== "file" &&
-      this.sessionFilePath &&
-      this.terminalStatus === "completed"
-    ) {
+    if (this.sessionFilePath && this.terminalStatus === "completed") {
       const gatewayUrl = process.env.DISPATCHER_URL;
       const runId = this.config.runId;
       // Per-run JWT minted by the gateway's MessageConsumer alongside
@@ -735,15 +723,11 @@ export class OpenClawWorker implements WorkerExecutor {
     const configuredMcpExposure = (
       rawOptions.toolsConfig as ToolsConfig | undefined
     )?.mcpExposure;
-    const envMcpExposure = process.env.LOBU_MCP_EXPOSURE;
     const mcpExposure: "tools" | "cli" =
-      configuredMcpExposure === "cli" || envMcpExposure === "cli"
-        ? "cli"
-        : "tools";
+      configuredMcpExposure === "cli" ? "cli" : "tools";
 
-    // Fetch session context BEFORE model resolution so AGENT_DEFAULT_PROVIDER
-    // is available when resolveModelRef() needs a fallback provider. Pass
-    // `mcpExposure` so MCP setup instructions use the right call syntax.
+    // Fetch session context BEFORE model resolution. Pass `mcpExposure` so
+    // MCP setup instructions use the right call syntax.
     const context = await getOpenClawSessionContext({ mcpExposure });
 
     // Sync enabled skills to workspace filesystem so the agent can `cat` them.
@@ -916,9 +900,7 @@ export class OpenClawWorker implements WorkerExecutor {
 
     const sessionFile = path.join(workspaceDir, ".openclaw", "session.jsonl");
     // Capture for cleanup() — it reads the file back to write the snapshot
-    // at terminal time. Set unconditionally so file-mode opt-outs
-    // still get a defined value (snapshot writer no-ops when
-    // LOBU_SESSION_STORE=file).
+    // at terminal time.
     this.sessionFilePath = sessionFile;
     const providerStateFile = path.join(
       workspaceDir,
@@ -927,10 +909,7 @@ export class OpenClawWorker implements WorkerExecutor {
     );
 
     // Hydrate from the latest completed Postgres snapshot BEFORE the
-    // provider-state check or SessionManager.open(). Phase 5: snapshot
-    // mode is the default; LOBU_SESSION_STORE=file opts out and keeps
-    // the legacy file-only behaviour for local-dev / single-replica
-    // self-hosters.
+    // provider-state check or SessionManager.open().
     //
     // Order matters: hydrate → provider check (may unlink) →
     // SessionManager.open(). The provider-change unlink at line ~925 still
@@ -940,7 +919,7 @@ export class OpenClawWorker implements WorkerExecutor {
     // PG rows remain readable without poisoning the new conversation
     // (hydrate would only resurrect them if a subsequent run completes
     // successfully and overwrites the latest pointer).
-    if (process.env.LOBU_SESSION_STORE !== "file") {
+    {
       const gatewayUrl = process.env.DISPATCHER_URL;
       const workerToken = process.env.WORKER_TOKEN;
       if (gatewayUrl && workerToken) {
@@ -960,7 +939,7 @@ export class OpenClawWorker implements WorkerExecutor {
         }
       } else {
         logger.warn(
-          "Snapshot mode active (LOBU_SESSION_STORE != 'file') but DISPATCHER_URL or WORKER_TOKEN missing; snapshot disabled"
+          "Snapshot hydrate skipped: DISPATCHER_URL or WORKER_TOKEN missing"
         );
       }
     }
@@ -1143,26 +1122,8 @@ export class OpenClawWorker implements WorkerExecutor {
     // Merge gateway instructions into custom instructions
     const instructionParts = [context.gatewayInstructions, customInstructions];
 
-    // Prefer CLI backends from dynamic session context, fall back to env var
-    let cliBackendsFromEnv:
-      | Array<{ name: string; command: string; args?: string[] }>
-      | undefined;
-    if (!pc.cliBackends?.length && process.env.CLI_BACKENDS) {
-      try {
-        cliBackendsFromEnv = JSON.parse(process.env.CLI_BACKENDS) as Array<{
-          name: string;
-          command: string;
-          args?: string[];
-        }>;
-      } catch (error) {
-        logger.error(
-          `Failed to parse CLI_BACKENDS env var: ${error instanceof Error ? error.message : String(error)}`
-        );
-      }
-    }
-    const cliBackends = pc.cliBackends?.length
-      ? pc.cliBackends
-      : cliBackendsFromEnv;
+    // CLI backends are delivered via session context from the gateway.
+    const cliBackends = pc.cliBackends;
     if (cliBackends?.length) {
       const agentList = cliBackends
         .map((b) => {
@@ -1622,13 +1583,12 @@ Use it when the user references past discussions or you need context.`);
         }
 
         // Also purge the Postgres snapshots for this (org, agent, conv)
-        // — in snapshot mode (the Phase 5 default) the next worker boot
-        // would otherwise rehydrate from the now-flushed conversation
-        // and the user-visible "Starting fresh" would be a lie. Best-
-        // effort: a failure here is logged but doesn't block the reset
-        // since the local unlink already happened and the snapshot
-        // helper is a no-op in file mode.
-        if (process.env.LOBU_SESSION_STORE !== "file") {
+        // — the next worker boot would otherwise rehydrate from the
+        // now-flushed conversation and the user-visible "Starting fresh"
+        // would be a lie. Best-effort: a failure here is logged but
+        // doesn't block the reset since the local unlink already
+        // happened.
+        {
           const gatewayUrl = process.env.DISPATCHER_URL;
           const workerToken = process.env.WORKER_TOKEN;
           if (gatewayUrl && workerToken) {

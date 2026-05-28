@@ -30,7 +30,7 @@ const EMBEDDED_BASH_LIMITS = {
   maxCallDepth: 50,
 } as const;
 
-export interface SandboxContext {
+interface SandboxContext {
   strategy: SandboxStrategy;
   workspaceDir: string;
   /** Whether the spawned binary may open sockets. just-bash's domain allowlist

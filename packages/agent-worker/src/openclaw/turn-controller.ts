@@ -18,12 +18,12 @@ export const DEFAULT_MAX_TOOL_CALLS_PER_TURN = 50;
 export const DEFAULT_MAX_IDENTICAL_TOOL_CALLS = 3;
 
 /** Why a turn was force-terminated. */
-export type TurnTerminationReason =
+type TurnTerminationReason =
   | "ask-user"
   | "identical-tool-loop"
   | "tool-call-cap";
 
-export interface TurnControllerOptions {
+interface TurnControllerOptions {
   /** Hard cap on total tool calls in a turn. */
   maxToolCallsPerTurn?: number;
   /** Cap on identical (same name + same args) tool calls in a turn. */

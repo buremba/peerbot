@@ -97,8 +97,8 @@ const JobEventSchema = z.object({
       jobId: z.string().optional(),
       teamId: z.string().optional(), // Optional for WhatsApp (top-level) and Slack (in platformMetadata)
       // Threaded through from MessageConsumer's runs-queue claim. The worker
-      // asserts these in snapshot mode (LOBU_SESSION_STORE != "file") — see
-      // worker.ts:353-360. The default zod object mode strips unknown keys,
+      // asserts these — see worker.ts:353-360. The default zod object mode
+      // strips unknown keys,
       // which silently dropped these fields and broke every Telegram chat
       // when snapshot mode became the default in PR #871. Declare them
       // explicitly so they survive parsing, and `.passthrough()` keeps any

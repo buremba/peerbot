@@ -24,21 +24,17 @@ const CLAUDE_PARAM_GROUPS: Record<
   "read" | "write" | "edit",
   RequiredParamGroup[]
 > = {
-  read: [{ keys: ["path", "file_path"], label: "path (path or file_path)" }],
-  write: [{ keys: ["path", "file_path"], label: "path (path or file_path)" }],
+  read: [{ keys: ["file_path"], label: "file_path" }],
+  write: [{ keys: ["file_path"], label: "file_path" }],
   edit: [
-    { keys: ["path", "file_path"], label: "path (path or file_path)" },
-    {
-      keys: ["oldText", "old_string"],
-      label: "oldText (oldText or old_string)",
-    },
-    {
-      keys: ["newText", "new_string"],
-      label: "newText (newText or new_string)",
-    },
+    { keys: ["file_path"], label: "file_path" },
+    { keys: ["old_string"], label: "old_string" },
+    { keys: ["new_string"], label: "new_string" },
   ],
 };
 
+// pi-coding-agent's underlying tools use camelCase (path/oldText/newText);
+// our schema exposes snake_case to the LLM. Translate before calling through.
 function normalizeToolParams(
   params: unknown
 ): Record<string, unknown> | undefined {
@@ -48,15 +44,15 @@ function normalizeToolParams(
   const record = params as Record<string, unknown>;
   const normalized = { ...record };
 
-  if ("file_path" in normalized && !("path" in normalized)) {
+  if ("file_path" in normalized) {
     normalized.path = normalized.file_path;
     delete normalized.file_path;
   }
-  if ("old_string" in normalized && !("oldText" in normalized)) {
+  if ("old_string" in normalized) {
     normalized.oldText = normalized.old_string;
     delete normalized.old_string;
   }
-  if ("new_string" in normalized && !("newText" in normalized)) {
+  if ("new_string" in normalized) {
     normalized.newText = normalized.new_string;
     delete normalized.new_string;
   }
@@ -99,8 +95,14 @@ function wrapToolWithNormalization(params: {
     ...tool,
     parameters: schema as any,
     execute: async (toolCallId, rawParams, signal, onUpdate) => {
+      // Assert against the snake_case LLM surface BEFORE normalising,
+      // since normalise rewrites to pi-coding-agent's camelCase keys.
+      const sourceParams =
+        rawParams && typeof rawParams === "object"
+          ? (rawParams as Record<string, unknown>)
+          : {};
+      assertRequiredParams(sourceParams, required);
       const normalized = normalizeToolParams(rawParams) ?? {};
-      assertRequiredParams(normalized, required);
       return tool.execute(toolCallId, normalized as any, signal, onUpdate);
     },
   };
@@ -108,8 +110,7 @@ function wrapToolWithNormalization(params: {
 
 function buildReadSchema() {
   return Type.Object({
-    path: Type.Optional(Type.String({ description: "Path to the file" })),
-    file_path: Type.Optional(Type.String({ description: "Path to the file" })),
+    file_path: Type.String({ description: "Path to the file" }),
     offset: Type.Optional(
       Type.Number({ description: "Start reading at this byte offset" })
     ),
@@ -119,20 +120,16 @@ function buildReadSchema() {
 
 function buildWriteSchema() {
   return Type.Object({
-    path: Type.Optional(Type.String({ description: "Path to the file" })),
-    file_path: Type.Optional(Type.String({ description: "Path to the file" })),
+    file_path: Type.String({ description: "Path to the file" }),
     content: Type.String({ description: "Content to write" }),
   });
 }
 
 function buildEditSchema() {
   return Type.Object({
-    path: Type.Optional(Type.String({ description: "Path to the file" })),
-    file_path: Type.Optional(Type.String({ description: "Path to the file" })),
-    oldText: Type.Optional(Type.String({ description: "Text to replace" })),
-    old_string: Type.Optional(Type.String({ description: "Text to replace" })),
-    newText: Type.Optional(Type.String({ description: "Replacement text" })),
-    new_string: Type.Optional(Type.String({ description: "Replacement text" })),
+    file_path: Type.String({ description: "Path to the file" }),
+    old_string: Type.String({ description: "Text to replace" }),
+    new_string: Type.String({ description: "Replacement text" }),
   });
 }
 

@@ -1,35 +1,6 @@
 /**
- * Per-run snapshot client for OpenClaw's `session.jsonl`.
- *
- * Why this exists: today's PVC-backed `workspaces/` directory is read-write-
- * once, which forces the helm chart to pin `replicaCount: 1` for the
- * gateway/worker. Mirroring the post-run session.jsonl to Postgres lets a
- * second pod hydrate the file on boot and resume the conversation, which is
- * the prerequisite for dropping the PVC (Phase 5, separate PR).
- *
- * Design contract for the next reader:
- *   - We do NOT fork or wrap `@mariozechner/pi-coding-agent`'s `SessionManager`.
- *     It owns the file on disk; we read it back at terminal time and write
- *     the bytes verbatim to PG. The next boot writes those bytes back to
- *     disk verbatim before SessionManager.open(), so SessionManager observes
- *     a byte-identical file to what it last wrote.
- *   - The snapshot is taken in `OpenClawWorker.cleanup()` on every terminal
- *     status — `completed`, `failed`, `timeout`, `cancelled`. Hydrate filters
- *     for `terminal_status='completed'` so a failed run can't poison the
- *     next worker with a dangling `tool_use` content block. Older completed
- *     snapshots remain readable; the hydrate query takes the latest one.
- *   - The worker is sandboxed — no PG access. Two new endpoints live on the
- *     existing worker gateway: `GET /worker/transcript/snapshot` for
- *     hydrate, `POST /worker/transcript/snapshot` for write. (org, agent,
- *     conv) are pulled from the worker JWT on the gateway side, so the
- *     worker can't impersonate another conversation.
- *   - Phase 5: snapshot mode is the default. `LOBU_SESSION_STORE=file`
- *     opts out for legacy/local-dev single-replica deploys. Phase 6
- *     drops the env var entirely.
- *
- * Trade-off accepted: a mid-run crash loses the partial transcript for that
- * run. The next attempt re-runs from the previous user message. Tools must
- * be idempotent (or accept user-visible re-execution).
+ * Mirrors session.jsonl to PG so multi-replica pods can hydrate.
+ * Snapshot written on success only; hydrate reads latest completed row.
  */
 
 import { promises as fs } from "node:fs";
@@ -40,7 +11,7 @@ const logger = createLogger("transcript-snapshot");
 
 export type TerminalStatus = "completed" | "failed" | "timeout" | "cancelled";
 
-export interface TranscriptSnapshotOptions {
+interface TranscriptSnapshotOptions {
   /** Absolute path to the session.jsonl SessionManager reads/writes. */
   sessionFile: string;
   /** Gateway base URL (e.g. `http://127.0.0.1:8787/lobu`). */

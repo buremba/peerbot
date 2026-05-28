@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   buildDynamicOpenAIModel,
   DEFAULT_PROVIDER_BASE_URL_ENV,
@@ -9,25 +9,6 @@ import {
 } from "../openclaw/model-resolver";
 
 describe("resolveModelRef", () => {
-  let originalDefaultModel: string | undefined;
-  let originalDefaultProvider: string | undefined;
-
-  beforeEach(() => {
-    originalDefaultModel = process.env.AGENT_DEFAULT_MODEL;
-    originalDefaultProvider = process.env.AGENT_DEFAULT_PROVIDER;
-    delete process.env.AGENT_DEFAULT_MODEL;
-    delete process.env.AGENT_DEFAULT_PROVIDER;
-  });
-
-  afterEach(() => {
-    if (originalDefaultModel !== undefined)
-      process.env.AGENT_DEFAULT_MODEL = originalDefaultModel;
-    else delete process.env.AGENT_DEFAULT_MODEL;
-    if (originalDefaultProvider !== undefined)
-      process.env.AGENT_DEFAULT_PROVIDER = originalDefaultProvider;
-    else delete process.env.AGENT_DEFAULT_PROVIDER;
-  });
-
   test("parses provider/model format", () => {
     const result = resolveModelRef("anthropic/claude-sonnet-4-20250514");
     expect(result.provider).toBe("anthropic");
@@ -46,23 +27,22 @@ describe("resolveModelRef", () => {
     expect(result.modelId).toBe(DEFAULT_PROVIDER_MODELS.anthropic);
   });
 
-  test("uses AGENT_DEFAULT_PROVIDER for bare model ID", () => {
-    process.env.AGENT_DEFAULT_PROVIDER = "openai";
-    const result = resolveModelRef("gpt-4.1");
+  test("uses overrides.defaultProvider for bare model ID", () => {
+    const result = resolveModelRef("gpt-4.1", { defaultProvider: "openai" });
     expect(result.provider).toBe("openai");
     expect(result.modelId).toBe("gpt-4.1");
   });
 
-  test("falls back to AGENT_DEFAULT_MODEL when rawModelRef is empty", () => {
-    process.env.AGENT_DEFAULT_MODEL = "anthropic/claude-sonnet-4-20250514";
-    const result = resolveModelRef("");
+  test("falls back to overrides.defaultModel when rawModelRef is empty", () => {
+    const result = resolveModelRef("", {
+      defaultModel: "anthropic/claude-sonnet-4-20250514",
+    });
     expect(result.provider).toBe("anthropic");
     expect(result.modelId).toBe("claude-sonnet-4-20250514");
   });
 
-  test("falls back to provider default when no model or AGENT_DEFAULT_MODEL", () => {
-    process.env.AGENT_DEFAULT_PROVIDER = "gemini";
-    const result = resolveModelRef("");
+  test("falls back to provider default when no model or override", () => {
+    const result = resolveModelRef("", { defaultProvider: "gemini" });
     expect(result.provider).toBe("gemini");
     expect(result.modelId).toBe(DEFAULT_PROVIDER_MODELS.gemini);
   });

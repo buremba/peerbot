@@ -115,7 +115,7 @@ interface NpmSpecifierPluginOptions {
  * environment, externalises so the bundle still produces — the runtime
  * is expected to provide it.
  */
-export function createNpmSpecifierPlugin(options?: NpmSpecifierPluginOptions): Plugin {
+function createNpmSpecifierPlugin(options?: NpmSpecifierPluginOptions): Plugin {
   return {
     name: 'npm-specifier',
     setup(b) {

@@ -12,7 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { startDaemon } from './daemon/index.js';
 import { buildConnectorWorkerEnv } from './env.js';
-import { assertExternalDepsResolvable } from './runtime-deps.js';
+import { assertExternalDepsResolvable } from './compile/index.js';
 import { printSelfCheckResult, runConnectorRuntimeSelfCheck } from './self-check/index.js';
 
 function printUsage(): void {
@@ -39,9 +39,6 @@ Environment Variables:
   WORKER_ID          Worker ID
   GITHUB_TOKEN       GitHub API token (for GitHub feed)
   GOOGLE_MAPS_API_KEY Google Maps API key
-  X_USERNAME         X/Twitter username
-  X_PASSWORD         X/Twitter password
-  X_EMAIL            X/Twitter email
   EMBEDDINGS_SERVICE_URL Embeddings service URL (if set, uses service; otherwise local)
   WORKER_API_TOKEN  Optional bearer token for /api/workers/* authentication
 

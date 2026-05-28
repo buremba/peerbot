@@ -27,7 +27,6 @@ API_URL=http://localhost:8787 bun run daemon
 | `EMBEDDINGS_SERVICE_URL` | Use a remote embedding service instead of local | No |
 | `GITHUB_TOKEN` | GitHub API token | No |
 | `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` / `REDDIT_USER_AGENT` | Reddit API credentials | No |
-| `X_USERNAME` / `X_PASSWORD` / `X_EMAIL` / `X_2FA_SECRET` / `X_COOKIES` | X/Twitter credentials | No |
 | `GOOGLE_MAPS_API_KEY` | Google Maps API key | No |
 
 ## Embeddings

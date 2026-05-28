@@ -30,11 +30,6 @@ export interface Env {
 
   // API Credentials
   GITHUB_TOKEN?: string; // GitHub API token for connectors
-  X_USERNAME?: string; // X/Twitter username for scraping
-  X_PASSWORD?: string; // X/Twitter password for scraping
-  X_EMAIL?: string; // X/Twitter email for scraping
-  X_2FA_SECRET?: string; // X/Twitter TOTP secret for 2FA (base32 encoded)
-  X_COOKIES?: string; // X/Twitter JSON cookies for cookie-based auth (recommended)
   GOOGLE_MAPS_API_KEY?: string; // Google Maps API key
   REDDIT_CLIENT_ID?: string; // Reddit API client ID
   REDDIT_CLIENT_SECRET?: string; // Reddit API client secret

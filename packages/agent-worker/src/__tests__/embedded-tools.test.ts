@@ -127,7 +127,7 @@ describe("file tools use real filesystem", () => {
     const readTool = tools.find((t) => t.name === "read")!;
     const result = await readTool.execute(
       "call-read",
-      { path: filePath },
+      { file_path: filePath },
       undefined,
       undefined
     );
@@ -145,7 +145,7 @@ describe("file tools use real filesystem", () => {
     const writeTool = tools.find((t) => t.name === "write")!;
     await writeTool.execute(
       "call-write",
-      { path: filePath, content: "new content" },
+      { file_path: filePath, content: "new content" },
       undefined,
       undefined
     );

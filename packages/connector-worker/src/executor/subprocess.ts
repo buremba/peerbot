@@ -47,10 +47,10 @@ function shellQuote(value: string): string {
  *  - oom: code !== 0 and output tail mentions a JS heap OOM.
  *  - crash: any other non-zero exit / unexpected signal.
  */
-export type SubprocessExitReason = 'ok' | 'error_message' | 'timeout' | 'oom' | 'crash';
+type SubprocessExitReason = 'ok' | 'error_message' | 'timeout' | 'oom' | 'crash';
 
 /** Diagnostic fields attached to errors thrown by the executor. */
-export interface SubprocessDiagnostics {
+interface SubprocessDiagnostics {
   exitCode: number | null;
   exitSignal: string | null;
   outputTail: string;

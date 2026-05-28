@@ -81,7 +81,7 @@ export function registerDynamicProvider(
 }
 
 /** Shape of a dynamically-built openai-completions model entry. */
-export interface DynamicOpenAIModel {
+interface DynamicOpenAIModel {
   id: string;
   name: string;
   api: "openai-completions";
@@ -151,10 +151,8 @@ export function resolveModelRef(
   provider: string;
   modelId: string;
 } {
-  const defaultModelRef =
-    overrides?.defaultModel || process.env.AGENT_DEFAULT_MODEL || "";
-  const defaultProvider =
-    overrides?.defaultProvider || process.env.AGENT_DEFAULT_PROVIDER || "";
+  const defaultModelRef = overrides?.defaultModel || "";
+  const defaultProvider = overrides?.defaultProvider || "";
 
   const normalizedRaw = rawModelRef?.trim();
   let modelRef = normalizedRaw || defaultModelRef;
@@ -225,7 +223,7 @@ export function resolveModelRef(
   }
 
   throw new Error(
-    `No provider specified for model "${modelRef}". Use "provider/model" format or set AGENT_DEFAULT_PROVIDER.`
+    `No provider specified for model "${modelRef}". Use "provider/model" format.`
   );
 }
 

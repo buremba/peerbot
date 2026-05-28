@@ -13,7 +13,7 @@
  * agent's answer back to the retrieved evidence.
  */
 
-export interface ToolUseEventPayload {
+interface ToolUseEventPayload {
   toolCallId: string;
   name: string;
   input: unknown;
@@ -21,7 +21,7 @@ export interface ToolUseEventPayload {
   result_summary?: ToolUseResultSummary;
 }
 
-export interface ToolUseResultSummary {
+interface ToolUseResultSummary {
   /** Event IDs the tool returned (search_memory etc). */
   event_ids?: number[];
   /** Inline snippet text keyed by event id — populated by retrieval tools so

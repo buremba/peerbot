@@ -1,21 +1,7 @@
 /**
- * Worker-side connector resolver + compile entry point.
- *
- * Until lobu#771, the gateway compiled connector bundles via esbuild and
- * shipped the ~13 MB output inline in every `/api/workers/poll` response.
- * The gateway pod held all ~29 connector bundles in its compile cache
- * (~384 MB, dominant heap occupant under the 1 GiB limit). For fleet
- * workers (and embedded mode where worker + gateway share a host), the
- * bundled connector .ts source is on disk in both pods — the gateway
- * doesn't need to compile or ship it. The gateway now sends only the
- * `connector_key` and this module compiles locally in the worker process.
- *
- * Device workers (Lobu Mac Bridge, etc.) keep getting `compiled_code`
- * inline — they don't have the connectors directory on disk.
- *
- * The resolver + esbuild bundle pipeline themselves are owned by the
- * shared `./compile` module so the gateway and CLI sides don't drift.
- * This file just supplies the worker-image-specific candidate dirs.
+ * Worker compiles connector bundles locally; gateway sends only the
+ * `connector_key`. Device workers (e.g. Mac Bridge) still receive
+ * `compiled_code` inline when they don't have the connectors directory on disk.
  */
 
 import { resolve } from 'node:path';

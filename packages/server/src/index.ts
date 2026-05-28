@@ -91,12 +91,43 @@ export type { Env };
 
 const LOCALHOST_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
-function isAllowedCorsOrigin(origin: string, _env: Env, requestUrl: string): boolean {
+// The published Owletto for Chrome extension ID, pinned via the manifest's
+// `key` field (see lobu-ai/owletto:apps/chrome/manifest.json). Identity for
+// CSP frame-ancestors AND CORS — both have to agree that this extension is
+// "us", otherwise either iframe embedding or fetch-from-SW breaks.
+const CANONICAL_OWLETTO_EXTENSION_ID = 'amnnhclgmbldmfcfamonoggjhfidemmm';
+
+const CHROME_EXTENSION_ID_RE = /^[a-p]{32}$/;
+
+/**
+ * Owned Owletto extension IDs (canonical + anything pinned via the
+ * LOBU_OWLETTO_EXTENSION_IDS env so a dev build with a different manifest
+ * key can be allowed alongside the published one). Same source for both
+ * the CSP frame-ancestors directive on HTML responses and the CORS
+ * allowlist that lets the service worker fetch /api/workers/poll.
+ */
+export function getOwnedOwlettoExtensionIds(env: Env): string[] {
+  const extra = (env.LOBU_OWLETTO_EXTENSION_IDS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => CHROME_EXTENSION_ID_RE.test(s));
+  return [CANONICAL_OWLETTO_EXTENSION_ID, ...extra];
+}
+
+export function isAllowedCorsOrigin(origin: string, env: Env, requestUrl: string): boolean {
   let parsed: URL;
   try {
     parsed = new URL(origin);
   } catch {
     return false;
+  }
+
+  // The Owletto extension's service worker fetches /api/workers/poll as
+  // origin chrome-extension://<id>. Match against the same owned-IDs list
+  // the CSP block uses so the two trust boundaries can't drift.
+  if (parsed.protocol === 'chrome-extension:') {
+    const owned = new Set(getOwnedOwlettoExtensionIds(env));
+    return owned.has(parsed.hostname);
   }
 
   if (LOCALHOST_HOSTNAMES.has(parsed.hostname.toLowerCase())) {
@@ -334,22 +365,9 @@ app.use('/*', async (c, next) => {
     // Owletto for Chrome embeds the whole app in its sidepanel iframe —
     // not just a stub route, the same UI users get in a regular tab. To
     // allow that without opening clickjacking risk to every extension on
-    // the user's machine, we narrow the allow to OUR extension ID
-    // (pinned via apps/chrome/manifest.json's `key` field; see
-    // lobu-ai/owletto:apps/chrome/manifest.json).
-    // LOBU_OWLETTO_EXTENSION_IDS takes a comma-separated list so a dev
-    // build with a different manifest key can be allowed alongside the
-    // canonical published one.
-    const extraExtensionIds = (c.env.LOBU_OWLETTO_EXTENSION_IDS ?? '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter((s) => /^[a-p]{32}$/.test(s));
-    const ownedExtensionIds = [
-      // canonical, derived from apps/chrome/manifest.json's `key`
-      'amnnhclgmbldmfcfamonoggjhfidemmm',
-      ...extraExtensionIds,
-    ];
-    const extensionAllowed = ownedExtensionIds
+    // the user's machine, we narrow the allow to OUR extension IDs (see
+    // getOwnedOwlettoExtensionIds — same list the CORS allowlist uses).
+    const extensionAllowed = getOwnedOwlettoExtensionIds(c.env)
       .map((id) => ` chrome-extension://${id}`)
       .join('');
     c.header(

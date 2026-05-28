@@ -13,8 +13,11 @@
 
 import { describe, expect, mock, test } from "bun:test";
 import type { ThreadResponsePayload } from "@lobu/core";
-import { getResponseStrategy } from "../index.js";
-import type { StrategyContext, StreamState } from "../index.js";
+import { getResponseStrategy } from "../connections/platform-strategies/index.js";
+import type {
+  StrategyContext,
+  StreamState,
+} from "../connections/platform-strategies/index.js";
 
 function fakeInstanceWithSlackSpy() {
   const postMessage = mock(async () => ({ ok: true }));

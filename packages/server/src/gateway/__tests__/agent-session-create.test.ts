@@ -301,6 +301,94 @@ describe("POST /api/v1/agents — default-agent resolution", () => {
     });
   });
 
+  test("cross-tenant GET via a settings-session COOKIE is denied with 403", async () => {
+    // The worker/PAT/OAuth auth paths populate an org on the auth context, so
+    // the up-front tenant guard catches their cross-tenant attempts (the test
+    // above). The settings-session COOKIE path populates only a userId —
+    // callerOrgId stays undefined and that guard is a no-op. This exercises the
+    // resolved-org fallback inside requireAgentOwnership: verifyOwnedAgentAccess
+    // authorizes orgB's cookie user (they own their own `owletto-default`) but
+    // resolves their org to orgB, which must NOT match orgA's session. Without
+    // the fallback this GET would return 200 and leak orgA's session.
+    const orgA = "org-A";
+    const orgB = "org-B";
+
+    const sharedSessions = new Map<string, any>();
+    const seed = (org: string) => {
+      const id = `owletto-default_user-cookie_${org}`;
+      sharedSessions.set(id, {
+        conversationId: id,
+        userId: "user-cookie",
+        agentId: "owletto-default",
+        organizationId: org,
+        status: "created",
+        createdAt: Date.now(),
+        lastActivity: Date.now(),
+      });
+      return id;
+    };
+    const orgASession = seed(orgA);
+    const orgBSession = seed(orgB);
+
+    const app = createAgentApi({
+      queueProducer: {} as never,
+      sessionManager: {
+        async getSession(id: string) {
+          return sharedSessions.get(id) ?? null;
+        },
+        async setSession() {},
+        async touchSession() {},
+        async deleteSession() {},
+      } as never,
+      sseManager: {
+        hasActiveConnection() {
+          return false;
+        },
+      } as never,
+      publicGatewayUrl: "http://localhost:8787",
+      agentMetadataStore: {
+        async getMetadata(id: string) {
+          if (id !== "owletto-default") return null;
+          return { owner: { platform: "api", userId: "user-cookie" } };
+        },
+      } as never,
+      userAgentsStore: {
+        async ownsAgent() {
+          return true;
+        },
+        // The cookie user belongs to orgB only — this is the org
+        // verifyOwnedAgentAccess resolves and compares against the session's.
+        async findAgentOrganizations() {
+          return [orgB];
+        },
+      } as never,
+    });
+
+    // A settings-session cookie carries a userId, NOT an org —
+    // createApiAuthMiddleware stamps authContext = { userId } with no
+    // organizationId, so callerOrgId is undefined and the up-front guard
+    // can't fire.
+    setAuthProvider(() => ({
+      userId: "user-cookie",
+      platform: "api",
+      exp: Date.now() + 60_000,
+    }));
+
+    // Sanity: the cookie user reaches their OWN org's session (resolved org
+    // orgB === session org orgB → allowed; never a false-deny).
+    const okSelf = await app.request(`/api/v1/agents/${orgBSession}`);
+    expect(okSelf.status).toBe(200);
+
+    // The fix: the same cookie user is denied orgA's session (resolved org
+    // orgB ≠ session org orgA) even though ownsAgent() returns true.
+    const denied = await app.request(`/api/v1/agents/${orgASession}`);
+    expect(denied.status).toBe(403);
+    expect((await denied.json()) as { error?: string }).toEqual({
+      success: false,
+      error: "Forbidden",
+    });
+  });
+
   test("returns 404 when the default agent belongs to a different org", async () => {
     // Default agent exists, but its org doesn't match the caller's token
     // org — must NOT leak. The same 404 as 'not provisioned' is fine; the
@@ -323,4 +411,81 @@ describe("POST /api/v1/agents — default-agent resolution", () => {
   // asserts on but we don't pin the exact userId since it's derived from
   // authContext under the hood.
   void USER_ID;
+});
+
+/**
+ * Watcher session-id shape.
+ *
+ * Watcher dispatch correlation — the worker session key AND the API/SSE
+ * owner-routing key (unified-thread-consumer) — both derive from the
+ * conversationId and rely on the exact `..._watcher_<watcherId>_run_<runId>`
+ * shape. The org-scope suffix added for the default-agent / pinned-API paths
+ * must NOT be spliced into watcher conversationIds: `_<org>_` between
+ * `watcher_<id>` and `run_<id>` breaks watcher→worker dispatch (the sdk-e2e
+ * watcher gate went red on exactly this). Tenant isolation for watchers rides
+ * `session.organizationId` (still set) + the route guard, not the id string.
+ */
+describe("POST /api/v1/agents — watcher session id shape", () => {
+  const ORG_ID = "org-watcher";
+
+  test("watcher conversationId keeps watcher_<id>_run_<id> and omits the org suffix", async () => {
+    const sessions = new Map<string, { conversationId: string }>();
+    const app = createAgentApi({
+      queueProducer: {} as never,
+      sessionManager: {
+        async getSession(id: string) {
+          return sessions.get(id) ?? null;
+        },
+        async setSession(s: { conversationId: string }) {
+          sessions.set(s.conversationId, s);
+        },
+        async touchSession() {},
+        async deleteSession() {},
+      } as never,
+      sseManager: {} as never,
+      publicGatewayUrl: "http://localhost:8787",
+      agentMetadataStore: {
+        async getMetadata(id: string) {
+          // Non-empty org metadata → tokenOrganizationId resolves, so the
+          // suffix WOULD be added on a non-watcher path. The watcher exemption
+          // is what keeps it out.
+          return id === "watcher-agent"
+            ? {
+                owner: { platform: "api", userId: "watcher-agent" },
+                organizationId: ORG_ID,
+              }
+            : null;
+        },
+      } as never,
+    });
+
+    // Worker token scoped to the watcher's agent + org (mirrors the internal
+    // service token the watcher dispatcher mints).
+    const token = generateWorkerToken("watcher-agent", "conv-w", "deploy-w", {
+      channelId: "api_test",
+      agentId: "watcher-agent",
+      organizationId: ORG_ID,
+    });
+
+    const res = await app.request("/api/v1/agents", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        agentId: "watcher-agent",
+        userId: "watcher-5",
+        thread: "watcher-5",
+        forceNew: true,
+        intent: { kind: "watcher_run", runId: 27, watcherId: 5 },
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { agentId?: string };
+    // Exact prod-proven shape: `<agentId>_watcher_<watcherId>_run_<runId>`.
+    expect(body.agentId).toBe("watcher-agent_watcher_5_run_27");
+    expect(body.agentId).not.toContain(ORG_ID);
+  });
 });

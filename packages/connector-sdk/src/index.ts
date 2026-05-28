@@ -143,6 +143,19 @@ export {
 } from './browser/launcher.js';
 export type { BrowserNetworkConfig, BrowserNetworkResult } from './browser-network.js';
 export { browserNetworkSync } from './browser-network.js';
+export type {
+  ChromeActionDispatcher,
+  ChromeActionInput,
+  ChromeActionOutput,
+  ExtensionNetworkConfig,
+  ExtensionNetworkPattern,
+  ExtensionNetworkResult,
+  InterceptedResponse,
+  NavigateObservation,
+  NetworkInterceptDrainObservation,
+  NetworkInterceptStartObservation,
+} from './extension-network.js';
+export { extensionNetworkSync } from './extension-network.js';
 export type { ReactionContext } from './reaction-sdk.js';
 export type { ReactionClient } from './reaction-client-types.js';
 export type {

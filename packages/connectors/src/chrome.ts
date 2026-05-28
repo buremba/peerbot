@@ -312,6 +312,115 @@ export default class ChromeConnector extends ConnectorRuntime {
           properties: { tab_id: { type: 'integer' } },
         },
       },
+      network_intercept_start: {
+        key: 'network_intercept_start',
+        name: 'Start network interception',
+        description:
+          'Attach CDP Network and start buffering response bodies whose URL matches one of `patterns`. Returns a `session_id` the caller uses with drain/stop. Idempotent on resume — passing the same `session_id` is a no-op after a service-worker eviction. Survives SW eviction (buffer persisted to chrome.storage.session).',
+        requiresApproval: false,
+        inputSchema: {
+          type: 'object',
+          required: ['patterns'],
+          properties: {
+            tab_id: tabIdSchema,
+            session_id: {
+              type: 'string',
+              description: 'Reuse an existing session id. Mints a fresh one when omitted.',
+            },
+            patterns: {
+              type: 'array',
+              minItems: 1,
+              items: {
+                oneOf: [
+                  { type: 'string', description: 'URL glob (** = any path; * = path segment).' },
+                  {
+                    type: 'object',
+                    required: ['regex'],
+                    properties: {
+                      regex: { type: 'string' },
+                      flags: { type: 'string' },
+                    },
+                    description: 'RegExp serialized for the wire.',
+                  },
+                ],
+              },
+              description:
+                'URL patterns to capture. Matched against response.url at receive time.',
+            },
+            max_buffer_responses: {
+              type: 'integer',
+              minimum: 1,
+              maximum: 1000,
+              description: 'FIFO buffer cap per session. Default 100.',
+            },
+            max_body_bytes: {
+              type: 'integer',
+              minimum: 1024,
+              maximum: 10 * 1024 * 1024,
+              description: 'Per-response body cap. Bodies above are truncated. Default 1 MiB.',
+            },
+          },
+        },
+        outputSchema: {
+          type: 'object',
+          properties: {
+            session_id: { type: 'string' },
+            tab_id: { type: 'integer' },
+            resumed: { type: 'boolean' },
+          },
+        },
+      },
+      network_intercept_drain: {
+        key: 'network_intercept_drain',
+        name: 'Drain buffered network responses',
+        description:
+          'Return all buffered intercepted responses for a session, atomically clearing the buffer.',
+        requiresApproval: false,
+        inputSchema: {
+          type: 'object',
+          required: ['session_id'],
+          properties: {
+            session_id: { type: 'string' },
+          },
+        },
+        outputSchema: {
+          type: 'object',
+          properties: {
+            session_id: { type: 'string' },
+            drained: { type: 'integer' },
+            missing: { type: 'boolean' },
+            responses: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  url: { type: 'string' },
+                  status: { type: 'integer' },
+                  mime: { type: 'string' },
+                  body: { type: 'string' },
+                  base64_encoded: { type: 'boolean' },
+                  truncated: { type: 'boolean' },
+                  ts: { type: 'integer' },
+                },
+              },
+            },
+          },
+        },
+      },
+      network_intercept_stop: {
+        key: 'network_intercept_stop',
+        name: 'Stop network interception',
+        description:
+          'Remove the CDP listener for the session and delete its buffer. Detaches the debugger when this is the last live session on the tab.',
+        requiresApproval: false,
+        inputSchema: {
+          type: 'object',
+          required: ['session_id'],
+          properties: {
+            session_id: { type: 'string' },
+          },
+        },
+      },
       evaluate: {
         key: 'evaluate',
         name: 'Evaluate JS',

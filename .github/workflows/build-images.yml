@@ -87,21 +87,19 @@ jobs:
 
   build-app:
     runs-on: ubuntu-latest
-    # Runs IN PARALLEL with build-worker + build-embeddings-service, but
-    # KEEPS the connector-parity-smoke gate that protects against shipping
-    # a broken worker image.
-    #
-    # Two separate gates were collapsed into one `needs` chain before:
-    #   1. connector-parity-smoke — runtime self-check of the worker
-    #      image. Without this we can ship a worker that crashes on boot
-    #      (the exact failure mode added in #774). MUST stay.
-    #   2. build-worker + build-embeddings-service — purely so the Flux-
-    #      watched app tag never appears before its sibling tags. Drops
-    #      ~7-10min of critical path. In practice build-app is the
-    #      longest job and finishes 2-3min after the others when launched
-    #      in parallel, so the app tag still appears LAST. kubelet's
-    #      image-pull back-off handles the rare outlier.
-    needs: [generate-tag, connector-parity-smoke]
+    # Push the app image LAST. Flux's ImageUpdateAutomation only watches
+    # the app image policy, but the chart applies one shared tag to app,
+    # worker, AND embeddings. If app pushed before worker or embeddings,
+    # Flux would roll the release to a tag whose sibling images don't yet
+    # exist (or never will, if a sibling build failed for an unrelated
+    # reason — disk pressure, registry hiccup, an unrelated Dockerfile
+    # regression). Earlier in this PR I tried parallelizing build-app for
+    # a ~7min critical-path win, but pi flagged the real (low-probability
+    # but not zero) failure window: a failed sibling build still lets
+    # build-app push the watched tag, and Flux rolls a half-existent
+    # tag. Reverted to the safe gate. The arm64-drop alone still cuts
+    # ~15-20min off the critical path, which is the bigger lever anyway.
+    needs: [generate-tag, build-worker, build-embeddings-service]
     permissions:
       contents: read
       packages: write

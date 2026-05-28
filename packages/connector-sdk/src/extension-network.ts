@@ -190,23 +190,33 @@ export async function extensionNetworkSync<TItem>(opts: {
   const tabId = blankNavObs.tab_id;
   sdkLogger.info({ tabId }, '[ExtensionNetwork] opened scratch tab');
 
-  // 2. Start the intercept on the empty tab BEFORE the real navigation
-  // happens, so every response fired during the page's initial render is
-  // captured. Anything that landed before start() is lost — and since the
-  // tab is at about:blank, nothing has landed yet.
-  const startObs = await opts.dispatcher.dispatch<NetworkInterceptStartObservation>(
-    'network_intercept_start',
-    {
-      tab_id: tabId,
-      patterns: opts.config.interceptPatterns,
-      max_buffer_responses: cfg.maxBufferResponses,
-      max_body_bytes: cfg.maxBodyBytes,
-      ...allowedOriginsInput,
-    }
-  );
-  const sessionId = startObs.session_id;
+  // sessionId is set once network_intercept_start returns. The cleanup
+  // block below stops the session iff it's set (so a thrown start() still
+  // closes the tab without trying to stop a never-started session). Pi v2
+  // suggested fix.
+  let sessionId: string | null = null;
 
   try {
+    // 2. Start the intercept on the empty tab BEFORE the real navigation
+    // happens, so every response fired during the page's initial render is
+    // captured. Anything that landed before start() is lost — and since the
+    // tab is at about:blank, nothing has landed yet.
+    const startObs = await opts.dispatcher.dispatch<NetworkInterceptStartObservation>(
+      'network_intercept_start',
+      {
+        tab_id: tabId,
+        patterns: opts.config.interceptPatterns,
+        max_buffer_responses: cfg.maxBufferResponses,
+        max_body_bytes: cfg.maxBodyBytes,
+        ...allowedOriginsInput,
+      }
+    );
+    sessionId = startObs.session_id;
+    // Capture the just-set session id in a non-nullable local so the typed
+    // drainInto calls below don't have to wrestle with the let-binding
+    // type. The outer sessionId variable stays nullable for the cleanup.
+    const liveSessionId: string = sessionId;
+
     // 3. Now navigate to the real URL. Initial XHRs land into the live
     // buffer.
     const navObs = await opts.dispatcher.dispatch<NavigateObservation>('navigate', {
@@ -229,7 +239,7 @@ export async function extensionNetworkSync<TItem>(opts: {
 
     // 4. give the initial render a chance to fire its XHRs, then drain.
     await sleep(cfg.responseTimeoutMs);
-    apiCallCount += await drainInto(items, opts, sessionId);
+    apiCallCount += await drainInto(items, opts, liveSessionId);
 
     // 5. scroll loop. Each iteration: trigger pagination, wait, drain.
     let prev = items.length;
@@ -246,7 +256,7 @@ export async function extensionNetworkSync<TItem>(opts: {
         });
       await trigger(tabId, opts.dispatcher);
       await sleep(cfg.scrollDelayMs);
-      apiCallCount += await drainInto(items, opts, sessionId);
+      apiCallCount += await drainInto(items, opts, liveSessionId);
 
       if (items.length === prev) {
         sdkLogger.info(

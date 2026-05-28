@@ -653,10 +653,9 @@ export async function createAuth(env: Env, request?: Request) {
 						// which is the fail-closed posture we want.
 						if (env.LOBU_SINGLE_USER === "1") {
 							// Exclude the synthetic install_operator row
-							// (auto-provisioned by ensureInstallOperator) AND the
-							// legacy bootstrap-user row (pre-PR #902) so the
-							// first human signup still proceeds on upgraded
-							// installs. See docs/install-operator-bootstrap.md.
+							// (auto-provisioned by ensureInstallOperator) so the
+							// first human signup still proceeds. See
+							// docs/install-operator-bootstrap.md.
 							const existing =
 								await ctx!.context.internalAdapter.countTotalUsers([
 									{
@@ -664,7 +663,6 @@ export async function createAuth(env: Env, request?: Request) {
 										operator: "ne",
 										value: "install_operator",
 									},
-									{ field: "id", operator: "ne", value: "bootstrap-user" },
 								]);
 							if (existing > 0) {
 								throw new APIError("FORBIDDEN", {

@@ -130,7 +130,7 @@ const SECRET_PATTERNS: Array<{ name: string; re: RegExp }> = [
   },
 ];
 
-export const secretScanGuardrail: Guardrail<"output"> = {
+const secretScanGuardrail: Guardrail<"output"> = {
   name: "secret-scan",
   stage: "output",
   async run(ctx: OutputGuardrailContext) {
@@ -157,7 +157,7 @@ const FORBIDDEN_TOOLS = new Set<string>([
   "drop_table",
 ]);
 
-export const forbiddenToolsGuardrail: Guardrail<"pre-tool"> = {
+const forbiddenToolsGuardrail: Guardrail<"pre-tool"> = {
   name: "forbidden-tools",
   stage: "pre-tool",
   async run(ctx: PreToolGuardrailContext) {

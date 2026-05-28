@@ -373,10 +373,9 @@ export async function getAuthConfig(
   const passkey = true;
   const singleUserMode = env.LOBU_SINGLE_USER === '1';
   // Filter out the synthetic install_operator row (auto-provisioned at
-  // boot in ensureInstallOperator) AND the legacy bootstrap-user row
-  // (pre-PR #902) — neither counts as "the install has a *human*".
-  // Real users include anyone signed up via the web UI. See
-  // docs/install-operator-bootstrap.md.
+  // boot in ensureInstallOperator) — it doesn't count as "the install
+  // has a *human*". Real users include anyone signed up via the web UI.
+  // See docs/install-operator-bootstrap.md.
   let hasUser = false;
   try {
     const sql = getDb();
@@ -384,7 +383,6 @@ export async function getAuthConfig(
       SELECT EXISTS(
         SELECT 1 FROM "user"
          WHERE principal_kind <> 'install_operator'
-           AND id <> 'bootstrap-user'
       ) AS has_user
     `) as unknown as Array<{ has_user: boolean }>;
     hasUser = !!rows[0]?.has_user;

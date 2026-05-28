@@ -1,5 +1,4 @@
 import {
-  decrypt,
   inferGrantKind,
   type AgentAccessStore,
   type AgentConfigStore,
@@ -96,46 +95,8 @@ function isSecretField(key: string): boolean {
   return SECRET_PATTERN.test(key);
 }
 
-const ENC_PREFIX = 'enc:v1:';
-
 function isRedactedSecretValue(value: unknown): value is string {
   return typeof value === 'string' && value.startsWith('***');
-}
-
-/**
- * Read-side legacy fallback: any `enc:v1:`-prefixed value is decrypted
- * back to plaintext so connections persisted before the move to
- * `secret://` ref indirection still load. New writes never produce
- * these — ChatInstanceManager normalizes secret fields into refs via
- * SecretStoreRegistry before saveConnection runs. Non-prefixed strings
- * (including `secret://` refs) pass through untouched.
- */
-function decryptLegacyEncryptedConfig(
-  config: Record<string, any>
-): Record<string, any> {
-  // Fast path (the common case): new writes never produce `enc:v1:` values,
-  // so don't clone the object unless there's actually something to decrypt.
-  let hasEncrypted = false;
-  for (const value of Object.values(config)) {
-    if (typeof value === 'string' && value.startsWith(ENC_PREFIX)) {
-      hasEncrypted = true;
-      break;
-    }
-  }
-  if (!hasEncrypted) return config;
-
-  const result = { ...config };
-  for (const [key, value] of Object.entries(result)) {
-    if (typeof value === 'string' && value.startsWith(ENC_PREFIX)) {
-      try {
-        result[key] = decrypt(value.slice(ENC_PREFIX.length));
-      } catch {
-        // Leave encrypted if decryption fails — surfaces as a
-        // resolveConfigForRuntime error at boot time.
-      }
-    }
-  }
-  return result;
 }
 
 function rowToConnection(row: Record<string, any>): StoredConnection {
@@ -144,7 +105,7 @@ function rowToConnection(row: Record<string, any>): StoredConnection {
     platform: row.platform,
     agentId: row.agent_id ?? undefined,
     organizationId: row.organization_id ?? undefined,
-    config: decryptLegacyEncryptedConfig(row.config ?? {}),
+    config: row.config ?? {},
     settings: row.settings ?? {},
     metadata: row.metadata ?? {},
     status: row.status,

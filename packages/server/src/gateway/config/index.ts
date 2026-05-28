@@ -39,9 +39,6 @@ const GATEWAY_DEFAULTS = {
   CLEANUP_INITIAL_DELAY_MS: TIME.FIVE_SECONDS_MS,
   CLEANUP_INTERVAL_MS: 60000,
   CLEANUP_VERY_OLD_DAYS: 7,
-  SOCKET_HEALTH_CHECK_INTERVAL_MS: 5 * TIME.MINUTE_MS,
-  SOCKET_STALE_THRESHOLD_MS: 15 * TIME.MINUTE_MS,
-  SOCKET_PROTECT_ACTIVE_WORKERS: true,
   LOBU_DEV_PROJECT_PATH: "/app",
   LOG_LEVEL: "INFO" as const,
   EMBEDDED_MAX_CONCURRENT_SESSIONS: 100,
@@ -125,11 +122,6 @@ export interface GatewayConfig {
     aws: {
       region?: string;
     };
-  };
-  health: {
-    checkIntervalMs: number;
-    staleThresholdMs: number;
-    protectActiveWorkers: boolean;
   };
 }
 
@@ -483,20 +475,6 @@ export function buildGatewayConfig(
       aws: {
         region: process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION,
       },
-    },
-    health: {
-      checkIntervalMs: getOptionalNumber(
-        "SOCKET_HEALTH_CHECK_INTERVAL_MS",
-        DEFAULTS.SOCKET_HEALTH_CHECK_INTERVAL_MS
-      ),
-      staleThresholdMs: getOptionalNumber(
-        "SOCKET_STALE_THRESHOLD_MS",
-        DEFAULTS.SOCKET_STALE_THRESHOLD_MS
-      ),
-      protectActiveWorkers: getOptionalBoolean(
-        "SOCKET_PROTECT_ACTIVE_WORKERS",
-        DEFAULTS.SOCKET_PROTECT_ACTIVE_WORKERS
-      ),
     },
   };
 

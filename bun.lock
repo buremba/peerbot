@@ -16,7 +16,7 @@
     },
     "packages/agent-worker": {
       "name": "@lobu/worker",
-      "version": "9.4.1",
+      "version": "10.2.0",
       "bin": {
         "lobu-worker": "./dist/index.js",
       },
@@ -43,7 +43,7 @@
     },
     "packages/cli": {
       "name": "@lobu/cli",
-      "version": "9.4.1",
+      "version": "10.2.0",
       "bin": {
         "lobu": "bin/lobu.js",
       },
@@ -128,7 +128,7 @@
     },
     "packages/client": {
       "name": "@lobu/client",
-      "version": "9.4.1",
+      "version": "10.2.0",
       "devDependencies": {
         "@hey-api/client-fetch": "^0.13.1",
         "@hey-api/openapi-ts": "^0.86.5",
@@ -137,7 +137,7 @@
     },
     "packages/connector-sdk": {
       "name": "@lobu/connector-sdk",
-      "version": "9.4.1",
+      "version": "10.2.0",
       "dependencies": {
         "@lobu/core": "workspace:*",
         "@sinclair/typebox": "^0.34.41",
@@ -161,7 +161,7 @@
     },
     "packages/connector-worker": {
       "name": "@lobu/connector-worker",
-      "version": "9.4.1",
+      "version": "10.2.0",
       "bin": {
         "connector-worker": "./dist/bin.js",
       },
@@ -198,7 +198,7 @@
     },
     "packages/core": {
       "name": "@lobu/core",
-      "version": "9.4.1",
+      "version": "10.2.0",
       "dependencies": {
         "@opentelemetry/api": "^1.9.0",
         "@opentelemetry/exporter-trace-otlp-grpc": "^0.57.0",
@@ -217,7 +217,7 @@
     },
     "packages/embeddings": {
       "name": "@lobu/embeddings",
-      "version": "9.4.1",
+      "version": "10.2.0",
       "dependencies": {
         "@hono/node-server": "^1.13.7",
         "@xenova/transformers": "^2.17.2",
@@ -249,7 +249,7 @@
     },
     "packages/openclaw-plugin": {
       "name": "@lobu/openclaw-plugin",
-      "version": "9.4.1",
+      "version": "10.2.0",
       "dependencies": {
         "@lobu/core": "workspace:*",
       },
@@ -334,7 +334,7 @@
     },
     "packages/pgvector-embedded": {
       "name": "@lobu/pgvector-embedded",
-      "version": "9.4.1",
+      "version": "10.2.0",
       "devDependencies": {
         "@types/node": "20.19.9",
         "typescript": "^5.7.2",
@@ -342,7 +342,7 @@
     },
     "packages/promptfoo-provider": {
       "name": "@lobu/promptfoo-provider",
-      "version": "9.4.1",
+      "version": "10.2.0",
       "devDependencies": {
         "@types/node": "^20.10.0",
         "typescript": "^5.3.3",
@@ -379,7 +379,6 @@
         "ajv-formats": "^3.0.1",
         "better-auth": "^1.4.10",
         "chat": "^4.26.0",
-        "commander": "^14.0.1",
         "cron-parser": "^5.5.0",
         "handlebars": "^4.7.9",
         "hono": "^4.10.4",
@@ -391,7 +390,6 @@
         "postgres": "^3.4.7",
         "react": "^19.2.5",
         "resend": "^6.6.0",
-        "yaml": "^2.7.1",
         "zod": "^4.4.0",
       },
       "devDependencies": {

@@ -534,14 +534,11 @@ credentialRoutes.post('/local-init', async (c) => {
   // row (auto-provisioned at boot in ensureInstallOperator). Ordering by
   // principal_kind keeps 'install_operator' last so a human comes first
   // when both exist; on a fresh install before signup, only the operator
-  // row exists and it gets minted credentials. The legacy bootstrap-user
-  // (pre-PR #902) is excluded entirely — upgraded installs that still
-  // carry it should still see the install_operator / human flow. See
+  // row exists and it gets minted credentials. See
   // docs/install-operator-bootstrap.md.
   const userRows = (await sql`
     SELECT id, email, name, principal_kind
       FROM "user"
-     WHERE id <> 'bootstrap-user'
      ORDER BY
        CASE WHEN principal_kind = 'install_operator' THEN 1 ELSE 0 END ASC,
        "createdAt" ASC

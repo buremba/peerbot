@@ -56,11 +56,6 @@ function createGatewayConfig(
     },
     auth: {},
     lobuMemory: {},
-    health: {
-      checkIntervalMs: 1000,
-      staleThresholdMs: 2000,
-      protectActiveWorkers: true,
-    },
     secrets: {
       aws: {},
     },

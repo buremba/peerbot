@@ -5,9 +5,9 @@
  * Pins two contracts:
  *
  *  1. The guard counts real humans correctly — the synthetic
- *     install_operator row and the legacy bootstrap-user row are
- *     excluded, so the FIRST human signup proceeds and the SECOND is
- *     refused with SIGN_UP_DISABLED_IN_SINGLE_USER_MODE.
+ *     install_operator row is excluded, so the FIRST human signup
+ *     proceeds and the SECOND is refused with
+ *     SIGN_UP_DISABLED_IN_SINGLE_USER_MODE.
  *
  *  2. The guard does not deadlock. Sign-up runs inside Better Auth's
  *     runWithTransaction, which reserves a pooled connection. The hook must
@@ -142,11 +142,10 @@ describe("single-user-mode sign-up guard", () => {
 		expect(res.body.code).toBe("SIGN_UP_DISABLED_IN_SINGLE_USER_MODE");
 	});
 
-	it("does not count install_operator or bootstrap-user as the existing human", async () => {
+	it("does not count install_operator as the existing human", async () => {
 		await seedUser("user_install_seed", "install_operator");
-		await seedUser("bootstrap-user", "human");
 
-		// Neither seeded row is a real human, so the first human signup
+		// The seeded row is not a real human, so the first human signup
 		// must still be admitted.
 		const first = await signUp({
 			email: "first@local.test",

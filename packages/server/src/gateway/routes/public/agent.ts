@@ -683,9 +683,18 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     const tokenOrganizationId = metadataOrgId ?? callerOrgId;
 
     const watcherIntent = intent?.kind === "watcher_run" ? intent : null;
+    // userId backs `conversationId = ${agentId}_${userId}[_${thread}]`, which
+    // is the session-store key. For pinned agents the agentId is per-org so
+    // collisions are bounded to a single tenant. For the default-agent path
+    // agentId is a GLOBAL constant (DEFAULT_AGENT_ID) — so the userId must
+    // be unique-per-caller to keep conversationIds globally unique and
+    // prevent cross-tenant session resume. Prefer the request body, then the
+    // authenticated caller's userId (per-org-unique via the auth bridge),
+    // then fall back to agentId (only for pinned agents where that's safe).
+    const authUserId = c.get("authContext")?.userId;
     const userId = watcherIntent
       ? `watcher_${watcherIntent.watcherId}`
-      : requestedUserId || agentId;
+      : requestedUserId || authUserId || agentId;
     const effectiveThread = watcherIntent
       ? `run_${watcherIntent.runId}`
       : thread;
@@ -702,9 +711,24 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     const channelId = `api_${userId}`;
     const deploymentName = `api-${agentId.slice(0, 8)}`;
 
-    // Try to resume existing session (unless forceNew is requested)
+    // Try to resume existing session (unless forceNew is requested).
+    // Refuse cross-tenant resume defensively: even though the userId fallback
+    // above is per-org-unique for the default-agent path, a future caller that
+    // bypasses the auth bridge or passes a colliding requestedUserId would
+    // otherwise resume another tenant's session and leak its worker token.
     if (!effectiveForceNew) {
       const existing = await sessMgr.getSession(conversationId);
+      if (
+        existing &&
+        existing.organizationId &&
+        tokenOrganizationId &&
+        existing.organizationId !== tokenOrganizationId
+      ) {
+        logger.warn(
+          `Refusing to resume session ${conversationId} for org ${tokenOrganizationId}: belongs to org ${existing.organizationId}`
+        );
+        return c.json({ success: false, error: "Forbidden" }, 403);
+      }
       if (existing) {
         // Reuse existing session — touch lastActivity and return existing token
         await sessMgr.touchSession(conversationId);

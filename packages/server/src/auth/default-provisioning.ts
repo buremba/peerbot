@@ -161,13 +161,12 @@ async function backfillDefaultAgent(
   const row = rows[0];
   if (!row) return;
 
-  const ownerLookup = (await client`
-    SELECT (metadata::jsonb)->>'personal_org_for_user_id' AS owner_user_id
-      FROM "organization"
-     WHERE id = ${organizationId}
-     LIMIT 1
-  `) as unknown as Array<{ owner_user_id: string | null }>;
-  const ownerUserId = ownerLookup[0]?.owner_user_id ?? null;
+  const orgMetadata = await readOrgMetadata(client, organizationId);
+  const ownerUserIdRaw = orgMetadata['personal_org_for_user_id'];
+  const ownerUserId =
+    typeof ownerUserIdRaw === 'string' && ownerUserIdRaw.length > 0
+      ? ownerUserIdRaw
+      : null;
 
   const installedNow = Array.isArray(row.installed_providers)
     ? (row.installed_providers as Array<{ providerId: string }>)
@@ -270,13 +269,12 @@ export async function ensureDefaultAgent(
     // check in `verifyOwnedAgentAccess` recognizes this user as the agent's
     // owner: without it, a PAT session for the user can't open a session
     // against their own org's default agent.
-    const ownerRows = (await client`
-      SELECT (metadata::jsonb)->>'personal_org_for_user_id' AS owner_user_id
-        FROM "organization"
-       WHERE id = ${organizationId}
-       LIMIT 1
-    `) as unknown as Array<{ owner_user_id: string | null }>;
-    const ownerUserId = ownerRows[0]?.owner_user_id ?? null;
+    const orgMetadataForInsert = await readOrgMetadata(client, organizationId);
+    const ownerForInsertRaw = orgMetadataForInsert['personal_org_for_user_id'];
+    const ownerUserId =
+      typeof ownerForInsertRaw === 'string' && ownerForInsertRaw.length > 0
+        ? ownerForInsertRaw
+        : null;
 
     // Insert the default agent. The PK is (organization_id, id) so we can
     // ON CONFLICT DO NOTHING to guard against a parallel boot.

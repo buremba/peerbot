@@ -9,7 +9,10 @@ installed skill or plugin.
 An open-source, event-sourced backend for AI agents:
 
 - **Connectors** pull from external sources (GitHub, Slack, a website, a webhook,
-  a CSV) and emit **events**.
+  a CSV) via scheduled **feeds** that collect incrementally — each run picks up
+  only what's new since the last (checkpointed), so nothing is re-ingested — and
+  emit **events**. When onboarding a user, explain this model in plain terms before
+  writing config so they understand what they're building.
 - **Memory** turns events into a structured, append-only knowledge graph of typed
   **entities** and **relationships**.
 - **Agents** react to messages in real time and answer over chat platforms, HTTP,
@@ -22,11 +25,11 @@ on http://localhost:{{GATEWAY_PORT}}.
 
 ## Prerequisites
 
-Before `lobu run`, the host needs: Node 22-24 (25+ is rejected — `isolated-vm` has
-no build), a reachable Postgres with the `pgvector` extension, and one LLM provider
-key in `.env`. `lobu run` starts an embedded PostgreSQL by default; set
-`DATABASE_URL` only to use an external Postgres instead. If a prerequisite is
-missing, stop and help the user install it — don't work around it.
+Before `lobu run`, the host needs Node 22-24 (25+ is rejected — `isolated-vm` has
+no build) and one LLM provider key in `.env`. Postgres is built in: `lobu run`
+starts an embedded PostgreSQL (with `pgvector`); set `DATABASE_URL` only to use an
+external Postgres instead. If a prerequisite is missing, stop and help the user
+install it — don't work around it.
 
 ## Layout
 
@@ -57,7 +60,7 @@ https://github.com/lobu-ai/lobu/blob/main/examples/lobu-crm/lobu.config.ts
 ```ts
 const agent = defineAgent({
   id: "{{PROJECT_NAME}}",
-  dir: ".",
+  // dir defaults to ./agents/<id> (where init scaffolds IDENTITY.md / SOUL.md / USER.md)
   name: "{{PROJECT_NAME}}",
   description: "<one sentence: what it does>",
   providers: [
@@ -106,11 +109,13 @@ column in the admin UI.
 ### Connection (a bundled connector — preferred)
 
 ```ts
+const ghAuth = defineAuthProfile({ slug: "gh", connector: "github", authKind: "oauth_account", name: "GitHub" });
+
 const gh = defineConnection({
   slug: "github-main",
   connector: "github",
   name: "GitHub",
-  authProfile: defineAuthProfile({ slug: "gh", connector: "github", authKind: "oauth_account", name: "GitHub" }),
+  authProfile: ghAuth, // declare the profile as a const, then list it in defineConfig({ authProfiles })
   config: { repo_owner: "you", repo_name: "repo" },
   feeds: [{ feed: "issues", name: "Issues", schedule: "0 */6 * * *", config: { repo_owner: "you", repo_name: "repo" } }],
 });
@@ -166,7 +171,7 @@ export default defineConfig({
   agents: [agent],
   entities: [ticket],
   connections: [gh],
-  authProfiles: [/* ... */],
+  authProfiles: [ghAuth],
   watchers: [digest],
 });
 ```

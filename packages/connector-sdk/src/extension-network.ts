@@ -20,8 +20,9 @@
  * need to know how the run is routed (sync vs queued) — they just await
  * the dispatcher.
  *
- * Non-goal: this does NOT replace `browserNetworkSync` yet. The two
- * coexist while we migrate, gated per connector via a config flag.
+ * Migration scope: LinkedIn is fully on this path (no Playwright
+ * fallback). Revolut and X still use `browserNetworkSync`; we keep that
+ * helper alive for them and drop it once every consumer has migrated.
  */
 
 import { sdkLogger } from './logger.js';
@@ -176,11 +177,10 @@ export async function extensionNetworkSync<TItem>(opts: {
     ? { allowed_origins: opts.config.allowedOrigins }
     : {};
 
-  // 1. Open an about:blank tab WITHOUT navigating yet. We need the Network
-  // domain listener live BEFORE the page starts loading — otherwise the
+  // 1. Open an about:blank tab WITHOUT navigating yet. The Network domain
+  // listener must be live BEFORE the page starts loading — otherwise the
   // first batch of Voyager XHRs the page fires during initial render
-  // completes before our start() listener attaches and we miss them. Pi
-  // review caught this; LinkedIn was the canonical case.
+  // completes before our start() listener attaches and we miss them.
   const blankNavObs = await opts.dispatcher.dispatch<NavigateObservation>('navigate', {
     url: 'about:blank',
     open_in_new_tab: true,

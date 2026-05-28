@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { getOwnedOwlettoExtensionIds, isAllowedCorsOrigin } from '../../index';
 import { __resetPublicOriginCachesForTests } from '../../utils/public-origin';
 
-// The CORS callback at index.ts:285 must accept `chrome-extension://<our id>`
+// The Hono CORS middleware in packages/server/src/index.ts must accept
+// `chrome-extension://<our id>`
 // or the Owletto service worker's `/api/workers/poll` fetch fails the
 // preflight with "No 'Access-Control-Allow-Origin' header is present on the
 // requested resource" — exactly the regression we're closing.

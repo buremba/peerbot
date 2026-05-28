@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
   ConnectorAuthSchema,
   ConnectorDefinition,
@@ -871,23 +871,29 @@ export async function loadProjectConfig(
     throw new ValidationError(`No lobu.config.ts found in ${cwd}`);
   }
   const { createJiti } = await import("jiti");
-  const jiti = createJiti(pathToFileURL(configPath).href);
+  // Resolve the SDK imports the config will reference (`@lobu/cli/config`,
+  // `@lobu/connector-sdk`) against the running CLI's own copies — not the
+  // project's `node_modules`. This lets a freshly-scaffolded project
+  // `validate`/`run` with zero install: the user has the CLI, that's enough.
+  // Falls through silently if a symbol can't be resolved from here (the
+  // catch-all error below still surfaces real problems).
+  const alias: Record<string, string> = {};
+  for (const spec of ["@lobu/cli/config", "@lobu/connector-sdk"]) {
+    try {
+      alias[spec] = fileURLToPath(import.meta.resolve(spec));
+    } catch {
+      // CLI dist may not expose this symbol in some packaging layouts; skip.
+    }
+  }
+  const jiti = createJiti(
+    pathToFileURL(configPath).href,
+    Object.keys(alias).length > 0 ? { alias } : undefined
+  );
   let project: unknown;
   try {
     project = await jiti.import(configPath, { default: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    // A fresh `lobu init` writes package.json declaring @lobu/cli but doesn't
-    // install — jiti then can't resolve the import. Point the user at the fix
-    // instead of surfacing a raw module-resolution error.
-    if (
-      /@lobu\/(cli|connector-sdk)/.test(message) &&
-      !existsSync(resolve(cwd, "node_modules"))
-    ) {
-      throw new ValidationError(
-        `Failed to load lobu.config.ts — its @lobu/cli/config import can't be resolved because dependencies aren't installed. Run \`bun install\` (or npm/pnpm install) in ${cwd} first.`
-      );
-    }
     throw new ValidationError(`Failed to load lobu.config.ts — ${message}`);
   }
   if (

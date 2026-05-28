@@ -64,7 +64,8 @@ const agent = defineAgent({
   name: "{{PROJECT_NAME}}",
   description: "<one sentence: what it does>",
   providers: [
-    { id: "anthropic", model: "anthropic/claude-...", key: secret("ANTHROPIC_API_KEY") },
+    // init prewrites this from --provider; canonical ids include `claude`, `openai`, `z-ai`.
+    { id: "claude", model: "claude-sonnet-4-20250514", key: secret("ANTHROPIC_API_KEY") },
   ],
   // skills: [skillFromFile("./skills/<name>")],
   // network: { allowed: ["api.example.com"] }, // egress allowlist

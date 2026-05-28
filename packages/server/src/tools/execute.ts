@@ -4,11 +4,12 @@
  * Used by both the MCP Streamable HTTP handler and the REST API proxy.
  */
 
+import { TypeCompiler, type TypeCheck } from '@sinclair/typebox/compiler';
 import type { Context } from 'hono';
 import { getRequiredAccessLevel, hasRequiredMcpScope, isPublicReadable } from '../auth/tool-access';
 import type { Env } from '../index';
 import { trackMCPToolCall } from '../sentry';
-import { ToolNotRegisteredError } from '../utils/errors';
+import { ToolNotRegisteredError, ToolUserError } from '../utils/errors';
 import { getConfiguredPublicOrigin } from '../utils/public-origin';
 import { recordToolInvocationAudit } from './audit';
 import { listOrganizations } from './organizations';
@@ -146,6 +147,71 @@ export function checkToolAccess(toolName: string, args: unknown, authCtx: AuthCo
 }
 
 /**
+ * Tools whose args are TypeBox-validated at the boundary before the handler
+ * runs. Deliberately narrow: only the two SDK-scripting tools where a missing
+ * field produced an opaque internal stack trace
+ * (`Cannot read properties of undefined (reading 'replace')` from the sandbox
+ * compiler). The `manage_*` tools are intentionally NOT here — they carry
+ * `_id: Type.Number` round-trip fields and `additionalProperties: false`
+ * schemas that lenient handlers tolerated, so flipping strict validation on
+ * for them could 400 previously-working external MCP calls. Widening this set
+ * requires a per-tool audit — tracked in lobu#1137
+ * ("Audit + enable global tool-arg validation safely").
+ */
+const VALIDATED_TOOLS = new Set(['query_sdk', 'run_sdk']);
+
+/**
+ * Per-tool compiled TypeBox validator cache.
+ *
+ * Tool registrations carry their TypeBox schema as `inputSchema`. Without
+ * validating at the boundary, a missing/mistyped field tunnels into the
+ * handler and surfaces as a stack trace from deep inside the implementation
+ * (e.g. `query_sdk` without `script` exploded as
+ * `Cannot read properties of undefined (reading 'replace')` from the sandbox
+ * compiler). Compiling once and reusing is what every other validator in
+ * this codebase does — see `manage_schedules.ts`, `watcher-execution-config.ts`.
+ *
+ * Tools whose schema isn't a TypeBox object (e.g. unusual hand-rolled JSON
+ * Schema) fall back to no validation rather than crashing the boundary; the
+ * handler stays responsible for its own input checks in that case.
+ */
+const validatorCache = new Map<string, TypeCheck<any> | null>();
+
+function getValidator(toolName: string, schema: unknown): TypeCheck<any> | null {
+  if (validatorCache.has(toolName)) {
+    return validatorCache.get(toolName) ?? null;
+  }
+  let validator: TypeCheck<any> | null = null;
+  try {
+    validator = TypeCompiler.Compile(schema as any);
+  } catch {
+    validator = null;
+  }
+  validatorCache.set(toolName, validator);
+  return validator;
+}
+
+function validateToolArgs(toolName: string, schema: unknown, args: unknown): void {
+  if (!schema || typeof schema !== 'object') return;
+  const validator = getValidator(toolName, schema);
+  if (!validator) return;
+  if (validator.Check(args)) return;
+  // Deduplicate by path — TypeBox emits both `Expected required property` and
+  // `Expected <type>` against the same missing field, which would otherwise
+  // duplicate the field name in the error message.
+  const seen = new Set<string>();
+  const errs: string[] = [];
+  for (const e of validator.Errors(args)) {
+    const path = e.path || '/';
+    if (seen.has(path)) continue;
+    seen.add(path);
+    errs.push(`${path}: ${e.message}`);
+    if (errs.length >= 3) break;
+  }
+  throw new ToolUserError(`Invalid arguments for ${toolName}: ${errs.join('; ')}`);
+}
+
+/**
  * Execute a tool by name with access control and Sentry tracking.
  * Returns the raw tool result (caller decides formatting).
  */
@@ -175,6 +241,23 @@ export async function executeTool(
   const tool = getTool(toolName)!;
   const toolContext = toToolContext(authCtx);
   const startTime = Date.now();
+
+  // Validate args against the tool's TypeBox schema BEFORE the handler runs,
+  // so a missing/mistyped field returns a clean 400 with the offending name
+  // rather than a stack-trace from deep inside the handler.
+  //
+  // Scoped to `query_sdk`/`run_sdk` only — the two tools that produced the
+  // user-visible failure this fix targets (a missing `script` exploded as
+  // `Cannot read properties of undefined (reading 'replace')` from inside the
+  // sandbox compiler). Enabling strict validation across ALL tools at once is
+  // a much wider blast radius: several `manage_*` tools have `_id: Type.Number`
+  // fields and `additionalProperties: false` schemas that lenient handlers
+  // historically tolerated, and live external MCP clients may rely on that.
+  // Rolling validation out globally needs a per-tool round-trip audit first —
+  // tracked in lobu#1137.
+  if (VALIDATED_TOOLS.has(toolName)) {
+    validateToolArgs(toolName, tool.inputSchema, args);
+  }
 
   try {
     const result = await trackMCPToolCall(toolName, args, () => tool.handler(args, env, toolContext));

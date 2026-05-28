@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { GITHUB_URL } from "../lib/urls";
 import { getLobuLoginUrl } from "../use-case-showcases";
 
-const GITHUB_URL = "https://github.com/lobu-ai/lobu";
 const GITHUB_STARS_BADGE =
   "https://img.shields.io/github/stars/lobu-ai/lobu?style=social";
 

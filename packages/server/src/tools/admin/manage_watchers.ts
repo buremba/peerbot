@@ -2461,6 +2461,20 @@ async function handleList(
       delete (rest as Record<string, unknown>).description;
     }
 
+    // Stringify `watcher_id` to match the rest of the manage_watchers
+    // contract: `handleCreate` returns `String(watcherId)`, the input schema
+    // declares `watcher_id` as a string, and downstream callers (CLI
+    // `apply-cmd.ts` → `updateWatcher`, MCP tools) forward whatever they
+    // receive straight back. Without the cast the raw integer leaks through
+    // and a follow-up `update`/`upgrade` call fails the schema gate with
+    // `/watcher_id: Expected string`. Same bug pattern for `current_version_id`
+    // (kept as-is — no consumer feeds it back into manage_watchers today).
+    if ((rest as Record<string, unknown>).watcher_id != null) {
+      (rest as Record<string, unknown>).watcher_id = String(
+        (rest as Record<string, unknown>).watcher_id,
+      );
+    }
+
     return {
       ...rest,
       organization_slug: orgSlug,

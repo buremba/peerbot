@@ -627,30 +627,6 @@ export async function publicRestGetOrganization(c: Context<{ Bindings: Env }>) {
 }
 
 /**
- * GET /api/:orgSlug/public/agents
- * Sanitized agent list for non-members of a public workspace.
- * Only name/description/id are exposed — no credentials, MCP server URLs,
- * auth profiles, or configuration.
- */
-export async function publicRestListAgents(c: Context<{ Bindings: Env }>) {
-  return withPublicOrg(c, async (organizationId) => {
-    const sql = getDb();
-    const rows = await sql<{
-      id: string;
-      name: string;
-      description: string | null;
-      created_at: string;
-    }>`
-      SELECT id, name, description, created_at
-      FROM agents
-      WHERE organization_id = ${organizationId}
-      ORDER BY created_at ASC
-    `;
-    return { agents: rows };
-  });
-}
-
-/**
  * Cache keys safe to forward to anonymous / non-member viewers of a public org.
  * Must exclude notifications, member-admin, and connector-admin events.
  */

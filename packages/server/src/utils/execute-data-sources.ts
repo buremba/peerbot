@@ -386,6 +386,58 @@ function buildScopedQuery(
 // ============================================
 
 /**
+ * Inspect a SELECT/WITH query's top-level projection and report whether it
+ * surfaces an `id` column.
+ *
+ * Watcher-mode content aggregation keys every row by `row.id` (see
+ * queryContentData in get_content.ts) and the signed window_token only carries
+ * those numeric ids. A source query that omits `id` (e.g. `SELECT origin_id,
+ * payload_text FROM events`) therefore produces zero content_ids — which makes
+ * complete_window silently report `content_linked: 0` and skip the reaction
+ * even though the agent received the rows. We catch that at save time instead.
+ *
+ * A projection "has id" if it contains a `*` star (bare or table-qualified),
+ * a bare `id` column reference, or any column aliased `AS id`.
+ *
+ * Returns true on any parse failure: this is a best-effort guard, not a
+ * security control, and we never want a parser edge case to block a save.
+ */
+export function queryProjectsIdColumn(query: string): boolean {
+  try {
+    const forParsing = query.trim().replace(/\{\{\w+(?:\.\w+)?\}\}/g, '0');
+    const ast = sqlParser.astify(forParsing, { database: 'PostgreSql' });
+    const stmt = (Array.isArray(ast) ? ast[0] : ast) as Record<string, unknown> | undefined;
+    const columns = stmt?.columns;
+    if (!Array.isArray(columns)) {
+      // `SELECT *` is sometimes represented as a non-array; treat unknown
+      // shapes as "has id" so we never block a save we can't analyze.
+      return true;
+    }
+    for (const col of columns as Array<Record<string, unknown>>) {
+      const as = col.as;
+      if (typeof as === 'string' && as.toLowerCase() === 'id') return true;
+
+      const expr = col.expr as Record<string, unknown> | undefined;
+      if (!expr || expr.type !== 'column_ref') continue;
+
+      const column = expr.column;
+      // Star projection: `*` or `alias.*`
+      if (column === '*') return true;
+      // Bare column reference: { expr: { value: 'id' } }
+      const name =
+        typeof column === 'string'
+          ? column
+          : ((column as Record<string, unknown>)?.expr as Record<string, unknown> | undefined)
+              ?.value;
+      if (typeof name === 'string' && name.toLowerCase() === 'id') return true;
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Validate a data source query.
  * Checks: SELECT/WITH prefix, forbidden ops, SQL syntax, schema-qualified refs.
  * When `parse` is true (save-time), also validates syntax and table refs.

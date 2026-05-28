@@ -5,7 +5,7 @@
  * manage_watchers, manage_entity_schema, manage_classifiers, etc.
  */
 
-import type { DbClient } from '../../../db/client';
+import { type DbClient, pgBigintArray } from '../../../db/client';
 
 /**
  * Valid tables for requireExists. Uses a whitelist so we can safely
@@ -46,6 +46,42 @@ export async function requireExists(
     const displayLabel = label ?? table.replace(/_/g, ' ');
     throw new Error(`${displayLabel} ${id} not found`);
   }
+}
+
+/**
+ * Validate that every entity id in `entityIds` belongs to `organizationId`.
+ *
+ * Feeds and watchers carry an `entity_ids` array used to link synced events to
+ * in-org entities. A cross-org entity id (e.g. a feed in org A pointing at an
+ * entity owned by org B) means synced events never link to a valid in-org
+ * entity — a silent data-correctness bug. We reject it at create/update time.
+ *
+ * Returns the deduped list of ids that ARE in the org (empty/undefined input
+ * returns `[]`). Throws an Error naming the offending ids when any id is
+ * missing or belongs to another org. `entities` has no soft-delete column, so
+ * a row simply present + org-scoped is sufficient.
+ */
+export async function assertEntityIdsInOrg(
+  sql: DbClient,
+  organizationId: string,
+  entityIds: number[] | null | undefined
+): Promise<number[]> {
+  const requested = [...new Set((entityIds ?? []).map(Number).filter(Number.isFinite))];
+  if (requested.length === 0) return [];
+
+  const rows = await sql<{ id: number }>`
+    SELECT id FROM entities
+    WHERE organization_id = ${organizationId}
+      AND id = ANY(${pgBigintArray(requested)}::bigint[])
+  `;
+  const found = new Set(rows.map((r) => Number(r.id)));
+  const invalid = requested.filter((id) => !found.has(id));
+  if (invalid.length > 0) {
+    throw new Error(
+      `entity_ids do not belong to this organization (or do not exist): ${invalid.join(', ')}`
+    );
+  }
+  return requested;
 }
 
 /**

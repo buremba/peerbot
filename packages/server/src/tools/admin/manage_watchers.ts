@@ -57,6 +57,7 @@ import {
 } from '../../watchers/classifier-extraction';
 import { advanceWatcherSchedule } from '../../watchers/automation';
 import { compileReactionScript, executeReaction } from '../../watchers/reaction-executor';
+import { queryProjectsIdColumn } from '../../utils/execute-data-sources';
 import { validateTemplate } from '../../watchers/renderer';
 import { validateClassifierSourcePaths, validateExtractionSchema } from '../../watchers/validator';
 import type { ToolContext } from '../registry';
@@ -66,7 +67,7 @@ import {
   assertValidExecutionConfig,
   WatcherExecutionConfigSchema,
 } from './watcher-execution-config';
-import { getNextNumericId, requireExists } from './helpers/db-helpers';
+import { assertEntityIdsInOrg, getNextNumericId, requireExists } from './helpers/db-helpers';
 
 // Initialize AJV for JSON Schema validation
 // removeAdditional: true strips fields like 'embedding' that workers add but aren't in the schema
@@ -864,6 +865,13 @@ function validateWatcherConfig(input: {
       if (!trimmed.startsWith('SELECT') && !trimmed.startsWith('WITH')) {
         return `source "${source.name}": query must be a SELECT statement (read-only)`;
       }
+      // Watcher-mode content aggregation keys every row by `id` and the signed
+      // window_token only carries those ids; a source that omits `id` yields
+      // content_linked: 0 at complete_window and SILENTLY skips the reaction.
+      // Reject it at save time so the failure is loud, not invisible.
+      if (!queryProjectsIdColumn(source.query)) {
+        return `source "${source.name}": query must project an "id" column (e.g. SELECT id, ... FROM events). Without it the reaction is silently skipped because no content can be linked to the window.`;
+      }
     }
   }
 
@@ -1213,12 +1221,18 @@ async function handleCreateFromVersion(
     );
   }
 
-  // Fetch entity names for name pattern substitution
+  // Reject cross-org entity_ids before cloning: a watcher attached to another
+  // org's entity links its synced/extracted content to a non-existent in-org
+  // entity (silent data-correctness bug). Names are fetched org-scoped below.
+  await assertEntityIdsInOrg(sql, organizationId, args.entity_ids);
+
+  // Fetch entity names for name pattern substitution (org-scoped)
   const entityRows = await sql`
     SELECT e.id, e.name, et.slug AS entity_type, e.slug
     FROM entities e
     JOIN entity_types et ON et.id = e.entity_type_id
-    WHERE e.id = ANY(${`{${args.entity_ids.join(',')}}`}::bigint[])
+    WHERE e.organization_id = ${organizationId}
+      AND e.id = ANY(${`{${args.entity_ids.join(',')}}`}::bigint[])
   `;
   const entityMap = new Map(entityRows.map((e: any) => [Number(e.id), e]));
 

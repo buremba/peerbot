@@ -26,6 +26,7 @@ import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../../utils/run-statuses'
 import type { ToolContext } from '../registry';
 import { routeAction } from './action-router';
 import { getDefaultSchedule } from './helpers/connection-helpers';
+import { assertEntityIdsInOrg } from './helpers/db-helpers';
 import { resolveFeedDisplayName } from './helpers/feed-helpers';
 import { PaginationFields } from './schemas/common-fields';
 
@@ -338,6 +339,13 @@ async function handleCreateFeed(
   }
   // Don't schedule a first run for a feed whose connection is still pending auth.
   const nextRunAtVal = feedInitialStatus === 'active' ? nextRunAt(schedule) : null;
+  // Reject cross-org entity_ids: a feed pointing at another org's entity links
+  // synced events to a non-existent in-org entity (silent data-correctness bug).
+  try {
+    await assertEntityIdsInOrg(sql, organizationId, args.entity_ids);
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
   const entityIdsValue =
     args.entity_ids && args.entity_ids.length > 0 ? pgBigintArray(args.entity_ids) : null;
 
@@ -394,6 +402,14 @@ async function handleUpdateFeed(
     return { error: 'Feed not found' };
   }
 
+  // Reject cross-org entity_ids on update too (skip when clearing to []).
+  if (args.entity_ids !== undefined && args.entity_ids.length > 0) {
+    try {
+      await assertEntityIdsInOrg(sql, organizationId, args.entity_ids);
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  }
   const entityIdsValue =
     args.entity_ids !== undefined
       ? args.entity_ids.length > 0

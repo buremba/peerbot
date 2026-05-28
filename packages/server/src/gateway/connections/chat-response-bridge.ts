@@ -44,6 +44,11 @@ const logger = createLogger("chat-response-bridge");
  * — for surfacing in user-facing error messages (e.g. NO_MODEL_CONFIGURED tells
  * the user where to connect a provider). Returns null when any required piece
  * is missing; callers fall back to non-linked guidance.
+ *
+ * `manager.publicGatewayUrl` is the gateway base, which in embedded mode
+ * includes the `/lobu` path suffix (the gateway is mounted at `/lobu` under
+ * the web app). Admin UI routes live at the web origin (`/<slug>/agents/...`)
+ * NOT under `/lobu`, so strip a trailing `/lobu` before composing the link.
  */
 async function buildAgentSettingsUrl(
   publicGatewayUrl: string | undefined,
@@ -53,7 +58,10 @@ async function buildAgentSettingsUrl(
   if (!publicGatewayUrl || !organizationId || !agentId) return null;
   const slug = await getOrganizationSlug(organizationId).catch(() => null);
   if (!slug) return null;
-  return `${publicGatewayUrl.replace(/\/+$/, "")}/${slug}/agents/${encodeURIComponent(agentId)}`;
+  const webOrigin = publicGatewayUrl
+    .replace(/\/+$/, "")
+    .replace(/\/lobu$/, "");
+  return `${webOrigin}/${slug}/agents/${encodeURIComponent(agentId)}`;
 }
 
 /**

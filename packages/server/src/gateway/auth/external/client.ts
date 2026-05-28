@@ -43,10 +43,27 @@ interface WellKnownMetadata {
   grant_types_supported?: string[];
 }
 
-interface UserInfoResponse {
+export interface UserInfoResponse {
   sub: string;
   email: string;
   name?: string;
+  /**
+   * Token-bound org id, or — when the token has no org binding (e.g. a
+   * device-flow PAT) — the user's personal-org id. Resolved by mapping
+   * `organization_slug` to its entry in `organizations[]` (both already
+   * returned by `/oauth/userinfo`). Surfaced so `createApiAuthMiddleware`
+   * can attach an org context to handlers like `createAgent`, which
+   * otherwise has no way to find the org for an ephemeral request.
+   */
+  organizationId?: string;
+}
+
+interface UserInfoApiResponse {
+  sub: string;
+  email: string;
+  name?: string;
+  organization_slug?: string | null;
+  organizations?: { id: string; slug: string; name: string }[];
 }
 
 interface DynamicClientCredentials {
@@ -167,12 +184,23 @@ export class ExternalAuthClient {
       );
     }
 
-    const data = (await response.json()) as UserInfoResponse;
+    const data = (await response.json()) as UserInfoApiResponse;
+    const orgId =
+      data.organization_slug && data.organizations
+        ? (data.organizations.find((o) => o.slug === data.organization_slug)
+            ?.id ?? undefined)
+        : undefined;
     logger.info("Fetched external auth user info", {
       sub: data.sub,
       email: data.email,
+      orgId,
     });
-    return data;
+    return {
+      sub: data.sub,
+      email: data.email,
+      name: data.name,
+      organizationId: orgId,
+    };
   }
 
   async getCapabilities(): Promise<ExternalAuthCapabilities> {

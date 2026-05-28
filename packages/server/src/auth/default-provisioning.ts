@@ -23,6 +23,7 @@
 
 import { getDb } from '../db/client';
 import type { DbClient } from '../db/client';
+import { getModelProviderModules } from '../gateway/modules/module-system';
 import { getNextNumericId } from '../tools/admin/helpers/db-helpers';
 import { nextRunAt } from '../utils/cron';
 import logger from '../utils/logger';
@@ -152,20 +153,59 @@ export async function ensureDefaultAgent(
       return { created: false, reason: 'has_agents' };
     }
 
+    // Resolve the set of model providers that have a system-level credential
+    // available at this boot (env-var API keys, claude OAuth-discovery, etc.)
+    // and install them onto the default agent up front. Without this, the row
+    // exists but `installed_providers = '[]'` and `lobu chat -c local` would
+    // immediately hit "No model configured" — even though the env keys are
+    // sitting right there in the same process.
+    const systemProviders = getModelProviderModules()
+      .filter((m) => m.hasSystemKey())
+      .map((m) => ({
+        providerId: m.providerId,
+        installedAt: Date.now(),
+      }));
+
+    // Resolve the owning user — the personal_org metadata is the canonical
+    // marker. The default agent is shown as user-owned (rather than the
+    // legacy `'lobu', NULL` org-level marker) so the per-user ownership
+    // check in `verifyOwnedAgentAccess` recognizes this user as the agent's
+    // owner: without it, a PAT session for the user can't open a session
+    // against their own org's default agent.
+    const ownerRows = (await client`
+      SELECT (metadata::jsonb)->>'personal_org_for_user_id' AS owner_user_id
+        FROM "organization"
+       WHERE id = ${organizationId}
+       LIMIT 1
+    `) as unknown as Array<{ owner_user_id: string | null }>;
+    const ownerUserId = ownerRows[0]?.owner_user_id ?? null;
+
     // Insert the default agent. The PK is (organization_id, id) so we can
     // ON CONFLICT DO NOTHING to guard against a parallel boot.
     await client`
       INSERT INTO agents (
         id, organization_id, name, identity_md,
         owner_platform, owner_user_id, is_workspace_agent,
+        installed_providers,
         created_at, updated_at
       ) VALUES (
         ${DEFAULT_AGENT_ID}, ${organizationId}, ${DEFAULT_AGENT_NAME}, ${DEFAULT_AGENT_IDENTITY},
-        'lobu', NULL, false,
+        'external', ${ownerUserId}, false,
+        ${client.json(systemProviders)},
         NOW(), NOW()
       )
       ON CONFLICT (organization_id, id) DO NOTHING
     `;
+
+    // Mirror the ownership into agent_users so `userAgentsStore.ownsAgent`
+    // returns true on the PAT-session path used by `lobu chat -c local`.
+    if (ownerUserId) {
+      await client`
+        INSERT INTO agent_users (organization_id, agent_id, platform, user_id, created_at)
+        VALUES (${organizationId}, ${DEFAULT_AGENT_ID}, 'external', ${ownerUserId}, now())
+        ON CONFLICT (organization_id, agent_id, platform, user_id) DO NOTHING
+      `;
+    }
 
     await writeOrgSentinel(
       client,
@@ -175,7 +215,7 @@ export async function ensureDefaultAgent(
     );
 
     logger.info(
-      { organizationId, agentId: DEFAULT_AGENT_ID },
+      { organizationId, agentId: DEFAULT_AGENT_ID, ownerUserId },
       '[default-provisioning] Provisioned default agent'
     );
     return { created: true, reason: 'inserted' };

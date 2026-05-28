@@ -50,14 +50,6 @@ export interface ThreadSession {
   dryRun?: boolean;
   /** Internal automation intent for one-shot system sessions. */
   intent?: { kind: "watcher_run"; runId: number; watcherId: number };
-  /**
-   * True when the session was created without a caller-supplied agentId and
-   * the gateway auto-provisioned both the agent and its settings. Only
-   * ephemeral sessions should have their settings torn down on DELETE —
-   * tearing down a shared/named agent's settings corrupts every other
-   * session that reuses it.
-   */
-  isEphemeral?: boolean;
 }
 
 /**

@@ -19,6 +19,7 @@ import {
   runGuardrails,
 } from "@lobu/core";
 import { getDb } from "../../db/client.js";
+import { getOrganizationSlug } from "../../utils/url-builder.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import { recordGuardrailTrip } from "../guardrails/audit.js";
 import type { ThreadResponsePayload } from "../infrastructure/queue/index.js";
@@ -37,6 +38,23 @@ import {
 } from "./platform-strategies/index.js";
 
 const logger = createLogger("chat-response-bridge");
+
+/**
+ * Build the agent's admin-settings URL — `<publicWebUrl>/<orgSlug>/agents/<agentId>`
+ * — for surfacing in user-facing error messages (e.g. NO_MODEL_CONFIGURED tells
+ * the user where to connect a provider). Returns null when any required piece
+ * is missing; callers fall back to non-linked guidance.
+ */
+async function buildAgentSettingsUrl(
+  publicGatewayUrl: string | undefined,
+  organizationId: string | undefined,
+  agentId: string | undefined
+): Promise<string | null> {
+  if (!publicGatewayUrl || !organizationId || !agentId) return null;
+  const slug = await getOrganizationSlug(organizationId).catch(() => null);
+  if (!slug) return null;
+  return `${publicGatewayUrl.replace(/\/+$/, "")}/${slug}/agents/${encodeURIComponent(agentId)}`;
+}
 
 /**
  * Construct a minimal Chat SDK `Message`-shaped object from the inbound
@@ -615,11 +633,21 @@ export class ChatResponseBridge implements ResponseRenderer {
       return;
     }
 
-    // For known error codes, render user-facing guidance without sending users
-    // to the retired end-user settings UI.
+    // For known error codes, render user-facing guidance with a real link
+    // into the admin UI when we can resolve one. The settings page for an
+    // agent is `<publicWebUrl>/<orgSlug>/agents/<agentId>`.
     if (payload.errorCode === "NO_MODEL_CONFIGURED") {
-      payload.error =
-        "No model configured. Provider setup is not available in the end-user chat flow yet. Ask an admin to connect a provider for the base agent.";
+      const errCtx = this.extractResponseContext(payload);
+      const settingsUrl = errCtx
+        ? await buildAgentSettingsUrl(
+            this.manager.getPublicGatewayUrl(),
+            this.resolveOrganizationId(payload, errCtx) ?? undefined,
+            this.resolveAgentId(payload, errCtx) ?? undefined
+          )
+        : null;
+      payload.error = settingsUrl
+        ? `No model configured. Connect a provider at ${settingsUrl}`
+        : "No model configured. Ask an admin to connect a provider for the base agent.";
     }
 
     // Fallback: plain text error via Chat SDK

@@ -97,7 +97,6 @@ export async function createThreadForAgent(
     provider: "claude",
     agentId,
     dryRun: false,
-    isEphemeral: false,
   };
   await sessionManager.setSession(session);
 

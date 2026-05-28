@@ -173,6 +173,15 @@ export class ChatInstanceManager {
   private slackCoordinator!: SlackConnectionCoordinator;
   private connectionStore!: AgentConnectionStore;
 
+  /**
+   * Public gateway base URL (`PUBLIC_WEB_URL` or derived) — exposed so the
+   * response bridge can build links into the admin UI (e.g. the
+   * provider-settings page) for user-facing error messages.
+   */
+  getPublicGatewayUrl(): string {
+    return this.publicGatewayUrl;
+  }
+
   async initialize(services: CoreServices): Promise<void> {
     this.services = services;
     this.publicGatewayUrl = services.getPublicGatewayUrl();

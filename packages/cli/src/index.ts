@@ -251,7 +251,10 @@ Memory:
       "-g, --gateway <url>",
       `Gateway URL (default: ${GATEWAY_DEFAULT_URL})`
     )
-    .option("--dry-run", "Process without persisting history")
+    .option(
+      "--dry-run",
+      "Skip side-effecting tool calls (sandbox writes, sdk_run mutations). The turn still runs and history is still persisted."
+    )
     .option("--new", "Force new session (ignore existing)")
     .option(
       "-C, --continue",

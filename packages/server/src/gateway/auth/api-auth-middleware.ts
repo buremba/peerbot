@@ -1,10 +1,30 @@
 import { verifyWorkerToken } from "@lobu/core";
 import type { Context, Next } from "hono";
+import { orgContext } from "../../lobu/stores/org-context.js";
 import { verifySettingsSession } from "../routes/public/settings-auth.js";
 import type { ExternalAuthClient } from "./external/client.js";
 import { getRevokedTokenStore } from "./revoked-token-store.js";
 
 export const TOKEN_EXPIRATION_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Caller identity surfaced to handlers via `c.get("authContext")` after a
+ * successful auth check. `organizationId` is the token-bound or personal-org
+ * id when the auth path can resolve one (worker token payload, or
+ * `/oauth/userinfo` org slug); otherwise undefined. `createAgent` uses it to
+ * route no-agentId requests to the org's default agent so the cross-pod
+ * conversation lock can be acquired (#1068 follow-up).
+ */
+export interface ApiAuthContext {
+  userId?: string;
+  organizationId?: string;
+}
+
+declare module "hono" {
+  interface ContextVariableMap {
+    authContext?: ApiAuthContext;
+  }
+}
 
 /**
  * Creates a Hono middleware that enforces the standard auth check:
@@ -13,6 +33,14 @@ export const TOKEN_EXPIRATION_MS = 24 * 60 * 60 * 1000;
  * The worker-token check is local + cheap, so it runs before the remote OIDC
  * userinfo fetch — a valid worker token never needs to round-trip to the
  * identity provider.
+ *
+ * On a successful check, the caller's identity is attached to the Hono context
+ * as `authContext`. When that includes an `organizationId`, the rest of the
+ * request runs inside `orgContext.run()` so Postgres-backed stores (which read
+ * the org id from AsyncLocalStorage via `getOrgId()`) see the same tenant.
+ * `createLobuAuthBridge` already wraps PAT-authenticated requests this way;
+ * this is the equivalent for the worker-token and external-OAuth paths, which
+ * `createLobuAuthBridge` doesn't cover.
  */
 export function createApiAuthMiddleware(opts: {
   externalAuthClient?: ExternalAuthClient;
@@ -21,13 +49,27 @@ export function createApiAuthMiddleware(opts: {
 }) {
   const revokedTokens = getRevokedTokenStore();
 
+  const runWithContext = (
+    ctx: ApiAuthContext,
+    c: Context,
+    next: Next
+  ): Promise<void> | void => {
+    c.set("authContext", ctx);
+    if (ctx.organizationId) {
+      return orgContext.run({ organizationId: ctx.organizationId }, () =>
+        next()
+      );
+    }
+    return next();
+  };
+
   return async (c: Context, next: Next) => {
     // 1. Try settings session cookie when explicitly allowed.
     // verifySettingsSession now enforces jti revocation internally.
     if (opts.allowSettingsSession) {
       const session = await verifySettingsSession(c);
       if (session) {
-        return next();
+        return runWithContext({ userId: session.userId }, c, next);
       }
     }
 
@@ -46,7 +88,14 @@ export function createApiAuthMiddleware(opts: {
           if (workerData.jti && (await revokedTokens.isRevoked(workerData.jti))) {
             return c.json({ success: false, error: "Unauthorized" }, 401);
           }
-          return next();
+          return runWithContext(
+            {
+              userId: workerData.userId,
+              organizationId: workerData.organizationId,
+            },
+            c,
+            next
+          );
         }
       }
     }
@@ -55,7 +104,16 @@ export function createApiAuthMiddleware(opts: {
     if (opts.externalAuthClient) {
       try {
         const userInfo = await opts.externalAuthClient.fetchUserInfo(token);
-        if (userInfo?.sub) return next();
+        if (userInfo?.sub) {
+          return runWithContext(
+            {
+              userId: userInfo.sub,
+              organizationId: userInfo.organizationId,
+            },
+            c,
+            next
+          );
+        }
       } catch {
         // Token not valid for external auth, continue to next method
       }

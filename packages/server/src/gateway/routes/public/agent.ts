@@ -5,7 +5,6 @@ import {
   createLogger,
   createRootSpan,
   generateWorkerToken,
-  type InstalledProvider,
   type McpServerConfig,
   type NetworkConfig,
   normalizeDomainPatterns,
@@ -15,6 +14,7 @@ import type { Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { bindRequestAbortToStream } from "../../../events/sse-abort-bridge.js";
 import { z } from "zod";
+import { DEFAULT_AGENT_ID } from "../../../auth/default-provisioning.js";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store.js";
 import { getRevokedTokenStore } from "../../auth/revoked-token-store.js";
 import {
@@ -26,7 +26,6 @@ import type { AgentSettingsStore } from "../../auth/settings/agent-settings-stor
 import type { SettingsTokenPayload } from "../../auth/settings/token-service.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
 import type { QueueProducer } from "../../infrastructure/queue/queue-producer.js";
-import { getModelProviderModules } from "../../modules/module-system.js";
 import type { PlatformRegistry } from "../../platform.js";
 import { resolveAgentOptions } from "../../services/platform-helpers.js";
 import type { SseManager } from "../../services/sse-manager.js";
@@ -624,52 +623,64 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       }
     }
 
-    const isEphemeral = !requestedAgentId?.trim();
-    const agentId = requestedAgentId?.trim() || randomUUID();
-
-    // If the caller pinned a specific agentId, require ownership so a signed-in
-    // user cannot open a session against another tenant's agent. The denial is
-    // uniform on purpose: never reveal whether `agentId` exists (distinguishing
-    // "missing" from "exists-but-unauthorized" would be a cross-tenant
-    // enumeration oracle). The getting-started UX is carried by `lobu run`
-    // auto-applying the project, so a fresh local agent exists by chat time.
-    if (!isEphemeral) {
-      const denial = await requireAgentOwnership(c, agentId);
-      if (denial) return denial;
+    // Resolve the target agent. Two flows, no third:
+    //   - caller pinned agentId → use it (with ownership check)
+    //   - no agentId → route to the org's default agent (`owletto-default`)
+    // The third flow that used to live here ("ephemeral": generate a UUID
+    // and auto-install providers on it) is gone — it created a phantom
+    // agent per chat, never used the user's actual default agent, and the
+    // saveSettings UPDATE silently no-op'd on a row that didn't exist yet.
+    // Default-agent provisioning runs at signup (`ensureDefaultAgent`) and
+    // already populates `installed_providers` from system-key providers,
+    // so the row exists with credentials by the time chat reaches here.
+    //
+    // Org resolution: `createLobuAuthBridge` (outer middleware on `/lobu/*`)
+    // sets `c.get("organizationId")` from the PAT — that's the common path
+    // for `lobu chat -c local`. `createApiAuthMiddleware` (this app's inner
+    // middleware) sets `authContext` for the worker-token and external-OAuth
+    // paths. Check both.
+    const callerOrgId =
+      (c.get("organizationId") as string | undefined) ??
+      c.get("authContext")?.organizationId;
+    let agentId = requestedAgentId?.trim();
+    if (!agentId) {
+      if (!callerOrgId) {
+        return c.json(
+          {
+            success: false,
+            error:
+              "Cannot resolve default agent: caller has no organization context",
+          },
+          400
+        );
+      }
+      const defaultMeta = await ownershipMetadataStore?.getMetadata(
+        DEFAULT_AGENT_ID
+      );
+      if (!defaultMeta || defaultMeta.organizationId !== callerOrgId) {
+        return c.json(
+          {
+            success: false,
+            error: `Default agent "${DEFAULT_AGENT_ID}" not provisioned for this organization. Run lobu apply or create an agent first.`,
+          },
+          404
+        );
+      }
+      agentId = DEFAULT_AGENT_ID;
     }
+
+    const ownershipDenial = await requireAgentOwnership(c, agentId);
+    if (ownershipDenial) return ownershipDenial;
 
     // Stamp the worker token with the agent's owning org so the egress
     // proxy's per-tenant gates (grant/deny, judge cache, judge policy)
-    // can scope decisions by org. Ephemeral agents have no preexisting
-    // metadata; their token mints without orgId and the proxy falls
-    // through to unscoped checks for that worker — flagged for a
-    // future fix that derives org from the auth session.
-    const tokenOrganizationId =
-      !isEphemeral && ownershipMetadataStore
-        ? (await ownershipMetadataStore.getMetadata(agentId))?.organizationId
-        : undefined;
-
-    // For ephemeral agents, auto-provision settings from system-key
-    // providers (env-var-based API keys). No more template-agent fallback —
-    // there are no template/sandbox agents anymore.
-    if (isEphemeral && agentSettingsStore) {
-      const providerModules = getModelProviderModules();
-      const systemProviders: InstalledProvider[] = providerModules
-        .filter((m) => m.hasSystemKey())
-        .map((m) => ({
-          providerId: m.providerId,
-          installedAt: Date.now(),
-        }));
-
-      if (systemProviders.length > 0) {
-        await agentSettingsStore.saveSettings(agentId, {
-          installedProviders: systemProviders,
-        });
-        logger.info(
-          `Ephemeral agent ${agentId}: provisioned system providers [${systemProviders.map((p) => p.providerId).join(", ")}]`
-        );
-      }
-    }
+    // can scope decisions by org. Prefer the agent's metadata; fall back
+    // to the caller's auth-context org for the default-agent route where
+    // the lookup above already proved ownership.
+    const metadataOrgId = ownershipMetadataStore
+      ? (await ownershipMetadataStore.getMetadata(agentId))?.organizationId
+      : undefined;
+    const tokenOrganizationId = metadataOrgId ?? callerOrgId;
 
     const watcherIntent = intent?.kind === "watcher_run" ? intent : null;
     const userId = watcherIntent
@@ -761,7 +772,6 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       ...(tokenOrganizationId ? { organizationId: tokenOrganizationId } : {}),
       dryRun: effectiveDryRun,
       intent: watcherIntent ?? undefined,
-      isEphemeral,
     };
     await sessMgr.setSession(session);
 
@@ -829,20 +839,12 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     // replay stale completion events from this deleted session.
     sseManager.closeAgent(sessionKey, "agent_deleted");
 
-    // Reuse the session we loaded for ownership verification above.
-    const realAgentId = existingSession?.agentId || sessionKey;
-    const wasEphemeral = existingSession?.isEphemeral === true;
-
+    // Delete the session only. Agent rows persist — they're owned by the
+    // org (declared agents) or the user's personal org (the default agent).
+    // The phantom-ephemeral-agent cleanup that used to run here is gone:
+    // there are no phantom rows to clean up under the default-agent flow.
     await sessMgr.deleteSession(sessionKey);
-    // Only tear down agent settings if we auto-provisioned them for an
-    // ephemeral session. Named/shared agents (like ones loaded from
-    // filesystem config) must keep their settings across session lifecycles.
-    if (wasEphemeral && agentSettingsStore) {
-      await agentSettingsStore.deleteSettings(realAgentId).catch(() => {
-        /* best-effort cleanup */
-      });
-    }
-    logger.info(`Deleted agent ${sessionKey}`);
+    logger.info(`Deleted agent session ${sessionKey}`);
 
     return c.json({
       success: true,

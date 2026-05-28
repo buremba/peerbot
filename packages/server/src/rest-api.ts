@@ -238,7 +238,7 @@ export async function restToolProxy(
     return c.json(toJsonSafe(result));
   } catch (error) {
     if (error instanceof ToolUserError) {
-      return c.json({ error: error.message }, error.httpStatus as 400 | 404);
+      return c.json({ error: error.message }, error.httpStatus as 400 | 403 | 404 | 409 | 422);
     }
     if (error instanceof ToolNotRegisteredError) {
       // Registry/frontend drift — surface to Sentry so the next "Tool not

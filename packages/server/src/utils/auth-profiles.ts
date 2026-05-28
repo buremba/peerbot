@@ -1,5 +1,27 @@
 import { getDb } from '../db/client';
 import { generateSlug } from './entity-management';
+import { ToolUserError } from './errors';
+import { isUniqueViolation } from './pg-errors';
+
+/**
+ * Thrown when an INSERT into auth_profiles with status='pending_auth' collides
+ * with the partial unique index `auth_profiles_pending_unique` (one pending
+ * profile per org+connector+kind+provider). Carries the existing row so callers
+ * can choose to recover (return the existing profile) instead of surfacing the
+ * error.
+ */
+export class PendingAuthConflictError extends ToolUserError {
+  readonly existing: AuthProfileRow;
+
+  constructor(existing: AuthProfileRow) {
+    super(
+      `An ${existing.profile_kind} auth profile for connector '${existing.connector_key ?? ''}'${existing.provider ? ` (${existing.provider})` : ''} is already pending authorization (slug: '${existing.slug}'). Finish authorizing it or delete it before creating a new one.`,
+      409
+    );
+    this.name = 'PendingAuthConflictError';
+    this.existing = existing;
+  }
+}
 
 export type AuthProfileKind =
   | 'env'
@@ -332,42 +354,90 @@ export async function createAuthProfile(params: {
     slug: normalizeAuthProfileSlug(params.slug, params.displayName),
   });
 
-  const rows = await sql`
-    INSERT INTO auth_profiles (
-      organization_id,
-      slug,
-      display_name,
-      connector_key,
-      profile_kind,
-      status,
-      auth_data,
-      account_id,
-      provider,
-      created_by,
-      device_worker_id,
-      browser_kind,
-      user_data_dir,
-      cdp_url
-    ) VALUES (
-      ${params.organizationId},
-      ${slug},
-      ${params.displayName},
-      ${params.connectorKey ?? null},
-      ${params.profileKind},
-      ${params.status ?? 'active'},
-      ${sql.json(normalizeAuthData(params.profileKind, params.authData ?? {}))},
-      ${params.accountId ?? null},
-      ${params.provider ? params.provider.toLowerCase() : null},
-      ${params.createdBy ?? null},
-      ${params.deviceWorkerId ?? null},
-      ${params.browserKind ?? null},
-      ${params.userDataDir ?? null},
-      ${params.cdpUrl ?? null}
-    )
-    RETURNING ${sql.unsafe(AUTH_PROFILE_COLUMNS)}
-  `;
+  const normalizedProvider = params.provider ? params.provider.toLowerCase() : null;
+
+  let rows: unknown[];
+  try {
+    rows = await sql`
+      INSERT INTO auth_profiles (
+        organization_id,
+        slug,
+        display_name,
+        connector_key,
+        profile_kind,
+        status,
+        auth_data,
+        account_id,
+        provider,
+        created_by,
+        device_worker_id,
+        browser_kind,
+        user_data_dir,
+        cdp_url
+      ) VALUES (
+        ${params.organizationId},
+        ${slug},
+        ${params.displayName},
+        ${params.connectorKey ?? null},
+        ${params.profileKind},
+        ${params.status ?? 'active'},
+        ${sql.json(normalizeAuthData(params.profileKind, params.authData ?? {}))},
+        ${params.accountId ?? null},
+        ${normalizedProvider},
+        ${params.createdBy ?? null},
+        ${params.deviceWorkerId ?? null},
+        ${params.browserKind ?? null},
+        ${params.userDataDir ?? null},
+        ${params.cdpUrl ?? null}
+      )
+      RETURNING ${sql.unsafe(AUTH_PROFILE_COLUMNS)}
+    `;
+  } catch (err) {
+    // Partial unique index `auth_profiles_pending_unique` enforces one
+    // pending row per (org, connector_key, profile_kind, provider). Translate
+    // a raw 23505 into a structured error carrying the existing row so
+    // callers can recover (idempotent reuse) or surface a clean message
+    // instead of leaking the constraint name to the UI.
+    if (isUniqueViolation(err, 'auth_profiles_pending_unique')) {
+      if (params.connectorKey !== null && normalizedProvider !== null) {
+        const existing = await findPendingAuthProfile({
+          organizationId: params.organizationId,
+          connectorKey: params.connectorKey,
+          profileKind: params.profileKind,
+          provider: normalizedProvider,
+        });
+        if (existing) throw new PendingAuthConflictError(existing);
+      }
+    }
+    throw err;
+  }
 
   return rows[0] as AuthProfileRow;
+}
+
+/**
+ * Find the existing pending_auth profile that the partial unique index
+ * `auth_profiles_pending_unique` would collide with. Returns null when no
+ * pending row exists for the tuple.
+ */
+export async function findPendingAuthProfile(params: {
+  organizationId: string;
+  connectorKey: string;
+  profileKind: AuthProfileKind;
+  provider: string;
+}): Promise<AuthProfileRow | null> {
+  const sql = getDb();
+  const rows = await sql`
+    SELECT ${sql.unsafe(AUTH_PROFILE_COLUMNS)}
+    FROM auth_profiles
+    WHERE organization_id = ${params.organizationId}
+      AND connector_key = ${params.connectorKey}
+      AND profile_kind = ${params.profileKind}
+      AND provider = ${params.provider.toLowerCase()}
+      AND status = 'pending_auth'
+    LIMIT 1
+  `;
+  return rows.length > 0 ? (rows[0] as AuthProfileRow) : null;
 }
 
 export async function updateAuthProfile(params: {

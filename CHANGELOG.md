@@ -1,5 +1,21 @@
 # Changelog
 
+## [10.2.0](https://github.com/lobu-ai/lobu/compare/lobu-v10.1.0...lobu-v10.2.0) (2026-05-28)
+
+
+### Features
+
+* **cli:** scaffold AGENTS.md as config-API guide; pure-CLI onboarding prompt; rest-platform validate fix ([#1110](https://github.com/lobu-ai/lobu/issues/1110)) ([25abc9f](https://github.com/lobu-ai/lobu/commit/25abc9feb8d4b06e80b045aea6f916a3a31657f4))
+* **examples:** working npm-downloads custom connector for lobu-crm ([#1108](https://github.com/lobu-ai/lobu/issues/1108)) ([2db43f5](https://github.com/lobu-ai/lobu/commit/2db43f5ad2df646ed2a5d59dde6d65af50cba382))
+* **landing:** outcome-first homepage, less code up front ([#1112](https://github.com/lobu-ai/lobu/issues/1112)) ([a1b1e4a](https://github.com/lobu-ai/lobu/commit/a1b1e4a5d7436222579d34d06e40020fdc487467))
+
+
+### Bug Fixes
+
+* **cli:** init --from-org declares only org-owned types, not public/system ([#1111](https://github.com/lobu-ai/lobu/issues/1111)) ([6bc689f](https://github.com/lobu-ai/lobu/commit/6bc689fc6343ebd5e7f6ecf0c4623cd4a3fc7767))
+* **cli:** lobu apply falls back to npm when bun is missing ([#1115](https://github.com/lobu-ai/lobu/issues/1115)) ([b077b97](https://github.com/lobu-ai/lobu/commit/b077b97c1b5f7a35c4b1a167403a9db43733c13a))
+* **cli:** scaffolded projects validate/run with zero install; slim skill; provider-id align; clean-test-pg target ([#1113](https://github.com/lobu-ai/lobu/issues/1113)) ([d72d49a](https://github.com/lobu-ai/lobu/commit/d72d49af7fed2cc57d969a731aa3408f247f199f))
+
 ## [10.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v10.0.0...lobu-v10.1.0) (2026-05-27)
 
 

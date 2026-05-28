@@ -451,7 +451,7 @@ export default class RevolutConnector extends ConnectorRuntime {
 					defaultCdpUrl: "http://127.0.0.1:9222",
 					requiredDomains: REVOLUT_AUTH_DOMAINS,
 					description:
-						"Connect over CDP to a Chrome logged in to app.revolut.com: lobu memory browser-auth --connector revolut --launch-cdp (log in there, re-enter the passcode whenever Revolut expires the session).",
+						"Connect over CDP to a Chrome logged in to app.revolut.com: lobu memory browser-auth --connector revolut --auth-profile-slug <slug> (log in to the dedicated Chrome that opens, re-enter the passcode whenever Revolut expires the session).",
 				},
 			],
 		},

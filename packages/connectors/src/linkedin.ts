@@ -244,7 +244,7 @@ export default class LinkedInConnector extends ConnectorRuntime {
           capture: 'cli',
           requiredDomains: ['linkedin.com', '.linkedin.com'],
           description:
-            'Preferred auth mode for LinkedIn scraping. Captures your existing browser session cookies.',
+            'Preferred auth mode for LinkedIn scraping. The CLI launches a dedicated Chrome with remote debugging; you log into LinkedIn once and the connector attaches over CDP, harvesting cookies live from that session.',
         },
         {
           type: 'oauth',

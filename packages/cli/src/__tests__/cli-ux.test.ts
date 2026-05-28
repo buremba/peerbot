@@ -210,3 +210,28 @@ describe("agent scaffold", () => {
     expect(logs.join("\n")).toContain('name: "Sales \\"Bot\\" v2"');
   });
 });
+
+describe("memory browser-auth --help", () => {
+  test("advertises the CDP flags and not the removed cookie-copy flags", async () => {
+    const cliEntry = join(import.meta.dir, "..", "..", "bin", "lobu.js");
+    const proc = Bun.spawnSync({
+      cmd: [process.execPath, cliEntry, "memory", "browser-auth", "--help"],
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const out =
+      new TextDecoder().decode(proc.stdout) +
+      new TextDecoder().decode(proc.stderr);
+
+    // Present: the CDP-only surface.
+    expect(out).toContain("--connector");
+    expect(out).toContain("--auth-profile-slug");
+    expect(out).toContain("--remote-debug-port");
+    expect(out).toContain("--dedicated-profile");
+    expect(out).toContain("--check");
+
+    // Removed: the old cookie-copy capture flags.
+    expect(out).not.toContain("--launch-cdp");
+    expect(out).not.toContain("--chrome-profile");
+  });
+});

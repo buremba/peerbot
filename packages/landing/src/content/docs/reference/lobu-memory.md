@@ -176,24 +176,25 @@ lobu memory seed --org my-org --url https://lobu.ai/mcp
 
 ### `lobu memory browser-auth`
 
-Captures cookie state from your local Chrome for connectors that rely on a real browser session. `--connector` is required.
+Sets up browser auth for connectors that rely on a real browser session. The CLI launches a dedicated Chrome with remote debugging enabled and stores its CDP endpoint on the auth profile; the connector attaches over CDP at sync time and harvests fresh cookies live from that session. `--connector` is required.
 
 ```bash
+# Launch a debug Chrome and store the CDP endpoint on the auth profile.
+# A new Chrome window opens; sign into the site once and leave it open.
 lobu memory browser-auth --connector x --auth-profile-slug my-profile
+
+# Verify the CDP endpoint on a profile is still reachable.
 lobu memory browser-auth --connector x --auth-profile-slug my-profile --check
-lobu memory browser-auth --connector x --launch-cdp --remote-debug-port 9222
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--connector <key>` | **Required.** Connector key (e.g. `x`) |
 | `--domains <list>` | Comma-separated cookie-domain override |
-| `--chrome-profile <name>` | Chrome profile name (prompts interactively if omitted) |
-| `--auth-profile-slug <slug>` | Browser auth profile slug to store cookies on |
-| `--launch-cdp` | Launch a dedicated Chrome user-data-dir with remote debugging enabled |
-| `--remote-debug-port <port>` | Remote debugging port for `--launch-cdp` (default `9222`) |
-| `--dedicated-profile <name>` | Dedicated Chrome profile dir name for `--launch-cdp` |
-| `--check` | Check whether stored cookies for a browser auth profile are still valid |
+| `--auth-profile-slug <slug>` | Browser auth profile slug to store the CDP endpoint on |
+| `--remote-debug-port <port>` | Remote debugging port for the dedicated Chrome (default `9222`) |
+| `--dedicated-profile <name>` | Dedicated Chrome profile dir name |
+| `--check` | Check whether the CDP endpoint stored on a browser auth profile is reachable |
 
 ## Skills
 

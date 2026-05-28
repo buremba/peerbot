@@ -173,9 +173,8 @@ export async function decryptChromeCookiesMacOS(
 
   const { pbkdf2Sync, createDecipheriv } = await import('node:crypto');
   // node:sqlite is stable on Node 22+; the lobu repo pins Node 22-24.
-  // @types/node 20 doesn't include the typings yet, so the dynamic-import
-  // module specifier trips the TS resolver — suppress.
-  // @ts-expect-error — node:sqlite typings not in @types/node@20
+  // @types/node 20 doesn't ship typings for it, so we declare the minimal
+  // surface we use in src/types/node-sqlite.d.ts.
   const { DatabaseSync } = await import('node:sqlite');
 
   // Chrome holds a write lock on Cookies; copy to temp so the read can

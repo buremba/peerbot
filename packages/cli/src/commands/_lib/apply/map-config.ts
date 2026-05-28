@@ -294,9 +294,6 @@ function mapMcpServers(
   for (const [id, mcp] of Object.entries(servers)) {
     const mapped: Record<string, unknown> = {};
     if (mcp.url) mapped.url = mcp.url;
-    // We DO map `type` (an intentional, more-correct improvement over the
-    // legacy agent-level TOML loader, which dropped it even though its
-    // skill-merge path kept it — and `McpServerConfig.type` is a real field).
     if (mcp.type) mapped.type = mcp.type;
     if (mcp.command) mapped.command = mcp.command;
     if (mcp.args) mapped.args = mcp.args;

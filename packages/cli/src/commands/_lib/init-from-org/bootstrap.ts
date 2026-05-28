@@ -762,7 +762,7 @@ function emitAuthProfile(
       const credKey =
         p.profile_kind === "oauth_app" ? "CLIENT_SECRET" : "VALUE";
       fields.push(
-        `// TODO: rename credential keys to this connector's auth-schema fields\n  credentials: {\n    ${envVarFor(p.slug, credKey)}: ${secrets.ref(envVarFor(p.slug, credKey))},\n  }`
+        `credentials: {\n    ${envVarFor(p.slug, credKey)}: ${secrets.ref(envVarFor(p.slug, credKey))},\n  }`
       );
     }
   }

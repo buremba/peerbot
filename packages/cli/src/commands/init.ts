@@ -18,12 +18,11 @@ import {
   loadProviderRegistry,
   type RegistryProvider,
 } from "../commands/providers/registry.js";
+import { DEFAULT_LOBU_MCP_URL } from "../internal/context.js";
 import { setLocalEnvValue } from "../internal/local-env.js";
 import { renderTemplate } from "../utils/template.js";
 import { initFromOrg } from "./_lib/init-from-org/bootstrap.js";
 import { isPortFree } from "./dev.js";
-
-const DEFAULT_LOBU_MCP_URL = "https://lobu.ai/mcp";
 
 const PROJECT_NAME_PATTERN = /^[a-z0-9-]+$/;
 const PLATFORM_CHOICES = [

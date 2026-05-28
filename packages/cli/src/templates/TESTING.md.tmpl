@@ -6,6 +6,8 @@ This bot provides HTTP APIs for testing and automation. These endpoints allow AI
 
 Send messages to your bot with optional file uploads.
 
+> Examples below use `"platform": "slack"`; substitute your platform's connector key (telegram, discord, whatsapp, teams, gchat) if you scaffolded with a different one.
+
 ### Endpoint
 ```
 POST http://localhost:{{GATEWAY_PORT}}/lobu/api/v1/agents/{agentId}/messages
@@ -214,7 +216,7 @@ echo "Thread ID: $THREAD_ID"
 
 ---
 
-## 4. Notes for AI Agents
+## 3. Notes for AI Agents
 
 These APIs enable your AI agents to:
 - **Test connectivity**: Verify bot deployment is working

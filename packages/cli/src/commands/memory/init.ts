@@ -1,8 +1,7 @@
 import * as p from "@clack/prompts";
+import { DEFAULT_LOBU_MCP_URL } from "../../internal/context.js";
 import { healthPing, runInitWizard } from "./_lib/init-wizard.js";
 import { normalizeMcpUrl } from "./_lib/openclaw-auth.js";
-
-const CLOUD_MCP_URL = "https://lobu.ai/mcp";
 
 interface MemoryInitOptions {
   url?: string;
@@ -31,7 +30,7 @@ async function chooseMcpUrl(urlFlag?: string): Promise<string> {
     process.exit(0);
   }
 
-  if (mode === "cloud") return CLOUD_MCP_URL;
+  if (mode === "cloud") return DEFAULT_LOBU_MCP_URL;
   if (mode === "local") return normalizeMcpUrl("http://localhost:8787");
 
   const url = await p.text({

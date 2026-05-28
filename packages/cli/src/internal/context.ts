@@ -8,7 +8,7 @@ const DEFAULT_CONTEXT_URL = "https://app.lobu.ai/api/v1";
 
 const CONTEXTS_FILE = join(LOBU_CONFIG_DIR, "config.json");
 
-export const DEFAULT_MEMORY_URL = "https://lobu.ai/mcp";
+export const DEFAULT_LOBU_MCP_URL = "https://lobu.ai/mcp";
 
 export interface LobuServerConfig {
   port?: number;
@@ -506,7 +506,7 @@ function defaultMemoryUrlForContext(
     url.hash = "";
     return url.toString().replace(/\/+$/, "");
   }
-  return DEFAULT_MEMORY_URL;
+  return DEFAULT_LOBU_MCP_URL;
 }
 
 function isLoopbackContextUrl(input: string): boolean {

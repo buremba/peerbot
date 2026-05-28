@@ -712,7 +712,8 @@ function emitAuthProfile(
   connectorHandles: Map<string, string>,
   authSchemas: Map<string, Record<string, unknown> | null | undefined>,
   imports: ImportTracker,
-  minter: IdentMinter
+  minter: IdentMinter,
+  warnings: string[]
 ): Handle | null {
   // An auth profile with no connector can't be expressed as defineAuthProfile
   // (connector is required), and emitting `connector: null` would crash on the
@@ -757,12 +758,16 @@ function emitAuthProfile(
       fields.push(`credentials: {\n    ${credLines.join(",\n    ")},\n  }`);
     } else {
       // No connector def / auth_schema found — fall back to a single
-      // placeholder. The operator must rename the credential key to the
-      // connector's auth-schema field before applying.
+      // placeholder and warn the operator (scaffold output, not TODO in
+      // generated code): the credential KEY must be renamed to a real
+      // auth-schema field before `lobu apply`.
       const credKey =
         p.profile_kind === "oauth_app" ? "CLIENT_SECRET" : "VALUE";
       fields.push(
         `credentials: {\n    ${envVarFor(p.slug, credKey)}: ${secrets.ref(envVarFor(p.slug, credKey))},\n  }`
+      );
+      warnings.push(
+        `auth profile "${p.slug}" (connector "${p.connector_key}"): no connector definition found, emitted placeholder credential key "${envVarFor(p.slug, credKey)}" — rename it to the connector's real auth-schema field in lobu.config.ts before \`lobu apply\`.`
       );
     }
   }
@@ -1035,7 +1040,8 @@ export function generateProject(
       connectorHandles,
       authSchemas,
       imports,
-      minter
+      minter,
+      warnings
     );
     if (!h) {
       warnings.push(

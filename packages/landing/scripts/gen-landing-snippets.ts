@@ -253,12 +253,28 @@ function fileSnippet(
   };
 }
 
-/** The imports + the first `defineAgent({...})` block, the representative
- *  agent slice for the landing "Agents" section. */
+/** The imports + `defineAgent` + a real `defineWatcher` + the `defineConfig`
+ *  manifest that wires connectors, entities, watchers, and agents together.
+ *  Only the repetitive entity/relationship definitions are elided (behind a
+ *  comment), so the snippet shows the differentiated piece (a watcher's prompt
+ *  + extraction schema) and stays one coherent control-plane file. The
+ *  homepage shows this as the single "it's real" anchor. */
 function agentConfigSlice(raw: string): string {
   const imports = sliceImportBlock(raw);
   const agent = sliceDefineCall(raw, "defineAgent");
-  return [...imports, "", ...agent].join("\n");
+  const watcher = sliceDefineCall(raw, "defineWatcher");
+  const config = sliceDefineCall(raw, "defineConfig");
+  return [
+    ...imports,
+    "",
+    ...agent,
+    "",
+    "// entity types and relationships defined here…",
+    "",
+    ...watcher,
+    "",
+    ...config,
+  ].join("\n");
 }
 
 function entitySlice(raw: string): string {

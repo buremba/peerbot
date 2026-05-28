@@ -6,6 +6,7 @@ import { ArchitectureDiagram } from "./ArchitectureDiagram";
 import { CodeBlock, type CodeSnippet } from "./CodeBlock";
 import { CTA } from "./CTA";
 import { LatestBlogPosts, type LatestBlogPost } from "./LatestBlogPosts";
+import { ProactiveLoop } from "./ProactiveLoop";
 
 type ExampleEntry = {
   slug: string;
@@ -48,6 +49,9 @@ Lobu is an open-source event-sourced backend for AI agents: connectors emit even
 
 const GITHUB_URL = "https://github.com/lobu-ai/lobu";
 
+// The canonical "test it" command, kept in sync with InstallSection.
+const QUICKSTART_CMD = "npx @lobu/cli@latest init my-agent";
+
 export function LandingPage(props: {
   latestPosts?: LatestBlogPost[];
   defaultUseCaseId?: string;
@@ -62,17 +66,40 @@ export function LandingPage(props: {
   const memorySchemaSnippet = uc?.memorySchema ?? snippets.memorySchema;
   const watcherSnippet = uc?.watcher ?? snippets.watcher;
 
+  // The canonical homepage stays benefit-led: outcome artifact + a plain
+  // 3-step explanation, with the deep code living in the docs. The
+  // /for/<useCase> and /connect-from SEO pages keep the per-primitive code
+  // sections, which is their whole purpose.
+  const isHome = !props.defaultUseCaseId;
+
   return (
     <>
       <Hero />
-      <Container className="py-14 sm:py-20">
-        <ArchitectureDiagram />
-      </Container>
-      <AgentsSection />
-      <ConnectorsSection connector={connectorSnippet} slug={activeUseCase} />
-      <WatchersSection watcher={watcherSnippet} slug={activeUseCase} />
-      <MemorySection memorySchema={memorySchemaSnippet} slug={activeUseCase} />
-      <SkillsSection />
+      {isHome ? (
+        <>
+          <Container className="pt-10 pb-4 sm:pt-14">
+            <ProactiveLoop />
+          </Container>
+          <HowItWorks />
+        </>
+      ) : (
+        <>
+          <Container className="py-14 sm:py-20">
+            <ArchitectureDiagram />
+          </Container>
+          <AgentsSection />
+          <ConnectorsSection
+            connector={connectorSnippet}
+            slug={activeUseCase}
+          />
+          <MemorySection
+            memorySchema={memorySchemaSnippet}
+            slug={activeUseCase}
+          />
+          <WatchersSection watcher={watcherSnippet} slug={activeUseCase} />
+          <SkillsSection />
+        </>
+      )}
       <BrowseExamplesSection />
       <RunAnywhereSection />
       <CTA startUrl={getLobuBaseUrl()} />
@@ -132,30 +159,25 @@ function SectionHeading(props: {
 /* -------------------------------------------------------------------------- */
 
 function Hero() {
-  const [copied, setCopied] = useState(false);
+  // Tracks which of the two copy actions fired last, so each shows its own
+  // confirmation: the quickstart command (primary) or the setup prompt (sub).
+  const [copied, setCopied] = useState<"cmd" | "prompt" | null>(null);
 
-  const onCopy = async () => {
+  const copy = async (which: "cmd" | "prompt") => {
     try {
-      await navigator.clipboard.writeText(SETUP_PROMPT);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 2200);
+      await navigator.clipboard.writeText(
+        which === "cmd" ? QUICKSTART_CMD : SETUP_PROMPT
+      );
+      setCopied(which);
+      window.setTimeout(() => setCopied(null), 2200);
     } catch {
-      setCopied(false);
+      setCopied(null);
     }
   };
 
   return (
     <section class="px-4 pb-12 pt-20 text-center sm:pb-16 sm:pt-28">
       <Container>
-        <span
-          class="hero-rise hero-rise-1 mb-6 inline-block rounded-full border px-3.5 py-1.5 text-[11.5px] font-medium"
-          style={{
-            borderColor: "var(--color-page-border)",
-            color: "var(--color-page-text-muted)",
-          }}
-        >
-          Open source · TypeScript · Postgres · Multi-tenant · BYO model
-        </span>
         <h1
           class="hero-rise hero-rise-2 mx-auto max-w-[58rem] font-display text-[clamp(2.25rem,4.8vw,3.5rem)] font-bold leading-[1.06] tracking-[-0.028em]"
           style={{ color: "var(--color-page-text)" }}
@@ -164,34 +186,36 @@ function Hero() {
           <em class="not-italic" style={{ color: "var(--color-tg-accent)" }}>
             proactive
           </em>{" "}
-          agents on a
+          AI agents on a graph
           <br />
+          that{" "}
           <em class="not-italic" style={{ color: "var(--color-tg-accent)" }}>
-            self-building
-          </em>{" "}
-          knowledge graph
+            builds itself
+          </em>
         </h1>
         <p
-          class="hero-rise hero-rise-3 mx-auto mt-5 max-w-[42rem] text-[17px] leading-[1.55]"
+          class="hero-rise hero-rise-3 mx-auto mt-5 max-w-[44rem] text-[17px] leading-[1.55]"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          An automated pipeline streams every event into the graph. Agents react
-          to changes, take action, and reach people as bots, or other agents
-          over MCP and HTTP.
+          Connect your company's data in real time, plug in your model, and let
+          your agents act the moment something changes, as a bot, an API, or
+          another agent.
         </p>
         <div class="hero-rise hero-rise-4 mt-8 flex flex-wrap items-center justify-center gap-3">
           <button
             class="inline-flex items-center gap-2 rounded-lg px-5 py-3 text-[14.5px] font-semibold transition-transform hover:-translate-y-px"
-            onClick={onCopy}
+            onClick={() => copy("prompt")}
             style={{
               backgroundColor: "var(--color-page-text)",
               color: "var(--color-page-bg)",
             }}
             type="button"
           >
-            <CopyIcon copied={copied} />
+            <CopyIcon copied={copied === "prompt"} />
             <span>
-              {copied ? "Copied, paste into your agent" : "Copy setup prompt"}
+              {copied === "prompt"
+                ? "Copied, paste into your agent"
+                : "Copy setup prompt"}
             </span>
           </button>
           <a
@@ -213,10 +237,30 @@ function Hero() {
           class="hero-rise hero-rise-4 mt-3.5 text-[13px]"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          or paste the prompt into <span class="font-mono">claude code</span>,{" "}
+          Paste it into <span class="font-mono">claude code</span>,{" "}
           <span class="font-mono">cursor</span>, or{" "}
-          <span class="font-mono">opencode</span>, it'll scaffold the project
-          for you
+          <span class="font-mono">opencode</span>, and it scaffolds the project
+          for you.
+        </p>
+        <p
+          class="hero-rise hero-rise-4 mt-2.5 flex flex-wrap items-center justify-center gap-2 text-[13px]"
+          style={{ color: "var(--color-page-text-muted)" }}
+        >
+          Or start it yourself:
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-[12.5px] transition-colors hover:border-[color:var(--color-tg-accent)]"
+            onClick={() => copy("cmd")}
+            style={{
+              borderColor: "var(--color-page-border)",
+              color: "var(--color-page-text)",
+            }}
+          >
+            <span style={{ opacity: 0.5 }}>$</span>
+            {QUICKSTART_CMD}
+            <CopyIcon copied={copied === "cmd"} />
+          </button>
+          {copied === "cmd" ? <span>copied</span> : null}
         </p>
       </Container>
     </section>
@@ -326,6 +370,133 @@ function BrowseExamplesSection() {
         </div>
       </Container>
     </section>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  How it works: the benefit-led, mostly-code-free homepage explainer.       */
+/*  Three plain steps + a single collapsed lobu.config.ts as the "it's real"  */
+/*  anchor. The per-primitive code deep-dives live in the docs (linked).      */
+/* -------------------------------------------------------------------------- */
+
+function HowItWorks() {
+  const steps: Array<{
+    n: string;
+    title: string;
+    body: preact.ComponentChildren;
+    link: { href: string; label: string };
+  }> = [
+    {
+      n: "1",
+      title: "Connect your data, in real time",
+      body: (
+        <>
+          Stream company data the moment it happens: 50+ built-in connectors,
+          any MCP server, or your own in TypeScript. On-device connectors even
+          capture context no cloud agent can see.
+        </>
+      ),
+      link: {
+        href: "/getting-started/connector-sdk/",
+        label: "Connecting data",
+      },
+    },
+    {
+      n: "2",
+      title: "It builds itself into memory",
+      body: (
+        <>
+          Watchers turn the raw stream into typed, queryable records, the moment
+          events arrive or on a schedule. You describe what to track in plain
+          language; there's no ETL to maintain.
+        </>
+      ),
+      link: { href: "/getting-started/memory/", label: "Watchers & memory" },
+    },
+    {
+      n: "3",
+      title: "Agents act where your team works",
+      body: (
+        <>
+          On the model you choose, agents respond and flag what matters the
+          moment memory changes, right where your team already works, as a Slack
+          bot, an API, or another agent.
+        </>
+      ),
+      link: { href: "/getting-started/", label: "Building agents" },
+    },
+  ];
+
+  return (
+    <Container className="py-16 sm:py-20">
+      <div class="mb-10 text-center">
+        <Eyebrow>How it works</Eyebrow>
+        <SectionHeading className="mx-auto">
+          From your data to an agent that acts.
+        </SectionHeading>
+        <p
+          class="mx-auto mt-3 max-w-[36rem] text-[15px]"
+          style={{ color: "var(--color-page-text-muted)" }}
+        >
+          Three steps. No data pipeline to wire up, no glue code to maintain.
+        </p>
+      </div>
+
+      <div class="grid gap-6 md:grid-cols-3">
+        {steps.map((step) => (
+          <div
+            key={step.n}
+            class="flex min-w-0 flex-col rounded-lg border p-6"
+            style={{
+              borderColor: "var(--color-page-border)",
+              backgroundColor: "var(--color-page-surface)",
+            }}
+          >
+            <div
+              class="mb-4 flex h-8 w-8 items-center justify-center rounded-full font-mono text-[14px] font-bold"
+              style={{
+                backgroundColor: "var(--color-page-bg)",
+                border: "1px solid var(--color-tg-accent)",
+                color: "var(--color-tg-accent)",
+              }}
+            >
+              {step.n}
+            </div>
+            <h3
+              class="mb-2 text-[1.05rem] font-bold tracking-tight"
+              style={{ color: "var(--color-page-text)" }}
+            >
+              {step.title}
+            </h3>
+            <p
+              class="mb-4 flex-1 text-[14.5px] leading-[1.55]"
+              style={{ color: "var(--color-page-text-muted)" }}
+            >
+              {step.body}
+            </p>
+            <ProductLink href={step.link.href}>{step.link.label}</ProductLink>
+          </div>
+        ))}
+      </div>
+
+      <div class="mx-auto mt-12 max-w-[46rem]">
+        <p
+          class="mb-3 text-center text-[14.5px]"
+          style={{ color: "var(--color-page-text-muted)" }}
+        >
+          It's all one typed file.{" "}
+          <code class="font-mono text-[13px]">lobu apply</code> deploys it.
+        </p>
+        <CodeBlock
+          badge="lobu.config.ts"
+          snippet={snippets.agentConfig}
+          collapsible
+        />
+        <div class="text-center">
+          <ExampleFooterLink slug="sales" />
+        </div>
+      </div>
+    </Container>
   );
 }
 
@@ -474,7 +645,7 @@ function ConnectorsSection({
         }
         code={
           <div>
-            <CodeBlock badge="typescript" snippet={connector} />
+            <CodeBlock badge="typescript" snippet={connector} collapsible />
             <ExampleFooterLink slug={slug} />
           </div>
         }
@@ -583,7 +754,7 @@ function MemorySection({
         }
         code={
           <div>
-            <CodeBlock badge="entities" snippet={memorySchema} />
+            <CodeBlock badge="entities" snippet={memorySchema} collapsible />
             <ExampleFooterLink slug={slug} />
           </div>
         }
@@ -615,7 +786,8 @@ function WatchersSection({
               A watcher is a <code class="font-mono text-[14px]">prompt</code> +{" "}
               <code class="font-mono text-[14px]">extraction_schema</code>. Lobu
               runs the LLM, validates, and persists the output to memory.{" "}
-              <b>No application code</b>: fire on events, or run on cron.
+              <b>No application code for extraction</b>: fire on events, or run
+              on cron.
             </p>
             <FeatureList
               items={[
@@ -637,14 +809,18 @@ function WatchersSection({
               ]}
             />
             <div class="mb-6 flex flex-wrap gap-x-4 gap-y-2">
-              <ProductLink href="/getting-started/watchers/">
+              <ProductLink href="/getting-started/memory/">
                 Watchers guide
               </ProductLink>
               <ProductLink href="/getting-started/reaction-sdk/">
                 Reaction SDK docs
               </ProductLink>
             </div>
-            <CodeBlock badge="reactive + dreaming" snippet={watcher} />
+            <CodeBlock
+              badge="reactive + dreaming"
+              snippet={watcher}
+              collapsible
+            />
           </div>
         }
         code={
@@ -658,6 +834,7 @@ function WatchersSection({
             <CodeBlock
               badge="optional · typescript"
               snippet={snippets.reaction}
+              collapsible
             />
             <ExampleFooterLink slug={slug} />
           </div>
@@ -725,7 +902,7 @@ function SkillsSection() {
         }
         code={
           <div>
-            <CodeBlock badge="skill" snippet={snippets.skill} />
+            <CodeBlock badge="skill" snippet={snippets.skill} collapsible />
             <p
               class="mt-2 text-[13px]"
               style={{ color: "var(--color-page-text-muted)" }}
@@ -748,23 +925,19 @@ function AgentsSection() {
         text={
           <div>
             <Eyebrow>lobu.config.ts</Eyebrow>
-            <SectionHeading>Your whole agent in one file.</SectionHeading>
+            <SectionHeading>One typed file wires it together.</SectionHeading>
             <p
               class="mt-4 max-w-[28rem] text-[16px] leading-[1.6]"
               style={{ color: "var(--color-page-text-muted)" }}
             >
-              One typed config declares the agent, the entities it remembers,
-              the watchers that run, and the connectors it reads.{" "}
-              <code class="font-mono text-[14px]">lobu apply</code> deploys it;
-              the sections below zoom into each piece.
+              <code class="font-mono text-[14px]">lobu.config.ts</code> is the
+              control plane: it declares the agent and points at the entities,
+              watchers, connectors, and skills it uses.{" "}
+              <code class="font-mono text-[14px]">lobu apply</code> deploys the
+              lot; the sections below zoom into each piece.
             </p>
             <FeatureList
               items={[
-                <>
-                  <b>One declarative file</b>: agent, entities, watchers, and
-                  connectors, all wired in{" "}
-                  <code class="font-mono text-[13px]">lobu.config.ts</code>.
-                </>,
                 <>
                   <b>Every chat surface</b>:{" "}
                   <a
@@ -821,7 +994,12 @@ function AgentsSection() {
         }
         code={
           <div>
-            <CodeBlock badge="lobu.config.ts" snippet={snippets.agentConfig} />
+            <CodeBlock
+              badge="lobu.config.ts"
+              snippet={snippets.agentConfig}
+              collapsible
+              defaultOpen
+            />
             <ExampleFooterLink slug="sales" />
           </div>
         }

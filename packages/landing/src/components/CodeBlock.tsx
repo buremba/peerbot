@@ -1,4 +1,5 @@
 import type { ComponentChildren } from "preact";
+import { useState } from "preact/hooks";
 
 export type CodeSnippet = {
   code: string;
@@ -15,6 +16,14 @@ type CodeBlockProps = {
   badge?: string;
   /** Extra footer text rendered next to the GitHub link. */
   footnote?: ComponentChildren;
+  /**
+   * When true, the code body collapses behind a "show the code" toggle so the
+   * page reads value-first for non-TS skimmers. The tab bar (filename + line
+   * count) stays visible as the affordance. Defaults to false (always open).
+   */
+  collapsible?: boolean;
+  /** Initial open state when `collapsible`. Defaults to false (collapsed). */
+  defaultOpen?: boolean;
 };
 
 type Token = { kind: TokenKind; text: string };
@@ -443,8 +452,50 @@ export function CodeBlock({
   tabLabel,
   badge,
   footnote,
+  collapsible = false,
+  defaultOpen = false,
 }: CodeBlockProps) {
   const lines = highlight(snippet.code, snippet.language);
+  const [open, setOpen] = useState(defaultOpen);
+  const showBody = !collapsible || open;
+
+  const tabBar = (
+    <div
+      class="flex items-center justify-between border-b px-4 py-2 font-mono text-[11.5px] lowercase"
+      style={{
+        color: "var(--color-landing-code-comment)",
+        backgroundColor: "var(--color-landing-code-bg-soft)",
+        borderColor: "rgba(255,255,255,0.06)",
+      }}
+    >
+      <span>{tabLabel ?? snippet.path}</span>
+      <span class="flex items-center gap-3">
+        {badge ? (
+          <span style={{ color: "var(--color-landing-code-comment)" }}>
+            {badge}
+          </span>
+        ) : null}
+        {collapsible ? (
+          <span
+            class="flex items-center gap-1"
+            style={{ color: "var(--color-tg-accent)" }}
+          >
+            {open ? "hide code" : "show the code"}
+            <span
+              aria-hidden="true"
+              style={{
+                display: "inline-block",
+                transform: open ? "rotate(90deg)" : "none",
+                transition: "transform 0.15s ease",
+              }}
+            >
+              ▸
+            </span>
+          </span>
+        ) : null}
+      </span>
+    </div>
+  );
 
   return (
     <div
@@ -454,52 +505,57 @@ export function CodeBlock({
         borderColor: "var(--color-page-border)",
       }}
     >
-      <div
-        class="flex items-center justify-between border-b px-4 py-2 font-mono text-[11.5px] lowercase"
-        style={{
-          color: "var(--color-landing-code-comment)",
-          backgroundColor: "var(--color-landing-code-bg-soft)",
-          borderColor: "rgba(255,255,255,0.06)",
-        }}
-      >
-        <span>{tabLabel ?? snippet.path}</span>
-        {badge ? (
-          <span style={{ color: "var(--color-landing-code-comment)" }}>
-            {badge}
-          </span>
-        ) : null}
-      </div>
+      {collapsible ? (
+        <button
+          type="button"
+          class="block w-full cursor-pointer text-left"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+        >
+          {tabBar}
+        </button>
+      ) : (
+        tabBar
+      )}
 
-      <pre
-        class="overflow-x-auto px-5 py-4 font-mono text-[12.5px] leading-[1.65]"
-        style={{ color: "var(--color-landing-code-text)" }}
-      >
-        <code class="block">
-          {lines.map((toks, idx) => (
-            <span class="block whitespace-pre" key={idx}>
-              {tokensToJsx(toks)}
-              {idx < lines.length - 1 ? "\n" : ""}
+      {showBody ? (
+        <>
+          <pre
+            class="overflow-x-auto px-5 py-4 font-mono text-[12.5px] leading-[1.65]"
+            style={{ color: "var(--color-landing-code-text)" }}
+          >
+            <code class="block">
+              {lines.map((toks, idx) => (
+                <span class="block whitespace-pre" key={idx}>
+                  {tokensToJsx(toks)}
+                  {idx < lines.length - 1 ? "\n" : ""}
+                </span>
+              ))}
+            </code>
+          </pre>
+
+          <div
+            class="flex items-center justify-between border-t px-4 py-2 font-mono text-[11px] lowercase"
+            style={{
+              color: "var(--color-landing-code-comment)",
+              backgroundColor: "var(--color-landing-code-bg-soft)",
+              borderColor: "rgba(255,255,255,0.06)",
+            }}
+          >
+            <span>{lines.length} lines</span>
+            <span class="flex items-center gap-3">
+              {footnote}
+              <a
+                href={snippet.githubUrl}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                see on github →
+              </a>
             </span>
-          ))}
-        </code>
-      </pre>
-
-      <div
-        class="flex items-center justify-between border-t px-4 py-2 font-mono text-[11px] lowercase"
-        style={{
-          color: "var(--color-landing-code-comment)",
-          backgroundColor: "var(--color-landing-code-bg-soft)",
-          borderColor: "rgba(255,255,255,0.06)",
-        }}
-      >
-        <span>{lines.length} lines</span>
-        <span class="flex items-center gap-3">
-          {footnote}
-          <a href={snippet.githubUrl} rel="noopener noreferrer" target="_blank">
-            see on github →
-          </a>
-        </span>
-      </div>
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }

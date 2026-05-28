@@ -272,3 +272,42 @@ jobs:
             -H "X-GitHub-Api-Version: 2022-11-28" \
             https://api.github.com/user/packages/container/lobu-embeddings/visibility \
             -d '{"visibility":"public"}' || true
+
+  # Failure notification. The chart applies one shared tag to app + worker +
+  # embeddings, so if any of the three build/push jobs fails on main, the next
+  # ImageUpdateAutomation cycle either rolls a tag that does not exist for one
+  # service (half-rolled prod) or — when app fails after worker/embeddings
+  # already pushed — silently leaves prod on the previous app tag while the
+  # other two move forward. Both modes were caught only by manual inspection
+  # before this notifier existed (PR #1116 build-app disk-full incident).
+  #
+  # Posts to the same Slack webhook the Flux notification-controller's
+  # `slack-devops` Provider uses (devops channel) so cluster-side and CI-side
+  # deploy failures land in one place. Webhook lives in the SLACK_DEPLOY_WEBHOOK_URL
+  # repo secret; if unset the curl is skipped, never failing the job.
+  notify-failure:
+    runs-on: ubuntu-latest
+    needs: [generate-tag, connector-parity-smoke, build-worker, build-embeddings-service, build-app]
+    if: failure() && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+    steps:
+      - name: Post failure to Slack devops
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_DEPLOY_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          ACTOR: ${{ github.actor }}
+          SHA_SHORT: ${{ github.sha }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "SLACK_DEPLOY_WEBHOOK_URL not set; skipping notification."
+            exit 0
+          fi
+          # First line of commit message only, JSON-escaped via jq.
+          first_line=$(printf '%s' "$COMMIT_MSG" | head -n1)
+          payload=$(jq -nc \
+            --arg text "<@U09513HH1N1> :rotating_light: build-images failed on \`main\` — prod will roll half (or not at all). <${RUN_URL}|run> · <${COMMIT_URL}|${SHA_SHORT:0:7}> by ${ACTOR}\n> ${first_line}" \
+            '{text: $text}')
+          curl -sS -X POST -H 'Content-type: application/json' --data "$payload" "$SLACK_WEBHOOK_URL"

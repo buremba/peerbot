@@ -175,10 +175,14 @@ authSchema: {
   methods: [{
     type: 'browser',
     capture: 'cli',             // How auth is captured:
-                                //   'cli'  - Extract cookies from Chrome via `lobu memory browser-auth`
-                                //   'cdp'  - Connect to Chrome via DevTools Protocol (port 9222)
-    requiredDomains: [           // Cookie domains to extract (for 'cli' capture)
-      'x.com',
+                                //   'cli'  - `lobu memory browser-auth` launches a dedicated Chrome
+                                //           with CDP enabled; user signs in once; the connector
+                                //           attaches over CDP at sync time (cdp_url stored on the
+                                //           auth profile).
+                                //   'cdp'  - Connect to a Chrome the user is already running with
+                                //           --remote-debugging-port=9222 (no dedicated profile).
+    requiredDomains: [           // Domains the connector needs an authenticated session on. Used
+      'x.com',                   // to verify the live Chrome session via the `--check` flow.
       '.x.com',
     ],
     defaultCdpUrl: 'auto',       // CDP URL (for 'cdp' capture). 'auto' detects local Chrome.
@@ -187,7 +191,7 @@ authSchema: {
 }
 ```
 
-Use `'cdp'` for services like Google that block headless browsers — it connects to the user's real Chrome session. Use `'cli'` for sites where extracted cookies are sufficient.
+Use `'cdp'` for services like Google that block headless browsers — it connects to the user's already-running Chrome session. Use `'cli'` for sites where attaching to a dedicated, user-signed-in Chrome (per auth profile) is acceptable.
 
 ## Feeds
 

@@ -290,12 +290,18 @@ export async function captureBrowserAuth(
         const parsed = await restToolCall<any>(mcpUrl, "manage_auth_profiles", {
           action: "update_auth_profile",
           auth_profile_slug: args.authProfileSlug,
+          // NB: don't persist user_data_dir alongside cdp_url. The
+          // connector-side cascade (acquire.ts / browser-network.ts /
+          // browser-scraper-utils.ts) all short-circuit on userDataDir and
+          // try Playwright launchPersistentContext — which can't open a
+          // profile dir already held by the dedicated Chrome we just
+          // launched (Single Lock). cdp_url alone gives the connector the
+          // attach path it needs.
           auth_data: {
             cdp_url: cdpUrl,
             captured_at: new Date().toISOString(),
             captured_via: "cli",
             browser_profile: profileName,
-            user_data_dir: userDataDir,
           },
         });
         if (parsed?.error) {

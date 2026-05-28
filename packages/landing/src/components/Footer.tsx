@@ -1,4 +1,4 @@
-const GITHUB_URL = "https://github.com/lobu-ai/lobu";
+import { GITHUB_URL } from "../lib/urls";
 
 type FooterColumn = {
   heading: string;

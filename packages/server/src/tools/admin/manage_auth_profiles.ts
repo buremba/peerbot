@@ -20,11 +20,13 @@ import {
   type AuthProfileStatus,
   createAuthProfile,
   deleteAuthProfile,
+  findPendingAuthProfile,
   getAuthProfileBySlug,
   getBrowserSessionReadiness,
   listAuthProfiles,
   normalizeAuthProfileSlug,
   normalizeAuthValues,
+  PendingAuthConflictError,
   revokeOAuthAppProfileAtomic,
   setDefaultAuthProfileForConnector,
   summarizeBrowserSessionAuthData,
@@ -503,9 +505,25 @@ async function handleCreateAuthProfile(
     // fresh connect token if it still needs auth). This lets a connection
     // reference `auth_profile_slug = <slug>` in the *same* `lobu apply` —
     // previously this branch never persisted a row, so the slug didn't resolve.
-    const existing = args.slug
+    let existing = args.slug
       ? await getAuthProfileBySlug(ctx.organizationId, normalizeAuthProfileSlug(args.slug, displayName))
       : null;
+    // When no slug was provided, repeat clicks from the UI ("create OAuth
+    // account") would otherwise hit the partial unique index
+    // `auth_profiles_pending_oauth_account_unique` and leak a raw PG error
+    // to the user. Reuse any existing pending row this caller already owns
+    // for the (connector, provider) tuple instead — same behavior as the
+    // slug-keyed branch. The index is keyed per-user, so two members can
+    // still run parallel OAuth flows for the same connector.
+    if (!existing && !args.slug) {
+      existing = await findPendingAuthProfile({
+        organizationId: ctx.organizationId,
+        connectorKey,
+        profileKind: 'oauth_account',
+        provider: oauthMethod.provider,
+        createdBy: ctx.userId ?? null,
+      });
+    }
     if (existing) {
       if (existing.profile_kind !== 'oauth_account' || existing.connector_key !== connectorKey) {
         return {
@@ -551,17 +569,29 @@ async function handleCreateAuthProfile(
     // Create a real `pending_auth` row up front so downstream
     // `auth_profile_slug` lookups (connection create, etc.) resolve. The OAuth
     // callback flips it to `active` once the user finishes authorization.
-    const authProfile = await createAuthProfile({
-      organizationId: ctx.organizationId,
-      connectorKey,
-      displayName,
-      slug: args.slug,
-      profileKind: 'oauth_account',
-      authData: {},
-      provider: oauthMethod.provider.toLowerCase(),
-      status: 'pending_auth',
-      createdBy: ctx.userId ?? 'api',
-    });
+    // The `findPendingAuthProfile` lookup above is the happy-path dedup; the
+    // try/catch here closes the race window between that SELECT and this
+    // INSERT (and surfaces an explicit slug collision with a friendly error
+    // instead of the raw PG constraint name).
+    let authProfile: Awaited<ReturnType<typeof createAuthProfile>>;
+    try {
+      authProfile = await createAuthProfile({
+        organizationId: ctx.organizationId,
+        connectorKey,
+        displayName,
+        slug: args.slug,
+        profileKind: 'oauth_account',
+        authData: {},
+        provider: oauthMethod.provider.toLowerCase(),
+        status: 'pending_auth',
+        createdBy: ctx.userId ?? 'api',
+      });
+    } catch (err) {
+      if (err instanceof PendingAuthConflictError) {
+        return { error: err.message };
+      }
+      throw err;
+    }
 
     const requestedScopes = resolveRequestedOAuthScopes(oauthMethod, args.requested_scopes);
     let connectToken: Awaited<ReturnType<typeof createConnectToken>>;

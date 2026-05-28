@@ -2127,6 +2127,56 @@ function getLobuOrgSlug(useCaseId?: LandingUseCaseId) {
   return "lobuOrg" in def ? def.lobuOrg : undefined;
 }
 
+export type ArchitectureEntityRow = readonly [
+  name: string,
+  type: string,
+  updated: string,
+];
+
+// The 3 rows shown in the architecture diagram's "entities" table for a given
+// use case. Derived from the first highlights in landingUseCases[slug].memory
+// (the same data the /for/<slug> hero copy is built from), so adding a new
+// use case automatically yields a vertical-specific preview instead of the
+// generic "Customer A / company" placeholder. Returns null when the slug is
+// unknown — the diagram falls back to its built-in generic rows.
+const FALLBACK_UPDATED: readonly string[] = ["2d", "5h", "1h"];
+
+export function getArchitectureEntityRows(
+  slug?: string
+): readonly ArchitectureEntityRow[] | null {
+  if (!slug) return null;
+  const def = (landingUseCases as Record<string, LandingUseCaseDefinition>)[
+    slug
+  ];
+  if (!def) return null;
+  const rows: ArchitectureEntityRow[] = [];
+  for (const h of def.memory.highlights) {
+    if (rows.length >= 3) break;
+    rows.push([h.value, h.label.toLowerCase(), FALLBACK_UPDATED[rows.length]]);
+  }
+  return rows.length === 3 ? rows : null;
+}
+
+// 3 connector source labels for the architecture diagram's Connectors column.
+// Pulled from the use case's own `connect.chips` list (the same data the
+// /for/<slug> hero copy describes), so legal shows "File upload / Drive /
+// Research" instead of the generic "50+ built-in connectors" placeholder.
+// Returns null when the slug is unknown — the diagram falls back to its
+// generic labels.
+export function getArchitectureConnectorChips(
+  slug?: string
+): readonly string[] | null {
+  if (!slug) return null;
+  const def = (landingUseCases as Record<string, LandingUseCaseDefinition>)[
+    slug
+  ];
+  if (!def) return null;
+  const chips = def.memory.howItWorks
+    .find((p) => p.id === "connect")
+    ?.chips?.slice(0, 3);
+  return chips && chips.length === 3 ? chips : null;
+}
+
 export function getLobuMcpUrl() {
   return `${LOBU_APP_BASE_URL}/mcp`;
 }

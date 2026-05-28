@@ -1,12 +1,14 @@
 import { useState } from "preact/hooks";
 import connectorsManifest from "../generated/connectors.json";
 import snippetsManifest from "../generated/landing-snippets.json";
+import { GITHUB_CONNECTORS_BLOB_URL, GITHUB_EXAMPLES_URL } from "../lib/urls";
 import { getLobuBaseUrl } from "../use-case-showcases";
 import { ArchitectureDiagram } from "./ArchitectureDiagram";
 import { CodeBlock, type CodeSnippet } from "./CodeBlock";
 import { CTA } from "./CTA";
 import { LatestBlogPosts, type LatestBlogPost } from "./LatestBlogPosts";
 import { ProactiveLoop } from "./ProactiveLoop";
+import { ScheduleCallButton, ScheduleCallIcon } from "./ScheduleDialog";
 
 type ExampleEntry = {
   slug: string;
@@ -19,6 +21,9 @@ type UseCaseSnippets = {
   connector: CodeSnippet;
   memorySchema: CodeSnippet;
   watcher: CodeSnippet;
+  agentConfig: CodeSnippet;
+  reaction: CodeSnippet | null;
+  skill: CodeSnippet | null;
 };
 
 type LandingSnippets = {
@@ -33,8 +38,6 @@ type LandingSnippets = {
 };
 
 const snippets = snippetsManifest as LandingSnippets;
-
-const EXAMPLE_BASE_URL = "https://github.com/lobu-ai/lobu/tree/main/examples";
 
 const SETUP_PROMPT = `I want to build a Lobu agent with you. Lobu is an open-source, event-sourced backend for AI agents: connectors emit events, memory keeps a structured knowledge graph, and agents react in real time and run on a schedule. Set it up with me end to end.
 
@@ -55,8 +58,6 @@ const SETUP_PROMPT = `I want to build a Lobu agent with you. Lobu is an open-sou
 
 Repo: https://github.com/lobu-ai/lobu. Docs: https://lobu.ai/docs/`;
 
-const GITHUB_URL = "https://github.com/lobu-ai/lobu";
-
 // The canonical "test it" command, kept in sync with InstallSection.
 const QUICKSTART_CMD = "npx @lobu/cli@latest init my-agent";
 
@@ -73,6 +74,11 @@ export function LandingPage(props: {
   const connectorSnippet = uc?.connector ?? snippets.connector;
   const memorySchemaSnippet = uc?.memorySchema ?? snippets.memorySchema;
   const watcherSnippet = uc?.watcher ?? snippets.watcher;
+  const agentConfigSnippet = uc?.agentConfig ?? snippets.agentConfig;
+  // null means the example for this use case has no reaction / skill — hide
+  // that panel rather than substituting a foreign example's code.
+  const reactionSnippet = uc ? uc.reaction : snippets.reaction;
+  const skillSnippet = uc ? uc.skill : snippets.skill;
 
   // The canonical homepage stays benefit-led: outcome artifact + a plain
   // 3-step explanation, with the deep code living in the docs. The
@@ -93,19 +99,17 @@ export function LandingPage(props: {
       ) : (
         <>
           <Container className="py-14 sm:py-20">
-            <ArchitectureDiagram />
+            <ArchitectureDiagram slug={activeUseCase} />
           </Container>
-          <AgentsSection />
-          <ConnectorsSection
+          <UseCaseShowcaseSection
+            slug={activeUseCase}
+            agentConfig={agentConfigSnippet}
             connector={connectorSnippet}
-            slug={activeUseCase}
-          />
-          <MemorySection
             memorySchema={memorySchemaSnippet}
-            slug={activeUseCase}
+            watcher={watcherSnippet}
+            reaction={reactionSnippet}
+            skill={skillSnippet}
           />
-          <WatchersSection watcher={watcherSnippet} slug={activeUseCase} />
-          <SkillsSection />
         </>
       )}
       <BrowseExamplesSection />
@@ -226,20 +230,17 @@ function Hero() {
                 : "Copy setup prompt"}
             </span>
           </button>
-          <a
+          <ScheduleCallButton
             class="inline-flex items-center gap-2 rounded-lg border px-5 py-3 text-[14.5px] font-semibold transition-colors hover:bg-[var(--color-page-surface-dim)]"
-            href={GITHUB_URL}
-            rel="noopener noreferrer"
             style={{
               borderColor: "var(--color-page-border)",
               color: "var(--color-page-text)",
               backgroundColor: "var(--color-page-surface)",
             }}
-            target="_blank"
           >
-            <GithubIcon />
-            View on GitHub
-          </a>
+            <ScheduleCallIcon />
+            Talk to the founder
+          </ScheduleCallButton>
         </div>
         <p
           class="hero-rise hero-rise-4 mt-3.5 text-[13px]"
@@ -308,26 +309,27 @@ function CopyIcon(props: { copied: boolean }) {
   );
 }
 
-function GithubIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      fill="currentColor"
-      height="14"
-      viewBox="0 0 24 24"
-      width="14"
-    >
-      <path d="M12 .5a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2c-3.3.7-4-1.4-4-1.4-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.6-.3-5.4-1.3-5.4-5.9 0-1.3.5-2.4 1.3-3.2-.1-.3-.6-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.7 1.7.2 2.9.1 3.2.8.8 1.3 1.9 1.3 3.2 0 4.6-2.8 5.6-5.4 5.9.4.3.8 1 .8 2v3c0 .3.2.7.8.6A12 12 0 0 0 12 .5z" />
-    </svg>
-  );
-}
-
 /* -------------------------------------------------------------------------- */
 /*  Static sections                                                           */
 /* -------------------------------------------------------------------------- */
 
+// The 6 examples that have a richer /for/<slug> landing page. Other examples
+// (lobu-crm, office-bot, atlas, etc.) still ship in the repo and are reachable
+// via the "Browse all examples" link below.
+const FEATURED_EXAMPLE_SLUGS = [
+  "sales",
+  "legal",
+  "finance",
+  "leadership",
+  "market",
+  "agent-community",
+] as const;
+
 function BrowseExamplesSection() {
-  const examples = snippets.examples;
+  const bySlug = new Map(snippets.examples.map((ex) => [ex.slug, ex]));
+  const featured = FEATURED_EXAMPLE_SLUGS.map((slug) =>
+    bySlug.get(slug)
+  ).filter((ex): ex is ExampleEntry => Boolean(ex));
   return (
     <section
       class="border-t py-16"
@@ -335,35 +337,35 @@ function BrowseExamplesSection() {
     >
       <Container>
         <div class="mb-10 text-center">
-          <Eyebrow>Browse the repo</Eyebrow>
-          <SectionHeading className="mx-auto">Examples</SectionHeading>
+          <Eyebrow>Solutions</Eyebrow>
+          <SectionHeading className="mx-auto">
+            Pick a use case to see it end to end.
+          </SectionHeading>
           <p
             class="mx-auto mt-3 max-w-[42rem] text-[14.5px]"
             style={{ color: "var(--color-page-text-muted)" }}
           >
-            Clone any one, run{" "}
-            <code class="font-mono text-[13.5px]">lobu apply</code>, and you
-            have a working agent.
+            Each page walks through the connectors, memory shape, and watchers
+            for one team — and ships as a working example you can{" "}
+            <code class="font-mono text-[13.5px]">lobu apply</code>.
           </p>
         </div>
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
-          {examples.map((ex) => (
+          {featured.map((ex) => (
             <a
               class="flex flex-col rounded-lg border p-4 transition-colors hover:border-[color:var(--color-tg-accent)]"
-              href={ex.githubUrl}
+              href={`/for/${ex.slug}`}
               key={ex.slug}
-              rel="noopener noreferrer"
               style={{
                 borderColor: "var(--color-page-border)",
                 backgroundColor: "var(--color-page-surface)",
               }}
-              target="_blank"
             >
               <span
-                class="mb-2 font-mono text-[12.5px]"
+                class="mb-2 text-[14px] font-semibold"
                 style={{ color: "var(--color-page-text)" }}
               >
-                examples/{ex.slug}
+                {ex.label}
               </span>
               {ex.description ? (
                 <span
@@ -375,6 +377,17 @@ function BrowseExamplesSection() {
               ) : null}
             </a>
           ))}
+        </div>
+        <div class="mt-8 text-center">
+          <a
+            class="inline-flex items-center gap-1 text-[13.5px] transition-colors hover:text-[color:var(--color-tg-accent)]"
+            href={GITHUB_EXAMPLES_URL}
+            rel="noopener noreferrer"
+            style={{ color: "var(--color-page-text-muted)" }}
+            target="_blank"
+          >
+            Browse all {snippets.examples.length} examples on GitHub →
+          </a>
         </div>
       </Container>
     </section>
@@ -527,7 +540,7 @@ function ExampleFooterLink({ slug }: { slug: string }) {
   return (
     <a
       class="mt-3 inline-flex items-center gap-1 text-[13px] transition-colors hover:text-[color:var(--color-tg-accent)]"
-      href={`${EXAMPLE_BASE_URL}/${slug}`}
+      href={`${GITHUB_EXAMPLES_URL}/${slug}`}
       rel="noopener noreferrer"
       style={{ color: "var(--color-page-text-muted)" }}
       target="_blank"
@@ -541,57 +554,6 @@ function ExampleFooterLink({ slug }: { slug: string }) {
       </code>
       <span aria-hidden="true">→</span>
     </a>
-  );
-}
-
-function ProductGrid(props: {
-  reverse?: boolean;
-  text: preact.ComponentChildren;
-  code: preact.ComponentChildren;
-}) {
-  return (
-    <div
-      class={`grid items-start gap-10 md:gap-16 ${
-        props.reverse
-          ? "md:grid-cols-[1.15fr_1fr]"
-          : "md:grid-cols-[1fr_1.15fr]"
-      }`}
-    >
-      {props.reverse ? (
-        <>
-          <div class="min-w-0">{props.code}</div>
-          <div class="min-w-0">{props.text}</div>
-        </>
-      ) : (
-        <>
-          <div class="min-w-0">{props.text}</div>
-          <div class="min-w-0">{props.code}</div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function FeatureList(props: { items: Array<preact.ComponentChildren> }) {
-  return (
-    <ul class="my-5 grid gap-2.5">
-      {props.items.map((item, i) => (
-        <li
-          key={i}
-          class="relative pl-6 text-[14.5px] leading-[1.55]"
-          style={{ color: "var(--color-page-text)" }}
-        >
-          <span
-            aria-hidden="true"
-            class="absolute left-0 top-0 font-bold"
-            style={{ color: "var(--color-tg-accent)" }}
-          >
-            →
-          </span>
-          {item}
-        </li>
-      ))}
-    </ul>
   );
 }
 
@@ -613,67 +575,6 @@ function ProductLink(props: {
   );
 }
 
-function ConnectorsSection({
-  connector,
-  slug,
-}: {
-  connector: CodeSnippet;
-  slug: string;
-}) {
-  return (
-    <Container className="py-16 sm:py-20">
-      <ProductGrid
-        reverse
-        text={
-          <div>
-            <Eyebrow>Connectors</Eyebrow>
-            <SectionHeading>
-              One typed event stream from every source.
-            </SectionHeading>
-            <p
-              class="mt-4 max-w-[28rem] text-[16px] leading-[1.6]"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              Three ways in: a built-in connector, your own in TypeScript with{" "}
-              <code class="font-mono text-[14px]">@lobu/connector-sdk</code>, or
-              any MCP server wrapped as a connector.
-            </p>
-            <FeatureList
-              items={[
-                <>
-                  <b>On-device collection</b>: paired Chrome and macOS
-                  connectors capture local context no cloud agent can see.
-                </>,
-                <>
-                  <b>Multi-tenant OAuth</b>: each user signs in with their own
-                  account; workers never see the token.
-                </>,
-                <>
-                  <b>Durable checkpointing</b>: connectors resume from the last
-                  cursor after restart. No missed events.
-                </>,
-              ]}
-            />
-            <ProductLink href="/getting-started/connector-sdk/">
-              Read the connector-sdk docs
-            </ProductLink>
-            <ConnectorChips />
-          </div>
-        }
-        code={
-          <div>
-            <CodeBlock badge="typescript" snippet={connector} collapsible />
-            <ExampleFooterLink slug={slug} />
-          </div>
-        }
-      />
-    </Container>
-  );
-}
-
-const CONNECTOR_SRC_BASE =
-  "https://github.com/lobu-ai/lobu/blob/main/packages/connectors/src";
-
 // Renders every built-in connector as a chip linking to its source file.
 // The list is generated from packages/connectors by scripts/gen-connectors.ts,
 // so adding a connector surfaces it here automatically.
@@ -690,7 +591,7 @@ function ConnectorChips() {
         {connectorsManifest.map((c) => (
           <a
             key={c.key}
-            href={`${CONNECTOR_SRC_BASE}/${c.file}`}
+            href={`${GITHUB_CONNECTORS_BLOB_URL}/${c.file}`}
             target="_blank"
             rel="noreferrer"
             class="flex h-11 w-11 items-center justify-center rounded-lg border transition-colors hover:border-[color:var(--color-tg-accent)] hover:text-[color:var(--color-tg-accent)]"
@@ -723,304 +624,211 @@ function ConnectorChips() {
   );
 }
 
-function MemorySection({
+/* -------------------------------------------------------------------------- */
+/*  Use-case showcase: the four/five product primitives as collapsed tabs.    */
+/*  Each tab card shows a compact pitch; clicking one reveals its code panel  */
+/*  below at full width. Skills tab is omitted when the active use case's     */
+/*  example has no SKILL.md.                                                  */
+/* -------------------------------------------------------------------------- */
+
+type ShowcaseTab = {
+  id: string;
+  eyebrow: string;
+  blurb: string;
+  primary: { snippet: CodeSnippet; badge: string; maxHeight: string };
+  secondary?: {
+    snippet: CodeSnippet;
+    badge: string;
+    intro: string;
+    maxHeight: string;
+  };
+  docHref: string;
+  docLabel: string;
+  showConnectorChips?: boolean;
+};
+
+function UseCaseShowcaseSection({
+  slug,
+  agentConfig,
+  connector,
   memorySchema,
-  slug,
-}: {
-  memorySchema: CodeSnippet;
-  slug: string;
-}) {
-  return (
-    <Container id="memory" className="py-16 sm:py-20">
-      <ProductGrid
-        reverse
-        text={
-          <div>
-            <Eyebrow>Memory</Eyebrow>
-            <SectionHeading>
-              An event-sourced database for AI agents.
-            </SectionHeading>
-            <p
-              class="mt-4 max-w-[28rem] text-[16px] leading-[1.6]"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              Declare entity types in TypeScript. Lobu stores them as
-              append-only events with full audit. Multi-tenant by default,
-              agents see only their scope.
-            </p>
-            <FeatureList
-              items={[
-                <>
-                  <b>Entity types &amp; relationships</b>: declare what your
-                  agent should remember; link entities with typed relations.
-                </>,
-                <>
-                  <b>Append-only</b>: every change is a new event. Tombstones
-                  supersede; nothing is destroyed.
-                </>,
-                <>
-                  <b>Per-user / per-org isolation</b>: your agents only see the
-                  memory they're scoped to.
-                </>,
-              ]}
-            />
-            <ProductLink href="/getting-started/memory/">
-              Read the memory guide
-            </ProductLink>
-          </div>
-        }
-        code={
-          <div>
-            <CodeBlock badge="entities" snippet={memorySchema} collapsible />
-            <ExampleFooterLink slug={slug} />
-          </div>
-        }
-      />
-    </Container>
-  );
-}
-
-function WatchersSection({
   watcher,
-  slug,
+  reaction,
+  skill,
 }: {
-  watcher: CodeSnippet;
   slug: string;
+  agentConfig: CodeSnippet;
+  connector: CodeSnippet;
+  memorySchema: CodeSnippet;
+  watcher: CodeSnippet;
+  reaction: CodeSnippet | null;
+  skill: CodeSnippet | null;
 }) {
+  const tabs: ShowcaseTab[] = [
+    {
+      id: "config",
+      eyebrow: "lobu.config.ts",
+      blurb:
+        "One typed file declares the agent and wires entities, watchers, connectors, and skills.",
+      primary: {
+        snippet: agentConfig,
+        badge: "lobu.config.ts",
+        maxHeight: "36rem",
+      },
+      docHref: "/getting-started/",
+      docLabel: "Agents guide",
+    },
+    {
+      id: "connectors",
+      eyebrow: "Connectors",
+      blurb:
+        "Built-in, MCP, or a custom *.connector.ts — one typed event stream from every source.",
+      primary: {
+        snippet: connector,
+        badge: "typescript",
+        maxHeight: "36rem",
+      },
+      docHref: "/getting-started/connector-sdk/",
+      docLabel: "Connector SDK docs",
+      showConnectorChips: true,
+    },
+    {
+      id: "memory",
+      eyebrow: "Memory",
+      blurb:
+        "Declare entity types in TypeScript. Lobu stores them as append-only events with full audit.",
+      primary: {
+        snippet: memorySchema,
+        badge: "entities",
+        maxHeight: "36rem",
+      },
+      docHref: "/getting-started/memory/",
+      docLabel: "Memory guide",
+    },
+    {
+      id: "watchers",
+      eyebrow: "Watchers",
+      blurb:
+        "Prompt + extraction schema. The LLM runs, validates, and writes typed memory — no ETL code.",
+      primary: {
+        snippet: watcher,
+        badge: "reactive + dreaming",
+        maxHeight: "26rem",
+      },
+      secondary: reaction
+        ? {
+            snippet: reaction,
+            badge: "optional · typescript",
+            intro: "Reactions run code when memory changes:",
+            maxHeight: "26rem",
+          }
+        : undefined,
+      docHref: "/getting-started/memory/",
+      docLabel: "Watchers guide",
+    },
+  ];
+  if (skill) {
+    tabs.push({
+      id: "skills",
+      eyebrow: "Skills",
+      blurb:
+        "A SKILL.md folder: instructions, TS tools, Nix packages, and per-domain egress policy.",
+      primary: { snippet: skill, badge: "skill", maxHeight: "32rem" },
+      docHref: "/getting-started/",
+      docLabel: "Skills guide",
+    });
+  }
+
+  const [activeId, setActiveId] = useState<string | null>(tabs[0].id);
+  const active = tabs.find((t) => t.id === activeId) ?? null;
+
   return (
     <Container className="py-16 sm:py-20">
-      <ProductGrid
-        text={
-          <div>
-            <Eyebrow>Watchers</Eyebrow>
-            <SectionHeading>
-              Turn events into memory. With prompts.
-            </SectionHeading>
-            <p
-              class="mt-4 max-w-[28rem] text-[16px] leading-[1.6]"
-              style={{ color: "var(--color-page-text-muted)" }}
+      <div class="mb-8 text-center">
+        <Eyebrow>What ships</Eyebrow>
+        <SectionHeading className="mx-auto">
+          One typed file wires it together.
+        </SectionHeading>
+        <p
+          class="mx-auto mt-3 max-w-[42rem] text-[15px]"
+          style={{ color: "var(--color-page-text-muted)" }}
+        >
+          Pick a piece to see the code for this use case. Click again to hide.
+        </p>
+      </div>
+
+      <div
+        class={`grid gap-3 sm:grid-cols-2 ${tabs.length === 5 ? "lg:grid-cols-5" : "lg:grid-cols-4"}`}
+      >
+        {tabs.map((tab) => {
+          const isOpen = active?.id === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveId(isOpen ? null : tab.id)}
+              aria-expanded={isOpen}
+              class="flex flex-col items-start gap-2 rounded-lg border p-4 text-left transition-colors hover:border-[color:var(--color-tg-accent)]"
+              style={{
+                borderColor: isOpen
+                  ? "var(--color-tg-accent)"
+                  : "var(--color-page-border)",
+                backgroundColor: "var(--color-page-surface)",
+                cursor: "pointer",
+              }}
             >
-              A watcher is a <code class="font-mono text-[14px]">prompt</code> +{" "}
-              <code class="font-mono text-[14px]">extraction_schema</code>. Lobu
-              runs the LLM, validates, and persists the output to memory.{" "}
-              <b>No application code for extraction</b>: fire on events, or run
-              on cron.
-            </p>
-            <FeatureList
-              items={[
-                <>
-                  <b>Reactive</b>: fires on the event stream (e.g.{" "}
-                  <code class="font-mono text-[13px]">
-                    linear.issue.created
-                  </code>
-                  ).
-                </>,
-                <>
-                  <b>Dreaming</b>: runs on cron. Aggregates the previous day's
-                  events into higher-level entities.
-                </>,
-                <>
-                  <b>No-code ETL</b>: the prompt is your transformation; the
-                  schema is your output type.
-                </>,
-              ]}
-            />
-            <div class="mb-6 flex flex-wrap gap-x-4 gap-y-2">
-              <ProductLink href="/getting-started/memory/">
-                Watchers guide
-              </ProductLink>
-              <ProductLink href="/getting-started/reaction-sdk/">
-                Reaction SDK docs
-              </ProductLink>
-            </div>
-            <CodeBlock
-              badge="reactive + dreaming"
-              snippet={watcher}
-              collapsible
-            />
-          </div>
-        }
-        code={
-          <div class="space-y-3.5">
-            <p
-              class="text-[13px]"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              Reactions run code when memory changes. For example:
-            </p>
-            <CodeBlock
-              badge="optional · typescript"
-              snippet={snippets.reaction}
-              collapsible
-            />
+              <span
+                class="font-mono text-[10.5px] font-semibold uppercase tracking-[0.12em]"
+                style={{ color: "var(--color-tg-accent)" }}
+              >
+                {tab.eyebrow}
+              </span>
+              <span
+                class="text-[13.5px] leading-[1.45]"
+                style={{ color: "var(--color-page-text-muted)" }}
+              >
+                {tab.blurb}
+              </span>
+              <span
+                class="mt-1 text-[12px] font-semibold"
+                style={{ color: "var(--color-tg-accent)" }}
+              >
+                {isOpen ? "hide code ▾" : "show code ▸"}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {active ? (
+        <div class="mt-6 space-y-4">
+          <CodeBlock
+            badge={active.primary.badge}
+            snippet={active.primary.snippet}
+            maxHeight={active.primary.maxHeight}
+          />
+          {active.secondary ? (
+            <>
+              <p
+                class="text-[13px]"
+                style={{ color: "var(--color-page-text-muted)" }}
+              >
+                {active.secondary.intro}
+              </p>
+              <CodeBlock
+                badge={active.secondary.badge}
+                snippet={active.secondary.snippet}
+                maxHeight={active.secondary.maxHeight}
+              />
+            </>
+          ) : null}
+          <div class="flex flex-wrap items-center gap-x-5 gap-y-2 text-[13px]">
+            <ProductLink href={active.docHref}>{active.docLabel}</ProductLink>
             <ExampleFooterLink slug={slug} />
           </div>
-        }
-      />
-    </Container>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/*  Skills section: snippet is the YAML frontmatter of the sales account-brief */
-/*  SKILL.md, trimmed at build time by gen-landing-snippets.ts (it exercises   */
-/*  every field the pitch promises: nixPackages, network.allow, network.judge, */
-/*  judges).                                                                   */
-/* -------------------------------------------------------------------------- */
-
-function SkillsSection() {
-  return (
-    <Container id="skills" className="py-16 sm:py-20">
-      <ProductGrid
-        text={
-          <div>
-            <Eyebrow>Skills</Eyebrow>
-            <SectionHeading>
-              Bundle tools, packages, and policy into one drop-in.
-            </SectionHeading>
-            <p
-              class="mt-4 max-w-[28rem] text-[16px] leading-[1.6]"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              A skill is a folder with a{" "}
-              <code class="font-mono text-[14px]">SKILL.md</code>. Drop it in{" "}
-              <code class="font-mono text-[13px]">skills/</code> or{" "}
-              <code class="font-mono text-[13px]">
-                agents/&lt;id&gt;/skills/
-              </code>
-              , <code class="font-mono text-[13px]">lobu apply</code> picks it
-              up. The agent gets instructions, tools, packages, and a per-domain
-              LLM egress policy in one shot.
-            </p>
-            <FeatureList
-              items={[
-                <>
-                  <b>Instructions</b>: markdown describing when the agent should
-                  use this skill.
-                </>,
-                <>
-                  <b>Tools</b>: TypeScript functions the agent calls.
-                  Auto-registered as MCP tools.
-                </>,
-                <>
-                  <b>Network</b>: allowed domains + per-domain LLM egress judge
-                  in YAML.
-                </>,
-                <>
-                  <b>Packages</b>: Nix packages (git, jq, etc.) merged into the
-                  worker env.
-                </>,
-              ]}
-            />
-            <ProductLink href="/getting-started/">
-              Read the skills guide
-            </ProductLink>
-          </div>
-        }
-        code={
-          <div>
-            <CodeBlock badge="skill" snippet={snippets.skill} collapsible />
-            <p
-              class="mt-2 text-[13px]"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              Plus the markdown body, instructions for when and how the agent
-              should use this skill.
-            </p>
-            <ExampleFooterLink slug="sales" />
-          </div>
-        }
-      />
-    </Container>
-  );
-}
-
-function AgentsSection() {
-  return (
-    <Container className="py-16 sm:py-20">
-      <ProductGrid
-        text={
-          <div>
-            <Eyebrow>lobu.config.ts</Eyebrow>
-            <SectionHeading>One typed file wires it together.</SectionHeading>
-            <p
-              class="mt-4 max-w-[28rem] text-[16px] leading-[1.6]"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              <code class="font-mono text-[14px]">lobu.config.ts</code> is the
-              control plane: it declares the agent and points at the entities,
-              watchers, connectors, and skills it uses.{" "}
-              <code class="font-mono text-[14px]">lobu apply</code> deploys the
-              lot; the sections below zoom into each piece.
-            </p>
-            <FeatureList
-              items={[
-                <>
-                  <b>Every chat surface</b>:{" "}
-                  <a
-                    class="underline decoration-dotted underline-offset-2 transition-colors hover:text-[color:var(--color-tg-accent)]"
-                    href="/platforms/slack/"
-                  >
-                    Slack
-                  </a>
-                  ,{" "}
-                  <a
-                    class="underline decoration-dotted underline-offset-2 transition-colors hover:text-[color:var(--color-tg-accent)]"
-                    href="/platforms/telegram/"
-                  >
-                    Telegram
-                  </a>
-                  ,{" "}
-                  <a
-                    class="underline decoration-dotted underline-offset-2 transition-colors hover:text-[color:var(--color-tg-accent)]"
-                    href="/platforms/discord/"
-                  >
-                    Discord
-                  </a>
-                  ,{" "}
-                  <a
-                    class="underline decoration-dotted underline-offset-2 transition-colors hover:text-[color:var(--color-tg-accent)]"
-                    href="/platforms/teams/"
-                  >
-                    Teams
-                  </a>
-                  ,{" "}
-                  <a
-                    class="underline decoration-dotted underline-offset-2 transition-colors hover:text-[color:var(--color-tg-accent)]"
-                    href="/platforms/whatsapp/"
-                  >
-                    WhatsApp
-                  </a>
-                  , HTTP, MCP. Same{" "}
-                  <code class="font-mono text-[13px]">lobu.config.ts</code>.
-                </>,
-                <>
-                  <b>BYO model</b>: Anthropic, OpenAI, Z.ai, OpenRouter, your
-                  own.
-                </>,
-                <>
-                  <b>Per-user isolation</b>: workers scoped by user/channel.
-                  Secrets stay in the proxy.
-                </>,
-              ]}
-            />
-            <ProductLink href="/getting-started/">
-              Read the agents guide
-            </ProductLink>
-          </div>
-        }
-        code={
-          <div>
-            <CodeBlock
-              badge="lobu.config.ts"
-              snippet={snippets.agentConfig}
-              collapsible
-              defaultOpen
-            />
-            <ExampleFooterLink slug="sales" />
-          </div>
-        }
-      />
+          {active.showConnectorChips ? <ConnectorChips /> : null}
+        </div>
+      ) : null}
     </Container>
   );
 }

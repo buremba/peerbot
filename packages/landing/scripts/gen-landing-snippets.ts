@@ -84,6 +84,9 @@ type UseCaseSnippets = {
   connector: Snippet;
   memorySchema: Snippet;
   watcher: Snippet;
+  agentConfig: Snippet;
+  reaction: Snippet | null;
+  skill: Snippet | null;
 };
 
 type LandingSnippets = {
@@ -442,6 +445,27 @@ function findConnectorFile(slug: string): { rel: string } {
   return { rel: file };
 }
 
+function findReactionFile(slug: string): string | null {
+  const exampleDir = resolve(examplesDir, slug);
+  const file = readdirSync(exampleDir).find((f) => f.endsWith(".reaction.ts"));
+  return file ?? null;
+}
+
+// First-party skills only — under examples/<slug>/skills/<name>/SKILL.md.
+// Workspace-bundled .skills/ and node_modules SKILL.md are noise.
+function findSkillFile(slug: string): string | null {
+  const skillsDir = resolve(examplesDir, slug, "skills");
+  if (!existsSync(skillsDir)) return null;
+  const names = readdirSync(skillsDir, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name);
+  for (const name of names) {
+    const rel = `skills/${name}/SKILL.md`;
+    if (existsSync(resolve(examplesDir, slug, rel))) return rel;
+  }
+  return null;
+}
+
 function buildUseCases(): Record<string, UseCaseSnippets> {
   const out: Record<string, UseCaseSnippets> = {};
   for (const slug of USE_CASE_SLUGS) {
@@ -454,7 +478,23 @@ function buildUseCases(): Record<string, UseCaseSnippets> {
     );
     const memorySchema = configSnippet(slug, entitySlice);
     const watcher = configSnippet(slug, watcherSlice);
-    out[slug] = { connector, memorySchema, watcher };
+    const agentConfig = configSnippet(slug, agentConfigSlice);
+    const reactionRel = findReactionFile(slug);
+    const reaction = reactionRel
+      ? fileSnippet(slug, reactionRel, "typescript")
+      : null;
+    const skillRel = findSkillFile(slug);
+    const skill = skillRel
+      ? fileSnippet(slug, skillRel, "markdown", trimSkillMarkdown)
+      : null;
+    out[slug] = {
+      connector,
+      memorySchema,
+      watcher,
+      agentConfig,
+      reaction,
+      skill,
+    };
   }
   return out;
 }

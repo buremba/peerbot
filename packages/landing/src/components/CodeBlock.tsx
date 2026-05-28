@@ -24,6 +24,11 @@ type CodeBlockProps = {
   collapsible?: boolean;
   /** Initial open state when `collapsible`. Defaults to false (collapsed). */
   defaultOpen?: boolean;
+  /**
+   * Cap the rendered code body's height (CSS value) and make it scrollable.
+   * Use on long snippets that would otherwise dominate a two-column section.
+   */
+  maxHeight?: string;
 };
 
 type Token = { kind: TokenKind; text: string };
@@ -454,6 +459,7 @@ export function CodeBlock({
   footnote,
   collapsible = false,
   defaultOpen = false,
+  maxHeight,
 }: CodeBlockProps) {
   const lines = highlight(snippet.code, snippet.language);
   const [open, setOpen] = useState(defaultOpen);
@@ -521,8 +527,11 @@ export function CodeBlock({
       {showBody ? (
         <>
           <pre
-            class="overflow-x-auto px-5 py-4 font-mono text-[12.5px] leading-[1.65]"
-            style={{ color: "var(--color-landing-code-text)" }}
+            class="overflow-auto px-5 py-4 font-mono text-[12.5px] leading-[1.65]"
+            style={{
+              color: "var(--color-landing-code-text)",
+              ...(maxHeight ? { maxHeight } : {}),
+            }}
           >
             <code class="block">
               {lines.map((toks, idx) => (

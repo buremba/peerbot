@@ -54,17 +54,23 @@ jobs:
         # install it in the worker runtime image" before it ships.
         run: node scripts/check-connector-runtime-deps.mjs
 
-      - name: Build core + sdk + embeddings + connector-worker for downstream type-resolution
+      - name: Build core + sdk + embeddings + connector-worker + pgvector-embedded + cli for downstream type-resolution
         # connector-worker integration tests import from its compiled `dist/`
         # (subprocess-mode tests spawn the built executor); build it here
         # so those run. embeddings must build before connector-worker —
         # connector-worker's src/embeddings.ts imports from @lobu/embeddings
         # and resolves it via the workspace symlink → dist.
+        # cli must build too: the cli-ux unit test spawns `packages/cli/bin/lobu.js`,
+        # whose shim resolves `../dist/index.js` at runtime. The cli's build
+        # script vendors @lobu/pgvector-embedded's dist+prebuilt into its
+        # tarball, so pgvector-embedded must build first.
         run: |
           cd packages/core && bun run build && cd ../..
           cd packages/connector-sdk && bun run build && cd ../..
           cd packages/embeddings && bun run build && cd ../..
           cd packages/connector-worker && bun run build && cd ../..
+          cd packages/pgvector-embedded && bun run build && cd ../..
+          cd packages/cli && bun run build && cd ../..
 
       - name: core / cli (bun:test)
         run: bun test packages/core packages/cli --coverage

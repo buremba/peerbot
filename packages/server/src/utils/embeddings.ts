@@ -14,7 +14,7 @@ import logger from '../utils/logger';
 const EMBEDDING_DIMENSIONS = 768;
 // Must match @lobu/embeddings DEFAULT_MODEL_NAME (the local pipeline + service
 // fall back to this when EMBEDDINGS_MODEL is unset).
-const DEFAULT_EMBEDDING_MODEL = 'Xenova/bge-base-en-v1.5';
+export const DEFAULT_EMBEDDING_MODEL = 'Xenova/bge-base-en-v1.5';
 // Allowlist mirroring the embeddings service's MODEL_NAME_PATTERN. Used to
 // reject anything unsafe before inlining the configured model into SQL.
 const MODEL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/:-]{0,127}$/;

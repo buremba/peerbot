@@ -54,7 +54,6 @@ import {
   publicRestGetConnector,
   publicRestGetOrganization,
   publicRestGetWatchers,
-  publicRestListAgents,
   publicRestListClassifiers,
   publicRestListConnectors,
   publicRestSearchKnowledge,
@@ -929,7 +928,6 @@ app.get('/api/:orgSlug/public/classifiers', publicRestListClassifiers);
 app.get('/api/:orgSlug/public/connectors', publicRestListConnectors);
 app.get('/api/:orgSlug/public/connectors/:connectorKey', publicRestGetConnector);
 app.get('/api/:orgSlug/public/organization', publicRestGetOrganization);
-app.get('/api/:orgSlug/public/agents', publicRestListAgents);
 app.get('/api/:orgSlug/public/events', publicRestEventsStream);
 app.patch(
   '/api/:orgSlug/content/:id/classifications/:classifier_slug',

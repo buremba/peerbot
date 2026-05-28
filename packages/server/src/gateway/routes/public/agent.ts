@@ -505,10 +505,33 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
    */
   async function requireAgentOwnership(
     c: Context,
-    resolvedAgentId: string
+    resolvedAgentId: string,
+    sessionForTenantCheck?: { organizationId?: string } | null
   ): Promise<Response | null> {
     const deny = () =>
       c.json({ success: false, error: "Forbidden" }, 403) as Response;
+
+    // Tenant guard: agent-id-string ownership is per (platform, userId,
+    // agentId) — but the agentId string can repeat across tenants (the
+    // global `DEFAULT_AGENT_ID` constant, or two orgs that happen to share
+    // an id). If a session belongs to org A and the caller's auth context
+    // says org B, deny BEFORE any ownership check — otherwise org B would
+    // pass ownership against its own agent-X and reach org A's session
+    // routed by the same agent-X. Returning the same `Forbidden` shape as
+    // ownership keeps the response uniform (no enumeration oracle on which
+    // check failed). Routes that load a session before calling this MUST
+    // pass it in; createAgent has no pre-existing session and passes null.
+    if (sessionForTenantCheck?.organizationId) {
+      const callerOrgId =
+        (c.get("organizationId") as string | undefined) ??
+        c.get("authContext")?.organizationId;
+      if (
+        callerOrgId &&
+        sessionForTenantCheck.organizationId !== callerOrgId
+      ) {
+        return deny();
+      }
+    }
 
     const bearer = tokenFromHeader(c);
 
@@ -835,7 +858,8 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
 
     const denial = await requireAgentOwnership(
       c,
-      session.agentId || sessionKey
+      session.agentId || sessionKey,
+      session
     );
     if (denial) return denial;
 
@@ -863,7 +887,8 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     const existingSession = await sessMgr.getSession(sessionKey);
     const denial = await requireAgentOwnership(
       c,
-      existingSession?.agentId || sessionKey
+      existingSession?.agentId || sessionKey,
+      existingSession
     );
     if (denial) return denial;
 
@@ -899,7 +924,8 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     // cross-tenant caller would receive another agent's buffered events.
     const denial = await requireAgentOwnership(
       c,
-      session.agentId || sessionKey
+      session.agentId || sessionKey,
+      session
     );
     if (denial) return denial;
 
@@ -1016,7 +1042,8 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     const preSession = await sessMgr.getSession(agentId);
     const ownershipDenial = await requireAgentOwnership(
       c,
-      preSession?.agentId || agentId
+      preSession?.agentId || agentId,
+      preSession
     );
     if (ownershipDenial) return ownershipDenial;
 

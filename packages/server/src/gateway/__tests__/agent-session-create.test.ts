@@ -210,6 +210,97 @@ describe("POST /api/v1/agents — default-agent resolution", () => {
     expect(body.error).toContain("Default agent");
   });
 
+  test("cross-tenant GET on a session URL is denied with 403", async () => {
+    // Set up: orgA creates a session via POST /api/v1/agents, then orgB
+    // tries to GET that exact session URL. Both orgs nominally "own"
+    // agentId `owletto-default` (the global constant) — without the
+    // tenant guard in requireAgentOwnership, orgB would pass the
+    // (platform, userId, agentId) check and read orgA's session row.
+    const orgA = "org-A";
+    const orgB = "org-B";
+    const tokenA = generateWorkerToken("owletto-default", "conv-A", "deploy-A", {
+      channelId: "api_test",
+      agentId: "owletto-default",
+      organizationId: orgA,
+    });
+    const tokenB = generateWorkerToken("owletto-default", "conv-B", "deploy-B", {
+      channelId: "api_test",
+      agentId: "owletto-default",
+      organizationId: orgB,
+    });
+
+    // Shared metadata store: BOTH orgs have an `owletto-default` agent that
+    // their respective workers own (the cross-tenant collision setup pi
+    // exploited).
+    const sharedSessions = new Map<string, any>();
+    sharedSessions.set("owletto-default_owletto-default_org-A", {
+      conversationId: "owletto-default_owletto-default_org-A",
+      userId: "owletto-default",
+      agentId: "owletto-default",
+      organizationId: orgA,
+      status: "created",
+      createdAt: Date.now(),
+      lastActivity: Date.now(),
+    });
+
+    const app = createAgentApi({
+      queueProducer: {} as never,
+      sessionManager: {
+        async getSession(id: string) {
+          return sharedSessions.get(id) ?? null;
+        },
+        async setSession(s: any) {
+          sharedSessions.set(s.conversationId, s);
+        },
+        async touchSession() {},
+        async deleteSession(id: string) {
+          sharedSessions.delete(id);
+        },
+      } as never,
+      sseManager: {
+        hasActiveConnection() {
+          return false;
+        },
+      } as never,
+      publicGatewayUrl: "http://localhost:8787",
+      agentMetadataStore: {
+        async getMetadata(id: string) {
+          if (id !== "owletto-default") return null;
+          return {
+            owner: { platform: "api", userId: "owletto-default" },
+          };
+        },
+      } as never,
+      userAgentsStore: {
+        async ownsAgent() {
+          return true;
+        },
+      } as never,
+    });
+
+    // Sanity: orgA can GET its own session (token A authenticates as the
+    // owner, session.organizationId matches authContext).
+    const okSelf = await app.request(
+      "/api/v1/agents/owletto-default_owletto-default_org-A",
+      { headers: { Authorization: `Bearer ${tokenA}` } }
+    );
+    expect(okSelf.status).toBe(200);
+
+    // Real test: orgB tries the same URL. Ownership check would otherwise
+    // pass (orgB also owns agent `owletto-default`) — the tenant guard
+    // inside requireAgentOwnership refuses based on session.organizationId
+    // (orgA) ≠ caller orgId (orgB).
+    const denied = await app.request(
+      "/api/v1/agents/owletto-default_owletto-default_org-A",
+      { headers: { Authorization: `Bearer ${tokenB}` } }
+    );
+    expect(denied.status).toBe(403);
+    expect((await denied.json()) as { error?: string }).toEqual({
+      success: false,
+      error: "Forbidden",
+    });
+  });
+
   test("returns 404 when the default agent belongs to a different org", async () => {
     // Default agent exists, but its org doesn't match the caller's token
     // org — must NOT leak. The same 404 as 'not provisioned' is fine; the

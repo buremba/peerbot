@@ -533,6 +533,33 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       }
     }
 
+    // Defense-in-depth for the tenant guard above. That guard only fires when
+    // the auth method populated an org (PAT bridge / worker token / external
+    // OAuth all set one). The settings-session COOKIE path authenticates a
+    // userId but carries NO org, so the guard above is a no-op for it — yet
+    // `verifyOwnedAgentAccess` authorizes on (platform, userId, agentId) and
+    // returns the CALLER's org, never the session's. Without this, a cookie
+    // session for org B could read org A's session via a shared agentId (the
+    // global DEFAULT_AGENT_ID). So compare the org ownership actually resolved
+    // to against the session's, and deny on a definite mismatch. An undefined
+    // on either side falls through unchanged — this never denies a legitimate
+    // same-org caller, it only closes the cross-org case the guard above misses.
+    const authorizeOwnership = (access: {
+      authorized: boolean;
+      organizationId?: string;
+    }): Response | null => {
+      if (!access.authorized) return deny();
+      const tenantOrg = sessionForTenantCheck?.organizationId;
+      if (
+        tenantOrg &&
+        access.organizationId &&
+        access.organizationId !== tenantOrg
+      ) {
+        return deny();
+      }
+      return null;
+    };
+
     const bearer = tokenFromHeader(c);
 
     // 1. Settings session cookie (or injected auth provider for embedded mode).
@@ -543,7 +570,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
         resolvedAgentId,
         ownershipAccessConfig
       );
-      return access.authorized ? null : deny();
+      return authorizeOwnership(access);
     }
 
     if (!bearer) return deny();
@@ -585,7 +612,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
             resolvedAgentId,
             ownershipAccessConfig
           );
-          return access.authorized ? null : deny();
+          return authorizeOwnership(access);
         }
       } catch {
         // fall through to deny
@@ -736,7 +763,16 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     // store. The resume guard below catches in-flight collisions; the org
     // suffix prevents `forceNew` from silently overwriting another tenant's
     // session at setSession time.
-    const orgScope = tokenOrganizationId ? `_${tokenOrganizationId}` : "";
+    //
+    // Watcher sessions are EXEMPT: their conversationId is already globally
+    // unique via the DB-serial watcherId + runId, and downstream correlation
+    // relies on the exact `..._watcher_<id>_run_<id>` shape — the worker
+    // session key AND the API/SSE owner-routing key (unified-thread-consumer)
+    // both derive from this conversationId. Injecting `_<org>_` mid-id splits
+    // `watcher_<id>` from `run_<id>`, breaking watcher→worker dispatch (caught
+    // by the sdk-e2e gate). Keep the prod-proven shape for the watcher path.
+    const orgScope =
+      tokenOrganizationId && !watcherIntent ? `_${tokenOrganizationId}` : "";
     const conversationId = effectiveThread
       ? `${agentId}_${userId}${orgScope}_${effectiveThread}`
       : `${agentId}_${userId}${orgScope}`;

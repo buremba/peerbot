@@ -1,8 +1,7 @@
 import { useState } from "preact/hooks";
+import { GITHUB_URL } from "../lib/urls";
 import { ModeCard, modes } from "./InstallSection";
 import { ScheduleCallButton, ScheduleCallIcon } from "./ScheduleDialog";
-
-const GITHUB_URL = "https://github.com/lobu-ai/lobu";
 
 const resources = [
   {

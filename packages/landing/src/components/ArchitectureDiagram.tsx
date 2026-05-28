@@ -1,5 +1,30 @@
 // biome-ignore-all format: stays compact for the landing-page panel
+import { GITHUB_CONNECTORS_TREE_URL } from "../lib/urls";
+import {
+  type ArchitectureEntityRow,
+  getArchitectureConnectorChips,
+  getArchitectureEntityRows,
+} from "../use-case-showcases";
 import { messagingChannels } from "./platforms";
+
+const GENERIC_CONNECTOR_ROWS: ReadonlyArray<{
+  label: string;
+  href: string;
+}> = [
+  { label: "50+ built-in connectors", href: GITHUB_CONNECTORS_TREE_URL },
+  { label: "any MCP server", href: "/guides/mcp-proxy/" },
+  { label: "custom via connector-sdk", href: "/getting-started/connector-sdk/" },
+];
+
+// Fallback entity rows when no use case is active (the homepage). Labelled
+// generically so the widget reads as a schema preview, not a snapshot of a
+// real customer's data. /for/<slug> pages pass `slug` and get vertical-
+// specific rows via getArchitectureEntityRows.
+const GENERIC_ROWS: readonly ArchitectureEntityRow[] = [
+  ["Customer A", "company", "2d"],
+  ["Customer B", "person", "5h"],
+  ["Customer C", "meeting", "1h"],
+];
 
 /**
  * Architecture diagram: layered stream story (NOT cycling pairs).
@@ -22,11 +47,19 @@ import { messagingChannels } from "./platforms";
 /*  Component                                                                 */
 /* -------------------------------------------------------------------------- */
 
-export function ArchitectureDiagram() {
+export function ArchitectureDiagram({ slug }: { slug?: string } = {}) {
+  const rows = getArchitectureEntityRows(slug) ?? GENERIC_ROWS;
+  const chips = getArchitectureConnectorChips(slug);
+  const connectorRows = chips
+    ? chips.map((label) => ({
+        label,
+        href: "/getting-started/connector-sdk/",
+      }))
+    : GENERIC_CONNECTOR_ROWS;
   return (
     <div class="flex flex-col gap-6">
       <Header />
-      <DiagramBoard />
+      <DiagramBoard rows={rows} connectorRows={connectorRows} />
       <PulseStyles />
     </div>
   );
@@ -60,7 +93,15 @@ function Header() {
   );
 }
 
-function DiagramBoard() {
+type ConnectorRow = { label: string; href: string };
+
+function DiagramBoard({
+  rows,
+  connectorRows,
+}: {
+  rows: readonly ArchitectureEntityRow[];
+  connectorRows: readonly ConnectorRow[];
+}) {
   return (
     <div
       class="relative rounded-lg border p-6 sm:p-8"
@@ -71,10 +112,10 @@ function DiagramBoard() {
       }}
     >
       <div class="hidden lg:block">
-        <DesktopBoard />
+        <DesktopBoard rows={rows} connectorRows={connectorRows} />
       </div>
       <div class="block lg:hidden">
-        <MobileBoard />
+        <MobileBoard rows={rows} connectorRows={connectorRows} />
       </div>
     </div>
   );
@@ -84,24 +125,36 @@ function DiagramBoard() {
 /*  Desktop board: three column layered story                                 */
 /* -------------------------------------------------------------------------- */
 
-function DesktopBoard() {
+function DesktopBoard({
+  rows,
+  connectorRows,
+}: {
+  rows: readonly ArchitectureEntityRow[];
+  connectorRows: readonly ConnectorRow[];
+}) {
   return (
     <div class="grid grid-cols-[1fr_auto_1.1fr_auto_1.1fr] items-stretch gap-x-2">
-      <ConnectorsColumn />
+      <ConnectorsColumn connectorRows={connectorRows} />
       <ColumnArrow label="events" />
-      <MemoryColumn />
+      <MemoryColumn rows={rows} />
       <ColumnArrow label="chat" sublabel="read" split />
       <AgentsColumn />
     </div>
   );
 }
 
-function MobileBoard() {
+function MobileBoard({
+  rows,
+  connectorRows,
+}: {
+  rows: readonly ArchitectureEntityRow[];
+  connectorRows: readonly ConnectorRow[];
+}) {
   return (
     <div class="flex flex-col gap-4">
-      <ConnectorsColumn />
+      <ConnectorsColumn connectorRows={connectorRows} />
       <VerticalArrow label="events" />
-      <MemoryColumn />
+      <MemoryColumn rows={rows} />
       <VerticalArrow label="chat · read" />
       <AgentsColumn />
     </div>
@@ -112,31 +165,33 @@ function MobileBoard() {
 /*  Columns                                                                   */
 /* -------------------------------------------------------------------------- */
 
-function ConnectorsColumn() {
+function ConnectorsColumn({
+  connectorRows,
+}: {
+  connectorRows: readonly ConnectorRow[];
+}) {
   return (
     <ColumnCard heading="Connectors" footer="stream events from any source">
       <div class="flex flex-col gap-2">
-        <SourceRow
-          label="50+ built-in connectors"
-          href="https://github.com/lobu-ai/lobu/tree/main/packages/connectors/src"
-        />
-        <SourceRow label="any MCP server" href="/guides/mcp-proxy/" />
-        <SourceRow
-          label="custom via connector-sdk"
-          href="/getting-started/connector-sdk/"
-        />
+        {connectorRows.map((row) => (
+          <SourceRow key={row.label} label={row.label} href={row.href} />
+        ))}
       </div>
     </ColumnCard>
   );
 }
 
-function MemoryColumn() {
+function MemoryColumn({
+  rows,
+}: {
+  rows: readonly ArchitectureEntityRow[];
+}) {
   return (
     <ColumnCard heading="Memory" footer="append-only knowledge graph">
       <div class="flex flex-col">
         <StreamBox label="events" />
         <DerivationArrow />
-        <EntitiesTable />
+        <EntitiesTable rows={rows} />
       </div>
     </ColumnCard>
   );
@@ -319,15 +374,13 @@ function StreamBox({ label }: { label: string }) {
  * monospace dashes/blocks so the table reads as a schema preview rather
  * than fake data. Sits in the same box family as StreamBox.
  */
-function EntitiesTable() {
+function EntitiesTable({
+  rows,
+}: {
+  rows: readonly ArchitectureEntityRow[];
+}) {
   const HEADERS = ["name", "type", "updated"] as const;
-  // Placeholder rows, labelled generically so the widget reads as a
-  // schema preview, not a snapshot of a real customer's data.
-  const ROWS: ReadonlyArray<readonly [string, string, string]> = [
-    ["Customer A", "company", "2d"],
-    ["Customer B", "person", "5h"],
-    ["Customer C", "meeting", "1h"],
-  ];
+  const ROWS = rows;
   return (
     <div
       class="relative overflow-hidden rounded-lg border"

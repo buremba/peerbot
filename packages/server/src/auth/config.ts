@@ -91,42 +91,8 @@ function getOAuthMethodsFromSchema(
   return parsedAuthSchema?.methods ?? [];
 }
 
-function unionScopes(...scopeLists: Array<readonly string[] | null | undefined>): string[] {
-  return Array.from(
-    new Set(
-      scopeLists
-        .flatMap((scopes) => scopes ?? [])
-        .map((scope) => scope.trim())
-        .filter((scope) => scope.length > 0)
-    )
-  );
-}
-
-function collectProvisioningScopesByProvider(
-  rows: LoginProviderConfigRow[]
-): Map<string, string[]> {
-  const scopesByProvider = new Map<string, string[]>();
-
-  for (const row of rows) {
-    const methods = getOAuthMethodsFromSchema(row.auth_schema);
-    for (const method of methods) {
-      if (method.type !== 'oauth' || typeof method.provider !== 'string') continue;
-      if (!method.loginProvisioning?.autoCreateConnection) continue;
-      const provider = method.provider.trim().toLowerCase();
-      if (!provider) continue;
-      scopesByProvider.set(
-        provider,
-        unionScopes(scopesByProvider.get(provider), method.requiredScopes ?? [])
-      );
-    }
-  }
-
-  return scopesByProvider;
-}
-
 export function collectEnabledLoginProviderConfigs(
-  rows: LoginProviderConfigRow[],
-  provisioningScopesByProvider?: Map<string, string[]>
+  rows: LoginProviderConfigRow[]
 ): EnabledLoginProviderConfig[] {
   const configs: EnabledLoginProviderConfig[] = [];
   const seenProviders = new Map<string, string>();
@@ -141,11 +107,8 @@ export function collectEnabledLoginProviderConfigs(
       const provider = method.provider.trim().toLowerCase();
       if (!provider) continue;
 
-      const loginScopes = unionScopes(
-        getLoginProviderScopes(provider, method.loginScopes),
-        provisioningScopesByProvider?.get(provider)
-      );
-      if (loginScopes.length === 0) {
+      const loginScopes = getLoginProviderScopes(provider, method.loginScopes);
+      if (!loginScopes || loginScopes.length === 0) {
         console.warn(
           `[Auth] Ignoring login-enabled connector '${connectorKey}' for unsupported provider '${provider}'.`
         );
@@ -352,18 +315,7 @@ export async function getEnabledLoginProviderConfigs(
       AND organization_id = ${effectiveOrgId}
     ORDER BY key ASC
   `;
-  const allActiveRows = await db`
-    SELECT key, auth_schema
-    FROM connector_definitions
-    WHERE status = 'active'
-      AND organization_id = ${effectiveOrgId}
-    ORDER BY key ASC
-  `;
-
-  const configs = collectEnabledLoginProviderConfigs(
-    rows as LoginProviderConfigRow[],
-    collectProvisioningScopesByProvider(allActiveRows as LoginProviderConfigRow[])
-  );
+  const configs = collectEnabledLoginProviderConfigs(rows as LoginProviderConfigRow[]);
 
   loginProviderCache.set(cacheKey, configs);
   return configs;

@@ -34,7 +34,8 @@ describe('login provider helpers', () => {
 
     const configs = collectEnabledLoginProviderConfigs([
       {
-        // No loginScopes declared and no provisioning union available → filtered out.
+        // Sensitive connector scopes never leak into login: a connector that declares
+        // only requiredScopes (no loginScopes) is filtered out of the login flow.
         key: 'google.calendar',
         auth_schema: {
           methods: [
@@ -47,9 +48,12 @@ describe('login provider helpers', () => {
         },
       },
       {
+        // Sensitive requiredScopes + auto-provisioning must NOT leak into login:
+        // login stays identity-only (openid/email/profile); gmail.readonly is granted
+        // later via the connector's own incremental-auth flow.
         key: 'google.gmail',
         auth_schema:
-          '{"methods":[{"type":"oauth","provider":"google","loginScopes":["openid","email","profile"]}]}',
+          '{"methods":[{"type":"oauth","provider":"google","loginScopes":["openid","email","profile"],"requiredScopes":["https://www.googleapis.com/auth/gmail.readonly"],"loginProvisioning":{"autoCreateConnection":true}}]}',
       },
       {
         key: 'github.issues',

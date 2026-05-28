@@ -104,6 +104,19 @@ export interface ExtensionNetworkConfig {
   maxBufferResponses?: number;
   /** Per-response body cap. Default 1 MiB. */
   maxBodyBytes?: number;
+  /**
+   * Origins the dispatched chrome actions are allowed to touch. Each entry
+   * is either an exact host (`linkedin.com`) or a wildcard (`*.linkedin.com`,
+   * `linkedin.com/*`); see apps/chrome/tools.js / network-intercept.js
+   * `urlHostInAllowlist` / `enforceAllowedOriginFromTab`.
+   *
+   * Forwarded on every dispatched action's `action_input.allowed_origins`,
+   * mirroring how the chrome extension's per-run ctx normally pulls them
+   * off `run.config.allowed_origins`. When omitted, the extension's gate
+   * defaults to permissive — set this from every connector for defense in
+   * depth.
+   */
+  allowedOrigins?: string[];
 }
 
 const DEFAULT_CONFIG = {
@@ -154,33 +167,33 @@ export async function extensionNetworkSync<TItem>(opts: {
   const cfg = { ...DEFAULT_CONFIG, ...opts.config };
   const items: TItem[] = [];
   let apiCallCount = 0;
+  // Threaded through every dispatched action's input so the extension's
+  // per-run allowedOrigins gate (apps/chrome/background.js reads from
+  // run.config or action_input) blocks anything off-host. Omitted from the
+  // payload when the caller didn't set it — the extension treats an empty
+  // array as permissive.
+  const allowedOriginsInput = opts.config.allowedOrigins
+    ? { allowed_origins: opts.config.allowedOrigins }
+    : {};
 
-  // 1. navigate into a fresh background tab.
-  const navObs = await opts.dispatcher.dispatch<NavigateObservation>('navigate', {
-    url: opts.url,
+  // 1. Open an about:blank tab WITHOUT navigating yet. We need the Network
+  // domain listener live BEFORE the page starts loading — otherwise the
+  // first batch of Voyager XHRs the page fires during initial render
+  // completes before our start() listener attaches and we miss them. Pi
+  // review caught this; LinkedIn was the canonical case.
+  const blankNavObs = await opts.dispatcher.dispatch<NavigateObservation>('navigate', {
+    url: 'about:blank',
     open_in_new_tab: true,
     wait_for_load: true,
+    ...allowedOriginsInput,
   });
-  const tabId = navObs.tab_id;
-  sdkLogger.info(
-    { tabId, currentUrl: navObs.current_url },
-    '[ExtensionNetwork] navigated'
-  );
+  const tabId = blankNavObs.tab_id;
+  sdkLogger.info({ tabId }, '[ExtensionNetwork] opened scratch tab');
 
-  if (opts.checkAuth && !opts.checkAuth(navObs.current_url)) {
-    await safeStop(opts.dispatcher, null);
-    await safeCloseTab(opts.dispatcher, tabId);
-    throw new Error(
-      'extensionNetworkSync: auth check failed — Chrome session is not logged in to this site'
-    );
-  }
-
-  // 2. start intercept BEFORE any scroll so the first batch of responses
-  // (the page's initial XHR/GraphQL calls during render) is captured. The
-  // extension's start() attaches the Network domain synchronously; any
-  // request that's already in-flight when start() returns will be seen.
-  // Anything that finished before start() is lost — same as the Playwright
-  // page.on('response') lifecycle.
+  // 2. Start the intercept on the empty tab BEFORE the real navigation
+  // happens, so every response fired during the page's initial render is
+  // captured. Anything that landed before start() is lost — and since the
+  // tab is at about:blank, nothing has landed yet.
   const startObs = await opts.dispatcher.dispatch<NetworkInterceptStartObservation>(
     'network_intercept_start',
     {
@@ -188,16 +201,37 @@ export async function extensionNetworkSync<TItem>(opts: {
       patterns: opts.config.interceptPatterns,
       max_buffer_responses: cfg.maxBufferResponses,
       max_body_bytes: cfg.maxBodyBytes,
+      ...allowedOriginsInput,
     }
   );
   const sessionId = startObs.session_id;
 
   try {
-    // 3. give the initial render a chance to fire its XHRs, then drain.
+    // 3. Now navigate to the real URL. Initial XHRs land into the live
+    // buffer.
+    const navObs = await opts.dispatcher.dispatch<NavigateObservation>('navigate', {
+      tab_id: tabId,
+      url: opts.url,
+      open_in_new_tab: false,
+      wait_for_load: true,
+      ...allowedOriginsInput,
+    });
+    sdkLogger.info(
+      { tabId, currentUrl: navObs.current_url },
+      '[ExtensionNetwork] navigated'
+    );
+
+    if (opts.checkAuth && !opts.checkAuth(navObs.current_url)) {
+      throw new Error(
+        'extensionNetworkSync: auth check failed — Chrome session is not logged in to this site'
+      );
+    }
+
+    // 4. give the initial render a chance to fire its XHRs, then drain.
     await sleep(cfg.responseTimeoutMs);
     apiCallCount += await drainInto(items, opts, sessionId);
 
-    // 4. scroll loop. Each iteration: trigger pagination, wait, drain.
+    // 5. scroll loop. Each iteration: trigger pagination, wait, drain.
     let prev = items.length;
     for (let n = 0; n < cfg.maxScrolls; n++) {
       const trigger =
@@ -207,6 +241,7 @@ export async function extensionNetworkSync<TItem>(opts: {
             tab_id: tid,
             expression:
               'window.scrollTo(0, document.documentElement.scrollHeight); 1',
+            ...allowedOriginsInput,
           });
         });
       await trigger(tabId, opts.dispatcher);
@@ -241,7 +276,7 @@ export async function extensionNetworkSync<TItem>(opts: {
   ): Promise<number> {
     const drained = await o.dispatcher.dispatch<NetworkInterceptDrainObservation>(
       'network_intercept_drain',
-      { session_id: sid }
+      { session_id: sid, ...allowedOriginsInput }
     );
     let calls = 0;
     for (const resp of drained.responses ?? []) {
@@ -278,6 +313,9 @@ async function safeStop(dispatcher: ChromeActionDispatcher, sessionId: string | 
 
 async function safeCloseTab(dispatcher: ChromeActionDispatcher, tabId: number) {
   try {
+    // close_tab is intentionally not gated by allowedOrigins on the extension
+    // side (a tab the connector opened is owned by the connector regardless
+    // of where it ended up), so we don't need to forward the allowlist here.
     await dispatcher.dispatch('close_tab', { tab_id: tabId });
   } catch (err) {
     sdkLogger.warn({ err, tabId }, '[ExtensionNetwork] close_tab failed (already gone?)');

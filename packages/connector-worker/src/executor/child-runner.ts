@@ -65,18 +65,52 @@ const pendingDispatchWaiters = new Map<
   { resolve: (v: Record<string, unknown>) => void; reject: (e: Error) => void }
 >();
 
+// Hard ceiling per dispatch. The gateway bridge itself caps at
+// QUEUE_BUDGET_MS (60s) + POST_CLAIM_BUDGET_MS (120s) = 180s, plus a small
+// buffer for HTTP round-trip. We give the child 240s before forcibly
+// rejecting so a wedged daemon/IPC channel can't leave sync() hanging
+// indefinitely. Caught by pi review of #1132.
+const CHROME_DISPATCH_HARD_TIMEOUT_MS = 240_000;
+
 function dispatchChromeAction(
   actionKey: string,
   actionInput: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
   return new Promise<Record<string, unknown>>((resolve, reject) => {
     const requestId = nextDispatchRequestId++;
-    pendingDispatchWaiters.set(requestId, { resolve, reject });
-    void sendIPC({
+    const timer = setTimeout(() => {
+      if (pendingDispatchWaiters.delete(requestId)) {
+        reject(
+          new Error(
+            `chrome_dispatcher.dispatch('${actionKey}') exceeded ${CHROME_DISPATCH_HARD_TIMEOUT_MS}ms; IPC may be wedged`
+          )
+        );
+      }
+    }, CHROME_DISPATCH_HARD_TIMEOUT_MS);
+    pendingDispatchWaiters.set(requestId, {
+      resolve: (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      reject: (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    });
+    sendIPC({
       type: 'chrome_dispatch_request',
       requestId,
       actionKey,
       actionInput,
+    }).catch((err: unknown) => {
+      if (pendingDispatchWaiters.delete(requestId)) {
+        clearTimeout(timer);
+        reject(
+          new Error(
+            `chrome_dispatcher.dispatch('${actionKey}') IPC send failed: ${err instanceof Error ? err.message : String(err)}`
+          )
+        );
+      }
     });
   });
 }

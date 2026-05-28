@@ -147,6 +147,19 @@ export function checkToolAccess(toolName: string, args: unknown, authCtx: AuthCo
 }
 
 /**
+ * Tools whose args are TypeBox-validated at the boundary before the handler
+ * runs. Deliberately narrow: only the two SDK-scripting tools where a missing
+ * field produced an opaque internal stack trace
+ * (`Cannot read properties of undefined (reading 'replace')` from the sandbox
+ * compiler). The `manage_*` tools are intentionally NOT here — they carry
+ * `_id: Type.Number` round-trip fields and `additionalProperties: false`
+ * schemas that lenient handlers tolerated, so flipping strict validation on
+ * for them could 400 previously-working external MCP calls. Widening this set
+ * requires a per-tool audit (tracked in a follow-up issue).
+ */
+const VALIDATED_TOOLS = new Set(['query_sdk', 'run_sdk']);
+
+/**
  * Per-tool compiled TypeBox validator cache.
  *
  * Tool registrations carry their TypeBox schema as `inputSchema`. Without
@@ -231,7 +244,19 @@ export async function executeTool(
   // Validate args against the tool's TypeBox schema BEFORE the handler runs,
   // so a missing/mistyped field returns a clean 400 with the offending name
   // rather than a stack-trace from deep inside the handler.
-  validateToolArgs(toolName, tool.inputSchema, args);
+  //
+  // Scoped to `query_sdk`/`run_sdk` only — the two tools that produced the
+  // user-visible failure this fix targets (a missing `script` exploded as
+  // `Cannot read properties of undefined (reading 'replace')` from inside the
+  // sandbox compiler). Enabling strict validation across ALL tools at once is
+  // a much wider blast radius: several `manage_*` tools have `_id: Type.Number`
+  // fields and `additionalProperties: false` schemas that lenient handlers
+  // historically tolerated, and live external MCP clients may rely on that.
+  // Rolling validation out globally needs a per-tool round-trip audit first —
+  // tracked separately (see "Audit + enable global tool-arg validation safely").
+  if (VALIDATED_TOOLS.has(toolName)) {
+    validateToolArgs(toolName, tool.inputSchema, args);
+  }
 
   try {
     const result = await trackMCPToolCall(toolName, args, () => tool.handler(args, env, toolContext));

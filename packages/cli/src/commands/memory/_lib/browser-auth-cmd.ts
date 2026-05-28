@@ -61,6 +61,29 @@ async function waitForCdpEndpoint(
   return null;
 }
 
+/**
+ * The auth_data payload we write to the auth profile after a successful
+ * CDP launch. Extracted so the unit test can pin its shape without
+ * spawning Chrome — see cli-ux.test.ts. The crucial invariant is that
+ * `user_data_dir` is NOT present: the connector-side cascade
+ * (acquire.ts / browser-network.ts / browser-scraper-utils.ts) prefers
+ * userDataDir over cdp_url and tries Playwright launchPersistentContext,
+ * which can't open a profile dir held by the dedicated Chrome we just
+ * launched. cdp_url alone keeps sync attaching live.
+ */
+export function buildBrowserAuthData(opts: {
+  cdpUrl: string;
+  profileName: string;
+  capturedAt: string;
+}) {
+  return {
+    cdp_url: opts.cdpUrl,
+    captured_at: opts.capturedAt,
+    captured_via: "cli" as const,
+    browser_profile: opts.profileName,
+  };
+}
+
 function launchDedicatedChrome(params: {
   chromeBinary: string;
   userDataDir: string;
@@ -290,19 +313,11 @@ export async function captureBrowserAuth(
         const parsed = await restToolCall<any>(mcpUrl, "manage_auth_profiles", {
           action: "update_auth_profile",
           auth_profile_slug: args.authProfileSlug,
-          // NB: don't persist user_data_dir alongside cdp_url. The
-          // connector-side cascade (acquire.ts / browser-network.ts /
-          // browser-scraper-utils.ts) all short-circuit on userDataDir and
-          // try Playwright launchPersistentContext — which can't open a
-          // profile dir already held by the dedicated Chrome we just
-          // launched (Single Lock). cdp_url alone gives the connector the
-          // attach path it needs.
-          auth_data: {
-            cdp_url: cdpUrl,
-            captured_at: new Date().toISOString(),
-            captured_via: "cli",
-            browser_profile: profileName,
-          },
+          auth_data: buildBrowserAuthData({
+            cdpUrl,
+            profileName,
+            capturedAt: new Date().toISOString(),
+          }),
         });
         if (parsed?.error) {
           printText(`Error: ${parsed.error}`);

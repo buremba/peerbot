@@ -41,23 +41,6 @@ type CampaignMeta = {
   ctaLabel: string;
 };
 
-type SurfaceId = "landing" | "skills" | "memory";
-
-export type SurfaceHeroCopy = {
-  title: string;
-  highlight?: string;
-  description: string;
-};
-
-type SurfaceHeroCopyOverride = Partial<SurfaceHeroCopy> & {
-  title: string;
-};
-
-type SurfaceHeroCopyConfig = {
-  default: SurfaceHeroCopy;
-  byUseCase?: Partial<Record<LandingUseCaseId, SurfaceHeroCopyOverride>>;
-};
-
 type ShowcaseSkillWorkspacePreview = SkillWorkspacePreviewData & {
   useCaseId: LandingUseCaseId;
   examplePath: string;
@@ -2106,163 +2089,7 @@ export const landingUseCaseRouteEntries: Array<{
   { routeId: "market-intelligence", useCaseId: "market" },
 ];
 
-export const DEFAULT_LANDING_USE_CASE_ID: LandingUseCaseId = "market";
-
-const surfaceHeroCopy: Record<SurfaceId, SurfaceHeroCopyConfig> = {
-  landing: {
-    default: {
-      title: "Open-source backend for multi-user AI agents",
-      highlight: "multi-user AI agents",
-      description:
-        "Multi-user agents with isolated workers, connected sources, shared memory, and secrets agents never see.",
-    },
-    byUseCase: {
-      legal: {
-        title: "Trusted AI agents for contract review",
-        highlight: "contract review",
-        description:
-          "Sandboxed legal agents with durable contract memory, secure tool access, and full control in your infrastructure.",
-      },
-      finance: {
-        title: "Finance agents for close and reconciliation",
-        highlight: "close and reconciliation",
-        description:
-          "Run finance workflows with agents that preserve account context, track exceptions, and operate safely inside your environment.",
-      },
-      sales: {
-        title: "Revenue agents for every account",
-        highlight: "every account",
-        description:
-          "Track pilots, buying signals, renewal risk, and account history with agents that keep shared deal context over time.",
-      },
-      delivery: {
-        title: "Delivery agents for project execution",
-        highlight: "project execution",
-        description:
-          "Give teams agents that track milestones, blockers, ownership, and reporting context across the full rollout lifecycle.",
-      },
-      leadership: {
-        title: "Leadership agents for decision support",
-        highlight: "decision support",
-        description:
-          "Turn documents, decisions, blockers, and assignments into reusable context for faster executive follow-through.",
-      },
-      "agent-community": {
-        title: "Community agents for member matching",
-        highlight: "member matching",
-        description:
-          "Build agents that understand member identity, interests, relationships, and intent across your community's real activity.",
-      },
-      ecommerce: {
-        title: "Ecommerce agents for customer operations",
-        highlight: "customer operations",
-        description:
-          "Run ecommerce workflows with agents that connect store systems, preserve customer context, and act with current operational state.",
-      },
-      market: {
-        title: "Investment agents for deal flow",
-        highlight: "deal flow",
-        description:
-          "Track firms, partners, deals, and diligence signals with agents that keep investment context structured and reusable.",
-      },
-    },
-  },
-  skills: {
-    default: {
-      title: "Build reliable agents with skills",
-      highlight: "skills",
-      description:
-        "A skill isn't a prompt template, it's a full sandboxed computer. All capabilities bundled into one installable unit.",
-    },
-    byUseCase: {
-      legal: { title: "Skills for secure legal workflows" },
-      finance: { title: "Skills for finance workflows" },
-      sales: { title: "Skills for account and pipeline agents" },
-      delivery: { title: "Skills for rollout and status workflows" },
-      leadership: { title: "Skills for executive workflows" },
-      "agent-community": { title: "Skills for community workflows" },
-      ecommerce: { title: "Skills for ecommerce workflows" },
-      market: { title: "Skills for sourcing and diligence agents" },
-    },
-  },
-  memory: {
-    default: {
-      title: "Build long-term collective memory",
-      highlight: "collective memory",
-      description:
-        "Lobu gives all your agents the same durable graph: connectors, recall, and managed auth without leaking credentials to the runtime.",
-    },
-    byUseCase: {
-      legal: { title: "Contract memory for legal agents" },
-      finance: { title: "Structured finance memory for every close" },
-      sales: { title: "Account memory for revenue teams" },
-      delivery: { title: "Project memory for delivery teams" },
-      leadership: { title: "Decision memory for leadership agents" },
-      "agent-community": { title: "Member memory for community agents" },
-      ecommerce: { title: "Customer memory for store agents" },
-      market: { title: "Deal memory for venture teams" },
-    },
-  },
-};
-
-type LandingUseCaseRole = "departments" | "personal" | "public";
-
-const useCaseRoleMap: Record<LandingUseCaseId, LandingUseCaseRole> = {
-  legal: "departments",
-  finance: "departments",
-  sales: "departments",
-  delivery: "departments",
-  ecommerce: "departments",
-  leadership: "personal",
-  market: "personal",
-  "agent-community": "public",
-};
-
-const useCaseEmojiMap: Record<LandingUseCaseId, string> = {
-  legal: "\u2696\uFE0F",
-  finance: "\uD83D\uDCCA",
-  sales: "\uD83D\uDCC8",
-  delivery: "\uD83D\uDCE6",
-  leadership: "\uD83E\uDDED",
-  ecommerce: "\uD83D\uDED2",
-  market: "\uD83D\uDCBC",
-  "agent-community": "\uD83E\uDD1D",
-};
-
-const landingUseCaseRoleMeta: Array<{
-  id: LandingUseCaseRole;
-  label: string;
-  description: string;
-}> = [
-  {
-    id: "departments",
-    label: "Company",
-    description: "Team agents with shared memory across roles and tools.",
-  },
-  {
-    id: "personal",
-    label: "Personal",
-    description: "Solo memory: your own decisions, deals, and context.",
-  },
-  {
-    id: "public",
-    label: "Public",
-    description: "Community-scale memory: members, markets, open knowledge.",
-  },
-];
-
-export const landingUseCaseGroupedOptions = landingUseCaseRoleMeta
-  .map((role) => ({
-    ...role,
-    useCases: landingUseCaseShowcases
-      .filter((uc) => useCaseRoleMap[uc.id] === role.id)
-      .map((uc) => ({
-        id: uc.id,
-        label: uc.label,
-        emoji: useCaseEmojiMap[uc.id],
-      })),
-  }))
-  .filter((group) => group.useCases.length > 0);
+const DEFAULT_LANDING_USE_CASE_ID: LandingUseCaseId = "market";
 
 export function getLandingUseCaseShowcase(
   useCaseId?: string
@@ -2274,19 +2101,6 @@ export function getLandingUseCaseShowcase(
     ) ??
     landingUseCaseShowcases[0]
   );
-}
-
-export function getSurfaceHeroCopy(
-  surface: SurfaceId,
-  useCaseId?: LandingUseCaseId
-): SurfaceHeroCopy {
-  const config = surfaceHeroCopy[surface];
-  const useCaseCopy = useCaseId ? config.byUseCase?.[useCaseId] : undefined;
-
-  return {
-    ...config.default,
-    ...useCaseCopy,
-  };
 }
 
 const LOBU_ZONE =
@@ -2311,10 +2125,6 @@ function getLobuOrgSlug(useCaseId?: LandingUseCaseId) {
   if (!useCaseId) return undefined;
   const def = landingUseCases[useCaseId];
   return "lobuOrg" in def ? def.lobuOrg : undefined;
-}
-
-export function getLobuUrl(useCaseId?: LandingUseCaseId) {
-  return buildOrgUrl(getLobuOrgSlug(useCaseId));
 }
 
 export function getLobuMcpUrl() {

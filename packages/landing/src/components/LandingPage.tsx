@@ -495,6 +495,15 @@ function HowItWorks() {
         <div class="text-center">
           <ExampleFooterLink slug="sales" />
         </div>
+        <p
+          class="mt-6 text-center text-[13.5px]"
+          style={{ color: "var(--color-page-text-muted)" }}
+        >
+          Curious how Lobu stacks up against other agent runtimes?{" "}
+          <ProductLink href="/getting-started/comparison/">
+            See the comparison
+          </ProductLink>
+        </p>
       </div>
     </Container>
   );

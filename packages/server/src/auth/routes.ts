@@ -507,8 +507,7 @@ credentialRoutes.get('/extension-bootstrap', (c) => {
  *     Tailscale Funnel / ngrok / cloudflared / nginx proxy fronting a
  *     loopback bind sets these — the bind looks local but the *exposure*
  *     isn't, so a public client could otherwise reach this endpoint.
- *   - Refuses when the deployment has more than one user (legacy bootstrap
- *     row counts as zero — see the `id <> 'bootstrap-user'` filter below).
+ *   - Refuses when the deployment has more than one user.
  *   - Refuses when the single user has no personal org (shouldn't happen —
  *     databaseHooks.user.create.after provisions one).
  *

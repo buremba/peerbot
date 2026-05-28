@@ -49,9 +49,7 @@ matches what's already in operator muscle memory.
 `principal_kind` is a new `text NOT NULL DEFAULT 'human'` column on
 `user`. The discriminator lets surfaces that gate on "is there a real
 human?" exclude the install operator with a single predicate:
-`WHERE principal_kind <> 'install_operator' AND id <> 'bootstrap-user'`
-(the trailing `id <>` clause keeps the pre-PR-#902 legacy bootstrap row
-from being mistaken for a human on upgraded installs).
+`WHERE principal_kind <> 'install_operator'`.
 
 Carve-outs land at: signup count (`databaseHooks.user.create.before`),
 `getAuthConfig().hasUser`, password reset (`sendResetPassword`), magic
@@ -161,10 +159,9 @@ Trade-offs:
 
 Carve-outs (one predicate, applied at each surface):
 
-- `databaseHooks.user.create.before` — install_operator (and the legacy
-  `bootstrap-user` row, if present) excluded from the "deployment already
-  has a user" count, so the first human signup can still proceed in
-  single-user mode.
+- `databaseHooks.user.create.before` — install_operator excluded from
+  the "deployment already has a user" count, so the first human signup
+  can still proceed in single-user mode.
 - `getAuthConfig().hasUser` — same predicate, so the SPA gateway knows
   "the install has a *human*" not "the install has the operator row".
 - `sendResetPassword` / `sendMagicLink` — reject when the target user has
@@ -174,9 +171,8 @@ Carve-outs (one predicate, applied at each surface):
   any non-`credential` provider attempting to write an account row for
   the install operator. `credential` is allowed so `ensureInstallOperator`
   can write the password-hash row at boot.
-- `/api/local-init` user-selection — orders the operator last and
-  excludes `bootstrap-user` entirely, so the route mints credentials
-  for a real human when one exists.
+- `/api/local-init` user-selection — orders the operator last, so the
+  route mints credentials for a real human when one exists.
 
 Not carved out in this PR (intentional — see "Design" section):
 member listing / org member UI / admin user lists. The install operator
@@ -190,8 +186,7 @@ On next boot, every existing install auto-provisions its install_operator.
 Existing human users with normal email + password accounts keep working —
 their auth is independent of the operator row. No user-visible disruption.
 The `principal_kind` column defaults to `'human'` for every pre-existing
-row, so existing predicates that used to filter `WHERE id <> 'bootstrap-user'`
-(legacy, pre-#902) can be replaced with the cleaner
+row, so the "is there a real human?" gate is the single predicate
 `WHERE principal_kind <> 'install_operator'`.
 
 ## Stage 2 implementation files

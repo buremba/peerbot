@@ -1,17 +1,20 @@
 /**
  * LinkedIn Connector
  *
- * Scrapes LinkedIn company pages via browser network interception.
- * Uses Playwright to navigate company pages and intercept Voyager API responses.
- * Auth via Chrome attach over CDP — the user signs in once to a dedicated
- * Chrome window started by `lobu memory browser-auth`, and the connector
- * connects to that live profile at sync time.
+ * Scrapes LinkedIn company pages via the paired Owletto Chrome extension's
+ * network-intercept primitive. The extension runs inside the user's real
+ * Chrome session — no Playwright, no cookie cache, no `--remote-debugging-
+ * port` plumbing. We attach the CDP Network domain in the user's signed-in
+ * tab, drive scroll pagination, and parse the Voyager API responses the
+ * page emits.
  *
- * Follows the same pattern as the X (Twitter) connector.
+ * Auth is implicit: the user is already signed into linkedin.com in the
+ * paired Chrome. There is no fallback path — if no online Owletto extension
+ * is reachable in the connection's org, this sync fails fast with a clear
+ * "no paired Owletto extension" error.
  */
 
 import {
-  browserNetworkSync,
   type ChromeActionDispatcher,
   type ConnectorDefinition,
   ConnectorRuntime,
@@ -21,12 +24,6 @@ import {
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
-import {
-  getBrowserCdpUrl,
-  getBrowserCookies,
-  getBrowserUserDataDir,
-  validateCookieNotExpired,
-} from './browser-scraper-utils';
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -62,24 +59,23 @@ function normalizeCheckpointPostId(postId?: string): string | undefined {
 }
 
 /**
- * Discover a chrome-extension action dispatcher from the run context. The
- * extension path is opted in by:
- *   1. `config.use_extension === true` on the connection, AND
- *   2. `ctx.sessionState.chrome_dispatcher` being a `ChromeActionDispatcher`
- *      (a handle the server-side bridge injects when a paired Owletto
- *      extension worker is available to claim the run).
- *
- * Returning null falls through to the existing Playwright + cookies stack.
- * That keeps every existing deployment working unchanged.
+ * Pull the chrome action dispatcher from sessionState. The connector-worker
+ * subprocess (child-runner.ts) splices a live `chrome_dispatcher` object
+ * onto every sync's sessionState; the dispatcher's `dispatch()` rides an
+ * IPC channel up to the daemon and out to the gateway's
+ * /api/workers/dispatch-chrome-action bridge. When no paired Owletto
+ * extension is online in the connection's org, the bridge returns the
+ * `failed` status and the dispatcher throws — we surface that as the sync
+ * failure verbatim.
  */
-function pickExtensionDispatcher(
-  ctx: SyncContext,
-  config: Record<string, unknown>
-): ChromeActionDispatcher | null {
-  if (config.use_extension !== true) return null;
+function requireExtensionDispatcher(ctx: SyncContext): ChromeActionDispatcher {
   const handle = (ctx.sessionState as Record<string, unknown> | null | undefined)
     ?.chrome_dispatcher as ChromeActionDispatcher | undefined;
-  if (!handle || typeof handle.dispatch !== 'function') return null;
+  if (!handle || typeof handle.dispatch !== 'function') {
+    throw new Error(
+      'LinkedIn connector requires a paired Owletto Chrome extension. No chrome_dispatcher was injected into sessionState — re-run on a connector-worker that has the dispatcher bridge.'
+    );
+  }
   return handle;
 }
 
@@ -218,13 +214,6 @@ function parseJobListings(_url: string, json: unknown): LinkedInJob[] {
 
 // ── Config Schemas ────────────────────────────────────────────
 
-const useExtensionProp = {
-  type: 'boolean',
-  default: false,
-  description:
-    'Route the scrape through the paired Owletto Chrome extension instead of a Playwright-launched browser. Requires a paired Chrome connector worker; falls back to Playwright when no dispatcher is available. Default: false during the migration window.',
-};
-
 const companyUpdatesConfigSchema = {
   type: 'object',
   required: ['company_url'],
@@ -240,7 +229,6 @@ const companyUpdatesConfigSchema = {
       default: 5,
       description: 'Maximum scroll iterations for pagination (default: 5)',
     },
-    use_extension: useExtensionProp,
   },
 };
 
@@ -259,7 +247,6 @@ const jobsConfigSchema = {
       default: 3,
       description: 'Maximum scroll iterations for job listings (default: 3)',
     },
-    use_extension: useExtensionProp,
   },
 };
 
@@ -269,17 +256,14 @@ export default class LinkedInConnector extends ConnectorRuntime {
   readonly definition: ConnectorDefinition = {
     key: 'linkedin',
     name: 'LinkedIn',
-    description: 'Scrapes LinkedIn company pages for posts, hiring signals, and team data.',
-    version: '1.1.0',
+    description:
+      'Scrapes LinkedIn company pages for posts, hiring signals, and team data via the paired Owletto Chrome extension.',
+    version: '2.0.0',
     faviconDomain: 'linkedin.com',
     authSchema: {
       methods: [
         {
-          type: 'browser',
-          capture: 'cli',
-          requiredDomains: ['linkedin.com', '.linkedin.com'],
-          description:
-            'Preferred auth mode for LinkedIn scraping. The CLI launches a dedicated Chrome with remote debugging; you log into LinkedIn once and the connector attaches over CDP, harvesting cookies live from that session.',
+          type: 'none',
         },
         {
           type: 'oauth',
@@ -293,7 +277,7 @@ export default class LinkedInConnector extends ConnectorRuntime {
           clientIdKey: 'LINKEDIN_CLIENT_ID',
           clientSecretKey: 'LINKEDIN_CLIENT_SECRET',
           description:
-            'Optional LinkedIn OAuth app config for sign-in and future API-based access. Current company page and jobs feeds still scrape via browser session cookies.',
+            'Optional LinkedIn OAuth app config for sign-in. Current company page and jobs feeds run via the Chrome extension; OAuth is here for downstream sign-in flows.',
           setupInstructions:
             'Create a LinkedIn OAuth app, add {{redirect_uri}} as the callback URL, then paste the client ID and client secret below.',
         },
@@ -353,62 +337,16 @@ export default class LinkedInConnector extends ConnectorRuntime {
 
     // Normalize URL - remove trailing slash
     const baseUrl = companyUrl.replace(/\/$/, '');
-
-    // ── Extension path (opt-in) ──────────────────────────────────────────
-    //
-    // When the connection's session state carries a `chrome_dispatcher`
-    // handle (injected by the server-side bridge that pairs LinkedIn runs
-    // with a paired Owletto extension worker) AND the connection config
-    // enables it, route the whole sync through the extension's network-
-    // intercept primitive instead of Playwright. The Playwright path
-    // stays as the default fallback during the migration window.
-    //
-    // The dispatcher contract (extensionNetworkSync ⇄ background.js):
-    //   dispatch('navigate', {url, open_in_new_tab: true})
-    //   dispatch('network_intercept_start', {tab_id, patterns, ...})
-    //   dispatch('network_intercept_drain', {session_id})
-    //   dispatch('network_intercept_stop', {session_id})
-    //   dispatch('close_tab', {tab_id})
-    //
-    // See PR body "Migration sequencing" for the server-side wiring.
-    const dispatcher = pickExtensionDispatcher(ctx, config);
     const maxScrolls = (config.max_scrolls as number) ?? (feedKey === 'jobs' ? 3 : 5);
-    if (dispatcher) {
-      if (feedKey === 'jobs') {
-        return this.syncJobsViaExtension(baseUrl, maxScrolls, checkpoint, dispatcher);
-      }
-      return this.syncUpdatesViaExtension(baseUrl, maxScrolls, checkpoint, dispatcher);
-    }
 
-    const userDataDir = getBrowserUserDataDir(ctx.sessionState);
-    const cdpUrlFromSession = getBrowserCdpUrl(ctx.sessionState);
-    const cdpUrl = cdpUrlFromSession ?? 'auto';
-    // No need to require cookies when the device tells us to attach directly
-    // (managed --user-data-dir on disk, or an explicit CDP endpoint pointed
-    // at the user's running Chrome). The cookie cascade is only the fallback
-    // for the cloud/auto path.
-    const skipServerCookies = !!userDataDir || !!cdpUrlFromSession;
-    const cookies = skipServerCookies
-      ? []
-      : getBrowserCookies(ctx.checkpoint as any, ctx.sessionState as any, 'linkedin');
-    if (!skipServerCookies) {
-      validateCookieNotExpired(cookies, 'li_at', 'linkedin');
-    }
-
+    const dispatcher = requireExtensionDispatcher(ctx);
     if (feedKey === 'jobs') {
-      return this.syncJobs(baseUrl, cookies, maxScrolls, checkpoint, userDataDir, cdpUrl);
+      return this.syncJobs(baseUrl, maxScrolls, checkpoint, dispatcher);
     }
-
-    return this.syncUpdates(baseUrl, cookies, maxScrolls, checkpoint, userDataDir, cdpUrl);
+    return this.syncUpdates(baseUrl, maxScrolls, checkpoint, dispatcher);
   }
 
-  // ── Extension-backed sync paths ────────────────────────────────────────
-  //
-  // These mirror syncUpdates / syncJobs but consume extensionNetworkSync
-  // instead of browserNetworkSync. They share the parsers and checkpoint
-  // logic; the diff is purely the transport layer.
-
-  private async syncUpdatesViaExtension(
+  private async syncUpdates(
     baseUrl: string,
     maxScrolls: number,
     checkpoint: LinkedInCheckpoint,
@@ -461,8 +399,8 @@ export default class LinkedInConnector extends ConnectorRuntime {
         last_post_id: posts[0]?.id ?? checkpoint.last_post_id,
         last_timestamp: events[0]?.occurred_at?.toISOString?.() ?? checkpoint.last_timestamp,
       } as unknown as Record<string, unknown>,
-      // No cookie persistence on the extension path — auth lives in the
-      // user's signed-in Chrome session, not in our cookie cache.
+      // No cookie persistence — auth lives in the user's signed-in Chrome,
+      // not in our cookie cache.
       metadata: {
         items_found: events.length,
         items_skipped: result.items.length - posts.length,
@@ -472,7 +410,7 @@ export default class LinkedInConnector extends ConnectorRuntime {
     };
   }
 
-  private async syncJobsViaExtension(
+  private async syncJobs(
     baseUrl: string,
     maxScrolls: number,
     checkpoint: LinkedInCheckpoint,
@@ -525,149 +463,6 @@ export default class LinkedInConnector extends ConnectorRuntime {
         items_found: events.length,
         api_calls: result.apiCallCount,
         backend: 'extension',
-      },
-    };
-  }
-
-  private async syncUpdates(
-    baseUrl: string,
-    cookies: any[],
-    maxScrolls: number,
-    checkpoint: LinkedInCheckpoint,
-    userDataDir: string | undefined,
-    cdpUrl: string | 'auto'
-  ): Promise<SyncResult> {
-    const postsUrl = `${baseUrl}/posts/`;
-
-    const result = await browserNetworkSync<LinkedInPost>({
-      config: {
-        interceptPatterns: [
-          /voyager\/api\/graphql\?variables=.*ORGANIZATION_MEMBER_FEED/,
-          /voyager\/api\/graphql\?variables=.*organizationalPageUrn/,
-        ],
-        authDomains: ['linkedin.com', '.linkedin.com', '.www.linkedin.com'],
-        stealth: true,
-        maxScrolls,
-        scrollDelayMs: 3000,
-        responseTimeoutMs: 8000,
-        navigationTimeoutMs: 20000,
-      },
-      url: postsUrl,
-      cdpUrl,
-      cookies,
-      userDataDir,
-      parseResponse: parseCompanyUpdates,
-      checkAuth: async (page) => {
-        const url = page.url();
-        return !url.includes('/login') && !url.includes('/authwall');
-      },
-    });
-
-    const posts = filterPostsSinceCheckpoint(result.items, checkpoint);
-
-    const events: EventEnvelope[] = posts.map((post) => ({
-      origin_id: `li_post_${post.id}`,
-      payload_text: post.text,
-      author_name: post.author,
-      occurred_at: post.publishedAt,
-      origin_type: 'post',
-      source_url: `https://www.linkedin.com/feed/update/urn:li:activity:${post.id}`,
-      score: calculateEngagementScore('linkedin', {
-        upvotes: post.likes,
-        reply_count: post.comments,
-      }),
-      metadata: {
-        author_headline: post.authorHeadline,
-        likes: post.likes,
-        comments: post.comments,
-        shares: post.shares,
-      },
-    }));
-
-    events.sort((a, b) => new Date(b.occurred_at).getTime() - new Date(a.occurred_at).getTime());
-
-    return {
-      events,
-      checkpoint: {
-        last_post_id: posts[0]?.id ?? checkpoint.last_post_id,
-        last_timestamp: events[0]?.occurred_at?.toISOString?.() ?? checkpoint.last_timestamp,
-      } as unknown as Record<string, unknown>,
-      auth_update: { cookies: result.cookies },
-      metadata: {
-        items_found: events.length,
-        items_skipped: result.items.length - posts.length,
-        api_calls: result.apiCallCount,
-      },
-    };
-  }
-
-  private async syncJobs(
-    baseUrl: string,
-    cookies: any[],
-    maxScrolls: number,
-    checkpoint: LinkedInCheckpoint,
-    userDataDir: string | undefined,
-    cdpUrl: string | 'auto'
-  ): Promise<SyncResult> {
-    const jobsUrl = `${baseUrl}/jobs/`;
-
-    const result = await browserNetworkSync<LinkedInJob>({
-      config: {
-        interceptPatterns: [
-          /voyager\/api\/graphql.*jobPosting/i,
-          /voyager\/api\/search\/dash\/.*jobs/i,
-          /voyager\/api\/organization\/.*jobs/i,
-        ],
-        authDomains: ['linkedin.com', '.linkedin.com', '.www.linkedin.com'],
-        stealth: true,
-        maxScrolls,
-        scrollDelayMs: 3000,
-        responseTimeoutMs: 8000,
-        navigationTimeoutMs: 20000,
-      },
-      url: jobsUrl,
-      cdpUrl,
-      cookies,
-      userDataDir,
-      parseResponse: parseJobListings,
-      checkAuth: async (page) => {
-        const url = page.url();
-        return !url.includes('/login') && !url.includes('/authwall');
-      },
-    });
-
-    // Deduplicate
-    const seenIds = new Set<string>();
-    const jobs = result.items.filter((j) => {
-      if (!j.id || seenIds.has(j.id)) return false;
-      seenIds.add(j.id);
-      return true;
-    });
-
-    jobs.sort((a, b) => b.postedAt.getTime() - a.postedAt.getTime());
-
-    const events: EventEnvelope[] = jobs.map((job) => ({
-      origin_id: `li_job_${job.id}`,
-      payload_text: job.description ?? job.title,
-      title: job.title,
-      occurred_at: job.postedAt,
-      origin_type: 'job_posting',
-      source_url: job.url,
-      metadata: {
-        location: job.location,
-      },
-    }));
-
-    return {
-      events,
-      checkpoint: {
-        last_job_id: jobs[0]?.id ?? checkpoint.last_job_id,
-        last_timestamp: jobs[0]?.postedAt?.toISOString?.() ?? checkpoint.last_timestamp,
-      } as unknown as Record<string, unknown>,
-      auth_update: { cookies: result.cookies },
-      metadata: {
-        items_found: events.length,
-        api_calls: result.apiCallCount,
       },
     };
   }

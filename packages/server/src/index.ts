@@ -791,6 +791,10 @@ app.post('/api/workers/heartbeat', heartbeat);
 app.post('/api/workers/stream', streamContent);
 app.post('/api/workers/complete', completeWorkerJob);
 app.post('/api/workers/complete-action', completeActionRun);
+// Bridge that lets connector-worker fleets dispatch chrome connector actions
+// against a paired Owletto extension. See dispatch-chrome-action.ts.
+import { dispatchChromeAction } from './worker-api/dispatch-chrome-action';
+app.post('/api/workers/dispatch-chrome-action', dispatchChromeAction);
 app.post('/api/workers/complete-embeddings', completeEmbeddings);
 app.post('/api/workers/me/runs/:runId/complete-watcher', completeWatcherRun);
 app.post('/api/workers/me/watchers/:watcher_id/trigger', triggerWatcherForDevice);

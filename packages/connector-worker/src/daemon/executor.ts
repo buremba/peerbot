@@ -242,6 +242,19 @@ async function executeSyncRun(
             }
           }
         },
+        onChromeDispatch: async (actionKey, actionInput) => {
+          // Forward to the gateway's dispatch endpoint. The endpoint
+          // resolves a paired chrome connection in the same org as run_id,
+          // inserts an 'action' run, and waits for the Owletto extension
+          // worker to claim + complete. Multi-replica safe — all state in
+          // Postgres; either replica can host the wait.
+          return client.dispatchChromeAction({
+            parent_run_id: run_id,
+            worker_id: client.id,
+            action_key: actionKey,
+            action_input: actionInput,
+          });
+        },
       },
     });
 

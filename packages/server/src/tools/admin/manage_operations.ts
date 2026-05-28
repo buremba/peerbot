@@ -482,7 +482,7 @@ async function handleListAvailable(
 // 20-30s) could exhaust a flat-100s deadline before the worker even
 // claimed the run, marking it timeout while the worker was about to
 // pick it up.
-async function waitForDeviceActionRun(
+export async function waitForDeviceActionRun(
   runId: number,
   organizationId: string
 ): Promise<{

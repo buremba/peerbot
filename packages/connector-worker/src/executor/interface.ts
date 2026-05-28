@@ -67,6 +67,19 @@ export interface ExecutionHooks {
     name: string,
     options?: { timeoutMs?: number }
   ) => Promise<Record<string, unknown>>;
+  /**
+   * Sync runs: connector code invoked
+   * `ctx.sessionState.chrome_dispatcher.dispatch(actionKey, actionInput)`.
+   * The host (connector-worker daemon) forwards the call to the gateway
+   * (POST /api/workers/dispatch-chrome-action), which inserts a chrome
+   * connector action run, waits for the paired Owletto extension to claim
+   * and complete it, and returns the observation. Implementations MUST
+   * reject when no extension is reachable.
+   */
+  onChromeDispatch?: (
+    actionKey: string,
+    actionInput: Record<string, unknown>
+  ) => Promise<Record<string, unknown>>;
 }
 
 /** Per-run execution options independent of the job payload. */

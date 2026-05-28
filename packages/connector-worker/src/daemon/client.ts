@@ -39,6 +39,13 @@ export interface ExecutorClient {
   emitAuthArtifact(req: EmitAuthArtifactRequest): Promise<void>;
   pollAuthSignal(req: PollAuthSignalRequest): Promise<PollAuthSignalResponse>;
   completeAuth(req: CompleteAuthRequest): Promise<void>;
+  /**
+   * Forward a chrome-extension action call from the running connector to the
+   * gateway, which enqueues a chrome connector action run, waits for the
+   * paired Owletto extension to claim/complete, and returns the observation
+   * — multi-replica safe because the wait is Postgres-mediated.
+   */
+  dispatchChromeAction(req: DispatchChromeActionRequest): Promise<Record<string, unknown>>;
 }
 
 // ============================================
@@ -205,6 +212,26 @@ export interface PollAuthSignalRequest {
 
 export interface PollAuthSignalResponse {
   signal?: Record<string, unknown>;
+}
+
+/**
+ * Request the gateway dispatch a chrome connector action on behalf of the
+ * currently-running sync. The gateway resolves a paired chrome connection
+ * in the same org and posts the result back via /api/workers/complete-action,
+ * the same path used by the chrome extension for its own action runs.
+ */
+export interface DispatchChromeActionRequest {
+  /** run_id of the *parent* sync run (used to scope the dispatch to that org). */
+  parent_run_id: number;
+  worker_id: string;
+  action_key: string;
+  action_input: Record<string, unknown>;
+}
+
+export interface DispatchChromeActionResponse {
+  status: 'completed' | 'failed' | 'timeout';
+  output?: Record<string, unknown>;
+  error_message?: string;
 }
 
 export interface CompleteAuthRequest {
@@ -375,6 +402,25 @@ export class WorkerClient implements ExecutorClient {
    */
   async completeAuth(req: CompleteAuthRequest): Promise<void> {
     await this.requestVoid('/api/workers/complete-auth', req as unknown as Record<string, unknown>);
+  }
+
+  /**
+   * Forward a chrome connector action call to the gateway. Blocks until the
+   * paired Owletto extension completes the run or the gateway-side budget
+   * times out. Throws on failure/timeout with the gateway's error message.
+   */
+  async dispatchChromeAction(req: DispatchChromeActionRequest): Promise<Record<string, unknown>> {
+    const result = await this.requestJson<DispatchChromeActionResponse>(
+      '/api/workers/dispatch-chrome-action',
+      req as unknown as Record<string, unknown>
+    );
+    if (result.status === 'completed') {
+      return result.output ?? {};
+    }
+    throw new Error(
+      result.error_message ??
+        `Chrome action '${req.action_key}' ${result.status === 'timeout' ? 'timed out' : 'failed'}`
+    );
   }
 
   /**

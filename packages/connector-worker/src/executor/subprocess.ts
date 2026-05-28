@@ -326,6 +326,53 @@ export class SubprocessExecutor implements SyncExecutor {
           return;
         }
 
+        if (msg.type === 'chrome_dispatch_request') {
+          const requestId = msg.requestId;
+          const actionKey = typeof msg.actionKey === 'string' ? msg.actionKey : '';
+          const actionInput =
+            msg.actionInput && typeof msg.actionInput === 'object'
+              ? (msg.actionInput as Record<string, unknown>)
+              : {};
+          queueTask(async () => {
+            if (!hooks?.onChromeDispatch) {
+              try {
+                child.send({
+                  type: 'chrome_dispatch_response',
+                  requestId,
+                  error:
+                    'chrome_dispatcher is not available in this execution context (no onChromeDispatch hook)',
+                });
+              } catch {
+                /* ignore */
+              }
+              return;
+            }
+            try {
+              const output = await hooks.onChromeDispatch(actionKey, actionInput);
+              try {
+                child.send({
+                  type: 'chrome_dispatch_response',
+                  requestId,
+                  output,
+                });
+              } catch {
+                /* IPC closed — child already exited. */
+              }
+            } catch (err) {
+              try {
+                child.send({
+                  type: 'chrome_dispatch_response',
+                  requestId,
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              } catch {
+                /* IPC closed — child already exited. */
+              }
+            }
+          });
+          return;
+        }
+
         if (msg.type === 'await_signal_request') {
           const requestId = msg.requestId;
           const name = msg.name;

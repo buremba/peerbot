@@ -797,4 +797,104 @@ describe("lobu init --from-org", () => {
     );
     expect(rel?.rules).toEqual([{ source: "contact", target: "company" }]);
   });
+
+  test("public/cross-org + system types are NOT declared (only owned ones)", async () => {
+    // The list endpoint returns the org's own types PLUS public types from
+    // OTHER orgs (and the system `$member`). Only the org's own, non-system
+    // types belong in a generated config — foreign ones would emit colliding
+    // `defineEntityType` keys that don't apply.
+    const dir = mkFixtureDir();
+    await initFromOrg({
+      targetDir: dir,
+      fetchImpl: buildFetch({
+        "/oauth/userinfo": () => ({
+          organizations: [{ id: "org-1", slug: "acme", name: "Acme Inc" }],
+        }),
+        "/agents/lone/config": () => ({ updatedAt: 0 }),
+        "/agents": () => ({ agents: [{ agentId: "lone", name: "Lone" }] }),
+        "watchers?include_details": () => ({ watchers: [] }),
+        manage_entity_schema: (body) => {
+          if (body.action === "list_rules") {
+            // The owned cross-org rel type binds an owned type to a NON-owned
+            // (public) one — that target must survive as a string ref.
+            if (body.slug === "tracked-via") {
+              return {
+                rules: [
+                  {
+                    id: 1,
+                    source_entity_type_slug: "lead",
+                    target_entity_type_slug: "investor",
+                  },
+                ],
+              };
+            }
+            return { rules: [] };
+          }
+          return {
+            entity_types: [
+              { slug: "lead", name: "Lead", organization_id: "org-1" },
+              { slug: "pilot", name: "Pilot", organization_id: "org-1" },
+              // System type owned by this org — server-provisioned, rejects create.
+              { slug: "$member", name: "Member", organization_id: "org-1" },
+              // Public type from another org.
+              {
+                slug: "investor",
+                name: "Investor",
+                organization_id: "org-pub",
+              },
+              // Same key as an owned type, but from a public org (a collision
+              // source if both were declared).
+              {
+                slug: "lead",
+                name: "Lead (foreign)",
+                organization_id: "org-pub",
+              },
+            ],
+            relationship_types: [
+              {
+                slug: "converted-to",
+                name: "Converted To",
+                organization_id: "org-1",
+              },
+              {
+                slug: "tracked-via",
+                name: "Tracked Via",
+                organization_id: "org-1",
+              },
+              {
+                slug: "invested-in",
+                name: "Invested In",
+                organization_id: "org-pub",
+              },
+            ],
+          };
+        },
+        manage_auth_profiles: () => ({ auth_profiles: [] }),
+        manage_connections: () => ({ connections: [] }),
+      }),
+    });
+
+    const source = readFileSync(join(dir, "lobu.config.ts"), "utf-8");
+    // Owned, non-system types are declared.
+    expect(source).toContain('key: "lead"');
+    expect(source).toContain('key: "pilot"');
+    expect(source).toContain('key: "converted-to"');
+    expect(source).toContain('key: "tracked-via"');
+    // Foreign (public-org) and system types are NOT declared.
+    expect(source).not.toContain('key: "investor"');
+    expect(source).not.toContain('key: "$member"');
+    expect(source).not.toContain('key: "invested-in"');
+    // The cross-org rule target survives as a string ref (the type isn't declared).
+    expect(source).toContain('target: "investor"');
+
+    // Round-trip: only the owned types land in DesiredState, exactly once each.
+    const { state } = await loadDesiredStateFromConfig({ cwd: dir });
+    expect(state.memorySchema.entityTypes.map((e) => e.slug).sort()).toEqual([
+      "lead",
+      "pilot",
+    ]);
+    expect(
+      state.memorySchema.relationshipTypes.map((r) => r.slug).sort()
+    ).toEqual(["converted-to", "tracked-via"]);
+  });
 });

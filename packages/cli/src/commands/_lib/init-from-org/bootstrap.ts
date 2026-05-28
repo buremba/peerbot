@@ -844,7 +844,10 @@ interface FetchedState {
   connectorDefinitions: RemoteConnectorDefinition[];
 }
 
-async function fetchOrgState(client: ApplyClient): Promise<FetchedState> {
+async function fetchOrgState(
+  client: ApplyClient,
+  orgId: string | undefined
+): Promise<FetchedState> {
   const [
     agentList,
     entityTypes,
@@ -920,13 +923,31 @@ async function fetchOrgState(client: ApplyClient): Promise<FetchedState> {
       }))
   );
 
+  // The entity/relationship-type `list` endpoints also return *public* types
+  // from OTHER orgs (`o.visibility = 'public'`) so the UI can reference them —
+  // but a generated config must only DECLARE the types this org owns, or it
+  // emits dozens of foreign `defineEntityType()` blocks with colliding keys
+  // (e.g. `product` from several public orgs) that won't apply. Mirror apply's
+  // `ownsDefinition` guard. `$`-prefixed types (e.g. `$member`) are server-
+  // provisioned system types that reject create — never declare them either.
+  // Rules that reference a non-owned type still render as a string ref
+  // (see `emitRelationshipType`), so cross-org bindings survive.
+  const ownsDefinition = (definitionOrgId: string | undefined): boolean =>
+    orgId === undefined ||
+    definitionOrgId === undefined ||
+    definitionOrgId === orgId;
+  const isOwnDeclarable = (d: {
+    slug: string;
+    organization_id?: string;
+  }): boolean => ownsDefinition(d.organization_id) && !d.slug.startsWith("$");
+
   return {
     agents,
     entityTypes: entityTypes
-      .slice()
+      .filter(isOwnDeclarable)
       .sort((a, b) => a.slug.localeCompare(b.slug)),
     relationshipTypes: relationshipTypes
-      .slice()
+      .filter(isOwnDeclarable)
       .sort((a, b) => a.slug.localeCompare(b.slug)),
     watchers,
     authProfiles: authProfiles
@@ -1131,11 +1152,13 @@ export async function initFromOrg(opts: InitFromOrgOptions): Promise<void> {
   printText(chalk.dim(`Bootstrapping from org: ${orgSlug}`));
   printText(chalk.dim(`Destination: ${targetDir}`));
 
-  // Org display name from the userinfo orgs list (no description endpoint).
+  // Org id + display name from the userinfo orgs list (no description endpoint).
+  // The id scopes type declarations to what this org owns (see fetchOrgState).
   const orgs = await client.listOrgs().catch(() => []);
-  const orgName = orgs.find((o) => o.slug === orgSlug)?.name;
+  const targetOrg = orgs.find((o) => o.slug === orgSlug);
+  const orgName = targetOrg?.name;
 
-  const state = await fetchOrgState(client);
+  const state = await fetchOrgState(client, targetOrg?.id);
   const project = generateProject(orgSlug, orgName, state);
 
   // Write lobu.config.ts.

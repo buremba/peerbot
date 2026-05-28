@@ -2,7 +2,9 @@
  * Ensure a connector project's npm dependencies are installed before the CLI
  * compiles its connectors. esbuild bundles a connector's imports relative to
  * the connector file's directory, so the project's own `node_modules` (next to
- * `package.json`) must exist. We run `bun install --ignore-scripts` when stale:
+ * `package.json`) must exist. We install when stale, preferring `bun` (faster,
+ * if the user has it) and falling back to `npm` (always present with Node) so
+ * the lobu CLI never forces a bun install on the user's machine.
  * `--ignore-scripts` keeps install-time supply-chain surface off the user's
  * machine — packages that need build scripts (native bindings) belong in
  * `runtime.nix.packages`, not bundled npm.
@@ -32,25 +34,57 @@ export function findProjectRoot(fromFile: string): string | null {
   return null;
 }
 
+/**
+ * The project is "stale" if `node_modules` is missing or its mtime is older
+ * than whichever lockfile the project uses (`bun.lock` for a bun-based project,
+ * `package-lock.json` for an npm-based one). Honouring both means switching
+ * installers between runs doesn't trigger spurious reinstalls.
+ */
 function installIsStale(root: string): boolean {
   const nodeModules = join(root, "node_modules");
   if (!existsSync(nodeModules)) return true;
-  const lock = join(root, "bun.lock");
-  if (!existsSync(lock)) return false; // deps present, no lockfile to compare against
+  for (const lockName of ["bun.lock", "package-lock.json"]) {
+    const lock = join(root, lockName);
+    if (!existsSync(lock)) continue;
+    try {
+      if (statSync(lock).mtimeMs > statSync(nodeModules).mtimeMs) return true;
+    } catch {
+      // unreadable lockfile — treat as fresh rather than reinstall on every run
+    }
+  }
+  return false;
+}
+
+function hasOnPath(bin: string): boolean {
   try {
-    return statSync(lock).mtimeMs > statSync(nodeModules).mtimeMs;
+    execFileSync(bin, ["--version"], { stdio: "ignore" });
+    return true;
   } catch {
     return false;
   }
 }
 
-function hasBun(): boolean {
-  try {
-    execFileSync("bun", ["--version"], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
+const bunInstaller = { cmd: "bun", args: ["install", "--ignore-scripts"] };
+const npmInstaller = {
+  cmd: "npm",
+  args: ["install", "--ignore-scripts", "--no-audit", "--no-fund"],
+};
+
+/**
+ * Pick an installer for the user's project. Honour an existing lockfile so we
+ * don't mix `bun.lock` and `package-lock.json` for the same project, then fall
+ * back to whatever's available — bun is faster when present, npm is always
+ * available because Node ships it. The lobu CLI never requires bun on the
+ * user's machine.
+ */
+function pickInstaller(root: string): { cmd: string; args: string[] } {
+  const hasNpmLock = existsSync(join(root, "package-lock.json"));
+  if (hasNpmLock) return npmInstaller;
+  const hasBunLock = existsSync(join(root, "bun.lock"));
+  const bunAvailable = hasOnPath("bun");
+  if (hasBunLock && bunAvailable) return bunInstaller;
+  if (bunAvailable) return bunInstaller;
+  return npmInstaller;
 }
 
 /**
@@ -73,14 +107,9 @@ export function ensureProjectDepsInstalled(
     ensuredRoots.add(root);
     return;
   }
-  if (!hasBun()) {
-    throw new Error(
-      `Connector dependencies in ${root} need installing, but \`bun\` is not on PATH. ` +
-        `Run \`bun install\` in ${root}, or install bun (https://bun.sh).`
-    );
-  }
-  log(`Installing connector dependencies in ${root}...`);
-  execFileSync("bun", ["install", "--ignore-scripts"], {
+  const installer = pickInstaller(root);
+  log(`Installing connector dependencies in ${root} via ${installer.cmd}...`);
+  execFileSync(installer.cmd, installer.args, {
     cwd: root,
     stdio: "inherit",
   });

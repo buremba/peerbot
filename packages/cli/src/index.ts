@@ -1062,42 +1062,29 @@ Memory:
   memory
     .command("browser-auth")
     .description(
-      "Capture cookies from your local Chrome browser for a connector"
+      "Set up browser auth for a connector: launch a dedicated Chrome with remote debugging and store its CDP endpoint on the auth profile"
     )
     .requiredOption("--connector <key>", 'Connector key (e.g. "x")')
     .option("--domains <list>", "Comma-separated cookie domains override")
     .option(
-      "--chrome-profile <name>",
-      "Chrome profile name (interactive prompt if not specified)"
-    )
-    .option(
       "--auth-profile-slug <slug>",
-      "Browser auth profile slug to store cookies on"
-    )
-    .option(
-      "--launch-cdp",
-      "Launch a dedicated Chrome user-data-dir with remote debugging enabled"
+      "Browser auth profile slug to store the CDP endpoint on"
     )
     .option(
       "--remote-debug-port <port>",
-      "Remote debugging port for --launch-cdp",
+      "Remote debugging port for the dedicated Chrome",
       "9222"
     )
-    .option(
-      "--dedicated-profile <name>",
-      "Dedicated Chrome profile dir name for --launch-cdp"
-    )
+    .option("--dedicated-profile <name>", "Dedicated Chrome profile dir name")
     .option(
       "--check",
-      "Check if stored cookies for a browser auth profile are still valid"
+      "Check if the CDP endpoint stored on a browser auth profile is reachable"
     )
     .action(
       async (options: {
         connector: string;
         domains?: string;
-        chromeProfile?: string;
         authProfileSlug?: string;
-        launchCdp?: boolean;
         remoteDebugPort?: string;
         dedicatedProfile?: string;
         check?: boolean;

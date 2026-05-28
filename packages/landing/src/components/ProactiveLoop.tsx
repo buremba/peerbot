@@ -102,7 +102,7 @@ function GraphCard() {
           color: "var(--color-page-text-muted)",
         }}
       >
-        derived from 1,204 raw events by a watcher — no app code
+        derived from 1,204 raw events by a watcher, no app code
       </div>
     </div>
   );
@@ -162,7 +162,7 @@ export function ProactiveLoop() {
         >
           Raw events stream in and build a typed record. When it crosses a line
           you set, an agent flags it on its own and proposes the next step. Chat
-          is just one surface — the same loop fires over MCP or HTTP.
+          is just one surface; the same loop fires over MCP or HTTP.
         </p>
       </div>
 

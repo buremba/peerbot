@@ -179,7 +179,7 @@ function Hero() {
     <section class="px-4 pb-12 pt-20 text-center sm:pb-16 sm:pt-28">
       <Container>
         <h1
-          class="hero-rise hero-rise-2 mx-auto max-w-[58rem] font-display text-[clamp(2.25rem,4.8vw,3.5rem)] font-bold leading-[1.06] tracking-[-0.028em]"
+          class="hero-rise hero-rise-1 mx-auto max-w-[58rem] font-display text-[clamp(2.25rem,4.8vw,3.5rem)] font-bold leading-[1.06] tracking-[-0.028em]"
           style={{ color: "var(--color-page-text)" }}
         >
           Build{" "}
@@ -194,14 +194,14 @@ function Hero() {
           </em>
         </h1>
         <p
-          class="hero-rise hero-rise-3 mx-auto mt-5 max-w-[44rem] text-[17px] leading-[1.55]"
+          class="hero-rise hero-rise-2 mx-auto mt-5 max-w-[44rem] text-[17px] leading-[1.55]"
           style={{ color: "var(--color-page-text-muted)" }}
         >
           Connect your company's data in real time, plug in your model, and let
           your agents act the moment something changes, as a bot, an API, or
           another agent.
         </p>
-        <div class="hero-rise hero-rise-4 mt-8 flex flex-wrap items-center justify-center gap-3">
+        <div class="hero-rise hero-rise-3 mt-8 flex flex-wrap items-center justify-center gap-3">
           <button
             class="inline-flex items-center gap-2 rounded-lg px-5 py-3 text-[14.5px] font-semibold transition-transform hover:-translate-y-px"
             onClick={() => copy("prompt")}

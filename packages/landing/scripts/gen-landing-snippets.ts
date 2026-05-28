@@ -127,18 +127,35 @@ function githubTreeUrl(slug: string): string {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Slice the leading `import ... from "@lobu/cli/config";` block out of a config file.
- * Returns the import statement lines (the first `import` through its closing
- * `from "...";`), or an empty array if none is found.
+ * Slice the leading import section out of a config file: every contiguous
+ * `import ...` statement (including `import type X from "./*.ts"`), tolerating
+ * blank lines between them. Capturing the type imports too means generic
+ * references shown in the snippet (e.g. `connectorFromFile<typeof X>`) resolve
+ * to a visible import rather than reading as undefined symbols. Returns an
+ * empty array if no import is found.
  */
 function sliceImportBlock(raw: string): string[] {
   const lines = raw.split("\n");
   const start = lines.findIndex((l) => /^\s*import\b/.test(l));
   if (start < 0) return [];
   let end = start;
+  let inStatement = true;
   for (let i = start; i < lines.length; i++) {
-    end = i;
-    if (/;\s*$/.test(lines[i])) break;
+    const line = lines[i];
+    if (inStatement) {
+      end = i;
+      if (/;\s*$/.test(line)) inStatement = false;
+      continue;
+    }
+    if (/^\s*import\b/.test(line)) {
+      inStatement = true;
+      end = i;
+      if (/;\s*$/.test(line)) inStatement = false;
+    } else if (line.trim() === "") {
+      // tolerate blank lines between import statements
+    } else {
+      break;
+    }
   }
   return lines.slice(start, end + 1);
 }

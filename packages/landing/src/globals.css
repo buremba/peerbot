@@ -411,7 +411,6 @@ button.chat-action-btn:hover {
 .hero-rise-2 { animation-delay: 80ms; }
 .hero-rise-3 { animation-delay: 160ms; }
 .hero-rise-4 { animation-delay: 240ms; }
-.hero-rise-5 { animation-delay: 320ms; }
 
 /* Scroll-reveal: applied to elements observed by useReveal().
    Only transform/opacity — no layout shift. */
@@ -435,8 +434,7 @@ button.chat-action-btn:hover {
   .hero-rise-1,
   .hero-rise-2,
   .hero-rise-3,
-  .hero-rise-4,
-  .hero-rise-5 {
+  .hero-rise-4 {
     animation: none;
     opacity: 1;
     transform: none;

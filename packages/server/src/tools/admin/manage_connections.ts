@@ -22,7 +22,7 @@
 
 import { parseJsonObject } from '@lobu/core';
 import { type Static, Type } from '@sinclair/typebox';
-import { getDb } from '../../db/client';
+import { getDb, parsePgNumberArray, pgBigintArray } from '../../db/client';
 import type { Env } from '../../index';
 import { notifyConnectionPermissionRequest } from '../../notifications/triggers';
 import {
@@ -87,6 +87,7 @@ import {
   buildConnectorDefinitionList,
   type ListedConnectorDefinition,
 } from './helpers/connector-definition-list';
+import { assertEntityIdsInOrg } from './helpers/db-helpers';
 import { type FeedDefinition, splitConfigByFeedScope } from './helpers/feed-helpers';
 import { PaginationFields } from './schemas/common-fields';
 
@@ -172,6 +173,11 @@ const CreateAction = Type.Object({
         "Run this connection's syncs/actions on a specific device worker (its device_workers.id) instead of the Lobu server (runs serverless). Required for connectors that declare a required_capability; optional otherwise. The device must belong to you or be granted to this org.",
     })
   ),
+  entity_ids: Type.Optional(
+    Type.Array(Type.Number(), {
+      description: 'Entity IDs to tag this connection with (links the connection to entities)',
+    })
+  ),
   entity_link_overrides: Type.Optional(EntityLinkOverridesSchema),
 });
 
@@ -186,6 +192,12 @@ const UpdateAction = Type.Object({
   auth_profile_slug: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   app_auth_profile_slug: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   config: Type.Optional(Type.Record(Type.String(), Type.Any())),
+  entity_ids: Type.Optional(
+    Type.Array(Type.Number(), {
+      description:
+        'Entity IDs to tag this connection with. Pass [] (or null) to clear all links; omit to leave unchanged.',
+    })
+  ),
   device_worker_id: Type.Optional(
     Type.Union([Type.String(), Type.Null()], {
       description:
@@ -277,6 +289,11 @@ const ConnectAction = Type.Object({
     Type.String({
       description:
         "Run this connection's syncs/actions on a specific device worker (its device_workers.id) instead of the Lobu server (runs serverless). Required for connectors that declare a required_capability; optional otherwise. The device must belong to you or be granted to this org.",
+    })
+  ),
+  entity_ids: Type.Optional(
+    Type.Array(Type.Number(), {
+      description: 'Entity IDs to tag this connection with (links the connection to entities)',
     })
   ),
   entity_link_overrides: Type.Optional(EntityLinkOverridesSchema),
@@ -591,11 +608,18 @@ async function handleList(
            (SELECT ct.token FROM connect_tokens ct
             WHERE ct.connection_id = c.id AND ct.status = 'pending' AND ct.expires_at > NOW()
             ORDER BY ct.created_at DESC LIMIT 1) AS connect_token,
+           -- entity_names = UNION of the connection's own entity_ids and any of
+           -- its feeds' entity_ids (a connection counts under an entity if
+           -- either it is directly tagged OR one of its feeds is).
            (
              SELECT string_agg(DISTINCT ent.name, ', ' ORDER BY ent.name)
-             FROM feeds f
-             JOIN entities ent ON ent.id = ANY(f.entity_ids)
-             WHERE f.connection_id = c.id AND f.deleted_at IS NULL
+             FROM entities ent
+             WHERE ent.id = ANY(c.entity_ids)
+                OR ent.id IN (
+                  SELECT unnest(f.entity_ids)
+                  FROM feeds f
+                  WHERE f.connection_id = c.id AND f.deleted_at IS NULL
+                )
            ) AS entity_names
     FROM connections c
     LEFT JOIN LATERAL (
@@ -620,12 +644,15 @@ async function handleList(
     query = sql`${query} AND c.status = ${args.status}`;
   }
   if (args.entity_id) {
-    query = sql`${query} AND EXISTS (
-      SELECT 1
-      FROM feeds f
-      WHERE f.connection_id = c.id
-        AND f.deleted_at IS NULL
-        AND ${args.entity_id} = ANY(f.entity_ids)
+    query = sql`${query} AND (
+      ${args.entity_id} = ANY(c.entity_ids)
+      OR EXISTS (
+        SELECT 1
+        FROM feeds f
+        WHERE f.connection_id = c.id
+          AND f.deleted_at IS NULL
+          AND ${args.entity_id} = ANY(f.entity_ids)
+      )
     )`;
   }
   if (args.created_by) {
@@ -655,6 +682,9 @@ async function handleList(
     const operationsSummary = summaries.get(String(row.connector_key)) ?? { ...EMPTY_SUMMARY };
     return {
       ...row,
+      // Postgres returns bigint[] as a literal string ('{2}'); parse to number[]
+      // so the API contract matches the typed entity_ids the UI picker expects.
+      entity_ids: parsePgNumberArray(row.entity_ids),
       operations_summary: operationsSummary,
       has_operations: operationsSummary.total > 0,
     };
@@ -1231,6 +1261,16 @@ async function handleCreate(
       ? 'pending_auth'
       : 'active';
 
+  // Reject cross-org entity_ids: a connection tagged with another org's entity
+  // would surface under a non-existent in-org entity (mirrors manage_feeds).
+  try {
+    await assertEntityIdsInOrg(sql, organizationId, args.entity_ids);
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+  const entityIdsValue =
+    args.entity_ids && args.entity_ids.length > 0 ? pgBigintArray(args.entity_ids) : null;
+
   const slugResult = await resolveNewConnectionSlug({
     organizationId,
     connectorKey: args.connector_key,
@@ -1251,7 +1291,8 @@ async function handleCreate(
       doInsert: (slug) => sql`
         INSERT INTO connections (
           organization_id, connector_key, slug, display_name, status,
-          auth_profile_id, app_auth_profile_id, config, created_by, visibility, device_worker_id
+          auth_profile_id, app_auth_profile_id, config, created_by, visibility, device_worker_id,
+          entity_ids
         ) VALUES (
           ${organizationId}, ${args.connector_key},
           ${slug},
@@ -1262,7 +1303,8 @@ async function handleCreate(
           ${connectionConfigToInsert ? sql.json(connectionConfigToInsert) : null},
           ${effectiveCreatedBy},
           ${visibility},
-          ${effectiveDeviceWorkerId}
+          ${effectiveDeviceWorkerId},
+          ${entityIdsValue}::bigint[]
         )
         RETURNING *
       `,
@@ -1564,6 +1606,15 @@ async function handleConnect(
         }
       : null;
 
+  // Reject cross-org entity_ids (mirrors handleCreate / manage_feeds).
+  try {
+    await assertEntityIdsInOrg(sql, organizationId, args.entity_ids);
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err), setup_url: setupUrl };
+  }
+  const connectEntityIdsValue =
+    args.entity_ids && args.entity_ids.length > 0 ? pgBigintArray(args.entity_ids) : null;
+
   const connectSlugResult = await resolveNewConnectionSlug({
     organizationId,
     connectorKey: args.connector_key,
@@ -1584,7 +1635,8 @@ async function handleConnect(
       doInsert: (slug) => sql`
         INSERT INTO connections (
           organization_id, connector_key, slug, display_name, status,
-          auth_profile_id, app_auth_profile_id, config, created_by, visibility, device_worker_id
+          auth_profile_id, app_auth_profile_id, config, created_by, visibility, device_worker_id,
+          entity_ids
         ) VALUES (
           ${organizationId}, ${args.connector_key},
           ${slug},
@@ -1595,7 +1647,8 @@ async function handleConnect(
           ${connectionConfigToInsert ? sql.json(connectionConfigToInsert) : null},
           ${userId},
           ${connectVisibility},
-          ${effectiveDeviceWorkerIdConnect}
+          ${effectiveDeviceWorkerIdConnect},
+          ${connectEntityIdsValue}::bigint[]
         )
         RETURNING *
       `,
@@ -2012,6 +2065,23 @@ async function handleUpdate(
     };
   }
 
+  // Reject cross-org entity_ids on update too (skip when clearing to []).
+  if (args.entity_ids !== undefined && args.entity_ids.length > 0) {
+    try {
+      await assertEntityIdsInOrg(sql, organizationId, args.entity_ids);
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+  // Tri-state, mirrors manage_feeds: undefined = leave unchanged (null → COALESCE
+  // keeps existing), explicit [] = clear ('{}' → COALESCE picks the empty array).
+  const entityIdsValue =
+    args.entity_ids !== undefined
+      ? args.entity_ids.length > 0
+        ? pgBigintArray(args.entity_ids)
+        : '{}'
+      : null;
+
   // Slug is only ever changed when the caller passes one explicitly — a
   // display_name change never touches it (that's the whole point of a stable
   // identity for `lobu apply`). An explicit slug is validated for format and
@@ -2043,6 +2113,7 @@ async function handleUpdate(
           status = COALESCE(${effectiveStatus}, status),
           auth_profile_id = ${nextAuthProfileId},
           app_auth_profile_id = ${nextAppAuthProfileId},
+          entity_ids = COALESCE(${entityIdsValue}::bigint[], entity_ids),
           config = ${
             replaceConfig
               ? sql`${sql.json(connectionConfigForReplace)}::jsonb`

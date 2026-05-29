@@ -17,6 +17,7 @@ export interface ConnectionsConnectInput {
   auth_profile_slug?: string;
   app_auth_profile_slug?: string;
   config?: Record<string, unknown>;
+  entity_ids?: number[];
   entity_link_overrides?: Record<string, unknown> | null;
 }
 
@@ -31,6 +32,7 @@ export interface ConnectionsUpdateInput {
   auth_profile_slug?: string | null;
   app_auth_profile_slug?: string | null;
   config?: Record<string, unknown>;
+  entity_ids?: number[] | null;
 }
 
 /**

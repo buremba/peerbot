@@ -1,58 +1,9 @@
 import { describe, expect, mock, test } from 'bun:test';
+import { connectorSdkMock } from './connector-sdk.mock';
 
-// browser-scraper-utils.ts pulls runtime symbols (acquireBrowser,
-// captureErrorArtifacts) from @lobu/connector-sdk, which itself pulls in
-// playwright. Stub the SDK so the pure helpers (validateUrlDomain,
-// getBrowserCookies, validateCookieNotExpired, filterByCheckpoint) can be
-// imported without spinning up a real browser stack.
-mock.module('@lobu/connector-sdk', () => ({
-  acquireBrowser: () => {
-    throw new Error('not used in unit tests');
-  },
-  captureErrorArtifacts: () => {
-    throw new Error('not used in unit tests');
-  },
-  // Other connector tests (linkedin) load the same stubbed module in the same
-  // run; expose the symbols they need so the shared mock satisfies every
-  // importer regardless of file order.
-  ConnectorRuntime: class {},
-  calculateEngagementScore: () => 0,
-  extensionNetworkSync: () => {
-    throw new Error('not used in unit tests');
-  },
-  // Faithful re-implementation of the SDK helper so the shared mock satisfies
-  // linkedin's home-feed path regardless of file order (mirrors the helper in
-  // packages/connector-sdk; its own unit tests cover the real implementation).
-  extensionDomScrape: async (opts: {
-    // biome-ignore lint/suspicious/noExplicitAny: stub dispatcher return
-    dispatcher: { dispatch: (a: string, i: Record<string, unknown>) => Promise<any> };
-    url: string;
-    config: Record<string, unknown>;
-    parseRows: (rows: Array<Record<string, unknown>>) => unknown[];
-    allowedOrigins: string[];
-    persistent?: boolean;
-    focus?: boolean;
-  }) => {
-    const observation = await opts.dispatcher.dispatch('navigate', {
-      cs_scrape: true,
-      persistent: opts.persistent ?? true,
-      focus: opts.focus ?? true,
-      url: opts.url,
-      scrape_config: opts.config,
-      allowed_origins: opts.allowedOrigins,
-    });
-    const result = observation?.result;
-    const rows = result?.rows ?? [];
-    const items = opts.parseRows(rows);
-    return {
-      items,
-      loggedIn: result?.loggedIn !== false,
-      count: result?.count ?? items.length,
-      host: result?.host,
-      landedUrl: result?.landedUrl,
-    };
-  },
-}));
+// Stub @lobu/connector-sdk (it pulls in playwright) so the pure helpers import
+// without the browser stack. Shared superset — see connector-sdk.mock.ts.
+mock.module('@lobu/connector-sdk', connectorSdkMock);
 
 const {
   filterByCheckpoint,

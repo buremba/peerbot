@@ -10,7 +10,7 @@
 
 import { type Static, Type } from '@sinclair/typebox';
 import type { AutoCreateWhenRule } from '@lobu/connector-sdk';
-import { type DbClient, getDb } from '../../db/client';
+import { type DbClient, getDb, pgTextArray } from '../../db/client';
 import type { Env } from '../../index';
 import logger from '../../utils/logger';
 import { compileRulesMetadata, ruleHashFor } from '../../identity/rules';
@@ -36,6 +36,23 @@ const AutoCreateWhenRuleInputSchema = Type.Object(
     ]),
     matchStrategy: Type.Union([Type.Literal('unique_only'), Type.Literal('all_matches')]),
     notes: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false }
+);
+
+/** Derived-entity backing: a SQL view + its canonical-fact key + optional source. */
+const BackingInputSchema = Type.Object(
+  {
+    sql: Type.String({ minLength: 1, description: 'ANSI SELECT defining the view' }),
+    grain: Type.Optional(
+      Type.Array(Type.String(), {
+        description:
+          'Canonical-fact key columns; omit for the embedded-events default (organization_id, connection_id, origin_id).',
+      })
+    ),
+    source: Type.Optional(
+      Type.String({ description: 'Connection key the view reads from; omit for the embedded events store.' })
+    ),
   },
   { additionalProperties: false }
 );
@@ -98,6 +115,12 @@ export const ManageEntitySchemaSchema = Type.Object({
       }
     )
   ),
+  backing: Type.Optional(
+    Type.Union([Type.Null(), BackingInputSchema], {
+      description:
+        '[entity_type: create/update] Makes the type DERIVED — a read-only SQL view whose aggregate columns become measures. `{ sql, grain?, source? }` to set; `null` to clear (revert to a stored type); omit to leave unchanged.',
+    })
+  ),
 
   // Relationship type fields
   is_symmetric: Type.Optional(
@@ -157,6 +180,9 @@ interface EntityTypeRow {
   color?: string | null;
   metadata_schema?: Record<string, unknown> | null;
   event_kinds?: Record<string, unknown> | null;
+  backing_sql?: string | null;
+  backing_grain?: string[] | null;
+  backing_source?: string | null;
   is_system: boolean;
   created_by?: string | null;
   organization_id?: string | null;
@@ -264,10 +290,11 @@ export async function manageEntitySchema(
 // ============================================
 
 const ENTITY_TYPE_COLUMNS =
-  'id, slug, name, description, icon, color, metadata_schema, event_kinds, created_by, organization_id, created_at, updated_at, current_view_template_version_id';
+  'id, slug, name, description, icon, color, metadata_schema, event_kinds, backing_sql, backing_grain, backing_source, created_by, organization_id, created_at, updated_at, current_view_template_version_id';
 
 const ENTITY_TYPE_COLUMNS_WITH_ORG = `et.id, et.slug, et.name, et.description, et.icon, et.color,
-  et.metadata_schema, et.event_kinds, et.created_by, et.organization_id,
+  et.metadata_schema, et.event_kinds, et.backing_sql, et.backing_grain, et.backing_source,
+  et.created_by, et.organization_id,
   et.created_at, et.updated_at, et.current_view_template_version_id,
   o.slug AS organization_slug`;
 
@@ -500,6 +527,7 @@ async function etHandleCreate(
     INSERT INTO entity_types (
       slug, name, description, icon, color,
       metadata_schema, event_kinds,
+      backing_sql, backing_grain, backing_source,
       organization_id, created_by,
       created_at, updated_at
     ) VALUES (
@@ -510,6 +538,9 @@ async function etHandleCreate(
       ${args.color ?? null},
       ${metadataSchema},
       ${eventKinds},
+      ${args.backing?.sql ?? null},
+      ${args.backing?.grain ? pgTextArray(args.backing.grain) : null}::text[],
+      ${args.backing?.source ?? null},
       ${ctx.organizationId},
       ${ctx.userId},
       current_timestamp,
@@ -568,6 +599,10 @@ async function etHandleUpdate(
   const hasEventKinds = args.event_kinds !== undefined;
   const eventKindsJson = hasEventKinds && args.event_kinds ? sql.json(args.event_kinds) : null;
 
+  // Backing is set as a unit: callers send `backing` (an object makes the type
+  // derived, null reverts it to stored) or omit it to leave backing unchanged.
+  const hasBacking = args.backing !== undefined;
+
   await sql`
     UPDATE entity_types SET
       name = COALESCE(${args.name ?? null}, name),
@@ -581,6 +616,18 @@ async function etHandleUpdate(
       event_kinds = CASE
         WHEN ${hasEventKinds} THEN ${eventKindsJson}
         ELSE event_kinds
+      END,
+      backing_sql = CASE
+        WHEN ${hasBacking} THEN ${args.backing?.sql ?? null}::text
+        ELSE backing_sql
+      END,
+      backing_grain = CASE
+        WHEN ${hasBacking} THEN ${args.backing?.grain ? pgTextArray(args.backing.grain) : null}::text[]
+        ELSE backing_grain
+      END,
+      backing_source = CASE
+        WHEN ${hasBacking} THEN ${args.backing?.source ?? null}::text
+        ELSE backing_source
       END,
       updated_by = ${ctx.userId},
       updated_at = current_timestamp

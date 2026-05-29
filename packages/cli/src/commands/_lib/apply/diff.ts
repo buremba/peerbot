@@ -482,6 +482,10 @@ function diffEntityType(
         name: "properties",
         changed: (d, r) => !deepEqual(d.properties, r.properties),
       },
+      {
+        name: "backing",
+        changed: (d, r) => !deepEqual(d.backing, r.backing),
+      },
     ],
   }) as EntityTypeDiffRow;
 }

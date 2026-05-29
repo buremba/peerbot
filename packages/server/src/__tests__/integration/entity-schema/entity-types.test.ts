@@ -78,6 +78,66 @@ describe('entity schema CRUD', () => {
       expect(slugs).toContain('lst-asset');
       await owner.entity_schema.deleteType('lst-asset');
     });
+
+    it('round-trips a derived backing (sql + grain) and reverts to stored', async () => {
+      // postgres.js may return text[] as a JS array or the raw "{a,b}" literal.
+      const toArr = (v: unknown): string[] =>
+        Array.isArray(v)
+          ? (v as string[])
+          : typeof v === 'string'
+            ? v.replace(/^\{|\}$/g, '').split(',').filter(Boolean)
+            : [];
+      type Got = {
+        entity_type?: {
+          backing_sql?: string | null;
+          backing_grain?: string[] | string | null;
+          backing_source?: string | null;
+        };
+      };
+
+      // create as a derived view
+      await owner.entity_schema.createType({
+        slug: 'spend-by-vendor',
+        name: 'Spend by vendor',
+        backing: {
+          sql: 'SELECT 1 AS company_id, 0::numeric AS total',
+          grain: ['organization_id', 'connection_id', 'origin_id'],
+        },
+      });
+      const created = (await owner.entity_schema.getType('spend-by-vendor')) as Got;
+      expect(created.entity_type?.backing_sql).toContain('SELECT 1');
+      expect(toArr(created.entity_type?.backing_grain)).toEqual([
+        'organization_id',
+        'connection_id',
+        'origin_id',
+      ]);
+
+      // update the view sql
+      await owner.entity_schema.updateType({
+        slug: 'spend-by-vendor',
+        backing: { sql: 'SELECT 2 AS company_id, 0::numeric AS total' },
+      });
+      const updated = (await owner.entity_schema.getType('spend-by-vendor')) as Got;
+      expect(updated.entity_type?.backing_sql).toContain('SELECT 2');
+      // grain was not re-sent ⇒ cleared (backing is set as a unit)
+      expect(toArr(updated.entity_type?.backing_grain)).toEqual([]);
+
+      // revert to stored: backing = null clears the view
+      await owner.entity_schema.updateType({ slug: 'spend-by-vendor', backing: null });
+      const reverted = (await owner.entity_schema.getType('spend-by-vendor')) as Got;
+      expect(reverted.entity_type?.backing_sql ?? null).toBeNull();
+
+      await owner.entity_schema.deleteType('spend-by-vendor');
+    });
+
+    it('a stored type carries no backing_sql', async () => {
+      await owner.entity_schema.createType({ slug: 'plain-thing', name: 'Plain' });
+      const got = (await owner.entity_schema.getType('plain-thing')) as {
+        entity_type?: { backing_sql?: string | null };
+      };
+      expect(got.entity_type?.backing_sql ?? null).toBeNull();
+      await owner.entity_schema.deleteType('plain-thing');
+    });
   });
 
   describe('relationship_type', () => {

@@ -512,6 +512,19 @@ function mapEntityType(entity: EntityType): DesiredEntityType {
     ...(entity.required ? { required: entity.required } : {}),
     ...(entity.properties ? { properties: entity.properties } : {}),
     ...(entity.metadata ? { metadata: entity.metadata } : {}),
+    // `backing` is present only for derived types; a stored entity (the default)
+    // carries no backing so it never churns the diff.
+    ...(entity.backing
+      ? {
+          backing: {
+            sql: entity.backing.sql,
+            ...(entity.backing.grain ? { grain: entity.backing.grain } : {}),
+            ...(entity.backing.source !== undefined
+              ? { source: connectorKey(entity.backing.source) }
+              : {}),
+          },
+        }
+      : {}),
   };
 }
 

@@ -28,6 +28,12 @@ export interface RemoteEntityType {
   description?: string;
   required?: string[];
   properties?: Record<string, unknown>;
+  /** Present only for derived types (mirrors {@link DesiredEntityType.backing}). */
+  backing?: {
+    sql: string;
+    grain?: string[];
+    source?: string;
+  };
   /**
    * Owning org id. The list endpoint also returns *public* types from OTHER
    * orgs (`o.visibility = 'public'`), so prune must compare this against the
@@ -188,7 +194,12 @@ function pickArray<T>(body: Record<string, unknown>, ...keys: string[]): T[] {
  * folds the flat fields back into `metadata_schema` when writing.
  */
 function hoistEntityTypeSchema(
-  row: RemoteEntityType & { metadata_schema?: unknown }
+  row: RemoteEntityType & {
+    metadata_schema?: unknown;
+    backing_sql?: string | null;
+    backing_grain?: string[] | null;
+    backing_source?: string | null;
+  }
 ): RemoteEntityType {
   const schema = row.metadata_schema;
   const out: RemoteEntityType = {
@@ -207,6 +218,17 @@ function hoistEntityTypeSchema(
         (v): v is string => typeof v === "string"
       );
     }
+  }
+  // A type is derived iff it has view SQL; stored types carry no backing, so it
+  // compares equal to the desired side without churn.
+  if (typeof row.backing_sql === "string") {
+    out.backing = {
+      sql: row.backing_sql,
+      ...(row.backing_grain && row.backing_grain.length > 0
+        ? { grain: row.backing_grain }
+        : {}),
+      ...(row.backing_source ? { source: row.backing_source } : {}),
+    };
   }
   return out;
 }
@@ -489,21 +511,26 @@ export class ApplyClient {
   // ── Memory schema ─────────────────────────────────────────────────────────
 
   async listEntityTypes(): Promise<RemoteEntityType[]> {
+    type RawEntityTypeRow = RemoteEntityType & {
+      metadata_schema?: unknown;
+      backing_sql?: string | null;
+      backing_grain?: string[] | null;
+      backing_source?: string | null;
+    };
     const { body } = await this.request<{
-      entity_types?: Array<RemoteEntityType & { metadata_schema?: unknown }>;
-      entityTypes?: Array<RemoteEntityType & { metadata_schema?: unknown }>;
+      entity_types?: RawEntityTypeRow[];
+      entityTypes?: RawEntityTypeRow[];
     }>("POST", `/api/${this.orgSlug}/manage_entity_schema`, {
       schema_type: "entity_type",
       action: "list",
     });
     // The server returns the type's fields inside a single `metadata_schema`
-    // JSON Schema. Surface its `properties`/`required` at top level so the diff
-    // compares them against the desired config (which carries them flat).
-    return pickArray<RemoteEntityType & { metadata_schema?: unknown }>(
-      body,
-      "entity_types",
-      "entityTypes"
-    ).map(hoistEntityTypeSchema);
+    // JSON Schema (+ typed backing_* columns). Surface `properties`/`required`
+    // and normalize `backing` at top level so the diff compares them against the
+    // desired config (which carries them flat).
+    return pickArray<RawEntityTypeRow>(body, "entity_types", "entityTypes").map(
+      hoistEntityTypeSchema
+    );
   }
 
   /**
@@ -543,13 +570,18 @@ export class ApplyClient {
     description?: string;
     required?: string[];
     properties?: Record<string, unknown>;
+    backing?: {
+      sql: string;
+      grain?: string[];
+      source?: string;
+    };
   }): Promise<UpsertEntityTypeResult> {
     // The server stores per-type fields as a single `metadata_schema` JSON
     // Schema (`{ type, properties, required }`) — it does NOT read top-level
     // `properties`/`required`. Fold them into `metadata_schema` so the schema
     // actually persists (otherwise every apply re-reports a `properties`
     // update because the stored schema stays empty).
-    const { slug, name, description, required, properties } = entity;
+    const { slug, name, description, required, properties, backing } = entity;
     const payload: Record<string, unknown> = { slug };
     if (name !== undefined) payload.name = name;
     if (description !== undefined) payload.description = description;
@@ -560,6 +592,16 @@ export class ApplyClient {
         ...(required && required.length > 0 ? { required } : {}),
       };
     }
+    // Backing is sent on every upsert so it is deterministic: an object makes
+    // the type derived; `null` makes it stored (and reverts a previously-derived
+    // type). One key, mirroring the SDK's `backing`.
+    payload.backing = backing
+      ? {
+          sql: backing.sql,
+          ...(backing.grain ? { grain: backing.grain } : {}),
+          ...(backing.source ? { source: backing.source } : {}),
+        }
+      : null;
     return this.upsertSchemaResource("entity_type", payload);
   }
 

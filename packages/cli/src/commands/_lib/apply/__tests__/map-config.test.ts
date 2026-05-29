@@ -197,6 +197,30 @@ describe("mapProjectToDesiredState", () => {
     ]);
   });
 
+  test("maps a derived entity's backing; stored entities carry none", () => {
+    const subscription = defineEntityType({
+      key: "subscription",
+      name: "Subscription",
+      backing: {
+        sql: "SELECT company_id, SUM(amount) AS spend FROM revolut GROUP BY company_id",
+        grain: ["organization_id", "connection_id", "origin_id"],
+      },
+    });
+    const company = defineEntityType({ key: "company", name: "Company" });
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [], entities: [subscription, company] })
+    );
+    const byKey = Object.fromEntries(
+      state.memorySchema.entityTypes.map((e) => [e.slug, e])
+    );
+    expect(byKey.subscription?.backing).toEqual({
+      sql: "SELECT company_id, SUM(amount) AS spend FROM revolut GROUP BY company_id",
+      grain: ["organization_id", "connection_id", "origin_id"],
+    });
+    // stored (default) entities never carry backing — keeps the diff churn-free
+    expect(byKey.company?.backing).toBeUndefined();
+  });
+
   test("carries prune into DesiredState (defaults false when unset)", () => {
     expect(mapProjectToDesiredState(defineConfig({ agents: [] })).prune).toBe(
       false

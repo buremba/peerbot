@@ -218,12 +218,16 @@ export async function devCommand(
   }
 
   // Embedded: resolve the data root and pass it through as the explicit
-  // DATABASE_URL path the single server bundle reads. A path-form DATABASE_URL
-  // wins; otherwise default to the user's home dir. The bundle puts the cluster
-  // at <root>/.lobu/pgdata.
+  // DATABASE_URL path the single server bundle reads. Precedence: an explicit
+  // path-form DATABASE_URL wins; else LOBU_DATA_DIR (the documented override in
+  // docs/reference/cli.md); else the user's home dir. The bundle puts the
+  // cluster at <root>/.lobu/pgdata.
   let embeddedDataRoot: string | null = null;
   if (mode === "embedded") {
-    embeddedDataRoot = resolveEmbeddedDataRoot(databaseUrlRaw || "~");
+    const dataDirOverride = mergedEnv.LOBU_DATA_DIR?.trim();
+    embeddedDataRoot = resolveEmbeddedDataRoot(
+      databaseUrlRaw || dataDirOverride || "~"
+    );
     mergedEnv.DATABASE_URL = embeddedDataRoot;
   }
 
@@ -343,6 +347,12 @@ export async function devCommand(
   const childEnv: Record<string, string> = {
     ...mergedEnv,
     LOBU_DEV_PROJECT_PATH: projectPath,
+    // `lobu run` owns the local DB lifecycle for both backends. The embedded
+    // path already migrates on boot; this flag tells the server bundle to also
+    // apply migrations when pointed at an external (postgres://) DATABASE_URL,
+    // so a fresh/empty local Postgres is set up before serving. Prod never sets
+    // it — there a separate dbmate migration Job owns migrations.
+    LOBU_RUN_OWNS_DB: "1",
     ...(providerRegistryPath
       ? { LOBU_PROVIDER_REGISTRY_PATH: providerRegistryPath }
       : {}),

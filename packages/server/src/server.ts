@@ -38,7 +38,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertExternalDepsResolvable } from "@lobu/connector-worker/compile";
 import { getDb, probeListenNotify } from "./db/client";
-import { startEmbeddedRuntime } from "./embedded-runtime";
+import { runMigrations, startEmbeddedRuntime } from "./embedded-runtime";
 import { getEnvFromProcess } from "./utils/env";
 import logger from "./utils/logger";
 import { assertSchemaUpToDate } from "./utils/schema-version-check";
@@ -75,8 +75,24 @@ async function main(): Promise<void> {
 	let extraTeardown: Array<() => Promise<void> | void> = [];
 
 	if (external) {
-		process.env.DATABASE_URL = raw;
+		// `external` is true only for a non-empty postgres:// URL, so `raw` is
+		// defined here; bind it to a non-optional local for the closure below.
+		const externalDatabaseUrl = raw as string;
+		process.env.DATABASE_URL = externalDatabaseUrl;
 		databaseReadiness = async () => {
+			// `lobu run` owns the local DB lifecycle, so it must apply migrations
+			// itself before the schema-version gate runs — otherwise a fresh/empty
+			// external Postgres throws `relation "schema_migrations" does not exist`.
+			// The CLI sets LOBU_RUN_OWNS_DB=1 when it spawns this bundle. Prod never
+			// sets it: there a separate dbmate migration Job applies migrations, and
+			// the app only asserts the DB is up to date (below). runMigrations is
+			// idempotent, so replaying against an already-migrated DB is a no-op.
+			if (process.env.LOBU_RUN_OWNS_DB === "1") {
+				logger.info(
+					"[migrations] LOBU_RUN_OWNS_DB=1 — applying migrations to external DATABASE_URL",
+				);
+				await runMigrations(externalDatabaseUrl);
+			}
 			// Refuse to boot if the image expects a migration the DB hasn't applied.
 			// Skippable via SKIP_SCHEMA_VERSION_CHECK=1 for emergency forward-flight.
 			if (process.env.SKIP_SCHEMA_VERSION_CHECK !== "1") {

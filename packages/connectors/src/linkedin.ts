@@ -161,7 +161,12 @@ export function buildHomeFeedEvents(rows: HomeFeedRow[], occurredAt: Date): Even
     if (!row?.id || !row.body || seen.has(row.id)) continue;
     if (isHomeFeedNoise(row.body)) continue;
     seen.add(row.id);
-    const author = (row.author ?? '').trim() || parseHomeFeedAuthor(row.body ?? '');
+    // The DOM actor span often includes the connection-degree marker
+    // ("Julien Hurault • 1st"); strip it the same way body-parse does. Fall
+    // back to parsing the name out of the post body when the selector misses.
+    const author =
+      (row.author ?? '').trim().split(' • ')[0].trim() ||
+      parseHomeFeedAuthor(row.body ?? '');
     events.push({
       origin_id: `li_home_${row.id}`,
       payload_text: row.body,

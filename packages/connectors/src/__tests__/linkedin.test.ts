@@ -73,6 +73,21 @@ describe('buildHomeFeedEvents', () => {
     expect(ev.metadata).toEqual({ author: 'DOM Author' });
   });
 
+  test('strips the connection-degree marker from a DOM-selector author', () => {
+    const [ev] = buildHomeFeedEvents(
+      [
+        {
+          id: 'tok',
+          body: 'Julien Hurault 1st Julien Hurault • 1st Freelance Data Eng newsletter',
+          author: 'Julien Hurault • 1st',
+        },
+      ],
+      new Date()
+    );
+    expect(ev.author_name).toBe('Julien Hurault');
+    expect(ev.metadata).toEqual({ author: 'Julien Hurault' });
+  });
+
   test('falls back to body-parsed author when row.author is empty', () => {
     const [ev] = buildHomeFeedEvents(
       [

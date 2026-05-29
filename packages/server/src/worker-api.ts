@@ -429,7 +429,17 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   const orgScopeActive = isUserScopedWorker;
   // Always pass a non-empty array to ANY() to keep the SQL valid; the gate
   // below only activates when orgScopeActive is true.
+  //
+  // Two scopes: `orgScopeIds` (widened with cross-org pins) gates the
+  // explicitly-PINNED claim branches — the pin is the owner's consent.
+  // `baseOrgScopeIds` (token's bound + personal org only) gates the UNPINNED
+  // capability-matched branch, so a single pin in org B does NOT also let the
+  // device claim unrelated unpinned device-connector runs in org B.
   const orgScopeIds = orgScopeActive && claimableOrgIds ? claimableOrgIds : [''];
+  const baseOrgScopeIds =
+    orgScopeActive && effectiveWorkerOrgIds && effectiveWorkerOrgIds.length > 0
+      ? effectiveWorkerOrgIds
+      : [''];
 
   const claimNextPendingRun = async () =>
     sql.begin(async (tx) => {
@@ -473,7 +483,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
                   AND cd.required_capability IS NOT NULL
                   AND cd.required_capability = ANY(${pgTextArray(authorizedCapabilities)}::text[])
                   AND con.device_worker_id IS NULL
-                  AND r.organization_id = ANY(${pgTextArray(orgScopeIds)}::text[])
+                  AND r.organization_id = ANY(${pgTextArray(baseOrgScopeIds)}::text[])
                 )
                 -- ... or any connection explicitly pinned to THIS device (this is
                 --     "run the Reddit connector on my Mac"). Still: a device-only

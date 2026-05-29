@@ -58,6 +58,96 @@ function normalizeCheckpointPostId(postId?: string): string | undefined {
   return postId.startsWith('li_post_') ? postId.slice('li_post_'.length) : postId;
 }
 
+// ── Home-feed content-script scrape contract ────────────────────
+//
+// The personalized home feed (linkedin.com/feed/) is the ONE feed that can't
+// be read via network capture: attaching the CDP debugger stops the feed from
+// rendering, so the Voyager responses never arrive. Instead we drive the
+// extension's `cs_scrape` op (a content script, no debugger) with a declarative
+// selector config defined here. The extension runs a site-agnostic scrape
+// engine — the LinkedIn selectors live in this connector, not the extension.
+
+/** A row produced by the extension's cs_scrape from HOME_FEED_SCRAPE_CONFIG. */
+interface HomeFeedRow {
+  /** The componentkey token (base64url-ish, NOT a numeric activity id). */
+  id?: string;
+  body?: string;
+  author?: string;
+}
+
+/** The `.result` payload of a cs_scrape dispatch. */
+interface HomeFeedScrapeResult {
+  count?: number;
+  host?: string;
+  landedUrl?: string;
+  loggedIn?: boolean;
+  rows?: HomeFeedRow[];
+}
+
+/**
+ * The dispatch observation wrapping a cs_scrape result. The index signature
+ * keeps it assignable to ChromeActionDispatcher.dispatch's `ChromeActionOutput`
+ * (= Record<string, unknown>) constraint.
+ */
+type CsScrapeObservation = Record<string, unknown> & {
+  tab_id?: number;
+  cs_scrape?: boolean;
+  persistent_reused?: boolean;
+  result?: HomeFeedScrapeResult;
+};
+
+/** LinkedIn origins the cs_scrape window is allowed to touch. */
+const LINKEDIN_ALLOWED_ORIGINS = ['linkedin.com', '*.linkedin.com'];
+
+/**
+ * Selectors for the virtualized linkedin.com/feed/ DOM. Home-feed posts are
+ * componentkey divs with no activity urn, so the row id is the componentkey
+ * token (NOT numeric). These selectors live here, not in the extension.
+ */
+const HOME_FEED_SCRAPE_CONFIG = {
+  scroll: { max: 8, stall: 3, waitMs: 1500 },
+  loggedOutWhen: { pathRegex: '/(login|authwall|uas/login|checkpoint|signup)\\b' },
+  rowSelector: 'div[componentkey*="FeedType_MAIN_FEED_RELEVANCE"]',
+  id: { source: 'attr', name: 'componentkey', regex: '^(?:expanded)?(.+?)FeedType_', group: 1 },
+  requireFields: ['body'],
+  fields: {
+    body: { take: 'text' },
+    author: {
+      selector: '.update-components-actor__title, .update-components-actor__name',
+      take: 'text',
+      firstLine: true,
+    },
+  },
+} as const;
+
+/**
+ * Map cs_scrape home-feed rows to event envelopes. The componentkey token is
+ * not a numeric activity id, so there is no /feed/update permalink — source_url
+ * stays at /feed/. Home-feed posts expose no reliable timestamp, so the caller
+ * stamps occurred_at with the sync time.
+ */
+export function buildHomeFeedEvents(rows: HomeFeedRow[], occurredAt: Date): EventEnvelope[] {
+  const seen = new Set<string>();
+  const events: EventEnvelope[] = [];
+  for (const row of rows) {
+    if (!row?.id || !row.body || seen.has(row.id)) continue;
+    seen.add(row.id);
+    events.push({
+      origin_id: `li_home_${row.id}`,
+      payload_text: row.body,
+      author_name: row.author || '',
+      // Feed posts expose no reliable timestamp; use the sync time.
+      occurred_at: occurredAt,
+      origin_type: 'post',
+      // Token id is NOT a numeric activity id, so we cannot build a
+      // urn:li:activity permalink — link to the feed itself.
+      source_url: 'https://www.linkedin.com/feed/',
+      metadata: { author: row.author || '' },
+    });
+  }
+  return events;
+}
+
 /**
  * Pull the chrome action dispatcher from sessionState. The connector-worker
  * subprocess (child-runner.ts) splices a live `chrome_dispatcher` object
@@ -232,6 +322,19 @@ const companyUpdatesConfigSchema = {
   },
 };
 
+const homeFeedConfigSchema = {
+  type: 'object',
+  properties: {
+    max_scrolls: {
+      type: 'integer',
+      minimum: 1,
+      maximum: 30,
+      default: 8,
+      description: 'Maximum scroll iterations for the home feed (default: 8)',
+    },
+  },
+};
+
 const jobsConfigSchema = {
   type: 'object',
   required: ['company_url'],
@@ -284,6 +387,23 @@ export default class LinkedInConnector extends ConnectorRuntime {
       ],
     },
     feeds: {
+      home_feed: {
+        key: 'home_feed',
+        name: 'Home Feed',
+        description: 'Your personalized LinkedIn home feed.',
+        configSchema: homeFeedConfigSchema,
+        eventKinds: {
+          post: {
+            description: 'A post from your personalized LinkedIn home feed',
+            metadataSchema: {
+              type: 'object',
+              properties: {
+                author: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
       company_updates: {
         key: 'company_updates',
         name: 'Company Updates',
@@ -330,6 +450,14 @@ export default class LinkedInConnector extends ConnectorRuntime {
     const checkpoint = (ctx.checkpoint ?? {}) as LinkedInCheckpoint;
     const feedKey = ctx.feedKey ?? 'company_updates';
 
+    // home_feed is the one feed that needs a content-script scrape (the CDP
+    // debugger stops the personalized feed from rendering) and takes no
+    // company_url — it always reads linkedin.com/feed/.
+    if (feedKey === 'home_feed') {
+      const homeScrolls = (config.max_scrolls as number) ?? 8;
+      return this.syncHomeFeed(homeScrolls, checkpoint, requireExtensionDispatcher(ctx));
+    }
+
     const companyUrl = config.company_url as string;
     if (!companyUrl) {
       throw new Error('company_url is required');
@@ -344,6 +472,53 @@ export default class LinkedInConnector extends ConnectorRuntime {
       return this.syncJobs(baseUrl, maxScrolls, checkpoint, dispatcher);
     }
     return this.syncUpdates(baseUrl, maxScrolls, checkpoint, dispatcher);
+  }
+
+  /**
+   * Personalized home feed via the extension's content-script scrape. Network
+   * capture can't read it (the CDP debugger stops the feed rendering), so we
+   * dispatch a `cs_scrape` against linkedin.com/feed/ with the home-feed
+   * selectors. The persistent window is reused/focused so an auth wall can be
+   * cleared in place for the next run.
+   */
+  private async syncHomeFeed(
+    maxScrolls: number,
+    checkpoint: LinkedInCheckpoint,
+    dispatcher: ChromeActionDispatcher
+  ): Promise<SyncResult> {
+    const observation = await dispatcher.dispatch<CsScrapeObservation>('navigate', {
+      cs_scrape: true,
+      persistent: true,
+      focus: true,
+      url: 'https://www.linkedin.com/feed/',
+      scrape_config: {
+        ...HOME_FEED_SCRAPE_CONFIG,
+        scroll: { ...HOME_FEED_SCRAPE_CONFIG.scroll, max: maxScrolls },
+      },
+      allowed_origins: LINKEDIN_ALLOWED_ORIGINS,
+    });
+
+    const result = observation?.result;
+    if (result?.loggedIn === false) {
+      throw new Error(
+        'Not logged into LinkedIn. The home feed could not be read — sign in to LinkedIn in the focused Owletto window, then re-run the sync.'
+      );
+    }
+
+    const rows = result?.rows ?? [];
+    const events = buildHomeFeedEvents(rows, new Date());
+
+    return {
+      events,
+      // The home feed exposes no stable per-post cursor (opaque token ids, no
+      // timestamps), so there is nothing new to checkpoint — pass it through.
+      checkpoint: checkpoint as unknown as Record<string, unknown>,
+      metadata: {
+        items_found: events.length,
+        items_scraped: rows.length,
+        backend: 'extension-cs-scrape',
+      },
+    };
   }
 
   private async syncUpdates(

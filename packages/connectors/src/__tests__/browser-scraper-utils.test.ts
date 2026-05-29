@@ -12,6 +12,14 @@ mock.module('@lobu/connector-sdk', () => ({
   captureErrorArtifacts: () => {
     throw new Error('not used in unit tests');
   },
+  // Other connector tests (linkedin) load the same stubbed module in the same
+  // run; expose the symbols they need so the shared mock satisfies every
+  // importer regardless of file order.
+  ConnectorRuntime: class {},
+  calculateEngagementScore: () => 0,
+  extensionNetworkSync: () => {
+    throw new Error('not used in unit tests');
+  },
 }));
 
 const {

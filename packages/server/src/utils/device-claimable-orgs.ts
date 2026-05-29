@@ -42,3 +42,26 @@ export async function resolveDeviceClaimableOrgs(
 
   return Array.from(new Set([...params.baseOrgIds, ...pinnedOrgIds]));
 }
+
+/**
+ * Whether a user-scoped device worker may act on a run (claim / complete /
+ * heartbeat). True when the run's org is in the worker's base scope, OR the
+ * worker's user owns the device the run is pinned to — via either a pinned
+ * connection (`device_owner`) or a pinned watcher (`watcher_device_owner`).
+ * Pinning is the owner's consent, so a device may finish a run it was attached
+ * to in any org, mirroring the claim-side scope.
+ */
+export function runInWorkerScope(
+  run: {
+    organization_id: string;
+    device_owner: string | null;
+    watcher_device_owner: string | null;
+  },
+  ctx: { workerUserId: string | null; orgIds: string[] }
+): boolean {
+  if (ctx.orgIds.includes(run.organization_id)) return true;
+  if (!ctx.workerUserId) return false;
+  return (
+    run.device_owner === ctx.workerUserId || run.watcher_device_owner === ctx.workerUserId
+  );
+}

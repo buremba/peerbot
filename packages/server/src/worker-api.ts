@@ -40,7 +40,7 @@ import { getNextNumericId } from './tools/admin/helpers/db-helpers';
 import { reconcileDeviceCapabilities } from './worker-api/device-reconcile';
 import { findBundledConnectorFile } from './utils/connector-catalog';
 import { resolveConnectorCode } from './utils/ensure-connector-installed';
-import { resolveDeviceClaimableOrgs } from './utils/device-claimable-orgs';
+import { resolveDeviceClaimableOrgs, runInWorkerScope } from './utils/device-claimable-orgs';
 import { applyEntityLinks } from './utils/entity-link-upsert';
 import { errorMessage } from './utils/errors';
 import { validateConnectorEventSemanticType } from './utils/event-kind-validation';
@@ -97,10 +97,14 @@ async function authorizeRunForWorker(
   const orgIds = c.var.workerOrgIds ?? [];
   const sql = getDb();
   const rows = (await sql`
-    SELECT r.status, r.claimed_by, r.organization_id, dw.user_id AS device_owner
+    SELECT r.status, r.claimed_by, r.organization_id,
+           dw.user_id AS device_owner,
+           wdw.user_id AS watcher_device_owner
     FROM runs r
     LEFT JOIN connections con ON con.id = r.connection_id
     LEFT JOIN device_workers dw ON dw.id = con.device_worker_id
+    LEFT JOIN watchers w ON w.id = r.watcher_id
+    LEFT JOIN device_workers wdw ON wdw.id = w.device_worker_id
     WHERE r.id = ${runId}
     LIMIT 1
   `) as unknown as Array<{
@@ -108,14 +112,16 @@ async function authorizeRunForWorker(
     claimed_by: string | null;
     organization_id: string;
     device_owner: string | null;
+    watcher_device_owner: string | null;
   }>;
   if (rows.length === 0) {
     return c.json({ error: 'Run not found' }, 404);
   }
   const run = rows[0];
-  const inScope =
-    orgIds.includes(run.organization_id) ||
-    (!!workerUserId && run.device_owner === workerUserId);
+  // Watcher runs pinned to a device the worker owns are in scope too (the pin
+  // is the owner's consent), so a device can FINISH a cross-org run it claimed —
+  // not just claim it. Without this the poll widening would 403 on completion.
+  const inScope = runInWorkerScope(run, { workerUserId, orgIds });
   if (!inScope) {
     return c.json({ error: 'Forbidden' }, 403);
   }

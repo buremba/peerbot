@@ -144,6 +144,13 @@ export {
 export type { BrowserNetworkConfig, BrowserNetworkResult } from './browser-network.js';
 export { browserNetworkSync } from './browser-network.js';
 export type {
+  ExtensionDomScrapeResult,
+  ExtensionScrapeConfig,
+  ExtensionScrapeObservation,
+  ExtensionScrapeResult,
+} from './extension-dom-scrape.js';
+export { extensionDomScrape } from './extension-dom-scrape.js';
+export type {
   ChromeActionDispatcher,
   ChromeActionInput,
   ChromeActionOutput,

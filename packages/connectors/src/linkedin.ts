@@ -20,6 +20,7 @@ import {
   ConnectorRuntime,
   calculateEngagementScore,
   type EventEnvelope,
+  extensionDomScrape,
   extensionNetworkSync,
   type SyncContext,
   type SyncResult,
@@ -74,27 +75,6 @@ interface HomeFeedRow {
   body?: string;
   author?: string;
 }
-
-/** The `.result` payload of a cs_scrape dispatch. */
-interface HomeFeedScrapeResult {
-  count?: number;
-  host?: string;
-  landedUrl?: string;
-  loggedIn?: boolean;
-  rows?: HomeFeedRow[];
-}
-
-/**
- * The dispatch observation wrapping a cs_scrape result. The index signature
- * keeps it assignable to ChromeActionDispatcher.dispatch's `ChromeActionOutput`
- * (= Record<string, unknown>) constraint.
- */
-type CsScrapeObservation = Record<string, unknown> & {
-  tab_id?: number;
-  cs_scrape?: boolean;
-  persistent_reused?: boolean;
-  result?: HomeFeedScrapeResult;
-};
 
 /** LinkedIn origins the cs_scrape window is allowed to touch. */
 const LINKEDIN_ALLOWED_ORIGINS = ['linkedin.com', '*.linkedin.com'];
@@ -486,26 +466,23 @@ export default class LinkedInConnector extends ConnectorRuntime {
     checkpoint: LinkedInCheckpoint,
     dispatcher: ChromeActionDispatcher
   ): Promise<SyncResult> {
-    const observation = await dispatcher.dispatch<CsScrapeObservation>('navigate', {
-      cs_scrape: true,
-      persistent: true,
-      focus: true,
+    const { items: rows, loggedIn } = await extensionDomScrape<HomeFeedRow>({
+      dispatcher,
       url: 'https://www.linkedin.com/feed/',
-      scrape_config: {
+      config: {
         ...HOME_FEED_SCRAPE_CONFIG,
         scroll: { ...HOME_FEED_SCRAPE_CONFIG.scroll, max: maxScrolls },
       },
-      allowed_origins: LINKEDIN_ALLOWED_ORIGINS,
+      parseRows: (raw) => raw as HomeFeedRow[],
+      allowedOrigins: LINKEDIN_ALLOWED_ORIGINS,
     });
 
-    const result = observation?.result;
-    if (result?.loggedIn === false) {
+    if (!loggedIn) {
       throw new Error(
         'Not logged into LinkedIn. The home feed could not be read — sign in to LinkedIn in the focused Owletto window, then re-run the sync.'
       );
     }
 
-    const rows = result?.rows ?? [];
     const events = buildHomeFeedEvents(rows, new Date());
 
     return {

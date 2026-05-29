@@ -20,6 +20,38 @@ mock.module('@lobu/connector-sdk', () => ({
   extensionNetworkSync: () => {
     throw new Error('not used in unit tests');
   },
+  // Faithful re-implementation of the SDK helper so the shared mock satisfies
+  // linkedin's home-feed path regardless of file order (mirrors the helper in
+  // packages/connector-sdk; its own unit tests cover the real implementation).
+  extensionDomScrape: async (opts: {
+    // biome-ignore lint/suspicious/noExplicitAny: stub dispatcher return
+    dispatcher: { dispatch: (a: string, i: Record<string, unknown>) => Promise<any> };
+    url: string;
+    config: Record<string, unknown>;
+    parseRows: (rows: Array<Record<string, unknown>>) => unknown[];
+    allowedOrigins: string[];
+    persistent?: boolean;
+    focus?: boolean;
+  }) => {
+    const observation = await opts.dispatcher.dispatch('navigate', {
+      cs_scrape: true,
+      persistent: opts.persistent ?? true,
+      focus: opts.focus ?? true,
+      url: opts.url,
+      scrape_config: opts.config,
+      allowed_origins: opts.allowedOrigins,
+    });
+    const result = observation?.result;
+    const rows = result?.rows ?? [];
+    const items = opts.parseRows(rows);
+    return {
+      items,
+      loggedIn: result?.loggedIn !== false,
+      count: result?.count ?? items.length,
+      host: result?.host,
+      landedUrl: result?.landedUrl,
+    };
+  },
 }));
 
 const {

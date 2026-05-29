@@ -3214,9 +3214,23 @@ export async function triggerWatcherForDevice(c: Context<{ Bindings: Env }>) {
     return c.json({ error: 'Watcher not found' }, 404);
   }
 
+  // Org scope: the watcher's org must be in the caller's base scope OR be a
+  // cross-org pin the caller still has access to. The pin to THIS device is
+  // verified next (the consent); here we just confirm membership of the
+  // watcher's org for the cross-org case, mirroring the poll's membership gate.
   const orgIds = c.var.workerOrgIds ?? [];
+  const workerUserId = c.var.workerUserId;
   if (!orgIds.includes(watcher.organization_id)) {
-    return c.json({ error: 'Forbidden' }, 403);
+    const memberRows = workerUserId
+      ? ((await sql`
+          SELECT 1 FROM "member"
+          WHERE "organizationId" = ${watcher.organization_id} AND "userId" = ${workerUserId}
+          LIMIT 1
+        `) as unknown as Array<unknown>)
+      : [];
+    if (memberRows.length === 0) {
+      return c.json({ error: 'Forbidden' }, 403);
+    }
   }
   if (!watcher.device_worker_id || watcher.device_worker_id !== resolvedDeviceWorkerId) {
     return c.json({ error: 'Watcher is not pinned to this device' }, 403);

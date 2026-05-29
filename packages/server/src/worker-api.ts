@@ -3219,15 +3219,13 @@ export async function triggerWatcherForDevice(c: Context<{ Bindings: Env }>) {
   // verified next (the consent); here we just confirm membership of the
   // watcher's org for the cross-org case, mirroring the poll's membership gate.
   const orgIds = c.var.workerOrgIds ?? [];
-  const workerUserId = c.var.workerUserId;
   if (!orgIds.includes(watcher.organization_id)) {
-    const memberRows = workerUserId
-      ? ((await sql`
-          SELECT 1 FROM "member"
-          WHERE "organizationId" = ${watcher.organization_id} AND "userId" = ${workerUserId}
-          LIMIT 1
-        `) as unknown as Array<unknown>)
-      : [];
+    // workerUserId is guaranteed non-null by the guard above.
+    const memberRows = (await sql`
+      SELECT 1 FROM "member"
+      WHERE "organizationId" = ${watcher.organization_id} AND "userId" = ${workerUserId}
+      LIMIT 1
+    `) as unknown as Array<unknown>;
     if (memberRows.length === 0) {
       return c.json({ error: 'Forbidden' }, 403);
     }

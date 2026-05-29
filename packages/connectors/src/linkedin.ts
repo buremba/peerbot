@@ -93,12 +93,60 @@ const HOME_FEED_SCRAPE_CONFIG = {
   fields: {
     body: { take: 'text' },
     author: {
-      selector: '.update-components-actor__title, .update-components-actor__name',
+      // LinkedIn obfuscates the actor classes, so the old
+      // .update-components-actor__* selectors no longer match. Best-effort:
+      // grab the visible name span inside the actor's profile/company link
+      // when present. When this misses, buildHomeFeedEvents falls back to
+      // parsing the author out of the row body text.
+      selector:
+        'a[href*="/in/"] span[aria-hidden="true"], a[href*="/company/"] span[aria-hidden="true"]',
       take: 'text',
       firstLine: true,
     },
   },
 } as const;
+
+/**
+ * Best-effort author extraction from a home-feed row's body text. The home
+ * feed DOM obfuscates the actor classes, so the selector often misses and the
+ * only reliable place the author name appears is the row's body text. This is
+ * inherently heuristic — the feed can't use network capture, so there is no
+ * structured author field to read.
+ */
+export function parseHomeFeedAuthor(body: string): string {
+  if (!body) return '';
+  let text = body.replace(/^feed post\s+/i, '').trim();
+
+  // A repost surfaces the resharer first, then "reposted this", then the
+  // original poster whose content this actually is — take the original poster.
+  const repostIdx = text.toLowerCase().indexOf('reposted this');
+  if (repostIdx !== -1) {
+    text = text.slice(repostIdx + 'reposted this'.length).trim();
+  }
+
+  // The author is the leading name before the " • " connection-degree marker.
+  const sepIdx = text.indexOf(' • ');
+  if (sepIdx === -1) return '';
+  let name = text.slice(0, sepIdx).trim();
+  // A repost segment puts a relative-time token (e.g. "17h") right after the
+  // original poster's name and before the marker — strip it so we keep just
+  // the name.
+  name = name.replace(/\s+\d+\s*[smhdwy]o?$/i, '').trim();
+  return name.slice(0, 60);
+}
+
+/**
+ * The home feed mixes in ads, suggestions, and non-post noise. These never
+ * become useful events, so drop them before emitting. Heuristic by necessity —
+ * the home feed has no structured "is this an ad" field over the content-script
+ * scrape.
+ */
+export function isHomeFeedNoise(body: string): boolean {
+  if (!body || body.trim().length < 30) return true;
+  if (/\bPromoted\b/i.test(body.slice(0, 130))) return true;
+  if (/\bSuggested\b/i.test(body.slice(0, 30))) return true;
+  return false;
+}
 
 /**
  * Map cs_scrape home-feed rows to event envelopes. The componentkey token is
@@ -111,18 +159,20 @@ export function buildHomeFeedEvents(rows: HomeFeedRow[], occurredAt: Date): Even
   const events: EventEnvelope[] = [];
   for (const row of rows) {
     if (!row?.id || !row.body || seen.has(row.id)) continue;
+    if (isHomeFeedNoise(row.body)) continue;
     seen.add(row.id);
+    const author = (row.author ?? '').trim() || parseHomeFeedAuthor(row.body ?? '');
     events.push({
       origin_id: `li_home_${row.id}`,
       payload_text: row.body,
-      author_name: row.author || '',
+      author_name: author,
       // Feed posts expose no reliable timestamp; use the sync time.
       occurred_at: occurredAt,
       origin_type: 'post',
       // Token id is NOT a numeric activity id, so we cannot build a
       // urn:li:activity permalink — link to the feed itself.
       source_url: 'https://www.linkedin.com/feed/',
-      metadata: { author: row.author || '' },
+      metadata: { author },
     });
   }
   return events;

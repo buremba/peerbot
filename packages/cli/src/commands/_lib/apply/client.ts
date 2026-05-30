@@ -200,7 +200,8 @@ function pickArray<T>(body: Record<string, unknown>, ...keys: string[]): T[] {
  * (otherwise a derived type churns forever on `backing`).
  */
 function normalizeGrain(raw: unknown): string[] | undefined {
-  if (Array.isArray(raw)) return raw.filter((v): v is string => typeof v === "string");
+  if (Array.isArray(raw))
+    return raw.filter((v): v is string => typeof v === "string");
   if (typeof raw === "string") {
     const inner = raw.replace(/^\{|\}$/g, "");
     return inner ? inner.split(",").map((s) => s.replace(/^"|"$/g, "")) : [];

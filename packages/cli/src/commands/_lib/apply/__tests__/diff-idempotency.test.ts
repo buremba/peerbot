@@ -120,6 +120,100 @@ describe("computeDiff — idempotency (applying twice is a no-op)", () => {
     expect(secondPlan.counts.update).toBe(0);
   });
 
+  test("derived entity type: server-inferred measures don't churn (config declares none)", () => {
+    // The config declares only the view; the server infers + stores
+    // measure/dimension annotations (flagged `inferred: true`). Re-apply must
+    // be a noop, not a perpetual "properties changed".
+    const desired = buildState([], {
+      memorySchema: {
+        entityTypes: [
+          {
+            slug: "subscription",
+            name: "Subscription",
+            backing: {
+              sql: "SELECT company_id, SUM(amount) AS spend FROM events GROUP BY company_id",
+              grain: ["organization_id"],
+            },
+          },
+        ],
+        relationshipTypes: [],
+      },
+    });
+
+    const afterFirstApply: RemoteSnapshot = {
+      ...emptyRemote(),
+      entityTypes: [
+        {
+          slug: "subscription",
+          name: "Subscription",
+          // The inferred superset the server persisted — never in the config.
+          // Inference injects ONLY the flagged annotation (no `type`).
+          properties: {
+            company_id: { "x-dimension": { inferred: true } },
+            spend: { "x-measure": { reagg: "additive", inferred: true } },
+          },
+          backing: {
+            sql: "SELECT company_id, SUM(amount) AS spend FROM events GROUP BY company_id",
+            grain: ["organization_id"],
+          },
+        },
+      ],
+    };
+
+    const plan = computeDiff(desired, afterFirstApply);
+    const row = plan.rows.find((r) => r.kind === "entity-type");
+    expect(row?.verb).toBe("noop");
+    expect(plan.counts.update).toBe(0);
+  });
+
+  test("derived entity type: an author-DECLARED measure override still surfaces as an update", () => {
+    // Author overrides one column's re-agg rule (no `inferred` flag). Editing
+    // that declared value must produce an update even though the rest of the
+    // stored properties are an inferred superset the config never sends.
+    const desired = buildState([], {
+      memorySchema: {
+        entityTypes: [
+          {
+            slug: "subscription",
+            name: "Subscription",
+            backing: {
+              sql: "SELECT company_id, SUM(amount) AS spend FROM events GROUP BY company_id",
+            },
+            // Author declares spend should re-aggregate as a ratio.
+            properties: { spend: { "x-measure": { reagg: "ratio" } } },
+          },
+        ],
+        relationshipTypes: [],
+      },
+    });
+
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      entityTypes: [
+        {
+          slug: "subscription",
+          name: "Subscription",
+          properties: {
+            // Stored declared override is still the OLD value (holistic).
+            spend: { "x-measure": { reagg: "holistic" } },
+            // Plus an inferred dimension the config never declared.
+            company_id: { "x-dimension": { inferred: true } },
+          },
+          backing: {
+            sql: "SELECT company_id, SUM(amount) AS spend FROM events GROUP BY company_id",
+          },
+        },
+      ],
+    };
+
+    const plan = computeDiff(desired, remote);
+    const row = plan.rows.find((r) => r.kind === "entity-type");
+    expect(row?.verb).toBe("update");
+    if (row?.kind === "entity-type") {
+      expect(row.changedFields).toContain("properties");
+    }
+  });
+
   test("relationship type: same desired+remote is noop", () => {
     const desired = buildState([], {
       memorySchema: {

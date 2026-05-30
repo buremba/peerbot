@@ -126,10 +126,16 @@ export function applyInferredMeasures(
     if (existing['x-measure'] !== undefined || existing['x-dimension'] !== undefined) {
       continue;
     }
+    // `inferred: true` marks these as server-derived (not author-declared) so
+    // the apply diff can strip them — otherwise a derived entity churns every
+    // apply (the config never declares this inferred superset). The flagged
+    // annotation is the ONLY key inference injects (no `type`), so stripping it
+    // leaves exactly the author's keys — keeping the diff exact even when the
+    // author also gave the column a description.
     props[col.name] =
       col.role === 'measure'
-        ? { type: 'number', ...existing, 'x-measure': { reagg: col.reagg } }
-        : { ...existing, 'x-dimension': {} };
+        ? { ...existing, 'x-measure': { reagg: col.reagg, inferred: true } }
+        : { ...existing, 'x-dimension': { inferred: true } };
   }
 
   base.properties = props;

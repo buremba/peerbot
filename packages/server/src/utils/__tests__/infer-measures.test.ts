@@ -47,5 +47,13 @@ describe('applyInferredMeasures', () => {
     expect((props.n['x-measure'] as { reagg: string }).reagg).toBe('additive');
     // dimension inferred
     expect(props.company_id['x-dimension']).toBeDefined();
+
+    // Server-inferred annotations are flagged `inferred: true` so the apply
+    // diff can ignore them; an author-declared annotation carries no flag.
+    expect((props.n['x-measure'] as { inferred?: boolean }).inferred).toBe(true);
+    expect((props.company_id['x-dimension'] as { inferred?: boolean }).inferred).toBe(true);
+    expect(
+      (props.spend['x-measure'] as { inferred?: boolean }).inferred
+    ).toBeUndefined();
   });
 });

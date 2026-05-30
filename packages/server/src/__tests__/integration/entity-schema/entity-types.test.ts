@@ -135,10 +135,13 @@ describe('entity schema CRUD', () => {
       // grain was not re-sent ⇒ cleared (backing is set as a unit)
       expect(toArr(updated.entity_type?.backing_grain)).toEqual([]);
 
-      // revert to stored: backing = null clears the view
+      // revert to stored: backing = null clears the view AND the derived-only
+      // measure annotations (they're meaningless on a stored type).
       await owner.entity_schema.updateType({ slug: 'spend-by-vendor', backing: null });
       const reverted = (await owner.entity_schema.getType('spend-by-vendor')) as Got;
       expect(reverted.entity_type?.backing_sql ?? null).toBeNull();
+      const revProps = reverted.entity_type?.metadata_schema?.properties ?? {};
+      expect(revProps.avg_spend?.['x-measure']).toBeUndefined();
 
       await owner.entity_schema.deleteType('spend-by-vendor');
     });

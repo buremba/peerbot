@@ -11,7 +11,7 @@
 import { type Static, Type } from '@sinclair/typebox';
 import type { AutoCreateWhenRule } from '@lobu/connector-sdk';
 import { type DbClient, getDb, pgTextArray } from '../../db/client';
-import { applyInferredMeasures } from '../../utils/infer-measures';
+import { applyInferredMeasures, stripMeasureAnnotations } from '../../utils/infer-measures';
 import type { Env } from '../../index';
 import logger from '../../utils/logger';
 import { compileRulesMetadata, ruleHashFor } from '../../identity/rules';
@@ -596,11 +596,25 @@ async function etHandleUpdate(
   if (args.metadata_schema !== undefined) {
     validateEntityMetadataSchemaDisplayConfig(args.metadata_schema);
   }
-  // Re-infer measures whenever the derived view SQL is (re)set, merging into
-  // any provided metadata_schema (author-declared annotations win).
-  const effectiveSchema = args.backing?.sql
-    ? applyInferredMeasures(args.metadata_schema, args.backing.sql)
-    : args.metadata_schema;
+  // Keep metadata_schema's measure annotations consistent with the FINAL backing
+  // state (after this update), reading the existing row when backing is unchanged:
+  //   - setting/changing a derived view → infer over the new sql (declared wins)
+  //   - reverting to stored (backing=null) → strip derived-only annotations
+  //   - metadata-only edit of a still-derived type → re-infer over the current sql
+  //   - otherwise → use the provided schema (or leave unchanged)
+  const currentBackingSql =
+    typeof current.backing_sql === 'string' ? current.backing_sql : null;
+  const currentSchema = current.metadata_schema as Record<string, unknown> | null;
+  let effectiveSchema: Record<string, unknown> | undefined;
+  if (args.backing?.sql) {
+    effectiveSchema = applyInferredMeasures(args.metadata_schema, args.backing.sql);
+  } else if (args.backing === null) {
+    effectiveSchema = stripMeasureAnnotations(args.metadata_schema ?? currentSchema ?? undefined);
+  } else if (currentBackingSql && args.metadata_schema !== undefined) {
+    effectiveSchema = applyInferredMeasures(args.metadata_schema, currentBackingSql);
+  } else {
+    effectiveSchema = args.metadata_schema;
+  }
   const hasMetadataSchema = effectiveSchema !== undefined;
   const metadataSchemaJson = effectiveSchema ? sql.json(effectiveSchema) : null;
   const hasEventKinds = args.event_kinds !== undefined;

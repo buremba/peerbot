@@ -135,3 +135,27 @@ export function applyInferredMeasures(
   base.properties = props;
   return base;
 }
+
+/**
+ * Remove the derived-only `x-measure` / `x-dimension` annotations from a
+ * metadata_schema. Used when an entity type reverts from derived to stored:
+ * measures/dimensions are meaningless on a row-backed type, so they must not
+ * linger from a previous derived definition.
+ */
+export function stripMeasureAnnotations(
+  metadataSchema: Record<string, unknown> | undefined
+): Record<string, unknown> | undefined {
+  if (!metadataSchema) return metadataSchema;
+  const propsIn = metadataSchema.properties as Record<string, unknown> | undefined;
+  if (!propsIn) return metadataSchema;
+  const propsOut: Record<string, unknown> = {};
+  for (const [name, prop] of Object.entries(propsIn)) {
+    if (prop && typeof prop === 'object' && !Array.isArray(prop)) {
+      const { 'x-measure': _m, 'x-dimension': _d, ...rest } = prop as Record<string, unknown>;
+      propsOut[name] = rest;
+    } else {
+      propsOut[name] = prop;
+    }
+  }
+  return { ...metadataSchema, properties: propsOut };
+}

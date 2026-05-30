@@ -169,4 +169,49 @@ describe("ApplyClient — prune", () => {
       watcher_ids: ["42"],
     });
   });
+
+  test("upsertEntityType POSTs a nested backing for a derived type", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    await client.upsertEntityType({
+      slug: "subscription",
+      backing: {
+        sql: "SELECT company_id, SUM(amount) AS spend FROM events GROUP BY company_id",
+        grain: ["organization_id", "connection_id", "origin_id"],
+      },
+    });
+
+    expect(calls[0]?.url).toBe(
+      "https://example.test/api/acme/manage_entity_schema"
+    );
+    const body = JSON.parse(String(calls[0]?.init?.body));
+    expect(body.action).toBe("create");
+    expect(body.backing).toEqual({
+      sql: "SELECT company_id, SUM(amount) AS spend FROM events GROUP BY company_id",
+      grain: ["organization_id", "connection_id", "origin_id"],
+    });
+  });
+
+  test("upsertEntityType POSTs backing:null for a stored type", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    await client.upsertEntityType({ slug: "company", name: "Company" });
+
+    const body = JSON.parse(String(calls[0]?.init?.body));
+    expect(body.backing).toBeNull();
+  });
 });

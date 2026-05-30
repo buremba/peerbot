@@ -1,5 +1,49 @@
 # Changelog
 
+## [11.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v10.2.0...lobu-v11.0.0) (2026-05-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** `lobu memory browser-auth --connector <key>` now launches a dedicated debug Chrome instead of copying cookies from your real Chrome profile. The `--chrome-profile` and `--launch-cdp` flags are removed (`--launch-cdp` was the path now always taken).
+
+### Features
+
+* **connector-sdk:** extensionDomScrape helper; use it in LinkedIn home_feed ([#1155](https://github.com/lobu-ai/lobu/issues/1155)) ([ef359c0](https://github.com/lobu-ai/lobu/commit/ef359c0726d79513ab64f4628a4609f4095ab9e6))
+* **connectors:** add Hacker News front-page feed ([#1147](https://github.com/lobu-ai/lobu/issues/1147)) ([153f82a](https://github.com/lobu-ai/lobu/commit/153f82acc3768b3d3359b5b3408631e0d718e1c3))
+* **infra:** alert on prod deploy failures (Flux + CI) ([#1130](https://github.com/lobu-ai/lobu/issues/1130)) ([b79e599](https://github.com/lobu-ai/lobu/commit/b79e5996fe92463ce3b6b725fee2f78d32eafe0a))
+* **landing:** use-case-specific /for/ pages with collapsible code tabs ([#1134](https://github.com/lobu-ai/lobu/issues/1134)) ([51124de](https://github.com/lobu-ai/lobu/commit/51124de19bb10f52bce836878d6a81d988f86a09))
+* LinkedIn end-to-end on Owletto Chrome extension (delete Playwright fallback) ([#1132](https://github.com/lobu-ai/lobu/issues/1132)) ([080a3a3](https://github.com/lobu-ai/lobu/commit/080a3a33da581b11dbed363ec0e07370ccd5df02))
+* **linkedin:** home_feed via content-script scrape ([#1151](https://github.com/lobu-ai/lobu/issues/1151)) ([c9baa1a](https://github.com/lobu-ai/lobu/commit/c9baa1a699cf4648ccef756fc7c233b9d15a10fa))
+* **server:** associate connections with entities (union with feeds) ([#1158](https://github.com/lobu-ai/lobu/issues/1158)) ([4fb67f7](https://github.com/lobu-ai/lobu/commit/4fb67f7e3009de3cfcf2d14c618fae46189fcba2))
+* **server:** device workers can claim runs in orgs they're pinned to ([#1149](https://github.com/lobu-ai/lobu/issues/1149)) ([3f24eec](https://github.com/lobu-ai/lobu/commit/3f24eec66408640fa44577391683da276364df14))
+
+
+### Bug Fixes
+
+* **auth:** expose username in session so home routing is synchronous ([#1162](https://github.com/lobu-ai/lobu/issues/1162)) ([c5fee87](https://github.com/lobu-ai/lobu/commit/c5fee878762c3f194e90e9fcbf0471df71a6615e))
+* **auth:** login requests only connector loginScopes, not sensitive connector scopes ([#1145](https://github.com/lobu-ai/lobu/issues/1145)) ([5bb81cd](https://github.com/lobu-ai/lobu/commit/5bb81cdbde20ca2f0a92b0ac4d1945edab6b93b3))
+* **auth:** set username at signup + bump owletto (new-user org routing) ([#1160](https://github.com/lobu-ai/lobu/issues/1160)) ([fc6a6d4](https://github.com/lobu-ai/lobu/commit/fc6a6d4fece8eee5394817902a121b932573bcfa))
+* **gateway:** allow Owletto extension origins through CORS ([#1116](https://github.com/lobu-ai/lobu/issues/1116)) ([449f93e](https://github.com/lobu-ai/lobu/commit/449f93e46ac73fcd2d5f69e2084a159e50d22e4a))
+* **gateway:** route lobu chat to org's default agent end-to-end ([#1136](https://github.com/lobu-ai/lobu/issues/1136)) ([6c07546](https://github.com/lobu-ai/lobu/commit/6c075465eac397b3d5dbab391697e828ffd2e270))
+* **linkedin:** home_feed author body-fallback + drop promoted/suggested/noise rows ([#1156](https://github.com/lobu-ai/lobu/issues/1156)) ([858e8e0](https://github.com/lobu-ai/lobu/commit/858e8e029c3df060dc76ebbc396bff0fba230683))
+* **server,cli:** migrate external DATABASE_URL on `lobu run` + honor LOBU_DATA_DIR ([#1154](https://github.com/lobu-ai/lobu/issues/1154)) ([1d7d69f](https://github.com/lobu-ai/lobu/commit/1d7d69f0e0d993a58efce5584be3f3e0e7d52252))
+* **server,db:** per-user pending oauth_account uniqueness + clean conflict errors ([#1121](https://github.com/lobu-ai/lobu/issues/1121)) ([8ec3a81](https://github.com/lobu-ai/lobu/commit/8ec3a8193d12a0faa2835a70904a946b459f42b2))
+* **server:** clear field-missing errors on query_sdk/run_sdk ([#1131](https://github.com/lobu-ai/lobu/issues/1131)) ([5ef81b8](https://github.com/lobu-ai/lobu/commit/5ef81b8e94817af1344348fa9079dee87dd181ef))
+* **server:** repair connections.entity_ids schema drift for query_sql ([#1157](https://github.com/lobu-ai/lobu/issues/1157)) ([4081c0a](https://github.com/lobu-ai/lobu/commit/4081c0a492f250ed69f6aaeb825d7ebed72901ef))
+* **watchers,feeds:** guard id-less source queries and cross-org entity_ids ([#1146](https://github.com/lobu-ai/lobu/issues/1146)) ([f04469a](https://github.com/lobu-ai/lobu/commit/f04469af9686a3e7f923ed4fd88d2716f89dd9e4))
+
+
+### Performance Improvements
+
+* **auth:** don't block signup on the welcome email ([#1163](https://github.com/lobu-ai/lobu/issues/1163)) ([21443c0](https://github.com/lobu-ai/lobu/commit/21443c0e8115656c14b56aceac0e1f441447827b))
+* **web:** critical-path XHR cuts + route code-splitting ([#1135](https://github.com/lobu-ai/lobu/issues/1135)) ([9c5a3ce](https://github.com/lobu-ai/lobu/commit/9c5a3ceb3143eee22b0a28e66dbf63432723e0c7))
+
+
+### Code Refactoring
+
+* **cli:** drop profile-cookie capture from browser-auth ([#1114](https://github.com/lobu-ai/lobu/issues/1114)) ([dea44b1](https://github.com/lobu-ai/lobu/commit/dea44b1a083bb93aaef74585fe51e6a95ece4814))
+
 ## [10.2.0](https://github.com/lobu-ai/lobu/compare/lobu-v10.1.0...lobu-v10.2.0) (2026-05-28)
 
 

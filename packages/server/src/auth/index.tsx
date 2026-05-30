@@ -3,7 +3,6 @@ import { passkey } from "@better-auth/passkey";
 import { APIError, betterAuth } from "better-auth";
 import { magicLink, organization, phoneNumber } from "better-auth/plugins";
 import { bearer } from "better-auth/plugins/bearer";
-import type { Env } from "../index";
 import { getAuthDialect, getDb } from "../db/client";
 import { sendTransactionalEmail } from "../email/send";
 import {
@@ -20,7 +19,10 @@ import {
 	passwordResetSubject,
 } from "../email/templates/password-reset";
 import { WelcomeEmail, welcomeSubject } from "../email/templates/welcome";
+import { connectorCapabilityRegistry } from "../identity/capability-registry";
+import type { Env } from "../index";
 import { notifyInvitationReceived } from "../notifications/triggers";
+import { recordLifecycleEvent } from "../utils/insert-event";
 import {
 	deleteMemberEntity,
 	ensureMemberEntity,
@@ -31,10 +33,8 @@ import {
 	getConfiguredPublicOrigin,
 	normalizeHost,
 } from "../utils/public-origin";
-import { recordLifecycleEvent } from "../utils/insert-event";
 import { TtlCache } from "../utils/ttl-cache";
 import { resolveBaseUrl, safeParseUrl } from "./base-url";
-import { findExistingPersonalOrg } from "./personal-org-provisioning";
 import {
 	getAuthConfig as getAuthConfigFromEnv,
 	getEnabledLoginProviderConfigs,
@@ -42,7 +42,7 @@ import {
 	resolveLoginProviderCredentials,
 	resolveRequestOrganizationId,
 } from "./config";
-import { connectorCapabilityRegistry } from "../identity/capability-registry";
+import { findExistingPersonalOrg } from "./personal-org-provisioning";
 // Side-effect imports: each connector self-registers on load, so the
 // registry is fully populated before any auth hook can fire. Add a new
 // import here when adding a connector under `../identity/connectors/`.
@@ -53,6 +53,7 @@ if (connectorCapabilityRegistry.size() === 0) {
 		"identity connector registry is empty — check side-effect imports in auth/index.tsx",
 	);
 }
+
 import {
 	scheduleIdentityIngest,
 	scheduleIdentityTombstoneOnAccountDelete,
@@ -189,7 +190,11 @@ export async function createAuth(env: Env, request?: Request) {
 
 	const auth = betterAuth({
 		...(env.BETTER_AUTH_SECRET ? { secret: env.BETTER_AUTH_SECRET } : {}),
-		database: { dialect: getAuthDialect(), type: "postgres", transaction: true },
+		database: {
+			dialect: getAuthDialect(),
+			type: "postgres",
+			transaction: true,
+		},
 		baseURL: resolveBaseUrl({ request }),
 		basePath: "/api/auth",
 
@@ -241,6 +246,19 @@ export async function createAuth(env: Env, request?: Request) {
 					returned: false,
 					required: false,
 				},
+				// Surface `username` in the session payload. The SPA derives a
+				// user's home org from session.user.username (personalOrgSlug) to
+				// route them straight to /$owner — without this it's absent from
+				// the session, so routing falls back to the (slow) /api/organizations
+				// fetch on every cold load. `input: false`: it's set server-side by
+				// the personal-org provisioner, never by client signup input.
+				username: {
+					type: "string",
+					fieldName: "username",
+					input: false,
+					returned: true,
+					required: false,
+				},
 			},
 		},
 
@@ -282,17 +300,11 @@ export async function createAuth(env: Env, request?: Request) {
 					// their first org via the UI, ends up with NULL `workerOrgIds`
 					// in the device-worker auth middleware (index.ts:602-607), so
 					// their Lobu bridge gets a 403 on every poll.
-					afterCreateOrganization: async ({
-						organization: org,
-						user,
-					}) => {
+					afterCreateOrganization: async ({ organization: org, user }) => {
 						try {
 							if (org.visibility !== "private") return;
 							const sql = getDb();
-							const existing = await findExistingPersonalOrg(
-								user.id,
-								sql,
-							);
+							const existing = await findExistingPersonalOrg(user.id, sql);
 							if (existing) return;
 							await sql`
 								UPDATE "organization"
@@ -324,14 +336,14 @@ export async function createAuth(env: Env, request?: Request) {
 								"../workspace/multi-tenant"
 							);
 							invalidateMembershipRoleCache(org.id, user.id);
-								recordLifecycleEvent({
-									organizationId: org.id,
-									entityType: "member",
-									op: "created",
-									entityId: member.id,
-									summary: `Member "${user.name || user.email}" added`,
-									extra: { user_id: user.id, role: member.role },
-								});
+							recordLifecycleEvent({
+								organizationId: org.id,
+								entityType: "member",
+								op: "created",
+								entityId: member.id,
+								summary: `Member "${user.name || user.email}" added`,
+								extra: { user_id: user.id, role: member.role },
+							});
 						} catch (err) {
 							console.error(
 								"[Auth] Failed to create $member entity after addMember:",
@@ -370,13 +382,13 @@ export async function createAuth(env: Env, request?: Request) {
 					afterRemoveMember: async ({ user, organization: org }) => {
 						try {
 							await deleteMemberEntity(org.id, user.email);
-								recordLifecycleEvent({
-									organizationId: org.id,
-									entityType: "member",
-									op: "deleted",
-									entityId: user.id,
-									summary: `Member "${user.name || user.email}" removed`,
-								});
+							recordLifecycleEvent({
+								organizationId: org.id,
+								entityType: "member",
+								op: "deleted",
+								entityId: user.id,
+								summary: `Member "${user.name || user.email}" removed`,
+							});
 							const { invalidateMembershipRoleCache } = await import(
 								"../workspace/multi-tenant"
 							);
@@ -538,8 +550,10 @@ export async function createAuth(env: Env, request?: Request) {
 					// doesn't grant third-party access thinking they're just signing in.
 					let isAuthorizeRequest = false;
 					try {
-						const callbackUrl = new URL(url).searchParams.get("callbackURL") ?? "";
-						isAuthorizeRequest = decodeURIComponent(callbackUrl).includes("/oauth/device");
+						const callbackUrl =
+							new URL(url).searchParams.get("callbackURL") ?? "";
+						isAuthorizeRequest =
+							decodeURIComponent(callbackUrl).includes("/oauth/device");
 					} catch {
 						isAuthorizeRequest = false;
 					}
@@ -547,7 +561,9 @@ export async function createAuth(env: Env, request?: Request) {
 						env,
 						to: email,
 						category: "auth",
-						subject: isAuthorizeRequest ? authorizeAppSubject : magicLinkSubject,
+						subject: isAuthorizeRequest
+							? authorizeAppSubject
+							: magicLinkSubject,
 						react: (
 							<MagicLinkEmail
 								url={url}
@@ -727,7 +743,10 @@ export async function createAuth(env: Env, request?: Request) {
 								),
 							});
 						} catch (error) {
-							console.error("[Auth] Failed to send signup welcome email:", error);
+							console.error(
+								"[Auth] Failed to send signup welcome email:",
+								error,
+							);
 						}
 					},
 				},

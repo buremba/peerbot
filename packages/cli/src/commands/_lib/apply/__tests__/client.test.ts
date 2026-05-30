@@ -199,6 +199,38 @@ describe("ApplyClient — prune", () => {
     });
   });
 
+  test("listEntityTypes normalizes a text[] backing_grain literal to an array (no diff churn)", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        // Postgres text[] often round-trips as the raw literal "{a,b,c}".
+        return new Response(
+          JSON.stringify({
+            entity_types: [
+              {
+                slug: "subscription",
+                metadata_schema: { type: "object", properties: {} },
+                backing_sql: "SELECT 1 AS x",
+                backing_grain: "{organization_id,connection_id,origin_id}",
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      }) as typeof fetch
+    );
+
+    const types = await client.listEntityTypes();
+    // normalized to an array so it compares equal to the config's array (else
+    // a derived type churns `backing` on every apply).
+    expect(types[0]?.backing).toEqual({
+      sql: "SELECT 1 AS x",
+      grain: ["organization_id", "connection_id", "origin_id"],
+    });
+  });
+
   test("upsertEntityType POSTs backing:null for a stored type", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new ApplyClient(

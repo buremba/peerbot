@@ -193,11 +193,26 @@ function pickArray<T>(body: Record<string, unknown>, ...keys: string[]): T[] {
  * `metadata_schema` to the row's top level. Mirrors `upsertEntityType`, which
  * folds the flat fields back into `metadata_schema` when writing.
  */
+/**
+ * `backing_grain` is a Postgres `text[]` column; depending on the driver it
+ * comes back either as a JS array or as the raw array literal `"{a,b,c}"`.
+ * Normalize to `string[]` so the diff compares it against the config's array
+ * (otherwise a derived type churns forever on `backing`).
+ */
+function normalizeGrain(raw: unknown): string[] | undefined {
+  if (Array.isArray(raw)) return raw.filter((v): v is string => typeof v === "string");
+  if (typeof raw === "string") {
+    const inner = raw.replace(/^\{|\}$/g, "");
+    return inner ? inner.split(",").map((s) => s.replace(/^"|"$/g, "")) : [];
+  }
+  return undefined;
+}
+
 function hoistEntityTypeSchema(
   row: RemoteEntityType & {
     metadata_schema?: unknown;
     backing_sql?: string | null;
-    backing_grain?: string[] | null;
+    backing_grain?: string[] | string | null;
     backing_source?: string | null;
   }
 ): RemoteEntityType {
@@ -222,11 +237,10 @@ function hoistEntityTypeSchema(
   // A type is derived iff it has view SQL; stored types carry no backing, so it
   // compares equal to the desired side without churn.
   if (typeof row.backing_sql === "string") {
+    const grain = normalizeGrain(row.backing_grain);
     out.backing = {
       sql: row.backing_sql,
-      ...(row.backing_grain && row.backing_grain.length > 0
-        ? { grain: row.backing_grain }
-        : {}),
+      ...(grain && grain.length > 0 ? { grain } : {}),
       ...(row.backing_source ? { source: row.backing_source } : {}),
     };
   }
@@ -514,7 +528,7 @@ export class ApplyClient {
     type RawEntityTypeRow = RemoteEntityType & {
       metadata_schema?: unknown;
       backing_sql?: string | null;
-      backing_grain?: string[] | null;
+      backing_grain?: string[] | string | null;
       backing_source?: string | null;
     };
     const { body } = await this.request<{

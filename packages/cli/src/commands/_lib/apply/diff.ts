@@ -480,7 +480,12 @@ function diffEntityType(
       },
       {
         name: "properties",
-        changed: (d, r) => !deepEqual(d.properties, r.properties),
+        // A derived entity's properties are SERVER-managed: the server infers
+        // measure/dimension annotations from `backing.sql` and stores them, but
+        // the config never declares that superset — so comparing would churn on
+        // every apply. For derived types, `backing` is the authored source of
+        // truth (compared below); properties follow from it.
+        changed: (d, r) => (d.backing ? false : !deepEqual(d.properties, r.properties)),
       },
       {
         name: "backing",

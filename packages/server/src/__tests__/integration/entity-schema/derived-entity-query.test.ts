@@ -92,4 +92,16 @@ describe('derived entity read path (reuse query_sql)', () => {
     expect(Number(acme?.purchases)).toBe(2);
     expect(Number(acme?.total_spend)).toBe(15);
   });
+
+  it('rejects creating a stored row on a derived (view) entity type', async () => {
+    await owner.entity_schema.createType({
+      slug: 'orders-view',
+      name: 'Orders view',
+      backing: { sql: 'SELECT semantic_type, COUNT(*) AS n FROM events GROUP BY 1' },
+    });
+    // The view has no stored rows; inserting one would be silently ignored.
+    await expect(
+      owner.entities.create({ type: 'orders-view', name: 'nope' })
+    ).rejects.toThrow(/derived|view|no stored rows/i);
+  });
 });

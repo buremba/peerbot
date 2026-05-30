@@ -8,18 +8,14 @@
  *   - Any other name → treated as an entity_type slug, filtered from entities
  *
  * Security:
- *   - SQL parsed via node-sql-parser to extract ALL table references
+ *   - SQL parsed via @polyglot-sql/sdk to extract ALL table references
  *   - Schema-qualified references (e.g. public.user) rejected outright
  *   - Every table ref gets a CTE with org-scoping baked in
  *   - READ ONLY transaction + timeout via sql.begin()
  *   - FORBIDDEN_OPS regex as additional safeguard
  */
 
-import { createRequire } from 'node:module';
-
-const _require = createRequire(import.meta.url);
-const { Parser } = _require('node-sql-parser');
-
+import { Dialect, ast, parse as parseSql } from '@polyglot-sql/sdk';
 import type { DbClient } from '../db/client';
 import logger from './logger';
 import {
@@ -49,7 +45,31 @@ const FORBIDDEN_OPS = /\b(COPY|IMPORT|PRAGMA|CALL)\b/i;
 const MAX_ROWS = 1000;
 const QUERY_TIMEOUT_MS = 5000;
 
-const sqlParser = new Parser();
+type SqlNode = ast.Expression;
+
+/** Strip {{...}} template placeholders to a literal so the parser doesn't choke. */
+function stripPlaceholders(sql: string): string {
+  return sql.replace(/\{\{\w+(?:\.\w+)?\}\}/g, '0');
+}
+
+/** Parse to the top-level statement node, or undefined when the SQL won't parse. */
+function parseRoot(sql: string): SqlNode | undefined {
+  const res = parseSql(stripPlaceholders(sql), Dialect.PostgreSQL);
+  if (!res.success || !res.ast) return undefined;
+  return (Array.isArray(res.ast) ? res.ast[0] : res.ast) as SqlNode | undefined;
+}
+
+/** Pull a bare identifier string out of polyglot's `{ name, quoted }` shapes. */
+function identName(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object') {
+    const o = value as Record<string, unknown>;
+    if (typeof o.name === 'string') return o.name;
+    if (o.name && typeof o.name === 'object') return identName(o.name);
+    if (o.this) return identName(o.this);
+  }
+  return null;
+}
 
 // ============================================
 // SQL Parsing
@@ -58,48 +78,33 @@ const sqlParser = new Parser();
 /**
  * Extract all table references from a SQL query.
  * Rejects schema-qualified references (e.g. public.users, pg_catalog.pg_roles).
- * Filters out user-defined CTE names so they aren't treated as virtual tables.
+ * User-defined CTE names are excluded by polyglot's `getTableNames` so they
+ * aren't treated as virtual tables.
  */
 function extractTableRefs(query: string): string[] {
-  // Replace {{...}} placeholders with a literal so the parser doesn't choke
-  const forParsing = query.replace(/\{\{\w+(?:\.\w+)?\}\}/g, '0');
-
-  const tableList = sqlParser.tableList(forParsing, { database: 'PostgreSql' });
-
-  // Extract user-defined CTE names to exclude
-  const userCteNames = new Set<string>();
-  try {
-    const ast = sqlParser.astify(forParsing, { database: 'PostgreSql' });
-    const astObj = (Array.isArray(ast) ? ast[0] : ast) as unknown as Record<string, unknown>;
-    const withClause = astObj?.with as Array<{ name: { value: string } }> | undefined;
-    if (withClause) {
-      for (const cte of withClause) {
-        if (cte.name?.value) userCteNames.add(cte.name.value.toLowerCase());
-      }
-    }
-  } catch {
-    // If AST parsing fails, we still have tableList — just can't filter CTEs
+  const root = parseRoot(query);
+  if (!root) {
+    throw new Error('Could not parse SQL query for table extraction');
   }
 
+  // Reject schema-qualified references — every table node carries a `schema`
+  // field (null when unqualified). CTE references are unqualified, so this only
+  // trips on real `schema.table` refs (public.user, pg_catalog.*, …).
+  for (const node of ast.getTables(root)) {
+    const data = ast.getExprData(node) as Record<string, unknown>;
+    if (data.schema) {
+      throw new Error(
+        `Schema-qualified table references are not allowed: ${identName(data.schema)}.${identName(data.name)}`
+      );
+    }
+  }
+
+  // getTableNames returns the real referenced tables with user-defined CTE
+  // names already filtered out.
   const tables = new Set<string>();
-  for (const ref of tableList) {
-    // Format: "operation::schema::table"
-    const parts = ref.split('::');
-    const schema = parts[1];
-    const table = parts[2];
-
-    if (schema && schema !== 'null' && schema !== '') {
-      throw new Error(`Schema-qualified table references are not allowed: ${schema}.${table}`);
-    }
-
-    if (table) {
-      const lower = table.toLowerCase();
-      if (!userCteNames.has(lower)) {
-        tables.add(lower);
-      }
-    }
+  for (const name of ast.getTableNames(root)) {
+    if (typeof name === 'string' && name) tables.add(name.toLowerCase());
   }
-
   return Array.from(tables);
 }
 
@@ -113,7 +118,7 @@ function extractTableRefs(query: string): string[] {
  * Validation pipeline:
  *   1. validateTableQuery() — @polyglot-sql/sdk parses the SQL and checks
  *      all table/column references against the allowlisted schema
- *   2. extractTableRefs() — node-sql-parser AST extracts table names
+ *   2. extractTableRefs() — @polyglot-sql/sdk AST extracts table names
  *   3. buildScopedQuery() — wraps each table reference in an org-scoped CTE
  *
  * Throws on any validation failure.
@@ -404,32 +409,26 @@ function buildScopedQuery(
  */
 export function queryProjectsIdColumn(query: string): boolean {
   try {
-    const forParsing = query.trim().replace(/\{\{\w+(?:\.\w+)?\}\}/g, '0');
-    const ast = sqlParser.astify(forParsing, { database: 'PostgreSql' });
-    const stmt = (Array.isArray(ast) ? ast[0] : ast) as Record<string, unknown> | undefined;
-    const columns = stmt?.columns;
-    if (!Array.isArray(columns)) {
-      // `SELECT *` is sometimes represented as a non-array; treat unknown
-      // shapes as "has id" so we never block a save we can't analyze.
-      return true;
-    }
-    for (const col of columns as Array<Record<string, unknown>>) {
-      const as = col.as;
-      if (typeof as === 'string' && as.toLowerCase() === 'id') return true;
+    const root = parseRoot(query);
+    // Treat any shape we can't analyze (parse failure, non-SELECT) as "has id"
+    // so we never block a save on a parser edge case.
+    if (!root || ast.getExprType(root) !== 'select') return true;
+    const projection = (ast.getExprData(root) as { expressions?: unknown[] }).expressions;
+    if (!Array.isArray(projection)) return true;
 
-      const expr = col.expr as Record<string, unknown> | undefined;
-      if (!expr || expr.type !== 'column_ref') continue;
-
-      const column = expr.column;
+    for (const item of projection as SqlNode[]) {
+      const itemType = ast.getExprType(item);
       // Star projection: `*` or `alias.*`
-      if (column === '*') return true;
-      // Bare column reference: { expr: { value: 'id' } }
-      const name =
-        typeof column === 'string'
-          ? column
-          : ((column as Record<string, unknown>)?.expr as Record<string, unknown> | undefined)
-              ?.value;
-      if (typeof name === 'string' && name.toLowerCase() === 'id') return true;
+      if (itemType === 'star' || ast.isStar?.(item)) return true;
+      if (itemType === 'alias') {
+        const d = ast.getExprData(item) as Record<string, unknown>;
+        if (identName(d.alias)?.toLowerCase() === 'id') return true; // ... AS id
+        const inner = (d.this ?? d.expr) as SqlNode | undefined;
+        if (inner && (ast.getExprType(inner) === 'star' || ast.isStar?.(inner))) return true;
+      } else if (itemType === 'column') {
+        if (identName((ast.getExprData(item) as Record<string, unknown>).name)?.toLowerCase() === 'id')
+          return true; // bare `id`
+      }
     }
     return false;
   } catch {
@@ -452,8 +451,8 @@ export function validateDataSourceQuery(name: string, query: string, parse = fal
   }
   if (parse) {
     try {
-      const forParsing = trimmed.replace(/\{\{\w+(?:\.\w+)?\}\}/g, '0');
-      sqlParser.astify(forParsing, { database: 'PostgreSql' });
+      const res = parseSql(stripPlaceholders(trimmed), Dialect.PostgreSQL);
+      if (!res.success) throw new Error(res.error ?? 'could not parse query');
       extractTableRefs(trimmed);
     } catch (err) {
       throw new Error(`Data source '${name}': ${err instanceof Error ? err.message : String(err)}`);

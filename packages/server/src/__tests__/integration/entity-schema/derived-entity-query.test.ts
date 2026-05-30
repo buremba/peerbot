@@ -41,28 +41,35 @@ describe('derived entity read path (reuse query_sql)', () => {
     });
   });
 
-  it("a stored derived backing_sql is queryable + org-scoped via query_sql", async () => {
-    // Author a derived view over REAL event columns (an illustrative
-    // `SUM(amount)` would be rejected — `amount` isn't an allowlisted column).
+  it('a stored derived backing_sql (metadata jsonb) is queryable + org-scoped via query_sql', async () => {
+    // Realistic derived view: business data lives in events.metadata (jsonb),
+    // not in fixed columns. Extraction + cast + aggregate must survive the
+    // parse → validate → org-scope path (now powered by @polyglot-sql/sdk).
+    const sql =
+      "SELECT (metadata->>'vendor') AS vendor, SUM((metadata->>'amount')::numeric) AS total_spend, COUNT(*) AS purchases FROM events GROUP BY 1";
     await owner.entity_schema.createType({
-      slug: 'events-by-type',
-      name: 'Events by type',
-      backing: {
-        sql: 'SELECT semantic_type, COUNT(*) AS event_count FROM events GROUP BY semantic_type',
-      },
+      slug: 'spend-by-vendor',
+      name: 'Spend by vendor',
+      backing: { sql },
     });
 
-    // 2 events in org A + 1 in org B, same semantic_type. Org B must be excluded.
-    await createTestEvent({ organization_id: orgAId, semantic_type: 'purchase', content: 'a1' });
-    await createTestEvent({ organization_id: orgAId, semantic_type: 'purchase', content: 'a2' });
-    await createTestEvent({ organization_id: orgBId, semantic_type: 'purchase', content: 'b1' });
-
-    // Reuse path: read the STORED view SQL, then run it through query_sql.
-    const got = (await owner.entity_schema.getType('events-by-type')) as {
-      entity_type?: { backing_sql?: string | null };
+    // Inference classifies the jsonb columns: vendor → dimension, the SUM →
+    // additive measure, COUNT(*) → additive measure.
+    const got = (await owner.entity_schema.getType('spend-by-vendor')) as {
+      entity_type?: {
+        backing_sql?: string | null;
+        metadata_schema?: { properties?: Record<string, Record<string, unknown>> };
+      };
     };
-    const backingSql = got.entity_type?.backing_sql;
-    expect(backingSql).toContain('COUNT(*)');
+    const props = got.entity_type?.metadata_schema?.properties ?? {};
+    expect(props.vendor?.['x-dimension']).toBeDefined();
+    expect((props.total_spend?.['x-measure'] as { reagg?: string })?.reagg).toBe('additive');
+    expect((props.purchases?.['x-measure'] as { reagg?: string })?.reagg).toBe('additive');
+
+    // 2 purchases in org A + 1 in org B (same vendor). Org B must be excluded.
+    await createTestEvent({ organization_id: orgAId, content: 'a1', metadata: { vendor: 'acme', amount: '10' } });
+    await createTestEvent({ organization_id: orgAId, content: 'a2', metadata: { vendor: 'acme', amount: '5' } });
+    await createTestEvent({ organization_id: orgBId, content: 'b1', metadata: { vendor: 'acme', amount: '99' } });
 
     const ctxA: ToolContext = {
       organizationId: orgAId,
@@ -73,11 +80,16 @@ describe('derived entity read path (reuse query_sql)', () => {
       scopedToOrg: false,
       allowCrossOrg: false,
     };
-    const res = await querySql({ sql: backingSql as string, sort_by: 'semantic_type' }, {}, ctxA);
+    const res = await querySql(
+      { sql: got.entity_type?.backing_sql as string, sort_by: 'vendor' },
+      {},
+      ctxA
+    );
 
     expect(res.error).toBeUndefined();
-    const purchase = res.rows.find((r) => r.semantic_type === 'purchase');
-    // Org-scoped: only org A's 2 events are counted, never org B's.
-    expect(Number(purchase?.event_count)).toBe(2);
+    const acme = res.rows.find((r) => r.vendor === 'acme');
+    // Org-scoped: only org A's 2 events aggregate — org B's $99 never leaks in.
+    expect(Number(acme?.purchases)).toBe(2);
+    expect(Number(acme?.total_spend)).toBe(15);
   });
 });

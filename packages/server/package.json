@@ -56,7 +56,6 @@
     "hono-pino": "^0.10.3",
     "kysely": "^0.28.0",
     "kysely-postgres-js": "^2.0.0",
-    "node-sql-parser": "^5.4.0",
     "pino": "^10.1.0",
     "postgres": "^3.4.7",
     "react": "^19.2.5",

@@ -18,13 +18,14 @@
  *   a / b                  → ratio
  *   anything else          → non_additive (safe: the engine refuses to roll it up)
  *
- * Parsing uses node-sql-parser (the same parser `execute-data-sources.ts` uses
- * for table extraction); polyglot 0.1.x does not expose a usable projection AST.
+ * Parsing uses @polyglot-sql/sdk — the same postgres-aware SQL engine that
+ * `validateAndScopeQuery` uses to validate/scope queries — so the whole stack
+ * runs on one parser. The SDK auto-initialises on (ESM) import, so the
+ * synchronous `parse` below works without an explicit init step.
  */
-import nodeSqlParser from 'node-sql-parser';
+import { Dialect, ast, parse } from '@polyglot-sql/sdk';
 
-const { Parser } = nodeSqlParser;
-const parser = new Parser();
+type Node = ast.Expression;
 
 export type ReaggRule =
   | 'additive'
@@ -40,27 +41,50 @@ export interface InferredColumn {
   reagg?: ReaggRule;
 }
 
-function reaggForAggregate(name: string, distinct: boolean): ReaggRule {
+// Aggregate function node types polyglot reports via getExprType(). Anything in
+// this set is a measure; the re-agg rule depends on which one (+ DISTINCT).
+const ADDITIVE_AGGS = new Set(['sum', 'count', 'count_if', 'sum_if']);
+const HOLISTIC_AGGS = new Set([
+  'median',
+  'mode',
+  'approx_distinct',
+  'approx_count_distinct',
+]);
+const EXTREMUM_AGGS = new Set(['min', 'max']);
+const AGG_TYPES = new Set<string>([
+  ...ADDITIVE_AGGS,
+  ...HOLISTIC_AGGS,
+  ...EXTREMUM_AGGS,
+  'avg',
+  // present but not safely re-aggregatable → non_additive
+  'group_concat',
+  'string_agg',
+  'list_agg',
+  'array_agg',
+  'stddev',
+  'variance',
+  'first',
+  'last',
+  'any_value',
+]);
+
+function reaggForAggregate(type: string, distinct: boolean): ReaggRule {
   if (distinct) return 'holistic'; // COUNT(DISTINCT ...), etc.
-  const n = name.toUpperCase();
-  if (n === 'SUM' || n === 'COUNT') return 'additive';
-  if (n === 'AVG') return 'ratio';
-  if (n === 'MIN' || n === 'MAX') return 'extremum';
-  if (n === 'MEDIAN' || n.startsWith('PERCENTILE')) return 'holistic';
-  return 'non_additive'; // unknown aggregate → never silently roll it up
+  if (ADDITIVE_AGGS.has(type)) return 'additive';
+  if (type === 'avg') return 'ratio';
+  if (EXTREMUM_AGGS.has(type)) return 'extremum';
+  if (HOLISTIC_AGGS.has(type)) return 'holistic';
+  return 'non_additive'; // unknown/unsafe aggregate → never silently roll it up
 }
 
-/** Best-effort output-column name for a projection item. */
-function columnName(col: Record<string, unknown>): string | null {
-  if (typeof col.as === 'string' && col.as) return col.as;
-  const expr = col.expr as Record<string, unknown> | undefined;
-  if (expr?.type === 'column_ref') {
-    const column = expr.column;
-    if (typeof column === 'string') return column;
-    const nested = (column as Record<string, unknown>)?.expr as
-      | Record<string, unknown>
-      | undefined;
-    if (typeof nested?.value === 'string') return nested.value;
+/** Pull a bare identifier string out of polyglot's `{ name, quoted }` shapes. */
+function identName(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object') {
+    const o = value as Record<string, unknown>;
+    if (typeof o.name === 'string') return o.name;
+    if (o.name && typeof o.name === 'object') return identName(o.name);
+    if (o.this) return identName(o.this);
   }
   return null;
 }
@@ -71,34 +95,48 @@ function columnName(col: Record<string, unknown>): string | null {
  * (callers treat "no inference" as "author annotates explicitly").
  */
 export function inferColumns(sql: string): InferredColumn[] {
-  let stmt: Record<string, unknown> | undefined;
+  // Strip {{...}} template placeholders so the parser doesn't choke.
+  const forParsing = sql.trim().replace(/\{\{\w+(?:\.\w+)?\}\}/g, '0');
+
+  let root: Node | undefined;
   try {
-    // Strip {{...}} template placeholders so the parser doesn't choke.
-    const forParsing = sql.trim().replace(/\{\{\w+(?:\.\w+)?\}\}/g, '0');
-    const ast = parser.astify(forParsing, { database: 'PostgreSql' });
-    stmt = (Array.isArray(ast) ? ast[0] : ast) as unknown as
-      | Record<string, unknown>
-      | undefined;
+    const res = parse(forParsing, Dialect.PostgreSQL);
+    if (!res.success || !res.ast) return [];
+    root = (Array.isArray(res.ast) ? res.ast[0] : res.ast) as Node | undefined;
   } catch {
     return [];
   }
+  if (!root || ast.getExprType(root) !== 'select') return []; // non-SELECT / unknown shape
 
-  const columns = stmt?.columns;
-  if (!Array.isArray(columns)) return []; // `SELECT *` and unknown shapes → no inference
+  const projection = (ast.getExprData(root) as { expressions?: unknown[] }).expressions;
+  if (!Array.isArray(projection)) return [];
 
   const out: InferredColumn[] = [];
-  for (const col of columns as Array<Record<string, unknown>>) {
-    const name = columnName(col);
+  for (const item of projection as Node[]) {
+    const itemType = ast.getExprType(item);
+
+    // Resolve the output column name + the value expression behind it.
+    let nameSrc: unknown;
+    let valueExpr: Node = item;
+    if (itemType === 'alias') {
+      const d = ast.getExprData(item) as Record<string, unknown>;
+      nameSrc = d.alias;
+      valueExpr = (d.this ?? d.expr ?? item) as Node;
+    } else if (itemType === 'column') {
+      nameSrc = (ast.getExprData(item) as Record<string, unknown>).name;
+    } else {
+      continue; // star / literal / unnamed projection → not a useful column
+    }
+
+    const name = identName(nameSrc);
     if (!name || name === '*') continue;
 
-    const expr = col.expr as Record<string, unknown> | undefined;
-    if (expr?.type === 'aggr_func') {
-      const fnName = typeof expr.name === 'string' ? expr.name : '';
-      const distinct =
-        (expr.args as Record<string, unknown> | undefined)?.distinct === 'DISTINCT';
-      out.push({ name, role: 'measure', reagg: reaggForAggregate(fnName, distinct) });
-    } else if (expr?.type === 'binary_expr' && expr.operator === '/') {
-      out.push({ name, role: 'measure', reagg: 'ratio' });
+    const valueType = ast.getExprType(valueExpr);
+    if (valueType === 'div') {
+      out.push({ name, role: 'measure', reagg: 'ratio' }); // a / b
+    } else if (AGG_TYPES.has(valueType)) {
+      const distinct = (ast.getExprData(valueExpr) as Record<string, unknown>).distinct === true;
+      out.push({ name, role: 'measure', reagg: reaggForAggregate(valueType, distinct) });
     } else {
       out.push({ name, role: 'dimension' });
     }

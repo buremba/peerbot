@@ -91,7 +91,6 @@
     "kysely-postgres-js": "^2.0.0",
     "marked": "^17.0.4",
     "marked-terminal": "^7.3.0",
-    "node-sql-parser": "^5.4.0",
     "open": "^10.1.0",
     "ora": "^8.0.1",
     "pino": "^10.1.0",

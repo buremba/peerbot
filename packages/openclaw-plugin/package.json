@@ -1,6 +1,6 @@
 {
 	"name": "@lobu/openclaw-plugin",
-	"version": "10.2.0",
+	"version": "11.0.0",
 	"description": "Lobu memory plugin for OpenClaw",
 	"type": "module",
 	"main": "dist/index.js",

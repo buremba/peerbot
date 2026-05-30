@@ -342,6 +342,18 @@ function validateEntityMetadataSchemaDisplayConfig(
   }
 }
 
+/**
+ * Reject an empty/whitespace `backing.sql`. TypeBox's `minLength: 1` is not
+ * enforced for this tool (it isn't in VALIDATED_TOOLS), so without this guard a
+ * caller could persist a "derived" type whose view is blank — unqueryable and
+ * with no inferable measures. `backing: null` (revert to stored) is fine.
+ */
+function assertValidBacking(backing: ManageEntitySchemaArgs['backing']): void {
+  if (backing && typeof backing.sql === 'string' && backing.sql.trim() === '') {
+    throw new Error('backing.sql cannot be empty');
+  }
+}
+
 async function getEntityCountsByType(organizationId: string): Promise<Map<number, number>> {
   const sql = getDb();
   const rows = await sql`
@@ -520,6 +532,7 @@ async function etHandleCreate(
   }
 
   validateEntityMetadataSchemaDisplayConfig(args.metadata_schema);
+  assertValidBacking(args.backing);
 
   // For a derived type, infer measure/dimension roles from the view's SELECT and
   // merge them into metadata_schema (author-declared x-measure/x-dimension win).
@@ -596,6 +609,7 @@ async function etHandleUpdate(
   if (args.metadata_schema !== undefined) {
     validateEntityMetadataSchemaDisplayConfig(args.metadata_schema);
   }
+  assertValidBacking(args.backing);
   // Keep metadata_schema's measure annotations consistent with the FINAL backing
   // state (after this update), reading the existing row when backing is unchanged:
   //   - setting/changing a derived view → infer over the new sql (declared wins)

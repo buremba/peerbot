@@ -56,4 +56,31 @@ describe('applyInferredMeasures', () => {
       (props.spend['x-measure'] as { inferred?: boolean }).inferred
     ).toBeUndefined();
   });
+
+  it('re-infers stale inferred annotations when the sql changes (round-trip robustness)', () => {
+    // Simulate a non-CLI caller re-sending a read-back schema (which carries
+    // server `inferred: true` annotations) alongside a CHANGED view.
+    const readBack = {
+      type: 'object',
+      properties: {
+        amt: { 'x-measure': { reagg: 'additive', inferred: true } }, // was SUM → now AVG
+        old_dim: { 'x-dimension': { inferred: true } }, // column dropped in new sql
+        note: { type: 'string', 'x-measure': { reagg: 'additive', inferred: true } }, // author key + stale inferred
+      },
+    };
+    const out = applyInferredMeasures(
+      readBack,
+      'SELECT AVG(x) AS amt, note FROM events GROUP BY note'
+    );
+    const props = out.properties as Record<string, Record<string, unknown>>;
+    // refreshed to the new sql, NOT frozen at the stale 'additive'
+    expect((props.amt['x-measure'] as { reagg: string }).reagg).toBe('ratio');
+    // a column the new sql no longer projects loses its stale annotation entirely
+    expect(props.old_dim).toBeUndefined();
+    // author-contributed keys survive; the stale inferred measure is replaced by
+    // the correct inferred dimension
+    expect(props.note.type).toBe('string');
+    expect(props.note['x-dimension']).toBeDefined();
+    expect(props.note['x-measure']).toBeUndefined();
+  });
 });

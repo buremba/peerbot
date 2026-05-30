@@ -154,6 +154,17 @@ describe('entity schema CRUD', () => {
       expect(got.entity_type?.backing_sql ?? null).toBeNull();
       await owner.entity_schema.deleteType('plain-thing');
     });
+
+    it('rejects an empty / whitespace backing.sql (no corrupt derived type)', async () => {
+      // TypeBox minLength isn't enforced for this tool, so the handler guards.
+      await expect(
+        owner.entity_schema.createType({
+          slug: 'blank-view',
+          name: 'Blank',
+          backing: { sql: '   ' },
+        })
+      ).rejects.toThrow(/backing\.sql cannot be empty/i);
+    });
   });
 
   describe('relationship_type', () => {

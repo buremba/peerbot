@@ -27,11 +27,14 @@ import { Dialect, ast, parse } from '@polyglot-sql/sdk';
 
 type Node = ast.Expression;
 
+// Must stay in sync with the CLI's `ReaggRule` (packages/cli/src/config/define.ts).
+// `semi_additive` is author-declarable only — inference never emits it.
 export type ReaggRule =
   | 'additive'
   | 'holistic'
   | 'ratio'
   | 'extremum'
+  | 'semi_additive'
   | 'non_additive';
 
 export interface InferredColumn {
@@ -157,6 +160,23 @@ export function applyInferredMeasures(
   const props: Record<string, unknown> = {
     ...((base.properties as Record<string, unknown>) ?? {}),
   };
+
+  // Drop any PRIOR server-inferred annotations so re-inference reflects the
+  // CURRENT sql. The CLI strips these before sending, but a caller that
+  // round-trips a read-back schema (which carries `inferred: true` annotations)
+  // alongside a changed view would otherwise freeze stale rules — or keep
+  // annotations for columns the new sql no longer projects. Author-declared
+  // annotations (no `inferred` flag) are left intact (declared wins, below).
+  for (const [name, raw] of Object.entries(props)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const prop = raw as Record<string, unknown>;
+    const m = prop['x-measure'] as Record<string, unknown> | undefined;
+    const d = prop['x-dimension'] as Record<string, unknown> | undefined;
+    if (m?.inferred !== true && d?.inferred !== true) continue;
+    const { 'x-measure': _m, 'x-dimension': _d, ...rest } = prop;
+    if (Object.keys(rest).length > 0) props[name] = rest;
+    else delete props[name];
+  }
 
   for (const col of inferColumns(backingSql)) {
     const existing = (props[col.name] as Record<string, unknown> | undefined) ?? {};

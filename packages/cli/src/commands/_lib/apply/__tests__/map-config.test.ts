@@ -221,6 +221,26 @@ describe("mapProjectToDesiredState", () => {
     expect(byKey.company?.backing).toBeUndefined();
   });
 
+  test("omits an empty grain: [] (would otherwise churn the diff)", () => {
+    const t = defineEntityType({
+      key: "t",
+      name: "T",
+      backing: {
+        sql: "SELECT semantic_type, COUNT(*) AS n FROM events GROUP BY 1",
+        grain: [],
+      },
+    });
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [], entities: [t] })
+    );
+    const mapped = state.memorySchema.entityTypes.find((e) => e.slug === "t");
+    // the server reads text[] back as absent, so `grain: []` must not be sent
+    expect(mapped?.backing).toEqual({
+      sql: "SELECT semantic_type, COUNT(*) AS n FROM events GROUP BY 1",
+    });
+    expect("grain" in (mapped?.backing ?? {})).toBe(false);
+  });
+
   test("carries prune into DesiredState (defaults false when unset)", () => {
     expect(mapProjectToDesiredState(defineConfig({ agents: [] })).prune).toBe(
       false

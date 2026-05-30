@@ -78,8 +78,9 @@ export interface EntityType {
   properties?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
   /**
-   * How rows come to exist. Omitted ⇒ `{ mode: "stored" }` (backward compatible —
-   * existing entity types are unchanged).
+   * Present only for DERIVED types — a read-only SQL view. Omitted ⇒ the type is
+   * stored (the default; rows are inserted/validated). Presence is the only
+   * discriminant; there is no separate `mode` field.
    */
   backing?: EntityBacking;
 }

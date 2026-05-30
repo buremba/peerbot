@@ -518,7 +518,11 @@ function mapEntityType(entity: EntityType): DesiredEntityType {
       ? {
           backing: {
             sql: entity.backing.sql,
-            ...(entity.backing.grain ? { grain: entity.backing.grain } : {}),
+            // `.length` (not truthiness): an empty `grain: []` must be omitted —
+            // the server reads text[] back as absent, so sending `[]` would churn.
+            ...(entity.backing.grain?.length
+              ? { grain: entity.backing.grain }
+              : {}),
             ...(entity.backing.source !== undefined
               ? { source: connectorKey(entity.backing.source) }
               : {}),

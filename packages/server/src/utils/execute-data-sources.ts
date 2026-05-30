@@ -71,6 +71,40 @@ function identName(value: unknown): string | null {
   return null;
 }
 
+/**
+ * Collect every schema-qualified table reference (`schema.table`) in the parsed
+ * tree by recursing the RAW AST node graph.
+ *
+ * Security-critical: org-scoping shadows UNQUALIFIED table names with CTEs, so a
+ * schema-qualified ref (`public.connections`, `pg_catalog.*`) bypasses scoping
+ * and reads every org's rows. polyglot's `getTables`/`walk`/`findByType` only
+ * surface the FIRST `FROM` table — they do NOT descend into JOINs or
+ * sub-selects — so a qualified table in a join or subquery would slip past a
+ * node-enumeration check. A raw recursion over the node graph is the only
+ * reliable way to see them all. A polyglot table-ref node is shaped
+ * `{ name, schema, catalog, ... }`; `schema` is null when unqualified.
+ */
+function collectSchemaQualifiedTables(root: unknown): string[] {
+  const seen = new Set<object>();
+  const hits: string[] = [];
+  const rec = (node: unknown, depth: number): void => {
+    if (!node || typeof node !== 'object' || depth > 50) return;
+    if (seen.has(node as object)) return;
+    seen.add(node as object);
+    if (Array.isArray(node)) {
+      for (const child of node) rec(child, depth + 1);
+      return;
+    }
+    const obj = node as Record<string, unknown>;
+    if (obj.schema != null && obj.name != null && Object.hasOwn(obj, 'catalog')) {
+      hits.push(`${identName(obj.schema) ?? '?'}.${identName(obj.name) ?? '?'}`);
+    }
+    for (const key of Object.keys(obj)) rec(obj[key], depth + 1);
+  };
+  rec(root, 0);
+  return hits;
+}
+
 // ============================================
 // SQL Parsing
 // ============================================
@@ -87,16 +121,13 @@ function extractTableRefs(query: string): string[] {
     throw new Error('Could not parse SQL query for table extraction');
   }
 
-  // Reject schema-qualified references — every table node carries a `schema`
-  // field (null when unqualified). CTE references are unqualified, so this only
-  // trips on real `schema.table` refs (public.user, pg_catalog.*, …).
-  for (const node of ast.getTables(root)) {
-    const data = ast.getExprData(node) as Record<string, unknown>;
-    if (data.schema) {
-      throw new Error(
-        `Schema-qualified table references are not allowed: ${identName(data.schema)}.${identName(data.name)}`
-      );
-    }
+  // Reject schema-qualified references anywhere in the tree (joins, subqueries,
+  // CTE bodies, UNION branches) — they bypass the org-scoping CTEs.
+  const qualified = collectSchemaQualifiedTables(root);
+  if (qualified.length > 0) {
+    throw new Error(
+      `Schema-qualified table references are not allowed: ${[...new Set(qualified)].join(', ')}`
+    );
   }
 
   // getTableNames returns the real referenced tables with user-defined CTE

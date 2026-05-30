@@ -92,33 +92,46 @@ describe('entity schema CRUD', () => {
           backing_sql?: string | null;
           backing_grain?: string[] | string | null;
           backing_source?: string | null;
+          metadata_schema?: { properties?: Record<string, Record<string, unknown>> } | null;
         };
       };
 
-      // create as a derived view
+      // create as a derived view (with aggregates → measures get inferred)
       await owner.entity_schema.createType({
         slug: 'spend-by-vendor',
         name: 'Spend by vendor',
         backing: {
-          sql: 'SELECT 1 AS company_id, 0::numeric AS total',
+          sql: 'SELECT company_id, currency, SUM(amount) AS total_spend, COUNT(DISTINCT u) AS users FROM events GROUP BY company_id, currency',
           grain: ['organization_id', 'connection_id', 'origin_id'],
         },
       });
       const created = (await owner.entity_schema.getType('spend-by-vendor')) as Got;
-      expect(created.entity_type?.backing_sql).toContain('SELECT 1');
+      expect(created.entity_type?.backing_sql).toContain('SUM(amount)');
       expect(toArr(created.entity_type?.backing_grain)).toEqual([
         'organization_id',
         'connection_id',
         'origin_id',
       ]);
+      // step-2 inference: aggregate columns become measures with a re-agg rule,
+      // grouping columns become dimensions.
+      const props = created.entity_type?.metadata_schema?.properties ?? {};
+      expect((props.total_spend?.['x-measure'] as { reagg?: string })?.reagg).toBe('additive');
+      expect((props.users?.['x-measure'] as { reagg?: string })?.reagg).toBe('holistic');
+      expect(props.company_id?.['x-dimension']).toBeDefined();
 
       // update the view sql
       await owner.entity_schema.updateType({
         slug: 'spend-by-vendor',
-        backing: { sql: 'SELECT 2 AS company_id, 0::numeric AS total' },
+        backing: { sql: 'SELECT company_id, AVG(amount) AS avg_spend FROM events GROUP BY company_id' },
       });
       const updated = (await owner.entity_schema.getType('spend-by-vendor')) as Got;
-      expect(updated.entity_type?.backing_sql).toContain('SELECT 2');
+      expect(updated.entity_type?.backing_sql).toContain('AVG(amount)');
+      // re-inferred on the new sql: AVG → ratio
+      expect(
+        (updated.entity_type?.metadata_schema?.properties?.avg_spend?.['x-measure'] as {
+          reagg?: string;
+        })?.reagg
+      ).toBe('ratio');
       // grain was not re-sent ⇒ cleared (backing is set as a unit)
       expect(toArr(updated.entity_type?.backing_grain)).toEqual([]);
 

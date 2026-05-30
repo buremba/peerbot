@@ -11,6 +11,7 @@
 import { type Static, Type } from '@sinclair/typebox';
 import type { AutoCreateWhenRule } from '@lobu/connector-sdk';
 import { type DbClient, getDb, pgTextArray } from '../../db/client';
+import { applyInferredMeasures } from '../../utils/infer-measures';
 import type { Env } from '../../index';
 import logger from '../../utils/logger';
 import { compileRulesMetadata, ruleHashFor } from '../../identity/rules';
@@ -520,7 +521,12 @@ async function etHandleCreate(
 
   validateEntityMetadataSchemaDisplayConfig(args.metadata_schema);
 
-  const metadataSchema = args.metadata_schema ? sql.json(args.metadata_schema) : null;
+  // For a derived type, infer measure/dimension roles from the view's SELECT and
+  // merge them into metadata_schema (author-declared x-measure/x-dimension win).
+  const effectiveSchema = args.backing?.sql
+    ? applyInferredMeasures(args.metadata_schema, args.backing.sql)
+    : args.metadata_schema;
+  const metadataSchema = effectiveSchema ? sql.json(effectiveSchema) : null;
   const eventKinds = args.event_kinds ? sql.json(args.event_kinds) : null;
 
   const inserted = await sql`
@@ -587,15 +593,16 @@ async function etHandleUpdate(
   const current = existing[0];
 
   const beforePayload = { ...current } as Record<string, unknown>;
-  const hasMetadataSchema = args.metadata_schema !== undefined;
-  if (hasMetadataSchema) {
+  if (args.metadata_schema !== undefined) {
     validateEntityMetadataSchemaDisplayConfig(args.metadata_schema);
   }
-  const metadataSchemaJson = hasMetadataSchema
-    ? args.metadata_schema
-      ? sql.json(args.metadata_schema)
-      : null
-    : null;
+  // Re-infer measures whenever the derived view SQL is (re)set, merging into
+  // any provided metadata_schema (author-declared annotations win).
+  const effectiveSchema = args.backing?.sql
+    ? applyInferredMeasures(args.metadata_schema, args.backing.sql)
+    : args.metadata_schema;
+  const hasMetadataSchema = effectiveSchema !== undefined;
+  const metadataSchemaJson = effectiveSchema ? sql.json(effectiveSchema) : null;
   const hasEventKinds = args.event_kinds !== undefined;
   const eventKindsJson = hasEventKinds && args.event_kinds ? sql.json(args.event_kinds) : null;
 

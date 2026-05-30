@@ -119,7 +119,7 @@ export const ManageEntitySchemaSchema = Type.Object({
   backing: Type.Optional(
     Type.Union([Type.Null(), BackingInputSchema], {
       description:
-        '[entity_type: create/update] Makes the type DERIVED — a read-only SQL view whose aggregate columns become measures. `{ sql, grain?, source? }` to set; `null` to clear (revert to a stored type); omit to leave unchanged.',
+        "[entity_type: create/update] Makes the type DERIVED — a read-only SQL view whose aggregate columns become measures. `{ sql, grain?, source? }` to set; `null` to clear (revert to a stored type); omit to leave unchanged. Read a derived type's rows by running its `backing_sql` (returned by `get`) through `query_sql`, which org-scopes the view; the inferred `x-measure` rules tell you how each measure rolls up to a coarser grain.",
     })
   ),
 

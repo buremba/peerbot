@@ -720,34 +720,41 @@ export async function createAuth(env: Env, request?: Request) {
 							console.error("[Auth] Failed to provision personal org:", error);
 						}
 
-						try {
-							if (!env.RESEND_API_KEY && runtimeNodeEnv !== "production") {
-								console.info(
-									{ email: user.email },
-									"[Auth] Development signup welcome email skipped (RESEND_API_KEY not configured)",
-								);
-								return;
-							}
-							await sendTransactionalEmail({
-								env,
-								to: user.email,
-								category: "auth",
-								subject: welcomeSubject,
-								react: (
-									<WelcomeEmail
-										name={user.name}
-										appUrl={resolveBaseUrl({
-											request: context?.request ?? undefined,
-										})}
-									/>
-								),
-							});
-						} catch (error) {
+						if (!env.RESEND_API_KEY && runtimeNodeEnv !== "production") {
+							console.info(
+								{ email: user.email },
+								"[Auth] Development signup welcome email skipped (RESEND_API_KEY not configured)",
+							);
+							return;
+						}
+						// Fire-and-forget: the welcome email hits an external API
+						// (Resend). Better Auth awaits user.create.after before
+						// completing signup, so awaiting the send blocks the signup
+						// response on an external HTTP call. On a busy single node that
+						// blocked request contends with the SPA's immediate
+						// /api/organizations fetch — observed pushing it to multi-second
+						// latency right after signup. The email is non-critical; send it
+						// in the background. (appUrl is resolved synchronously here, before
+						// the request context is torn down.)
+						void sendTransactionalEmail({
+							env,
+							to: user.email,
+							category: "auth",
+							subject: welcomeSubject,
+							react: (
+								<WelcomeEmail
+									name={user.name}
+									appUrl={resolveBaseUrl({
+										request: context?.request ?? undefined,
+									})}
+								/>
+							),
+						}).catch((error) => {
 							console.error(
 								"[Auth] Failed to send signup welcome email:",
 								error,
 							);
-						}
+						});
 					},
 				},
 			},

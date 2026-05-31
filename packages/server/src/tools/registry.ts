@@ -152,7 +152,7 @@ const TOOLS: ToolDefinition[] = [
   {
     name: 'query_sql',
     description:
-      'Run a paginated, sortable, searchable read-only SQL query. Table references auto-scope to the bound org. Do NOT include ORDER BY/LIMIT/OFFSET or positional parameters. Optional `org_slug` (OAuth on /mcp only) redirects the query to a different member org; rejected on /mcp/{slug} and on PAT auth.',
+      'Run a paginated, sortable, searchable read-only SQL query. Table references auto-scope to the bound org. The query is wrapped as a subquery, so inner ORDER BY / LIMIT / window functions are fine; pagination + sort come from the sort_by/limit/offset args. Do NOT use positional parameters ($1, $2, …). Optional `org_slug` (OAuth on /mcp only) redirects the query to a different member org; rejected on /mcp/{slug} and on PAT auth.',
     inputSchema: QuerySqlSchema,
     annotations: READ_ONLY,
     handler: querySql,

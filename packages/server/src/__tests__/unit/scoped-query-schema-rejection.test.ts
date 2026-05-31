@@ -53,6 +53,19 @@ describe('validateAndScopeQuery — schema-qualified table rejection', () => {
     });
   }
 
+  it('catches a deeply-nested schema-qualified ref (no recursion depth fail-open)', () => {
+    let sql = 'SELECT id FROM public.events';
+    for (let i = 0; i < 60; i++) sql = `SELECT id FROM (${sql}) AS _n${i}`;
+    expect(() => scope(sql)).toThrow(/schema-qualified/i);
+  });
+
+  it('rejects multiple statements (the org-scoping CTEs only wrap the first)', () => {
+    // The 2nd statement would otherwise run unscoped against public.oauth_tokens.
+    expect(() =>
+      scope('SELECT id FROM events; SELECT id FROM public.oauth_tokens')
+    ).toThrow();
+  });
+
   const clean: Array<[string, string]> = [
     ['plain', 'SELECT * FROM entities WHERE id > 0'],
     ['unqualified join', 'SELECT * FROM events ev JOIN entities en ON en.id = ANY(ev.entity_ids)'],

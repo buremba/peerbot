@@ -83,25 +83,30 @@ function identName(value: unknown): string | null {
  * node-enumeration check. A raw recursion over the node graph is the only
  * reliable way to see them all. A polyglot table-ref node is shaped
  * `{ name, schema, catalog, ... }`; `schema` is null when unqualified.
+ *
+ * Iterative (stack) traversal, NOT recursion: a recursion depth-cap would
+ * fail OPEN — a deeply-nested `public.oauth_tokens` past the cap would slip
+ * past and bypass scoping. The `seen` set bounds the walk on cyclic graphs.
  */
 function collectSchemaQualifiedTables(root: unknown): string[] {
   const seen = new Set<object>();
   const hits: string[] = [];
-  const rec = (node: unknown, depth: number): void => {
-    if (!node || typeof node !== 'object' || depth > 50) return;
-    if (seen.has(node as object)) return;
+  const stack: unknown[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node || typeof node !== 'object') continue;
+    if (seen.has(node as object)) continue;
     seen.add(node as object);
     if (Array.isArray(node)) {
-      for (const child of node) rec(child, depth + 1);
-      return;
+      for (const child of node) stack.push(child);
+      continue;
     }
     const obj = node as Record<string, unknown>;
     if (obj.schema != null && obj.name != null && Object.hasOwn(obj, 'catalog')) {
       hits.push(`${identName(obj.schema) ?? '?'}.${identName(obj.name) ?? '?'}`);
     }
-    for (const key of Object.keys(obj)) rec(obj[key], depth + 1);
-  };
-  rec(root, 0);
+    for (const key of Object.keys(obj)) stack.push(obj[key]);
+  }
   return hits;
 }
 
@@ -111,15 +116,21 @@ function collectSchemaQualifiedTables(root: unknown): string[] {
 
 /**
  * Extract all table references from a SQL query.
- * Rejects schema-qualified references (e.g. public.users, pg_catalog.pg_roles).
- * User-defined CTE names are excluded by polyglot's `getTableNames` so they
- * aren't treated as virtual tables.
+ * Rejects multiple statements and schema-qualified references — both bypass the
+ * org-scoping CTEs. User-defined CTE names are excluded by `getTableNames`.
  */
 function extractTableRefs(query: string): string[] {
-  const root = parseRoot(query);
-  if (!root) {
+  const res = parseSql(stripPlaceholders(query), Dialect.PostgreSQL);
+  if (!res.success || !res.ast) {
     throw new Error('Could not parse SQL query for table extraction');
   }
+  // Reject multiple statements: org-scoping CTEs only wrap the FIRST statement,
+  // so a trailing `; SELECT … FROM public.oauth_tokens` would run unscoped.
+  const statements = Array.isArray(res.ast) ? res.ast : [res.ast];
+  if (statements.length > 1) {
+    throw new Error('Multiple SQL statements are not allowed; provide a single query.');
+  }
+  const root = statements[0] as SqlNode;
 
   // Reject schema-qualified references anywhere in the tree (joins, subqueries,
   // CTE bodies, UNION branches) — they bypass the org-scoping CTEs.

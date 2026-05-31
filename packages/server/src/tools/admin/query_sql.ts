@@ -8,7 +8,11 @@
 
 import { type Static, Type } from '@sinclair/typebox';
 import { getDb } from '../../db/client';
-import { validateAndScopeQuery } from '../../utils/execute-data-sources';
+import {
+  RESTRICTED_QUERY_ROLE,
+  restrictedQueryRoleAvailable,
+  validateAndScopeQuery,
+} from '../../utils/execute-data-sources';
 import logger from '../../utils/logger';
 import { raceAbort } from '../../utils/race-abort';
 import { ADMIN_ONLY_QUERYABLE_TABLES, SAFE_COLUMN_DEFS } from '../../utils/table-schema';
@@ -238,6 +242,10 @@ export async function querySql(
 
   try {
     const sql = getDb();
+    // Defense-in-depth: a non-admin's query runs under the restricted DB role
+    // (when provisioned), so an auth/identity table that slips past the app gate
+    // hits a DB-level "permission denied". Admins keep full access.
+    const useRestrictedRole = !callerIsAdmin && (await restrictedQueryRoleAvailable(sql));
     // Race the DB transaction against the sandbox abort signal so the handler
     // returns promptly when the script times out. The 5s `statement_timeout`
     // is the actual hard cap on the postgres side (postgres.js doesn't expose
@@ -245,6 +253,7 @@ export async function querySql(
     const txPromise = sql.begin(async (tx: typeof sql) => {
       await tx`SET TRANSACTION READ ONLY`;
       await tx`SET LOCAL statement_timeout = '5s'`;
+      if (useRestrictedRole) await tx.unsafe(`SET LOCAL ROLE ${RESTRICTED_QUERY_ROLE}`);
       const cnt = await tx.unsafe(countSql, params);
       const data = await tx.unsafe(dataSql, params);
       return [cnt, data] as const;

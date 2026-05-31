@@ -719,3 +719,36 @@ export async function executeDataSources(
 
   return results;
 }
+
+// ============================================
+// Restricted-role backstop
+// ============================================
+
+/**
+ * Read-only backstop role for member-accessible query_sql / metric_series.
+ * Non-admins run their (org-scoped, app-gated) SQL under this role so a parser
+ * hole that reaches an auth/identity table hits a DB-level "permission denied"
+ * instead of leaking. Provisioned by 20260531130000_restricted_query_role.sql.
+ */
+export const RESTRICTED_QUERY_ROLE = 'lobu_query_restricted';
+
+let restrictedRolePromise: Promise<boolean> | null = null;
+
+/**
+ * Whether {@link RESTRICTED_QUERY_ROLE} exists in this database. Cached
+ * per-process — role existence is a DB-global fact, identical across replicas,
+ * and the role is created by migration before the app serves traffic. When the
+ * role is absent (e.g. a managed cluster where the app user lacks CREATEROLE,
+ * so the migration's CREATE ROLE no-op'd), callers fall back to the app-layer
+ * admin gate alone — no member query breaks.
+ */
+export function restrictedQueryRoleAvailable(db: DbClient): Promise<boolean> {
+  if (!restrictedRolePromise) {
+    restrictedRolePromise = Promise.resolve(
+      db`SELECT 1 FROM pg_roles WHERE rolname = ${RESTRICTED_QUERY_ROLE}`
+    )
+      .then((rows) => Array.isArray(rows) && rows.length > 0)
+      .catch(() => false);
+  }
+  return restrictedRolePromise;
+}

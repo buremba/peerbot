@@ -13,7 +13,11 @@
  */
 
 import { describe, expect, it } from 'bun:test';
-import { validateAndScopeQuery } from '../../utils/execute-data-sources';
+import {
+  isReadQuery,
+  stripLeadingComments,
+  validateAndScopeQuery,
+} from '../../utils/execute-data-sources';
 import { ADMIN_ONLY_QUERYABLE_TABLES, SAFE_COLUMN_DEFS } from '../../utils/table-schema';
 
 const scope = (sql: string) =>
@@ -272,5 +276,29 @@ describe('validateAndScopeQuery — ORDER BY/GROUP BY alias + leading-comment WI
     const out = scopeAsMember('-- note\nWITH recent AS (SELECT id FROM events) SELECT * FROM recent');
     expect((out.sql.match(/\bWITH\b/gi) || []).length).toBe(1);
     expect(out.sql).toMatch(/"events"\s+AS\s+\(/i);
+  });
+});
+
+/**
+ * The read-query prefix guard strips leading comments with a LINEAR scan, not a
+ * nested-quantifier regex (which backtracks catastrophically — a ReDoS, since
+ * this runs on member-supplied SQL). Guards against reintroducing that.
+ */
+describe('isReadQuery / stripLeadingComments (ReDoS-safe)', () => {
+  it('strips leading line + block comments before the SELECT/WITH check', () => {
+    expect(isReadQuery('-- note\nSELECT 1')).toBe(true);
+    expect(isReadQuery('/* a */ /* b */ WITH x AS (SELECT 1) SELECT * FROM x')).toBe(true);
+    expect(isReadQuery('  \n  SELECT 1')).toBe(true);
+    expect(isReadQuery('DELETE FROM events')).toBe(false);
+    expect(isReadQuery('TABLE events')).toBe(false);
+    expect(stripLeadingComments('-- x\n/* y */  SELECT 1')).toBe('SELECT 1');
+    // unterminated comment → consumes to EOF (no match, fail-closed)
+    expect(isReadQuery('/* unclosed SELECT 1')).toBe(false);
+  });
+
+  it('handles pathological unclosed-comment input in linear time (no catastrophic backtracking)', () => {
+    const start = Date.now();
+    expect(isReadQuery(`${'/*'.repeat(100_000)} SELECT 1`)).toBe(false);
+    expect(Date.now() - start).toBeLessThan(1000); // a backtracking regex would hang
   });
 });

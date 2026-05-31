@@ -21,7 +21,7 @@
 
 import { type Static, Type } from '@sinclair/typebox';
 import { getDb } from '../../db/client';
-import { validateAndScopeQuery } from '../../utils/execute-data-sources';
+import { isReadQuery, validateAndScopeQuery } from '../../utils/execute-data-sources';
 import { ADMIN_ONLY_QUERYABLE_TABLES, SAFE_COLUMN_DEFS } from '../../utils/table-schema';
 import { ToolUserError } from '../../utils/errors';
 import logger from '../../utils/logger';
@@ -44,11 +44,6 @@ const STATEMENT_TIMEOUT_MS = 5000;
 // megabytes back to the client.
 const MAX_ROWS = 2000;
 
-// Only SELECT or WITH … SELECT are valid metric queries. Catches DML/DDL
-// prefixes (INSERT/UPDATE/DELETE/TRUNCATE/COPY/CREATE/DROP/ALTER/GRANT/
-// REVOKE/VACUUM/ANALYZE/EXPLAIN/SET/RESET/LOCK/CALL/DO/…) before they hit
-// the heavier AST validator.
-const SELECT_OR_WITH = /^\s*(?:--[^\n]*\n\s*|\/\*[\s\S]*?\*\/\s*)*(SELECT|WITH)\b/i;
 
 export interface MetricSeriesResult {
   columns: string[];
@@ -65,7 +60,7 @@ export async function metricSeries(
     throw new Error('metric_series: caller must be scoped to an organization');
   }
 
-  if (!SELECT_OR_WITH.test(args.sql)) {
+  if (!isReadQuery(args.sql)) {
     throw new ToolUserError('metric_series: only SELECT or WITH … SELECT queries are accepted');
   }
 

@@ -172,11 +172,38 @@ function collectCteNames(root: unknown): Set<string> {
   return names;
 }
 
-// Only SELECT / WITH … SELECT are valid. Rejects DML/DDL prefixes AND PostgreSQL's
-// `TABLE <name>` shorthand (≡ SELECT * FROM <name>) — polyglot mis-parses the
-// latter as a column, so it yields no table refs and would otherwise pass through
-// unscoped. Mirrors the guard metric_series already has.
-const SELECT_OR_WITH = /^\s*(?:--[^\n]*\n\s*|\/\*[\s\S]*?\*\/\s*)*(SELECT|WITH)\b/i;
+/**
+ * Strip leading whitespace + SQL comments (line `--…` and block `/* … *​/`) with
+ * a single linear scan. Deliberately NOT a regex: a comment-stripping regex with
+ * nested quantifiers (`(?:--…|/*…*​/)*`) backtracks catastrophically on crafted
+ * input (e.g. many unclosed `/*`) — a ReDoS DoS, since this runs on member SQL.
+ */
+export function stripLeadingComments(sql: string): string {
+  const n = sql.length;
+  let i = 0;
+  for (;;) {
+    while (i < n && /\s/.test(sql[i])) i++;
+    if (sql.startsWith('--', i)) {
+      const nl = sql.indexOf('\n', i);
+      if (nl === -1) return '';
+      i = nl + 1;
+    } else if (sql.startsWith('/*', i)) {
+      const end = sql.indexOf('*/', i);
+      if (end === -1) return '';
+      i = end + 2;
+    } else {
+      return sql.slice(i);
+    }
+  }
+}
+
+// A read query is SELECT or WITH … SELECT, after any leading comments. Rejects
+// DML/DDL prefixes AND PostgreSQL's `TABLE <name>` shorthand (≡ SELECT * FROM
+// <name>) — polyglot mis-parses the latter as a column, so it yields no table
+// refs and would otherwise pass through unscoped.
+export function isReadQuery(sql: string): boolean {
+  return /^(SELECT|WITH)\b/i.test(stripLeadingComments(sql));
+}
 
 // ============================================
 // SQL Parsing
@@ -287,7 +314,7 @@ export function validateAndScopeQuery(
   // column, so it would yield zero table refs and pass through UNSCOPED and
   // past the admin-table gate. The gate below is fail-closed regardless, but
   // rejecting the shorthand outright keeps the contract obvious.
-  if (!SELECT_OR_WITH.test(trimmed)) {
+  if (!isReadQuery(trimmed)) {
     throw new Error('Only SELECT / WITH queries are allowed.');
   }
 
@@ -549,9 +576,7 @@ function buildScopedQuery(
   // `-- note\nWITH x AS (…) …` query is still a WITH, and prepending a second
   // WITH keyword would emit invalid SQL (`WITH … \n -- note \n WITH x …`).
   // Comments are cosmetic, so dropping the leading ones is safe.
-  const body = processedQuery
-    .replace(/^(?:\s*--[^\n]*\n|\s*\/\*[\s\S]*?\*\/)+/, '')
-    .trim();
+  const body = stripLeadingComments(processedQuery).trim();
 
   // If the user query is itself a WITH, splice our CTEs in front of its CTE list
   // (single WITH keyword); otherwise prepend our WITH block.

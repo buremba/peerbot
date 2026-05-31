@@ -18,7 +18,7 @@ import type { ToolContext } from '../registry';
 export const QuerySqlSchema = Type.Object({
   sql: Type.String({
     description:
-      'Base SELECT query. Table references are auto-scoped to your organization. Do NOT include ORDER BY, LIMIT, or OFFSET — they are added automatically.',
+      'Base SELECT query. Table references are auto-scoped to your organization. It is wrapped as a subquery, so ORDER BY / LIMIT / window functions inside it are fine; pagination + sort are added on the outside via sort_by/limit/offset.',
   }),
   org_slug: Type.Optional(
     Type.String({

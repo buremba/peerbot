@@ -34,7 +34,7 @@ export interface EntitySchemaNamespace {
     metadata_schema?: Record<string, unknown>;
     event_kinds?: Record<string, unknown>;
     /** Make the type derived (a SQL view); `null`/omit ⇒ a stored type. */
-    backing?: { sql: string; grain?: string[]; source?: string } | null;
+    backing?: { sql: string } | null;
   }): Promise<unknown>;
   updateType(input: {
     slug: string;
@@ -45,7 +45,7 @@ export interface EntitySchemaNamespace {
     metadata_schema?: Record<string, unknown>;
     event_kinds?: Record<string, unknown>;
     /** Set/clear the derived view; omit to leave backing unchanged. */
-    backing?: { sql: string; grain?: string[]; source?: string } | null;
+    backing?: { sql: string } | null;
   }): Promise<unknown>;
   deleteType(slug: string): Promise<unknown>;
   auditType(slug: string): Promise<unknown>;

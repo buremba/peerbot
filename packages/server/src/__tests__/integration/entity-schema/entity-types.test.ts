@@ -79,69 +79,47 @@ describe('entity schema CRUD', () => {
       await owner.entity_schema.deleteType('lst-asset');
     });
 
-    it('round-trips a derived backing (sql + grain) and reverts to stored', async () => {
-      // postgres.js may return text[] as a JS array or the raw "{a,b}" literal.
-      const toArr = (v: unknown): string[] =>
-        Array.isArray(v)
-          ? (v as string[])
-          : typeof v === 'string'
-            ? v.replace(/^\{|\}$/g, '').split(',').filter(Boolean)
-            : [];
+    it('round-trips a derived backing (sql) and reverts to stored', async () => {
       type Got = {
         entity_type?: {
           backing_sql?: string | null;
-          backing_grain?: string[] | string | null;
-          backing_source?: string | null;
+          measure_columns?: string[];
           metadata_schema?: { properties?: Record<string, Record<string, unknown>> } | null;
         };
       };
 
-      // create as a derived view (with aggregates → measures get inferred)
       await owner.entity_schema.createType({
         slug: 'spend-by-vendor',
         name: 'Spend by vendor',
         backing: {
           sql: 'SELECT company_id, currency, SUM(amount) AS total_spend, COUNT(DISTINCT u) AS users FROM events GROUP BY company_id, currency',
-          grain: ['organization_id', 'connection_id', 'origin_id'],
         },
       });
       const created = (await owner.entity_schema.getType('spend-by-vendor')) as Got;
       expect(created.entity_type?.backing_sql).toContain('SUM(amount)');
-      expect(toArr(created.entity_type?.backing_grain)).toEqual([
-        'organization_id',
-        'connection_id',
-        'origin_id',
+      // Measure columns are classified ON READ (not persisted into metadata_schema).
+      expect((created.entity_type?.measure_columns ?? []).sort()).toEqual([
+        'total_spend',
+        'users',
       ]);
-      // step-2 inference: aggregate columns become measures with a re-agg rule,
-      // grouping columns become dimensions.
+      // No inferred annotations are persisted — metadata_schema stays as authored.
       const props = created.entity_type?.metadata_schema?.properties ?? {};
-      expect((props.total_spend?.['x-measure'] as { reagg?: string })?.reagg).toBe('additive');
-      expect((props.users?.['x-measure'] as { reagg?: string })?.reagg).toBe('holistic');
-      expect(props.company_id?.['x-dimension']).toBeDefined();
+      expect(props.total_spend).toBeUndefined();
 
-      // update the view sql
+      // update the view sql → backing_sql changes, measure_columns recompute
       await owner.entity_schema.updateType({
         slug: 'spend-by-vendor',
         backing: { sql: 'SELECT company_id, AVG(amount) AS avg_spend FROM events GROUP BY company_id' },
       });
       const updated = (await owner.entity_schema.getType('spend-by-vendor')) as Got;
       expect(updated.entity_type?.backing_sql).toContain('AVG(amount)');
-      // re-inferred on the new sql: AVG → ratio
-      expect(
-        (updated.entity_type?.metadata_schema?.properties?.avg_spend?.['x-measure'] as {
-          reagg?: string;
-        })?.reagg
-      ).toBe('ratio');
-      // grain was not re-sent ⇒ cleared (backing is set as a unit)
-      expect(toArr(updated.entity_type?.backing_grain)).toEqual([]);
+      expect(updated.entity_type?.measure_columns).toEqual(['avg_spend']);
 
-      // revert to stored: backing = null clears the view AND the derived-only
-      // measure annotations (they're meaningless on a stored type).
+      // revert to stored: backing = null clears the view; no measure_columns.
       await owner.entity_schema.updateType({ slug: 'spend-by-vendor', backing: null });
       const reverted = (await owner.entity_schema.getType('spend-by-vendor')) as Got;
       expect(reverted.entity_type?.backing_sql ?? null).toBeNull();
-      const revProps = reverted.entity_type?.metadata_schema?.properties ?? {};
-      expect(revProps.avg_spend?.['x-measure']).toBeUndefined();
+      expect(reverted.entity_type?.measure_columns ?? []).toEqual([]);
 
       await owner.entity_schema.deleteType('spend-by-vendor');
     });

@@ -246,8 +246,8 @@ export async function createEntity(
   // visibility flips to admins; long-term the right fix is either an
   // explicit `is_catalog` flag on `organization` or per-agent `uses_catalog`
   // declarations narrowing the search scope.
-  const typeRow = await sql<{ id: number }>`
-    SELECT et.id
+  const typeRow = await sql<{ id: number; backing_sql: string | null }>`
+    SELECT et.id, et.backing_sql
     FROM entity_types et
     LEFT JOIN organization o ON o.id = et.organization_id
     WHERE et.slug = ${data.entity_type}
@@ -262,6 +262,15 @@ export async function createEntity(
   if (typeRow.length === 0) {
     throw new ToolUserError(
       `Unknown entity type '${data.entity_type}'. Use manage_entity_schema(schema_type="entity_type", action="list") to list available types or create a custom type first.`,
+      400
+    );
+  }
+  // A derived (view-backed) type has no stored rows — its data is its backing_sql
+  // view. Reject inserts here (the single chokepoint; covers tenant + public
+  // catalog types) so a row the view ignores can't be orphaned.
+  if (typeRow[0].backing_sql) {
+    throw new ToolUserError(
+      `Entity type '${data.entity_type}' is derived (a SQL view) and has no stored rows. Edit its backing view instead of creating entities.`,
       400
     );
   }

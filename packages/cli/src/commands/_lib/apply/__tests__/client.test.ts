@@ -184,7 +184,6 @@ describe("ApplyClient — prune", () => {
       slug: "subscription",
       backing: {
         sql: "SELECT company_id, SUM(amount) AS spend FROM events GROUP BY company_id",
-        grain: ["organization_id", "connection_id", "origin_id"],
       },
     });
 
@@ -195,17 +194,15 @@ describe("ApplyClient — prune", () => {
     expect(body.action).toBe("create");
     expect(body.backing).toEqual({
       sql: "SELECT company_id, SUM(amount) AS spend FROM events GROUP BY company_id",
-      grain: ["organization_id", "connection_id", "origin_id"],
     });
   });
 
-  test("listEntityTypes normalizes a text[] backing_grain literal to an array (no diff churn)", async () => {
+  test("listEntityTypes hoists backing_sql to a { sql } backing (derived type)", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new ApplyClient(
       { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
       (async (url, init) => {
         calls.push({ url: String(url), init });
-        // Postgres text[] often round-trips as the raw literal "{a,b,c}".
         return new Response(
           JSON.stringify({
             entity_types: [
@@ -213,7 +210,6 @@ describe("ApplyClient — prune", () => {
                 slug: "subscription",
                 metadata_schema: { type: "object", properties: {} },
                 backing_sql: "SELECT 1 AS x",
-                backing_grain: "{organization_id,connection_id,origin_id}",
               },
             ],
           }),
@@ -223,12 +219,7 @@ describe("ApplyClient — prune", () => {
     );
 
     const types = await client.listEntityTypes();
-    // normalized to an array so it compares equal to the config's array (else
-    // a derived type churns `backing` on every apply).
-    expect(types[0]?.backing).toEqual({
-      sql: "SELECT 1 AS x",
-      grain: ["organization_id", "connection_id", "origin_id"],
-    });
+    expect(types[0]?.backing).toEqual({ sql: "SELECT 1 AS x" });
   });
 
   test("upsertEntityType POSTs backing:null for a stored type", async () => {

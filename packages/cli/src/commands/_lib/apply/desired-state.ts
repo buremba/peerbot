@@ -50,8 +50,6 @@ export interface DesiredEntityType {
    */
   backing?: {
     sql: string;
-    grain?: string[];
-    source?: string;
   };
 }
 

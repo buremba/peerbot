@@ -454,23 +454,8 @@ async function handleCreate(
     throw new Error('name is required for create action');
   }
 
-  // A derived (view-backed) entity type has NO stored rows — its data is its
-  // `backing_sql` view. Inserting an `entities` row here would be silently
-  // ignored by the view, so reject it (the UI hides the affordance; this guards
-  // the API/SDK path too).
-  const derivedCheck = await getDb()`
-    SELECT 1 FROM entity_types
-    WHERE slug = ${args.entity_type}
-      AND organization_id = ${ctx.organizationId}
-      AND deleted_at IS NULL
-      AND backing_sql IS NOT NULL
-    LIMIT 1
-  `;
-  if (derivedCheck.length > 0) {
-    throw new Error(
-      `Entity type '${args.entity_type}' is derived (a SQL view) and has no stored rows. Edit its backing view instead of creating entities.`
-    );
-  }
+  // (Derived-type rejection lives in createEntity — the single chokepoint that
+  // also resolves public-catalog types.)
 
   // Validate metadata against entity type's JSON schema (if defined)
   if (args.metadata && Object.keys(args.metadata).length > 0) {

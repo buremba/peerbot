@@ -2,24 +2,17 @@
 
 -- Derived (SQL-view-backed) entity types. Today every entity type is "stored"
 -- (rows are inserted/validated against metadata_schema). A "derived" entity type
--- is instead a read-only SQL view over other relations (events, other entities,
--- or — later — an external SQL source); its aggregate columns become measures.
+-- is instead a read-only SQL view over other relations (events, other entities);
+-- it has no stored rows — its data comes from running backing_sql via query_sql.
 --
--- Decision B: typed first-class columns (not a metadata jsonb blob) so apply can
--- diff them and query_sql/metric paths can read them without parsing. There is NO
--- separate mode column — a type is derived iff backing_sql IS NOT NULL.
---   backing_sql    — the ANSI SELECT for a derived view (NULL ⇒ stored)
---   backing_grain  — canonical-fact key; NULL means the default
---                    (organization_id, connection_id, origin_id) for embedded-events views
---   backing_source — connection key the view reads from; NULL means the embedded events store
+-- Decision B: a typed first-class column (not a metadata jsonb blob) so apply can
+-- diff it and the read path can read it without parsing. There is NO separate mode
+-- column — a type is derived iff backing_sql IS NOT NULL. Measure/dimension roles
+-- are classified ON READ from backing_sql, not persisted.
 --
--- Idempotent: no-op on databases that already have the columns.
+-- Idempotent: no-op on databases that already have the column.
 ALTER TABLE public.entity_types ADD COLUMN IF NOT EXISTS backing_sql text;
-ALTER TABLE public.entity_types ADD COLUMN IF NOT EXISTS backing_grain text[];
-ALTER TABLE public.entity_types ADD COLUMN IF NOT EXISTS backing_source text;
 
 -- migrate:down
 
-ALTER TABLE public.entity_types DROP COLUMN IF EXISTS backing_source;
-ALTER TABLE public.entity_types DROP COLUMN IF EXISTS backing_grain;
 ALTER TABLE public.entity_types DROP COLUMN IF EXISTS backing_sql;

@@ -53,18 +53,12 @@ describe('derived entity read path (reuse query_sql)', () => {
       backing: { sql },
     });
 
-    // Inference classifies the jsonb columns: vendor → dimension, the SUM →
-    // additive measure, COUNT(*) → additive measure.
+    // Measure columns are classified ON READ: the SUM + COUNT(*) are measures,
+    // the jsonb-extracted `vendor` is a dimension.
     const got = (await owner.entity_schema.getType('spend-by-vendor')) as {
-      entity_type?: {
-        backing_sql?: string | null;
-        metadata_schema?: { properties?: Record<string, Record<string, unknown>> };
-      };
+      entity_type?: { backing_sql?: string | null; measure_columns?: string[] };
     };
-    const props = got.entity_type?.metadata_schema?.properties ?? {};
-    expect(props.vendor?.['x-dimension']).toBeDefined();
-    expect((props.total_spend?.['x-measure'] as { reagg?: string })?.reagg).toBe('additive');
-    expect((props.purchases?.['x-measure'] as { reagg?: string })?.reagg).toBe('additive');
+    expect((got.entity_type?.measure_columns ?? []).sort()).toEqual(['purchases', 'total_spend']);
 
     // 2 purchases in org A + 1 in org B (same vendor). Org B must be excluded.
     await createTestEvent({ organization_id: orgAId, content: 'a1', metadata: { vendor: 'acme', amount: '10' } });

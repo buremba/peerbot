@@ -27,38 +27,17 @@ export type ConnectorRef = string | ConnectorClass;
 
 /**
  * Makes an entity type **derived**: its rows are a read-only SQL view over other
- * relations (events, other entities, or — later — an external SQL source) instead
- * of inserted/validated rows. Aggregate columns in the SELECT become measures; the
- * rest are dimensions.
+ * relations (events, other entities) instead of inserted/validated rows.
  *
  * Presence is the discriminant: an entity type with `backing` is derived; without
  * it, it is **stored** (the default — a curated entity like a Company or a
  * hand-named Trip). There is no separate `mode` field — "derived" just means
- * "has a view".
- *
- * Forward-compat seam: every source (the embedded events store today, external SQL
- * warehouses later) is modeled uniformly as a relation a derived view reads from.
- * `source` names that connection. Only the embedded source is implemented now;
- * external SQL sources attach behind the same contract without changing this shape.
+ * "has a view". Read a derived type's rows by running its SQL through `query_sql`;
+ * measure vs. dimension columns are classified on read (not declared here).
  */
 export interface EntityBacking {
-  /** ANSI SELECT over other relations. Aggregate columns become measures. */
+  /** ANSI SELECT over other relations (events, entities, …). */
   sql: string;
-  /**
-   * Canonical-fact key: the columns that uniquely identify one fact in the
-   * source. Lets the engine treat SUM/COUNT as additive (safe to roll up),
-   * because the source is already deduped on this key. Defaults to
-   * `["organization_id", "connection_id", "origin_id"]` for embedded-events
-   * views (the key ingest dedupes on). Absent + undefaultable ⇒ measures are
-   * treated as non-additive (the engine refuses to silently roll them up).
-   */
-  grain?: string[];
-  /**
-   * Seam: the connection this view reads from. Defaults to the embedded events
-   * store. External SQL sources (warehouses) attach here later via push-down;
-   * only the embedded source is implemented today.
-   */
-  source?: ConnectorRef;
 }
 
 export interface EntityType {
@@ -69,72 +48,19 @@ export interface EntityType {
   description?: string;
   /** Required property names for the entity's metadata. */
   required?: string[];
-  /**
-   * JSON Schema properties for the entity's metadata. Property-level extensions
-   * carry semantic-layer metadata via the established `x-` convention: `x-measure`
-   * (see {@link measure}) and `x-dimension` (see {@link dimension}), alongside the
-   * existing `x-table-column` / `x-table-label`.
-   */
+  /** JSON Schema properties for the entity's metadata. */
   properties?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
   /**
-   * Present only for DERIVED types — a read-only SQL view. Omitted ⇒ the type is
-   * stored (the default; rows are inserted/validated). Presence is the only
-   * discriminant; there is no separate `mode` field.
+   * Present only for DERIVED types — a read-only SQL view (`{ sql }`). Omitted ⇒
+   * the type is stored (the default; rows are inserted/validated). Presence is
+   * the only discriminant; there is no separate `mode` field.
    */
   backing?: EntityBacking;
 }
 
 export function defineEntityType(config: Omit<EntityType, "kind">): EntityType {
   return { ...config, kind: "entityType" };
-}
-
-// ---------------------------------------------------------------------------
-// Measures & dimensions (semantic layer)
-//
-// A measure is NOT a separate primitive — it is a column of a derived entity's
-// SELECT playing the measure role, plus a re-aggregation rule. Aggregate columns
-// are inferred as measures at apply time; these helpers attach explicit overrides
-// (and the cases inference cannot decide: ratios, semi-additive, holistic) onto a
-// property via the `x-` convention.
-// ---------------------------------------------------------------------------
-
-/**
- * How a measure re-aggregates when the query grouping/grain changes.
- * - `additive`      — re-sum across groups (SUM/COUNT over a grain-guaranteed source). Default.
- * - `holistic`      — non-decomposable (COUNT DISTINCT, MEDIAN, PERCENTILE); recompute from base.
- * - `ratio`         — recompute numerator/denominator at the new grain; never average ratios.
- * - `extremum`      — MIN/MAX at any grain (non-additive over every dimension).
- * - `semi_additive` — additive over some dimensions, not over time (e.g. a balance: take latest).
- * - `non_additive`  — cannot be rolled up; only valid at its declared grain.
- */
-export type ReaggRule =
-  | "additive"
-  | "holistic"
-  | "ratio"
-  | "extremum"
-  | "semi_additive"
-  | "non_additive";
-
-export interface MeasureAnnotation {
-  /** Re-aggregation rule. Defaults to `additive` (trusted only over a grain-guaranteed source). */
-  reagg?: ReaggRule;
-  /** Ratio numerator measure name (required when `reagg: "ratio"`). */
-  numerator?: string;
-  /** Ratio denominator measure name (required when `reagg: "ratio"`). */
-  denominator?: string;
-}
-
-/** Annotate a derived entity's property as a measure. Compiles to the `x-measure` extension. */
-export function measure(
-  annotation: MeasureAnnotation = {}
-): Record<string, unknown> {
-  return { "x-measure": annotation };
-}
-
-/** Mark a derived entity's property as an explicit dimension. Compiles to the `x-dimension` extension. */
-export function dimension(): Record<string, unknown> {
-  return { "x-dimension": {} };
 }
 
 export interface RelationshipType {

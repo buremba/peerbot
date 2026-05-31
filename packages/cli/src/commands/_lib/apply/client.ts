@@ -31,8 +31,6 @@ export interface RemoteEntityType {
   /** Present only for derived types (mirrors {@link DesiredEntityType.backing}). */
   backing?: {
     sql: string;
-    grain?: string[];
-    source?: string;
   };
   /**
    * Owning org id. The list endpoint also returns *public* types from OTHER
@@ -193,28 +191,10 @@ function pickArray<T>(body: Record<string, unknown>, ...keys: string[]): T[] {
  * `metadata_schema` to the row's top level. Mirrors `upsertEntityType`, which
  * folds the flat fields back into `metadata_schema` when writing.
  */
-/**
- * `backing_grain` is a Postgres `text[]` column; depending on the driver it
- * comes back either as a JS array or as the raw array literal `"{a,b,c}"`.
- * Normalize to `string[]` so the diff compares it against the config's array
- * (otherwise a derived type churns forever on `backing`).
- */
-function normalizeGrain(raw: unknown): string[] | undefined {
-  if (Array.isArray(raw))
-    return raw.filter((v): v is string => typeof v === "string");
-  if (typeof raw === "string") {
-    const inner = raw.replace(/^\{|\}$/g, "");
-    return inner ? inner.split(",").map((s) => s.replace(/^"|"$/g, "")) : [];
-  }
-  return undefined;
-}
-
 function hoistEntityTypeSchema(
   row: RemoteEntityType & {
     metadata_schema?: unknown;
     backing_sql?: string | null;
-    backing_grain?: string[] | string | null;
-    backing_source?: string | null;
   }
 ): RemoteEntityType {
   const schema = row.metadata_schema;
@@ -238,12 +218,7 @@ function hoistEntityTypeSchema(
   // A type is derived iff it has view SQL; stored types carry no backing, so it
   // compares equal to the desired side without churn.
   if (typeof row.backing_sql === "string") {
-    const grain = normalizeGrain(row.backing_grain);
-    out.backing = {
-      sql: row.backing_sql,
-      ...(grain && grain.length > 0 ? { grain } : {}),
-      ...(row.backing_source ? { source: row.backing_source } : {}),
-    };
+    out.backing = { sql: row.backing_sql };
   }
   return out;
 }
@@ -529,8 +504,6 @@ export class ApplyClient {
     type RawEntityTypeRow = RemoteEntityType & {
       metadata_schema?: unknown;
       backing_sql?: string | null;
-      backing_grain?: string[] | string | null;
-      backing_source?: string | null;
     };
     const { body } = await this.request<{
       entity_types?: RawEntityTypeRow[];
@@ -587,8 +560,6 @@ export class ApplyClient {
     properties?: Record<string, unknown>;
     backing?: {
       sql: string;
-      grain?: string[];
-      source?: string;
     };
   }): Promise<UpsertEntityTypeResult> {
     // The server stores per-type fields as a single `metadata_schema` JSON
@@ -607,16 +578,10 @@ export class ApplyClient {
         ...(required && required.length > 0 ? { required } : {}),
       };
     }
-    // Backing is sent on every upsert so it is deterministic: an object makes
+    // Backing is sent on every upsert so it is deterministic: `{ sql }` makes
     // the type derived; `null` makes it stored (and reverts a previously-derived
-    // type). One key, mirroring the SDK's `backing`.
-    payload.backing = backing
-      ? {
-          sql: backing.sql,
-          ...(backing.grain ? { grain: backing.grain } : {}),
-          ...(backing.source ? { source: backing.source } : {}),
-        }
-      : null;
+    // type).
+    payload.backing = backing ? { sql: backing.sql } : null;
     return this.upsertSchemaResource("entity_type", payload);
   }
 

@@ -26,9 +26,11 @@ export const QuerySqlSchema = Type.Object({
         'Optional. Only honored on the unscoped `/mcp` endpoint with OAuth auth. Rejected for PAT auth, browser-session auth, and scoped `/mcp/{slug}` connections — re-connect to the target workspace instead.',
     })
   ),
-  sort_by: Type.String({
-    description: 'Column name to sort by.',
-  }),
+  sort_by: Type.Optional(
+    Type.String({
+      description: 'Column name to sort by. Omit to return rows unordered (e.g. a view whose columns you don\'t know upfront).',
+    })
+  ),
   sort_order: Type.Optional(
     Type.Union([Type.Literal('asc'), Type.Literal('desc')], {
       description: 'Sort direction. Default: asc.',
@@ -68,7 +70,6 @@ interface QuerySqlResult {
   error?: string;
 }
 
-const TRAILING_CLAUSES = /\b(ORDER\s+BY|LIMIT|OFFSET)\b/i;
 const COLUMN_NAME_RE = /^[a-zA-Z_]\w*$/;
 
 const PG_OID_TYPE_MAP: Record<number, string> = {
@@ -121,21 +122,16 @@ export async function querySql(
   if (typeof args.sql !== 'string') {
     return errorResult('sql (string) is required.', startTime);
   }
-  if (typeof args.sort_by !== 'string' || args.sort_by.length === 0) {
-    return errorResult('sort_by (string column name) is required.', startTime);
-  }
 
   const baseSql = args.sql.trim();
   if (!baseSql) return errorResult('SQL query is required.', startTime);
 
-  if (TRAILING_CLAUSES.test(baseSql)) {
-    return errorResult(
-      'Do not include ORDER BY, LIMIT, or OFFSET in your SQL — they are added automatically.',
-      startTime
-    );
-  }
+  // The base query is wrapped as `SELECT * FROM (<sql>) _t [ORDER BY …] LIMIT …`,
+  // so an ORDER BY / LIMIT / window inside the caller's SQL is valid (it sits in
+  // the subquery). A derived view's backing_sql commonly has `OVER (ORDER BY …)`.
 
-  if (!COLUMN_NAME_RE.test(args.sort_by)) {
+  // sort_by is optional: omit it for a view whose columns aren't known upfront.
+  if (args.sort_by !== undefined && !COLUMN_NAME_RE.test(args.sort_by)) {
     return errorResult(`Invalid sort_by column name: ${args.sort_by}`, startTime);
   }
 
@@ -232,7 +228,8 @@ export async function querySql(
   const offset = Math.max(0, Math.trunc(rawOffset));
 
   const countSql = `SELECT count(*)::int AS c FROM (${scopedSql}) AS _t ${searchWhere}`;
-  const dataSql = `SELECT * FROM (${scopedSql}) AS _t ${searchWhere} ORDER BY "${args.sort_by}" ${sortOrder} LIMIT ${limit} OFFSET ${offset}`;
+  const orderBy = args.sort_by ? `ORDER BY "${args.sort_by}" ${sortOrder}` : '';
+  const dataSql = `SELECT * FROM (${scopedSql}) AS _t ${searchWhere} ${orderBy} LIMIT ${limit} OFFSET ${offset}`;
 
   try {
     const sql = getDb();

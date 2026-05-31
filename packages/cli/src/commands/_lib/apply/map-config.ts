@@ -514,21 +514,7 @@ function mapEntityType(entity: EntityType): DesiredEntityType {
     ...(entity.metadata ? { metadata: entity.metadata } : {}),
     // `backing` is present only for derived types; a stored entity (the default)
     // carries no backing so it never churns the diff.
-    ...(entity.backing
-      ? {
-          backing: {
-            sql: entity.backing.sql,
-            // `.length` (not truthiness): an empty `grain: []` must be omitted —
-            // the server reads text[] back as absent, so sending `[]` would churn.
-            ...(entity.backing.grain?.length
-              ? { grain: entity.backing.grain }
-              : {}),
-            ...(entity.backing.source !== undefined
-              ? { source: connectorKey(entity.backing.source) }
-              : {}),
-          },
-        }
-      : {}),
+    ...(entity.backing ? { backing: { sql: entity.backing.sql } } : {}),
   };
 }
 

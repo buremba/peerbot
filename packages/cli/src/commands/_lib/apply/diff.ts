@@ -459,46 +459,6 @@ function diffPlatform(
   }) as unknown as PlatformDiffRow;
 }
 
-/**
- * Drop the server-inferred `x-measure` / `x-dimension` annotations (the ones
- * flagged `inferred: true`) from an entity type's `properties`.
- *
- * A derived entity's stored `properties` are a superset the server infers from
- * `backing.sql`; the config never declares them, so comparing raw would churn
- * `properties` on every apply. Stripping the flagged annotations leaves exactly
- * what the author declared — so the diff stays idempotent for the common case
- * yet still reports a real change when the author edits a DECLARED annotation
- * (those carry no flag). Symmetric and a no-op on the config side (it has no
- * flags). Returns `undefined` when nothing author-declared remains, so it
- * compares equal to an omitted `properties`.
- */
-function withoutInferredAnnotations(
-  properties: Record<string, unknown> | undefined
-): Record<string, unknown> | undefined {
-  if (!properties) return undefined;
-  const out: Record<string, unknown> = {};
-  for (const [name, value] of Object.entries(properties)) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      out[name] = value;
-      continue;
-    }
-    const prop = { ...(value as Record<string, unknown>) };
-    for (const key of ["x-measure", "x-dimension"] as const) {
-      const ann = prop[key];
-      if (
-        ann &&
-        typeof ann === "object" &&
-        (ann as Record<string, unknown>).inferred === true
-      ) {
-        delete prop[key];
-      }
-    }
-    // A column that was *only* an inferred annotation disappears entirely.
-    if (Object.keys(prop).length > 0) out[name] = prop;
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
-}
-
 function diffEntityType(
   desired: DesiredEntityType,
   remote: RemoteEntityType | undefined
@@ -520,18 +480,11 @@ function diffEntityType(
       },
       {
         name: "properties",
-        // Compare only author-declared annotations: a derived entity's stored
-        // `properties` include a server-inferred superset (flagged
-        // `inferred: true`) the config never sends. Without stripping it the
-        // type churns every apply; with it, a declared-override edit is still a
-        // real change.
-        changed: (d, r) =>
-          !deepEqual(
-            withoutInferredAnnotations(d.properties),
-            withoutInferredAnnotations(r.properties)
-          ),
+        changed: (d, r) => !deepEqual(d.properties, r.properties),
       },
       {
+        // Derived types store metadata_schema verbatim (no inferred superset),
+        // so a plain properties + backing diff is exact and idempotent.
         name: "backing",
         changed: (d, r) => !deepEqual(d.backing, r.backing),
       },

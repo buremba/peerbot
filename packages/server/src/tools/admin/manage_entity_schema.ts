@@ -10,8 +10,8 @@
 
 import { type Static, Type } from '@sinclair/typebox';
 import type { AutoCreateWhenRule } from '@lobu/connector-sdk';
-import { type DbClient, getDb, pgTextArray } from '../../db/client';
-import { applyInferredMeasures, stripMeasureAnnotations } from '../../utils/infer-measures';
+import { type DbClient, getDb } from '../../db/client';
+import { measureColumns } from '../../utils/infer-measures';
 import type { Env } from '../../index';
 import logger from '../../utils/logger';
 import { compileRulesMetadata, ruleHashFor } from '../../identity/rules';
@@ -41,19 +41,10 @@ const AutoCreateWhenRuleInputSchema = Type.Object(
   { additionalProperties: false }
 );
 
-/** Derived-entity backing: a SQL view + its canonical-fact key + optional source. */
+/** Derived-entity backing: a read-only SQL view. */
 const BackingInputSchema = Type.Object(
   {
     sql: Type.String({ minLength: 1, description: 'ANSI SELECT defining the view' }),
-    grain: Type.Optional(
-      Type.Array(Type.String(), {
-        description:
-          'Canonical-fact key columns; omit for the embedded-events default (organization_id, connection_id, origin_id).',
-      })
-    ),
-    source: Type.Optional(
-      Type.String({ description: 'Connection key the view reads from; omit for the embedded events store.' })
-    ),
   },
   { additionalProperties: false }
 );
@@ -119,7 +110,7 @@ export const ManageEntitySchemaSchema = Type.Object({
   backing: Type.Optional(
     Type.Union([Type.Null(), BackingInputSchema], {
       description:
-        "[entity_type: create/update] Makes the type DERIVED — a read-only SQL view whose aggregate columns become measures. `{ sql, grain?, source? }` to set; `null` to clear (revert to a stored type); omit to leave unchanged. Read a derived type's rows by running its `backing_sql` (returned by `get`) through `query_sql`, which org-scopes the view; the inferred `x-measure` rules tell you how each measure rolls up to a coarser grain.",
+        "[entity_type: create/update] Makes the type DERIVED — a read-only SQL view. `{ sql }` to set; `null` to clear (revert to a stored type); omit to leave unchanged. Read a derived type's rows by running its `backing_sql` (returned by `get`) through `query_sql`, which org-scopes the view; `get` also returns `measure_columns` (the view's aggregate columns, classified on read).",
     })
   ),
 
@@ -182,8 +173,6 @@ interface EntityTypeRow {
   metadata_schema?: Record<string, unknown> | null;
   event_kinds?: Record<string, unknown> | null;
   backing_sql?: string | null;
-  backing_grain?: string[] | null;
-  backing_source?: string | null;
   is_system: boolean;
   created_by?: string | null;
   organization_id?: string | null;
@@ -192,6 +181,8 @@ interface EntityTypeRow {
   updated_at: Date;
   entity_count?: number;
   current_view_template_version_id?: number | null;
+  /** Derived types only — the view's aggregate columns, classified on read. */
+  measure_columns?: string[];
 }
 
 interface AuditEntry {
@@ -291,10 +282,10 @@ export async function manageEntitySchema(
 // ============================================
 
 const ENTITY_TYPE_COLUMNS =
-  'id, slug, name, description, icon, color, metadata_schema, event_kinds, backing_sql, backing_grain, backing_source, created_by, organization_id, created_at, updated_at, current_view_template_version_id';
+  'id, slug, name, description, icon, color, metadata_schema, event_kinds, backing_sql, created_by, organization_id, created_at, updated_at, current_view_template_version_id';
 
 const ENTITY_TYPE_COLUMNS_WITH_ORG = `et.id, et.slug, et.name, et.description, et.icon, et.color,
-  et.metadata_schema, et.event_kinds, et.backing_sql, et.backing_grain, et.backing_source,
+  et.metadata_schema, et.event_kinds, et.backing_sql,
   et.created_by, et.organization_id,
   et.created_at, et.updated_at, et.current_view_template_version_id,
   o.slug AS organization_slug`;
@@ -494,6 +485,8 @@ async function etHandleGet(
   const [resolved] = await resolveUsernames([rows[0] as Record<string, unknown>], 'created_by');
   const mapped = mapRowToEntityType(resolved);
   mapped.entity_count = await getEntityCountForType(Number(mapped.id), ctx.organizationId);
+  // Classify the view's measure columns on read (never persisted).
+  if (mapped.backing_sql) mapped.measure_columns = measureColumns(mapped.backing_sql);
 
   return { schema_type: 'entity_type', action: 'get', entity_type: mapped };
 }
@@ -534,19 +527,16 @@ async function etHandleCreate(
   validateEntityMetadataSchemaDisplayConfig(args.metadata_schema);
   assertValidBacking(args.backing);
 
-  // For a derived type, infer measure/dimension roles from the view's SELECT and
-  // merge them into metadata_schema (author-declared x-measure/x-dimension win).
-  const effectiveSchema = args.backing?.sql
-    ? applyInferredMeasures(args.metadata_schema, args.backing.sql)
-    : args.metadata_schema;
-  const metadataSchema = effectiveSchema ? sql.json(effectiveSchema) : null;
+  // metadata_schema is stored as the author sent it — measure/dimension roles for
+  // a derived type are classified ON READ (see etHandleGet), never persisted.
+  const metadataSchema = args.metadata_schema ? sql.json(args.metadata_schema) : null;
   const eventKinds = args.event_kinds ? sql.json(args.event_kinds) : null;
 
   const inserted = await sql`
     INSERT INTO entity_types (
       slug, name, description, icon, color,
       metadata_schema, event_kinds,
-      backing_sql, backing_grain, backing_source,
+      backing_sql,
       organization_id, created_by,
       created_at, updated_at
     ) VALUES (
@@ -558,8 +548,6 @@ async function etHandleCreate(
       ${metadataSchema},
       ${eventKinds},
       ${args.backing?.sql ?? null},
-      ${args.backing?.grain ? pgTextArray(args.backing.grain) : null}::text[],
-      ${args.backing?.source ?? null},
       ${ctx.organizationId},
       ${ctx.userId},
       current_timestamp,
@@ -610,27 +598,9 @@ async function etHandleUpdate(
     validateEntityMetadataSchemaDisplayConfig(args.metadata_schema);
   }
   assertValidBacking(args.backing);
-  // Keep metadata_schema's measure annotations consistent with the FINAL backing
-  // state (after this update), reading the existing row when backing is unchanged:
-  //   - setting/changing a derived view → infer over the new sql (declared wins)
-  //   - reverting to stored (backing=null) → strip derived-only annotations
-  //   - metadata-only edit of a still-derived type → re-infer over the current sql
-  //   - otherwise → use the provided schema (or leave unchanged)
-  const currentBackingSql =
-    typeof current.backing_sql === 'string' ? current.backing_sql : null;
-  const currentSchema = current.metadata_schema as Record<string, unknown> | null;
-  let effectiveSchema: Record<string, unknown> | undefined;
-  if (args.backing?.sql) {
-    effectiveSchema = applyInferredMeasures(args.metadata_schema, args.backing.sql);
-  } else if (args.backing === null) {
-    effectiveSchema = stripMeasureAnnotations(args.metadata_schema ?? currentSchema ?? undefined);
-  } else if (currentBackingSql && args.metadata_schema !== undefined) {
-    effectiveSchema = applyInferredMeasures(args.metadata_schema, currentBackingSql);
-  } else {
-    effectiveSchema = args.metadata_schema;
-  }
-  const hasMetadataSchema = effectiveSchema !== undefined;
-  const metadataSchemaJson = effectiveSchema ? sql.json(effectiveSchema) : null;
+  // metadata_schema is stored verbatim (measure roles are classified on read).
+  const hasMetadataSchema = args.metadata_schema !== undefined;
+  const metadataSchemaJson = args.metadata_schema ? sql.json(args.metadata_schema) : null;
   const hasEventKinds = args.event_kinds !== undefined;
   const eventKindsJson = hasEventKinds && args.event_kinds ? sql.json(args.event_kinds) : null;
 
@@ -655,14 +625,6 @@ async function etHandleUpdate(
       backing_sql = CASE
         WHEN ${hasBacking} THEN ${args.backing?.sql ?? null}::text
         ELSE backing_sql
-      END,
-      backing_grain = CASE
-        WHEN ${hasBacking} THEN ${args.backing?.grain ? pgTextArray(args.backing.grain) : null}::text[]
-        ELSE backing_grain
-      END,
-      backing_source = CASE
-        WHEN ${hasBacking} THEN ${args.backing?.source ?? null}::text
-        ELSE backing_source
       END,
       updated_by = ${ctx.userId},
       updated_at = current_timestamp

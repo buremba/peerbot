@@ -35,13 +35,13 @@ describe('querySql input validation', () => {
     expect(result.total_count).toBe(0);
   });
 
-  it('requires an explicit sort_by column before building SQL', async () => {
+  it('rejects an invalid sort_by column name (sort_by is optional, but must be a bare identifier when given)', async () => {
     const result = await querySql(
-      { sql: 'select * from events' } as unknown as QuerySqlArgs,
+      { sql: 'select * from events', sort_by: 'a; DROP' } as unknown as QuerySqlArgs,
       {},
       ctx
     );
 
-    expect(result.error).toBe('sort_by (string column name) is required.');
+    expect(result.error).toBe('Invalid sort_by column name: a; DROP');
   });
 });

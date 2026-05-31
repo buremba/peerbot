@@ -14,10 +14,17 @@
 
 import { describe, expect, it } from 'bun:test';
 import { validateAndScopeQuery } from '../../utils/execute-data-sources';
-import { SAFE_COLUMN_DEFS } from '../../utils/table-schema';
+import { ADMIN_ONLY_QUERYABLE_TABLES, SAFE_COLUMN_DEFS } from '../../utils/table-schema';
 
 const scope = (sql: string) =>
   validateAndScopeQuery(sql, 'org_test', { safeColumns: SAFE_COLUMN_DEFS });
+
+// A non-admin caller passes the auth/identity tables as restricted.
+const scopeAsMember = (sql: string) =>
+  validateAndScopeQuery(sql, 'org_test', {
+    safeColumns: SAFE_COLUMN_DEFS,
+    restrictedTables: ADMIN_ONLY_QUERYABLE_TABLES,
+  });
 
 describe('validateAndScopeQuery — schema-qualified table rejection', () => {
   const leaks: Array<[string, string]> = [
@@ -65,4 +72,36 @@ describe('validateAndScopeQuery — schema-qualified table rejection', () => {
       expect(out.params[0]).toBe('org_test');
     });
   }
+});
+
+describe('validateAndScopeQuery — member table restriction (auth/identity admin-only)', () => {
+  const blocked: Array<[string, string]> = [
+    ['oauth_tokens', 'SELECT * FROM oauth_tokens'],
+    ['oauth_clients', 'SELECT * FROM oauth_clients'],
+    ['user roster', 'SELECT * FROM "user"'],
+    ['joined oauth_tokens', 'SELECT * FROM entities e JOIN oauth_tokens t ON t.id = e.id'],
+  ];
+  for (const [label, sql] of blocked) {
+    it(`blocks a non-admin from ${label}`, () => {
+      expect(() => scopeAsMember(sql)).toThrow(/admin access/i);
+    });
+  }
+
+  const allowed: Array<[string, string]> = [
+    ['events', 'SELECT * FROM events'],
+    ['entities', 'SELECT * FROM entities'],
+    ['connections', 'SELECT * FROM connections'],
+    ['feeds', 'SELECT * FROM feeds'],
+  ];
+  for (const [label, sql] of allowed) {
+    it(`allows a non-admin to query ${label}`, () => {
+      const out = scopeAsMember(sql);
+      expect(out.sql).toContain('organization_id');
+    });
+  }
+
+  it('allows an admin (no restriction) to query oauth_tokens', () => {
+    const out = scope('SELECT * FROM oauth_tokens');
+    expect(out.sql).toContain('organization_id');
+  });
 });

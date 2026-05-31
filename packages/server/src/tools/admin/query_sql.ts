@@ -11,7 +11,7 @@ import { getDb } from '../../db/client';
 import { validateAndScopeQuery } from '../../utils/execute-data-sources';
 import logger from '../../utils/logger';
 import { raceAbort } from '../../utils/race-abort';
-import { SAFE_COLUMN_DEFS } from '../../utils/table-schema';
+import { ADMIN_ONLY_QUERYABLE_TABLES, SAFE_COLUMN_DEFS } from '../../utils/table-schema';
 import { getCachedMembershipRole, getCachedOrgBySlug } from '../../workspace/multi-tenant';
 import type { ToolContext } from '../registry';
 
@@ -144,6 +144,9 @@ export async function querySql(
   // cross-org. The single source of truth is `ctx.allowCrossOrg`, which is
   // computed from `tokenType === 'oauth' && !scopedToOrg`.
   let targetOrgId = ctx.organizationId;
+  // Members may query their own org's operational tables; the auth/identity
+  // tables stay admin-only (enforced via restrictedTables below).
+  let callerIsAdmin = ctx.memberRole === 'owner' || ctx.memberRole === 'admin';
   if (args.org_slug) {
     if (!ctx.allowCrossOrg) {
       if (ctx.scopedToOrg) {
@@ -171,9 +174,9 @@ export async function querySql(
         startTime
       );
     }
-    // `query_sql` is admin-tier (it can read audit/event tables); the cross-
-    // org hop must re-validate that constraint against the *target* org's
-    // role, not just the caller's role in the bound org.
+    // Same-org querying is read-tier, but reaching into ANOTHER workspace stays
+    // owner/admin-only — re-validate against the *target* org's role, not the
+    // caller's role in the bound org.
     if (role !== 'owner' && role !== 'admin') {
       return errorResult(
         `Cross-org query_sql requires owner or admin access in '${args.org_slug}'.`,
@@ -181,6 +184,7 @@ export async function querySql(
       );
     }
     targetOrgId = targetOrg.id;
+    callerIsAdmin = true; // cross-org already required owner/admin in the target
   }
 
   // Validate, parse, and org-scope the query
@@ -189,6 +193,7 @@ export async function querySql(
   try {
     const scoped = validateAndScopeQuery(baseSql, targetOrgId, {
       safeColumns: SAFE_COLUMN_DEFS,
+      restrictedTables: callerIsAdmin ? undefined : ADMIN_ONLY_QUERYABLE_TABLES,
     });
     scopedSql = scoped.sql;
     params = scoped.params;

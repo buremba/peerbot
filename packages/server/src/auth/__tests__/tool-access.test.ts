@@ -20,8 +20,8 @@ import {
 } from '../tool-access';
 
 describe('requiresOwnerAdmin', () => {
-  it('should require admin for query_sql despite being read-only', () => {
-    expect(requiresOwnerAdmin('query_sql', {}, true)).toBe(true);
+  it('treats query_sql as read-tier — members may query; sensitive tables gated per-query', () => {
+    expect(requiresOwnerAdmin('query_sql', {}, true)).toBe(false);
   });
 
   it('should require admin for destructive manage_entity actions only', () => {
@@ -367,21 +367,20 @@ describe('checkToolAccess', () => {
     }
   );
 
-  it('keeps admin-only tools restricted for members', () => {
-    // query_sql is the canonical admin-only tool on the post-PR-2 surface.
+  it('lets members run query_sql (read-tier; auth/identity tables gated per-query, not at the tool gate)', () => {
     expect(() =>
       checkToolAccess(
         'query_sql',
         { sql: 'SELECT 1', sort_by: 'id' },
-        {
-          ...baseAuth,
-          memberRole: 'member',
-          scopes: ['mcp:admin'],
-        }
+        { ...baseAuth, memberRole: 'member', scopes: ['mcp:read'] }
       )
-    ).toThrow(
-      'This action requires admin or owner access. Ask an organization owner to grant elevated access.'
-    );
+    ).not.toThrow();
+  });
+
+  it('keeps genuinely admin-only actions admin-tier (manage_entity_schema create)', () => {
+    // Opening query_sql to read-tier must not have widened the real admin
+    // actions — these go through SDK wrappers / action-router, gated by policy.
+    expect(requiresOwnerAdmin('manage_entity_schema', { action: 'create' }, false)).toBe(true);
   });
 });
 

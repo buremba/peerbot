@@ -157,7 +157,16 @@ function extractTableRefs(query: string): string[] {
 export function validateAndScopeQuery(
   rawSql: string,
   organizationId: string,
-  options?: { safeColumns?: Map<string, ColumnDef[]> }
+  options?: {
+    safeColumns?: Map<string, ColumnDef[]>;
+    /**
+     * Tables the caller may NOT reference (rejected even though they're in the
+     * global allowlist). Used to keep auth/identity tables (oauth_tokens,
+     * oauth_clients, user) admin-only when a non-admin runs query_sql /
+     * metric_series. Omit for admin / server-internal callers (full access).
+     */
+    restrictedTables?: ReadonlySet<string>;
+  }
 ): { sql: string; params: unknown[] } {
   const trimmed = rawSql.trim();
   if (!trimmed) {
@@ -175,6 +184,15 @@ export function validateAndScopeQuery(
   const unknown = tableRefs.filter((t) => !QUERYABLE_TABLE_NAMES.has(t));
   if (unknown.length > 0) {
     throw new Error(`Unknown table(s): ${unknown.join(', ')}`);
+  }
+
+  if (options?.restrictedTables) {
+    const blocked = tableRefs.filter((t) => options.restrictedTables?.has(t));
+    if (blocked.length > 0) {
+      throw new Error(
+        `Table(s) require admin access: ${[...new Set(blocked)].join(', ')}`
+      );
+    }
   }
 
   return buildScopedQuery(trimmed, tableRefs, { organizationId }, options);

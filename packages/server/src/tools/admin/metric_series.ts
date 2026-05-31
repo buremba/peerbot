@@ -22,6 +22,7 @@
 import { type Static, Type } from '@sinclair/typebox';
 import { getDb } from '../../db/client';
 import { validateAndScopeQuery } from '../../utils/execute-data-sources';
+import { ADMIN_ONLY_QUERYABLE_TABLES } from '../../utils/table-schema';
 import { ToolUserError } from '../../utils/errors';
 import logger from '../../utils/logger';
 import type { ToolContext } from '../registry';
@@ -68,7 +69,12 @@ export async function metricSeries(
     throw new ToolUserError('metric_series: only SELECT or WITH … SELECT queries are accepted');
   }
 
-  const { sql: scopedSql, params } = validateAndScopeQuery(args.sql, orgId);
+  // Members may chart their org's operational data; the auth/identity tables
+  // (oauth_tokens, oauth_clients, user) stay admin-only.
+  const isAdmin = ctx.memberRole === 'owner' || ctx.memberRole === 'admin';
+  const { sql: scopedSql, params } = validateAndScopeQuery(args.sql, orgId, {
+    restrictedTables: isAdmin ? undefined : ADMIN_ONLY_QUERYABLE_TABLES,
+  });
   const db = getDb();
 
   // Run inside a transaction so SET LOCAL applies for the user query only.

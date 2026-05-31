@@ -171,7 +171,7 @@ describe('MCP member write access', () => {
     });
     const beforeBody = await beforeResponse.json();
     const beforeNames = beforeBody.result.tools.map((tool: any) => tool.name);
-    // Admin/owner sessions see `query_sql` (admin-tier read).
+    // query_sql is read-tier — visible to members and admins alike.
     expect(beforeNames).toContain('query_sql');
     expect(beforeNames).toContain('run_sdk');
 
@@ -193,8 +193,10 @@ describe('MCP member write access', () => {
     const afterBody = await afterResponse.json();
     const afterTools = afterBody.result.tools.map((tool: any) => tool.name);
     expect(afterTools).toContain('save_memory');
-    // Member tier loses admin-only `query_sql`.
-    expect(afterTools).not.toContain('query_sql');
+    // query_sql is read-tier, so it stays visible after a downgrade; the
+    // auth/identity tables it can reach stay admin-only via the per-query
+    // restriction (covered in scoped-query-schema-rejection.test.ts).
+    expect(afterTools).toContain('query_sql');
   });
 
   it('applies member removal immediately to existing MCP sessions', async () => {

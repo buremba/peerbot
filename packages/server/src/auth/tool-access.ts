@@ -150,10 +150,10 @@ export function requiresOwnerAdmin(
   args: unknown,
   readOnlyHint: boolean
 ): boolean {
-  // query_sql is intentionally owner/admin only despite being read-only —
-  // it can read across the whole org's data, including audit/event tables.
-  if (toolName === 'query_sql') return true;
-
+  // query_sql / metric_series are read-tier (members may query their org's
+  // operational data). The auth/identity tables (oauth_tokens, oauth_clients,
+  // user) stay admin-only via ADMIN_ONLY_QUERYABLE_TABLES, enforced per-query in
+  // those handlers — not by gating the whole tool to admins.
   if (actionMatches(OWNER_ADMIN_ACTIONS, toolName, args)) return true;
 
   const hasExplicitPolicy = toolName in OWNER_ADMIN_ACTIONS || toolName in MEMBER_WRITE_ACTIONS;

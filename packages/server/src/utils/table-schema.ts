@@ -348,6 +348,20 @@ export const QUERYABLE_SCHEMA = {
 
 export const QUERYABLE_TABLE_NAMES = new Set(QUERYABLE_SCHEMA.tables.map((t) => t.name));
 
+/**
+ * Queryable tables that stay OWNER/ADMIN-only even when query_sql / metric_series
+ * are member-accessible: the auth + identity tables. Members can read the
+ * org's operational data (entities, events, connections, feeds, watchers, …) but
+ * not enumerate every OAuth token/app or the full user roster. Secret columns
+ * (credentials, client_secret, token_hash, email, phone) are already excluded
+ * from the schema above; this is the table-level guard on top of that.
+ */
+export const ADMIN_ONLY_QUERYABLE_TABLES: ReadonlySet<string> = new Set([
+  'oauth_tokens',
+  'oauth_clients',
+  'user',
+]);
+
 /** table name → column definitions for use in CTE SELECT.
  *  Columns with `expr` are derived from JSONB and need special handling. */
 export const SAFE_COLUMN_DEFS = new Map<string, ColumnDef[]>(

@@ -215,8 +215,8 @@ async function createEntityWithIdentities(params: {
   // Resolve entity_type slug → entity_types(id). Same schema search path as
   // createEntity: try the entity's own org first, then any visibility='public'
   // catalog. First match wins. See createEntity for the slug-poisoning caveat.
-  const typeRow = await sql<{ id: number }>`
-    SELECT et.id
+  const typeRow = await sql<{ id: number; backing_sql: string | null }>`
+    SELECT et.id, et.backing_sql
     FROM entity_types et
     LEFT JOIN organization o ON o.id = et.organization_id
     WHERE et.slug = ${params.entityType}
@@ -232,6 +232,16 @@ async function createEntityWithIdentities(params: {
     logger.warn(
       { entityType: params.entityType, orgId: params.orgId },
       'entity create failed: unknown entity type'
+    );
+    return null;
+  }
+  // Derived (view-backed) types have no stored rows — skip auto-create (the
+  // view ignores any row this would insert). Mirrors createEntity's guard for
+  // this separate connector/link insert path.
+  if (typeRow[0].backing_sql) {
+    logger.warn(
+      { entityType: params.entityType, orgId: params.orgId },
+      'entity auto-create skipped: entity type is derived (a SQL view)'
     );
     return null;
   }

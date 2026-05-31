@@ -598,6 +598,16 @@ async function etHandleUpdate(
     validateEntityMetadataSchemaDisplayConfig(args.metadata_schema);
   }
   assertValidBacking(args.backing);
+  // Converting a populated stored type to a derived (view-backed) type would
+  // orphan its existing rows (the view ignores them). Reject it.
+  if (args.backing?.sql) {
+    const existingCount = await getEntityCountForType(Number(current.id), ctx.organizationId);
+    if (existingCount > 0) {
+      throw new Error(
+        `Cannot make entity type '${args.slug}' derived: ${existingCount} stored ${existingCount === 1 ? 'entity exists' : 'entities exist'}. Delete them first.`
+      );
+    }
+  }
   // metadata_schema is stored verbatim (measure roles are classified on read).
   const hasMetadataSchema = args.metadata_schema !== undefined;
   const metadataSchemaJson = args.metadata_schema ? sql.json(args.metadata_schema) : null;

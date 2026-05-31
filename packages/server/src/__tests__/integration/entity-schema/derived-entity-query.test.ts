@@ -12,7 +12,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { querySql } from '../../../tools/admin/query_sql';
 import type { ToolContext } from '../../../tools/registry';
-import { cleanupTestDatabase } from '../../setup/test-db';
+import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   addUserToOrganization,
   createTestEvent,
@@ -97,5 +97,33 @@ describe('derived entity read path (reuse query_sql)', () => {
     await expect(
       owner.entities.create({ type: 'orders-view', name: 'nope' })
     ).rejects.toThrow(/derived|view|no stored rows/i);
+  });
+
+  it('rejects converting a populated stored type into a derived view', async () => {
+    await owner.entity_schema.createType({ slug: 'people', name: 'People' });
+    await owner.entities.create({ type: 'people', name: 'Ada' });
+    // Would orphan Ada (the view ignores stored rows) — must be rejected.
+    await expect(
+      owner.entity_schema.updateType({
+        slug: 'people',
+        backing: { sql: 'SELECT 1 AS x FROM events' },
+      })
+    ).rejects.toThrow(/stored entit|delete them first/i);
+  });
+
+  it('a DB trigger rejects a direct row insert on a derived type (invariant backstop)', async () => {
+    await owner.entity_schema.createType({
+      slug: 'metrics-view',
+      name: 'Metrics',
+      backing: { sql: 'SELECT 1 AS x FROM events' },
+    });
+    const db = getTestDb();
+    const [row] = await db`
+      SELECT id FROM entity_types WHERE slug = 'metrics-view' AND organization_id = ${orgAId} LIMIT 1
+    `;
+    // Bypass the app guards entirely — the trigger is the safety net.
+    await expect(
+      db`INSERT INTO entities (entity_type_id, name, organization_id) VALUES (${row.id}, 'x', ${orgAId})`
+    ).rejects.toThrow(/derived|cannot have stored rows/i);
   });
 });

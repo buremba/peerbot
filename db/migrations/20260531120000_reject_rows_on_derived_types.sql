@@ -37,7 +37,8 @@ CREATE OR REPLACE FUNCTION public.reject_derived_conversion_with_rows()
   RETURNS trigger AS $$
 BEGIN
   IF NEW.backing_sql IS NOT NULL AND EXISTS (
-    SELECT 1 FROM public.entities e WHERE e.entity_type_id = NEW.id
+    SELECT 1 FROM public.entities e
+    WHERE e.entity_type_id = NEW.id AND e.deleted_at IS NULL
   ) THEN
     RAISE EXCEPTION
       'entity type % cannot become a derived view while stored rows exist; delete them first',

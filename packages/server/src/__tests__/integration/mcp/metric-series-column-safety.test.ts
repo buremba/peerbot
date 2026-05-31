@@ -14,6 +14,7 @@ import type { ToolContext } from '../../../tools/registry';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
   createTestConnection,
+  createTestEvent,
   createTestOrganization,
 } from '../../setup/test-fixtures';
 
@@ -50,5 +51,23 @@ describe('metric_series — safe column allowlist (member)', () => {
     expect(JSON.stringify(res.rows)).not.toContain('SECRET-TOKEN');
     // sanity: an allowlisted column IS present (the scope worked, not just empty)
     expect(res.columns).toContain('connector_key');
+  });
+
+  it('refuses a data-modifying CTE (read-only transaction)', async () => {
+    // A data-modifying WITH CTE passes the SELECT/WITH guard, so the read-only
+    // transaction is what must stop it. Without it, this read-tier endpoint
+    // could DELETE/UPDATE/INSERT.
+    const db = getTestDb();
+    const ev = await createTestEvent({ organization_id: orgId, content: 'keep-me' });
+    await expect(
+      metricSeries(
+        { sql: 'WITH x AS (DELETE FROM events RETURNING id) SELECT count(*) AS n FROM x' },
+        {},
+        memberCtx()
+      )
+    ).rejects.toThrow(/read-only|read only|cannot execute/i);
+    // the row is untouched
+    const [row] = await db`SELECT id FROM events WHERE id = ${ev.id}`;
+    expect(row?.id).toBeDefined();
   });
 });

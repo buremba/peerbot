@@ -189,4 +189,19 @@ describe('derived entity read path (reuse query_sql)', () => {
          WHERE slug = 'plants' AND organization_id = ${orgAId}`
     ).rejects.toThrow(/derived view while stored rows exist|delete them first/i);
   });
+
+  it('allows converting to derived when all rows are soft-deleted (matches app live-row count)', async () => {
+    await owner.entity_schema.createType({ slug: 'fish', name: 'Fish' });
+    await owner.entities.create({ type: 'fish', name: 'Nemo' });
+    const db = getTestDb();
+    // Soft-delete the only row — the app's convert-guard counts WHERE deleted_at
+    // IS NULL, so conversion is allowed; the DB trigger must agree (not block on
+    // a tombstoned row).
+    await db`UPDATE entities e SET deleted_at = NOW()
+             FROM entity_types et
+             WHERE e.entity_type_id = et.id AND et.slug = 'fish' AND e.organization_id = ${orgAId}`;
+    await expect(
+      owner.entity_schema.updateType({ slug: 'fish', backing: { sql: 'SELECT 1 AS x FROM events' } })
+    ).resolves.toBeDefined();
+  });
 });

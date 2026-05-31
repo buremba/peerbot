@@ -86,6 +86,10 @@ export async function metricSeries(
   let rows: Record<string, unknown>[];
   try {
     rows = (await db.begin(async (tx) => {
+      // READ ONLY first: a data-modifying CTE (`WITH x AS (DELETE … RETURNING …)
+      // SELECT …`) passes the SELECT/WITH guard, so the DB must refuse the write.
+      // Mirrors query_sql; without it this read-tier endpoint could mutate.
+      await tx.unsafe('SET TRANSACTION READ ONLY');
       await tx.unsafe(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`);
       return tx.unsafe(scopedSql, params as unknown[]);
     })) as Record<string, unknown>[];

@@ -21,11 +21,7 @@
 
 import { type Static, Type } from '@sinclair/typebox';
 import { getDb } from '../../db/client';
-import {
-  RESTRICTED_QUERY_ROLE,
-  restrictedQueryRoleAvailable,
-  validateAndScopeQuery,
-} from '../../utils/execute-data-sources';
+import { validateAndScopeQuery } from '../../utils/execute-data-sources';
 import { ADMIN_ONLY_QUERYABLE_TABLES, SAFE_COLUMN_DEFS } from '../../utils/table-schema';
 import { ToolUserError } from '../../utils/errors';
 import logger from '../../utils/logger';
@@ -84,11 +80,6 @@ export async function metricSeries(
   });
   const db = getDb();
 
-  // Defense-in-depth: a non-admin's query runs under the restricted DB role
-  // (when provisioned), so an auth/identity table that slips past the app gate
-  // hits a DB-level "permission denied". Admins keep full access.
-  const useRestrictedRole = !isAdmin && (await restrictedQueryRoleAvailable(db));
-
   // Run inside a transaction so SET LOCAL applies for the user query only.
   // `SET LOCAL` doesn't accept prepared parameters, so the timeout literal is
   // interpolated directly (safe — it's a module-level number).
@@ -96,7 +87,6 @@ export async function metricSeries(
   try {
     rows = (await db.begin(async (tx) => {
       await tx.unsafe(`SET LOCAL statement_timeout = ${STATEMENT_TIMEOUT_MS}`);
-      if (useRestrictedRole) await tx.unsafe(`SET LOCAL ROLE ${RESTRICTED_QUERY_ROLE}`);
       return tx.unsafe(scopedSql, params as unknown[]);
     })) as Record<string, unknown>[];
   } catch (err) {

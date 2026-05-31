@@ -185,3 +185,55 @@ describe('validateAndScopeQuery — parser-bypass regressions', () => {
     expect(out.sql).toMatch(/"events"\s+AS\s+\(/i);
   });
 });
+
+/**
+ * Completeness invariant — the security property the whole table-extraction
+ * exists to uphold: an admin-only table referenced ANYWHERE in a member's query
+ * must be rejected, in EVERY syntactic position. This is the parser-independent
+ * guarantee a DB role would otherwise provide, asserted instead where we can run
+ * it in CI. It is the canary for a future parser blind spot: add a position the
+ * extractor can't see and one of these flips RED before the leak can ship.
+ *
+ * Each builder embeds the table with NO column references (SELECT 1 / count(*) /
+ * ON true), so the schema validator can't reject for an unrelated reason and
+ * mask a missed-table hole — the only thing that should reject is the admin gate.
+ */
+describe('validateAndScopeQuery — admin-table completeness invariant', () => {
+  const positions: Array<[string, (t: string) => string]> = [
+    ['top-level FROM', (t) => `SELECT * FROM ${t}`],
+    ['JOIN', (t) => `SELECT * FROM entities e JOIN ${t} x ON true`],
+    ['WHERE EXISTS subquery', (t) => `SELECT id FROM entities WHERE EXISTS (SELECT 1 FROM ${t})`],
+    [
+      'scalar SELECT-list subquery',
+      (t) => `SELECT id, (SELECT count(*) FROM ${t}) AS n FROM entities`,
+    ],
+    [
+      'CASE-nested subquery',
+      (t) =>
+        `SELECT id, (CASE WHEN true THEN (SELECT count(*) FROM ${t}) ELSE 0 END) AS n FROM entities`,
+    ],
+    ['CTE body', (t) => `WITH src AS (SELECT 1 AS c FROM ${t}) SELECT * FROM src`],
+    ['UNION branch', (t) => `SELECT id FROM entities UNION SELECT 1 FROM ${t}`],
+    [
+      'doubly-nested subquery',
+      (t) => `SELECT 1 FROM (SELECT 1 AS c FROM (SELECT 1 AS c FROM ${t}) AS a) AS b`,
+    ],
+  ];
+
+  // SQL-safe identifiers for each restricted table ("user" is reserved).
+  const adminTables = [...ADMIN_ONLY_QUERYABLE_TABLES].map((t) => (t === 'user' ? '"user"' : t));
+
+  for (const [label, build] of positions) {
+    for (const t of adminTables) {
+      it(`blocks ${t} in ${label} (member)`, () => {
+        expect(() => scopeAsMember(build(t))).toThrow(/admin access/i);
+      });
+    }
+    // Inverse: the same shape with an allowed table must NOT be over-blocked —
+    // it scopes cleanly (every base table wrapped in an org-scoped CTE).
+    it(`does not over-block a clean ${label}`, () => {
+      const out = scopeAsMember(build('events'));
+      expect(out.sql).toContain('organization_id');
+    });
+  }
+});

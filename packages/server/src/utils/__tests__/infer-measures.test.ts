@@ -63,9 +63,16 @@ describe('inferColumns', () => {
     expect(role.amt).toBe('dimension');
   });
 
-  it('returns [] for SELECT * and unparseable SQL', () => {
+  it('returns [] for non-SELECT roots and genuinely unparseable SQL', () => {
+    // SELECT * → handled (star projection, no named columns)
     expect(inferColumns('SELECT * FROM events')).toEqual([]);
-    expect(inferColumns('this is not sql')).toEqual([]);
+    // These parse SUCCESSFULLY to a non-`select` root, so they hit the
+    // non-select guard (not the parse-failure branch):
+    expect(inferColumns('this is not sql')).toEqual([]); // parses as a `not` node
+    expect(inferColumns('DROP TABLE x')).toEqual([]); // parses as `drop_table`
+    // These FAIL to parse → exercise the `!res.success` fail-open branch:
+    expect(inferColumns('SELECT (')).toEqual([]);
+    expect(inferColumns('SELECT FROM')).toEqual([]);
   });
 });
 

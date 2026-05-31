@@ -197,9 +197,10 @@ const SELECT_OR_WITH = /^\s*(?:--[^\n]*\n\s*|\/\*[\s\S]*?\*\/\s*)*(SELECT|WITH)\
  *
  * Strategy here:
  *  - Reject multiple statements and schema-qualified refs (both bypass scoping).
- *  - Build the ref set from the UNION of `getTableNames` and a raw AST walk
- *    (`collectAllTableNames`) — defense-in-depth: a table only escapes scoping
- *    if BOTH extractors miss it.
+ *  - Build the ref set from a raw AST walk (`collectAllTableNames`), which is a
+ *    strict SUPERSET of `ast.getTableNames` (verified across diverse shapes) and
+ *    additionally reaches expression-nested subqueries getTableNames misses. The
+ *    completeness-invariant test suite guards this against parser changes.
  *  - Exclude CTE names (local aliases, not base tables).
  *  - FAIL-CLOSED collision guard: reject a query whose CTE name shadows a real
  *    or admin table. The parser cannot tell, by lexical scope, whether `events`
@@ -238,15 +239,9 @@ function extractTableRefs(query: string): string[] {
     }
   }
 
-  // Union of getTableNames and the raw walk — a table escapes scoping only if
-  // BOTH miss it. CTE names are excluded (local aliases, not base tables).
+  // Every base-table ref via the raw walk (superset of getTableNames, incl.
+  // expression-nested), minus CTE names (local aliases, not base tables).
   const refs = new Set<string>();
-  for (const name of ast.getTableNames(root)) {
-    if (typeof name === 'string' && name) {
-      const n = name.toLowerCase();
-      if (!cteNames.has(n)) refs.add(n);
-    }
-  }
   for (const n of collectAllTableNames(root)) {
     if (!cteNames.has(n)) refs.add(n);
   }

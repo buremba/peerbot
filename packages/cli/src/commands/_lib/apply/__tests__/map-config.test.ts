@@ -219,6 +219,17 @@ describe("mapProjectToDesiredState", () => {
     expect(byKey.company?.backing).toBeUndefined();
   });
 
+  test("rejects an empty backing.sql at load time (before any remote mutation)", () => {
+    const bad = defineEntityType({
+      key: "bad",
+      name: "Bad",
+      backing: { sql: "   " },
+    });
+    expect(() =>
+      mapProjectToDesiredState(defineConfig({ agents: [], entities: [bad] }))
+    ).toThrow(/empty backing\.sql/i);
+  });
+
   test("carries prune into DesiredState (defaults false when unset)", () => {
     expect(mapProjectToDesiredState(defineConfig({ agents: [] })).prune).toBe(
       false

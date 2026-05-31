@@ -118,3 +118,70 @@ describe('validateAndScopeQuery — member table restriction (auth/identity admi
     expect(out.sql).toContain('organization_id');
   });
 });
+
+/**
+ * Parser-bypass regressions. These were RED after the @polyglot-sql/sdk swap
+ * (confirmed by the adversarial bug-hunt), because the member-accessible scoping
+ * relied on `ast.getTableNames`, which (a) yields nothing for the `TABLE <name>`
+ * shorthand (mis-parsed as a column) and (b) does not descend into subqueries
+ * nested inside an expression (CASE / scalar). Both let a non-admin read
+ * oauth_tokens — unscoped AND past the admin gate. Now GREEN via the SELECT/WITH
+ * prefix guard + the complete (union) table walk + the CTE-collision guard.
+ */
+describe('validateAndScopeQuery — parser-bypass regressions', () => {
+  it('rejects the PostgreSQL `TABLE <name>` shorthand (member)', () => {
+    expect(() => scopeAsMember('TABLE oauth_tokens')).toThrow(/SELECT \/ WITH/i);
+  });
+
+  it('rejects `TABLE <name>` even for an admin (not a SELECT)', () => {
+    expect(() => scope('TABLE events')).toThrow(/SELECT \/ WITH/i);
+  });
+
+  it('blocks oauth_tokens nested in a CASE-expression subquery (member)', () => {
+    const sql =
+      "SELECT id, (CASE WHEN true THEN (SELECT token FROM oauth_tokens LIMIT 1) ELSE 'x' END) AS leak FROM entities";
+    expect(() => scopeAsMember(sql)).toThrow(/admin access/i);
+  });
+
+  it('blocks oauth_tokens nested in a scalar SELECT-list subquery (member)', () => {
+    const sql = 'SELECT id, (SELECT count(*) FROM oauth_tokens) AS n FROM entities';
+    expect(() => scopeAsMember(sql)).toThrow(/admin access/i);
+  });
+
+  it('still allows the same shapes for an admin (no restriction)', () => {
+    const sql = 'SELECT id, (SELECT count(*) FROM oauth_tokens) AS n FROM entities';
+    const out = scope(sql);
+    expect(out.sql).toContain('organization_id');
+  });
+
+  it('SCOPES a non-admin table nested in a scalar subquery (no cross-org leak)', () => {
+    // events nested in a SELECT-list subquery is invisible to getTableNames; the
+    // complete walk catches it so it gets its own org-scoped CTE rather than
+    // reading every org's events.
+    const out = scopeAsMember('SELECT id, (SELECT count(*) FROM events) AS n FROM entities');
+    expect(out.sql).toMatch(/"events"\s+AS\s+\(/i);
+    expect(out.sql).toMatch(/"entities"\s+AS\s+\(/i);
+  });
+
+  it('rejects a CTE whose name shadows a real table (fail-closed)', () => {
+    // The parser cannot tell, by lexical scope, whether `events` in the CTE body
+    // is the CTE or the base table — so we forbid the ambiguity outright.
+    expect(() => scope('WITH events AS (SELECT 1 AS x) SELECT * FROM events')).toThrow(
+      /collides|reserved/i
+    );
+    expect(() =>
+      scope('WITH events AS (SELECT id FROM events) SELECT * FROM events')
+    ).toThrow(/collides|reserved/i);
+  });
+
+  it('rejects a CTE whose name shadows an admin-only table (fail-closed)', () => {
+    expect(() =>
+      scope('WITH oauth_tokens AS (SELECT 1 AS x) SELECT * FROM oauth_tokens')
+    ).toThrow(/collides|reserved/i);
+  });
+
+  it('still allows an ordinary (non-colliding) CTE name', () => {
+    const out = scopeAsMember('WITH recent AS (SELECT id FROM events) SELECT * FROM recent');
+    expect(out.sql).toMatch(/"events"\s+AS\s+\(/i);
+  });
+});

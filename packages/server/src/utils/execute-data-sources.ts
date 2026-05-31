@@ -19,6 +19,7 @@ import { Dialect, ast, parse as parseSql } from '@polyglot-sql/sdk';
 import type { DbClient } from '../db/client';
 import logger from './logger';
 import {
+  ADMIN_ONLY_QUERYABLE_TABLES,
   buildColumnList,
   type ColumnDef,
   QUERYABLE_TABLE_NAMES,
@@ -110,14 +111,100 @@ function collectSchemaQualifiedTables(root: unknown): string[] {
   return hits;
 }
 
+/**
+ * Every table-ref name anywhere in the tree (lowercased) via the same raw walk.
+ * Security-critical: `ast.getTableNames` does NOT descend into subqueries nested
+ * inside an expression (e.g. `(CASE WHEN … THEN (SELECT … FROM oauth_tokens) …)`),
+ * so a table hidden there would be neither scoped nor admin-gated. This walk
+ * reaches them. Includes CTE-reference names (filtered out by the caller).
+ */
+function collectAllTableNames(root: unknown): string[] {
+  const seen = new Set<object>();
+  const names: string[] = [];
+  const stack: unknown[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node || typeof node !== 'object') continue;
+    if (seen.has(node as object)) continue;
+    seen.add(node as object);
+    if (Array.isArray(node)) {
+      for (const child of node) stack.push(child);
+      continue;
+    }
+    const obj = node as Record<string, unknown>;
+    if (obj.name != null && Object.hasOwn(obj, 'catalog')) {
+      const n = identName(obj.name);
+      if (n) names.push(n.toLowerCase());
+    }
+    for (const key of Object.keys(obj)) stack.push(obj[key]);
+  }
+  return names;
+}
+
+/**
+ * Names defined in every WITH clause in the tree (lowercased), incl. nested
+ * WITHs. A CTE name is a local alias, NOT a base table — it must be excluded
+ * from the scoping list (we'd otherwise inject a conflicting CTE) and from the
+ * admin gate (a `WITH events AS …` would otherwise be treated as the base table).
+ */
+function collectCteNames(root: unknown): Set<string> {
+  const seen = new Set<object>();
+  const names = new Set<string>();
+  const stack: unknown[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node || typeof node !== 'object') continue;
+    if (seen.has(node as object)) continue;
+    seen.add(node as object);
+    if (Array.isArray(node)) {
+      for (const child of node) stack.push(child);
+      continue;
+    }
+    const obj = node as Record<string, unknown>;
+    if (Array.isArray(obj.ctes)) {
+      for (const cte of obj.ctes) {
+        const alias = identName((cte as Record<string, unknown>)?.alias);
+        if (alias) names.add(alias.toLowerCase());
+      }
+    }
+    for (const key of Object.keys(obj)) stack.push(obj[key]);
+  }
+  return names;
+}
+
+// Only SELECT / WITH … SELECT are valid. Rejects DML/DDL prefixes AND PostgreSQL's
+// `TABLE <name>` shorthand (≡ SELECT * FROM <name>) — polyglot mis-parses the
+// latter as a column, so it yields no table refs and would otherwise pass through
+// unscoped. Mirrors the guard metric_series already has.
+const SELECT_OR_WITH = /^\s*(?:--[^\n]*\n\s*|\/\*[\s\S]*?\*\/\s*)*(SELECT|WITH)\b/i;
+
 // ============================================
 // SQL Parsing
 // ============================================
 
 /**
- * Extract all table references from a SQL query.
- * Rejects multiple statements and schema-qualified references — both bypass the
- * org-scoping CTEs. User-defined CTE names are excluded by `getTableNames`.
+ * Extract the COMPLETE set of base-table references a query reads, lowercased —
+ * the list that must each be wrapped in an org-scoping CTE.
+ *
+ * Why this is more than `ast.getTableNames`: the @polyglot-sql/sdk migration's
+ * scoping relied on `getTableNames`, which has TWO blind spots that each leak
+ * (found by the adversarial bug-hunt):
+ *  1. It does not descend into subqueries nested inside an EXPRESSION — e.g.
+ *     `(CASE WHEN … THEN (SELECT … FROM oauth_tokens) END)` or a scalar
+ *     `SELECT (SELECT … FROM events) …`. Such a table was left unscoped.
+ *  2. PostgreSQL's `TABLE <name>` shorthand mis-parses as a column, yielding no
+ *     refs at all (handled by the SELECT/WITH guard in validateAndScopeQuery).
+ *
+ * Strategy here:
+ *  - Reject multiple statements and schema-qualified refs (both bypass scoping).
+ *  - Build the ref set from the UNION of `getTableNames` and a raw AST walk
+ *    (`collectAllTableNames`) — defense-in-depth: a table only escapes scoping
+ *    if BOTH extractors miss it.
+ *  - Exclude CTE names (local aliases, not base tables).
+ *  - FAIL-CLOSED collision guard: reject a query whose CTE name shadows a real
+ *    or admin table. The parser cannot tell, by lexical scope, whether `events`
+ *    in `WITH events AS (SELECT … FROM events)` is the CTE or the base table —
+ *    so we forbid the ambiguity rather than risk an unscoped base-table read.
  */
 function extractTableRefs(query: string): string[] {
   const res = parseSql(stripPlaceholders(query), Dialect.PostgreSQL);
@@ -141,13 +228,29 @@ function extractTableRefs(query: string): string[] {
     );
   }
 
-  // getTableNames returns the real referenced tables with user-defined CTE
-  // names already filtered out.
-  const tables = new Set<string>();
-  for (const name of ast.getTableNames(root)) {
-    if (typeof name === 'string' && name) tables.add(name.toLowerCase());
+  const cteNames = collectCteNames(root);
+  // A CTE may not shadow a real/admin table name — see fail-closed note above.
+  for (const cte of cteNames) {
+    if (QUERYABLE_TABLE_NAMES.has(cte) || ADMIN_ONLY_QUERYABLE_TABLES.has(cte)) {
+      throw new Error(
+        `CTE name '${cte}' collides with a reserved table name; rename the CTE.`
+      );
+    }
   }
-  return Array.from(tables);
+
+  // Union of getTableNames and the raw walk — a table escapes scoping only if
+  // BOTH miss it. CTE names are excluded (local aliases, not base tables).
+  const refs = new Set<string>();
+  for (const name of ast.getTableNames(root)) {
+    if (typeof name === 'string' && name) {
+      const n = name.toLowerCase();
+      if (!cteNames.has(n)) refs.add(n);
+    }
+  }
+  for (const n of collectAllTableNames(root)) {
+    if (!cteNames.has(n)) refs.add(n);
+  }
+  return Array.from(refs);
 }
 
 // ============================================
@@ -184,13 +287,24 @@ export function validateAndScopeQuery(
     throw new Error('SQL query is required');
   }
 
+  // Must be a read query. Rejects DML/DDL AND PostgreSQL's `TABLE <name>`
+  // shorthand (≡ `SELECT * FROM <name>`) — polyglot mis-parses `TABLE` as a
+  // column, so it would yield zero table refs and pass through UNSCOPED and
+  // past the admin-table gate. The gate below is fail-closed regardless, but
+  // rejecting the shorthand outright keeps the contract obvious.
+  if (!SELECT_OR_WITH.test(trimmed)) {
+    throw new Error('Only SELECT / WITH queries are allowed.');
+  }
+
   // Schema-level validation via SQL parser (rejects unknown tables/columns, mutations, etc.)
   const validation = validateTableQuery(trimmed);
   if (!validation.valid) {
     throw new Error(validation.errors.join('; '));
   }
 
-  // AST-based table extraction
+  // COMPLETE table extraction (union of getTableNames + raw walk, CTE names
+  // excluded). Drives the unknown-table check, the admin gate, AND org-scoping,
+  // so an expression-nested table is caught by all three.
   const tableRefs = extractTableRefs(trimmed);
   const unknown = tableRefs.filter((t) => !QUERYABLE_TABLE_NAMES.has(t));
   if (unknown.length > 0) {

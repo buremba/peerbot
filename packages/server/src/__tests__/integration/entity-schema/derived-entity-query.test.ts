@@ -126,4 +126,35 @@ describe('derived entity read path (reuse query_sql)', () => {
       db`INSERT INTO entities (entity_type_id, name, organization_id) VALUES (${row.id}, 'x', ${orgAId})`
     ).rejects.toThrow(/derived|cannot have stored rows/i);
   });
+
+  // query_sql is member-accessible; these are the parser-bypass leaks the
+  // bug-hunt confirmed (member reads the admin-only oauth_tokens via a parser
+  // hole). They must error through the real tool, not just validateAndScopeQuery.
+  const memberCtx = (): ToolContext => ({
+    organizationId: orgAId,
+    userId: 'member-u',
+    memberRole: 'member',
+    isAuthenticated: true,
+    tokenType: 'oauth',
+    scopedToOrg: false,
+    allowCrossOrg: false,
+  });
+
+  it('member query_sql rejects the `TABLE oauth_tokens` shorthand', async () => {
+    const res = await querySql({ sql: 'TABLE oauth_tokens' }, {}, memberCtx());
+    expect(res.rows).toHaveLength(0);
+    expect(res.error).toMatch(/SELECT \/ WITH/i);
+  });
+
+  it('member query_sql blocks oauth_tokens nested in a CASE subquery', async () => {
+    const res = await querySql(
+      {
+        sql: "SELECT id, (CASE WHEN true THEN (SELECT access_token FROM oauth_tokens LIMIT 1) ELSE 'x' END) AS leak FROM entities",
+      },
+      {},
+      memberCtx()
+    );
+    expect(res.rows).toHaveLength(0);
+    expect(res.error).toMatch(/admin access/i);
+  });
 });

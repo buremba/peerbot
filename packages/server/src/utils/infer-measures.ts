@@ -25,8 +25,9 @@ export interface DerivedColumn {
 // computed numeric (ratio). polyglot reports canonical aggregates by name
 // (sum/count/…) and everything else as the generic `aggregate_function` /
 // `within_group` (e.g. bool_or, jsonb_agg, percentile_cont … WITHIN GROUP);
-// `div` covers ratios. Anything else (a bare column, a cast of one) is a
-// dimension.
+// `div` covers ratios. A bare column (or a cast of one) is a dimension — but a
+// cast of an aggregate (`COUNT(*)::int`, `SUM(x)::numeric`) is still a measure,
+// so we peel cast/paren wrappers before classifying (see unwrapWrappers).
 const MEASURE_EXPR_TYPES = new Set<string>([
   'sum',
   'count',
@@ -54,6 +55,29 @@ const MEASURE_EXPR_TYPES = new Set<string>([
   // computed numeric (ratios)
   'div',
 ]);
+
+/**
+ * Peel `cast` / `paren` wrappers off a projection value so an aggregate hidden
+ * under them (`COUNT(*)::int`, `(SUM(x))::numeric`) is still classified by its
+ * underlying type. Stops at the first non-wrapper node. Bounded to guard against
+ * a pathological/cyclic tree.
+ */
+function unwrapWrappers(node: Node): Node {
+  let cur = node;
+  for (let i = 0; i < 24; i++) {
+    let type: string;
+    try {
+      type = ast.getExprType(cur);
+    } catch {
+      return cur;
+    }
+    if (type !== 'cast' && type !== 'paren') return cur;
+    const inner = (ast.getExprData(cur) as Record<string, unknown>).this;
+    if (!inner || typeof inner !== 'object') return cur;
+    cur = inner as Node;
+  }
+  return cur;
+}
 
 /** Pull a bare identifier string out of polyglot's `{ name, quoted }` shapes. */
 function identName(value: unknown): string | null {
@@ -109,7 +133,9 @@ export function inferColumns(sql: string): DerivedColumn[] {
 
     out.push({
       name,
-      role: MEASURE_EXPR_TYPES.has(ast.getExprType(valueExpr)) ? 'measure' : 'dimension',
+      role: MEASURE_EXPR_TYPES.has(ast.getExprType(unwrapWrappers(valueExpr)))
+        ? 'measure'
+        : 'dimension',
     });
   }
   return out;

@@ -42,6 +42,27 @@ describe('inferColumns', () => {
     expect(role.median_v).toBe('measure');
   });
 
+  it('sees through casts/parens to the underlying aggregate', () => {
+    // Regression: a cast wraps the aggregate node, so checking only the top
+    // node type reported `COUNT(*)::int` / `SUM(x)::numeric` as dimensions.
+    const role = Object.fromEntries(
+      inferColumns(
+        `SELECT g,
+                COUNT(*)::int            AS n,
+                SUM(amount)::numeric     AS total,
+                (AVG(x))::float8         AS avgx,
+                (metadata->>'amount')::numeric AS amt
+         FROM events GROUP BY g`
+      ).map((c) => [c.name, c.role])
+    );
+    expect(role.g).toBe('dimension');
+    expect(role.n).toBe('measure');
+    expect(role.total).toBe('measure');
+    expect(role.avgx).toBe('measure');
+    // a cast of a NON-aggregate stays a dimension (no false positive)
+    expect(role.amt).toBe('dimension');
+  });
+
   it('returns [] for SELECT * and unparseable SQL', () => {
     expect(inferColumns('SELECT * FROM events')).toEqual([]);
     expect(inferColumns('this is not sql')).toEqual([]);

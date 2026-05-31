@@ -735,19 +735,27 @@ export const RESTRICTED_QUERY_ROLE = 'lobu_query_restricted';
 let restrictedRolePromise: Promise<boolean> | null = null;
 
 /**
- * Whether {@link RESTRICTED_QUERY_ROLE} exists in this database. Cached
- * per-process — role existence is a DB-global fact, identical across replicas,
- * and the role is created by migration before the app serves traffic. When the
- * role is absent (e.g. a managed cluster where the app user lacks CREATEROLE,
- * so the migration's CREATE ROLE no-op'd), callers fall back to the app-layer
- * admin gate alone — no member query breaks.
+ * Whether the current DB user can actually `SET ROLE` to {@link
+ * RESTRICTED_QUERY_ROLE}. Checks ASSUMABILITY (`pg_has_role(... 'MEMBER')`), not
+ * mere existence: a role that exists but wasn't granted to the connecting user
+ * (e.g. the migration ran as a different user, or the GRANT step was skipped)
+ * would make `SET LOCAL ROLE` throw and abort every member query. Cached
+ * per-process — the answer is a DB-global fact, identical across replicas, and
+ * the role is provisioned by migration before the app serves traffic. When it's
+ * not assumable, callers fall back to the app-layer admin gate alone — no member
+ * query breaks. (The CASE short-circuits so `pg_has_role` is never evaluated for
+ * a non-existent role, which would itself error.)
  */
 export function restrictedQueryRoleAvailable(db: DbClient): Promise<boolean> {
   if (!restrictedRolePromise) {
     restrictedRolePromise = Promise.resolve(
-      db`SELECT 1 FROM pg_roles WHERE rolname = ${RESTRICTED_QUERY_ROLE}`
+      db`SELECT (CASE
+            WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = ${RESTRICTED_QUERY_ROLE})
+            THEN pg_has_role(current_user, ${RESTRICTED_QUERY_ROLE}, 'MEMBER')
+            ELSE false
+          END) AS ok`
     )
-      .then((rows) => Array.isArray(rows) && rows.length > 0)
+      .then((rows) => Array.isArray(rows) && rows[0]?.ok === true)
       .catch(() => false);
   }
   return restrictedRolePromise;

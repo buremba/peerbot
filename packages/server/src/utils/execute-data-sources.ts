@@ -550,12 +550,19 @@ function buildScopedQuery(
   if (ctes.length === 0) return { sql: processedQuery, params };
 
   const cteStr = `WITH ${ctes.join(',\n')}`;
-  const trimmed = processedQuery.trim();
+  // Strip leading line/block comments before deciding how to merge: a
+  // `-- note\nWITH x AS (…) …` query is still a WITH, and prepending a second
+  // WITH keyword would emit invalid SQL (`WITH … \n -- note \n WITH x …`).
+  // Comments are cosmetic, so dropping the leading ones is safe.
+  const body = processedQuery
+    .replace(/^(?:\s*--[^\n]*\n|\s*\/\*[\s\S]*?\*\/)+/, '')
+    .trim();
 
-  // If user query starts with WITH, merge CTEs (no duplicate WITH keyword)
-  const finalSql = /^WITH\b/i.test(trimmed)
-    ? `${cteStr},\n${trimmed.replace(/^WITH\s+/i, '')}`
-    : `${cteStr}\n${trimmed}`;
+  // If the user query is itself a WITH, splice our CTEs in front of its CTE list
+  // (single WITH keyword); otherwise prepend our WITH block.
+  const finalSql = /^WITH\b/i.test(body)
+    ? `${cteStr},\n${body.replace(/^WITH\s+/i, '')}`
+    : `${cteStr}\n${body}`;
 
   return { sql: finalSql, params };
 }

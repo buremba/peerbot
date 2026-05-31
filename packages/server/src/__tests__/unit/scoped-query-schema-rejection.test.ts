@@ -237,3 +237,40 @@ describe('validateAndScopeQuery — admin-table completeness invariant', () => {
     });
   }
 });
+
+/**
+ * Edge cases the review surfaced once query_sql became member-reachable (both
+ * pre-existing in buildScopedQuery / validateTableQuery, latent while the tool
+ * was admin-only). The output-alias relaxation must NOT relax real unknown
+ * columns or excluded columns — those stay rejected.
+ */
+describe('validateAndScopeQuery — ORDER BY/GROUP BY alias + leading-comment WITH', () => {
+  it('accepts ORDER BY on an output alias', () => {
+    const out = scopeAsMember('SELECT COUNT(*) AS n FROM events ORDER BY n');
+    expect(out.sql).toContain('organization_id');
+  });
+
+  it('accepts GROUP BY on an output alias', () => {
+    const out = scopeAsMember('SELECT semantic_type AS st, COUNT(*) AS c FROM events GROUP BY st');
+    expect(out.sql).toContain('organization_id');
+  });
+
+  it('still rejects ORDER BY on a genuinely unknown column', () => {
+    expect(() => scopeAsMember('SELECT id FROM events ORDER BY nonsense_col')).toThrow(
+      /unknown column/i
+    );
+  });
+
+  it('still rejects an excluded column even when aliased', () => {
+    // `credentials` is withheld from connections; aliasing it must not sneak it in.
+    expect(() => scopeAsMember('SELECT credentials AS x FROM connections')).toThrow(
+      /unknown column/i
+    );
+  });
+
+  it('emits a single WITH for a leading-comment WITH query (valid SQL)', () => {
+    const out = scopeAsMember('-- note\nWITH recent AS (SELECT id FROM events) SELECT * FROM recent');
+    expect((out.sql.match(/\bWITH\b/gi) || []).length).toBe(1);
+    expect(out.sql).toMatch(/"events"\s+AS\s+\(/i);
+  });
+});

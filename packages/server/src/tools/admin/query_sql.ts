@@ -170,17 +170,22 @@ export async function querySql(
         startTime
       );
     }
-    // Same-org querying is read-tier, but reaching into ANOTHER workspace stays
-    // owner/admin-only — re-validate against the *target* org's role, not the
-    // caller's role in the bound org.
-    if (role !== 'owner' && role !== 'admin') {
-      return errorResult(
-        `Cross-org query_sql requires owner or admin access in '${args.org_slug}'.`,
-        startTime
-      );
-    }
     targetOrgId = targetOrg.id;
-    callerIsAdmin = true; // cross-org already required owner/admin in the target
+    // Reaching into ANOTHER workspace stays owner/admin-only. Passing your OWN
+    // org slug is just an explicit form of the default and stays read-tier —
+    // don't reject a member or silently escalate them to admin. Either way the
+    // role is re-validated against the *target* org, not the bound-org role.
+    if (targetOrg.id !== ctx.organizationId) {
+      if (role !== 'owner' && role !== 'admin') {
+        return errorResult(
+          `Cross-org query_sql requires owner or admin access in '${args.org_slug}'.`,
+          startTime
+        );
+      }
+      callerIsAdmin = true; // cross-org already required owner/admin in the target
+    } else {
+      callerIsAdmin = role === 'owner' || role === 'admin';
+    }
   }
 
   // Validate, parse, and org-scope the query

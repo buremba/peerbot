@@ -157,4 +157,36 @@ describe('derived entity read path (reuse query_sql)', () => {
     expect(res.rows).toHaveLength(0);
     expect(res.error).toMatch(/admin access/i);
   });
+
+  it('DB trigger rejects re-pointing a stored row at a derived type (UPDATE)', async () => {
+    await owner.entity_schema.createType({ slug: 'animals', name: 'Animals' });
+    await owner.entity_schema.createType({
+      slug: 'animal-counts',
+      name: 'Animal counts',
+      backing: { sql: 'SELECT 1 AS x FROM events' },
+    });
+    await owner.entities.create({ type: 'animals', name: 'Cat' });
+    const db = getTestDb();
+    const [cat] = await db`
+      SELECT id FROM entities WHERE name = 'Cat' AND organization_id = ${orgAId} LIMIT 1
+    `;
+    const [derived] = await db`
+      SELECT id FROM entity_types WHERE slug = 'animal-counts' AND organization_id = ${orgAId} LIMIT 1
+    `;
+    // Re-pointing the row's entity_type_id to the derived type would orphan it.
+    await expect(
+      db`UPDATE entities SET entity_type_id = ${derived.id} WHERE id = ${cat.id}`
+    ).rejects.toThrow(/derived|cannot have stored rows/i);
+  });
+
+  it('DB trigger rejects setting backing_sql on a populated stored type (UPDATE)', async () => {
+    await owner.entity_schema.createType({ slug: 'plants', name: 'Plants' });
+    await owner.entities.create({ type: 'plants', name: 'Fern' });
+    const db = getTestDb();
+    // Direct DB convert-to-derived while rows exist must be rejected.
+    await expect(
+      db`UPDATE entity_types SET backing_sql = 'SELECT 1 AS x FROM events'
+         WHERE slug = 'plants' AND organization_id = ${orgAId}`
+    ).rejects.toThrow(/derived view while stored rows exist|delete them first/i);
+  });
 });

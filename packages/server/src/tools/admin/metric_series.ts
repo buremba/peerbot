@@ -22,7 +22,7 @@
 import { type Static, Type } from '@sinclair/typebox';
 import { getDb } from '../../db/client';
 import { validateAndScopeQuery } from '../../utils/execute-data-sources';
-import { ADMIN_ONLY_QUERYABLE_TABLES } from '../../utils/table-schema';
+import { ADMIN_ONLY_QUERYABLE_TABLES, SAFE_COLUMN_DEFS } from '../../utils/table-schema';
 import { ToolUserError } from '../../utils/errors';
 import logger from '../../utils/logger';
 import type { ToolContext } from '../registry';
@@ -73,6 +73,9 @@ export async function metricSeries(
   // (oauth_tokens, oauth_clients, user) stay admin-only.
   const isAdmin = ctx.memberRole === 'owner' || ctx.memberRole === 'admin';
   const { sql: scopedSql, params } = validateAndScopeQuery(args.sql, orgId, {
+    // Emit the safe column allowlist (not SELECT *) so a member charting e.g.
+    // `connections` can't pull credential columns the allowlist withholds.
+    safeColumns: SAFE_COLUMN_DEFS,
     restrictedTables: isAdmin ? undefined : ADMIN_ONLY_QUERYABLE_TABLES,
   });
   const db = getDb();

@@ -47,7 +47,7 @@ Latency is **retrieval-only latency**, not end-to-end wall clock. It is not full
 
 ## Reproducing the results
 
-The full harness lives in the [`lobu` repo](https://github.com/lobu-ai/lobu) under [`benchmarks/memory/`](https://github.com/lobu-ai/lobu/tree/main/benchmarks/memory). The TypeScript runner is at `packages/server/src/benchmarks/memory/runner.ts`, driven by `scripts/lobu/run-memory-benchmark.ts` (root `package.json` exposes it as `bun run lobu:bench:memory`). External systems are integrated as long-lived Python adapter subprocesses framed over JSONL-on-stdin, which avoids per-op fork/exec cost.
+The full harness is the open-source [`agent-memory-benchmark`](https://github.com/lobu-ai/agent-memory-benchmark) repo. Every system is reached only through its public client (REST/SDK/local server) — no privileged database access — so the numbers reflect what a real user actually gets. External systems are integrated as long-lived Python adapter subprocesses framed over JSONL-on-stdin, which avoids per-op fork/exec cost.
 
 ### Prerequisites
 
@@ -55,62 +55,21 @@ The full harness lives in the [`lobu` repo](https://github.com/lobu-ai/lobu) und
 - `ZAI_API_KEY` (z.ai, used as the answerer model `glm-5.1`)
 - API keys for any external systems you want to include: `MEM0_API_KEY`, `SUPERMEMORY_API_KEY`, `LETTA_API_KEY`, `ZEP_API_KEY`
 
-Run the harness with `bun run scripts/lobu/run-memory-benchmark.ts --config <path>` (or the shortcut `bun run lobu:bench:memory --config <path>`).
-
-### LongMemEval oracle-50, all systems
-
 ```bash
-ZAI_API_KEY=... MEM0_API_KEY=... SUPERMEMORY_API_KEY=... LETTA_API_KEY=... \
-  bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.longmemeval.oracle.50.compare.all.zai.json
+git clone https://github.com/lobu-ai/agent-memory-benchmark
+cd agent-memory-benchmark && bun install
+bun run scripts/run.ts --config configs/<config>.json
 ```
 
-### LoCoMo-50, three-way (Lobu vs Mem0 vs Supermemory)
-
-```bash
-ZAI_API_KEY=... MEM0_API_KEY=... SUPERMEMORY_API_KEY=... \
-  bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.locomo.50.compare.top-memory.zai.json
-```
-
-### Lobu-only, no external API keys
-
-```bash
-# Retrieval-only (no answerer)
-bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.longmemeval.oracle.50.json
-
-# Full QA with z.ai answerer
-ZAI_API_KEY=... bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.longmemeval.oracle.50.zai.json
-ZAI_API_KEY=... bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.locomo.50.zai.json
-```
-
-### Smaller LoCoMo slices
-
-```bash
-bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.locomo.5.local.json
-bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.locomo.10.compare.top-memory.zai.json
-bun run scripts/lobu/run-memory-benchmark.ts --config benchmarks/memory/config.locomo.30.local.json
-```
-
-A complete table of available configs is documented in [`benchmarks/memory/README.md`](https://github.com/lobu-ai/lobu/blob/main/benchmarks/memory/README.md#available-configs).
+Each config selects a suite (LongMemEval / LoCoMo) and the systems to compare; the Lobu adapter talks to a running `lobu` server over its public REST API. The full config list is in the [repo README](https://github.com/lobu-ai/agent-memory-benchmark#readme).
 
 ## GitHub Actions
 
-The Memory Benchmark workflow runs the same harness in CI and uploads JSON + Markdown artifacts.
-
-- Workflow: [`benchmark-memory.yml`](https://github.com/lobu-ai/lobu/blob/main/.github/workflows/benchmark-memory.yml)
-- Trigger: [Actions → Memory Benchmark → Run workflow](https://github.com/lobu-ai/lobu/actions/workflows/benchmark-memory.yml)
-
-Inputs include `dataset` (`longmemeval-oracle` or `locomo`), `limit`, `trials`, `model` (answerer model id), and `providers` (comma-separated adapter list).
+The benchmark repo runs the harness in CI and publishes JSON + Markdown artifacts to its leaderboard site — see [`.github/workflows/benchmark.yml`](https://github.com/lobu-ai/agent-memory-benchmark/blob/main/.github/workflows/benchmark.yml).
 
 ## Adapters
 
-| System | Adapter | Notes |
-|---|---|---|
-| Mem0 | [`adapters/mem0_adapter.py`](https://github.com/lobu-ai/lobu/blob/main/benchmarks/memory/adapters/mem0_adapter.py) | `MEM0_API_KEY` |
-| Supermemory | [`adapters/supermemory_adapter.py`](https://github.com/lobu-ai/lobu/blob/main/benchmarks/memory/adapters/supermemory_adapter.py) | `SUPERMEMORY_API_KEY` |
-| Letta | [`adapters/letta_adapter.py`](https://github.com/lobu-ai/lobu/blob/main/benchmarks/memory/adapters/letta_adapter.py) | `LETTA_API_KEY` |
-| Zep | [`adapters/zep_adapter.py`](https://github.com/lobu-ai/lobu/blob/main/benchmarks/memory/adapters/zep_adapter.py) | `ZEP_API_KEY` (Cloud) or `ZEP_BASE_URL` (self-hosted) |
-
-To add a new system, write a Python adapter that defines `reset` / `setup` / `ingest` / `retrieve` action handlers. The shared protocol module is at [`adapters/_bench_protocol.py`](https://github.com/lobu-ai/lobu/blob/main/benchmarks/memory/adapters/_bench_protocol.py).
+Adapters live in [`adapters/`](https://github.com/lobu-ai/agent-memory-benchmark/tree/main/adapters) (Mem0, Supermemory, Letta, Zep, and Lobu). To add a new system, write a Python adapter that defines `reset` / `setup` / `ingest` / `retrieve` handlers over the shared [`_bench_protocol.py`](https://github.com/lobu-ai/agent-memory-benchmark/blob/main/adapters/_bench_protocol.py), then open a PR.
 
 ## Why Lobu wins on retention
 

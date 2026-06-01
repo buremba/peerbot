@@ -95,6 +95,9 @@ packages/*/~/
 
 # Embedded PGlite dev data (make dev without DATABASE_URL)
 .lobu-dev/
+# Local benchmark run artifacts (harness moved to lobu-ai/agent-memory-benchmark)
+.lobu/
+.bench-hindsight/
 .sdk-e2e-run/
 .managed-e2e-run/
 .cli-smoke-run/

@@ -1,0 +1,67 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import "../globals.css";
+import { Footer } from "../components/Footer";
+import { Nav } from "../components/Nav";
+import { CAL_URL } from "../components/ScheduleDialog";
+---
+
+<BaseLayout
+  title="Schedule a call - Lobu"
+  description="Book a 15-minute call with the Lobu founder to talk through your use case, see the workspace, and get early access to apps we haven't published yet."
+>
+  <div class="min-h-screen" style={{ backgroundColor: "var(--color-page-bg)" }}>
+    <Nav client:load currentPath={Astro.url.pathname} />
+    <main class="relative z-[1] max-w-[60rem] mx-auto px-6 py-16">
+      <div class="text-center mb-10">
+        <p
+          class="text-xs uppercase tracking-[0.18em] mb-3"
+          style={{ color: "var(--color-page-text-muted)" }}
+        >
+          Talk to us
+        </p>
+        <h1
+          class="text-4xl font-bold mb-4"
+          style={{ color: "var(--color-page-text)" }}
+        >
+          Schedule a call
+        </h1>
+        <p
+          class="text-base max-w-[40rem] mx-auto leading-relaxed"
+          style={{ color: "var(--color-page-text-muted)" }}
+        >
+          Book 15 minutes with the founder to talk through your use case, see the
+          workspace, and get early access to the apps we haven't published yet.
+        </p>
+      </div>
+
+      <div
+        class="overflow-hidden rounded-2xl"
+        style={{
+          border: "1px solid var(--color-page-border)",
+          backgroundColor: "var(--color-page-surface)",
+        }}
+      >
+        <iframe
+          src={CAL_URL}
+          title="Schedule a call with the Lobu founder"
+          loading="lazy"
+          style="width: 100%; height: 80vh; min-height: 640px; border: 0; display: block;"
+        ></iframe>
+      </div>
+
+      <p
+        class="text-sm text-center mt-6"
+        style={{ color: "var(--color-page-text-muted)" }}
+      >
+        Prefer email? Reach us at{" "}
+        <a
+          href="mailto:hello@lobu.ai"
+          class="underline"
+          style={{ color: "var(--color-page-text)" }}>hello@lobu.ai</a
+        >.
+      </p>
+    </main>
+    <Footer />
+  </div>
+</BaseLayout>

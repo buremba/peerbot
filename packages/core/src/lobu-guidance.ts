@@ -12,6 +12,7 @@ const MEMORY_RULE_TEMPLATES = [
   "To search, call {{searchTool}}. Results include view_url links to the web interface.",
   "NEVER construct Lobu URLs yourself. When the user asks for a link, call {{searchTool}} to get the correct view_url.",
   'When the user says "remember this", save it to Lobu immediately.',
+  "When a message changes a fact you already stored (an updated preference, status, count, location, or plan), first {{searchTool}} for the prior memory to get its id, then {{saveTool}} the new value with supersedes_event_id set to that id. This replaces the stale value so future recalls return the current one; the old value stays in history but is hidden from normal search.",
 ];
 
 function renderTemplate(template: string, tools: MemoryGuidanceTools): string {

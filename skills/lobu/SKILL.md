@@ -53,6 +53,7 @@ Your long-term memory is powered by Lobu. Do NOT use local files (memory/, MEMOR
 - To search, call search_memory. Results include view_url links to the web interface.
 - NEVER construct Lobu URLs yourself. When the user asks for a link, call search_memory to get the correct view_url.
 - When the user says "remember this", save it to Lobu immediately.
+- When a message changes a fact you already stored (an updated preference, status, count, location, or plan), first search_memory for the prior memory to get its id, then save_memory the new value with supersedes_event_id set to that id. This replaces the stale value so future recalls return the current one; the old value stays in history but is hidden from normal search.
 <!-- lobu-memory-guidance:end -->
 
 ## Lobu Memory

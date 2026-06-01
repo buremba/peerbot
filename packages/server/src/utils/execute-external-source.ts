@@ -25,6 +25,7 @@ import { getAuthProfileById, normalizeAuthValues } from './auth-profiles';
 import { isCloudMode } from './cloud-mode';
 import { isReadQuery } from './execute-data-sources';
 import logger from './logger';
+import { COLUMN_NAME_RE, oidToTypeName } from './pg-oid';
 
 export interface ExternalSourceRef {
   organizationId: string;
@@ -49,33 +50,11 @@ export interface ExternalQueryResult {
   has_more: boolean;
 }
 
-const COLUMN_NAME_RE = /^[a-zA-Z_]\w*$/;
 const FORBIDDEN_OPS = /\b(COPY|IMPORT|PRAGMA|CALL|DO)\b/i;
 const POOL_MAX = Number.parseInt(process.env.EXTERNAL_DB_POOL_MAX || '4', 10);
 const MAX_POOLS = Number.parseInt(process.env.EXTERNAL_DB_MAX_POOLS || '25', 10);
 const POOL_IDLE_MS = 5 * 60 * 1000;
 const QUERY_TIMEOUT_MS = 15_000;
-
-const PG_OID_TYPE_MAP: Record<number, string> = {
-  16: 'boolean',
-  20: 'bigint',
-  21: 'smallint',
-  23: 'integer',
-  25: 'text',
-  114: 'json',
-  700: 'float4',
-  701: 'float8',
-  1042: 'bpchar',
-  1043: 'varchar',
-  1082: 'date',
-  1083: 'time',
-  1114: 'timestamp',
-  1184: 'timestamptz',
-  1186: 'interval',
-  1700: 'numeric',
-  2950: 'uuid',
-  3802: 'jsonb',
-};
 
 // ---------------------------------------------------------------------------
 // Read-only gate (no allowlist — it's the tenant's own DB)
@@ -292,7 +271,7 @@ const POSTGRES_ADAPTER: SqlDialectAdapter = {
     });
     const total = Number((countResult as Array<{ c?: number }>)[0]?.c ?? 0);
     const cols = (dataResult as unknown as { columns?: Array<{ name: string; type: number }> }).columns ?? [];
-    const columns = cols.map((c) => ({ name: c.name, type: PG_OID_TYPE_MAP[c.type] ?? 'unknown' }));
+    const columns = cols.map((c) => ({ name: c.name, type: oidToTypeName(c.type) }));
     return { rows: Array.isArray(dataResult) ? dataResult : [], total, columns };
   },
 };

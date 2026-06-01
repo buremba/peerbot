@@ -10,6 +10,7 @@ import { type Static, Type } from '@sinclair/typebox';
 import { getDb } from '../../db/client';
 import { validateAndScopeQuery } from '../../utils/execute-data-sources';
 import logger from '../../utils/logger';
+import { COLUMN_NAME_RE, oidToTypeName } from '../../utils/pg-oid';
 import { raceAbort } from '../../utils/race-abort';
 import { ADMIN_ONLY_QUERYABLE_TABLES, SAFE_COLUMN_DEFS } from '../../utils/table-schema';
 import { getCachedMembershipRole, getCachedOrgBySlug } from '../../workspace/multi-tenant';
@@ -68,34 +69,6 @@ interface QuerySqlResult {
   has_more: boolean;
   execution_time_ms: number;
   error?: string;
-}
-
-const COLUMN_NAME_RE = /^[a-zA-Z_]\w*$/;
-
-const PG_OID_TYPE_MAP: Record<number, string> = {
-  16: 'boolean',
-  20: 'bigint',
-  21: 'smallint',
-  23: 'integer',
-  25: 'text',
-  26: 'oid',
-  114: 'json',
-  700: 'float4',
-  701: 'float8',
-  1042: 'bpchar',
-  1043: 'varchar',
-  1082: 'date',
-  1083: 'time',
-  1114: 'timestamp',
-  1184: 'timestamptz',
-  1186: 'interval',
-  1700: 'numeric',
-  2950: 'uuid',
-  3802: 'jsonb',
-};
-
-function oidToTypeName(oid: number): string {
-  return PG_OID_TYPE_MAP[oid] ?? 'unknown';
 }
 
 function errorResult(message: string, startTime: number): QuerySqlResult {

@@ -182,7 +182,11 @@ describe("computeDiff — idempotency (applying twice is a no-op)", () => {
     const desired = buildState([], {
       memorySchema: {
         entityTypes: [
-          { slug: "ext", name: "Ext", backing: { sql, connection: "warehouse" } },
+          {
+            slug: "ext",
+            name: "Ext",
+            backing: { sql, connection: "warehouse" },
+          },
         ],
         relationshipTypes: [],
       },
@@ -204,7 +208,11 @@ describe("computeDiff — idempotency (applying twice is a no-op)", () => {
     const desired = buildState([], {
       memorySchema: {
         entityTypes: [
-          { slug: "ext", name: "Ext", backing: { sql, connection: "warehouse" } },
+          {
+            slug: "ext",
+            name: "Ext",
+            backing: { sql, connection: "warehouse" },
+          },
         ],
         relationshipTypes: [],
       },

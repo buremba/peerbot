@@ -8,6 +8,7 @@
 
 import { executeCompiledConnector } from '@lobu/connector-worker/executor/runtime';
 import { getDb } from '../db/client';
+import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { resolveExecutionAuth } from '../utils/execution-context';
 
@@ -17,6 +18,10 @@ export interface ConnectorQueryParams {
   connectionSlug: string;
   /** Read-only SQL to push down (a derived entity's backing_sql, or a feed query). */
   query: string;
+  /** Caller identity — enforces the same connection visibility as manage_connections. */
+  userId: string | null;
+  /** Owner/admin callers see every connection; members only org-visible or their own. */
+  isAdmin: boolean;
   feedKey?: string;
   config?: Record<string, unknown>;
   limit?: number;
@@ -32,16 +37,20 @@ export interface ConnectorQueryResult {
 
 export async function runConnectorQuery(p: ConnectorQueryParams): Promise<ConnectorQueryResult> {
   const sql = getDb();
+  // Resolve org-scoped + active, enforcing the same visibility as manage_connections:
+  // a member only reaches org-visible connections or ones they created.
   const connRows = await sql`
     SELECT id, connector_key, auth_profile_id, app_auth_profile_id
     FROM connections
     WHERE organization_id = ${p.organizationId}
       AND slug = ${p.connectionSlug}
       AND deleted_at IS NULL
+      AND status = 'active'
+      AND (${p.isAdmin} OR visibility = 'org' OR created_by = ${p.userId})
     LIMIT 1
   `;
   if (connRows.length === 0) {
-    throw new Error(`source connection '${p.connectionSlug}' no longer exists`);
+    throw new Error(`source connection '${p.connectionSlug}' not found or not accessible`);
   }
   const conn = connRows[0] as {
     id: number;
@@ -49,6 +58,10 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
     auth_profile_id: number | null;
     app_auth_profile_id: number | null;
   };
+
+  // Execution-time cloud gate: blocking connection CREATION isn't enough — an
+  // existing raw-DB connection must not run pushdown under LOBU_CLOUD_MODE either.
+  assertConnectorAllowedInCloud(conn.connector_key);
 
   const compiledRows = await sql`
     SELECT compiled_code FROM connector_versions

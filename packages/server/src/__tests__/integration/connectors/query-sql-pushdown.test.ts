@@ -45,11 +45,28 @@ describe('query_sql connection pushdown', () => {
     });
     await db`
       INSERT INTO connections
-        (organization_id, connector_key, slug, display_name, status, auth_profile_id, visibility, created_at, updated_at)
+        (organization_id, connector_key, slug, display_name, status, auth_profile_id, visibility, created_by, created_at, updated_at)
       VALUES
-        (${orgId}, 'postgres', 'qsp-ext-db', 'Ext DB', 'active', ${profile.id}, 'org', NOW(), NOW())
+        (${orgId}, 'postgres', 'qsp-ext-db', 'Ext DB', 'active', ${profile.id}, 'org', ${user.id}, NOW(), NOW())
+    `;
+    // A PRIVATE connection owned by the org owner — a member must not reach it.
+    await db`
+      INSERT INTO connections
+        (organization_id, connector_key, slug, display_name, status, auth_profile_id, visibility, created_by, created_at, updated_at)
+      VALUES
+        (${orgId}, 'postgres', 'qsp-priv-db', 'Private DB', 'active', ${profile.id}, 'private', ${user.id}, NOW(), NOW())
     `;
   }, 120_000);
+
+  const memberCtx = (): ToolContext => ({
+    organizationId: orgId,
+    userId: 'member-x',
+    memberRole: 'member',
+    isAuthenticated: true,
+    tokenType: 'oauth',
+    scopedToOrg: false,
+    allowCrossOrg: false,
+  });
 
   afterAll(async () => {
     await getTestDb()`DROP TABLE IF EXISTS qsp_ext`;
@@ -78,7 +95,7 @@ describe('query_sql connection pushdown', () => {
 
   it('errors on a missing connection', async () => {
     const res = await querySql({ sql: 'SELECT 1', connection: 'nope' }, {}, ctx);
-    expect(res.error).toMatch(/no longer exists/i);
+    expect(res.error).toMatch(/not found or not accessible/i);
   }, 60_000);
 
   it('errors on a write-capable query (connector read-only contract)', async () => {
@@ -90,5 +107,24 @@ describe('query_sql connection pushdown', () => {
     expect(res.error).toMatch(/data-modifying/i);
     const [{ n }] = await getTestDb()`SELECT count(*)::int AS n FROM qsp_ext WHERE name = '1'`;
     expect(Number(n)).toBe(0);
+  }, 60_000);
+
+  it('a member cannot reach another user’s PRIVATE connection by slug', async () => {
+    const res = await querySql({ sql: 'SELECT 1', connection: 'qsp-priv-db' }, {}, memberCtx());
+    expect(res.rows).toHaveLength(0);
+    expect(res.error).toMatch(/not found or not accessible/i);
+    // …and an owner/admin still can.
+    const ok = await querySql({ sql: 'SELECT count(*)::int AS n FROM qsp_ext', connection: 'qsp-priv-db' }, {}, ctx);
+    expect(ok.error).toBeUndefined();
+  }, 60_000);
+
+  it('refuses pushdown for an existing connection under LOBU_CLOUD_MODE', async () => {
+    process.env.LOBU_CLOUD_MODE = '1';
+    try {
+      const res = await querySql({ sql: 'SELECT 1', connection: 'qsp-ext-db' }, {}, ctx);
+      expect(res.error).toMatch(/Lobu Cloud/i);
+    } finally {
+      process.env.LOBU_CLOUD_MODE = undefined;
+    }
   }, 60_000);
 });

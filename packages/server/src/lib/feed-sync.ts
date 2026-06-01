@@ -6,6 +6,7 @@
 
 import { executeCompiledConnector } from '@lobu/connector-worker/executor/runtime';
 import { getDb, parsePgNumberArray } from '../db/client';
+import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
 import logger from '../utils/logger';
@@ -98,6 +99,10 @@ export async function runFeed(feed: FeedRecord): Promise<{ itemCount: number }> 
     },
     'Starting feed sync'
   );
+
+  // Execution-time cloud gate: a raw-DB connector must not run (even an existing
+  // feed's scheduled sync) under LOBU_CLOUD_MODE until egress hardening lands.
+  assertConnectorAllowedInCloud(feed.connector_key);
 
   const compiledCode = await resolveConnectorCode(feed.connector_key, feed.compiled_code);
 

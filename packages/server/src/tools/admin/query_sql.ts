@@ -213,6 +213,8 @@ export async function querySql(
         organizationId: targetOrgId,
         connectionSlug: args.connection,
         query: baseSql,
+        userId: ctx.userId,
+        isAdmin: callerIsAdmin,
         limit,
         offset,
         sort: args.sort_by

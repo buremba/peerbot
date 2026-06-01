@@ -30,6 +30,18 @@ export type ExecutorJob =
       config: Record<string, unknown>;
       previousCredentials: Record<string, unknown> | null;
       env: Record<string, string | undefined>;
+    }
+  | {
+      mode: 'query';
+      feedKey?: string | null;
+      query: string;
+      config: Record<string, unknown>;
+      credentials: SyncCredentials | null;
+      sessionState: Record<string, unknown> | null;
+      env: Record<string, string | undefined>;
+      limit?: number;
+      offset?: number;
+      sort?: { column: string; order: 'asc' | 'desc' };
     };
 
 /**
@@ -53,6 +65,12 @@ export type ExecutorResult =
   | {
       mode: 'authenticate';
       auth: AuthResult;
+    }
+  | {
+      mode: 'query';
+      rows: Record<string, unknown>[];
+      columns?: { name: string; type: string }[];
+      total?: number;
     };
 
 export interface ExecutionHooks {

@@ -8,9 +8,9 @@
 
 import { type Static, Type } from '@sinclair/typebox';
 import { getDb } from '../../db/client';
+import { runConnectorQuery } from '../../lib/connector-pushdown';
 import { validateAndScopeQuery } from '../../utils/execute-data-sources';
 import logger from '../../utils/logger';
-import { COLUMN_NAME_RE, oidToTypeName } from '../../utils/pg-oid';
 import { raceAbort } from '../../utils/race-abort';
 import { ADMIN_ONLY_QUERYABLE_TABLES, SAFE_COLUMN_DEFS } from '../../utils/table-schema';
 import { getCachedMembershipRole, getCachedOrgBySlug } from '../../workspace/multi-tenant';
@@ -21,6 +21,12 @@ export const QuerySqlSchema = Type.Object({
     description:
       'Base SELECT query. Table references are auto-scoped to your organization. It is wrapped as a subquery, so ORDER BY / LIMIT / window functions inside it are fine; pagination + sort are added on the outside via sort_by/limit/offset.',
   }),
+  connection: Type.Optional(
+    Type.String({
+      description:
+        'Optional connection slug. When set, `sql` runs LIVE (read-only) against that connection’s external database via its connector (pushdown), and the internal org-scoping is skipped. When unset, the query runs over your org’s internal tables.',
+    })
+  ),
   org_slug: Type.Optional(
     Type.String({
       description:
@@ -61,6 +67,34 @@ export const QuerySqlSchema = Type.Object({
 });
 
 type QuerySqlArgs = Static<typeof QuerySqlSchema>;
+
+const COLUMN_NAME_RE = /^[a-zA-Z_]\w*$/;
+
+const PG_OID_TYPE_MAP: Record<number, string> = {
+  16: 'boolean',
+  20: 'bigint',
+  21: 'smallint',
+  23: 'integer',
+  25: 'text',
+  26: 'oid',
+  114: 'json',
+  700: 'float4',
+  701: 'float8',
+  1042: 'bpchar',
+  1043: 'varchar',
+  1082: 'date',
+  1083: 'time',
+  1114: 'timestamp',
+  1184: 'timestamptz',
+  1186: 'interval',
+  1700: 'numeric',
+  2950: 'uuid',
+  3802: 'jsonb',
+};
+
+function oidToTypeName(oid: number): string {
+  return PG_OID_TYPE_MAP[oid] ?? 'unknown';
+}
 
 interface QuerySqlResult {
   rows: Record<string, unknown>[];
@@ -158,6 +192,42 @@ export async function querySql(
       callerIsAdmin = true; // cross-org already required owner/admin in the target
     } else {
       callerIsAdmin = role === 'owner' || role === 'admin';
+    }
+  }
+
+  // External pushdown: when a connection is named, the SQL runs LIVE against that
+  // connection's database via its connector (no internal org-scoping — it's the
+  // org's own DB, read-only). The connection is resolved org-scoped inside
+  // runConnectorQuery; access is bounded by the connection's read-only DB role.
+  if (args.connection) {
+    if (args.search_term) {
+      return errorResult(
+        'search_term is not supported with an external connection — use search_memory.',
+        startTime
+      );
+    }
+    const limit = Math.max(1, Math.min(500, Math.trunc(Number(args.limit ?? 50))));
+    const offset = Math.max(0, Math.trunc(Number(args.offset ?? 0)));
+    try {
+      const r = await runConnectorQuery({
+        organizationId: targetOrgId,
+        connectionSlug: args.connection,
+        query: baseSql,
+        limit,
+        offset,
+        sort: args.sort_by
+          ? { column: args.sort_by, order: args.sort_order === 'desc' ? 'desc' : 'asc' }
+          : undefined,
+      });
+      return {
+        rows: r.rows,
+        columns: r.columns,
+        total_count: r.total ?? r.rows.length,
+        has_more: r.total !== undefined ? offset + limit < r.total : r.rows.length >= limit,
+        execution_time_ms: Date.now() - startTime,
+      };
+    } catch (err) {
+      return errorResult(err instanceof Error ? err.message : String(err), startTime);
     }
   }
 

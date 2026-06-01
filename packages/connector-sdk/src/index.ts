@@ -46,6 +46,8 @@ export type {
   Feed,
   FeedDefinition,
   IdentityNamespace,
+  QueryContext,
+  QueryResult,
   Run,
   RunStatus,
   RunType,

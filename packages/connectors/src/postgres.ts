@@ -31,6 +31,8 @@ import {
   type ConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
+  type QueryContext,
+  type QueryResult,
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
@@ -155,22 +157,23 @@ function containsDmlNode(root: unknown): boolean {
   return false;
 }
 
+type ParsedSelect = { type?: string; limit?: { value?: unknown[] } | null };
+
 /**
- * Validate the user's base query and return it stripped of a trailing semicolon.
- * Rejects multi-statement, non-SELECT, data-modifying CTEs, top-level
- * LIMIT/OFFSET, and positional/named params — the hazards that break the keyset
- * wrap or violate the read-only connector contract (pi).
+ * Shared read-only gate: trim a trailing `;`, then reject multi-statement,
+ * non-SELECT, data-modifying CTEs, and positional/named params. Returns the
+ * stripped SQL + its top-level statement node. Used by both the memory feed
+ * (sync) and live query().
  */
-function validateBaseQuery(raw: string): string {
+function assertReadOnlyQuery(raw: string): { stripped: string; stmt: ParsedSelect } {
   const stripped = raw.trim().replace(/;\s*$/, '');
   if (!stripped) throw new Error('query is empty');
   if (stripped.includes(';')) {
     throw new Error('query must be a single statement (no embedded ";").');
   }
   if (/\$\d/.test(stripped) || /(^|[^:]):[A-Za-z_]/.test(stripped)) {
-    throw new Error('query must not contain bind parameters ($1, :name) — the connector binds the cursor itself.');
+    throw new Error('query must not contain bind parameters ($1, :name).');
   }
-
   let ast: unknown;
   try {
     ast = new Parser().astify(stripped, { database: 'postgresql' });
@@ -182,21 +185,35 @@ function validateBaseQuery(raw: string): string {
   if (statements.length !== 1) {
     throw new Error('query must be exactly one statement.');
   }
-  const stmt = statements[0] as { type?: string; limit?: { value?: unknown[] } | null };
+  const stmt = statements[0] as ParsedSelect;
   if (stmt.type !== 'select') {
     throw new Error(`query must be a SELECT (got ${stmt.type ?? 'unknown'}).`);
   }
   if (containsDmlNode(ast)) {
     throw new Error('query must not contain data-modifying statements (incl. in CTEs).');
   }
-  // node-sql-parser represents an ABSENT limit as `{ value: [] }` (a truthy
-  // object), not null — so only reject when an actual LIMIT/OFFSET term exists.
+  return { stripped, stmt };
+}
+
+/**
+ * Memory-feed base query: read-only AND no top-level LIMIT/OFFSET — the keyset
+ * wrap adds its own, and a user LIMIT would cap the window and stall the cursor.
+ */
+function validateBaseQuery(raw: string): string {
+  const { stripped, stmt } = assertReadOnlyQuery(raw);
+  // node-sql-parser represents an ABSENT limit as `{ value: [] }` (truthy), so
+  // only reject when an actual LIMIT/OFFSET term exists.
   if (Array.isArray(stmt.limit?.value) && stmt.limit.value.length > 0) {
     throw new Error(
       'query must not include a top-level LIMIT/OFFSET — it would cap the keyset window and stall incremental sync.',
     );
   }
   return stripped;
+}
+
+/** Live-query SQL: read-only; inner LIMIT/ORDER BY is fine (we wrap as a subquery). */
+function validateQuerySql(raw: string): string {
+  return assertReadOnlyQuery(raw).stripped;
 }
 
 function toCheckpointValue(v: unknown): string {
@@ -347,6 +364,56 @@ export default class PostgresConnector extends ConnectorRuntime {
         checkpoint: newCheckpoint as unknown as Record<string, unknown>,
         metadata: { items_found: events.length },
       };
+    } finally {
+      await sql.end({ timeout: 5 });
+    }
+  }
+
+  /**
+   * Live read (no copy): run `ctx.query` read-only against the source and return
+   * rows. The platform calls this for virtual-feed reads and external-backed
+   * derived entities. Inner ORDER BY/LIMIT in the query is fine — it's wrapped as
+   * a subquery and paginated on the outside.
+   */
+  async query(ctx: QueryContext): Promise<QueryResult> {
+    const connectionString = (ctx.config as Record<string, unknown>).DATABASE_URL as
+      | string
+      | undefined;
+    if (!connectionString) {
+      throw new Error('DATABASE_URL is required');
+    }
+    const baseSql = validateQuerySql(ctx.query);
+    const limit =
+      ctx.limit !== undefined ? Math.min(Math.max(Math.trunc(ctx.limit), 1), 5000) : 1000;
+    const offset = ctx.offset !== undefined ? Math.max(Math.trunc(ctx.offset), 0) : 0;
+    let orderBy = '';
+    if (ctx.sort?.column) {
+      const col = assertIdentifier(ctx.sort.column, 'sort.column');
+      orderBy = `ORDER BY q."${col}" ${ctx.sort.order === 'desc' ? 'DESC' : 'ASC'}`;
+    }
+    const wrapped = `SELECT * FROM (\n${baseSql}\n) q\n${orderBy}\nLIMIT ${limit} OFFSET ${offset}`;
+
+    const sql = postgres(connectionString, {
+      max: 2,
+      idle_timeout: 5,
+      connect_timeout: 15,
+      prepare: false,
+      onnotice: () => {},
+    });
+    try {
+      const result = (await sql.begin(async (tx) => {
+        await tx.unsafe('SET TRANSACTION READ ONLY');
+        await tx.unsafe('SET LOCAL statement_timeout = 30000');
+        return tx.unsafe(wrapped);
+      })) as unknown as Array<Record<string, unknown>> & {
+        columns?: Array<{ name: string; type: number }>;
+      };
+      const rows = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : [];
+      const columns = (result.columns ?? []).map((c) => ({
+        name: c.name,
+        type: OID_CAST[c.type] ?? 'unknown',
+      }));
+      return { rows, columns };
     } finally {
       await sql.end({ timeout: 5 });
     }

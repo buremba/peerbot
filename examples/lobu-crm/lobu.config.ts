@@ -437,7 +437,8 @@ const lobu_dbConn = defineConnection({
 });
 
 // Live, no-copy: funnel counts computed at read time straight from the prod DB
-// (an external-backed derived entity — query_entity_type runs it live).
+// (an external-backed derived entity — backing.connection pushes the SQL down to
+// the connector, read live via query_sql({ connection })).
 const funnel_by_org = defineEntityType({
   key: "funnel_by_org",
   name: "Funnel by org",

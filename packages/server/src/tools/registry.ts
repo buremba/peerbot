@@ -21,7 +21,6 @@ import { getPublicReadableActions, getRequiredAccessLevel } from '../auth/tool-a
 import type { Env } from '../index';
 import { INTERNAL_REST_TOOLS } from './admin';
 import { MetricSeriesSchema, metricSeries } from './admin/metric_series';
-import { QueryEntityTypeSchema, queryEntityType } from './admin/query_entity_type';
 import { QuerySqlSchema, querySql } from './admin/query_sql';
 import { ListOrganizationsSchema } from './organizations';
 import { ResolvePathSchema, resolvePath } from './resolve_path';
@@ -157,14 +156,6 @@ const TOOLS: ToolDefinition[] = [
     inputSchema: QuerySqlSchema,
     annotations: READ_ONLY,
     handler: querySql,
-  },
-  {
-    name: 'query_entity_type',
-    description:
-      "Read the rows of a DERIVED (view-backed) entity type by slug, paginated/sortable/searchable. You pass only the type slug — the server runs the type's stored view. An internal view is org-scoped like query_sql; an external-backed view (bound to a connection) runs read-only against that connection's database. Returns `{ rows, columns, total_count, has_more, source }`.",
-    inputSchema: QueryEntityTypeSchema,
-    annotations: READ_ONLY,
-    handler: queryEntityType,
   },
   {
     name: 'metric_series',

@@ -1,68 +1,79 @@
 # Database connectors (Postgres) — design + gating
 
-Bring an external database in as memory (and, for derived entities, as live
-metrics). V1 ships **Postgres**; Snowflake/BigQuery are additive (see end).
+Bring an external database in as memory, and read it live (no copy) for derived
+entities. V1 ships **Postgres**; Snowflake/BigQuery are additive (see end).
 
-## Two materialization paths (object-decides — no `mode` toggle)
+## The model: connectors push compute down; Lobu aggregates
 
-- **Memory feed** — a `postgres` connection + a `query` feed. The feed runs a
-  user-authored read-only `SELECT` on a schedule, wraps it with a keyset
-  compound-cursor predicate, and emits one event per row → embedded, searchable
-  memory. Incremental via `cursor_column`. (`packages/connectors/src/postgres.ts`)
-- **Live derived entity** — `defineEntityType({ backing: { connection, sql } })`.
-  The view executes LIVE against the connection's database at read time (no copy)
-  via `query_entity_type` → `execute-external-source.ts`. `backing.connection`
-  omitted ⇒ the view runs over Lobu's internal `events`/`entities` (unchanged).
+The connector owns the DB connection — for *both* indexing and live reads. The
+gateway never opens an external pool.
 
-Single-database only: every query targets exactly one database; no cross-source
-joins. True multi-source federation is deferred to an enterprise engine (DuckDB).
+- **Memory feed (indexed)** — a `postgres` connection + a `query` feed runs a
+  read-only `SELECT` on a schedule, keyset-incremental, and emits one event per
+  row → embedded, searchable memory. (`packages/connectors/src/postgres.ts`)
+- **Live read (no copy)** — the connector's `query()` runs SQL live against the
+  source and returns rows, persisting nothing. The platform reaches it through one
+  primitive: `runConnectorQuery` (`packages/server/src/lib/connector-pushdown.ts`),
+  which invokes the connector in the worker `query` run-mode (the same inline-run
+  path as `operations.execute`).
+- **`query_sql({ connection })`** is the single door: with a `connection` slug it
+  pushes the SQL down via `runConnectorQuery` (internal org-scoping skipped — it's
+  the org's own DB); without, it runs the internal org-scoped path. There is no
+  separate `query_entity_type` tool.
+- **Derived entity** — `defineEntityType({ backing: { sql, connection? } })`. With
+  `connection`, the read is `get_type → query_sql({ sql: backing_sql, connection })`
+  → pushdown. Without, it's the shipped internal view over `events`/`entities`.
 
-## SSRF / egress trust model (implemented gate)
+Single-database only: every query targets one database; no cross-source joins
+(that's a later DuckDB-class engine).
 
-A DB connector opens **raw TCP** from app/worker pods to the host in
-`DATABASE_URL`. The dogfood reaches Lobu's *own private* PG, so the HTTP scrapers'
-block-all-private-IPs rule can't be reused.
+Slice 2 (next): **virtual feeds** (a `virtual` feed flag → live reads, no events)
+and **federated search** (a connector `search()` the platform fans out to and
+merges with the vector index). The SDK `virtual` flag and the `query` primitive
+are already in place; `search()` + the fan-out are the remaining work.
 
-- **Self-hosted / first-party:** `DATABASE_URL` is an operator-set secret — the
-  same trust boundary as any other env secret. Private IPs allowed. Ships now.
-- **Untrusted multi-tenant cloud:** a tenant-supplied `DATABASE_URL` pointing at
-  `169.254.169.254`, internal CIDRs, or another tenant's DB is an exfil/scan
-  vector. **Not allowed yet.** Under `LOBU_CLOUD_MODE=1`, three gates apply:
-  1. the postgres connector is hidden from the catalog (`connector-catalog.ts`);
-  2. creating a postgres connection is hard-blocked (`manage_connections.ts` via
-     `connector-cloud-gate.ts`); and
-  3. the live external-read path (`executeExternalSource`) refuses to run — the
-     airtight gate, since a derived view could bind to *any* env connection
-     carrying a `DATABASE_URL`, not just the postgres connector.
+## SSRF / egress trust model
 
-**Before enabling on cloud (the hardening gate):** an egress allowlist;
-resolve-then-pin the host IP at connect time with DNS-rebinding protection; block
-link-local/metadata + internal CIDRs; per-org policy. Remove the key from
-`CLOUD_RESTRICTED_CONNECTOR_KEYS` only once that lands.
+The DB socket lives in the **connector subprocess**, behind the worker egress
+controls — not the gateway. The dogfood reaches Lobu's own private PG, so the HTTP
+scrapers' block-all-private-IPs rule can't be reused.
+
+- **Self-hosted / first-party:** `DATABASE_URL` is an operator-set secret — same
+  trust boundary as any other env secret. Private IPs allowed. Ships now.
+- **Untrusted multi-tenant cloud:** a tenant-supplied `DATABASE_URL` (metadata
+  IPs, internal CIDRs, another tenant's DB) is an exfil/scan vector. **Not allowed
+  yet.** Under `LOBU_CLOUD_MODE=1` the postgres connector is hidden from the
+  catalog (`connector-catalog.ts`) and connection-create is hard-blocked
+  (`manage_connections.ts` via `connector-cloud-gate.ts`). Because every live read
+  goes *through* the connector, blocking the connector blocks the pushdown too — no
+  separate executor gate needed.
+
+**Before enabling on cloud:** an egress allowlist; resolve-then-pin the host IP at
+connect time with DNS-rebinding protection; block link-local/metadata + internal
+CIDRs; per-org policy. Remove the key from `CLOUD_RESTRICTED_CONNECTOR_KEYS` only
+once that lands.
 
 ## Entitlement boundary (design-only — not yet built)
 
-Gate advanced database connectivity behind a paid tier to upsell. Seam:
-`organization.plan` (`free` | `pro` | `enterprise`) + an entitlement check in the
-`packages/server/src/workspace/multi-tenant.ts` auth resolver.
+Gate advanced database connectivity behind a paid tier. Seam: `organization.plan`
+(`free` | `pro` | `enterprise`) + a check in the `multi-tenant.ts` auth resolver.
 
 | Capability | Tier |
 | --- | --- |
 | Postgres connector + memory feeds | free / pro |
-| Single-source internal derived entities | free / pro |
+| Internal derived entities | free / pro |
 | External-backed (live) derived entities — `backing.connection` set | pro / enterprise |
-| Warehouse connectors (Snowflake, BigQuery) | enterprise |
-| Multi-DB / cross-source federation (DuckDB) | enterprise |
+| Warehouse connectors (Snowflake, BigQuery), virtual feeds + federated search | enterprise |
 
-Enforcement points when built: connector install (`manage_connections` create),
-connection count, and presence of `backing.connection` on an entity type.
+Enforcement points when built: connector install, connection count, and presence
+of `backing.connection`.
 
 ## Snowflake / BigQuery forward-compat
 
-No redesign needed. `env_keys` already takes multiple secret fields
+No redesign needed: each is a new bundled connector implementing `sync()` +
+`query()` (+ later `search()`), with `env_keys` carrying its credentials
 (Snowflake account/user/keypair/warehouse/role; BigQuery service-account JSON).
-`execute-external-source.ts` is built against a `SqlDialectAdapter` seam — a new
-adapter (read-only enforcement, param style, `maximumBytesBilled`) plus a new
-bundled connector is additive. Metered warehouses make "live, every read" cost
-money → the TTL cache + a bytes cap become mandatory there, pushing big sources
-toward materialization (the enterprise/DuckDB tier).
+The pushdown plumbing (`runConnectorQuery`, the `query` run-mode, `query_sql`'s
+`connection`) is dialect-agnostic — only the connector's own `query()` differs.
+Metered warehouses make "live, every read" costly → those lean on the indexed
+(memory-feed) path or materialization.

@@ -1,0 +1,11 @@
+{
+  "name": "@lobu/example-personal-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Lobu example: personal agent with a project-local Revolut connector.",
+  "type": "module",
+  "devDependencies": {
+    "@lobu/cli": "^9.3.0",
+    "@lobu/connector-sdk": "^9.3.0"
+  }
+}

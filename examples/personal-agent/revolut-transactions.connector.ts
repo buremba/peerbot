@@ -428,7 +428,7 @@ const transactionMetadataSchema = {
 	},
 };
 
-export default class RevolutConnector extends ConnectorRuntime {
+export default class RevolutTransactionsConnector extends ConnectorRuntime {
 	readonly definition: ConnectorDefinition = {
 		key: "revolut",
 		name: "Revolut",

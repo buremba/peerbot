@@ -44,7 +44,6 @@ const ICON_SLUGS: Record<string, string> = {
   whatsapp: "whatsapp",
   "whatsapp.local": "whatsapp",
   x: "x",
-  revolut: "revolut",
   rss: "rss",
   trustpilot: "trustpilot",
   g2: "g2",

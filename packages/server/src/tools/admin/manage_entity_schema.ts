@@ -45,6 +45,13 @@ const AutoCreateWhenRuleInputSchema = Type.Object(
 const BackingInputSchema = Type.Object(
   {
     sql: Type.String({ minLength: 1, description: 'ANSI SELECT defining the view' }),
+    connection: Type.Optional(
+      Type.String({
+        minLength: 1,
+        description:
+          'Optional connection slug. When set, the view runs LIVE against that connection’s external database (read-only, no copy) instead of internal tables. Stored verbatim; resolved to the connection at read time.',
+      })
+    ),
   },
   { additionalProperties: false }
 );
@@ -173,6 +180,8 @@ interface EntityTypeRow {
   metadata_schema?: Record<string, unknown> | null;
   event_kinds?: Record<string, unknown> | null;
   backing_sql?: string | null;
+  /** Connection slug an external-backed derived view runs against; null ⇒ internal. */
+  backing_source?: string | null;
   is_system: boolean;
   created_by?: string | null;
   organization_id?: string | null;
@@ -282,10 +291,10 @@ export async function manageEntitySchema(
 // ============================================
 
 const ENTITY_TYPE_COLUMNS =
-  'id, slug, name, description, icon, color, metadata_schema, event_kinds, backing_sql, created_by, organization_id, created_at, updated_at, current_view_template_version_id';
+  'id, slug, name, description, icon, color, metadata_schema, event_kinds, backing_sql, backing_source, created_by, organization_id, created_at, updated_at, current_view_template_version_id';
 
 const ENTITY_TYPE_COLUMNS_WITH_ORG = `et.id, et.slug, et.name, et.description, et.icon, et.color,
-  et.metadata_schema, et.event_kinds, et.backing_sql,
+  et.metadata_schema, et.event_kinds, et.backing_sql, et.backing_source,
   et.created_by, et.organization_id,
   et.created_at, et.updated_at, et.current_view_template_version_id,
   o.slug AS organization_slug`;
@@ -536,7 +545,7 @@ async function etHandleCreate(
     INSERT INTO entity_types (
       slug, name, description, icon, color,
       metadata_schema, event_kinds,
-      backing_sql,
+      backing_sql, backing_source,
       organization_id, created_by,
       created_at, updated_at
     ) VALUES (
@@ -548,6 +557,7 @@ async function etHandleCreate(
       ${metadataSchema},
       ${eventKinds},
       ${args.backing?.sql ?? null},
+      ${args.backing?.connection ?? null},
       ${ctx.organizationId},
       ${ctx.userId},
       current_timestamp,
@@ -635,6 +645,10 @@ async function etHandleUpdate(
       backing_sql = CASE
         WHEN ${hasBacking} THEN ${args.backing?.sql ?? null}::text
         ELSE backing_sql
+      END,
+      backing_source = CASE
+        WHEN ${hasBacking} THEN ${args.backing?.connection ?? null}::text
+        ELSE backing_source
       END,
       updated_by = ${ctx.userId},
       updated_at = current_timestamp

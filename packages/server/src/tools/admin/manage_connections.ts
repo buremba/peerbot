@@ -40,6 +40,7 @@ import {
   summarizeBrowserSessionAuthData,
 } from '../../utils/auth-profiles';
 import { createConnectToken } from '../../utils/connect-tokens';
+import { assertConnectorAllowedInCloud } from '../../utils/connector-cloud-gate';
 import {
   ConnectionSlugConflictError,
   connectionSlugFormatError,
@@ -866,6 +867,15 @@ async function handleCreate(
 ): Promise<ManageConnectionsResult> {
   const sql = getDb();
   const { organizationId, userId } = ctx;
+
+  // Cloud-mode hard gate (plan §G): raw-DB connectors aren't installable by
+  // untrusted multi-tenant cloud tenants until egress hardening lands. No-op
+  // self-hosted. (The catalog also hides them; this blocks a direct API call.)
+  try {
+    assertConnectorAllowedInCloud(args.connector_key);
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
 
   // Resolve caller role once — we use it for created_by overrides, explicit
   // app_auth_profile picks, and member-friendly error messages downstream.

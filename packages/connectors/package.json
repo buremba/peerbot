@@ -11,8 +11,10 @@
   "dependencies": {
     "@lobu/connector-sdk": "workspace:*",
     "baileys": "7.0.0-rc.9",
+    "node-sql-parser": "^5.3.13",
     "playwright": "npm:patchright@^1.57.0",
     "playwright-vanilla": "npm:playwright@^1.60.0",
+    "postgres": "^3.4.7",
     "turndown": "7.2.2"
   },
   "devDependencies": {

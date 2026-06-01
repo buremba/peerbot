@@ -38,6 +38,14 @@ export type ConnectorRef = string | ConnectorClass;
 export interface EntityBacking {
   /** ANSI SELECT over other relations (events, entities, …). */
   sql: string;
+  /**
+   * Optional connection slug. When set, `sql` runs LIVE against that connection's
+   * single external database (read-only, no copy) instead of Lobu's internal
+   * store — see {@link defineConnection}. Omitted ⇒ the view runs over internal
+   * events/entities (the default). Single-database only: `sql` may reference only
+   * tables that exist in the bound connection's database.
+   */
+  connection?: string;
 }
 
 export interface EntityType {

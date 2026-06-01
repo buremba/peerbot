@@ -46,10 +46,13 @@ export interface DesiredEntityType {
   /**
    * Present only for derived (SQL-view-backed) entity types; absent ⇒ stored
    * (the default). Normalized so a stored type compares equal on both sides
-   * (desired + remote both omit it) and never churns the diff.
+   * (desired + remote both omit it) and never churns the diff. `connection` (a
+   * slug) is present only for an external-backed view; both sides omit it for an
+   * internal view, so it never churns either.
    */
   backing?: {
     sql: string;
+    connection?: string;
   };
 }
 

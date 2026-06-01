@@ -27,9 +27,13 @@ block-all-private-IPs rule can't be reused.
   same trust boundary as any other env secret. Private IPs allowed. Ships now.
 - **Untrusted multi-tenant cloud:** a tenant-supplied `DATABASE_URL` pointing at
   `169.254.169.254`, internal CIDRs, or another tenant's DB is an exfil/scan
-  vector. **Not allowed yet.** `LOBU_CLOUD_MODE=1` hides the connector from the
-  catalog (`connector-catalog.ts`) and hard-blocks connection creation
-  (`manage_connections.ts` via `connector-cloud-gate.ts`).
+  vector. **Not allowed yet.** Under `LOBU_CLOUD_MODE=1`, three gates apply:
+  1. the postgres connector is hidden from the catalog (`connector-catalog.ts`);
+  2. creating a postgres connection is hard-blocked (`manage_connections.ts` via
+     `connector-cloud-gate.ts`); and
+  3. the live external-read path (`executeExternalSource`) refuses to run — the
+     airtight gate, since a derived view could bind to *any* env connection
+     carrying a `DATABASE_URL`, not just the postgres connector.
 
 **Before enabling on cloud (the hardening gate):** an egress allowlist;
 resolve-then-pin the host IP at connect time with DNS-rebinding protection; block

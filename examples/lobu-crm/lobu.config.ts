@@ -476,6 +476,11 @@ export default defineConfig({
     x_mentionsConn,
     lobu_dbConn,
   ],
-  authProfiles: [github_accountAuth, github_appAuth, x_accountAuth, lobu_dbAuth],
+  authProfiles: [
+    github_accountAuth,
+    github_appAuth,
+    x_accountAuth,
+    lobu_dbAuth,
+  ],
   watchers: [funnel_digestWatcher, inbound_triageWatcher],
 });

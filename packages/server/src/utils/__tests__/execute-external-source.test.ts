@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { assertExternalReadQuery } from '../execute-external-source';
+import { afterEach, describe, expect, it } from 'vitest';
+import { assertExternalReadQuery, executeExternalSource } from '../execute-external-source';
 
 describe('assertExternalReadQuery (external read-only gate)', () => {
   it('accepts a plain SELECT', () => {
@@ -38,5 +38,27 @@ describe('assertExternalReadQuery (external read-only gate)', () => {
     expect(() => assertExternalReadQuery("COPY t TO PROGRAM 'sh'")).toThrow();
     expect(() => assertExternalReadQuery('CALL do_thing()')).toThrow();
     expect(() => assertExternalReadQuery('DO $$ BEGIN END $$')).toThrow();
+  });
+
+  it('rejects a data-modifying CTE (defense-in-depth)', () => {
+    expect(() =>
+      assertExternalReadQuery('WITH x AS (INSERT INTO t VALUES (1) RETURNING id) SELECT * FROM x')
+    ).toThrow(/data-modifying/i);
+    expect(() =>
+      assertExternalReadQuery('WITH d AS (DELETE FROM t RETURNING id) SELECT * FROM d')
+    ).toThrow(/data-modifying/i);
+  });
+});
+
+describe('executeExternalSource cloud-mode gate (§G SSRF)', () => {
+  afterEach(() => {
+    process.env.LOBU_CLOUD_MODE = undefined;
+  });
+
+  it('refuses to run under LOBU_CLOUD_MODE before touching any DB', async () => {
+    process.env.LOBU_CLOUD_MODE = '1';
+    await expect(
+      executeExternalSource({ organizationId: 'org', connectionSlug: 'c' }, 'SELECT 1')
+    ).rejects.toThrow(/Lobu Cloud/i);
   });
 });

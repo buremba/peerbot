@@ -118,6 +118,11 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 				coverage: "round-trip",
 				note: "paginated read-only SQL auto-scoped to the org returns rows",
 			},
+			query_entity_type: {
+				args: { slug: "coverage-probe" },
+				coverage: "reachable",
+				note: "reads a derived entity type's rows; an unknown slug returns a structured { error } result, not a throw",
+			},
 			metric_series: {
 				args: {
 					sql: "SELECT date_trunc('day', created_at) AS bucket, count(*)::int AS n FROM entities GROUP BY 1",

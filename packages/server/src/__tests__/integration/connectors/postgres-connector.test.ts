@@ -78,4 +78,19 @@ describe('PostgresConnector.sync (keyset incremental, real DB)', () => {
     );
     await expect(run({ query: 'UPDATE pgc_it SET email = NULL' }, null)).rejects.toThrow(/SELECT/i);
   });
+
+  it('rejects a write-capable CTE (read-only connector contract)', async () => {
+    await expect(
+      run(
+        {
+          query:
+            "WITH x AS (INSERT INTO pgc_it (email, created_at) VALUES ('hack','2030-01-01') RETURNING id) SELECT * FROM x",
+        },
+        null
+      )
+    ).rejects.toThrow(/data-modifying/i);
+    // The write must NOT have happened.
+    const [{ n }] = await getTestDb()`SELECT count(*)::int AS n FROM pgc_it WHERE email = 'hack'`;
+    expect(Number(n)).toBe(0);
+  });
 });

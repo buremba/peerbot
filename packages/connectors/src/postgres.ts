@@ -128,10 +128,38 @@ function assertIdentifier(value: string, label: string): string {
   return value;
 }
 
+const DML_NODE_TYPES = new Set(['insert', 'update', 'delete', 'replace']);
+
+/**
+ * Walk the node-sql-parser AST for any data-modifying node. A top-level SELECT
+ * can still wrap a write-capable CTE (`WITH x AS (INSERT … RETURNING) SELECT …`),
+ * which the parser reports as a top-level `select` — so the `stmt.type` check
+ * alone misses it. The read-only transaction is the hard seal; this rejects it
+ * up front so a feed query can never attempt a write.
+ */
+function containsDmlNode(root: unknown): boolean {
+  const seen = new Set<object>();
+  const stack: unknown[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (!node || typeof node !== 'object' || seen.has(node as object)) continue;
+    seen.add(node as object);
+    if (Array.isArray(node)) {
+      for (const child of node) stack.push(child);
+      continue;
+    }
+    const obj = node as Record<string, unknown>;
+    if (typeof obj.type === 'string' && DML_NODE_TYPES.has(obj.type)) return true;
+    for (const key of Object.keys(obj)) stack.push(obj[key]);
+  }
+  return false;
+}
+
 /**
  * Validate the user's base query and return it stripped of a trailing semicolon.
- * Rejects multi-statement, non-SELECT, top-level LIMIT/OFFSET, and positional/
- * named params — the hazards that break the keyset wrap (pi).
+ * Rejects multi-statement, non-SELECT, data-modifying CTEs, top-level
+ * LIMIT/OFFSET, and positional/named params — the hazards that break the keyset
+ * wrap or violate the read-only connector contract (pi).
  */
 function validateBaseQuery(raw: string): string {
   const stripped = raw.trim().replace(/;\s*$/, '');
@@ -157,6 +185,9 @@ function validateBaseQuery(raw: string): string {
   const stmt = statements[0] as { type?: string; limit?: { value?: unknown[] } | null };
   if (stmt.type !== 'select') {
     throw new Error(`query must be a SELECT (got ${stmt.type ?? 'unknown'}).`);
+  }
+  if (containsDmlNode(ast)) {
+    throw new Error('query must not contain data-modifying statements (incl. in CTEs).');
   }
   // node-sql-parser represents an ABSENT limit as `{ value: [] }` (a truthy
   // object), not null — so only reject when an actual LIMIT/OFFSET term exists.
@@ -251,51 +282,56 @@ export default class PostgresConnector extends ConnectorRuntime {
     });
 
     try {
-      // 1. Probe column types so the string-serialized checkpoint can be re-cast.
-      const probe = await sql.unsafe(`SELECT * FROM (\n${baseSql}\n) q LIMIT 0`);
-      const cols = (probe as unknown as { columns?: Array<{ name: string; type: number }> }).columns ?? [];
-      const colByName = new Map(cols.map((c) => [c.name, c]));
-      if (cols.length > 0 && !colByName.has(cursorCol)) {
-        throw new Error(`cursor_column "${cursorCol}" is not a column in the query result.`);
-      }
-      if (cols.length > 0 && !colByName.has(pkCol)) {
-        throw new Error(`primary_key "${pkCol}" is not a column in the query result.`);
-      }
-      const castFor = (name: string): string => {
-        const t = colByName.get(name)?.type;
-        const cast = t !== undefined ? OID_CAST[t] : undefined;
-        return cast ? `::${cast}` : '';
-      };
-      const curCast = castFor(cursorCol);
-      const pkCast = castFor(pkCol);
-
-      // 2. Build the keyset-paginated query.
-      const colCur = `q."${cursorCol}"`;
-      const colPk = `q."${pkCol}"`;
-      const haveCursor = checkpoint.last_cursor !== undefined && checkpoint.last_pk !== undefined;
-
-      let wrapped: string;
-      let params: unknown[];
-      if (haveCursor) {
-        wrapped =
-          `SELECT * FROM (\n${baseSql}\n) q\n` +
-          `WHERE (${colCur} > $1${curCast} ` +
-          `OR (${colCur} = $1${curCast} AND ${colPk} > $2${pkCast}))\n` +
-          `ORDER BY ${colCur}, ${colPk} LIMIT $3`;
-        params = [checkpoint.last_cursor, checkpoint.last_pk, limit];
-      } else {
-        wrapped = `SELECT * FROM (\n${baseSql}\n) q\nORDER BY ${colCur}, ${colPk} LIMIT $1`;
-        params = [limit];
-      }
-
-      // 3. Run read-only with a statement timeout.
+      // Everything runs inside ONE read-only transaction — the probe included —
+      // so even a crafted query (e.g. a data-modifying CTE that slipped past
+      // validateBaseQuery) cannot write while we introspect or read.
       const rows = (await sql.begin(async (tx) => {
         await tx.unsafe('SET TRANSACTION READ ONLY');
         await tx.unsafe(`SET LOCAL statement_timeout = ${Math.floor(timeoutMs)}`);
+
+        // 1. Probe column types so the string-serialized checkpoint can be re-cast.
+        const probe = await tx.unsafe(`SELECT * FROM (\n${baseSql}\n) q LIMIT 0`);
+        const cols =
+          (probe as unknown as { columns?: Array<{ name: string; type: number }> }).columns ?? [];
+        const colByName = new Map(cols.map((c) => [c.name, c]));
+        if (cols.length > 0 && !colByName.has(cursorCol)) {
+          throw new Error(`cursor_column "${cursorCol}" is not a column in the query result.`);
+        }
+        if (cols.length > 0 && !colByName.has(pkCol)) {
+          throw new Error(`primary_key "${pkCol}" is not a column in the query result.`);
+        }
+        const castFor = (name: string): string => {
+          const t = colByName.get(name)?.type;
+          const cast = t !== undefined ? OID_CAST[t] : undefined;
+          return cast ? `::${cast}` : '';
+        };
+        const curCast = castFor(cursorCol);
+        const pkCast = castFor(pkCol);
+
+        // 2. Build the keyset-paginated query.
+        const colCur = `q."${cursorCol}"`;
+        const colPk = `q."${pkCol}"`;
+        const haveCursor =
+          checkpoint.last_cursor !== undefined && checkpoint.last_pk !== undefined;
+
+        let wrapped: string;
+        let params: unknown[];
+        if (haveCursor) {
+          wrapped =
+            `SELECT * FROM (\n${baseSql}\n) q\n` +
+            `WHERE (${colCur} > $1${curCast} ` +
+            `OR (${colCur} = $1${curCast} AND ${colPk} > $2${pkCast}))\n` +
+            `ORDER BY ${colCur}, ${colPk} LIMIT $3`;
+          params = [checkpoint.last_cursor, checkpoint.last_pk, limit];
+        } else {
+          wrapped = `SELECT * FROM (\n${baseSql}\n) q\nORDER BY ${colCur}, ${colPk} LIMIT $1`;
+          params = [limit];
+        }
+
         return tx.unsafe(wrapped, params as never[]);
       })) as unknown as Array<Record<string, unknown>>;
 
-      // 4. Map rows → events, advancing the compound checkpoint to the last row.
+      // Map rows → events, advancing the compound checkpoint to the last row.
       const events: EventEnvelope[] = [];
       let newCheckpoint: PgCheckpoint = checkpoint;
       for (const row of rows) {

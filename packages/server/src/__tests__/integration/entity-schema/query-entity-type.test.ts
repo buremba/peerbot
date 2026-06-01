@@ -98,7 +98,8 @@ describe('query_entity_type', () => {
       name: 'External spend',
       backing: {
         connection: 'qet-ext-db',
-        sql: 'SELECT org, sum(amount)::numeric AS total, count(*)::int AS n FROM qet_ext_signups GROUP BY org',
+        // trailing ';' must be stripped before the subquery wrap.
+        sql: 'SELECT org, sum(amount)::numeric AS total, count(*)::int AS n FROM qet_ext_signups GROUP BY org;',
       },
     });
 

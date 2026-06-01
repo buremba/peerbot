@@ -120,18 +120,14 @@ export function assertExternalReadQuery(sql: string): void {
 // Credential resolution (connection slug → DATABASE_URL)
 // ---------------------------------------------------------------------------
 
-interface ResolvedExternalConn {
-  url: string;
-  connectorKey: string | null;
-}
-
-async function resolveExternalConnection(
+/** Resolve a connection slug → its env `DATABASE_URL`, scoped to the org. */
+async function resolveExternalDatabaseUrl(
   organizationId: string,
   connectionSlug: string
-): Promise<ResolvedExternalConn> {
+): Promise<string> {
   const db = getDb();
   const rows = await db`
-    SELECT id, connector_key, auth_profile_id
+    SELECT auth_profile_id
     FROM connections
     WHERE organization_id = ${organizationId}
       AND slug = ${connectionSlug}
@@ -141,20 +137,16 @@ async function resolveExternalConnection(
   if (rows.length === 0) {
     throw new Error(`source connection '${connectionSlug}' no longer exists`);
   }
-  const conn = rows[0] as {
-    connector_key: string | null;
-    auth_profile_id: number | null;
-  };
+  const conn = rows[0] as { auth_profile_id: number | null };
   const profile = await getAuthProfileById(organizationId, conn.auth_profile_id);
   if (!profile || profile.profile_kind !== 'env') {
     throw new Error(`source connection '${connectionSlug}' has no environment credentials`);
   }
-  const env = normalizeAuthValues(profile.auth_data);
-  const url = env.DATABASE_URL;
+  const url = normalizeAuthValues(profile.auth_data).DATABASE_URL;
   if (!url) {
     throw new Error(`source connection '${connectionSlug}' is missing DATABASE_URL`);
   }
-  return { url, connectorKey: conn.connector_key };
+  return url;
 }
 
 // ---------------------------------------------------------------------------
@@ -328,10 +320,13 @@ export async function executeExternalSource(
 
   const sortOrder = opts.sortOrder === 'desc' ? 'DESC' : 'ASC';
   const orderBy = opts.sortBy ? `ORDER BY "${opts.sortBy}" ${sortOrder}` : '';
-  const countSql = `SELECT count(*)::int AS c FROM (${viewSql}) AS _t ${searchWhere}`;
-  const dataSql = `SELECT * FROM (${viewSql}) AS _t ${searchWhere} ${orderBy} LIMIT ${limit} OFFSET ${offset}`;
+  // A trailing ';' passes the single-statement gate but breaks the subquery wrap
+  // (`(SELECT 1;) AS _t` is a syntax error) — strip one before wrapping.
+  const view = viewSql.trim().replace(/;\s*$/, '');
+  const countSql = `SELECT count(*)::int AS c FROM (${view}) AS _t ${searchWhere}`;
+  const dataSql = `SELECT * FROM (${view}) AS _t ${searchWhere} ${orderBy} LIMIT ${limit} OFFSET ${offset}`;
 
-  const { url } = await resolveExternalConnection(ref.organizationId, ref.connectionSlug);
+  const url = await resolveExternalDatabaseUrl(ref.organizationId, ref.connectionSlug);
   const key = `${ref.organizationId}:${ref.connectionSlug}`;
   const pool = getPool(key, url);
 

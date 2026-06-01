@@ -1,11 +1,16 @@
 import {
   connectorFromFile,
   defineAgent,
+  defineAuthProfile,
   defineConfig,
+  defineConnection,
   defineEntityType,
-  secret,
 } from "@lobu/cli/config";
 import type RevolutTransactionsConnector from "./revolut-transactions.connector.ts";
+
+// This Mac's device worker (Owletto). Syncs/actions for device-pinned
+// connections run here — where the logged-in Chrome / CDP session lives.
+const DEVICE_WORKER_ID = "2c295bed-1dfa-4c8b-9f58-c20a62aadfc2";
 
 const personalAgent = defineAgent({
   id: "personal-agent",
@@ -13,13 +18,8 @@ const personalAgent = defineAgent({
   name: "personal-agent",
   description:
     "A personal agent that tracks finances, people, companies, subscriptions, trips, and topics across the user's own data.",
-  providers: [
-    {
-      id: "anthropic",
-      model: "claude/sonnet-4-5",
-      key: secret("ANTHROPIC_API_KEY"),
-    },
-  ],
+  // No cloud provider key: runs on the local/Mac-app device worker and inherits
+  // the org's default provider. No ANTHROPIC_API_KEY needed.
   network: {
     allowed: [
       "app.revolut.com",
@@ -39,27 +39,13 @@ const person = defineEntityType({
   description: "Team member, contact, or stakeholder",
   metadata: { icon: "user", color: "#8B5CF6" },
   properties: {
-    role: {
-      type: "string",
-      "x-table-label": "Role",
-      "x-table-column": true,
-    },
+    role: { type: "string" },
     type: {
       type: "string",
       enum: ["employee", "client_contact", "partner", "external"],
-      "x-table-label": "Type",
-      "x-table-column": true,
     },
-    email: {
-      type: "string",
-      "x-table-label": "Email",
-      "x-table-column": true,
-    },
-    company: {
-      type: "string",
-      "x-table-label": "Company",
-      "x-table-column": true,
-    },
+    email: { type: "string" },
+    company: { type: "string" },
     session_prefix: { type: "string" },
   },
 });
@@ -70,7 +56,7 @@ const company = defineEntityType({
   description: "Portfolio company or deal pipeline company",
   metadata: { icon: "building", color: "#2563eb" },
   properties: {
-    mrr: { type: "number", "x-table-label": "MRR", "x-table-column": true },
+    mrr: { type: "number", description: "Monthly recurring revenue in USD" },
     stage: {
       type: "string",
       enum: [
@@ -82,26 +68,40 @@ const company = defineEntityType({
         "growth",
         "public",
       ],
-      "x-table-label": "Stage",
-      "x-table-column": true,
+      description: "Current funding stage",
     },
-    market: {
-      type: "string",
-      "x-table-label": "Market",
-      "x-table-column": true,
-    },
-    thesis: { type: "string" },
-    revenue: { type: "number" },
+    market: { type: "string", description: "Primary market vertical" },
+    thesis: { type: "string", description: "Investment thesis notes" },
+    revenue: { type: "number", description: "Annual revenue in USD" },
     location: { type: "string" },
-    one_liner: { type: "string" },
-    team_size: { type: "integer" },
-    valuation: { type: "number" },
-    growth_rate: { type: "number" },
-    linkedin_url: { type: "string" },
-    founding_year: { type: "integer" },
-    funding_raised: { type: "number" },
-    traction_score: { type: "number" },
-    traction_signals: { type: "object" },
+    one_liner: { type: "string", description: "One-line pitch" },
+    team_size: { type: "integer", minimum: 0 },
+    valuation: { type: "number", description: "Last known valuation in USD" },
+    growth_rate: { type: "number", description: "YoY growth rate as decimal" },
+    linkedin_url: { type: "string", format: "uri" },
+    founding_year: { type: "integer", maximum: 2030, minimum: 1900 },
+    funding_raised: {
+      type: "number",
+      description: "Total funding raised in USD",
+    },
+    traction_score: {
+      type: "number",
+      maximum: 100,
+      minimum: 0,
+      description: "Computed traction score",
+    },
+    traction_signals: {
+      type: "object",
+      properties: {
+        hiring: { type: "number" },
+        last_updated: { type: "string", format: "date-time" },
+        news_coverage: { type: "number" },
+        github_velocity: { type: "number" },
+        social_mentions: { type: "number" },
+        app_store_growth: { type: "number" },
+        review_sentiment: { type: "number" },
+      },
+    },
   },
 });
 
@@ -111,17 +111,13 @@ const asset = defineEntityType({
   description:
     "Things you own with monetary value - bank accounts, property, investments, vehicles, devices",
   metadata: { icon: "💰", color: "#10B981" },
+  required: ["category"],
   properties: {
-    value: {
-      type: "number",
-      "x-table-label": "Value",
-      "x-table-column": true,
-    },
+    value: { type: "number", description: "Current value or balance" },
     status: {
       type: "string",
       enum: ["active", "sold", "closed"],
-      "x-table-label": "Status",
-      "x-table-column": true,
+      description: "Current status",
     },
     category: {
       type: "string",
@@ -132,15 +128,14 @@ const asset = defineEntityType({
         "vehicle",
         "device",
       ],
-      "x-table-label": "Category",
-      "x-table-column": true,
+      description: "Type of asset",
     },
-    currency: {
+    currency: { type: "string", description: "Currency code (GBP, USD, etc)" },
+    acquired_date: {
       type: "string",
-      "x-table-label": "Ccy",
-      "x-table-column": true,
+      format: "date",
+      description: "When acquired",
     },
-    acquired_date: { type: "string" },
   },
 });
 
@@ -150,39 +145,35 @@ const subscription = defineEntityType({
   description:
     "Recurring costs and obligations - subscriptions, bills, insurance, memberships",
   metadata: { icon: "🔄", color: "#EF4444" },
+  required: ["category"],
   properties: {
-    amount: {
-      type: "number",
-      "x-table-label": "Amount",
-      "x-table-column": true,
-    },
+    amount: { type: "number", description: "Current charge amount" },
     status: {
       type: "string",
       enum: ["active", "cancelled", "changed"],
-      "x-table-label": "Status",
-      "x-table-column": true,
+      description: "Current status",
     },
     category: {
       type: "string",
       enum: ["subscription", "bill", "insurance", "membership"],
-      "x-table-label": "Category",
-      "x-table-column": true,
+      description: "Type of expense",
     },
-    currency: {
-      type: "string",
-      "x-table-label": "Ccy",
-      "x-table-column": true,
-    },
+    currency: { type: "string", description: "Currency code" },
     frequency: {
       type: "string",
       enum: ["monthly", "annual", "periodic"],
-      "x-table-label": "Frequency",
-      "x-table-column": true,
+      description: "How often charged",
     },
-    last_seen: { type: "string" },
-    first_seen: { type: "string" },
-    billing_day: { type: "number" },
-    total_spent: { type: "number" },
+    last_seen: { type: "string", format: "date" },
+    first_seen: { type: "string", format: "date" },
+    billing_day: {
+      type: "number",
+      description: "Day of month typically charged",
+    },
+    total_spent: {
+      type: "number",
+      description: "Total spent over tracked period",
+    },
   },
 });
 
@@ -193,11 +184,7 @@ const topic = defineEntityType({
     "Generic topic or category for organizing content and connections",
   metadata: { icon: "📚", color: "#8B5CF6" },
   properties: {
-    description: {
-      type: "string",
-      "x-table-label": "Description",
-      "x-table-column": true,
-    },
+    description: { type: "string" },
   },
 });
 
@@ -206,38 +193,36 @@ const trip = defineEntityType({
   name: "Trip",
   description: "Travel experiences with associated spending",
   metadata: { icon: "✈️", color: "#F59E0B" },
+  required: ["destination"],
   properties: {
-    people: {
-      type: "number",
-      "x-table-label": "People",
-      "x-table-column": true,
-    },
-    currency: {
-      type: "string",
-      "x-table-label": "Ccy",
-      "x-table-column": true,
-    },
-    end_date: {
-      type: "string",
-      "x-table-label": "End",
-      "x-table-column": true,
-    },
-    start_date: {
-      type: "string",
-      "x-table-label": "Start",
-      "x-table-column": true,
-    },
-    total_cost: {
-      type: "number",
-      "x-table-label": "Total",
-      "x-table-column": true,
-    },
-    destination: {
-      type: "string",
-      "x-table-label": "Destination",
-      "x-table-column": true,
-    },
+    people: { type: "number", description: "Number of travellers" },
+    currency: { type: "string" },
+    end_date: { type: "string", format: "date" },
+    start_date: { type: "string", format: "date" },
+    total_cost: { type: "number" },
+    destination: { type: "string", description: "Primary destination" },
   },
+});
+
+// Revolut runs through the browser's live session over CDP, so its auth grant
+// is performed at runtime (lobu memory browser-auth) — no stored secret here.
+const revolutAuth = defineAuthProfile({
+  slug: "revolut-buremba",
+  connector: "revolut",
+  authKind: "browser_session",
+  name: "Revolut (this Mac)",
+});
+
+// Connection pinned to THIS Mac's device worker: the sync runs where the
+// logged-in Revolut Chrome / CDP session lives, not in the cloud. max_scrolls
+// is raised so the first run paginates the full multi-year history.
+const revolutConnection = defineConnection({
+  slug: "revolut-buremba",
+  connector: "revolut",
+  name: "Revolut",
+  authProfile: "revolut-buremba",
+  deviceWorkerId: DEVICE_WORKER_ID,
+  feeds: [{ feed: "transactions", config: { max_scrolls: 100 } }],
 });
 
 export default defineConfig({
@@ -252,4 +237,6 @@ export default defineConfig({
     "Personal agent tracking finances, people, companies, subscriptions, trips, and topics.",
   agents: [personalAgent],
   entities: [person, company, asset, subscription, topic, trip],
+  authProfiles: [revolutAuth],
+  connections: [revolutConnection],
 });

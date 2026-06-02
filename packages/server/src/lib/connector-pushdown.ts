@@ -95,10 +95,12 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
       // one non-credential we inject: under cloud mode a DB connector must reject
       // internal/metadata hosts (block-private); self-hosted reaches its own
       // private DB (allow-private). env is {} so this is the only channel for it.
+      // Injected LAST so neither caller config nor credentials can override this
+      // security control.
       config: {
-        LOBU_DB_EGRESS_POLICY: isCloudMode() ? 'block-private' : 'allow-private',
         ...connectionCredentials,
         ...(p.config ?? {}),
+        LOBU_DB_EGRESS_POLICY: isCloudMode() ? 'block-private' : 'allow-private',
       },
       env: {},
       sessionState,

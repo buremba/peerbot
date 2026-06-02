@@ -21,6 +21,7 @@ import { querySql } from '../../../tools/admin/query_sql';
 import type { ToolContext } from '../../../tools/registry';
 import { createAuthProfile } from '../../../utils/auth-profiles';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
+import { post } from '../../setup/test-helpers';
 import {
   addUserToOrganization,
   createTestOrganization,
@@ -149,6 +150,74 @@ describe('postgres dogfood E2E (memory feed + connection-backed derived entity)'
       entityIds: [],
     });
     expect(r2.events).toHaveLength(0);
+  }, 60_000);
+
+  it('memory feed ingestion: connector envelopes land in events via the worker stream, deduped by origin_id', async () => {
+    const db = getTestDb();
+    const conn = new PostgresConnector();
+    const r = await conn.sync({
+      feedKey: 'query',
+      config: {
+        DATABASE_URL: process.env.DATABASE_URL,
+        query: SIGNUP_SQL,
+        primary_key: 'id',
+        cursor_column: 'created_at',
+        mapping: { title: 'email', occurred_at: 'created_at' },
+      } as never,
+      checkpoint: null as never,
+      credentials: null,
+      entityIds: [],
+    });
+
+    const [connRow] = await db`
+      SELECT id FROM connections WHERE slug = 'dog-prod-db' AND organization_id = ${orgId}
+    `;
+    const connId = Number((connRow as { id: number }).id);
+    const [feed] = await db`
+      INSERT INTO feeds (organization_id, connection_id, feed_key, status, created_at, updated_at)
+      VALUES (${orgId}, ${connId}, 'query', 'active', NOW(), NOW()) RETURNING id
+    `;
+    const feedId = Number((feed as { id: number }).id);
+    const [run] = await db`
+      INSERT INTO runs
+        (organization_id, run_type, feed_id, connection_id, connector_key, connector_version, status, approval_status, created_at)
+      VALUES
+        (${orgId}, 'sync', ${feedId}, ${connId}, 'postgres', '1.0.0', 'running', 'auto', current_timestamp)
+      RETURNING id
+    `;
+    const runId = Number((run as { id: number }).id);
+
+    // The worker streams the connector's EventEnvelopes to the gateway.
+    const items = r.events.map((e) => ({
+      id: e.origin_id,
+      title: e.title,
+      payload_text: e.payload_text,
+      occurred_at: (e.occurred_at as Date).toISOString(),
+    }));
+    const res = await post('/api/workers/stream', { body: { type: 'batch', run_id: runId, items } });
+    expect(res.status).toBe(200);
+
+    const events = await db`
+      SELECT origin_id, connector_key FROM events
+      WHERE connection_id = ${connId} AND origin_id LIKE 'query:%'
+      ORDER BY origin_id
+    `;
+    expect(events.map((e) => (e as { origin_id: string }).origin_id)).toEqual([
+      'query:u1',
+      'query:u2',
+      'query:u3',
+    ]);
+    expect(events.every((e) => (e as { connector_key: string }).connector_key === 'postgres')).toBe(
+      true
+    );
+
+    // Re-stream the SAME envelopes → dedup by origin_id: still 3 current records, not 6.
+    await post('/api/workers/stream', { body: { type: 'batch', run_id: runId, items } });
+    const [current] = await db`
+      SELECT count(*)::int AS n FROM current_event_records
+      WHERE connection_id = ${connId} AND origin_id LIKE 'query:%'
+    `;
+    expect(Number((current as { n: number }).n)).toBe(3);
   }, 60_000);
 
   it('connection-backed derived entity: create, get_type returns backing_source, read LIVE via pushdown', async () => {

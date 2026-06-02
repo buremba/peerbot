@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  assertConnectionStringAllowed,
   assertHostAllowed,
   type DbEgressPolicy,
+  extractDbHosts,
   type HostLookup,
   isBlockedIp,
   normalizeIpLiteral,
@@ -77,6 +79,26 @@ describe('isBlockedIp — genuine public addresses pass under both', () => {
   }
 });
 
+describe('isBlockedIp — IPv4-compatible IPv6 (::a.b.c.d) is unwrapped, not bypassed', () => {
+  // ::7f00:1 = 127.0.0.1 (loopback); ::a9fe:a9fe = 169.254.169.254 (metadata).
+  test('::7f00:1 normalizes to 127.0.0.1', () =>
+    expect(normalizeIpLiteral('::7f00:1')).toEqual({ kind: 'ipv4', value: '127.0.0.1' }));
+  test('::a9fe:a9fe (metadata) blocked under BOTH', () => {
+    expect(isBlockedIp('::a9fe:a9fe', BLOCK)).toBe(true);
+    expect(isBlockedIp('::a9fe:a9fe', ALLOW)).toBe(true);
+  });
+  test('::7f00:1 (loopback) blocked on cloud, allowed self-hosted', () => {
+    expect(isBlockedIp('::7f00:1', BLOCK)).toBe(true);
+    expect(isBlockedIp('::7f00:1', ALLOW)).toBe(false);
+  });
+  test(':: and ::1 are NOT mis-unwrapped', () => {
+    expect(normalizeIpLiteral('::')).toEqual({ kind: 'ipv6', value: '::' });
+    expect(normalizeIpLiteral('::1')).toEqual({ kind: 'ipv6', value: '::1' });
+    expect(isBlockedIp('::1', ALLOW)).toBe(false); // v6 loopback allowed self-hosted
+    expect(isBlockedIp('::1', BLOCK)).toBe(true);
+  });
+});
+
 describe('normalizeIpLiteral — brackets, zone ids, mapped/NAT64', () => {
   test('strips zone id', () => expect(normalizeIpLiteral('fe80::1%eth0')).toEqual({ kind: 'ipv6', value: 'fe80::1' }));
   test('::ffff: dotted → ipv4', () => expect(normalizeIpLiteral('::ffff:127.0.0.1')).toEqual({ kind: 'ipv4', value: '127.0.0.1' }));
@@ -148,5 +170,55 @@ describe('assertHostAllowed — hostname resolution (injected resolver)', () => 
     await expect(assertHostAllowed('nope.invalid', BLOCK, failing)).rejects.toThrow(
       /could not be resolved/i
     );
+  });
+});
+
+describe('extractDbHosts — host parsing for the egress guard', () => {
+  test('single host with port + creds', () =>
+    expect(extractDbHosts('postgres://u:p@db.example.com:5432/x')).toEqual(['db.example.com']));
+  test('password containing @ uses the LAST @', () =>
+    expect(extractDbHosts('postgres://u:p@ss@db.example.com:5432/x')).toEqual(['db.example.com']));
+  test('IPv6 bracket host', () =>
+    expect(extractDbHosts('postgres://u:p@[::1]:5432/x')).toEqual(['::1']));
+  test('multi-host failover URL → every host', () =>
+    expect(extractDbHosts('postgres://u:p@h1:5432,169.254.169.254:5432/x')).toEqual([
+      'h1',
+      '169.254.169.254',
+    ]));
+  test('no port', () => expect(extractDbHosts('postgres://u:p@plainhost/x')).toEqual(['plainhost']));
+  test('no authority (unix socket form) → []', () =>
+    expect(extractDbHosts('postgres:///mydb?host=/tmp')).toEqual([]));
+  test('non-URL key=value string → []', () =>
+    expect(extractDbHosts('host=localhost dbname=x')).toEqual([]));
+});
+
+describe('assertConnectionStringAllowed — multi-host + policy', () => {
+  test('block-private rejects a multi-host URL where ANY host is metadata (literals, no DNS)', async () => {
+    await expect(
+      assertConnectionStringAllowed('postgres://u:p@8.8.8.8,169.254.169.254:5432/x', BLOCK)
+    ).rejects.toThrow(/blocked internal\/metadata/i);
+  });
+
+  test('allow-private does NOT DNS-resolve a hostname multi-host URL (no failover regression)', async () => {
+    // The injected lookup throws if called — proving allow-private skips hostnames.
+    const explodingLookup: HostLookup = async () => {
+      throw new Error('lookup must not be called under allow-private for a hostname');
+    };
+    await expect(
+      assertConnectionStringAllowed(
+        'postgres://u:p@a.example.com,b.example.com:5432/x',
+        ALLOW,
+        explodingLookup
+      )
+    ).resolves.toBeUndefined();
+  });
+
+  test('block-private fails closed when no host can be parsed; allow-private skips it', async () => {
+    await expect(
+      assertConnectionStringAllowed('postgres:///mydb?host=/tmp', BLOCK)
+    ).rejects.toThrow(/could not be parsed/i);
+    await expect(
+      assertConnectionStringAllowed('postgres:///mydb?host=/tmp', ALLOW)
+    ).resolves.toBeUndefined();
   });
 });

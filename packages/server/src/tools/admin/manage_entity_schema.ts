@@ -352,6 +352,11 @@ function assertValidBacking(backing: ManageEntitySchemaArgs['backing']): void {
   if (backing && typeof backing.sql === 'string' && backing.sql.trim() === '') {
     throw new Error('backing.sql cannot be empty');
   }
+  // Symmetric guard: an empty `connection` would persist backing_source='' — a
+  // slug that resolves to no connection, failing only at read time.
+  if (backing && typeof backing.connection === 'string' && backing.connection.trim() === '') {
+    throw new Error('backing.connection cannot be empty');
+  }
 }
 
 async function getEntityCountsByType(organizationId: string): Promise<Map<number, number>> {

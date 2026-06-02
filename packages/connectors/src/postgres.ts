@@ -20,11 +20,14 @@
  *  - origin_id = "<feed>:<pk>" so two feeds on one connection never collide, and
  *    re-emitting a row supersedes (events ingestion dedupes by origin_id).
  *
- * V1 trust model (plan §G): first-party / operator-set DATABASE_URL — private IPs
- * are allowed (the dogfood reaches Lobu's own private PG). Untrusted multi-tenant
- * cloud exposure is gated separately (the bundled connector is hidden under
- * LOBU_CLOUD_MODE until egress hardening lands); this runtime does not SSRF-block
- * private hosts the way the HTTP scrapers do.
+ * V1 trust model (plan §G): the DATABASE_URL host is checked before connecting
+ * (guardDbHost → db-egress-guard). Under the default `allow-private` policy
+ * (first-party / operator-set URL) private IPs are allowed — the dogfood reaches
+ * Lobu's own private PG — and only metadata/link-local literals are blocked.
+ * Under `block-private` (injected by the server in cloud mode) every non-public
+ * host is rejected. Untrusted multi-tenant cloud exposure is ALSO gated
+ * separately (the bundled connector is restricted under LOBU_CLOUD_MODE) until
+ * the full hardening (IP pin / force-TLS) lands and that gate is lifted.
  */
 
 import {
@@ -38,7 +41,7 @@ import {
 } from '@lobu/connector-sdk';
 import { Parser } from 'node-sql-parser';
 import postgres from 'postgres';
-import { assertHostAllowed, readEgressPolicy } from './db-egress-guard.js';
+import { assertConnectionStringAllowed, readEgressPolicy } from './db-egress-guard.js';
 
 interface PgQueryConfig {
   /** ONE read-only base SELECT. No WHERE-cursor / ORDER BY / top-level LIMIT — the connector wraps it. */
@@ -307,28 +310,14 @@ const POOL_OPTS = {
 } as const;
 
 /**
- * SSRF/egress pre-flight: reject (or, for a hostname, resolve-and-reject) a
- * DATABASE_URL host that points at a blocked internal/metadata address under the
- * active policy. Policy comes from ctx.config.LOBU_DB_EGRESS_POLICY — the server
+ * SSRF/egress pre-flight, run before any socket opens on BOTH sync() and
+ * query(). Policy comes from ctx.config.LOBU_DB_EGRESS_POLICY — the server
  * injects `block-private` under cloud mode; everything else defaults to the
- * trusted `allow-private` (self-hosted reaches its own private PG / localhost).
- * Runs before any socket opens, on BOTH sync() and query().
+ * trusted `allow-private`. The host parsing + per-host validation (incl. the
+ * multi-host failover case) lives in db-egress-guard.
  */
 async function guardDbHost(connectionString: string, config: Record<string, unknown>): Promise<void> {
-  const policy = readEgressPolicy(config.LOBU_DB_EGRESS_POLICY);
-  let host: string | null = null;
-  try {
-    // URL keeps brackets on an IPv6 literal host; strip them for the classifier.
-    host = new URL(connectionString).hostname.replace(/^\[|\]$/g, '');
-  } catch {
-    host = null;
-  }
-  if (host) {
-    await assertHostAllowed(host, policy);
-  } else if (policy === 'block-private') {
-    // Can't isolate the host to validate it — fail closed on the untrusted path.
-    throw new Error('DATABASE_URL could not be parsed for egress validation.');
-  }
+  await assertConnectionStringAllowed(connectionString, readEgressPolicy(config.LOBU_DB_EGRESS_POLICY));
 }
 
 /** Seal a transaction read-only with a statement timeout — the hard write/time

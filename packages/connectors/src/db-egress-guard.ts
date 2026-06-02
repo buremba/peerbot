@@ -193,6 +193,21 @@ export function normalizeIpLiteral(host: string): NormalizedHost {
   ) {
     return { kind: 'ipv4', value: hextetsToIpv4(hextets[6] ?? 0, hextets[7] ?? 0) };
   }
+  // IPv4-compatible IPv6 (`::a.b.c.d`, e.g. `::7f00:1` = 127.0.0.1): the first 96
+  // bits are zero with a non-trivial v4 suffix. Unwrap so the v4 blocklist
+  // applies — otherwise swapping `::ffff:` for `::` evades the guard. `::` and
+  // `::1` keep their explicit blocklist entries (suffix 0 or 1).
+  if (
+    hextets[0] === 0 &&
+    hextets[1] === 0 &&
+    hextets[2] === 0 &&
+    hextets[3] === 0 &&
+    hextets[4] === 0 &&
+    hextets[5] === 0 &&
+    (hextets[6] !== 0 || (hextets[7] ?? 0) > 1)
+  ) {
+    return { kind: 'ipv4', value: hextetsToIpv4(hextets[6] ?? 0, hextets[7] ?? 0) };
+  }
   return { kind: 'ipv6', value: bare };
 }
 
@@ -257,6 +272,69 @@ export async function assertHostAllowed(
         `DATABASE_URL host "${host}" resolves to a blocked internal/metadata address (${address}, egress policy: ${policy}).`,
       );
     }
+  }
+}
+
+/**
+ * Pull every host out of a connection string the way postgres.js does, so the
+ * guard's host set matches the driver's connect set. postgres.js supports a
+ * multi-host authority (`postgres://u:p@h1:p1,h2:p2/db`) and failover-dials each
+ * host — `new URL().hostname` collapses that to the literal "h1,h2", letting a
+ * `public,169.254.169.254` host evade the guard while the driver still dials the
+ * metadata IP. Parse the authority by hand: strip scheme, path/query, and
+ * userinfo (last `@`, so a password containing `@` is handled), then split on
+ * `,` and drop each `:port` and IPv6 brackets. Returns [] when there's no URL
+ * authority (e.g. a `key=value` / unix-socket string the driver resolves itself).
+ */
+export function extractDbHosts(connectionString: string): string[] {
+  const schemeAt = connectionString.indexOf('://');
+  if (schemeAt === -1) return [];
+  let authority = connectionString.slice(schemeAt + 3);
+  const pathStart = authority.search(/[/?]/);
+  if (pathStart !== -1) authority = authority.slice(0, pathStart);
+  const at = authority.lastIndexOf('@');
+  if (at !== -1) authority = authority.slice(at + 1);
+  return authority
+    .split(',')
+    .map((seg) => {
+      const s = seg.trim();
+      if (s.startsWith('[')) {
+        const close = s.indexOf(']');
+        return close === -1 ? s.slice(1) : s.slice(1, close); // IPv6 literal
+      }
+      const colon = s.lastIndexOf(':');
+      return colon === -1 ? s : s.slice(0, colon); // strip :port
+    })
+    .filter((h) => h.length > 0);
+}
+
+/**
+ * Assert every host in a postgres connection string is allowed under `policy`
+ * (validating each host of a multi-host failover URL):
+ *  - block-private (cloud): validate + DNS-resolve every host; throw if any host
+ *    (or any address it resolves to) is internal/metadata. Throws fail-closed
+ *    when no host can be parsed.
+ *  - allow-private (self-hosted, default): the URL is an operator secret, so only
+ *    validate IP LITERALS (cheap metadata/link-local block) and DON'T force a DNS
+ *    resolve for a hostname — the driver resolves it itself, and a mandatory
+ *    pre-resolve would add a new failure mode for a legitimate private/hostname
+ *    (or multi-host failover) DB.
+ */
+export async function assertConnectionStringAllowed(
+  connectionString: string,
+  policy: DbEgressPolicy,
+  lookup: HostLookup = defaultLookup,
+): Promise<void> {
+  const hosts = extractDbHosts(connectionString);
+  if (hosts.length === 0) {
+    if (policy === 'block-private') {
+      throw new Error('DATABASE_URL host could not be parsed for egress validation.');
+    }
+    return;
+  }
+  for (const host of hosts) {
+    if (policy === 'allow-private' && normalizeIpLiteral(host).kind === 'not-ip') continue;
+    await assertHostAllowed(host, policy, lookup);
   }
 }
 

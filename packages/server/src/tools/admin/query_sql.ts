@@ -105,6 +105,26 @@ interface QuerySqlResult {
   error?: string;
 }
 
+/**
+ * Coerce + clamp the page bounds. TypeBox schemas aren't runtime-validated in
+ * this codebase, so a non-number limit/offset would otherwise interpolate as a
+ * string into raw SQL and bypass the intended bounds. Shared by the internal and
+ * external (connection pushdown) branches.
+ */
+function coercePageBounds(
+  args: QuerySqlArgs
+): { limit: number; offset: number } | { error: string } {
+  const rawLimit = Number(args.limit ?? 50);
+  const rawOffset = Number(args.offset ?? 0);
+  if (!Number.isFinite(rawLimit) || !Number.isFinite(rawOffset)) {
+    return { error: 'limit and offset must be numbers.' };
+  }
+  return {
+    limit: Math.max(1, Math.min(500, Math.trunc(rawLimit))),
+    offset: Math.max(0, Math.trunc(rawOffset)),
+  };
+}
+
 function errorResult(message: string, startTime: number): QuerySqlResult {
   return {
     rows: [],
@@ -140,6 +160,16 @@ export async function querySql(
   // sort_by is optional: omit it for a view whose columns aren't known upfront.
   if (args.sort_by !== undefined && !COLUMN_NAME_RE.test(args.sort_by)) {
     return errorResult(`Invalid sort_by column name: ${args.sort_by}`, startTime);
+  }
+
+  // search_columns only filters in concert with search_term — passing it alone
+  // is a silent no-op on both the internal and external paths, which reads as
+  // "a filter was applied" when none was. Reject it so the caller notices.
+  if (args.search_columns?.length && !args.search_term) {
+    return errorResult(
+      'search_columns has no effect without search_term — set search_term to filter, or drop search_columns.',
+      startTime
+    );
   }
 
   // Resolve the target organization. By default, the caller's bound org. When
@@ -206,13 +236,9 @@ export async function querySql(
         startTime
       );
     }
-    const rawLimit = Number(args.limit ?? 50);
-    const rawOffset = Number(args.offset ?? 0);
-    if (!Number.isFinite(rawLimit) || !Number.isFinite(rawOffset)) {
-      return errorResult('limit and offset must be numbers.', startTime);
-    }
-    const limit = Math.max(1, Math.min(500, Math.trunc(rawLimit)));
-    const offset = Math.max(0, Math.trunc(rawOffset));
+    const bounds = coercePageBounds(args);
+    if ('error' in bounds) return errorResult(bounds.error, startTime);
+    const { limit, offset } = bounds;
     try {
       const r = await runConnectorQuery({
         organizationId: targetOrgId,
@@ -269,18 +295,10 @@ export async function querySql(
     searchWhere = `WHERE (${orClauses.join(' OR ')})`;
   }
 
-  // TypeBox schemas don't auto-validate at runtime in this codebase, so coerce
-  // numeric args to integers here before they reach raw SQL. A non-number
-  // limit/offset would otherwise interpolate as a string and bypass the
-  // intended bounds.
   const sortOrder = args.sort_order === 'desc' ? 'DESC' : 'ASC';
-  const rawLimit = Number(args.limit ?? 50);
-  const rawOffset = Number(args.offset ?? 0);
-  if (!Number.isFinite(rawLimit) || !Number.isFinite(rawOffset)) {
-    return errorResult('limit and offset must be numbers.', startTime);
-  }
-  const limit = Math.max(1, Math.min(500, Math.trunc(rawLimit)));
-  const offset = Math.max(0, Math.trunc(rawOffset));
+  const bounds = coercePageBounds(args);
+  if ('error' in bounds) return errorResult(bounds.error, startTime);
+  const { limit, offset } = bounds;
 
   const countSql = `SELECT count(*)::int AS c FROM (${scopedSql}) AS _t ${searchWhere}`;
   const orderBy = args.sort_by ? `ORDER BY "${args.sort_by}" ${sortOrder}` : '';

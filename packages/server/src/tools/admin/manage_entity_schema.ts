@@ -117,7 +117,7 @@ export const ManageEntitySchemaSchema = Type.Object({
   backing: Type.Optional(
     Type.Union([Type.Null(), BackingInputSchema], {
       description:
-        "[entity_type: create/update] Makes the type DERIVED — a read-only SQL view. `{ sql }` to set; `null` to clear (revert to a stored type); omit to leave unchanged. Read a derived type's rows by running its `backing_sql` (returned by `get`) through `query_sql`, which org-scopes the view; `get` also returns `measure_columns` (the view's aggregate columns, classified on read).",
+        "[entity_type: create/update] Makes the type DERIVED — a read-only SQL view. `{ sql }` runs over your org's internal tables; `{ sql, connection: <slug> }` runs LIVE against that connection's external database (read-only, no copy). `null` clears it (revert to a stored type); omit to leave unchanged. Read a derived type's rows by running its `backing_sql` (returned by `get`) through `query_sql` — and when `get` also returns a `backing_source`, pass it as `query_sql`'s `connection` so the view runs against the external DB instead of your internal tables. `get` also returns `measure_columns` (the view's aggregate columns, classified on read).",
     })
   ),
 

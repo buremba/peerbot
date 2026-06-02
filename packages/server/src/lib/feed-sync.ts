@@ -100,8 +100,9 @@ export async function runFeed(feed: FeedRecord): Promise<{ itemCount: number }> 
     'Starting feed sync'
   );
 
-  // Execution-time cloud gate: a raw-DB connector must not run (even an existing
-  // feed's scheduled sync) under LOBU_CLOUD_MODE until egress hardening lands.
+  // Execution-time cloud gate for the dev CLI sync path (scripts/lobu/sync-local.ts,
+  // the only caller of runFeed). The production worker-poll path is gated
+  // independently in worker-api.ts pollWorkerJob. No-op when not in cloud mode.
   assertConnectorAllowedInCloud(feed.connector_key);
 
   const compiledCode = await resolveConnectorCode(feed.connector_key, feed.compiled_code);

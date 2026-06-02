@@ -74,7 +74,7 @@ const configSchema = {
     query: {
       type: 'string',
       description:
-        'A read-only base SELECT. Do NOT add a WHERE on the cursor, an ORDER BY, or a LIMIT — the connector adds keyset pagination automatically. Alias mixed-case columns to simple names.',
+        'A read-only base SELECT. Do NOT add a WHERE on the cursor, an ORDER BY, or a LIMIT — the connector adds keyset pagination automatically. Alias mixed-case columns to simple names, and give every output column a distinct name (duplicate names collapse in the row object).',
     },
     primary_key: {
       type: 'string',
@@ -100,23 +100,29 @@ const configSchema = {
   },
 };
 
-/** Postgres type OID → a cast name we can re-apply to a string-bound checkpoint value. */
-const OID_CAST: Record<number, string> = {
-  1184: 'timestamptz',
-  1114: 'timestamp',
-  1082: 'date',
-  1083: 'time',
-  20: 'int8',
-  23: 'int4',
-  21: 'int2',
-  1700: 'numeric',
-  700: 'float4',
-  701: 'float8',
-  25: 'text',
-  1043: 'varchar',
-  1042: 'bpchar',
-  2950: 'uuid',
-  16: 'bool',
+/**
+ * Postgres type OID → `cast` (SQL cast we re-apply to a string-bound checkpoint
+ * value) and `display` (human type name surfaced on query() columns). The two
+ * diverge for the integer/bool OIDs — `::int8` is the cast syntax, `bigint` is
+ * the name — so the display column matches query_sql's PG_OID_TYPE_MAP rather
+ * than leaking cast aliases (int8/int4/bool) to callers.
+ */
+const PG_OID: Record<number, { cast: string; display: string }> = {
+  1184: { cast: 'timestamptz', display: 'timestamptz' },
+  1114: { cast: 'timestamp', display: 'timestamp' },
+  1082: { cast: 'date', display: 'date' },
+  1083: { cast: 'time', display: 'time' },
+  20: { cast: 'int8', display: 'bigint' },
+  23: { cast: 'int4', display: 'integer' },
+  21: { cast: 'int2', display: 'smallint' },
+  1700: { cast: 'numeric', display: 'numeric' },
+  700: { cast: 'float4', display: 'float4' },
+  701: { cast: 'float8', display: 'float8' },
+  25: { cast: 'text', display: 'text' },
+  1043: { cast: 'varchar', display: 'varchar' },
+  1042: { cast: 'bpchar', display: 'bpchar' },
+  2950: { cast: 'uuid', display: 'uuid' },
+  16: { cast: 'bool', display: 'boolean' },
 };
 
 const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_$]*$/;
@@ -157,15 +163,100 @@ function containsDmlNode(root: unknown): boolean {
   return false;
 }
 
-type ParsedSelect = { type?: string; limit?: { value?: unknown[] } | null };
+type ParsedSelect = { type?: string };
 
 /**
- * Shared read-only gate: trim a trailing `;`, then reject multi-statement,
- * non-SELECT, data-modifying CTEs, and positional/named params. Returns the
- * stripped SQL + its top-level statement node. Used by both the memory feed
- * (sync) and live query().
+ * Token-level fallback when node-sql-parser can't parse the statement. Its
+ * Postgres grammar (v5.4.0) lags real Postgres — it rejects FTS `@@`, jsonpath
+ * `@?`/`@@`, `GROUP BY GROUPING SETS`, array slices `arr[a:b]`, `IS NOT DISTINCT
+ * FROM`, range-type literal casts, and more — so hard-failing on a parse error
+ * would reject valid read-only SQL. The HARD write seal is the read-only
+ * transaction (`SET TRANSACTION READ ONLY` rejects every write, incl. DML in a
+ * CTE); single-statement (no embedded `;`) and no-bind-params are already
+ * enforced before we reach here. This only re-checks the one thing the seal
+ * doesn't: that the statement is a SELECT (or WITH … SELECT), not a leading DDL/
+ * DML the planner would still happily run inside a read-only tx if it were, say,
+ * a `SET`/`CALL`/`DO`.
  */
-function assertReadOnlyQuery(raw: string): { stripped: string; stmt: ParsedSelect } {
+function assertReadOnlyTokens(stripped: string): void {
+  // Allow a leading "(" for "(SELECT …) UNION …" / parenthesized selects.
+  const head = stripped.replace(/^\s*\(+\s*/, '');
+  if (!/^(select|with)\b/i.test(head)) {
+    throw new Error('query must be a single read-only SELECT (or WITH … SELECT).');
+  }
+}
+
+/**
+ * True if `sql` has a `LIMIT`/`OFFSET` keyword at paren-depth 0 (a TOP-level
+ * one), scanning past string literals, quoted identifiers, and comments so a
+ * `'limit'` literal or a `"limit"` column never false-matches. An inner LIMIT
+ * inside a subquery sits at depth > 0 and is allowed. Works without the AST, so
+ * it gates both the parseable and the token-fallback paths identically.
+ */
+function hasTopLevelLimitOrOffset(sql: string): boolean {
+  const n = sql.length;
+  let depth = 0;
+  let i = 0;
+  while (i < n) {
+    const c = sql[i];
+    if (c === "'") {
+      i++;
+      while (i < n && sql[i] !== "'") i++;
+      i++;
+      continue;
+    }
+    if (c === '"') {
+      i++;
+      while (i < n && sql[i] !== '"') i++;
+      i++;
+      continue;
+    }
+    if (c === '-' && sql[i + 1] === '-') {
+      i += 2;
+      while (i < n && sql[i] !== '\n') i++;
+      continue;
+    }
+    if (c === '/' && sql[i + 1] === '*') {
+      i += 2;
+      while (i < n && !(sql[i] === '*' && sql[i + 1] === '/')) i++;
+      i += 2;
+      continue;
+    }
+    if (c === '(') {
+      depth++;
+      i++;
+      continue;
+    }
+    if (c === ')') {
+      if (depth > 0) depth--;
+      i++;
+      continue;
+    }
+    if (/[A-Za-z_]/.test(c)) {
+      let j = i + 1;
+      while (j < n && /[A-Za-z0-9_$]/.test(sql[j])) j++;
+      if (depth === 0) {
+        const word = sql.slice(i, j).toLowerCase();
+        if (word === 'limit' || word === 'offset') return true;
+      }
+      i = j;
+      continue;
+    }
+    i++;
+  }
+  return false;
+}
+
+/**
+ * Shared read-only gate for both the memory feed (sync) and live query(). Trims
+ * a trailing `;`, rejects multi-statement / bind params / non-SELECT /
+ * data-modifying CTEs, and rejects a TOP-level LIMIT/OFFSET — the connector
+ * always wraps the query and paginates on the outside, so a top-level LIMIT
+ * would (sync) stall the keyset cursor and (live) cap the universe the OFFSET
+ * pages over, silently returning zero rows on later pages. An inner LIMIT inside
+ * a subquery is fine. Returns the stripped SQL.
+ */
+function validateReadOnlySelect(raw: string): string {
   const stripped = raw.trim().replace(/;\s*$/, '');
   if (!stripped) throw new Error('query is empty');
   if (stripped.includes(';')) {
@@ -177,43 +268,51 @@ function assertReadOnlyQuery(raw: string): { stripped: string; stmt: ParsedSelec
   let ast: unknown;
   try {
     ast = new Parser().astify(stripped, { database: 'postgresql' });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`query is not valid SQL: ${msg}`);
+  } catch {
+    // Parser gap, not invalid SQL — fall back to the token check (see above).
+    assertReadOnlyTokens(stripped);
+    ast = null;
   }
-  const statements = Array.isArray(ast) ? ast : [ast];
-  if (statements.length !== 1) {
-    throw new Error('query must be exactly one statement.');
+  if (ast !== null) {
+    const statements = Array.isArray(ast) ? ast : [ast];
+    if (statements.length !== 1) {
+      throw new Error('query must be exactly one statement.');
+    }
+    const stmt = statements[0] as ParsedSelect;
+    if (stmt.type !== 'select') {
+      throw new Error(`query must be a SELECT (got ${stmt.type ?? 'unknown'}).`);
+    }
+    if (containsDmlNode(ast)) {
+      throw new Error('query must not contain data-modifying statements (incl. in CTEs).');
+    }
   }
-  const stmt = statements[0] as ParsedSelect;
-  if (stmt.type !== 'select') {
-    throw new Error(`query must be a SELECT (got ${stmt.type ?? 'unknown'}).`);
-  }
-  if (containsDmlNode(ast)) {
-    throw new Error('query must not contain data-modifying statements (incl. in CTEs).');
-  }
-  return { stripped, stmt };
-}
-
-/**
- * Memory-feed base query: read-only AND no top-level LIMIT/OFFSET — the keyset
- * wrap adds its own, and a user LIMIT would cap the window and stall the cursor.
- */
-function validateBaseQuery(raw: string): string {
-  const { stripped, stmt } = assertReadOnlyQuery(raw);
-  // node-sql-parser represents an ABSENT limit as `{ value: [] }` (truthy), so
-  // only reject when an actual LIMIT/OFFSET term exists.
-  if (Array.isArray(stmt.limit?.value) && stmt.limit.value.length > 0) {
+  if (hasTopLevelLimitOrOffset(stripped)) {
     throw new Error(
-      'query must not include a top-level LIMIT/OFFSET — it would cap the keyset window and stall incremental sync.',
+      'query must not include a top-level LIMIT/OFFSET — the connector adds pagination automatically (an inner LIMIT inside a subquery is fine).',
     );
   }
   return stripped;
 }
 
-/** Live-query SQL: read-only; inner LIMIT/ORDER BY is fine (we wrap as a subquery). */
-function validateQuerySql(raw: string): string {
-  return assertReadOnlyQuery(raw).stripped;
+/** postgres.js client options shared by sync() and query(): a tiny capped pool
+ *  that never prepares (so `.unsafe` simple-protocol queries work) and swallows
+ *  NOTICEs so a connection string can never reach a log line. */
+const POOL_OPTS = {
+  max: 2,
+  idle_timeout: 5,
+  connect_timeout: 15,
+  prepare: false,
+  onnotice: () => {},
+} as const;
+
+/** Seal a transaction read-only with a statement timeout — the hard write/time
+ *  boundary both sync() and query() rely on. */
+async function setReadOnly(
+  tx: { unsafe: (q: string) => Promise<unknown> },
+  timeoutMs: number,
+): Promise<void> {
+  await tx.unsafe('SET TRANSACTION READ ONLY');
+  await tx.unsafe(`SET LOCAL statement_timeout = ${Math.floor(timeoutMs)}`);
 }
 
 function toCheckpointValue(v: unknown): string {
@@ -281,7 +380,7 @@ export default class PostgresConnector extends ConnectorRuntime {
     }
     const config = ctx.config as unknown as PgQueryConfig;
 
-    const baseSql = validateBaseQuery(config.query);
+    const baseSql = validateReadOnlySelect(config.query);
     const cursorCol = assertIdentifier(config.cursor_column, 'cursor_column');
     const pkCol = assertIdentifier(config.primary_key, 'primary_key');
     const limit = Math.min(Math.max(config.max_rows_per_sync ?? 5000, 1), 50000);
@@ -289,22 +388,14 @@ export default class PostgresConnector extends ConnectorRuntime {
 
     const checkpoint = (ctx.checkpoint as PgCheckpoint | null) ?? {};
 
-    const sql = postgres(connectionString, {
-      max: 2,
-      idle_timeout: 5,
-      connect_timeout: 15,
-      prepare: false,
-      // Connectors must never leak the connection string into logs.
-      onnotice: () => {},
-    });
+    const sql = postgres(connectionString, POOL_OPTS);
 
     try {
       // Everything runs inside ONE read-only transaction — the probe included —
       // so even a crafted query (e.g. a data-modifying CTE that slipped past
-      // validateBaseQuery) cannot write while we introspect or read.
+      // validation) cannot write while we introspect or read.
       const rows = (await sql.begin(async (tx) => {
-        await tx.unsafe('SET TRANSACTION READ ONLY');
-        await tx.unsafe(`SET LOCAL statement_timeout = ${Math.floor(timeoutMs)}`);
+        await setReadOnly(tx, timeoutMs);
 
         // 1. Probe column types so the string-serialized checkpoint can be re-cast.
         const probe = await tx.unsafe(`SELECT * FROM (\n${baseSql}\n) q LIMIT 0`);
@@ -319,7 +410,7 @@ export default class PostgresConnector extends ConnectorRuntime {
         }
         const castFor = (name: string): string => {
           const t = colByName.get(name)?.type;
-          const cast = t !== undefined ? OID_CAST[t] : undefined;
+          const cast = t !== undefined ? PG_OID[t]?.cast : undefined;
           return cast ? `::${cast}` : '';
         };
         const curCast = castFor(cursorCol);
@@ -372,8 +463,9 @@ export default class PostgresConnector extends ConnectorRuntime {
   /**
    * Live read (no copy): run `ctx.query` read-only against the source and return
    * rows. The platform calls this for virtual-feed reads and external-backed
-   * derived entities. Inner ORDER BY/LIMIT in the query is fine — it's wrapped as
-   * a subquery and paginated on the outside.
+   * derived entities. An inner ORDER BY/LIMIT inside a subquery is fine — it's
+   * wrapped and paginated on the outside; a TOP-level LIMIT is rejected by
+   * validateReadOnlySelect because the outer OFFSET would page over a capped set.
    */
   async query(ctx: QueryContext): Promise<QueryResult> {
     const connectionString = (ctx.config as Record<string, unknown>).DATABASE_URL as
@@ -382,7 +474,7 @@ export default class PostgresConnector extends ConnectorRuntime {
     if (!connectionString) {
       throw new Error('DATABASE_URL is required');
     }
-    const baseSql = validateQuerySql(ctx.query);
+    const baseSql = validateReadOnlySelect(ctx.query);
     const limit =
       ctx.limit !== undefined ? Math.min(Math.max(Math.trunc(ctx.limit), 1), 5000) : 1000;
     const offset = ctx.offset !== undefined ? Math.max(Math.trunc(ctx.offset), 0) : 0;
@@ -392,28 +484,32 @@ export default class PostgresConnector extends ConnectorRuntime {
       orderBy = `ORDER BY q."${col}" ${ctx.sort.order === 'desc' ? 'DESC' : 'ASC'}`;
     }
     const wrapped = `SELECT * FROM (\n${baseSql}\n) q\n${orderBy}\nLIMIT ${limit} OFFSET ${offset}`;
+    // Real total over the whole (un-paginated) result, so the aggregator reports
+    // an accurate total_count / has_more — parity with the internal query_sql
+    // path. baseSql has no top-level LIMIT (rejected above), so this is exact.
+    const countSql = `SELECT count(*)::int AS n FROM (\n${baseSql}\n) q`;
 
-    const sql = postgres(connectionString, {
-      max: 2,
-      idle_timeout: 5,
-      connect_timeout: 15,
-      prepare: false,
-      onnotice: () => {},
-    });
+    const sql = postgres(connectionString, POOL_OPTS);
     try {
-      const result = (await sql.begin(async (tx) => {
-        await tx.unsafe('SET TRANSACTION READ ONLY');
-        await tx.unsafe('SET LOCAL statement_timeout = 30000');
-        return tx.unsafe(wrapped);
-      })) as unknown as Array<Record<string, unknown>> & {
-        columns?: Array<{ name: string; type: number }>;
+      const { data, total } = (await sql.begin(async (tx) => {
+        await setReadOnly(tx, 30000);
+        const rows = await tx.unsafe(wrapped);
+        const counted = (await tx.unsafe(countSql)) as unknown as Array<{ n: number }>;
+        return { data: rows, total: counted[0]?.n };
+      })) as unknown as {
+        data: Array<Record<string, unknown>> & { columns?: Array<{ name: string; type: number }> };
+        total: number | undefined;
       };
-      const rows = Array.isArray(result) ? (result as Array<Record<string, unknown>>) : [];
-      const columns = (result.columns ?? []).map((c) => ({
-        name: c.name,
-        type: OID_CAST[c.type] ?? 'unknown',
-      }));
-      return { rows, columns };
+      const rows = Array.isArray(data) ? (data as Array<Record<string, unknown>>) : [];
+      const cols = data.columns ?? [];
+      const names = cols.map((c) => c.name);
+      if (new Set(names).size !== names.length) {
+        throw new Error(
+          'query has duplicate output column names — alias each selected column to a distinct name (the row object would otherwise drop a value).',
+        );
+      }
+      const columns = cols.map((c) => ({ name: c.name, type: PG_OID[c.type]?.display ?? 'unknown' }));
+      return { rows, columns, total };
     } finally {
       await sql.end({ timeout: 5 });
     }

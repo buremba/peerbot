@@ -69,6 +69,18 @@ describe('PostgresConnector.sync (keyset incremental, real DB)', () => {
     }
   });
 
+  it('accepts valid Postgres that node-sql-parser cannot parse (token fallback)', async () => {
+    // node-sql-parser 5.4.0 throws on `IS NOT DISTINCT FROM` (and FTS @@, jsonpath
+    // @?/@@, GROUPING SETS, array slices, range casts …). The connector must not
+    // reject valid read-only SQL it merely can't parse — the read-only
+    // transaction is the real write seal, so it falls back to a token check.
+    const r = await run(
+      { query: 'SELECT id, email, created_at FROM pgc_it WHERE email IS NOT DISTINCT FROM email' },
+      null
+    );
+    expect(r.events.map((e) => e.origin_id)).toEqual(['query:1', 'query:2', 'query:3']);
+  });
+
   it('rejects invalid base queries before connecting', async () => {
     await expect(run({ query: 'SELECT 1; DROP TABLE pgc_it' }, null)).rejects.toThrow(
       /single statement/i

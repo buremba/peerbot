@@ -109,7 +109,6 @@ function buildDefinition(spec: ConnectorSpec): ConnectorDefinition {
           requiredScopes: feed.requiredScopes,
           displayNameTemplate: feed.displayNameTemplate,
           configSchema: feed.configSchema,
-          virtual: feed.virtual,
           userManaged: feed.userManaged,
           eventKinds: feed.eventKinds,
         },

@@ -206,8 +206,13 @@ export async function querySql(
         startTime
       );
     }
-    const limit = Math.max(1, Math.min(500, Math.trunc(Number(args.limit ?? 50))));
-    const offset = Math.max(0, Math.trunc(Number(args.offset ?? 0)));
+    const rawLimit = Number(args.limit ?? 50);
+    const rawOffset = Number(args.offset ?? 0);
+    if (!Number.isFinite(rawLimit) || !Number.isFinite(rawOffset)) {
+      return errorResult('limit and offset must be numbers.', startTime);
+    }
+    const limit = Math.max(1, Math.min(500, Math.trunc(rawLimit)));
+    const offset = Math.max(0, Math.trunc(rawOffset));
     try {
       const r = await runConnectorQuery({
         organizationId: targetOrgId,

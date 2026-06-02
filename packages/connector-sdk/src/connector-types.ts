@@ -193,12 +193,6 @@ export interface FeedDefinition {
   /** JSON Schema for feed-specific config */
   configSchema?: Record<string, unknown>;
   /**
-   * When true, this feed is VIRTUAL: it is never synced to `events`. Reading it
-   * pushes down to the connector's `query()` (live, no copy) and search fans out
-   * to its `search()`. Omitted/false ⇒ indexed (synced → events → embeddings).
-   */
-  virtual?: boolean;
-  /**
    * When true, auto-wire (device-reconcile + bundled-connector install) skips
    * this feed — every feed instance is created explicitly by the user (or by
    * the device worker on their behalf). Use this for feeds whose configSchema

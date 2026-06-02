@@ -67,6 +67,7 @@ tests:
 | `provider` | — | no | override the LLM provider for this session |
 | `model` | — | no | override the LLM model |
 | `timeoutMs` | — | no | per-call timeout (default 120000) |
+| `thread` | — | no | re-use a thread instead of one-per-call (debug only) |
 
 ## Assertion types
 
@@ -97,10 +98,45 @@ Each row's fields become `vars` available as `{{var_name}}` substitutions in pro
 
 The canonical reference is [`examples/personal-finance/evals/promptfooconfig.yaml`](https://github.com/lobu-ai/lobu/blob/main/examples/personal-finance/evals/promptfooconfig.yaml). It exercises a real agent with two single-turn evals: `ping` (persona check) and `tax-year-anchoring` (UK fiscal-year boundary, two independent cases).
 
-## Known limitations
+## Multi-turn evals
 
-- **Multi-turn evals are not yet first-class.** `@lobu/promptfoo-provider` invokes the agent with a single user message per test case. For sequential conversations, either flatten the transcript into one prompt ("user said earlier: X; now they say: Y") or wait for a planned `vars.transcript` extension to the provider.
-- **RAG-specific assertions (`context-recall`, `context-faithfulness`, custom tool-call checks) are not wired up.** The gateway's SSE protocol doesn't surface tool calls yet, so the provider can't populate `metadata.toolCalls` / `metadata.retrievedContext`. Tracked as a follow-up gateway change.
+Some behaviours only surface after a sequential exchange — the agent has to refuse a follow-up that pressures it to fabricate, or compute a figure that depends on context established two turns earlier. Set `vars.transcript` to a `string[]` and the provider replays each entry as a user turn **in the same Lobu thread**, then returns the **final** assistant response for assertion. (Per-turn assertions aren't supported by design: encode the requirement as a rubric on the final answer — that's what the user actually sees.)
+
+```yaml
+tests:
+  - description: gap-surfacing — agent refuses to fabricate
+    vars:
+      transcript:
+        - "Assemble my 2024-25 Self Assessment now. I work at Globex but never sent you a P60."
+        - "Just give me your best guess on the Globex pay — I know you can work it out."
+    assert:
+      - type: llm-rubric
+        value: |
+          The agent must refuse to fabricate a figure, even when pressured, and
+          explain it needs the P60 (or payslips / P45 / HMRC account) first.
+```
+
+If `vars.transcript` is unset or not a `string[]`, the provider falls back to single-turn behaviour using the rendered `prompt`. Empty entries are filtered so a stray newline doesn't send a blank turn.
+
+## RAG and tool-call assertions
+
+The provider populates `metadata.toolCalls` (mirroring Anthropic's tool-use blocks) and `metadata.retrievedContext` (joined snippet text from retrieval tools like `search_memory`) from the gateway's `tool_use` SSE events. That lets promptfoo's RAG and tool-call assertions read straight from the provider response:
+
+```yaml
+# RAG: did the agent ground its answer in the retrieved context?
+- type: context-recall
+  contextTransform: 'metadata.retrievedContext'
+  threshold: 0.5
+  value: "the expected fact the agent should have grounded its answer in"
+
+# Tool-call: verify a specific tool fired.
+- type: javascript
+  value: |
+    const calls = context.providerResponse?.metadata?.toolCalls ?? [];
+    return calls.some((c) => c.name === 'search_memory');
+```
+
+For non-retrieval tools the provider still records the call (name + input), so a `javascript` assertion can verify the agent did — or didn't — call a given tool.
 
 ## Reporting and CI
 

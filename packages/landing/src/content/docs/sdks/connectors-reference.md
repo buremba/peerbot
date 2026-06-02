@@ -5,7 +5,7 @@ sidebar:
   order: 5
 ---
 
-API reference for [`@lobu/connector-sdk`](https://www.npmjs.com/package/@lobu/connector-sdk). For a tutorial-style introduction see the [Connector SDK guide](/getting-started/connector-sdk/); for the reactions surface (also exported from this package) see the [Reactions reference](/reference/reaction-sdk/).
+API reference for [`@lobu/connector-sdk`](https://www.npmjs.com/package/@lobu/connector-sdk). For a tutorial-style introduction see the [Connector SDK guide](/sdks/connectors/); for the reactions surface (also exported from this package) see the [Reactions reference](/sdks/reactions/).
 
 Every symbol below is a re-export from the package's top-level entry point:
 
@@ -83,7 +83,7 @@ interface ConnectorRuntimeInfo {
 
 `platforms` and `scopes` describe device-bound connectors; omit the `runtime` block for cloud-fleet connectors that do not pin to a device.
 
-`nix.packages` lists native system dependencies as nixpkgs attribute refs (for example `["ffmpeg", "imagemagick"]`) the connector needs on PATH at execution time. npm dependencies are bundled into the connector at compile time and do **not** go here. Backends that can run native deps (embedded, container, machine) provision them via `nix-shell`; backends that cannot (for example edge workers) reject a connector that declares them. See [Dependencies](/getting-started/connector-sdk/#dependencies) in the guide for the npm-vs-native split.
+`nix.packages` lists native system dependencies as nixpkgs attribute refs (for example `["ffmpeg", "imagemagick"]`) the connector needs on PATH at execution time. npm dependencies are bundled into the connector at compile time and do **not** go here. Backends that can run native deps (embedded, container, machine) provision them via `nix-shell`; backends that cannot (for example edge workers) reject a connector that declares them. See [Dependencies](/sdks/connectors/#dependencies) in the guide for the npm-vs-native split.
 
 ---
 

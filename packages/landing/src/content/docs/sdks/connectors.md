@@ -5,7 +5,7 @@ description: Write TypeScript connectors that turn REST APIs, webhooks, and file
 
 Connectors are how Lobu turns external systems — REST APIs, GraphQL, webhooks, files, OAuth-protected services — into the typed event stream that watchers shape into entities and memory.
 
-A connector is a TypeScript class that extends [`ConnectorRuntime`](/reference/connector-sdk/#connectorruntime) and ships three things:
+A connector is a TypeScript class that extends [`ConnectorRuntime`](/sdks/connectors-reference/#connectorruntime) and ships three things:
 
 - a **`definition`** describing the connector (key, name, version, auth, feeds, actions),
 - a **`sync(ctx)`** method that pulls the next slice of data and returns events,
@@ -189,7 +189,7 @@ The static metadata for your connector. Filed under `connector_definitions` in t
 | `requiredCapability` | no | When set, only worker pods/devices advertising this capability serve runs (e.g. `screentime` for the Mac app) |
 | `runtime` | no | Pin to a device platform (iOS, macOS, …) — omit for cloud-side connectors |
 
-See the full type at [`reference/connector-sdk` › ConnectorDefinition](/reference/connector-sdk/#connectordefinition).
+See the full type at [`reference/connector-sdk` › ConnectorDefinition](/sdks/connectors-reference/#connectordefinition).
 
 ### `SyncContext`
 
@@ -228,7 +228,7 @@ interface EventEnvelope {
 }
 ```
 
-Only `origin_id`, `payload_text`, and `occurred_at` are required. The full surface is documented in [`reference/connector-sdk` › EventEnvelope](/reference/connector-sdk/#eventenvelope).
+Only `origin_id`, `payload_text`, and `occurred_at` are required. The full surface is documented in [`reference/connector-sdk` › EventEnvelope](/sdks/connectors-reference/#eventenvelope).
 
 ### `SyncResult`
 
@@ -292,7 +292,7 @@ Declare on `definition.authSchema`. A connector can list multiple methods; the g
 
 Workers never see the raw secret on the wire: the gateway's `secret-proxy` swaps `lobu_secret_<uuid>` placeholders for real values at egress, so the string you pull from `ctx.config.<field>` (env_keys) or `ctx.credentials.accessToken` (oauth) looks like a normal token from your code, but it's only resolved when the outbound request leaves the proxy.
 
-Full breakdown at [`reference/connector-sdk` › ConnectorAuthSchema](/reference/connector-sdk/#connectorauthschema).
+Full breakdown at [`reference/connector-sdk` › ConnectorAuthSchema](/sdks/connectors-reference/#connectorauthschema).
 
 ## Checkpoints
 
@@ -367,7 +367,7 @@ export default class VideoConnector extends ConnectorRuntime {
 
 At execution the runtime wraps the connector's subprocess in `nix-shell -p <packages>` so the declared tools are on `PATH`. Backends that cannot run native deps reject a connector that declares them, and a host without `nix-shell` errors with a clear message rather than failing mid-run.
 
-The rule of thumb: **npm is bundled (compile-time), native is nix (run-time).** Never put a native tool in `package.json` expecting it to ship, and never list an npm package in `runtime.nix.packages`. See the [`ConnectorRuntimeInfo` reference](/reference/connector-sdk/#connectorruntimeinfo) for the field shape.
+The rule of thumb: **npm is bundled (compile-time), native is nix (run-time).** Never put a native tool in `package.json` expecting it to ship, and never list an npm package in `runtime.nix.packages`. See the [`ConnectorRuntimeInfo` reference](/sdks/connectors-reference/#connectorruntimeinfo) for the field shape.
 
 ## See it in production
 
@@ -376,6 +376,6 @@ The rule of thumb: **npm is bundled (compile-time), native is nix (run-time).** 
 
 ## See also
 
-- [Reactions](/getting-started/reaction-sdk/) — the typed hook (part of this same package) for code that runs after watchers extract data.
-- [`@lobu/connector-sdk` API reference](/reference/connector-sdk/) — every exported symbol with types.
+- [Reactions](/sdks/reactions/) — the typed hook (part of this same package) for code that runs after watchers extract data.
+- [`@lobu/connector-sdk` API reference](/sdks/connectors-reference/) — every exported symbol with types.
 - [Memory](/getting-started/memory/) — how connector events become durable entity memory.

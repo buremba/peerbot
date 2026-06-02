@@ -401,7 +401,7 @@ Declares a scheduled watcher. Pass it to `defineConfig({ watchers: [...] })`.
 | `tags` | `string[]` | no | Free-form tags |
 | `reactionsGuidance` | string | no | LLM guidance for the watcher's downstream reaction agent |
 | `agentKind` | string | no | Agent-kind override for firings (e.g. `background`, `notifier`) |
-| `reaction` | `ReactionSource` | no | A sibling `.ts` reaction script referenced with `reactionFromFile("./reactions/foo.reaction.ts")` (pass `reactionFromFile<typeof handler>(...)` with an `import type` for go-to-def + a `tsc` check on the default export), compiled and run in a sandboxed isolate when the watcher fires. The script must `export default async (ctx, client) => …`. See the [Reaction SDK](/getting-started/reaction-sdk/) |
+| `reaction` | `ReactionSource` | no | A sibling `.ts` reaction script referenced with `reactionFromFile("./reactions/foo.reaction.ts")` (pass `reactionFromFile<typeof handler>(...)` with an `import type` for go-to-def + a `tsc` check on the default export), compiled and run in a sandboxed isolate when the watcher fires. The script must `export default async (ctx, client) => …`. See the [Reaction SDK](/sdks/reactions/) |
 
 ```ts
 import type weeklyDigestReaction from "./reactions/weekly-digest.reaction.ts";

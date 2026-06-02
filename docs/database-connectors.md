@@ -29,8 +29,8 @@ Single-database only: every query targets one database; no cross-source joins
 
 Slice 2 (next): **virtual feeds** (a `virtual` feed flag → live reads, no events)
 and **federated search** (a connector `search()` the platform fans out to and
-merges with the vector index). The SDK `virtual` flag and the `query` primitive
-are already in place; `search()` + the fan-out are the remaining work.
+merges with the vector index). Only the `query()` live-read primitive is in place
+today; the `virtual` feed flag, `search()`, and the fan-out are the remaining work.
 
 ## SSRF / egress trust model
 
@@ -44,9 +44,11 @@ scrapers' block-all-private-IPs rule can't be reused.
   IPs, internal CIDRs, another tenant's DB) is an exfil/scan vector. **Not allowed
   yet.** Under `LOBU_CLOUD_MODE=1` the postgres connector is hidden from the
   catalog (`connector-catalog.ts`) and connection-create is hard-blocked
-  (`manage_connections.ts` via `connector-cloud-gate.ts`). Because every live read
-  goes *through* the connector, blocking the connector blocks the pushdown too — no
-  separate executor gate needed.
+  (`manage_connections.ts` via `connector-cloud-gate.ts`). Execution is gated
+  independently at every run path, not just by catalog-hide: scheduled-sync run
+  creation (`queue-helpers.ts`), the production worker poll (`worker-api.ts`), the
+  dev-CLI sync (`feed-sync.ts`), and the live pushdown (`connector-pushdown.ts`)
+  each refuse a cloud-restricted connector under `LOBU_CLOUD_MODE`.
 
 **Before enabling on cloud:** an egress allowlist; resolve-then-pin the host IP at
 connect time with DNS-rebinding protection; block link-local/metadata + internal

@@ -50,10 +50,23 @@ scrapers' block-all-private-IPs rule can't be reused.
   dev-CLI sync (`feed-sync.ts`), and the live pushdown (`connector-pushdown.ts`)
   each refuse a cloud-restricted connector under `LOBU_CLOUD_MODE`.
 
-**Before enabling on cloud:** an egress allowlist; resolve-then-pin the host IP at
-connect time with DNS-rebinding protection; block link-local/metadata + internal
-CIDRs; per-org policy. Remove the key from `CLOUD_RESTRICTED_CONNECTOR_KEYS` only
-once that lands.
+**Egress guard (`packages/connectors/src/db-egress-guard.ts`).** The connector
+runs a pre-connect host check on both `sync()` and `query()`. Policy comes from
+`ctx.config.LOBU_DB_EGRESS_POLICY`, injected by the server from cloud mode:
+
+- `allow-private` (self-hosted, the default) — allows loopback / RFC1918 / CGNAT
+  / ULA, but still blocks link-local + cloud metadata (`169.254/16`), multicast,
+  and the unspecified address (no DB lives there).
+- `block-private` (cloud) — blocks **every** non-public address. A hostname is
+  resolved and rejected if ANY returned address is blocked (multi-record rebind),
+  with IPv4-mapped / NAT64 / zone-id normalization and fail-closed on malformed
+  literals.
+
+**Remaining before enabling on cloud** (then remove the key from
+`CLOUD_RESTRICTED_CONNECTOR_KEYS`): pin the resolved IP into the socket to close
+the DNS-rebind TOCTOU across the pool, force TLS when the URL omits it, and a
+per-org allowlist. The classifier + reject is in place and tested; the gate is
+what currently keeps untrusted tenants out.
 
 ## Entitlement boundary (design-only — not yet built)
 

@@ -8,6 +8,7 @@
 
 import { executeCompiledConnector } from '@lobu/connector-worker/executor/runtime';
 import { getDb } from '../db/client';
+import { isCloudMode } from '../utils/cloud-mode';
 import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { resolveExecutionAuth } from '../utils/execution-context';
@@ -90,8 +91,15 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
       query: p.query,
       // ONLY the connection's own credentials reach ctx.config — deliberately NOT
       // the gateway's process.env, so a connection missing DATABASE_URL fails
-      // cleanly instead of falling back to Lobu's own DB.
-      config: { ...connectionCredentials, ...(p.config ?? {}) },
+      // cleanly instead of falling back to Lobu's own DB. The egress policy is the
+      // one non-credential we inject: under cloud mode a DB connector must reject
+      // internal/metadata hosts (block-private); self-hosted reaches its own
+      // private DB (allow-private). env is {} so this is the only channel for it.
+      config: {
+        LOBU_DB_EGRESS_POLICY: isCloudMode() ? 'block-private' : 'allow-private',
+        ...connectionCredentials,
+        ...(p.config ?? {}),
+      },
       env: {},
       sessionState,
       credentials,

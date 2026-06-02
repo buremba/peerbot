@@ -91,6 +91,29 @@ describe('PostgresConnector.sync (keyset incremental, real DB)', () => {
     await expect(run({ query: 'UPDATE pgc_it SET email = NULL' }, null)).rejects.toThrow(/SELECT/i);
   });
 
+  it('blocks an internal host under the block-private egress policy (cloud)', async () => {
+    // The test DB is on loopback; block-private rejects it before any socket opens.
+    // (allow-private — the default exercised by every other case here — allows it.)
+    await expect(run({ LOBU_DB_EGRESS_POLICY: 'block-private' }, null)).rejects.toThrow(
+      /blocked internal\/metadata/i
+    );
+  });
+
+  it('query() also enforces the egress policy', async () => {
+    const conn2 = new PostgresConnector();
+    await expect(
+      conn2.query({
+        feedKey: null,
+        query: 'SELECT 1 AS one',
+        config: {
+          DATABASE_URL: process.env.DATABASE_URL,
+          LOBU_DB_EGRESS_POLICY: 'block-private',
+        },
+        credentials: null,
+      } as never)
+    ).rejects.toThrow(/blocked internal\/metadata/i);
+  });
+
   it('rejects a write-capable CTE (read-only connector contract)', async () => {
     await expect(
       run(

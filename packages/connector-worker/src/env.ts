@@ -25,5 +25,8 @@ export function buildConnectorWorkerEnv(): Env {
     REDDIT_CLIENT_SECRET: process.env.REDDIT_CLIENT_SECRET,
     REDDIT_USER_AGENT: process.env.REDDIT_USER_AGENT,
     WORKER_API_TOKEN: process.env.WORKER_API_TOKEN,
+    // DB connectors reject internal/metadata hosts under cloud mode; self-hosted
+    // reaches its own private DB. Delivered to the connector subprocess as config.
+    LOBU_DB_EGRESS_POLICY: process.env.LOBU_CLOUD_MODE ? 'block-private' : 'allow-private',
   };
 }

@@ -38,6 +38,7 @@ import {
 } from '@lobu/connector-sdk';
 import { Parser } from 'node-sql-parser';
 import postgres from 'postgres';
+import { assertHostAllowed, readEgressPolicy } from './db-egress-guard.js';
 
 interface PgQueryConfig {
   /** ONE read-only base SELECT. No WHERE-cursor / ORDER BY / top-level LIMIT — the connector wraps it. */
@@ -305,6 +306,31 @@ const POOL_OPTS = {
   onnotice: () => {},
 } as const;
 
+/**
+ * SSRF/egress pre-flight: reject (or, for a hostname, resolve-and-reject) a
+ * DATABASE_URL host that points at a blocked internal/metadata address under the
+ * active policy. Policy comes from ctx.config.LOBU_DB_EGRESS_POLICY — the server
+ * injects `block-private` under cloud mode; everything else defaults to the
+ * trusted `allow-private` (self-hosted reaches its own private PG / localhost).
+ * Runs before any socket opens, on BOTH sync() and query().
+ */
+async function guardDbHost(connectionString: string, config: Record<string, unknown>): Promise<void> {
+  const policy = readEgressPolicy(config.LOBU_DB_EGRESS_POLICY);
+  let host: string | null = null;
+  try {
+    // URL keeps brackets on an IPv6 literal host; strip them for the classifier.
+    host = new URL(connectionString).hostname.replace(/^\[|\]$/g, '');
+  } catch {
+    host = null;
+  }
+  if (host) {
+    await assertHostAllowed(host, policy);
+  } else if (policy === 'block-private') {
+    // Can't isolate the host to validate it — fail closed on the untrusted path.
+    throw new Error('DATABASE_URL could not be parsed for egress validation.');
+  }
+}
+
 /** Seal a transaction read-only with a statement timeout — the hard write/time
  *  boundary both sync() and query() rely on. */
 async function setReadOnly(
@@ -388,6 +414,7 @@ export default class PostgresConnector extends ConnectorRuntime {
 
     const checkpoint = (ctx.checkpoint as PgCheckpoint | null) ?? {};
 
+    await guardDbHost(connectionString, ctx.config as Record<string, unknown>);
     const sql = postgres(connectionString, POOL_OPTS);
 
     try {
@@ -489,6 +516,7 @@ export default class PostgresConnector extends ConnectorRuntime {
     // path. baseSql has no top-level LIMIT (rejected above), so this is exact.
     const countSql = `SELECT count(*)::int AS n FROM (\n${baseSql}\n) q`;
 
+    await guardDbHost(connectionString, ctx.config as Record<string, unknown>);
     const sql = postgres(connectionString, POOL_OPTS);
     try {
       const { data, total } = (await sql.begin(async (tx) => {

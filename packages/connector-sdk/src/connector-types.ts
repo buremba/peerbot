@@ -481,6 +481,13 @@ export interface EventEnvelope {
 export interface SyncContext<C = Record<string, unknown>, F = Record<string, unknown>> {
   /** Feed key */
   feedKey: string;
+  /**
+   * Stable id of this feed INSTANCE (the `feeds` row), when run by the platform.
+   * Distinct per feed even when several feeds share one `feedKey` on a single
+   * connection — use it to namespace emitted `origin_id`s so two feeds can't
+   * supersede each other's events. Undefined for direct/programmatic sync calls.
+   */
+  feedId?: number | null;
   /** Feed configuration (typed via F) */
   config: F;
   /** Previous checkpoint (null on first sync) */

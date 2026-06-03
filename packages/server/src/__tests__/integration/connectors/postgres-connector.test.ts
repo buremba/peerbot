@@ -81,6 +81,39 @@ describe('PostgresConnector.sync (keyset incremental, real DB)', () => {
     expect(r.events.map((e) => e.origin_id)).toEqual(['query:1', 'query:2', 'query:3']);
   });
 
+  it('namespaces origin_id by feed instance so two feeds on one connection do not collide', async () => {
+    // Both feeds share feedKey 'query' and the same primary keys; distinct feedId
+    // must keep their origin_ids apart (else one supersedes the other's events).
+    const conn = new PostgresConnector();
+    const base = {
+      DATABASE_URL: process.env.DATABASE_URL,
+      query: 'SELECT id, email, created_at FROM pgc_it',
+      primary_key: 'id',
+      cursor_column: 'created_at',
+    };
+    const feedA = await conn.sync({
+      feedKey: 'query',
+      feedId: 101,
+      config: base as never,
+      checkpoint: null as never,
+      credentials: null,
+      entityIds: [],
+    });
+    const feedB = await conn.sync({
+      feedKey: 'query',
+      feedId: 202,
+      config: base as never,
+      checkpoint: null as never,
+      credentials: null,
+      entityIds: [],
+    });
+    expect(feedA.events[0].origin_id).toBe('101:1');
+    expect(feedB.events[0].origin_id).toBe('202:1');
+    // Same pk, different feed → no collision.
+    const aIds = new Set(feedA.events.map((e) => e.origin_id));
+    expect(feedB.events.some((e) => aIds.has(e.origin_id))).toBe(false);
+  });
+
   it('rejects invalid base queries before connecting', async () => {
     await expect(run({ query: 'SELECT 1; DROP TABLE pgc_it' }, null)).rejects.toThrow(
       /single statement/i

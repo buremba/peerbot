@@ -455,11 +455,18 @@ export default class PostgresConnector extends ConnectorRuntime {
         return tx.unsafe(wrapped, params as never[]);
       })) as unknown as Array<Record<string, unknown>>;
 
+      // Namespace origin_ids by the feed INSTANCE, not the feed key: every
+      // postgres feed shares feedKey 'query', so two feeds on one connection with
+      // overlapping primary keys would otherwise emit the same origin_id and
+      // supersede each other's events. feedId is unique per feeds row; fall back
+      // to feedKey only for direct/programmatic sync calls (no feedId).
+      const originPrefix = ctx.feedId != null ? String(ctx.feedId) : ctx.feedKey;
+
       // Map rows → events, advancing the compound checkpoint to the last row.
       const events: EventEnvelope[] = [];
       let newCheckpoint: PgCheckpoint = checkpoint;
       for (const row of rows) {
-        events.push(this.rowToEvent(ctx.feedKey, row, config, cursorCol, pkCol));
+        events.push(this.rowToEvent(originPrefix, row, config, cursorCol, pkCol));
         newCheckpoint = {
           last_cursor: toCheckpointValue(row[cursorCol]),
           last_pk: toCheckpointValue(row[pkCol]),
@@ -533,7 +540,7 @@ export default class PostgresConnector extends ConnectorRuntime {
   }
 
   private rowToEvent(
-    feedKey: string,
+    originPrefix: string,
     row: Record<string, unknown>,
     config: PgQueryConfig,
     cursorCol: string,
@@ -550,7 +557,7 @@ export default class PostgresConnector extends ConnectorRuntime {
     const payloadText = m.payload_text ? row[m.payload_text] : row.payload_text;
 
     return {
-      origin_id: `${feedKey}:${String(row[pkCol])}`,
+      origin_id: `${originPrefix}:${String(row[pkCol])}`,
       origin_type: 'row',
       title: titleRaw != null ? String(titleRaw) : undefined,
       author_name: authorRaw != null ? String(authorRaw) : undefined,

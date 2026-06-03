@@ -9,6 +9,8 @@ export type ExecutorJob =
   | {
       mode: 'sync';
       feedKey?: string | null;
+      /** Feed-instance id (feeds.id) — namespaces emitted origin_ids per feed. */
+      feedId?: number | null;
       config: Record<string, unknown>;
       checkpoint: Record<string, unknown> | null;
       entityIds: number[];

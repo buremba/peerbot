@@ -134,6 +134,7 @@ export async function runFeed(feed: FeedRecord): Promise<{ itemCount: number }> 
       sessionState,
       credentials,
       feedKey: feed.feed_key,
+      feedId: feed.id,
       entityIds: feed.entity_ids,
     },
     hooks: {

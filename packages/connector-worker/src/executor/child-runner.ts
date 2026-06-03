@@ -243,6 +243,7 @@ async function executeConnectorRuntime(
 
   const syncResult = (await instance.sync({
     feedKey: job.feedKey,
+    feedId: job.feedId,
     config: { ...job.env, ...job.config },
     checkpoint: job.checkpoint,
     credentials: job.credentials,

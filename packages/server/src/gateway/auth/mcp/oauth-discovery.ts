@@ -7,13 +7,13 @@
  * a client. Results are cached per `mcpId` so repeated 401s don't re-run the
  * probes on every tool call.
  *
- * All outbound fetches pass through `isInternalUrl` SSRF guards — advertised
- * resource_metadata / issuer URLs are untrusted.
+ * All outbound fetches go through `ssrfSafeFetch` (resolve-once + pin to the
+ * validated IP) — advertised resource_metadata / issuer URLs are untrusted.
  */
 
 import { createHash } from "node:crypto";
-import dns from "node:dns/promises";
 import { createLogger } from "@lobu/core";
+import { ssrfSafeFetch } from "../../proxy/ip-blocklist.js";
 import type { WritableSecretStore } from "../../secrets/index.js";
 
 const logger = createLogger("mcp-oauth-discovery");
@@ -72,7 +72,7 @@ interface AuthServerMetadata {
  * servers list refinements after the generic default per RFC 9728 guidance.
  */
 function parseResourceMetadataFromWwwAuth(
-  header: string | null
+  header: string | null,
 ): string | null {
   if (!header) return null;
   const matches = [...header.matchAll(/resource_metadata="?([^",\s]+)"?/gi)];
@@ -80,22 +80,7 @@ function parseResourceMetadataFromWwwAuth(
   return matches[matches.length - 1]?.[1] ?? null;
 }
 
-function isReservedIp(ip: string): boolean {
-  if (ip === "::1") return true;
-  if (/^f[cd]/i.test(ip)) return true;
-  const parts = ip.split(".").map(Number);
-  if (parts.length === 4) {
-    const [a, b] = parts as [number, number, number, number];
-    if (a === 127) return true;
-    if (a === 10) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 169 && b === 254) return true;
-  }
-  return false;
-}
-
-async function assertPublicUrl(url: string): Promise<void> {
+function assertSupportedProtocol(url: string): void {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -105,30 +90,21 @@ async function assertPublicUrl(url: string): Promise<void> {
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     throw new Error(`Unsupported protocol: ${parsed.protocol}`);
   }
-  const host = parsed.hostname;
-  if (isReservedIp(host)) {
-    throw new Error(`URL resolves to a blocked internal host: ${host}`);
-  }
-  const ipv4 = await dns.resolve4(host).catch(() => [] as string[]);
-  const ipv6 = await dns.resolve6(host).catch(() => [] as string[]);
-  for (const ip of [...ipv4, ...ipv6]) {
-    if (isReservedIp(ip)) {
-      throw new Error(
-        `URL resolves to a blocked internal host: ${host} (${ip})`
-      );
-    }
-  }
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
-  await assertPublicUrl(url);
+  // `ssrfSafeFetch` resolves the host once, checks it against the reserved-IP
+  // blocklist (0.0.0.0/8, ::, IPv4-mapped IPv6, NAT64, RFC1918, link-local,
+  // …), and pins the connection to the validated IP — so an advertised
+  // resource_metadata / issuer URL can't be used for SSRF or DNS rebinding.
+  assertSupportedProtocol(url);
   const controller = new AbortController();
   const timer = setTimeout(
     () => controller.abort(),
-    DISCOVERY_FETCH_TIMEOUT_MS
+    DISCOVERY_FETCH_TIMEOUT_MS,
   );
   try {
-    const response = await fetch(url, {
+    const response = await ssrfSafeFetch(url, {
       method: "GET",
       headers: { Accept: "application/json" },
       signal: controller.signal,
@@ -146,7 +122,7 @@ async function fetchJson<T>(url: string): Promise<T> {
  * Fetch RFC 9728 Protected Resource Metadata.
  */
 async function fetchProtectedResourceMetadata(
-  url: string
+  url: string,
 ): Promise<ProtectedResourceMetadata> {
   logger.debug("Fetching protected resource metadata", { url });
   return fetchJson<ProtectedResourceMetadata>(url);
@@ -158,7 +134,7 @@ async function fetchProtectedResourceMetadata(
  * `/.well-known/openid-configuration` for providers that only advertise OIDC.
  */
 async function fetchAuthorizationServerMetadata(
-  issuer: string
+  issuer: string,
 ): Promise<AuthServerMetadata> {
   const base = issuer.replace(/\/+$/, "");
   const candidates = [
@@ -187,7 +163,7 @@ async function fetchAuthorizationServerMetadata(
   throw new Error(
     `Unable to fetch authorization server metadata from ${issuer}: ${
       lastError instanceof Error ? lastError.message : String(lastError)
-    }`
+    }`,
   );
 }
 
@@ -199,9 +175,9 @@ async function dynamicClientRegistration(
   registrationEndpoint: string,
   clientName: string,
   redirectUri: string,
-  scope: string | undefined
+  scope: string | undefined,
 ): Promise<DiscoveredClient> {
-  await assertPublicUrl(registrationEndpoint);
+  assertSupportedProtocol(registrationEndpoint);
   const body: Record<string, unknown> = {
     client_name: clientName,
     redirect_uris: [redirectUri],
@@ -212,7 +188,9 @@ async function dynamicClientRegistration(
   };
   if (scope) body.scope = scope;
 
-  const response = await fetch(registrationEndpoint, {
+  // SSRF-guarded: the registration endpoint is discovered from untrusted
+  // metadata, so resolve+pin to a validated public IP before POSTing.
+  const response = await ssrfSafeFetch(registrationEndpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -223,7 +201,7 @@ async function dynamicClientRegistration(
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     throw new Error(
-      `Dynamic client registration failed: ${response.status} ${text}`
+      `Dynamic client registration failed: ${response.status} ${text}`,
     );
   }
   const data = (await response.json()) as {
@@ -257,7 +235,7 @@ function scopeTag(agentId: string, upstreamUrl: string): string {
 function discoveryCacheName(
   mcpId: string,
   agentId: string,
-  upstreamUrl: string
+  upstreamUrl: string,
 ): string {
   return `mcp-oauth/${mcpId}/${scopeTag(agentId, upstreamUrl)}/discovery`;
 }
@@ -265,7 +243,7 @@ function discoveryCacheName(
 function clientCacheName(
   mcpId: string,
   agentId: string,
-  upstreamUrl: string
+  upstreamUrl: string,
 ): string {
   return `mcp-oauth/clients/${mcpId}/${scopeTag(agentId, upstreamUrl)}/registration`;
 }
@@ -277,7 +255,7 @@ function clientCacheName(
  */
 function pickStaticAuthMethod(
   supported: string[] | undefined,
-  hasSecret: boolean
+  hasSecret: boolean,
 ): string {
   if (!hasSecret) return "none";
   if (supported?.includes("client_secret_basic")) return "client_secret_basic";
@@ -287,7 +265,7 @@ function pickStaticAuthMethod(
 
 async function readSecretJson<T>(
   secretStore: WritableSecretStore,
-  name: string
+  name: string,
 ): Promise<T | null> {
   const ref = `secret://${encodeURIComponent(name)}` as const;
   const value = await secretStore.get(ref as any);
@@ -303,7 +281,7 @@ async function writeSecretJson<T>(
   secretStore: WritableSecretStore,
   name: string,
   value: T,
-  ttlSeconds?: number
+  ttlSeconds?: number,
 ): Promise<void> {
   await secretStore.put(name, JSON.stringify(value), { ttlSeconds });
 }
@@ -333,7 +311,7 @@ interface DiscoverOptions {
  * 401. The cache is invalidated by deleting the credential (logout).
  */
 export async function discoverOAuth(
-  options: DiscoverOptions
+  options: DiscoverOptions,
 ): Promise<DiscoveryResult> {
   const {
     mcpId,
@@ -358,7 +336,7 @@ export async function discoverOAuth(
         clientSecret: staticClientSecret,
         tokenEndpointAuthMethod: pickStaticAuthMethod(
           cached.endpoints.tokenEndpointAuthMethodsSupported,
-          !!staticClientSecret
+          !!staticClientSecret,
         ),
       };
     }
@@ -381,14 +359,14 @@ export async function discoverOAuth(
   const authServerIssuer = prm.authorization_servers?.[0];
   if (!authServerIssuer) {
     throw new Error(
-      `Protected resource metadata at ${prmUrl} lists no authorization_servers`
+      `Protected resource metadata at ${prmUrl} lists no authorization_servers`,
     );
   }
 
   const asm = await fetchAuthorizationServerMetadata(authServerIssuer);
   if (!asm.authorization_endpoint || !asm.token_endpoint) {
     throw new Error(
-      `Authorization server ${authServerIssuer} missing required endpoints`
+      `Authorization server ${authServerIssuer} missing required endpoints`,
     );
   }
 
@@ -416,32 +394,32 @@ export async function discoverOAuth(
       clientSecret: staticClientSecret,
       tokenEndpointAuthMethod: pickStaticAuthMethod(
         endpoints.tokenEndpointAuthMethodsSupported,
-        !!staticClientSecret
+        !!staticClientSecret,
       ),
     };
   } else {
     const cachedClient = await readSecretJson<DiscoveredClient>(
       secretStore,
-      clientCacheName(mcpId, agentId, upstreamUrl)
+      clientCacheName(mcpId, agentId, upstreamUrl),
     );
     if (cachedClient) {
       client = cachedClient;
     } else {
       if (!endpoints.registrationEndpoint) {
         throw new Error(
-          `Authorization server ${endpoints.issuer} has no registration_endpoint and no static client_id configured for MCP '${mcpId}'`
+          `Authorization server ${endpoints.issuer} has no registration_endpoint and no static client_id configured for MCP '${mcpId}'`,
         );
       }
       client = await dynamicClientRegistration(
         endpoints.registrationEndpoint,
         `Lobu Gateway (${mcpId})`,
         redirectUri,
-        scopes?.join(" ")
+        scopes?.join(" "),
       );
       await writeSecretJson(
         secretStore,
         clientCacheName(mcpId, agentId, upstreamUrl),
-        client
+        client,
       );
       logger.info("Registered new OAuth client via DCR", {
         mcpId,

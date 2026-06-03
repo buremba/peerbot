@@ -6,16 +6,22 @@ import * as net from "node:net";
 import { URL } from "node:url";
 import type { WorkerTokenData } from "@lobu/core";
 import { createLogger, verifyWorkerToken } from "@lobu/core";
+import { getRevokedTokenStore } from "../auth/revoked-token-store.js";
 import {
   isUnrestrictedMode,
   loadAllowedDomains,
   loadDisallowedDomains,
 } from "../config/network-allowlist.js";
-import { getRevokedTokenStore } from "../auth/revoked-token-store.js";
 import type { GrantStore } from "../permissions/grant-store.js";
 import type { PolicyStore } from "../permissions/policy-store.js";
 import { EgressJudge } from "./egress-judge/judge.js";
 import type { JudgeDecision } from "./egress-judge/types.js";
+import {
+  isBlockedIpAddress,
+  normalizeIpLiteral,
+  setIpBlocklistDnsLookup,
+  stripIpv6Brackets,
+} from "./ip-blocklist.js";
 
 const logger = createLogger("http-proxy");
 
@@ -30,37 +36,6 @@ interface TargetResolutionResult {
   statusCode?: number;
   clientMessage?: string;
   reason?: string;
-}
-
-const blockedIpv4Ranges: ReadonlyArray<readonly [string, number]> = [
-  ["0.0.0.0", 8],
-  ["10.0.0.0", 8],
-  ["100.64.0.0", 10],
-  ["127.0.0.0", 8],
-  ["169.254.0.0", 16],
-  ["172.16.0.0", 12],
-  ["192.168.0.0", 16],
-  ["198.18.0.0", 15],
-  ["224.0.0.0", 4],
-  ["240.0.0.0", 4],
-];
-
-const blockedIpv6Ranges: ReadonlyArray<readonly [string, number]> = [
-  ["fc00::", 7],
-  ["fe80::", 10],
-  ["ff00::", 8],
-];
-
-const blockedIpv4List = new net.BlockList();
-for (const [address, prefix] of blockedIpv4Ranges) {
-  blockedIpv4List.addSubnet(address, prefix, "ipv4");
-}
-
-const blockedIpv6List = new net.BlockList();
-blockedIpv6List.addAddress("::", "ipv6");
-blockedIpv6List.addAddress("::1", "ipv6");
-for (const [address, prefix] of blockedIpv6Ranges) {
-  blockedIpv6List.addSubnet(address, prefix, "ipv6");
 }
 
 // Cache for global defaults (used when no deployment identified)
@@ -141,9 +116,13 @@ async function checkDomainAccess(
   hostname: string,
   agentId: string | undefined,
   organizationId: string | undefined,
-  requestContext?: { method?: string; path?: string }
+  requestContext?: { method?: string; path?: string },
 ): Promise<AccessDecision> {
   const global = getGlobalConfig();
+
+  // Canonicalize once so the denylist, allowlist, grant store, and judge all
+  // match the same name (closes the trailing-dot FQDN blocklist bypass).
+  hostname = canonicalizeHostname(hostname);
 
   // Global blocklist always takes precedence
   if (
@@ -157,7 +136,7 @@ async function checkDomainAccess(
   const globallyAllowed = isHostnameAllowed(
     hostname,
     global.allowedDomains,
-    global.deniedDomains
+    global.deniedDomains,
   );
 
   if (globallyAllowed) {
@@ -170,7 +149,7 @@ async function checkDomainAccess(
       const denied = await proxyGrantStore.isDenied(
         agentId,
         hostname,
-        organizationId
+        organizationId,
       );
       if (denied) {
         logger.debug(`Domain ${hostname} denied via grant (agent: ${agentId})`);
@@ -185,7 +164,7 @@ async function checkDomainAccess(
     const granted = await proxyGrantStore.hasGrant(
       agentId,
       hostname,
-      organizationId
+      organizationId,
     );
     if (granted) {
       logger.debug(`Domain ${hostname} allowed via grant (agent: ${agentId})`);
@@ -208,7 +187,7 @@ async function checkDomainAccess(
           method: requestContext?.method,
           path: requestContext?.path,
         },
-        rule
+        rule,
       );
       return {
         allowed: decision.verdict === "allow",
@@ -226,176 +205,17 @@ interface ProxyCredentials {
   token: string;
 }
 
-/**
- * Result of running a host literal through {@link normalizeIpLiteral}.
- *  - `ipv4`     — the value is (or decodes to) a bare IPv4 address.
- *  - `ipv6`     — a genuine IPv6 address that doesn't embed an IPv4.
- *  - `not-ip`   — not an IP literal at all (a DNS name); caller should resolve.
- *  - `invalid`  — looks like an IP literal but doesn't cleanly parse → reject.
- */
-type NormalizedHost =
-  | { kind: "ipv4"; value: string }
-  | { kind: "ipv6"; value: string }
-  | { kind: "not-ip" }
-  | { kind: "invalid" };
-
-/** Turn 16 bits + 16 bits into a dotted-quad IPv4 string. */
-function hextetsToIpv4(high: number, low: number): string {
-  return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
-}
-
-/**
- * Expand a valid IPv6 address string into exactly 8 unsigned 16-bit hextets.
- * Handles `::` compression and mixed dotted-quad suffixes (e.g. `::ffff:127.0.0.1`).
- * The caller must pass a string already validated by `net.isIP() === 6`.
- */
-function expandIpv6ToHextets(addr: string): number[] {
-  const lower = addr.toLowerCase();
-
-  // Detect and handle the embedded IPv4 dotted-quad suffix (e.g. `::ffff:127.0.0.1`).
-  // RFC 4291 §2.2 allows the last 32 bits of an IPv6 address to be written in
-  // dotted-quad form. When present, convert those 4 octets to 2 hextets first.
-  let hexPart = lower;
-  let ipv4Suffix: number[] = [];
-  const dotIdx = lower.lastIndexOf(".");
-  if (dotIdx !== -1) {
-    // The dotted-quad portion starts at the last ':' before the first dot.
-    const colonBeforeDot = lower.lastIndexOf(":", dotIdx);
-    const dotted = lower.slice(colonBeforeDot + 1);
-    hexPart = lower.slice(0, colonBeforeDot + 1); // keep the trailing ':'
-    const octets = dotted.split(".").map((o) => parseInt(o, 10));
-    // octets must be exactly 4 valid bytes (already guaranteed by net.isIP)
-    ipv4Suffix = [
-      ((octets[0]! << 8) | octets[1]!) >>> 0,
-      ((octets[2]! << 8) | octets[3]!) >>> 0,
-    ];
-    // Strip the trailing colon we left on hexPart so split works correctly
-    if (hexPart.endsWith(":") && !hexPart.endsWith("::")) {
-      hexPart = hexPart.slice(0, -1);
-    }
-  }
-
-  const halves = hexPart.split("::");
-  const left = halves[0] ? halves[0].split(":").map((h) => parseInt(h, 16)) : [];
-  const right =
-    halves.length === 2 && halves[1]
-      ? halves[1].split(":").map((h) => parseInt(h, 16))
-      : [];
-  const rightWithSuffix = [...right, ...ipv4Suffix];
-  const zeros = new Array(8 - left.length - rightWithSuffix.length).fill(0);
-  return [...left, ...zeros, ...rightWithSuffix];
-}
-
-/**
- * Single funnel for every host literal that reaches the blocklist check —
- * resolved DNS results and CONNECT/forward targets alike. Collapses the
- * forms an attacker can use to dress up an internal address as something
- * `net.BlockList` won't recognise:
- *   - IPv4-mapped IPv6, dotted (`::ffff:127.0.0.1`) and hex (`::ffff:7f00:1`)
- *   - NAT64 well-known prefix `64:ff9b::/96` (last 32 bits are an IPv4)
- *   - zone IDs (`fe80::1%eth0` → strip `%eth0`)
- *   - compressed / uppercase forms (handled by `net.isIP`)
- * Anything that looks like an IP but doesn't parse returns `invalid` so the
- * caller fails closed rather than falling through to a DNS lookup.
- */
-function normalizeIpLiteral(host: string): NormalizedHost {
-  // Strip a zone identifier first (`%eth0`, `%1`). It's only meaningful for
-  // link-local addresses and never changes the routability decision.
-  const zoneSplit = host.indexOf("%");
-  const bare = (zoneSplit === -1 ? host : host.slice(0, zoneSplit)).trim();
-  if (bare.length === 0) {
-    return zoneSplit === -1 ? { kind: "not-ip" } : { kind: "invalid" };
-  }
-
-  const family = net.isIP(bare);
-  if (family === 4) {
-    return { kind: "ipv4", value: bare };
-  }
-  if (family === 0) {
-    // Not a valid IP literal. If it contains ':' it was meant to be an IPv6
-    // address (or something pretending to be one) but didn't parse — reject.
-    // Otherwise treat it as a hostname for the caller to resolve.
-    return bare.includes(":") ? { kind: "invalid" } : { kind: "not-ip" };
-  }
-
-  // family === 6 from here on.
-  const lower = bare.toLowerCase();
-
-  // IPv4-mapped IPv6: `::ffff:a.b.c.d` or `::ffff:hhhh:hhhh`.
-  if (lower.startsWith("::ffff:")) {
-    const mapped = lower.slice("::ffff:".length);
-    if (mapped.includes(".")) {
-      return net.isIP(mapped) === 4
-        ? { kind: "ipv4", value: mapped }
-        : { kind: "invalid" };
-    }
-    const parts = mapped.split(":");
-    if (parts.length !== 2) {
-      return { kind: "invalid" };
-    }
-    const high = Number.parseInt(parts[0] || "", 16);
-    const low = Number.parseInt(parts[1] || "", 16);
-    if (
-      !Number.isInteger(high) ||
-      !Number.isInteger(low) ||
-      high < 0 ||
-      high > 0xffff ||
-      low < 0 ||
-      low > 0xffff
-    ) {
-      return { kind: "invalid" };
-    }
-    return { kind: "ipv4", value: hextetsToIpv4(high, low) };
-  }
-
-  // NAT64 well-known prefix `64:ff9b::/96` — the trailing 32 bits hold the
-  // synthesised IPv4 destination. Both compressed (`64:ff9b::a9fe:a9fe`) and
-  // expanded (`64:ff9b:0:0:0:0:a9fe:a9fe`) spellings must decode identically.
-  // Canonicalize into 8 hextets and verify the first 96 bits match the prefix.
-  const hextets = expandIpv6ToHextets(bare);
-  if (
-    hextets[0] === 0x0064 &&
-    hextets[1] === 0xff9b &&
-    hextets[2] === 0 &&
-    hextets[3] === 0 &&
-    hextets[4] === 0 &&
-    hextets[5] === 0
-  ) {
-    return { kind: "ipv4", value: hextetsToIpv4(hextets[6]!, hextets[7]!) };
-  }
-
-  return { kind: "ipv6", value: bare };
-}
-
-function isBlockedIpAddress(ip: string): boolean {
-  const normalized = normalizeIpLiteral(ip);
-  switch (normalized.kind) {
-    case "ipv4":
-      return blockedIpv4List.check(normalized.value, "ipv4");
-    case "ipv6":
-      // A genuine IPv6 address can still wrap an internal target via a
-      // mapped/translation prefix `net.BlockList` doesn't know about; the
-      // normalization above handles the standard ones (::ffff:, 64:ff9b::),
-      // so by this point a bare IPv6 only needs the IPv6 blocklist.
-      return blockedIpv6List.check(normalized.value, "ipv6");
-    case "invalid":
-      // Fail closed: an address that looks like an IP literal but won't
-      // parse cleanly must not be allowed through.
-      return true;
-    case "not-ip":
-      return false;
-  }
-}
-
 type DnsLookupAllFn = (
   hostname: string,
-  options: { all: true; verbatim: true }
+  options: { all: true; verbatim: true },
 ) => Promise<LookupAddress[]>;
 
 let dnsLookupOverride: DnsLookupAllFn | null = null;
 
 export const __testOnly = {
   isBlockedIpAddress,
+  checkDomainAccess,
+  canonicalizeHostname,
   /** Reset cached global config + module-level stores so tests can rebuild them. */
   reset: () => {
     globalConfig = null;
@@ -403,29 +223,18 @@ export const __testOnly = {
     proxyPolicyStore = null;
     proxyEgressJudge = null;
     dnsLookupOverride = null;
+    setIpBlocklistDnsLookup(null);
   },
   setDnsLookup(fn: DnsLookupAllFn | null): void {
+    // Drive both resolvers from one seam: this module's own
+    // `resolveAndValidateTarget` and the shared `resolveUrlToSafeAddress`.
     dnsLookupOverride = fn;
+    setIpBlocklistDnsLookup(fn);
   },
 };
 
-/**
- * Strip surrounding brackets from an IPv6 literal so `net.isIP()` can
- * recognise it. WHATWG URL parsing returns `parsedUrl.hostname` with
- * brackets for IPv6 (e.g. `[::1]`), and `net.isIP("[::1]")` returns 0,
- * which would cause the IP-blocklist check to be skipped and the value
- * to fall through to DNS lookup — bypassing the loopback/private-IP
- * guards. Normalising to the bare address closes that hole.
- */
-function stripIpv6Brackets(host: string): string {
-  if (host.length >= 2 && host.startsWith("[") && host.endsWith("]")) {
-    return host.slice(1, -1);
-  }
-  return host;
-}
-
 async function resolveAndValidateTarget(
-  rawHostname: string
+  rawHostname: string,
 ): Promise<TargetResolutionResult> {
   const hostname = stripIpv6Brackets(rawHostname);
 
@@ -481,7 +290,7 @@ async function resolveAndValidateTarget(
   }
 
   const blockedAddress = addresses.find((addr) =>
-    isBlockedIpAddress(addr.address)
+    isBlockedIpAddress(addr.address),
   );
   if (blockedAddress) {
     return {
@@ -504,7 +313,7 @@ async function resolveAndValidateTarget(
  * This creates a Basic auth header with username=deploymentName, password=token
  */
 function extractProxyCredentials(
-  req: http.IncomingMessage
+  req: http.IncomingMessage,
 ): ProxyCredentials | null {
   const authHeader = req.headers["proxy-authorization"];
   if (!authHeader || typeof authHeader !== "string") {
@@ -552,7 +361,7 @@ function validateProxyAuth(req: http.IncomingMessage): ValidatedProxy | null {
   const tokenData = verifyWorkerToken(creds.token);
   if (!tokenData) {
     logger.warn(
-      `Proxy auth failed: invalid token (claimed deployment: ${creds.deploymentName})`
+      `Proxy auth failed: invalid token (claimed deployment: ${creds.deploymentName})`,
     );
     return null;
   }
@@ -563,7 +372,7 @@ function validateProxyAuth(req: http.IncomingMessage): ValidatedProxy | null {
   // turning every CONNECT into an async DB hop.
   if (tokenData.jti && getRevokedTokenStore().isRevokedCached(tokenData.jti)) {
     logger.warn(
-      `Proxy auth failed: revoked jti (claimed deployment: ${creds.deploymentName})`
+      `Proxy auth failed: revoked jti (claimed deployment: ${creds.deploymentName})`,
     );
     return null;
   }
@@ -572,11 +381,11 @@ function validateProxyAuth(req: http.IncomingMessage): ValidatedProxy | null {
     tokenData.deploymentName.length === creds.deploymentName.length &&
     crypto.timingSafeEqual(
       Buffer.from(tokenData.deploymentName),
-      Buffer.from(creds.deploymentName)
+      Buffer.from(creds.deploymentName),
     );
   if (!deploymentMatch) {
     logger.warn(
-      `Proxy auth failed: deployment mismatch (claimed: ${creds.deploymentName}, token: ${tokenData.deploymentName})`
+      `Proxy auth failed: deployment mismatch (claimed: ${creds.deploymentName}, token: ${tokenData.deploymentName})`,
     );
     return null;
   }
@@ -588,6 +397,19 @@ function validateProxyAuth(req: http.IncomingMessage): ValidatedProxy | null {
  * Check if a hostname matches any domain patterns
  * Supports exact matches and wildcard patterns (.example.com matches *.example.com)
  */
+/**
+ * Canonicalize a hostname for allow/deny/judge matching. WHATWG URL parsing and
+ * the CONNECT host parser both preserve a trailing dot (`evil.com.`), which DNS
+ * resolves identically to `evil.com` but which configured allow/deny/judge
+ * patterns never carry. Without stripping it, a trailing-dot host slips past the
+ * blocklist in unrestricted+blocklist mode (matches neither the exact nor the
+ * `.suffix` pattern) while the plain form is blocked. Strip any trailing dots so
+ * every matcher sees the same name DNS will ultimately resolve.
+ */
+function canonicalizeHostname(hostname: string): string {
+  return hostname.replace(/\.+$/, "");
+}
+
 function matchesDomainPattern(hostname: string, patterns: string[]): boolean {
   const lowerHostname = hostname.toLowerCase();
 
@@ -620,7 +442,7 @@ function matchesDomainPattern(hostname: string, patterns: string[]): boolean {
 function isHostnameAllowed(
   hostname: string,
   allowedDomains: string[],
-  deniedDomains: string[]
+  deniedDomains: string[],
 ): boolean {
   // Unrestricted mode - allow all except explicitly disallowed
   if (isUnrestrictedMode(allowedDomains)) {
@@ -657,7 +479,7 @@ function logAccessDecision(
   hostname: string,
   deploymentName: string,
   agentId: string | undefined,
-  decision: AccessDecision
+  decision: AccessDecision,
 ): void {
   // Audit log only fires for non-trivial decisions — every judge
   // invocation and every denial. Globally-allowed fast-path requests are
@@ -712,7 +534,7 @@ function extractConnectHostname(url: string): string | null {
 async function handleConnect(
   req: http.IncomingMessage,
   clientSocket: import("stream").Duplex,
-  head: Buffer
+  head: Buffer,
 ): Promise<void> {
   const url = req.url || "";
   const hostname = extractConnectHostname(url);
@@ -755,7 +577,7 @@ async function handleConnect(
     logger.warn(`Proxy auth required for CONNECT to ${hostname}`);
     try {
       clientSocket.write(
-        'HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="lobu-proxy"\r\n\r\n'
+        'HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="lobu-proxy"\r\n\r\n',
       );
       clientSocket.end();
     } catch {
@@ -772,23 +594,23 @@ async function handleConnect(
   const decision = await checkDomainAccess(
     hostname,
     tokenData.agentId,
-    tokenData.organizationId
+    tokenData.organizationId,
   );
   logAccessDecision(
     "CONNECT",
     hostname,
     deploymentName,
     tokenData.agentId,
-    decision
+    decision,
   );
   if (!decision.allowed) {
     const reason = decision.judge?.reason ?? `Domain not allowed: ${hostname}`;
     logger.warn(
-      `Blocked CONNECT to ${hostname} (deployment: ${deploymentName}) - ${reason}`
+      `Blocked CONNECT to ${hostname} (deployment: ${deploymentName}) - ${reason}`,
     );
     try {
       clientSocket.write(
-        `HTTP/1.1 403 ${escapeHeaderValue(reason)}\r\nContent-Type: text/plain\r\n\r\n403 Forbidden - ${reason}. Network access is configured via lobu.config.ts, skill configs, or the gateway configuration APIs.\r\n`
+        `HTTP/1.1 403 ${escapeHeaderValue(reason)}\r\nContent-Type: text/plain\r\n\r\n403 Forbidden - ${reason}. Network access is configured via lobu.config.ts, skill configs, or the gateway configuration APIs.\r\n`,
       );
       clientSocket.end();
     } catch {
@@ -800,13 +622,13 @@ async function handleConnect(
   const targetResolution = await resolveAndValidateTarget(hostname);
   if (!targetResolution.ok) {
     logger.warn(
-      `Blocked CONNECT to ${hostname} (deployment: ${deploymentName}) - ${targetResolution.reason}`
+      `Blocked CONNECT to ${hostname} (deployment: ${deploymentName}) - ${targetResolution.reason}`,
     );
     try {
       clientSocket.write(
         `HTTP/1.1 ${targetResolution.statusCode} ${
           targetResolution.statusCode === 403 ? "Forbidden" : "Bad Gateway"
-        }\r\nContent-Type: text/plain\r\n\r\n${targetResolution.clientMessage}\r\n`
+        }\r\nContent-Type: text/plain\r\n\r\n${targetResolution.clientMessage}\r\n`,
       );
       clientSocket.end();
     } catch {
@@ -880,7 +702,7 @@ async function handleConnect(
  */
 async function handleProxyRequest(
   req: http.IncomingMessage,
-  res: http.ServerResponse
+  res: http.ServerResponse,
 ): Promise<void> {
   const targetUrl = req.url;
 
@@ -918,27 +740,32 @@ async function handleProxyRequest(
   // Check domain access: global config → grant store → LLM egress judge.
   // Plain HTTP: method and path are visible and are passed through to the
   // judge so policies can reason about specific endpoints.
-  const decision = await checkDomainAccess(hostname, tokenData.agentId, tokenData.organizationId, {
-    method: req.method,
-    path: parsedUrl.pathname + parsedUrl.search,
-  });
+  const decision = await checkDomainAccess(
+    hostname,
+    tokenData.agentId,
+    tokenData.organizationId,
+    {
+      method: req.method,
+      path: parsedUrl.pathname + parsedUrl.search,
+    },
+  );
   logAccessDecision(
     req.method ?? "?",
     hostname,
     deploymentName,
     tokenData.agentId,
-    decision
+    decision,
   );
   if (!decision.allowed) {
     const reason = decision.judge?.reason ?? `Domain not allowed: ${hostname}`;
     logger.warn(
-      `Blocked request to ${hostname} (deployment: ${deploymentName}) - ${reason}`
+      `Blocked request to ${hostname} (deployment: ${deploymentName}) - ${reason}`,
     );
     res.writeHead(403, escapeHeaderValue(reason), {
       "Content-Type": "text/plain",
     });
     res.end(
-      `403 Forbidden - ${reason}. Network access is configured via lobu.config.ts, skill configs, or the gateway configuration APIs.\n`
+      `403 Forbidden - ${reason}. Network access is configured via lobu.config.ts, skill configs, or the gateway configuration APIs.\n`,
     );
     return;
   }
@@ -946,7 +773,7 @@ async function handleProxyRequest(
   const targetResolution = await resolveAndValidateTarget(hostname);
   if (!targetResolution.ok) {
     logger.warn(
-      `Blocked request to ${hostname} (deployment: ${deploymentName}) - ${targetResolution.reason}`
+      `Blocked request to ${hostname} (deployment: ${deploymentName}) - ${targetResolution.reason}`,
     );
     res.writeHead(targetResolution.statusCode ?? 502, {
       "Content-Type": "text/plain",
@@ -963,7 +790,7 @@ async function handleProxyRequest(
   }
 
   logger.debug(
-    `Proxying ${req.method} ${hostname}${parsedUrl.pathname} via ${resolvedIp}`
+    `Proxying ${req.method} ${hostname}${parsedUrl.pathname} via ${resolvedIp}`,
   );
 
   // Remove proxy-authorization header before forwarding
@@ -1022,7 +849,7 @@ async function handleProxyRequest(
  */
 export function startHttpProxy(
   port: number = 8118,
-  host: string = "::"
+  host: string = "::",
 ): Promise<http.Server> {
   return new Promise((resolve, reject) => {
     const global = getGlobalConfig();
@@ -1072,7 +899,7 @@ export function startHttpProxy(
       }
 
       logger.debug(
-        `HTTP proxy started on ${host}:${port} (mode=${mode}, allowed=${global.allowedDomains.length}, denied=${global.deniedDomains.length})`
+        `HTTP proxy started on ${host}:${port} (mode=${mode}, allowed=${global.allowedDomains.length}, denied=${global.deniedDomains.length})`,
       );
       resolve(server);
     });

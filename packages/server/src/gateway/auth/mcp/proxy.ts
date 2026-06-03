@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import dns from "node:dns/promises";
 import {
   createLogger,
   type GuardrailRegistry,
@@ -8,12 +7,10 @@ import {
 } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
-import { storePendingTool } from "./pending-tool-store.js";
-import { getRevokedTokenStore } from "../revoked-token-store.js";
+import { recordGuardrailTrip } from "../../guardrails/audit.js";
 import { requiresToolApproval } from "../../permissions/approval-policy.js";
 import type { GrantStore } from "../../permissions/grant-store.js";
-import type { AgentSettingsStore } from "../settings/agent-settings-store.js";
-import { recordGuardrailTrip } from "../../guardrails/audit.js";
+import { SsrfBlockedError, ssrfSafeFetch } from "../../proxy/ip-blocklist.js";
 import {
   getStoredCredential,
   refreshCredential,
@@ -21,7 +18,10 @@ import {
   tryCompletePendingDeviceAuth,
 } from "../../routes/internal/device-auth.js";
 import type { WritableSecretStore } from "../../secrets/index.js";
+import { getRevokedTokenStore } from "../revoked-token-store.js";
+import type { AgentSettingsStore } from "../settings/agent-settings-store.js";
 import { startAuthCodeFlow } from "./oauth-flow.js";
+import { storePendingTool } from "./pending-tool-store.js";
 import type { CachedMcpServer, McpTool, McpToolCache } from "./tool-cache.js";
 
 const logger = createLogger("mcp-proxy");
@@ -82,61 +82,6 @@ async function parseJsonRpcResponse(response: Response): Promise<any> {
   return response.json();
 }
 
-/**
- * Check whether a resolved IP address belongs to a reserved/internal range.
- */
-function isReservedIp(ip: string): boolean {
-  // IPv6 loopback
-  if (ip === "::1") return true;
-
-  // IPv6 unique local (fc00::/7)
-  if (/^f[cd]/i.test(ip)) return true;
-
-  // IPv4
-  const parts = ip.split(".").map(Number);
-  if (parts.length === 4) {
-    const [a, b] = parts as [number, number, number, number];
-    // 127.0.0.0/8
-    if (a === 127) return true;
-    // 10.0.0.0/8
-    if (a === 10) return true;
-    // 172.16.0.0/12
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    // 192.168.0.0/16
-    if (a === 192 && b === 168) return true;
-    // 169.254.0.0/16 (link-local)
-    if (a === 169 && b === 254) return true;
-  }
-
-  return false;
-}
-
-/**
- * Resolve a URL's hostname and check whether it points to an internal/reserved network.
- */
-async function isInternalUrl(url: string): Promise<boolean> {
-  try {
-    const parsed = new URL(url);
-    const hostname = parsed.hostname;
-
-    // Check if hostname is already an IP literal
-    if (isReservedIp(hostname)) return true;
-
-    // Resolve hostname to IP addresses
-    const addresses = await dns.resolve4(hostname).catch(() => [] as string[]);
-    const addresses6 = await dns.resolve6(hostname).catch(() => [] as string[]);
-
-    for (const addr of [...addresses, ...addresses6]) {
-      if (isReservedIp(addr)) return true;
-    }
-
-    return false;
-  } catch {
-    // If URL parsing fails, block it
-    return true;
-  }
-}
-
 interface JsonRpcResponse {
   jsonrpc: string;
   id: unknown;
@@ -163,15 +108,15 @@ interface HttpMcpServerConfig {
 interface McpConfigSource {
   getHttpServer(
     id: string,
-    agentId?: string
+    agentId?: string,
   ): Promise<HttpMcpServerConfig | undefined>;
   getAllHttpServers(
-    agentId?: string
+    agentId?: string,
   ): Promise<Map<string, HttpMcpServerConfig>>;
 }
 
 async function authenticateRequest(
-  c: Context
+  c: Context,
 ): Promise<{ tokenData: any; token: string } | null> {
   const sessionToken = extractSessionToken(c);
   if (!sessionToken) return null;
@@ -212,7 +157,10 @@ export class McpProxy {
    * restart the worker simply re-runs `initialize` and gets a new session —
    * no cross-replica coherence needed.
    */
-  private readonly sessions = new Map<string, { sessionId: string; expiresAt: number }>();
+  private readonly sessions = new Map<
+    string,
+    { sessionId: string; expiresAt: number }
+  >();
   private app: Hono;
   private readonly toolCache?: McpToolCache;
   private readonly secretStore: WritableSecretStore;
@@ -234,7 +182,7 @@ export class McpProxy {
     conversationId: string,
     teamId: string | undefined,
     connectionId: string | undefined,
-    platform: string | undefined
+    platform: string | undefined,
   ) => Promise<void>;
 
   /** Callback invoked when an MCP auth flow is started or already pending. */
@@ -252,7 +200,7 @@ export class McpProxy {
     conversationId: string,
     teamId: string | undefined,
     connectionId: string | undefined,
-    platform: string | undefined
+    platform: string | undefined,
   ) => Promise<void>;
 
   constructor(
@@ -267,7 +215,7 @@ export class McpProxy {
       agentSettingsStore?: AgentSettingsStore;
       /** Shared registry of guardrails; pre-tool stage entries are queried. */
       guardrailRegistry?: GuardrailRegistry;
-    }
+    },
   ) {
     this.secretStore = options.secretStore;
     this.toolCache = options.toolCache;
@@ -293,7 +241,7 @@ export class McpProxy {
     userId: string,
     mcpId: string,
     toolName: string,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
   ): Promise<{
     content: Array<{ type: string; text: string }>;
     isError: boolean;
@@ -326,7 +274,7 @@ export class McpProxy {
         mcpId,
         "POST",
         jsonRpcBody,
-        scopeKey
+        scopeKey,
       );
 
       if (!response.ok) {
@@ -380,7 +328,7 @@ export class McpProxy {
     mcpId: string,
     agentId: string,
     tokenData: any,
-    workerToken?: string
+    workerToken?: string,
   ): Promise<{ tools: McpTool[]; instructions?: string }> {
     if (this.toolCache) {
       const cached = await this.toolCache.getServerInfo(mcpId, agentId);
@@ -408,7 +356,7 @@ export class McpProxy {
           agentId,
           mcpId,
           scopeKey,
-          workerToken
+          workerToken,
         );
 
         // Tool discovery runs before the agent has a chance to call anything.
@@ -449,7 +397,7 @@ export class McpProxy {
           agentId,
           mcpId,
           scopeKey,
-          workerToken
+          workerToken,
         );
       } catch (initError) {
         logger.warn("MCP initialize failed (continuing with tools/list)", {
@@ -474,7 +422,7 @@ export class McpProxy {
         "POST",
         jsonRpcBody,
         scopeKey,
-        workerToken
+        workerToken,
       );
 
       if (response.status === 401) {
@@ -524,10 +472,10 @@ export class McpProxy {
           "POST",
           retryBody,
           scopeKey,
-          workerToken
+          workerToken,
         );
         const retryData = (await parseJsonRpcResponse(
-          retryResponse
+          retryResponse,
         )) as JsonRpcResponse;
         const retryTools: McpTool[] = retryData?.result?.tools || [];
         if (retryTools.length > 0) {
@@ -587,7 +535,7 @@ export class McpProxy {
     const scopeKey = this.computeScopeKey(
       httpServer,
       requesterUserId,
-      auth.tokenData.channelId || ""
+      auth.tokenData.channelId || "",
     );
 
     // Check cache
@@ -606,7 +554,7 @@ export class McpProxy {
           agentId,
           mcpId,
           scopeKey,
-          directAuthToken
+          directAuthToken,
         );
         await initResponse.text().catch(() => {
           /* noop — body drained, result not needed for plain tool listing */
@@ -616,12 +564,13 @@ export class McpProxy {
           agentId,
           mcpId,
           scopeKey,
-          directAuthToken
+          directAuthToken,
         );
       } catch (initError) {
         logger.warn("MCP initialize failed before listing tools", {
           mcpId,
-          error: initError instanceof Error ? initError.message : String(initError),
+          error:
+            initError instanceof Error ? initError.message : String(initError),
         });
       }
 
@@ -639,7 +588,7 @@ export class McpProxy {
         "POST",
         jsonRpcBody,
         scopeKey,
-        directAuthToken
+        directAuthToken,
       );
 
       const data = (await parseJsonRpcResponse(response)) as JsonRpcResponse;
@@ -665,7 +614,7 @@ export class McpProxy {
         {
           error: `Failed to connect to MCP '${mcpId}': ${error instanceof Error ? error.message : "Unknown error"}`,
         },
-        502
+        502,
       );
     }
   }
@@ -692,7 +641,7 @@ export class McpProxy {
     const scopeKey = this.computeScopeKey(
       httpServer,
       requesterUserId,
-      channelId
+      channelId,
     );
 
     // Parse body early so tool arguments are available for the approval message.
@@ -709,6 +658,27 @@ export class McpProxy {
       return c.json({ error: "Invalid JSON body" }, 400);
     }
 
+    // Pre-tool guardrails: run before the approval check so a blocked tool
+    // never enters the approval funnel. The worker sees a generic policy
+    // message — the specific reason is intentionally NOT surfaced.
+    const blocked = await this.runPreToolGuardrails(
+      toolName,
+      toolArguments,
+      agentId,
+      auth.tokenData,
+    );
+    if (blocked) {
+      return c.json({
+        content: [
+          {
+            type: "text",
+            text: "Tool call blocked by policy.",
+          },
+        ],
+        isError: true,
+      });
+    }
+
     // Check tool approval based on annotations and grants.
     const approval = await this.evaluateToolApproval(
       mcpId,
@@ -716,7 +686,7 @@ export class McpProxy {
       toolArguments,
       agentId,
       auth.tokenData,
-      auth.token
+      auth.token,
     );
     if (approval === "blocked-notified") {
       return c.json(
@@ -729,7 +699,7 @@ export class McpProxy {
           ],
           isError: true,
         },
-        403
+        403,
       );
     }
     if (approval === "blocked-no-channel") {
@@ -743,7 +713,7 @@ export class McpProxy {
           ],
           isError: true,
         },
-        403
+        403,
       );
     }
 
@@ -773,7 +743,7 @@ export class McpProxy {
         jsonRpcBody,
         scopeKey,
         auth.token,
-        extraHeaders
+        extraHeaders,
       );
 
       // Detect HTTP 401 + WWW-Authenticate → start MCP OAuth 2.1 auth-code flow.
@@ -808,7 +778,7 @@ export class McpProxy {
             ],
             isError: true,
           },
-          200
+          200,
         );
       }
 
@@ -832,7 +802,13 @@ export class McpProxy {
           mcpId,
           toolName,
         });
-        await this.reinitializeSession(httpServer, agentId, mcpId, scopeKey, auth.token);
+        await this.reinitializeSession(
+          httpServer,
+          agentId,
+          mcpId,
+          scopeKey,
+          auth.token,
+        );
 
         response = await this.sendUpstreamRequest(
           httpServer,
@@ -841,7 +817,7 @@ export class McpProxy {
           "POST",
           jsonRpcBody,
           scopeKey,
-          auth.token
+          auth.token,
         );
         data = (await parseJsonRpcResponse(response)) as JsonRpcResponse;
       }
@@ -861,7 +837,7 @@ export class McpProxy {
           const autoAuthResult = await this.tryAutoDeviceAuth(
             mcpId,
             agentId,
-            scopeKey
+            scopeKey,
           );
           if (autoAuthResult) {
             await this.fireAuthRequired(
@@ -873,7 +849,7 @@ export class McpProxy {
               auth.tokenData.conversationId || "",
               auth.tokenData.teamId,
               auth.tokenData.connectionId,
-              auth.tokenData.platform
+              auth.tokenData.platform,
             );
           }
           return c.json(
@@ -888,7 +864,7 @@ export class McpProxy {
               ],
               isError: true,
             },
-            200
+            200,
           );
         }
 
@@ -898,7 +874,7 @@ export class McpProxy {
             isError: true,
             error: errorMsg,
           },
-          502
+          502,
         );
       }
 
@@ -915,7 +891,7 @@ export class McpProxy {
           isError: true,
           error: `Failed to connect to MCP '${mcpId}': ${error instanceof Error ? error.message : "Unknown error"}`,
         },
-        502
+        502,
       );
     }
   }
@@ -938,10 +914,10 @@ export class McpProxy {
           mcpId,
           agentId,
           auth.tokenData,
-          auth.token
+          auth.token,
         );
         return { mcpId, tools };
-      })
+      }),
     );
 
     for (const result of results) {
@@ -984,13 +960,17 @@ export class McpProxy {
       return this.sendJsonRpcError(
         c,
         -32601,
-        `MCP server '${mcpId}' not found`
+        `MCP server '${mcpId}' not found`,
       );
     }
 
-    // Check tool approval for tools/call JSON-RPC requests.
+    // Pre-tool guardrails + approval for tools/call JSON-RPC requests.
+    // Both gates apply even when only one of them is configured — guardrails
+    // must NOT be coupled to a configured grant store. The body is parsed on
+    // every POST; `runPreToolGuardrails` and `evaluateToolApproval` each
+    // no-op when their backing store/registry is absent.
     // Clone the request so the body can be read twice (once here, once in forwardRequest).
-    if (this.grantStore && c.req.method === "POST") {
+    if (c.req.method === "POST") {
       try {
         const clonedReq = c.req.raw.clone();
         const bodyText = await clonedReq.text();
@@ -1004,93 +984,26 @@ export class McpProxy {
             // a blocked tool never enters the approval funnel. The worker
             // sees a generic policy message — the specific reason is
             // intentionally NOT surfaced (evasion surface).
-            if (this.guardrailRegistry && this.agentSettingsStore) {
-              try {
-                const settings =
-                  await this.agentSettingsStore.getSettings(agentId);
-                const enabled = settings?.guardrails ?? [];
-                if (enabled.length > 0) {
-                  const outcome = await runGuardrails(
-                    this.guardrailRegistry,
-                    "pre-tool",
-                    enabled,
+            const blocked = await this.runPreToolGuardrails(
+              toolName,
+              toolArgs,
+              agentId,
+              tokenData,
+            );
+            if (blocked) {
+              return c.json({
+                jsonrpc: "2.0",
+                id: jsonRpc.id,
+                result: {
+                  content: [
                     {
-                      agentId,
-                      userId: tokenData.userId,
-                      toolName,
-                      arguments: toolArgs,
-                      conversationId: tokenData.conversationId,
-                    }
-                  );
-                  if (outcome.tripped) {
-                    // Resolve org id with a metadata fallback — per-job
-                    // tokens carry it, but legacy deployment-lifetime
-                    // tokens may not, and an unaudited trip is a security
-                    // log gap.
-                    let resolvedOrgId = tokenData.organizationId;
-                    if (!resolvedOrgId) {
-                      try {
-                        const md =
-                          await this.agentSettingsStore.getMetadata(agentId);
-                        resolvedOrgId = md?.organizationId;
-                      } catch (lookupErr) {
-                        logger.warn(
-                          {
-                            agentId,
-                            err:
-                              lookupErr instanceof Error
-                                ? lookupErr.message
-                                : String(lookupErr),
-                          },
-                          "Pre-tool guardrail trip: orgId metadata lookup failed (audit may be skipped)"
-                        );
-                      }
-                    }
-                    void recordGuardrailTrip({
-                      organizationId: resolvedOrgId,
-                      agentId,
-                      userId: tokenData.userId,
-                      conversationId: tokenData.conversationId,
-                      stage: "pre-tool",
-                      guardrail: outcome.tripped.guardrail,
-                      reason: outcome.tripped.reason,
-                      metadata: outcome.tripped.metadata,
-                    });
-                    logger.info(
-                      {
-                        agentId,
-                        toolName,
-                        guardrail: outcome.tripped.guardrail,
-                      },
-                      "Pre-tool guardrail tripped — returning generic policy block to worker"
-                    );
-                    return c.json({
-                      jsonrpc: "2.0",
-                      id: jsonRpc.id,
-                      result: {
-                        content: [
-                          {
-                            type: "text",
-                            text: "Tool call blocked by policy.",
-                          },
-                        ],
-                        isError: true,
-                      },
-                    });
-                  }
-                }
-              } catch (err) {
-                // Fail open on store/registry-level errors — the runner
-                // already fail-opens on per-guardrail throws.
-                logger.warn(
-                  {
-                    agentId,
-                    toolName,
-                    err: err instanceof Error ? err.message : String(err),
-                  },
-                  "Pre-tool guardrail check failed — proceeding without guardrails"
-                );
-              }
+                      type: "text",
+                      text: "Tool call blocked by policy.",
+                    },
+                  ],
+                  isError: true,
+                },
+              });
             }
 
             const approval = await this.evaluateToolApproval(
@@ -1099,7 +1012,7 @@ export class McpProxy {
               toolArgs,
               agentId,
               tokenData,
-              sessionToken
+              sessionToken,
             );
             if (approval !== "allow") {
               return c.json({
@@ -1127,7 +1040,7 @@ export class McpProxy {
     const scopeKey = this.computeScopeKey(
       httpServer,
       tokenData.userId,
-      channelId
+      channelId,
     );
 
     try {
@@ -1145,15 +1058,106 @@ export class McpProxy {
           teamId: tokenData.teamId,
           connectionId: tokenData.connectionId,
           workerToken: sessionToken,
-        }
+        },
       );
     } catch (error) {
       logger.error("Failed to proxy MCP request", { error, mcpId });
       return this.sendJsonRpcError(
         c,
         -32603,
-        `Failed to connect to MCP '${mcpId}': ${error instanceof Error ? error.message : "Unknown error"}`
+        `Failed to connect to MCP '${mcpId}': ${error instanceof Error ? error.message : "Unknown error"}`,
       );
+    }
+  }
+
+  /**
+   * Shared pre-tool guardrail gate used by both the REST (`handleCallTool`)
+   * and JSON-RPC (`handleProxyRequest`) call paths. Runs the agent's enabled
+   * `pre-tool` guardrails (forbidden-tools, secret-scan, pii-scan on args)
+   * against the tool name + arguments. On a trip it audits the event and
+   * returns `true` so the caller can return the generic policy block; the
+   * specific reason is intentionally NOT surfaced to the worker (evasion
+   * surface). Fails open (`false`) on any store/registry-level error — the
+   * runner itself already fail-opens on per-guardrail throws.
+   */
+  private async runPreToolGuardrails(
+    toolName: string,
+    toolArgs: Record<string, unknown>,
+    agentId: string,
+    tokenData: any,
+  ): Promise<boolean> {
+    if (!this.guardrailRegistry || !this.agentSettingsStore) return false;
+    try {
+      const settings = await this.agentSettingsStore.getSettings(agentId);
+      const enabled = settings?.guardrails ?? [];
+      if (enabled.length === 0) return false;
+
+      const outcome = await runGuardrails(
+        this.guardrailRegistry,
+        "pre-tool",
+        enabled,
+        {
+          agentId,
+          userId: tokenData.userId,
+          toolName,
+          arguments: toolArgs,
+          conversationId: tokenData.conversationId,
+        },
+      );
+      if (!outcome.tripped) return false;
+
+      // Resolve org id with a metadata fallback — per-job tokens carry it,
+      // but legacy deployment-lifetime tokens may not, and an unaudited trip
+      // is a security log gap.
+      let resolvedOrgId = tokenData.organizationId;
+      if (!resolvedOrgId) {
+        try {
+          const md = await this.agentSettingsStore.getMetadata(agentId);
+          resolvedOrgId = md?.organizationId;
+        } catch (lookupErr) {
+          logger.warn(
+            {
+              agentId,
+              err:
+                lookupErr instanceof Error
+                  ? lookupErr.message
+                  : String(lookupErr),
+            },
+            "Pre-tool guardrail trip: orgId metadata lookup failed (audit may be skipped)",
+          );
+        }
+      }
+      void recordGuardrailTrip({
+        organizationId: resolvedOrgId,
+        agentId,
+        userId: tokenData.userId,
+        conversationId: tokenData.conversationId,
+        stage: "pre-tool",
+        guardrail: outcome.tripped.guardrail,
+        reason: outcome.tripped.reason,
+        metadata: outcome.tripped.metadata,
+      });
+      logger.info(
+        {
+          agentId,
+          toolName,
+          guardrail: outcome.tripped.guardrail,
+        },
+        "Pre-tool guardrail tripped — returning generic policy block to worker",
+      );
+      return true;
+    } catch (err) {
+      // Fail open on store/registry-level errors — the runner already
+      // fail-opens on per-guardrail throws.
+      logger.warn(
+        {
+          agentId,
+          toolName,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "Pre-tool guardrail check failed — proceeding without guardrails",
+      );
+      return false;
     }
   }
 
@@ -1173,7 +1177,7 @@ export class McpProxy {
     toolArgs: Record<string, unknown>,
     agentId: string,
     tokenData: any,
-    token: string
+    token: string,
   ): Promise<"allow" | "blocked-notified" | "blocked-no-channel"> {
     if (!this.grantStore) return "allow";
 
@@ -1182,7 +1186,7 @@ export class McpProxy {
       toolName,
       agentId,
       tokenData,
-      token
+      token,
     );
     // Fail closed: when tool annotations can't be fetched (upstream error,
     // SSRF block, timeout, etc.), `found` is false. The previous behaviour
@@ -1217,12 +1221,12 @@ export class McpProxy {
         teamId: tokenData.teamId,
         connectionId: tokenData.connectionId,
       },
-      this.PENDING_TOOL_TTL
+      this.PENDING_TOOL_TTL,
     ).catch((err: unknown) =>
       logger.error(
         { requestId, error: String(err) },
-        "Failed to store pending tool invocation"
-      )
+        "Failed to store pending tool invocation",
+      ),
     );
 
     await this.onToolBlocked(
@@ -1237,12 +1241,12 @@ export class McpProxy {
       tokenData.conversationId || "",
       tokenData.teamId,
       tokenData.connectionId,
-      tokenData.platform
+      tokenData.platform,
     ).catch((err) =>
       logger.error(
         { requestId, error: String(err) },
-        "onToolBlocked callback failed"
-      )
+        "onToolBlocked callback failed",
+      ),
     );
 
     return "blocked-notified";
@@ -1253,7 +1257,7 @@ export class McpProxy {
     toolName: string,
     agentId: string,
     tokenData: any,
-    workerToken?: string
+    workerToken?: string,
   ): Promise<{ found: boolean; annotations?: McpTool["annotations"] }> {
     let tools: McpTool[] | null = null;
     if (this.toolCache) {
@@ -1269,7 +1273,7 @@ export class McpProxy {
         mcpId,
         agentId,
         tokenData,
-        workerToken
+        workerToken,
       );
       tools = result.tools;
     }
@@ -1286,7 +1290,7 @@ export class McpProxy {
     sessionId: string | null,
     configHeaders?: Record<string, string>,
     credentialToken?: string,
-    internal?: boolean
+    internal?: boolean,
   ): Record<string, string> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -1323,13 +1327,13 @@ export class McpProxy {
   private async resolveCredentialToken(
     agentId: string,
     userId: string,
-    mcpId: string
+    mcpId: string,
   ): Promise<string | null> {
     const credential = await getStoredCredential(
       this.secretStore,
       agentId,
       userId,
-      mcpId
+      mcpId,
     );
     if (!credential) {
       // No stored credential — check if there's a pending device-auth to complete
@@ -1337,7 +1341,7 @@ export class McpProxy {
         this.secretStore,
         agentId,
         userId,
-        mcpId
+        mcpId,
       );
     }
 
@@ -1352,7 +1356,7 @@ export class McpProxy {
       agentId,
       userId,
       mcpId,
-      credential
+      credential,
     );
     return refreshed?.accessToken ?? null;
   }
@@ -1370,7 +1374,7 @@ export class McpProxy {
     body?: string,
     scopeKey?: string,
     directAuthToken?: string,
-    extraHeaders?: Record<string, string>
+    extraHeaders?: Record<string, string>,
   ): Promise<Response> {
     const sessionKey = this.buildSessionKey(agentId, mcpId, scopeKey);
     const sessionId = this.getSession(sessionKey);
@@ -1386,14 +1390,11 @@ export class McpProxy {
       if (token) credentialToken = token;
     }
 
-    const ssrfBlock = await this.ssrfBlockResponse(httpServer, mcpId, agentId);
-    if (ssrfBlock) return ssrfBlock;
-
     const headers = this.buildUpstreamHeaders(
       sessionId,
       httpServer.headers,
       credentialToken,
-      httpServer.internal === true
+      httpServer.internal === true,
     );
     if (extraHeaders) {
       for (const [key, value] of Object.entries(extraHeaders)) {
@@ -1401,11 +1402,18 @@ export class McpProxy {
       }
     }
 
-    const response = await fetch(httpServer.upstreamUrl, {
-      method,
-      headers,
-      body: body || undefined,
-    });
+    let response: Response;
+    try {
+      response = await this.upstreamFetch(httpServer, {
+        method,
+        headers,
+        body: body || undefined,
+      });
+    } catch (error) {
+      const blocked = this.ssrfBlockResponse(error, mcpId, agentId);
+      if (blocked) return blocked;
+      throw error;
+    }
 
     // Track session
     const newSessionId = response.headers.get("Mcp-Session-Id");
@@ -1417,22 +1425,38 @@ export class McpProxy {
   }
 
   /**
-   * SSRF guard: if the upstream URL resolves to an internal/reserved network
-   * (and the server isn't an embedded internal MCP), log it and return a 403
-   * JSON-RPC error response. Returns null when the request may proceed.
+   * Fetch an MCP upstream with the SSRF guard applied.
+   *
+   * Internal MCPs (the embedded lobu-memory server) run in this same process
+   * and intentionally bypass the reserved-IP guard. Every other upstream is
+   * fetched via {@link ssrfSafeFetch}, which resolves the host to exactly one
+   * validated public IP and pins the connection to it (closing DNS rebinding).
    */
-  private async ssrfBlockResponse(
+  private upstreamFetch(
     httpServer: HttpMcpServerConfig,
-    mcpId: string,
-    agentId: string
-  ): Promise<Response | null> {
-    if (httpServer.internal || !(await isInternalUrl(httpServer.upstreamUrl))) {
-      return null;
+    init: RequestInit,
+  ): Promise<Response> {
+    if (httpServer.internal) {
+      return fetch(httpServer.upstreamUrl, init);
     }
+    return ssrfSafeFetch(httpServer.upstreamUrl, init);
+  }
+
+  /**
+   * Translate a thrown {@link SsrfBlockedError} into a 403 JSON-RPC error
+   * response (and log it). Returns null for any other error so the caller can
+   * rethrow / handle it as a normal upstream failure.
+   */
+  private ssrfBlockResponse(
+    error: unknown,
+    mcpId: string,
+    agentId: string,
+  ): Response | null {
+    if (!(error instanceof SsrfBlockedError)) return null;
     logger.warn("Blocked SSRF attempt to internal URL", {
-      url: httpServer.upstreamUrl,
       mcpId,
       agentId,
+      detail: error.detail,
     });
     return new Response(
       JSON.stringify({
@@ -1440,10 +1464,10 @@ export class McpProxy {
         id: null,
         error: {
           code: -32600,
-          message: "Upstream URL resolves to a blocked internal network",
+          message: error.message,
         },
       }),
-      { status: 403, headers: { "Content-Type": "application/json" } }
+      { status: 403, headers: { "Content-Type": "application/json" } },
     );
   }
 
@@ -1461,17 +1485,8 @@ export class McpProxy {
       teamId?: string;
       connectionId?: string;
       workerToken?: string;
-    }
+    },
   ): Promise<Response> {
-    const ssrfBlock = await this.ssrfBlockResponse(httpServer, mcpId, agentId);
-    if (ssrfBlock) {
-      return this.sendJsonRpcError(
-        c,
-        -32600,
-        "Upstream URL resolves to a blocked internal network"
-      );
-    }
-
     const sessionKey = this.buildSessionKey(agentId, mcpId, scopeKey);
     let sessionId = this.getSession(sessionKey);
 
@@ -1501,7 +1516,13 @@ export class McpProxy {
     // If no active session exists, re-initialize before forwarding
     if (!sessionId && c.req.method === "POST") {
       try {
-        await this.reinitializeSession(httpServer, agentId, mcpId, scopeKey, credentialToken);
+        await this.reinitializeSession(
+          httpServer,
+          agentId,
+          mcpId,
+          scopeKey,
+          credentialToken,
+        );
         sessionId = this.getSession(sessionKey);
       } catch (error) {
         logger.warn("Pre-emptive MCP re-initialization failed", {
@@ -1523,14 +1544,26 @@ export class McpProxy {
       sessionId,
       httpServer.headers,
       credentialToken,
-      httpServer.internal === true
+      httpServer.internal === true,
     );
 
-    let response = await fetch(httpServer.upstreamUrl, {
-      method: c.req.method,
-      headers,
-      body: bodyText || undefined,
-    });
+    let response: Response;
+    try {
+      response = await this.upstreamFetch(httpServer, {
+        method: c.req.method,
+        headers,
+        body: bodyText || undefined,
+      });
+    } catch (error) {
+      if (this.ssrfBlockResponse(error, mcpId, agentId)) {
+        return this.sendJsonRpcError(
+          c,
+          -32600,
+          "Upstream URL resolves to a blocked internal network",
+        );
+      }
+      throw error;
+    }
 
     // Detect HTTP 401 + WWW-Authenticate → start MCP OAuth 2.1 auth-code flow.
     if (response.status === 401 && authContext) {
@@ -1562,7 +1595,7 @@ export class McpProxy {
             isError: true,
           },
         },
-        200
+        200,
       );
     }
 
@@ -1578,18 +1611,24 @@ export class McpProxy {
     ) {
       logger.info(
         "Upstream 404 on cached session id — re-initializing and retrying",
-        { mcpId, agentId }
+        { mcpId, agentId },
       );
       try {
-        await this.reinitializeSession(httpServer, agentId, mcpId, scopeKey, credentialToken);
+        await this.reinitializeSession(
+          httpServer,
+          agentId,
+          mcpId,
+          scopeKey,
+          credentialToken,
+        );
         sessionId = this.getSession(sessionKey);
         const retryHeaders = this.buildUpstreamHeaders(
           sessionId,
           httpServer.headers,
           credentialToken,
-          httpServer.internal === true
+          httpServer.internal === true,
         );
-        response = await fetch(httpServer.upstreamUrl, {
+        response = await this.upstreamFetch(httpServer, {
           method: c.req.method,
           headers: retryHeaders,
           body: bodyText,
@@ -1645,7 +1684,7 @@ export class McpProxy {
     agentId: string,
     mcpId: string,
     scopeKey?: string,
-    directAuthToken?: string
+    directAuthToken?: string,
   ): Promise<Response> {
     return this.sendUpstreamRequest(
       httpServer,
@@ -1654,7 +1693,7 @@ export class McpProxy {
       "POST",
       INITIALIZE_BODY,
       scopeKey,
-      directAuthToken
+      directAuthToken,
     );
   }
 
@@ -1664,7 +1703,7 @@ export class McpProxy {
     agentId: string,
     mcpId: string,
     scopeKey?: string,
-    directAuthToken?: string
+    directAuthToken?: string,
   ): Promise<void> {
     await this.sendUpstreamRequest(
       httpServer,
@@ -1673,7 +1712,7 @@ export class McpProxy {
       "POST",
       INITIALIZED_NOTIFICATION_BODY,
       scopeKey,
-      directAuthToken
+      directAuthToken,
     ).catch(() => {
       /* noop */
     });
@@ -1688,7 +1727,7 @@ export class McpProxy {
     agentId: string,
     mcpId: string,
     scopeKey?: string,
-    directAuthToken?: string
+    directAuthToken?: string,
   ): Promise<void> {
     // Clear stale session
     this.deleteSession(this.buildSessionKey(agentId, mcpId, scopeKey));
@@ -1698,7 +1737,7 @@ export class McpProxy {
       agentId,
       mcpId,
       scopeKey,
-      directAuthToken
+      directAuthToken,
     );
     await initResponse.text(); // consume response (may be JSON or SSE-framed)
 
@@ -1707,7 +1746,7 @@ export class McpProxy {
       agentId,
       mcpId,
       scopeKey,
-      directAuthToken
+      directAuthToken,
     );
 
     logger.info("Re-initialized MCP session", { mcpId, agentId });
@@ -1750,7 +1789,7 @@ export class McpProxy {
         params.conversationId,
         params.teamId,
         params.connectionId,
-        params.platform
+        params.platform,
       );
       return payload;
     };
@@ -1774,7 +1813,7 @@ export class McpProxy {
       const legacyAuth = await this.tryAutoDeviceAuth(
         params.mcpId,
         params.agentId,
-        params.scopeKey
+        params.scopeKey,
       );
       if (legacyAuth) return fire(legacyAuth);
     }
@@ -1792,7 +1831,7 @@ export class McpProxy {
     conversationId: string,
     teamId: string | undefined,
     connectionId: string | undefined,
-    platform: string | undefined
+    platform: string | undefined,
   ): Promise<void> {
     if (!this.onAuthRequired) return;
     await this.onAuthRequired(
@@ -1804,9 +1843,12 @@ export class McpProxy {
       conversationId,
       teamId,
       connectionId,
-      platform
+      platform,
     ).catch((err) =>
-      logger.error({ mcpId, error: String(err) }, "onAuthRequired callback failed")
+      logger.error(
+        { mcpId, error: String(err) },
+        "onAuthRequired callback failed",
+      ),
     );
   }
 
@@ -1849,7 +1891,7 @@ export class McpProxy {
   private computeScopeKey(
     httpServer: HttpMcpServerConfig,
     userId: string,
-    channelId: string | undefined
+    channelId: string | undefined,
   ): string {
     if (httpServer.authScope === "channel" && channelId) {
       return `channel-${channelId}`;
@@ -1866,7 +1908,7 @@ export class McpProxy {
   private buildSessionKey(
     agentId: string,
     mcpId: string,
-    scopeKey?: string
+    scopeKey?: string,
   ): string {
     const scope = scopeKey ?? "_unscoped";
     return `mcp:session:${agentId}:${mcpId}:${scope}`;
@@ -1942,7 +1984,7 @@ export class McpProxy {
   private async tryAutoDeviceAuth(
     mcpId: string,
     agentId: string,
-    scopeKey: string
+    scopeKey: string,
   ): Promise<AuthRequiredPayload | null> {
     try {
       // Existing-flow detection now happens inside startDeviceAuth — it
@@ -1953,7 +1995,7 @@ export class McpProxy {
         this.configService as any,
         mcpId,
         agentId,
-        scopeKey
+        scopeKey,
       );
       if (!result) return null;
       const url = result.verificationUriComplete || result.verificationUri;
@@ -2001,7 +2043,7 @@ export class McpProxy {
     c: Context,
     code: number,
     message: string,
-    id: any = null
+    id: any = null,
   ): Response {
     return c.json(
       {
@@ -2009,7 +2051,7 @@ export class McpProxy {
         id,
         error: { code, message },
       },
-      200
+      200,
     );
   }
 }

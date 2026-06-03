@@ -6,11 +6,19 @@ import {
   expect,
   test,
 } from "bun:test";
-import { generateWorkerToken, type SecretRef } from "@lobu/core";
+import {
+  generateWorkerToken,
+  GuardrailRegistry,
+  type SecretRef,
+} from "@lobu/core";
+import type { LookupAddress } from "node:dns";
 import { MockMessageQueue } from "@lobu/core/testing";
 import { McpProxy } from "../auth/mcp/proxy.js";
 import { McpToolCache } from "../auth/mcp/tool-cache.js";
+import { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
+import { registerBuiltinGuardrails } from "../guardrails/builtins.js";
 import { GrantStore } from "../permissions/grant-store.js";
+import { setIpBlocklistDnsLookup } from "../proxy/ip-blocklist.js";
 import {
   type SecretListEntry,
   type WritableSecretStore,
@@ -122,6 +130,7 @@ afterAll(() => {
   if (originalEnv !== undefined) process.env.ENCRYPTION_KEY = originalEnv;
   else delete process.env.ENCRYPTION_KEY;
   globalThis.fetch = originalFetch;
+  setIpBlocklistDnsLookup(null);
 });
 
 describe("McpProxy", () => {
@@ -130,6 +139,16 @@ describe("McpProxy", () => {
   beforeEach(() => {
     queue = new MockMessageQueue();
     globalThis.fetch = originalFetch;
+    // Non-internal upstreams now go through the SSRF guard, which resolves the
+    // host and pins the connection. These tests use unroutable single-label
+    // hostnames (`upstream`, `upstream1`, …) as public stand-ins; resolve them
+    // to a public test-net IP so the guard allows them and the request reaches
+    // the mocked `globalThis.fetch`.
+    setIpBlocklistDnsLookup(
+      async (): Promise<LookupAddress[]> => [
+        { address: "203.0.113.10", family: 4 },
+      ]
+    );
   });
 
   // ---------- Auth tests ----------
@@ -631,6 +650,165 @@ describe("McpProxy", () => {
         body: JSON.stringify({}),
       });
       expect(res.status).toBe(200);
+    });
+  });
+
+  // ---------- Pre-tool guardrails (REST + JSON-RPC parity) ----------
+
+  describe("pre-tool guardrails", () => {
+    // Minimal AgentConfigStore stub: only getSettings/getMetadata are exercised
+    // by the proxy's pre-tool guardrail path. Returns a fixed `guardrails`
+    // enable-list for agent1.
+    function makeSettingsStore(enabled: string[]): AgentSettingsStore {
+      const configStore = {
+        getSettings: async () => ({ guardrails: enabled }) as any,
+        getMetadata: async () => null,
+        saveSettings: async () => {},
+        updateSettings: async () => {},
+        deleteSettings: async () => {},
+        hasSettings: async () => true,
+        saveMetadata: async () => {},
+        updateMetadata: async () => {},
+        deleteMetadata: async () => {},
+        hasAgent: async () => true,
+        listAgents: async () => [],
+      };
+      return new AgentSettingsStore(configStore as any);
+    }
+
+    function makeRegistry(): GuardrailRegistry {
+      const reg = new GuardrailRegistry();
+      registerBuiltinGuardrails(reg);
+      return reg;
+    }
+
+    // `internal: true` skips the SSRF guard so the mocked `fetch` is reached
+    // deterministically. (A bare hostname like `upstream` can resolve to a
+    // private IP via the host's DNS search domain and trip the SSRF block,
+    // which would mask what these tests assert about the guardrail gate.)
+    const GUARDED_SERVER = {
+      id: "test-mcp",
+      upstreamUrl: "http://upstream:9000/mcp",
+      internal: true,
+    } as unknown as HttpMcpServerConfig;
+
+    function createGuardedProxy(enabled: string[]) {
+      const configSource = createMockConfigSource({
+        "test-mcp": GUARDED_SERVER,
+      });
+      const proxy = new McpProxy(configSource, {
+        secretStore: createTestSecretStore(queue),
+        // No grantStore: isolate the guardrail gate from the approval gate.
+        agentSettingsStore: makeSettingsStore(enabled),
+        guardrailRegistry: makeRegistry(),
+      });
+      return proxy;
+    }
+
+    test("REST POST blocks a forbidden tool with the generic policy message", async () => {
+      const proxy = createGuardedProxy(["forbidden-tools"]);
+      const app = proxy.getApp();
+
+      // Upstream must NOT be reached when a guardrail trips.
+      let upstreamCalls = 0;
+      globalThis.fetch = async () => {
+        upstreamCalls++;
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            result: { content: [{ type: "text", text: "SHOULD NOT RUN" }] },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      };
+
+      // drop_table is on the built-in forbidden-tools deny list.
+      const res = await app.request("/test-mcp/tools/drop_table", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${validToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ table: "users" }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.isError).toBe(true);
+      expect(body.content[0].text).toBe("Tool call blocked by policy.");
+      // Generic block only — internal reason must not leak.
+      expect(JSON.stringify(body)).not.toContain("deny list");
+      // Upstream was never contacted.
+      expect(upstreamCalls).toBe(0);
+    });
+
+    test("REST POST allows a non-forbidden tool through to upstream", async () => {
+      const proxy = createGuardedProxy(["forbidden-tools"]);
+      const app = proxy.getApp();
+
+      mockUpstreamFetch({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          content: [{ type: "text", text: "Allowed result" }],
+          isError: false,
+        },
+      });
+
+      const res = await app.request("/test-mcp/tools/list_files", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${validToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ path: "/tmp" }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.isError).toBe(false);
+      expect(body.content[0].text).toBe("Allowed result");
+    });
+
+    test("JSON-RPC tools/call still blocks a forbidden tool (parity regression guard)", async () => {
+      const proxy = createGuardedProxy(["forbidden-tools"]);
+      const app = proxy.getApp();
+
+      let upstreamCalls = 0;
+      globalThis.fetch = async () => {
+        upstreamCalls++;
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            result: { content: [{ type: "text", text: "SHOULD NOT RUN" }] },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      };
+
+      const res = await app.request("/test-mcp", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${validToken}`,
+          "Content-Type": "application/json",
+          "x-mcp-id": "test-mcp",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 7,
+          method: "tools/call",
+          params: { name: "drop_table", arguments: { table: "users" } },
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.id).toBe(7);
+      expect(body.result.isError).toBe(true);
+      expect(body.result.content[0].text).toBe("Tool call blocked by policy.");
+      expect(upstreamCalls).toBe(0);
     });
   });
 

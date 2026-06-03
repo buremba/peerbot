@@ -21,11 +21,13 @@ import {
   expect,
   test,
 } from "bun:test";
+import type { LookupAddress } from "node:dns";
 import { generateWorkerToken, type SecretRef } from "@lobu/core";
 import { MockMessageQueue } from "@lobu/core/testing";
 import { McpProxy } from "../auth/mcp/proxy.js";
 import { McpToolCache } from "../auth/mcp/tool-cache.js";
 import { GrantStore } from "../permissions/grant-store.js";
+import { setIpBlocklistDnsLookup } from "../proxy/ip-blocklist.js";
 import type {
   SecretListEntry,
   WritableSecretStore,
@@ -145,10 +147,22 @@ afterAll(() => {
   if (originalEnv !== undefined) process.env.ENCRYPTION_KEY = originalEnv;
   else delete process.env.ENCRYPTION_KEY;
   globalThis.fetch = originalFetch;
+  setIpBlocklistDnsLookup(null);
 });
 
 beforeEach(() => {
   globalThis.fetch = originalFetch;
+  // The SSRF guard resolves non-internal hosts to a single validated IP and
+  // pins the connection to it. These tests use unroutable `*.example.com`
+  // hostnames as stand-ins for public upstreams; point the resolver at a
+  // public test-net IP so the guard treats them as allowed and the request
+  // reaches the mocked `globalThis.fetch`. IP-literal upstreams (127.0.0.1,
+  // 192.168.x, [::1], …) bypass DNS and are still blocked as before.
+  setIpBlocklistDnsLookup(
+    async (): Promise<LookupAddress[]> => [
+      { address: "203.0.113.10", family: 4 },
+    ]
+  );
 });
 
 // ---------------------------------------------------------------------------

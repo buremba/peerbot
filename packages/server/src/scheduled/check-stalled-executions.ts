@@ -41,7 +41,11 @@ import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { expireStaleConnectTokens } from '../utils/connect-tokens';
 import logger from '../utils/logger';
-import { reconcileWatcherRuns, sweepStaleWatcherRuns } from '../watchers/automation';
+import {
+  reconcileWatcherRuns,
+  sweepStalePendingDeviceWatcherRuns,
+  sweepStaleWatcherRuns,
+} from '../watchers/automation';
 
 /** Advisory-lock key for cross-pod coordination of the stale-run reaper.
  *  Picked from the >2^31 range to avoid collisions with the queue-NOTIFY
@@ -281,6 +285,11 @@ export async function checkStalledExecutions(_env: Env): Promise<void> {
     await sweepStaleWatcherRuns(sql);
   } catch (error) {
     logger.error({ error }, '[StalledRuns] sweepStaleWatcherRuns failed');
+  }
+  try {
+    await sweepStalePendingDeviceWatcherRuns(sql);
+  } catch (error) {
+    logger.error({ error }, '[StalledRuns] sweepStalePendingDeviceWatcherRuns failed');
   }
   try {
     await reapStaleRuns();

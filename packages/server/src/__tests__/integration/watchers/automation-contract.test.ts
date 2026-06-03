@@ -20,6 +20,7 @@ import {
   materializeDueWatcherRuns,
   reconcileWatcherRuns,
   runWatcherAutomationTick,
+  sweepStalePendingDeviceWatcherRuns,
   sweepStaleWatcherRuns,
 } from '../../../watchers/automation';
 import { generateSecureToken, hashToken } from '../../../auth/oauth/utils';
@@ -1274,6 +1275,133 @@ describe('watcher automation contract', () => {
       const [row] = await sql`SELECT status, error_message FROM runs WHERE id = ${runId}`;
       expect(String(row.status)).toBe('timeout');
       expect(String(row.error_message ?? '')).toMatch(/2 hours/i);
+    });
+  });
+
+  // A device-pinned watcher run sits in `pending` until the pinned device
+  // claims it via /api/workers/poll. If the device never returns (offline,
+  // uninstalled, dead pin) the row never leaves `pending`:
+  //   - the server dispatcher refuses device-pinned rows (#802),
+  //   - sweepStaleWatcherRuns only reaps running/claimed,
+  //   - materialize treats the pending run as active (ACTIVE_RUN_STATUSES) and
+  //     so never re-materializes, and next_run_at never advances.
+  // The watcher is silently halted forever. sweepStalePendingDeviceWatcherRuns
+  // is the backstop: timeout the run past a generous TTL + advance the schedule.
+  describe('sweepStalePendingDeviceWatcherRuns (stuck device-pinned pending)', () => {
+    async function seedPendingDeviceRun(opts: { createdAgo: string }) {
+      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
+      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+      const { windowStart, windowEnd } = await computePendingWindow(
+        dbClient,
+        watcherId,
+        granularity
+      );
+      const queued = await createWatcherRun({
+        organizationId: workspace.org.id,
+        watcherId,
+        agentId: agent.agentId,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+        dispatchSource: 'scheduled',
+        deviceWorkerId: '88888888-8888-8888-8888-888888888888',
+        agentKind: 'claude-code',
+      });
+      // Backdate created_at so it's past the 12h TTL; leave it 'pending'
+      // (never claimed). next_run_at was forced 10min into the past by
+      // createAutomatedWatcher and never advances on materialization.
+      await sql`
+        UPDATE runs
+        SET created_at = NOW() - ${opts.createdAgo}::interval
+        WHERE id = ${queued.runId}
+      `;
+      return { sql, watcherId, runId: queued.runId };
+    }
+
+    it('times out a device-pinned pending run past the TTL and advances next_run_at', async () => {
+      const { sql, watcherId, runId } = await seedPendingDeviceRun({ createdAgo: '13 hours' });
+
+      const [before] = await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
+      const beforeMs = new Date(before.next_run_at as string | Date).getTime();
+      // Pre-condition: the schedule is in the past (the watcher is stuck).
+      expect(beforeMs).toBeLessThan(Date.now());
+
+      const { timedOut } = await sweepStalePendingDeviceWatcherRuns(sql);
+      expect(timedOut).toBeGreaterThanOrEqual(1);
+
+      const [run] = await sql`SELECT status, error_message FROM runs WHERE id = ${runId}`;
+      expect(String(run.status)).toBe('timeout');
+      expect(String(run.error_message ?? '')).toMatch(/never returned/i);
+
+      // The watcher must resume: next_run_at is advanced strictly forward and
+      // into the future, so a future tick re-materializes once it comes due.
+      const [after] = await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
+      const afterMs = new Date(after.next_run_at as string | Date).getTime();
+      expect(afterMs).toBeGreaterThan(beforeMs);
+      expect(afterMs).toBeGreaterThan(Date.now() - 1000);
+    });
+
+    it('leaves a fresh device-pinned pending run (within TTL) untouched', async () => {
+      const { sql, watcherId, runId } = await seedPendingDeviceRun({ createdAgo: '1 hour' });
+
+      const { timedOut } = await sweepStalePendingDeviceWatcherRuns(sql);
+      expect(timedOut).toBe(0);
+
+      const [run] = await sql`SELECT status FROM runs WHERE id = ${runId}`;
+      expect(String(run.status)).toBe('pending');
+      // Schedule unchanged — the device may still legitimately claim it.
+      const [after] = await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
+      expect(new Date(after.next_run_at as string | Date).getTime()).toBeLessThan(Date.now());
+    });
+
+    it('does not time out a non-device pending run (server dispatcher owns it)', async () => {
+      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
+      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+      const { windowStart, windowEnd } = await computePendingWindow(
+        dbClient,
+        watcherId,
+        granularity
+      );
+      // No deviceWorkerId → a normal cloud-dispatched pending run.
+      const queued = await createWatcherRun({
+        organizationId: workspace.org.id,
+        watcherId,
+        agentId: agent.agentId,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+        dispatchSource: 'scheduled',
+      });
+      await sql`
+        UPDATE runs SET created_at = NOW() - INTERVAL '13 hours' WHERE id = ${queued.runId}
+      `;
+
+      const { timedOut } = await sweepStalePendingDeviceWatcherRuns(sql);
+      expect(timedOut).toBe(0);
+      const [run] = await sql`SELECT status FROM runs WHERE id = ${queued.runId}`;
+      expect(String(run.status)).toBe('pending');
+    });
+
+    it('re-materializes the watcher after the stuck device run is reaped', async () => {
+      const { sql, watcherId } = await seedPendingDeviceRun({ createdAgo: '13 hours' });
+
+      // Reap the stuck run; this advances next_run_at into the future.
+      await sweepStalePendingDeviceWatcherRuns(sql);
+
+      // Force the watcher due again (simulate the advanced schedule elapsing)
+      // so materialize re-creates a fresh device-pinned pending run instead of
+      // staying permanently halted.
+      await sql`UPDATE watchers SET next_run_at = NOW() - INTERVAL '1 minute' WHERE id = ${watcherId}`;
+
+      const result = await materializeDueWatcherRuns({} as Env);
+      expect(result.runsCreated).toBeGreaterThanOrEqual(1);
+
+      const active = await sql`
+        SELECT id FROM runs
+        WHERE watcher_id = ${watcherId}
+          AND run_type = 'watcher'
+          AND status = 'pending'
+      `;
+      // Exactly one fresh pending run (the timed-out one is terminal).
+      expect(active).toHaveLength(1);
     });
   });
 });

@@ -486,6 +486,79 @@ export async function sweepStaleWatcherRuns(
   return { timedOut };
 }
 
+/**
+ * Generous TTL for a device-pinned watcher run stuck in `pending` with no
+ * claim. The server-side dispatcher deliberately refuses these rows (#802) —
+ * only the matching device worker (Mac/CLI app) claims them via
+ * `/api/workers/poll`. If that device is offline, uninstalled, or its pin
+ * points at a worker that never returns, the row never leaves `pending`.
+ *
+ * Because `materializeDueWatcherRuns` treats any `pending`/`claimed`/`running`
+ * run as "already active" (ACTIVE_RUN_STATUSES) it will NOT create a fresh run,
+ * and `next_run_at` never advances — so the watcher silently halts forever.
+ * `sweepStaleWatcherRuns` doesn't catch it either: that sweeper only reaps
+ * `running`/`claimed`, never `pending`.
+ *
+ * 12h is intentionally far past any plausible "device asleep overnight, wakes
+ * and polls" window so a device that comes back the next morning still claims
+ * its own queued run rather than racing a reaper.
+ */
+const WATCHER_PENDING_DEVICE_STALE_INTERVAL = '12 hours';
+
+/**
+ * Backstop for device-pinned watcher runs stuck in `pending` past
+ * {@link WATCHER_PENDING_DEVICE_STALE_INTERVAL} with no claim (the device never
+ * came back). Marks the run `timeout` AND advances the watcher's `next_run_at`
+ * by one cron tick so the schedule resumes when the device returns — mirroring
+ * the terminal-failure path (`markWatcherRunFailedIdempotent`), which also
+ * advances the schedule so a stuck run can't wedge the watcher forever.
+ *
+ * Correct under N replicas: the predicate is keyed on the run's own
+ * `created_at` age, and the timeout transition is gated on the row still being
+ * `pending` (`RETURNING` only yields rows this call actually transitioned), so
+ * concurrent sweeps on different pods don't double-advance the schedule. Each
+ * timed-out run advances its watcher exactly once.
+ *
+ * Scoped to `approved_input->>'device_worker_id' IS NOT NULL` — a NON-device
+ * `pending` run is the server dispatcher's responsibility and is reaped/retried
+ * by the claim + orphaned-claim paths; we must not time those out here.
+ */
+export async function sweepStalePendingDeviceWatcherRuns(
+  db?: DbClient
+): Promise<{ timedOut: number }> {
+  const sql = db ?? getDb();
+  const error = `Device-pinned watcher run sat in 'pending' for over ${WATCHER_PENDING_DEVICE_STALE_INTERVAL} without being claimed — the pinned device never returned`;
+  const timedOutRows = await sql`
+    UPDATE runs
+    SET status = 'timeout',
+        completed_at = current_timestamp,
+        error_message = ${error}
+    WHERE run_type = 'watcher'
+      AND status = 'pending'
+      AND approved_input->>'device_worker_id' IS NOT NULL
+      AND approved_input->>'device_worker_id' <> ''
+      AND created_at < current_timestamp - ${WATCHER_PENDING_DEVICE_STALE_INTERVAL}::interval
+    RETURNING watcher_id
+  `;
+
+  // Advance each affected watcher's schedule exactly once. The RETURNING set is
+  // only the rows THIS call transitioned out of 'pending', so a concurrent
+  // sweep on another replica can't re-advance the same watcher.
+  const seen = new Set<number>();
+  for (const row of timedOutRows) {
+    const watcherId = Number((row as { watcher_id: unknown }).watcher_id);
+    if (!Number.isFinite(watcherId) || seen.has(watcherId)) continue;
+    seen.add(watcherId);
+    await advanceWatcherSchedule(sql, watcherId);
+  }
+
+  const timedOut = timedOutRows.length;
+  if (timedOut > 0) {
+    logger.warn({ timedOut }, '[watchers] Swept stale pending device-pinned watcher runs');
+  }
+  return { timedOut };
+}
+
 /** Stale-claim threshold for orphan recovery: a watcher run stuck in `claimed`
  *  this long without progressing to `running` is taken to be from a crashed
  *  dispatcher (real session-create + fetch + POST takes seconds, not minutes).
@@ -639,6 +712,8 @@ export async function materializeDueWatcherRuns(
 export interface WatcherAutomationTickResult {
   reset: number | null;
   reconciled: number | null;
+  /** Device-pinned `pending` runs reaped this tick (device never claimed). */
+  pendingDeviceTimedOut: number | null;
   dueWatchers: number | null;
   runsCreated: number | null;
   skipped: number | null;
@@ -675,6 +750,13 @@ export async function runWatcherAutomationTick(env: Env): Promise<WatcherAutomat
 
   const reset = await phase('reset', () => resetOrphanedWatcherRuns());
   const reconciliation = await phase('reconcile', () => reconcileWatcherRuns());
+  // Reap device-pinned pending runs the device never claimed BEFORE materialize:
+  // a timed-out run frees the watcher's ACTIVE_RUN_STATUSES slot so it can
+  // re-materialize once its (now-advanced) next_run_at comes due again, instead
+  // of staying silently halted forever.
+  const pendingDeviceSweep = await phase('sweep-pending-device', () =>
+    sweepStalePendingDeviceWatcherRuns()
+  );
   const materialize = await phase('materialize', () => materializeDueWatcherRuns(env));
   const dispatch = await phase('dispatch', () => dispatchPendingWatcherRuns(env));
 
@@ -694,6 +776,7 @@ export async function runWatcherAutomationTick(env: Env): Promise<WatcherAutomat
   return {
     reset: reset?.reset ?? null,
     reconciled: reconciliation?.reconciled ?? null,
+    pendingDeviceTimedOut: pendingDeviceSweep?.timedOut ?? null,
     dueWatchers: materialize?.dueWatchers ?? null,
     runsCreated: materialize?.runsCreated ?? null,
     skipped: materialize?.skipped ?? null,

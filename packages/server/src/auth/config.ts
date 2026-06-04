@@ -1,6 +1,7 @@
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { getPrimaryAuthProfileForKind, normalizeAuthValues } from '../utils/auth-profiles';
+import { listCatalogConnectorDefinitions } from '../utils/connector-catalog';
 import { TtlCache } from '../utils/ttl-cache';
 import { safeParseUrl } from './base-url';
 
@@ -92,7 +93,13 @@ function getOAuthMethodsFromSchema(
 }
 
 export function collectEnabledLoginProviderConfigs(
-  rows: LoginProviderConfigRow[]
+  rows: LoginProviderConfigRow[],
+  // The catalog-derived baseline scans EVERY bundled connector, so it expects to
+  // see OAuth connectors without login scopes (e.g. read-only feed connectors)
+  // and several connectors per provider (calendar/gmail/youtube all = google).
+  // Those are normal there, not misconfiguration — `quiet` suppresses the warns
+  // that are only meaningful for an explicit per-org `login_enabled` set.
+  options: { quiet?: boolean } = {}
 ): EnabledLoginProviderConfig[] {
   const configs: EnabledLoginProviderConfig[] = [];
   const seenProviders = new Map<string, string>();
@@ -109,15 +116,17 @@ export function collectEnabledLoginProviderConfigs(
 
       const loginScopes = getLoginProviderScopes(provider, method.loginScopes);
       if (!loginScopes || loginScopes.length === 0) {
-        console.warn(
-          `[Auth] Ignoring login-enabled connector '${connectorKey}' for unsupported provider '${provider}'.`
-        );
+        if (!options.quiet) {
+          console.warn(
+            `[Auth] Ignoring login-enabled connector '${connectorKey}' for unsupported provider '${provider}'.`
+          );
+        }
         continue;
       }
 
       const existingConnectorKey = seenProviders.get(provider);
       if (existingConnectorKey) {
-        if (existingConnectorKey !== connectorKey) {
+        if (existingConnectorKey !== connectorKey && !options.quiet) {
           console.warn(
             `[Auth] Multiple login-enabled connectors configured for provider '${provider}'. ` +
               `Using '${existingConnectorKey}' and ignoring '${connectorKey}'.`
@@ -271,40 +280,79 @@ export async function resolveLoginProviderCredentials(params: {
 }
 
 /**
- * Get enabled OAuth login provider configs from connector_definitions.
+ * Global baseline login providers.
  *
- * When organizationId is null (e.g. login page without org context),
- * falls back to AUTH_DEFAULT_ORGANIZATION_SLUG if configured.
+ * Every bundled connector that declares `loginScopes` is a login candidate on
+ * every deployment, independent of any organization. Whether a candidate
+ * actually renders is decided downstream by credential resolution (env vars or
+ * an org's OAuth-app auth profile) — see getAuthConfig / createAuth.
+ *
+ * This is the connector-owned model applied globally: core still never assumes
+ * scopes for a provider (the connector declares them), it just no longer needs
+ * a designated "default org" to carry the standard providers. The old
+ * AUTH_DEFAULT_ORGANIZATION_SLUG pointer — and the silent empty-provider page
+ * for any org that hadn't enabled its own connectors — are gone.
  */
 const loginProviderCache = new TtlCache<EnabledLoginProviderConfig[]>(60_000);
-const defaultOrgCache = new TtlCache<string | null>(60_000);
+const baselineProviderCache = new TtlCache<EnabledLoginProviderConfig[]>(60_000);
+const BASELINE_CACHE_KEY = '__baseline__';
 
-export async function resolveDefaultOrganizationId(): Promise<string | null> {
-  const defaultSlug = process.env.AUTH_DEFAULT_ORGANIZATION_SLUG;
-  if (!defaultSlug) return null;
-  const cached = defaultOrgCache.get(defaultSlug);
-  if (cached !== undefined) return cached;
-  const db = getDb();
-  const rows = await db`SELECT id FROM "organization" WHERE slug = ${defaultSlug} LIMIT 1`;
-  const id = rows.length > 0 ? String((rows[0] as { id: string }).id) : null;
-  defaultOrgCache.set(defaultSlug, id);
-  return id;
+/**
+ * Drop the cached baseline + per-org provider configs. Tests that vary the
+ * catalog or org connector rows between cases must call this, or a stale 60s
+ * cache entry serves the wrong set.
+ */
+export function clearLoginProviderCachesForTests(): void {
+  loginProviderCache.clear();
+  baselineProviderCache.clear();
+}
+
+export async function getBaselineLoginProviderConfigs(): Promise<EnabledLoginProviderConfig[]> {
+  const cached = baselineProviderCache.get(BASELINE_CACHE_KEY);
+  if (cached) return cached;
+
+  // Same catalog source the connector picker uses (manage_connections passes
+  // env.CONNECTOR_CATALOG_URIS); defaults to the bundled connectors next to the
+  // server, which ship a prebuilt manifest so this is a cheap lookup, not a
+  // cold compile of every connector.
+  const defs = await listCatalogConnectorDefinitions(process.env.CONNECTOR_CATALOG_URIS);
+  const rows: LoginProviderConfigRow[] = defs.map((def) => ({
+    key: def.key,
+    auth_schema: (def.auth_schema as LoginProviderConfigRow['auth_schema']) ?? null,
+  }));
+  const configs = collectEnabledLoginProviderConfigs(rows, { quiet: true });
+
+  baselineProviderCache.set(BASELINE_CACHE_KEY, configs);
+  return configs;
+}
+
+/**
+ * Merge org-specific login providers onto the global baseline. An org bringing
+ * its own OAuth app for a provider (e.g. `google`) shadows the global one for
+ * that provider; everything else is additive. The union guarantees a branded
+ * org login page can never silently end up with *fewer* providers than the
+ * default — it can only add. (Narrowing to org-only — enterprise SSO-only mode
+ * — would be a future explicit flag, deliberately not inferred here.)
+ */
+export function mergeLoginProviderConfigs(
+  baseline: EnabledLoginProviderConfig[],
+  orgConfigs: EnabledLoginProviderConfig[]
+): EnabledLoginProviderConfig[] {
+  const byProvider = new Map<string, EnabledLoginProviderConfig>();
+  for (const config of baseline) byProvider.set(config.provider, config);
+  for (const config of orgConfigs) byProvider.set(config.provider, config);
+  return Array.from(byProvider.values());
 }
 
 export async function getEnabledLoginProviderConfigs(
   organizationId?: string | null
 ): Promise<EnabledLoginProviderConfig[]> {
-  let effectiveOrgId = organizationId ?? null;
+  const baseline = await getBaselineLoginProviderConfigs();
+  const orgId = organizationId ?? null;
+  if (!orgId) return baseline;
 
-  if (!effectiveOrgId) {
-    effectiveOrgId = await resolveDefaultOrganizationId();
-  }
-
-  if (!effectiveOrgId) return [];
-
-  const cacheKey = effectiveOrgId;
-  const cached = loginProviderCache.get(cacheKey);
-  if (cached) return cached;
+  const cached = loginProviderCache.get(orgId);
+  if (cached) return mergeLoginProviderConfigs(baseline, cached);
 
   const db = getDb();
   const rows = await db`
@@ -312,13 +360,13 @@ export async function getEnabledLoginProviderConfigs(
     FROM connector_definitions
     WHERE login_enabled = true
       AND status = 'active'
-      AND organization_id = ${effectiveOrgId}
+      AND organization_id = ${orgId}
     ORDER BY key ASC
   `;
-  const configs = collectEnabledLoginProviderConfigs(rows as LoginProviderConfigRow[]);
+  const orgConfigs = collectEnabledLoginProviderConfigs(rows as LoginProviderConfigRow[]);
 
-  loginProviderCache.set(cacheKey, configs);
-  return configs;
+  loginProviderCache.set(orgId, orgConfigs);
+  return mergeLoginProviderConfigs(baseline, orgConfigs);
 }
 
 /**
@@ -328,13 +376,10 @@ export async function getAuthConfig(
   env: Env,
   options: AuthConfigOptions = {}
 ): Promise<AuthConfig> {
-  let organizationId =
+  const organizationId =
     options.organizationId !== undefined
       ? options.organizationId
       : ((await resolveRequestOrganizationId(options.request)) ?? null);
-  if (!organizationId) {
-    organizationId = await resolveDefaultOrganizationId();
-  }
   const providerConfigs = await getEnabledLoginProviderConfigs(organizationId);
   const runtimeNodeEnv = env.NODE_ENV || process.env.NODE_ENV || 'development';
   const isProduction = runtimeNodeEnv === 'production';

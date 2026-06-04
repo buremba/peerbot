@@ -29,6 +29,7 @@ import {
 import { formatDateISO, parseDateAlias } from '../utils/date-aliases';
 import { parseJsonObject } from '@lobu/core';
 import logger from '../utils/logger';
+import { ToolUserError } from '../utils/errors';
 import {
   requireOrgReadAccess,
   requireReadAccess,
@@ -297,8 +298,9 @@ async function requireWatcherReadAccess(
 
   const row = rows[0] as { organization_id: string | null; entity_ids: unknown };
   if (!row.organization_id || row.organization_id !== ctx.organizationId) {
-    throw new Error(
-      `Access denied: watcher ${watcherId} is not accessible to your organization`
+    throw new ToolUserError(
+      `Access denied: watcher ${watcherId} is not accessible to your organization`,
+      403
     );
   }
 

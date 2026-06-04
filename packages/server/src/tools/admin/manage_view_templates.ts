@@ -8,6 +8,7 @@
 import { type Static, Type } from '@sinclair/typebox';
 import { getDb } from '../../db/client';
 import { emit } from '../../events/emitter';
+import { ToolUserError } from '../../utils/errors';
 import { validateDataSourceQuery } from '../../utils/execute-data-sources';
 import { resolveUsernames } from '../../utils/resolve-usernames';
 import type { ToolContext } from '../registry';
@@ -157,9 +158,9 @@ async function verifyAccess(
         AND (organization_id = ${ctx.organizationId} OR organization_id IS NULL)
       LIMIT 1
     `;
-    if (rows.length === 0) throw new Error(`Entity type '${id}' not found`);
+    if (rows.length === 0) throw new ToolUserError(`Entity type '${id}' not found`, 404);
     if (requireWrite && rows[0].organization_id !== ctx.organizationId) {
-      throw new Error(`Access denied: entity type '${id}' belongs to another organization`);
+      throw new ToolUserError(`Access denied: entity type '${id}' belongs to another organization`, 403);
     }
     return Number(rows[0].id);
   }

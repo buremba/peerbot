@@ -12,6 +12,7 @@ import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { entityLinkMatchSql, searchContentByText } from '../utils/content-search';
 import { toVectorLiteral } from '../utils/entity-management';
+import { ToolUserError } from '../utils/errors';
 import logger from '../utils/logger';
 import { expandSearchQueries } from '../utils/query-expansion';
 import { buildEntityUrl, getPublicWebUrl } from '../utils/url-builder';
@@ -306,7 +307,7 @@ export async function search(
 
   // Validate: must have either query, ID, or embedding
   if (!args.query && !args.entity_id && !args.query_embedding?.length) {
-    throw new Error('Must provide either query, entity_id, or query_embedding');
+    throw new ToolUserError('Must provide either query, entity_id, or query_embedding', 400);
   }
 
   // Helper to run content search in parallel. Runs when we have either a text
@@ -360,7 +361,7 @@ export async function search(
   // Truncate query for search — long texts break websearch_to_tsquery and don't improve results
   const query = args.query ? args.query.slice(0, 200).trim() || null : null;
   if (!query && !args.query_embedding?.length) {
-    throw new Error('Must provide a query or query_embedding');
+    throw new ToolUserError('Must provide a query or query_embedding', 400);
   }
 
   logger.info(

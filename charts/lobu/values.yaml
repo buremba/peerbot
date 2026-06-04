@@ -35,6 +35,10 @@ app:
   # Non-secret environment variables
   env:
     NODE_ENV: production
+    # Tags all Sentry events (server + forwarded to the worker subprocess) so a
+    # prod deploy can never report under environment=development. Worker spawn
+    # forwards this via assembleBaseEnv (base-deployment-manager.ts).
+    ENVIRONMENT: production
 
   # Persistent workspaces volume. The embedded worker stores the
   # durable transcript in Postgres (`agent_transcript_snapshot`); the
@@ -71,6 +75,8 @@ worker:
 
   env:
     POLL_INTERVAL_MS: "10000"
+    # Tag Sentry events from the worker/embeddings deployment as production.
+    ENVIRONMENT: production
 
   # Transformer model cache volume
   cache:

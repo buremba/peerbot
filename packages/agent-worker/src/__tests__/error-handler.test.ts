@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { WorkerTransport } from "@lobu/core";
-import { handleExecutionError } from "../core/error-handler";
+import { classifyError, handleExecutionError } from "../core/error-handler";
 
 type Recorder = {
   transport: WorkerTransport;
@@ -76,5 +76,63 @@ describe("handleExecutionError", () => {
     expect(deltas).toHaveLength(0);
     expect(errors).toHaveLength(1);
     expect(errors[0].code).toBe("NO_MODEL_CONFIGURED");
+  });
+
+  test("PROVIDER_* failures STILL emit a user-facing delta (not silent)", async () => {
+    const { transport, deltas, errors } = makeTransport();
+
+    await handleExecutionError(
+      new Error('Model "gpt-nope" not found for provider "openai".'),
+      transport
+    );
+
+    // Unlike SESSION_TIMEOUT / NO_MODEL_CONFIGURED, a provider failure that
+    // reaches the catch-all must still tell the user something broke.
+    expect(deltas).toHaveLength(1);
+    expect(deltas[0].delta).toContain("💥 Worker crashed");
+    expect(errors).toHaveLength(1);
+    expect(errors[0].code).toBe("PROVIDER_UNKNOWN_MODEL");
+  });
+});
+
+describe("classifyError", () => {
+  test("recognizes provider auth failures", () => {
+    expect(classifyError(new Error("Authentication failed for openai"))).toBe(
+      "PROVIDER_AUTH"
+    );
+    expect(classifyError(new Error("incorrect api key provided"))).toBe(
+      "PROVIDER_AUTH"
+    );
+  });
+
+  test("recognizes unknown-model failures", () => {
+    expect(
+      classifyError(
+        new Error('Model "x" not found for provider "openai". Check ...')
+      )
+    ).toBe("PROVIDER_UNKNOWN_MODEL");
+    expect(
+      classifyError(new Error("400 gpt-foo is not a valid model ID"))
+    ).toBe("PROVIDER_UNKNOWN_MODEL");
+  });
+
+  test("recognizes unresolved provider base URL", () => {
+    expect(
+      classifyError(
+        new Error('Could not resolve a base URL for provider "z-ai".')
+      )
+    ).toBe("PROVIDER_BASE_URL_UNRESOLVED");
+  });
+
+  test("leaves unrelated crashes unclassified", () => {
+    expect(classifyError(new Error("kaboom"))).toBeUndefined();
+    expect(classifyError("not an error")).toBeUndefined();
+  });
+
+  test("SESSION_TIMEOUT and NO_MODEL_CONFIGURED still classify", () => {
+    expect(classifyError(new Error("SESSION_TIMEOUT"))).toBe("SESSION_TIMEOUT");
+    expect(classifyError(new Error("No model configured"))).toBe(
+      "NO_MODEL_CONFIGURED"
+    );
   });
 });

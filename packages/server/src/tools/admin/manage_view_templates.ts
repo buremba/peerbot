@@ -10,6 +10,7 @@ import { getDb } from '../../db/client';
 import { emit } from '../../events/emitter';
 import { validateDataSourceQuery } from '../../utils/execute-data-sources';
 import { resolveUsernames } from '../../utils/resolve-usernames';
+import { ToolUserError } from '../../utils/errors';
 import type { ToolContext } from '../registry';
 import { routeAction } from './action-router';
 
@@ -148,6 +149,34 @@ async function verifyAccess(
   if (requireWrite && !ctx.userId) throw new Error('Authentication required');
 
   const rt = args.resource_type;
+
+  // Neither the SDK namespace path (action-call.ts) nor the REST/registry path
+  // (execute.ts only TypeBox-validates query_sdk/run_sdk) validates these args
+  // before the handler runs, so a missing/wrong-shaped call (e.g.
+  // `{ resource: 'entity' }`) reaches here with resource_type/resource_id
+  // undefined. For the entity branch that meant `WHERE id = Number(undefined)`
+  // → NaN → a raw `invalid input syntax for type bigint: "NaN"` Postgres error.
+  // Reject the bad shape with a clean ToolUserError instead.
+  if (rt !== 'entity_type' && rt !== 'entity') {
+    throw new ToolUserError(
+      `resource_type is required and must be 'entity' or 'entity_type' (got ${JSON.stringify(rt)})`
+    );
+  }
+
+  // Both branches below dereference resource_id; a missing one must fail
+  // handler-side, not reach the DB. (entity_type stringifies undefined to the
+  // literal "undefined" and queries by slug; entity coerces to NaN — both are
+  // rejected here so every shape fails consistently before any query.)
+  if (
+    args.resource_id === undefined ||
+    args.resource_id === null ||
+    String(args.resource_id).trim() === ''
+  ) {
+    throw new ToolUserError(
+      `resource_id is required (got ${JSON.stringify(args.resource_id)})`
+    );
+  }
+
   const id = rid(args);
 
   if (rt === 'entity_type') {
@@ -165,9 +194,15 @@ async function verifyAccess(
   }
 
   // entity
+  const numericId = Number(id);
+  if (!Number.isFinite(numericId)) {
+    throw new ToolUserError(
+      `resource_id must be a numeric entity id for resource_type 'entity' (got ${JSON.stringify(args.resource_id)})`
+    );
+  }
   const rows = await sql`
     SELECT id FROM entities
-    WHERE id = ${Number(id)} AND organization_id = ${ctx.organizationId}
+    WHERE id = ${numericId} AND organization_id = ${ctx.organizationId}
     LIMIT 1
   `;
   if (rows.length === 0) throw new Error(`Entity ${id} not found`);

@@ -266,6 +266,10 @@ Memory:
     )
     .option("--json", "Emit raw SSE events as JSON lines instead of text")
     .option("-c, --context <name>", "Use a named context")
+    .option(
+      "--org <slug>",
+      "Org slug override for this run (defaults to active context org; no config write)"
+    )
     .action(
       async (
         prompt: string,
@@ -278,6 +282,7 @@ Memory:
           new?: boolean;
           continue?: boolean;
           context?: string;
+          org?: string;
           autoApprove?: boolean;
           json?: boolean;
         }

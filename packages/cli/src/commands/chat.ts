@@ -2,17 +2,18 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import chalk from "chalk";
+import { LOBU_CONFIG_DIR } from "../internal/context.js";
 import {
   agentApiBase,
   apiBaseFromContextUrl,
+  getActiveOrg,
   getAgentApiToken,
   getCurrentContextName,
   resolveContext,
   resolveGatewayUrl,
 } from "../internal/index.js";
-import { LOBU_CONFIG_DIR } from "../internal/context.js";
-import { loadProjectConfig } from "./_lib/apply/desired-state.js";
 import { renderMarkdown } from "../utils/markdown.js";
+import { loadProjectConfig } from "./_lib/apply/desired-state.js";
 
 const THREADS_FILE = join(LOBU_CONFIG_DIR, "threads.json");
 
@@ -57,8 +58,46 @@ export interface ChatOptions {
   new?: boolean;
   continue?: boolean;
   context?: string;
+  org?: string;
   autoApprove?: boolean;
   json?: boolean;
+}
+
+/**
+ * Resolve which org the chat invocation targets. Precedence mirrors the other
+ * org-scoped commands (`lobu memory run`, `lobu call`): explicit `--org` >
+ * `LOBU_ORG` env > the context's stored `activeOrg`. `getActiveOrg` already
+ * folds in the env var and context lookup, so an explicit flag is the only
+ * thing layered on top.
+ *
+ * Returns `undefined` when nothing is configured — the server then falls back
+ * to the PAT-bound org / the user's default membership, preserving the
+ * pre-flag behavior for callers that never pass `--org`.
+ */
+export async function resolveChatOrg(
+  options: Pick<ChatOptions, "org" | "context">
+): Promise<string | undefined> {
+  if (options.org?.trim()) return options.org.trim();
+  return getActiveOrg(options.context);
+}
+
+/**
+ * Build the Authorization header plus an optional `x-lobu-org` override the
+ * embedded gateway honors per-request (membership-checked server-side). The
+ * header is omitted entirely when no org is resolved, so unflagged invocations
+ * are byte-for-byte identical to the previous behavior.
+ */
+function agentApiHeaders(
+  authToken: string,
+  org: string | undefined,
+  extra?: Record<string, string>
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${authToken}`,
+    ...extra,
+  };
+  if (org) headers["x-lobu-org"] = org;
+  return headers;
 }
 
 /**
@@ -101,6 +140,9 @@ export async function chatCommand(
   const agentId = options.agent ?? (await resolveAgentId(cwd));
   const platformUser = options.user ? parsePlatformUser(options.user) : null;
   const contextName = options.context ?? (await getCurrentContextName());
+  // Explicit `--org` overrides the context's activeOrg for this invocation
+  // only (no config write). Threaded as `x-lobu-org` on every Agent API call.
+  const org = await resolveChatOrg(options);
 
   // Resolve thread: explicit --thread > --continue (last for this agent)
   let threadId = options.thread;
@@ -123,6 +165,7 @@ export async function chatCommand(
       message: prompt,
       thread: threadId,
       json: options.json,
+      org,
     });
   } else {
     await sendViaApi(gatewayUrl, authToken, {
@@ -134,6 +177,7 @@ export async function chatCommand(
       autoApprove: options.autoApprove,
       json: options.json,
       contextName,
+      org,
     });
   }
 }
@@ -159,6 +203,7 @@ async function sendViaPlatform(
     message: string;
     thread?: string;
     json?: boolean;
+    org?: string;
   }
 ): Promise<void> {
   const agentId = opts.agentId || `test-${opts.platform}`;
@@ -179,10 +224,9 @@ async function sendViaPlatform(
     `${gatewayUrl}/api/v1/agents/${encodeURIComponent(agentId)}/messages`,
     {
       method: "POST",
-      headers: {
+      headers: agentApiHeaders(authToken, opts.org, {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${authToken}`,
-      },
+      }),
       body: JSON.stringify(body),
     }
   );
@@ -212,6 +256,7 @@ async function sendViaPlatform(
     await streamResponse(sseUrl, authToken, sseController, {
       expectedMessageId: result.messageId,
       json: opts.json,
+      org: opts.org,
     });
   } else {
     console.log(
@@ -231,6 +276,7 @@ interface ApiSendOptions {
   autoApprove?: boolean;
   json?: boolean;
   contextName?: string;
+  org?: string;
 }
 
 interface ApiSession {
@@ -247,6 +293,7 @@ async function createSession(
     thread?: string;
     dryRun?: boolean;
     forceNew?: boolean;
+    org?: string;
   }
 ): Promise<ApiSession> {
   const createBody: Record<string, any> = {};
@@ -257,10 +304,9 @@ async function createSession(
 
   const createRes = await fetch(`${gatewayUrl}/api/v1/agents`, {
     method: "POST",
-    headers: {
+    headers: agentApiHeaders(authToken, opts.org, {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${authToken}`,
-    },
+    }),
     body: JSON.stringify(createBody),
   });
 
@@ -301,6 +347,7 @@ async function sendViaApi(
     thread: opts.thread,
     dryRun: opts.dryRun,
     forceNew: opts.forceNew,
+    org: opts.org,
   });
 
   const base = `${gatewayUrl}/api/v1/agents/${session.agentId}`;
@@ -311,14 +358,14 @@ async function sendViaApi(
   const streaming = streamResponse(sseUrl, session.token, sseController, {
     autoApprove: opts.autoApprove,
     json: opts.json,
+    org: opts.org,
   });
 
   const msgRes = await fetch(messagesUrl, {
     method: "POST",
-    headers: {
+    headers: agentApiHeaders(session.token, opts.org, {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${session.token}`,
-    },
+    }),
     body: JSON.stringify({ content: opts.message }),
   });
 
@@ -375,6 +422,7 @@ interface StreamOptions {
   expectedMessageId?: string;
   autoApprove?: boolean;
   json?: boolean;
+  org?: string;
 }
 
 async function streamResponse(
@@ -401,7 +449,7 @@ async function streamResponse(
 
   try {
     const res = await fetch(sseUrl, {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: agentApiHeaders(token, options.org),
       signal: controller.signal,
     });
 
@@ -530,10 +578,9 @@ async function streamResponse(
                 .replace(/\/api\/v1\/agents\/[^/]+/, "/api/v1/agents/approve");
               const approveRes = await fetch(approveUrl, {
                 method: "POST",
-                headers: {
+                headers: agentApiHeaders(token, options.org, {
                   "Content-Type": "application/json",
-                  Authorization: `Bearer ${token}`,
-                },
+                }),
                 body: JSON.stringify({ requestId: data.requestId, decision }),
               });
               if (approveRes.ok) {

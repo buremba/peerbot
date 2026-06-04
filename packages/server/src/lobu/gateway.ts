@@ -26,6 +26,10 @@ import type { Env } from '../index';
 import logger from '../utils/logger';
 import { getConfiguredPublicOrigin } from '../utils/public-origin';
 import { getDb } from '../db/client';
+import {
+  getCachedMembershipRole,
+  getCachedOrgBySlug,
+} from '../workspace/multi-tenant';
 import { orgContext } from './stores/org-context';
 import { PostgresSecretStore } from './stores/postgres-secret-store';
 import {
@@ -196,6 +200,80 @@ export function createLobuAuthBridge() {
 }
 
 /**
+ * Org-context middleware for the embedded Lobu app.
+ *
+ * Resolves the organization a request runs under and wraps the rest of the
+ * request in `orgContext.run()` so Postgres-backed stores (which read the org
+ * id from AsyncLocalStorage via `getOrgId()`) work for routes that don't carry
+ * an explicit org slug in the path — `POST /api/v1/agents` in particular, which
+ * auto-provisions ephemeral agents and needs the user's existing agents to
+ * inherit `pluginsConfig`. (The mainApp's `workspace/multi-tenant.ts` already
+ * handles `/api/:orgSlug/*`; this is the equivalent for the lobu-app's unscoped
+ * routes.)
+ *
+ * Resolution precedence:
+ *   1. `x-lobu-org` header (sent by `lobu chat --org <slug>`) — an explicit
+ *      per-request override of both the PAT pin and the user's default org.
+ *      Honored ONLY after re-verifying the authenticated user is a member of
+ *      that org (unknown slug → 404, non-member → 403), so a header can never
+ *      escalate cross-tenant access — the same invariant the PAT path enforces.
+ *   2. The PAT-bound org (`organizationId` set by `createLobuAuthBridge`).
+ *   3. The user's default org membership.
+ *
+ * Exported for tests; production wires it via `lobuApp.use('*', …)`.
+ */
+export function createLobuOrgContextMiddleware() {
+  return async (c: any, next: any) => {
+    const user = c.get('user') as { id?: string } | null;
+    if (!user?.id) {
+      await next();
+      return;
+    }
+
+    const orgHeader = c.req.header('x-lobu-org')?.trim();
+    if (orgHeader) {
+      let resolvedOrg: { id: string } | null;
+      try {
+        resolvedOrg = await getCachedOrgBySlug(orgHeader);
+      } catch {
+        return c.json({ error: 'Unable to resolve organization' }, 503);
+      }
+      if (!resolvedOrg) {
+        return c.json({ error: `Unknown organization "${orgHeader}"` }, 404);
+      }
+      const role = await getCachedMembershipRole(resolvedOrg.id, user.id);
+      if (!role) {
+        return c.json(
+          { error: `Not a member of organization "${orgHeader}"` },
+          403
+        );
+      }
+      c.set('organizationId', resolvedOrg.id);
+      await orgContext.run({ organizationId: resolvedOrg.id }, () => next());
+      return;
+    }
+
+    // PAT-hydration middleware above sets `organizationId` when the PAT is
+    // bound to one. Honor that pin first so the org-scoped stores see the same
+    // tenant the PAT was minted for; only fall back to the user's default
+    // membership when no pin exists.
+    let orgId: string | null = (c.get('organizationId') as string | null) ?? null;
+    if (!orgId) {
+      try {
+        orgId = await resolveDefaultOrgId(user.id);
+      } catch {
+        return c.json({ error: 'Unable to resolve organization membership' }, 503);
+      }
+      if (!orgId) {
+        return c.json({ error: 'No organization membership found' }, 404);
+      }
+      c.set('organizationId', orgId);
+    }
+    await orgContext.run({ organizationId: orgId }, () => next());
+  };
+}
+
+/**
  * Initialize the embedded Lobu gateway.
  * Returns the Hono app to mount, or null if DATABASE_URL is not configured.
  */
@@ -337,40 +415,10 @@ export async function initLobuGateway(): Promise<Hono | null> {
     lobuApp = new HonoApp<{ Bindings: Env }>();
     lobuApp.use('*', createLobuAuthBridge());
 
-    // Resolve the signed-in user's primary org and wrap the rest of the
-    // request in orgContext.run() so Postgres-backed stores (which read the
-    // org id from AsyncLocalStorage via getOrgId()) work for routes that
-    // don't carry an explicit org slug — POST /api/v1/agents in particular,
-    // which auto-provisions ephemeral agents and needs to look up the
-    // user's existing agents to inherit pluginsConfig.
-    //
-    // The mainApp's multi-tenant middleware (workspace/multi-tenant.ts)
-    // already handles /api/:orgSlug/* — that's a separate path. This
-    // middleware is the equivalent for the lobu-app's unscoped routes.
-    lobuApp.use('*', async (c: any, next: any) => {
-      const user = c.get('user') as { id?: string } | null;
-      if (!user?.id) {
-        await next();
-        return;
-      }
-      // PAT-hydration middleware above sets `organizationId` when the PAT
-      // is bound to one. Honor that pin first so the org-scoped stores see
-      // the same tenant the PAT was minted for; only fall back to the user's
-      // default membership when no pin exists.
-      let orgId: string | null = (c.get('organizationId') as string | null) ?? null;
-      if (!orgId) {
-        try {
-          orgId = await resolveDefaultOrgId(user.id);
-        } catch {
-          return c.json({ error: 'Unable to resolve organization membership' }, 503);
-        }
-        if (!orgId) {
-          return c.json({ error: 'No organization membership found' }, 404);
-        }
-        c.set('organizationId', orgId);
-      }
-      await orgContext.run({ organizationId: orgId }, () => next());
-    });
+    // Resolve the request's org (x-lobu-org override > PAT pin > default
+    // membership) and wrap the rest of the request in orgContext.run(). See
+    // createLobuOrgContextMiddleware for the precedence + membership invariant.
+    lobuApp.use('*', createLobuOrgContextMiddleware());
 
     // Worker gateway routes must be mounted first (before rawLobuApp's catch-all)
     if (workerGateway?.getApp) {

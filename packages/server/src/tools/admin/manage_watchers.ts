@@ -7,13 +7,17 @@
  * - create: Create watcher with prompt/schema/sources directly
  * - update: Modify config (model, schedule, sources)
  * - create_version: Create a new version for a watcher (prompt/schema/sources)
+ * - create_from_version: Create a new watcher from an existing version
  * - upgrade: Upgrade watcher to a specific version
  * - complete_window: Complete a window using window_token from read_knowledge
+ * - trigger: Manually trigger a watcher run
  * - delete: Remove watcher
  * - set_reaction_script: Attach automated TypeScript reaction
  * - get_versions: View version history for a watcher
  * - get_version_details: Get full config for a specific version
  * - get_component_reference: Get available components and data types documentation
+ * - submit_feedback: Submit feedback on a watcher window
+ * - get_feedback: Retrieve feedback for a watcher
  */
 
 import { type Static, Type } from '@sinclair/typebox';

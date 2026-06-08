@@ -9,7 +9,7 @@
 
 import * as Sentry from '@sentry/node';
 import { type Static, Type } from '@sinclair/typebox';
-import { createDbClientFromEnv, getDb } from '../db/client';
+import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { entityLinkMatchSql } from '../utils/content-search';
 import {
@@ -293,7 +293,6 @@ async function _resolvePath(
     throw new ToolUserError(`Owner '${ownerSlug}' is reserved`, 400);
   }
 
-  const pgSql = createDbClientFromEnv(env);
   const sql = getDb();
 
   const resolved = await Sentry.startSpan({ name: 'resolveOwner', op: 'db' }, () =>
@@ -319,7 +318,7 @@ async function _resolvePath(
 
   if (remaining.length === 0) {
     const bootstrap = args.include_bootstrap
-      ? await fetchBootstrap(sql, pgSql, ctx, workspace, null)
+      ? await fetchBootstrap(sql, ctx, workspace, null)
       : null;
     return emptyResult(workspace, bootstrap);
   }
@@ -595,7 +594,7 @@ async function _resolvePath(
   }
 
   const bootstrap = args.include_bootstrap
-    ? await fetchBootstrap(sql, pgSql, ctx, workspace, resolvedEntity)
+    ? await fetchBootstrap(sql, ctx, workspace, resolvedEntity)
     : null;
 
   return {
@@ -636,7 +635,6 @@ function emptyResult(
 
 async function fetchBootstrap(
   sql: DbClient,
-  _pgSql: ReturnType<typeof createDbClientFromEnv>,
   ctx: ToolContext,
   workspace: ResolvedWorkspace,
   entity: ResolvedEntityDetails | null

@@ -272,7 +272,7 @@ export function resolvePath(
 
 async function _resolvePath(
   args: ResolvePathArgs,
-  env: Env,
+  _env: Env,
   ctx: ToolContext
 ): Promise<ResolvePathResult> {
   const { path: normalized, query: urlQuery } = parsePathAndQuery(args.path);

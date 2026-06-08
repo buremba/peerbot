@@ -3,7 +3,7 @@
  */
 
 import type { Env } from '../../index';
-import { type DbClient } from '../../db/client';
+import { type DbClient, pgTextArray } from '../../db/client';
 import { buildConnectionFilter, buildFeedFilter, buildOrderByClause, buildRunFilter } from '../content-query-filters';
 import { parseDateAlias, toEndOfDay } from '../date-aliases';
 import { configuredEmbeddingModelSqlLiteral, generateEmbeddings } from '../embeddings';
@@ -15,7 +15,6 @@ import { buildEntityLinkUnion, entityLinkMatchSql, fetchEntityIdentityScopes } f
 import {
   CANDIDATE_QUERY_TIMEOUT_MS,
   CANDIDATE_VECTOR_LIMIT,
-  NORMALIZED_QUERY_SQL,
   TSQUERY_SQL,
   buildSearchDocumentExpr,
   buildTsqueryString,

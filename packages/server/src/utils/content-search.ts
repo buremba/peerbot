@@ -19,7 +19,7 @@ export {
 
 export { buildConnectionVisibilityClause, buildOrgScopeWhere } from './content-search/visibility';
 
-import { type DbClient, getDb } from '../db/client';
+import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { listContentInternal } from './content-search/list-path';
 import { searchContentBySingleQuery } from './content-search/search-path';

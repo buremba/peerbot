@@ -325,7 +325,8 @@ export class McpProxy {
     mcpId: string,
     agentId: string,
     tokenData: any,
-    workerToken?: string
+    workerToken?: string,
+    options?: { surfaceErrors?: boolean }
   ): Promise<{ tools: McpTool[]; instructions?: string }> {
     if (this.toolCache) {
       const cached = this.toolCache.getServerInfo(mcpId, agentId);
@@ -494,7 +495,12 @@ export class McpProxy {
               ? retryError.message
               : String(retryError),
         });
+        // The curl-facing REST endpoint surfaces upstream failures as 502;
+        // agent-boot discovery (the default) fails soft so one unreachable
+        // MCP doesn't block the worker from starting.
+        if (options?.surfaceErrors) throw retryError;
       }
+      if (options?.surfaceErrors) throw error;
       return { tools: [] };
     }
   }
@@ -526,12 +532,19 @@ export class McpProxy {
       return c.json({ error: `MCP server '${mcpId}' not found` }, 404);
     }
 
+    // The curl-facing introspection endpoint must surface a hard SSRF block as
+    // 403 — fetchToolsForMcp fails soft for agent-boot discovery and would
+    // otherwise drain the blocked response and return an empty 200.
+    const ssrfBlock = await this.ssrfBlockResponse(httpServer, mcpId, agentId);
+    if (ssrfBlock) return ssrfBlock;
+
     try {
       const { tools, instructions } = await this.fetchToolsForMcp(
         mcpId,
         agentId,
         auth.tokenData,
-        httpServer.internal === true ? auth.token : undefined
+        httpServer.internal === true ? auth.token : undefined,
+        { surfaceErrors: true }
       );
       return c.json({ tools, instructions });
     } catch (error) {

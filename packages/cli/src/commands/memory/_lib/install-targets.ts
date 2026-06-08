@@ -141,7 +141,7 @@ export const INSTALL_TARGETS: InstallTarget[] = [
         };
       }
       try {
-        configureMemoryPlugin({ url: mcpUrl });
+        await configureMemoryPlugin({ url: mcpUrl });
       } catch (e) {
         return {
           status: "failed",

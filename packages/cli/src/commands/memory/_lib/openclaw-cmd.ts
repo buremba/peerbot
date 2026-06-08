@@ -12,7 +12,7 @@ import {
   setActiveOrg,
   type MemorySession,
 } from "./openclaw-auth.js";
-import { isJson, printJson, printText } from "./output.js";
+import { printText } from "./output.js";
 
 const MCP_PROTOCOL_VERSION = "2025-03-26";
 
@@ -214,16 +214,6 @@ export async function checkMemoryHealth(
     ? result.result?.tools.length
     : 0;
 
-  if (isJson()) {
-    printJson({
-      ok: true,
-      mcpUrl: targetMcpUrl,
-      org: org || null,
-      toolsCount,
-    });
-    return;
-  }
-
   printText("ok: true");
   printText(`mcpUrl: ${targetMcpUrl}`);
   printText(`org: ${org || "(none)"}`);
@@ -286,17 +276,6 @@ export async function configureMemoryPlugin(
   };
 
   writeJsonObject(configPath, config);
-
-  if (isJson()) {
-    printJson({
-      updated: true,
-      configPath,
-      pluginId,
-      mcpUrl: resolvedMcpUrl,
-      tokenCommand,
-    });
-    return;
-  }
 
   printText(`Updated ${configPath}`);
   printText(`Plugin: ${pluginId}`);

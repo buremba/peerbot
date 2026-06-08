@@ -1,6 +1,5 @@
 /**
- * Agent Settings API response types.
- * These mirror the gateway API response shapes used by UI consumers.
+ * Gateway API response types shared between the server and UI consumers.
  */
 
 import type { ModelSelectionState, RegistryEntry } from "./types";

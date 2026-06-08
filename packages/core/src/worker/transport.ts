@@ -1,12 +1,7 @@
 /**
  * Worker Transport Interface
- * Defines how workers communicate with the gateway (platform-agnostic)
- *
- * This abstraction allows different transport implementations:
- * - HTTP (current implementation)
- * - WebSocket (for real-time bidirectional communication)
- * - gRPC (for high-performance scenarios)
- * - Message Queue (for asynchronous processing)
+ * Defines how workers communicate with the gateway (platform-agnostic).
+ * Current implementation: HTTP.
  */
 
 /**

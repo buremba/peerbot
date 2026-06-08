@@ -52,20 +52,11 @@ export function resolveUri(uri: string): FileSystemSource {
     );
   }
 
-  // Future schemes — surface them by name so the error tells operators what
-  // we know about, not just "unknown".
-  const knownFutureSchemes = ['s3://', 'gs://', 'azure://', 'gcs://', 'r2://'];
-  for (const scheme of knownFutureSchemes) {
-    if (uri.startsWith(scheme)) {
-      throw new Error(
-        `Scheme ${scheme} is reserved for a future implementation and not supported ` +
-          `in v1 of FileSystemSource.`,
-      );
-    }
-  }
-
+  const futurePrefixes = ['s3://', 'gs://', 'azure://', 'gcs://', 'r2://'];
+  const futureMatch = futurePrefixes.find((p) => uri.startsWith(p));
   throw new Error(
-    `Unsupported FileSystemSource URI: ${uri}. ` +
-      `Expected git+https://…, https://…tar.gz, or file:///…`,
+    futureMatch
+      ? `Scheme ${futureMatch} is reserved for a future implementation and not supported in v1 of FileSystemSource.`
+      : `Unsupported FileSystemSource URI: ${uri}. Expected git+https://…, https://…tar.gz, or file:///…`,
   );
 }

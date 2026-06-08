@@ -19,23 +19,20 @@ export function calculateEngagementScore(
 ): number {
   if (!engagementData) return 0;
 
-  switch (connectorKey) {
-    case 'reddit':
-      // Reddit: karma score (upvotes - downvotes), normalized to 0-100
-      // Max 10000 score = 100 points
-      return Math.min(Math.max(engagementData.score || 0, 0), 10000) / 100;
-
-    default: {
-      // Generic scoring: combine rating + helpful votes + score
-      if (engagementData.rating != null) {
-        // Rating-based: rating (1-5) * 10 + helpful votes * 0.5
-        return Math.min(
-          (engagementData.rating || 0) * 10 + (engagementData.helpful_count || 0) * 0.5,
-          100
-        );
-      }
-      // Score-based: use score directly, capped at 100
-      return Math.min(engagementData.score || 0, 100);
-    }
+  if (connectorKey === 'reddit') {
+    // Reddit: karma score (upvotes - downvotes), normalized to 0-100
+    // Max 10000 score = 100 points
+    return Math.min(Math.max(engagementData.score || 0, 0), 10000) / 100;
   }
+
+  // Generic scoring: combine rating + helpful votes + score
+  if (engagementData.rating != null) {
+    // Rating-based: rating (1-5) * 10 + helpful votes * 0.5
+    return Math.min(
+      (engagementData.rating || 0) * 10 + (engagementData.helpful_count || 0) * 0.5,
+      100
+    );
+  }
+  // Score-based: use score directly, capped at 100
+  return Math.min(engagementData.score || 0, 100);
 }

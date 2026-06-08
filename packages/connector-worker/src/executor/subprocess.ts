@@ -140,10 +140,6 @@ const DEFAULT_OPTIONS: SubprocessExecutorOptions = {
   maxOldSpaceSize: 512,
 };
 
-function jobEnv(job: ExecutorJob): Record<string, string | undefined> {
-  return job.env;
-}
-
 export class SubprocessExecutor implements SyncExecutor {
   private options: SubprocessExecutorOptions;
 
@@ -198,7 +194,7 @@ export class SubprocessExecutor implements SyncExecutor {
       // Node subprocess execution is process isolation, not a security sandbox.
       // Node --experimental-permission flags intentionally NOT enabled — the
       // connector runtime isn't compatible. Revisit if that changes.
-      const env = { ...pickSystemEnv(), ...jobEnv(job) } as NodeJS.ProcessEnv;
+      const env = { ...pickSystemEnv(), ...job.env } as NodeJS.ProcessEnv;
       let child: ChildProcess;
       if (nixPackages.length > 0) {
         // Wrap in nix-shell so the connector's declared native tools are on
@@ -523,9 +519,8 @@ export class SubprocessExecutor implements SyncExecutor {
       child.stdout?.on('data', onStdout);
       child.stderr?.on('data', onStderr);
 
-      // Hint to keep linter quiet when latestCheckpoint isn't consumed in
-      // non-sync modes; it's the parent-side mirror of the sync checkpoint
-      // stream and only relevant when hooks.onCheckpointUpdate is wired.
+      // latestCheckpoint is only read when hooks.onCheckpointUpdate is wired
+      // (sync mode). Suppress unused-variable lint in other lanes.
       void latestCheckpoint;
 
       // Send the compiled code and job descriptor to the child. Use the

@@ -22,19 +22,12 @@ export type {
 export { inferGrantKind } from "./agent-store";
 // Agent Settings API response types (for UI consumers)
 export type {
-  AgentConfigResponse,
-  AgentInfo,
   CatalogProvider,
   Connection,
   McpConfig,
   ModelOption,
-  PermissionGrant,
   PrefillMcp,
   PrefillSkill,
-  ProviderInfo,
-  ProviderState,
-  ProviderStatus,
-  SettingsSnapshot,
   Skill,
   SkillMcpServerInfo,
 } from "./api-types";

@@ -227,11 +227,11 @@ describe("getDelta and getOutputSnapshot", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Thinking accumulation across verbose/non-verbose
+// Thinking events (non-verbose mode)
 // ---------------------------------------------------------------------------
 
-describe("thinking accumulation", () => {
-  test("thinking deltas accumulate across multiple events", () => {
+describe("thinking events non-verbose", () => {
+  test("thinking deltas do not append output in non-verbose mode", () => {
     const p = new OpenClawProgressProcessor();
     p.processEvent({
       type: "message_update",
@@ -243,17 +243,18 @@ describe("thinking accumulation", () => {
       message: { role: "assistant" },
       assistantMessageEvent: { type: "thinking_delta", delta: "step two" },
     } as any);
-    expect(p.getCurrentThinking()).toBe("step one step two");
+    expect(p.getDelta()).toBeNull();
   });
 
-  test("reset() clears accumulated thinking", () => {
+  test("reset() does not carry over thinking into next session", () => {
     const p = new OpenClawProgressProcessor();
+    p.setVerboseLogging(true);
     p.processEvent({
       type: "message_update",
       message: { role: "assistant" },
       assistantMessageEvent: { type: "thinking_delta", delta: "thoughts" },
     } as any);
     p.reset();
-    expect(p.getCurrentThinking()).toBeNull();
+    expect(p.getDelta()).toBeNull();
   });
 });

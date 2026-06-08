@@ -16,7 +16,6 @@ import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
 
 type RequiredParamGroup = {
   keys: readonly string[];
-  allowEmpty?: boolean;
   label?: string;
 };
 
@@ -69,11 +68,7 @@ function assertRequiredParams(
       if (value === undefined || value === null) {
         return false;
       }
-      if (
-        !group.allowEmpty &&
-        typeof value === "string" &&
-        value.trim() === ""
-      ) {
+      if (typeof value === "string" && value.trim() === "") {
         return false;
       }
       return true;

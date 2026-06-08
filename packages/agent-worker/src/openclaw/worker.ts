@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import { createWriteStream } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { Readable } from "node:stream";
@@ -35,6 +36,7 @@ import {
   getApiKeyEnvVarForProvider,
   getProviderAuthHintFromError,
 } from "../shared/provider-auth-hints";
+import { isRecord } from "../shared/type-guards";
 import type { GatewayParams } from "../shared/tool-implementations";
 import {
   createMcpAuthToolDefinitions,
@@ -173,23 +175,15 @@ function isRealOpenAIBaseUrl(baseUrl: string): boolean {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function readStringOrFallback(
-  value: unknown,
-  fallback: string,
-  allowEmpty = false
-): string {
+function readStringOrFallback(value: unknown, fallback: string): string {
   if (typeof value !== "string") {
     return fallback;
   }
   const trimmed = value.trim();
-  if (!trimmed && !allowEmpty) {
+  if (!trimmed) {
     return fallback;
   }
-  return allowEmpty ? value : trimmed;
+  return trimmed;
 }
 
 function readNonNegativeNumberOrFallback(
@@ -1050,6 +1044,12 @@ export class OpenClawWorker implements WorkerExecutor {
       workspaceDir,
     };
 
+    // Dynamic import is justified: just-bash-bootstrap transitively pulls in
+    // the embedded MCP server and its heavy deps (child_process, fs watchers).
+    // Deferring keeps the cold-start path lean and avoids loading the MCP
+    // runtime before the workspace is ready. Static import would force
+    // the module to initialise at worker process startup, wasting memory for
+    // runs that never reach this point (e.g. early auth errors).
     const { createEmbeddedBashOps } = await import(
       "../embedded/just-bash-bootstrap"
     );
@@ -1128,7 +1128,7 @@ export class OpenClawWorker implements WorkerExecutor {
       const agentList = cliBackends
         .map((b) => {
           const cmd = `${b.command} ${(b.args || []).join(" ")}`;
-          const aliases = [b.name, (b as any).providerId].filter(
+          const aliases = [b.name, b.providerId].filter(
             (v, i, a) => v && a.indexOf(v) === i
           );
           return `### ${aliases.join(" / ")}
@@ -1615,7 +1615,14 @@ Use it when the user references past discussions or you need context.`);
         };
       }
 
-      // Consume any pending config change notifications from SSE events
+      // Consume any pending config change notifications from SSE events.
+      // Dynamic import is justified: sse-client runs a top-level singleton
+      // EventSource connection and registers global process-level handlers.
+      // A static import would start that connection at module load time (worker
+      // startup), before the gateway URL / token env vars are validated.
+      // Circular-dependency risk: sse-client imports gateway types that
+      // transitively depend on worker internals; deferring the import breaks
+      // the cycle without introducing a separate entry point.
       const { consumePendingConfigNotifications } = await import(
         "../gateway/sse-client"
       );
@@ -1855,9 +1862,7 @@ Use it when the user references past discussions or you need context.`);
 
         const destPath = path.join(inputDir, safeName);
         const fileStream = Readable.fromWeb(response.body as any);
-        const writeStream = (await import("node:fs")).createWriteStream(
-          destPath
-        );
+        const writeStream = createWriteStream(destPath);
 
         await pipeline(fileStream, writeStream);
         logger.info(`Downloaded: ${safeName} to input directory`);

@@ -31,6 +31,7 @@ export const DEFAULT_PROVIDER_MODELS: Record<string, string> = {
   // Keyed by gateway slug ("gemini", not "google"). Overridden at runtime by
   // the config-driven defaultModel via registerDynamicProvider().
   gemini: "gemini-2.5-flash",
+  // NVIDIA's model registry uses the "organization/model" prefix format.
   nvidia: "nvidia/moonshotai/kimi-k2.5",
   "z-ai": "glm-4.7",
 };

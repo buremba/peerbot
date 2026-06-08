@@ -14,6 +14,7 @@ import {
   type ProviderRegistration,
 } from "@lobu/core";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
+import { isRecord } from "../shared/type-guards";
 
 const logger = createLogger("openclaw-plugin-loader");
 
@@ -224,10 +225,6 @@ function resolvePluginEntrypoint(mod: Record<string, unknown>): {
   }
 
   return null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 function readStringProperty(

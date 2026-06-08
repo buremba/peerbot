@@ -261,18 +261,17 @@ function parsePathAndQuery(rawPath: string): { path: string; query: Record<strin
 
 export function resolvePath(
   args: ResolvePathArgs,
-  env: Env,
+  _env: Env,
   ctx: ToolContext
 ): Promise<ResolvePathResult> {
   return Sentry.startSpan(
     { name: 'resolve_path', op: 'function', attributes: { path: args.path } },
-    () => _resolvePath(args, env, ctx)
+    () => _resolvePath(args, ctx)
   );
 }
 
 async function _resolvePath(
   args: ResolvePathArgs,
-  _env: Env,
   ctx: ToolContext
 ): Promise<ResolvePathResult> {
   const { path: normalized, query: urlQuery } = parsePathAndQuery(args.path);

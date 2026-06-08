@@ -101,7 +101,7 @@ export async function getCachedOrgBySlug(
 }
 
 /// Bootstrap identity constants — must match the constants in
-/// `packages/server/src/start-local.ts` (BOOTSTRAP_USER_ID + BOOTSTRAP_ORG_ID).
+/// `packages/server/src/embedded-runtime.ts` (BOOTSTRAP_USER_ID + BOOTSTRAP_ORG_ID).
 /**
  * Direct org lookup by id. Uncached — ids are a fallback path for the sandbox's
  * `.org(slugOrId)` accessor, so the TTL cache hit rate would be near-zero.

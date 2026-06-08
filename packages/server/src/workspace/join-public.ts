@@ -1,6 +1,7 @@
 import { generateSecureToken } from '../auth/oauth/utils';
 import { getDb } from '../db/client';
 import { ensureMemberEntity } from '../utils/member-entity';
+import logger from '../utils/logger';
 import { invalidateMembershipRoleCache } from './multi-tenant';
 
 type JoinPublicResult =
@@ -83,7 +84,7 @@ export async function joinPublicOrganization({
       status: 'active',
     });
   } catch (err) {
-    console.error('[joinPublicOrganization] Failed to create $member entity:', err);
+    logger.error({ err }, '[joinPublicOrganization] Failed to create $member entity');
   }
 
   invalidateMembershipRoleCache(organizationId, userId);

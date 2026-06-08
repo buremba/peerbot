@@ -15,10 +15,7 @@
  */
 import type { Context } from 'hono';
 import * as invalidationEmitter from './emitter';
-
-interface InvalidationEvent {
-  keys: string[];
-}
+import type { InvalidationEvent } from './emitter';
 
 interface StreamOptions {
   /** Optional filter; return `null` to drop the event for this subscriber. */

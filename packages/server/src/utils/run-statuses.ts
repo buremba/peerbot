@@ -12,8 +12,3 @@ export function runStatusLiteral(
   return pgTextArray([...statuses]);
 }
 
-export function isExecutingRunStatus(status: unknown): status is ExecutingRunStatus {
-  return (
-    typeof status === 'string' && EXECUTING_RUN_STATUSES.includes(status as ExecutingRunStatus)
-  );
-}

@@ -36,19 +36,19 @@ interface CacheEntry {
 export class McpToolCache {
   private readonly entries = new Map<string, CacheEntry>();
 
-  async get(mcpId: string, agentId?: string): Promise<McpTool[] | null> {
-    const info = await this.getServerInfo(mcpId, agentId);
+  get(mcpId: string, agentId?: string): McpTool[] | null {
+    const info = this.getServerInfo(mcpId, agentId);
     return info ? info.tools : null;
   }
 
-  async set(mcpId: string, tools: McpTool[], agentId?: string): Promise<void> {
-    await this.setServerInfo(mcpId, { tools }, agentId);
+  set(mcpId: string, tools: McpTool[], agentId?: string): void {
+    this.setServerInfo(mcpId, { tools }, agentId);
   }
 
-  async getServerInfo(
+  getServerInfo(
     mcpId: string,
     agentId?: string
-  ): Promise<CachedMcpServer | null> {
+  ): CachedMcpServer | null {
     const key = this.buildKey(mcpId, agentId);
     const entry = this.entries.get(key);
     if (!entry) return null;
@@ -59,11 +59,11 @@ export class McpToolCache {
     return entry.info;
   }
 
-  async setServerInfo(
+  setServerInfo(
     mcpId: string,
     info: CachedMcpServer,
     agentId?: string
-  ): Promise<void> {
+  ): void {
     const key = this.buildKey(mcpId, agentId);
     try {
       this.entries.set(key, {
@@ -75,11 +75,11 @@ export class McpToolCache {
     }
   }
 
-  async getInstructions(
+  getInstructions(
     mcpId: string,
     agentId?: string
-  ): Promise<string | undefined> {
-    const info = await this.getServerInfo(mcpId, agentId);
+  ): string | undefined {
+    const info = this.getServerInfo(mcpId, agentId);
     return info?.instructions;
   }
 

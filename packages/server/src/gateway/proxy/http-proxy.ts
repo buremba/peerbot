@@ -3,7 +3,6 @@ import type { LookupAddress } from "node:dns";
 import * as dns from "node:dns/promises";
 import * as http from "node:http";
 import * as net from "node:net";
-import { URL } from "node:url";
 import type { WorkerTokenData } from "@lobu/core";
 import { createLogger, verifyWorkerToken } from "@lobu/core";
 import {

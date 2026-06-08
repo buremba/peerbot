@@ -421,8 +421,7 @@ export class SecretProxy {
     // The bearer credential is normally a `lobu_secret_<uuid>` placeholder
     // but legacy callers may pass the worker JWT directly. Verify if it
     // looks like one (long, no placeholder prefix).
-    const auth =
-      c.req.header("authorization") || c.req.header("Authorization");
+    const auth = c.req.header("authorization");
     if (auth) {
       const parts = auth.split(" ");
       const tok =
@@ -444,7 +443,7 @@ export class SecretProxy {
   private extractCallerToken(c: Context): string | null {
     const apiKey = c.req.header("x-api-key");
     if (apiKey) return apiKey;
-    const auth = c.req.header("authorization") || c.req.header("Authorization");
+    const auth = c.req.header("authorization");
     if (!auth) return null;
     const parts = auth.split(" ");
     if (parts.length === 2 && parts[0]?.toLowerCase() === "bearer") {
@@ -738,8 +737,7 @@ export class SecretProxy {
         );
       }
 
-      const auth =
-        c.req.header("authorization") || c.req.header("Authorization");
+      const auth = c.req.header("authorization");
       if (auth) {
         const parts = auth.split(" ");
         if (parts.length === 2 && parts[0]?.toLowerCase() === "bearer") {

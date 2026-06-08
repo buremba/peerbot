@@ -4,18 +4,15 @@ import { AnthropicJudgeClient } from "./anthropic-client.js";
 import { VerdictCache } from "./cache.js";
 import { CircuitBreaker } from "./circuit-breaker.js";
 import type { JudgeClient, JudgeVerdict } from "./types.js";
+import {
+  DEFAULT_JUDGE_MODEL,
+  DEFAULT_JUDGE_TIMEOUT_MS,
+  JudgeTimeoutError,
+  envTimeoutMs,
+  withTimeout,
+} from "./judge-utils.js";
 
 const logger = createLogger("text-judge");
-
-/**
- * Default Haiku model -- same model the egress judge uses.
- */
-const DEFAULT_JUDGE_MODEL = "claude-haiku-4-5-20251001";
-
-/**
- * Hard ceiling on a single judge call. Same default as the egress judge.
- */
-const DEFAULT_JUDGE_TIMEOUT_MS = 8_000;
 
 /**
  * Separator between policy and text when hashing the cache key. ASCII 0x1F
@@ -25,20 +22,6 @@ const DEFAULT_JUDGE_TIMEOUT_MS = 8_000;
  * treat the source as binary).
  */
 const HASH_SEPARATOR = "\u001F";
-
-function envTimeoutMs(): number | undefined {
-  const raw = process.env.EGRESS_JUDGE_TIMEOUT_MS;
-  if (!raw) return undefined;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
-}
-
-class JudgeTimeoutError extends Error {
-  constructor(timeoutMs: number) {
-    super(`Text judge call exceeded ${timeoutMs}ms`);
-    this.name = "JudgeTimeoutError";
-  }
-}
 
 const TEXT_JUDGE_SYSTEM_PROMPT = `You are a safety judge for an autonomous AI agent's text outputs and inputs.
 
@@ -194,12 +177,13 @@ export class TextJudge {
 
     const model = options.model ?? this.defaultModel;
     try {
-      const verdict = await this.withTimeout(
+      const verdict = await withTimeout(
         this.client.judge({
           model,
           systemPrompt: TEXT_JUDGE_SYSTEM_PROMPT,
           userPrompt: buildUserPrompt(policy, text),
-        })
+        }),
+        this.judgeTimeoutMs
       );
       this.breaker.onSuccess(policyHash);
       this.cache.set(cacheKey, verdict);
@@ -227,14 +211,4 @@ export class TextJudge {
     }
   }
 
-  private withTimeout<T>(promise: Promise<T>): Promise<T> {
-    let timer: ReturnType<typeof setTimeout>;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new JudgeTimeoutError(this.judgeTimeoutMs)),
-        this.judgeTimeoutMs
-      );
-    });
-    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-  }
 }

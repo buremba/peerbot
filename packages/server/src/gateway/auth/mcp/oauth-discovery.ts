@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import dns from "node:dns/promises";
 import { createLogger } from "@lobu/core";
 import type { WritableSecretStore } from "../../secrets/index.js";
+import { isReservedIp } from "../../proxy/ssrf-guard.js";
 
 const logger = createLogger("mcp-oauth-discovery");
 
@@ -78,21 +79,6 @@ function parseResourceMetadataFromWwwAuth(
   const matches = [...header.matchAll(/resource_metadata="?([^",\s]+)"?/gi)];
   if (matches.length === 0) return null;
   return matches[matches.length - 1]?.[1] ?? null;
-}
-
-function isReservedIp(ip: string): boolean {
-  if (ip === "::1") return true;
-  if (/^f[cd]/i.test(ip)) return true;
-  const parts = ip.split(".").map(Number);
-  if (parts.length === 4) {
-    const [a, b] = parts as [number, number, number, number];
-    if (a === 127) return true;
-    if (a === 10) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 169 && b === 254) return true;
-  }
-  return false;
 }
 
 async function assertPublicUrl(url: string): Promise<void> {

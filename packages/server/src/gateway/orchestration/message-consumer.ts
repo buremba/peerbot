@@ -42,12 +42,12 @@ export class MessageConsumer {
   private isRunning = false;
   /**
    * Per-process deployment-creation lock. The embedded-only server
-   * has a single MessageConsumer instance per process, so an in-memory Map
+   * has a single MessageConsumer instance per process, so an in-memory Set
    * is sufficient for the "two consecutive messages for the same thread
-   * race to create the deployment" guard. The Phase-9 gateway no longer
-   * has cross-process workers.
+   * race to create the deployment" guard. The cross-pod guard is the PG
+   * advisory lock in BaseDeploymentManager — this Set is pod-local only.
    */
-  private deploymentLocks = new Map<string, Promise<unknown>>();
+  private deploymentLocks = new Set<string>();
   private agentSettingsStore?: AgentSettingsStore;
   private guardrailRegistry?: GuardrailRegistry;
   constructor(
@@ -508,9 +508,7 @@ export class MessageConsumer {
    */
   private acquireDeploymentLock(deploymentName: string): boolean {
     if (this.deploymentLocks.has(deploymentName)) return false;
-    // We store a placeholder; the caller wraps the create in a try/finally
-    // and `releaseDeploymentLock` removes the entry once done.
-    this.deploymentLocks.set(deploymentName, Promise.resolve());
+    this.deploymentLocks.add(deploymentName);
     return true;
   }
 

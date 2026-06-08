@@ -238,30 +238,6 @@ export class WorkerConnectionManager {
   }
 
   /**
-   * Send an SSE event to all connected workers for a given agentId.
-   * Partial failures are logged but don't block.
-   */
-  notifyAgent(agentId: string, event: string, data: unknown): void {
-    const deployments = this.getDeploymentsForAgent(agentId);
-    if (deployments.length === 0) {
-      logger.debug(
-        `No active deployments for agent ${agentId}, skipping ${event} notification`
-      );
-      return;
-    }
-
-    logger.info(
-      `Sending ${event} to ${deployments.length} deployment(s) for agent ${agentId}`
-    );
-    for (const deploymentName of deployments) {
-      const connection = this.connections.get(deploymentName);
-      if (connection) {
-        this.sendSSE(connection.writer, event, data);
-      }
-    }
-  }
-
-  /**
    * Get the HTTP URL for a worker serving the given agentId.
    * Returns the httpUrl of the first connected deployment for the agent.
    */

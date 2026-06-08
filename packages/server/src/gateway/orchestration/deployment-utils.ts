@@ -1,9 +1,6 @@
 import type { ProviderCredentialContext } from "../embedded.js";
 import { getOrchestratorModules } from "../modules/module-system.js";
-import type {
-  DeploymentInfo,
-  OrchestratorConfig,
-} from "./base-deployment-manager.js";
+import type { DeploymentInfo } from "./base-deployment-manager.js";
 
 /**
  * Build environment variables by integrating all registered modules
@@ -23,10 +20,6 @@ export async function buildModuleEnvVars(
   }
 
   return envVars;
-}
-
-export function getVeryOldThresholdDays(config: OrchestratorConfig): number {
-  return config.cleanup?.veryOldDays ?? 7;
 }
 
 export function buildDeploymentInfoSummary({

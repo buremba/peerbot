@@ -20,8 +20,13 @@ import {
   listPreviewAgents,
   previewAgentMenu,
   resolveChatUserIdentity,
-  slackSurfaceType,
 } from "../slack";
+
+/** Inlined from preview/slack.ts — DM channels start with `D`. */
+function slackSurfaceType(channelId: string): "dm" | "channel" {
+  const id = channelId.replace(/^[a-z]+:/i, "").split(":")[0]!;
+  return id.startsWith("D") ? "dm" : "channel";
+}
 
 const AGENT_ID = "demo-agent";
 const OTHER_AGENT_ID = "other-agent";

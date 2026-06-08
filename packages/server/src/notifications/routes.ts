@@ -1,5 +1,6 @@
 import type { Context } from 'hono';
 import type { Env } from '../index';
+import { requireOrgUser } from '../utils/require-org-user';
 import {
   deleteNotification,
   getUnreadCount,
@@ -7,16 +8,6 @@ import {
   markAllAsRead,
   markAsRead,
 } from './service';
-
-function requireOrgUser(c: Context<{ Bindings: Env }>): {
-  organizationId: string;
-  userId: string;
-} | null {
-  const organizationId = c.var.organizationId;
-  const userId = c.var.session?.userId ?? c.var.user?.id;
-  if (!organizationId || !userId) return null;
-  return { organizationId, userId };
-}
 
 export async function restListNotifications(c: Context<{ Bindings: Env }>) {
   const auth = requireOrgUser(c);

@@ -28,20 +28,6 @@ interface CreateNotificationParams {
   card?: CardElement | null;
 }
 
-interface NotificationRow {
-  id: number;
-  organization_id: string;
-  user_id: string;
-  type: string;
-  title: string;
-  body: string | null;
-  resource_type: string | null;
-  resource_id: string | null;
-  resource_url: string | null;
-  is_read: boolean;
-  created_at: string;
-}
-
 /**
  * Forward a notification to the org's active chat-bot connections so it lands
  * in the bound channel — e.g. a watcher digest posting to #leads.
@@ -50,9 +36,7 @@ interface NotificationRow {
  * posts in-process via the chat manager. Every app pod loads every active
  * connection at boot, so the locally-held instance can post regardless of
  * which pod fired the notification — correct under N>1 replicas, no cross-pod
- * routing needed. (The previous implementation called `/api/internal/connections`
- * + `/api/v1/messaging/send` over HTTP — both removed in #846, so it had been
- * a silent no-op.)
+ * routing needed.
  *
  * Best-effort: a connection with no live instance or no binding is skipped
  * without failing the others. A connection bound to several channels posts to
@@ -202,7 +186,7 @@ export async function listNotifications(opts: {
   cursor?: number | null;
   limit?: number;
   unreadOnly?: boolean;
-}): Promise<{ notifications: NotificationRow[]; nextCursor: number | null }> {
+}): Promise<{ notifications: Record<string, unknown>[]; nextCursor: number | null }> {
   const sql = getDb();
   const limit = Math.min(opts.limit ?? 20, 50);
   const cursor = opts.cursor ?? null;
@@ -233,11 +217,11 @@ export async function listNotifications(opts: {
     -- skipping notifications when delivered_at and e.id disagreed.
     ORDER BY e.id DESC
     LIMIT ${limit + 1}
-  `) as unknown as NotificationRow[];
+  `) as unknown as Array<{ id: number } & Record<string, unknown>>;
 
   const hasMore = rows.length > limit;
   const notifications = hasMore ? rows.slice(0, limit) : rows;
-  const nextCursor = hasMore ? notifications[notifications.length - 1].id : null;
+  const nextCursor = hasMore ? (notifications[notifications.length - 1]?.id ?? null) : null;
 
   return { notifications, nextCursor };
 }

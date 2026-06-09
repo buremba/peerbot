@@ -56,7 +56,7 @@ const realFetch = global.fetch;
 
 function installFetchStub(): void {
   fetchCalls = [];
-  global.fetch = (async (input: RequestInfo | URL, _init?: RequestInit) => {
+  global.fetch = (async (input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : input.toString();
     fetchCalls.push(url);
     if (url.includes('/chat/completions')) {
@@ -87,6 +87,13 @@ describe('getContent > rewrite_query recall expansion', () => {
   // Extra synonym sessions used to prove `limit` is respected under union.
   let entEventId: number;
   let specialistEventId: number;
+
+  // Fusion / displacement fixtures (BUG-1 reproducer). The raw query
+  // "appointment" matches several low-relevance filler sessions; a rewritten
+  // variant "cardiologist" matches one short, highly-relevant session that must
+  // displace a filler row INTO the top-k even when raw already filled the page.
+  let cardiologistEventId: number;
+  const fillerAppointmentEventIds: number[] = [];
 
   function ctx(): ToolContext {
     return {
@@ -142,6 +149,42 @@ describe('getContent > rewrite_query recall expansion', () => {
         content: 'The specialist ordered a follow-up scan for next month.',
       })
     ).id;
+
+    // Three filler sessions match the raw query "appointment" and fill a limit=3
+    // page. Two contain the literal "appointment" (so the ranker's ILIKE
+    // whole-query-substring boost applies → score ≈ 1.4). The first uses the
+    // stem-only form "appoints" — it matches the english-tsquery for
+    // "appointment" (both stem to "appoint") but NOT the ILIKE '%appointment%'
+    // substring, so it forgoes that boost and scores LOW (≈ 0.4). That makes it
+    // the deterministically weakest raw hit — the one a strong variant hit must
+    // displace from the top-k.
+    const fillerContents = [
+      'I keep appoints lined up across many errands, groceries, laundry, emails, ' +
+        'meetings and assorted chores that fill the whole long rambling busy day.',
+      'Random note one: I had an appointment among errands, groceries, laundry, ' +
+        'emails, meetings and chores that fill the whole long rambling busy day.',
+      'Random note two: I had an appointment among errands, groceries, laundry, ' +
+        'emails, meetings and chores that fill the whole long rambling busy day.',
+    ];
+    for (const content of fillerContents) {
+      const id = (
+        await createTestEvent({ organization_id: org.id, entity_id: entity.id, content })
+      ).id;
+      fillerAppointmentEventIds.push(id);
+    }
+
+    // A short, on-topic session for the variant term "cardiologist". It does NOT
+    // contain "appointment", so the raw query misses it entirely; only the
+    // variant surfaces it, and as the dominant token in a short doc it scores
+    // HIGH — so fusion must promote it into the top-k, displacing a low-relevance
+    // filler row.
+    cardiologistEventId = (
+      await createTestEvent({
+        organization_id: org.id,
+        entity_id: entity.id,
+        content: 'Cardiologist visit.',
+      })
+    ).id;
   });
 
   afterAll(() => {
@@ -176,16 +219,14 @@ describe('getContent > rewrite_query recall expansion', () => {
     );
     const expandedIds = new Set(expanded.content.map((c) => c.id));
 
-    // Raw-query result preserved AND the missed session now appears.
+    // Raw-query result preserved AND the missed session now appears (fusion pools
+    // both queries' hits and re-ranks by relevance).
     expect(expandedIds.has(physicianEventId)).toBe(true);
     expect(expandedIds.has(dermatologistEventId)).toBe(true);
 
     // The rewriter was actually consulted (exactly one chat/completions call).
     const rewriteCalls = fetchCalls.filter((u) => u.includes('/chat/completions'));
     expect(rewriteCalls.length).toBe(1);
-
-    // Raw result ranks first (additive union preserves raw ordering).
-    expect(expanded.content[0].id).toBe(physicianEventId);
   });
 
   it('(b) rewrite_query=false is identical to baseline — no rewrite, no fetch', async () => {
@@ -219,9 +260,9 @@ describe('getContent > rewrite_query recall expansion', () => {
     expect(fetchCalls.length).toBe(0);
   });
 
-  it('(d) union never exceeds the caller-supplied limit', async () => {
-    // Raw "physician" matches 1 session; variants would add 3 more synonym
-    // sessions. With limit=2 the union must cap at 2 rows total.
+  it('(d) fusion never exceeds the caller-supplied limit (and flags has_more)', async () => {
+    // Raw "physician" + variants match 4 distinct synonym sessions. With limit=2
+    // the fused, re-ranked result must cap at 2 rows and report has_more.
     cannedVariants = ['dermatologist', 'ENT', 'specialist'];
     const result = await getContent(
       { entity_id: entity.id, query: 'physician', limit: 2, rewrite_query: true } as never,
@@ -229,11 +270,11 @@ describe('getContent > rewrite_query recall expansion', () => {
       ctx()
     );
 
-    expect(result.content.length).toBeLessThanOrEqual(2);
-    // Raw match is retained as the highest-priority row.
-    expect(result.content.map((c) => c.id)).toContain(physicianEventId);
+    expect(result.content.length).toBe(2);
+    expect(result.total).toBeGreaterThan(2); // pool had more distinct matches
+    expect(result.page.has_more).toBe(true);
 
-    // Sanity: the synonym sessions exist and a larger limit DOES pull extras in,
+    // Sanity: the synonym sessions exist and a larger limit DOES pull them all in,
     // proving the cap above was the limiter (not a missing fixture).
     cannedVariants = ['dermatologist', 'ENT', 'specialist'];
     const wide = await getContent(
@@ -246,5 +287,42 @@ describe('getContent > rewrite_query recall expansion', () => {
     expect(wideIds.has(dermatologistEventId)).toBe(true);
     expect(wideIds.has(entEventId)).toBe(true);
     expect(wideIds.has(specialistEventId)).toBe(true);
+  });
+
+  it('(e) fusion pulls a more-relevant variant hit into a full top-k page (displaces filler)', async () => {
+    // Baseline: with rewrite OFF, the raw query "appointment" returns a full
+    // limit=3 page of low-relevance filler sessions and does NOT surface the
+    // highly-relevant "Cardiologist appointment." session as the variant term.
+    const baseline = await getContent(
+      { entity_id: entity.id, query: 'appointment', limit: 3 } as never,
+      NO_KEY_ENV as never,
+      ctx()
+    );
+    const baselineIds = new Set(baseline.content.map((c) => c.id));
+    // The raw page is full (3) and made entirely of filler; the cardiologist row
+    // does not match "appointment" at all, so it is absent pre-rewrite.
+    expect(baseline.content.length).toBe(3);
+    for (const id of baselineIds) {
+      expect(fillerAppointmentEventIds).toContain(id);
+    }
+    expect(baselineIds.has(cardiologistEventId)).toBe(false);
+
+    // With rewrite ON, the variant "cardiologist" scores the short on-topic
+    // session HIGH; fusion re-ranks across raw+variant and the cardiologist row
+    // must now appear in the top-k even though raw already filled the page —
+    // proving fusion (displacement), not fill-leftover-slots.
+    cannedVariants = ['cardiologist'];
+    const fused = await getContent(
+      { entity_id: entity.id, query: 'appointment', limit: 3, rewrite_query: true } as never,
+      REWRITER_ENV as never,
+      ctx()
+    );
+    const fusedIds = new Set(fused.content.map((c) => c.id));
+
+    expect(fused.content.length).toBe(3);
+    expect(fusedIds.has(cardiologistEventId)).toBe(true);
+    // The union held more distinct matches than the page → has_more is set.
+    expect(fused.page.has_more).toBe(true);
+    expect(fused.total).toBeGreaterThan(3);
   });
 });

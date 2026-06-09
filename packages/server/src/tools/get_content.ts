@@ -1046,43 +1046,60 @@ export async function getContent(
         after_id: args.after_id,
       };
 
-      const result = await searchContentByText(args.query ?? null, searchOptions, env);
-
       // Query-rewrite recall expansion (opt-in, only with an actual text query).
-      // Run the RAW query first (preserving its ranking), then each LLM-rewritten
-      // variant, and union the rows deduped by event id. This is purely additive:
-      // variants only contribute sessions the raw query missed, so existing
-      // callers (default rewrite_query=false) are byte-for-byte unaffected, and a
-      // rewrite that returns no variants behaves exactly like a single raw query.
-      // Stateless per-request — correct under N>1 replicas (no shared state).
-      if (args.rewrite_query === true && args.query) {
-        const variants = await rewriteQueries(args.query, env);
-        if (variants.length > 0) {
-          const merged: typeof result.content = [...result.content];
-          const seenIds = new Set(merged.map((row) => row.id));
+      // Instead of filling leftover slots after the raw page (which can't help
+      // when the raw query already returns a full `limit` page of the WRONG
+      // sessions), do proper multi-query relevance fusion: search the raw query
+      // and each LLM-rewritten variant with an over-fetched internal limit, pool
+      // the candidates keyed by event id keeping each id's MAX relevance score,
+      // then sort by score and slice to the caller's `limit`. A variant-found
+      // session can thus displace a less-relevant raw row INTO the top-k while
+      // the result stays relevance-ranked. Variants are focused versions of the
+      // same question, so regression risk is low. Stateless per-request —
+      // correct under N>1 replicas (no shared state). Default rewrite_query=false
+      // keeps every existing caller on the single-query path below, unchanged.
+      const variants =
+        args.rewrite_query === true && args.query ? await rewriteQueries(args.query, env) : [];
 
-          for (const variant of variants) {
-            if (merged.length >= limit) break;
-            const variantResult = await searchContentByText(variant, searchOptions, env);
-            for (const row of variantResult.content) {
-              if (merged.length >= limit) break;
-              if (seenIds.has(row.id)) continue;
-              seenIds.add(row.id);
-              merged.push(row);
+      if (variants.length > 0 && args.query) {
+        // Over-fetch per query so fusion has a real candidate pool to re-rank
+        // (a variant's best hit may sit past the caller's `limit` in its own
+        // ranking). The caller's `limit` is only applied to the final pool.
+        const fetchLimit = Math.max(limit * 4, 40);
+        const fusionOptions = { ...searchOptions, limit: fetchLimit };
+
+        // candidate pool: event id -> best (max-score) row seen across all queries.
+        const pool = new Map<number, { row: ContentRow; score: number }>();
+        const fuseInto = (rows: ContentRow[]) => {
+          for (const row of rows) {
+            const score = row.combined_score ?? row.similarity ?? 0;
+            const existing = pool.get(row.id);
+            if (!existing || score > existing.score) {
+              pool.set(row.id, { row, score });
             }
           }
+        };
 
-          rawContent = merged;
-          // Reflect the unioned recall in total without ever shrinking it below
-          // the raw query's own total (the union only adds rows).
-          total = Math.max(result.total, merged.length);
-          pageInfo = result.page;
-        } else {
-          rawContent = result.content;
-          total = result.total;
-          pageInfo = result.page;
+        const rawResult = await searchContentByText(args.query, fusionOptions, env);
+        fuseInto(rawResult.content);
+        for (const variant of variants) {
+          const variantResult = await searchContentByText(variant, fusionOptions, env);
+          fuseInto(variantResult.content);
         }
+
+        const ranked = [...pool.values()].sort((a, b) => b.score - a.score).map((c) => c.row);
+
+        rawContent = ranked.slice(0, limit);
+        // total = distinct matching rows across raw+variants (pre-slice); has_more
+        // when the pool held more than we returned.
+        total = ranked.length;
+        pageInfo = {
+          limit,
+          offset,
+          has_more: ranked.length > limit,
+        };
       } else {
+        const result = await searchContentByText(args.query ?? null, searchOptions, env);
         rawContent = result.content;
         total = result.total;
         pageInfo = result.page;

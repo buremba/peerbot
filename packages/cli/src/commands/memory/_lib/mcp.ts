@@ -1,3 +1,4 @@
+import { MCP_PROTOCOL_VERSION } from "@lobu/core";
 import { ApiError } from "./errors.js";
 import {
   getUsableToken,
@@ -156,7 +157,7 @@ async function initializeMcpSession(
       id: "__init__",
       method: "initialize",
       params: {
-        protocolVersion: "2025-03-26",
+        protocolVersion: MCP_PROTOCOL_VERSION,
         capabilities: {},
         clientInfo: { name: "lobu-memory", version: "1.0.0" },
       },

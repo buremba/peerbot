@@ -1,5 +1,5 @@
-import { randomBytes } from "node:crypto";
 import { createLogger } from "@lobu/core";
+import { generateCodeVerifier as pkceCodeVerifier } from "../../../utils/pkce.js";
 import { OAuthClient } from "../oauth/client.js";
 import type { OAuthCredentials } from "../oauth/credentials.js";
 import type { OAuthProviderConfig } from "../oauth/providers.js";
@@ -121,7 +121,7 @@ export class ExternalAuthClient {
   constructor(private readonly config: ExternalAuthConfig) {}
 
   generateCodeVerifier(): string {
-    return randomBytes(32).toString("base64url");
+    return pkceCodeVerifier();
   }
 
   async buildAuthUrl(

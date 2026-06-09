@@ -10,8 +10,11 @@
  * consume() is atomic, so replay of the same `state` fails.
  */
 
-import { createHash, randomBytes } from "node:crypto";
 import { createLogger, type McpOAuthConfig } from "@lobu/core";
+import {
+  generateCodeChallenge,
+  generateCodeVerifier,
+} from "../../../utils/pkce.js";
 import {
   OAuthStateStore,
   type ProviderOAuthStateData,
@@ -58,15 +61,6 @@ function getStateStore(): OAuthStateStore<McpOAuthStateData> {
     STATE_KEY_PREFIX,
     "mcp-oauth-state"
   );
-}
-
-function generateCodeVerifier(): string {
-  // 32 random bytes → 43 base64url chars (RFC 7636 minimum).
-  return randomBytes(32).toString("base64url");
-}
-
-function generateCodeChallenge(verifier: string): string {
-  return createHash("sha256").update(verifier).digest("base64url");
 }
 
 interface StartFlowOptions {

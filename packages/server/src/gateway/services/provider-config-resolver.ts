@@ -1,14 +1,6 @@
 import type { ProviderConfigEntry } from "@lobu/core";
 import type { ProviderRegistryService } from "./provider-registry-service.js";
 
-interface ResolvedMcpRegistryServer {
-  id: string;
-  name: string;
-  description: string;
-  type: "oauth" | "stdio" | "sse" | "api-key";
-  config: Record<string, unknown>;
-}
-
 export class ProviderConfigResolver {
   constructor(
     private readonly providerRegistryService: ProviderRegistryService
@@ -22,9 +14,5 @@ export class ProviderConfigResolver {
     Record<string, Record<string, unknown>>
   > {
     return {};
-  }
-
-  async getMcpRegistryServers(): Promise<ResolvedMcpRegistryServer[]> {
-    return [];
   }
 }

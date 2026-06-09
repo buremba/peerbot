@@ -14,8 +14,11 @@
  * - GET  /connect/:token/oauth/callback → legacy per-token OAuth callback
  */
 
-import { createHash, randomBytes } from 'node:crypto';
 import { type Context, Hono } from 'hono';
+import {
+  generateCodeChallenge as buildPkceChallenge,
+  generateCodeVerifier as buildPkceVerifier,
+} from '../utils/pkce';
 import { createMiddleware } from 'hono/factory';
 import { createAuth } from '../auth';
 import { getDb } from '../db/client';
@@ -57,14 +60,6 @@ interface OAuthAuthConfig {
 }
 
 type ConnectTokenEnv = { Bindings: Env; Variables: { tokenRow: ConnectTokenRow } };
-
-function buildPkceVerifier(): string {
-  return randomBytes(32).toString('base64url');
-}
-
-function buildPkceChallenge(verifier: string): string {
-  return createHash('sha256').update(verifier).digest('base64url');
-}
 
 /**
  * Middleware that resolves the :token route param into a ConnectTokenRow.

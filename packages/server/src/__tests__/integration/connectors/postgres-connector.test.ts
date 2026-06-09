@@ -147,6 +147,28 @@ describe('PostgresConnector.sync (keyset incremental, real DB)', () => {
     ).rejects.toThrow(/blocked internal\/metadata/i);
   });
 
+  it('labels result column types from the OID map (incl. name / jsonb / oid)', async () => {
+    const conn2 = new PostgresConnector();
+    const r = await conn2.query({
+      feedKey: null,
+      query:
+        "SELECT 1::bigint AS a, 'x'::text AS b, true AS c, now() AS d, '{}'::jsonb AS e, 'y'::name AS f, 1::oid AS g, 1.5::numeric AS h",
+      config: { DATABASE_URL: process.env.DATABASE_URL },
+      credentials: null,
+    } as never);
+    const types = Object.fromEntries((r.columns ?? []).map((c) => [c.name, c.type]));
+    expect(types).toMatchObject({
+      a: 'bigint',
+      b: 'text',
+      c: 'boolean',
+      d: 'timestamptz',
+      e: 'jsonb',
+      f: 'name',
+      g: 'oid',
+      h: 'numeric',
+    });
+  });
+
   it('rejects a write-capable CTE (read-only connector contract)', async () => {
     await expect(
       run(

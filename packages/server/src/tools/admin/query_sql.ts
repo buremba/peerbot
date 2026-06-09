@@ -72,6 +72,8 @@ const COLUMN_NAME_RE = /^[a-zA-Z_]\w*$/;
 
 const PG_OID_TYPE_MAP: Record<number, string> = {
   16: 'boolean',
+  17: 'bytea',
+  19: 'name',
   20: 'bigint',
   21: 'smallint',
   23: 'integer',

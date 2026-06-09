@@ -116,17 +116,23 @@ const PG_OID: Record<number, { cast: string; display: string }> = {
   1114: { cast: 'timestamp', display: 'timestamp' },
   1082: { cast: 'date', display: 'date' },
   1083: { cast: 'time', display: 'time' },
+  1186: { cast: 'interval', display: 'interval' },
   20: { cast: 'int8', display: 'bigint' },
   23: { cast: 'int4', display: 'integer' },
   21: { cast: 'int2', display: 'smallint' },
+  26: { cast: 'oid', display: 'oid' },
   1700: { cast: 'numeric', display: 'numeric' },
   700: { cast: 'float4', display: 'float4' },
   701: { cast: 'float8', display: 'float8' },
   25: { cast: 'text', display: 'text' },
   1043: { cast: 'varchar', display: 'varchar' },
   1042: { cast: 'bpchar', display: 'bpchar' },
+  19: { cast: 'name', display: 'name' },
   2950: { cast: 'uuid', display: 'uuid' },
   16: { cast: 'bool', display: 'boolean' },
+  17: { cast: 'bytea', display: 'bytea' },
+  114: { cast: 'json', display: 'json' },
+  3802: { cast: 'jsonb', display: 'jsonb' },
 };
 
 const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_$]*$/;

@@ -1,0 +1,22 @@
+{{- /*
+PodDisruptionBudget for the app deployment. Only rendered when running more
+than one replica AND pdb.enabled — a PDB with minAvailable:1 on a single-replica
+Deployment would block every voluntary node drain (the lone pod can never be
+evicted), so we deliberately skip it below replicaCount 2. With 2+ replicas this
+keeps at least `minAvailable` app pods serving through node drains/upgrades,
+which matters because app pods host long-running agent-worker subprocesses.
+*/ -}}
+{{- if and .Values.app.pdb.enabled (gt (int .Values.app.replicaCount) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "lobu.fullname" . }}-app
+  labels:
+    {{- include "lobu.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  minAvailable: {{ .Values.app.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "lobu.appSelectorLabels" . | nindent 6 }}
+{{- end }}

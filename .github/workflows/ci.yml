@@ -107,6 +107,12 @@ jobs:
         run: |
           bun test packages/connector-worker
 
+      - name: client / promptfoo-provider (bun:test)
+        # Previously unrun in CI: the client SSE/auth suite and the
+        # promptfoo-provider tests (which had no `test` script wired anywhere).
+        # Neither needs Postgres.
+        run: bun test packages/client packages/promptfoo-provider
+
       - name: Upload coverage
         if: always()
         uses: codecov/codecov-action@v4

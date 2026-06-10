@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createLogger, type SecretRef, verifyWorkerToken } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
@@ -840,7 +841,7 @@ export function generatePlaceholder(
   deploymentName: string,
   options?: { ttlSeconds?: number; organizationId?: string }
 ): string {
-  const uuid = crypto.randomUUID();
+  const uuid = randomUUID();
   storeSecretMapping(
     uuid,
     {

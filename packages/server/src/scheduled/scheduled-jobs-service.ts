@@ -190,19 +190,28 @@ export function registerScheduledJobsTicker(scheduler: TaskScheduler): void {
           continue;
         }
         // Advance OR pause-when-done depending on whether this is recurring.
+        //
+        // The claim transaction (FOR UPDATE SKIP LOCKED) commits when the
+        // closure above returns, releasing the row locks BEFORE this advance
+        // runs — so SKIP LOCKED gives no cross-pod exclusion during the
+        // spawn+advance window. The spawn idempotency key collapses duplicate
+        // tasks, but the advance itself must be conditional or two pods reading
+        // the same pre-advance `next_run_at` can both write (and clobber a
+        // concurrent pause/delete). Gate every advance on the tick we read so
+        // it is a no-op once any pod (or an operator) has moved the row on.
         const nextAt = row.cron ? nextCronTickAt(row.cron) : null;
         if (nextAt) {
           await sql`
             UPDATE scheduled_jobs
             SET last_fired_at = now(), next_run_at = ${nextAt}, updated_at = now()
-            WHERE id = ${row.id}
+            WHERE id = ${row.id} AND next_run_at = ${tickIso}
           `;
         } else {
           // One-shot: mark as fired + paused so the index ignores it.
           await sql`
             UPDATE scheduled_jobs
             SET last_fired_at = now(), paused = true, updated_at = now()
-            WHERE id = ${row.id}
+            WHERE id = ${row.id} AND next_run_at = ${tickIso}
           `;
         }
       }

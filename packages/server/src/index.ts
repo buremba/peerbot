@@ -28,6 +28,7 @@ import { getDb } from './db/client';
 import * as invalidationEmitter from './events/emitter';
 import { streamInvalidationEvents } from './events/sse';
 import { isExcludedSpaPath } from './http/spa-route-filter';
+import { isShuttingDown } from './lifecycle-state';
 import { restGetAuthProfileForRun, restGetFeedForRun } from './connector-run/routes';
 import { agentRoutes } from './lobu/agent-routes';
 import { clientRoutes, platformSchemaRoutes } from './lobu/client-routes';
@@ -463,6 +464,11 @@ app.get('/health', (c) => {
  * it, which is the right semantic for transient DB unavailability.
  */
 app.get('/health/ready', async (c) => {
+  // Once shutdown has begun, report unready so the LB drains this pod's
+  // endpoint before teardown severs in-flight connections (see lifecycle-state.ts).
+  if (isShuttingDown()) {
+    return c.json({ status: 'draining', service: 'lobu-api' }, 503);
+  }
   try {
     const sql = getDb();
     await sql`SELECT 1`;

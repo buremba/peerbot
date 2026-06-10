@@ -20,6 +20,7 @@ import * as Sentry from "@sentry/node";
 import { Hono } from "hono";
 import { closeDbSingleton } from "./db/client";
 import { mountViteDev } from "./dev-vite";
+import { markShuttingDown } from "./lifecycle-state";
 import type { Env } from "./index";
 import { app as mainApp } from "./index";
 import {
@@ -364,6 +365,18 @@ export function createServerLifecycle(
 				{ signal, mode },
 				"Received shutdown signal, stopping gracefully...",
 			);
+			// Flip the readiness flag FIRST so `/health/ready` starts returning
+			// 503 immediately. On k8s this lets kube-proxy drop the pod from the
+			// Service endpoint set before we tear anything down. The optional
+			// drain delay (SHUTDOWN_READINESS_DRAIN_MS, default 0 so local/dev
+			// shutdown stays instant) holds teardown for one probe period so the
+			// endpoint is actually removed before in-flight connections are cut.
+			// Prod sets this (and a matching chart preStop / grace period).
+			markShuttingDown();
+			const drainMs = Number(env.SHUTDOWN_READINESS_DRAIN_MS ?? 0);
+			if (Number.isFinite(drainMs) && drainMs > 0) {
+				await new Promise<void>((resolve) => setTimeout(resolve, drainMs));
+			}
 			// Each step is wrapped in try/catch so one failing teardown can't
 			// block the rest — we still want the listener closed and the
 			// process gone, even if (say) the gateway drain rejects. Catch +
@@ -404,9 +417,26 @@ export function createServerLifecycle(
 			for (let i = 0; i < extraTeardown.length; i++) {
 				await safe(`extraTeardown[${i}]`, extraTeardown[i]);
 			}
-			//   h. Finally, close the listener. Matches the historical behavior of
-			//      not awaiting (server.ts:260; embedded-runtime.ts:200).
-			httpServer.close();
+			//   h. Finally, stop accepting new connections and wait for in-flight
+			//      requests to finish. `close()` only stops new connections; we
+			//      await its callback so open responses (including the 75s-keepalive
+			//      SSE/MCP streams) drain instead of being severed by the immediate
+			//      process.exit that used to follow. Bounded by HTTP_CLOSE_TIMEOUT_MS
+			//      (default 10s) so a stuck stream can't block the exit past the
+			//      pod's termination grace period.
+			await safe("httpServer.close", async () => {
+				const closeTimeoutMs = Number(env.HTTP_CLOSE_TIMEOUT_MS ?? 10_000);
+				await new Promise<void>((resolve) => {
+					let settled = false;
+					const done = () => {
+						if (settled) return;
+						settled = true;
+						resolve();
+					};
+					httpServer.close(() => done());
+					setTimeout(done, closeTimeoutMs).unref?.();
+				});
+			});
 			process.exit(0);
 		};
 		// Single-flight guard: SIGTERM+SIGINT or a double-tap on either must

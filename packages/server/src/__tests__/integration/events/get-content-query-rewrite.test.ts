@@ -6,9 +6,11 @@
  * keyword-matches poorly, so the gold session ranks below the cutoff — and a
  * synonym gap ("physician") misses sessions that say "dermatologist". The LLM
  * query rewriter expands the raw query into focused keyword variants; the search
- * branch runs the RAW query first (preserving its ranking) and unions each
- * variant's rows deduped by event id. Purely additive: variants only surface
- * sessions the raw query missed.
+ * branch runs raw + each variant with an over-fetched internal limit and FUSES
+ * the candidates (max score per event id, re-ranked, caller's offset/limit
+ * applied to the fused pool) — so a variant hit can displace a less-relevant
+ * raw row into the top-k. Fusion only applies to score-sorted, non-cursor
+ * searches; date feeds keep their ordering via the single-query path.
  *
  * The benchmark adapter gets this lift by calling
  * read_knowledge({ rewrite_query: true }) — the recall improvement lives in the
@@ -324,5 +326,65 @@ describe('getContent > rewrite_query recall expansion', () => {
     // The union held more distinct matches than the page → has_more is set.
     expect(fused.page.has_more).toBe(true);
     expect(fused.total).toBeGreaterThan(3);
+  });
+
+  it('(f) sort_by=date keeps chronological semantics — fusion is skipped entirely', async () => {
+    // Fusion re-ranks by relevance, which would destroy a chronological feed.
+    // With sort_by='date', rewrite_query must be inert: no rewriter call, and
+    // the results come back date-ordered from the single-query path.
+    cannedVariants = ['dermatologist'];
+    const result = await getContent(
+      {
+        entity_id: entity.id,
+        query: 'physician',
+        limit: 50,
+        rewrite_query: true,
+        sort_by: 'date',
+      } as never,
+      REWRITER_ENV as never,
+      ctx()
+    );
+
+    // No rewrite fetch happened (fusion ineligible under date sort)...
+    expect(fetchCalls.filter((u) => u.includes('/chat/completions')).length).toBe(0);
+    // ...so the variant-only session is absent,
+    const ids = new Set(result.content.map((c) => c.id));
+    expect(ids.has(dermatologistEventId)).toBe(false);
+    // ...and the rows are in date order (desc by default).
+    const dates = result.content.map((c) => new Date(c.occurred_at).getTime());
+    for (let i = 1; i < dates.length; i++) {
+      expect(dates[i - 1]).toBeGreaterThanOrEqual(dates[i]);
+    }
+  });
+
+  it('(g) offset pages through the FUSED ranking without overlap', async () => {
+    // The fused pool for raw "physician" + 3 variants holds 4 distinct synonym
+    // sessions. Page 1 (limit=2, offset=0) and page 2 (limit=2, offset=2) must
+    // be disjoint and together equal the wide fused result's top-4 — proving the
+    // caller's offset applies to the fused pool, not per internal query.
+    cannedVariants = ['dermatologist', 'ENT', 'specialist'];
+    const page1 = await getContent(
+      { entity_id: entity.id, query: 'physician', limit: 2, offset: 0, rewrite_query: true } as never,
+      REWRITER_ENV as never,
+      ctx()
+    );
+    cannedVariants = ['dermatologist', 'ENT', 'specialist'];
+    const page2 = await getContent(
+      { entity_id: entity.id, query: 'physician', limit: 2, offset: 2, rewrite_query: true } as never,
+      REWRITER_ENV as never,
+      ctx()
+    );
+
+    expect(page1.content.length).toBe(2);
+    expect(page2.content.length).toBeGreaterThanOrEqual(1);
+    const ids1 = new Set(page1.content.map((c) => c.id));
+    for (const row of page2.content) {
+      expect(ids1.has(row.id)).toBe(false); // disjoint pages
+    }
+    // Combined pages cover all 4 distinct synonym sessions.
+    const combined = new Set([...page1.content, ...page2.content].map((c) => c.id));
+    for (const id of [physicianEventId, dermatologistEventId, entEventId, specialistEventId]) {
+      expect(combined.has(id)).toBe(true);
+    }
   });
 });

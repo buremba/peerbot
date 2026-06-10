@@ -1058,15 +1058,29 @@ export async function getContent(
       // same question, so regression risk is low. Stateless per-request —
       // correct under N>1 replicas (no shared state). Default rewrite_query=false
       // keeps every existing caller on the single-query path below, unchanged.
-      const variants =
-        args.rewrite_query === true && args.query ? await rewriteQueries(args.query, env) : [];
+      // Fusion is relevance-ranked by construction, so it only applies to
+      // score-sorted searches. A chronological feed (sort_by='date') or a
+      // cursor-anchored page must keep its ordering semantics — those fall
+      // through to the single-query path even when rewrite_query is set.
+      const fusionEligible =
+        args.rewrite_query === true &&
+        !!args.query &&
+        (args.sort_by ?? 'score') === 'score' &&
+        !args.before_occurred_at &&
+        !args.after_occurred_at;
+      const variants = fusionEligible ? await rewriteQueries(args.query as string, env) : [];
 
       if (variants.length > 0 && args.query) {
         // Over-fetch per query so fusion has a real candidate pool to re-rank
         // (a variant's best hit may sit past the caller's `limit` in its own
-        // ranking). The caller's `limit` is only applied to the final pool.
-        const fetchLimit = Math.max(limit * 4, 40);
-        const fusionOptions = { ...searchOptions, limit: fetchLimit };
+        // ranking), capped so a large caller limit can't fan out into tens of
+        // thousands of rows across the variant queries. The caller's
+        // limit/offset apply to the FINAL fused pool only — each internal
+        // search reads its query's top-of-ranking from offset 0 (re-applying
+        // the caller's offset per query would skip different rows per query
+        // and break the fused page).
+        const fetchLimit = Math.min(Math.max((limit + offset) * 4, 40), 400);
+        const fusionOptions = { ...searchOptions, limit: fetchLimit, offset: 0 };
 
         // candidate pool: event id -> best (max-score) row seen across all queries.
         const pool = new Map<number, { row: ContentRow; score: number }>();
@@ -1089,14 +1103,15 @@ export async function getContent(
 
         const ranked = [...pool.values()].sort((a, b) => b.score - a.score).map((c) => c.row);
 
-        rawContent = ranked.slice(0, limit);
+        // The caller's offset/limit page out of the FUSED ranking.
+        rawContent = ranked.slice(offset, offset + limit);
         // total = distinct matching rows across raw+variants (pre-slice); has_more
-        // when the pool held more than we returned.
+        // when the pool extends past this page.
         total = ranked.length;
         pageInfo = {
           limit,
           offset,
-          has_more: ranked.length > limit,
+          has_more: ranked.length > offset + limit,
         };
       } else {
         const result = await searchContentByText(args.query ?? null, searchOptions, env);

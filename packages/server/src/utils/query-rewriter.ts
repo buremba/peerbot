@@ -9,9 +9,10 @@
  *
  * This helper asks a small LLM to rewrite the question into a few focused
  * keyword search queries (filler stripped, synonym variants added). The caller
- * (read_knowledge / get_content) runs the RAW query first, then unions these
- * variants' results — so the feature is purely additive: variants only surface
- * sessions the raw query missed. The benchmark adapter calls
+ * (read_knowledge / get_content) searches the raw query AND each variant with
+ * an over-fetched internal limit, then FUSES the candidates by best relevance
+ * score per event — so a variant-found session can displace a less-relevant
+ * raw row into the top-k. The benchmark adapter calls
  * read_knowledge({ rewrite_query: true }) and gets this recall lift from the
  * SERVER, so it's a product capability, not adapter glue.
  *

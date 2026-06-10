@@ -19,7 +19,6 @@ import {
   loadContextConfig,
   removeContext,
   setActiveOrg,
-  setServerConfig,
 } from "../context";
 
 describe("context management", () => {
@@ -181,15 +180,6 @@ describe("context management", () => {
       port: 9000,
       host: "localhost",
     });
-
-    await setServerConfig({ lifecycle: "managed", cwd: "/tmp/new" }, "local");
-    const [, written] = writeFileSpy.mock.calls.at(-1)!;
-    const saved = JSON.parse(written as string) as typeof configData;
-    expect(saved.contexts.local).toEqual({
-      url: "http://localhost:9000/api/v1",
-      lifecycle: "managed",
-      cwd: "/tmp/new",
-    });
   });
 
   test("derives default ports for scheme-only managed URLs", async () => {
@@ -288,20 +278,6 @@ describe("context management", () => {
       addContext("plain", "http://localhost:8788", {
         cwd: "/tmp/lobu-worktree",
       })
-    ).rejects.toThrow(/`cwd` can only be set on managed contexts/);
-    expect(writeFileSpy.mock.calls.length).toBe(0);
-  });
-
-  test("setServerConfig rejects cwd on a non-managed context", async () => {
-    readFileSpy.mockResolvedValue(
-      JSON.stringify({
-        currentContext: "local",
-        contexts: { local: { url: "http://localhost:8788/api/v1" } },
-      })
-    );
-
-    await expect(
-      setServerConfig({ cwd: "/tmp/lobu-worktree" }, "local")
     ).rejects.toThrow(/`cwd` can only be set on managed contexts/);
     expect(writeFileSpy.mock.calls.length).toBe(0);
   });

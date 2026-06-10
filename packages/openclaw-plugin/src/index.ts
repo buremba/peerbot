@@ -10,7 +10,7 @@ import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { renderFallbackSystemContext } from '@lobu/core';
+import { MCP_PROTOCOL_VERSION, renderFallbackSystemContext } from '@lobu/core';
 import type {
   McpToolDefinition,
   McpToolResponse,
@@ -106,8 +106,6 @@ let sessionClientSecret: string | null = null;
 let sessionIssuer: string | null = null;
 let mcpSessionId: string | null = null;
 
-const MCP_PROTOCOL_VERSION = '2025-03-26';
-
 // Make an MCP JSON-RPC request with session management.
 // Server returns plain JSON when Accept doesn't include text/event-stream.
 async function mcpFetch(
@@ -186,7 +184,7 @@ interface StoredSession {
 interface AuthStore {
   version: 1;
   activeServer?: string;
-  activeContext?: string; // legacy
+  activeContext?: string;
   sessions: Record<string, StoredSession>;
 }
 
@@ -204,12 +202,13 @@ function normalizeMcpUrl(input: string): string {
   return url.toString().replace(/\/+$/, '');
 }
 
-/** Strip org suffix for session lookup: /mcp/acme → /mcp */
-function baseMcpUrl(input: string): string {
+/** Derive a base URL by replacing the pathname. Defaults to '/' (OAuth root);
+ *  pass '/mcp' to strip an org suffix for session lookup: /mcp/acme → /mcp. */
+function deriveMcpBaseUrl(input: string, path = '/'): string {
   const url = new URL(input);
   url.hash = '';
   url.search = '';
-  url.pathname = '/mcp';
+  url.pathname = path;
   return url.toString().replace(/\/+$/, '');
 }
 
@@ -220,7 +219,7 @@ function loadStoredSession(mcpUrl: string): StoredSession | null {
     if (!store || store.version !== 1 || !store.sessions) return null;
     // Try exact match, then fall back to base /mcp
     const key = normalizeMcpUrl(mcpUrl);
-    return store.sessions[key] || store.sessions[baseMcpUrl(mcpUrl)] || null;
+    return store.sessions[key] || store.sessions[deriveMcpBaseUrl(mcpUrl, '/mcp')] || null;
   } catch {
     return null;
   }
@@ -429,13 +428,6 @@ function clearSessionTokens(): void {
   sessionRefreshToken = null;
 }
 
-function deriveOAuthBaseUrl(mcpUrl: string): string {
-  const base = new URL(mcpUrl);
-  base.pathname = '/';
-  base.search = '';
-  base.hash = '';
-  return base.toString().replace(/\/$/, '');
-}
 
 function spawnWorkerDaemon(mcpUrl: string, accessToken: string, log: PluginLogger): void {
   if (workerProcess) {
@@ -447,7 +439,7 @@ function spawnWorkerDaemon(mcpUrl: string, accessToken: string, log: PluginLogge
     workerProcess = null;
   }
 
-  const apiUrl = deriveOAuthBaseUrl(mcpUrl);
+  const apiUrl = deriveMcpBaseUrl(mcpUrl);
 
   try {
     workerProcess = spawn('npx', ['connector-worker', 'daemon', '--api-url', apiUrl], {
@@ -495,7 +487,7 @@ async function initiateDeviceLogin(
   scope: string,
   resource: string | null
 ): Promise<DeviceLoginState> {
-  const issuer = deriveOAuthBaseUrl(mcpUrl);
+  const issuer = deriveMcpBaseUrl(mcpUrl);
 
   // Step 1: Dynamic client registration
   const regResponse = await fetch(`${issuer}/oauth/register`, {
@@ -978,7 +970,7 @@ function fetchMcpBootstrapSync(config: ResolvedPluginConfig): McpBootstrap {
     const base = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
     if (token) base.Authorization = 'Bearer ' + token;
     async function run() {
-      const initRes = await fetch(url, { method: 'POST', headers: base, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'openclaw-lobu', version: '1.0.0' } } }) });
+      const initRes = await fetch(url, { method: 'POST', headers: base, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: ${JSON.stringify(MCP_PROTOCOL_VERSION)}, capabilities: {}, clientInfo: { name: 'openclaw-lobu', version: '1.0.0' } } }) });
       const initData = await initRes.json();
       const sid = initRes.headers.get('mcp-session-id');
       const h2 = { ...base };

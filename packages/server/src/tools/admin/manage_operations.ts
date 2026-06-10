@@ -178,6 +178,28 @@ export async function manageOperations(
   });
 }
 
+// Update the run to failed status and return the error result in one call.
+async function failRunInline(
+  runId: number,
+  organizationId: string,
+  errorMsg: string
+): Promise<InlineExecutionResult> {
+  const sql = getDb();
+  await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMsg} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+  return { status: 'failed', error_message: errorMsg };
+}
+
+// Update the run to completed status and return the output in one call.
+async function completeRunInline(
+  runId: number,
+  organizationId: string,
+  output: Record<string, unknown>
+): Promise<InlineExecutionResult> {
+  const sql = getDb();
+  await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(output)} WHERE id = ${runId} AND organization_id = ${organizationId}`;
+  return { status: 'completed', output };
+}
+
 async function executeLocalActionInline(
   runId: number,
   organizationId: string,
@@ -203,9 +225,7 @@ async function executeLocalActionInline(
       (compiledRows[0] as { compiled_code: string | null } | undefined)?.compiled_code ?? null;
     compiledCode = await resolveConnectorCode(connection.connector_key, rawCode);
   } catch (err) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMsg} WHERE id = ${runId} AND organization_id = ${organizationId}`;
-    return { status: 'failed', error_message: errorMsg };
+    return failRunInline(runId, organizationId, err instanceof Error ? err.message : String(err));
   }
 
   const { credentials, connectionCredentials, sessionState } = await resolveExecutionAuth({
@@ -244,13 +264,9 @@ async function executeLocalActionInline(
     if (result.mode !== 'action') {
       throw new Error(`Expected action result, got mode=${result.mode}`);
     }
-    const actionOutput = result.output;
-    await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(actionOutput)} WHERE id = ${runId} AND organization_id = ${organizationId}`;
-    return { status: 'completed', output: actionOutput };
+    return completeRunInline(runId, organizationId, result.output);
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMessage} WHERE id = ${runId} AND organization_id = ${organizationId}`;
-    return { status: 'failed', error_message: errorMessage };
+    return failRunInline(runId, organizationId, error instanceof Error ? error.message : String(error));
   }
 }
 
@@ -261,7 +277,6 @@ async function executeMcpToolInline(
   operation: OperationDescriptor,
   actionInput: Record<string, unknown>
 ): Promise<InlineExecutionResult> {
-  const sql = getDb();
   if (operation.backend_config.backend !== 'mcp_tool') {
     return { status: 'failed', error_message: 'Invalid MCP operation backend config' };
   }
@@ -282,13 +297,10 @@ async function executeMcpToolInline(
       (result.content as Array<{ type: string; text?: string }>).find(
         (item) => item?.type === 'text'
       )?.text ?? 'Upstream MCP error';
-    await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorText} WHERE id = ${runId} AND organization_id = ${organizationId}`;
-    return { status: 'failed', error_message: errorText };
+    return failRunInline(runId, organizationId, errorText);
   }
 
-  const output = { content: result.content } as Record<string, unknown>;
-  await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(output)} WHERE id = ${runId} AND organization_id = ${organizationId}`;
-  return { status: 'completed', output };
+  return completeRunInline(runId, organizationId, { content: result.content } as Record<string, unknown>);
 }
 
 function buildResolvedUrl(
@@ -411,9 +423,7 @@ async function executeHttpOperationInline(
     await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(output)} WHERE id = ${runId} AND organization_id = ${organizationId}`;
     return { status: 'completed', output, metadata };
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    await sql`UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMessage} WHERE id = ${runId} AND organization_id = ${organizationId}`;
-    return { status: 'failed', error_message: errorMessage };
+    return failRunInline(runId, organizationId, error instanceof Error ? error.message : String(error));
   }
 }
 

@@ -37,10 +37,6 @@ const config: KnipConfig = {
         "src/lib/feed-sync.ts",
         // Dynamically imported at runtime by reaction-executor.
         "src/tools/admin/notify.ts",
-        // Benchmark suite — entries are scripts in scripts/lobu/.
-        "src/benchmarks/memory/runner.ts",
-        "src/benchmarks/memory/adapters/*.ts",
-        "src/benchmarks/memory/public-datasets/*.ts",
       ],
       ignoreDependencies: [
         // Loaded via dynamic _require() in execute-data-sources.ts.

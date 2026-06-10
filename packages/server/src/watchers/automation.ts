@@ -14,7 +14,11 @@ import logger from '../utils/logger';
 import { createWatcherRun, type WatcherRunPayload } from '../utils/queue-helpers';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 import { computePendingWindow } from '../utils/window-utils';
-import { resolveWatcherRunsByMessageIds } from './run-completion';
+import {
+  findWindowIdForRun,
+  markWatcherRunCompleted,
+  resolveWatcherRunsByMessageIds,
+} from './run-completion';
 import { nextRunAt } from '../utils/cron';
 
 type WatcherRunStatus =
@@ -150,18 +154,6 @@ export function parseWatcherRunPayload(value: unknown): WatcherRunPayload | null
   };
 }
 
-async function findWindowIdForRun(sql: DbClient, runId: number): Promise<number | null> {
-  const rows = await sql`
-    SELECT id
-    FROM watcher_windows
-    WHERE run_id = ${runId}
-    ORDER BY id DESC
-    LIMIT 1
-  `;
-
-  return rows.length > 0 ? Number((rows[0] as { id: unknown }).id) : null;
-}
-
 async function loadWatcherForAutomation(
   sql: DbClient,
   watcherId: number
@@ -223,22 +215,6 @@ export async function enqueueWatcherRunForWatcher(
   }
 
   return enqueueWatcherRunForRecord(sql, watcher, dispatchSource);
-}
-
-async function markWatcherRunCompleted(
-  sql: DbClient,
-  runId: number,
-  windowId: number | null
-): Promise<void> {
-  await sql`
-    UPDATE runs
-    SET status = 'completed',
-        window_id = ${windowId},
-        completed_at = current_timestamp,
-        error_message = NULL
-    WHERE id = ${runId}
-      AND status IN ('running', 'claimed')
-  `;
 }
 
 async function markWatcherRunFailedIdempotent(

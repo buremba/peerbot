@@ -1,8 +1,5 @@
 import type { AuthProfile } from "@lobu/core";
 
-export type EmbeddedAuthProvider =
-  import("./routes/public/settings-auth.js").AuthProvider;
-
 export interface ProviderCredentialContext {
   userId?: string;
   conversationId?: string;

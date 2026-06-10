@@ -30,9 +30,6 @@
     "slack:manifest:update": "bun run scripts/slack-manifest.ts update",
     "lobu:feeds:sync": "bun run scripts/lobu/sync-local.ts",
     "lobu:guidance:sync": "bun run scripts/lobu/sync-lobu-guidance.ts",
-    "lobu:bench:memory": "bun run scripts/lobu/run-memory-benchmark.ts",
-    "lobu:bench:locomo:prepare": "bun run scripts/lobu/prepare-locomo-suite.ts",
-    "lobu:bench:longmemeval:prepare": "bun run scripts/lobu/prepare-longmemeval-suite.ts",
     "lobu:connectors:install": "bun run scripts/lobu/install-connectors.ts",
     "lobu:connectors:dry-run": "bun run scripts/lobu/dry-run-connector.ts"
   },

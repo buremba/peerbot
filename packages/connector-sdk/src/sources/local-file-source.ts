@@ -25,7 +25,6 @@ import { createHash, randomBytes } from 'node:crypto';
 import {
   mkdir,
   readFile,
-  readdir,
   realpath,
   rename,
   rm,
@@ -39,16 +38,21 @@ import {
   type CachePaths,
   type Manifest,
   type ManifestEntry,
+  MAX_REF_DIRS,
   canonicalManifestRef,
   cachePathsFor,
   defaultCacheRoot,
   diffManifests,
+  dirExists,
+  pruneOldRefDirs,
   readAndVerifyMeta,
   readManifest,
+  readPerRefManifest,
   requireMeta,
   withSourceLock,
   writeManifest,
   writeMeta,
+  writePerRefManifest,
 } from './cache.js';
 import { walkDirectoryRelative } from './glob.js';
 import { DirectorySnapshot } from './snapshot.js';
@@ -162,7 +166,7 @@ export class LocalFileSource implements FileSystemSource {
       // where its mtime is older than newer entries — pruning it would
       // ENOENT the Snapshot we just handed back. Mirrors the
       // `protectedRefDir` argument tarball-file-source.ts already uses.
-      await pruneOldRefDirs(this.#paths.root, MAX_REF_DIRS, refDir);
+      await pruneOldRefDirs(this.#paths.root, MAX_REF_DIRS, refDir, (n) => /^[a-f0-9]{64}$/.test(n));
 
       return new DirectorySnapshot(refDir, ref);
     });
@@ -225,14 +229,6 @@ async function resolveCacheExclude(
 function perRefDir(root: string, ref: string): string {
   return join(root, 'refs', ref);
 }
-
-async function dirExists(p: string): Promise<boolean> {
-  const s = await stat(p).catch(() => null);
-  return !!s && s.isDirectory();
-}
-
-/** Max number of `refs/<hash>` per-ref directories kept on disk. */
-const MAX_REF_DIRS = 3;
 
 /** List relative paths from the source root, applying the exclude predicate. */
 async function listRelativeFiles(
@@ -302,96 +298,3 @@ async function collectFilesFromLive(
   return out;
 }
 
-/**
- * Keep at most `keep` per-ref directories under `${root}/refs/`. Sorted by
- * mtime descending; the oldest are rm-rf'd. `protectedRefDir` is always
- * preserved regardless of mtime — the cache-hit branch in fetch() returns
- * an existing dir whose mtime may be older than newer entries, and the
- * Snapshot we just handed back is reading from it. Pre-this-guard, the
- * mtime sort happily pruned exactly the dir the caller was about to read,
- * leaving the Snapshot pointing at an ENOENT. Matches the
- * `protectedRefDir` parameter tarball-file-source.ts already uses
- * (lines 137 + 228-273).
- *
- * Snapshots already handed out keep working as long as their backing
- * dir wasn't pruned — `keep=3` accommodates a fresh fetch plus two
- * in-flight overlapping syncs.
- *
- * Filters by name shape (64-hex sha256). Skips in-flight staging dirs
- * (32-hex random names co-located in `refs/`) AND any legacy `.staging.*`
- * directories from older builds. Per-ref manifest JSON files
- * (`<ref>.json`) are files, not directories, and are kept indefinitely
- * so historical diffs work even after the data dir is gone.
- *
- * v1 limitation: this prune is process-local (`withSourceLock` is an
- * in-memory mutex). Two processes sharing the same
- * `${WORKSPACE_DIR}/.lobu-cache` can race-prune each other's per-ref
- * dirs — including the one a peer's Snapshot is reading. v1 supports
- * one cache owner per workspace; multi-process sharing would need a
- * filesystem advisory lock around fetch+prune.
- */
-async function pruneOldRefDirs(
-  root: string,
-  keep: number,
-  protectedRefDir: string,
-): Promise<void> {
-  const refsRoot = join(root, 'refs');
-  let entries: import('node:fs').Dirent[];
-  try {
-    entries = await readdir(refsRoot, { withFileTypes: true });
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
-    throw err;
-  }
-  const candidates: Array<{
-    name: string;
-    abs: string;
-    mtimeMs: number;
-    protected: boolean;
-  }> = [];
-  for (const ent of entries) {
-    if (!ent.isDirectory()) continue;
-    // Only touch completed per-ref dirs (64-hex sha256). In-flight staging
-    // dirs use a 32-hex randomBytes name and must not be pruned.
-    if (!/^[a-f0-9]{64}$/.test(ent.name)) continue;
-    const abs = join(refsRoot, ent.name);
-    try {
-      const s = await stat(abs);
-      candidates.push({
-        name: ent.name,
-        abs,
-        mtimeMs: s.mtimeMs,
-        protected: abs === protectedRefDir,
-      });
-    } catch {
-      // Skip — concurrent prune from another process is fine.
-    }
-  }
-  if (candidates.length <= keep) return;
-  const protectedDirs = candidates.filter((c) => c.protected);
-  const others = candidates
-    .filter((c) => !c.protected)
-    .sort((a, b) => b.mtimeMs - a.mtimeMs);
-  const keepers = new Set([
-    ...protectedDirs.map((c) => c.name),
-    ...others.slice(0, Math.max(0, keep - protectedDirs.length)).map((c) => c.name),
-  ]);
-  for (const c of candidates) {
-    if (keepers.has(c.name)) continue;
-    await rm(c.abs, { recursive: true, force: true }).catch(() => undefined);
-  }
-}
-
-/**
- * Per-ref manifest storage under `<root>/refs/<ref>.json`. Lets a connector
- * keep checkpointing arbitrary `prevRef`s without us guessing.
- */
-async function writePerRefManifest(root: string, manifest: Manifest): Promise<void> {
-  const { mkdir } = await import('node:fs/promises');
-  await mkdir(join(root, 'refs'), { recursive: true });
-  await writeManifest(join(root, 'refs', `${manifest.ref}.json`), manifest);
-}
-
-async function readPerRefManifest(root: string, ref: string): Promise<Manifest | null> {
-  return readManifest(join(root, 'refs', `${ref}.json`));
-}

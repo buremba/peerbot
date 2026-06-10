@@ -21,6 +21,7 @@
 import { getDb } from "../db/client";
 import { insertEvent } from "../utils/insert-event";
 import logger from "../utils/logger";
+import { TtlCache } from "../utils/ttl-cache";
 import {
 	type AssuranceLevel,
 	type AutoCreateWhenRule,
@@ -257,27 +258,18 @@ interface MatchedEntity {
  * a malicious or careless rule could match on any JSONB field (e.g.
  * `internal_notes`, `system_secret`) and derive against wrong evidence.
  *
- * Cached per process lifetime. The seeder bumps `ruleVersion` when YAML
- * changes; the engine notices via ruleHash drift — cache invalidation is
- * opportunistic.
- */
-interface IdentityFieldCacheEntry {
-	allowed: Set<string>;
-	expiresAt: number;
-}
-
-const identityFieldCache = new Map<string, IdentityFieldCacheEntry>();
-
-/**
- * Default TTL for the per-org identity-field cache. Schema changes
- * (`x-identity-namespace` toggled on/off in YAML) propagate to all
- * running engines within this window without an explicit reseed broadcast.
- * Override per-call via `IDENTITY_FIELD_CACHE_TTL_MS`.
+ * Cached per-org with a configurable TTL (default 60 s). Schema changes
+ * (`x-identity-namespace` toggled on/off in YAML) propagate to all running
+ * engines within this window; the seeder also bumps `ruleVersion` so
+ * ruleHash drift invalidation kicks in. Override TTL via
+ * `IDENTITY_FIELD_CACHE_TTL_MS`.
  */
 const IDENTITY_FIELD_CACHE_TTL_MS = (() => {
 	const raw = Number(process.env.IDENTITY_FIELD_CACHE_TTL_MS);
 	return Number.isFinite(raw) && raw > 0 ? raw : 60_000;
 })();
+
+const identityFieldCache = new TtlCache<Set<string>>(IDENTITY_FIELD_CACHE_TTL_MS);
 
 /**
  * Drop the in-memory cache. Tests use this to refresh after declaring new
@@ -293,9 +285,7 @@ async function loadIdentityFields(
 	organizationId: string,
 ): Promise<Set<string>> {
 	const cached = identityFieldCache.get(organizationId);
-	if (cached && cached.expiresAt > Date.now()) {
-		return cached.allowed;
-	}
+	if (cached) return cached;
 	const rows = await sql<{ slug: string; metadata_schema: unknown }>`
     SELECT slug, metadata_schema
     FROM entity_types
@@ -323,10 +313,7 @@ async function loadIdentityFields(
 			}
 		}
 	}
-	identityFieldCache.set(organizationId, {
-		allowed,
-		expiresAt: Date.now() + IDENTITY_FIELD_CACHE_TTL_MS,
-	});
+	identityFieldCache.set(organizationId, allowed);
 	return allowed;
 }
 

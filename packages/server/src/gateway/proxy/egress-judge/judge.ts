@@ -5,36 +5,15 @@ import { VerdictCache } from "./cache.js";
 import { CircuitBreaker } from "./circuit-breaker.js";
 import { buildSystemPrompt, buildUserPrompt } from "./policy-composer.js";
 import type { JudgeClient, JudgeDecision, JudgeRequest } from "./types.js";
+import {
+  DEFAULT_JUDGE_MODEL,
+  DEFAULT_JUDGE_TIMEOUT_MS,
+  JudgeTimeoutError,
+  envTimeoutMs,
+  withTimeout,
+} from "./judge-utils.js";
 
 const logger = createLogger("egress-judge");
-
-/**
- * Default Haiku model for the judge. Fast + cheap; invoked only when a
- * rule with `action: "judge"` matches, so most traffic never touches it.
- */
-const DEFAULT_JUDGE_MODEL = "claude-haiku-4-5-20251001";
-
-/**
- * Hard ceiling on a single judge call, independent of the model client's
- * own transport timeout. On expiry the call is abandoned, the verdict
- * fails closed (deny), and the timeout counts as a circuit-breaker failure.
- * Overridable via `EGRESS_JUDGE_TIMEOUT_MS` or `EgressJudgeOptions.judgeTimeoutMs`.
- */
-const DEFAULT_JUDGE_TIMEOUT_MS = 8_000;
-
-function envTimeoutMs(): number | undefined {
-  const raw = process.env.EGRESS_JUDGE_TIMEOUT_MS;
-  if (!raw) return undefined;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
-}
-
-class JudgeTimeoutError extends Error {
-  constructor(timeoutMs: number) {
-    super(`Egress judge call exceeded ${timeoutMs}ms`);
-    this.name = "JudgeTimeoutError";
-  }
-}
 
 interface EgressJudgeOptions {
   client?: JudgeClient;
@@ -154,12 +133,13 @@ export class EgressJudge {
     const started = Date.now();
     const model = rule.judgeModel ?? this.defaultModel;
     try {
-      const verdict = await this.withTimeout(
+      const verdict = await withTimeout(
         this.client.judge({
           model,
           systemPrompt: buildSystemPrompt(),
           userPrompt: buildUserPrompt({ policy: rule.policy, request }),
-        })
+        }),
+        this.judgeTimeoutMs
       );
       const latencyMs = Date.now() - started;
       this.breaker.onSuccess(rule.policyHash);
@@ -199,19 +179,4 @@ export class EgressJudge {
     }
   }
 
-  /**
-   * Race the judge call against a hard timeout. The underlying client
-   * promise is left to settle on its own (we can't cancel it), but the
-   * caller sees a {@link JudgeTimeoutError} once the deadline passes.
-   */
-  private withTimeout<T>(promise: Promise<T>): Promise<T> {
-    let timer: ReturnType<typeof setTimeout>;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new JudgeTimeoutError(this.judgeTimeoutMs)),
-        this.judgeTimeoutMs
-      );
-    });
-    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-  }
 }

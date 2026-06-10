@@ -110,11 +110,6 @@ async function fetchEmbeddingsFromService(texts: string[]): Promise<EmbeddingRes
   }
 }
 
-export async function generateEmbedding(text: string): Promise<number[]> {
-  const { embeddings } = await batchGenerateEmbeddings([text]);
-  return embeddings[0]!;
-}
-
 export async function batchGenerateEmbeddings(
   texts: string[],
   batchSize: number = DEFAULT_BATCH_SIZE

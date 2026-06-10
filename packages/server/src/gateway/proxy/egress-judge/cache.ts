@@ -3,8 +3,6 @@ import type { JudgeVerdict } from "./types.js";
 interface Entry {
   verdict: JudgeVerdict;
   expiresAt: number;
-  /** Doubly-linked-list touchstamp for LRU eviction. */
-  touch: number;
 }
 
 /**
@@ -19,7 +17,6 @@ interface Entry {
  */
 export class VerdictCache {
   private entries = new Map<string, Entry>();
-  private counter = 0;
 
   constructor(
     private readonly ttlMs: number,
@@ -49,7 +46,8 @@ export class VerdictCache {
       this.entries.delete(key);
       return undefined;
     }
-    entry.touch = ++this.counter;
+    // Re-insert to move this key to the newest position; Map preserves
+    // insertion order, so the oldest-touched key sorts first for eviction.
     this.entries.delete(key);
     this.entries.set(key, entry);
     return entry.verdict;
@@ -66,7 +64,6 @@ export class VerdictCache {
     this.entries.set(key, {
       verdict,
       expiresAt: Date.now() + this.ttlMs,
-      touch: ++this.counter,
     });
   }
 
@@ -77,6 +74,5 @@ export class VerdictCache {
 
   clear(): void {
     this.entries.clear();
-    this.counter = 0;
   }
 }

@@ -1,4 +1,4 @@
-Insights Platform has been deployed!
+Lobu has been deployed!
 
 1. Application URL:
 {{- if and .Values.ingress.enabled (gt (len .Values.ingress.hosts) 0) }}

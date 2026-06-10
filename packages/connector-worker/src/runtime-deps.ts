@@ -6,7 +6,7 @@
  * connectors — the server container that hosts in-process feed sync,
  * and the connector-worker daemon that runs out-of-process. They appear in:
  *
- *   - `server/src/utils/connector-compiler.ts` `external` list
+ *   - `packages/connector-worker/src/compile/index.ts` `external` list
  *     (esbuild leaves the imports as bare specifiers in the bundle)
  *   - `packages/connector-worker/package.json` dependencies (so the runtime can
  *     resolve them)

@@ -10,10 +10,6 @@ export interface RemoteAgent {
   description?: string;
 }
 
-export interface RemoteAgentDetail extends RemoteAgent {
-  settings?: AgentSettings | null;
-}
-
 export interface RemotePlatform {
   id: string;
   platform: string;
@@ -852,7 +848,7 @@ export class ApplyClient {
    * condensation_*) require `createWatcherVersion` instead.
    *
    * `null` clears nullable fields (device_worker_id, scheduler_client_id,
-   * goal_id, agent_kind) per the server contract.
+   * agent_kind) per the server contract.
    */
   async updateWatcher(payload: {
     watcher_id: string;
@@ -865,8 +861,6 @@ export class ApplyClient {
     min_cooldown_seconds?: number;
     tags?: string[];
     agent_kind?: string | null;
-    goal_id?: number | null;
-    model_config?: Record<string, unknown>;
   }): Promise<void> {
     await this.request("POST", `/api/${this.orgSlug}/manage_watchers`, {
       action: "update",
@@ -891,10 +885,6 @@ export class ApplyClient {
       ...(payload.tags !== undefined ? { tags: payload.tags } : {}),
       ...(payload.agent_kind !== undefined
         ? { agent_kind: payload.agent_kind }
-        : {}),
-      ...(payload.goal_id !== undefined ? { goal_id: payload.goal_id } : {}),
-      ...(payload.model_config !== undefined
-        ? { model_config: payload.model_config }
         : {}),
     });
   }
@@ -1155,13 +1145,6 @@ export class ApplyClient {
     return body.connect_url;
   }
 
-  async deleteAuthProfile(slug: string): Promise<void> {
-    await this.authProfilesTool({
-      action: "delete_auth_profile",
-      auth_profile_slug: slug,
-    });
-  }
-
   // ── Connections ───────────────────────────────────────────────────────────
 
   async listConnections(): Promise<RemoteConnection[]> {
@@ -1241,13 +1224,6 @@ export class ApplyClient {
     return body.connection;
   }
 
-  async deleteConnection(connectionId: number): Promise<void> {
-    await this.connectionsTool({
-      action: "delete",
-      connection_id: connectionId,
-    });
-  }
-
   // ── Feeds (managed per-connection) ────────────────────────────────────────
 
   async listFeeds(connectionId: number): Promise<RemoteFeed[]> {
@@ -1303,10 +1279,6 @@ export class ApplyClient {
       throw new ApiError(`update feed #${feedId} returned no feed payload`);
     }
     return body.feed;
-  }
-
-  async deleteFeed(feedId: number): Promise<void> {
-    await this.feedsTool({ action: "delete_feed", feed_id: feedId });
   }
 }
 

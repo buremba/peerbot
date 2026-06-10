@@ -32,7 +32,6 @@ describe("ProviderConfigResolver", () => {
     );
 
     expect(await resolver.getGlobalMcpServers()).toEqual({});
-    expect(await resolver.getMcpRegistryServers()).toEqual([]);
     expect(Object.keys(await resolver.getProviderConfigs())).toEqual(["groq"]);
   });
 });

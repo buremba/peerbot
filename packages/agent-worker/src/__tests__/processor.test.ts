@@ -59,13 +59,6 @@ describe("OpenClawProgressProcessor", () => {
     expect(p.processEvent(makeMessageUpdate("thinking_end"))).toBe(true);
   });
 
-  test("getCurrentThinking tracks thinking content", () => {
-    const p = new OpenClawProgressProcessor();
-    expect(p.getCurrentThinking()).toBeNull();
-    p.processEvent(makeMessageUpdate("thinking_delta", "step 1"));
-    expect(p.getCurrentThinking()).toBe("step 1");
-  });
-
   test("message_end with error stores fatal error", () => {
     const p = new OpenClawProgressProcessor();
     const event = makeEvent("message_end", {
@@ -218,7 +211,6 @@ describe("reset", () => {
     p.reset();
 
     expect(p.getDelta()).toBeNull();
-    expect(p.getCurrentThinking()).toBeNull();
     expect(p.getFinalResult()).toBeNull();
     expect(p.consumeFatalErrorMessage()).toBeNull();
   });

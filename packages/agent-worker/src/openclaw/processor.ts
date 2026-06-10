@@ -11,7 +11,6 @@ const logger = createLogger("openclaw-processor");
 export class OpenClawProgressProcessor {
   private chronologicalOutput = "";
   private lastSentContent = "";
-  private currentThinking = "";
   private verboseLogging = false;
   private finalResult: { text: string; isFinal: boolean } | null = null;
   private hasStreamedText = false;
@@ -42,7 +41,6 @@ export class OpenClawProgressProcessor {
         }
 
         if (assistantEvent.type === "thinking_delta") {
-          this.currentThinking += assistantEvent.delta;
           if (this.verboseLogging) {
             this.chronologicalOutput += assistantEvent.delta;
             return true;
@@ -180,10 +178,6 @@ export class OpenClawProgressProcessor {
     return result;
   }
 
-  getCurrentThinking(): string | null {
-    return this.currentThinking || null;
-  }
-
   getOutputSnapshot(): string {
     return this.chronologicalOutput.trim();
   }
@@ -191,7 +185,6 @@ export class OpenClawProgressProcessor {
   reset(): void {
     this.lastSentContent = "";
     this.chronologicalOutput = "";
-    this.currentThinking = "";
     this.finalResult = null;
     this.hasStreamedText = false;
     this.fatalErrorMessage = null;

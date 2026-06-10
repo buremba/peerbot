@@ -16,6 +16,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import postgres from "postgres";
 import { ensureDefaultAgent } from "./auth/default-provisioning";
 import { ensureInstallOperator } from "./auth/install-operator";
 import {
@@ -177,8 +178,7 @@ export async function startEmbeddedRuntime(): Promise<EmbeddedRuntime> {
 			// a returning user picks up the default agent.
 			async () => {
 				try {
-					const rows = (await import("postgres"))
-						.default(databaseUrl, { max: 1 });
+					const rows = postgres(databaseUrl, { max: 1 });
 					try {
 						const orgs = (await rows`
               SELECT id FROM "organization"
@@ -219,8 +219,7 @@ export async function runMigrations(databaseUrl: string): Promise<void> {
 	// Same migrations dbmate uses for prod, applied unconditionally. The dir is
 	// a single squashed baseline + forward deltas; both replay idempotently
 	// (baseline gated by the schema_migrations ledger, deltas use IF NOT EXISTS).
-	const pg = await import("postgres");
-	const sql = pg.default(databaseUrl, { max: 1 });
+	const sql = postgres(databaseUrl, { max: 1 });
 
 	try {
 		const migrationsDir = resolveExistingPath(

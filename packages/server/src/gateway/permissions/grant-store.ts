@@ -24,6 +24,50 @@ function getDomainGrantCandidates(pattern: string): string[] {
   return [...candidates];
 }
 
+/**
+ * Full set of patterns whose rows can satisfy a lookup for `pattern`: the
+ * exact pattern plus its wildcard parents. Shared by `hasGrant` (allow) and
+ * `isDenied` (block) so both honour the same wildcard precedence — a deny on
+ * `*.example.com` blocks `sub.example.com`, and `/mcp/gmail/tools/*` covers a
+ * specific tool.
+ */
+function buildGrantCandidates(pattern: string, kind: GrantKind): string[] {
+  const candidates = getDomainGrantCandidates(pattern);
+
+  // MCP wildcard: "/mcp/gmail/tools/send_email" is covered by
+  // "/mcp/gmail/tools/*".
+  if (kind === "mcp_tool") {
+    const lastSlash = pattern.lastIndexOf("/");
+    if (lastSlash > 0) {
+      candidates.push(`${pattern.substring(0, lastSlash)}/*`);
+    }
+  }
+
+  // Domain wildcard: "sub.example.com" is covered by "*.example.com" or
+  // ".example.com".
+  if (kind === "domain") {
+    const parts = pattern.split(".");
+    if (parts.length > 2) {
+      const tail = parts.slice(1).join(".");
+      candidates.push(normalizeDomainPattern(`.${tail}`));
+      candidates.push(normalizeDomainPattern(`*.${tail}`));
+    }
+  }
+
+  return candidates;
+}
+
+/**
+ * Optional `organization_id` filter as a composable SQL fragment, so the
+ * org-scoped and legacy (org-less) query variants share a single statement.
+ */
+function orgScope(
+  sql: ReturnType<typeof getDb>,
+  orgId: string | null | undefined
+) {
+  return orgId ? sql`AND organization_id = ${orgId}` : sql``;
+}
+
 interface GrantRow {
   pattern: string;
   kind: GrantKind;
@@ -95,48 +139,19 @@ export class GrantStore {
 
     // Build the candidate pattern set (exact + wildcards) and look them
     // up in a single query.
-    const candidates: string[] = getDomainGrantCandidates(pattern);
-
-    // MCP wildcard: "/mcp/gmail/tools/send_email" is covered by
-    // "/mcp/gmail/tools/*".
-    if (kind === "mcp_tool") {
-      const lastSlash = pattern.lastIndexOf("/");
-      if (lastSlash > 0) {
-        candidates.push(`${pattern.substring(0, lastSlash)}/*`);
-      }
-    }
-
-    // Domain wildcard: "sub.example.com" is covered by "*.example.com" or
-    // ".example.com".
-    if (kind === "domain") {
-      const parts = pattern.split(".");
-      if (parts.length > 2) {
-        const tail = parts.slice(1).join(".");
-        candidates.push(normalizeDomainPattern(`.${tail}`));
-        candidates.push(normalizeDomainPattern(`*.${tail}`));
-      }
-    }
+    const candidates = buildGrantCandidates(pattern, kind);
 
     const sql = getDb();
     try {
-      const rows = orgId
-        ? await sql<GrantRow>`
-            SELECT pattern, granted_at, expires_at, denied
-            FROM grants
-            WHERE organization_id = ${orgId}
-              AND agent_id = ${agentId}
-              AND kind = ${kind}
-              AND pattern = ANY(${pgTextArray(candidates)}::text[])
-              AND (expires_at IS NULL OR expires_at > now())
-          `
-        : await sql<GrantRow>`
-            SELECT pattern, granted_at, expires_at, denied
-            FROM grants
-            WHERE agent_id = ${agentId}
-              AND kind = ${kind}
-              AND pattern = ANY(${pgTextArray(candidates)}::text[])
-              AND (expires_at IS NULL OR expires_at > now())
-          `;
+      const rows = await sql<GrantRow>`
+        SELECT pattern, granted_at, expires_at, denied
+        FROM grants
+        WHERE agent_id = ${agentId}
+          AND kind = ${kind}
+          AND pattern = ANY(${pgTextArray(candidates)}::text[])
+          AND (expires_at IS NULL OR expires_at > now())
+          ${orgScope(sql, orgId)}
+      `;
 
       if (rows.length === 0) return false;
 
@@ -167,33 +182,22 @@ export class GrantStore {
   ): Promise<boolean> {
     pattern = normalizeDomainPattern(pattern);
     const kind = inferGrantKind(pattern);
-    const candidates = getDomainGrantCandidates(pattern);
+    const candidates = buildGrantCandidates(pattern, kind);
     const orgId = organizationId ?? tryGetOrgId();
 
     const sql = getDb();
     try {
-      const rows = orgId
-        ? await sql<{ denied: boolean }>`
-            SELECT denied
-            FROM grants
-            WHERE organization_id = ${orgId}
-              AND agent_id = ${agentId}
-              AND kind = ${kind}
-              AND pattern = ANY(${pgTextArray(candidates)}::text[])
-              AND (expires_at IS NULL OR expires_at > now())
-              AND denied = true
-            LIMIT 1
-          `
-        : await sql<{ denied: boolean }>`
-            SELECT denied
-            FROM grants
-            WHERE agent_id = ${agentId}
-              AND kind = ${kind}
-              AND pattern = ANY(${pgTextArray(candidates)}::text[])
-              AND (expires_at IS NULL OR expires_at > now())
-              AND denied = true
-            LIMIT 1
-          `;
+      const rows = await sql<{ denied: boolean }>`
+        SELECT denied
+        FROM grants
+        WHERE agent_id = ${agentId}
+          AND kind = ${kind}
+          AND pattern = ANY(${pgTextArray(candidates)}::text[])
+          AND (expires_at IS NULL OR expires_at > now())
+          AND denied = true
+          ${orgScope(sql, orgId)}
+        LIMIT 1
+      `;
       return rows.length > 0;
     } catch (error) {
       logger.error("Failed to check denied grant", {
@@ -212,22 +216,14 @@ export class GrantStore {
     const sql = getDb();
     const orgId = organizationId ?? tryGetOrgId();
     try {
-      const rows = orgId
-        ? await sql<GrantRow>`
-            SELECT pattern, kind, granted_at, expires_at, denied
-            FROM grants
-            WHERE organization_id = ${orgId}
-              AND agent_id = ${agentId}
-              AND (expires_at IS NULL OR expires_at > now())
-            ORDER BY granted_at DESC
-          `
-        : await sql<GrantRow>`
-            SELECT pattern, kind, granted_at, expires_at, denied
-            FROM grants
-            WHERE agent_id = ${agentId}
-              AND (expires_at IS NULL OR expires_at > now())
-            ORDER BY granted_at DESC
-          `;
+      const rows = await sql<GrantRow>`
+        SELECT pattern, kind, granted_at, expires_at, denied
+        FROM grants
+        WHERE agent_id = ${agentId}
+          AND (expires_at IS NULL OR expires_at > now())
+          ${orgScope(sql, orgId)}
+        ORDER BY granted_at DESC
+      `;
 
       return rows.map((row) => ({
         pattern: row.pattern,
@@ -254,22 +250,13 @@ export class GrantStore {
     const kind = inferGrantKind(pattern);
     const orgId = organizationId ?? tryGetOrgId();
     const sql = getDb();
-    if (orgId) {
-      await sql`
-        DELETE FROM grants
-        WHERE organization_id = ${orgId}
-          AND agent_id = ${agentId}
-          AND kind = ${kind}
-          AND pattern = ANY(${pgTextArray(candidates)}::text[])
-      `;
-    } else {
-      await sql`
-        DELETE FROM grants
-        WHERE agent_id = ${agentId}
-          AND kind = ${kind}
-          AND pattern = ANY(${pgTextArray(candidates)}::text[])
-      `;
-    }
+    await sql`
+      DELETE FROM grants
+      WHERE agent_id = ${agentId}
+        AND kind = ${kind}
+        AND pattern = ANY(${pgTextArray(candidates)}::text[])
+        ${orgScope(sql, orgId)}
+    `;
     logger.info("Revoked grant", { agentId, pattern });
   }
 }

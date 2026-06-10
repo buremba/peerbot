@@ -15,10 +15,7 @@ import {
   type ModuleEnvVarsBuilder,
   type OrchestratorConfig,
 } from "../base-deployment-manager.js";
-import {
-  buildDeploymentInfoSummary,
-  getVeryOldThresholdDays,
-} from "../deployment-utils.js";
+import { buildDeploymentInfoSummary } from "../deployment-utils.js";
 import { failTurnsForDeployment } from "../turn-liveness.js";
 
 /** Surfaced to the client when a worker dies before producing a reply. */
@@ -898,7 +895,7 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
   async listDeployments(): Promise<DeploymentInfo[]> {
     const now = Date.now();
     const idleThresholdMinutes = this.config.worker.idleCleanupMinutes;
-    const veryOldDays = getVeryOldThresholdDays(this.config);
+    const veryOldDays = this.config.cleanup?.veryOldDays ?? 7;
 
     const results: DeploymentInfo[] = [];
     for (const [deploymentName, entry] of this.workers) {

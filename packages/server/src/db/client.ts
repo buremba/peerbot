@@ -13,9 +13,7 @@ import logger from '../utils/logger';
 /**
  * SQL client interface — a postgres.js tagged-template client.
  */
-export interface DbQuery<T = any> extends Promise<T[] & { count: number }> {
-  simple?: () => DbQuery<T>;
-}
+export type DbQuery<T = any> = Promise<T[] & { count: number }>;
 
 export interface DbClient {
   <T = any>(strings: TemplateStringsArray, ...values: unknown[]): DbQuery<T>;

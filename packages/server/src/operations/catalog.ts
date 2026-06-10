@@ -47,36 +47,20 @@ type OpenApiConfig = {
 
 function normalizeOpenApiConfig(raw: Record<string, unknown> | null): OpenApiConfig | null {
   if (!raw) return null;
-  const specUrl =
-    typeof raw.spec_url === 'string'
-      ? raw.spec_url
-      : typeof raw.specUrl === 'string'
-        ? raw.specUrl
-        : null;
+  const specUrl = typeof raw.specUrl === 'string' ? raw.specUrl : null;
   if (!specUrl) return null;
   return {
     specUrl,
-    includeOperations: Array.isArray(raw.include_operations)
-      ? raw.include_operations.filter((v): v is string => typeof v === 'string')
-      : Array.isArray(raw.includeOperations)
-        ? raw.includeOperations.filter((v): v is string => typeof v === 'string')
-        : undefined,
-    excludeOperations: Array.isArray(raw.exclude_operations)
-      ? raw.exclude_operations.filter((v): v is string => typeof v === 'string')
-      : Array.isArray(raw.excludeOperations)
-        ? raw.excludeOperations.filter((v): v is string => typeof v === 'string')
-        : undefined,
-    includeTags: Array.isArray(raw.include_tags)
-      ? raw.include_tags.filter((v): v is string => typeof v === 'string')
-      : Array.isArray(raw.includeTags)
-        ? raw.includeTags.filter((v): v is string => typeof v === 'string')
-        : undefined,
-    serverUrl:
-      typeof raw.server_url === 'string'
-        ? raw.server_url
-        : typeof raw.serverUrl === 'string'
-          ? raw.serverUrl
-          : undefined,
+    includeOperations: Array.isArray(raw.includeOperations)
+      ? raw.includeOperations.filter((v): v is string => typeof v === 'string')
+      : undefined,
+    excludeOperations: Array.isArray(raw.excludeOperations)
+      ? raw.excludeOperations.filter((v): v is string => typeof v === 'string')
+      : undefined,
+    includeTags: Array.isArray(raw.includeTags)
+      ? raw.includeTags.filter((v): v is string => typeof v === 'string')
+      : undefined,
+    serverUrl: typeof raw.serverUrl === 'string' ? raw.serverUrl : undefined,
   };
 }
 

@@ -22,8 +22,6 @@ const logger = createLogger("unified-thread-consumer");
  * Routes responses to the appropriate platform adapter based on payload.platform field.
  */
 export class UnifiedThreadResponseConsumer {
-  private isRunning = false;
-
   private chatResponseBridge?: ChatResponseBridge;
 
   constructor(
@@ -49,7 +47,6 @@ export class UnifiedThreadResponseConsumer {
         this.handleThreadResponse.bind(this)
       );
 
-      this.isRunning = true;
       logger.debug("Unified thread response consumer started");
     } catch (error) {
       logger.error("Failed to start unified thread response consumer:", error);
@@ -61,7 +58,6 @@ export class UnifiedThreadResponseConsumer {
    * Stop the consumer.
    */
   async stop(): Promise<void> {
-    this.isRunning = false;
     await this.queue.stop();
     logger.info("Unified thread response consumer stopped");
   }
@@ -325,10 +321,4 @@ export class UnifiedThreadResponseConsumer {
     }
   }
 
-  /**
-   * Check if consumer is healthy.
-   */
-  isHealthy(): boolean {
-    return this.isRunning;
-  }
 }

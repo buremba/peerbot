@@ -519,6 +519,8 @@ function mapEntityType(entity: EntityType): DesiredEntityType {
     ...(entity.description ? { description: entity.description } : {}),
     ...(entity.required ? { required: entity.required } : {}),
     ...(entity.properties ? { properties: entity.properties } : {}),
+    // metadata is carried for config-API compat (defineEntityType consumers may
+    // attach it) but is neither diffed nor sent to the server.
     ...(entity.metadata ? { metadata: entity.metadata } : {}),
     // `backing` is present only for derived types; a stored entity (the default)
     // carries no backing so it never churns the diff. `connection` (a slug) is
@@ -549,6 +551,8 @@ function mapRelationshipType(rel: RelationshipType): DesiredRelationshipType {
           })),
         }
       : {}),
+    // metadata is carried for config-API compat (defineRelationshipType
+    // consumers may attach it) but is neither diffed nor sent to the server.
     ...(rel.metadata ? { metadata: rel.metadata } : {}),
   };
 }

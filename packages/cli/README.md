@@ -15,7 +15,7 @@ Lobu boots as a single Node process. Postgres (with pgvector) is a user-provided
 
 ```bash
 docker run -d --name lobu-pg -p 5432:5432 \
-  -e POSTGRES_PASSWORD=lobu pgvector/pgvector:pg16
+  -e POSTGRES_PASSWORD=lobu pgvector/pgvector:pg18-trixie
 # DATABASE_URL=postgresql://postgres:lobu@localhost:5432/postgres
 ```
 

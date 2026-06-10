@@ -3,6 +3,8 @@ import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { validateEmbeddingDimensions } from "./embedding-utils.js";
 import {
+	DEFAULT_BATCH_SIZE,
+	DEFAULT_DIMENSIONS,
 	batchGenerateLocalEmbeddings,
 	getLocalModelName,
 } from "./embeddings.js";
@@ -19,8 +21,6 @@ interface EmbeddingRequest {
 
 const DEFAULT_PORT = 8790;
 const DEFAULT_TIMEOUT_MS = 30000;
-const DEFAULT_DIMENSIONS = 768;
-const DEFAULT_BATCH_SIZE = 32;
 // Hard DoS limits per request.
 const MAX_TEXTS_PER_REQUEST = 256;
 const MAX_TEXT_BYTES = 32 * 1024;

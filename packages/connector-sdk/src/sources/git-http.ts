@@ -17,7 +17,6 @@
 
 import { request as httpsRequest } from 'node:https';
 import type { IncomingMessage } from 'node:http';
-import { Readable } from 'node:stream';
 
 interface GitHttpRequest {
   url: string;
@@ -210,7 +209,3 @@ export async function gitHttpRequest(req: GitHttpRequest): Promise<GitHttpRespon
 }
 
 export const gitHttpsOnlyClient = { request: gitHttpRequest };
-
-// Force Readable import to be retained (avoids unused-import elision and
-// keeps the contract explicit for future stream-conversion changes).
-void Readable;

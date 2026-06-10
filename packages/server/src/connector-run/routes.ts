@@ -21,16 +21,7 @@ import type { Context } from 'hono';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { getAuthProfileBySlug } from '../utils/auth-profiles';
-
-function requireOrgUser(c: Context<{ Bindings: Env }>): {
-  organizationId: string;
-  userId: string;
-} | null {
-  const organizationId = c.var.organizationId;
-  const userId = c.var.session?.userId ?? c.var.user?.id;
-  if (!organizationId || !userId) return null;
-  return { organizationId, userId };
-}
+import { requireOrgUser } from '../utils/require-org-user';
 
 export async function restGetAuthProfileForRun(c: Context<{ Bindings: Env }>) {
   const auth = requireOrgUser(c);

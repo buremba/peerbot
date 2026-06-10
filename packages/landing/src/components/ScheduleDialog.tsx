@@ -1,7 +1,7 @@
 import type { ComponentChildren } from "preact";
 import { useRef, useState } from "preact/hooks";
 
-const CAL_URL =
+export const CAL_URL =
   "https://cal.com/buremba/lobu-discovery?duration=15&overlayCalendar=true&embed=true&layout=month_view";
 
 export function ScheduleCallIcon() {

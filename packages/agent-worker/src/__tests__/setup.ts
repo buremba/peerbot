@@ -37,13 +37,6 @@ export class TestHelpers {
     return sharedMockFetch(responses);
   }
 
-  static createMockProgressUpdate(
-    type: "output" | "completion" | "error",
-    data: any
-  ) {
-    return { type, data, timestamp: Date.now() };
-  }
-
   static async delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }

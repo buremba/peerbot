@@ -75,7 +75,7 @@ export function startEmbeddedConnectorWorker(
   // throws, the .catch logs once and the worker is dead until process
   // restart (no exponential-retry built into the daemon). Future
   // hardening could re-spawn on startup failure, but the listen-callback
-  // ordering in start-local.ts / server.ts already makes this path
+  // ordering in embedded-runtime.ts / server.ts already makes this path
   // succeed in practice.
   void daemon
     .start()

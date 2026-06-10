@@ -1,39 +1,73 @@
 ---
 import BaseLayout from "../layouts/BaseLayout.astro";
+import "../globals.css";
+import { Footer } from "../components/Footer";
+import { Nav } from "../components/Nav";
 ---
 
 <BaseLayout title="404 - Lobu" description="Page not found.">
-  <main
-    style="min-height: 100vh; display: grid; place-items: center; background: #09090b; color: #f4f4f5; padding: 2rem;"
+  <div
+    class="min-h-screen flex flex-col"
+    style={{ backgroundColor: "var(--color-page-bg)" }}
   >
-    <div style="max-width: 32rem; text-align: center;">
-      <p
-        style="margin: 0 0 0.75rem; font-size: 0.75rem; letter-spacing: 0.18em; text-transform: uppercase; color: #a1a1aa;"
-      >
-        404
-      </p>
-      <h1 style="margin: 0 0 1rem; font-size: 2.5rem; line-height: 1.1;">
-        Page not found
-      </h1>
-      <p style="margin: 0 0 1.5rem; color: #d4d4d8; line-height: 1.7;">
-        Check the URL or jump back to the main site or docs.
-      </p>
-      <div
-        style="display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap;"
-      >
-        <a
-          href="/"
-          style="display: inline-flex; align-items: center; justify-content: center; padding: 0.75rem 1rem; border-radius: 0.75rem; background: #f4f4f5; color: #09090b; font-weight: 600; text-decoration: none;"
+    <Nav client:load currentPath={Astro.url.pathname} />
+    <main
+      class="relative z-[1] flex flex-1 items-center justify-center px-6 py-24"
+    >
+      <div class="max-w-[34rem] text-center">
+        <p
+          class="text-xs uppercase tracking-[0.18em] mb-3"
+          style={{ color: "var(--color-page-text-muted)" }}
         >
-          Go home
-        </a>
-        <a
-          href="/getting-started/"
-          style="display: inline-flex; align-items: center; justify-content: center; padding: 0.75rem 1rem; border-radius: 0.75rem; border: 1px solid #27272a; color: #f4f4f5; font-weight: 600; text-decoration: none;"
+          404
+        </p>
+        <h1
+          class="text-4xl font-bold mb-4"
+          style={{ color: "var(--color-page-text)" }}
         >
-          Open docs
-        </a>
+          Page not found
+        </h1>
+        <p
+          class="text-base mb-8 leading-relaxed"
+          style={{ color: "var(--color-page-text-muted)" }}
+        >
+          The page you're looking for moved or never existed. Head back to the
+          main site or the docs, or grab time with us.
+        </p>
+        <div class="flex gap-3 justify-center flex-wrap">
+          <a
+            href="/"
+            class="inline-flex items-center justify-center px-4 py-3 rounded-lg font-semibold no-underline"
+            style={{
+              backgroundColor: "var(--color-page-text)",
+              color: "var(--color-page-bg)",
+            }}
+          >
+            Go home
+          </a>
+          <a
+            href="/getting-started/"
+            class="inline-flex items-center justify-center px-4 py-3 rounded-lg font-semibold no-underline"
+            style={{
+              border: "1px solid var(--color-page-border)",
+              color: "var(--color-page-text)",
+            }}
+          >
+            Open docs
+          </a>
+          <a
+            href="/schedule/"
+            class="inline-flex items-center justify-center px-4 py-3 rounded-lg font-semibold no-underline"
+            style={{
+              border: "1px solid var(--color-page-border)",
+              color: "var(--color-page-text)",
+            }}
+          >
+            Schedule a call
+          </a>
+        </div>
       </div>
-    </div>
-  </main>
+    </main>
+    <Footer />
+  </div>
 </BaseLayout>

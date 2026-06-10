@@ -19,7 +19,7 @@
  *    is not exposed.
  */
 
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import * as git from 'isomorphic-git';
 // `fs` is passed as a plain Node fs module — isomorphic-git accepts it.
@@ -219,10 +219,7 @@ function isGitInternalPath(rel: string): boolean {
 
 async function pathExists(p: string): Promise<boolean> {
   try {
-    await readFile(p).catch(async () => {
-      const { stat } = await import('node:fs/promises');
-      await stat(p);
-    });
+    await stat(p);
     return true;
   } catch {
     return false;

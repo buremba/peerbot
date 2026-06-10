@@ -30,6 +30,34 @@ const logger = createLogger("orchestrator");
 // (`workerKillTimeoutMs`), env-overridable.
 
 /**
+ * Signal a worker's entire process group. Workers are spawned `detached`, so
+ * `child.pid` is the process-group leader; on Linux the direct child is a
+ * wrapper (`systemd-run --scope` / `nix-shell --run`) with the real worker as a
+ * descendant in the same group. `process.kill(-pid, …)` reaches the wrapper AND
+ * the worker, where `child.kill()` would hit only the wrapper and orphan the
+ * worker. Falls back to the single child if the group send fails (e.g. the
+ * leader already exited, or the platform doesn't support group signals).
+ * Returns true if a signal was delivered.
+ */
+export function signalWorkerGroup(
+  child: Pick<ChildProcess, "pid" | "kill">,
+  signal: NodeJS.Signals
+): boolean {
+  const pid = child.pid;
+  if (pid === undefined) return false;
+  try {
+    process.kill(-pid, signal);
+    return true;
+  } catch {
+    try {
+      return child.kill(signal);
+    } catch {
+      return false;
+    }
+  }
+}
+
+/**
  * Detect once whether `systemd-run --user` is available. On Linux production
  * hosts this lets us spawn each worker as a transient systemd unit with
  * cgroup limits + IPAddressDeny + capability drops. macOS dev hosts and
@@ -768,6 +796,14 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
         env: commonEnvVars,
         cwd: workspaceDir,
         stdio: ["ignore", "pipe", "pipe"],
+        // Run the worker in its OWN process group (child.pid == pgid). The
+        // direct child is usually a wrapper — `systemd-run --scope` on Linux,
+        // `nix-shell --run` for native-dep connectors — so a plain
+        // `child.kill()` signals only the wrapper and reparents the real worker
+        // to init (the orphan `make clean-workers` exists to reap). With a
+        // dedicated group we can signal the wrapper AND the worker together via
+        // the negative pid in killWorker(). See signalWorkerGroup().
+        detached: true,
       });
     } catch (err) {
       // Pre-spawn throw (generateEnvironmentVariables, nix package
@@ -988,14 +1024,14 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
       child.once("exit", () => resolve());
     });
 
-    child.kill("SIGTERM");
+    signalWorkerGroup(child, "SIGTERM");
 
     const killTimer = setTimeout(() => {
       if (child.exitCode === null && child.signalCode === null) {
         logger.warn(
           `Embedded worker ${deploymentName} did not exit after SIGTERM, sending SIGKILL`
         );
-        child.kill("SIGKILL");
+        signalWorkerGroup(child, "SIGKILL");
       }
     }, intervals.workerKillTimeoutMs);
 

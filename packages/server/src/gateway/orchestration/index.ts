@@ -150,11 +150,31 @@ export class Orchestrator {
       // exit; other impls would no-op locally and that's fine.
       try {
         const active = await this.deploymentManager.listDeployments();
-        await Promise.allSettled(
+        // Bound the overall drain: each deleteDeployment awaits the worker's
+        // exit (SIGTERM, then SIGKILL after KILL_TIMEOUT_MS), but a wedged or
+        // zombie worker whose `exit` never fires would otherwise hang shutdown
+        // until k8s SIGKILLs the whole pod (re-orphaning every other worker).
+        // Cap the wait so we always reach the rest of teardown.
+        const drainDeadlineMs = (() => {
+          const raw = Number(process.env.SHUTDOWN_WORKER_DRAIN_MS);
+          return Number.isFinite(raw) && raw > 0 ? raw : 25_000;
+        })();
+        const drained = Promise.allSettled(
           active.map((d) =>
             this.deploymentManager.deleteDeployment(d.deploymentName)
           )
         );
+        const result = await Promise.race([
+          drained.then(() => "drained" as const),
+          new Promise<"timeout">((resolve) =>
+            setTimeout(() => resolve("timeout"), drainDeadlineMs)
+          ),
+        ]);
+        if (result === "timeout") {
+          logger.warn(
+            `Worker drain exceeded ${drainDeadlineMs}ms; continuing shutdown (${active.length} workers were active)`
+          );
+        }
       } catch (error) {
         logger.error("Error draining workers during shutdown:", error);
       }

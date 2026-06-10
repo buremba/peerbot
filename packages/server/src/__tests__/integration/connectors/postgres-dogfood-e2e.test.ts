@@ -221,9 +221,8 @@ describe('postgres dogfood E2E (memory feed + connection-backed derived entity)'
   }, 60_000);
 
   it('connection-backed derived entity: create, get_type returns backing_source, read LIVE via pushdown', async () => {
-    await owner.entity_schema.manage({
-      schema_type: 'entity_type',
-      action: 'create',
+    // Typed SDK surface: createType accepts backing.connection (external-backed).
+    await owner.entity_schema.createType({
       slug: 'dog-funnel',
       name: 'Dog Funnel',
       backing: { sql: FUNNEL_SQL, connection: 'dog-prod-db' },

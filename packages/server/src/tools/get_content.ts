@@ -1008,9 +1008,6 @@ export async function getContent(
     } else {
       logger.info(`[get_content] ${args.query ? 'Search query provided' : 'Listing content'}`);
 
-      // Shared options for every searchContentByText call below. Only the query
-      // text varies across the raw query and its rewritten variants, so the
-      // per-query call stays DRY (built once, run in a loop).
       const searchOptions = {
         entity_id: args.entity_id,
         organization_id: !args.entity_id ? ctx.organizationId : undefined,
@@ -1046,40 +1043,35 @@ export async function getContent(
         after_id: args.after_id,
       };
 
-      // Query-rewrite recall expansion (opt-in, only with an actual text query).
-      // Instead of filling leftover slots after the raw page (which can't help
-      // when the raw query already returns a full `limit` page of the WRONG
-      // sessions), do proper multi-query relevance fusion: search the raw query
-      // and each LLM-rewritten variant with an over-fetched internal limit, pool
-      // the candidates keyed by event id keeping each id's MAX relevance score,
-      // then sort by score and slice to the caller's `limit`. A variant-found
-      // session can thus displace a less-relevant raw row INTO the top-k while
-      // the result stays relevance-ranked. Variants are focused versions of the
-      // same question, so regression risk is low. Stateless per-request —
-      // correct under N>1 replicas (no shared state). Default rewrite_query=false
-      // keeps every existing caller on the single-query path below, unchanged.
-      // Fusion is relevance-ranked by construction, so it only applies to
-      // score-sorted searches. A chronological feed (sort_by='date') or a
-      // cursor-anchored page must keep its ordering semantics — those fall
-      // through to the single-query path even when rewrite_query is set.
+      // Query-rewrite recall expansion (opt-in): multi-query relevance fusion
+      // over the raw query + LLM-rewritten variants, so a variant-found row can
+      // displace a less-relevant raw row into the top-k. Fusion re-ranks by
+      // relevance, so it only applies to score-sorted, non-cursor searches with
+      // a page window inside the fetch cap — date feeds, cursor pages, and
+      // deeper windows keep single-query semantics even when rewrite_query is
+      // set. Stateless per-request (multi-replica-safe); default false leaves
+      // existing callers on the single-query path unchanged.
+      const FUSION_FETCH_CAP = 400;
       const fusionEligible =
         args.rewrite_query === true &&
         !!args.query &&
         (args.sort_by ?? 'score') === 'score' &&
         !args.before_occurred_at &&
-        !args.after_occurred_at;
+        !args.after_occurred_at &&
+        offset + limit <= FUSION_FETCH_CAP;
       const variants = fusionEligible ? await rewriteQueries(args.query as string, env) : [];
 
       if (variants.length > 0 && args.query) {
         // Over-fetch per query so fusion has a real candidate pool to re-rank
         // (a variant's best hit may sit past the caller's `limit` in its own
         // ranking), capped so a large caller limit can't fan out into tens of
-        // thousands of rows across the variant queries. The caller's
-        // limit/offset apply to the FINAL fused pool only — each internal
-        // search reads its query's top-of-ranking from offset 0 (re-applying
-        // the caller's offset per query would skip different rows per query
-        // and break the fused page).
-        const fetchLimit = Math.min(Math.max((limit + offset) * 4, 40), 400);
+        // thousands of rows across the variant queries. Eligibility above
+        // guarantees offset+limit fits inside the cap, so the slice below can
+        // never page past the fetched pool. Each internal search reads its
+        // query's top-of-ranking from offset 0 (re-applying the caller's
+        // offset per query would skip different rows per query and break the
+        // fused page).
+        const fetchLimit = Math.min(Math.max((limit + offset) * 4, 40), FUSION_FETCH_CAP);
         const fusionOptions = { ...searchOptions, limit: fetchLimit, offset: 0 };
 
         // candidate pool: event id -> best (max-score) row seen across all queries.
@@ -1094,24 +1086,30 @@ export async function getContent(
           }
         };
 
+        // Sentinel: a query whose fetch came back full may have more matches
+        // beyond the cap, so the pool is a LOWER BOUND on the true fused total
+        // and deep pages must not be reported as exhausted.
+        let poolTruncated = false;
         const rawResult = await searchContentByText(args.query, fusionOptions, env);
         fuseInto(rawResult.content);
+        poolTruncated ||= rawResult.content.length >= fetchLimit;
         for (const variant of variants) {
           const variantResult = await searchContentByText(variant, fusionOptions, env);
           fuseInto(variantResult.content);
+          poolTruncated ||= variantResult.content.length >= fetchLimit;
         }
 
         const ranked = [...pool.values()].sort((a, b) => b.score - a.score).map((c) => c.row);
 
         // The caller's offset/limit page out of the FUSED ranking.
         rawContent = ranked.slice(offset, offset + limit);
-        // total = distinct matching rows across raw+variants (pre-slice); has_more
-        // when the pool extends past this page.
+        // total = distinct fused candidates (a lower bound when any per-query
+        // fetch hit the cap); has_more stays conservative via the sentinel.
         total = ranked.length;
         pageInfo = {
           limit,
           offset,
-          has_more: ranked.length > offset + limit,
+          has_more: poolTruncated || ranked.length > offset + limit,
         };
       } else {
         const result = await searchContentByText(args.query ?? null, searchOptions, env);

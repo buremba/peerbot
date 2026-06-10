@@ -303,8 +303,16 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 
     const sql = getDb();
 
-    if (req.status === 'failed') {
-      await sql`
+    // Atomic terminal-state transition. The `status = 'running' AND
+    // claimed_by = worker_id` guard makes the UPDATE a no-op if the run was
+    // already finalized by another path (e.g. the gateway reaped it on
+    // timeout and the worker is reporting in late) or if this worker isn't
+    // the claimant. Without it, a late completion resurrects a reaped run and
+    // the feed/auth bookkeeping below double-applies (consecutive_failures,
+    // items_collected, next_run_at, auth_data). Mirrors completeActionRun.
+    const updatedRuns =
+      req.status === 'failed'
+        ? ((await sql`
       UPDATE runs
       SET status = 'failed',
           completed_at = current_timestamp,
@@ -316,9 +324,11 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
           exit_signal = ${req.exit_signal ?? null},
           exit_reason = ${req.exit_reason ?? null}
       WHERE id = ${req.run_id}
-    `;
-    } else {
-      await sql`
+        AND status = 'running'
+        AND claimed_by = ${req.worker_id}
+      RETURNING feed_id, connection_id
+    `) as unknown as Array<{ feed_id: number | null; connection_id: number | null }>)
+        : ((await sql`
       UPDATE runs
       SET status = 'completed',
           completed_at = current_timestamp,
@@ -326,13 +336,24 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
           error_message = ${req.error_message ?? null},
           checkpoint = COALESCE(${req.checkpoint ? sql.json(req.checkpoint) : null}, checkpoint)
       WHERE id = ${req.run_id}
-    `;
+        AND status = 'running'
+        AND claimed_by = ${req.worker_id}
+      RETURNING feed_id, connection_id
+    `) as unknown as Array<{ feed_id: number | null; connection_id: number | null }>);
+
+    if (updatedRuns.length === 0) {
+      // The run was already finalized (timeout race) or this worker isn't the
+      // claimant. Skip all feed/auth bookkeeping and return an idempotent
+      // already-finalized response.
+      logger.info(
+        { run_id: req.run_id, worker_id: req.worker_id, claimed_status: req.status },
+        '[completeWorkerJob] no-op: run already in terminal state (likely gateway timeout)'
+      );
+      return c.json({ success: false, reason: 'already_finalized' });
     }
 
     // Update the feed's sync state
-    const runRows = (await sql`
-    SELECT feed_id, connection_id FROM runs WHERE id = ${req.run_id}
-  `) as unknown as Array<{ feed_id: number | null; connection_id: number | null }>;
+    const runRows = updatedRuns;
     const feedId = runRows[0]?.feed_id;
 
     if (feedId) {

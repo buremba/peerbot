@@ -318,6 +318,7 @@ export class MessageHandlerBridge {
       channelId,
       teamId,
       agentId: this.connection.agentId,
+      organizationId: this.connection.organizationId,
       channelBindingService,
     });
     if (!resolved) {
@@ -441,6 +442,7 @@ export class MessageHandlerBridge {
             isGroup,
             conversationId,
             connectionId: this.connection.id,
+            organizationId: this.connection.organizationId,
             reply: createChatReply((content) => thread.post(content)),
           }
         );
@@ -460,6 +462,7 @@ export class MessageHandlerBridge {
           isGroup,
           conversationId,
           connectionId: this.connection.id,
+          organizationId: this.connection.organizationId,
           reply: createChatReply((content) => thread.post(content)),
         }
       );
@@ -705,6 +708,7 @@ export class MessageHandlerBridge {
       channelId,
       teamId,
       agentId: this.connection.agentId,
+      organizationId: this.connection.organizationId,
       channelBindingService,
     });
     if (!resolved) {

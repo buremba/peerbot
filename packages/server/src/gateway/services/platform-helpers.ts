@@ -244,15 +244,22 @@ export async function resolveAgentId(params: {
   channelId: string;
   teamId?: string;
   agentId?: string;
+  organizationId?: string;
   channelBindingService?: ChannelBindingService;
 }): Promise<{ agentId: string; source: "binding" | "connection" } | null> {
-  const { platform, channelId, teamId, agentId, channelBindingService } = params;
+  const { platform, channelId, teamId, agentId, organizationId, channelBindingService } =
+    params;
 
   if (channelBindingService) {
+    // Bindings are org-scoped (a channel_id can be bound independently by
+    // multiple tenants), so the read MUST be scoped to the inbound
+    // connection's org — otherwise getBinding falls back to an org-less query
+    // and can route a message to another tenant's agent.
     const binding = await channelBindingService.getBinding(
       platform,
       channelId,
-      teamId
+      teamId,
+      organizationId
     );
     if (binding) {
       logger.info(

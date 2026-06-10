@@ -26,6 +26,7 @@ import {
   resetTestDatabase,
   seedAgentRow,
 } from "../../__tests__/helpers/db-setup.js";
+import { resolveAgentId } from "../../services/platform-helpers.js";
 import { ChannelBindingService } from "../binding-service.js";
 
 describe("ChannelBindingService is org-scoped (no cross-tenant takeover)", () => {
@@ -138,5 +139,37 @@ describe("ChannelBindingService is org-scoped (no cross-tenant takeover)", () =>
         AND channel_id = ${CHANNEL} AND team_id IS NULL
     `;
     expect(rows.length).toBe(1);
+  });
+
+  // Read-path regression: now that two orgs can bind the same channel, the
+  // inbound router (resolveAgentId) MUST scope its getBinding by the inbound
+  // connection's org. Without it the lookup is org-less and routes the message
+  // to whichever tenant's row Postgres returns first — a cross-tenant misroute.
+  test("resolveAgentId routes each org to its OWN agent for a shared channel", async () => {
+    const svc = new ChannelBindingService();
+    await svc.createBinding(AGENT_A, PLATFORM, CHANNEL, undefined, {
+      organizationId: ORG_A,
+    });
+    await svc.createBinding(AGENT_B, PLATFORM, CHANNEL, undefined, {
+      organizationId: ORG_B,
+    });
+
+    const a = await resolveAgentId({
+      platform: PLATFORM,
+      channelId: CHANNEL,
+      organizationId: ORG_A,
+      channelBindingService: svc,
+    });
+    const b = await resolveAgentId({
+      platform: PLATFORM,
+      channelId: CHANNEL,
+      organizationId: ORG_B,
+      channelBindingService: svc,
+    });
+
+    // Distinct, org-correct agents. Pre-fix (org-less read) both calls return
+    // the same arbitrary row, so they cannot both match their distinct orgs.
+    expect(a?.agentId).toBe(AGENT_A);
+    expect(b?.agentId).toBe(AGENT_B);
   });
 });

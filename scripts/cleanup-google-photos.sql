@@ -56,6 +56,11 @@
 
 BEGIN;
 
+-- events has a DB-level append-only guard (trg_events_append_only). This
+-- script is the documented sanctioned-maintenance case, so opt in with the
+-- transaction-scoped GUC the trigger honors (resets automatically at COMMIT).
+SET LOCAL lobu.allow_event_delete = 'on';
+
 -- 1) Wipe events whose connector_key is google_photos.
 DELETE FROM events
 WHERE connector_key = 'google_photos';

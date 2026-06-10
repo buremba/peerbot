@@ -28,6 +28,21 @@ const logger = createLogger("mcp-proxy");
 
 const MAX_BODY_SIZE = 1024 * 1024; // 1MB
 
+// Bound upstream MCP calls so a slow/hung third-party server can't pin a
+// worker turn (and the gateway request serving it) indefinitely. Applies to
+// POST/DELETE (JSON-RPC calls) only — GET opens the streamable-HTTP SSE
+// listening stream, which is long-lived by design and must not be aborted.
+// 120s matches the worker-side MCP call budget.
+const UPSTREAM_FETCH_TIMEOUT_MS = Number(
+  process.env.MCP_PROXY_FETCH_TIMEOUT_MS ?? 120_000
+);
+
+function upstreamTimeoutSignal(method: string): AbortSignal | undefined {
+  return method.toUpperCase() === "GET"
+    ? undefined
+    : AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS);
+}
+
 /** Standard MCP `initialize` request body. */
 const INITIALIZE_BODY = JSON.stringify({
   jsonrpc: "2.0",
@@ -1293,6 +1308,7 @@ export class McpProxy {
       method,
       headers,
       body: body || undefined,
+      signal: upstreamTimeoutSignal(method),
     });
 
     // Track session
@@ -1418,6 +1434,7 @@ export class McpProxy {
       method: c.req.method,
       headers,
       body: bodyText || undefined,
+      signal: upstreamTimeoutSignal(c.req.method),
     });
 
     // Detect HTTP 401 + WWW-Authenticate → start MCP OAuth 2.1 auth-code flow.
@@ -1481,6 +1498,8 @@ export class McpProxy {
           method: c.req.method,
           headers: retryHeaders,
           body: bodyText,
+          // Retry path is POST-only (guarded above) — always bounded.
+          signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS),
         });
       } catch (error) {
         logger.warn("Stale-session recovery failed on forward", {

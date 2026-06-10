@@ -17,6 +17,15 @@ import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager
 
 const logger = createLogger("transcription-service");
 
+// Every provider call carries an abort timeout: a hung upstream otherwise
+// pins the request (and its DB pool connection) indefinitely — none of these
+// fetches had a signal before. 120s matches the worker-side budget for
+// generate_image/generate_audio; audio payloads can be large, so don't trim
+// this without checking real STT latencies.
+const PROVIDER_FETCH_TIMEOUT_MS = Number(
+  process.env.TRANSCRIPTION_FETCH_TIMEOUT_MS ?? 120_000
+);
+
 type TranscriptionProvider = "openai" | "gemini" | "elevenlabs";
 
 interface TranscriptionConfig {
@@ -394,6 +403,7 @@ export class TranscriptionService {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}` },
         body: formData,
+        signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS),
       }
     );
 
@@ -434,6 +444,7 @@ export class TranscriptionService {
             },
           ],
         }),
+        signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS),
       }
     );
 
@@ -468,6 +479,7 @@ export class TranscriptionService {
       method: "POST",
       headers: { "xi-api-key": apiKey },
       body: formData,
+      signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS),
     });
 
     if (!resp.ok) {
@@ -523,6 +535,7 @@ export class TranscriptionService {
         speed,
         response_format: "opus", // Good for WhatsApp
       }),
+      signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS),
     });
 
     if (!resp.ok) {
@@ -563,6 +576,7 @@ export class TranscriptionService {
             },
           },
         }),
+        signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS),
       }
     );
 
@@ -621,6 +635,7 @@ export class TranscriptionService {
             similarity_boost: 0.5,
           },
         }),
+        signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS),
       }
     );
 

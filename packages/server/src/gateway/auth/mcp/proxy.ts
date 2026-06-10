@@ -613,6 +613,23 @@ export class McpProxy {
       return c.json({ error: "Invalid JSON body" }, 400);
     }
 
+    // Pre-tool guardrails — same enforcement as the JSON-RPC path so this REST
+    // entrypoint can't bypass the stage. Runs before approval and independently
+    // of grantStore.
+    if (
+      await this.runPreToolGuardrails(
+        agentId,
+        auth.tokenData,
+        toolName,
+        toolArguments
+      )
+    ) {
+      return c.json({
+        content: [{ type: "text", text: "Tool call blocked by policy." }],
+        isError: true,
+      });
+    }
+
     // Check tool approval based on annotations and grants.
     const approval = await this.evaluateToolApproval(
       mcpId,
@@ -892,9 +909,12 @@ export class McpProxy {
       );
     }
 
-    // Check tool approval for tools/call JSON-RPC requests.
-    // Clone the request so the body can be read twice (once here, once in forwardRequest).
-    if (this.grantStore && c.req.method === "POST") {
+    // Pre-tool guardrails + tool approval for tools/call JSON-RPC requests.
+    // Clone the request so the body can be read twice (once here, once in
+    // forwardRequest). NOTE: this runs on any POST, NOT gated on grantStore —
+    // guardrail enforcement must not depend on the approval subsystem being
+    // configured (the approval check below is what's gated on grantStore).
+    if (c.req.method === "POST") {
       try {
         const clonedReq = c.req.raw.clone();
         const bodyText = await clonedReq.text();
@@ -904,133 +924,51 @@ export class McpProxy {
             const toolName = jsonRpc.params.name;
             const toolArgs = jsonRpc.params.arguments || {};
 
-            // Pre-tool guardrails: run before the existing approval check so
-            // a blocked tool never enters the approval funnel. The worker
-            // sees a generic policy message — the specific reason is
-            // intentionally NOT surfaced (evasion surface).
-            if (this.guardrailRegistry && this.agentSettingsStore) {
-              try {
-                const settings =
-                  await this.agentSettingsStore.getSettings(agentId);
-                // Resolve the agent's built-in names PLUS skill-declared
-                // pre-tool guardrails (SKILL.md) into runnable instances. Until
-                // this was wired, skill-declared guardrails were silently
-                // ignored. NOTE: judge guardrails fail CLOSED (an unreachable
-                // judge denies → blocks the tool) — a deliberate posture; see
-                // judge-factory.ts.
-                const resolved = resolveAgentGuardrails(
-                  settings ?? { guardrails: [] },
-                  (settings?.skillsConfig?.skills ?? []).filter(
-                    (s) => s.enabled
-                  ),
-                  this.guardrailRegistry
-                );
-                const list = resolved.byStage["pre-tool"];
-                if (list.length > 0) {
-                  const outcome = await runGuardrailInstances(
-                    "pre-tool",
-                    list,
-                    {
-                      agentId,
-                      userId: tokenData.userId,
-                      toolName,
-                      arguments: toolArgs,
-                      conversationId: tokenData.conversationId,
-                    }
-                  );
-                  if (outcome.tripped) {
-                    // Resolve org id with a metadata fallback — per-job
-                    // tokens carry it, but legacy deployment-lifetime
-                    // tokens may not, and an unaudited trip is a security
-                    // log gap.
-                    let resolvedOrgId = tokenData.organizationId;
-                    if (!resolvedOrgId) {
-                      try {
-                        const md =
-                          await this.agentSettingsStore.getMetadata(agentId);
-                        resolvedOrgId = md?.organizationId;
-                      } catch (lookupErr) {
-                        logger.warn(
-                          {
-                            agentId,
-                            err:
-                              lookupErr instanceof Error
-                                ? lookupErr.message
-                                : String(lookupErr),
-                          },
-                          "Pre-tool guardrail trip: orgId metadata lookup failed (audit may be skipped)"
-                        );
-                      }
-                    }
-                    void recordGuardrailTrip({
-                      organizationId: resolvedOrgId,
-                      agentId,
-                      userId: tokenData.userId,
-                      conversationId: tokenData.conversationId,
-                      stage: "pre-tool",
-                      guardrail: outcome.tripped.guardrail,
-                      reason: outcome.tripped.reason,
-                      metadata: outcome.tripped.metadata,
-                    });
-                    logger.info(
-                      {
-                        agentId,
-                        toolName,
-                        guardrail: outcome.tripped.guardrail,
-                      },
-                      "Pre-tool guardrail tripped — returning generic policy block to worker"
-                    );
-                    return c.json({
-                      jsonrpc: "2.0",
-                      id: jsonRpc.id,
-                      result: {
-                        content: [
-                          {
-                            type: "text",
-                            text: "Tool call blocked by policy.",
-                          },
-                        ],
-                        isError: true,
-                      },
-                    });
-                  }
-                }
-              } catch (err) {
-                // Fail open on store/registry-level errors — the runner
-                // already fail-opens on per-guardrail throws.
-                logger.warn(
-                  {
-                    agentId,
-                    toolName,
-                    err: err instanceof Error ? err.message : String(err),
-                  },
-                  "Pre-tool guardrail check failed — proceeding without guardrails"
-                );
-              }
-            }
-
-            const approval = await this.evaluateToolApproval(
-              mcpId,
-              toolName,
-              toolArgs,
-              agentId,
-              tokenData,
-              sessionToken
-            );
-            if (approval !== "allow") {
+            // Pre-tool guardrails run before approval so a blocked tool never
+            // enters the approval funnel, and independently of grantStore.
+            if (
+              await this.runPreToolGuardrails(
+                agentId,
+                tokenData,
+                toolName,
+                toolArgs
+              )
+            ) {
               return c.json({
                 jsonrpc: "2.0",
                 id: jsonRpc.id,
                 result: {
-                  content: [
-                    {
-                      type: "text",
-                      text: "Tool call requires approval. The user has been asked to approve. Your session will end. The result will arrive as your next message.",
-                    },
-                  ],
+                  content: [{ type: "text", text: "Tool call blocked by policy." }],
                   isError: true,
                 },
               });
+            }
+
+            // Tool approval is gated on the approval subsystem (grantStore).
+            if (this.grantStore) {
+              const approval = await this.evaluateToolApproval(
+                mcpId,
+                toolName,
+                toolArgs,
+                agentId,
+                tokenData,
+                sessionToken
+              );
+              if (approval !== "allow") {
+                return c.json({
+                  jsonrpc: "2.0",
+                  id: jsonRpc.id,
+                  result: {
+                    content: [
+                      {
+                        type: "text",
+                        text: "Tool call requires approval. The user has been asked to approve. Your session will end. The result will arrive as your next message.",
+                      },
+                    ],
+                    isError: true,
+                  },
+                });
+              }
             }
           }
         }
@@ -1070,6 +1008,100 @@ export class McpProxy {
         -32603,
         `Failed to connect to MCP '${mcpId}': ${error instanceof Error ? error.message : "Unknown error"}`
       );
+    }
+  }
+
+  /**
+   * Run the agent's resolved pre-tool guardrails (built-in names + skill-
+   * declared SKILL.md guardrails) for a `tools/call`. Returns true if a
+   * guardrail tripped and the call must be blocked — the caller then returns a
+   * generic, platform-shaped "blocked by policy" response (the specific reason
+   * is never surfaced to the worker; that would be an evasion oracle).
+   *
+   * Shared by BOTH tool-call entrypoints — the JSON-RPC forward path
+   * (`handleProxyRequest`) and the REST `handleCallTool` — so neither can
+   * bypass the stage, and independent of `grantStore` so guardrails enforce
+   * even when the approval subsystem isn't configured.
+   *
+   * Fails OPEN on store/registry-level errors (per-guardrail throws already
+   * fail open in the runner); judge guardrails fail CLOSED by design.
+   */
+  private async runPreToolGuardrails(
+    agentId: string,
+    tokenData: {
+      userId: string;
+      conversationId?: string;
+      organizationId?: string;
+    },
+    toolName: string,
+    toolArgs: Record<string, unknown>
+  ): Promise<boolean> {
+    if (!this.guardrailRegistry || !this.agentSettingsStore) return false;
+    try {
+      const settings = await this.agentSettingsStore.getSettings(agentId);
+      const resolved = resolveAgentGuardrails(
+        settings ?? { guardrails: [] },
+        (settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),
+        this.guardrailRegistry
+      );
+      const list = resolved.byStage["pre-tool"];
+      if (list.length === 0) return false;
+      const outcome = await runGuardrailInstances("pre-tool", list, {
+        agentId,
+        userId: tokenData.userId,
+        toolName,
+        arguments: toolArgs,
+        conversationId: tokenData.conversationId,
+      });
+      if (!outcome.tripped) return false;
+      // Resolve org id with a metadata fallback — per-job tokens carry it, but
+      // legacy deployment-lifetime tokens may not, and an unaudited trip is a
+      // security log gap.
+      let resolvedOrgId = tokenData.organizationId;
+      if (!resolvedOrgId) {
+        try {
+          const md = await this.agentSettingsStore.getMetadata(agentId);
+          resolvedOrgId = md?.organizationId;
+        } catch (lookupErr) {
+          logger.warn(
+            {
+              agentId,
+              err:
+                lookupErr instanceof Error
+                  ? lookupErr.message
+                  : String(lookupErr),
+            },
+            "Pre-tool guardrail trip: orgId metadata lookup failed (audit may be skipped)"
+          );
+        }
+      }
+      void recordGuardrailTrip({
+        organizationId: resolvedOrgId,
+        agentId,
+        userId: tokenData.userId,
+        conversationId: tokenData.conversationId,
+        stage: "pre-tool",
+        guardrail: outcome.tripped.guardrail,
+        reason: outcome.tripped.reason,
+        metadata: outcome.tripped.metadata,
+      });
+      logger.info(
+        { agentId, toolName, guardrail: outcome.tripped.guardrail },
+        "Pre-tool guardrail tripped — blocking tool call with generic policy message"
+      );
+      return true;
+    } catch (err) {
+      // Fail open on store/registry-level errors — the runner already
+      // fail-opens on per-guardrail throws.
+      logger.warn(
+        {
+          agentId,
+          toolName,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "Pre-tool guardrail check failed — proceeding without guardrails"
+      );
+      return false;
     }
   }
 

@@ -623,14 +623,26 @@ export class SecretProxy {
         const tokenData = workerTokenStr
           ? verifyWorkerToken(workerTokenStr)
           : null;
-        if (tokenData?.agentId && tokenData.agentId !== urlAgentId) {
+        if (!tokenData) {
+          // A non-placeholder caller on an agent-scoped route MUST present a
+          // VERIFIABLE worker token. Without this an arbitrary bearer/x-api-key
+          // would satisfy the "has auth" check and still reach the URL-agent
+          // provider-credential injection below. (Truly tokenless callers are
+          // already rejected by the `else` branch.)
+          logger.warn(
+            { urlAgentId },
+            "Rejecting proxy request: non-placeholder worker token failed verification"
+          );
+          return c.json({ error: "Unauthorized" }, 401);
+        }
+        if (tokenData.agentId && tokenData.agentId !== urlAgentId) {
           logger.warn(
             { urlAgentId, tokenAgentId: tokenData.agentId },
             "Rejecting proxy request: worker token agentId does not match URL"
           );
           return c.json({ error: "Forbidden" }, 403);
         }
-        if (!tokenData?.agentId) {
+        if (!tokenData.agentId) {
           // Internal/preflight tokens minted before agent resolution carry no
           // agentId — the documented exception. Org scoping still applies via
           // expectedOrganizationId.

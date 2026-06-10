@@ -537,6 +537,11 @@ function normalizeConfig(config: { mcpServers: Record<string, any> }) {
     }
 
     const cloned = cloneConfig(serverConfig);
+    // Global MCP servers are never internal. The httpServers entry below is
+    // already forced to internal:false, but rawServers is spread into the
+    // worker config in getWorkerConfig(), so a stored `internal` flag must be
+    // cleared here too or the "global is never internal" guarantee leaks.
+    if ("internal" in cloned) delete cloned.internal;
     rawServers[id] = cloned;
 
     if (typeof cloned.url === "string" && isHttpUrl(cloned.url)) {

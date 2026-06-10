@@ -283,6 +283,14 @@ function splitShellCommands(command: string): string[] {
       i++; // consume "("
       continue;
     }
+    // Process substitution: `<( … )` / `>( … )` runs the inner command, so the
+    // boundary starts a new segment and the substituted body is checked on its
+    // own (e.g. `cat <(rm -rf /)` must not let `rm` ride inside the `cat` segment).
+    if ((ch === "<" || ch === ">") && next === "(") {
+      push();
+      i++; // consume "("
+      continue;
+    }
     if (ch === ")" || ch === "`") {
       push();
       continue;

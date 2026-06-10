@@ -41,6 +41,8 @@ describe("enforceBashCommandPolicy command-chaining bypass", () => {
     "git status & rm -rf /",
     "echo hi; echo hi; rm -rf /",
     "git log; sudo apt install evil", // deny via default package-manager prefix
+    "cat <(rm -rf /)", // process substitution
+    "diff <(echo a) >(rm -rf /)", // output process substitution
   ];
 
   for (const cmd of denyChained) {

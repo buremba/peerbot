@@ -300,19 +300,26 @@ export async function handleCompleteWindow(
   if (tokenIsRollup && tokenSourceWindowIds && tokenSourceWindowIds.length > 0) {
     const depth = tokenDepth ?? 1;
 
-    const newWindowId = await getNextNumericId(sql, 'watcher_windows');
     const sourceIds = tokenSourceWindowIds.map(Number);
-    await sql`
-      INSERT INTO watcher_windows (
-        id, watcher_id, version_id, window_start, window_end, granularity,
-        extracted_data, content_analyzed, model_used, client_id, run_metadata,
-        is_rollup, depth, source_window_ids, run_id, created_at
-      ) VALUES (
-        ${newWindowId}, ${watcherId}, ${resolvedVersionId}, ${window_start}, ${window_end}, ${granularity || timeGranularity},
-        ${sql.json(extractedData)}, 0, ${provenanceModel}, ${provenanceClientId}, ${sql.json(provenanceMetadata)},
-        true, ${depth}, ${sourceIds}, ${watcherRunId}, NOW()
-      )
-    `;
+    // getNextNumericId uses a transaction-scoped advisory lock; it MUST run in
+    // the same transaction as the INSERT or the lock releases before the INSERT
+    // and two concurrent device-worker rollup completions race on the PK (both
+    // compute the same MAX(id)+1). Mirror the leaf-window path below.
+    const newWindowId = await sql.begin(async (tx) => {
+      const allocatedWindowId = await getNextNumericId(tx, 'watcher_windows');
+      await tx`
+        INSERT INTO watcher_windows (
+          id, watcher_id, version_id, window_start, window_end, granularity,
+          extracted_data, content_analyzed, model_used, client_id, run_metadata,
+          is_rollup, depth, source_window_ids, run_id, created_at
+        ) VALUES (
+          ${allocatedWindowId}, ${watcherId}, ${resolvedVersionId}, ${window_start}, ${window_end}, ${granularity || timeGranularity},
+          ${tx.json(extractedData)}, 0, ${provenanceModel}, ${provenanceClientId}, ${tx.json(provenanceMetadata)},
+          true, ${depth}, ${sourceIds}, ${watcherRunId}, NOW()
+        )
+      `;
+      return allocatedWindowId;
+    });
 
     logger.info(
       `[complete_window] Created rollup window ${newWindowId} for watcher ${watcherId} ` +

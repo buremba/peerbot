@@ -67,7 +67,12 @@ jobs:
 
       - name: Upload Trivy SARIF
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        # Upload only from main/schedule runs: PR uploads create a per-tool
+        # code-scanning check that compares against the base branch, and until
+        # a main baseline exists every pre-existing finding shows as a "new
+        # alert" failing that check on every PR. PR runs still scan and log;
+        # the Security tab baseline populates from main.
+        if: always() && github.event_name != 'pull_request'
         with:
           sarif_file: trivy-results.sarif
           category: trivy-fs

@@ -4,6 +4,9 @@ import {
   isBlockedIpAddress,
   resolveUrlToSafeAddress,
   setIpBlocklistDnsLookup,
+  setSsrfFetchImpl,
+  SsrfBlockedError,
+  ssrfSafeFetch,
 } from "../proxy/ip-blocklist.js";
 
 // Regression coverage for the MCP-proxy SSRF / reserved-IP guard.
@@ -20,6 +23,7 @@ import {
 
 afterEach(() => {
   setIpBlocklistDnsLookup(null);
+  setSsrfFetchImpl(null);
 });
 
 describe("isBlockedIpAddress — payloads the old MCP matcher missed", () => {
@@ -117,5 +121,74 @@ describe("resolveUrlToSafeAddress — DNS rebinding (TOCTOU)", () => {
     );
     const r = await resolveUrlToSafeAddress("https://mixed.example/mcp");
     expect(r.ok).toBe(false);
+  });
+});
+
+// ssrfSafeFetch follows redirects MANUALLY and re-validates every hop. The
+// pinned connect.lookup only fires for hostnames, so without per-hop
+// revalidation a 3xx whose Location is an IP literal (e.g. the cloud metadata
+// service) would bypass the guard entirely. These tests drive the redirect
+// path through the fetch test-seam (the pinned dispatcher always connects to
+// the validated IP, so a real loopback test server is unreachable here).
+describe("ssrfSafeFetch — redirect re-validation", () => {
+  test("rejects a redirect whose Location points at an internal IP literal", async () => {
+    // First hop resolves to a public IP (no real DNS).
+    setIpBlocklistDnsLookup(async () => [{ address: "203.0.113.1", family: 4 }]);
+    let calls = 0;
+    setSsrfFetchImpl(async () => {
+      calls++;
+      return new Response(null, {
+        status: 302,
+        headers: { location: "http://169.254.169.254/latest/meta-data/" },
+      });
+    });
+
+    let blocked = false;
+    try {
+      await ssrfSafeFetch("http://entry.example/");
+    } catch (e) {
+      blocked = e instanceof SsrfBlockedError;
+    }
+    expect(blocked).toBe(true);
+    // The metadata host is rejected by re-validation BEFORE a second fetch.
+    expect(calls).toBe(1);
+  });
+
+  test("follows a redirect to a public host and returns the final response", async () => {
+    setIpBlocklistDnsLookup(async () => [{ address: "203.0.113.1", family: 4 }]);
+    setSsrfFetchImpl(async (url) => {
+      if (url.includes("first.example")) {
+        return new Response(null, {
+          status: 302,
+          headers: { location: "http://second.example/done" },
+        });
+      }
+      return new Response("final", { status: 200 });
+    });
+
+    const res = await ssrfSafeFetch("http://first.example/");
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("final");
+  });
+
+  test("rejects an over-long redirect chain", async () => {
+    setIpBlocklistDnsLookup(async () => [{ address: "203.0.113.1", family: 4 }]);
+    // Always redirect to another public host — never terminates.
+    let n = 0;
+    setSsrfFetchImpl(async () => {
+      n++;
+      return new Response(null, {
+        status: 302,
+        headers: { location: `http://hop${n}.example/` },
+      });
+    });
+
+    let blocked = false;
+    try {
+      await ssrfSafeFetch("http://start.example/");
+    } catch (e) {
+      blocked = e instanceof SsrfBlockedError;
+    }
+    expect(blocked).toBe(true);
   });
 });

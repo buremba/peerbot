@@ -230,6 +230,19 @@ export function setIpBlocklistDnsLookup(fn: DnsLookupAllFn | null): void {
   dnsLookupOverride = fn;
 }
 
+type FetchImpl = (url: string, init?: RequestInit) => Promise<Response>;
+let ssrfFetchOverride: FetchImpl | null = null;
+
+/**
+ * Test seam: override the `fetch` used by {@link ssrfSafeFetch}. Lets tests
+ * drive the redirect-revalidation path without real network egress (the pinned
+ * dispatcher always connects to the validated IP, which is never a loopback
+ * test server). Production always uses the global undici `fetch`.
+ */
+export function setSsrfFetchImpl(fn: FetchImpl | null): void {
+  ssrfFetchOverride = fn;
+}
+
 /**
  * Outcome of resolving a URL to a single validated IP address.
  *  - `ok: true`  → connect to `address` (already past the blocklist).
@@ -328,6 +341,34 @@ export class SsrfBlockedError extends Error {
 }
 
 /**
+ * Build the undici `connect.lookup` that pins every connection attempt to one
+ * pre-validated IP. It must honor BOTH Node `dns.lookup` callback shapes:
+ * undici calls it with `{ all: true }` and expects an array of
+ * `{ address, family }`; returning the scalar form in that case makes the
+ * connection fail before it is attempted. Exported for tests.
+ */
+export function pinnedConnectLookup(pinnedIp: string, family: number) {
+  return (
+    _hostname: string,
+    options: LookupOptions,
+    callback: (
+      err: NodeJS.ErrnoException | null,
+      address: string | LookupAddress[],
+      family?: number,
+    ) => void,
+  ): void => {
+    if (options?.all) {
+      callback(null, [{ address: pinnedIp, family }]);
+    } else {
+      callback(null, pinnedIp, family);
+    }
+  };
+}
+
+/** Max redirect hops ssrfSafeFetch will follow before giving up. */
+const MAX_SSRF_REDIRECTS = 5;
+
+/**
  * SSRF-safe `fetch`: resolve the URL's host to exactly ONE validated public IP
  * via {@link resolveUrlToSafeAddress}, then pin the connection to that address
  * so the socket can never be redirected to an internal target by a second DNS
@@ -335,50 +376,77 @@ export class SsrfBlockedError extends Error {
  * from the original URL hostname, so virtual-hosting and certificate validation
  * are unaffected.
  *
- * Throws {@link SsrfBlockedError} when the host is blocked.
+ * Redirects are followed MANUALLY (`redirect: "manual"`) and every hop is
+ * re-validated through {@link resolveUrlToSafeAddress}. This is required: the
+ * pinned `connect.lookup` only fires for hostnames, so a 3xx whose `Location`
+ * is an IP literal (e.g. `http://169.254.169.254/`) would otherwise bypass the
+ * guard entirely and reach an internal service. The original `init` (method,
+ * headers, body) is replayed on each hop, so non-replayable stream bodies
+ * should not be combined with redirecting endpoints.
+ *
+ * Throws {@link SsrfBlockedError} when any hop's host is blocked or the redirect
+ * chain is too long.
  */
 export async function ssrfSafeFetch(
   url: string,
   init?: RequestInit,
 ): Promise<Response> {
-  const resolved = await resolveUrlToSafeAddress(url);
-  if (!resolved.ok) {
-    throw new SsrfBlockedError(resolved.reason);
-  }
+  let currentUrl = url;
+  for (let hop = 0; ; hop++) {
+    const resolved = await resolveUrlToSafeAddress(currentUrl);
+    if (!resolved.ok) {
+      throw new SsrfBlockedError(resolved.reason);
+    }
 
-  const pinnedIp = resolved.address;
-  const dispatcher = new Agent({
-    connect: {
-      lookup: (
-        _hostname: string,
-        _options: LookupOptions,
-        callback: (
-          err: NodeJS.ErrnoException | null,
-          address: string | LookupAddress[],
-          family?: number,
-        ) => void,
-      ) => {
-        callback(null, pinnedIp, resolved.family);
-      },
-    },
-  });
+    const pinnedIp = resolved.address;
+    const pinnedFamily = resolved.family ?? (pinnedIp.includes(":") ? 6 : 4);
+    const dispatcher = new Agent({
+      connect: { lookup: pinnedConnectLookup(pinnedIp, pinnedFamily) },
+    });
 
-  try {
     // `dispatcher` is an undici option on the global fetch; the lib DOM/Node
     // `RequestInit` type doesn't surface it, so widen the init type here.
-    return await fetch(url, {
+    const doFetch = ssrfFetchOverride ?? fetch;
+    const response = await doFetch(currentUrl, {
       ...init,
+      redirect: "manual",
       dispatcher,
-    } as RequestInit & { dispatcher: unknown });
-  } finally {
-    // Best-effort cleanup. `Agent.close()` exists on Node's undici; under Bun
-    // the interop object may not expose it — never let teardown surface as a
-    // request failure.
+    } as unknown as RequestInit & { dispatcher: unknown });
+
+    // Gracefully tear down the per-request dispatcher WITHOUT awaiting: undici's
+    // close() resolves only after the in-flight (possibly streaming) request
+    // completes, so awaiting it here — before the caller has read the body —
+    // would deadlock. Fire-and-forget keeps the Response body readable and lets
+    // the agent close once the stream drains. `close` may be absent under Bun's
+    // undici interop; never let teardown surface as a request failure.
     const close = (dispatcher as { close?: () => Promise<void> }).close;
-    if (typeof close === "function") {
-      await close.call(dispatcher).catch(() => {
-        /* noop */
-      });
+    const closeDispatcher = () => {
+      if (typeof close === "function") {
+        void close.call(dispatcher).catch(() => {
+          /* noop */
+        });
+      }
+    };
+
+    const location =
+      response.status >= 300 && response.status < 400
+        ? response.headers.get("location")
+        : null;
+    if (!location) {
+      closeDispatcher();
+      return response;
     }
+
+    // Following a redirect: drain the 3xx body, then re-validate the target.
+    await response.body?.cancel().catch(() => {
+      /* noop */
+    });
+    closeDispatcher();
+    if (hop >= MAX_SSRF_REDIRECTS) {
+      throw new SsrfBlockedError(
+        `too many redirects (>${MAX_SSRF_REDIRECTS}) starting from ${url}`,
+      );
+    }
+    currentUrl = new URL(location, currentUrl).toString();
   }
 }

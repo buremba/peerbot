@@ -97,7 +97,7 @@ You are a helpful AI assistant.
 Tips:
 - Use markdown headers and lists for structure
 - Be specific — "be helpful" is vague, "ask one clarifying question before answering" is actionable
-- Test different instructions with [evals](/guides/evals/) to measure their impact
+- Test different instructions with [evals](/sdks/evals/) to measure their impact
 
 ## USER.md
 
@@ -178,4 +178,4 @@ agents/
 
 - [SKILL.md Reference](/reference/skill-md/)
 - [`lobu.config.ts` Reference](/reference/lobu-config/)
-- [Evaluations](/guides/evals/)
+- [Evaluations](/sdks/evals/)

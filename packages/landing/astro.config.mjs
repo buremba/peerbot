@@ -41,6 +41,13 @@ export default defineConfig({
   site: "https://lobu.ai",
   redirects: {
     "/pricing": "/serverless-openclaw",
+    // SDK docs consolidated under /sdks/ — keep old URLs working.
+    "/getting-started/connector-sdk": "/sdks/connectors",
+    "/reference/connector-sdk": "/sdks/connectors-reference",
+    "/getting-started/reaction-sdk": "/sdks/reactions",
+    "/reference/reaction-sdk": "/sdks/reactions",
+    "/platforms/rest-api": "/sdks/rest-api",
+    "/guides/evals": "/sdks/evals",
   },
   integrations: [
     starlight({
@@ -66,8 +73,22 @@ export default defineConfig({
             { label: "Comparison", link: "/getting-started/comparison/" },
             { label: "Skills", link: "/getting-started/skills/" },
             { label: "Memory", link: "/getting-started/memory/" },
-            { label: "Connector SDK", link: "/getting-started/connector-sdk/" },
-            { label: "Reactions", link: "/getting-started/reaction-sdk/" },
+          ],
+        },
+        {
+          label: "SDKs",
+          items: [
+            { label: "Overview", link: "/sdks/" },
+            { label: "Client", link: "/sdks/client/" },
+            { label: "REST API", link: "/sdks/rest-api/" },
+            { label: "Connectors", link: "/sdks/connectors/" },
+            {
+              label: "Connectors reference",
+              link: "/sdks/connectors-reference/",
+            },
+            { label: "Reactions", link: "/sdks/reactions/" },
+            { label: "Memory plugin", link: "/sdks/memory-plugin/" },
+            { label: "Evals", link: "/sdks/evals/" },
           ],
         },
         { label: "Deployment", autogenerate: { directory: "deployment" } },
@@ -80,7 +101,6 @@ export default defineConfig({
             { label: "Google Chat", link: "/platforms/google-chat/" },
             { label: "WhatsApp", link: "/platforms/whatsapp/" },
             { label: "Telegram", link: "/platforms/telegram/" },
-            { label: "REST API", link: "/platforms/rest-api/" },
           ],
         },
         {
@@ -101,8 +121,6 @@ export default defineConfig({
             { label: "CLI", link: "/reference/cli/" },
             { label: "lobu apply", link: "/reference/lobu-apply/" },
             { label: "Lobu memory CLI", link: "/reference/lobu-memory/" },
-            { label: "@lobu/connector-sdk", link: "/reference/connector-sdk/" },
-            { label: "Reactions", link: "/reference/reaction-sdk/" },
             { label: "REST API", link: "/reference/api-reference/" },
           ],
         },

@@ -1,11 +1,11 @@
 ---
 title: "@lobu/connector-sdk"
-description: Type reference for the Connector SDK — ConnectorRuntime, ConnectorDefinition, EventEnvelope, and the sync/action/auth surface.
+description: "Type reference for the Connector SDK: ConnectorRuntime, ConnectorDefinition, EventEnvelope, and the sync/action/auth surface."
 sidebar:
   order: 5
 ---
 
-API reference for [`@lobu/connector-sdk`](https://www.npmjs.com/package/@lobu/connector-sdk). For a tutorial-style introduction see the [Connector SDK guide](/getting-started/connector-sdk/); for the reactions surface (also exported from this package) see the [Reactions reference](/reference/reaction-sdk/).
+API reference for [`@lobu/connector-sdk`](https://www.npmjs.com/package/@lobu/connector-sdk). For a tutorial-style introduction see the [Connector SDK guide](/sdks/connectors/); for the reactions surface (also exported from this package) see the [Reactions reference](/sdks/reactions/).
 
 Every symbol below is a re-export from the package's top-level entry point:
 
@@ -83,7 +83,7 @@ interface ConnectorRuntimeInfo {
 
 `platforms` and `scopes` describe device-bound connectors; omit the `runtime` block for cloud-fleet connectors that do not pin to a device.
 
-`nix.packages` lists native system dependencies as nixpkgs attribute refs (for example `["ffmpeg", "imagemagick"]`) the connector needs on PATH at execution time. npm dependencies are bundled into the connector at compile time and do **not** go here. Backends that can run native deps (embedded, container, machine) provision them via `nix-shell`; backends that cannot (for example edge workers) reject a connector that declares them. See [Dependencies](/getting-started/connector-sdk/#dependencies) in the guide for the npm-vs-native split.
+`nix.packages` lists native system dependencies as nixpkgs attribute refs (for example `["ffmpeg", "imagemagick"]`) the connector needs on PATH at execution time. npm dependencies are bundled into the connector at compile time and do **not** go here. Backends that can run native deps (embedded, container, machine) provision them via `nix-shell`; backends that cannot (for example edge workers) reject a connector that declares them. See [Dependencies](/sdks/connectors/#dependencies) in the guide for the npm-vs-native split.
 
 ---
 
@@ -445,7 +445,7 @@ interface AuthResult {
 
 ## `Connection` / `Feed` / `Run`
 
-DB-backed types the runtime hands you in admin contexts. Reads only — connectors never write these.
+DB-backed types the runtime hands you in admin contexts. Reads only: connectors never write these.
 
 ```ts
 interface Connection {
@@ -525,7 +525,7 @@ The package also re-exports a few utilities so connectors share one implementati
 | `calculateEngagementScore(signals)` | Maps raw engagement metrics into a normalised 0–100 `score`. |
 | `Type`, `Static` | Re-exported TypeBox builders for `configSchema` / `inputSchema` / `outputSchema`. |
 | `sdkLogger` (alias `logger`) | Connector-scoped logger; output is captured by the run record. |
-| `normalizeEmail`, `normalizePhone`, `normalizeGithubLogin`, … | Identifier normalisers — call these before populating `EntityIdentitySpec` paths. |
+| `normalizeEmail`, `normalizePhone`, `normalizeGithubLogin`, … | Identifier normalisers; call these before populating `EntityIdentitySpec` paths. |
 | `SOURCE_NATIVE_EVENT_TYPES`, `isSourceNativeEventType` | The canonical event-type taxonomy. |
 | `WATCHER_TIME_GRANULARITIES`, `alignToWatcherWindowStart`, … | Time helpers used by watcher scheduling. |
 | Browser SDK: `acquireBrowser`, `launchBrowser`, `launchStealthBrowser`, `CdpPage`, `browserNetworkSync`, etc. | Headless / CDP / stealth browser primitives for `browser` and `cdp` capture. |

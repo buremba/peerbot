@@ -5,6 +5,7 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
+import { generateCodeChallenge } from '../../utils/pkce';
 import { AVAILABLE_SCOPES, DEFAULT_SCOPES } from './scopes';
 
 // ============================================
@@ -125,13 +126,6 @@ export function getPATPrefix(key: string): string {
 // ============================================
 // PKCE (Proof Key for Code Exchange)
 // ============================================
-
-/**
- * Generate a PKCE code challenge from a verifier using S256 method
- */
-function generateCodeChallenge(verifier: string): string {
-  return createHash('sha256').update(verifier).digest('base64url');
-}
 
 /**
  * Verify a PKCE code verifier against a stored challenge

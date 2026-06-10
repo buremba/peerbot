@@ -23,10 +23,16 @@ export function createHistoryRoutes(): Hono<WorkerContext> {
   router.get("/history", authenticateWorker, async (c) => {
     try {
       const worker = getVerifiedWorker(c);
-      const platform = c.req.query("platform") || worker.platform || "api";
-      const channelId = c.req.query("channelId") || worker.channelId;
-      const conversationId =
-        c.req.query("conversationId") || worker.conversationId;
+      // SECURITY: the channel/conversation/platform a worker may read history
+      // for is fixed by its verified token, NOT by request input. Earlier this
+      // route let query params override the token (`query || token`), so a
+      // worker could pass `?platform=slack&channelId=<other channel>` and read
+      // any channel's history on any platform — cross-channel/cross-tenant
+      // disclosure. Only pagination (`limit`, `before`) is caller-controlled,
+      // and both are scoped within the already-authorized channel.
+      const platform = worker.platform || "api";
+      const channelId = worker.channelId;
+      const conversationId = worker.conversationId;
       const limitStr = c.req.query("limit") || "50";
       const before = c.req.query("before"); // ISO timestamp cursor
 

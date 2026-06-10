@@ -16,11 +16,12 @@ import { resolve } from "node:path";
 import {
   createLogger,
   type GuardrailRegistry,
-  runGuardrails,
+  runGuardrailInstances,
 } from "@lobu/core";
 import { getDb } from "../../db/client.js";
 import { getOrganizationSlug } from "../../utils/url-builder.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
+import { resolveAgentGuardrails } from "../guardrails/aggregator.js";
 import { recordGuardrailTrip } from "../guardrails/audit.js";
 import type { ThreadResponsePayload } from "../infrastructure/queue/index.js";
 import { extractSettingsLinkButtons } from "../platform/link-buttons.js";
@@ -210,20 +211,20 @@ export class ChatResponseBridge implements ResponseRenderer {
 
     try {
       const settings = await this.agentSettingsStore.getSettings(agentId);
-      const enabled = settings?.guardrails ?? [];
-      if (enabled.length === 0) return null;
-      const outcome = await runGuardrails(
-        this.guardrailRegistry,
-        "output",
-        enabled,
-        {
-          agentId,
-          userId: payload.userId,
-          text: scanText,
-          platform: ctx.platform,
-          conversationId: payload.conversationId,
-        }
+      const resolved = resolveAgentGuardrails(
+        settings ?? { guardrails: [] },
+        (settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),
+        this.guardrailRegistry
       );
+      const list = resolved.byStage.output;
+      if (list.length === 0) return null;
+      const outcome = await runGuardrailInstances("output", list, {
+        agentId,
+        userId: payload.userId,
+        text: scanText,
+        platform: ctx.platform,
+        conversationId: payload.conversationId,
+      });
       if (!outcome.tripped) return null;
       // Fire-and-forget — the block message must not wait on the audit write.
       void recordGuardrailTrip({

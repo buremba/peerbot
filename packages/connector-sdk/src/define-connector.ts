@@ -36,6 +36,8 @@ import type {
   AuthResult,
   ConnectorDefinition,
   FeedDefinition,
+  QueryContext,
+  QueryResult,
   SyncContext,
   SyncResult,
 } from "./connector-types.js";
@@ -69,6 +71,12 @@ export interface ConnectorSpec
    * base behavior (throws — non-interactive auth needs no handler).
    */
   authenticate?(ctx: AuthContext): Promise<AuthResult>;
+  /**
+   * Optional live-read handler. When provided, lowers to `ConnectorRuntime.query`
+   * — the platform calls it for virtual-feed reads and external-backed derived
+   * entities (returns rows, no persistence). Omitted ⇒ live queries unsupported.
+   */
+  query?(ctx: QueryContext): Promise<QueryResult>;
 }
 
 /** Constructor shape the connector-worker's `child-runner` detects and instantiates. */
@@ -166,6 +174,13 @@ export function defineConnector(spec: ConnectorSpec): ConnectorClass {
         return super.authenticate(ctx);
       }
       return spec.authenticate(ctx);
+    }
+
+    async query(ctx: QueryContext): Promise<QueryResult> {
+      if (!spec.query) {
+        return super.query(ctx);
+      }
+      return spec.query(ctx);
     }
   };
 }

@@ -193,6 +193,26 @@ async function executeConnectorRuntime(
     return { mode: 'action', output: actionResult.output ?? {} };
   }
 
+  if (job.mode === 'query') {
+    // Live read: returns rows to the caller, persists nothing (like an action).
+    const queryResult = await instance.query({
+      feedKey: job.feedKey ?? undefined,
+      query: job.query,
+      config: { ...job.env, ...job.config },
+      credentials: job.credentials,
+      sessionState: job.sessionState,
+      limit: job.limit,
+      offset: job.offset,
+      sort: job.sort,
+    });
+    return {
+      mode: 'query',
+      rows: queryResult.rows ?? [],
+      columns: queryResult.columns,
+      total: queryResult.total,
+    };
+  }
+
   // mode === 'sync'
   const emitEvents = async (events: EventEnvelope[]) => {
     for (let index = 0; index < events.length; index += EVENT_CHUNK_SIZE) {
@@ -223,6 +243,7 @@ async function executeConnectorRuntime(
 
   const syncResult = (await instance.sync({
     feedKey: job.feedKey,
+    feedId: job.feedId,
     config: { ...job.env, ...job.config },
     checkpoint: job.checkpoint,
     credentials: job.credentials,

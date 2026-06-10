@@ -31,6 +31,7 @@ import { parseJsonObject } from '@lobu/core';
 import { parseDateAlias, toEndOfDay } from '../utils/date-aliases';
 import { type DataSourceContext, executeDataSources } from '../utils/execute-data-sources';
 import logger from '../utils/logger';
+import { rewriteQueries } from '../utils/query-rewriter';
 
 /**
  * Build the common SELECT columns, JOINs, and classification subquery
@@ -206,6 +207,13 @@ export const GetContentSchema = Type.Object({
         'Weight of vector similarity vs text rank in combined_score (0.0-1.0, default: 0.6). Higher values favor semantic match over keyword overlap. Only applies when a query and embeddings are both present.',
       minimum: 0.0,
       maximum: 1.0,
+    })
+  ),
+  rewrite_query: Type.Optional(
+    Type.Boolean({
+      description:
+        'Expand a conversational/underspecified query into focused keyword variants (LLM) and union their results to improve recall. Default false.',
+      default: false,
     })
   ),
   classification_filters: Type.Optional(
@@ -999,47 +1007,116 @@ export async function getContent(
       };
     } else {
       logger.info(`[get_content] ${args.query ? 'Search query provided' : 'Listing content'}`);
-      const result = await searchContentByText(
-        args.query ?? null,
-        {
-          entity_id: args.entity_id,
-          organization_id: !args.entity_id ? ctx.organizationId : undefined,
-          connection_ids: effectiveConnectionIds,
-          feed_ids: args.feed_ids,
-          run_ids: args.run_ids,
-          visibility_scope: visibilityScope,
-          window_id: args.window_id,
-          exclude_watcher_id: args.exclude_watcher_id,
-          platform: effectivePlatform,
-          since: args.since,
-          until: args.until,
-          engagement_min: args.engagement_min,
-          engagement_max: args.engagement_max,
-          min_similarity: args.min_similarity,
-          include_classifications: true,
-          classification_filters: classificationFilters,
-          classification_source: args.classification_source,
-          semantic_type: args.semantic_type,
-          interaction_status: args.interaction_status,
+
+      const searchOptions = {
+        entity_id: args.entity_id,
+        organization_id: !args.entity_id ? ctx.organizationId : undefined,
+        connection_ids: effectiveConnectionIds,
+        feed_ids: args.feed_ids,
+        run_ids: args.run_ids,
+        visibility_scope: visibilityScope,
+        window_id: args.window_id,
+        exclude_watcher_id: args.exclude_watcher_id,
+        platform: effectivePlatform,
+        since: args.since,
+        until: args.until,
+        engagement_min: args.engagement_min,
+        engagement_max: args.engagement_max,
+        min_similarity: args.min_similarity,
+        include_classifications: true,
+        classification_filters: classificationFilters,
+        classification_source: args.classification_source,
+        semantic_type: args.semantic_type,
+        interaction_status: args.interaction_status,
+        limit,
+        offset,
+        // When a query is provided and no explicit sort_by, rank by combined_score
+        // (text + vector). Defaulting to 'date' here quietly bypasses semantic ranking
+        // and orders results newest-first, which is not what most semantic callers want.
+        // Callers can still request chronological by passing sort_by='date' explicitly.
+        sort_by: args.sort_by || (args.query ? 'score' : 'date'),
+        sort_order: args.sort_order,
+        ...(args.vector_weight !== undefined && { vector_weight: args.vector_weight }),
+        before_occurred_at: args.before_occurred_at,
+        before_id: args.before_id,
+        after_occurred_at: args.after_occurred_at,
+        after_id: args.after_id,
+      };
+
+      // Query-rewrite recall expansion (opt-in): multi-query relevance fusion
+      // over the raw query + LLM-rewritten variants, so a variant-found row can
+      // displace a less-relevant raw row into the top-k. Fusion re-ranks by
+      // relevance, so it only applies to score-sorted, non-cursor searches with
+      // a page window inside the fetch cap — date feeds, cursor pages, and
+      // deeper windows keep single-query semantics even when rewrite_query is
+      // set. Stateless per-request (multi-replica-safe); default false leaves
+      // existing callers on the single-query path unchanged.
+      const FUSION_FETCH_CAP = 400;
+      const fusionEligible =
+        args.rewrite_query === true &&
+        !!args.query &&
+        (args.sort_by ?? 'score') === 'score' &&
+        !args.before_occurred_at &&
+        !args.after_occurred_at &&
+        offset + limit <= FUSION_FETCH_CAP;
+      const variants = fusionEligible ? await rewriteQueries(args.query as string, env) : [];
+
+      if (variants.length > 0 && args.query) {
+        // Over-fetch per query so fusion has a real candidate pool to re-rank
+        // (a variant's best hit may sit past the caller's `limit` in its own
+        // ranking), capped so a large caller limit can't fan out into tens of
+        // thousands of rows across the variant queries. Eligibility above
+        // guarantees offset+limit fits inside the cap, so the slice below can
+        // never page past the fetched pool. Each internal search reads its
+        // query's top-of-ranking from offset 0 (re-applying the caller's
+        // offset per query would skip different rows per query and break the
+        // fused page).
+        const fetchLimit = Math.min(Math.max((limit + offset) * 4, 40), FUSION_FETCH_CAP);
+        const fusionOptions = { ...searchOptions, limit: fetchLimit, offset: 0 };
+
+        // candidate pool: event id -> best (max-score) row seen across all queries.
+        const pool = new Map<number, { row: ContentRow; score: number }>();
+        const fuseInto = (rows: ContentRow[]) => {
+          for (const row of rows) {
+            const score = row.combined_score ?? row.similarity ?? 0;
+            const existing = pool.get(row.id);
+            if (!existing || score > existing.score) {
+              pool.set(row.id, { row, score });
+            }
+          }
+        };
+
+        // Sentinel: a query whose fetch came back full may have more matches
+        // beyond the cap, so the pool is a LOWER BOUND on the true fused total
+        // and deep pages must not be reported as exhausted.
+        let poolTruncated = false;
+        const rawResult = await searchContentByText(args.query, fusionOptions, env);
+        fuseInto(rawResult.content);
+        poolTruncated ||= rawResult.content.length >= fetchLimit;
+        for (const variant of variants) {
+          const variantResult = await searchContentByText(variant, fusionOptions, env);
+          fuseInto(variantResult.content);
+          poolTruncated ||= variantResult.content.length >= fetchLimit;
+        }
+
+        const ranked = [...pool.values()].sort((a, b) => b.score - a.score).map((c) => c.row);
+
+        // The caller's offset/limit page out of the FUSED ranking.
+        rawContent = ranked.slice(offset, offset + limit);
+        // total = distinct fused candidates (a lower bound when any per-query
+        // fetch hit the cap); has_more stays conservative via the sentinel.
+        total = ranked.length;
+        pageInfo = {
           limit,
           offset,
-          // When a query is provided and no explicit sort_by, rank by combined_score
-          // (text + vector). Defaulting to 'date' here quietly bypasses semantic ranking
-          // and orders results newest-first, which is not what most semantic callers want.
-          // Callers can still request chronological by passing sort_by='date' explicitly.
-          sort_by: args.sort_by || (args.query ? 'score' : 'date'),
-          sort_order: args.sort_order,
-          ...(args.vector_weight !== undefined && { vector_weight: args.vector_weight }),
-          before_occurred_at: args.before_occurred_at,
-          before_id: args.before_id,
-          after_occurred_at: args.after_occurred_at,
-          after_id: args.after_id,
-        },
-        env
-      );
-      rawContent = result.content;
-      total = result.total;
-      pageInfo = result.page;
+          has_more: poolTruncated || ranked.length > offset + limit,
+        };
+      } else {
+        const result = await searchContentByText(args.query ?? null, searchOptions, env);
+        rawContent = result.content;
+        total = result.total;
+        pageInfo = result.page;
+      }
     }
 
     // Optionally fetch classification statistics (aggregated across ALL matching content, not just paginated results)

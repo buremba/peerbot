@@ -3,9 +3,9 @@ title: Connector SDK
 description: Write TypeScript connectors that turn REST APIs, webhooks, and files into the Lobu event stream.
 ---
 
-Connectors are how Lobu turns external systems — REST APIs, GraphQL, webhooks, files, OAuth-protected services — into the typed event stream that watchers shape into entities and memory.
+Connectors are how Lobu turns external systems (REST APIs, GraphQL, webhooks, files, OAuth-protected services) into the typed event stream that watchers shape into entities and memory.
 
-A connector is a TypeScript class that extends [`ConnectorRuntime`](/reference/connector-sdk/#connectorruntime) and ships three things:
+A connector is a TypeScript class that extends [`ConnectorRuntime`](/sdks/connectors-reference/#connectorruntime) and ships three things:
 
 - a **`definition`** describing the connector (key, name, version, auth, feeds, actions),
 - a **`sync(ctx)`** method that pulls the next slice of data and returns events,
@@ -27,7 +27,7 @@ The package is published from this repo and tracks the same release line as `@lo
 
 ## A typed connector, end to end
 
-The example below pulls issues from a GitHub repository, polls incrementally with a typed checkpoint, and emits one `EventEnvelope` per issue. Every field has a real type — no `as any` casts, no `// biome-ignore` directives.
+The example below pulls issues from a GitHub repository, polls incrementally with a typed checkpoint, and emits one `EventEnvelope` per issue. Every field has a real type: no `as any` casts, no `// biome-ignore` directives.
 
 ```ts
 import {
@@ -148,7 +148,7 @@ export default class GitHubIssuesConnector extends ConnectorRuntime {
 A few things to notice:
 
 - **`SyncContext["checkpoint"]` is `Record<string, unknown> | null`.** Wrap it once in a tiny typed reader (`readCheckpoint`) instead of casting at every call site.
-- **`env_keys` credentials live on `ctx.config`, not `ctx.credentials`.** Lobu merges the values the user filled into the `env_keys` form into `ctx.config` under the keys you declared (`token` here). `ctx.credentials` is reserved for `oauth` auth — `accessToken`, `refreshToken`, `scope`, `expiresAt`.
+- **`env_keys` credentials live on `ctx.config`, not `ctx.credentials`.** Lobu merges the values the user filled into the `env_keys` form into `ctx.config` under the keys you declared (`token` here). `ctx.credentials` is reserved for `oauth` auth: `accessToken`, `refreshToken`, `scope`, `expiresAt`.
 - **The PAT is a `lobu_secret_<uuid>` placeholder at runtime.** The gateway's secret proxy swaps it for the real value when the outbound HTTPS request leaves the worker, so the secret never lives in the worker's memory.
 - **Pagination via the `since` query param.** The GitHub `Link` header is the alternative for cursor-style paging when you need to walk a stable, ordered list; `since` is simpler when the source already gives you a monotonic timestamp.
 
@@ -168,7 +168,7 @@ export default defineConfig({
 });
 ```
 
-Passing the connector's type via the generic (`import type` + `connectorFromFile<typeof GitHubIssuesConnector>`) is optional — bare `connectorFromFile("./github-issues.connector.ts")` still works — but it gives you go-to-definition, rename, and a `tsc` error if the file's default export ever stops being a `ConnectorRuntime` subclass. The `import type` is erased at compile time, so the connector module is never loaded while your config is evaluated.
+Passing the connector's type via the generic (`import type` + `connectorFromFile<typeof GitHubIssuesConnector>`) is optional (bare `connectorFromFile("./github-issues.connector.ts")` still works), but it gives you go-to-definition, rename, and a `tsc` error if the file's default export ever stops being a `ConnectorRuntime` subclass. The `import type` is erased at compile time, so the connector module is never loaded while your config is evaluated.
 
 `lobu apply` ships the source to the gateway, which compiles and registers it; from there each `feeds.<key>` entry shows up as something a user can create a connection for in the admin UI.
 
@@ -182,14 +182,14 @@ The static metadata for your connector. Filed under `connector_definitions` in t
 |------|----------|-------------|
 | `key` | yes | Unique global key, e.g. `google.gmail`, `github-issues` |
 | `name` | yes | Human-readable label |
-| `version` | yes | Semver — bump to invalidate per-feed checkpoints if the event shape changes |
+| `version` | yes | Semver; bump to invalidate per-feed checkpoints if the event shape changes |
 | `authSchema` | no | How users authenticate this connector (see below) |
 | `feeds` | no | Map of feed key → `FeedDefinition` (a connector typically has one or more feeds) |
 | `actions` | no | Map of action key → `ActionDefinition` (only needed if you also implement `execute`) |
 | `requiredCapability` | no | When set, only worker pods/devices advertising this capability serve runs (e.g. `screentime` for the Mac app) |
-| `runtime` | no | Pin to a device platform (iOS, macOS, …) — omit for cloud-side connectors |
+| `runtime` | no | Pin to a device platform (iOS, macOS, …); omit for cloud-side connectors |
 
-See the full type at [`reference/connector-sdk` › ConnectorDefinition](/reference/connector-sdk/#connectordefinition).
+See the full type at [`reference/connector-sdk` › ConnectorDefinition](/sdks/connectors-reference/#connectordefinition).
 
 ### `SyncContext`
 
@@ -203,7 +203,7 @@ What `sync()` receives. Every field is read-only.
 | `credentials` | OAuth tokens (`accessToken`, `refreshToken`, …) for `oauth` auth; `null` for everything else. `env_keys` values land on `ctx.config` under the declared `key`. |
 | `entityIds` | Entities this feed is linked to (rarely needed; useful for scoping the sync) |
 | `sessionState` | Browser cookies / tokens captured by `lobu memory browser-auth` for `browser` auth |
-| `emitEvents(events)` | Optional streaming hook — flush a chunk before the run ends |
+| `emitEvents(events)` | Optional streaming hook: flush a chunk before the run ends |
 | `updateCheckpoint(cp)` | Optional progress-checkpoint hook for long-running syncs |
 
 `SyncContext` does not currently expose generics for `config` / `checkpoint`. Declare your own interfaces and convert at the boundary, as the example above does with `readCheckpoint`.
@@ -228,7 +228,7 @@ interface EventEnvelope {
 }
 ```
 
-Only `origin_id`, `payload_text`, and `occurred_at` are required. The full surface is documented in [`reference/connector-sdk` › EventEnvelope](/reference/connector-sdk/#eventenvelope).
+Only `origin_id`, `payload_text`, and `occurred_at` are required. The full surface is documented in [`reference/connector-sdk` › EventEnvelope](/sdks/connectors-reference/#eventenvelope).
 
 ### `SyncResult`
 
@@ -245,7 +245,7 @@ interface SyncResult {
 }
 ```
 
-Return `events: []` plus the same `checkpoint` you received on a no-new-data tick — runs stay idempotent.
+Return `events: []` plus the same `checkpoint` you received on a no-new-data tick; runs stay idempotent.
 
 ### `ActionContext` / `ActionResult`
 
@@ -264,7 +264,7 @@ async execute(ctx: ActionContext): Promise<ActionResult> {
     return { success: false, error: `unknown action ${ctx.actionKey}` };
   }
   const { issueId, assignee } = ctx.input as unknown as AssignIssueInput;
-  // Same `env_keys` field as sync() — execute()'s ctx.config carries it too.
+  // Same `env_keys` field as sync(); execute()'s ctx.config carries it too.
   const token = String((ctx.config as { token?: string }).token ?? "");
 
   await fetch(`https://api.example.com/issues/${issueId}`, {
@@ -285,14 +285,14 @@ Declare on `definition.authSchema`. A connector can list multiple methods; the g
 | `type` | Use when |
 |--------|----------|
 | `none` | Public endpoint, no credentials needed |
-| `env_keys` | Static API keys (Stripe secret key, PAT) — fields rendered as form inputs, stored encrypted |
-| `oauth` | Standard OAuth 2.0 — Lobu handles the dance, refresh, and per-user token isolation |
+| `env_keys` | Static API keys (Stripe secret key, PAT); fields rendered as form inputs, stored encrypted |
+| `oauth` | Standard OAuth 2.0; Lobu handles the dance, refresh, and per-user token isolation |
 | `browser` | Session cookies captured via `lobu memory browser-auth` from a logged-in Chrome profile (or CDP) |
-| `interactive` | Custom auth flow (QR pairing, OTP, signed device handshake) — implement `authenticate(ctx)` and stream `AuthArtifact`s |
+| `interactive` | Custom auth flow (QR pairing, OTP, signed device handshake); implement `authenticate(ctx)` and stream `AuthArtifact`s |
 
 Workers never see the raw secret on the wire: the gateway's `secret-proxy` swaps `lobu_secret_<uuid>` placeholders for real values at egress, so the string you pull from `ctx.config.<field>` (env_keys) or `ctx.credentials.accessToken` (oauth) looks like a normal token from your code, but it's only resolved when the outbound request leaves the proxy.
 
-Full breakdown at [`reference/connector-sdk` › ConnectorAuthSchema](/reference/connector-sdk/#connectorauthschema).
+Full breakdown at [`reference/connector-sdk` › ConnectorAuthSchema](/sdks/connectors-reference/#connectorauthschema).
 
 ## Checkpoints
 
@@ -317,8 +317,8 @@ interface IdSetCheckpoint {
 
 Rules of thumb:
 
-- **Always return a checkpoint**, even on the no-new-data case — return the previous one verbatim. Returning `null` tells the gateway to treat the next run as a fresh start.
-- **Cap unbounded structures** (ID sets, in-flight queues) before persisting. Keep the last 1000 IDs — enough to dedupe across a sync window without bloating the row.
+- **Always return a checkpoint**, even on the no-new-data case: return the previous one verbatim. Returning `null` tells the gateway to treat the next run as a fresh start.
+- **Cap unbounded structures** (ID sets, in-flight queues) before persisting. Keep the last 1000 IDs, enough to dedupe across a sync window without bloating the row.
 - **Long-running syncs** can call `ctx.updateCheckpoint(...)` mid-flight so a crash doesn't lose progress.
 
 ## Where the file lives
@@ -367,15 +367,15 @@ export default class VideoConnector extends ConnectorRuntime {
 
 At execution the runtime wraps the connector's subprocess in `nix-shell -p <packages>` so the declared tools are on `PATH`. Backends that cannot run native deps reject a connector that declares them, and a host without `nix-shell` errors with a clear message rather than failing mid-run.
 
-The rule of thumb: **npm is bundled (compile-time), native is nix (run-time).** Never put a native tool in `package.json` expecting it to ship, and never list an npm package in `runtime.nix.packages`. See the [`ConnectorRuntimeInfo` reference](/reference/connector-sdk/#connectorruntimeinfo) for the field shape.
+The rule of thumb: **npm is bundled (compile-time), native is nix (run-time).** Never put a native tool in `package.json` expecting it to ship, and never list an npm package in `runtime.nix.packages`. See the [`ConnectorRuntimeInfo` reference](/sdks/connectors-reference/#connectorruntimeinfo) for the field shape.
 
 ## See it in production
 
-- [`examples/ecommerce/stripe-charges.connector.ts`](https://github.com/lobu-ai/lobu/blob/main/examples/ecommerce/stripe-charges.connector.ts) — REST API, `env_keys` auth, timestamp checkpoint.
-- [`examples/lobu-crm/funnel-form.connector.ts`](https://github.com/lobu-ai/lobu/blob/main/examples/lobu-crm/funnel-form.connector.ts) — small custom HTTP API, ID-set dedupe.
+- [`examples/ecommerce/stripe-charges.connector.ts`](https://github.com/lobu-ai/lobu/blob/main/examples/ecommerce/stripe-charges.connector.ts): REST API, `env_keys` auth, timestamp checkpoint.
+- [`examples/lobu-crm/funnel-form.connector.ts`](https://github.com/lobu-ai/lobu/blob/main/examples/lobu-crm/funnel-form.connector.ts): small custom HTTP API, ID-set dedupe.
 
 ## See also
 
-- [Reactions](/getting-started/reaction-sdk/) — the typed hook (part of this same package) for code that runs after watchers extract data.
-- [`@lobu/connector-sdk` API reference](/reference/connector-sdk/) — every exported symbol with types.
-- [Memory](/getting-started/memory/) — how connector events become durable entity memory.
+- [Reactions](/sdks/reactions/): the typed hook (part of this same package) for code that runs after watchers extract data.
+- [`@lobu/connector-sdk` API reference](/sdks/connectors-reference/): every exported symbol with types.
+- [Memory](/getting-started/memory/): how connector events become durable entity memory.

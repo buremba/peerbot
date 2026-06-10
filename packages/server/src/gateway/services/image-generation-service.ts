@@ -4,6 +4,12 @@ import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager
 
 const logger = createLogger("image-generation-service");
 
+// Abort hung provider calls instead of pinning the request indefinitely.
+// 120s matches the worker-side generate_image budget.
+const PROVIDER_FETCH_TIMEOUT_MS = Number(
+  process.env.IMAGE_GENERATION_FETCH_TIMEOUT_MS ?? 120_000
+);
+
 type ImageGenerationProvider = "openai" | "gemini";
 
 interface ImageGenerationConfig {
@@ -227,6 +233,7 @@ export class ImageGenerationService {
           output_format: format,
           response_format: "b64_json",
         }),
+        signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS),
       }
     );
 
@@ -280,6 +287,7 @@ export class ImageGenerationService {
           instances: [{ prompt }],
           parameters: { sampleCount: 1, outputMimeType: mimeType },
         }),
+        signal: AbortSignal.timeout(PROVIDER_FETCH_TIMEOUT_MS),
       }
     );
 

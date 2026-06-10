@@ -171,7 +171,7 @@ npx @lobu/cli@latest chat "Status update" -c staging
 
 ### Evaluations
 
-Lobu does not ship its own eval runner. Use [promptfoo](https://www.promptfoo.dev) with [`@lobu/promptfoo-provider`](https://www.npmjs.com/package/@lobu/promptfoo-provider) — see the [Evaluations guide](/guides/evals/) for the full pattern.
+Lobu does not ship its own eval runner. Use [promptfoo](https://www.promptfoo.dev) with [`@lobu/promptfoo-provider`](https://www.npmjs.com/package/@lobu/promptfoo-provider); see the [Evaluations guide](/sdks/evals/) for the full pattern.
 
 ```bash
 bun add -D promptfoo @lobu/promptfoo-provider

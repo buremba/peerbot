@@ -39,6 +39,45 @@ app:
     # prod deploy can never report under environment=development. Worker spawn
     # forwards this via assembleBaseEnv (base-deployment-manager.ts).
     ENVIRONMENT: production
+    # Hold teardown after SIGTERM so /health/ready returns 503 and kube-proxy
+    # removes this pod from the Service endpoints before in-flight connections
+    # are cut. Keep below terminationGracePeriodSeconds (and roughly aligned
+    # with lifecycle.preStopSleepSeconds).
+    SHUTDOWN_READINESS_DRAIN_MS: "5000"
+    # Bounded wait for in-flight HTTP responses (incl. SSE/MCP streams) to drain
+    # before process exit. Keep below the remaining grace-period budget.
+    HTTP_CLOSE_TIMEOUT_MS: "10000"
+
+  # Graceful-shutdown budget. Must comfortably exceed the sum of the readiness
+  # drain + in-flight HTTP close + gateway/worker teardown, or the kubelet
+  # SIGKILLs mid-drain (orphaning workers — the failure `make clean-workers`
+  # exists to mop up).
+  terminationGracePeriodSeconds: 60
+
+  # preStop sleep keeps the container alive briefly after the pod is marked
+  # Terminating, covering the window where kube-proxy endpoint removal lags the
+  # SIGTERM. Belt-and-braces with SHUTDOWN_READINESS_DRAIN_MS. Set to 0 to skip.
+  lifecycle:
+    preStopSleepSeconds: 5
+
+  # Container-level hardening. runAsNonRoot is left unset because the app image
+  # currently has no non-root USER (docker/app/Dockerfile) — enable it once the
+  # image ships a non-root user. The defaults below are safe to apply even as
+  # root and drop a meaningful amount of attack surface.
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+
+  # PodDisruptionBudget. Rendered only when replicaCount > 1 so single-replica
+  # installs aren't blocked from ever draining a node. minAvailable keeps at
+  # least one app pod serving across voluntary disruptions (node drains/upgrades).
+  pdb:
+    enabled: true
+    minAvailable: 1
 
   # Persistent workspaces volume. The embedded worker stores the
   # durable transcript in Postgres (`agent_transcript_snapshot`); the
@@ -64,6 +103,23 @@ worker:
   podSecurityContext:
     fsGroup: 1001
     fsGroupChangePolicy: OnRootMismatch
+
+  # Agent/connector runs can be minutes-long; give the daemon time to finish
+  # or hand off in-flight runs after SIGTERM before the kubelet escalates to
+  # SIGKILL (which orphans runs until the stale-run reaper recovers them).
+  terminationGracePeriodSeconds: 300
+
+  # The worker executes untrusted agent/connector code — the highest-value
+  # container to harden. The image already runs as a non-root user
+  # (docker/worker/Dockerfile: USER worker), so runAsNonRoot is enforceable.
+  containerSecurityContext:
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
 
   resources:
     requests:
@@ -96,6 +152,17 @@ embeddings:
   podSecurityContext:
     fsGroup: 1001
     fsGroupChangePolicy: OnRootMismatch
+
+  # The image runs as a non-root user (docker/embeddings-service/Dockerfile:
+  # USER embeddings), so runAsNonRoot is enforceable.
+  containerSecurityContext:
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
 
   serviceUrl: ""
 

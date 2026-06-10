@@ -177,6 +177,57 @@ describe("computeDiff — idempotency (applying twice is a no-op)", () => {
       expect(row.changedFields).toContain("backing");
   });
 
+  test("derived entity type: same backing.connection is a noop (external-backed)", () => {
+    const sql = "SELECT org, count(*) AS n FROM customers GROUP BY org";
+    const desired = buildState([], {
+      memorySchema: {
+        entityTypes: [
+          {
+            slug: "ext",
+            name: "Ext",
+            backing: { sql, connection: "warehouse" },
+          },
+        ],
+        relationshipTypes: [],
+      },
+    });
+    const afterFirstApply: RemoteSnapshot = {
+      ...emptyRemote(),
+      entityTypes: [
+        { slug: "ext", name: "Ext", backing: { sql, connection: "warehouse" } },
+      ],
+    };
+    const plan = computeDiff(desired, afterFirstApply);
+    const row = plan.rows.find((r) => r.kind === "entity-type");
+    expect(row?.verb).toBe("noop");
+    expect(plan.counts.update).toBe(0);
+  });
+
+  test("derived entity type: adding backing.connection (internal → external) is an update", () => {
+    const sql = "SELECT 1 AS x FROM events";
+    const desired = buildState([], {
+      memorySchema: {
+        entityTypes: [
+          {
+            slug: "ext",
+            name: "Ext",
+            backing: { sql, connection: "warehouse" },
+          },
+        ],
+        relationshipTypes: [],
+      },
+    });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      entityTypes: [{ slug: "ext", name: "Ext", backing: { sql } }],
+    };
+    const plan = computeDiff(desired, remote);
+    const row = plan.rows.find((r) => r.kind === "entity-type");
+    expect(row?.verb).toBe("update");
+    if (row?.kind === "entity-type")
+      expect(row.changedFields).toContain("backing");
+  });
+
   test("relationship type: same desired+remote is noop", () => {
     const desired = buildState([], {
       memorySchema: {

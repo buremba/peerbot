@@ -481,6 +481,13 @@ export interface EventEnvelope {
 export interface SyncContext<C = Record<string, unknown>, F = Record<string, unknown>> {
   /** Feed key */
   feedKey: string;
+  /**
+   * Stable id of this feed INSTANCE (the `feeds` row), when run by the platform.
+   * Distinct per feed even when several feeds share one `feedKey` on a single
+   * connection — use it to namespace emitted `origin_id`s so two feeds can't
+   * supersede each other's events. Undefined for direct/programmatic sync calls.
+   */
+  feedId?: number | null;
   /** Feed configuration (typed via F) */
   config: F;
   /** Previous checkpoint (null on first sync) */
@@ -523,6 +530,42 @@ export interface SyncResult<C = Record<string, unknown>> {
     items_skipped?: number;
     [key: string]: unknown;
   };
+}
+
+// =============================================================================
+// Query (live pushdown — virtual feeds & external-backed derived entities)
+// =============================================================================
+
+/**
+ * Context passed to ConnectorRuntime.query(). The connector runs `query` LIVE
+ * against its source and returns rows WITHOUT persisting anything (contrast
+ * sync(), which emits events). Used for virtual-feed reads and external-backed
+ * derived entities — `query` is the feed's configured SQL, or the entity's
+ * backing.sql.
+ */
+export interface QueryContext<F = Record<string, unknown>> {
+  /** Present for a virtual-feed read; absent for an ad-hoc / derived-entity query. */
+  feedKey?: string;
+  /** The read-only query to run. */
+  query: string;
+  /** Feed configuration (typed via F) when feedKey is set; `{}` otherwise. */
+  config: F;
+  /** OAuth/env credentials (if applicable). */
+  credentials: SyncCredentials | null;
+  /** Connection session state (browser cookies, tokens, etc.). */
+  sessionState?: Record<string, unknown> | null;
+  /** Pagination + sort the platform wants applied; the connector pushes these down. */
+  limit?: number;
+  offset?: number;
+  sort?: { column: string; order: 'asc' | 'desc' };
+}
+
+/** Result from ConnectorRuntime.query(). Rows are returned to the caller, never persisted. */
+export interface QueryResult {
+  rows: Record<string, unknown>[];
+  columns?: { name: string; type: string }[];
+  /** Total matching rows (for pagination), when cheaply available. */
+  total?: number;
 }
 
 // =============================================================================

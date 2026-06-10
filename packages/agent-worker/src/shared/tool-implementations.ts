@@ -268,6 +268,19 @@ export async function uploadUserFile(
     if (stats.size === 0) {
       return textResult(`Error: Cannot show empty file: ${args.file_path}`);
     }
+    // Cap upload size BEFORE reading into memory. The whole file is buffered
+    // (and re-buffered into multipart form data), so an agent pointing this at
+    // a multi-GB file it wrote in the workspace could OOM the worker. Reject
+    // pathological sizes up front. Override via LOBU_MAX_UPLOAD_BYTES.
+    const maxUploadBytes = (() => {
+      const raw = parseInt(process.env.LOBU_MAX_UPLOAD_BYTES ?? "", 10);
+      return Number.isInteger(raw) && raw > 0 ? raw : 100 * 1024 * 1024;
+    })();
+    if (stats.size > maxUploadBytes) {
+      return textResult(
+        `Error: Cannot show file - too large (${stats.size} bytes, limit ${maxUploadBytes}): ${args.file_path}`
+      );
+    }
 
     const fileName = path.basename(filePath);
     const fileBuffer = await fs.readFile(filePath);

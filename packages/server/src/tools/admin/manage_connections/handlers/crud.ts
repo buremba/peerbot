@@ -45,6 +45,7 @@ import { getScopedConnectorDefinition } from '../../connector-definition-helpers
 import type { ToolContext } from '../../../registry';
 import type { ManageConnectionsResult, ConnectionsArgs } from '../schemas';
 import { resolveDeviceBinding, isManagedPublicOrgConnect } from './device-binding';
+import { assertConnectorAllowedInCloud } from '../../../../utils/connector-cloud-gate';
 import { ensureConnectorInstalled } from '../../../../utils/ensure-connector-installed';
 
 // ============================================
@@ -291,6 +292,15 @@ export async function handleCreate(
 ): Promise<ManageConnectionsResult> {
   const sql = getDb();
   const { organizationId, userId } = ctx;
+
+  // Cloud gate: a raw-DB connector (postgres) has no tenant-URL egress hardening
+  // yet, so it can't be installed under LOBU_CLOUD_MODE. (The catalog also hides
+  // it; this blocks a direct API call.) No-op when not in cloud mode.
+  try {
+    assertConnectorAllowedInCloud(args.connector_key);
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
 
   // Resolve caller role once — we use it for created_by overrides, explicit
   // app_auth_profile picks, and member-friendly error messages downstream.

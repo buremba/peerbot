@@ -33,8 +33,12 @@ export interface EntitySchemaNamespace {
     color?: string;
     metadata_schema?: Record<string, unknown>;
     event_kinds?: Record<string, unknown>;
-    /** Make the type derived (a SQL view); `null`/omit ⇒ a stored type. */
-    backing?: { sql: string } | null;
+    /**
+     * Make the type derived (a SQL view); `null`/omit ⇒ a stored type. With
+     * `connection`, the view runs LIVE against that connection's external DB
+     * (read-only pushdown) instead of the org's internal tables.
+     */
+    backing?: { sql: string; connection?: string } | null;
   }): Promise<unknown>;
   updateType(input: {
     slug: string;
@@ -44,8 +48,9 @@ export interface EntitySchemaNamespace {
     color?: string;
     metadata_schema?: Record<string, unknown>;
     event_kinds?: Record<string, unknown>;
-    /** Set/clear the derived view; omit to leave backing unchanged. */
-    backing?: { sql: string } | null;
+    /** Set/clear the derived view; omit to leave backing unchanged. With
+     *  `connection`, the view reads live from that external connection (pushdown). */
+    backing?: { sql: string; connection?: string } | null;
   }): Promise<unknown>;
   deleteType(slug: string): Promise<unknown>;
   auditType(slug: string): Promise<unknown>;

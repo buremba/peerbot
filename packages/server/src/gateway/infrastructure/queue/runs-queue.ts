@@ -22,6 +22,7 @@ import { randomUUID } from "node:crypto";
 import { createLogger } from "@lobu/core";
 import * as Sentry from "@sentry/node";
 import { getDb, getDbListener, type DbClient } from "../../../db/client.js";
+import { incrementCounter } from "../../metrics/prometheus.js";
 import type {
   IMessageQueue,
   JobHandler,
@@ -695,7 +696,7 @@ export class RunsQueue implements IMessageQueue {
   private async markFailed(runId: number, err: unknown): Promise<void> {
     const sql = getDb();
     const message = err instanceof Error ? err.message : String(err);
-    await sql`
+    const rows = await sql`
       UPDATE public.runs
       SET status = 'failed',
           completed_at = now(),
@@ -704,15 +705,27 @@ export class RunsQueue implements IMessageQueue {
       WHERE id = ${runId}
         AND status = 'claimed'
         AND claimed_by = ${this.claimedBy}
+      RETURNING run_type, queue_name
     `;
+    const row = rows[0] as
+      | { run_type?: string; queue_name?: string }
+      | undefined;
+    // Only emit when we actually transitioned the row (a sibling pod may have
+    // reclaimed it after a heartbeat gap). The failed `runs` row is the durable
+    // dead-letter record (kept FAILED_RUNS_RETENTION_DAYS); this counter is the
+    // aggregate, alertable signal the log alone never provided — a
+    // user-facing reply (run_type='chat_message') here was silently dropped.
+    if (row) {
+      incrementCounter("lobu_runs_failed_total", {
+        run_type: row.run_type ?? "unknown",
+        queue: row.queue_name ?? "unknown",
+      });
+    }
     // Logged as a warning; not emitted to Sentry. Per-run terminal failures
     // are high-volume and low-actionable (each is a separate event in Sentry,
     // burning the org quota with no per-incident signal beyond the log).
-    // The aggregate "we have failed runs" signal belongs on a metric/dash,
-    // not in the error feed.
-    logger.warn(
-      `Run ${runId} failed after retries: ${message}`,
-    );
+    // The aggregate "we have failed runs" signal lives on lobu_runs_failed_total.
+    logger.warn(`Run ${runId} failed after retries: ${message}`);
   }
 
   private async scheduleRetry(
@@ -860,6 +873,17 @@ export async function sweepCompletedRuns(): Promise<number> {
     const raw = Number(process.env.RUNS_RETENTION_DAYS);
     return Number.isFinite(raw) && raw > 0 ? raw : 30;
   })();
+  // Failed runs are the dead-letter record an operator inspects/replays. Keep
+  // them at least as long as completed runs, but allow a longer, independent
+  // window via FAILED_RUNS_RETENTION_DAYS so the dead-letter lane isn't pruned
+  // at the same cadence as routine completions. Defaults to retentionDays, so
+  // behavior is unchanged unless an operator opts into a longer window.
+  const failedRetentionDays = (() => {
+    const raw = Number(process.env.FAILED_RUNS_RETENTION_DAYS);
+    return Number.isFinite(raw) && raw > 0
+      ? Math.max(raw, retentionDays)
+      : retentionDays;
+  })();
 
   let total = 0;
 
@@ -879,7 +903,7 @@ export async function sweepCompletedRuns(): Promise<number> {
   const aged = await sql`
     WITH d AS (
       DELETE FROM runs
-      WHERE status IN ('completed', 'failed', 'cancelled', 'timeout')
+      WHERE status IN ('completed', 'cancelled', 'timeout')
         AND run_type IN ('chat_message', 'schedule', 'agent_run', 'internal', 'task')
         AND completed_at IS NOT NULL
         AND completed_at < now() - (${retentionDays}::int * interval '1 day')
@@ -888,6 +912,20 @@ export async function sweepCompletedRuns(): Promise<number> {
     SELECT count(*)::int AS count FROM d
   `;
   total += Number((aged[0] as { count?: number } | undefined)?.count ?? 0);
+
+  // Dead-letter lane: prune failed runs on their own (>=) retention window.
+  const agedFailed = await sql`
+    WITH d AS (
+      DELETE FROM runs
+      WHERE status = 'failed'
+        AND run_type IN ('chat_message', 'schedule', 'agent_run', 'internal', 'task')
+        AND completed_at IS NOT NULL
+        AND completed_at < now() - (${failedRetentionDays}::int * interval '1 day')
+      RETURNING id
+    )
+    SELECT count(*)::int AS count FROM d
+  `;
+  total += Number((agedFailed[0] as { count?: number } | undefined)?.count ?? 0);
 
   return total;
 }

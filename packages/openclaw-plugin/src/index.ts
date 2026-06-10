@@ -10,7 +10,7 @@ import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { renderFallbackSystemContext } from '@lobu/core';
+import { MCP_PROTOCOL_VERSION, renderFallbackSystemContext } from '@lobu/core';
 import type {
   McpToolDefinition,
   McpToolResponse,
@@ -105,8 +105,6 @@ let sessionClientId: string | null = null;
 let sessionClientSecret: string | null = null;
 let sessionIssuer: string | null = null;
 let mcpSessionId: string | null = null;
-
-const MCP_PROTOCOL_VERSION = '2025-03-26';
 
 // Make an MCP JSON-RPC request with session management.
 // Server returns plain JSON when Accept doesn't include text/event-stream.
@@ -972,7 +970,7 @@ function fetchMcpBootstrapSync(config: ResolvedPluginConfig): McpBootstrap {
     const base = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
     if (token) base.Authorization = 'Bearer ' + token;
     async function run() {
-      const initRes = await fetch(url, { method: 'POST', headers: base, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'openclaw-lobu', version: '1.0.0' } } }) });
+      const initRes = await fetch(url, { method: 'POST', headers: base, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: ${JSON.stringify(MCP_PROTOCOL_VERSION)}, capabilities: {}, clientInfo: { name: 'openclaw-lobu', version: '1.0.0' } } }) });
       const initData = await initRes.json();
       const sid = initRes.headers.get('mcp-session-id');
       const h2 = { ...base };

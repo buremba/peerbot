@@ -5,7 +5,6 @@ import logger from '../utils/logger';
 
 interface CreateNotificationParams {
   organizationId: string;
-  userId: string;
   type:
     | 'action_approval_needed'
     | 'connection_permission_request'

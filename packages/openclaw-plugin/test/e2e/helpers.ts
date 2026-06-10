@@ -661,8 +661,15 @@ export async function cleanupTestData(): Promise<void> {
   await db`DELETE FROM "member" WHERE "userId" IN (
     SELECT id FROM "user" WHERE email LIKE '%@e2e-test.example.com'
   )`;
-  // Delete events + entities in test orgs (must precede user/org deletion due to FKs)
-  await db`DELETE FROM events WHERE organization_id LIKE 'org_e2e_%'`;
+  // Delete events + entities in test orgs (must precede user/org deletion due to FKs).
+  // events has a DB-level append-only guard (trg_events_append_only); test
+  // teardown is sanctioned maintenance, so opt in with the transaction-scoped
+  // GUC the trigger honors. SET LOCAL keeps the bypass from leaking to other
+  // queries on this pooled connection.
+  await db.begin(async (tx) => {
+    await tx`SET LOCAL lobu.allow_event_delete = 'on'`;
+    await tx`DELETE FROM events WHERE organization_id LIKE 'org_e2e_%'`;
+  });
   // Clear parent references before deleting entities (parent_id has RESTRICT)
   await db`UPDATE entities SET parent_id = NULL WHERE organization_id LIKE 'org_e2e_%'`;
   await db`DELETE FROM entities WHERE organization_id LIKE 'org_e2e_%'`;

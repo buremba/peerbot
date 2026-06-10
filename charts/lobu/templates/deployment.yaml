@@ -28,10 +28,23 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with .Values.app.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ . }}
+      {{- end }}
       containers:
         - name: app
           image: {{ include "lobu.appImage" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.app.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if and .Values.app.lifecycle .Values.app.lifecycle.preStopSleepSeconds (gt (int .Values.app.lifecycle.preStopSleepSeconds) 0) }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep {{ .Values.app.lifecycle.preStopSleepSeconds }}"]
+          {{- end }}
           ports:
             - containerPort: 8787
               protocol: TCP

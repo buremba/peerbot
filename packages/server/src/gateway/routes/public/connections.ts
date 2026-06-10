@@ -513,6 +513,14 @@ export function createConnectionCrudRoutes(
       if (!access.authorized) {
         return c.json({ error: "Forbidden" }, 403);
       }
+    } else if (!session.isAdmin && session.settingsMode !== "admin") {
+      // An unbound connection (no owning agent) carries no per-agent ACL, and
+      // `manager.getConnection` is a global lookup. Without this gate any
+      // authenticated settings session could read another tenant's unbound
+      // connection — including its `config` secrets (botToken, signingSecret,
+      // clientSecret, credentials). Mirror the admin requirement the list
+      // route applies to unscoped reads.
+      return c.json({ error: "Forbidden" }, 403);
     }
 
     return c.json(connection);

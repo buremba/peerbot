@@ -8,5 +8,6 @@
 /public/guides/**/*.md
 /public/platforms/**/*.md
 /public/reference/**/*.md
+/public/sdks/**/*.md
 # Apex homepage has no Starlight source — committed as the curated twin.
 !/public/index.md

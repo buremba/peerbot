@@ -4,7 +4,7 @@
   "private": true,
   "license": "BUSL-1.1",
   "type": "module",
-  "description": "Lobu memory connectors — third-party integration implementations built on @lobu/connector-sdk",
+  "description": "Lobu memory connectors \u2014 third-party integration implementations built on @lobu/connector-sdk",
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
@@ -13,6 +13,7 @@
     "baileys": "7.0.0-rc.9",
     "playwright": "npm:patchright@^1.57.0",
     "playwright-vanilla": "npm:playwright@^1.60.0",
+    "postgres": "^3.4.7",
     "turndown": "7.2.2"
   },
   "devDependencies": {

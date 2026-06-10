@@ -36,6 +36,9 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with .Values.worker.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ . }}
+      {{- end }}
       initContainers:
         # Wait for the app pod's /health before starting the worker daemon.
         # Without this the daemon's hard health check (worker.ts:77) crashes
@@ -44,6 +47,10 @@ spec:
         - name: wait-for-app
           image: {{ include "lobu.workerImage" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.worker.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           command:
             - sh
             - -c
@@ -70,6 +77,10 @@ spec:
         - name: worker
           image: {{ include "lobu.workerImage" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.worker.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           env:
             - name: API_URL
               value: http://{{ include "lobu.fullname" . }}-app:{{ .Values.service.port }}

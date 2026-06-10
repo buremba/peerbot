@@ -18,6 +18,7 @@ import {
 } from '../auth/default-provisioning';
 import { reconcileDeviceCapabilities } from './device-reconcile';
 import { findBundledConnectorFile } from '../utils/connector-catalog';
+import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { resolveDeviceClaimableOrgs } from '../utils/device-claimable-orgs';
 import { errorMessage } from '../utils/errors';
@@ -629,6 +630,31 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
   //     worker image — see worker-side resolver in
   //     connector-worker/src/compile-connector.ts) to decide whether the
   //     fleet path applies.
+  // Execution-time cloud gate: a raw-DB connector (postgres) opens outbound TCP
+  // with no tenant-URL egress hardening yet, so it must not run under
+  // LOBU_CLOUD_MODE — fail the already-claimed run rather than hand it to a
+  // worker. This covers the production worker-poll path; feed-sync.ts gates the
+  // dev CLI path. No-op when not in cloud mode.
+  if (row.connector_key) {
+    try {
+      assertConnectorAllowedInCloud(row.connector_key);
+    } catch (err) {
+      const message = errorMessage(err);
+      await sql`
+        UPDATE runs
+        SET status = 'failed',
+            completed_at = current_timestamp,
+            error_message = ${message}
+        WHERE id = ${row.run_id}
+      `;
+      logger.warn(
+        { run_id: row.run_id, connector_key: row.connector_key },
+        'Blocked cloud-restricted connector run under LOBU_CLOUD_MODE'
+      );
+      return c.json({ next_poll_seconds: 1, skipped_run_id: row.run_id, error: message });
+    }
+  }
+
   let compiledCode: string | undefined;
   const gatewayHasLocalSource = row.connector_key
     ? findBundledConnectorFile(row.connector_key) !== null

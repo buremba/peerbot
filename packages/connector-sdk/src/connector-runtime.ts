@@ -11,6 +11,8 @@ import type {
   AuthContext,
   AuthResult,
   ConnectorDefinition,
+  QueryContext,
+  QueryResult,
   SyncContext,
   SyncResult,
 } from './connector-types.js';
@@ -78,6 +80,18 @@ export abstract class ConnectorRuntime<C = Record<string, unknown>, F = Record<s
   // biome-ignore lint/correctness/noUnusedFunctionParameters: contract signature — subclasses receive the full ActionContext
   async execute(ctx: ActionContext): Promise<ActionResult> {
     return { success: false, error: 'Actions not supported' };
+  }
+
+  /**
+   * Run a read-only query LIVE against the source and return rows — without
+   * persisting anything (contrast `sync()`, which emits events). The platform
+   * calls this for virtual-feed reads and external-backed derived entities; the
+   * connector pushes pagination/sort down. Default implementation throws —
+   * connectors that don't serve live reads need not override.
+   */
+  // biome-ignore lint/correctness/noUnusedFunctionParameters: contract signature — subclasses receive the full QueryContext
+  async query(ctx: QueryContext<F>): Promise<QueryResult> {
+    throw new Error(`${this.definition.key} does not support live queries`);
   }
 
   /**

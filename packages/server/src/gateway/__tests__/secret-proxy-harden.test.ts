@@ -314,6 +314,67 @@ describe("secret-proxy agentId binding", () => {
     });
     expect(status).toBe(200);
   });
+
+  // REGRESSION GUARD (allow-path). The non-placeholder branch must NOT reject a
+  // bearer that fails verifyWorkerToken. Embedded/local worker→proxy auth
+  // legitimately reaches this branch with a token the proxy can't decode;
+  // 401'ing it broke real chat turns (cli-smoke / sdk-e2e / integration). The
+  // agentId binding applies ONLY when the token verifies AND carries an
+  // agentId. Do NOT "tighten" this branch to reject unverifiable tokens — that
+  // is the exact change this test exists to catch. See PR #1192 history.
+  test("ALLOW-PATH: a non-placeholder, non-verifying bearer still forwards (not 401)", async () => {
+    const secretRef = createBuiltinSecretRef("agents/agent-ok/key");
+    const secretStore = makeSecretStore({ [secretRef]: "real-key" });
+
+    const proxy = new SecretProxy(
+      { defaultUpstreamUrl: "https://upstream.example.com" },
+      secretStore
+    );
+    proxy.registerUpstream(
+      { slug: "mock", upstreamBaseUrl: "https://mock.api.example.com" },
+      "mock-provider"
+    );
+
+    // Credential present so the provider path doesn't 401 from credential lookup.
+    proxy.setAuthProfilesManager({
+      getBestProfile: async () => ({
+        id: "p1",
+        provider: "mock-provider",
+        credential: "real-key",
+        authType: "api-key",
+        label: "p1",
+        createdAt: Date.now(),
+      }),
+      ensureFreshCredential: async (profile: { credential?: string }) =>
+        profile.credential,
+    } as any);
+
+    let status = 0;
+    await withFetch(
+      async () =>
+        new Response("{}", {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      async () => {
+        const res = await proxy.getApp().request(
+          "/api/proxy/mock/a/agent-ok/v1/chat/completions",
+          {
+            method: "POST",
+            headers: {
+              // Non-placeholder bearer that is NOT a decodable worker token.
+              authorization: "Bearer not-a-verifiable-worker-token",
+              "content-type": "application/json",
+            },
+            body: "{}",
+          }
+        );
+        status = res.status;
+      }
+    );
+    // Must proceed (200), NOT 401 — the binding is best-effort, not a gate.
+    expect(status).toBe(200);
+  });
 });
 
 // ---------------------------------------------------------------------------

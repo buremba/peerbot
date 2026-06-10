@@ -16,6 +16,14 @@
 
 import type { Env } from '@lobu/connector-sdk';
 
+/** Mirror the server's isCloudMode() truthiness (1/true/yes, case-insensitive) —
+ *  a bare `process.env.LOBU_CLOUD_MODE ?` would wrongly treat "0"/"false" as on.
+ *  Duplicated rather than imported: connector-worker can't depend on @lobu/server. */
+function cloudModeOn(): boolean {
+  const v = process.env.LOBU_CLOUD_MODE?.trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes';
+}
+
 export function buildConnectorWorkerEnv(): Env {
   return {
     ENVIRONMENT: process.env.ENVIRONMENT || 'production',
@@ -25,5 +33,8 @@ export function buildConnectorWorkerEnv(): Env {
     REDDIT_CLIENT_SECRET: process.env.REDDIT_CLIENT_SECRET,
     REDDIT_USER_AGENT: process.env.REDDIT_USER_AGENT,
     WORKER_API_TOKEN: process.env.WORKER_API_TOKEN,
+    // DB connectors reject internal/metadata hosts under cloud mode; self-hosted
+    // reaches its own private DB. Delivered to the connector subprocess as config.
+    LOBU_DB_EGRESS_POLICY: cloudModeOn() ? 'block-private' : 'allow-private',
   };
 }

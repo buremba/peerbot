@@ -1,0 +1,24 @@
+# Dependabot keeps the GitHub Actions supply chain current. Action refs are an
+# unmonitored attack surface today (no pinning automation, no update cadence) —
+# this surfaces version bumps as grouped weekly PRs so a vulnerable/abandoned
+# action doesn't silently linger in the deploy/publish pipeline.
+#
+# npm/bun dependency updates are intentionally NOT handled here: this repo is a
+# Bun workspace monorepo with `workspace:*` internal deps and a committed
+# `bun.lock` that Dependabot's npm ecosystem does not update cleanly. Use
+# Renovate (Bun-aware, handles `workspace:*`) for runtime dependency bumps —
+# see the prod-readiness roadmap. Dependency *vulnerability* scanning is covered
+# by `bun audit` + Trivy in supply-chain.yml.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"

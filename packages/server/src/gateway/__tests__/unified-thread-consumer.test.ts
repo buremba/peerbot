@@ -120,6 +120,84 @@ describe("UnifiedThreadResponseConsumer customEvent broadcast", () => {
   });
 });
 
+describe("UnifiedThreadResponseConsumer interaction card owner-routing", () => {
+  function makeInteractionConsumer(hasActiveConnection: boolean) {
+    const queue = {
+      start: mock(async () => undefined),
+      stop: mock(async () => undefined),
+      createQueue: mock(async () => undefined),
+      work: mock(async () => undefined),
+    };
+    const broadcast = mock(() => undefined);
+    const sseManager = {
+      broadcast,
+      hasActiveConnection: mock(() => hasActiveConnection),
+    };
+    const platformRegistry = {
+      get: mock(() => ({
+        getResponseRenderer: () => ({
+          handleCompletion: mock(async () => undefined),
+          handleError: mock(async () => undefined),
+        }),
+      })),
+    };
+    const consumer = new UnifiedThreadResponseConsumer(
+      queue as any,
+      platformRegistry as any,
+      sseManager as any
+    ) as any;
+    return { consumer, broadcast, sseManager };
+  }
+
+  const interactionPayload = {
+    messageId: "m-int-1",
+    channelId: "api:conv-1",
+    conversationId: "api:conv-1",
+    userId: "u1",
+    teamId: "api",
+    platform: "api",
+    timestamp: 1234,
+    customEvent: {
+      name: "question",
+      data: { type: "question", questionId: "q_1", question: "Proceed?" },
+      requireSseOwner: true,
+    },
+  };
+
+  test("re-queues an ask_user card when this pod does not own the SSE", async () => {
+    const { consumer, broadcast, sseManager } = makeInteractionConsumer(false);
+
+    await expect(
+      consumer.handleThreadResponse({ id: "job-1", data: interactionPayload })
+    ).rejects.toThrow(/not owned by this gateway instance/);
+
+    expect(sseManager.hasActiveConnection).toHaveBeenCalledWith("api:conv-1");
+    // Must NOT broadcast into the wrong pod's SseManager.
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  test("delivers the card on the pod that owns the SSE connection", async () => {
+    const { consumer, broadcast } = makeInteractionConsumer(true);
+
+    await consumer.handleThreadResponse({
+      id: "job-2",
+      data: interactionPayload,
+    });
+
+    const questionBroadcasts = broadcast.mock.calls.filter(
+      (call: any[]) => call[1] === "question"
+    );
+    expect(questionBroadcasts.length).toBe(1);
+    expect(questionBroadcasts[0][0]).toBe("api:conv-1");
+    expect(questionBroadcasts[0][2]).toMatchObject({
+      type: "question",
+      questionId: "q_1",
+      messageId: "m-int-1",
+      timestamp: 1234,
+    });
+  });
+});
+
 describe("UnifiedThreadResponseConsumer Chat SDK ownership", () => {
   test("throws for Chat SDK connection responses not owned by this gateway", async () => {
     const chatResponseBridge = {

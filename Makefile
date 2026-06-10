@@ -118,6 +118,7 @@ test-unit:
 	@bun test packages/server/src/auth/__tests__/tool-access.test.ts
 	@bun test packages/server/src/gateway/infrastructure/queue
 	@bun test packages/connector-worker
+	@bun test packages/client packages/promptfoo-provider
 
 # Integration suite — vitest under Node + bun:test packages that need Postgres.
 # Requires DATABASE_URL pointing at a Postgres with pgvector installed.

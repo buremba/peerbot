@@ -1,5 +1,8 @@
-import { createHash, randomBytes } from "node:crypto";
 import { createLogger, type Logger } from "@lobu/core";
+import {
+  generateCodeChallenge as pkceCodeChallenge,
+  generateCodeVerifier as pkceCodeVerifier,
+} from "../../../utils/pkce.js";
 
 /**
  * Base OAuth2 client with shared token exchange and refresh logic
@@ -22,7 +25,7 @@ export abstract class BaseOAuth2Client {
    * Used for public OAuth clients (mobile apps, CLIs, SPAs)
    */
   generateCodeVerifier(): string {
-    return randomBytes(32).toString("base64url");
+    return pkceCodeVerifier();
   }
 
   /**
@@ -30,7 +33,7 @@ export abstract class BaseOAuth2Client {
    * The challenge is sent in authorization request, verifier in token exchange
    */
   generateCodeChallenge(codeVerifier: string): string {
-    return createHash("sha256").update(codeVerifier).digest("base64url");
+    return pkceCodeChallenge(codeVerifier);
   }
 
   // ============================================================================

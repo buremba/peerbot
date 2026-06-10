@@ -12,9 +12,8 @@ import {
   setActiveOrg,
   type MemorySession,
 } from "./openclaw-auth.js";
+import { MCP_PROTOCOL_VERSION } from "@lobu/core";
 import { printText } from "./output.js";
-
-const MCP_PROTOCOL_VERSION = "2025-03-26";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;

@@ -607,10 +607,38 @@ export class SecretProxy {
           return c.json({ error: "Forbidden" }, 403);
         }
       } else if (callerToken) {
-        logger.debug(
-          { urlAgentId },
-          "Proxy request authenticated by non-placeholder token; agentId binding skipped"
-        );
+        // A non-placeholder caller authenticates with a worker JWT. Bind it to
+        // the URL agentId exactly like the placeholder path above: a worker
+        // minted for agent A must not spend agent B's provider credentials by
+        // rewriting the `/a/{agentId}/` URL segment (these requests reach the
+        // provider-credential path below, which injects the URL agent's real
+        // key). The token already carries the agentId it was minted for.
+        const workerTokenStr =
+          c.req.header("x-lobu-worker-token") ||
+          c.req.header("X-Lobu-Worker-Token") ||
+          c.req.query("worker_token") ||
+          (!callerToken.includes(PLACEHOLDER_PREFIX)
+            ? callerToken
+            : undefined);
+        const tokenData = workerTokenStr
+          ? verifyWorkerToken(workerTokenStr)
+          : null;
+        if (tokenData?.agentId && tokenData.agentId !== urlAgentId) {
+          logger.warn(
+            { urlAgentId, tokenAgentId: tokenData.agentId },
+            "Rejecting proxy request: worker token agentId does not match URL"
+          );
+          return c.json({ error: "Forbidden" }, 403);
+        }
+        if (!tokenData?.agentId) {
+          // Internal/preflight tokens minted before agent resolution carry no
+          // agentId — the documented exception. Org scoping still applies via
+          // expectedOrganizationId.
+          logger.debug(
+            { urlAgentId },
+            "Proxy request authenticated by non-placeholder token without agentId; agentId binding skipped"
+          );
+        }
       } else {
         // No auth header at all but the URL names an agent — refuse rather than
         // forward upstream using that agent's credential. An unauthenticated

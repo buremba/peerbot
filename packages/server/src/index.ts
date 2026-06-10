@@ -19,6 +19,7 @@ import { createAuth } from './auth';
 import { getAuthConfig as getAuthConfigFromEnv } from './auth/config';
 import { mcpAuth } from './auth/middleware';
 import { compareWorkerToken } from './auth/worker-token';
+import { isCloudMode } from './utils/cloud-mode';
 import { oauthRoutes } from './auth/oauth/routes';
 import { findExistingPersonalOrg } from './auth/personal-org-provisioning';
 import { credentialRoutes } from './auth/routes';
@@ -781,6 +782,14 @@ app.use('/api/workers/*', async (c, next) => {
     }
 
     if (expected) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    // Anonymous fallback is a local-dev convenience only. In cloud/prod mode
+    // (LOBU_CLOUD_MODE=1) an operator who forgets to set WORKER_API_TOKEN must
+    // NOT silently expose poll/heartbeat/stream/complete/dispatch to anonymous
+    // callers — fail closed instead of opening the worker fleet API.
+    if (isCloudMode()) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
 

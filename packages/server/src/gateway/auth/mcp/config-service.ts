@@ -372,7 +372,14 @@ export class McpConfigService {
       try {
         const settings =
           await this.agentSettingsStore.getSettings(agentId);
-        servers = { ...(settings?.mcpServers || {}) };
+        // SECURITY: `internal: true` is a privileged, gateway-derived flag — it
+        // bypasses the SSRF guard and stamps the memory-direct-auth header
+        // (see toHttpServerConfig / mcp proxy). It must NEVER be honored from
+        // stored agent config, which is user/agent-writable. Strip it here at
+        // the untrusted input boundary; the only legitimate internal server
+        // (lobu-memory) gets the flag added downstream in
+        // getEffectiveAgentMcpServers.
+        servers = stripInternalFlag(settings?.mcpServers || {});
       } catch (error) {
         logger.warn(`Failed to load per-agent MCP settings for ${agentId}`, {
           error,
@@ -498,6 +505,28 @@ function parseOAuthConfig(raw: any): McpOAuthConfig | undefined {
   return config;
 }
 
+/**
+ * Remove the privileged `internal` flag from every server in an untrusted
+ * MCP-server map. `internal: true` causes the proxy to skip the SSRF guard and
+ * forward the worker credential with a direct-auth header, so it may only ever
+ * originate from gateway-derived config (the lobu-memory server), never from
+ * stored agent/user settings.
+ */
+export function stripInternalFlag(
+  servers: Record<string, any>
+): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [id, server] of Object.entries(servers)) {
+    if (server && typeof server === "object" && !Array.isArray(server)) {
+      const { internal: _internal, ...rest } = server as Record<string, any>;
+      out[id] = rest;
+    } else {
+      out[id] = server;
+    }
+  }
+  return out;
+}
+
 function normalizeConfig(config: { mcpServers: Record<string, any> }) {
   const rawServers: Record<string, any> = {};
   const httpServers = new Map<string, HttpMcpServerConfig>();
@@ -528,7 +557,10 @@ function normalizeConfig(config: { mcpServers: Record<string, any> }) {
             ? cloned.headers
             : undefined,
         authScope: parseAuthScope(cloned),
-        internal: cloned.internal === true,
+        // Global MCP servers are never internal — the only internal server is
+        // the per-agent derived lobu-memory entry, which does not flow through
+        // normalizeConfig. Never trust a stored `internal` flag here.
+        internal: false,
       });
     }
   }

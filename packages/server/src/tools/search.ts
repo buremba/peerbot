@@ -256,6 +256,7 @@ function withContent<T extends UnifiedSearchResult>(result: T, content: ContentS
 async function fetchContentSnippets(
   query: string | null,
   organizationId: string,
+  userId: string | null,
   contentLimit: number,
   env: Env,
   queryEmbedding?: number[],
@@ -265,6 +266,12 @@ async function fetchContentSnippets(
     query,
     {
       organization_id: organizationId,
+      // Enforce the org/private-connection visibility boundary on the recall
+      // path, exactly as get_content does. Without visibility_scope the
+      // connection-visibility clause is skipped entirely, so search_memory
+      // (publicly readable) would expose another member's private-connection
+      // content. See get-content-visibility / search-cross-org tests.
+      visibility_scope: { organizationId, userId },
       limit: contentLimit,
       min_similarity: 0.4,
       query_embedding: queryEmbedding,
@@ -320,6 +327,7 @@ export async function search(
       ? fetchContentSnippets(
           args.query ?? null,
           ctx.organizationId,
+          ctx.userId,
           contentLimit,
           env,
           args.query_embedding,

@@ -391,6 +391,8 @@ export default class PostgresConnector extends ConnectorRuntime {
         let wrapped: string;
         let params: unknown[];
         if (haveCursor) {
+          // security-allowed: colCur/colPk are assertIdentifier-validated + quoted;
+          // the cursor/pk values are bound parameters ($1/$2/$3), not interpolated.
           wrapped =
             `SELECT * FROM (\n${baseSql}\n) q\n` +
             `WHERE (${colCur} > $1${curCast} ` +

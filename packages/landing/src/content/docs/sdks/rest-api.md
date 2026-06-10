@@ -19,7 +19,7 @@ Browse all endpoints, try requests, and see response schemas in the [full API re
 
 The reference is auto-generated from the gateway's OpenAPI spec and always reflects the latest routes.
 
-Calling agents from TypeScript? Reach for the typed [`@lobu/client`](/sdks/client/) instead of hand-rolling HTTP — same endpoints, typed sessions and SSE streaming. To extend what an agent sees and does rather than call it over the wire, see [Connectors](/sdks/connectors/) and [Reactions](/sdks/reactions/).
+Calling agents from TypeScript? Reach for the typed [`@lobu/client`](/sdks/client/) instead of hand-rolling HTTP: same endpoints, typed sessions and SSE streaming. To extend what an agent sees and does rather than call it over the wire, see [Connectors](/sdks/connectors/) and [Reactions](/sdks/reactions/).
 
 ## Quick Start
 

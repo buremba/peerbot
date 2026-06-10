@@ -1,9 +1,9 @@
 ---
 title: Client
-description: Call Lobu agents from TypeScript — create a session, send a message, stream the reply, with @lobu/client.
+description: "Call Lobu agents from TypeScript with @lobu/client: create a session, send a message, stream the reply."
 ---
 
-[`@lobu/client`](https://www.npmjs.com/package/@lobu/client) is the typed TypeScript wrapper around Lobu's agent API. Create a session against an agent, send messages, and stream the reply — without hand-rolling SSE parsing or token handling. It's the inside-your-app counterpart to the [REST API](/sdks/rest-api/): same endpoints, typed.
+[`@lobu/client`](https://www.npmjs.com/package/@lobu/client) is the typed TypeScript wrapper around Lobu's agent API. Create a session against an agent, send messages, and stream the reply, without hand-rolling SSE parsing or token handling. It's the inside-your-app counterpart to the [REST API](/sdks/rest-api/): same endpoints, typed.
 
 ## Install
 
@@ -12,7 +12,7 @@ bun add @lobu/client
 # or: npm install @lobu/client
 ```
 
-Runtime: Node 18+ (anything with a global `fetch`). Works in the browser too, but **mint sessions server-side** — see [Security](#security).
+Runtime: Node 18+ (anything with a global `fetch`). Works in the browser too, but **mint sessions server-side**; see [Security](#security).
 
 ## Quick start
 
@@ -49,7 +49,7 @@ const lobu = new Lobu({
 
 | Option | Type | Notes |
 |--------|------|-------|
-| `baseUrl` | `string` | Gateway origin. Endpoints are `<baseUrl>/api/v1/agents/…`. The embedded server and cloud both serve the agent API under the `/lobu` prefix — e.g. `http://localhost:8787/lobu`. Trailing slashes are trimmed. |
+| `baseUrl` | `string` | Gateway origin. Endpoints are `<baseUrl>/api/v1/agents/…`. The embedded server and cloud both serve the agent API under the `/lobu` prefix, e.g. `http://localhost:8787/lobu`. Trailing slashes are trimmed. |
 | `token` | `string \| () => string \| Promise<string>` | The **API token** used to mint sessions. Pass a function to fetch it lazily (e.g. from a secret store or a short-lived issuer). |
 | `fetch` | `typeof fetch` | Override the fetch implementation. Defaults to the global `fetch`. |
 | `headers` | `Headers \| Record<string,string> \| [string,string][]` | Extra headers attached to every request. |
@@ -63,11 +63,11 @@ There are two tokens in play: the **API token** you pass here mints sessions; ea
 ```ts
 const session = await lobu.sessions.create({
   agentId: "my-agent",
-  userId: "u_123",      // optional — scopes the conversation to a user
-  thread: "support",    // optional — separate conversation threads
-  // provider, model — optional per-session overrides
-  // forceNew: true     — start a fresh conversation instead of resuming
-  // dryRun: true       — validate without spawning a worker
+  userId: "u_123",      // optional: scopes the conversation to a user
+  thread: "support",    // optional: separate conversation threads
+  // provider, model    // optional per-session overrides
+  // forceNew: true     // start a fresh conversation instead of resuming
+  // dryRun: true       // validate without spawning a worker
 });
 ```
 
@@ -80,7 +80,7 @@ The `AgentSession` exposes:
 | `session.events(opts?)` | An `AsyncIterable` of the agent's SSE stream. |
 | `session.refresh()` | Re-mint the worker token without losing the conversation. Call before `expiresAt`. |
 | `session.token` / `session.expiresAt` | Current worker token and its expiry (Unix epoch ms, 24h TTL). |
-| `session.conversationId` | Server-side routing id — what `send`/`events` route on. Not the logical `agentId`. |
+| `session.conversationId` | Server-side routing id, what `send`/`events` route on. Not the logical `agentId`. |
 | `session.sseUrl` / `session.messagesUrl` | The endpoints the server advertised for this session. |
 
 ## Streaming a reply
@@ -108,13 +108,13 @@ for await (const event of session.events()) {
 }
 ```
 
-The event union is closed on the common events (`connected`, `output`, `complete`, `error`, `agent-error`, `ping`) so matching on `event.event` narrows `event.data`. Richer interactive events (`question`, `tool-approval`, `suggestion`, …) are present by name with `unknown` data; type one yourself with `session.events<MyPayload>()`.
+The event union is closed on the common events (`connected`, `output`, `complete`, `error`, `agent-error`, `ping`), so matching on `event.event` narrows `event.data`. Richer interactive events (`question`, `tool-approval`, `suggestion`, …) are present by name with `unknown` data; type one yourself with `session.events<MyPayload>()`.
 
-`events` defaults to **no auto-reconnect** (`maxRetryAttempts: 1`) — a 401/404/5xx or network failure rejects the iterator immediately instead of hanging. Raise `maxRetryAttempts` to opt into reconnects for transient failures.
+`events` defaults to **no auto-reconnect** (`maxRetryAttempts: 1`): a 401/404/5xx or network failure rejects the iterator immediately instead of hanging. Raise `maxRetryAttempts` to opt into reconnects for transient failures.
 
 ## Long-lived sessions
 
-Worker tokens expire after 24h. For a chat that outlives that, refresh before expiry — there's no background auto-renew:
+Worker tokens expire after 24h. For a chat that outlives that, refresh before expiry (there's no background auto-renew):
 
 ```ts
 if (Date.now() > session.expiresAt - 60_000) {
@@ -144,12 +144,12 @@ try {
 
 ## Security
 
-`createSession` accepts **server-trusted** fields — `networkConfig` (the worker's egress allow/blocklist), `mcpServers`, and `nix` packages. These control what the spawned worker can reach and run, so **mint sessions on your server**, never let an untrusted browser pick its own values. If you call the client from the browser, proxy session creation through your backend and hand the browser only the resulting session token.
+`createSession` accepts **server-trusted** fields: `networkConfig` (the worker's egress allow/blocklist), `mcpServers`, and `nix` packages. These control what the spawned worker can reach and run, so **mint sessions on your server**; never let an untrusted browser pick its own values. If you call the client from the browser, proxy session creation through your backend and hand the browser only the resulting session token.
 
 Note also: under a multi-replica deployment, API/SSE events are not owner-routed across pods, so `ask` can time out even after the agent finished. Single-replica and local runs are reliable; for multi-replica, prefer `send` + your own `events` consumer with reconnect.
 
 ## See also
 
-- [REST API](/sdks/rest-api/) — the same endpoints over raw HTTP, for any language.
-- [Interactive API reference](/reference/api-reference/) — every endpoint, generated from the OpenAPI spec.
-- [Connectors](/sdks/connectors/) / [Reactions](/sdks/reactions/) — the inside-out surface for extending what an agent sees and does.
+- [REST API](/sdks/rest-api/): the same endpoints over raw HTTP, for any language.
+- [Interactive API reference](/reference/api-reference/): every endpoint, generated from the OpenAPI spec.
+- [Connectors](/sdks/connectors/) / [Reactions](/sdks/reactions/): the inside-out surface for extending what an agent sees and does.

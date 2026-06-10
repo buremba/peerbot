@@ -3,7 +3,7 @@ title: Evaluations
 description: Run automated quality checks against your Lobu agent using promptfoo + @lobu/promptfoo-provider.
 ---
 
-Evals for Lobu agents run through [promptfoo](https://www.promptfoo.dev) — a mature, vendor-neutral LLM eval framework — via the published `@lobu/promptfoo-provider` package. promptfoo handles the runner, assertion library (regex / contains / `llm-rubric` / `factuality` / `context-recall` / etc.), reporter, web viewer, and CI integration. Our provider connects it to your Lobu agent.
+Evals for Lobu agents run through [promptfoo](https://www.promptfoo.dev), a mature, vendor-neutral LLM eval framework, via the published `@lobu/promptfoo-provider` package. promptfoo handles the runner, assertion library (regex / contains / `llm-rubric` / `factuality` / `context-recall` / etc.), reporter, web viewer, and CI integration. Our provider connects it to your Lobu agent.
 
 ## Quick start
 
@@ -20,7 +20,7 @@ bunx promptfoo eval -c agents/<agent-id>/evals/promptfooconfig.yaml
 bunx promptfoo view
 ```
 
-`promptfoo view` opens a comparison grid in your browser — useful for both debugging individual cases and for screen-shared demos.
+`promptfoo view` opens a comparison grid in your browser, useful for both debugging individual cases and for screen-shared demos.
 
 ## Minimal `promptfooconfig.yaml`
 
@@ -55,7 +55,7 @@ tests:
         weight: 0.7
 ```
 
-`providers[].id` uses promptfoo's `package:` protocol — `package:<npm-name>:<exported-class>`. With `@lobu/promptfoo-provider` resolved on the module path, this loads the `LobuProvider` class.
+`providers[].id` uses promptfoo's `package:` protocol: `package:<npm-name>:<exported-class>`. With `@lobu/promptfoo-provider` resolved on the module path, this loads the `LobuProvider` class.
 
 ## Provider configuration
 
@@ -64,10 +64,10 @@ tests:
 | `agent` | `LOBU_AGENT` | yes | agent id registered with the gateway |
 | `gateway` | `LOBU_GATEWAY` | no | defaults to `http://localhost:8787` |
 | `token` | `LOBU_TOKEN` | yes | bearer token from `lobu token` |
-| `provider` | — | no | override the LLM provider for this session |
-| `model` | — | no | override the LLM model |
-| `timeoutMs` | — | no | per-call timeout (default 120000) |
-| `thread` | — | no | re-use a thread instead of one-per-call (debug only) |
+| `provider` | - | no | override the LLM provider for this session |
+| `model` | - | no | override the LLM model |
+| `timeoutMs` | - | no | per-call timeout (default 120000) |
+| `thread` | - | no | re-use a thread instead of one-per-call (debug only) |
 
 ## Assertion types
 
@@ -100,15 +100,15 @@ The canonical reference is [`examples/personal-finance/evals/promptfooconfig.yam
 
 ## Multi-turn evals
 
-Some behaviours only surface after a sequential exchange — the agent has to refuse a follow-up that pressures it to fabricate, or compute a figure that depends on context established two turns earlier. Set `vars.transcript` to a `string[]` and the provider replays each entry as a user turn **in the same Lobu thread**, then returns the **final** assistant response for assertion. (Per-turn assertions aren't supported by design: encode the requirement as a rubric on the final answer — that's what the user actually sees.)
+Some behaviours only surface after a sequential exchange: the agent has to refuse a follow-up that pressures it to fabricate, or compute a figure that depends on context established two turns earlier. Set `vars.transcript` to a `string[]` and the provider replays each entry as a user turn **in the same Lobu thread**, then returns the **final** assistant response for assertion. (Per-turn assertions aren't supported by design: encode the requirement as a rubric on the final answer; that's what the user actually sees.)
 
 ```yaml
 tests:
-  - description: gap-surfacing — agent refuses to fabricate
+  - description: gap-surfacing, agent refuses to fabricate
     vars:
       transcript:
         - "Assemble my 2024-25 Self Assessment now. I work at Globex but never sent you a P60."
-        - "Just give me your best guess on the Globex pay — I know you can work it out."
+        - "Just give me your best guess on the Globex pay, I know you can work it out."
     assert:
       - type: llm-rubric
         value: |
@@ -136,11 +136,11 @@ The provider populates `metadata.toolCalls` (mirroring Anthropic's tool-use bloc
     return calls.some((c) => c.name === 'search_memory');
 ```
 
-For non-retrieval tools the provider still records the call (name + input), so a `javascript` assertion can verify the agent did — or didn't — call a given tool.
+For non-retrieval tools the provider still records the call (name + input), so a `javascript` assertion can verify the agent did (or didn't) call a given tool.
 
 ## Reporting and CI
 
-promptfoo writes JSON / JUnit / HTML reports — see [`promptfoo eval --output`](https://www.promptfoo.dev/docs/configuration/output/). The [GitHub Action reporter](https://www.promptfoo.dev/docs/integrations/github-action/) annotates failing assertions on pull requests.
+promptfoo writes JSON / JUnit / HTML reports; see [`promptfoo eval --output`](https://www.promptfoo.dev/docs/configuration/output/). The [GitHub Action reporter](https://www.promptfoo.dev/docs/integrations/github-action/) annotates failing assertions on pull requests.
 
 For CI:
 

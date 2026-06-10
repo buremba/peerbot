@@ -1,6 +1,6 @@
 ---
 title: "@lobu/connector-sdk"
-description: Type reference for the Connector SDK — ConnectorRuntime, ConnectorDefinition, EventEnvelope, and the sync/action/auth surface.
+description: "Type reference for the Connector SDK: ConnectorRuntime, ConnectorDefinition, EventEnvelope, and the sync/action/auth surface."
 sidebar:
   order: 5
 ---
@@ -445,7 +445,7 @@ interface AuthResult {
 
 ## `Connection` / `Feed` / `Run`
 
-DB-backed types the runtime hands you in admin contexts. Reads only — connectors never write these.
+DB-backed types the runtime hands you in admin contexts. Reads only: connectors never write these.
 
 ```ts
 interface Connection {
@@ -525,7 +525,7 @@ The package also re-exports a few utilities so connectors share one implementati
 | `calculateEngagementScore(signals)` | Maps raw engagement metrics into a normalised 0–100 `score`. |
 | `Type`, `Static` | Re-exported TypeBox builders for `configSchema` / `inputSchema` / `outputSchema`. |
 | `sdkLogger` (alias `logger`) | Connector-scoped logger; output is captured by the run record. |
-| `normalizeEmail`, `normalizePhone`, `normalizeGithubLogin`, … | Identifier normalisers — call these before populating `EntityIdentitySpec` paths. |
+| `normalizeEmail`, `normalizePhone`, `normalizeGithubLogin`, … | Identifier normalisers; call these before populating `EntityIdentitySpec` paths. |
 | `SOURCE_NATIVE_EVENT_TYPES`, `isSourceNativeEventType` | The canonical event-type taxonomy. |
 | `WATCHER_TIME_GRANULARITIES`, `alignToWatcherWindowStart`, … | Time helpers used by watcher scheduling. |
 | Browser SDK: `acquireBrowser`, `launchBrowser`, `launchStealthBrowser`, `CdpPage`, `browserNetworkSync`, etc. | Headless / CDP / stealth browser primitives for `browser` and `cdp` capture. |

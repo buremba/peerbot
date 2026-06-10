@@ -7,10 +7,11 @@
  * Design (see plan §A):
  *  - Auth is `env_keys` with a single `DATABASE_URL` secret → `ctx.config.DATABASE_URL`.
  *  - The user writes a BARE base SELECT (no WHERE-cursor / ORDER BY / LIMIT). The
- *    connector validates it with node-sql-parser (single statement, a SELECT, no
- *    top-level LIMIT/OFFSET, no positional/named params) and WRAPS it — never
- *    string-substitutes a cursor — with a keyset compound-cursor predicate so
- *    incremental sync is correct across equal-cursor ties:
+ *    connector structurally checks it (single statement, leading SELECT/WITH, no
+ *    top-level LIMIT/OFFSET, no positional/named params — the read-only tx is the
+ *    real write seal) and WRAPS it — never string-substitutes a cursor — with a
+ *    keyset compound-cursor predicate so incremental sync is correct across
+ *    equal-cursor ties:
  *      SELECT * FROM (<base>) q
  *      WHERE (q.cur > $1 OR (q.cur = $1 AND q.pk > $2))
  *      ORDER BY q.cur, q.pk LIMIT $3
@@ -39,7 +40,6 @@ import {
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
-import { Parser } from 'node-sql-parser';
 import postgres from 'postgres';
 import { assertConnectionStringAllowed, readEgressPolicy } from './db-egress-guard.js';
 
@@ -146,56 +146,6 @@ function assertIdentifier(value: string, label: string): string {
   return value;
 }
 
-const DML_NODE_TYPES = new Set(['insert', 'update', 'delete', 'replace']);
-
-/**
- * Walk the node-sql-parser AST for any data-modifying node. A top-level SELECT
- * can still wrap a write-capable CTE (`WITH x AS (INSERT … RETURNING) SELECT …`),
- * which the parser reports as a top-level `select` — so the `stmt.type` check
- * alone misses it. The read-only transaction is the hard seal; this rejects it
- * up front so a feed query can never attempt a write.
- */
-function containsDmlNode(root: unknown): boolean {
-  const seen = new Set<object>();
-  const stack: unknown[] = [root];
-  while (stack.length > 0) {
-    const node = stack.pop();
-    if (!node || typeof node !== 'object' || seen.has(node as object)) continue;
-    seen.add(node as object);
-    if (Array.isArray(node)) {
-      for (const child of node) stack.push(child);
-      continue;
-    }
-    const obj = node as Record<string, unknown>;
-    if (typeof obj.type === 'string' && DML_NODE_TYPES.has(obj.type)) return true;
-    for (const key of Object.keys(obj)) stack.push(obj[key]);
-  }
-  return false;
-}
-
-type ParsedSelect = { type?: string };
-
-/**
- * Token-level fallback when node-sql-parser can't parse the statement. Its
- * Postgres grammar (v5.4.0) lags real Postgres — it rejects FTS `@@`, jsonpath
- * `@?`/`@@`, `GROUP BY GROUPING SETS`, array slices `arr[a:b]`, `IS NOT DISTINCT
- * FROM`, range-type literal casts, and more — so hard-failing on a parse error
- * would reject valid read-only SQL. The HARD write seal is the read-only
- * transaction (`SET TRANSACTION READ ONLY` rejects every write, incl. DML in a
- * CTE); single-statement (no embedded `;`) and no-bind-params are already
- * enforced before we reach here. This only re-checks the one thing the seal
- * doesn't: that the statement is a SELECT (or WITH … SELECT), not a leading DDL/
- * DML the planner would still happily run inside a read-only tx if it were, say,
- * a `SET`/`CALL`/`DO`.
- */
-function assertReadOnlyTokens(stripped: string): void {
-  // Allow a leading "(" for "(SELECT …) UNION …" / parenthesized selects.
-  const head = stripped.replace(/^\s*\(+\s*/, '');
-  if (!/^(select|with)\b/i.test(head)) {
-    throw new Error('query must be a single read-only SELECT (or WITH … SELECT).');
-  }
-}
-
 /**
  * True if `sql` has a `LIMIT`/`OFFSET` keyword at paren-depth 0 (a TOP-level
  * one), scanning past string literals, quoted identifiers, and comments so a
@@ -258,13 +208,23 @@ function hasTopLevelLimitOrOffset(sql: string): boolean {
 }
 
 /**
- * Shared read-only gate for both the memory feed (sync) and live query(). Trims
- * a trailing `;`, rejects multi-statement / bind params / non-SELECT /
- * data-modifying CTEs, and rejects a TOP-level LIMIT/OFFSET — the connector
- * always wraps the query and paginates on the outside, so a top-level LIMIT
- * would (sync) stall the keyset cursor and (live) cap the universe the OFFSET
- * pages over, silently returning zero rows on later pages. An inner LIMIT inside
- * a subquery is fine. Returns the stripped SQL.
+ * Shared read-only gate for both the memory feed (sync) and live query(). It is
+ * a structural check, NOT a SQL parser: the HARD write seal is the read-only
+ * transaction (`SET TRANSACTION READ ONLY`), which rejects every write — incl. a
+ * data-modifying CTE — at execution; and the connector always runs the query as
+ * `SELECT * FROM (<sql>) q …`, so a top-level data-modifying CTE is also a syntax
+ * error (Postgres forbids it inside a subquery). So this only enforces what makes
+ * the wrap valid and the cursor correct:
+ *  - one statement (no embedded `;`), no bind params (the connector binds its own);
+ *  - it reads (`SELECT`, or `WITH … SELECT`, or a parenthesized select) — not a
+ *    leading `SET`/`CALL`/`DO`/DDL that a read-only tx would still happily run;
+ *  - no TOP-level LIMIT/OFFSET — the connector wraps + paginates on the outside,
+ *    so a top-level LIMIT would (sync) stall the keyset cursor and (live) cap the
+ *    universe the OFFSET pages over. An inner LIMIT inside a subquery is fine.
+ *
+ * Deliberately no AST parser: a Postgres-grammar parser lags real Postgres and
+ * would false-reject valid SQL (FTS `@@`, jsonpath, `GROUPING SETS`, …) while
+ * adding nothing the read-only transaction doesn't already guarantee.
  */
 function validateReadOnlySelect(raw: string): string {
   const stripped = raw.trim().replace(/;\s*$/, '');
@@ -275,26 +235,10 @@ function validateReadOnlySelect(raw: string): string {
   if (/\$\d/.test(stripped) || /(^|[^:]):[A-Za-z_]/.test(stripped)) {
     throw new Error('query must not contain bind parameters ($1, :name).');
   }
-  let ast: unknown;
-  try {
-    ast = new Parser().astify(stripped, { database: 'postgresql' });
-  } catch {
-    // Parser gap, not invalid SQL — fall back to the token check (see above).
-    assertReadOnlyTokens(stripped);
-    ast = null;
-  }
-  if (ast !== null) {
-    const statements = Array.isArray(ast) ? ast : [ast];
-    if (statements.length !== 1) {
-      throw new Error('query must be exactly one statement.');
-    }
-    const stmt = statements[0] as ParsedSelect;
-    if (stmt.type !== 'select') {
-      throw new Error(`query must be a SELECT (got ${stmt.type ?? 'unknown'}).`);
-    }
-    if (containsDmlNode(ast)) {
-      throw new Error('query must not contain data-modifying statements (incl. in CTEs).');
-    }
+  // Allow a leading "(" for "(SELECT …) UNION …" / parenthesized selects.
+  const head = stripped.replace(/^\s*\(+\s*/, '');
+  if (!/^(select|with)\b/i.test(head)) {
+    throw new Error('query must be a single read-only SELECT (or WITH … SELECT).');
   }
   if (hasTopLevelLimitOrOffset(stripped)) {
     throw new Error(

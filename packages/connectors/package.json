@@ -4,14 +4,13 @@
   "private": true,
   "license": "BUSL-1.1",
   "type": "module",
-  "description": "Lobu memory connectors — third-party integration implementations built on @lobu/connector-sdk",
+  "description": "Lobu memory connectors \u2014 third-party integration implementations built on @lobu/connector-sdk",
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@lobu/connector-sdk": "workspace:*",
     "baileys": "7.0.0-rc.9",
-    "node-sql-parser": "^5.3.13",
     "playwright": "npm:patchright@^1.57.0",
     "playwright-vanilla": "npm:playwright@^1.60.0",
     "postgres": "^3.4.7",

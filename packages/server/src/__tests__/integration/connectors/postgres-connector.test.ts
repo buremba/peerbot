@@ -69,11 +69,11 @@ describe('PostgresConnector.sync (keyset incremental, real DB)', () => {
     }
   });
 
-  it('accepts valid Postgres that node-sql-parser cannot parse (token fallback)', async () => {
-    // node-sql-parser 5.4.0 throws on `IS NOT DISTINCT FROM` (and FTS @@, jsonpath
-    // @?/@@, GROUPING SETS, array slices, range casts …). The connector must not
-    // reject valid read-only SQL it merely can't parse — the read-only
-    // transaction is the real write seal, so it falls back to a token check.
+  it('accepts exotic-but-valid Postgres (no SQL parser to false-reject it)', async () => {
+    // The connector does a structural read-only check, not an AST parse, so SQL a
+    // Postgres-grammar parser would choke on (`IS NOT DISTINCT FROM`, FTS @@,
+    // jsonpath, GROUPING SETS, range casts …) runs fine — the read-only
+    // transaction is the real write seal.
     const r = await run(
       { query: 'SELECT id, email, created_at FROM pgc_it WHERE email IS NOT DISTINCT FROM email' },
       null

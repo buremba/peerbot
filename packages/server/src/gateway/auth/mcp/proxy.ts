@@ -2,9 +2,10 @@ import { randomUUID } from "node:crypto";
 import {
   createLogger,
   type GuardrailRegistry,
-  runGuardrails,
+  runGuardrailInstances,
   verifyWorkerToken,
 } from "@lobu/core";
+import { resolveAgentGuardrails } from "../../guardrails/aggregator.js";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { storePendingTool } from "./pending-tool-store.js";
@@ -911,12 +912,24 @@ export class McpProxy {
               try {
                 const settings =
                   await this.agentSettingsStore.getSettings(agentId);
-                const enabled = settings?.guardrails ?? [];
-                if (enabled.length > 0) {
-                  const outcome = await runGuardrails(
-                    this.guardrailRegistry,
+                // Resolve the agent's built-in names PLUS skill-declared
+                // pre-tool guardrails (SKILL.md) into runnable instances. Until
+                // this was wired, skill-declared guardrails were silently
+                // ignored. NOTE: judge guardrails fail CLOSED (an unreachable
+                // judge denies → blocks the tool) — a deliberate posture; see
+                // judge-factory.ts.
+                const resolved = resolveAgentGuardrails(
+                  settings ?? { guardrails: [] },
+                  (settings?.skillsConfig?.skills ?? []).filter(
+                    (s) => s.enabled
+                  ),
+                  this.guardrailRegistry
+                );
+                const list = resolved.byStage["pre-tool"];
+                if (list.length > 0) {
+                  const outcome = await runGuardrailInstances(
                     "pre-tool",
-                    enabled,
+                    list,
                     {
                       agentId,
                       userId: tokenData.userId,

@@ -197,21 +197,30 @@ export function registerScheduledJobsTicker(scheduler: TaskScheduler): void {
         // spawn+advance window. The spawn idempotency key collapses duplicate
         // tasks, but the advance itself must be conditional or two pods reading
         // the same pre-advance `next_run_at` can both write (and clobber a
-        // concurrent pause/delete). Gate every advance on the tick we read so
-        // it is a no-op once any pod (or an operator) has moved the row on.
+        // concurrent pause/delete/re-schedule).
+        //
+        // Guard on `next_run_at <= now()` (same predicate as the claim SELECT),
+        // NOT equality against the value we read: postgres.js parses
+        // timestamptz to a millisecond-precision JS Date while the column
+        // stores microseconds, so an equality round-trip silently never
+        // matches for µs-precision rows — leaving them eternally due and
+        // re-claimed every tick. `<= now()` is a no-op once any pod has
+        // advanced the row (next_run_at is then in the future) and never
+        // clobbers an operator re-schedule to a future time.
         const nextAt = row.cron ? nextCronTickAt(row.cron) : null;
         if (nextAt) {
           await sql`
             UPDATE scheduled_jobs
             SET last_fired_at = now(), next_run_at = ${nextAt}, updated_at = now()
-            WHERE id = ${row.id} AND next_run_at = ${tickIso}
+            WHERE id = ${row.id} AND next_run_at <= now()
           `;
         } else {
           // One-shot: mark as fired + paused so the index ignores it.
+          // Re-pausing an already-paused row is idempotent.
           await sql`
             UPDATE scheduled_jobs
             SET last_fired_at = now(), paused = true, updated_at = now()
-            WHERE id = ${row.id} AND next_run_at = ${tickIso}
+            WHERE id = ${row.id} AND next_run_at <= now()
           `;
         }
       }

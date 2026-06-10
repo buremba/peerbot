@@ -100,6 +100,23 @@ worker:
     fsGroup: 1001
     fsGroupChangePolicy: OnRootMismatch
 
+  # Agent/connector runs can be minutes-long; give the daemon time to finish
+  # or hand off in-flight runs after SIGTERM before the kubelet escalates to
+  # SIGKILL (which orphans runs until the stale-run reaper recovers them).
+  terminationGracePeriodSeconds: 300
+
+  # The worker executes untrusted agent/connector code — the highest-value
+  # container to harden. The image already runs as a non-root user
+  # (docker/worker/Dockerfile: USER worker), so runAsNonRoot is enforceable.
+  containerSecurityContext:
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+
   resources:
     requests:
       cpu: 500m
@@ -129,6 +146,17 @@ embeddings:
   podSecurityContext:
     fsGroup: 1001
     fsGroupChangePolicy: OnRootMismatch
+
+  # The image runs as a non-root user (docker/embeddings-service/Dockerfile:
+  # USER embeddings), so runAsNonRoot is enforceable.
+  containerSecurityContext:
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
 
   serviceUrl: ""
 

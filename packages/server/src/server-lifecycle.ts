@@ -372,9 +372,10 @@ export function createServerLifecycle(
 			// shutdown stays instant) holds teardown for one probe period so the
 			// endpoint is actually removed before in-flight connections are cut.
 			// Prod sets this (and a matching chart preStop / grace period).
+			// SIGINT is interactive (no LB endpoint to drain) — skip the pause.
 			markShuttingDown();
 			const drainMs = Number(env.SHUTDOWN_READINESS_DRAIN_MS ?? 0);
-			if (Number.isFinite(drainMs) && drainMs > 0) {
+			if (signal !== "SIGINT" && Number.isFinite(drainMs) && drainMs > 0) {
 				await new Promise<void>((resolve) => setTimeout(resolve, drainMs));
 			}
 			// Each step is wrapped in try/catch so one failing teardown can't
@@ -418,14 +419,20 @@ export function createServerLifecycle(
 				await safe(`extraTeardown[${i}]`, extraTeardown[i]);
 			}
 			//   h. Finally, stop accepting new connections and wait for in-flight
-			//      requests to finish. `close()` only stops new connections; we
-			//      await its callback so open responses (including the 75s-keepalive
-			//      SSE/MCP streams) drain instead of being severed by the immediate
-			//      process.exit that used to follow. Bounded by HTTP_CLOSE_TIMEOUT_MS
-			//      (default 10s) so a stuck stream can't block the exit past the
-			//      pod's termination grace period.
+			//      requests to finish, instead of the historical fire-and-forget
+			//      close + immediate process.exit that severed open responses.
+			//      `close()` alone never completes while idle keep-alive sockets
+			//      (75s timeout above) are open, so close those proactively —
+			//      genuinely active requests/streams are not idle and get the
+			//      drain window. Bounded by HTTP_CLOSE_TIMEOUT_MS (default 10s)
+			//      so a long-lived SSE stream can't hold the exit past the pod's
+			//      termination grace period. SIGINT is the interactive path
+			//      (Ctrl-C in dev, Mac app quit) where there's no LB to drain —
+			//      cap it at 1s so local shutdown stays snappy.
 			await safe("httpServer.close", async () => {
-				const closeTimeoutMs = Number(env.HTTP_CLOSE_TIMEOUT_MS ?? 10_000);
+				const configuredMs = Number(env.HTTP_CLOSE_TIMEOUT_MS ?? 10_000);
+				const closeTimeoutMs =
+					signal === "SIGINT" ? Math.min(configuredMs, 1_000) : configuredMs;
 				await new Promise<void>((resolve) => {
 					let settled = false;
 					const done = () => {
@@ -434,6 +441,7 @@ export function createServerLifecycle(
 						resolve();
 					};
 					httpServer.close(() => done());
+					httpServer.closeIdleConnections();
 					setTimeout(done, closeTimeoutMs).unref?.();
 				});
 			});

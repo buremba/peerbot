@@ -23,7 +23,7 @@
     "check": "biome check --write src"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.90.0",
+    "@anthropic-ai/sdk": "^0.104.1",
     "@aws-sdk/client-bedrock": "^3.1028.0",
     "@aws-sdk/client-secrets-manager": "^3.1028.0",
     "@chat-adapter/discord": "4.26.0",
@@ -72,7 +72,7 @@
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vite": "^6.0.0",
-    "vitest": "^2.1.8"
+    "vitest": "^4.1.8"
   },
   "optionalDependencies": {
     "isolated-vm": "^6.1.2"

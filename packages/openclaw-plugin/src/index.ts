@@ -970,7 +970,7 @@ function fetchMcpBootstrapSync(config: ResolvedPluginConfig): McpBootstrap {
     const base = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
     if (token) base.Authorization = 'Bearer ' + token;
     async function run() {
-      const initRes = await fetch(url, { method: 'POST', headers: base, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: 'openclaw-lobu', version: '1.0.0' } } }) });
+      const initRes = await fetch(url, { method: 'POST', headers: base, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: ${JSON.stringify(MCP_PROTOCOL_VERSION)}, capabilities: {}, clientInfo: { name: 'openclaw-lobu', version: '1.0.0' } } }) });
       const initData = await initRes.json();
       const sid = initRes.headers.get('mcp-session-id');
       const h2 = { ...base };

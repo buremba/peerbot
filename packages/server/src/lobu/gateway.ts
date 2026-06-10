@@ -212,11 +212,13 @@ export function createLobuAuthBridge() {
  * routes.)
  *
  * Resolution precedence:
- *   1. `x-lobu-org` header (sent by `lobu chat --org <slug>`) — an explicit
- *      per-request override of both the PAT pin and the user's default org.
- *      Honored ONLY after re-verifying the authenticated user is a member of
- *      that org (unknown slug → 404, non-member → 403), so a header can never
- *      escalate cross-tenant access — the same invariant the PAT path enforces.
+ *   1. `x-lobu-org` header (sent by `lobu chat --org <slug>`) — a per-request
+ *      override of the user's default org, honored ONLY after re-verifying the
+ *      authenticated user is a member of that org (unknown slug → 404,
+ *      non-member → 403). Under PAT auth the header cannot select a different
+ *      org than the PAT's pin (→ 403; naming the pinned org is a no-op) — the
+ *      same rule as the MCP's query_sql, so an org-bound credential never
+ *      widens into the holder's other orgs.
  *   2. The PAT-bound org (`organizationId` set by `createLobuAuthBridge`).
  *   3. The user's default org membership.
  *
@@ -241,6 +243,28 @@ export function createLobuOrgContextMiddleware() {
       if (!resolvedOrg) {
         return c.json({ error: `Unknown organization "${orgHeader}"` }, 404);
       }
+
+      // A PAT stays pinned to the org it was minted for — same rule as the
+      // MCP's query_sql, which rejects org overrides under PAT auth. A header
+      // naming the pinned org is a harmless no-op (the CLI auto-sends the
+      // context's activeOrg), but a different org is rejected even when the
+      // user is a member: minting an org-bound credential is an intentional
+      // scope decision, and a stolen PAT must not widen into every org its
+      // owner belongs to.
+      const session = c.get('session') as { id?: string } | null;
+      const isPat =
+        typeof session?.id === 'string' && session.id.startsWith('pat:');
+      if (isPat && resolvedOrg.id !== c.get('organizationId')) {
+        return c.json(
+          {
+            error:
+              `x-lobu-org "${orgHeader}" is not allowed with PAT auth: the token stays pinned to the organization it was minted for. ` +
+              'Mint a PAT for the target organization, or sign in with `lobu login`.',
+          },
+          403
+        );
+      }
+
       const role = await getCachedMembershipRole(resolvedOrg.id, user.id);
       if (!role) {
         return c.json(

@@ -116,23 +116,8 @@ export interface PollResponse {
   action_key?: string;
   /** Action input (for action runs) */
   action_input?: Record<string, unknown>;
-  /** Watcher ID (for watcher runs) */
-  watcher_id?: number;
-  /** Window ID (for watcher runs) */
-  window_id?: number;
-  /** Compiled reaction script (for watcher runs) */
-  reaction_script_compiled?: string;
-  /** Extracted data from the completed window (for watcher runs) */
-  extracted_data?: Record<string, unknown>;
   /** Entity info (for watcher runs) */
   entity?: { id: number; name: string; entity_type: string; metadata: Record<string, unknown> };
-  /** Window metadata (for watcher runs) */
-  window_start?: string;
-  window_end?: string;
-  granularity?: string;
-  content_analyzed?: number;
-  /** Organization ID (for watcher runs) */
-  organization_id?: string;
 }
 
 export interface ContentItem {

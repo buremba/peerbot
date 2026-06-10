@@ -405,7 +405,7 @@ export function createServerLifecycle(
 				await safe(`extraTeardown[${i}]`, extraTeardown[i]);
 			}
 			//   h. Finally, close the listener. Matches the historical behavior of
-			//      not awaiting (server.ts:260; start-local.ts:322).
+			//      not awaiting (server.ts:260; embedded-runtime.ts:200).
 			httpServer.close();
 			process.exit(0);
 		};

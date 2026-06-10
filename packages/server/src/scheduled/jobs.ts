@@ -26,7 +26,7 @@ import {
 /**
  * Construct the TaskScheduler, register every periodic task, start dispatch,
  * and wire the lazy at-use-time refresh hooks into AuthProfilesManager.
- * Single call site for both `server.ts` (prod) and `start-local.ts` (embedded Postgres).
+ * Single call site for both `server.ts` (prod) and `embedded-runtime.ts` (embedded Postgres).
  */
 export async function bootTaskScheduler(
   coreServices: CoreServices,

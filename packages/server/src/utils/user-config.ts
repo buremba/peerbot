@@ -7,7 +7,7 @@
  * local server can be started for a selected context without per-project `.env`
  * plumbing.
  *
- * Sync on purpose — start-local.ts reads env at module-load time, so this has
+ * Sync on purpose — embedded-runtime.ts reads env at module-load time, so this has
  * to resolve before the first env read. Cost is one ~1KB JSON file per boot.
  *
  * Schema is duplicated from the CLI's context loader rather than imported to

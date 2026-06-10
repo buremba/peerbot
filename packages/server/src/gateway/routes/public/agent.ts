@@ -74,7 +74,7 @@ const WatcherRunIntentSchema = z.object({
 });
 
 const CreateAgentRequestSchema = z.object({
-  provider: z.string().default("claude").optional(),
+  provider: z.literal("claude").default("claude").optional(),
   model: z.string().optional(),
   agentId: z.string().min(1).optional(),
   userId: z.string().min(1).optional(),
@@ -642,14 +642,6 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       mcpServers,
       nix: nixConfig,
     } = body;
-
-    // Validate provider
-    if (provider && !["claude"].includes(provider)) {
-      return c.json(
-        { success: false, error: "Invalid provider. Supported: claude" },
-        400
-      );
-    }
 
     const normalizedNetworkConfig = networkConfig
       ? normalizeNetworkConfig(networkConfig as NetworkConfig)

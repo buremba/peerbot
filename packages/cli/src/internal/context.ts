@@ -360,37 +360,6 @@ export async function getServerConfig(
   return deriveManagedServerConfig(context);
 }
 
-export async function setServerConfig(
-  server: LobuServerConfig | undefined,
-  contextName?: string
-): Promise<LobuContextConfig> {
-  const config = await loadContextConfig();
-  const name = contextName || config.currentContext;
-  const context = config.contexts[name];
-  if (!context) {
-    throw new Error(`Unknown context "${name}".`);
-  }
-
-  if (!server) {
-    delete context.lifecycle;
-    delete context.cwd;
-  } else {
-    const lifecycle = normalizeLifecycle(server.lifecycle);
-    const cwd = server.cwd?.trim();
-    // Same invariant as addContext: a non-managed context with a `cwd` is dead
-    // config — getServerConfig() never returns it.
-    if (cwd && lifecycle !== "managed") {
-      throw new Error("`cwd` can only be set on managed contexts.");
-    }
-    if (lifecycle) context.lifecycle = lifecycle;
-    else delete context.lifecycle;
-    if (cwd) context.cwd = cwd;
-    else delete context.cwd;
-  }
-  await saveContextConfig(config);
-  return config;
-}
-
 function deriveManagedServerConfig(
   context: LobuContextEntry
 ): LobuServerConfig | undefined {

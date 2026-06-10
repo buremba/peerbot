@@ -1,5 +1,12 @@
 /**
- * Auth Config Tests
+ * Auth Config — pure helper unit tests.
+ *
+ * These cover the side-effect-free logic only (scope extraction, provider
+ * collection, baseline↔org merge). The catalog/DB-backed paths
+ * (getBaselineLoginProviderConfigs, getEnabledLoginProviderConfigs, getAuthConfig)
+ * are exercised against the real catalog + embedded Postgres in
+ * config.baseline.integration.test.ts — mocking those modules is unreliable here
+ * because the suite runs with `isolate: false` (shared module registry).
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -7,6 +14,7 @@ import {
   collectEnabledLoginProviderConfigs,
   getAuthConfig,
   getLoginProviderScopes,
+  mergeLoginProviderConfigs,
 } from '../config';
 
 describe('login provider helpers', () => {
@@ -115,11 +123,93 @@ describe('login provider helpers', () => {
     ]);
     expect(warnSpy).toHaveBeenCalled();
   });
+
+  it('quiet mode suppresses the no-scope / multi-connector warnings (catalog baseline)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const configs = collectEnabledLoginProviderConfigs(
+      [
+        {
+          key: 'google.calendar',
+          auth_schema: {
+            methods: [{ type: 'oauth', provider: 'google', loginScopes: ['openid', 'email'] }],
+          },
+        },
+        {
+          // Same provider via a second connector — would warn without quiet.
+          key: 'google.gmail',
+          auth_schema: {
+            methods: [{ type: 'oauth', provider: 'google', loginScopes: ['openid', 'email'] }],
+          },
+        },
+        {
+          // OAuth but no login scopes — would warn without quiet.
+          key: 'reddit',
+          auth_schema: {
+            methods: [{ type: 'oauth', provider: 'reddit', requiredScopes: ['read'] }],
+          },
+        },
+      ],
+      { quiet: true }
+    );
+
+    expect(configs.map((c) => c.provider)).toEqual(['google']);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('mergeLoginProviderConfigs', () => {
+  const baselineGoogle = {
+    connectorKey: 'google.gmail',
+    provider: 'google',
+    loginScopes: ['openid', 'email', 'profile'],
+    clientIdKey: 'GOOGLE_CLIENT_ID',
+    clientSecretKey: 'GOOGLE_CLIENT_SECRET',
+  };
+  const baselineGithub = {
+    connectorKey: 'github.issues',
+    provider: 'github',
+    loginScopes: ['read:user'],
+    clientIdKey: 'GITHUB_CLIENT_ID',
+    clientSecretKey: 'GITHUB_CLIENT_SECRET',
+  };
+
+  it('returns the baseline unchanged when the org adds nothing', () => {
+    expect(mergeLoginProviderConfigs([baselineGoogle, baselineGithub], [])).toEqual([
+      baselineGoogle,
+      baselineGithub,
+    ]);
+  });
+
+  it('is additive — an org-only provider is appended, the baseline is never dropped', () => {
+    const orgOnly = {
+      connectorKey: 'okta.sso',
+      provider: 'okta',
+      loginScopes: ['openid'],
+      clientIdKey: 'OKTA_CLIENT_ID',
+      clientSecretKey: 'OKTA_CLIENT_SECRET',
+    };
+    const merged = mergeLoginProviderConfigs([baselineGoogle], [orgOnly]);
+    expect(merged).toEqual([baselineGoogle, orgOnly]);
+  });
+
+  it('lets an org override the baseline for the same provider (BYO OAuth app)', () => {
+    const orgGoogle = {
+      connectorKey: 'org.google',
+      provider: 'google',
+      loginScopes: ['openid', 'email'],
+      clientIdKey: 'ORG_GOOGLE_ID',
+      clientSecretKey: 'ORG_GOOGLE_SECRET',
+    };
+    const merged = mergeLoginProviderConfigs([baselineGoogle, baselineGithub], [orgGoogle]);
+    // google is replaced by the org config; github (baseline) survives.
+    expect(merged).toEqual([orgGoogle, baselineGithub]);
+  });
 });
 
 describe('getAuthConfig', () => {
   it('should be an async function', () => {
-    const result = getAuthConfig({} as any);
+    const result = getAuthConfig({} as never);
     result.catch(() => {});
     expect(result).toBeInstanceOf(Promise);
   });
@@ -127,11 +217,4 @@ describe('getAuthConfig', () => {
   it('should export getAuthConfig function', () => {
     expect(typeof getAuthConfig).toBe('function');
   });
-
-  // Full integration tests with a real database connection should still verify:
-  // - OAuth providers enabled when login_enabled=true in DB and credentials in env
-  // - Magic link enabled with RESEND_API_KEY
-  // - Phone auth enabled with Twilio credentials
-  // - Email/password fallback logic
-  // - AUTH_DEFAULT_ORGANIZATION_SLUG fallback when no org context
 });

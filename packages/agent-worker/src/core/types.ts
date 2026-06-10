@@ -67,21 +67,6 @@ export type ProgressUpdate =
       timestamp: number;
     }
   | {
-      type: "completion";
-      data: {
-        exitCode?: number;
-        message?: string;
-        success?: boolean;
-        sessionId?: string;
-      };
-      timestamp: number;
-    }
-  | {
-      type: "error";
-      data: Error | { message?: string; stack?: string; error?: string };
-      timestamp: number;
-    }
-  | {
       type: "status_update";
       data: {
         elapsedSeconds: number;
@@ -107,6 +92,4 @@ export interface SessionExecutionResult {
   output: string;
   error?: string;
   sessionKey: string;
-  persisted?: boolean;
-  storagePath?: string;
 }

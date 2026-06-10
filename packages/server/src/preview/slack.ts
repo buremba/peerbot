@@ -4,6 +4,7 @@ import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
+import { requireOrgUser } from '../utils/require-org-user';
 
 // Slack Preview lets people trying Lobu locally talk to their agent through the
 // hosted "Lobu Developer" Slack workspace before they have their own bot token.
@@ -24,7 +25,8 @@ const MAX_TTL_MINUTES = 60;
 const SURFACES = new Set(['dm', 'channel']);
 
 // Hosted preview bots — the platforms a `preview.<platform>` block / claim mint
-// is allowed for, and the default "join the workspace" links.
+// is allowed for (currently Slack and Telegram), and the default join links.
+// Both Slack and Telegram route through the same Chat SDK adapter path.
 const PREVIEW_PLATFORMS = new Set(['slack', 'telegram']);
 const PREVIEW_JOIN_DEFAULTS: Record<string, string> = {
   slack: 'https://lobu.ai/slack',
@@ -91,13 +93,6 @@ function normalizeTtlMinutes(input: unknown): number {
   return Math.min(Math.trunc(parsed), MAX_TTL_MINUTES);
 }
 
-function requireOrgUser(c: Context<{ Bindings: Env }>): { organizationId: string; userId: string } | null {
-  const organizationId = c.var.organizationId;
-  const userId = c.var.session?.userId ?? c.var.user?.id;
-  if (!organizationId || !userId) return null;
-  return { organizationId, userId };
-}
-
 // "Join the hosted workspace" link for a preview platform — overridable per
 // platform via `LOBU_PREVIEW_<PLATFORM>_URL` on the deployment.
 function previewJoinUrl(platform: string): string {
@@ -111,17 +106,6 @@ function previewJoinUrl(platform: string): string {
 /** The slash command to send to the hosted bot to redeem a code. */
 function previewLinkCommand(platform: string, code: string): string {
   return platform === 'slack' ? `/lobu link ${code}` : `/link ${code}`;
-}
-
-/**
- * Slack convention: DM channels start with `D`; everything else is a
- * group/channel. The bridge sometimes hands us the Chat SDK thread id
- * (`slack:D012…` / `slack:C012…:172…`) rather than the bare channel id, so
- * strip a leading transport prefix and any thread-ts suffix before the check.
- */
-export function slackSurfaceType(channelId: string): SurfaceType {
-  const id = channelId.replace(/^[a-z]+:/i, '').split(':')[0]!;
-  return id.startsWith('D') ? 'dm' : 'channel';
 }
 
 /**

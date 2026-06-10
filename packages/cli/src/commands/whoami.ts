@@ -44,8 +44,5 @@ export async function whoamiCommand(options?: {
   if (creds.userId) {
     console.log(chalk.dim(`  User ID: ${creds.userId}`));
   }
-  if (creds.agentId) {
-    console.log(chalk.dim(`  Linked agent: ${creds.agentId}`));
-  }
   console.log();
 }

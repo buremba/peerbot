@@ -6,7 +6,7 @@ import {
 
 const DEFAULT_MODEL_NAME = 'Xenova/bge-base-en-v1.5';
 export const DEFAULT_DIMENSIONS = 768;
-const DEFAULT_BATCH_SIZE = 32;
+export const DEFAULT_BATCH_SIZE = 32;
 
 transformersEnv.cacheDir = process.env.TRANSFORMERS_CACHE || '~/.cache/huggingface/transformers/';
 transformersEnv.backends.onnx.wasm.numThreads = 1;
@@ -27,7 +27,7 @@ async function getExtractor(): Promise<FeatureExtractionPipeline> {
   }
 
   const modelName = getModelName();
-  console.log(`[EmbeddingsService] Loading model: ${modelName}...`);
+  console.info(`[EmbeddingsService] Loading model: ${modelName}...`);
   const startTime = Date.now();
 
   // Don't cache a rejected promise — a transient model-load failure would
@@ -40,7 +40,7 @@ async function getExtractor(): Promise<FeatureExtractionPipeline> {
   });
 
   const extractor = await extractorPromise;
-  console.log(`[EmbeddingsService] Model loaded in ${Date.now() - startTime}ms`);
+  console.info(`[EmbeddingsService] Model loaded in ${Date.now() - startTime}ms`);
   return extractor;
 }
 

@@ -198,40 +198,35 @@ Memory:
           url?: string;
         }
       ) => {
-        try {
-          const { initCommand } = await import("./commands/init.js");
-          // Commander gives a tristate: true for --sentry, false for
-          // --no-sentry, undefined for neither.
-          // `--from-org` with no value is `true`; normalize to "" (active org).
-          const fromOrg =
-            options.fromOrg === undefined
-              ? undefined
-              : options.fromOrg === true
-                ? ""
-                : (options.fromOrg as string);
-          await initCommand(process.cwd(), name, {
-            yes: options.yes,
-            here: options.here,
-            port: options.port,
-            publicUrl: options.publicUrl,
-            network: options.network,
-            provider: options.provider,
-            providerKey: options.providerKey,
-            platform: options.platform,
-            memory: options.memory,
-            memoryUrl: options.memoryUrl,
-            otelEndpoint: options.otelEndpoint,
-            sentry: options.sentry === true,
-            noSentry: options.sentry === false,
-            slackPreview: options.slackPreview,
-            listProviders: options.listProviders,
-            fromOrg,
-            url: options.url,
-          });
-        } catch (error) {
-          console.error(chalk.red("\n  Error:"), error);
-          process.exit(1);
-        }
+        const { initCommand } = await import("./commands/init.js");
+        // Commander gives a tristate: true for --sentry, false for
+        // --no-sentry, undefined for neither.
+        // `--from-org` with no value is `true`; normalize to "" (active org).
+        const fromOrg =
+          options.fromOrg === undefined
+            ? undefined
+            : options.fromOrg === true
+              ? ""
+              : (options.fromOrg as string);
+        await initCommand(process.cwd(), name, {
+          yes: options.yes,
+          here: options.here,
+          port: options.port,
+          publicUrl: options.publicUrl,
+          network: options.network,
+          provider: options.provider,
+          providerKey: options.providerKey,
+          platform: options.platform,
+          memory: options.memory,
+          memoryUrl: options.memoryUrl,
+          otelEndpoint: options.otelEndpoint,
+          sentry: options.sentry === true,
+          noSentry: options.sentry === false,
+          slackPreview: options.slackPreview,
+          listProviders: options.listProviders,
+          fromOrg,
+          url: options.url,
+        });
       }
     );
 
@@ -781,7 +776,7 @@ Memory:
   // every UI-callable tool through one entry point. `lobu memory run` is
   // kept alongside intentionally — it routes via MCP JSON-RPC, this one via
   // the REST proxy. See packages/cli/src/commands/call.ts for the arg shape.
-  const call = withCommonOpts(
+  withCommonOpts(
     program
       .command("call [tool]")
       .description(
@@ -824,9 +819,6 @@ Memory:
       await callCommand(tool, options);
     }
   );
-  // Silence unused-variable lint — `call` is the Commander handle, retained
-  // for symmetry with sibling command groups in case subcommands are added.
-  void call;
 
   // ─── connector ──────────────────────────────────────────────────────
   const connector = program

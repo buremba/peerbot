@@ -1,23 +1,6 @@
 /**
- * Agent Settings API response types.
- * These mirror the gateway API response shapes used by UI consumers.
+ * Gateway API response types shared between the server and UI consumers.
  */
-
-import type { ModelSelectionState, RegistryEntry } from "./types";
-
-export interface ProviderInfo {
-  name: string;
-  authType: "oauth" | "device-code" | "api-key";
-  supportedAuthTypes: ("oauth" | "device-code" | "api-key")[];
-  apiKeyInstructions: string;
-  apiKeyPlaceholder: string;
-  capabilities: (
-    | "text"
-    | "image-generation"
-    | "speech-to-text"
-    | "text-to-speech"
-  )[];
-}
 
 export interface CatalogProvider {
   id: string;
@@ -38,23 +21,6 @@ export interface CatalogProvider {
 export interface ModelOption {
   label: string;
   value: string;
-}
-
-type SettingsSectionKey =
-  | "model"
-  | "system-prompt"
-  | "skills"
-  | "packages"
-  | "permissions"
-  | "logging";
-
-interface SectionView {
-  editable: boolean;
-}
-
-interface ProviderView {
-  id: string;
-  canEdit: boolean;
 }
 
 export interface SkillMcpServerInfo {
@@ -107,59 +73,6 @@ export interface PrefillMcp {
   envVars?: string[];
 }
 
-export interface ProviderState {
-  status: string;
-  connected: boolean;
-  userConnected: boolean;
-  systemConnected: boolean;
-  showAuthFlow: boolean;
-  showCodeInput: boolean;
-  showDeviceCode: boolean;
-  showApiKeyInput: boolean;
-  activeAuthTab: string;
-  activeAuthType?: string | null;
-  authMethods?: string[];
-  code: string;
-  apiKey: string;
-  userCode: string;
-  verificationUrl: string;
-  pollStatus: string;
-  deviceAuthId: string;
-  selectedModel: string;
-  modelQuery: string;
-  showModelDropdown: boolean;
-}
-
-export interface PermissionGrant {
-  pattern: string;
-  expiresAt: number | null;
-  denied?: boolean;
-  grantedAt?: number;
-}
-
-export interface AgentInfo {
-  agentId: string;
-  name: string;
-  isWorkspaceAgent?: boolean;
-  channelCount: number;
-  description?: string;
-}
-
-export interface SettingsSnapshot {
-  identityMd: string;
-  soulMd: string;
-  userMd: string;
-  verboseLogging: boolean;
-  primaryProvider: string;
-  providerOrder: string;
-  nixPackages: string;
-  skills: string;
-  mcpServers: string;
-  permissions: string;
-  providerModelPreferences: string;
-  registries: string;
-}
-
 export interface Connection {
   id: string;
   platform: string;
@@ -175,51 +88,4 @@ export interface Connection {
   errorMessage?: string;
   createdAt: number;
   updatedAt: number;
-}
-
-export interface ProviderStatus {
-  connected: boolean;
-  userConnected: boolean;
-  systemConnected: boolean;
-  activeAuthType?: "oauth" | "device-code" | "api-key";
-  authMethods?: string[];
-}
-
-export interface AgentConfigResponse {
-  agentId: string;
-  sections: Record<SettingsSectionKey, SectionView>;
-  providerViews: Record<string, ProviderView>;
-
-  instructions: {
-    identity: string;
-    soul: string;
-    user: string;
-  };
-
-  providers: {
-    order: string[];
-    status: Record<string, ProviderStatus>;
-    catalog: CatalogProvider[];
-    meta: Record<string, ProviderInfo>;
-    models: Record<string, ModelOption[]>;
-    preferences: Record<string, string>;
-    icons: Record<string, string>;
-    modelSelection: ModelSelectionState;
-    configManaged: string[];
-  };
-
-  skills: Skill[];
-  mcpServers: Record<string, McpConfig>;
-
-  tools: {
-    nixPackages: string[];
-    permissions: PermissionGrant[];
-    registries: RegistryEntry[];
-    globalRegistries: RegistryEntry[];
-  };
-
-  settings: {
-    verboseLogging: boolean;
-    memoryEnabled: boolean;
-  };
 }

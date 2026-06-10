@@ -6,7 +6,7 @@ import {
   resolveOrg,
   resolveServerUrl,
 } from "./_lib/openclaw-auth.js";
-import { isJson, printJson, printText } from "./_lib/output.js";
+import { printText } from "./_lib/output.js";
 
 interface RunOptions {
   url?: string;
@@ -65,14 +65,10 @@ export async function memoryRunCommand(
         ? (result as Array<{ name: string; description?: string }>)
         : []);
 
-    if (isJson()) {
-      printJson({ tools: toolList });
-    } else {
-      for (const t of toolList) {
-        printText(`  ${t.name}${t.description ? ` — ${t.description}` : ""}`);
-      }
-      printText(`\n${toolList.length} tool(s)`);
+    for (const t of toolList) {
+      printText(`  ${t.name}${t.description ? ` — ${t.description}` : ""}`);
     }
+    printText(`\n${toolList.length} tool(s)`);
     return;
   }
 
@@ -87,9 +83,5 @@ export async function memoryRunCommand(
     options.context
   );
 
-  if (isJson()) {
-    printJson({ result });
-  } else {
-    printText(JSON.stringify(result, null, 2));
-  }
+  printText(JSON.stringify(result, null, 2));
 }

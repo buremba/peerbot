@@ -39,6 +39,14 @@ export async function startFilteringProxy(): Promise<void> {
     logger.error("Failed to start HTTP proxy:", error);
     throw error;
   }
+
+  process.on("SIGTERM", async () => {
+    await stopFilteringProxy();
+  });
+
+  process.on("SIGINT", async () => {
+    await stopFilteringProxy();
+  });
 }
 
 /**
@@ -51,14 +59,3 @@ export async function stopFilteringProxy(): Promise<void> {
     proxyServer = null;
   }
 }
-
-/**
- * Handle graceful shutdown
- */
-process.on("SIGTERM", async () => {
-  await stopFilteringProxy();
-});
-
-process.on("SIGINT", async () => {
-  await stopFilteringProxy();
-});

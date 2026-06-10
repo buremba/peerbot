@@ -346,7 +346,7 @@ function BrowseExamplesSection() {
             style={{ color: "var(--color-page-text-muted)" }}
           >
             Each page walks through the connectors, memory shape, and watchers
-            for one team — and ships as a working example you can{" "}
+            for one team, and ships as a working example you can{" "}
             <code class="font-mono text-[13.5px]">lobu apply</code>.
           </p>
         </div>
@@ -682,7 +682,7 @@ function UseCaseShowcaseSection({
       id: "connectors",
       eyebrow: "Connectors",
       blurb:
-        "Built-in, MCP, or a custom *.connector.ts — one typed event stream from every source.",
+        "Built-in, MCP, or a custom *.connector.ts: one typed event stream from every source.",
       primary: {
         snippet: connector,
         badge: "typescript",
@@ -709,7 +709,7 @@ function UseCaseShowcaseSection({
       id: "watchers",
       eyebrow: "Watchers",
       blurb:
-        "Prompt + extraction schema. The LLM runs, validates, and writes typed memory — no ETL code.",
+        "Prompt + extraction schema. The LLM runs, validates, and writes typed memory; no ETL code.",
       primary: {
         snippet: watcher,
         badge: "reactive + dreaming",

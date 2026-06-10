@@ -186,7 +186,7 @@ interface StoredSession {
 interface AuthStore {
   version: 1;
   activeServer?: string;
-  activeContext?: string; // legacy
+  activeContext?: string;
   sessions: Record<string, StoredSession>;
 }
 
@@ -204,12 +204,13 @@ function normalizeMcpUrl(input: string): string {
   return url.toString().replace(/\/+$/, '');
 }
 
-/** Strip org suffix for session lookup: /mcp/acme → /mcp */
-function baseMcpUrl(input: string): string {
+/** Derive a base URL by replacing the pathname. Defaults to '/' (OAuth root);
+ *  pass '/mcp' to strip an org suffix for session lookup: /mcp/acme → /mcp. */
+function deriveMcpBaseUrl(input: string, path = '/'): string {
   const url = new URL(input);
   url.hash = '';
   url.search = '';
-  url.pathname = '/mcp';
+  url.pathname = path;
   return url.toString().replace(/\/+$/, '');
 }
 
@@ -220,7 +221,7 @@ function loadStoredSession(mcpUrl: string): StoredSession | null {
     if (!store || store.version !== 1 || !store.sessions) return null;
     // Try exact match, then fall back to base /mcp
     const key = normalizeMcpUrl(mcpUrl);
-    return store.sessions[key] || store.sessions[baseMcpUrl(mcpUrl)] || null;
+    return store.sessions[key] || store.sessions[deriveMcpBaseUrl(mcpUrl, '/mcp')] || null;
   } catch {
     return null;
   }
@@ -429,13 +430,6 @@ function clearSessionTokens(): void {
   sessionRefreshToken = null;
 }
 
-function deriveOAuthBaseUrl(mcpUrl: string): string {
-  const base = new URL(mcpUrl);
-  base.pathname = '/';
-  base.search = '';
-  base.hash = '';
-  return base.toString().replace(/\/$/, '');
-}
 
 function spawnWorkerDaemon(mcpUrl: string, accessToken: string, log: PluginLogger): void {
   if (workerProcess) {
@@ -447,7 +441,7 @@ function spawnWorkerDaemon(mcpUrl: string, accessToken: string, log: PluginLogge
     workerProcess = null;
   }
 
-  const apiUrl = deriveOAuthBaseUrl(mcpUrl);
+  const apiUrl = deriveMcpBaseUrl(mcpUrl);
 
   try {
     workerProcess = spawn('npx', ['connector-worker', 'daemon', '--api-url', apiUrl], {
@@ -495,7 +489,7 @@ async function initiateDeviceLogin(
   scope: string,
   resource: string | null
 ): Promise<DeviceLoginState> {
-  const issuer = deriveOAuthBaseUrl(mcpUrl);
+  const issuer = deriveMcpBaseUrl(mcpUrl);
 
   // Step 1: Dynamic client registration
   const regResponse = await fetch(`${issuer}/oauth/register`, {

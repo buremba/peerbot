@@ -18,8 +18,9 @@
  *    module is internal to the SDK.
  */
 
+import type { Dirent } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export type SourceKind = 'git' | 'tarball' | 'local';
@@ -209,4 +210,84 @@ export function canonicalManifestRef(files: ManifestEntry[]): string {
     h.update('\n');
   }
   return h.digest('hex');
+}
+
+export async function dirExists(p: string): Promise<boolean> {
+  const s = await stat(p).catch(() => null);
+  return !!s && s.isDirectory();
+}
+
+/**
+ * Persist a per-ref copy of `manifest` under `<root>/refs/<ref>.json`.
+ * Lets `diffSinceRef` look up prior refs even after a data dir is pruned.
+ */
+export async function writePerRefManifest(root: string, manifest: Manifest): Promise<void> {
+  await mkdir(join(root, 'refs'), { recursive: true });
+  await writeManifest(join(root, 'refs', `${manifest.ref}.json`), manifest);
+}
+
+export async function readPerRefManifest(root: string, ref: string): Promise<Manifest | null> {
+  return readManifest(join(root, 'refs', `${ref}.json`));
+}
+
+/** Max number of `refs/<hash>` per-ref directories kept on disk. */
+export const MAX_REF_DIRS = 3;
+
+/**
+ * Keep at most `keep` per-ref directories under `${root}/refs/`. Sorted by
+ * mtime descending; the oldest are rm-rf'd. `protectedRefDir` is always
+ * preserved regardless of mtime.
+ *
+ * `isCandidateDir` filters which directory names are eligible for pruning.
+ * Pass a predicate that matches only completed ref dirs (e.g. 64-hex for
+ * local/tarball sources) to avoid touching in-flight staging dirs.
+ * Directories that don't match are skipped silently.
+ *
+ * Per-ref manifest JSON files (`<ref>.json`) are files, not directories,
+ * and are kept indefinitely so historical diffs work after a data dir is gone.
+ */
+export async function pruneOldRefDirs(
+  root: string,
+  keep: number,
+  protectedRefDir: string,
+  isCandidateDir: (name: string) => boolean = () => true,
+): Promise<void> {
+  const refsRoot = join(root, 'refs');
+  let entries: Dirent[];
+  try {
+    entries = await readdir(refsRoot, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw err;
+  }
+  const candidates: Array<{ name: string; abs: string; mtimeMs: number; protected: boolean }> = [];
+  for (const ent of entries) {
+    if (!ent.isDirectory()) continue;
+    if (!isCandidateDir(ent.name)) continue;
+    const abs = join(refsRoot, ent.name);
+    try {
+      const s = await stat(abs);
+      candidates.push({
+        name: ent.name,
+        abs,
+        mtimeMs: s.mtimeMs,
+        protected: abs === protectedRefDir,
+      });
+    } catch {
+      // Skip — concurrent prune from another process is fine.
+    }
+  }
+  if (candidates.length <= keep) return;
+  const protectedDirs = candidates.filter((c) => c.protected);
+  const others = candidates
+    .filter((c) => !c.protected)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const keepers = new Set([
+    ...protectedDirs.map((c) => c.name),
+    ...others.slice(0, Math.max(0, keep - protectedDirs.length)).map((c) => c.name),
+  ]);
+  for (const c of candidates) {
+    if (keepers.has(c.name)) continue;
+    await rm(c.abs, { recursive: true, force: true }).catch(() => undefined);
+  }
 }

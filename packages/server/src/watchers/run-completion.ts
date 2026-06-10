@@ -4,7 +4,7 @@ import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 
 export type WatcherTerminalResult = { ok: true } | { ok: false; error: string };
 
-async function findWindowIdForRun(sql: DbClient, runId: number): Promise<number | null> {
+export async function findWindowIdForRun(sql: DbClient, runId: number): Promise<number | null> {
   const rows = await sql`
     SELECT id
     FROM watcher_windows
@@ -16,7 +16,7 @@ async function findWindowIdForRun(sql: DbClient, runId: number): Promise<number 
   return rows.length > 0 ? Number((rows[0] as { id: unknown }).id) : null;
 }
 
-async function markWatcherRunCompleted(
+export async function markWatcherRunCompleted(
   sql: DbClient,
   runId: number,
   windowId: number | null

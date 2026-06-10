@@ -26,7 +26,6 @@ export interface Credentials extends BaseCredential {
   email?: string;
   name?: string;
   userId?: string;
-  agentId?: string;
   /** Local-init worker PAT used only by the gateway agent API. */
   localWorkerToken?: string;
 }

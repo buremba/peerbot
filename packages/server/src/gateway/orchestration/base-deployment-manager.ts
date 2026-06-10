@@ -72,11 +72,6 @@ export function buildCanonicalConversationKey(
   return conversationId;
 }
 
-function sanitizeNameHint(value: string | undefined, fallback: string): string {
-  const sanitized = (value || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
-  return (sanitized.slice(0, 8) || fallback).toLowerCase();
-}
-
 /**
  * Generate a consistent worker runtime ID from canonical conversation identity.
  * Runtime IDs stay lowercase alphanumeric with hyphens for filesystem and
@@ -84,7 +79,8 @@ function sanitizeNameHint(value: string | undefined, fallback: string): string {
  */
 export function generateDeploymentName(identity: DeploymentIdentity): string {
   const canonicalKey = buildCanonicalConversationKey(identity);
-  const hint = sanitizeNameHint(identity.platform || identity.userId, "ctx");
+  const rawHint = (identity.platform || identity.userId || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+  const hint = (rawHint.slice(0, 8) || "ctx").toLowerCase();
   const hash = createHash("sha256")
     .update(canonicalKey)
     .digest("hex")

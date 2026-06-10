@@ -6,7 +6,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { encrypt, type AuthProfile, type SkillConfig } from '@lobu/core';
+import { encrypt, type AuthProfile } from '@lobu/core';
 import { Hono } from 'hono';
 import { mcpAuth } from '../auth/middleware';
 import { getDb } from '../db/client';
@@ -264,36 +264,7 @@ function requireSessionOrAdminPat(c: any): Response | null {
   return c.json({ error: 'Authentication required' }, 401);
 }
 
-/**
- * Strip secret material from a stored auth profile before returning it to the
- * web client. `user_auth_profiles` only ever holds refs (not plaintext), but
- * we still drop `credentialRef` / `metadata.*Ref` so the UI never sees them.
- * `credential` is surfaced as an empty string to match the client type — the
- * UI uses it only as "is a key already saved?" signal, never reads its value.
- */
-function sanitizeAuthProfileForClient(profile: AuthProfile) {
-  const metadata = profile.metadata
-    ? {
-        ...(profile.metadata.email ? { email: profile.metadata.email } : {}),
-        ...(typeof profile.metadata.expiresAt === 'number'
-          ? { expiresAt: profile.metadata.expiresAt }
-          : {}),
-        ...(profile.metadata.accountId ? { accountId: profile.metadata.accountId } : {}),
-      }
-    : undefined;
-  return {
-    id: profile.id,
-    provider: profile.provider,
-    model: profile.model,
-    credential: '',
-    label: profile.label,
-    authType: profile.authType,
-    ...(metadata && Object.keys(metadata).length > 0 ? { metadata } : {}),
-    createdAt: profile.createdAt,
-  };
-}
-
-/** Whitelist client-supplied profile metadata down to the non-secret fields. */
+/** Whitelist profile metadata down to the non-secret fields (email, expiresAt, accountId). */
 function sanitizeClientProfileMetadata(
   metadata: AuthProfile['metadata']
 ): AuthProfile['metadata'] | undefined {
@@ -304,6 +275,27 @@ function sanitizeClientProfileMetadata(
     ...(metadata.accountId ? { accountId: metadata.accountId } : {}),
   };
   return Object.keys(next).length > 0 ? next : undefined;
+}
+
+/**
+ * Strip secret material from a stored auth profile before returning it to the
+ * web client. `user_auth_profiles` only ever holds refs (not plaintext), but
+ * we still drop `credentialRef` / `metadata.*Ref` so the UI never sees them.
+ * `credential` is surfaced as an empty string to match the client type — the
+ * UI uses it only as "is a key already saved?" signal, never reads its value.
+ */
+function sanitizeAuthProfileForClient(profile: AuthProfile) {
+  const metadata = sanitizeClientProfileMetadata(profile.metadata);
+  return {
+    id: profile.id,
+    provider: profile.provider,
+    model: profile.model,
+    credential: '',
+    label: profile.label,
+    authType: profile.authType,
+    ...(metadata ? { metadata } : {}),
+    createdAt: profile.createdAt,
+  };
 }
 
 /**
@@ -377,26 +369,55 @@ routes.get('/', async (c) => {
   const sql = getDb();
   const orgId = c.get('organizationId')!;
   const connCounts = await sql`
-    SELECT c.agent_id, count(*)::int as count
+    SELECT c.agent_id,
+      count(*)::int as count,
+      count(*) FILTER (WHERE c.status = 'active')::int as active_count
     FROM agent_connections c
     JOIN agents a ON a.id = c.agent_id
     WHERE a.organization_id = ${orgId}
     GROUP BY c.agent_id
   `;
   const countMap = new Map(connCounts.map((r: any) => [r.agent_id, r.count]));
+  const activeCountMap = new Map(connCounts.map((r: any) => [r.agent_id, r.active_count]));
 
-  const activeConnCounts = await sql`
-    SELECT c.agent_id, count(*)::int as count
-    FROM agent_connections c
-    JOIN agents a ON a.id = c.agent_id
-    WHERE a.organization_id = ${orgId}
-      AND c.status = 'active'
-    GROUP BY c.agent_id
-  `;
-  const activeCountMap = new Map(activeConnCounts.map((r: any) => [r.agent_id, r.count]));
+  const [runtimeClientCounts, watcherCounts, userCounts, platformRows, providerRows] =
+    await Promise.all([
+      countRuntimeMessagingClientsByAgent(orgId),
+      // Watchers owned by each agent (active only).
+      sql`
+        SELECT agent_id, count(*)::int as count
+        FROM watchers
+        WHERE organization_id = ${orgId} AND status = 'active' AND agent_id IS NOT NULL
+        GROUP BY agent_id
+      `,
+      // Distinct end-users per agent across messaging platforms.
+      sql`
+        SELECT u.agent_id, count(DISTINCT (u.platform, u.user_id))::int as count
+        FROM agent_users u
+        JOIN agents a ON a.id = u.agent_id
+        WHERE a.organization_id = ${orgId}
+        GROUP BY u.agent_id
+      `,
+      // Distinct connection platforms per agent. Cast to text so the driver always
+      // returns a JS array — array_agg over an enum/varchar column can come back as
+      // a raw `'{telegram,slack}'` string when postgres.js has no array parser for
+      // the element OID, which then blows up `.map` in the UI.
+      sql`
+        SELECT c.agent_id, array_agg(DISTINCT c.platform::text) as platforms
+        FROM agent_connections c
+        JOIN agents a ON a.id = c.agent_id
+        WHERE a.organization_id = ${orgId}
+        GROUP BY c.agent_id
+      `,
+      // Provider ids per agent, from the agent row's installed_providers list.
+      sql`
+        SELECT id, installed_providers
+        FROM agents
+        WHERE organization_id = ${orgId}
+      `,
+    ]);
 
   const clientCountMap = new Map<string, Set<string>>();
-  const runtimeClientCounts = await countRuntimeMessagingClientsByAgent(orgId);
   for (const [agentId, runtimeIds] of runtimeClientCounts.entries()) {
     let ids = clientCountMap.get(agentId);
     if (!ids) {
@@ -405,48 +426,11 @@ routes.get('/', async (c) => {
     }
     for (const clientId of runtimeIds) ids.add(clientId);
   }
-
-  // Watchers owned by each agent (active only).
-  const watcherCounts = await sql`
-    SELECT agent_id, count(*)::int as count
-    FROM watchers
-    WHERE organization_id = ${orgId} AND status = 'active' AND agent_id IS NOT NULL
-    GROUP BY agent_id
-  `;
   const watcherCountMap = new Map(watcherCounts.map((r: any) => [r.agent_id, r.count]));
-
-  // Distinct end-users per agent across messaging platforms.
-  const userCounts = await sql`
-    SELECT u.agent_id, count(DISTINCT (u.platform, u.user_id))::int as count
-    FROM agent_users u
-    JOIN agents a ON a.id = u.agent_id
-    WHERE a.organization_id = ${orgId}
-    GROUP BY u.agent_id
-  `;
   const userCountMap = new Map(userCounts.map((r: any) => [r.agent_id, r.count]));
-
-  // Distinct connection platforms per agent. Cast to text so the driver always
-  // returns a JS array — array_agg over an enum/varchar column can come back as
-  // a raw `'{telegram,slack}'` string when postgres.js has no array parser for
-  // the element OID, which then blows up `.map` in the UI.
-  const platformRows = await sql`
-    SELECT c.agent_id, array_agg(DISTINCT c.platform::text) as platforms
-    FROM agent_connections c
-    JOIN agents a ON a.id = c.agent_id
-    WHERE a.organization_id = ${orgId}
-    GROUP BY c.agent_id
-  `;
   const platformsMap = new Map(
     platformRows.map((r: any) => [r.agent_id, toStringArray(r.platforms)])
   );
-
-  // Provider ids per agent, from the agent row's installed_providers list
-  // (the canonical "which providers does this agent have" set).
-  const providerRows = await sql`
-    SELECT id, installed_providers
-    FROM agents
-    WHERE organization_id = ${orgId}
-  `;
   const providersMap = new Map<string, string[]>();
   for (const r of providerRows) {
     const set = new Set<string>();
@@ -694,21 +678,6 @@ routes.get('/:agentId/config/providers/catalog', async (c) => {
     installedProviders,
     models,
   });
-});
-
-// ── Get skills catalog ───────────────────────────────────────────────────────
-
-routes.get('/config/skills/catalog', async (c) => {
-  return c.json({ catalog: [], installedSkills: [] });
-});
-
-routes.get('/:agentId/config/skills/catalog', async (c) => {
-  const { agentId } = c.req.param();
-  const settings = await configStore.getSettings(agentId);
-  if (!settings) return c.json({ error: 'Agent not found' }, 404);
-
-  const installedSkills: SkillConfig[] = settings.skillsConfig?.skills ?? [];
-  return c.json({ catalog: [], installedSkills });
 });
 
 // ── Start provider OAuth login ───────────────────────────────────────────────
@@ -1085,12 +1054,10 @@ function hashStableId(stableId: string): number {
 }
 
 // In-process Promise chain for concurrent PUTs against the same stable ID.
-// Lobu runs embedded-only (single Node process), so a per-key chain is
-// strictly correct — every PUT enqueues against the previous PUT's
-// completion before entering its critical section. We back this up with a
-// Postgres advisory lock at the top of each entry as a structured signal
-// (visible in `pg_locks`) and as defense-in-depth for hypothetical future
-// multi-host writers.
+// Provides per-key serialization within a single pod; multi-replica safety
+// comes from the pg_advisory_xact_lock below (cross-pod writers serialize via
+// Postgres). Every PUT enqueues against the previous PUT's completion before
+// entering its critical section.
 const stablePlatformLockChains: Map<string, Promise<unknown>> = new Map();
 
 /**
@@ -1098,17 +1065,16 @@ const stablePlatformLockChains: Map<string, Promise<unknown>> = new Map();
  *
  * Combines two layers:
  *
- *   1. **In-process per-stableId Promise chain** — primary serialization for
- *      the embedded single-process deployment. Strictly FIFO; no DB
- *      round-trips on the hot path beyond what `fn` itself does.
+ *   1. **In-process per-stableId Promise chain** — primary serialization
+ *      within a single pod. Strictly FIFO; no DB round-trips on the hot path
+ *      beyond what `fn` itself does.
  *   2. **`pg_advisory_xact_lock(NAMESPACE, hashStableId(stableId))`** —
  *      acquired and released around a short-lived `BEGIN; ...; COMMIT;` at
  *      the top of each chain entry. Auto-releases on commit (per the
- *      `_xact_` semantics), which means the lock is gone before `fn` runs;
- *      we don't depend on it for serialization. It still gives us:
- *        - a structured `pg_locks` trace for diagnostics.
- *        - cross-process serialization if a future scale-out runs two
- *          gateway processes against the same DB.
+ *      `_xact_` semantics), which means the lock is gone before `fn` runs.
+ *      This is the multi-replica safety guard: N>1 pods behind ClientIP
+ *      affinity can still race on `lobu apply` from a different machine.
+ *      Also surfaces in `pg_locks` for diagnostics.
  *
  * Wrapping the whole flow in a single `sql.begin(...)` is not viable: the
  * tx connection plus parent-pool writes via `connectionStore` /

@@ -95,10 +95,12 @@ export default async (_ctx, client) => {
     access: "read",
   },
   "entities.search": {
-    summary: "Fuzzy search entities by name, optionally filtered by type.",
+    summary:
+      "Fuzzy search entities by name. POSITIONAL signature: search(query: string, options?: { limit?: number }). The query is the first positional argument — passing an object like { query: '...' } throws (the handler calls query.slice).",
     access: "read",
     example: "const hits = await client.entities.search('acme', { limit: 5 });",
     usageExample: `// Resolve a free-text mention into entity ids before linking knowledge to it.
+// First arg is the query string; second is options. Do NOT pass { query }.
 export default async (_ctx, client) => {
   return client.entities.search('Acme', { limit: 5 });
 };`,
@@ -118,8 +120,11 @@ export default async (_ctx, client) => {
     access: "read",
   },
   "entitySchema.createType": {
-    summary: "Create an entity type.",
+    summary:
+      "Create an entity type. The metadata shape goes in `metadata_schema` (a JSON Schema), NOT `properties` — a top-level `properties` key is silently ignored.",
     access: "write",
+    example:
+      "await client.entitySchema.createType({ slug: 'widget', name: 'Widget', metadata_schema: { type: 'object', properties: { color: { type: 'string' } } } });",
   },
   "entitySchema.updateType": {
     summary: "Update an entity type.",
@@ -246,17 +251,27 @@ export default async (ctx, client) => {
     throws: ["WatcherNotFound"],
   },
   "watchers.create": {
-    summary: "Create a watcher with prompt, extraction schema, and sources.",
+    summary:
+      "Create a watcher. REQUIRES slug, prompt, agent_id (the executing agent — a watcher without one is a zombie row), and extraction_schema as a FULL JSON Schema (top-level `type: 'object'` + `properties`). Each sources[].query must be a read-only SELECT/WITH projecting an `id` column (it runs against org-scoped virtual tables, NOT a URL). entity_id is optional (omit for an org-scoped watcher).",
     access: "write",
     throws: ["EntityNotFound", "InvalidExtractionSchema"],
-    example: "await client.watchers.create({ entity_id: 42, prompt: '...', extraction_schema: {...} });",
-    usageExample: `// Stand up a watcher that extracts pricing facts from a customer's site.
+    example:
+      "await client.watchers.create({ slug: 'pricing', agent_id: 'agt_123', prompt: 'Extract pricing from {{content}}.', extraction_schema: { type: 'object', properties: { price: { type: 'number' } } }, sources: [{ name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' }] });",
+    usageExample: `// Stand up a watcher that extracts pricing facts from recent events.
+// extraction_schema is a FULL JSON Schema; sources[].query is a read-only
+// SELECT projecting \`id\` (a URL here would be rejected).
 export default async (_ctx, client) => {
   return client.watchers.create({
-    entity_id: 42,
-    prompt: 'Extract current pricing.',
-    extraction_schema: { price: { type: 'number' } },
-    sources: [{ name: 'home', query: 'https://example.com/pricing' }],
+    slug: 'pricing-watcher',
+    agent_id: 'agt_123', // the agent that executes this watcher (required)
+    prompt: 'Extract current pricing from {{content}}.',
+    extraction_schema: {
+      type: 'object',
+      properties: { price: { type: 'number' } },
+    },
+    sources: [
+      { name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' },
+    ],
   });
 };`,
   },
@@ -508,12 +523,18 @@ export default async (_ctx, client) => {
     access: "write",
   },
   "viewTemplates.get": {
-    summary: "Get the active view template for a resource.",
+    summary:
+      "Get the active view template for a resource. Params: { resource_type: 'entity' | 'entity_type', resource_id, tab_name? } — resource_id is the entity id (number) for resource_type 'entity', or the entity-type slug (string) for 'entity_type'. Both resource_type and resource_id are required.",
     access: "read",
+    example:
+      "await client.viewTemplates.get({ resource_type: 'entity', resource_id: 42 });",
   },
   "viewTemplates.set": {
-    summary: "Create or update a view template.",
+    summary:
+      "Create or update a view template version. Params: { resource_type: 'entity' | 'entity_type', resource_id, json_template, tab_name?, tab_order?, change_notes? }. json_template may nest a `data_sources` key of named read-only SQL queries.",
     access: "write",
+    example:
+      "await client.viewTemplates.set({ resource_type: 'entity', resource_id: 42, json_template: { layout: 'overview' } });",
   },
   "viewTemplates.rollback": {
     summary: "Roll back to a previous template version.",

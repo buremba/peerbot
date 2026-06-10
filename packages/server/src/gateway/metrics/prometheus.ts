@@ -16,7 +16,8 @@ interface Metric {
   name: string;
   help: string;
   type: "counter" | "gauge" | "histogram";
-  values: MetricValue[];
+  /** Keyed by JSON.stringify(labels) for O(1) lookup. */
+  valuesByKey: Map<string, MetricValue>;
 }
 
 const metrics: Map<string, Metric> = new Map();
@@ -100,7 +101,7 @@ function registerMetric(
   help: string,
   type: "counter" | "gauge" | "histogram"
 ) {
-  metrics.set(name, { name, help, type, values: [] });
+  metrics.set(name, { name, help, type, valuesByKey: new Map() });
 }
 
 function setGaugeInternal(
@@ -115,13 +116,11 @@ function setGaugeInternal(
   }
 
   const labelKey = JSON.stringify(labels);
-  const existing = metric.values.find(
-    (entry) => JSON.stringify(entry.labels) === labelKey
-  );
+  const existing = metric.valuesByKey.get(labelKey);
   if (existing) {
     existing.value = value;
   } else {
-    metric.values.push({ value, labels });
+    metric.valuesByKey.set(labelKey, { value, labels });
   }
 }
 
@@ -144,13 +143,11 @@ export function incrementCounter(
     return;
   }
   const labelKey = JSON.stringify(labels);
-  const existing = metric.values.find(
-    (entry) => JSON.stringify(entry.labels) === labelKey
-  );
+  const existing = metric.valuesByKey.get(labelKey);
   if (existing) {
     existing.value += by;
   } else {
-    metric.values.push({ value: by, labels });
+    metric.valuesByKey.set(labelKey, { value: by, labels });
   }
 }
 
@@ -161,12 +158,12 @@ export function getMetricsText(): string {
     lines.push(`# HELP ${metric.name} ${metric.help}`);
     lines.push(`# TYPE ${metric.name} ${metric.type}`);
 
-    if (metric.values.length === 0) {
+    if (metric.valuesByKey.size === 0) {
       lines.push(`${metric.name} 0`);
       continue;
     }
 
-    for (const { value, labels } of metric.values) {
+    for (const { value, labels } of metric.valuesByKey.values()) {
       const labelStr = Object.entries(labels)
         .map(([key, labelValue]) => `${key}="${labelValue}"`)
         .join(",");

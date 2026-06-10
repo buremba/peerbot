@@ -8,6 +8,7 @@
 
 import type { Env } from '../index';
 import type { CreatedEntity, EntityData } from './entity-management';
+import logger from './logger';
 
 export interface EntityHookContext {
   organizationId: string;
@@ -145,7 +146,7 @@ registerEntityHooks('$member', {
         react: createElement(InvitationEmail, { inviterName, orgName, acceptUrl }),
       });
     } catch (err) {
-      console.error('[Entity Hook] Failed to send invitation email:', err);
+      logger.error({ err }, '[Entity Hook] Failed to send invitation email');
     }
   },
 

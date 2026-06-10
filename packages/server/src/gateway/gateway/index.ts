@@ -696,13 +696,6 @@ export class WorkerGateway {
   }
 
   /**
-   * Get active worker connections
-   */
-  getActiveConnections(): string[] {
-    return this.connectionManager.getActiveConnections();
-  }
-
-  /**
    * Resolve dynamic provider configuration for a given agent.
    * Mirrors the provider resolution logic in base-deployment-manager's
    * generateEnvironmentVariables() but returns config values instead of env vars.

@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import dns from "node:dns/promises";
 import {
   createLogger,
   type GuardrailRegistry,
@@ -21,6 +20,7 @@ import {
   tryCompletePendingDeviceAuth,
 } from "../../routes/internal/device-auth.js";
 import type { WritableSecretStore } from "../../secrets/index.js";
+import { isInternalUrl } from "../../proxy/ssrf-guard.js";
 import { startAuthCodeFlow } from "./oauth-flow.js";
 import type { CachedMcpServer, McpTool, McpToolCache } from "./tool-cache.js";
 
@@ -80,61 +80,6 @@ async function parseJsonRpcResponse(response: Response): Promise<any> {
     return JSON.parse(payload);
   }
   return response.json();
-}
-
-/**
- * Check whether a resolved IP address belongs to a reserved/internal range.
- */
-function isReservedIp(ip: string): boolean {
-  // IPv6 loopback
-  if (ip === "::1") return true;
-
-  // IPv6 unique local (fc00::/7)
-  if (/^f[cd]/i.test(ip)) return true;
-
-  // IPv4
-  const parts = ip.split(".").map(Number);
-  if (parts.length === 4) {
-    const [a, b] = parts as [number, number, number, number];
-    // 127.0.0.0/8
-    if (a === 127) return true;
-    // 10.0.0.0/8
-    if (a === 10) return true;
-    // 172.16.0.0/12
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    // 192.168.0.0/16
-    if (a === 192 && b === 168) return true;
-    // 169.254.0.0/16 (link-local)
-    if (a === 169 && b === 254) return true;
-  }
-
-  return false;
-}
-
-/**
- * Resolve a URL's hostname and check whether it points to an internal/reserved network.
- */
-async function isInternalUrl(url: string): Promise<boolean> {
-  try {
-    const parsed = new URL(url);
-    const hostname = parsed.hostname;
-
-    // Check if hostname is already an IP literal
-    if (isReservedIp(hostname)) return true;
-
-    // Resolve hostname to IP addresses
-    const addresses = await dns.resolve4(hostname).catch(() => [] as string[]);
-    const addresses6 = await dns.resolve6(hostname).catch(() => [] as string[]);
-
-    for (const addr of [...addresses, ...addresses6]) {
-      if (isReservedIp(addr)) return true;
-    }
-
-    return false;
-  } catch {
-    // If URL parsing fails, block it
-    return true;
-  }
 }
 
 interface JsonRpcResponse {
@@ -380,10 +325,11 @@ export class McpProxy {
     mcpId: string,
     agentId: string,
     tokenData: any,
-    workerToken?: string
+    workerToken?: string,
+    options?: { surfaceErrors?: boolean }
   ): Promise<{ tools: McpTool[]; instructions?: string }> {
     if (this.toolCache) {
-      const cached = await this.toolCache.getServerInfo(mcpId, agentId);
+      const cached = this.toolCache.getServerInfo(mcpId, agentId);
       if (cached) return cached;
     }
 
@@ -498,7 +444,7 @@ export class McpProxy {
 
       const serverInfo: CachedMcpServer = { tools, instructions };
       if (this.toolCache && tools.length > 0) {
-        await this.toolCache.setServerInfo(mcpId, serverInfo, agentId);
+        this.toolCache.setServerInfo(mcpId, serverInfo, agentId);
       }
 
       return serverInfo;
@@ -533,7 +479,7 @@ export class McpProxy {
         if (retryTools.length > 0) {
           const serverInfo: CachedMcpServer = { tools: retryTools };
           if (this.toolCache) {
-            await this.toolCache.setServerInfo(mcpId, serverInfo, agentId);
+            this.toolCache.setServerInfo(mcpId, serverInfo, agentId);
           }
           logger.info("Retry succeeded for MCP tool fetch", {
             mcpId,
@@ -549,7 +495,12 @@ export class McpProxy {
               ? retryError.message
               : String(retryError),
         });
+        // The curl-facing REST endpoint surfaces upstream failures as 502;
+        // agent-boot discovery (the default) fails soft so one unreachable
+        // MCP doesn't block the worker from starting.
+        if (options?.surfaceErrors) throw retryError;
       }
+      if (options?.surfaceErrors) throw error;
       return { tools: [] };
     }
   }
@@ -560,11 +511,7 @@ export class McpProxy {
     this.app.get("/:mcpId/tools", (c) => this.handleListTools(c));
     this.app.post("/:mcpId/tools/:toolName", (c) => this.handleCallTool(c));
 
-    // Legacy endpoints (if needed for other MCP transports)
-    this.app.all("/register", (c) => this.handleProxyRequest(c));
-    this.app.all("/message", (c) => this.handleProxyRequest(c));
-
-    // Path-based routes (for SSE or other transports)
+    // Path-based routes (catch-all for MCP streamable-HTTP transport)
     this.app.all("/:mcpId", (c) => this.handleProxyRequest(c));
     this.app.all("/:mcpId/*", (c) => this.handleProxyRequest(c));
   }
@@ -584,81 +531,22 @@ export class McpProxy {
     if (!httpServer) {
       return c.json({ error: `MCP server '${mcpId}' not found` }, 404);
     }
-    const scopeKey = this.computeScopeKey(
-      httpServer,
-      requesterUserId,
-      auth.tokenData.channelId || ""
-    );
 
-    // Check cache
-    if (this.toolCache) {
-      const cached = await this.toolCache.get(mcpId, agentId);
-      if (cached) return c.json({ tools: cached });
-    }
-
-    const directAuthToken =
-      httpServer.internal === true ? auth.token : undefined;
+    // The curl-facing introspection endpoint must surface a hard SSRF block as
+    // 403 — fetchToolsForMcp fails soft for agent-boot discovery and would
+    // otherwise drain the blocked response and return an empty 200.
+    const ssrfBlock = await this.ssrfBlockResponse(httpServer, mcpId, agentId);
+    if (ssrfBlock) return ssrfBlock;
 
     try {
-      try {
-        const initResponse = await this.sendInitialize(
-          httpServer,
-          agentId,
-          mcpId,
-          scopeKey,
-          directAuthToken
-        );
-        await initResponse.text().catch(() => {
-          /* noop — body drained, result not needed for plain tool listing */
-        });
-        await this.sendInitializedNotification(
-          httpServer,
-          agentId,
-          mcpId,
-          scopeKey,
-          directAuthToken
-        );
-      } catch (initError) {
-        logger.warn("MCP initialize failed before listing tools", {
-          mcpId,
-          error: initError instanceof Error ? initError.message : String(initError),
-        });
-      }
-
-      const jsonRpcBody = JSON.stringify({
-        jsonrpc: "2.0",
-        method: "tools/list",
-        params: {},
-        id: 1,
-      });
-
-      const response = await this.sendUpstreamRequest(
-        httpServer,
-        agentId,
+      const { tools, instructions } = await this.fetchToolsForMcp(
         mcpId,
-        "POST",
-        jsonRpcBody,
-        scopeKey,
-        directAuthToken
+        agentId,
+        auth.tokenData,
+        httpServer.internal === true ? auth.token : undefined,
+        { surfaceErrors: true }
       );
-
-      const data = (await parseJsonRpcResponse(response)) as JsonRpcResponse;
-      if (data?.error) {
-        logger.error("Upstream returned JSON-RPC error", {
-          mcpId,
-          error: data.error,
-        });
-        return c.json({ error: data.error.message || "Upstream error" }, 502);
-      }
-
-      const tools: McpTool[] = data?.result?.tools || [];
-
-      // Cache result
-      if (this.toolCache && tools.length > 0) {
-        await this.toolCache.set(mcpId, tools, agentId);
-      }
-
-      return c.json({ tools });
+      return c.json({ tools, instructions });
     } catch (error) {
       logger.error("Failed to list tools", { mcpId, error });
       return c.json(
@@ -1257,7 +1145,7 @@ export class McpProxy {
   ): Promise<{ found: boolean; annotations?: McpTool["annotations"] }> {
     let tools: McpTool[] | null = null;
     if (this.toolCache) {
-      tools = await this.toolCache.get(mcpId, agentId);
+      tools = this.toolCache.get(mcpId, agentId);
     }
 
     if (!tools) {

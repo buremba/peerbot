@@ -7,7 +7,13 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { createLogger, type InstructionProvider } from "@lobu/core";
+import {
+  createLogger,
+  type InstructionProvider,
+  type ThreadResponsePayload,
+} from "@lobu/core";
+import type { IMessageQueue } from "../infrastructure/queue/index.js";
+import { TERMINAL_DELIVERY_SEND_OPTS } from "../infrastructure/queue/index.js";
 import type { CoreServices, PlatformAdapter } from "../platform.js";
 import type { ResponseRenderer } from "../platform/response-renderer.js";
 import { ApiResponseRenderer } from "./response-renderer.js";
@@ -46,34 +52,43 @@ export class ApiPlatform implements PlatformAdapter {
       watcherRunTracker
     );
 
-    // Subscribe to interaction events to broadcast to SSE clients
+    // Subscribe to interaction events and deliver them to SSE clients.
+    //
+    // These cards (ask_user question, tool-approval, link-button) are raised by
+    // the worker on ITS pod, but the browser's SSE stream is pinned by ClientIP
+    // affinity to a possibly DIFFERENT pod. The SseManager is per-pod and
+    // in-memory, so broadcasting directly here would land the card on the
+    // worker's pod, which the browser is not connected to — the user never sees
+    // it and the turn hangs. Instead we enqueue each card onto the Postgres
+    // thread_response queue marked `requireSseOwner`, so the consumer's
+    // owner-routing re-queue delivers it on the pod that holds the SSE socket
+    // (same mechanism that already owner-routes terminal API completions).
     const interactionService = services.getInteractionService();
+    const queue = services.getQueue();
 
     interactionService.on("question:created", (event: any) => {
       if (event.platform !== "api") return;
-      sseManager.broadcast(event.conversationId, "question", {
+      this.enqueueInteractionCard(queue, event, "question", {
         type: "question",
         questionId: event.id,
         question: event.question,
         options: event.options,
-        timestamp: Date.now(),
       });
     });
 
     interactionService.on("link-button:created", (event: any) => {
       if (event.platform !== "api") return;
-      sseManager.broadcast(event.conversationId, "link-button", {
+      this.enqueueInteractionCard(queue, event, "link-button", {
         type: "link-button",
         url: event.url,
         label: event.label,
         linkType: event.linkType,
-        timestamp: Date.now(),
       });
     });
 
     interactionService.on("tool:approval-needed", (event: any) => {
       if (event.platform !== "api") return;
-      sseManager.broadcast(event.conversationId, "tool-approval", {
+      this.enqueueInteractionCard(queue, event, "tool-approval", {
         type: "tool-approval",
         requestId: event.id,
         mcpId: event.mcpId,
@@ -81,20 +96,51 @@ export class ApiPlatform implements PlatformAdapter {
         args: event.args,
         grantPattern: event.grantPattern,
         durationOptions: ["1h", "24h", "always"],
-        timestamp: Date.now(),
       });
     });
 
     interactionService.on("suggestion:created", (event: any) => {
       if (event.platform !== "api") return;
-      sseManager.broadcast(event.conversationId, "suggestion", {
+      this.enqueueInteractionCard(queue, event, "suggestion", {
         type: "suggestion",
         prompts: event.prompts,
-        timestamp: Date.now(),
       });
     });
 
     logger.debug("✅ API platform initialized");
+  }
+
+  /**
+   * Enqueue an interaction card onto the thread_response queue so the pod that
+   * owns the browser's SSE connection delivers it (cross-replica safe). The
+   * consumer broadcasts `customEvent.name` on `conversationId`; the
+   * `requireSseOwner` flag makes a non-owning pod re-queue rather than drop it.
+   */
+  private enqueueInteractionCard(
+    queue: IMessageQueue,
+    event: { conversationId: string; userId?: string },
+    name: string,
+    data: Record<string, unknown>
+  ): void {
+    const payload: ThreadResponsePayload = {
+      messageId: randomUUID(),
+      conversationId: event.conversationId,
+      // For the API platform channelId == conversationId == the SSE key.
+      channelId: event.conversationId,
+      userId: event.userId ?? "api",
+      platform: "api",
+      teamId: "api",
+      timestamp: Date.now(),
+      customEvent: { name, data, requireSseOwner: true },
+    };
+    void queue
+      .send("thread_response", payload, TERMINAL_DELIVERY_SEND_OPTS)
+      .catch((err) => {
+        logger.error(
+          `Failed to enqueue ${name} interaction card for ${event.conversationId}:`,
+          err
+        );
+      });
   }
 
   /**

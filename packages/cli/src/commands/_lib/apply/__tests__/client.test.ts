@@ -259,9 +259,9 @@ describe("isDuplicateError", () => {
   });
 
   test("bare 409 without a code is still a duplicate", () => {
-    expect(isDuplicateError(new ApiError("POST /x failed: conflict", 409))).toBe(
-      true
-    );
+    expect(
+      isDuplicateError(new ApiError("POST /x failed: conflict", 409))
+    ).toBe(true);
   });
 
   test("422 validation error is NOT a duplicate", () => {
@@ -307,7 +307,10 @@ describe("ApplyClient — upsert create/update flow", () => {
       }) as typeof fetch
     );
 
-    const result = await client.upsertEntityType({ slug: "task", name: "Task" });
+    const result = await client.upsertEntityType({
+      slug: "task",
+      name: "Task",
+    });
     expect(result).toEqual({ updated: true });
     expect(calls).toHaveLength(2);
     expect(JSON.parse(String(calls[0]?.init?.body)).action).toBe("create");

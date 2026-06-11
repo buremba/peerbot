@@ -208,7 +208,7 @@ export function buildWrapperApp(
 			// other body (DB unreachable, crash) is a real incident and must
 			// still report.
 			if (
-				c.req.path.startsWith("/health") &&
+				c.req.path === "/health/ready" &&
 				c.res.status === 503 &&
 				body !== null &&
 				typeof body === "object" &&

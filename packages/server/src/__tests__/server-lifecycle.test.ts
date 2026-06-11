@@ -227,6 +227,33 @@ describe("buildWrapperApp", () => {
 		expect(opts.tags.source).toBe("http_response");
 	});
 
+	it("suppresses ONLY the draining readiness 503; other health 5xx still report", async () => {
+		const { buildWrapperApp } = await import("../server-lifecycle");
+		const sentry = await import("@sentry/node");
+		const { Hono } = await import("hono");
+		const captureMessage = sentry.captureMessage as ReturnType<typeof vi.fn>;
+
+		// Expected deploy-drain shape → suppressed (was LOBU-BACKEND-X noise).
+		const draining = buildWrapperApp({} as never, new Hono());
+		draining.get("/health/ready", (c) =>
+			c.json({ status: "draining", service: "lobu-api" }, 503),
+		);
+		captureMessage.mockClear();
+		const drainRes = await draining.request("/health/ready");
+		expect(drainRes.status).toBe(503);
+		expect(captureMessage).not.toHaveBeenCalled();
+
+		// Same endpoint, non-draining body (e.g. DB unreachable) → still reports.
+		const broken = buildWrapperApp({} as never, new Hono());
+		broken.get("/health/ready", (c) =>
+			c.json({ status: "error", error: "db unreachable" }, 503),
+		);
+		captureMessage.mockClear();
+		const brokenRes = await broken.request("/health/ready");
+		expect(brokenRes.status).toBe(503);
+		expect(captureMessage).toHaveBeenCalled();
+	});
+
 	it("routes thrown exceptions through onError + Sentry.captureException", async () => {
 		const { buildWrapperApp } = await import("../server-lifecycle");
 		const sentry = await import("@sentry/node");
@@ -331,7 +358,9 @@ describe("createServerLifecycle (source-level contract)", () => {
 		const gateway = indexOf('safe("stopLobuGateway"');
 		const db = indexOf('safe("closeDbSingleton"');
 		const extra = indexOf("safe(`extraTeardown[");
-		const close = indexOf("httpServer.close();");
+		// #1191 wrapped the close in the same safe() step pattern as the rest of
+		// teardown; match the stable step label, not the raw call.
+		const close = indexOf('safe("httpServer.close"');
 
 		expect(worker).toBeLessThan(vite);
 		expect(vite).toBeLessThan(reaper);

@@ -14,9 +14,11 @@
 
 import { fork } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
+import { EXTERNAL_RUNTIME_DEPS } from '@lobu/connector-worker/compile';
 import { type BuildOptions, build } from 'esbuild';
 import logger from './logger';
 
@@ -159,6 +161,110 @@ export async function compileSource(
 }
 
 /**
+ * Bare specifiers the compiled bundle may import at load time: the connector
+ * SDK (always externalized by `createConnectorCompiler`) plus the
+ * EXTERNAL_RUNTIME_DEPS (native/binary deps esbuild leaves external).
+ */
+const RUNTIME_PROVIDED_PACKAGES: readonly string[] = [
+  '@lobu/connector-sdk',
+  ...EXTERNAL_RUNTIME_DEPS,
+];
+
+/**
+ * Resolve the on-disk package root for a bare specifier, as THIS process (the
+ * server, which always has the SDK installed) resolves it. Walks up from the
+ * resolved entry file and accepts a directory when its package.json declares
+ * the package's name (covers workspace layouts where require.resolve
+ * realpath's through a symlink to e.g. `packages/connector-sdk`, outside any
+ * node_modules) or when it sits directly under a node_modules dir (covers
+ * npm-aliased installs like `playwright` → patchright, whose package.json
+ * name differs from the specifier).
+ */
+function resolvePackageRoot(pkgName: string): string | null {
+  let entry: string;
+  try {
+    entry = require.resolve(pkgName);
+  } catch {
+    return null;
+  }
+  let dir = dirname(entry);
+  for (let i = 0; i < 30; i++) {
+    if (existsSync(join(dir, 'package.json'))) {
+      const parent = dirname(dir);
+      const underNodeModules =
+        basename(parent) === 'node_modules' ||
+        (basename(parent).startsWith('@') && basename(dirname(parent)) === 'node_modules');
+      if (underNodeModules) return dir;
+      try {
+        const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf-8')) as {
+          name?: string;
+        };
+        if (pkg.name === pkgName) return dir;
+      } catch {
+        // unreadable/invalid package.json — keep walking
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+const packageRootCache = new Map<string, string | null>();
+
+/**
+ * Stage a `node_modules` inside the extraction temp dir with symlinks to the
+ * runtime-provided packages, resolved from the server's own installation.
+ *
+ * Why: the temp dir lives under `process.cwd()`, which for an embedded
+ * `lobu run` is the USER'S project directory. The compiled bundle imports
+ * `@lobu/connector-sdk` as a bare (externalized) specifier, so Node resolves
+ * it by walking up from the temp dir — which only worked when the server's
+ * installation happened to be an ancestor. A fresh `lobu init` project has no
+ * node_modules, so the first bundled-connector install failed with
+ * `Cannot find package '@lobu/connector-sdk'` (#1181). Symlinks (not
+ * NODE_PATH) because ESM resolution ignores NODE_PATH entirely. Packages that
+ * don't resolve from the server are skipped — the subprocess then falls back
+ * to the ancestor walk exactly as before.
+ */
+async function stageRuntimeProvidedPackages(tmpDir: string): Promise<void> {
+  for (const pkgName of RUNTIME_PROVIDED_PACKAGES) {
+    if (!packageRootCache.has(pkgName)) {
+      packageRootCache.set(pkgName, resolvePackageRoot(pkgName));
+    }
+    const root = packageRootCache.get(pkgName);
+    if (!root) continue;
+    const linkPath = join(tmpDir, 'node_modules', pkgName);
+    try {
+      await mkdir(dirname(linkPath), { recursive: true });
+      // 'junction' only matters on Windows (ignored elsewhere); junctions
+      // don't need elevated privileges there.
+      await symlink(root, linkPath, 'junction');
+    } catch (err) {
+      logger.warn({ pkgName, err }, 'Failed to stage runtime-provided package for extraction');
+    }
+  }
+}
+
+/**
+ * Map a raw extraction failure to an actionable message. Safety net for
+ * environments where staging didn't cover resolution: a missing connector SDK
+ * means the project's npm deps were never installed, so say exactly that.
+ */
+export function formatMetadataExtractionError(rawError: string): string {
+  const base = `Metadata extraction failed: ${rawError}`;
+  if (/Cannot find (?:package|module) '(?:@lobu\/connector-sdk|lobu)'/.test(rawError)) {
+    return (
+      `${base}. The connector SDK could not be resolved from the project — ` +
+      'run `npm install` (or `bun install`) in the project directory to install ' +
+      '@lobu/connector-sdk, then retry.'
+    );
+  }
+  return base;
+}
+
+/**
  * Step 2: Extract metadata from compiled code via subprocess.
  * Spawns a child process to safely instantiate the class and read metadata.
  */
@@ -169,6 +275,7 @@ export async function extractMetadata<TMetadata>(
   const tmpDir = await mkdtemp(join(process.cwd(), config.tmpPrefix));
 
   try {
+    await stageRuntimeProvidedPackages(tmpDir);
     const codePath = join(tmpDir, 'source.mjs');
     const runnerPath = join(tmpDir, 'runner.mjs');
 
@@ -194,7 +301,7 @@ export async function extractMetadata<TMetadata>(
         if (msg.success) {
           resolve(msg.metadata);
         } else {
-          reject(new Error(`Metadata extraction failed: ${msg.error}`));
+          reject(new Error(formatMetadataExtractionError(String(msg.error))));
         }
       });
 
@@ -212,7 +319,7 @@ export async function extractMetadata<TMetadata>(
           reject(
             new Error(
               stderr
-                ? `Metadata extraction subprocess exited with code ${code}: ${stderr}`
+                ? formatMetadataExtractionError(`subprocess exited with code ${code}: ${stderr}`)
                 : `Metadata extraction subprocess exited with code ${code}`
             )
           );

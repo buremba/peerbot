@@ -57,7 +57,10 @@ function installIsStale(root: string): boolean {
 
 function hasOnPath(bin: string): boolean {
   try {
-    execFileSync(bin, ["--version"], { stdio: "ignore" });
+    // `env: process.env` is node's default; passed explicitly because bun
+    // otherwise resolves the binary against the STARTUP environment's PATH,
+    // ignoring runtime changes (which the tests rely on to stage fakes).
+    execFileSync(bin, ["--version"], { stdio: "ignore", env: process.env });
     return true;
   } catch {
     return false;
@@ -88,6 +91,29 @@ function pickInstaller(root: string): { cmd: string; args: string[] } {
 }
 
 /**
+ * Run the project's dependency install in `root` with the picked installer
+ * (bun if available, else npm; `--ignore-scripts` always). Throws when the
+ * install fails or the installer binary is missing — callers decide whether
+ * that's fatal (`lobu apply` compile path) or a warning (`lobu init`).
+ */
+export function installProjectDeps(
+  root: string,
+  opts: {
+    /** "inherit" streams installer output to the terminal; "pipe" keeps it quiet. */
+    stdio?: "inherit" | "pipe";
+  } = {}
+): { installer: string } {
+  const installer = pickInstaller(root);
+  // `env: process.env` — see hasOnPath for why it's passed explicitly.
+  execFileSync(installer.cmd, installer.args, {
+    cwd: root,
+    stdio: opts.stdio ?? "inherit",
+    env: process.env,
+  });
+  return { installer: installer.cmd };
+}
+
+/**
  * Install the connector project's deps if missing/stale. No-op when the
  * connector has no `package.json` (no declared npm deps to bundle).
  */
@@ -107,11 +133,7 @@ export function ensureProjectDepsInstalled(
     ensuredRoots.add(root);
     return;
   }
-  const installer = pickInstaller(root);
-  log(`Installing connector dependencies in ${root} via ${installer.cmd}...`);
-  execFileSync(installer.cmd, installer.args, {
-    cwd: root,
-    stdio: "inherit",
-  });
+  log(`Installing connector dependencies in ${root}...`);
+  installProjectDeps(root, { stdio: "inherit" });
   ensuredRoots.add(root);
 }

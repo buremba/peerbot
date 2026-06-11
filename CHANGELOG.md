@@ -1,5 +1,22 @@
 # Changelog
 
+## [11.2.0](https://github.com/lobu-ai/lobu/compare/lobu-v11.1.0...lobu-v11.2.0) (2026-06-11)
+
+
+### Features
+
+* **connector-sdk:** auth-aware HTTP client and pagination helpers; nine connectors gain 429/5xx retry ([4f6a495](https://github.com/lobu-ai/lobu/commit/4f6a4950d9b09bba0f2be9325c33c73dcafc64b0))
+
+
+### Bug Fixes
+
+* **cli:** drop scaffolded node_modules in smoke gates so the workspace connector-sdk is under test ([#1223](https://github.com/lobu-ai/lobu/issues/1223)) ([3cc9cc8](https://github.com/lobu-ai/lobu/commit/3cc9cc8f2e4492e4aead9790f51fa24eb4c45b87)), closes [#1222](https://github.com/lobu-ai/lobu/issues/1222)
+* **gateway:** resolve org-shared provider keys at the egress proxy ([#1215](https://github.com/lobu-ai/lobu/issues/1215)) ([3582ac0](https://github.com/lobu-ai/lobu/commit/3582ac0cd87d4dd39fbbff6d5910d4941ea25da2))
+* **sentry:** classify provider auth hints; suppress only the readiness drain 503 ([#1218](https://github.com/lobu-ai/lobu/issues/1218)) ([6f89cad](https://github.com/lobu-ai/lobu/commit/6f89cadbc4f785b040fb80bb61bfb319ffa56fa8))
+* **server:** enforce rate limits cluster-wide via Postgres (per-pod limiter multiplied limits by replica count) ([4f6a495](https://github.com/lobu-ai/lobu/commit/4f6a4950d9b09bba0f2be9325c33c73dcafc64b0))
+* **server:** truthful vitest exit codes, fail-closed CI gate, and the 8 red integration tests ([#1220](https://github.com/lobu-ai/lobu/issues/1220)) ([0235681](https://github.com/lobu-ai/lobu/commit/023568100f97d8c9b13fa2bbe3660338d15ded04))
+* **tests:** raise live-provider max_tokens so reasoning-default models aren't starved ([#1219](https://github.com/lobu-ai/lobu/issues/1219)) ([d500d89](https://github.com/lobu-ai/lobu/commit/d500d897874c071d93da5cf79567f71d01acd72b))
+
 ## [11.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v11.0.0...lobu-v11.1.0) (2026-06-11)
 
 

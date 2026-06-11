@@ -63,6 +63,13 @@ export function classifyError(error: unknown): string | undefined {
     /no\s+(provider\s+)?credentials\s+configured|no_credentials/i.test(message)
   )
     return "PROVIDER_AUTH";
+  // session-runner replaces a raw provider 401 with the admin-facing hint
+  // BEFORE the worker's failure branch captures it (maybeBuildAuthHintMessage),
+  // so the captured message is the hint, not the original "Incorrect API key".
+  // Classify the hint shape too or auth failures stay `unclassified` and dodge
+  // the PROVIDER_* Sentry alert (second live red-test round, LOBU-BACKEND-W).
+  if (/needs to connect .+ on the base agent/i.test(message))
+    return "PROVIDER_AUTH";
   // `worker.ts` throws "Model \"<id>\" not found for provider ..." and pi-ai /
   // upstream surface "<x> is not a valid model"/"unknown model"/"model ... not found".
   if (/not a valid model|unknown model|model .* not found/i.test(message))

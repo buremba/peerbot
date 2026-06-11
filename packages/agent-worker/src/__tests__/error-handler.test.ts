@@ -112,6 +112,15 @@ describe("classifyError", () => {
         )
       )
     ).toBe("PROVIDER_AUTH");
+    // The admin-facing auth hint that session-runner substitutes for the raw
+    // provider 401 before the worker's capture sees it.
+    expect(
+      classifyError(
+        new Error(
+          "To use gpt-4o, an admin needs to connect openai on the base agent. Ask an admin to configure openai and then try again."
+        )
+      )
+    ).toBe("PROVIDER_AUTH");
   });
 
   test("recognizes unknown-model failures", () => {

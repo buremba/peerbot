@@ -194,6 +194,12 @@ export function buildWrapperApp(
 	// so this is safe to wire unconditionally.
 	wrapper.use("*", async (c, next) => {
 		await next();
+		// Readiness probes intentionally 503 during the graceful-shutdown drain
+		// (SHUTDOWN_READINESS_DRAIN_MS) — capturing them turns every deploy
+		// rollover into a Sentry issue (LOBU-BACKEND-X).
+		if (c.req.path === "/health" || c.req.path === "/health/ready") {
+			return;
+		}
 		if (c.res.status >= 500 && !isSentryReported(c)) {
 			let body: unknown = null;
 			try {

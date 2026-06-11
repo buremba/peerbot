@@ -103,6 +103,15 @@ describe("classifyError", () => {
     expect(classifyError(new Error("incorrect api key provided"))).toBe(
       "PROVIDER_AUTH"
     );
+    // The secret-proxy's every-tier-missed 401 (live red-test LOBU-BACKEND-W
+    // landed as `unclassified` and dodged the PROVIDER_* alert).
+    expect(
+      classifyError(
+        new Error(
+          "401 No provider credentials configured. End-user provider setup is not available in chat yet."
+        )
+      )
+    ).toBe("PROVIDER_AUTH");
   });
 
   test("recognizes unknown-model failures", () => {

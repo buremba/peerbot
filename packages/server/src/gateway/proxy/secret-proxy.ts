@@ -6,6 +6,7 @@ import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager
 import type { ProviderCredentialContext } from "../embedded.js";
 import type { ProviderUpstreamConfig } from "../modules/module-system.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
+import { readOrgSharedProviderApiKey } from "../../lobu/stores/provider-secrets.js";
 import type { SecretStore } from "../secrets/index.js";
 import { getClientIp } from "../utils/rate-limiter.js";
 
@@ -739,31 +740,30 @@ export class SecretProxy {
               })
             )
           : profile?.credential;
-        if (credential) {
-          headers.authorization = `Bearer ${credential}`;
-        } else if (this.systemKeyResolver) {
-          const systemKey = this.systemKeyResolver(providerId);
-          if (systemKey) {
-            headers.authorization = `Bearer ${systemKey}`;
-          } else {
-            logger.warn(
-              `No auth profile or system key for agent ${urlAgentId}, provider ${providerId}`
-            );
-            return c.json(
-              {
-                error: {
-                  message:
-                    "No provider credentials configured. End-user provider setup is not available in chat yet. Ask an admin to connect a provider for the base agent.",
-                  type: "authentication_error",
-                  code: "no_credentials",
-                },
-              },
-              401
-            );
-          }
+        // Walk the documented resolution chain (provider-secrets.ts):
+        //   1. per-user auth profile (above)
+        //   2. org-shared `agent_secrets` key written by `lobu apply`
+        //   3. deployment-wide system key (env)
+        // Run dispatch admits the run when ANY tier matches (`hasCredentials`
+        // in base-provider-module.ts walks the same chain), so skipping tier 2
+        // here meant an apply-provisioned org dispatched its agent only to
+        // 401 at the first provider call — found live by the Sentry red-test
+        // (LOBU-BACKEND-W).
+        let resolvedCredential: string | null = credential ?? null;
+        if (!resolvedCredential && expectedOrganizationId) {
+          resolvedCredential = await readOrgSharedProviderApiKey(
+            providerId,
+            expectedOrganizationId
+          );
+        }
+        if (!resolvedCredential && this.systemKeyResolver) {
+          resolvedCredential = this.systemKeyResolver(providerId) ?? null;
+        }
+        if (resolvedCredential) {
+          headers.authorization = `Bearer ${resolvedCredential}`;
         } else {
           logger.warn(
-            `No auth profile for agent ${urlAgentId}, provider ${providerId}`
+            `No auth profile, org-shared key, or system key for agent ${urlAgentId}, provider ${providerId}`
           );
           return c.json(
             {

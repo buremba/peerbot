@@ -1,8 +1,7 @@
-import { createLogger, decrypt } from "@lobu/core";
+import { createLogger } from "@lobu/core";
 import { Hono } from "hono";
-import { getDb } from "../../db/client.js";
 import { tryGetOrgId } from "../../lobu/stores/org-context.js";
-import { providerOrgSecretName } from "../../lobu/stores/provider-secrets.js";
+import { readOrgSharedProviderApiKey } from "../../lobu/stores/provider-secrets.js";
 import type { ProviderCredentialContext } from "../embedded.js";
 import {
   BaseModule,
@@ -15,14 +14,9 @@ import type { AuthProfilesManager } from "./settings/auth-profiles-manager.js";
 const logger = createLogger("base-provider-module");
 
 /**
- * Look up the org-shared API key for this provider. Used as the second-tier
- * fallback after per-user `auth_profiles` and before deployment-wide
- * `process.env`. Returns null when no row exists or the ciphertext fails to
- * decrypt — every miss path is silent so the caller can keep walking the
- * resolution chain.
- *
- * The lookup is keyed strictly on `(organization_id, name)` against
- * `agent_secrets`. The orgId comes from one of two sources, in order:
+ * Look up the org-shared API key for this provider (tier 2 of the resolution
+ * chain — see provider-secrets.ts, which owns the actual lookup). The orgId
+ * comes from one of two sources, in order:
  * 1. `context.organizationId` — set by the worker-spawn code path that
  *    threads the org id through `ProviderCredentialContext`.
  * 2. `tryGetOrgId()` — the AsyncLocalStorage-backed org context set by
@@ -38,25 +32,7 @@ async function readOrgSharedProviderKey(
 ): Promise<string | null> {
   const orgId = context?.organizationId ?? tryGetOrgId();
   if (!orgId) return null;
-  const sql = getDb();
-  const rows = (await sql`
-    SELECT ciphertext
-    FROM agent_secrets
-    WHERE organization_id = ${orgId}
-      AND name = ${providerOrgSecretName(providerId)}
-      AND (expires_at IS NULL OR expires_at > now())
-    LIMIT 1
-  `) as Array<{ ciphertext: string }>;
-  const ciphertext = rows[0]?.ciphertext;
-  if (!ciphertext) return null;
-  try {
-    return decrypt(ciphertext);
-  } catch (error) {
-    logger.warn(
-      `Failed to decrypt org-shared key for provider ${providerId}: ${error instanceof Error ? error.message : String(error)}`
-    );
-    return null;
-  }
+  return readOrgSharedProviderApiKey(providerId, orgId);
 }
 
 interface BaseProviderConfig {

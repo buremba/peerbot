@@ -2,12 +2,15 @@ import { randomUUID } from "node:crypto";
 import {
 	createLogger,
 	type GuardrailRegistry,
+	runGuardrailInstances,
 	type WorkerTokenData,
 } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { requiresToolApproval } from "../../permissions/approval-policy.js";
 import type { GrantStore } from "../../permissions/grant-store.js";
+import { resolveAgentGuardrails } from "../../guardrails/aggregator.js";
+import { recordGuardrailTrip } from "../../guardrails/audit.js";
 import type { WritableSecretStore } from "../../secrets/index.js";
 import type { AgentSettingsStore } from "../settings/agent-settings-store.js";
 import { storePendingTool } from "./pending-tool-store.js";
@@ -396,6 +399,102 @@ export class McpProxy {
 		// Path-based routes (catch-all for MCP streamable-HTTP transport)
 		this.app.all("/:mcpId", (c) => handleProxyRequest(this, c));
 		this.app.all("/:mcpId/*", (c) => handleProxyRequest(this, c));
+	}
+
+	/**
+	* Run the agent's resolved pre-tool guardrails (built-in names + skill-
+	* declared SKILL.md guardrails) for a `tools/call`. Returns true if a
+	* guardrail tripped and the call must be blocked — the caller then returns a
+	* generic, platform-shaped "blocked by policy" response (the specific reason
+	* is never surfaced to the worker; that would be an evasion oracle).
+	*
+	* Shared by BOTH tool-call entrypoints — the JSON-RPC forward path
+	* (`handleProxyRequest`) and the REST `handleCallTool` — so neither can
+	* bypass the stage, and independent of `grantStore` so guardrails enforce
+	* even when the approval subsystem isn't configured.
+	*
+	* Fails OPEN on store/registry-level errors (per-guardrail throws already
+	* fail open in the runner); judge guardrails fail CLOSED by design.
+	*
+	* @internal Public only for the route-handler modules.
+	*/
+	async runPreToolGuardrails(
+		agentId: string,
+		tokenData: {
+			userId: string;
+			conversationId?: string;
+			organizationId?: string;
+		},
+		toolName: string,
+		toolArgs: Record<string, unknown>
+	): Promise<boolean> {
+		if (!this.guardrailRegistry || !this.agentSettingsStore) return false;
+		try {
+			const settings = await this.agentSettingsStore.getSettings(agentId);
+			const resolved = resolveAgentGuardrails(
+				settings ?? { guardrails: [] },
+				(settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),
+				this.guardrailRegistry
+			);
+			const list = resolved.byStage["pre-tool"];
+			if (list.length === 0) return false;
+			const outcome = await runGuardrailInstances("pre-tool", list, {
+				agentId,
+				userId: tokenData.userId,
+				toolName,
+				arguments: toolArgs,
+				conversationId: tokenData.conversationId,
+			});
+			if (!outcome.tripped) return false;
+			// Resolve org id with a metadata fallback — per-job tokens carry it, but
+			// legacy deployment-lifetime tokens may not, and an unaudited trip is a
+			// security log gap.
+			let resolvedOrgId = tokenData.organizationId;
+			if (!resolvedOrgId) {
+				try {
+					const md = await this.agentSettingsStore.getMetadata(agentId);
+					resolvedOrgId = md?.organizationId;
+				} catch (lookupErr) {
+					logger.warn(
+						{
+							agentId,
+							err:
+								lookupErr instanceof Error
+									? lookupErr.message
+									: String(lookupErr),
+						},
+						"Pre-tool guardrail trip: orgId metadata lookup failed (audit may be skipped)"
+					);
+				}
+			}
+			void recordGuardrailTrip({
+				organizationId: resolvedOrgId,
+				agentId,
+				userId: tokenData.userId,
+				conversationId: tokenData.conversationId,
+				stage: "pre-tool",
+				guardrail: outcome.tripped.guardrail,
+				reason: outcome.tripped.reason,
+				metadata: outcome.tripped.metadata,
+			});
+			logger.info(
+				{ agentId, toolName, guardrail: outcome.tripped.guardrail },
+				"Pre-tool guardrail tripped — blocking tool call with generic policy message"
+			);
+			return true;
+		} catch (err) {
+			// Fail open on store/registry-level errors — the runner already
+			// fail-opens on per-guardrail throws.
+			logger.warn(
+				{
+					agentId,
+					toolName,
+					err: err instanceof Error ? err.message : String(err),
+				},
+				"Pre-tool guardrail check failed — proceeding without guardrails"
+			);
+			return false;
+		}
 	}
 
 	/**

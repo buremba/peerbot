@@ -10,9 +10,10 @@ import {
   type MessagePayload,
   OrchestratorError,
   retryWithBackoff,
-  runGuardrails,
+  runGuardrailInstances,
   SpanStatusCode,
 } from "@lobu/core";
+import { resolveAgentGuardrails } from "../guardrails/aggregator.js";
 import * as Sentry from "@sentry/node";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import { platformMetadataString } from "../connections/platform-metadata.js";
@@ -245,20 +246,20 @@ export class MessageConsumer {
           const settings = await this.agentSettingsStore.getSettings(
             data.agentId
           );
-          const enabled = settings?.guardrails ?? [];
-          if (enabled.length > 0) {
-            const outcome = await runGuardrails(
-              this.guardrailRegistry,
-              "input",
-              enabled,
-              {
-                agentId: data.agentId,
-                userId: data.userId,
-                message: data.messageText,
-                platform: data.platform,
-                conversationId: effectiveConversationId,
-              }
-            );
+          const resolved = resolveAgentGuardrails(
+            settings ?? { guardrails: [] },
+            (settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),
+            this.guardrailRegistry
+          );
+          const list = resolved.byStage.input;
+          if (list.length > 0) {
+            const outcome = await runGuardrailInstances("input", list, {
+              agentId: data.agentId,
+              userId: data.userId,
+              message: data.messageText,
+              platform: data.platform,
+              conversationId: effectiveConversationId,
+            });
             if (outcome.tripped) {
               // Resolve org id with a metadata fallback so a trip never
               // silently drops the audit — legacy/test enqueues can omit it.

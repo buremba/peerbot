@@ -32,6 +32,23 @@ const DUE_FEEDS_LOCK_KEY = 71001;
 const DUE_FEED_MATERIALIZE_COOLDOWN_MS = 5000;
 let lastDueFeedMaterializeAttemptAt = 0;
 
+/** jsonb columns arrive as objects, text columns as JSON strings — normalize to an object or null. */
+function parseClaimJson(raw: unknown): Record<string, unknown> | null {
+  if (raw == null) return null;
+  if (typeof raw === 'object' && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 /**
  * POST /api/workers/poll
  *
@@ -468,7 +485,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         w.notification_channel AS watcher_notification_channel,
         w.notification_priority AS watcher_notification_priority,
         w.execution_config AS watcher_execution_config,
-        wv.prompt AS watcher_prompt
+        wv.prompt AS watcher_prompt,
+        wv.extraction_schema AS watcher_extraction_schema
       FROM runs r
       LEFT JOIN feeds f ON f.id = r.feed_id
       LEFT JOIN connections conn ON conn.id = r.connection_id
@@ -548,6 +566,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     watcher_notification_priority: string | null;
     watcher_execution_config: Record<string, unknown> | null;
     watcher_prompt: string | null;
+    watcher_extraction_schema: Record<string, unknown> | string | null;
     // Auth run fields
     run_auth_profile_id: number | null;
     auth_profile_auth_data: Record<string, unknown> | null;
@@ -596,6 +615,14 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           // "process this" and improvised; shipping it lets the device run the
           // real prompt. Null only if the watcher has no version row.
           prompt: row.watcher_prompt ?? null,
+          // The pinned version's extraction_schema (same version-resolution
+          // as the prompt above). The dispatcher embeds it in the prompt as
+          // the output contract: the CLI must finish with a JSON object
+          // matching it, which /complete-watcher feeds through the shared
+          // complete_window pipeline (schema validation included). Null when
+          // the watcher has no schema — the dispatcher then asks for a
+          // free-form `{"summary": ...}` object.
+          extraction_schema: parseClaimJson(row.watcher_extraction_schema),
         },
         event: {
           trigger_event_id: null,

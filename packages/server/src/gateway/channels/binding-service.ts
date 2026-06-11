@@ -93,25 +93,27 @@ export class ChannelBindingService {
       );
     }
     if (teamId) {
-      // The (platform, channel_id, team_id) UNIQUE covers the team-id-set case.
+      // The (organization_id, platform, channel_id, team_id) UNIQUE covers the
+      // team-id-set case. The key is org-scoped so a sibling tenant binding the
+      // same platform+channel can never collide with — and silently take over —
+      // this org's row. `organization_id` is intentionally NOT in the SET list:
+      // a binding must never change owners.
       await sql`
         INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
         VALUES (${orgId}, ${agentId}, ${platform}, ${channelId}, ${teamId}, now())
-        ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET
-          agent_id = EXCLUDED.agent_id,
-          organization_id = EXCLUDED.organization_id
+        ON CONFLICT (organization_id, platform, channel_id, team_id) DO UPDATE SET
+          agent_id = EXCLUDED.agent_id
       `;
     } else {
       // For team_id IS NULL the unique constraint above doesn't fire (PG
-      // treats NULL as distinct). The companion partial unique index
-      // (agent_channel_bindings_no_team_unique) is what we conflict on.
+      // treats NULL as distinct). The companion org-scoped partial unique index
+      // (agent_channel_bindings_org_no_team_unique) is what we conflict on.
       await sql`
         INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
         VALUES (${orgId}, ${agentId}, ${platform}, ${channelId}, NULL, now())
-        ON CONFLICT (platform, channel_id)
+        ON CONFLICT (organization_id, platform, channel_id)
           WHERE team_id IS NULL
-          DO UPDATE SET agent_id = EXCLUDED.agent_id,
-            organization_id = EXCLUDED.organization_id
+          DO UPDATE SET agent_id = EXCLUDED.agent_id
       `;
     }
     logger.info(`Created binding: ${platform}/${channelId} → ${agentId}`);

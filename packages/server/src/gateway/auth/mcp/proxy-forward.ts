@@ -1,6 +1,5 @@
-import { createLogger, runGuardrails, verifyWorkerToken } from "@lobu/core";
+import { createLogger, verifyWorkerToken } from "@lobu/core";
 import type { Context } from "hono";
-import { recordGuardrailTrip } from "../../guardrails/audit.js";
 import type { McpProxy } from "./proxy.js";
 import {
 	buildSessionKey,
@@ -52,9 +51,12 @@ export async function handleProxyRequest(
 		return sendJsonRpcError(c, -32601, `MCP server '${mcpId}' not found`);
 	}
 
-	// Check tool approval for tools/call JSON-RPC requests.
-	// Clone the request so the body can be read twice (once here, once in forwardRequest).
-	if (proxy.grantStore && c.req.method === "POST") {
+	// Pre-tool guardrails + tool approval for tools/call JSON-RPC requests.
+	// Clone the request so the body can be read twice (once here, once in
+	// forwardRequest). NOTE: this runs on any POST, NOT gated on grantStore —
+	// guardrail enforcement must not depend on the approval subsystem being
+	// configured (the approval check below is what's gated on grantStore).
+	if (c.req.method === "POST") {
 		try {
 			const clonedReq = c.req.raw.clone();
 			const bodyText = await clonedReq.text();
@@ -64,121 +66,51 @@ export async function handleProxyRequest(
 					const toolName = jsonRpc.params.name;
 					const toolArgs = jsonRpc.params.arguments || {};
 
-					// Pre-tool guardrails: run before the existing approval check so
-					// a blocked tool never enters the approval funnel. The worker
-					// sees a generic policy message — the specific reason is
-					// intentionally NOT surfaced (evasion surface).
-					if (proxy.guardrailRegistry && proxy.agentSettingsStore) {
-						try {
-							const settings =
-								await proxy.agentSettingsStore.getSettings(agentId);
-							const enabled = settings?.guardrails ?? [];
-							if (enabled.length > 0) {
-								const outcome = await runGuardrails(
-									proxy.guardrailRegistry,
-									"pre-tool",
-									enabled,
-									{
-										agentId,
-										userId: tokenData.userId,
-										toolName,
-										arguments: toolArgs,
-										conversationId: tokenData.conversationId,
-									},
-								);
-								if (outcome.tripped) {
-									// Resolve org id with a metadata fallback — per-job
-									// tokens carry it, but legacy deployment-lifetime
-									// tokens may not, and an unaudited trip is a security
-									// log gap.
-									let resolvedOrgId = tokenData.organizationId;
-									if (!resolvedOrgId) {
-										try {
-											const md =
-												await proxy.agentSettingsStore.getMetadata(agentId);
-											resolvedOrgId = md?.organizationId;
-										} catch (lookupErr) {
-											logger.warn(
-												{
-													agentId,
-													err:
-														lookupErr instanceof Error
-															? lookupErr.message
-															: String(lookupErr),
-												},
-												"Pre-tool guardrail trip: orgId metadata lookup failed (audit may be skipped)",
-											);
-										}
-									}
-									void recordGuardrailTrip({
-										organizationId: resolvedOrgId,
-										agentId,
-										userId: tokenData.userId,
-										conversationId: tokenData.conversationId,
-										stage: "pre-tool",
-										guardrail: outcome.tripped.guardrail,
-										reason: outcome.tripped.reason,
-										metadata: outcome.tripped.metadata,
-									});
-									logger.info(
-										{
-											agentId,
-											toolName,
-											guardrail: outcome.tripped.guardrail,
-										},
-										"Pre-tool guardrail tripped — returning generic policy block to worker",
-									);
-									return c.json({
-										jsonrpc: "2.0",
-										id: jsonRpc.id,
-										result: {
-											content: [
-												{
-													type: "text",
-													text: "Tool call blocked by policy.",
-												},
-											],
-											isError: true,
-										},
-									});
-								}
-							}
-						} catch (err) {
-							// Fail open on store/registry-level errors — the runner
-							// already fail-opens on per-guardrail throws.
-							logger.warn(
-								{
-									agentId,
-									toolName,
-									err: err instanceof Error ? err.message : String(err),
-								},
-								"Pre-tool guardrail check failed — proceeding without guardrails",
-							);
-						}
-					}
-
-					const approval = await proxy.evaluateToolApproval(
-						mcpId,
-						toolName,
-						toolArgs,
-						agentId,
-						tokenData,
-						sessionToken,
-					);
-					if (approval !== "allow") {
+					// Pre-tool guardrails run before approval so a blocked tool never
+					// enters the approval funnel, and independently of grantStore.
+					if (
+						await proxy.runPreToolGuardrails(
+							agentId,
+							tokenData,
+							toolName,
+							toolArgs,
+						)
+					) {
 						return c.json({
 							jsonrpc: "2.0",
 							id: jsonRpc.id,
 							result: {
-								content: [
-									{
-										type: "text",
-										text: "Tool call requires approval. The user has been asked to approve. Your session will end. The result will arrive as your next message.",
-									},
-								],
+								content: [{ type: "text", text: "Tool call blocked by policy." }],
 								isError: true,
 							},
 						});
+					}
+
+					// Tool approval is gated on the approval subsystem (grantStore).
+					if (proxy.grantStore) {
+						const approval = await proxy.evaluateToolApproval(
+							mcpId,
+							toolName,
+							toolArgs,
+							agentId,
+							tokenData,
+							sessionToken,
+						);
+						if (approval !== "allow") {
+							return c.json({
+								jsonrpc: "2.0",
+								id: jsonRpc.id,
+								result: {
+									content: [
+										{
+											type: "text",
+											text: "Tool call requires approval. The user has been asked to approve. Your session will end. The result will arrive as your next message.",
+										},
+									],
+									isError: true,
+								},
+							});
+						}
 					}
 				}
 			}

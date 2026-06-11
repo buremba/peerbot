@@ -5,7 +5,6 @@ const USE_WINSTON_LOGGER = process.env.USE_WINSTON_LOGGER === "true";
 const USE_JSON_FORMAT = process.env.LOG_FORMAT === "json";
 
 import winston from "winston";
-import { getSentry } from "./sentry";
 
 export interface Logger {
   error: (message: any, ...args: any[]) => void;
@@ -97,59 +96,6 @@ function createConsoleLogger(serviceName: string): Logger {
 }
 
 /**
- * Custom Winston transport that sends errors to Sentry
- */
-class SentryTransport extends winston.transports.Stream {
-  constructor() {
-    super({ stream: process.stdout });
-  }
-
-  log(info: any, callback: () => void) {
-    setImmediate(() => {
-      this.emit("logged", info);
-    });
-
-    // Only send errors and warnings to Sentry
-    if (info.level === "error" || info.level === "warn") {
-      const Sentry = getSentry();
-      if (Sentry) {
-        try {
-          // Extract error object if present
-          const errorObj =
-            info.error || (info.message instanceof Error ? info.message : null);
-
-          if (errorObj instanceof Error) {
-            Sentry.captureException(errorObj, {
-              level: info.level === "error" ? "error" : "warning",
-              tags: {
-                service: info.service,
-              },
-              // Pass `info` directly — Sentry copies it internally; spreading
-              // it here forced a shallow clone (+ serialize) of arbitrarily
-              // large log metadata on every prod error.
-              extra: info,
-            });
-          } else {
-            // Send as message if no Error object
-            Sentry.captureMessage(String(info.message), {
-              level: info.level === "error" ? "error" : "warning",
-              tags: {
-                service: info.service,
-              },
-              extra: info,
-            });
-          }
-        } catch (_err) {
-          // Ignore Sentry errors to avoid breaking logging
-        }
-      }
-    }
-
-    callback();
-  }
-}
-
-/**
  * Creates a logger instance for a specific service
  * Provides consistent logging format across all packages with level and timestamp
  * @param serviceName The name of the service using the logger
@@ -225,20 +171,6 @@ export function createLogger(serviceName: string): Logger {
     ),
     defaultMeta: { service: serviceName },
     transports,
-  });
-
-  // Add Sentry transport in production or if SENTRY_DSN is set
-  // Deferred to avoid circular dependency with sentry.ts
-  // The check is inside setImmediate to ensure SentryTransport class is fully initialized
-  setImmediate(() => {
-    if (isProduction || process.env.SENTRY_DSN) {
-      try {
-        const transport = new SentryTransport();
-        logger.add(transport);
-      } catch {
-        // Ignore errors during Sentry transport setup
-      }
-    }
   });
 
   return logger;

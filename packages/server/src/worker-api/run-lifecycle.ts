@@ -24,7 +24,6 @@ import {
 import { autoLinkEvent } from '../utils/auto-linker';
 import { nextRunAt as nextRunAtFromCron } from '../utils/cron';
 import { advanceWatcherSchedule } from '../watchers/automation';
-import { getNextNumericId } from '../tools/admin/helpers/db-helpers';
 import { applyEntityLinks } from '../utils/entity-link-upsert';
 import { errorMessage } from '../utils/errors';
 import { validateConnectorEventSemanticType } from '../utils/event-kind-validation';
@@ -303,8 +302,16 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 
     const sql = getDb();
 
-    if (req.status === 'failed') {
-      await sql`
+    // Atomic terminal-state transition. The `status = 'running' AND
+    // claimed_by = worker_id` guard makes the UPDATE a no-op if the run was
+    // already finalized by another path (e.g. the gateway reaped it on
+    // timeout and the worker is reporting in late) or if this worker isn't
+    // the claimant. Without it, a late completion resurrects a reaped run and
+    // the feed/auth bookkeeping below double-applies (consecutive_failures,
+    // items_collected, next_run_at, auth_data). Mirrors completeActionRun.
+    const updatedRuns =
+      req.status === 'failed'
+        ? ((await sql`
       UPDATE runs
       SET status = 'failed',
           completed_at = current_timestamp,
@@ -316,9 +323,11 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
           exit_signal = ${req.exit_signal ?? null},
           exit_reason = ${req.exit_reason ?? null}
       WHERE id = ${req.run_id}
-    `;
-    } else {
-      await sql`
+        AND status = 'running'
+        AND claimed_by = ${req.worker_id}
+      RETURNING feed_id, connection_id
+    `) as unknown as Array<{ feed_id: number | null; connection_id: number | null }>)
+        : ((await sql`
       UPDATE runs
       SET status = 'completed',
           completed_at = current_timestamp,
@@ -326,13 +335,24 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
           error_message = ${req.error_message ?? null},
           checkpoint = COALESCE(${req.checkpoint ? sql.json(req.checkpoint) : null}, checkpoint)
       WHERE id = ${req.run_id}
-    `;
+        AND status = 'running'
+        AND claimed_by = ${req.worker_id}
+      RETURNING feed_id, connection_id
+    `) as unknown as Array<{ feed_id: number | null; connection_id: number | null }>);
+
+    if (updatedRuns.length === 0) {
+      // The run was already finalized (timeout race) or this worker isn't the
+      // claimant. Skip all feed/auth bookkeeping and return an idempotent
+      // already-finalized response.
+      logger.info(
+        { run_id: req.run_id, worker_id: req.worker_id, claimed_status: req.status },
+        '[completeWorkerJob] no-op: run already in terminal state (likely gateway timeout)'
+      );
+      return c.json({ success: false, reason: 'already_finalized' });
     }
 
     // Update the feed's sync state
-    const runRows = (await sql`
-    SELECT feed_id, connection_id FROM runs WHERE id = ${req.run_id}
-  `) as unknown as Array<{ feed_id: number | null; connection_id: number | null }>;
+    const runRows = updatedRuns;
     const feedId = runRows[0]?.feed_id;
 
     if (feedId) {
@@ -493,15 +513,24 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 /**
  * POST /api/workers/me/runs/:runId/complete-watcher
  *
- * Device-side completion path for a watcher run that was executed by a local
- * CLI agent (Claude Code, Codex, etc.) on the user's machine. The Owletto
- * Mac app's `WatcherDispatcher` posts here once the subprocess exits.
+ * Device-side EXIT REPORT for a watcher run executed by a local CLI agent
+ * (Claude Code, etc.) on the user's machine. The Owletto Mac app's
+ * `WatcherDispatcher` posts here once the subprocess exits.
  *
- * Unlike the MCP-resident `manage_watchers(action="complete_window")` path,
- * the device flow has no JWT window token, no extraction schema validation,
- * and no entity-link resolution — the CLI output is free-form text. We
- * still write a `watcher_windows` row so the dashboard surfaces the run
- * the same way as a server-side watcher completion.
+ * The CLI agent completes the run itself, over MCP, exactly like a
+ * server-side watcher agent: `read_knowledge({watcher_id})` → window_token
+ * → `manage_watchers({action: "complete_window", extracted_data})`. The
+ * dispatcher wires the gateway MCP server into the spawned CLI
+ * (--mcp-config) and the prompt carries the completion instructions. This
+ * endpoint therefore only records process exit metadata:
+ *
+ * - body.error set → the subprocess crashed/timed out → run failed.
+ * - clean exit + run already completed (by complete_window) → ack; stamp
+ *   exit metadata and the window's wall-clock.
+ * - clean exit + run still running → the agent never called
+ *   complete_window → run FAILED. Same rule as the server-side dispatch
+ *   guard (automation.ts): complete_window is the only signal that real
+ *   work happened; absence of it is a failure, not a pass.
  *
  * Authorization: the caller must own the claim — same gate as
  * /api/workers/complete (status='running' AND claimed_by === worker_id).
@@ -531,16 +560,19 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
     return c.json({ error: 'Invalid or missing JSON body' }, 400);
   }
 
-  const denied = await authorizeRunForWorker(c, runId, body.worker_id);
+  // allowTerminal: when the CLI agent already completed the run via MCP
+  // complete_window, the exit report arrives against a terminal run — that's
+  // the happy path. Ownership (scope + claimed_by) is still enforced.
+  const denied = await authorizeRunForWorker(c, runId, body.worker_id, { allowTerminal: true });
   if (denied) return denied;
 
   const sql = getDb();
-  // Reload the row now that authorization has cleared. We need the watcher_id
-  // + organization_id + approved_input to write the completion side-effects.
-  // The transaction below will re-lock and re-check status under SELECT ...
-  // FOR UPDATE; this read just gates the cheap rejection paths.
+  // Reload the row now that authorization has cleared. Status drives the
+  // exit-report decision; the authoritative guard against double-writes is
+  // failRun's status-filtered UPDATE, so a stale read can't double-fail —
+  // at worst it reports `idempotent: true` with the loser's view.
   const runRows = (await sql`
-    SELECT id, organization_id, watcher_id, approved_input, run_type, claimed_at, status
+    SELECT id, organization_id, watcher_id, approved_input, run_type, claimed_at, status, window_id
     FROM runs
     WHERE id = ${runId}
     LIMIT 1
@@ -552,6 +584,7 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
     run_type: string;
     claimed_at: string | Date | null;
     status: string;
+    window_id: number | null;
   }>;
   const run = runRows[0];
   if (!run) return c.json({ error: 'Run not found' }, 404);
@@ -655,73 +688,6 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
     }
   }
 
-  // Fix 5: validate the window bounds BEFORE opening any transaction. The
-  // legacy code defaulted silently to `new Date().toISOString()` — that hid
-  // garbage payloads behind a fresh timestamp. If approved_input contains a
-  // bound, it must be a parseable ISO string; otherwise the run is
-  // unrecoverably malformed and we mark it failed up front (so it can't get
-  // stuck in `running` waiting for a stale-run sweep that may not exist).
-  const validateIsoBound = (
-    key: 'window_start' | 'window_end',
-    fallback: string
-  ): { value: string } | { error: string } => {
-    const raw = approved[key];
-    if (raw === undefined || raw === null) return { value: fallback };
-    if (typeof raw !== 'string') {
-      return { error: `approved_input.${key} must be an ISO timestamp string` };
-    }
-    const parsed = Date.parse(raw);
-    if (!Number.isFinite(parsed)) {
-      return { error: `approved_input.${key} is not a valid ISO timestamp` };
-    }
-    return { value: raw };
-  };
-
-  const nowIso = new Date().toISOString();
-  const startResult = validateIsoBound('window_start', nowIso);
-  const endResult = validateIsoBound('window_end', nowIso);
-  if ('error' in startResult || 'error' in endResult) {
-    const reason =
-      'error' in startResult ? startResult.error : (endResult as { error: string }).error;
-    // Mark the run failed so the watcher's `next_run_at` advances and the
-    // schedule doesn't loop on this poisoned payload forever.
-    //
-    // Pi round-2 #C: only advance the schedule when the UPDATE actually
-    // changed a row. Without `RETURNING id`, two concurrent malformed
-    // completions would BOTH advance the schedule — the second one's UPDATE
-    // matches zero rows (status already 'failed') but we'd still tick
-    // `next_run_at` forward, potentially skipping a window.
-    try {
-      const failedRows = (await sql`
-        UPDATE runs
-        SET status = 'failed',
-            completed_at = current_timestamp,
-            error_message = ${`Invalid completion payload: ${reason}`},
-            exit_reason = 'error_message'
-        WHERE id = ${runId}
-          AND status = 'running'
-        RETURNING id
-      `) as unknown as Array<{ id: number }>;
-      if (failedRows.length > 0) {
-        await advanceWatcherSchedule(sql, watcherId);
-      }
-    } catch (err) {
-      logger.error(
-        { run_id: runId, err: errorMessage(err) },
-        '[completeWatcherRun] failed to mark run failed after validation error'
-      );
-    }
-    return c.json({ error: reason }, 400);
-  }
-
-  const windowStart = startResult.value;
-  const windowEnd = endResult.value;
-  // Granularity isn't stored on watcher runs — infer once for the window
-  // row. A blank string fails the NOT NULL constraint; default to "ad_hoc"
-  // for device-driven runs (the dashboard's rollup logic treats this as a
-  // leaf window with no parent).
-  const granularity = 'ad_hoc';
-
   const hasError = typeof body.error === 'string' && body.error.trim() !== '';
   const output = typeof body.output === 'string' ? body.output : '';
   const durationMs =
@@ -729,160 +695,137 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
       ? Math.max(0, Math.floor(body.duration_ms))
       : null;
 
-  // Track whether the work was already done by a concurrent completion. Used
-  // after the transaction to return an idempotent 200 instead of failing the
-  // duplicate-INSERT path that pi-#3 flagged.
-  let alreadyCompleted = false;
+  // Mark the run failed and tick the schedule forward — but only when the
+  // UPDATE actually transitioned the row (RETURNING guard), so a concurrent
+  // duplicate POST can't double-advance `next_run_at` and skip a window.
+  // The stdout tail is stashed for diagnosis (why didn't the agent call
+  // complete_window?); the worker redacts before sending.
+  const failRun = async (reason: string): Promise<boolean> => {
+    const failedRows = (await sql`
+      UPDATE runs
+      SET status = 'failed',
+          completed_at = current_timestamp,
+          error_message = ${reason},
+          output_tail = ${output ? output.slice(-2000) : null},
+          exit_code = ${body.exit_code ?? null},
+          exit_signal = ${body.exit_signal ?? null},
+          exit_reason = ${body.exit_reason ?? 'error_message'}
+      WHERE id = ${runId}
+        AND status = 'running'
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+    if (failedRows.length === 0) return false;
+    await sql`
+      UPDATE watchers
+      SET last_fired_at = NOW(), updated_at = NOW()
+      WHERE id = ${watcherId}
+    `;
+    await advanceWatcherSchedule(sql, watcherId);
+    return true;
+  };
 
-  try {
-    await sql.begin(async (tx) => {
-      // Fix 3: lock the run row inside the transaction. Without this, two
-      // concurrent POSTs can both pass `authorizeRunForWorker` (which reads
-      // without a lock), both enter the tx, both INSERT a watcher_windows
-      // row, and the second one's run-UPDATE fails the `status='running'`
-      // filter — leaving a duplicate window row and a 500.
-      const lockedRows = (await tx`
-        SELECT status
-        FROM runs
-        WHERE id = ${runId}
-        FOR UPDATE
-      `) as unknown as Array<{ status: string }>;
-      const currentStatus = lockedRows[0]?.status ?? null;
-      if (!currentStatus) {
-        // Disappeared between the pre-tx read and the lock — treat as 404 by
-        // throwing; outer catch surfaces as 500, callers will retry.
-        throw new Error('Run vanished while acquiring lock');
-      }
-      if (currentStatus !== 'running') {
-        // A concurrent caller already terminated this run. Idempotent path:
-        // do nothing here and let the outer code return 200 with the existing
-        // terminal status. This is safe because the duplicate write would
-        // either violate the watcher_windows PK or insert a phantom row.
-        alreadyCompleted = true;
-        return;
-      }
-
-      if (hasError) {
-        await tx`
-          UPDATE runs
-          SET status = 'failed',
-              completed_at = current_timestamp,
-              error_message = ${body.error ?? null},
-              exit_code = ${body.exit_code ?? null},
-              exit_signal = ${body.exit_signal ?? null},
-              exit_reason = ${body.exit_reason ?? 'error_message'}
-          WHERE id = ${runId}
-            AND status = 'running'
-        `;
-      } else {
-        // Fix 4 (pi round-2 #B): allocate the window id via the shared
-        // helper, which now takes a per-table `pg_advisory_xact_lock` keyed
-        // on `hashtext('watcher_windows_id_alloc')`. Because this runs inside
-        // `sql.begin`, the lock is held until tx commit — bracketing the
-        // SELECT MAX + INSERT, so two concurrent completions on DIFFERENT
-        // watcher runs serialize on allocation and never collide on the
-        // watcher_windows PK. (Same-watcher concurrent completions are
-        // already serialized by the SELECT … FOR UPDATE on runs.id above.)
-        const windowId = await getNextNumericId(tx, 'watcher_windows');
-
-        const extractedData = {
-          kind: 'device_cli_output',
-          output,
-          agent_kind:
-            typeof approved.agent_kind === 'string' && (approved.agent_kind as string).trim()
-              ? (approved.agent_kind as string).trim()
-              : null,
-        } as Record<string, unknown>;
-        const runMetadata = {
-          source: 'device_worker',
-          device_worker_id:
-            typeof approved.device_worker_id === 'string'
-              ? approved.device_worker_id
-              : null,
-          watcher_run_id: runId,
-        } as Record<string, unknown>;
-
-        await tx`
-          INSERT INTO watcher_windows (
-            id, watcher_id, version_id, window_start, window_end, granularity,
-            extracted_data, content_analyzed, model_used, client_id, run_metadata,
-            is_rollup, depth, source_window_ids, run_id, execution_time_ms, created_at
-          ) VALUES (
-            ${windowId}, ${watcherId}, NULL, ${windowStart}, ${windowEnd}, ${granularity},
-            ${tx.json(extractedData)}, 0, 'device-cli', NULL, ${tx.json(runMetadata)},
-            false, 0, NULL, ${runId}, ${durationMs}, current_timestamp
-          )
-        `;
-
-        await tx`
-          UPDATE runs
-          SET status = 'completed',
-              completed_at = current_timestamp,
-              window_id = ${windowId},
-              error_message = NULL,
-              exit_code = ${body.exit_code ?? null},
-              exit_signal = ${body.exit_signal ?? null},
-              exit_reason = ${body.exit_reason ?? 'ok'}
-          WHERE id = ${runId}
-            AND status = 'running'
-        `;
-      }
-
-      await tx`
-        UPDATE watchers
-        SET last_fired_at = NOW(),
-            updated_at = NOW()
-        WHERE id = ${watcherId}
-      `;
-
-      // Fix 1: advance `next_run_at` in the SAME transaction that recorded
-      // the completion. Without this the scheduled-jobs tick sees the
-      // watcher as still due (last_fired_at moved, next_run_at didn't) and
-      // re-materializes immediately — looping forever on every minute tick.
-      // The helper is shared with `manage_watchers(action="complete_window")`
-      // and the terminal-failure path in `automation.ts`.
-      await advanceWatcherSchedule(tx, watcherId);
+  const emitCompletionEvent = (outcome: 'completed' | 'failed', detail?: string) => {
+    // Fire-and-forget: a "change" event so the dashboard's metric_series picks
+    // up the device-CLI completion the same way it picks up server-side ones.
+    // LifecycleOp is restricted to created/updated/deleted — we use 'updated'
+    // and put the actual ran/errored detail under `extra`.
+    recordLifecycleEvent({
+      organizationId: run.organization_id,
+      entityType: 'watcher',
+      op: 'updated',
+      entityId: String(watcherId),
+      summary:
+        outcome === 'failed'
+          ? `Watcher run ${runId} failed on device CLI: ${detail ?? 'unknown error'}`
+          : `Watcher run ${runId} completed via device CLI`,
+      extra: {
+        run_id: runId,
+        source: 'device_worker',
+        outcome,
+        duration_ms: durationMs,
+      },
     });
-  } catch (err) {
-    logger.error(
-      { error: errorMessage(err), run_id: runId, watcher_id: watcherId },
-      '[completeWatcherRun] Failed to record completion'
-    );
-    return c.json({ error: errorMessage(err) }, 500);
+  };
+
+  if (hasError) {
+    const transitioned = await failRun(body.error as string);
+    if (!transitioned) {
+      const finalRows = (await sql`
+        SELECT status FROM runs WHERE id = ${runId} LIMIT 1
+      `) as unknown as Array<{ status: string }>;
+      return c.json({ ok: true, status: finalRows[0]?.status ?? 'failed', idempotent: true });
+    }
+    emitCompletionEvent('failed', body.error);
+    return c.json({ ok: true, status: 'failed' });
   }
 
-  if (alreadyCompleted) {
-    // Re-read the terminal status so we echo back what actually landed (not
-    // what this request would have written). Don't fire the lifecycle event
-    // again — the winning concurrent caller already did.
-    const finalRows = (await sql`
-      SELECT status FROM runs WHERE id = ${runId} LIMIT 1
-    `) as unknown as Array<{ status: string }>;
-    const finalStatus = finalRows[0]?.status ?? (hasError ? 'failed' : 'completed');
-    return c.json({ ok: true, status: finalStatus, idempotent: true });
+  // Clean exit + run already completed: the agent finished the job over MCP
+  // (read_knowledge → complete_window) before the subprocess exited. Stamp
+  // the device-side provenance the pipeline can't know — exit metadata and
+  // the subprocess wall-clock — plus the cooldown bookkeeping. The
+  // `exit_reason IS NULL` filter makes this first-report-only: a duplicate
+  // exit report matches zero rows and acks without re-firing side effects.
+  if (run.status === 'completed') {
+    const stamped = (await sql`
+      UPDATE runs
+      SET exit_code = ${body.exit_code ?? null},
+          exit_signal = ${body.exit_signal ?? null},
+          exit_reason = ${body.exit_reason ?? 'ok'}
+      WHERE id = ${runId}
+        AND exit_reason IS NULL
+      RETURNING id
+    `) as unknown as Array<{ id: number }>;
+    if (stamped.length === 0) {
+      return c.json({ ok: true, status: 'completed', window_id: run.window_id, idempotent: true });
+    }
+    if (run.window_id != null) {
+      const agentKind =
+        typeof approved.agent_kind === 'string' && (approved.agent_kind as string).trim()
+          ? (approved.agent_kind as string).trim()
+          : null;
+      // Deterministic provenance from the system of record (the run's pinned
+      // agent_kind): the agent isn't trusted to self-report `model` through
+      // complete_window, so windows it left on the pipeline default get the
+      // device stamp. An explicit model passed by the agent wins.
+      await sql`
+        UPDATE watcher_windows
+        SET execution_time_ms = COALESCE(${durationMs}, execution_time_ms),
+            model_used = CASE
+              WHEN model_used = 'external-client'
+                THEN ${agentKind ? `device-cli:${agentKind}` : 'device-cli'}
+              ELSE model_used
+            END
+        WHERE id = ${run.window_id}
+      `;
+    }
+    await sql`
+      UPDATE watchers
+      SET last_fired_at = NOW(), updated_at = NOW()
+      WHERE id = ${watcherId}
+    `;
+    emitCompletionEvent('completed');
+    return c.json({ ok: true, status: 'completed', window_id: run.window_id });
   }
 
-  // Fire-and-forget: a "change" event so the dashboard's metric_series picks
-  // up the device-CLI completion the same way it picks up server-side ones.
-  // LifecycleOp is restricted to created/updated/deleted — we use 'updated'
-  // and put the actual ran/errored detail under `extra`.
-  recordLifecycleEvent({
-    organizationId: run.organization_id,
-    entityType: 'watcher',
-    op: 'updated',
-    entityId: String(watcherId),
-    summary: hasError
-      ? `Watcher run ${runId} failed on device CLI: ${body.error ?? 'unknown error'}`
-      : `Watcher run ${runId} completed via device CLI`,
-    extra: {
-      run_id: runId,
-      source: 'device_worker',
-      outcome: hasError ? 'failed' : 'completed',
-      duration_ms: durationMs,
-    },
-  });
+  // Already failed/timed out (a concurrent report, the reconciler, or the
+  // 2h sweep won): idempotent ack, no side effects.
+  if (run.status !== 'running') {
+    return c.json({ ok: true, status: run.status, idempotent: true });
+  }
 
-  return c.json({ ok: true, status: hasError ? 'failed' : 'completed' });
+  // Clean exit but the run is still `running`: the agent never called
+  // manage_watchers(complete_window). Fail closed — complete_window is the
+  // only signal that real work happened (the same rule the server-side
+  // dispatch guard enforces in automation.ts). The stdout tail lands in
+  // runs.output_tail for diagnosis.
+  const reason =
+    'Device CLI exited without calling manage_watchers(action="complete_window"). ' +
+    'The watcher prompt instructs the agent to complete via the lobu MCP server — check that ' +
+    'the dispatcher passed --mcp-config, the gateway is reachable from the device, and the ' +
+    'device token has mcp:write scope.';
+  await failRun(reason);
+  emitCompletionEvent('failed', reason);
+  return c.json({ ok: true, status: 'failed', error: reason });
 }
 
 /**

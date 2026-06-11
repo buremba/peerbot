@@ -2630,11 +2630,11 @@ ALTER TABLE ONLY public.account
     ADD CONSTRAINT account_pkey PRIMARY KEY (id);
 
 --
--- Name: agent_channel_bindings agent_channel_bindings_platform_channel_id_team_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: agent_channel_bindings agent_channel_bindings_org_platform_channel_team_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.agent_channel_bindings
-    ADD CONSTRAINT agent_channel_bindings_platform_channel_id_team_id_key UNIQUE (platform, channel_id, team_id);
+    ADD CONSTRAINT agent_channel_bindings_org_platform_channel_team_key UNIQUE (organization_id, platform, channel_id, team_id);
 
 --
 -- Name: agent_connections agent_connections_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -3228,10 +3228,10 @@ CREATE INDEX "account_userId_idx" ON public.account USING btree ("userId");
 CREATE INDEX agent_channel_bindings_agent_id_idx ON public.agent_channel_bindings USING btree (agent_id);
 
 --
--- Name: agent_channel_bindings_no_team_unique; Type: INDEX; Schema: public; Owner: -
+-- Name: agent_channel_bindings_org_no_team_unique; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE UNIQUE INDEX agent_channel_bindings_no_team_unique ON public.agent_channel_bindings USING btree (platform, channel_id) WHERE (team_id IS NULL);
+CREATE UNIQUE INDEX agent_channel_bindings_org_no_team_unique ON public.agent_channel_bindings USING btree (organization_id, platform, channel_id) WHERE (team_id IS NULL);
 
 --
 -- Name: agent_channel_bindings_org_agent_idx; Type: INDEX; Schema: public; Owner: -

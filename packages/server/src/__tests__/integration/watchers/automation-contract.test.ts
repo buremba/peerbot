@@ -442,8 +442,12 @@ describe('watcher automation contract', () => {
       expect(payload.agent_kind).toBe('claude-code');
     });
 
-    it('complete-watcher endpoint records a completed run + window + last_fired_at', async () => {
-      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
+    // The device contract: the CLI agent completes the run itself over MCP
+    // (read_knowledge → complete_window) — the same pipeline as server-side
+    // watcher agents. The dispatcher's POST is only an exit report that
+    // stamps device provenance on the already-completed run.
+    it('exit report acks an MCP-completed run and stamps device provenance', async () => {
+      const { sql, dbClient, workspace, api, watcherId, agent } = await createAutomatedWatcher();
       const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
       const { windowStart, windowEnd } = await computePendingWindow(
         dbClient,
@@ -473,45 +477,65 @@ describe('watcher automation contract', () => {
         WHERE id = ${queued.runId}
       `;
 
+      // The spawned CLI agent completes over MCP, exactly like a server
+      // agent: read_knowledge → window_token → complete_window.
+      const content = (await api.knowledge.read({ watcher_id: watcherId })) as {
+        window_token: string;
+      };
+      const completion = (await api.watchers.completeWindow({
+        watcher_id: String(watcherId),
+        window_token: content.window_token,
+        extracted_data: { summary: 'Looked at 5 events, no anomalies.' },
+        model: 'device-cli:claude-code',
+        run_metadata: {
+          source: 'device_worker',
+          agent_kind: 'claude-code',
+          watcher_run_id: queued.runId,
+        },
+      })) as { window_id: number };
+
+      // The subprocess exits; the dispatcher posts the exit report.
       const response = await post(
         `/api/workers/me/runs/${queued.runId}/complete-watcher`,
         {
           body: {
             worker_id: workerId,
-            output: 'CLI says: looked at 5 events, no anomalies.',
+            output: 'Done — completed via complete_window.',
             duration_ms: 1234,
+            exit_code: 0,
+            exit_reason: 'ok',
           },
         }
       );
       expect(response.status).toBe(200);
-      const json = (await response.json()) as { ok: boolean; status: string };
+      const json = (await response.json()) as { ok: boolean; status: string; window_id?: number };
       expect(json.ok).toBe(true);
       expect(json.status).toBe('completed');
+      expect(Number(json.window_id)).toBe(completion.window_id);
 
       const [run] = await sql`
-        SELECT status, completed_at, window_id, exit_reason
+        SELECT status, completed_at, window_id, exit_code, exit_reason
         FROM runs
         WHERE id = ${queued.runId}
       `;
       expect(String(run.status)).toBe('completed');
       expect(run.completed_at).not.toBeNull();
-      expect(Number(run.window_id)).toBeGreaterThan(0);
+      expect(Number(run.window_id)).toBe(completion.window_id);
+      expect(Number(run.exit_code)).toBe(0);
+      expect(String(run.exit_reason)).toBe('ok');
 
       const [window] = await sql`
-        SELECT extracted_data, run_metadata, execution_time_ms, model_used, granularity
+        SELECT extracted_data, run_metadata, execution_time_ms, model_used
         FROM watcher_windows
         WHERE id = ${run.window_id}
       `;
-      const extracted = window.extracted_data as Record<string, unknown>;
-      expect(extracted.kind).toBe('device_cli_output');
-      expect(extracted.output).toBe('CLI says: looked at 5 events, no anomalies.');
-      expect(extracted.agent_kind).toBe('claude-code');
+      // Structured data straight from the shared pipeline; the exit report
+      // stamped the subprocess wall-clock onto the window.
+      expect(window.extracted_data as Record<string, unknown>).toEqual({
+        summary: 'Looked at 5 events, no anomalies.',
+      });
       expect(Number(window.execution_time_ms)).toBe(1234);
-      expect(String(window.model_used)).toBe('device-cli');
-      expect(String(window.granularity)).toBe('ad_hoc');
-      const metadata = window.run_metadata as Record<string, unknown>;
-      expect(metadata.source).toBe('device_worker');
-      expect(metadata.watcher_run_id).toBe(queued.runId);
+      expect(String(window.model_used)).toBe('device-cli:claude-code');
 
       const [watcher] = await sql`
         SELECT last_fired_at
@@ -519,6 +543,157 @@ describe('watcher automation contract', () => {
         WHERE id = ${watcherId}
       `;
       expect(watcher.last_fired_at).not.toBeNull();
+
+      // A duplicate exit report acks idempotently without re-stamping.
+      const dup = await post(`/api/workers/me/runs/${queued.runId}/complete-watcher`, {
+        body: { worker_id: workerId, output: 'dup', duration_ms: 9, exit_code: 0 },
+      });
+      expect(dup.status).toBe(200);
+      const dupJson = (await dup.json()) as { status: string; idempotent?: boolean };
+      expect(dupJson.status).toBe('completed');
+      expect(dupJson.idempotent).toBe(true);
+      const [windowAfterDup] = await sql`
+        SELECT execution_time_ms FROM watcher_windows WHERE id = ${run.window_id}
+      `;
+      expect(Number(windowAfterDup.execution_time_ms)).toBe(1234);
+    });
+
+    // Content-less windows (device runs fetch their own context; nothing is
+    // linked server-side) still fire the reaction script — the signal is the
+    // extracted_data itself. The reaction log is surfaced on the window via
+    // get_watcher so the UI can show what the script did.
+    it('fires the reaction script for a content-less window and surfaces the log', async () => {
+      const { sql, dbClient, workspace, api, watcherId, agent } = await createAutomatedWatcher();
+      await api.watchers.setReactionScript({
+        watcher_id: String(watcherId),
+        reaction_script: 'export default async function reaction() { return; }',
+      });
+
+      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+      const { windowStart, windowEnd } = await computePendingWindow(
+        dbClient,
+        watcherId,
+        granularity
+      );
+      const queued = await createWatcherRun({
+        organizationId: workspace.org.id,
+        watcherId,
+        agentId: agent.agentId,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+        dispatchSource: 'scheduled',
+        deviceWorkerId: '88888888-8888-8888-8888-888888888888',
+        agentKind: 'claude-code',
+      });
+      await sql`
+        UPDATE runs
+        SET status = 'running', claimed_at = NOW(), claimed_by = 'mac-device-reaction-test'
+        WHERE id = ${queued.runId}
+      `;
+
+      const content = (await api.knowledge.read({ watcher_id: watcherId })) as {
+        window_token: string;
+      };
+      const completion = (await api.watchers.completeWindow({
+        watcher_id: String(watcherId),
+        window_token: content.window_token,
+        extracted_data: { summary: 'Device-run result, no server content.' },
+        run_metadata: { source: 'device_worker', watcher_run_id: queued.runId },
+      })) as { window_id: number; content_linked: number; reaction_status: string };
+
+      // Zero content linked, yet the reaction FIRED (window_created gate).
+      // This test pins the gate + the log surface, not the sandbox itself:
+      // runtimes without an isolated-vm build report 'failed' (the sandbox
+      // suite covers executor health), so assert "attempted", never
+      // 'skipped' — the pre-fix behavior this test exists to prevent.
+      expect(completion.content_linked).toBe(0);
+      expect(completion.reaction_status).not.toBe('skipped');
+
+      const reactionRows = await sql`
+        SELECT reaction_type, tool_name FROM watcher_reactions
+        WHERE window_id = ${completion.window_id}
+      `;
+      expect(reactionRows.length).toBeGreaterThan(0);
+      expect(String(reactionRows[0].reaction_type)).toBe('script_execution');
+
+      // The window surfaces its reaction log through get_watcher.
+      const detail = (await api.watchers.get(String(watcherId))) as {
+        windows: Array<{ window_id: number; reactions?: Array<{ tool_name: string }> }>;
+      };
+      const window = detail.windows.find((w) => w.window_id === completion.window_id);
+      expect(window).toBeDefined();
+      expect(window?.reactions?.length ?? 0).toBeGreaterThan(0);
+      expect(window?.reactions?.[0].tool_name).toBe('reaction_executor');
+    });
+
+    // Fail closed: the agent exiting cleanly WITHOUT calling complete_window
+    // means no real work was recorded — the run must fail (and the schedule
+    // advance), mirroring the server-side dispatch guard. This is exactly
+    // the failure mode that masked the broken Reddit watcher for a week.
+    it('fails the run when the agent exits without calling complete_window', async () => {
+      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
+      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+      const { windowStart, windowEnd } = await computePendingWindow(
+        dbClient,
+        watcherId,
+        granularity
+      );
+      const queued = await createWatcherRun({
+        organizationId: workspace.org.id,
+        watcherId,
+        agentId: agent.agentId,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+        dispatchSource: 'scheduled',
+        deviceWorkerId: '55555555-5555-5555-5555-555555555555',
+        agentKind: 'claude-code',
+      });
+      const workerId = 'mac-device-nocomplete-test';
+      await sql`
+        UPDATE runs
+        SET status = 'running', claimed_at = NOW(), claimed_by = ${workerId}
+        WHERE id = ${queued.runId}
+      `;
+
+      const [before] = await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
+      const beforeNextRun = before.next_run_at as Date | string | null;
+
+      const response = await post(
+        `/api/workers/me/runs/${queued.runId}/complete-watcher`,
+        {
+          body: {
+            worker_id: workerId,
+            output: 'I looked at everything and it seems fine, nothing to report.',
+            duration_ms: 50,
+            exit_code: 0,
+            exit_reason: 'ok',
+          },
+        }
+      );
+      expect(response.status).toBe(200);
+      const json = (await response.json()) as { ok: boolean; status: string; error?: string };
+      expect(json.status).toBe('failed');
+      expect(String(json.error)).toMatch(/complete_window/);
+
+      const [run] = await sql`
+        SELECT status, error_message, window_id, output_tail FROM runs WHERE id = ${queued.runId}
+      `;
+      expect(String(run.status)).toBe('failed');
+      expect(String(run.error_message)).toMatch(/complete_window/);
+      expect(run.window_id).toBeNull();
+      // The stdout tail is stashed for diagnosis.
+      expect(String(run.output_tail)).toContain('nothing to report');
+
+      const windows = await sql`
+        SELECT id FROM watcher_windows WHERE run_id = ${queued.runId}
+      `;
+      expect(windows).toHaveLength(0);
+
+      // Schedule must still advance so the watcher doesn't re-fire forever.
+      const [after] = await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
+      const beforeMs = beforeNextRun ? new Date(beforeNextRun).getTime() : 0;
+      const afterMs = after.next_run_at ? new Date(after.next_run_at as string).getTime() : 0;
+      expect(afterMs).toBeGreaterThan(beforeMs);
     });
 
     it('complete-watcher endpoint marks the run failed when error is supplied', async () => {
@@ -616,9 +791,11 @@ describe('watcher automation contract', () => {
       expect(response.status).toBe(404);
     });
 
-    // Pi review #1: schedule must advance on completion or the scheduler
-    // re-fires the watcher every tick forever.
-    it('advances watchers.next_run_at on successful completion', async () => {
+    // Pi review #1: schedule must advance on every terminal exit report or
+    // the scheduler re-fires the watcher every tick forever. This run never
+    // calls complete_window, so the report fails it — next_run_at must
+    // still move.
+    it('advances watchers.next_run_at on a terminal exit report', async () => {
       const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
       const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
       const { windowStart, windowEnd } = await computePendingWindow(
@@ -653,7 +830,7 @@ describe('watcher automation contract', () => {
       const response = await post(
         `/api/workers/me/runs/${queued.runId}/complete-watcher`,
         {
-          body: { worker_id: workerId, output: 'ok', duration_ms: 5 },
+          body: { worker_id: workerId, output: 'agent exited without completing', duration_ms: 5 },
         }
       );
       expect(response.status).toBe(200);
@@ -675,7 +852,10 @@ describe('watcher automation contract', () => {
 
     // Pi review #3: a second concurrent completion must be idempotent — no
     // duplicate watcher_windows row, no 500, status reflects the winner.
-    it('treats a double completion as idempotent (no duplicate window, no 500)', async () => {
+    // Duplicate exit reports on a FAILED run must be idempotent: the second
+    // report acks without re-failing or double-advancing the schedule
+    // (failRun's RETURNING guard).
+    it('treats a duplicate exit report as idempotent (no double schedule advance)', async () => {
       const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
       const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
       const { windowStart, windowEnd } = await computePendingWindow(
@@ -702,88 +882,32 @@ describe('watcher automation contract', () => {
         WHERE id = ${queued.runId}
       `;
 
-      // First completion lands.
+      // First report fails the run (no complete_window happened).
       const first = await post(`/api/workers/me/runs/${queued.runId}/complete-watcher`, {
-        body: { worker_id: workerId, output: 'first', duration_ms: 11 },
+        body: { worker_id: workerId, output: 'first exit', duration_ms: 11 },
       });
       expect(first.status).toBe(200);
+      expect(((await first.json()) as { status: string }).status).toBe('failed');
 
-      // Second completion against the now-terminal row must NOT 500.
-      // `authorizeRunForWorker` will return 409 first (status no longer
-      // 'running'); the in-tx FOR UPDATE / idempotent branch is exercised by
-      // the truly-concurrent case (post-claim, pre-commit), which a single
-      // serialized test runner can't easily reproduce — but we DO assert
-      // that no extra watcher_windows row was created either way.
+      const [afterFirst] = await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
+      const advancedOnce = new Date(afterFirst.next_run_at as string).getTime();
+
+      // Second report acks the terminal state; no extra side effects.
       const second = await post(`/api/workers/me/runs/${queued.runId}/complete-watcher`, {
-        body: { worker_id: workerId, output: 'second', duration_ms: 12 },
+        body: { worker_id: workerId, output: 'second exit', duration_ms: 12 },
       });
-      expect([200, 409]).toContain(second.status);
+      expect(second.status).toBe(200);
+      const secondJson = (await second.json()) as { status: string; idempotent?: boolean };
+      expect(secondJson.status).toBe('failed');
+      expect(secondJson.idempotent).toBe(true);
+
+      const [afterSecond] = await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
+      expect(new Date(afterSecond.next_run_at as string).getTime()).toBe(advancedOnce);
 
       const windowsForRun = await sql`
         SELECT id FROM watcher_windows WHERE run_id = ${queued.runId}
       `;
-      expect(windowsForRun).toHaveLength(1);
-
-      const [run] = await sql`
-        SELECT status FROM runs WHERE id = ${queued.runId}
-      `;
-      expect(String(run.status)).toBe('completed');
-    });
-
-    // Pi review #5: malformed window bounds in approved_input must fail the
-    // run and advance the schedule, not leave it stuck in 'running'.
-    it('marks run failed (not stuck running) on malformed approved_input', async () => {
-      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
-      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
-      const { windowStart, windowEnd } = await computePendingWindow(
-        dbClient,
-        watcherId,
-        granularity
-      );
-      const queued = await createWatcherRun({
-        organizationId: workspace.org.id,
-        watcherId,
-        agentId: agent.agentId,
-        windowStart: windowStart.toISOString(),
-        windowEnd: windowEnd.toISOString(),
-        dispatchSource: 'scheduled',
-        deviceWorkerId: '44444444-4444-4444-4444-444444444444',
-        agentKind: 'claude-code',
-      });
-      const workerId = 'mac-device-malformed-test';
-      // Corrupt the approved_input window_start so completion validation
-      // rejects it. The run is still claimed/running.
-      await sql`
-        UPDATE runs
-        SET status = 'running',
-            claimed_at = NOW(),
-            claimed_by = ${workerId},
-            approved_input = approved_input || ${sql.json({ window_start: 'not-a-date' })}
-        WHERE id = ${queued.runId}
-      `;
-
-      const [before] = await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
-      const beforeNextRun = before.next_run_at as Date | string | null;
-
-      const response = await post(
-        `/api/workers/me/runs/${queued.runId}/complete-watcher`,
-        {
-          body: { worker_id: workerId, output: 'whatever', duration_ms: 1 },
-        }
-      );
-      expect(response.status).toBe(400);
-
-      const [run] = await sql`
-        SELECT status, error_message FROM runs WHERE id = ${queued.runId}
-      `;
-      expect(String(run.status)).toBe('failed');
-      expect(String(run.error_message)).toMatch(/window_start/);
-
-      const [after] = await sql`SELECT next_run_at FROM watchers WHERE id = ${watcherId}`;
-      const afterNextRun = after.next_run_at as Date | string | null;
-      const beforeMs = beforeNextRun ? new Date(beforeNextRun).getTime() : 0;
-      const afterMs = afterNextRun ? new Date(afterNextRun).getTime() : 0;
-      expect(afterMs).toBeGreaterThan(beforeMs);
+      expect(windowsForRun).toHaveLength(0);
     });
 
     // Pi review round-2 #A: device spoof — a same-user token bound to worker
@@ -867,185 +991,6 @@ describe('watcher automation contract', () => {
       expect(windows).toHaveLength(0);
     });
 
-    // Pi review round-2 #B: concurrent allocation race — two completions on
-    // DIFFERENT watcher runs must both succeed with distinct window ids.
-    // Pre-fix, both could compute the same MAX(id)+1 and the second INSERT
-    // would 500 on the watcher_windows PK conflict. The advisory lock inside
-    // getNextNumericId serializes them.
-    it('serializes concurrent watcher_windows allocations across different runs', async () => {
-      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
-
-      // A second watcher in the same org so the two runs touch different
-      // `runs.id` rows AND different `watchers.id` (the SELECT … FOR UPDATE
-      // in the completeWatcherRun tx is per-row, so cross-watcher concurrent
-      // completions only collide on the watcher_windows allocator).
-      const secondEntity = await createTestEntity({
-        name: 'Second Entity',
-        organization_id: workspace.org.id,
-        created_by: workspace.users.owner.id,
-      });
-      const secondWatcher = (await workspace.owner.watchers.create({
-        entity_id: secondEntity.id,
-        slug: 'automation-watcher-2',
-        name: 'Automation Watcher 2',
-        prompt: 'Summarize content for {{entities}}.',
-        extraction_schema: {
-          type: 'object',
-          properties: { summary: { type: 'string' } },
-          required: ['summary'],
-        },
-        schedule: '0 9 * * *',
-        agent_id: agent.agentId,
-      })) as { watcher_id: string };
-      const watcherId2 = Number(secondWatcher.watcher_id);
-
-      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
-      const { windowStart, windowEnd } = await computePendingWindow(
-        dbClient,
-        watcherId,
-        granularity
-      );
-      const queuedA = await createWatcherRun({
-        organizationId: workspace.org.id,
-        watcherId,
-        agentId: agent.agentId,
-        windowStart: windowStart.toISOString(),
-        windowEnd: windowEnd.toISOString(),
-        dispatchSource: 'scheduled',
-        deviceWorkerId: '55555555-5555-5555-5555-555555555555',
-        agentKind: 'claude-code',
-      });
-      const queuedB = await createWatcherRun({
-        organizationId: workspace.org.id,
-        watcherId: watcherId2,
-        agentId: agent.agentId,
-        windowStart: windowStart.toISOString(),
-        windowEnd: windowEnd.toISOString(),
-        dispatchSource: 'scheduled',
-        deviceWorkerId: '66666666-6666-6666-6666-666666666666',
-        agentKind: 'claude-code',
-      });
-
-      const workerIdA = 'mac-device-concurrent-A';
-      const workerIdB = 'mac-device-concurrent-B';
-      await sql`
-        UPDATE runs
-        SET status = 'running', claimed_at = NOW(), claimed_by = ${workerIdA}
-        WHERE id = ${queuedA.runId}
-      `;
-      await sql`
-        UPDATE runs
-        SET status = 'running', claimed_at = NOW(), claimed_by = ${workerIdB}
-        WHERE id = ${queuedB.runId}
-      `;
-
-      // Fire both completions concurrently. With the per-table advisory lock
-      // they serialize on the SELECT MAX(id) and INSERT, so both succeed.
-      const [respA, respB] = await Promise.all([
-        post(`/api/workers/me/runs/${queuedA.runId}/complete-watcher`, {
-          body: { worker_id: workerIdA, output: 'A', duration_ms: 1 },
-        }),
-        post(`/api/workers/me/runs/${queuedB.runId}/complete-watcher`, {
-          body: { worker_id: workerIdB, output: 'B', duration_ms: 1 },
-        }),
-      ]);
-      expect(respA.status).toBe(200);
-      expect(respB.status).toBe(200);
-
-      // Both runs completed.
-      const runs = await sql`
-        SELECT id, status, window_id
-        FROM runs
-        WHERE id IN (${queuedA.runId}, ${queuedB.runId})
-        ORDER BY id
-      `;
-      expect(runs).toHaveLength(2);
-      for (const row of runs) {
-        expect(String(row.status)).toBe('completed');
-        expect(Number(row.window_id)).toBeGreaterThan(0);
-      }
-
-      // Window ids are distinct (no PK conflict, no two rows under the same id).
-      const windows = await sql`
-        SELECT id, run_id
-        FROM watcher_windows
-        WHERE run_id IN (${queuedA.runId}, ${queuedB.runId})
-        ORDER BY id
-      `;
-      expect(windows).toHaveLength(2);
-      const ids = windows.map((w) => Number((w as { id: unknown }).id));
-      expect(new Set(ids).size).toBe(2);
-    });
-
-    // Pi review round-2 #C: malformed-completion double-advance — two
-    // concurrent malformed POSTs against the same run must only advance the
-    // schedule once. Without the RETURNING-gated advance, the second POST's
-    // UPDATE matches zero rows (status already 'failed') but still ticked
-    // next_run_at forward.
-    it('does not double-advance next_run_at on concurrent malformed completions', async () => {
-      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
-      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
-      const { windowStart, windowEnd } = await computePendingWindow(
-        dbClient,
-        watcherId,
-        granularity
-      );
-      const queued = await createWatcherRun({
-        organizationId: workspace.org.id,
-        watcherId,
-        agentId: agent.agentId,
-        windowStart: windowStart.toISOString(),
-        windowEnd: windowEnd.toISOString(),
-        dispatchSource: 'scheduled',
-        deviceWorkerId: '77777777-7777-7777-7777-777777777777',
-        agentKind: 'claude-code',
-      });
-      const workerId = 'mac-device-double-advance';
-      // Poison window_start and claim the run.
-      await sql`
-        UPDATE runs
-        SET status = 'running',
-            claimed_at = NOW(),
-            claimed_by = ${workerId},
-            approved_input = approved_input || ${sql.json({ window_start: 'not-a-date' })}
-        WHERE id = ${queued.runId}
-      `;
-
-      // Capture next_run_at after the FIRST malformed completion lands.
-      const first = await post(
-        `/api/workers/me/runs/${queued.runId}/complete-watcher`,
-        {
-          body: { worker_id: workerId, output: 'x', duration_ms: 1 },
-        }
-      );
-      expect(first.status).toBe(400);
-      const [afterFirst] = await sql`
-        SELECT next_run_at FROM watchers WHERE id = ${watcherId}
-      `;
-      const firstNextRunMs = new Date(
-        afterFirst.next_run_at as string | Date
-      ).getTime();
-
-      // Second malformed completion against the now-failed row. The validation
-      // error still fires (approved_input.window_start is still garbage), but
-      // the UPDATE … WHERE status='running' matches zero rows, so the schedule
-      // must NOT advance again.
-      const second = await post(
-        `/api/workers/me/runs/${queued.runId}/complete-watcher`,
-        {
-          body: { worker_id: workerId, output: 'x2', duration_ms: 1 },
-        }
-      );
-      expect(second.status).toBe(400);
-      const [afterSecond] = await sql`
-        SELECT next_run_at FROM watchers WHERE id = ${watcherId}
-      `;
-      const secondNextRunMs = new Date(
-        afterSecond.next_run_at as string | Date
-      ).getTime();
-
-      expect(secondNextRunMs).toBe(firstNextRunMs);
-    });
   });
 
   // Regression: an active watcher run carrying a `dispatched_message_id` must

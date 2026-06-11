@@ -1,6 +1,6 @@
 export { createNoopGuardrail } from "./builtins/noop";
 export { GuardrailRegistry } from "./registry";
-export { runGuardrails } from "./runner";
+export { runGuardrailInstances, runGuardrails } from "./runner";
 export type {
   Guardrail,
   GuardrailContext,

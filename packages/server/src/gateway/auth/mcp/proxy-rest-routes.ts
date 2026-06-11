@@ -96,6 +96,23 @@ export async function handleCallTool(
 		return c.json({ error: "Invalid JSON body" }, 400);
 	}
 
+	// Pre-tool guardrails — same enforcement as the JSON-RPC path so this REST
+	// entrypoint can't bypass the stage. Runs before approval and independently
+	// of grantStore.
+	if (
+		await proxy.runPreToolGuardrails(
+			agentId,
+			auth.tokenData,
+			toolName,
+			toolArguments,
+		)
+	) {
+		return c.json({
+			content: [{ type: "text", text: "Tool call blocked by policy." }],
+			isError: true,
+		});
+	}
+
 	// Check tool approval based on annotations and grants.
 	const approval = await proxy.evaluateToolApproval(
 		mcpId,

@@ -208,4 +208,146 @@ describe('fake-llm-server', () => {
       ).toEqual([]);
     });
   });
+
+  // ── Provider-integration features ─────────────────────────────────────
+  // Auth capture, optional auth enforcement, and OpenAI-format tool_calls.
+  // These pin the wire shapes that the openclaw e2e harness drives an agent
+  // loop through AND that live-providers/provider-smoke.test.ts asserts
+  // against real providers — if the fake drifts from the OpenAI spec, the
+  // smoke would be testing a fiction.
+  describe('provider-integration features', () => {
+    it('captures the Authorization header in request history', async () => {
+      server.reset();
+      server.enqueueReply('ok');
+      await fetch(`${server.url}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer injected-by-proxy',
+        },
+        body: JSON.stringify({ model: 'fake-llm-1', messages: [] }),
+      });
+      expect(server.requests()[0]?.authorization).toBe('Bearer injected-by-proxy');
+    });
+
+    it('requireAuth rejects bearer-less requests with 401 without consuming the queue', async () => {
+      const authServer = await startFakeLlmServer({ requireAuth: true });
+      try {
+        authServer.enqueueReply('queued-first');
+
+        const denied = await fetch(`${authServer.url}/v1/chat/completions`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ model: 'fake-llm-1', messages: [] }),
+        });
+        expect(denied.status).toBe(401);
+        const deniedBody = (await denied.json()) as { error: { code: string } };
+        expect(deniedBody.error.code).toBe('invalid_api_key');
+
+        // The 401 must not have consumed the queued reply.
+        const ok = await fetch(`${authServer.url}/v1/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: 'Bearer k',
+          },
+          body: JSON.stringify({ model: 'fake-llm-1', messages: [] }),
+        });
+        const okBody = (await ok.json()) as {
+          choices: Array<{ message: { content: string } }>;
+        };
+        expect(okBody.choices[0]?.message.content).toBe('queued-first');
+      } finally {
+        await authServer.close();
+      }
+    });
+
+    it('emits OpenAI-format tool_calls (non-streaming)', async () => {
+      server.reset();
+      server.enqueueReply({
+        content: '',
+        tool_calls: [{ name: 'get_weather', arguments: { city: 'Paris' } }],
+      });
+      const res = await fetch(`${server.url}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'fake-llm-1', messages: [] }),
+      });
+      const body = (await res.json()) as {
+        choices: Array<{
+          message: {
+            tool_calls?: Array<{
+              id: string;
+              type: string;
+              function: { name: string; arguments: string };
+            }>;
+          };
+          finish_reason: string;
+        }>;
+      };
+      const choice = body.choices[0]!;
+      expect(choice.finish_reason).toBe('tool_calls');
+      expect(choice.message.tool_calls).toHaveLength(1);
+      const call = choice.message.tool_calls![0]!;
+      expect(call.type).toBe('function');
+      expect(call.function.name).toBe('get_weather');
+      // Arguments are serialized JSON, per the OpenAI spec.
+      expect(JSON.parse(call.function.arguments)).toEqual({ city: 'Paris' });
+    });
+
+    it('streams tool_calls as indexed deltas then a tool_calls finish', async () => {
+      server.reset();
+      server.enqueueReply({
+        content: '',
+        tool_calls: [{ id: 'call_a', name: 'lookup', arguments: '{"q":"x"}' }],
+      });
+      const res = await fetch(`${server.url}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'fake-llm-1', messages: [], stream: true }),
+      });
+      const dataLines = (await res.text())
+        .split('\n')
+        .filter((l) => l.startsWith('data: '))
+        .map((l) => l.slice('data: '.length).trim());
+      expect(dataLines.at(-1)).toBe('[DONE]');
+
+      const chunks = dataLines.filter((l) => l !== '[DONE]').map(
+        (l) =>
+          JSON.parse(l) as {
+            choices: Array<{
+              delta: {
+                tool_calls?: Array<{ index: number; function: { name: string } }>;
+              };
+              finish_reason: string | null;
+            }>;
+          }
+      );
+      const toolDelta = chunks.find((c) => c.choices[0]?.delta.tool_calls);
+      expect(toolDelta?.choices[0]?.delta.tool_calls?.[0]?.index).toBe(0);
+      expect(toolDelta?.choices[0]?.delta.tool_calls?.[0]?.function.name).toBe('lookup');
+      expect(chunks.find((c) => c.choices[0]?.finish_reason)?.choices[0]?.finish_reason).toBe(
+        'tool_calls'
+      );
+    });
+
+    it('plain text replies still default to a stop finish with no tool_calls', async () => {
+      server.reset();
+      server.enqueueReply('hello');
+      const res = await fetch(`${server.url}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'fake-llm-1', messages: [] }),
+      });
+      const body = (await res.json()) as {
+        choices: Array<{
+          message: { content: string; tool_calls?: unknown };
+          finish_reason: string;
+        }>;
+      };
+      expect(body.choices[0]?.message.content).toBe('hello');
+      expect(body.choices[0]?.message.tool_calls).toBeUndefined();
+      expect(body.choices[0]?.finish_reason).toBe('stop');
+    });
+  });
 });

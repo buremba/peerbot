@@ -103,6 +103,13 @@ RUN rm -rf node_modules/embedded-postgres node_modules/@embedded-postgres
 # Build frontend static assets (production only)
 ARG VITE_API_URL=
 ENV VITE_API_URL=$VITE_API_URL
+# Vite inlines these at build time (import.meta.env). Without VITE_SENTRY_DSN
+# baked in here the prod SPA's initSentry() short-circuits and frontend errors
+# never reach Sentry. Safe no-op when the build-arg is empty.
+ARG VITE_SENTRY_DSN=
+ENV VITE_SENTRY_DSN=$VITE_SENTRY_DSN
+ARG VITE_ENVIRONMENT=production
+ENV VITE_ENVIRONMENT=$VITE_ENVIRONMENT
 ARG SKIP_WEB_BUILD=false
 RUN if [ "$SKIP_WEB_BUILD" = "false" ] && [ -f packages/owletto/package.json ]; then \
       cd packages/owletto && bun run build; \

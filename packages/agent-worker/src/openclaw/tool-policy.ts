@@ -207,35 +207,147 @@ export function isToolAllowedByPolicy(
   );
 }
 
+/**
+ * Split a shell command into its individual sub-commands.
+ *
+ * A prefix-only allow/deny check is trivially bypassed by command chaining and
+ * substitution: an allowed prefix (`git status`) followed by `;`, `&&`, `||`,
+ * `|`, a newline, `$( … )`, or backticks runs an arbitrary second command that
+ * the policy never inspects. To close that hole we evaluate the prefix check
+ * against EVERY sub-command, not just the leading one.
+ *
+ * This is a deliberately conservative lexer — not a full shell parser. It walks
+ * the string tracking single/double quotes and treats any of the shell control
+ * operators, plus the boundaries of `$( … )` / backtick substitutions, as
+ * segment separators. Substitution boundaries are split rather than recursed so
+ * the substituted command body is checked as its own segment. Quoted operators
+ * (e.g. `echo "a; b"`) are intentionally left intact — they are data, not a new
+ * command — while unquoted ones start a new segment.
+ */
+function splitShellCommands(command: string): string[] {
+  const segments: string[] = [];
+  let current = "";
+  let inSingle = false;
+  let inDouble = false;
+
+  const push = () => {
+    const trimmed = current.trim();
+    if (trimmed) {
+      segments.push(trimmed);
+    }
+    current = "";
+  };
+
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    const next = command[i + 1];
+
+    if (inSingle) {
+      if (ch === "'") {
+        inSingle = false;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+
+    if (inDouble) {
+      // Inside double quotes only `$( … )` / backticks introduce a new command;
+      // everything else (including `;`, `&&`, `|`) is literal data.
+      if (ch === '"') {
+        inDouble = false;
+      } else if (ch === "$" && next === "(") {
+        push();
+        i++; // consume "("
+      } else if (ch === "`") {
+        push();
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingle = true;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      continue;
+    }
+
+    // Command-substitution boundaries become segment separators so the
+    // substituted body is checked on its own.
+    if (ch === "$" && next === "(") {
+      push();
+      i++; // consume "("
+      continue;
+    }
+    // Process substitution: `<( … )` / `>( … )` runs the inner command, so the
+    // boundary starts a new segment and the substituted body is checked on its
+    // own (e.g. `cat <(rm -rf /)` must not let `rm` ride inside the `cat` segment).
+    if ((ch === "<" || ch === ">") && next === "(") {
+      push();
+      i++; // consume "("
+      continue;
+    }
+    if (ch === ")" || ch === "`") {
+      push();
+      continue;
+    }
+
+    // Control operators: ; & && | || and newlines.
+    if (ch === "\n" || ch === ";") {
+      push();
+      continue;
+    }
+    if (ch === "&" || ch === "|") {
+      push();
+      if (next === ch) {
+        i++; // collapse && / ||
+      }
+      continue;
+    }
+
+    current += ch;
+  }
+
+  push();
+  return segments;
+}
+
 export function enforceBashCommandPolicy(
   command: string,
   policy: BashCommandPolicy
 ): void {
-  const trimmed = command.trim();
-  if (!trimmed) {
+  if (!command.trim()) {
     return;
   }
 
-  const normalizedCommand = trimmed.toLowerCase();
-  const denyMatchPrefix = policy.denyPrefixes.find((prefix) =>
-    normalizedCommand.startsWith(prefix.toLowerCase())
-  );
-  if (denyMatchPrefix) {
-    throw new Error("Bash command denied by policy");
-  }
-
-  if (policy.allowAll) {
+  const segments = splitShellCommands(command);
+  if (segments.length === 0) {
     return;
   }
 
-  if (policy.allowPrefixes.length === 0) {
-    return;
-  }
+  const hasAllowlist = !policy.allowAll && policy.allowPrefixes.length > 0;
 
-  const allowMatch = policy.allowPrefixes.some((prefix) =>
-    normalizedCommand.startsWith(prefix.toLowerCase())
-  );
-  if (!allowMatch) {
-    throw new Error("Bash command not allowed by policy");
+  for (const segment of segments) {
+    const normalizedSegment = segment.toLowerCase();
+
+    const denied = policy.denyPrefixes.some((prefix) =>
+      normalizedSegment.startsWith(prefix.toLowerCase())
+    );
+    if (denied) {
+      throw new Error("Bash command denied by policy");
+    }
+
+    if (hasAllowlist) {
+      const allowed = policy.allowPrefixes.some((prefix) =>
+        normalizedSegment.startsWith(prefix.toLowerCase())
+      );
+      if (!allowed) {
+        throw new Error("Bash command not allowed by policy");
+      }
+    }
   }
 }

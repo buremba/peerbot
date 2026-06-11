@@ -1,6 +1,18 @@
-import { createLogger, type WorkerTransport } from "@lobu/core";
+import { createLogger, getSentry, type WorkerTransport } from "@lobu/core";
+import { getProviderAuthHintFromError } from "../shared/provider-auth-hints";
 
 const logger = createLogger("worker");
+
+/**
+ * Context threaded from `worker.ts` so a captured provider/model failure
+ * carries the tags that make "openai doesn't work" triageable in Sentry.
+ */
+export interface ExecutionErrorContext {
+  provider?: string;
+  model?: string;
+  agentId?: string;
+  runId?: number | string;
+}
 
 function formatErrorMessage(error: unknown): string {
   if (!(error instanceof Error)) {
@@ -21,20 +33,42 @@ function formatErrorMessage(error: unknown): string {
  */
 const SESSION_TIMEOUT_MESSAGE = "SESSION_TIMEOUT";
 
-function classifyError(error: unknown): string | undefined {
+/**
+ * Classified codes whose user-facing "💥 Worker crashed" delta is intentionally
+ * suppressed: SESSION_TIMEOUT is retried silently, and NO_MODEL_CONFIGURED has a
+ * dedicated upstream user message. PROVIDER_* codes are NOT in this set — they
+ * must still surface a crash delta to the user when they reach the catch-all.
+ */
+const SILENT_DELTA_CODES = new Set(["SESSION_TIMEOUT", "NO_MODEL_CONFIGURED"]);
+
+export function classifyError(error: unknown): string | undefined {
   if (!(error instanceof Error)) return undefined;
-  if (error.message === SESSION_TIMEOUT_MESSAGE) return "SESSION_TIMEOUT";
+  const message = error.message;
+  if (message === SESSION_TIMEOUT_MESSAGE) return "SESSION_TIMEOUT";
   if (
-    error.message.includes("No model configured") ||
-    error.message.includes("No provider specified")
+    message.includes("No model configured") ||
+    message.includes("No provider specified")
   )
     return "NO_MODEL_CONFIGURED";
+  // Reuse the canonical provider-auth regex (provider-auth-hints.ts) so the
+  // classification matches the same auth-failure strings the worker already
+  // detects elsewhere.
+  if (getProviderAuthHintFromError(message)) return "PROVIDER_AUTH";
+  // `worker.ts` throws "Model \"<id>\" not found for provider ..." and pi-ai /
+  // upstream surface "<x> is not a valid model"/"unknown model"/"model ... not found".
+  if (/not a valid model|unknown model|model .* not found/i.test(message))
+    return "PROVIDER_UNKNOWN_MODEL";
+  // model-resolver.ts buildDynamicOpenAIModel throws this when the gateway
+  // failed to supply a proxy base URL for a non-OpenAI provider.
+  if (/Could not resolve a base URL for provider/i.test(message))
+    return "PROVIDER_BASE_URL_UNRESOLVED";
   return undefined;
 }
 
 export async function handleExecutionError(
   error: unknown,
-  transport: WorkerTransport
+  transport: WorkerTransport,
+  ctx?: ExecutionErrorContext
 ): Promise<void> {
   logger.error("Worker execution failed:", error);
 
@@ -42,15 +76,33 @@ export async function handleExecutionError(
   const errorInstance =
     error instanceof Error ? error : new Error(String(error));
 
+  // Report to Sentry Issues. `getSentry()` is DSN-gated and returns null when
+  // the worker was spawned without SENTRY_DSN, so this is a safe no-op in dev /
+  // self-host. SESSION_TIMEOUT is retried silently — capturing it would be pure
+  // noise — so it's the one classification we skip.
+  if (code !== "SESSION_TIMEOUT") {
+    getSentry()?.captureException(errorInstance, {
+      tags: {
+        provider: ctx?.provider ?? "unknown",
+        model: ctx?.model ?? "unknown",
+        agent_id: ctx?.agentId ?? "unknown",
+        run_id: ctx?.runId != null ? String(ctx.runId) : "unknown",
+        classification: code ?? "unclassified",
+      },
+      level: "error",
+    });
+  }
+
   try {
-    if (code) {
-      // Classified errors (incl. SESSION_TIMEOUT, which is retried silently)
-      // signal the error for bookkeeping but never emit a user-facing crash
-      // delta.
+    if (code && SILENT_DELTA_CODES.has(code)) {
+      // SESSION_TIMEOUT (retried silently) / NO_MODEL_CONFIGURED (dedicated
+      // upstream user message): signal for bookkeeping, no user-facing delta.
       await transport.signalError(errorInstance, code);
     } else {
+      // Unclassified crashes AND PROVIDER_* failures still show the user a
+      // crash message; the classification rides along on signalError.
       await transport.sendStreamDelta(formatErrorMessage(error), true, true);
-      await transport.signalError(errorInstance);
+      await transport.signalError(errorInstance, code);
     }
   } catch (gatewayError) {
     logger.error("Failed to send error via gateway:", gatewayError);

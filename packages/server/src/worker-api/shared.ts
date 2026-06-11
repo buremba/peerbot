@@ -44,7 +44,18 @@ export function normalizeAdvertisedCapabilities(capabilities: Record<string, boo
 export async function authorizeRunForWorker(
   c: Context<{ Bindings: Env }>,
   runId: number,
-  expectedWorkerId?: string
+  expectedWorkerId?: string,
+  opts?: {
+    /**
+     * Accept runs already in a terminal state. Used by the device watcher
+     * EXIT REPORT (`/runs/:id/complete-watcher`): the CLI agent completes
+     * the run itself via MCP `complete_window` before the subprocess exits,
+     * so by the time the dispatcher reports the exit the run is normally
+     * `completed` — that's the happy path, not a conflict. Ownership
+     * (scope + claimed_by) is still enforced.
+     */
+    allowTerminal?: boolean;
+  }
 ): Promise<Response | null> {
   if (c.var.workerAuthMode !== 'user') {
     return null;
@@ -81,7 +92,7 @@ export async function authorizeRunForWorker(
   if (!inScope) {
     return c.json({ error: 'Forbidden' }, 403);
   }
-  if (run.status !== 'running') {
+  if (run.status !== 'running' && !opts?.allowTerminal) {
     return c.json({ error: 'Run is not in progress' }, 409);
   }
   if (!expectedWorkerId?.trim()) {

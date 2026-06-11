@@ -59,6 +59,16 @@ function initializeMetrics() {
     "Total number of blocked proxy requests",
     "counter"
   );
+  // Terminal run failures (exhausted retries) by run_type + queue. A
+  // user-facing reply (run_type='chat_message') that lands here was dropped —
+  // alert on rate(lobu_runs_failed_total{run_type="chat_message"}[5m]). The
+  // failed `runs` rows are the durable dead-letter record (see
+  // FAILED_RUNS_RETENTION_DAYS); this counter is the actionable signal.
+  registerMetric(
+    "lobu_runs_failed_total",
+    "Runs that reached terminal 'failed' after exhausting retries, by run_type and queue",
+    "counter"
+  );
   registerMetric(
     "lobu_process_start_time_seconds",
     "Start time of the process since unix epoch in seconds",

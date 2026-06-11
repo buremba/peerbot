@@ -5,11 +5,11 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { createLogger, type WorkerTransport } from "@lobu/core";
+import { createLogger, getSentry, type WorkerTransport } from "@lobu/core";
 import type { ImageContent } from "@mariozechner/pi-ai";
 import type { SettingsManager } from "@mariozechner/pi-coding-agent";
 import * as Sentry from "@sentry/node";
-import { handleExecutionError } from "../core/error-handler";
+import { classifyError, handleExecutionError } from "../core/error-handler";
 import { listAppDirectories } from "../core/project-scanner";
 import type {
   ProgressUpdate,
@@ -82,6 +82,16 @@ export class OpenClawWorker implements WorkerExecutor {
    * read it back for the snapshot without re-deriving the path.
    */
   private sessionFilePath: string | null = null;
+  /**
+   * Resolved provider / model for the current run. Stamped via the
+   * `onModelResolved` callback from `runAISession()` (session-runner.ts, the
+   * only place model resolution happens) so the `execute()` catch-all and the
+   * inner failure branches can tag Sentry issues with which provider/model
+   * failed — the difference between a triageable "openai unknown-model" issue
+   * and an opaque worker crash.
+   */
+  private resolvedProvider: string | undefined;
+  private resolvedModelId: string | undefined;
 
   constructor(config: WorkerConfig) {
     this.config = config;
@@ -125,6 +135,10 @@ export class OpenClawWorker implements WorkerExecutor {
     // assigned to `completed` only on the success path below. SESSION_TIMEOUT
     // throws and is reassigned in the catch block.
     this.terminalStatus = "failed";
+    // Reset per-run resolved provider/model so a prior run's values can't leak
+    // into the Sentry tags of a failure that happens before model resolution.
+    this.resolvedProvider = undefined;
+    this.resolvedModelId = undefined;
 
     // Fail loud when the per-run scope the gateway is supposed to
     // provide hasn't reached this job. A silent skip in cleanup() would
@@ -290,10 +304,23 @@ export class OpenClawWorker implements WorkerExecutor {
             ? "Your AI provider credentials are invalid or expired. End-user provider setup is not available in chat yet. Ask an admin to reconnect the base agent provider."
             : `❌ Session failed: ${errorMsg}`;
           await this.workerTransport.sendStreamDelta(userMessage, true, true);
+          // These branches consume the `{success:false}` RESULT from
+          // runAISession — the session failed without throwing, so neither
+          // reaches execute()'s catch / handleExecutionError. Capture here or
+          // the failure is invisible to Sentry. Auth errors are an
+          // admin-config condition (level "warning"); other session failures
+          // are real faults (level "error").
+          this.reportSessionFailureToSentry(
+            errorMsg,
+            isAuthError ? "warning" : "error"
+          );
           if (isAuthError) {
             await this.workerTransport.signalDone();
           } else {
-            await this.workerTransport.signalError(new Error(errorMsg));
+            await this.workerTransport.signalError(
+              new Error(errorMsg),
+              classifyError(new Error(errorMsg))
+            );
           }
         }
       }
@@ -311,8 +338,37 @@ export class OpenClawWorker implements WorkerExecutor {
         );
       }
     } catch (error) {
-      await handleExecutionError(error, this.workerTransport);
+      await handleExecutionError(error, this.workerTransport, {
+        provider: this.resolvedProvider,
+        model: this.resolvedModelId,
+        agentId: this.config.agentId,
+        runId: this.config.runId,
+      });
     }
+  }
+
+  /**
+   * Report a non-throwing session failure (the `{success:false}` result from
+   * runAISession) to Sentry Issues, tagged with the resolved provider/model so
+   * "openai doesn't work" is triageable. `getSentry()` is DSN-gated, so this is
+   * a safe no-op when the worker was spawned without SENTRY_DSN.
+   */
+  private reportSessionFailureToSentry(
+    errorMsg: string,
+    level: "warning" | "error"
+  ): void {
+    const error = new Error(errorMsg);
+    getSentry()?.captureException(error, {
+      tags: {
+        provider: this.resolvedProvider ?? "unknown",
+        model: this.resolvedModelId ?? "unknown",
+        agent_id: this.config.agentId ?? "unknown",
+        run_id:
+          this.config.runId != null ? String(this.config.runId) : "unknown",
+        classification: classifyError(error) ?? "unclassified",
+      },
+      level,
+    });
   }
 
   async cleanup(): Promise<void> {
@@ -472,6 +528,14 @@ export class OpenClawWorker implements WorkerExecutor {
       progressProcessor: this.progressProcessor,
       onSessionFilePathResolved: (filePath) => {
         this.sessionFilePath = filePath;
+      },
+      onModelResolved: (provider, modelId) => {
+        // Stamp for Sentry tagging in execute()'s catch-all + failure
+        // branches. Anything that fails after this point (unknown model,
+        // unresolved base URL, provider auth) is attributable to a specific
+        // provider/model.
+        this.resolvedProvider = provider;
+        this.resolvedModelId = modelId;
       },
       loadImageAttachments: () => this.loadImageAttachments(),
       maybeRunPreCompactionMemoryFlush: (p) =>

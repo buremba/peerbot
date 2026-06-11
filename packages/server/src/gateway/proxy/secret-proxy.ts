@@ -607,10 +607,44 @@ export class SecretProxy {
           return c.json({ error: "Forbidden" }, 403);
         }
       } else if (callerToken) {
-        logger.debug(
-          { urlAgentId },
-          "Proxy request authenticated by non-placeholder token; agentId binding skipped"
-        );
+        // A non-placeholder caller authenticates with a worker JWT. Bind it to
+        // the URL agentId exactly like the placeholder path above: a worker
+        // minted for agent A must not spend agent B's provider credentials by
+        // rewriting the `/a/{agentId}/` URL segment (these requests reach the
+        // provider-credential path below, which injects the URL agent's real
+        // key). The token already carries the agentId it was minted for.
+        const workerTokenStr =
+          c.req.header("x-lobu-worker-token") ||
+          c.req.header("X-Lobu-Worker-Token") ||
+          c.req.query("worker_token") ||
+          (!callerToken.includes(PLACEHOLDER_PREFIX)
+            ? callerToken
+            : undefined);
+        const tokenData = workerTokenStr
+          ? verifyWorkerToken(workerTokenStr)
+          : null;
+        // Bind ONLY when the token verifies AND carries an agentId. We do NOT
+        // reject a non-verifying token here: embedded/local worker→proxy auth
+        // legitimately reaches this branch with a token verifyWorkerToken can't
+        // decode (different credential shape), and rejecting it 401s real chat
+        // turns (caught by cli-smoke / sdk-e2e / integration). The provider
+        // credential lookup below is still org-scoped via expectedOrganizationId.
+        if (tokenData?.agentId && tokenData.agentId !== urlAgentId) {
+          logger.warn(
+            { urlAgentId, tokenAgentId: tokenData.agentId },
+            "Rejecting proxy request: worker token agentId does not match URL"
+          );
+          return c.json({ error: "Forbidden" }, 403);
+        }
+        if (!tokenData?.agentId) {
+          // Token didn't verify, or verified without an agentId (internal/
+          // preflight tokens minted before agent resolution) — agentId binding
+          // is skipped; org scoping still applies via expectedOrganizationId.
+          logger.debug(
+            { urlAgentId },
+            "Proxy request: non-placeholder token without bindable agentId; agentId binding skipped"
+          );
+        }
       } else {
         // No auth header at all but the URL names an agent — refuse rather than
         // forward upstream using that agent's credential. An unauthenticated

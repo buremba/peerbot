@@ -9,16 +9,16 @@
           "displayName": "Groq",
           "iconUrl": "https://www.google.com/s2/favicons?domain=groq.com&sz=128",
           "envVarName": "GROQ_API_KEY",
-          "upstreamBaseUrl": "https://api.groq.com/openai",
+          "upstreamBaseUrl": "https://api.groq.com/openai/v1",
           "apiKeyInstructions": "Get your API key from <a href=\"https://console.groq.com/keys\" target=\"_blank\" class=\"text-blue-600 hover:underline\">Groq Console</a>",
           "apiKeyPlaceholder": "gsk_...",
           "sdkCompat": "openai",
           "defaultModel": "llama-3.3-70b-versatile",
-          "modelsEndpoint": "/v1/models",
+          "modelsEndpoint": "/models",
           "stt": {
             "enabled": true,
             "sdkCompat": "openai",
-            "transcriptionPath": "/v1/audio/transcriptions",
+            "transcriptionPath": "/audio/transcriptions",
             "model": "whisper-large-v3-turbo"
           }
         }
@@ -37,8 +37,7 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://aistudio.google.com/apikey\" target=\"_blank\" class=\"text-blue-600 hover:underline\">Google AI Studio</a>",
           "apiKeyPlaceholder": "AIza...",
           "sdkCompat": "openai",
-          "defaultModel": "gemini-2.5-flash",
-          "modelsEndpoint": "/v1/models"
+          "defaultModel": "gemini-2.5-flash"
         }
       ]
     },
@@ -56,7 +55,7 @@
           "apiKeyPlaceholder": "tok_...",
           "sdkCompat": "openai",
           "defaultModel": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-          "modelsEndpoint": "/v1/models"
+          "modelsEndpoint": "/models"
         }
       ]
     },
@@ -73,8 +72,8 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://build.nvidia.com/settings/api-keys\" target=\"_blank\" class=\"text-blue-600 hover:underline\">NVIDIA Build</a>",
           "apiKeyPlaceholder": "nvapi-...",
           "sdkCompat": "openai",
-          "modelsEndpoint": "/v1/models",
-          "defaultModel": "nvidia/moonshotai/kimi-k2.5"
+          "modelsEndpoint": "/models",
+          "defaultModel": "nvidia/moonshotai/kimi-k2.6"
         }
       ]
     },
@@ -124,7 +123,7 @@
           "apiKeyPlaceholder": "fw_...",
           "sdkCompat": "openai",
           "defaultModel": "accounts/fireworks/models/llama-v3p3-70b-instruct",
-          "modelsEndpoint": "/v1/models"
+          "modelsEndpoint": "/models"
         }
       ]
     },
@@ -142,7 +141,7 @@
           "apiKeyPlaceholder": "sk-...",
           "sdkCompat": "openai",
           "defaultModel": "mistral-large-latest",
-          "modelsEndpoint": "/v1/models"
+          "modelsEndpoint": "/models"
         }
       ]
     },
@@ -178,7 +177,7 @@
           "apiKeyPlaceholder": "sk-or-...",
           "sdkCompat": "openai",
           "defaultModel": "anthropic/claude-sonnet-4",
-          "modelsEndpoint": "/v1/models",
+          "modelsEndpoint": "/models",
           "stt": {
             "enabled": true,
             "sdkCompat": "openai",
@@ -202,7 +201,7 @@
           "apiKeyPlaceholder": "csk-...",
           "sdkCompat": "openai",
           "defaultModel": "llama-3.3-70b",
-          "modelsEndpoint": "/v1/models"
+          "modelsEndpoint": "/models"
         }
       ]
     },
@@ -219,8 +218,8 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://opencode.ai/auth\" target=\"_blank\" class=\"text-blue-600 hover:underline\">OpenCode Zen</a>",
           "apiKeyPlaceholder": "zen-...",
           "sdkCompat": "openai",
-          "defaultModel": "anthropic/claude-sonnet-4",
-          "modelsEndpoint": "/v1/models"
+          "defaultModel": "claude-sonnet-4-6",
+          "modelsEndpoint": "/models"
         }
       ]
     },
@@ -238,7 +237,7 @@
           "apiKeyPlaceholder": "xai-...",
           "sdkCompat": "openai",
           "defaultModel": "grok-3",
-          "modelsEndpoint": "/v1/models"
+          "modelsEndpoint": "/models"
         }
       ]
     },
@@ -255,7 +254,7 @@
           "apiKeyInstructions": "Get your API key from <a href=\"https://www.perplexity.ai/settings/api\" target=\"_blank\" class=\"text-blue-600 hover:underline\">Perplexity Settings</a>",
           "apiKeyPlaceholder": "pplx-...",
           "sdkCompat": "openai",
-          "defaultModel": "sonar-pro",
+          "defaultModel": "sonar",
           "modelsEndpoint": "/v1/models"
         }
       ]
@@ -274,7 +273,7 @@
           "apiKeyPlaceholder": "co-...",
           "sdkCompat": "openai",
           "defaultModel": "command-r-plus",
-          "modelsEndpoint": "/v1/models"
+          "modelsEndpoint": "/models"
         }
       ]
     },
@@ -287,12 +286,12 @@
           "displayName": "OpenAI",
           "iconUrl": "https://www.google.com/s2/favicons?domain=openai.com&sz=128",
           "envVarName": "OPENAI_API_KEY",
-          "upstreamBaseUrl": "https://api.openai.com",
+          "upstreamBaseUrl": "https://api.openai.com/v1",
           "apiKeyInstructions": "Get your API key from <a href=\"https://platform.openai.com/api-keys\" target=\"_blank\" class=\"text-blue-600 hover:underline\">OpenAI Dashboard</a>",
           "apiKeyPlaceholder": "sk-...",
           "sdkCompat": "openai",
           "defaultModel": "gpt-4o",
-          "modelsEndpoint": "/v1/models"
+          "modelsEndpoint": "/models"
         }
       ]
     }

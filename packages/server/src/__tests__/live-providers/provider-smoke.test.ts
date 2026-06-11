@@ -183,7 +183,10 @@ for (const { id, provider } of flattened) {
 							content: "Reply with exactly the single word: pong",
 						},
 					],
-					max_tokens: 16,
+					// Generous cap, not a target: reasoning-default models (gemini-2.5-*)
+					// spend "thinking" tokens from this budget before emitting text — at
+					// 16 they hit finish_reason=length with zero visible output.
+					max_tokens: 1024,
 					stream: false,
 				}),
 			});
@@ -232,7 +235,7 @@ for (const { id, provider } of flattened) {
 						},
 					],
 					tool_choice: "auto",
-					max_tokens: 64,
+					max_tokens: 1024,
 					stream: false,
 				}),
 			});

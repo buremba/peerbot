@@ -9,6 +9,7 @@
  */
 
 import { withHttpRetry } from './retry.js';
+import { sleep } from './sleep.js';
 
 /**
  * Statuses treated as transient: the client throws an `HttpStatusError` for
@@ -97,10 +98,6 @@ function parseRetryAfterMs(value: string | null): number | null {
   }
   const deltaMs = Date.parse(value) - Date.now();
   return Number.isFinite(deltaMs) && deltaMs > 0 ? deltaMs : null;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function createHttpClient(options: CreateHttpClientOptions = {}): HttpClient {

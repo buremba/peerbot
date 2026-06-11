@@ -8,9 +8,7 @@
  * early exit (`break` stops further fetches).
  */
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+import { sleep } from './sleep.js';
 
 export interface OffsetPage<T> {
   items: T[];

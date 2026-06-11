@@ -23,7 +23,7 @@ function parseEnvInt(name: string, fallback: number): number {
 /** Strict `<n> <unit>` Postgres interval literals only — these values are
  *  inlined into SQL by the stale-run sweeper, so anything fancier (or
  *  malformed) falls back to the default instead of reaching the database. */
-const PG_INTERVAL_PATTERN = /^\d+ (second|minute|hour|day)s?$/;
+export const PG_INTERVAL_PATTERN = /^\d+ (second|minute|hour|day)s?$/;
 
 /** Postgres interval literal (e.g. '3 minutes') from env; falls back when
  *  unset or not a simple `<n> <unit>` literal. */

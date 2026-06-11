@@ -74,6 +74,14 @@ const DB_TABLE_MISSING_BACKOFF_MS = 60_000;
 const PG_UNDEFINED_TABLE = '42P01';
 
 /**
+ * High-water mark for in-flight counter UPSERTs. A slow-but-not-erroring
+ * Postgres never trips the error backoff, so without a cap the pending set
+ * would grow with request-rate × latency. Past the cap new increments skip
+ * the DB write — per-pod local enforcement (the fail-open mode) still holds.
+ */
+const MAX_PENDING_WRITES = 500;
+
+/**
  * Postgres-backed fixed-window rate limiter with a synchronous local facade.
  */
 export class RateLimiter {
@@ -157,6 +165,18 @@ export class RateLimiter {
    */
   private persistIncrement(key: string, windowStartSec: number): void {
     if (Date.now() < this.dbBackoffUntilMs) return;
+    if (this.pendingWrites.size >= MAX_PENDING_WRITES) {
+      const now = Date.now();
+      if (now - this.lastDbWarnAtMs >= DB_WARN_INTERVAL_MS) {
+        this.lastDbWarnAtMs = now;
+        logger.warn(
+          { pendingWrites: this.pendingWrites.size },
+          '[rate-limiter] counter write backlog at high-water mark (slow Postgres?) — ' +
+            'skipping cluster-wide increments, per-pod limiting still enforced'
+        );
+      }
+      return;
+    }
 
     let db: DbClient;
     try {

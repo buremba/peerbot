@@ -22,6 +22,7 @@
  * so every input is validated against a strict literal pattern first.
  */
 
+import { PG_INTERVAL_PATTERN } from '../config/intervals';
 import type { DbClient } from '../db/client';
 
 export interface StaleRunSweepSpec {
@@ -46,7 +47,6 @@ export interface StaleRunSweepSpec {
   coarseStaleInterval: string;
 }
 
-const PG_INTERVAL_PATTERN = /^\d+ (second|minute|hour|day)s?$/;
 const RUN_TYPE_PATTERN = /^[a-z_]+$/;
 
 /** Validate + quote a `<n> <unit>` literal as a SQL interval expression. */

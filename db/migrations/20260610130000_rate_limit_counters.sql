@@ -24,6 +24,11 @@ CREATE UNLOGGED TABLE IF NOT EXISTS public.rate_limit_counters (
     PRIMARY KEY (key, window_start)
 );
 
+-- The sweep deletes by window_start alone; the composite PK (key, window_start)
+-- can't serve that range predicate, so give it its own index.
+CREATE INDEX IF NOT EXISTS rate_limit_counters_window_start_idx
+    ON public.rate_limit_counters (window_start);
+
 -- migrate:down
 
 DROP TABLE IF EXISTS public.rate_limit_counters;

@@ -46,7 +46,7 @@ scrapers' block-all-private-IPs rule can't be reused.
   catalog (`connector-catalog.ts`) and connection-create is hard-blocked
   (`manage_connections.ts` via `connector-cloud-gate.ts`). Execution is gated
   independently at every run path, not just by catalog-hide: scheduled-sync run
-  creation (`queue-helpers.ts`), the production worker poll (`worker-api.ts`), the
+  creation (`runs/queue-service.ts`), the production worker poll (`worker-api.ts`), the
   dev-CLI sync (`feed-sync.ts`), and the live pushdown (`connector-pushdown.ts`)
   each refuse a cloud-restricted connector under `LOBU_CLOUD_MODE`.
 

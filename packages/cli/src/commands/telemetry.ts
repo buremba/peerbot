@@ -41,6 +41,13 @@ export async function telemetryOnCommand(
   const cwd = options.cwd ?? process.cwd();
   const dsn = options.dsn ?? SENTRY_DSN_DEFAULT;
   await setLocalEnvValue(cwd, "SENTRY_DSN", dsn);
+  // The shared community DSN points at the same Sentry project as the hosted
+  // deployment, and instrument.ts defaults environment to "production" when
+  // ENVIRONMENT is unset — so without this tag a self-hosted install's errors
+  // are indistinguishable from real prod incidents in the feed.
+  if (!options.dsn) {
+    await setLocalEnvValue(cwd, "ENVIRONMENT", "self-host");
+  }
   console.log(chalk.green("\n  Telemetry enabled."));
   console.log(chalk.dim(`  Wrote SENTRY_DSN to ${join(cwd, ".env")}\n`));
 }

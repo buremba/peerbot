@@ -641,6 +641,14 @@ export async function initCommand(
       value:
         "https://c5910e58d1a134d64ff93a95a9c535bb@o4507291398897664.ingest.us.sentry.io/4511097466781696",
     });
+    // The shared community DSN reports into the same Sentry project as the
+    // hosted deployment, and instrument.ts defaults environment to
+    // "production" — tag self-hosted installs so their errors are filterable
+    // and never read as hosted-prod incidents.
+    envSecrets.push({
+      envVar: "ENVIRONMENT",
+      value: "self-host",
+    });
   }
 
   let allowedDomains: string;

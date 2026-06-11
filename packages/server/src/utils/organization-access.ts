@@ -11,6 +11,7 @@
 
 import { type DbClient, getDb } from '../db/client';
 import type { ToolContext } from '../tools/registry';
+import { ToolUserError } from './errors';
 
 /**
  * Get the user's role in a workspace (organization).
@@ -91,7 +92,7 @@ export async function requireReadAccess(
 ): Promise<void> {
   const canRead = await canReadEntity(sql, entityId, ctx);
   if (!canRead) {
-    throw new Error(`Access denied: entity ${entityId} is not accessible to your organization`);
+    throw new ToolUserError(`Access denied: entity ${entityId} is not accessible to your organization`, 403);
   }
 }
 
@@ -105,7 +106,7 @@ export async function requireWriteAccess(
 ): Promise<void> {
   const canWrite = await canWriteEntity(sql, entityId, ctx);
   if (!canWrite) {
-    throw new Error(`Access denied: entity ${entityId} does not belong to your organization`);
+    throw new ToolUserError(`Access denied: entity ${entityId} does not belong to your organization`, 403);
   }
 }
 

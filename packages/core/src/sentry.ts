@@ -12,6 +12,25 @@ function getLogger(): Logger {
 let sentryInstance: typeof import("@sentry/node") | null = null;
 
 /**
+ * Resolve the egress proxy URL the Sentry transport must use.
+ *
+ * Worker subprocesses reach the network ONLY through the gateway egress proxy
+ * (HTTP_PROXY=http://localhost:8118); prod additionally pins the kernel to
+ * IPAddressDeny=any + allow-loopback, so any direct (non-proxied) connection is
+ * dropped. @sentry/node-core's transport reads ONLY the lowercase
+ * http_proxy/https_proxy env vars (node_modules/@sentry/node-core/.../
+ * transports/http.js), which the spawn env does not set — so without passing
+ * the proxy explicitly via transportOptions.proxy the capture is silently
+ * kernel-blocked in prod. Returns undefined in the server/dev (no proxy) →
+ * direct egress, which is correct there.
+ */
+export function resolveSentryEgressProxy(
+  env: NodeJS.ProcessEnv = process.env
+): string | undefined {
+  return env.HTTP_PROXY || env.HTTPS_PROXY || undefined;
+}
+
+/**
  * Initialize Sentry with configuration from environment variables.
  * Only initializes if SENTRY_DSN is set — no implicit error reporting.
  * Uses dynamic import to avoid module resolution issues in dev mode.
@@ -23,12 +42,27 @@ export async function initSentry() {
     return;
   }
 
+  // transportOptions.proxy has highest priority in @sentry/node-core's
+  // transport; pass the gateway proxy through explicitly so worker captures
+  // route through it (the ingest host is allowlisted in
+  // gateway/config/network-allowlist.ts). See resolveSentryEgressProxy.
+  const egressProxy = resolveSentryEgressProxy();
+
   try {
     const Sentry = await import("@sentry/node");
     sentryInstance = Sentry;
 
     Sentry.init({
       dsn: sentryDsn,
+      transportOptions: egressProxy ? { proxy: egressProxy } : undefined,
+      // Tag worker events with the same environment/release the server uses
+      // (instrument.ts) so worker and server issues group and filter together.
+      // The gateway forwards ENVIRONMENT / SENTRY_RELEASE into the worker spawn
+      // env (base-deployment-manager.assembleBaseEnv); APP_GIT_SHA is the
+      // image-baked fallback when SENTRY_RELEASE is unset.
+      environment: process.env.ENVIRONMENT || "production",
+      release:
+        process.env.SENTRY_RELEASE || process.env.APP_GIT_SHA || undefined,
       // Do not ship IP/cookies/headers by default — user content and identifiers
       // travel through this stack and Sentry has no scrubbing for our schema.
       sendDefaultPii: false,

@@ -29,6 +29,7 @@ import {
   type RelationshipColumnSpec,
   updateEntity,
 } from '../../utils/entity-management';
+import { ToolUserError } from '../../utils/errors';
 import { recordChangeEvent } from '../../utils/insert-event';
 import {
   canonicalizeSymmetricEdge,
@@ -1008,9 +1009,9 @@ async function handleLink(
   env: Env,
   ctx: ToolContext
 ): Promise<ManageEntityResult> {
-  if (!args.from_entity_id) throw new Error('from_entity_id is required for link');
-  if (!args.to_entity_id) throw new Error('to_entity_id is required for link');
-  if (!args.relationship_type_slug) throw new Error('relationship_type_slug is required for link');
+  if (!args.from_entity_id) throw new ToolUserError('from_entity_id is required for link', 400);
+  if (!args.to_entity_id) throw new ToolUserError('to_entity_id is required for link', 400);
+  if (!args.relationship_type_slug) throw new ToolUserError('relationship_type_slug is required for link', 400);
 
   const sql = getDb();
 
@@ -1187,7 +1188,7 @@ async function handleListLinks(
   args: ManageEntityArgs,
   ctx: ToolContext
 ): Promise<ManageEntityResult> {
-  if (!args.entity_id) throw new Error('entity_id is required for list_links');
+  if (!args.entity_id) throw new ToolUserError('entity_id is required for list_links', 400);
 
   const sql = getDb();
   const direction = args.direction ?? 'both';

@@ -122,6 +122,7 @@ async function executeSyncRun(
     run_id,
     connector_key,
     feed_key,
+    feed_id,
     config: feedConfig,
     checkpoint,
     credentials,
@@ -214,6 +215,7 @@ async function executeSyncRun(
         sessionState: (job.session_state ?? null) as Record<string, unknown> | null,
         credentials: credentials ?? null,
         feedKey: feed_key,
+        feedId: feed_id,
         entityIds: job.entity_ids ?? [],
       },
       hooks: {

@@ -479,11 +479,13 @@ export class ChatInstanceManager {
     try {
       await this.startInstance(connection);
     } catch (error) {
-      // startInstance sets connection.status = "error" — persist so UI reflects it
-      await this.persistConnection(connection);
+      // startInstance sets connection.status = "error" — persist so UI reflects it.
+      // Bind the connection's owning org so the per-tenant saveConnection() write
+      // succeeds even on the org-less restart paths (see persistConnectionScoped).
+      await this.persistConnectionScoped(connection);
       throw error;
     }
-    await this.persistConnection(connection);
+    await this.persistConnectionScoped(connection);
 
     logger.info({ id }, "Connection restarted");
   }
@@ -491,9 +493,20 @@ export class ChatInstanceManager {
   async stopConnection(id: string): Promise<void> {
     await this.stopInstance(id);
 
-    await this.connectionStore.updateConnection(id, {
-      status: "stopped",
-    });
+    // updateConnection() routes through saveConnection() which requires
+    // getOrgId(); bind the connection's owning org so the stop write succeeds
+    // even when reached without an HTTP request's ALS org context.
+    const stored = await this.connectionStore.getConnection(id);
+    const markStopped = () =>
+      this.connectionStore.updateConnection(id, {
+        status: "stopped",
+      });
+    const orgId = stored?.organizationId;
+    if (orgId) {
+      await orgContext.run({ organizationId: orgId }, markStopped);
+    } else {
+      await markStopped();
+    }
 
     logger.info({ id }, "Connection stopped");
   }
@@ -1196,6 +1209,33 @@ export class ChatInstanceManager {
       ...connection,
       config: persistedConfig,
     });
+  }
+
+  /**
+   * persistConnection() rebound to the connection's owning org context.
+   *
+   * saveConnection() (and the per-org secret-store put() inside
+   * normalizeConfigForStorage()) require getOrgId() from AsyncLocalStorage.
+   * The restart path is reachable WITHOUT an HTTP request's org context —
+   * `ensureConnectionRunning()` is fired from the public per-connection
+   * webhook (`/api/v1/webhooks/:id`) and the notification fan-out
+   * (`postMessageToChannel`) on a cold pod that hasn't warmed the connection.
+   * Without rebinding, getOrgId() throws, the persist aborts, and the inbound
+   * message/notification is dropped (multi-replica). Bind the connection's
+   * own org so the per-tenant write hits the right bucket — mirroring
+   * startInstance()'s self-rebind. Legacy rows without an organizationId fall
+   * through to the caller's context (the global bucket still resolves).
+   */
+  private async persistConnectionScoped(
+    connection: PlatformConnection
+  ): Promise<void> {
+    if (connection.organizationId) {
+      return orgContext.run(
+        { organizationId: connection.organizationId },
+        () => this.persistConnection(connection)
+      );
+    }
+    return this.persistConnection(connection);
   }
 
   /**

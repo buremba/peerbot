@@ -186,4 +186,4 @@ bunx promptfoo eval -c <config> --output results.json --no-share   # CI mode
 bunx promptfoo view                                                   # comparison grid
 ```
 
-Eval configs live in the agent directory (`agents/<agent-id>/evals/promptfooconfig.yaml`) and define test cases with expected outcomes. promptfoo exits non-zero on failed assertions — wire that into CI. See the [Evaluations guide](/guides/evals/) for the full format.
+Eval configs live in the agent directory (`agents/<agent-id>/evals/promptfooconfig.yaml`) and define test cases with expected outcomes. promptfoo exits non-zero on failed assertions; wire that into CI. See the [Evaluations guide](/sdks/evals/) for the full format.

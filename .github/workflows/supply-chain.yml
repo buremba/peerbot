@@ -1,0 +1,78 @@
+name: Supply chain
+
+# Dependency, secret, and config scanning — the three checks the codebase has
+# no coverage for today (no `bun audit`, no secret scanner, no IaC/misconfig
+# scan). All jobs are informational (`continue-on-error`) so they surface
+# findings without blocking merges while the baseline is triaged; flip the
+# relevant job to a hard gate once it's clean.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  schedule:
+    # Daily so newly-published advisories are caught between PRs.
+    - cron: "13 6 * * *"
+
+concurrency:
+  group: supply-chain-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: bun audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+      - name: Audit dependencies (high+)
+        # Informational for now: the dependency tree has never been audited, so
+        # a first run may surface a backlog. Drop `|| true` to gate once clean.
+        run: bun audit --audit-level=high || true
+
+  trivy:
+    name: Trivy (vuln + secret + misconfig)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy filesystem scan
+        # @master is the ref the trivy-action README documents; the 0.x version
+        # tags are not resolvable as action refs (CI failed on @0.28.0).
+        # Acceptable for an informational scan job; pin a SHA if this is ever
+        # promoted to a blocking gate.
+        uses: aquasecurity/trivy-action@master
+        # Never fail the build on findings yet — emit SARIF for the Security tab.
+        continue-on-error: true
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-results.sarif
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        # Upload only from main/schedule runs: PR uploads create a per-tool
+        # code-scanning check that compares against the base branch, and until
+        # a main baseline exists every pre-existing finding shows as a "new
+        # alert" failing that check on every PR. PR runs still scan and log;
+        # the Security tab baseline populates from main.
+        if: always() && github.event_name != 'pull_request'
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-fs

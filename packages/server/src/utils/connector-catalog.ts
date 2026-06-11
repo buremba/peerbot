@@ -6,6 +6,8 @@ import {
   createConnectorCompiler,
   findBundledConnectorFile as findInDirs,
 } from '@lobu/connector-worker/compile';
+import { isCloudMode } from './cloud-mode';
+import { CLOUD_RESTRICTED_CONNECTOR_KEYS } from './connector-cloud-gate';
 import { extractConnectorMetadata } from './connector-compiler';
 import logger from './logger';
 
@@ -389,6 +391,12 @@ export async function listCatalogConnectorDefinitions(
     for (const filePath of candidatePaths) {
       const metadata = await resolveConnectorCatalogMetadata(filePath, dirPath, manifest);
       if (!metadata || seenKeys.has(metadata.key)) continue;
+
+      // Cloud-mode gate (plan §G): raw-DB connectors open arbitrary outbound TCP
+      // and have no tenant-supplied-URL egress hardening yet, so they must not be
+      // installable by untrusted multi-tenant cloud tenants. Hidden here for UX;
+      // also hard-blocked at connection creation (see connector-cloud-gate).
+      if (CLOUD_RESTRICTED_CONNECTOR_KEYS.has(metadata.key) && isCloudMode()) continue;
 
       seenKeys.add(metadata.key);
       definitions.push({

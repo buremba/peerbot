@@ -8,6 +8,7 @@
 import Ajv from 'ajv';
 import { createDbClientFromEnv, getDb } from '../../../db/client';
 import type { Env } from '../../../index';
+import { ToolUserError } from '../../../utils/errors';
 import { verifyWindowToken } from '../../../utils/jwt';
 import logger from '../../../utils/logger';
 import { computeStableKeys } from '../../../utils/stable-keys';
@@ -103,7 +104,9 @@ export async function handleCompleteWindow(
     )) as VerifiedWindowToken[];
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    throw new Error(
+    // Agent-recoverable validation (the message says how) — ToolUserError so
+    // it returns 400 and stays out of the Sentry feed (was LOBU-BACKEND-D).
+    throw new ToolUserError(
       `Invalid window_token: ${errorMsg}. ` +
         'The token may have expired or been tampered with. ' +
         'Get a fresh token from read_knowledge({ watcher_id: ... }).'
@@ -302,19 +305,26 @@ export async function handleCompleteWindow(
   if (tokenIsRollup && tokenSourceWindowIds && tokenSourceWindowIds.length > 0) {
     const depth = tokenDepth ?? 1;
 
-    const newWindowId = await getNextNumericId(sql, 'watcher_windows');
     const sourceIds = tokenSourceWindowIds.map(Number);
-    await sql`
-      INSERT INTO watcher_windows (
-        id, watcher_id, version_id, window_start, window_end, granularity,
-        extracted_data, content_analyzed, model_used, client_id, run_metadata,
-        is_rollup, depth, source_window_ids, run_id, created_at
-      ) VALUES (
-        ${newWindowId}, ${watcherId}, ${resolvedVersionId}, ${window_start}, ${window_end}, ${granularity || timeGranularity},
-        ${sql.json(extractedData)}, 0, ${provenanceModel}, ${provenanceClientId}, ${sql.json(provenanceMetadata)},
-        true, ${depth}, ${sourceIds}, ${watcherRunId}, NOW()
-      )
-    `;
+    // getNextNumericId uses a transaction-scoped advisory lock; it MUST run in
+    // the same transaction as the INSERT or the lock releases before the INSERT
+    // and two concurrent device-worker rollup completions race on the PK (both
+    // compute the same MAX(id)+1). Mirror the leaf-window path below.
+    const newWindowId = await sql.begin(async (tx) => {
+      const allocatedWindowId = await getNextNumericId(tx, 'watcher_windows');
+      await tx`
+        INSERT INTO watcher_windows (
+          id, watcher_id, version_id, window_start, window_end, granularity,
+          extracted_data, content_analyzed, model_used, client_id, run_metadata,
+          is_rollup, depth, source_window_ids, run_id, created_at
+        ) VALUES (
+          ${allocatedWindowId}, ${watcherId}, ${resolvedVersionId}, ${window_start}, ${window_end}, ${granularity || timeGranularity},
+          ${tx.json(extractedData)}, 0, ${provenanceModel}, ${provenanceClientId}, ${tx.json(provenanceMetadata)},
+          true, ${depth}, ${sourceIds}, ${watcherRunId}, NOW()
+        )
+      `;
+      return allocatedWindowId;
+    });
 
     logger.info(
       `[complete_window] Created rollup window ${newWindowId} for watcher ${watcherId} ` +
@@ -343,7 +353,7 @@ export async function handleCompleteWindow(
   // ============================================
   const perTokenIds = tokenPayloads.map((token) => {
     if (!Array.isArray(token.content_ids)) {
-      throw new Error(
+      throw new ToolUserError(
         'Invalid window_token: content_ids is required. Get a fresh token from read_knowledge({ watcher_id: ... }).'
       );
     }
@@ -356,7 +366,7 @@ export async function handleCompleteWindow(
       ),
     ];
     if (ids.length !== token.content_count) {
-      throw new Error(
+      throw new ToolUserError(
         `Invalid window_token: content_ids has ${ids.length} IDs, but content_count is ${token.content_count}. ` +
           'Get a fresh token from read_knowledge({ watcher_id: ... }).'
       );
@@ -471,9 +481,12 @@ export async function handleCompleteWindow(
             `;
           }
         } else {
-          throw new Error(
+          // Conflict with an existing window, not a server fault — 409 keeps
+          // it out of the Sentry feed (was LOBU-BACKEND-Q).
+          throw new ToolUserError(
             `Window already exists for watcher ${watcherId} for period ${window_start} to ${window_end}. ` +
-              'Use replace_existing: true to replace it, or query a different time period.'
+              'Use replace_existing: true to replace it, or query a different time period.',
+            409
           );
         }
       }
@@ -497,9 +510,10 @@ export async function handleCompleteWindow(
           `;
         } catch (err: any) {
           if (err?.code === '23505') {
-            throw new Error(
+            throw new ToolUserError(
               `Window already exists for watcher ${watcherId} for period ${window_start} to ${window_end}. ` +
-                'Use replace_existing: true to replace it, or query a different time period.'
+                'Use replace_existing: true to replace it, or query a different time period.',
+              409
             );
           }
           throw err;

@@ -75,6 +75,23 @@ function firstLiteral(source: string, field: string): string | null {
   return m ? m[1] : null;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// The connector's display name is the `name:` literal that accompanies its
+// `key:` in the definition object. Other `name:` literals can appear earlier in
+// the file — e.g. CSS-scrape selector configs like `name: 'componentkey'` in
+// linkedin.ts — so anchor on the connector key and read the first `name:` that
+// follows it instead of the first one anywhere in the source.
+function connectorName(source: string, key: string): string | null {
+  const keyIdx = source.search(
+    new RegExp(`key:\\s*["']${escapeRegExp(key)}["']`)
+  );
+  if (keyIdx === -1) return firstLiteral(source, "name");
+  return firstLiteral(source.slice(keyIdx), "name");
+}
+
 function extractConnectors(): Connector[] {
   const files = readdirSync(connectorsDir).filter(
     (f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && !SKIP.has(f)
@@ -84,7 +101,7 @@ function extractConnectors(): Connector[] {
   for (const file of files) {
     const source = readFileSync(resolve(connectorsDir, file), "utf-8");
     const key = firstLiteral(source, "key");
-    const name = firstLiteral(source, "name");
+    const name = key ? connectorName(source, key) : null;
     // A file is a connector only when its definition exposes both fields.
     if (key && name) found.push({ key, name, file });
   }

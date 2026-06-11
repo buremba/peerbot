@@ -29,6 +29,7 @@ export * from './hackernews.ts';
 export * from './ios_appstore.ts';
 export * from './linkedin.ts';
 export * from './microsoft_outlook.ts';
+export * from './postgres.ts';
 export * from './producthunt.ts';
 export * from './reddit.ts';
 export * from './revolut.ts';

@@ -114,6 +114,7 @@ export function registerSlackPlatformHandlers(
         teamId,
         isGroup: isSlackGroupChannel(rawChannelId),
         connectionId: connection.id,
+        organizationId: connection.organizationId,
         reply,
       }
     );

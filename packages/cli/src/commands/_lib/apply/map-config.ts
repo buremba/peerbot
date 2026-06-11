@@ -523,8 +523,18 @@ function mapEntityType(entity: EntityType): DesiredEntityType {
     // attach it) but is neither diffed nor sent to the server.
     ...(entity.metadata ? { metadata: entity.metadata } : {}),
     // `backing` is present only for derived types; a stored entity (the default)
-    // carries no backing so it never churns the diff.
-    ...(entity.backing ? { backing: { sql: entity.backing.sql } } : {}),
+    // carries no backing so it never churns the diff. `connection` (a slug) is
+    // included only when set, so an internal-backed view never churns either.
+    ...(entity.backing
+      ? {
+          backing: {
+            sql: entity.backing.sql,
+            ...(entity.backing.connection
+              ? { connection: entity.backing.connection }
+              : {}),
+          },
+        }
+      : {}),
   };
 }
 

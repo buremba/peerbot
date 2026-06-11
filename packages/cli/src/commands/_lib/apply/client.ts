@@ -27,6 +27,7 @@ export interface RemoteEntityType {
   /** Present only for derived types (mirrors {@link DesiredEntityType.backing}). */
   backing?: {
     sql: string;
+    connection?: string;
   };
   /**
    * Owning org id. The list endpoint also returns *public* types from OTHER
@@ -191,6 +192,7 @@ function hoistEntityTypeSchema(
   row: RemoteEntityType & {
     metadata_schema?: unknown;
     backing_sql?: string | null;
+    backing_source?: string | null;
   }
 ): RemoteEntityType {
   const schema = row.metadata_schema;
@@ -212,9 +214,16 @@ function hoistEntityTypeSchema(
     }
   }
   // A type is derived iff it has view SQL; stored types carry no backing, so it
-  // compares equal to the desired side without churn.
+  // compares equal to the desired side without churn. `backing_source` (a
+  // connection slug) is hoisted to `backing.connection` only when set, so an
+  // internal-backed view stays `{ sql }` and never churns.
   if (typeof row.backing_sql === "string") {
-    out.backing = { sql: row.backing_sql };
+    out.backing = {
+      sql: row.backing_sql,
+      ...(typeof row.backing_source === "string" && row.backing_source
+        ? { connection: row.backing_source }
+        : {}),
+    };
   }
   return out;
 }
@@ -556,6 +565,7 @@ export class ApplyClient {
     properties?: Record<string, unknown>;
     backing?: {
       sql: string;
+      connection?: string;
     };
   }): Promise<UpsertEntityTypeResult> {
     // The server stores per-type fields as a single `metadata_schema` JSON
@@ -576,8 +586,14 @@ export class ApplyClient {
     }
     // Backing is sent on every upsert so it is deterministic: `{ sql }` makes
     // the type derived; `null` makes it stored (and reverts a previously-derived
-    // type).
-    payload.backing = backing ? { sql: backing.sql } : null;
+    // type). `connection` (a slug) is forwarded so the server can bind the view
+    // to an external database; the server resolves slug → connection at read time.
+    payload.backing = backing
+      ? {
+          sql: backing.sql,
+          ...(backing.connection ? { connection: backing.connection } : {}),
+        }
+      : null;
     return this.upsertSchemaResource("entity_type", payload);
   }
 

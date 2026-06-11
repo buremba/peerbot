@@ -509,24 +509,25 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
       const sql = getDb();
       const orgId = getOrgId();
       if (binding.teamId) {
+        // Org-scoped UNIQUE — a sibling tenant binding the same platform+channel
+        // can never collide with this org's row. `organization_id` is
+        // deliberately absent from the SET list so a binding cannot change owners.
         await sql`
           INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
           VALUES (${orgId}, ${binding.agentId}, ${binding.platform}, ${binding.channelId}, ${binding.teamId}, now())
-          ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET
-            agent_id = EXCLUDED.agent_id,
-            organization_id = EXCLUDED.organization_id
+          ON CONFLICT (organization_id, platform, channel_id, team_id) DO UPDATE SET
+            agent_id = EXCLUDED.agent_id
         `;
       } else {
-        // PG treats NULL as distinct under the (platform, channel_id, team_id)
-        // UNIQUE; the team_id IS NULL branch upserts via the partial unique
-        // index agent_channel_bindings_no_team_unique.
+        // PG treats NULL as distinct under the org-scoped UNIQUE; the
+        // team_id IS NULL branch upserts via the org-scoped partial unique
+        // index agent_channel_bindings_org_no_team_unique.
         await sql`
           INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
           VALUES (${orgId}, ${binding.agentId}, ${binding.platform}, ${binding.channelId}, NULL, now())
-          ON CONFLICT (platform, channel_id)
+          ON CONFLICT (organization_id, platform, channel_id)
             WHERE team_id IS NULL
-            DO UPDATE SET agent_id = EXCLUDED.agent_id,
-              organization_id = EXCLUDED.organization_id
+            DO UPDATE SET agent_id = EXCLUDED.agent_id
         `;
       }
     },

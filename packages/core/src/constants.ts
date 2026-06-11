@@ -21,6 +21,12 @@ export const TIME = {
   THIRTY_SECONDS: 30,
 } as const;
 
+/**
+ * MCP protocol version this codebase advertises on `initialize` handshakes.
+ * Kept in one place so the gateway, CLI, and openclaw plugin stay in lockstep.
+ */
+export const MCP_PROTOCOL_VERSION = "2025-03-26";
+
 // Default configuration values
 export const DEFAULTS = {
   /** Default session TTL in milliseconds */

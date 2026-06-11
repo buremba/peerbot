@@ -16,6 +16,7 @@ interface CommandDispatchInput {
   isGroup: boolean;
   conversationId?: string;
   connectionId?: string;
+  organizationId?: string;
   reply: CommandContext["reply"];
 }
 
@@ -91,11 +92,14 @@ export class CommandDispatcher {
   }
 
   private async resolveAgentId(input: CommandDispatchInput): Promise<string> {
-    // Check channel binding first (Slack multi-tenant)
+    // Check channel binding first (Slack multi-tenant). Scope to the inbound
+    // org — bindings are org-scoped, so an org-less read could match another
+    // tenant's binding for the same channel.
     const binding = await this.channelBindingService.getBinding(
       input.platform,
       input.channelId,
-      input.teamId
+      input.teamId,
+      input.organizationId
     );
     if (binding?.agentId) {
       return binding.agentId;

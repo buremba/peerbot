@@ -195,10 +195,22 @@ export class UnifiedThreadResponseConsumer {
         data.error ||
         (data.processedMessageIds && data.processedMessageIds.length)
       );
+      // Interaction cards (ask_user question, tool-approval, link-button) are
+      // pushed to the browser's SSE socket, which lives on exactly one pod.
+      // Like terminal rows they must be owner-routed: a non-owning pod
+      // re-queues so the pod holding the SSE connection (pinned by ClientIP
+      // affinity) delivers the card. Without this the card lands in a pod-local
+      // SseManager the browser is not connected to and the user never sees it,
+      // leaving the ask_user/tool-approval turn hung. The card-bearing rows are
+      // enqueued with `customEvent.requireSseOwner` set (see api/platform.ts)
+      // and the same raised-retry send opts as terminal rows so the re-queue
+      // window covers the cross-pod hand-off and the browser's POST→connect gap.
+      const requiresSseOwner =
+        isTerminal || data.customEvent?.requireSseOwner === true;
       const sseKey =
         (data.platformMetadata?.sessionId as string) || data.conversationId;
       if (
-        isTerminal &&
+        requiresSseOwner &&
         sseKey &&
         !this.sseManager.hasActiveConnection(sseKey)
       ) {

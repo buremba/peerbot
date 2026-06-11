@@ -214,10 +214,12 @@ export type ConsumeClaimResult =
   | { status: 'not_found' }
   | { status: 'surface_not_allowed'; surfaceType: SurfaceType };
 
-// `agent_channel_bindings` upsert — last link for this chat wins. `ON CONFLICT`
-// can't target a NULL `team_id`, so for platforms without a workspace concept
-// (team_id null) we delete-then-insert instead. `tx` is a `sql` or a `sql.begin`
-// transaction handle.
+// `agent_channel_bindings` upsert — last link for THIS org's chat wins. The
+// uniqueness is org-scoped (org_id, platform, channel_id[, team_id]) so a
+// sibling tenant binding the same platform+channel can never collide with — or
+// take over — this org's row. `organization_id` is intentionally never updated,
+// so a binding cannot change owners. The team_id IS NULL branch upserts via the
+// org-scoped partial unique index. `tx` is a `sql` or a `sql.begin` handle.
 async function upsertBinding(
   tx: ReturnType<typeof getDb>,
   platform: string,
@@ -230,18 +232,16 @@ async function upsertBinding(
     await tx`
       INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
       VALUES (${organizationId}, ${agentId}, ${platform}, ${channelId}, ${teamId}, now())
-      ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET
-        agent_id = EXCLUDED.agent_id,
-        organization_id = EXCLUDED.organization_id
+      ON CONFLICT (organization_id, platform, channel_id, team_id) DO UPDATE SET
+        agent_id = EXCLUDED.agent_id
     `;
   } else {
     await tx`
-      DELETE FROM agent_channel_bindings
-      WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
-    `;
-    await tx`
       INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
       VALUES (${organizationId}, ${agentId}, ${platform}, ${channelId}, NULL, now())
+      ON CONFLICT (organization_id, platform, channel_id)
+        WHERE team_id IS NULL
+        DO UPDATE SET agent_id = EXCLUDED.agent_id
     `;
   }
 }
@@ -408,21 +408,22 @@ export async function bindChatToPreviewAgent(args: {
 
   const { platform, teamId, channelId } = args;
   if (teamId) {
+    // Org-scoped upsert: another tenant's binding for the same platform+channel
+    // is a different row and cannot be clobbered. `organization_id` is never
+    // reassigned, so a binding can't change owners.
     await sql`
       INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
       VALUES (${org.organizationId}, ${target.id}, ${platform}, ${channelId}, ${teamId}, now())
-      ON CONFLICT (platform, channel_id, team_id) DO UPDATE SET
-        agent_id = EXCLUDED.agent_id,
-        organization_id = EXCLUDED.organization_id
+      ON CONFLICT (organization_id, platform, channel_id, team_id) DO UPDATE SET
+        agent_id = EXCLUDED.agent_id
     `;
   } else {
     await sql`
-      DELETE FROM agent_channel_bindings
-      WHERE platform = ${platform} AND channel_id = ${channelId} AND team_id IS NULL
-    `;
-    await sql`
       INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
       VALUES (${org.organizationId}, ${target.id}, ${platform}, ${channelId}, NULL, now())
+      ON CONFLICT (organization_id, platform, channel_id)
+        WHERE team_id IS NULL
+        DO UPDATE SET agent_id = EXCLUDED.agent_id
     `;
   }
   return { status: 'bound', agentId: target.id };

@@ -323,6 +323,12 @@ export interface RunAISessionParams {
    * capture it for cleanup()/snapshot writing.
    */
   onSessionFilePathResolved: (sessionFilePath: string) => void;
+  /**
+   * Called as soon as the model ref is resolved to a (provider, modelId) pair
+   * so the worker can tag Sentry captures with which provider/model a later
+   * failure belongs to. Fires before any provider call can fail.
+   */
+  onModelResolved: (provider: string, modelId: string) => void;
 
   // Methods delegated from OpenClawWorker (kept on the class; passed here as
   // plain function references so the class can share them with tests without
@@ -365,6 +371,7 @@ export async function runAISession(
     workspaceDir,
     progressProcessor,
     onSessionFilePathResolved,
+    onModelResolved,
     loadImageAttachments,
     maybeRunPreCompactionMemoryFlush,
     maybeBuildAuthHintMessage,
@@ -474,6 +481,7 @@ export async function runAISession(
   });
   // Map gateway slug to model-registry provider name (e.g. "z-ai" → "zai")
   const provider = PROVIDER_REGISTRY_ALIASES[rawProvider] || rawProvider;
+  onModelResolved(provider, modelId);
 
   // Dynamic provider base URL from agentOptions.providerBaseUrlMappings
   let providerBaseUrl: string | undefined;

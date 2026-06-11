@@ -7,6 +7,14 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened]
 
+# Auto-cancel superseded runs on a PR so a force-push/rebase doesn't leave the
+# previous (now-stale) run burning ~10 parallel jobs to completion. `main`
+# pushes are never cancelled (ref is unique per push) so deploy-side gating is
+# unaffected.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # Fast unit tests — no Postgres, no submodule needed for most.
   # Splits from `integration` so a unit failure surfaces in <2 min instead of
@@ -98,6 +106,12 @@ jobs:
         # smoke-example workflow, not the unit job.
         run: |
           bun test packages/connector-worker
+
+      - name: client / promptfoo-provider (bun:test)
+        # Previously unrun in CI: the client SSE/auth suite and the
+        # promptfoo-provider tests (which had no `test` script wired anywhere).
+        # Neither needs Postgres.
+        run: bun test packages/client packages/promptfoo-provider
 
       - name: Upload coverage
         if: always()

@@ -45,4 +45,4 @@ The secret proxy keeps credentials *out* of the worker. The [`secret-scan` guard
 - [Egress judge](/guides/egress-judge/), per-request judging of where workers can connect.
 - [Guardrails](/guides/guardrails/), `secret-scan` and the rest of the policy layer.
 - [MCP Proxy](/guides/mcp-proxy/), how per-user tokens are injected into MCP calls.
-- [Connector SDK](/getting-started/connector-sdk/), how connector code receives placeholders for `env_keys` and `oauth` auth.
+- [Connector SDK](/sdks/connectors/), how connector code receives placeholders for `env_keys` and `oauth` auth.

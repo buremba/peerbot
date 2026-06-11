@@ -754,10 +754,14 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
       }
 
       child = spawn(command, spawnArgs, {
-        // Workers must not inherit gateway-only secrets or telemetry settings
-        // (DATABASE_URL, SENTRY_DSN, OAuth secrets, etc.). Everything a worker
-        // needs is assembled explicitly above, with optional operator-provided
-        // values forwarded only via WORKER_ENV_*.
+        // Workers must not inherit gateway-only secrets (DATABASE_URL, OAuth
+        // secrets, etc.). Everything a worker needs is assembled explicitly in
+        // assembleBaseEnv, with optional operator-provided values forwarded only
+        // via WORKER_ENV_*. SENTRY_DSN (+ ENVIRONMENT/SENTRY_RELEASE/APP_GIT_SHA)
+        // IS forwarded there now so the worker can report provider/model
+        // failures to Sentry Issues — it reaches Sentry via the gateway proxy
+        // (the Sentry host is added to the proxy allowlist), not directly, so
+        // the Linux IPAddressDeny scope doesn't drop the capture POST.
         env: commonEnvVars,
         cwd: workspaceDir,
         stdio: ["ignore", "pipe", "pipe"],

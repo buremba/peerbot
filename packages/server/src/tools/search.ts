@@ -12,6 +12,7 @@ import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { entityLinkMatchSql, searchContentByText } from '../utils/content-search';
 import { toVectorLiteral } from '../utils/entity-management';
+import { ToolUserError } from '../utils/errors';
 import logger from '../utils/logger';
 import { expandSearchQueries } from '../utils/query-expansion';
 import { buildEntityUrl, getPublicWebUrl } from '../utils/url-builder';
@@ -256,6 +257,7 @@ function withContent<T extends UnifiedSearchResult>(result: T, content: ContentS
 async function fetchContentSnippets(
   query: string | null,
   organizationId: string,
+  userId: string | null,
   contentLimit: number,
   env: Env,
   queryEmbedding?: number[],
@@ -265,6 +267,12 @@ async function fetchContentSnippets(
     query,
     {
       organization_id: organizationId,
+      // Enforce the org/private-connection visibility boundary on the recall
+      // path, exactly as get_content does. Without visibility_scope the
+      // connection-visibility clause is skipped entirely, so search_memory
+      // (publicly readable) would expose another member's private-connection
+      // content. See get-content-visibility / search-cross-org tests.
+      visibility_scope: { organizationId, userId },
       limit: contentLimit,
       min_similarity: 0.4,
       query_embedding: queryEmbedding,
@@ -306,7 +314,7 @@ export async function search(
 
   // Validate: must have either query, ID, or embedding
   if (!args.query && !args.entity_id && !args.query_embedding?.length) {
-    throw new Error('Must provide either query, entity_id, or query_embedding');
+    throw new ToolUserError('Must provide either query, entity_id, or query_embedding', 400);
   }
 
   // Helper to run content search in parallel. Runs when we have either a text
@@ -320,6 +328,7 @@ export async function search(
       ? fetchContentSnippets(
           args.query ?? null,
           ctx.organizationId,
+          ctx.userId,
           contentLimit,
           env,
           args.query_embedding,
@@ -360,7 +369,7 @@ export async function search(
   // Truncate query for search — long texts break websearch_to_tsquery and don't improve results
   const query = args.query ? args.query.slice(0, 200).trim() || null : null;
   if (!query && !args.query_embedding?.length) {
-    throw new Error('Must provide a query or query_embedding');
+    throw new ToolUserError('Must provide a query or query_embedding', 400);
   }
 
   logger.info(

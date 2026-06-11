@@ -1016,3 +1016,50 @@ describe("EgressJudge — additional behavioral coverage", () => {
     expect(d.source).toBe("judge-error"); // not "circuit-open"
   });
 });
+
+// Regression: in unrestricted+blocklist mode (WORKER_ALLOWED_DOMAINS=* with a
+// WORKER_DISALLOWED_DOMAINS list), a trailing-dot FQDN (`pastebin.com.`) used to
+// slip past the denylist — it matched neither the exact nor the `.suffix`
+// pattern — while `pastebin.com` was correctly blocked. DNS resolves both
+// identically, so this defeated the operator egress control. checkDomainAccess
+// now canonicalizes the hostname (strips trailing dots) before matching.
+describe("egress denylist — trailing-dot FQDN canonicalization", () => {
+  const prevAllowed = process.env.WORKER_ALLOWED_DOMAINS;
+  const prevDisallowed = process.env.WORKER_DISALLOWED_DOMAINS;
+
+  beforeEach(() => {
+    process.env.WORKER_ALLOWED_DOMAINS = "*";
+    process.env.WORKER_DISALLOWED_DOMAINS = "pastebin.com";
+    __testOnly.reset();
+  });
+
+  afterEach(() => {
+    if (prevAllowed === undefined) delete process.env.WORKER_ALLOWED_DOMAINS;
+    else process.env.WORKER_ALLOWED_DOMAINS = prevAllowed;
+    if (prevDisallowed === undefined) delete process.env.WORKER_DISALLOWED_DOMAINS;
+    else process.env.WORKER_DISALLOWED_DOMAINS = prevDisallowed;
+    __testOnly.reset();
+  });
+
+  test("blocks a denylisted host written with a trailing dot", async () => {
+    expect(
+      (await __testOnly.checkDomainAccess("pastebin.com", undefined, undefined)).allowed
+    ).toBe(false);
+    // The bug: this returned allowed:true before the canonicalization fix.
+    expect(
+      (await __testOnly.checkDomainAccess("pastebin.com.", undefined, undefined)).allowed
+    ).toBe(false);
+    expect(
+      (await __testOnly.checkDomainAccess("pastebin.com..", undefined, undefined)).allowed
+    ).toBe(false);
+  });
+
+  test("still allows a non-denylisted host (trailing dot or not) in unrestricted mode", async () => {
+    expect(
+      (await __testOnly.checkDomainAccess("example.com", undefined, undefined)).allowed
+    ).toBe(true);
+    expect(
+      (await __testOnly.checkDomainAccess("example.com.", undefined, undefined)).allowed
+    ).toBe(true);
+  });
+});

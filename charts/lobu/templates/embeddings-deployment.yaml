@@ -40,6 +40,10 @@ spec:
         - name: embeddings
           image: {{ include "lobu.embeddingsImage" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.embeddings.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - containerPort: {{ .Values.embeddings.service.port }}
               protocol: TCP

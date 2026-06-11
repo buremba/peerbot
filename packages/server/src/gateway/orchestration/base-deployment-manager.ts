@@ -665,6 +665,34 @@ export abstract class BaseDeploymentManager {
       envVars.TRACE_ID = traceId;
     }
 
+    // Forward Sentry config so the worker subprocess can report provider/model
+    // failures to Sentry Issues (core/sentry.ts initSentry() is DSN-gated and
+    // no-ops without SENTRY_DSN). The app process owns the DSN via envFrom in
+    // prod; without this forwarding the worker is entirely unmonitored.
+    //
+    // EGRESS: the worker reaches Sentry THROUGH the gateway proxy (HTTP_PROXY),
+    // NOT directly. We deliberately do NOT add the Sentry host to NO_PROXY:
+    // under Linux prod the worker runs in a systemd scope with
+    // `IPAddressDeny=any` + `IPAddressAllow=127.0.0.1/::1`, so a direct
+    // connection to Sentry's public IP would be dropped by the kernel. Routing
+    // via the proxy (loopback, allowed) works in both prod and dev. The proxy's
+    // allowlist is widened to admit the Sentry ingest host in
+    // network-allowlist.ts (loadAllowedDomains), gated on SENTRY_DSN.
+    if (process.env.SENTRY_DSN) {
+      envVars.SENTRY_DSN = process.env.SENTRY_DSN;
+    }
+    if (process.env.ENVIRONMENT) {
+      envVars.ENVIRONMENT = process.env.ENVIRONMENT;
+    }
+    if (process.env.SENTRY_RELEASE) {
+      envVars.SENTRY_RELEASE = process.env.SENTRY_RELEASE;
+    }
+    // APP_GIT_SHA is baked into the prod image and used as the Sentry `release`
+    // fallback (core/sentry.ts) when SENTRY_RELEASE is unset.
+    if (process.env.APP_GIT_SHA) {
+      envVars.APP_GIT_SHA = process.env.APP_GIT_SHA;
+    }
+
     // Add OTLP endpoint for distributed tracing
     const otlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
     if (otlpEndpoint) {

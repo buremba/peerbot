@@ -8,6 +8,7 @@
 
 import { type Static, Type } from '@sinclair/typebox';
 import { getDb } from '../../db/client';
+import { runConnectorQuery } from '../../lib/connector-pushdown';
 import { validateAndScopeQuery } from '../../utils/execute-data-sources';
 import logger from '../../utils/logger';
 import { raceAbort } from '../../utils/race-abort';
@@ -20,6 +21,12 @@ export const QuerySqlSchema = Type.Object({
     description:
       'Base SELECT query. Table references are auto-scoped to your organization. It is wrapped as a subquery, so ORDER BY / LIMIT / window functions inside it are fine; pagination + sort are added on the outside via sort_by/limit/offset.',
   }),
+  connection: Type.Optional(
+    Type.String({
+      description:
+        'Optional connection slug. When set, `sql` runs LIVE (read-only) against that connection’s external database via its connector (pushdown), and the internal org-scoping is skipped. When unset, the query runs over your org’s internal tables.',
+    })
+  ),
   org_slug: Type.Optional(
     Type.String({
       description:
@@ -61,19 +68,12 @@ export const QuerySqlSchema = Type.Object({
 
 type QuerySqlArgs = Static<typeof QuerySqlSchema>;
 
-interface QuerySqlResult {
-  rows: Record<string, unknown>[];
-  columns: { name: string; type: string }[];
-  total_count: number;
-  has_more: boolean;
-  execution_time_ms: number;
-  error?: string;
-}
-
 const COLUMN_NAME_RE = /^[a-zA-Z_]\w*$/;
 
 const PG_OID_TYPE_MAP: Record<number, string> = {
   16: 'boolean',
+  17: 'bytea',
+  19: 'name',
   20: 'bigint',
   21: 'smallint',
   23: 'integer',
@@ -96,6 +96,35 @@ const PG_OID_TYPE_MAP: Record<number, string> = {
 
 function oidToTypeName(oid: number): string {
   return PG_OID_TYPE_MAP[oid] ?? 'unknown';
+}
+
+interface QuerySqlResult {
+  rows: Record<string, unknown>[];
+  columns: { name: string; type: string }[];
+  total_count: number;
+  has_more: boolean;
+  execution_time_ms: number;
+  error?: string;
+}
+
+/**
+ * Coerce + clamp the page bounds. TypeBox schemas aren't runtime-validated in
+ * this codebase, so a non-number limit/offset would otherwise interpolate as a
+ * string into raw SQL and bypass the intended bounds. Shared by the internal and
+ * external (connection pushdown) branches.
+ */
+function coercePageBounds(
+  args: QuerySqlArgs
+): { limit: number; offset: number } | { error: string } {
+  const rawLimit = Number(args.limit ?? 50);
+  const rawOffset = Number(args.offset ?? 0);
+  if (!Number.isFinite(rawLimit) || !Number.isFinite(rawOffset)) {
+    return { error: 'limit and offset must be numbers.' };
+  }
+  return {
+    limit: Math.max(1, Math.min(500, Math.trunc(rawLimit))),
+    offset: Math.max(0, Math.trunc(rawOffset)),
+  };
 }
 
 function errorResult(message: string, startTime: number): QuerySqlResult {
@@ -133,6 +162,16 @@ export async function querySql(
   // sort_by is optional: omit it for a view whose columns aren't known upfront.
   if (args.sort_by !== undefined && !COLUMN_NAME_RE.test(args.sort_by)) {
     return errorResult(`Invalid sort_by column name: ${args.sort_by}`, startTime);
+  }
+
+  // search_columns only filters in concert with search_term — passing it alone
+  // is a silent no-op on both the internal and external paths, which reads as
+  // "a filter was applied" when none was. Reject it so the caller notices.
+  if (args.search_columns?.length && !args.search_term) {
+    return errorResult(
+      'search_columns has no effect without search_term — set search_term to filter, or drop search_columns.',
+      startTime
+    );
   }
 
   // Resolve the target organization. By default, the caller's bound org. When
@@ -188,6 +227,45 @@ export async function querySql(
     }
   }
 
+  // External pushdown: when a connection is named, the SQL runs LIVE against that
+  // connection's database via its connector (no internal org-scoping — it's the
+  // org's own DB, read-only). The connection is resolved org-scoped inside
+  // runConnectorQuery; access is bounded by the connection's read-only DB role.
+  if (args.connection) {
+    if (args.search_term) {
+      return errorResult(
+        'search_term is not supported with an external connection — use search_memory.',
+        startTime
+      );
+    }
+    const bounds = coercePageBounds(args);
+    if ('error' in bounds) return errorResult(bounds.error, startTime);
+    const { limit, offset } = bounds;
+    try {
+      const r = await runConnectorQuery({
+        organizationId: targetOrgId,
+        connectionSlug: args.connection,
+        query: baseSql,
+        userId: ctx.userId,
+        isAdmin: callerIsAdmin,
+        limit,
+        offset,
+        sort: args.sort_by
+          ? { column: args.sort_by, order: args.sort_order === 'desc' ? 'desc' : 'asc' }
+          : undefined,
+      });
+      return {
+        rows: r.rows,
+        columns: r.columns,
+        total_count: r.total ?? r.rows.length,
+        has_more: r.total !== undefined ? offset + limit < r.total : r.rows.length >= limit,
+        execution_time_ms: Date.now() - startTime,
+      };
+    } catch (err) {
+      return errorResult(err instanceof Error ? err.message : String(err), startTime);
+    }
+  }
+
   // Validate, parse, and org-scope the query
   let scopedSql: string;
   let params: unknown[];
@@ -219,18 +297,10 @@ export async function querySql(
     searchWhere = `WHERE (${orClauses.join(' OR ')})`;
   }
 
-  // TypeBox schemas don't auto-validate at runtime in this codebase, so coerce
-  // numeric args to integers here before they reach raw SQL. A non-number
-  // limit/offset would otherwise interpolate as a string and bypass the
-  // intended bounds.
   const sortOrder = args.sort_order === 'desc' ? 'DESC' : 'ASC';
-  const rawLimit = Number(args.limit ?? 50);
-  const rawOffset = Number(args.offset ?? 0);
-  if (!Number.isFinite(rawLimit) || !Number.isFinite(rawOffset)) {
-    return errorResult('limit and offset must be numbers.', startTime);
-  }
-  const limit = Math.max(1, Math.min(500, Math.trunc(rawLimit)));
-  const offset = Math.max(0, Math.trunc(rawOffset));
+  const bounds = coercePageBounds(args);
+  if ('error' in bounds) return errorResult(bounds.error, startTime);
+  const { limit, offset } = bounds;
 
   const countSql = `SELECT count(*)::int AS c FROM (${scopedSql}) AS _t ${searchWhere}`;
   const orderBy = args.sort_by ? `ORDER BY "${args.sort_by}" ${sortOrder}` : '';

@@ -10,7 +10,9 @@
 import type { DbClient } from '../db/client';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
+import { isCloudMode } from './cloud-mode';
 import { findBundledConnectorFile } from './connector-catalog';
+import { CLOUD_RESTRICTED_CONNECTOR_KEYS } from './connector-cloud-gate';
 import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from './run-statuses';
@@ -117,6 +119,20 @@ async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<n
     connector_key: string;
     pinned_version: string | null;
   };
+
+  // Cloud gate: a raw-DB connector (postgres) has no tenant-URL egress hardening
+  // yet, so under LOBU_CLOUD_MODE we don't queue a scheduled sync run for it. The
+  // connection is already blocked at create time, but an existing feed must not
+  // keep queueing. The feed is left intact (NOT soft-deleted) — it's a valid feed
+  // that simply can't run on cloud until hardening lands; self-hosted is
+  // unaffected. pollWorkerJob gates again as the hard execution boundary.
+  if (isCloudMode() && CLOUD_RESTRICTED_CONNECTOR_KEYS.has(feed.connector_key)) {
+    logger.warn(
+      { feedId, connector_key: feed.connector_key },
+      '[queue] Skipping sync run for cloud-restricted connector under LOBU_CLOUD_MODE'
+    );
+    return null;
+  }
 
   // Resolve connector version: pinned_version → connector_definitions.version
   let connectorVersion: string;

@@ -6,13 +6,13 @@
  * Tool discovery cache is stored in-process with a short TTL.
  */
 
+import { MCP_PROTOCOL_VERSION } from '@lobu/core';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 import { TtlCache } from '../utils/ttl-cache';
 import { type ResolvedCredentials, resolveCredentials } from './credential-resolver';
 import type { DiscoveredTool, JsonRpcResponse, McpProxyConfig } from './types';
 
-const MCP_PROTOCOL_VERSION = '2025-03-26';
 const FETCH_TIMEOUT_INIT_MS = 10_000;
 const FETCH_TIMEOUT_TOOL_MS = 30_000;
 const TOOL_CACHE_TTL_MS = 5 * 60 * 1000;

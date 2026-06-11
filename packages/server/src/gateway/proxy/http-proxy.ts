@@ -144,6 +144,10 @@ async function checkDomainAccess(
 ): Promise<AccessDecision> {
   const global = getGlobalConfig();
 
+  // Canonicalize once so the denylist, allowlist, grant store, and judge all
+  // match the same name (closes the trailing-dot FQDN blocklist bypass).
+  hostname = canonicalizeHostname(hostname);
+
   // Global blocklist always takes precedence
   if (
     global.deniedDomains.length > 0 &&
@@ -395,6 +399,8 @@ let dnsLookupOverride: DnsLookupAllFn | null = null;
 
 export const __testOnly = {
   isBlockedIpAddress,
+  checkDomainAccess,
+  canonicalizeHostname,
   /** Reset cached global config + module-level stores so tests can rebuild them. */
   reset: () => {
     globalConfig = null;
@@ -587,6 +593,19 @@ function validateProxyAuth(req: http.IncomingMessage): ValidatedProxy | null {
  * Check if a hostname matches any domain patterns
  * Supports exact matches and wildcard patterns (.example.com matches *.example.com)
  */
+/**
+ * Canonicalize a hostname for allow/deny/judge matching. WHATWG URL parsing and
+ * the CONNECT host parser both preserve a trailing dot (`evil.com.`), which DNS
+ * resolves identically to `evil.com` but which configured allow/deny/judge
+ * patterns never carry. Without stripping it, a trailing-dot host slips past the
+ * blocklist in unrestricted+blocklist mode (matches neither the exact nor the
+ * `.suffix` pattern) while the plain form is blocked. Strip trailing dots so
+ * every matcher sees the same name DNS will ultimately resolve.
+ */
+function canonicalizeHostname(hostname: string): string {
+  return hostname.replace(/\.+$/, "");
+}
+
 function matchesDomainPattern(hostname: string, patterns: string[]): boolean {
   const lowerHostname = hostname.toLowerCase();
 

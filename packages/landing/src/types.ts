@@ -15,7 +15,6 @@ export interface UseCase {
   tabLabel: string;
   title: string;
   description: string;
-  learnMoreUrl?: string;
   settingsLabel: string;
   chatLabel: string;
   messages: ChatMessage[];

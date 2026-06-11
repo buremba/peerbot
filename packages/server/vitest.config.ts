@@ -20,6 +20,9 @@ export default defineConfig({
     // from the merged @lobu/gateway package, plus the caches + queue unit tests).
     exclude: [
       "src/__tests__/unit/**",
+      // Opt-in, key-gated live provider smoke — bun:test, run via
+      // `make test-providers-live`, never as part of the integration gate.
+      "src/__tests__/live-providers/**",
       "src/gateway/**/__tests__/**",
       "src/lobu/**/__tests__/**",
       "src/scheduled/**/__tests__/**",

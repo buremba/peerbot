@@ -513,6 +513,16 @@ export interface ThreadResponsePayload {
   customEvent?: {
     name: string;
     data: Record<string, unknown>;
+    /**
+     * When true, this customEvent is an interaction card (ask_user question,
+     * tool-approval, link-button) that must reach the browser's SSE socket,
+     * which lives on exactly one pod. The thread_response consumer treats such
+     * rows like terminal API rows: a pod that does not hold the SSE connection
+     * re-queues so the owning pod (pinned by ClientIP affinity) delivers it.
+     * Without this the card is broadcast into a pod-local SseManager the
+     * browser is not connected to and the user never sees it, hanging the turn.
+     */
+    requireSseOwner?: boolean;
   };
 
   // Exec-specific response fields (for jobType === "exec")

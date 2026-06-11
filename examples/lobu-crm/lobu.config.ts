@@ -268,6 +268,19 @@ const x_accountAuth = defineAuthProfile({
   name: "X — @lobu",
 });
 
+// Dogfood: Lobu's own production Postgres as a read-only memory + live-metrics
+// source for the CRM. Use a least-privilege READ-ONLY role. Self-hosted only —
+// the postgres connector is gated off multi-tenant cloud (docs/database-connectors.md).
+const lobu_dbAuth = defineAuthProfile({
+  slug: "lobu-db",
+  connector: "postgres",
+  authKind: "env",
+  name: "Lobu Production DB (read-only)",
+  credentials: {
+    DATABASE_URL: secret("LOBU_PROD_READONLY_URL"),
+  },
+});
+
 const competitor_changelogsConn = defineConnection({
   slug: "competitor-changelogs",
   connector: "website",
@@ -387,6 +400,62 @@ const npm_downloadsConn = defineConnection({
   ],
 });
 
+const lobu_dbConn = defineConnection({
+  slug: "lobu-prod-db",
+  connector: "postgres",
+  name: "Lobu Production DB",
+  authProfile: lobu_dbAuth,
+  feeds: [
+    {
+      feed: "query",
+      name: "New signups",
+      schedule: "*/15 * * * *",
+      config: {
+        primary_key: "id",
+        cursor_column: "created_at",
+        // Base SELECT only — the connector adds the keyset WHERE / ORDER BY / LIMIT.
+        query: `SELECT u.id, u.email, u.name, u."createdAt" AS created_at, o.slug AS org
+                FROM "user" u
+                JOIN member m ON m."userId" = u.id
+                JOIN organization o ON o.id = m."organizationId"`,
+        mapping: { title: "email", occurred_at: "created_at" },
+      },
+    },
+    {
+      feed: "query",
+      name: "Org activity (daily)",
+      schedule: "0 6 * * *",
+      config: {
+        primary_key: "id",
+        cursor_column: "created_at",
+        query: `SELECT id, organization_id AS org, connector_key, semantic_type, created_at
+                FROM events`,
+        mapping: { title: "semantic_type", occurred_at: "created_at" },
+      },
+    },
+  ],
+});
+
+// Live, no-copy: funnel counts computed at read time straight from the prod DB
+// (an external-backed derived entity — backing.connection pushes the SQL down to
+// the connector, read live via query_sql({ connection })).
+const funnel_by_org = defineEntityType({
+  key: "funnel_by_org",
+  name: "Funnel by org",
+  description:
+    "Signups + last activity per signed-up org, read live from the Lobu prod DB.",
+  backing: {
+    connection: "lobu-prod-db",
+    sql: `SELECT o.slug AS org,
+                 count(DISTINCT u.id) AS signups,
+                 max(u."createdAt") AS last_signup
+          FROM "user" u
+          JOIN member m ON m."userId" = u.id
+          JOIN organization o ON o.id = m."organizationId"
+          GROUP BY o.slug`,
+  },
+});
+
 export default defineConfig({
   connectors: [
     connectorFromFile<typeof NpmDownloadsConnector>(
@@ -398,7 +467,7 @@ export default defineConfig({
   orgDescription:
     "Funnel CRM for Lobu — leads, pilots, conversations, launch signals",
   agents: [crm],
-  entities: [lead, pilot],
+  entities: [lead, pilot, funnel_by_org],
   relationships: [converted_to],
   connections: [
     competitor_changelogsConn,
@@ -406,7 +475,13 @@ export default defineConfig({
     hn_lobuConn,
     npm_downloadsConn,
     x_mentionsConn,
+    lobu_dbConn,
   ],
-  authProfiles: [github_accountAuth, github_appAuth, x_accountAuth],
+  authProfiles: [
+    github_accountAuth,
+    github_appAuth,
+    x_accountAuth,
+    lobu_dbAuth,
+  ],
   watchers: [funnel_digestWatcher, inbound_triageWatcher],
 });

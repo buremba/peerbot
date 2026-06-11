@@ -28,7 +28,11 @@ if (dsn) {
     dsn,
     environment: process.env.ENVIRONMENT || 'production',
     release: process.env.SENTRY_RELEASE || process.env.APP_GIT_SHA || undefined,
-    tracesSampleRate: isDev ? 1.0 : 0.1,
+    // 0.1 produced ~250k spans/day (~7.5M/mo) and exhausted the plan's 5M span
+    // quota by day ~20 of the usage period. 0.02 keeps ~50k/day (~1.5M/mo) —
+    // comfortably inside quota with headroom for growth. Errors are unaffected
+    // (sampleRate below governs those).
+    tracesSampleRate: isDev ? 1.0 : 0.02,
     // Error events: capture 100%. Error volume is low (~5/day) so there's no
     // quota pressure, and the captureMessage spam that once motivated 0.5
     // sampling was removed (runs-queue.ts). Sampling rare provider/model

@@ -66,8 +66,12 @@ export async function initSentry() {
       // Do not ship IP/cookies/headers by default — user content and identifiers
       // travel through this stack and Sentry has no scrubbing for our schema.
       sendDefaultPii: false,
-      profileSessionSampleRate: 1.0,
-      tracesSampleRate: 1.0, // Capture 100% of traces for better visibility
+      // Worker Sentry exists for ISSUES (provider/model failures), not tracing.
+      // Every agent run spawns a worker; at 1.0 the fleet would burn the org's
+      // span quota (5M/mo on the current plan was exhausted by the server alone
+      // at 0.1) and drown the server's traces. Errors are unaffected — error
+      // capture uses sampleRate (default 1.0), not tracesSampleRate.
+      tracesSampleRate: 0,
       integrations: [
         Sentry.consoleLoggingIntegration({ levels: ["log", "warn", "error"] }),
       ],

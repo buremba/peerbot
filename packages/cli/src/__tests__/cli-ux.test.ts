@@ -79,6 +79,10 @@ describe("project-link round-trip", () => {
 });
 
 describe("lobu init --yes", () => {
+  // initCommand runs a real `bun install --ignore-scripts` in the scaffold
+  // (the #1181 fix), so these tests are network-bound — bun's 5s default
+  // timeout flakes on slow CI runners (observed 5.7s).
+  const INIT_TIMEOUT = 120_000;
   let cwd: string;
   beforeEach(() => {
     cwd = mkdtempSync(join(tmpdir(), "lobu-init-yes-"));
@@ -87,67 +91,89 @@ describe("lobu init --yes", () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
-  test("scaffolds a non-interactive project with defaults", async () => {
-    await initCommand(cwd, "demo", { yes: true });
-    const proj = join(cwd, "demo");
-    expect(existsSync(join(proj, "lobu.config.ts"))).toBe(true);
-    expect(existsSync(join(proj, ".env"))).toBe(true);
-    expect(existsSync(join(proj, "agents", "demo", "IDENTITY.md"))).toBe(true);
-    const env = readFileSync(join(proj, ".env"), "utf-8");
-    expect(env.includes("SENTRY_DSN=")).toBe(false);
-    // The generated lobu.config.ts imports @lobu/cli/config, so the scaffolded
-    // package.json MUST declare @lobu/cli — else `lobu apply` (jiti) can't
-    // resolve it outside this monorepo. Regression guard for that blocker.
-    const pkg = JSON.parse(readFileSync(join(proj, "package.json"), "utf-8"));
-    expect(pkg.devDependencies["@lobu/cli"]).toBeDefined();
-    expect(pkg.devDependencies["@lobu/connector-sdk"]).toBeDefined();
-    const tsconfig = JSON.parse(
-      readFileSync(join(proj, "tsconfig.json"), "utf-8")
-    );
-    expect(tsconfig.include).toContain("lobu.config.ts");
-  });
+  test(
+    "scaffolds a non-interactive project with defaults",
+    async () => {
+      await initCommand(cwd, "demo", { yes: true });
+      const proj = join(cwd, "demo");
+      expect(existsSync(join(proj, "lobu.config.ts"))).toBe(true);
+      expect(existsSync(join(proj, ".env"))).toBe(true);
+      expect(existsSync(join(proj, "agents", "demo", "IDENTITY.md"))).toBe(
+        true
+      );
+      const env = readFileSync(join(proj, ".env"), "utf-8");
+      expect(env.includes("SENTRY_DSN=")).toBe(false);
+      // The generated lobu.config.ts imports @lobu/cli/config, so the scaffolded
+      // package.json MUST declare @lobu/cli — else `lobu apply` (jiti) can't
+      // resolve it outside this monorepo. Regression guard for that blocker.
+      const pkg = JSON.parse(readFileSync(join(proj, "package.json"), "utf-8"));
+      expect(pkg.devDependencies["@lobu/cli"]).toBeDefined();
+      expect(pkg.devDependencies["@lobu/connector-sdk"]).toBeDefined();
+      const tsconfig = JSON.parse(
+        readFileSync(join(proj, "tsconfig.json"), "utf-8")
+      );
+      expect(tsconfig.include).toContain("lobu.config.ts");
+    },
+    INIT_TIMEOUT
+  );
 
-  test("scaffolded lobu.config.ts loads into desired state", async () => {
-    // jiti resolves the externalized `@lobu/cli/config` import relative to the config
-    // file, so scaffold inside the package tree (where node_modules is
-    // reachable), not the tmpdir() used by the other init tests.
-    const fixtureRoot = mkdtempSync(join(import.meta.dir, "init-load-"));
-    try {
-      await initCommand(fixtureRoot, "loadable", { yes: true });
-      const proj = join(fixtureRoot, "loadable");
-      const { state } = await loadDesiredStateFromConfig({ cwd: proj });
-      expect(state.agents).toHaveLength(1);
-      expect(state.agents[0]?.metadata.agentId).toBe("loadable");
-      // SOUL/IDENTITY/USER.md from the agent dir are merged into settings.
-      expect(state.agents[0]?.settings.identityMd).toContain("loadable");
-    } finally {
-      rmSync(fixtureRoot, { recursive: true, force: true });
-    }
-  });
+  test(
+    "scaffolded lobu.config.ts loads into desired state",
+    async () => {
+      // jiti resolves the externalized `@lobu/cli/config` import relative to the config
+      // file, so scaffold inside the package tree (where node_modules is
+      // reachable), not the tmpdir() used by the other init tests.
+      const fixtureRoot = mkdtempSync(join(import.meta.dir, "init-load-"));
+      try {
+        await initCommand(fixtureRoot, "loadable", { yes: true });
+        const proj = join(fixtureRoot, "loadable");
+        const { state } = await loadDesiredStateFromConfig({ cwd: proj });
+        expect(state.agents).toHaveLength(1);
+        expect(state.agents[0]?.metadata.agentId).toBe("loadable");
+        // SOUL/IDENTITY/USER.md from the agent dir are merged into settings.
+        expect(state.agents[0]?.settings.identityMd).toContain("loadable");
+      } finally {
+        rmSync(fixtureRoot, { recursive: true, force: true });
+      }
+    },
+    INIT_TIMEOUT
+  );
 
-  test("--here scaffolds into the current directory", async () => {
-    await initCommand(cwd, undefined, { yes: true, here: true });
-    expect(existsSync(join(cwd, "lobu.config.ts"))).toBe(true);
-    expect(existsSync(join(cwd, "agents"))).toBe(true);
-  });
+  test(
+    "--here scaffolds into the current directory",
+    async () => {
+      await initCommand(cwd, undefined, { yes: true, here: true });
+      expect(existsSync(join(cwd, "lobu.config.ts"))).toBe(true);
+      expect(existsSync(join(cwd, "agents"))).toBe(true);
+    },
+    INIT_TIMEOUT
+  );
 
-  test("--sentry writes SENTRY_DSN", async () => {
-    await initCommand(cwd, "sentry-on", { yes: true, sentry: true });
-    const env = readFileSync(join(cwd, "sentry-on", ".env"), "utf-8");
-    expect(env).toMatch(/SENTRY_DSN=/);
-  });
+  test(
+    "--sentry writes SENTRY_DSN",
+    async () => {
+      await initCommand(cwd, "sentry-on", { yes: true, sentry: true });
+      const env = readFileSync(join(cwd, "sentry-on", ".env"), "utf-8");
+      expect(env).toMatch(/SENTRY_DSN=/);
+    },
+    INIT_TIMEOUT
+  );
 
-  test("--slack-preview writes agent preview config", async () => {
-    await initCommand(cwd, "preview-on", { yes: true, slackPreview: true });
-    const config = readFileSync(
-      join(cwd, "preview-on", "lobu.config.ts"),
-      "utf-8"
-    );
-    expect(config).toContain("preview:");
-    expect(config).toContain("slack:");
-    expect(config).toContain("enabled: true");
-    expect(config).toContain('surfaces: ["dm"]');
-  });
+  test(
+    "--slack-preview writes agent preview config",
+    async () => {
+      await initCommand(cwd, "preview-on", { yes: true, slackPreview: true });
+      const config = readFileSync(
+        join(cwd, "preview-on", "lobu.config.ts"),
+        "utf-8"
+      );
+      expect(config).toContain("preview:");
+      expect(config).toContain("slack:");
+      expect(config).toContain("enabled: true");
+      expect(config).toContain('surfaces: ["dm"]');
+    },
+    INIT_TIMEOUT
+  );
 
   test("--provider with bad id throws before writing files", async () => {
     await expect(

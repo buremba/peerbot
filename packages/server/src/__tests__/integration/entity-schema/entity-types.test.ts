@@ -61,12 +61,47 @@ describe('entity schema CRUD', () => {
       expect(tombstone.entity_type).toBeNull();
     });
 
-    it('rejects a duplicate slug create', async () => {
+    it('rejects a duplicate slug create with a coded 409', async () => {
       await owner.entity_schema.createType({ slug: 'dup-asset', name: 'Dup' });
-      await expect(
-        owner.entity_schema.createType({ slug: 'dup-asset', name: 'Dup 2' })
-      ).rejects.toThrow(/already exists|duplicate/i);
+      // `lobu apply` upserts by probing create and retrying as update ONLY on
+      // this explicit duplicate signal — the code + 409 are load-bearing.
+      const err = await owner.entity_schema
+        .createType({ slug: 'dup-asset', name: 'Dup 2' })
+        .then(() => null)
+        .catch((e: unknown) => e as Error & { httpStatus?: number });
+      expect(err).not.toBeNull();
+      expect(err?.message).toMatch(/\[entity_type_exists\].*already exists/);
+      expect(err?.httpStatus).toBe(409);
       await owner.entity_schema.deleteType('dup-asset');
+    });
+
+    it('rejects >4 x-table-column fields with a 422 carrying the real message (issue #1177)', async () => {
+      // Five flagged columns; before the fix this surfaced through `lobu apply`
+      // as a misleading "Entity type 'task' not found" instead of the message.
+      const properties = Object.fromEntries(
+        ['a', 'b', 'c', 'd', 'e'].map((f) => [
+          f,
+          { type: 'string', 'x-table-column': true },
+        ])
+      );
+      const err = await owner.entity_schema
+        .createType({
+          slug: 'too-many-columns',
+          name: 'Too Many',
+          metadata_schema: { type: 'object', properties },
+        })
+        .then(() => null)
+        .catch((e: unknown) => e as Error & { httpStatus?: number });
+      expect(err).not.toBeNull();
+      expect(err?.message).toContain('[invalid_schema]');
+      expect(err?.message).toContain('At most 4 metadata fields can have x-table-column=true.');
+      expect(err?.httpStatus).toBe(422);
+      // Validation rejected the create entirely — nothing persisted, so a
+      // follow-up create-after-fix is a clean create (not an update).
+      const got = (await owner.entity_schema.getType('too-many-columns')) as {
+        entity_type: unknown;
+      };
+      expect(got.entity_type).toBeNull();
     });
 
     it('lists user-created types alongside system types', async () => {
@@ -156,11 +191,15 @@ describe('entity schema CRUD', () => {
       await owner.entity_schema.deleteRelType('collaborates-with');
     });
 
-    it('rejects a duplicate relationship slug', async () => {
+    it('rejects a duplicate relationship slug with a coded 409', async () => {
       await owner.entity_schema.createRelType({ slug: 'dup-rel', name: 'Dup' });
-      await expect(
-        owner.entity_schema.createRelType({ slug: 'dup-rel', name: 'Dup 2' })
-      ).rejects.toThrow(/already exists|duplicate/i);
+      const err = await owner.entity_schema
+        .createRelType({ slug: 'dup-rel', name: 'Dup 2' })
+        .then(() => null)
+        .catch((e: unknown) => e as Error & { httpStatus?: number });
+      expect(err).not.toBeNull();
+      expect(err?.message).toMatch(/\[relationship_type_exists\].*already exists/);
+      expect(err?.httpStatus).toBe(409);
       await owner.entity_schema.deleteRelType('dup-rel');
     });
   });

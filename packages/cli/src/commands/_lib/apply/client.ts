@@ -528,9 +528,12 @@ export class ApplyClient {
 
   /**
    * The `manage_entity_schema` admin tool exposes separate `create` / `update`
-   * actions and surfaces duplicates as a structured error code rather than a
-   * 4xx. Probe with `create`; on a duplicate-named-resource code, retry with
-   * `update`.
+   * actions and surfaces duplicates as a coded 409 (`[entity_type_exists]` /
+   * `[relationship_type_exists]`). Probe with `create`; on that explicit
+   * duplicate signal retry with `update`. Any other error (e.g. a 422
+   * `[invalid_schema]` validation failure) propagates verbatim — retrying it
+   * as an update used to mask the real message behind "Entity type not
+   * found" (issue #1177).
    */
   private async upsertSchemaResource(
     schemaType: "entity_type" | "relationship_type",
@@ -1284,33 +1287,29 @@ export class ApplyClient {
 
 /**
  * Recognise duplicate-name errors from the admin tools without substring
- * matching the user-facing message. The server emits a structured code in
- * `error.code` (e.g. `entity_type_exists`, `already_exists`) that the
- * proxy surfaces in the error payload. This helper centralises that check
- * so we can extend the code list as the server grows.
+ * matching the user-facing message. The server stamps a bracketed code into
+ * the error message of every duplicate path `apply` upserts through
+ * (`manage_entity_schema` create / add_rule → `[entity_type_exists]`,
+ * `[relationship_type_exists]`, `[already_exists]`, all httpStatus 409).
  *
- * Tradeoff: the existing `manage_entity_schema` handler doesn't currently
- * stamp a stable code for every duplicate path. Until it does, we accept
- * structured codes when present and fall back to the http status alone
- * (any 4xx for a `create` action is treated as duplicate-or-bad-payload;
- * the subsequent `update` will fail noisily on the latter).
+ * Anything else is NOT a duplicate. In particular a 422 schema-validation
+ * error (`[invalid_schema]`, e.g. ">4 x-table-column fields") must surface
+ * verbatim — the old status-only fallback treated any 4xx as "already
+ * exists", retried with `action: update`, and buried the real message under
+ * a misleading "Entity type not found" (issue #1177). The 409 fallback stays
+ * as a belt-and-braces signal for duplicate paths that predate the codes.
  */
-function isDuplicateError(err: ApiError): boolean {
-  if (typeof err.status === "number" && err.status >= 400 && err.status < 500) {
-    const message = err.message.toLowerCase();
-    if (
-      message.includes("[entity_type_exists]") ||
-      message.includes("[relationship_type_exists]") ||
-      message.includes("[already_exists]")
-    ) {
-      return true;
-    }
-    // Fall back to status-only when no code is stamped. This is loose; we
-    // accept the loss because the v1 plan explicitly limits us to
-    // server endpoints whose error shape we don't control.
-    return err.status === 409 || err.status === 422 || err.status === 400;
+export function isDuplicateError(err: ApiError): boolean {
+  if (typeof err.status !== "number") return false;
+  const message = err.message.toLowerCase();
+  if (
+    message.includes("[entity_type_exists]") ||
+    message.includes("[relationship_type_exists]") ||
+    message.includes("[already_exists]")
+  ) {
+    return true;
   }
-  return false;
+  return err.status === 409;
 }
 
 // ── Top-level resolver ─────────────────────────────────────────────────────

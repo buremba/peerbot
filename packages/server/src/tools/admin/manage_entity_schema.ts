@@ -18,6 +18,7 @@ import { compileRulesMetadata, ruleHashFor } from '../../identity/rules';
 import { ensureMemberEntityType } from '../../utils/member-entity-type';
 import { RESERVED_ENTITY_TYPES } from '../../utils/reserved';
 import { resolveUsernames } from '../../utils/resolve-usernames';
+import { ToolUserError } from '../../utils/errors';
 import type { ToolContext } from '../registry';
 import { routeAction } from './action-router';
 
@@ -307,6 +308,18 @@ function mapRowToEntityType(row: Record<string, unknown>): EntityTypeRow {
   };
 }
 
+/**
+ * Schema-validation failures are user input errors, not duplicates: they carry
+ * a `[invalid_schema]` marker + httpStatus 422 so REST callers (`lobu apply`)
+ * can tell them apart from create-on-duplicate (`[entity_type_exists]`, 409)
+ * instead of guessing from the status code alone (issue #1177 — a 422 here
+ * used to be mistaken for "already exists", triggering a doomed update retry
+ * that buried the real message under "Entity type not found").
+ */
+function invalidSchema(message: string): ToolUserError {
+  return new ToolUserError(`[invalid_schema] ${message}`, 422);
+}
+
 function validateEntityMetadataSchemaDisplayConfig(
   metadataSchema: Record<string, unknown> | undefined
 ): void {
@@ -328,17 +341,17 @@ function validateEntityMetadataSchemaDisplayConfig(
     if (tableColumn === true) {
       tableColumnCount += 1;
     } else if (tableColumn !== undefined && typeof tableColumn !== 'boolean') {
-      throw new Error(`metadata_schema.properties.${field}.x-table-column must be a boolean`);
+      throw invalidSchema(`metadata_schema.properties.${field}.x-table-column must be a boolean`);
     }
 
     const tableLabel = (prop as Record<string, unknown>)['x-table-label'];
     if (tableLabel !== undefined && typeof tableLabel !== 'string') {
-      throw new Error(`metadata_schema.properties.${field}.x-table-label must be a string`);
+      throw invalidSchema(`metadata_schema.properties.${field}.x-table-label must be a string`);
     }
   }
 
   if (tableColumnCount > 4) {
-    throw new Error('At most 4 metadata fields can have x-table-column=true.');
+    throw invalidSchema('At most 4 metadata fields can have x-table-column=true.');
   }
 }
 
@@ -350,12 +363,12 @@ function validateEntityMetadataSchemaDisplayConfig(
  */
 function assertValidBacking(backing: ManageEntitySchemaArgs['backing']): void {
   if (backing && typeof backing.sql === 'string' && backing.sql.trim() === '') {
-    throw new Error('backing.sql cannot be empty');
+    throw invalidSchema('backing.sql cannot be empty');
   }
   // Symmetric guard: an empty `connection` would persist backing_source='' — a
   // slug that resolves to no connection, failing only at read time.
   if (backing && typeof backing.connection === 'string' && backing.connection.trim() === '') {
-    throw new Error('backing.connection cannot be empty');
+    throw invalidSchema('backing.connection cannot be empty');
   }
 }
 
@@ -535,7 +548,9 @@ async function etHandleCreate(
     LIMIT 1
   `;
   if (existing.length > 0) {
-    throw new Error(`Entity type with slug '${slug}' already exists`);
+    // Coded 409 (not a generic 400): `lobu apply` upserts by probing `create`
+    // and retrying as `update` ONLY on an explicit duplicate signal.
+    throw new ToolUserError(`[entity_type_exists] Entity type with slug '${slug}' already exists`, 409);
   }
 
   validateEntityMetadataSchemaDisplayConfig(args.metadata_schema);
@@ -1007,7 +1022,11 @@ async function rtHandleCreate(
     LIMIT 1
   `;
   if (existing.length > 0) {
-    throw new Error(`Relationship type with slug "${args.slug}" already exists`);
+    // Coded 409 — same duplicate-signal contract as entity-type create.
+    throw new ToolUserError(
+      `[relationship_type_exists] Relationship type with slug "${args.slug}" already exists`,
+      409
+    );
   }
 
   let inverseTypeId: number | null = null;
@@ -1201,8 +1220,10 @@ async function rtHandleAddRule(
     LIMIT 1
   `;
   if (existingRule.length > 0) {
-    throw new Error(
-      `Rule already exists for ${args.source_entity_type_slug} → ${args.target_entity_type_slug}`
+    // Coded 409 — `lobu apply` treats a duplicate add_rule as success (idempotent).
+    throw new ToolUserError(
+      `[already_exists] Rule already exists for ${args.source_entity_type_slug} → ${args.target_entity_type_slug}`,
+      409
     );
   }
 

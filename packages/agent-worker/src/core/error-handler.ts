@@ -59,7 +59,9 @@ export function classifyError(error: unknown): string | undefined {
   // (LOBU-BACKEND-W) landed as `unclassified` because the auth-hint regex
   // doesn't cover this shape — and an unclassified event dodges the
   // PROVIDER_* Sentry alert.
-  if (/no\s+(provider\s+)?credentials\s+configured|no_credentials/i.test(message))
+  if (
+    /no\s+(provider\s+)?credentials\s+configured|no_credentials/i.test(message)
+  )
     return "PROVIDER_AUTH";
   // `worker.ts` throws "Model \"<id>\" not found for provider ..." and pi-ai /
   // upstream surface "<x> is not a valid model"/"unknown model"/"model ... not found".

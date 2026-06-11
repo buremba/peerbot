@@ -4,6 +4,7 @@ import {
   __resetPlaceholderCacheForTests,
   generatePlaceholder,
   lookupPlaceholderMapping,
+  resolveProviderCredential,
   SecretProxy,
   type SecretMapping,
   storeSecretMapping,
@@ -246,5 +247,75 @@ describe("SecretProxy user-scoped provider routing", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+describe("resolveProviderCredential (egress resolution chain)", () => {
+  const neverDb = async (): Promise<string | null> => {
+    throw new Error("DB lookup must not run for this tier");
+  };
+
+  test("tier 1: profile credential wins without touching org or system tiers", async () => {
+    const credential = await resolveProviderCredential({
+      profileCredential: "profile-key",
+      providerId: "openai",
+      organizationId: "org-a",
+      readOrgSharedKey: neverDb,
+      systemKeyResolver: () => {
+        throw new Error("system tier must not run");
+      },
+    });
+    expect(credential).toBe("profile-key");
+  });
+
+  test("tier 2: org-shared apply-provisioned key resolves when no profile exists (LOBU-BACKEND-W regression)", async () => {
+    const calls: Array<[string, string]> = [];
+    const credential = await resolveProviderCredential({
+      profileCredential: null,
+      providerId: "openai",
+      organizationId: "org-a",
+      readOrgSharedKey: async (providerId, organizationId) => {
+        calls.push([providerId, organizationId]);
+        return "org-shared-key";
+      },
+      systemKeyResolver: () => {
+        throw new Error("system tier must not run when org key exists");
+      },
+    });
+    expect(credential).toBe("org-shared-key");
+    expect(calls).toEqual([["openai", "org-a"]]);
+  });
+
+  test("tier 2 is skipped without an organizationId (no unscoped reads)", async () => {
+    const credential = await resolveProviderCredential({
+      profileCredential: null,
+      providerId: "openai",
+      organizationId: undefined,
+      readOrgSharedKey: neverDb,
+      systemKeyResolver: () => "system-key",
+    });
+    expect(credential).toBe("system-key");
+  });
+
+  test("tier 3: system key resolves when profile and org tiers miss", async () => {
+    const credential = await resolveProviderCredential({
+      profileCredential: null,
+      providerId: "openai",
+      organizationId: "org-a",
+      readOrgSharedKey: async () => null,
+      systemKeyResolver: () => "system-key",
+    });
+    expect(credential).toBe("system-key");
+  });
+
+  test("null when every tier misses (handler 401s with no_credentials)", async () => {
+    const credential = await resolveProviderCredential({
+      profileCredential: null,
+      providerId: "openai",
+      organizationId: "org-a",
+      readOrgSharedKey: async () => null,
+      systemKeyResolver: undefined,
+    });
+    expect(credential).toBeNull();
   });
 });

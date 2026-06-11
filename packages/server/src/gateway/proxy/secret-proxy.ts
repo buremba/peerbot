@@ -240,6 +240,43 @@ function safeDecodePathSegment(value: string | undefined): string | undefined {
   }
 }
 
+/**
+ * Walk the documented provider-credential resolution chain
+ * (provider-secrets.ts) at the egress proxy:
+ *   1. per-user auth profile credential (resolved by the caller)
+ *   2. org-shared `agent_secrets` key written by `lobu apply`
+ *   3. deployment-wide system key (env)
+ *
+ * Run dispatch admits a run when `hasSystemKey() || hasCredentials()` passes
+ * (base-provider-module.ts), and `hasCredentials` covers tiers 1–2 — so the
+ * proxy MUST resolve the same tiers. Skipping tier 2 here meant an
+ * apply-provisioned org dispatched its agent only to 401 at the first
+ * provider call — found live by the Sentry red-test (LOBU-BACKEND-W).
+ *
+ * Exported for tests; dependencies are injected so the tier ORDER is testable
+ * without a database or upstream.
+ */
+export async function resolveProviderCredential(params: {
+  profileCredential: string | null;
+  providerId: string;
+  organizationId: string | undefined;
+  readOrgSharedKey: (
+    providerId: string,
+    organizationId: string
+  ) => Promise<string | null>;
+  systemKeyResolver?: (providerId: string) => string | undefined;
+}): Promise<string | null> {
+  if (params.profileCredential) return params.profileCredential;
+  if (params.organizationId) {
+    const orgKey = await params.readOrgSharedKey(
+      params.providerId,
+      params.organizationId
+    );
+    if (orgKey) return orgKey;
+  }
+  return params.systemKeyResolver?.(params.providerId) ?? null;
+}
+
 export interface SecretMapping {
   agentId: string;
   /**
@@ -740,25 +777,13 @@ export class SecretProxy {
               })
             )
           : profile?.credential;
-        // Walk the documented resolution chain (provider-secrets.ts):
-        //   1. per-user auth profile (above)
-        //   2. org-shared `agent_secrets` key written by `lobu apply`
-        //   3. deployment-wide system key (env)
-        // Run dispatch admits the run when ANY tier matches (`hasCredentials`
-        // in base-provider-module.ts walks the same chain), so skipping tier 2
-        // here meant an apply-provisioned org dispatched its agent only to
-        // 401 at the first provider call — found live by the Sentry red-test
-        // (LOBU-BACKEND-W).
-        let resolvedCredential: string | null = credential ?? null;
-        if (!resolvedCredential && expectedOrganizationId) {
-          resolvedCredential = await readOrgSharedProviderApiKey(
-            providerId,
-            expectedOrganizationId
-          );
-        }
-        if (!resolvedCredential && this.systemKeyResolver) {
-          resolvedCredential = this.systemKeyResolver(providerId) ?? null;
-        }
+        const resolvedCredential = await resolveProviderCredential({
+          profileCredential: credential ?? null,
+          providerId,
+          organizationId: expectedOrganizationId,
+          readOrgSharedKey: readOrgSharedProviderApiKey,
+          systemKeyResolver: this.systemKeyResolver,
+        });
         if (resolvedCredential) {
           headers.authorization = `Bearer ${resolvedCredential}`;
         } else {

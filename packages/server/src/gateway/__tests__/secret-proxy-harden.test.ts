@@ -720,3 +720,64 @@ describe("generatePlaceholder → resolve via proxy", () => {
     expect(forwardedAuth).toBe(`Bearer ${secretValue}`);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Header forwarding — hop-by-hop + content-length must be stripped (#1176)
+// ---------------------------------------------------------------------------
+//
+// The proxy re-sends the body via fetch, which recomputes content-length.
+// Forwarding the inbound content-length breaks when a foreign undici global
+// dispatcher (pi-ai's http-proxy side-effect: `setGlobalDispatcher(new
+// EnvHttpProxyAgent())`) is installed and the dispatching npm undici is
+// >= 7.27: it throws `InvalidArgumentError: invalid content-length header`
+// before any network I/O, turning EVERY agent LLM call into a 500.
+// `expect` / `keep-alive` / `upgrade` are hop-by-hop headers undici
+// hard-rejects the same way.
+
+describe("secret-proxy forward — header stripping (#1176)", () => {
+  test("content-length and hop-by-hop headers are NOT forwarded; regular headers are", async () => {
+    const secretStore = makeSecretStore({});
+    const proxy = buildProxy(secretStore);
+
+    let forwarded: Record<string, string> | null = null;
+    await withFetch(async (_input, init) => {
+      forwarded = (init?.headers as Record<string, string>) ?? null;
+      return new Response("{}", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }, async () => {
+      const res = await proxy.getApp().request("/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer some-token",
+          "content-type": "application/json",
+          "content-length": "5",
+          expect: "100-continue",
+          "keep-alive": "timeout=5",
+          upgrade: "h2c",
+          connection: "keep-alive",
+          "transfer-encoding": "chunked",
+          host: "worker.internal",
+          "x-custom-header": "kept",
+        },
+        body: "hello",
+      });
+      expect(res.status).toBe(200);
+    });
+
+    expect(forwarded).not.toBeNull();
+    const keys = Object.keys(forwarded ?? {}).map((k) => k.toLowerCase());
+    // Stripped: stale/hop-by-hop values that break or poison the egress fetch.
+    expect(keys).not.toContain("content-length");
+    expect(keys).not.toContain("expect");
+    expect(keys).not.toContain("keep-alive");
+    expect(keys).not.toContain("upgrade");
+    expect(keys).not.toContain("connection");
+    expect(keys).not.toContain("transfer-encoding");
+    expect(keys).not.toContain("host");
+    // Kept: regular request headers still reach the upstream.
+    expect(forwarded?.["content-type"]).toBe("application/json");
+    expect(forwarded?.["x-custom-header"]).toBe("kept");
+  });
+});

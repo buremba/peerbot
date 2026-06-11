@@ -355,7 +355,23 @@ export class SecretProxy {
     try {
       return await this.forward(c);
     } catch (error) {
-      logger.error("Secret proxy error:", error);
+      // JSON.stringify(Error) renders `{}` (Error has no enumerable props),
+      // which hid the real failure behind "Secret proxy error: {}" (#1176).
+      // Extract the fields explicitly (same { err } shape as
+      // packages/core/src/worker/auth.ts), including `cause` — undici wraps
+      // the underlying dispatch error there.
+      logger.error(
+        {
+          err:
+            error instanceof Error
+              ? { name: error.name, message: error.message, stack: error.stack }
+              : error,
+          cause: (error as { cause?: unknown })?.cause
+            ? String((error as { cause?: unknown }).cause)
+            : undefined,
+        },
+        "Secret proxy error"
+      );
       return c.json({ error: "Internal proxy error" }, 500);
     }
   }
@@ -667,6 +683,17 @@ export class SecretProxy {
       "host",
       "connection",
       "transfer-encoding",
+      // Never forward the inbound content-length: fetch recomputes it from the
+      // body we pass. Forwarding it breaks when a foreign undici global
+      // dispatcher is installed (pi-ai's http-proxy side-effect) and the
+      // dispatching undici is >= 7.27 — it throws
+      // `InvalidArgumentError: invalid content-length header` before any
+      // network I/O, turning EVERY LLM call into a 500 (#1176).
+      "content-length",
+      // Hop-by-hop headers undici hard-rejects on egress.
+      "expect",
+      "keep-alive",
+      "upgrade",
       "authorization",
       "x-api-key",
     ]);

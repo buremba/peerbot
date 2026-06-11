@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # full history so `git grep` sees every tracked file
           fetch-depth: 1
@@ -70,7 +70,7 @@ jobs:
       # Deterministic key for tests that exercise encrypt/decrypt + jti.
       ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: ./.github/actions/setup-submodule
         with:
@@ -142,7 +142,7 @@ jobs:
       DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5433/lobu_test
       ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: ./.github/actions/setup-submodule
         with:
@@ -154,7 +154,7 @@ jobs:
 
       # vitest in this repo runs under Node (isolated-vm etc.) — pin Node 22
       # so any native addon prebuild matches.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
 

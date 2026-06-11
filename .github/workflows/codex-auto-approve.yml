@@ -40,7 +40,7 @@ jobs:
     steps:
       - name: Generate App token
         id: app
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.CODEX_APPROVER_APP_ID }}
           private-key: ${{ secrets.CODEX_APPROVER_PRIVATE_KEY }}

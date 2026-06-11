@@ -30,9 +30,9 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
 
       - name: Lint chart
         run: helm lint charts/lobu
@@ -48,11 +48,11 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.release.tag_name || github.ref }}
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
 
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin

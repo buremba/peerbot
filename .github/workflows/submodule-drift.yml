@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - id: submodule
         uses: ./.github/actions/setup-submodule
@@ -44,7 +44,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # actions/checkout@v4 with default fetch-depth=1 only has the merge
+          # actions/checkout@v6 with default fetch-depth=1 only has the merge
           # commit; pull the two endpoints by SHA so ls-tree can resolve them.
           git fetch --depth=1 origin "$BASE_SHA" "$HEAD_SHA"
           base_pointer=$(git ls-tree "$BASE_SHA" packages/owletto | awk '{print $3}')

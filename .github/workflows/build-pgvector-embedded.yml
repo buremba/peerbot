@@ -51,8 +51,8 @@ jobs:
           - { platform: linux-arm64, runner: ubuntu-24.04-arm }
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
 
@@ -80,7 +80,7 @@ jobs:
           chmod +x packages/pgvector-embedded/scripts/build.sh
           PLATFORM=${{ matrix.platform }} packages/pgvector-embedded/scripts/build.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: pgvector-${{ matrix.platform }}
           # The platform-specific library plus the shared control/SQL (vendored
@@ -97,8 +97,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
         with:
           path: /tmp/pgvector-artifacts
 

@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Skip if secrets not configured
         id: gate
@@ -58,7 +58,7 @@ jobs:
 
       # `node packages/cli/bin/lobu.js` is the runtime entrypoint; Node 22 is the
       # repo's supported major (see AGENTS.md prereqs).
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         if: steps.gate.outputs.skip != 'true'
         with:
           node-version: "22"

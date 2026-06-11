@@ -31,13 +31,13 @@ jobs:
       # Step-level env is not visible to the same step's `if:` evaluator.
       CLAWHUB_TOKEN_SET: ${{ secrets.CLAWHUB_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: ./.github/actions/setup-submodule
         with:
           deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           # Node 24 ships with npm >= 11.5.1 which supports OIDC trusted
           # publishing. Do NOT downgrade below 24 without re-adding the

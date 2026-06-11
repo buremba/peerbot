@@ -38,7 +38,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertExternalDepsResolvable } from "@lobu/connector-worker/compile";
 import { getDb, probeListenNotify } from "./db/client";
-import { runMigrations, startEmbeddedRuntime } from "./embedded-runtime";
+import {
+	resolveMigrationsDir,
+	runMigrations,
+	startEmbeddedRuntime,
+} from "./embedded-runtime";
+import { externalDbBootstrapHooks } from "./local-bootstrap";
 import { getEnvFromProcess } from "./utils/env";
 import logger from "./utils/logger";
 import { assertSchemaUpToDate } from "./utils/schema-version-check";
@@ -74,11 +79,44 @@ async function main(): Promise<void> {
 	let preListenHooks: Array<() => Promise<void> | void> = [];
 	let extraTeardown: Array<() => Promise<void> | void> = [];
 
+	// Local-install conveniences — ephemeral secrets + localhost URLs so a bare
+	// `lobu run` works without hand-written env. Applies to the embedded backend
+	// always, and to an external DATABASE_URL only when the CLI marked this
+	// process a single-operator local install (LOBU_RUN_OWNS_DB=1 — see the
+	// safety invariant below). Prod never sets the flag and always has these
+	// set explicitly, so every guard no-ops there.
+	if (!external || process.env.LOBU_RUN_OWNS_DB === "1") {
+		if (!process.env.BETTER_AUTH_SECRET) {
+			process.env.BETTER_AUTH_SECRET = randomBytes(32).toString("base64");
+			logger.info(
+				"Generated ephemeral BETTER_AUTH_SECRET — set in .env to persist sessions",
+			);
+		}
+		if (!process.env.JWT_SECRET) {
+			process.env.JWT_SECRET = randomBytes(32).toString("base64");
+		}
+		if (!process.env.PUBLIC_WEB_URL) {
+			process.env.PUBLIC_WEB_URL = `http://localhost:${port}`;
+		}
+		if (!process.env.NODE_ENV) {
+			process.env.NODE_ENV = "development";
+		}
+	}
+
 	if (external) {
 		// `external` is true only for a non-empty postgres:// URL, so `raw` is
 		// defined here; bind it to a non-optional local for the closure below.
 		const externalDatabaseUrl = raw as string;
 		process.env.DATABASE_URL = externalDatabaseUrl;
+		// 🚨 SAFETY INVARIANT: cloud/multi-replica prod must NEVER auto-provision
+		// users or orgs. LOBU_RUN_OWNS_DB=1 is set ONLY by the CLI's `lobu run`
+		// (packages/cli/src/commands/dev.ts) for single-operator local installs;
+		// charts/lobu and the prod manifests never set it, so this returns [] in
+		// prod. Without these hooks an external-DB `lobu run` migrated the schema
+		// but left `user`/`organization` empty — `/api/local-init` then failed
+		// with `unexpected_empty_user_table` and there was no path to a first
+		// user (issue #1180).
+		preListenHooks = externalDbBootstrapHooks(externalDatabaseUrl, process.env);
 		databaseReadiness = async () => {
 			// `lobu run` owns the local DB lifecycle, so it must apply migrations
 			// itself before the schema-version gate runs — otherwise a fresh/empty
@@ -96,8 +134,13 @@ async function main(): Promise<void> {
 			// Refuse to boot if the image expects a migration the DB hasn't applied.
 			// Skippable via SKIP_SCHEMA_VERSION_CHECK=1 for emergency forward-flight.
 			if (process.env.SKIP_SCHEMA_VERSION_CHECK !== "1") {
+				// resolveMigrationsDir covers the published CLI (migrations live next
+				// to the bundle, where the repo-root-relative path resolved to
+				// node_modules/db/migrations → ENOENT warning); the PACKAGE_REPO_ROOT
+				// fallback preserves the previous behaviour everywhere else.
 				const migrationsDir =
 					process.env.LOBU_MIGRATIONS_DIR?.trim() ||
+					resolveMigrationsDir() ||
 					path.join(PACKAGE_REPO_ROOT, "db", "migrations");
 				await assertSchemaUpToDate(getDb(), { migrationsDir });
 			} else {
@@ -121,25 +164,6 @@ async function main(): Promise<void> {
 			}
 		};
 	} else {
-		// Embedded/local conveniences — ephemeral secrets + localhost URLs so a
-		// bare `lobu run` works. (In prod these are always already set, so the
-		// guards no-op; this branch only runs for path/file:// DATABASE_URLs.)
-		if (!process.env.BETTER_AUTH_SECRET) {
-			process.env.BETTER_AUTH_SECRET = randomBytes(32).toString("base64");
-			logger.info(
-				"Generated ephemeral BETTER_AUTH_SECRET — set in .env to persist sessions",
-			);
-		}
-		if (!process.env.JWT_SECRET) {
-			process.env.JWT_SECRET = randomBytes(32).toString("base64");
-		}
-		if (!process.env.PUBLIC_WEB_URL) {
-			process.env.PUBLIC_WEB_URL = `http://localhost:${port}`;
-		}
-		if (!process.env.NODE_ENV) {
-			process.env.NODE_ENV = "development";
-		}
-
 		// Lazy: pulls embedded-postgres + the pgvector injector ONLY here, spawns
 		// the cluster, sets process.env.DATABASE_URL to its TCP URL.
 		const rt = await startEmbeddedRuntime();

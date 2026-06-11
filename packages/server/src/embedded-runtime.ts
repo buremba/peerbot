@@ -17,12 +17,11 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
-import { ensureDefaultAgent } from "./auth/default-provisioning";
-import { ensureInstallOperator } from "./auth/install-operator";
 import {
 	listMigrationFiles,
 	loadMigrationUpSection,
 } from "./db/migration-loader";
+import { buildLocalBootstrapHooks } from "./local-bootstrap";
 import logger from "./utils/logger";
 
 const APP_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..");
@@ -163,38 +162,9 @@ export async function startEmbeddedRuntime(): Promise<EmbeddedRuntime> {
 		databaseUrl,
 		dataDir: pgDataDir,
 		databaseReadiness: () => runMigrations(databaseUrl),
-		preListenHooks: [
-			// BEFORE listen so headless installs (CI, containers) sign in via
-			// better-auth without a chicken-and-egg /sign-up. Provisions the
-			// synthetic `install_operator` user; idempotent. Never crash boot.
-			async () => {
-				try {
-					await ensureInstallOperator();
-				} catch (err) {
-					logger.error({ err }, "Install-operator provisioning failed");
-				}
-			},
-			// Default-agent provisioning: resolve the personal org id each boot so
-			// a returning user picks up the default agent.
-			async () => {
-				try {
-					const rows = postgres(databaseUrl, { max: 1 });
-					try {
-						const orgs = (await rows`
-              SELECT id FROM "organization"
-              WHERE (metadata::jsonb)->>'personal_org_for_user_id' IS NOT NULL
-              ORDER BY "createdAt" ASC LIMIT 1
-            `) as unknown as Array<{ id: string }>;
-						const orgId = orgs[0]?.id ?? null;
-						if (orgId) await ensureDefaultAgent(orgId);
-					} finally {
-						await rows.end({ timeout: 1 });
-					}
-				} catch (err) {
-					logger.warn({ err }, "Default-agent provisioning failed");
-				}
-			},
-		],
+		// Install-operator + default-agent provisioning, shared with the
+		// external-DB `lobu run` path (see local-bootstrap.ts).
+		preListenHooks: buildLocalBootstrapHooks(databaseUrl),
 		// Runs after stopLobuGateway + closeDbSingleton so gateway connections
 		// release before the embeddings child + PG child are stopped.
 		extraTeardown: [
@@ -204,6 +174,27 @@ export async function startEmbeddedRuntime(): Promise<EmbeddedRuntime> {
 			() => pg.stop(),
 		],
 	};
+}
+
+/**
+ * Locate the bundled `db/migrations` directory. The published `@lobu/cli`
+ * copies migrations next to the server bundle (`dist/db/migrations`); a
+ * monorepo checkout finds them at the repo root; running from a project
+ * subdir falls back to cwd-relative candidates. Returns null when nothing
+ * exists (the callers decide whether that's fatal). Used by `runMigrations`
+ * AND by `server.ts`'s boot-time schema-version check, which previously
+ * resolved a bundle-relative `../../../db/migrations` that lands on
+ * `node_modules/db/migrations` (ENOENT) in the published CLI.
+ */
+export function resolveMigrationsDir(): string | null {
+	return resolveExistingPath(
+		// Published @lobu/cli copies migrations next to the bundle under dist/db/migrations.
+		join(fileURLToPath(new URL(".", import.meta.url)), "db", "migrations"),
+		join(APP_ROOT, "db", "migrations"),
+		join(APP_ROOT, "..", "..", "db", "migrations"),
+		join(process.cwd(), "db", "migrations"),
+		join(process.cwd(), "..", "..", "db", "migrations"),
+	);
 }
 
 /**
@@ -222,14 +213,7 @@ export async function runMigrations(databaseUrl: string): Promise<void> {
 	const sql = postgres(databaseUrl, { max: 1 });
 
 	try {
-		const migrationsDir = resolveExistingPath(
-			// Published @lobu/cli copies migrations next to the bundle under dist/db/migrations.
-			join(fileURLToPath(new URL(".", import.meta.url)), "db", "migrations"),
-			join(APP_ROOT, "db", "migrations"),
-			join(APP_ROOT, "..", "..", "db", "migrations"),
-			join(process.cwd(), "db", "migrations"),
-			join(process.cwd(), "..", "..", "db", "migrations"),
-		);
+		const migrationsDir = resolveMigrationsDir();
 		if (!migrationsDir) throw new Error("Migrations directory not found.");
 
 		await sql.unsafe(`

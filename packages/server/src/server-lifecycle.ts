@@ -50,7 +50,9 @@ export interface ServerLifecycleConfig {
 	databaseReadiness: () => Promise<void>;
 	/**
 	 * Runs after gateway + scheduler boot, before `httpServer.listen()`.
-	 * The embedded backend uses this for `ensureInstallOperator` + `ensureDefaultAgent`.
+	 * Both `lobu run` backends use this for `ensureInstallOperator` +
+	 * `ensureDefaultAgent` (embedded always; external only with
+	 * LOBU_RUN_OWNS_DB=1 — see local-bootstrap.ts).
 	 */
 	preListenHooks?: Array<() => Promise<void> | void>;
 	/**

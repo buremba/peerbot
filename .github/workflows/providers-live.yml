@@ -35,6 +35,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          # This job only reads + runs tests; the submodule fetch rides the
+          # SSH deploy key below, so the persisted token is never needed.
+          persist-credentials: false
 
       # Matches the other CI jobs; the live suite itself doesn't touch owletto,
       # but `bun install` resolves the full workspace.

@@ -76,9 +76,14 @@ curl -fsS -X POST "http://127.0.0.1:$MOCK_PORT/v1/chat/completions" -H 'content-
 echo "✓ mock provider up"
 
 # 2) Scaffold a project (inside the repo so jiti resolves the workspace @lobu/cli/config).
+# Drop node_modules/bun.lock too: `lobu init` installs the *published*
+# @lobu/connector-sdk there, and connector bundles staged under cwd ($PROJ)
+# would resolve that stale copy instead of the workspace dist under test
+# whenever a connector uses an SDK export newer than the last npm release
+# (#1222 — this is what turned cli-smoke red).
 PROJ="$RUN_DIR/proj"; mkdir -p "$PROJ"
 ( cd "$PROJ" && $LOBU init . -y --here --provider gemini >/dev/null 2>&1 )
-rm -f "$PROJ/package.json"
+rm -rf "$PROJ/package.json" "$PROJ/node_modules" "$PROJ/bun.lock"
 cat > "$PROJ/lobu.config.ts" <<'TS'
 import { connectorFromFile, defineAgent, defineConfig, defineConnection, defineEntityType, defineRelationshipType, defineWatcher, reactionFromFile, secret } from "@lobu/cli/config";
 import type PulseConnector from "./connectors/pulse.connector.ts";

@@ -156,9 +156,17 @@ expect_grep "lobu init --list-providers" "--provider" "$WT" init --list-provider
 # Scaffold the project we'll boot. Mirror sdk-e2e: scaffold, drop package.json
 # so jiti resolves the workspace @lobu/cli/config, then overwrite the config to
 # point the agent at the deterministic mock provider.
+#
+# node_modules/bun.lock must go for the same reason as package.json: `lobu
+# init` runs `bun install`, which plants the *published* @lobu/connector-sdk
+# in $PROJ/node_modules. Compiled connector bundles are staged under cwd
+# ($PROJ here), so their externalized bare `@lobu/connector-sdk` import would
+# resolve that stale npm copy instead of the workspace dist under test --
+# making the runtime-self-check fail for any in-repo connector that uses an
+# SDK export newer than the last npm release (#1222).
 PROJ="$RUN_DIR/proj"; mkdir -p "$PROJ"
 expect_grep "lobu init . --here" "Lobu initialized" "$PROJ" init . -y --here --provider gemini
-rm -f "$PROJ/package.json"
+rm -rf "$PROJ/package.json" "$PROJ/node_modules" "$PROJ/bun.lock"
 cat > "$PROJ/lobu.config.ts" <<'TS'
 import { defineAgent, defineConfig, defineEntityType, secret } from "@lobu/cli/config";
 

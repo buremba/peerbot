@@ -11,61 +11,24 @@
  * PR-2 of `docs/plans/lobu-apply.md`.
  */
 
-import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import {
   ensureDbForGatewayTests,
   resetTestDatabase,
 } from '../../gateway/__tests__/helpers/db-setup.js';
+// Module mocks for `../../auth/middleware` and `../gateway` are shared with
+// agent-routes-rest-platform.test.ts: mock.module is process-global and the
+// cached agent-routes module keeps the FIRST file's mock bindings, so each
+// file mocking with its own closures broke whichever file ran second. The
+// helper installs the mocks ONCE over shared mutable stashes; each test sets
+// its per-test values on them in beforeEach (see helpers/route-test-mocks.ts).
+import {
+  authStash,
+  chatManagerStash,
+  installRouteTestMocks,
+} from './helpers/route-test-mocks';
 
-// Stash for the mocked `mcpAuth` middleware. Each test sets the user/org it
-// wants the route handler to see; the middleware below copies them onto the
-// Hono context. Using a mutable holder keeps the mocked module trivial — no
-// per-test re-mocking needed.
-const authStash: {
-  user: { id: string; name: string; email: string; emailVerified: boolean } | null;
-  organizationId: string | null;
-  // `authSource` mirrors the real middleware contract so admin-tier routes
-  // gated by `requireSessionOrAdminPat` see a non-null value. Default to
-  // 'session' — the existing apply tests simulate a web user.
-  authSource: 'session' | 'pat' | 'oauth' | null;
-  mcpAuthInfo: { scopes: string[] } | null;
-} = {
-  user: { id: 'u1', name: 'Test', email: 'u1@test', emailVerified: true },
-  organizationId: 'org-a',
-  authSource: 'session',
-  mcpAuthInfo: null,
-};
-
-mock.module('../../auth/middleware', () => ({
-  mcpAuth: async (c: any, next: any) => {
-    c.set('user', authStash.user);
-    c.set('organizationId', authStash.organizationId);
-    c.set('authSource', authStash.authSource);
-    c.set('mcpAuthInfo', authStash.mcpAuthInfo);
-    return next();
-  },
-  // requireAuth is referenced elsewhere in the module — provide a passthrough
-  // so importing files that destructure it still get a function.
-  requireAuth: async (_c: any, next: any) => next(),
-}));
-
-// `getChatInstanceManager` returns whatever the active test installs into
-// `chatManagerStash.manager`. The route refuses platform writes when the
-// manager is null (would otherwise persist plaintext secrets bypassing
-// secret-ref normalization), so `beforeEach` installs a thin stub that
-// just delegates persistence to the real connectionStore — enough for
-// route-level idempotency / ownership / racing tests that don't care
-// about secret-store roundtrip.
-const chatManagerStash: { manager: unknown } = { manager: null };
-
-mock.module('../gateway', () => ({
-  getChatInstanceManager: () => chatManagerStash.manager,
-  getLobuCoreServices: () => null,
-  initLobuGateway: async () => null,
-  stopLobuGateway: async () => {},
-  isLobuGatewayRunning: () => false,
-  ensureEmbeddedGatewaySecrets: () => {},
-}));
+installRouteTestMocks();
 
 /**
  * Minimal manager stub for route tests. addConnection / updateConnection

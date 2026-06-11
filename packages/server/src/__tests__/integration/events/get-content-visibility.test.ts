@@ -34,6 +34,10 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { getDb } from '../../../db/client';
 import { getContent } from '../../../tools/get_content';
 import type { ToolContext } from '../../../tools/registry';
+import {
+  __resetPublicOriginCachesForTests,
+  __setLocalFrontendForTests,
+} from '../../../utils/public-origin';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
@@ -338,20 +342,31 @@ describe('getContent > response shape (view_url present, stats opt-in)', () => {
   });
 
   it('empty entity returns content=[], total=0, view_url populated, no classification_stats by default', async () => {
-    const result = await getContent(
-      { entity_id: emptyEntity.id, limit: 50, sort_by: 'date', sort_order: 'desc' } as never,
-      {} as never,
-      ctx()
-    );
+    // Pin "no local frontend" so the URL builder takes the absolute
+    // hosted-UI fallback deterministically: with a built
+    // packages/owletto/dist on the machine (any owletto build, e.g.
+    // make review) hasLocalFrontend() flips and view_url comes back
+    // relative — the assertion below is about the URL being usable by
+    // an MCP client, not about the machine's build state.
+    __setLocalFrontendForTests(false);
+    try {
+      const result = await getContent(
+        { entity_id: emptyEntity.id, limit: 50, sort_by: 'date', sort_order: 'desc' } as never,
+        {} as never,
+        ctx()
+      );
 
-    expect(result.content).toEqual([]);
-    expect(result.total).toBe(0);
-    // view_url is consumed by LLM agents reading read_knowledge over MCP.
-    // It must always be populated when an entity is in scope.
-    const viewUrl = (result as { view_url?: string }).view_url;
-    expect(typeof viewUrl).toBe('string');
-    expect(viewUrl).toMatch(/^https?:\/\//);
-    expect(result.classification_stats).toBeUndefined();
+      expect(result.content).toEqual([]);
+      expect(result.total).toBe(0);
+      // view_url is consumed by LLM agents reading read_knowledge over MCP.
+      // It must always be populated when an entity is in scope.
+      const viewUrl = (result as { view_url?: string }).view_url;
+      expect(typeof viewUrl).toBe('string');
+      expect(viewUrl).toMatch(/^https?:\/\//);
+      expect(result.classification_stats).toBeUndefined();
+    } finally {
+      __resetPublicOriginCachesForTests();
+    }
   });
 
   it('classification_stats is populated only when include_classification=summary is set', async () => {

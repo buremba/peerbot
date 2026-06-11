@@ -45,18 +45,38 @@ const ENV = {
   GITHUB_CLIENT_SECRET: 'test-github-secret',
 } as unknown as Env;
 
+// resolveLoginProviderCredentials falls back to process.env
+// (`authValues[key] || env[key] || process.env[key]`), so ambient
+// GOOGLE_*/GITHUB_*/… credentials in a dev shell would silently enable
+// providers these tests assert are hidden. Scrub them for the duration of
+// the file (every test passes its credentials via an explicit Env object)
+// and restore after — the suite runs single-fork with isolate:false, so a
+// leaked deletion would bleed into later files.
+const CREDENTIAL_ENV_KEYS = ['GOOGLE', 'GITHUB', 'LINKEDIN', 'MICROSOFT', 'SLACK'].flatMap(
+  (provider) => [`${provider}_CLIENT_ID`, `${provider}_CLIENT_SECRET`]
+);
+
 describe('login provider baseline (integration)', () => {
   let prevCatalogUris: string | undefined;
+  const ambientCredentials = new Map<string, string | undefined>();
 
   beforeAll(() => {
     prevCatalogUris = process.env.CONNECTOR_CATALOG_URIS;
     process.env.CONNECTOR_CATALOG_URIS = CATALOG_DIR;
+    for (const key of CREDENTIAL_ENV_KEYS) {
+      ambientCredentials.set(key, process.env[key]);
+      delete process.env[key];
+    }
     clearLoginProviderCachesForTests();
   });
 
   afterAll(() => {
     if (prevCatalogUris === undefined) delete process.env.CONNECTOR_CATALOG_URIS;
     else process.env.CONNECTOR_CATALOG_URIS = prevCatalogUris;
+    for (const [key, value] of ambientCredentials) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     clearLoginProviderCachesForTests();
   });
 

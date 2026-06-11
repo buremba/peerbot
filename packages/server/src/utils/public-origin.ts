@@ -37,6 +37,16 @@ export function __resetPublicOriginCachesForTests(): void {
   localFrontendCache = undefined;
 }
 
+/**
+ * Test-only: pin `hasLocalFrontend()` so tests asserting the backend-only
+ * fallback don't depend on whether a frontend bundle happens to exist on the
+ * machine — `packages/owletto/dist/index.html` is present after any owletto
+ * build (e.g. `make review`), absent in CI and fresh checkouts.
+ */
+export function __setLocalFrontendForTests(value: boolean | undefined): void {
+  localFrontendCache = value;
+}
+
 const APP_ROOT = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '../..');
 
 let localFrontendCache: boolean | undefined;

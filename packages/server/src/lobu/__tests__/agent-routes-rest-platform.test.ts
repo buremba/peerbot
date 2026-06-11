@@ -31,51 +31,29 @@
  * Uses the embedded Postgres gateway test harness; no network.
  */
 
-import { beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import {
   ensureDbForGatewayTests,
   resetTestDatabase,
 } from '../../gateway/__tests__/helpers/db-setup.js';
+// Shared module mocks — see helpers/route-test-mocks.ts. This file previously
+// re-mocked `../../auth/middleware` / `../gateway` with its own closures, but
+// the cached agent-routes module stayed bound to agent-routes-apply.test.ts's
+// mocks (bun mock.module is process-global, module evaluation is cached), so
+// every request here authenticated under the OTHER file's stash (wrong org)
+// and 404'd when both files ran in one process. The shared stashes below are
+// set per-test in beforeEach instead; the manager installed is the REAL
+// ChatInstanceManager built by buildRealManager().
+import {
+  authStash,
+  chatManagerStash,
+  installRouteTestMocks,
+} from './helpers/route-test-mocks';
+
+installRouteTestMocks();
 
 const TEST_ENCRYPTION_KEY =
   '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
-
-// Mocked auth middleware — same contract as agent-routes-apply.test.ts.
-const authStash: {
-  user: { id: string; name: string; email: string; emailVerified: boolean } | null;
-  organizationId: string | null;
-  authSource: 'session' | 'pat' | 'oauth' | null;
-  mcpAuthInfo: { scopes: string[] } | null;
-} = {
-  user: { id: 'u1', name: 'Test', email: 'u1@test', emailVerified: true },
-  organizationId: 'org-rest',
-  authSource: 'session',
-  mcpAuthInfo: null,
-};
-
-mock.module('../../auth/middleware', () => ({
-  mcpAuth: async (c: any, next: any) => {
-    c.set('user', authStash.user);
-    c.set('organizationId', authStash.organizationId);
-    c.set('authSource', authStash.authSource);
-    c.set('mcpAuthInfo', authStash.mcpAuthInfo);
-    return next();
-  },
-  requireAuth: async (_c: any, next: any) => next(),
-}));
-
-// The route reads the manager via getChatInstanceManager(); install the REAL
-// ChatInstanceManager built by buildRealManager() below.
-const chatManagerStash: { manager: any } = { manager: null };
-
-mock.module('../gateway', () => ({
-  getChatInstanceManager: () => chatManagerStash.manager,
-  getLobuCoreServices: () => null,
-  initLobuGateway: async () => null,
-  stopLobuGateway: async () => {},
-  isLobuGatewayRunning: () => false,
-  ensureEmbeddedGatewaySecrets: () => {},
-}));
 
 const ORG = 'org-rest';
 const AGENT = 'rest-agent';

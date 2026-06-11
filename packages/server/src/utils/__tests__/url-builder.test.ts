@@ -3,6 +3,7 @@ import { buildEntityUrl, getPublicWebUrl } from '../url-builder';
 import {
   HOSTED_UI_FALLBACK_ORIGIN,
   __resetPublicOriginCachesForTests,
+  __setLocalFrontendForTests,
 } from '../public-origin';
 
 /**
@@ -56,10 +57,15 @@ describe('getPublicWebUrl', () => {
   });
 
   it('falls back to HOSTED_UI_FALLBACK_ORIGIN when no env, no baseUrl, no local frontend', () => {
+    // Pin the precondition: a built packages/owletto/dist on the dev machine
+    // (any owletto build, e.g. make review) would otherwise flip
+    // hasLocalFrontend() and break the assertion.
+    __setLocalFrontendForTests(false);
     expect(getPublicWebUrl(undefined, undefined)).toBe(HOSTED_UI_FALLBACK_ORIGIN);
   });
 
   it('falls back to HOSTED_UI_FALLBACK_ORIGIN even when requestUrl is given (backend-only host)', () => {
+    __setLocalFrontendForTests(false);
     expect(getPublicWebUrl('https://request.lobu.com/mcp')).toBe(HOSTED_UI_FALLBACK_ORIGIN);
   });
 });

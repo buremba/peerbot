@@ -37,6 +37,13 @@ const MEMBER_WRITE_ACTIONS: Record<string, Set<string> | null> = {
     'test_auth_profile',
     'get_auth_profile',
   ]),
+  // `complete_window` is how watcher AGENTS report results — server-side
+  // agent workers and device CLI runs (the Owletto Mac dispatcher wires the
+  // gateway MCP into the spawned CLI; device tokens carry mcp:write, not
+  // admin). The handler still enforces org/entity write access via
+  // requireWatcherAccess; watcher ADMINISTRATION (create/update/delete/…)
+  // stays admin-tier below.
+  manage_watchers: new Set(['complete_window']),
 };
 
 const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
@@ -70,11 +77,12 @@ const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
   ]),
   manage_operations: new Set(['execute', 'approve', 'reject']),
   manage_watchers: new Set([
+    // `complete_window` is in MEMBER_WRITE_ACTIONS — it's the agent result
+    // path (server workers + device CLI over MCP), not administration.
     'create',
     'update',
     'create_version',
     'upgrade',
-    'complete_window',
     'trigger',
     'delete',
     'set_reaction_script',

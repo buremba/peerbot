@@ -20,6 +20,7 @@ import type {
   WatcherSource,
   WatcherVersionInfo,
   WatcherWindow,
+  WatcherWindowReaction,
 } from '../types/watchers';
 import {
   buildEntityLinkUnion,
@@ -506,6 +507,48 @@ export async function getWatcher(
   const windowIds = typedWindows.map((w) => ensureNumber(w.window_id));
   const classificationStatsMap: Map<number, Record<string, Record<string, number>>> = new Map();
 
+  // Reaction-script execution log per window (newest first). One batched
+  // query for the page; capped per page so a chatty reaction can't bloat the
+  // response. Surfaced on each window so the UI can show what the reaction
+  // did (or why it failed).
+  const reactionsMap: Map<number, WatcherWindowReaction[]> = new Map();
+  if (windowIds.length > 0) {
+    // PG array literal, not a JS array bind: the pool runs fetch_types:false,
+    // so postgres.js ships a one-element JS array as a scalar and PG throws
+    // `malformed array literal` (same trap as the reconciler regression
+    // documented in automation-contract.test.ts).
+    const windowIdsLiteral = `{${windowIds.join(',')}}`;
+    const reactionRows = (await sql.unsafe(
+      `SELECT id, window_id, reaction_type, tool_name, tool_args, tool_result, created_at
+       FROM watcher_reactions
+       WHERE window_id = ANY($1::bigint[])
+       ORDER BY created_at DESC
+       LIMIT 500`,
+      [windowIdsLiteral]
+    )) as unknown as Array<{
+      id: number;
+      window_id: number;
+      reaction_type: string;
+      tool_name: string;
+      tool_args: Record<string, unknown> | null;
+      tool_result: Record<string, unknown> | null;
+      created_at: string;
+    }>;
+    for (const r of reactionRows) {
+      const wid = ensureNumber(r.window_id);
+      const list = reactionsMap.get(wid) ?? [];
+      list.push({
+        id: ensureNumber(r.id),
+        reaction_type: r.reaction_type,
+        tool_name: r.tool_name,
+        tool_args: r.tool_args ?? undefined,
+        tool_result: r.tool_result ?? undefined,
+        created_at: r.created_at,
+      });
+      reactionsMap.set(wid, list);
+    }
+  }
+
   // Fire watcher metadata query early (awaited after classification stats).
   // This single statement is the consolidated "Q-meta": watcher row +
   // condensation columns + selected version row + entities (with parent
@@ -730,6 +773,7 @@ export async function getWatcher(
       created_at: w.created_at ?? w.window_end,
       version_id: w.version_id ?? undefined,
       json_template: w.json_template ?? undefined,
+      reactions: reactionsMap.get(windowIdNum),
     };
   });
 

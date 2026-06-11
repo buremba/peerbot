@@ -558,6 +558,70 @@ describe('watcher automation contract', () => {
       expect(Number(windowAfterDup.execution_time_ms)).toBe(1234);
     });
 
+    // Content-less windows (device runs fetch their own context; nothing is
+    // linked server-side) still fire the reaction script — the signal is the
+    // extracted_data itself. The reaction log is surfaced on the window via
+    // get_watcher so the UI can show what the script did.
+    it('fires the reaction script for a content-less window and surfaces the log', async () => {
+      const { sql, dbClient, workspace, api, watcherId, agent } = await createAutomatedWatcher();
+      await api.watchers.setReactionScript({
+        watcher_id: String(watcherId),
+        reaction_script: 'export default async function reaction() { return; }',
+      });
+
+      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+      const { windowStart, windowEnd } = await computePendingWindow(
+        dbClient,
+        watcherId,
+        granularity
+      );
+      const queued = await createWatcherRun({
+        organizationId: workspace.org.id,
+        watcherId,
+        agentId: agent.agentId,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+        dispatchSource: 'scheduled',
+        deviceWorkerId: '88888888-8888-8888-8888-888888888888',
+        agentKind: 'claude-code',
+      });
+      await sql`
+        UPDATE runs
+        SET status = 'running', claimed_at = NOW(), claimed_by = 'mac-device-reaction-test'
+        WHERE id = ${queued.runId}
+      `;
+
+      const content = (await api.knowledge.read({ watcher_id: watcherId })) as {
+        window_token: string;
+      };
+      const completion = (await api.watchers.completeWindow({
+        watcher_id: String(watcherId),
+        window_token: content.window_token,
+        extracted_data: { summary: 'Device-run result, no server content.' },
+        run_metadata: { source: 'device_worker', watcher_run_id: queued.runId },
+      })) as { window_id: number; content_linked: number; reaction_status: string };
+
+      // Zero content linked, yet the reaction ran (window_created gate).
+      expect(completion.content_linked).toBe(0);
+      expect(completion.reaction_status).toBe('success');
+
+      const reactionRows = await sql`
+        SELECT reaction_type, tool_name FROM watcher_reactions
+        WHERE window_id = ${completion.window_id}
+      `;
+      expect(reactionRows.length).toBeGreaterThan(0);
+      expect(String(reactionRows[0].reaction_type)).toBe('script_execution');
+
+      // The window surfaces its reaction log through get_watcher.
+      const detail = (await api.watchers.get(String(watcherId))) as {
+        windows: Array<{ window_id: number; reactions?: Array<{ tool_name: string }> }>;
+      };
+      const window = detail.windows.find((w) => w.window_id === completion.window_id);
+      expect(window).toBeDefined();
+      expect(window?.reactions?.length ?? 0).toBeGreaterThan(0);
+      expect(window?.reactions?.[0].tool_name).toBe('reaction_executor');
+    });
+
     // Fail closed: the agent exiting cleanly WITHOUT calling complete_window
     // means no real work was recorded — the run must fail (and the schedule
     // advance), mirroring the server-side dispatch guard. This is exactly

@@ -28,6 +28,19 @@ export interface WatcherSource {
 // ============================================
 
 /**
+ * One reaction-log entry for a window (from watcher_reactions). Surfaced on
+ * get_watcher windows so the UI can show what the reaction script did.
+ */
+export interface WatcherWindowReaction {
+  id: number;
+  reaction_type: string;
+  tool_name: string;
+  tool_args?: Record<string, unknown>;
+  tool_result?: Record<string, unknown>;
+  created_at: string;
+}
+
+/**
  * Watcher window data as returned by get_watcher
  */
 export interface WatcherWindow {
@@ -49,6 +62,8 @@ export interface WatcherWindow {
   created_at: string;
   version_id?: number;
   json_template?: unknown;
+  /** Reaction-script execution log for this window (newest first). */
+  reactions?: WatcherWindowReaction[];
 }
 
 // ============================================

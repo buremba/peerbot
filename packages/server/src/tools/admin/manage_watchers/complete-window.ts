@@ -44,6 +44,8 @@ export async function handleCompleteWindow(
   window_start: string;
   window_end: string;
   content_linked: number;
+  /** False on idempotent replays that reused an existing window. */
+  window_created: boolean;
   is_rollup?: boolean;
   depth?: number;
   source_window_ids?: number[];
@@ -326,6 +328,9 @@ export async function handleCompleteWindow(
       window_start,
       window_end,
       content_linked: 0,
+      // Rollups condense existing windows — no fresh signal, so the early
+      // return (before the reaction block) keeps reactions skipped.
+      window_created: true,
       is_rollup: true,
       depth,
       source_window_ids: tokenSourceWindowIds,
@@ -585,12 +590,16 @@ export async function handleCompleteWindow(
       window_start,
       window_end,
       content_linked: batchContentIds.length,
+      window_created: windowCreated,
     };
   });
 
   // Execute reaction script inline (in-process via QuickJS WASM sandbox).
-  // Skip entirely when no content was linked — zero-content windows carry no
-  // new signal for the reaction to act on.
+  // Fire on linked content OR on a freshly created window: device-run and
+  // other self-sourcing watchers link no server-side content — their signal
+  // is the extracted_data itself, and the reaction script decides what to do
+  // with it. Idempotent replays (no new window, nothing linked) still skip,
+  // so a retried completion can't double-fire a reaction.
   let reactionStatus: 'success' | 'failed' | 'skipped' = 'skipped';
   let reactionError: string | undefined;
 
@@ -610,7 +619,7 @@ export async function handleCompleteWindow(
     const sql = watcherMetaSql;
     const scriptRows = watcherMetaRows;
     if (
-      result.content_linked > 0 &&
+      (result.content_linked > 0 || result.window_created) &&
       scriptRows.length > 0 &&
       scriptRows[0].reaction_script_compiled
     ) {

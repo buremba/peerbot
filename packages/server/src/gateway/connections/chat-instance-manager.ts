@@ -86,6 +86,26 @@ function configsEqual(
 
 const logger = createLogger("chat-instance-manager");
 
+
+/**
+ * Platforms that are valid to declare on an agent but have no chat adapter to
+ * run. `rest` is the HTTP Agent API (`POST /lobu/api/v1/agents/:id/messages`),
+ * which is registered unconditionally in gateway/routes/public/agent.ts —
+ * declaring it just persists the `agent_connections` row so `lobu apply`
+ * converges; there is no instance to start/stop/restart and no webhook to
+ * route. Deliberately NOT in the platform descriptor registry:
+ * createPlatformAdapters() derives the PlatformRegistry entries from it, and
+ * an adapterless platform must not get a registry entry either. Stateless by
+ * construction, so it is multi-replica safe — every pod's boot reconciliation
+ * sees the row as healthy (`active`) rather than retrying a doomed adapter
+ * start.
+ */
+const ADAPTERLESS_PLATFORMS = new Set<string>(["rest"]);
+
+function isAdapterlessPlatform(platform: string): boolean {
+  return ADAPTERLESS_PLATFORMS.has(platform);
+}
+
 interface ManagedInstance {
   connection: PlatformConnection;
   chat: any; // Chat SDK instance
@@ -283,7 +303,7 @@ export class ChatInstanceManager {
     stableId?: string
   ): Promise<PlatformConnection> {
     const descriptor = getPlatformDescriptor(platform);
-    if (!descriptor) {
+    if (!descriptor && !isAdapterlessPlatform(platform)) {
       throw new Error(`Unsupported platform: ${platform}`);
     }
     if (config.platform !== platform) {
@@ -294,7 +314,8 @@ export class ChatInstanceManager {
 
     // Platform-specific config refusal (e.g. Telegram rejects explicit
     // polling mode in Lobu Cloud — see the telegram descriptor for why).
-    const rejection = descriptor.getConfigRejection?.(config);
+    // Adapterless platforms have no descriptor and no config to vet.
+    const rejection = descriptor?.getConfigRejection?.(config);
     if (rejection) {
       throw new Error(rejection);
     }
@@ -302,7 +323,7 @@ export class ChatInstanceManager {
     // Let the platform prime a brand-new config before it is persisted —
     // e.g. Telegram auto-generates a strong webhook `secretToken` when the
     // caller didn't supply one, so its inbound webhook is never forgeable.
-    descriptor.prepareNewConnectionConfig?.(config);
+    descriptor?.prepareNewConnectionConfig?.(config);
 
     const id = stableId ?? randomUUID().replace(/-/g, "").slice(0, 16);
     const now = Date.now();
@@ -694,6 +715,21 @@ export class ChatInstanceManager {
   }
 
   private async startInstance(connection: PlatformConnection): Promise<void> {
+    // Adapterless platforms (`rest`) have nothing to boot: no Chat SDK
+    // adapter, no webhook, no `instances` entry. Returning early keeps the
+    // connection `active` (not `error`), so boot-time reconciliation on every
+    // replica treats the row as healthy instead of retrying a doomed adapter
+    // start. All lifecycle paths funnel through here (initialize(),
+    // addConnection(), restartConnection(), updateConnection()'s restart),
+    // so this is the single skip point.
+    if (isAdapterlessPlatform(connection.platform)) {
+      logger.debug(
+        { id: connection.id, platform: connection.platform },
+        "Adapterless platform — persisted only, no chat instance to start"
+      );
+      return;
+    }
+
     // Multi-tenant secret resolution: PostgresSecretStore.get/put route
     // by AsyncLocalStorage org context (see #516). Some callers reach
     // here with org context already bound (HTTP routes via agent-routes

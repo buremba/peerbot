@@ -1,5 +1,38 @@
 # Changelog
 
+## [11.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v11.0.0...lobu-v11.1.0) (2026-06-11)
+
+
+### Features
+
+* **auth:** global login-provider baseline; drop default-org pointer ([#1183](https://github.com/lobu-ai/lobu/issues/1183)) ([a6ebbff](https://github.com/lobu-ai/lobu/commit/a6ebbffd6c3dd38c7825fbe7e23bef762870b3c9))
+* **cli:** add --org override to lobu chat ([#1185](https://github.com/lobu-ai/lobu/issues/1185)) ([38aa4ab](https://github.com/lobu-ai/lobu/commit/38aa4aba9d582fbce9d17fa263484ec776eeeaa4))
+* **connectors:** native Postgres connector — memory feeds, live pushdown, connection-backed derived entities ([#1182](https://github.com/lobu-ai/lobu/issues/1182)) ([aaebe15](https://github.com/lobu-ai/lobu/commit/aaebe152b4fbbbb5187a73bbc6de379b1f36d979))
+* derived entity types (SQL-view backing) + measure inference ([#1161](https://github.com/lobu-ai/lobu/issues/1161)) ([73abb03](https://github.com/lobu-ai/lobu/commit/73abb03b06c47bee0c3113e6f4b11aa71b96a3d6))
+* **landing:** add /schedule page + revamp 404 ([#1166](https://github.com/lobu-ai/lobu/issues/1166)) ([8812b2f](https://github.com/lobu-ai/lobu/commit/8812b2f840816159e372492a528625dc74a42111))
+* **queue:** emit a failed-run metric and a durable dead-letter retention window ([#1201](https://github.com/lobu-ai/lobu/issues/1201)) ([c7fffa5](https://github.com/lobu-ai/lobu/commit/c7fffa566fa812e4f8088e3786ea62da79e2d23b))
+* **sentry:** report worker provider/model failures + cut alert-feed noise ([#1186](https://github.com/lobu-ai/lobu/issues/1186)) ([39b8aa6](https://github.com/lobu-ai/lobu/commit/39b8aa60b63293a467d6978316cee47b97f65507))
+* **server:** query-rewrite recall mode for read_knowledge ([#1187](https://github.com/lobu-ai/lobu/issues/1187)) ([a7c7784](https://github.com/lobu-ai/lobu/commit/a7c7784dbb74d9f645a1577fd62f3c15d2d60261))
+* **watchers:** device CLI results flow through the shared complete_window pipeline ([#1196](https://github.com/lobu-ai/lobu/issues/1196)) ([78c95dd](https://github.com/lobu-ai/lobu/commit/78c95dd47acd32675c34bdee10b98017fe872728))
+
+
+### Bug Fixes
+
+* **apply:** surface schema-validation errors instead of misreporting them as duplicates ([#1211](https://github.com/lobu-ai/lobu/issues/1211)) ([c2bdde5](https://github.com/lobu-ai/lobu/commit/c2bdde5212d9d082a6cd3a5d67f8b29f22290df5))
+* **cli:** document canonical dotted connector keys in scaffolded AGENTS.md ([#1209](https://github.com/lobu-ai/lobu/issues/1209)) ([4a6fd96](https://github.com/lobu-ai/lobu/commit/4a6fd96ddc58bc2fb883324d8e26d06f2fda16e1))
+* **cli:** point community telemetry at the dedicated lobu-oss Sentry org ([#1208](https://github.com/lobu-ai/lobu/issues/1208)) ([3ae6f6e](https://github.com/lobu-ai/lobu/commit/3ae6f6eeb9e870609716e494b7efcc5a8d3db233))
+* **connectors:** resolve connector SDK for metadata extraction in projects without node_modules ([#1214](https://github.com/lobu-ai/lobu/issues/1214)) ([a415355](https://github.com/lobu-ai/lobu/commit/a41535582d5719742c63db4e0f3b5efbc02b6ee7))
+* correctness/security bugs from multi-agent audit (rebased onto main) ([#1202](https://github.com/lobu-ai/lobu/issues/1202)) ([56dc97d](https://github.com/lobu-ai/lobu/commit/56dc97d606f422e68b70bdc31cddd92bb3bfd550))
+* **gateway:** deliver ask_user/tool-approval/link-button cards cross-replica ([#1194](https://github.com/lobu-ai/lobu/issues/1194)) ([dd47727](https://github.com/lobu-ai/lobu/commit/dd47727c0739b690f818177cf616151fe475c60b))
+* **gateway:** stop forwarding content-length/hop-by-hop headers in secret-proxy; log real proxy errors ([#1210](https://github.com/lobu-ai/lobu/issues/1210)) ([a630cb2](https://github.com/lobu-ai/lobu/commit/a630cb21ca796b7cf6dc676c27bb63f43401cb39)), closes [#1176](https://github.com/lobu-ai/lobu/issues/1176)
+* **guardrails:** execute skill-declared and agent-inline guardrails (wire the dead aggregator) ([#1200](https://github.com/lobu-ai/lobu/issues/1200)) ([440e660](https://github.com/lobu-ai/lobu/commit/440e6605338e3686992e2197d4fc6847eeddf5f7))
+* **providers:** correct broken provider URLs + add e2e provider-integration coverage ([#1193](https://github.com/lobu-ai/lobu/issues/1193)) ([55aea18](https://github.com/lobu-ai/lobu/commit/55aea188f3652f506d2bfd418c67929d902f5550))
+* **sdk:** correct search_sdk metadata + validate viewTemplates args ([#1184](https://github.com/lobu-ai/lobu/issues/1184)) ([36f41e2](https://github.com/lobu-ai/lobu/commit/36f41e2f9fac2b7301ccd6edc6813bf5dd988492))
+* **security:** close critical access-control and injection gaps from codebase audit ([#1192](https://github.com/lobu-ai/lobu/issues/1192)) ([a784560](https://github.com/lobu-ai/lobu/commit/a7845601957e6257ac4bfe3ac15fcf2cd6aff83c))
+* **sentry:** stop worker traces + cut server span sampling to fit the span quota ([#1207](https://github.com/lobu-ai/lobu/issues/1207)) ([9051f90](https://github.com/lobu-ai/lobu/commit/9051f9059ec523ec2a623221a3ae4002375681fd))
+* **server:** accept rest as a first-class adapterless platform ([#1212](https://github.com/lobu-ai/lobu/issues/1212)) ([c8294bb](https://github.com/lobu-ai/lobu/commit/c8294bb62701465de556389be85091f3aee30391)), closes [#1179](https://github.com/lobu-ai/lobu/issues/1179)
+* **server:** provision install operator + default org on external-DB lobu run ([#1213](https://github.com/lobu-ai/lobu/issues/1213)) ([e6cc6da](https://github.com/lobu-ai/lobu/commit/e6cc6da0b4d72607b6b128d7e06a90f22b98f98c))
+
 ## [11.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v10.2.0...lobu-v11.0.0) (2026-05-30)
 
 

@@ -26,6 +26,7 @@ import {
 import { DEFAULT_LOBU_MCP_URL } from "../internal/context.js";
 import { setLocalEnvValue } from "../internal/local-env.js";
 import { renderTemplate } from "../utils/template.js";
+import { installProjectDeps } from "./_lib/ensure-deps-installed.js";
 import { initFromOrg } from "./_lib/init-from-org/bootstrap.js";
 import { isPortFree } from "./dev.js";
 
@@ -333,6 +334,13 @@ export async function initCommand(
     // Same package.json/tsconfig the blank scaffold writes, so the bootstrapped
     // lobu.config.ts can resolve @lobu/cli/config + re-apply outside this monorepo.
     await scaffoldProjectPackaging(projectDir, projectName, cliVersion);
+    const depsSpinner = ora("Installing project dependencies...").start();
+    const depsWarning = installScaffoldedProjectDeps(projectDir);
+    if (depsWarning) {
+      depsSpinner.warn(depsWarning);
+    } else {
+      depsSpinner.succeed("Project dependencies installed");
+    }
     if (!here) {
       console.log(chalk.cyan(`\n  Next: cd ${projectName}\n`));
     }
@@ -631,7 +639,7 @@ export async function initCommand(
     envSecrets.push({
       envVar: "SENTRY_DSN",
       value:
-        "https://c5910e58d1a134d64ff93a95a9c535bb@o4507291398897664.ingest.us.sentry.io/4511097466781696",
+        "https://63abd848f1338116c41d4a8a29091c7c@o4511547660042240.ingest.us.sentry.io/4511547664171008",
     });
     // The shared community DSN reports into the same Sentry project as the
     // hosted deployment, and instrument.ts defaults environment to
@@ -790,6 +798,13 @@ export async function initCommand(
     await mkdir(join(projectDir, "connectors"), { recursive: true });
     await writeFile(join(projectDir, "connectors", ".gitkeep"), "");
 
+    // Install the freshly-declared devDependencies now so the runtime can
+    // resolve @lobu/connector-sdk from the project and editor types work
+    // out of the box. Warn-don't-fail (printed after the spinner settles).
+    spinner.text = "Installing project dependencies...";
+    const depsWarning = installScaffoldedProjectDeps(projectDir);
+    spinner.text = "Creating Lobu project...";
+
     await renderTemplate(
       "AGENTS.md.tmpl",
       variables,
@@ -802,6 +817,10 @@ export async function initCommand(
     );
 
     spinner.succeed("Project created successfully!");
+
+    if (depsWarning) {
+      console.log(chalk.yellow(`\n⚠ ${depsWarning}`));
+    }
 
     const gatewayUrl = `http://localhost:${gatewayPort}`;
     console.log(chalk.green("\n✓ Lobu initialized!\n"));
@@ -1043,6 +1062,30 @@ export async function generateLobuConfig(
   ];
 
   await writeFile(join(projectDir, "lobu.config.ts"), lines.join("\n"));
+}
+
+/**
+ * Install the scaffolded project's devDependencies (@lobu/cli +
+ * @lobu/connector-sdk) right after `lobu init` writes package.json. Without
+ * this, the project has no node_modules, so the first bundled-connector
+ * install fails metadata extraction with `Cannot find package
+ * '@lobu/connector-sdk'` (#1181) — and editor types don't resolve either.
+ * Warn-don't-fail: a broken/missing installer must not abort the scaffold, so
+ * the failure is returned as a warning string for the caller to print.
+ */
+export function installScaffoldedProjectDeps(
+  projectDir: string
+): string | null {
+  try {
+    installProjectDeps(projectDir, { stdio: "pipe" });
+    return null;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return (
+      `Could not install project dependencies (${message.trim()}). ` +
+      `Run \`npm install\` (or \`bun install\`) in ${projectDir} before \`lobu apply\`.`
+    );
+  }
 }
 
 async function getCliVersion(): Promise<string> {

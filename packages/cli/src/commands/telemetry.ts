@@ -5,7 +5,7 @@ import { setLocalEnvValue } from "../internal/local-env.js";
 import { parseEnvContent } from "../internal/env-file.js";
 
 const SENTRY_DSN_DEFAULT =
-  "https://c5910e58d1a134d64ff93a95a9c535bb@o4507291398897664.ingest.us.sentry.io/4511097466781696";
+  "https://63abd848f1338116c41d4a8a29091c7c@o4511547660042240.ingest.us.sentry.io/4511547664171008";
 
 interface TelemetryOptions {
   cwd?: string;

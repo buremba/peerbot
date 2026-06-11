@@ -595,6 +595,10 @@ export function runOpenclawAgent(
 
   const cmd = [
     'docker exec',
+    // `openclaw agent --local` is standalone pi-ai, which reads ZAI_API_KEY for
+    // z.ai (see @mariozechner/pi-ai env-api-keys: `zai: "ZAI_API_KEY"`). This is
+    // intentionally NOT the lobu gateway's `Z_AI_API_KEY` — different system,
+    // different convention. Don't "reconcile" the names; they're both correct.
     `-e ZAI_API_KEY="${process.env.ZAI_API_KEY || ''}"`,
     'openclaw-plugin-1',
     'openclaw agent --local',

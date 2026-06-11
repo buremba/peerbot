@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { ApplyClient } from "../client.js";
+import { ApiError } from "../../../memory/_lib/errors.js";
+import { ApplyClient, isDuplicateError } from "../client.js";
 
 describe("ApplyClient", () => {
   test("patchAgentMetadata uses PATCH /agents/:agentId", async () => {
@@ -236,5 +237,107 @@ describe("ApplyClient — prune", () => {
 
     const body = JSON.parse(String(calls[0]?.init?.body));
     expect(body.backing).toBeNull();
+  });
+});
+
+// Issue #1177: a 422 schema-validation error from `create` must NOT be
+// mistaken for "already exists" (which retried as `update` and buried the
+// real message under "Entity type not found").
+describe("isDuplicateError", () => {
+  test("coded duplicates are duplicates", () => {
+    for (const code of [
+      "entity_type_exists",
+      "relationship_type_exists",
+      "already_exists",
+    ]) {
+      expect(
+        isDuplicateError(
+          new ApiError(`POST /x failed: [${code}] thing already exists`, 409)
+        )
+      ).toBe(true);
+    }
+  });
+
+  test("bare 409 without a code is still a duplicate", () => {
+    expect(
+      isDuplicateError(new ApiError("POST /x failed: conflict", 409))
+    ).toBe(true);
+  });
+
+  test("422 validation error is NOT a duplicate", () => {
+    expect(
+      isDuplicateError(
+        new ApiError(
+          "POST /x failed: [invalid_schema] At most 4 metadata fields can have x-table-column=true.",
+          422
+        )
+      )
+    ).toBe(false);
+  });
+
+  test("code-less 400 is NOT a duplicate", () => {
+    expect(
+      isDuplicateError(new ApiError("POST /x failed: slug is required", 400))
+    ).toBe(false);
+  });
+
+  test("missing status is NOT a duplicate", () => {
+    expect(isDuplicateError(new ApiError("Invalid JSON from /x"))).toBe(false);
+  });
+});
+
+describe("ApplyClient — upsert create/update flow", () => {
+  test("create → coded 409 duplicate → retries as update (idempotent)", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        const body = JSON.parse(String(init?.body));
+        if (body.action === "create") {
+          return new Response(
+            JSON.stringify({
+              error:
+                "[entity_type_exists] Entity type with slug 'task' already exists",
+            }),
+            { status: 409 }
+          );
+        }
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    const result = await client.upsertEntityType({
+      slug: "task",
+      name: "Task",
+    });
+    expect(result).toEqual({ updated: true });
+    expect(calls).toHaveLength(2);
+    expect(JSON.parse(String(calls[0]?.init?.body)).action).toBe("create");
+    expect(JSON.parse(String(calls[1]?.init?.body)).action).toBe("update");
+  });
+
+  test("create → 422 validation error surfaces verbatim, no update retry", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(
+          JSON.stringify({
+            error:
+              "[invalid_schema] At most 4 metadata fields can have x-table-column=true.",
+          }),
+          { status: 422 }
+        );
+      }) as typeof fetch
+    );
+
+    await expect(
+      client.upsertEntityType({ slug: "task", name: "Task" })
+    ).rejects.toThrow(/At most 4 metadata fields can have x-table-column=true/);
+    // The doomed `update` retry (which produced the misleading
+    // "Entity type 'task' not found") must not happen.
+    expect(calls).toHaveLength(1);
   });
 });

@@ -54,6 +54,15 @@ export function classifyError(error: unknown): string | undefined {
   // classification matches the same auth-failure strings the worker already
   // detects elsewhere.
   if (getProviderAuthHintFromError(message)) return "PROVIDER_AUTH";
+  // The gateway secret-proxy 401s with "No provider credentials configured"
+  // (code no_credentials) when every credential tier misses. The live red-test
+  // (LOBU-BACKEND-W) landed as `unclassified` because the auth-hint regex
+  // doesn't cover this shape — and an unclassified event dodges the
+  // PROVIDER_* Sentry alert.
+  if (
+    /no\s+(provider\s+)?credentials\s+configured|no_credentials/i.test(message)
+  )
+    return "PROVIDER_AUTH";
   // `worker.ts` throws "Model \"<id>\" not found for provider ..." and pi-ai /
   // upstream surface "<x> is not a valid model"/"unknown model"/"model ... not found".
   if (/not a valid model|unknown model|model .* not found/i.test(message))

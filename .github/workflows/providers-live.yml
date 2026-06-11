@@ -1,0 +1,76 @@
+name: Live Providers
+
+# Networked, key-gated validation of every provider in config/providers.json.
+# Deliberately NOT in the CI gate (it hits real provider APIs and needs
+# secrets) — it runs on a schedule so a provider deprecating a model, moving
+# an endpoint, or changing its auth scheme surfaces here instead of in prod.
+#
+# Two tiers (both driven by `make test-providers-live`):
+#   - keyless: probes every composed chat/models route against the real API
+#     (a wrong path 404s, a right path 401s) and checks each defaultModel
+#     against the public catalogs. Runs with NO secrets, every time.
+#   - keyed:   full models + chat + tool-call round-trip for each provider
+#     whose API key is present below; the rest skip cleanly. Add a repo
+#     secret named after the provider's env var (e.g. OPENAI_API_KEY) to
+#     light up its row — no code change needed.
+
+on:
+  schedule:
+    # Mondays 06:00 UTC — weekly is enough to catch upstream drift early
+    # without burning provider quota.
+    - cron: "0 6 * * 1"
+  workflow_dispatch: {}
+
+# Never let two scheduled/manual runs race; the later one wins.
+concurrency:
+  group: live-providers
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  live-providers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # This job only reads + runs tests; the submodule fetch rides the
+          # SSH deploy key below, so the persisted token is never needed.
+          persist-credentials: false
+
+      # Matches the other CI jobs; the live suite itself doesn't touch owletto,
+      # but `bun install` resolves the full workspace.
+      - uses: ./.github/actions/setup-submodule
+        with:
+          deploy-key: ${{ secrets.OWLETTO_WEB_DEPLOY_KEY }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Validate providers (keyless + keyed)
+        run: make test-providers-live
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TOGETHER_API_KEY: ${{ secrets.TOGETHER_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          # z-ai: the live suite accepts either name; provide whichever exists.
+          Z_AI_API_KEY: ${{ secrets.Z_AI_API_KEY }}
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          OPENCODE_ZEN_API_KEY: ${{ secrets.OPENCODE_ZEN_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

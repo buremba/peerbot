@@ -14,10 +14,7 @@ import { join, resolve } from "node:path";
  */
 
 const TEMPLATE_PATH = resolve(import.meta.dir, "../templates/AGENTS.md.tmpl");
-const CONNECTORS_SRC_DIR = resolve(
-  import.meta.dir,
-  "../../../connectors/src"
-);
+const CONNECTORS_SRC_DIR = resolve(import.meta.dir, "../../../connectors/src");
 
 function catalogKeys(): Set<string> {
   const keys = new Set<string>();

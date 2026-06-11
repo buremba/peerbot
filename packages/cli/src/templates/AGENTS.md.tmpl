@@ -124,12 +124,14 @@ const gh = defineConnection({
 });
 ```
 
-**Bundled connector keys** — use the exact key (Gmail is `google_gmail`, not
-`gmail`): `github`, `google_gmail`, `google_calendar`, `microsoft_outlook`,
-`website`, `rss`, `hackernews`, `reddit`, `x`, `linkedin`, `youtube`, `spotify`,
-`producthunt`, `g2`, `capterra`, `glassdoor`, `trustpilot`, `revolut`, `gmaps`,
-plus on-device connectors (`apple_health`, `apple_photos`, `apple_screen_time`,
-`chrome*`, `local_directory`, `whatsapp_local`).
+**Bundled connector keys** — use the exact key; several are dotted (Gmail is
+`google.gmail`, not `gmail` or `google_gmail`): `github`, `google.gmail`,
+`google.calendar`, `microsoft.outlook`, `website`, `rss`, `postgres`,
+`hackernews`, `reddit`, `x`, `linkedin`, `youtube`, `spotify`, `producthunt`,
+`google_play`, `ios_appstore`, `g2`, `capterra`, `glassdoor`, `trustpilot`,
+`revolut`, `gmaps`, `whatsapp`, plus on-device connectors (`apple.health`,
+`apple.photos`, `apple.screen_time`, `chrome`, `chrome.history`,
+`chrome.bookmarks`, `chrome.downloads`, `local.directory`, `whatsapp.local`).
 
 Each connector defines its own `config` keys and feed keys — don't guess them. If
 you're unsure of a connector's config shape, ask the user or read its definition;

@@ -639,7 +639,7 @@ export async function initCommand(
     envSecrets.push({
       envVar: "SENTRY_DSN",
       value:
-        "https://c5910e58d1a134d64ff93a95a9c535bb@o4507291398897664.ingest.us.sentry.io/4511097466781696",
+        "https://63abd848f1338116c41d4a8a29091c7c@o4511547660042240.ingest.us.sentry.io/4511547664171008",
     });
     // The shared community DSN reports into the same Sentry project as the
     // hosted deployment, and instrument.ts defaults environment to

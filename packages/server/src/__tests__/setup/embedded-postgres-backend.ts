@@ -13,8 +13,23 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { injectPgvector, resolveEmbeddedNativeDir } from '@lobu/pgvector-embedded';
+import exitHook from 'async-exit-hook';
 import EmbeddedPostgres from 'embedded-postgres';
 import { withFreePortRetry } from './free-port';
+
+// Importing `embedded-postgres` registers async-exit-hook, whose `beforeExit`
+// handler force-exits with code 0 (`process.nextTick(process.exit.bind(null, 0))`).
+// Because the vitest globalSetup imports this module, that hook lives in the
+// MAIN vitest process: after a failed run vitest sets `process.exitCode = 1`
+// and lets the loop drain, Node emits `beforeExit`, and the hook overwrites the
+// failure with exit 0 — CI went green on a run with 8 failed tests (#1216).
+// The `exit` hook is removed too: it calls the async gracefulShutdown without
+// a `done` callback (`done is not a function` unhandled rejection on every
+// clean run), and async cleanup can't execute during `exit` anyway. Signal
+// hooks (SIGINT/SIGTERM/SIGHUP) stay so Ctrl-C still stops embedded clusters;
+// the normal path stops them explicitly in teardown().
+exitHook.unhookEvent('beforeExit');
+exitHook.unhookEvent('exit');
 
 export interface EmbeddedBackend {
   url: string;

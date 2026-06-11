@@ -6,7 +6,8 @@
  * fix (worker-api.ts) re-anchors such a poll to the user that already owns the
  * posted worker_id in a non-cloud install, so the device_workers capability
  * registration (which drives connector wiring) still happens. Cloud
- * (LOBU_CLOUD_MODE) must stay strict.
+ * (LOBU_CLOUD_MODE) must stay strict: since the #1192 security audit the
+ * middleware fails anonymous workers-API calls closed with a 401 there.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -81,8 +82,10 @@ describe('anonymous device-worker registration (local/non-cloud)', () => {
     const { workerId } = await seedDeviceOwner({ caps: {}, appVersion: '8.0.0' });
     process.env.LOBU_CLOUD_MODE = '1';
 
+    // #1192: anonymous workers-API access in cloud mode is rejected outright
+    // (fail-closed 401), so the poll never reaches registration at all.
     const res = await post('/api/workers/poll', { body: pollBody(workerId) });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(401);
 
     const dev = await readDevice(workerId);
     expect(dev?.caps).not.toContain('screentime');

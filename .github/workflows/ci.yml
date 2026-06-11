@@ -347,7 +347,15 @@ jobs:
 
       - name: server integration suite (vitest under Node)
         working-directory: packages/server
-        run: node ../../node_modules/.bin/vitest run --reporter=default
+        # Fail-closed double gate (#1216): vitest's exit code alone went green
+        # on a run with 8 failed tests (a `beforeExit` hook from a transitive
+        # dep force-exited 0 after the summary). The JSON report is written by
+        # the reporter while vitest still owns the process, so a second step
+        # independently asserts zero failures — and a missing/unparseable
+        # report (crashed run) also fails.
+        run: |
+          node ../../node_modules/.bin/vitest run --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/vitest-report.json"
+          node ../../scripts/assert-vitest-report-clean.mjs "$RUNNER_TEMP/vitest-report.json"
 
       - name: server gateway suite (bun:test, needs Postgres)
         # The gateway code that used to live in packages/gateway is now under

@@ -6,7 +6,7 @@
  */
 
 import Ajv from 'ajv';
-import { createDbClientFromEnv, getDb } from '../../../db/client';
+import { createDbClientFromEnv, getDb, pgBigintArray } from '../../../db/client';
 import type { Env } from '../../../index';
 import { ToolUserError } from '../../../utils/errors';
 import { verifyWindowToken } from '../../../utils/jwt';
@@ -310,6 +310,10 @@ export async function handleCompleteWindow(
     // the same transaction as the INSERT or the lock releases before the INSERT
     // and two concurrent device-worker rollup completions race on the PK (both
     // compute the same MAX(id)+1). Mirror the leaf-window path below.
+    //
+    // source_window_ids is integer[]; the prod pool runs fetch_types: false, so
+    // postgres.js can't serialize a bare JS array (it ships "5,6" and PG throws
+    // `malformed array literal`) — bind via the explicit literal idiom (#1046).
     const newWindowId = await sql.begin(async (tx) => {
       const allocatedWindowId = await getNextNumericId(tx, 'watcher_windows');
       await tx`
@@ -320,7 +324,7 @@ export async function handleCompleteWindow(
         ) VALUES (
           ${allocatedWindowId}, ${watcherId}, ${resolvedVersionId}, ${window_start}, ${window_end}, ${granularity || timeGranularity},
           ${tx.json(extractedData)}, 0, ${provenanceModel}, ${provenanceClientId}, ${tx.json(provenanceMetadata)},
-          true, ${depth}, ${sourceIds}, ${watcherRunId}, NOW()
+          true, ${depth}, ${pgBigintArray(sourceIds)}::int[], ${watcherRunId}, NOW()
         )
       `;
       return allocatedWindowId;

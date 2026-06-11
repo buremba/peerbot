@@ -13,6 +13,7 @@
  * catalog → collect → merge → credential-gate path end to end.
  */
 
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { getTestDb } from '../../__tests__/setup/test-db';
@@ -24,9 +25,16 @@ import {
   getEnabledLoginProviderConfigs,
 } from '../config';
 
-// Point at the bundled connectors that ship a `.catalog-manifest.json`, so the
-// scan is a fast manifest lookup instead of compiling every connector.
+// Prefer the built bundled connectors (they ship a `.catalog-manifest.json`,
+// so the scan is a fast manifest lookup), and fall back to the connector
+// sources when `build:server` hasn't run — CI's integration job and fresh
+// checkouts have no dist/, which made every baseline assertion fail with
+// `social: {}`. The source path takes the manifest-miss branch (compile +
+// extract per connector); slower, but it exercises the same
+// catalog → collect → merge → credential-gate pipeline.
 const DIST_CONNECTORS = resolve(__dirname, '../../../dist/connectors');
+const SRC_CONNECTORS = resolve(__dirname, '../../../../connectors/src');
+const CATALOG_DIR = existsSync(DIST_CONNECTORS) ? DIST_CONNECTORS : SRC_CONNECTORS;
 
 // Dummy credentials are enough: getAuthConfig only needs clientId + clientSecret
 // to *resolve* for a provider to be marked enabled — it never calls the IdP here.
@@ -42,7 +50,7 @@ describe('login provider baseline (integration)', () => {
 
   beforeAll(() => {
     prevCatalogUris = process.env.CONNECTOR_CATALOG_URIS;
-    process.env.CONNECTOR_CATALOG_URIS = DIST_CONNECTORS;
+    process.env.CONNECTOR_CATALOG_URIS = CATALOG_DIR;
     clearLoginProviderCachesForTests();
   });
 

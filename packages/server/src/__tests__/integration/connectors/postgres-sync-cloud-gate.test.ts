@@ -29,8 +29,8 @@ async function setupPostgresFeed(): Promise<{ feedId: number; connId: number; or
     version: CONNECTOR_VERSION,
     organization_id: org.id,
   });
-  // A non-device-pinned, active connection with required_capability NULL — so an
-  // anonymous worker poll (branch 1A) can claim its run and reach the gate.
+  // A non-device-pinned, active connection with required_capability NULL — so a
+  // fleet worker poll (branch 1A) can claim its run and reach the gate.
   const conn = await createTestConnection({
     organization_id: org.id,
     connector_key: 'postgres',
@@ -111,8 +111,13 @@ describe('pollWorkerJob cloud gate (postgres) — execution-time', () => {
 
     process.env.LOBU_CLOUD_MODE = '1';
     try {
+      // #1192 fails anonymous workers-API calls closed (401) under cloud mode,
+      // so authenticate as a trusted fleet worker — the execution-time gate
+      // inside pollWorkerJob is what this test is about.
       const res = await post('/api/workers/poll', {
         body: { worker_id: 'cloud-gate-worker', capabilities: {} },
+        token: 'test-fleet-token',
+        env: { WORKER_API_TOKEN: 'test-fleet-token' },
       });
       expect(res.status).toBe(200);
       const body = (await res.json()) as {

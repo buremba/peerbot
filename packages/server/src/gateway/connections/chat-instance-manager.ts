@@ -152,6 +152,24 @@ const ADAPTER_FACTORIES: Record<string, (config: any) => Promise<any>> = {
     (await import("@chat-adapter/gchat")).createGoogleChatAdapter(c),
 };
 
+/**
+ * Platforms that are valid to declare on an agent but have no chat adapter to
+ * run. `rest` is the HTTP Agent API (`POST /lobu/api/v1/agents/:id/messages`),
+ * which is registered unconditionally in gateway/routes/public/agent.ts —
+ * declaring it just persists the `agent_connections` row so `lobu apply`
+ * converges; there is no instance to start/stop/restart and no webhook to
+ * route. Deliberately NOT in ADAPTER_FACTORIES: createPlatformAdapters()
+ * derives the PlatformRegistry entries from that map, and an adapterless
+ * platform must not get a registry entry either. Stateless by construction,
+ * so it is multi-replica safe — every pod's boot reconciliation sees the row
+ * as healthy (`active`) rather than retrying a doomed adapter start.
+ */
+const ADAPTERLESS_PLATFORMS = new Set<string>(["rest"]);
+
+function isAdapterlessPlatform(platform: string): boolean {
+  return ADAPTERLESS_PLATFORMS.has(platform);
+}
+
 interface ManagedInstance {
   connection: PlatformConnection;
   chat: any; // Chat SDK instance
@@ -345,7 +363,7 @@ export class ChatInstanceManager {
     metadata: Record<string, any> = {},
     stableId?: string
   ): Promise<PlatformConnection> {
-    if (!(platform in ADAPTER_FACTORIES)) {
+    if (!(platform in ADAPTER_FACTORIES) && !isAdapterlessPlatform(platform)) {
       throw new Error(`Unsupported platform: ${platform}`);
     }
     if (config.platform !== platform) {
@@ -787,6 +805,21 @@ export class ChatInstanceManager {
   }
 
   private async startInstance(connection: PlatformConnection): Promise<void> {
+    // Adapterless platforms (`rest`) have nothing to boot: no Chat SDK
+    // adapter, no webhook, no `instances` entry. Returning early keeps the
+    // connection `active` (not `error`), so boot-time reconciliation on every
+    // replica treats the row as healthy instead of retrying a doomed adapter
+    // start. All lifecycle paths funnel through here (initialize(),
+    // addConnection(), restartConnection(), updateConnection()'s restart),
+    // so this is the single skip point.
+    if (isAdapterlessPlatform(connection.platform)) {
+      logger.debug(
+        { id: connection.id, platform: connection.platform },
+        "Adapterless platform — persisted only, no chat instance to start"
+      );
+      return;
+    }
+
     // Multi-tenant secret resolution: PostgresSecretStore.get/put route
     // by AsyncLocalStorage org context (see #516). Some callers reach
     // here with org context already bound (HTTP routes via agent-routes

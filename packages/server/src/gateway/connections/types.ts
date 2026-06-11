@@ -30,13 +30,23 @@ export type GoogleChatAdapterConfig = NonNullable<
   Parameters<typeof createGoogleChatAdapter>[0]
 > & { platform: "gchat" };
 
+/**
+ * `rest` is the always-on HTTP Agent API
+ * (`POST /lobu/api/v1/agents/:id/messages`, registered unconditionally in
+ * gateway/routes/public/agent.ts). It is declarable on an agent — so
+ * `lobu apply` can converge on the scaffolded `{ type: "rest", config: {} }`
+ * binding — but it has no Chat SDK adapter and takes no config.
+ */
+export type RestPlatformConfig = { platform: "rest" };
+
 export type PlatformAdapterConfig =
   | TelegramAdapterConfig
   | SlackAdapterConfig
   | DiscordAdapterConfig
   | WhatsAppAdapterConfig
   | TeamsAdapterConfig
-  | GoogleChatAdapterConfig;
+  | GoogleChatAdapterConfig
+  | RestPlatformConfig;
 
 /** Narrow a connection's config to the Telegram shape. */
 export function isTelegramConfig(

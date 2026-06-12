@@ -123,6 +123,10 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
     // Large per-connector JSONB blobs — too big and structure-dependent to expose
     // via raw SQL. Callers should hit the typed connector handler instead.
     connector_definitions: new Set([
+      // Dead since #1042 (nothing reads or writes it); omitted here during the
+      // expand phase so old replicas stop emitting it in scoped CTEs before a
+      // later release drops the column (#1044).
+      'api_type',
       'mcp_config',
       'api_config',
       'openapi_config',

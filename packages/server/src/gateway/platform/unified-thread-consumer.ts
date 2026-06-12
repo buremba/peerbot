@@ -18,6 +18,20 @@ import type { ResponseRenderer } from "./response-renderer.js";
 const logger = createLogger("unified-thread-consumer");
 
 /**
+ * `platformMetadata.source` values for turns dispatched server-side with no
+ * SSE client on any pod. These bypass the API owner-gate in routeToRenderer.
+ * Producers: routes/public/agent.ts (watcher-run/direct-api from session
+ * intent), services/agent-threads.ts (internal default), connectors/
+ * repair-agent.ts, scheduled/jobs.ts.
+ */
+const HEADLESS_SOURCES = new Set([
+  "watcher-run",
+  "connector-repair",
+  "scheduled-job",
+  "internal",
+]);
+
+/**
  * Unified consumer for thread_response queue.
  * Routes responses to the appropriate platform adapter based on payload.platform field.
  */
@@ -113,22 +127,24 @@ export class UnifiedThreadResponseConsumer {
         return;
       }
 
-      // Get platform adapter from registry
+      // Get platform adapter from registry. Throw (not return) so the row
+      // retries and then dead-letters into the failed lane where
+      // lobu_runs_failed_total makes the drop visible — a silent warn here
+      // loses the whole response. Registration races at boot make a short
+      // retry budget genuinely useful.
       const platform = this.platformRegistry.get(platformName);
       if (!platform) {
-        logger.warn(
-          `No platform adapter registered for: ${platformName}, skipping message ${data.messageId}`
+        throw new Error(
+          `No platform adapter registered for: ${platformName} (message ${data.messageId})`
         );
-        return;
       }
 
       // Get renderer from platform
       const renderer = platform.getResponseRenderer?.();
       if (!renderer) {
-        logger.warn(
-          `Platform ${platformName} does not provide a response renderer, skipping message ${data.messageId}`
+        throw new Error(
+          `Platform ${platformName} does not provide a response renderer (message ${data.messageId})`
         );
-        return;
       }
 
       // Create session key for tracking
@@ -208,8 +224,22 @@ export class UnifiedThreadResponseConsumer {
       // enqueued with `customEvent.requireSseOwner` set (see api/platform.ts)
       // and the same raised-retry send opts as terminal rows so the re-queue
       // window covers the cross-pod hand-off and the browser's POST→connect gap.
+      //
+      // Headless rows are exempt: turns dispatched server-side (watcher runs,
+      // connector repair, scheduled jobs, internal threads) never open an SSE
+      // connection on ANY pod, so gating them re-queues 30x, dead-letters the
+      // row, and skips the renderer side-effects (watcher run resolution most
+      // critically — a failed watcher run otherwise surfaces only via the 2h
+      // stale sweep). No pod is "the owner"; the first claimer delivers, and
+      // the SSE broadcast is a harmless no-op. `source` is stamped at dispatch
+      // (routes/public/agent.ts from session intent; agent-threads/repair/
+      // scheduled set it explicitly) and echoed back by the worker.
+      const source = data.platformMetadata?.source;
+      const isHeadless =
+        typeof source === "string" && HEADLESS_SOURCES.has(source);
       const requiresSseOwner =
-        isTerminal || data.customEvent?.requireSseOwner === true;
+        !isHeadless &&
+        (isTerminal || data.customEvent?.requireSseOwner === true);
       const sseKey =
         (data.platformMetadata?.sessionId as string) || data.conversationId;
       if (

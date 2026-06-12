@@ -44,13 +44,9 @@ export class ApiPlatform implements PlatformAdapter {
 
     this.services = services;
     const sseManager = services.getSseManager();
-    const watcherRunTracker = services.getWatcherRunTracker();
 
     // Create response renderer for routing worker responses to SSE clients
-    this.responseRenderer = new ApiResponseRenderer(
-      sseManager,
-      watcherRunTracker
-    );
+    this.responseRenderer = new ApiResponseRenderer(sseManager);
 
     // Subscribe to interaction events and deliver them to SSE clients.
     //

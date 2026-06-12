@@ -9,7 +9,6 @@ import { createLogger } from "@lobu/core";
 import type { ThreadResponsePayload } from "../infrastructure/queue/types.js";
 import type { ResponseRenderer } from "../platform/response-renderer.js";
 import type { SseManager } from "../services/sse-manager.js";
-import type { WatcherRunTracker } from "../watchers/run-tracker.js";
 import { resolveWatcherRunsByMessageIds } from "../../watchers/run-completion.js";
 
 const logger = createLogger("api-response-renderer");
@@ -19,10 +18,7 @@ const logger = createLogger("api-response-renderer");
  * Broadcasts responses to SSE clients instead of external platforms
  */
 export class ApiResponseRenderer implements ResponseRenderer {
-  constructor(
-    private readonly sseManager: SseManager,
-    private readonly watcherRunTracker?: WatcherRunTracker
-  ) {}
+  constructor(private readonly sseManager: SseManager) {}
 
   /**
    * The SSE session a payload should broadcast to: the worker-provided
@@ -129,9 +125,11 @@ export class ApiResponseRenderer implements ResponseRenderer {
   }
 
   /**
-   * Resolve any watcher-run handles whose dispatched messageId matches the
-   * terminal event. Checks both the immediate messageId and processedMessageIds
-   * since a single turn can batch-process multiple messages.
+   * Resolve any watcher runs whose dispatched messageId matches the terminal
+   * event. Checks both the immediate messageId and processedMessageIds since
+   * a single turn can batch-process multiple messages. Durable and replica-
+   * safe: keyed on runs.dispatched_message_id, idempotent via the active-
+   * status guard, so it's correct on whichever replica claims the row.
    */
   private async resolveWatcherRunsFromPayload(
     payload: ThreadResponsePayload,
@@ -148,10 +146,6 @@ export class ApiResponseRenderer implements ResponseRenderer {
       logger.error("Failed to resolve watcher runs from terminal API payload", {
         error,
       });
-    }
-    if (!this.watcherRunTracker) return;
-    for (const id of ids) {
-      await this.watcherRunTracker.resolve(id, result);
     }
   }
 

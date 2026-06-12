@@ -7,8 +7,11 @@
  * a running queued run.
  */
 
+import { randomUUID } from 'node:crypto';
 import { inferWatcherGranularityFromSchedule } from '@lobu/connector-sdk';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { ApiResponseRenderer } from '../../../gateway/api/response-renderer';
+import { UnifiedThreadResponseConsumer } from '../../../gateway/platform/unified-thread-consumer';
 import type { DbClient } from '../../../db/client';
 import { getDb } from '../../../db/client';
 import type { Env } from '../../../index';
@@ -1008,6 +1011,130 @@ describe('watcher automation contract', () => {
   // NOTE: this MUST exercise getDb() (the prod pool with fetch_types:false), not
   // the test-harness client — the latter fetches types and silently masks the
   // bug. Both clients point at the same DATABASE_URL test database here.
+  describe('headless terminal delivery resolves watcher runs on first claim (no SSE owner)', () => {
+    // Regression for the owner-gate false-negative: watcher dispatch never
+    // opens an SSE connection on any pod, so terminal thread_response rows
+    // used to throw "not owned by this gateway instance" on EVERY claim,
+    // exhaust 30 retries, dead-letter, and skip resolveWatcherRunsByMessageIds
+    // entirely — completions deferred to reconcile, failures to the 2h sweep.
+    // These contracts drive the REAL consumer + ApiResponseRenderer against
+    // the test DB with hasActiveConnection=false everywhere.
+    async function makeRunningWatcherRun(messageId: string) {
+      const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
+      const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');
+      const { windowStart, windowEnd } = await computePendingWindow(dbClient, watcherId, granularity);
+      const queued = await createWatcherRun({
+        organizationId: workspace.org.id,
+        watcherId,
+        agentId: agent.agentId,
+        windowStart: windowStart.toISOString(),
+        windowEnd: windowEnd.toISOString(),
+        dispatchSource: 'scheduled',
+      });
+      await sql`
+        UPDATE runs
+        SET status = 'running', claimed_at = NOW(),
+            claimed_by = ${`lobu:${agent.agentId}`},
+            dispatched_message_id = ${messageId}
+        WHERE id = ${queued.runId}
+      `;
+      return { sql, workspace, watcherId, runId: queued.runId, windowStart, windowEnd };
+    }
+
+    function makeHeadlessConsumer() {
+      const renderer = new ApiResponseRenderer({
+        broadcast: () => undefined,
+      } as never);
+      const platformRegistry = { get: () => ({ getResponseRenderer: () => renderer }) };
+      const sseManager = {
+        broadcast: () => undefined,
+        // No pod anywhere holds an SSE connection for a headless session.
+        hasActiveConnection: () => false,
+      };
+      const queueStub = {
+        start: async () => undefined,
+        stop: async () => undefined,
+        createQueue: async () => undefined,
+        work: async () => undefined,
+      };
+      return new UnifiedThreadResponseConsumer(
+        queueStub as never,
+        platformRegistry as never,
+        sseManager as never
+      );
+    }
+
+    // Worker terminal rows carry teamId "api" (no platform field) and echo the
+    // dispatch-time platformMetadata.source stamped by routes/public/agent.ts
+    // from the session intent.
+    function terminalPayload(messageId: string, runId: number, error?: string) {
+      return {
+        messageId,
+        channelId: `api_watcher_${runId}`,
+        conversationId: `api_watcher_${runId}`,
+        userId: `watcher-${runId}`,
+        teamId: 'api',
+        timestamp: Date.now(),
+        ...(error ? { error } : { processedMessageIds: [messageId] }),
+        platformMetadata: { source: 'watcher-run' },
+      };
+    }
+
+    it('fails the run immediately when the reply produced no window (fail-closed guard)', async () => {
+      const messageId = randomUUID();
+      const { sql, runId } = await makeRunningWatcherRun(messageId);
+
+      await makeHeadlessConsumer().handleThreadResponse({
+        id: 'job-headless-1',
+        data: terminalPayload(messageId, runId),
+      } as never);
+
+      const [run] = await sql`SELECT status, error_message FROM runs WHERE id = ${runId}`;
+      expect(String(run.status)).toBe('failed');
+      expect(String(run.error_message)).toContain('complete_window');
+    });
+
+    it('completes the run immediately when a window exists', async () => {
+      const messageId = randomUUID();
+      const { sql, runId, watcherId, windowStart, windowEnd } =
+        await makeRunningWatcherRun(messageId);
+      const [window] = await sql`
+        INSERT INTO watcher_windows (
+          watcher_id, granularity, window_start, window_end,
+          extracted_data, content_analyzed, model_used, run_metadata, run_id, created_at
+        ) VALUES (
+          ${watcherId}, 'daily', ${windowStart}, ${windowEnd},
+          ${sql.json({ summary: 'done' })}, 1, 'test-model',
+          ${sql.json({ watcher_run_id: runId })}, ${runId}, NOW()
+        )
+        RETURNING id
+      `;
+
+      await makeHeadlessConsumer().handleThreadResponse({
+        id: 'job-headless-2',
+        data: terminalPayload(messageId, runId),
+      } as never);
+
+      const [run] = await sql`SELECT status, window_id FROM runs WHERE id = ${runId}`;
+      expect(String(run.status)).toBe('completed');
+      expect(Number(run.window_id)).toBe(Number(window.id));
+    });
+
+    it('fails the run immediately on a worker error row (was: 2h stale sweep)', async () => {
+      const messageId = randomUUID();
+      const { sql, runId } = await makeRunningWatcherRun(messageId);
+
+      await makeHeadlessConsumer().handleThreadResponse({
+        id: 'job-headless-3',
+        data: terminalPayload(messageId, runId, 'worker exited 1'),
+      } as never);
+
+      const [run] = await sql`SELECT status, error_message FROM runs WHERE id = ${runId}`;
+      expect(String(run.status)).toBe('failed');
+      expect(String(run.error_message)).toBe('worker exited 1');
+    });
+  });
+
   it('reconciles without crashing when an active run carries a dispatched_message_id', async () => {
     const { sql, dbClient, workspace, watcherId, agent } = await createAutomatedWatcher();
     const granularity = inferWatcherGranularityFromSchedule('0 9 * * *');

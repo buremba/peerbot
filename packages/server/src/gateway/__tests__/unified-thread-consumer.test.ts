@@ -198,6 +198,161 @@ describe("UnifiedThreadResponseConsumer interaction card owner-routing", () => {
   });
 });
 
+describe("UnifiedThreadResponseConsumer headless owner-gate exemption", () => {
+  function makeApiConsumer(hasActiveConnection: boolean) {
+    const queue = {
+      start: mock(async () => undefined),
+      stop: mock(async () => undefined),
+      createQueue: mock(async () => undefined),
+      work: mock(async () => undefined),
+    };
+    const renderer = {
+      handleCompletion: mock(async () => undefined),
+      handleError: mock(async () => undefined),
+    };
+    const sseManager = {
+      broadcast: mock(() => undefined),
+      hasActiveConnection: mock(() => hasActiveConnection),
+    };
+    const platformRegistry = {
+      get: mock(() => ({ getResponseRenderer: () => renderer })),
+    };
+    const consumer = new UnifiedThreadResponseConsumer(
+      queue as any,
+      platformRegistry as any,
+      sseManager as any
+    ) as any;
+    return { consumer, renderer, sseManager };
+  }
+
+  // Worker terminal rows for headless turns carry teamId "api" without
+  // `platform`, plus the dispatch-time source echoed in platformMetadata.
+  const watcherTerminal = {
+    messageId: "m-w-1",
+    channelId: "api_watcher_7",
+    conversationId: "api_watcher_7",
+    userId: "watcher-7",
+    teamId: "api",
+    timestamp: 99,
+    processedMessageIds: ["m-w-1"],
+    platformMetadata: { source: "watcher-run" },
+  };
+
+  test("watcher terminal success row is delivered on first claim with no SSE anywhere", async () => {
+    const { consumer, renderer, sseManager } = makeApiConsumer(false);
+
+    await consumer.handleThreadResponse({ id: "job-1", data: watcherTerminal });
+
+    expect(renderer.handleCompletion).toHaveBeenCalledTimes(1);
+    expect(sseManager.hasActiveConnection).not.toHaveBeenCalled();
+  });
+
+  test("watcher terminal error row resolves immediately (was: 2h stale sweep)", async () => {
+    const { consumer, renderer } = makeApiConsumer(false);
+    const errorRow = {
+      ...watcherTerminal,
+      processedMessageIds: undefined,
+      error: "worker exited 1",
+    };
+
+    await consumer.handleThreadResponse({ id: "job-2", data: errorRow });
+
+    expect(renderer.handleError).toHaveBeenCalledTimes(1);
+    expect(renderer.handleCompletion).toHaveBeenCalledTimes(1); // error path also completes
+  });
+
+  for (const source of ["connector-repair", "scheduled-job", "internal"]) {
+    test(`${source} terminal row bypasses the owner-gate`, async () => {
+      const { consumer, renderer } = makeApiConsumer(false);
+
+      await consumer.handleThreadResponse({
+        id: `job-${source}`,
+        data: {
+          ...watcherTerminal,
+          platformMetadata: { source },
+        },
+      });
+
+      expect(renderer.handleCompletion).toHaveBeenCalledTimes(1);
+    });
+  }
+
+  test("direct-api terminal row is still owner-gated", async () => {
+    const { consumer, renderer } = makeApiConsumer(false);
+
+    await expect(
+      consumer.handleThreadResponse({
+        id: "job-3",
+        data: {
+          ...watcherTerminal,
+          userId: "u1",
+          platformMetadata: { source: "direct-api" },
+        },
+      })
+    ).rejects.toThrow(/not owned by this gateway instance/);
+    expect(renderer.handleCompletion).not.toHaveBeenCalled();
+  });
+
+  test("terminal row without any source is still owner-gated", async () => {
+    const { consumer, renderer } = makeApiConsumer(false);
+    const { platformMetadata, ...noMeta } = watcherTerminal;
+    void platformMetadata;
+
+    await expect(
+      consumer.handleThreadResponse({ id: "job-4", data: { ...noMeta, userId: "u1" } })
+    ).rejects.toThrow(/not owned by this gateway instance/);
+    expect(renderer.handleCompletion).not.toHaveBeenCalled();
+  });
+});
+
+describe("UnifiedThreadResponseConsumer dead-letters instead of silent drops", () => {
+  test("missing platform adapter throws so the row retries then dead-letters", async () => {
+    const queue = {
+      start: mock(async () => undefined),
+      stop: mock(async () => undefined),
+      createQueue: mock(async () => undefined),
+      work: mock(async () => undefined),
+    };
+    const platformRegistry = { get: mock(() => undefined) };
+    const consumer = new UnifiedThreadResponseConsumer(
+      queue as any,
+      platformRegistry as any,
+      { broadcast: mock(() => undefined) } as any
+    ) as any;
+
+    await expect(
+      consumer.handleThreadResponse({
+        id: "job-1",
+        data: { messageId: "m1", userId: "u1", teamId: "ghost-platform" },
+      })
+    ).rejects.toThrow(/No platform adapter registered/);
+  });
+
+  test("platform without renderer throws so the row retries then dead-letters", async () => {
+    const queue = {
+      start: mock(async () => undefined),
+      stop: mock(async () => undefined),
+      createQueue: mock(async () => undefined),
+      work: mock(async () => undefined),
+    };
+    const platformRegistry = {
+      get: mock(() => ({ getResponseRenderer: () => undefined })),
+    };
+    const consumer = new UnifiedThreadResponseConsumer(
+      queue as any,
+      platformRegistry as any,
+      { broadcast: mock(() => undefined) } as any
+    ) as any;
+
+    await expect(
+      consumer.handleThreadResponse({
+        id: "job-2",
+        data: { messageId: "m2", userId: "u1", teamId: "telegram" },
+      })
+    ).rejects.toThrow(/does not provide a response renderer/);
+  });
+});
+
 describe("UnifiedThreadResponseConsumer Chat SDK hydrate-on-claim", () => {
   test("throws for Chat SDK connection responses this replica cannot serve", async () => {
     // ensureDeliverable=false means hydration failed (deleted/stopped row or

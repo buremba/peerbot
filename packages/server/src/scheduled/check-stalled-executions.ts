@@ -20,8 +20,9 @@
  *    of a service-worker and also heartbeats now (owletto#186) but uses
  *    its own `chrome.alarms` cadence — it shares this WHERE clause.
  *  - `watcher` — driven in-process by the embedded gateway. Lifecycle is
- *    handled by WatcherRunTracker + the dedicated `sweepStaleWatcherRuns` /
- *    `resetOrphanedWatcherRuns` helpers in watchers/automation.ts.
+ *    handled by the durable terminal-event resolution (run-completion.ts)
+ *    + the dedicated `sweepStaleWatcherRuns` / `resetOrphanedWatcherRuns`
+ *    helpers in watchers/automation.ts.
  *  - lobu-queue lanes (`chat_message`, `schedule`, `agent_run`, `internal`,
  *    `task`) — claimed by RunsQueue with its own per-claim heartbeat on
  *    `claimed_at` and own 5-min stale sweep. Not touched here.

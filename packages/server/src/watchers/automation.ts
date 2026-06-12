@@ -8,10 +8,7 @@ import { materializeDueItems } from '../scheduled/due-materializer';
 import { markStaleRunsAsTimeout } from '../scheduled/stale-run-sweeper';
 import { incrementCounter, setGauge } from '../gateway/metrics/prometheus';
 import type { Env } from '../index';
-import {
-  getLobuCoreServices,
-  isLobuGatewayRunning,
-} from '../lobu/gateway';
+import { isLobuGatewayRunning } from '../lobu/gateway';
 import { getLobuServiceToken } from '../lobu/service-token';
 import logger from '../utils/logger';
 import { createWatcherRun, type WatcherRunPayload } from '../runs/queue-service';
@@ -393,11 +390,13 @@ export async function reconcileWatcherRuns(db?: DbClient): Promise<ReconcileWatc
 /**
  * Backstop for watcher runs that never reached terminal state.
  *
- * The primary lifecycle is driven by WatcherRunTracker (in-process completion
- * events) plus startup reconciliation on gateway boot. This sweeper catches
- * stuck runs — the tracker entry was lost without a clean completion (graceful
- * shutdown mid-turn, queue message silently dropped, the device executor
- * crashing or its process being abandoned, etc).
+ * The primary lifecycle is driven by the durable resolution path — the API
+ * response renderer calls resolveWatcherRunsByMessageIds on the terminal
+ * thread_response event, on whichever replica claims it — plus startup
+ * reconciliation on gateway boot. This sweeper catches stuck runs where no
+ * terminal event was ever consumed (graceful shutdown mid-turn, queue message
+ * silently dropped, the device executor crashing or its process being
+ * abandoned, etc).
  *
  * Two reap paths, both keyed on the run's OWN liveness so they're correct
  * under N replicas (a run actively executing anywhere keeps its heartbeat
@@ -936,13 +935,6 @@ async function dispatchWatcherRun(
       WHERE id = ${run.id}
     `;
 
-    registerWatcherRunHandle({
-      runId: run.id,
-      watcherId: run.watcher_id,
-      organizationId: run.organization_id,
-      messageId,
-    });
-
     const messageResponse = await fetch(messagesUrl, {
       method: 'POST',
       headers,
@@ -960,7 +952,6 @@ async function dispatchWatcherRun(
 
     if (!messageResponse.ok) {
       const body = await messageResponse.text();
-      unregisterWatcherRunHandle(messageId);
       await failWatcherRun(
         sql,
         run.id,
@@ -971,7 +962,6 @@ async function dispatchWatcherRun(
 
     return 'dispatched';
   } catch (error) {
-    unregisterWatcherRunHandle(messageId);
     await failWatcherRun(
       sql,
       run.id,
@@ -979,62 +969,6 @@ async function dispatchWatcherRun(
     );
     return 'failed';
   }
-}
-
-function registerWatcherRunHandle(params: {
-  runId: number;
-  watcherId: number;
-  organizationId: string;
-  messageId: string;
-}): void {
-  const coreServices = getLobuCoreServices();
-  const tracker = coreServices?.getWatcherRunTracker();
-  if (!tracker) {
-    logger.warn(
-      { runId: params.runId },
-      '[watcher-dispatch] No WatcherRunTracker available — completion will rely on reconciler'
-    );
-    return;
-  }
-
-  tracker.register({
-    messageId: params.messageId,
-    runId: params.runId,
-    watcherId: params.watcherId,
-    organizationId: params.organizationId,
-    onResolve: async (result: { ok: true } | { ok: false; error: string }) => {
-      const db = getDb();
-      if (!result.ok) {
-        await markWatcherRunFailedIdempotent(db, params.runId, result.error);
-        return;
-      }
-      // Fail closed when the agent's reply finished but no window was
-      // produced. Without this guard a no-op agent (no lobu-memory MCP, missing
-      // tools, or a chatty reply that skipped read_knowledge / complete_window)
-      // would silently mark the run "completed" — which is what masked the
-      // Reddit watcher being broken for a week. complete_window is the only
-      // signal that real work happened; absence of it is a failure, not a pass.
-      const windowId = await findWindowIdForRun(db, params.runId);
-      if (windowId === null) {
-        await markWatcherRunFailedIdempotent(
-          db,
-          params.runId,
-          'Agent reply finished without calling manage_watchers(action="complete_window"). ' +
-            'Check that the assigned agent has the lobu-memory MCP attached and that read_knowledge / ' +
-            'manage_watchers tools are approved for it.'
-        );
-        return;
-      }
-      await markWatcherRunCompleted(db, params.runId, windowId);
-    },
-  });
-}
-
-function unregisterWatcherRunHandle(messageId: string): void {
-  const coreServices = getLobuCoreServices();
-  const tracker = coreServices?.getWatcherRunTracker();
-  if (!tracker) return;
-  tracker.unregister(messageId);
 }
 
 export async function dispatchPendingWatcherRuns(

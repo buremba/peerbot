@@ -150,7 +150,7 @@ describe("handleWebhookIngest auth", () => {
     expect(res.status).toBe(401);
   });
 
-  test("query token is rejected unless allowQueryToken is enabled", async () => {
+  test("query token is rejected unless allowQueryAuth is enabled", async () => {
     await seedAgentRow(AGENT, { organizationId: ORG });
     const denied = await ingest(
       storedRow(),
@@ -159,14 +159,14 @@ describe("handleWebhookIngest auth", () => {
     expect(denied.status).toBe(401);
 
     const allowed = await ingest(
-      storedRow({}, { allowQueryToken: true }),
+      storedRow({}, { allowQueryAuth: true }),
       delivery({ a: 1 }, { query: `?token=${TOKEN}` })
     );
     expect(allowed.status).toBe(202);
 
     // `lobu apply` configs carry strings — the string spelling counts too.
     const allowedString = await ingest(
-      storedRow({ id: "whk2" }, { allowQueryToken: "true" }),
+      storedRow({ id: "whk2" }, { allowQueryAuth: "true" }),
       delivery({ b: 2 }, { query: `?token=${TOKEN}` })
     );
     expect(allowedString.status).toBe(202);
@@ -445,7 +445,7 @@ describe("ChatInstanceManager webhook wiring", () => {
     const created = await orgContext.run({ organizationId: ORG }, () =>
       manager.addConnection("webhook", AGENT, {
         platform: "webhook",
-        allowQueryToken: true,
+        allowQueryAuth: true,
         semanticType: "alert",
         titlePath: "/event/title",
       })

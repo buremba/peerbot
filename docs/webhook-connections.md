@@ -16,7 +16,7 @@ curl -X POST "$LOBU/api/<org>/agents/<agentId>/platforms" \
   -d '{
     "platform": "webhook",
     "config": {
-      "allowQueryToken": true,
+      "allowQueryAuth": true,
       "semanticType": "alert",
       "titlePath": "/event/title"
     }
@@ -32,7 +32,7 @@ it in plaintext — copy it then.
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `token` | auto-generated | Bearer token for inbound deliveries; stored as a secret ref. |
-| `allowQueryToken` | `false` | Accept `?token=` for senders that can't set headers (e.g. Sentry's legacy WebHooks plugin). |
+| `allowQueryAuth` | `false` | Accept `?token=` for senders that can't set headers (e.g. Sentry's legacy WebHooks plugin). |
 | `dedupeHeader` | — | Header carrying the provider's delivery id (e.g. `x-github-delivery`). Without it, the idempotency key is `sha256(raw body)`. |
 | `semanticType` | `content` | `events.semantic_type` stamped on ingested rows. |
 | `titlePath` | — | JSON pointer extracted into `events.title` (e.g. `/event/title`). |
@@ -42,7 +42,7 @@ it in plaintext — copy it then.
 ```
 POST /api/v1/webhooks/<connectionId>
   Authorization: Bearer <token>        # or x-lobu-webhook-token: <token>
-  # or ?token=<token> when allowQueryToken is enabled
+  # or ?token=<token> when allowQueryAuth is enabled
 ```
 
 Responses: `202 {"ok":true,"id":<eventId>}` on persist (the insert commits
@@ -70,7 +70,7 @@ Sentry's free plan blocks the native Slack integration, but the legacy
 per-project WebHooks plugin POSTs new-issue payloads to any URL on every
 plan:
 
-1. Create a webhook connection with `allowQueryToken: true`,
+1. Create a webhook connection with `allowQueryAuth: true`,
    `semanticType: "alert"`, `titlePath: "/event/title"`.
 2. In Sentry: project → Settings → Integrations → WebHooks → add
    `https://<gateway>/api/v1/webhooks/<connectionId>?token=<token>`.

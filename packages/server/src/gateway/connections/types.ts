@@ -50,7 +50,7 @@ export type WebhookIngestPlatformConfig = {
   /** Bearer token; auto-generated at create, stored as a `secret://` ref. */
   token?: string;
   /** Opt-in `?token=` auth for header-less senders. Default false. */
-  allowQueryToken?: boolean | string;
+  allowQueryAuth?: boolean | string;
   /** Header carrying the delivery id; else sha256(raw body). */
   dedupeHeader?: string;
   /** `events.semantic_type` for ingested rows; default "content". */

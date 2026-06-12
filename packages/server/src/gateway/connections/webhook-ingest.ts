@@ -84,7 +84,7 @@ function tokensMatch(presented: string, configured: string): boolean {
 }
 
 function isQueryTokenAllowed(config: WebhookIngestConfig): boolean {
-  return config.allowQueryToken === true || config.allowQueryToken === "true";
+  return config.allowQueryAuth === true || config.allowQueryAuth === "true";
 }
 
 /**

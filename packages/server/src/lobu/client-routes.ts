@@ -242,7 +242,7 @@ const PLATFORM_SCHEMAS: Record<
           description:
             'Bearer token for inbound deliveries. Auto-generated when left empty.',
         },
-        allowQueryToken: {
+        allowQueryAuth: {
           type: 'boolean',
           title: 'Allow ?token= auth',
           description:

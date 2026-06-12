@@ -185,7 +185,7 @@ export const WebhookConfigSchema = z.object({
   }),
   // Declarative configs (`lobu apply`) carry string values only, so the
   // boolean also accepts its string spelling.
-  allowQueryToken: z
+  allowQueryAuth: z
     .union([z.boolean(), z.enum(["true", "false"])])
     .optional()
     .openapi({

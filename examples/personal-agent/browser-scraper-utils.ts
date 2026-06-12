@@ -10,8 +10,8 @@ import {
   type CdpPage,
   captureErrorArtifacts,
   type EventEnvelope,
-} from '@lobu/connector-sdk';
-import type { Browser, Cookie, Page } from 'playwright';
+} from "@lobu/connector-sdk";
+import type { Browser, Cookie, Page } from "playwright";
 
 // -----------------------------------------------------------------------------
 // Browser auth cookie helpers
@@ -44,7 +44,7 @@ export function getBrowserUserDataDir(
   sessionState: Record<string, unknown> | null | undefined
 ): string | undefined {
   const value = sessionState?.user_data_dir;
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 /**
@@ -59,7 +59,7 @@ export function getBrowserCdpUrl(
   sessionState: Record<string, unknown> | null | undefined
 ): string | undefined {
   const value = sessionState?.cdp_url;
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 export function validateCookieNotExpired(
@@ -99,19 +99,27 @@ export function validatePublicUrl(url: string): void {
     throw new Error(`Invalid URL: ${url}`);
   }
 
-  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-    throw new Error(`URL must use http: or https: protocol, got ${parsed.protocol}`);
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error(
+      `URL must use http: or https: protocol, got ${parsed.protocol}`
+    );
   }
 
   const hostname = parsed.hostname.toLowerCase();
 
   // Block localhost variants
-  if (hostname === 'localhost' || hostname === '[::1]' || hostname.endsWith('.localhost')) {
+  if (
+    hostname === "localhost" ||
+    hostname === "[::1]" ||
+    hostname.endsWith(".localhost")
+  ) {
     throw new Error(`URL must not point to localhost: ${hostname}`);
   }
 
   // IPv4 private/loopback/link-local/cloud-metadata/CGNAT ranges
-  const ipv4Match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  const ipv4Match = hostname.match(
+    /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/
+  );
   if (ipv4Match) {
     const [, a, b] = ipv4Match.map(Number);
     if (
@@ -123,36 +131,40 @@ export function validatePublicUrl(url: string): void {
       (a === 100 && b >= 64 && b <= 127) || // CGNAT 100.64.0.0/10
       a === 0
     ) {
-      throw new Error(`URL must not point to a private/internal IP address: ${hostname}`);
+      throw new Error(
+        `URL must not point to a private/internal IP address: ${hostname}`
+      );
     }
   }
 
   // IPv6 private ranges (bracketed notation)
-  if (hostname.startsWith('[')) {
+  if (hostname.startsWith("[")) {
     const ipv6 = hostname.slice(1, -1).toLowerCase();
     // Link-local fe80::/10 covers fe80:..fec0: (first byte 1111 1110 1x).
     const linkLocalPrefix = /^fe[89ab][0-9a-f]?:/;
     // Multicast ff00::/8 — any address starting with ff.
     const multicastPrefix = /^ff[0-9a-f]{2}:/;
     if (
-      ipv6 === '::1' ||
+      ipv6 === "::1" ||
       linkLocalPrefix.test(ipv6) ||
       multicastPrefix.test(ipv6) ||
-      ipv6.startsWith('fc') || // unique local fc00::/7
-      ipv6.startsWith('fd') ||
-      ipv6 === '::' ||
-      ipv6.startsWith('::ffff:') // IPv4-mapped IPv6
+      ipv6.startsWith("fc") || // unique local fc00::/7
+      ipv6.startsWith("fd") ||
+      ipv6 === "::" ||
+      ipv6.startsWith("::ffff:") // IPv4-mapped IPv6
     ) {
-      throw new Error(`URL must not point to a private/internal IPv6 address: ${hostname}`);
+      throw new Error(
+        `URL must not point to a private/internal IPv6 address: ${hostname}`
+      );
     }
   }
 
   // Common internal hostnames
   if (
-    hostname.endsWith('.internal') ||
-    hostname.endsWith('.local') ||
-    hostname.endsWith('.corp') ||
-    hostname.endsWith('.lan')
+    hostname.endsWith(".internal") ||
+    hostname.endsWith(".local") ||
+    hostname.endsWith(".corp") ||
+    hostname.endsWith(".lan")
   ) {
     throw new Error(`URL must not point to an internal hostname: ${hostname}`);
   }
@@ -171,8 +183,10 @@ export function validateUrlDomain(url: string, expectedDomain: string): void {
   } catch {
     throw new Error(`Invalid ${expectedDomain} URL: ${url}`);
   }
-  if (parsed.protocol !== 'https:') {
-    throw new Error(`${expectedDomain} URL must use https: protocol, got ${parsed.protocol}`);
+  if (parsed.protocol !== "https:") {
+    throw new Error(
+      `${expectedDomain} URL must use https: protocol, got ${parsed.protocol}`
+    );
   }
   if (
     parsed.hostname !== expectedDomain &&
@@ -193,7 +207,7 @@ export interface BrowserSession {
   page: Page | CdpPage;
   screenshotDir: string;
   /** Which backend was used ('cdp' or 'playwright'). */
-  backend: 'cdp' | 'playwright';
+  backend: "cdp" | "playwright";
   /** If false, don't close the browser (CDP — it's the user's Chrome). */
   ownsBrowser: boolean;
 }
@@ -206,7 +220,7 @@ export interface BrowserSession {
  * Playwright's connectOverCDP crash on browsers with many tabs.
  */
 export async function openStealthBrowser(opts?: {
-  cdpUrl?: string | 'auto' | null;
+  cdpUrl?: string | "auto" | null;
   cookies?: Cookie[];
   authDomains?: string[];
   userDataDir?: string;
@@ -220,7 +234,7 @@ export async function openStealthBrowser(opts?: {
   });
 
   const page = acquired.cdpPage ?? acquired.page;
-  if (!page) throw new Error('No page available from browser acquisition');
+  if (!page) throw new Error("No page available from browser acquisition");
 
   return {
     browser: acquired.browser,
@@ -251,7 +265,7 @@ export async function handleCookieConsent(
     const found = await page.waitForSelector(selector, { timeout });
     if (found) {
       // CdpPage.waitForSelector returns boolean, Playwright returns ElementHandle
-      if (typeof found === 'boolean') {
+      if (typeof found === "boolean") {
         await (page as CdpPage).click(selector);
       } else {
         await found.click();
@@ -303,7 +317,7 @@ export async function withBrowserErrorCapture<T>(
     return await fn(session.page);
   } catch (error: any) {
     // captureErrorArtifacts only works with Playwright pages
-    if (session.backend === 'playwright' && session.page) {
+    if (session.backend === "playwright" && session.page) {
       await captureErrorArtifacts(
         session.page as Page,
         error,
@@ -313,7 +327,7 @@ export async function withBrowserErrorCapture<T>(
     }
     throw error;
   } finally {
-    if (session.backend === 'cdp') {
+    if (session.backend === "cdp") {
       await (session.page as CdpPage).close();
     } else if (session.ownsBrowser && session.browser) {
       await session.browser.close();

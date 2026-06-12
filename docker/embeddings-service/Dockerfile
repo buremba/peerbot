@@ -51,7 +51,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV PATH="/usr/local/bin:${PATH}"
 
-RUN useradd -m -s /bin/bash embeddings && \
+# Pinned UID and numeric final USER so the kubelet can verify
+# runAsNonRoot (a named USER fails CreateContainerConfigError
+# "non-numeric user"). Keep in sync with
+# embeddings.containerSecurityContext.runAsUser in charts/lobu.
+RUN useradd -m -u 1001 -s /bin/bash embeddings && \
     mkdir -p /app/.cache/transformers && \
     chown -R embeddings:embeddings /app
 
@@ -67,7 +71,7 @@ EXPOSE 8790
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
   CMD node -e "fetch('http://localhost:8790/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-USER embeddings
+USER 1001
 WORKDIR /app/packages/embeddings
 
 CMD ["bun", "src/server.ts"]

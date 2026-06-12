@@ -110,10 +110,15 @@ worker:
   terminationGracePeriodSeconds: 300
 
   # The worker executes untrusted agent/connector code — the highest-value
-  # container to harden. The image already runs as a non-root user
-  # (docker/worker/Dockerfile: USER worker), so runAsNonRoot is enforceable.
+  # container to harden. runAsUser must stay numeric and match the image's
+  # UID (docker/worker/Dockerfile: useradd -u 1001): the kubelet cannot
+  # verify runAsNonRoot from a named image USER and rejects the container
+  # with CreateContainerConfigError, wedging the rollout until Helm's
+  # --wait timeout.
   containerSecurityContext:
     runAsNonRoot: true
+    runAsUser: 1001
+    runAsGroup: 1001
     allowPrivilegeEscalation: false
     capabilities:
       drop:
@@ -153,10 +158,13 @@ embeddings:
     fsGroup: 1001
     fsGroupChangePolicy: OnRootMismatch
 
-  # The image runs as a non-root user (docker/embeddings-service/Dockerfile:
-  # USER embeddings), so runAsNonRoot is enforceable.
+  # runAsUser must stay numeric and match the image's UID
+  # (docker/embeddings-service/Dockerfile: useradd -u 1001) so the kubelet
+  # can verify runAsNonRoot without inferring from image metadata.
   containerSecurityContext:
     runAsNonRoot: true
+    runAsUser: 1001
+    runAsGroup: 1001
     allowPrivilegeEscalation: false
     capabilities:
       drop:

@@ -74,8 +74,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV PATH="/usr/local/bin:${PATH}"
 
-# Non-root user
-RUN useradd -m -s /bin/bash worker && \
+# Non-root user. Pinned UID and numeric final USER so the kubelet can
+# verify runAsNonRoot — a named USER fails CreateContainerConfigError
+# ("non-numeric user, cannot verify user is non-root"). Keep in sync
+# with worker.containerSecurityContext.runAsUser in charts/lobu.
+RUN useradd -m -u 1001 -s /bin/bash worker && \
     mkdir -p /app/.cache/transformers /ms-playwright && \
     chown -R worker:worker /app /ms-playwright
 
@@ -94,7 +97,7 @@ COPY --from=builder --chown=worker:worker /app/packages/connector-worker ./packa
 
 # Install patchright's Chromium (declared as `playwright` alias in worker package.json).
 # Use bunx from the worker workspace so bun's resolver finds the alias.
-USER worker
+USER 1001
 WORKDIR /app/packages/connector-worker
 RUN bunx --bun playwright install chromium
 WORKDIR /app

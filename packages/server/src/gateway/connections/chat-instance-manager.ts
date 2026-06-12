@@ -646,8 +646,12 @@ export class ChatInstanceManager {
     connectionId: string,
     request: Request
   ): Promise<Response> {
+    // A stopped row is deliberately off — refuse deliveries exactly like a
+    // stopped chat connection (whose instance would not be running). Error
+    // status stays accepting: webhook connections have no startup that can
+    // fail, and a stray error row should not silently drop deliveries.
     const stored = await this.connectionStore.getConnection(connectionId);
-    if (!stored || stored.platform !== "webhook") {
+    if (!stored || stored.platform !== "webhook" || stored.status === "stopped") {
       return new Response(JSON.stringify({ error: "Connection not found" }), {
         status: 404,
         headers: { "content-type": "application/json" },

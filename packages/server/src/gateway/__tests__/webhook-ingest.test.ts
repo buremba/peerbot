@@ -530,6 +530,34 @@ describe("ChatInstanceManager webhook wiring", () => {
     expect(rows[0].organization_id).toBe(ORG);
   });
 
+  test("a stopped webhook connection refuses deliveries with 404", async () => {
+    await seedAgentRow(AGENT, { organizationId: ORG });
+    const { orgContext } = await import("../../lobu/stores/org-context.js");
+    const { manager } = await buildManager();
+
+    const created = await orgContext.run({ organizationId: ORG }, () =>
+      manager.addConnection("webhook", AGENT, { platform: "webhook" })
+    );
+    const token = created.config.token as string;
+    await orgContext.run({ organizationId: ORG }, () =>
+      manager.stopConnection(created.id)
+    );
+
+    const res = await manager.handleIngestWebhook(
+      created.id,
+      new Request(`http://gateway.test/api/v1/webhooks/${created.id}`, {
+        method: "POST",
+        body: JSON.stringify({ dropped: true }),
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+        },
+      })
+    );
+    expect(res.status).toBe(404);
+    expect((await eventRows(created.id)).length).toBe(0);
+  });
+
   test("handleIngestWebhook 404s for unknown ids and non-webhook platforms", async () => {
     await seedAgentRow(AGENT, { organizationId: ORG });
     const { orgContext } = await import("../../lobu/stores/org-context.js");

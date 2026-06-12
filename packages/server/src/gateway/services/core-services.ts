@@ -74,6 +74,7 @@ import {
 import { ImageGenerationService } from "./image-generation-service.js";
 import { InstructionService } from "./instruction-service.js";
 import { SessionManager, StateAdapterSessionStore } from "./session-manager.js";
+import { SseFanout } from "./sse-fanout.js";
 import { SseManager } from "./sse-manager.js";
 import { ProviderConfigResolver } from "./provider-config-resolver.js";
 import {
@@ -101,6 +102,7 @@ export class CoreServices {
   private instructionService?: InstructionService;
   private interactionService?: InteractionService;
   private sseManager?: SseManager;
+  private sseFanout?: SseFanout;
 
   // ============================================================================
   // Auth & Provider Services
@@ -346,6 +348,14 @@ export class CoreServices {
 
     this.sseManager = new SseManager();
     logger.debug("SSE manager initialized");
+
+    // Cross-replica SSE delivery: LISTEN/NOTIFY fan-out so events produced on
+    // this pod reach clients (and seed replay backlogs) on every pod. Queue is
+    // already started here, so the DB is known-reachable. Fails open to
+    // local-only on LISTEN failure.
+    this.sseFanout = new SseFanout(this.sseManager);
+    await this.sseFanout.start();
+    logger.debug("SSE fan-out initialized");
 
     // Initialize grant store for unified permissions (PG-backed)
     this.grantStore = new GrantStore();
@@ -887,6 +897,10 @@ export class CoreServices {
 
     // Ephemeral sweeper + token refresh have no per-instance lifecycle anymore
     // — scheduling is owned by the TaskScheduler. Nothing to stop here.
+
+    if (this.sseFanout) {
+      await this.sseFanout.stop();
+    }
 
     if (this.queueProducer) {
       await this.queueProducer.stop();

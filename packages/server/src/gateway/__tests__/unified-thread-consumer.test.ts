@@ -99,15 +99,14 @@ describe("UnifiedThreadResponseConsumer customEvent broadcast", () => {
     const toolUseBroadcasts = broadcasts.filter(
       (call: any[]) => call[1] === "tool_use"
     );
-    expect(toolUseBroadcasts.length).toBe(2);
+    // Exactly one broadcast, keyed by conversation id — the legacy
+    // platformMetadata.sessionId side-channel is gone (no producer ever set
+    // it; clients subscribe on conversationId).
+    expect(toolUseBroadcasts.length).toBe(1);
     const conversationBroadcast = toolUseBroadcasts.find(
       (call: any[]) => call[0] === "api:1"
     );
-    const cliBroadcast = toolUseBroadcasts.find(
-      (call: any[]) => call[0] === "cli-session-1"
-    );
     expect(conversationBroadcast).toBeDefined();
-    expect(cliBroadcast).toBeDefined();
     expect(conversationBroadcast?.[2]).toMatchObject({
       toolCallId: "tc-1",
       name: "search_memory",

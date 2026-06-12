@@ -152,4 +152,71 @@ describe("SseManager", () => {
     // A second read-after-TTL should return nothing.
     expect(mgr.getRecentEvents("agent")).toEqual([]);
   });
+
+  test("stream events cannot evict interaction cards from the backlog", () => {
+    // Ring limit 3: a card followed by a flood of deltas must still replay
+    // the card — output/status live in their own ring.
+    const mgr = new SseManager(3, 60_000);
+    mgr.broadcast("agent", "question", { questionId: "q1" });
+    for (let i = 0; i < 20; i++) {
+      mgr.broadcast("agent", "output", { seq: i });
+      mgr.broadcast("agent", "status", { beat: i });
+    }
+    mgr.broadcast("agent", "complete", { processedMessageIds: ["m1"] });
+
+    const events = mgr.getRecentEvents("agent").map((entry) => entry.event);
+    expect(events).toContain("question");
+    expect(events).toContain("complete");
+    // Stream ring is still capped.
+    expect(events.filter((event) => event === "output").length).toBeLessThanOrEqual(3);
+  });
+
+  test("broadcast hands every event to the publisher; deliverFromPeer never does", () => {
+    const mgr = new SseManager();
+    const published: Array<{ agentId: string; event: string }> = [];
+    mgr.setPublisher({
+      event: (agentId, entry) => published.push({ agentId, event: entry.event }),
+      close: (agentId) => published.push({ agentId, event: "__close__" }),
+    });
+
+    mgr.broadcast("agent", "output", { n: 1 });
+    // Peer delivery must not republish (would loop the NOTIFY) but must seed
+    // the backlog so this pod can serve replay.
+    mgr.deliverFromPeer("agent", {
+      event: "complete",
+      data: { n: 2 },
+      timestamp: Date.now(),
+    });
+
+    expect(published).toEqual([{ agentId: "agent", event: "output" }]);
+    // Both rings retained the events (same-millisecond entries merge in
+    // ring order, so compare as a set).
+    expect(
+      mgr
+        .getRecentEvents("agent")
+        .map((entry) => entry.event)
+        .sort()
+    ).toEqual(["complete", "output"]);
+
+    mgr.closeAgent("agent", "done");
+    expect(published.at(-1)).toEqual({ agentId: "agent", event: "__close__" });
+    expect(mgr.getRecentEvents("agent")).toEqual([]);
+  });
+
+  test("closeFromPeer purges without republishing", () => {
+    const mgr = new SseManager();
+    let closePublishes = 0;
+    mgr.setPublisher({
+      event: () => undefined,
+      close: () => {
+        closePublishes += 1;
+      },
+    });
+    mgr.broadcast("agent", "question", { questionId: "q1" });
+
+    mgr.closeFromPeer("agent", "deleted elsewhere");
+
+    expect(mgr.getRecentEvents("agent")).toEqual([]);
+    expect(closePublishes).toBe(0);
+  });
 });

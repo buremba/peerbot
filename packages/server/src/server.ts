@@ -148,17 +148,20 @@ async function main(): Promise<void> {
 					"[schema-check] SKIP_SCHEMA_VERSION_CHECK=1 — skipping boot-time assertion",
 				);
 			}
-			// Detector (not a gate): the runs-queue has a 200ms SKIP-LOCKED poll
-			// fallback, so a dropped LISTEN (transaction-mode pooler) just degrades
-			// wakeup latency rather than causing an outage.
+			// Detector (not a gate). Two consumers degrade differently when LISTEN
+			// is dropped (transaction-mode pooler): the runs-queue falls back to its
+			// 200ms SKIP-LOCKED poll (latency only), but the SSE fan-out has NO poll
+			// fallback — under N>1 replicas cross-pod streaming and backlog seeding
+			// are silently disabled (terminal/card delivery still rides the
+			// owner-gate re-queue). Error-level so multi-replica operators see it.
 			if (process.env.SKIP_LISTEN_NOTIFY_PROBE !== "1") {
 				try {
 					await probeListenNotify();
 					logger.info("[DB] LISTEN/NOTIFY probe ok");
 				} catch (err) {
-					logger.warn(
+					logger.error(
 						{ err },
-						"[DB] LISTEN/NOTIFY probe failed — runs-queue will fall back to 200ms poll.",
+						"[DB] LISTEN/NOTIFY probe failed — runs-queue falls back to 200ms poll; cross-replica SSE fan-out is DISABLED (use a session-mode pool / direct connection for N>1 replicas).",
 					);
 				}
 			}

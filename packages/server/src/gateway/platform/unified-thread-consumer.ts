@@ -174,11 +174,6 @@ export class UnifiedThreadResponseConsumer {
     data: ThreadResponsePayload,
     sessionKey: string
   ): Promise<void> {
-    const cliSessionId =
-      typeof data.platformMetadata?.sessionId === "string"
-        ? (data.platformMetadata.sessionId as string)
-        : null;
-
     // Owner-routing for API/SSE TERMINAL delivery (success completion OR
     // error). The SseManager is per-pod and in-memory, so a terminal event
     // only reaches the client if THIS pod holds the SSE connection. Under N>1
@@ -240,8 +235,9 @@ export class UnifiedThreadResponseConsumer {
       const requiresSseOwner =
         !isHeadless &&
         (isTerminal || data.customEvent?.requireSseOwner === true);
-      const sseKey =
-        (data.platformMetadata?.sessionId as string) || data.conversationId;
+      // Clients subscribe on the conversation id (GET /events keys
+      // connections by session.conversationId — see routes/public/agent.ts).
+      const sseKey = data.conversationId;
       if (
         requiresSseOwner &&
         sseKey &&
@@ -264,13 +260,6 @@ export class UnifiedThreadResponseConsumer {
         data.customEvent.name,
         eventPayload
       );
-      if (cliSessionId) {
-        this.sseManager.broadcast(
-          cliSessionId,
-          data.customEvent.name,
-          eventPayload
-        );
-      }
 
       if (
         !data.ephemeral &&
@@ -285,42 +274,18 @@ export class UnifiedThreadResponseConsumer {
 
     // Handle ephemeral messages (OAuth/auth flows)
     if (data.ephemeral && data.content && renderer.handleEphemeral) {
-      if (cliSessionId) {
-        this.sseManager.broadcast(cliSessionId, "ephemeral", {
-          type: "ephemeral",
-          content: data.content,
-          messageId: data.messageId,
-          timestamp: data.timestamp,
-        });
-      }
       await renderer.handleEphemeral(data);
       return;
     }
 
     // Handle status updates (heartbeat with elapsed time)
     if (data.statusUpdate && renderer.handleStatusUpdate) {
-      if (cliSessionId) {
-        this.sseManager.broadcast(cliSessionId, "status", {
-          type: "status",
-          status: data.statusUpdate,
-          messageId: data.messageId,
-          timestamp: data.timestamp,
-        });
-      }
       await renderer.handleStatusUpdate(data);
       return;
     }
 
     // Handle streaming delta
     if (data.delta && renderer.handleDelta) {
-      if (cliSessionId) {
-        this.sseManager.broadcast(cliSessionId, "output", {
-          type: "delta",
-          content: data.delta,
-          timestamp: data.timestamp,
-          messageId: data.messageId,
-        });
-      }
       await renderer.handleDelta(data, sessionKey);
       // Early return if no error - delta processing is complete
       if (!data.error) {
@@ -330,38 +295,14 @@ export class UnifiedThreadResponseConsumer {
 
     // Handle error
     if (data.error) {
-      if (cliSessionId) {
-        this.sseManager.broadcast(cliSessionId, "error", {
-          type: "error",
-          error: data.error,
-          messageId: data.messageId,
-          timestamp: data.timestamp,
-        });
-      }
       await renderer.handleError(data, sessionKey);
       // Also complete session on error
-      if (cliSessionId) {
-        this.sseManager.broadcast(cliSessionId, "complete", {
-          type: "complete",
-          messageId: data.messageId,
-          processedMessageIds: data.processedMessageIds,
-          timestamp: data.timestamp,
-        });
-      }
       await renderer.handleCompletion(data, sessionKey);
       return;
     }
 
     // Handle completion
     if (data.processedMessageIds?.length) {
-      if (cliSessionId) {
-        this.sseManager.broadcast(cliSessionId, "complete", {
-          type: "complete",
-          messageId: data.messageId,
-          processedMessageIds: data.processedMessageIds,
-          timestamp: data.timestamp,
-        });
-      }
       await renderer.handleCompletion(data, sessionKey);
     }
   }

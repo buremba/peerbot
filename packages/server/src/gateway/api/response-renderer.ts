@@ -21,13 +21,12 @@ export class ApiResponseRenderer implements ResponseRenderer {
   constructor(private readonly sseManager: SseManager) {}
 
   /**
-   * The SSE session a payload should broadcast to: the worker-provided
-   * `sessionId` when present, otherwise the conversation id.
+   * The SSE session a payload broadcasts to. Clients subscribe on the
+   * conversation id (GET /events keys connections by session.conversationId
+   * — see routes/public/agent.ts).
    */
   private sessionIdFor(payload: ThreadResponsePayload): string | undefined {
-    return (
-      (payload.platformMetadata?.sessionId as string) || payload.conversationId
-    );
+    return payload.conversationId;
   }
 
   /**

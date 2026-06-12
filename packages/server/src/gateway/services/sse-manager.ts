@@ -8,26 +8,52 @@
  * into SSE streams (API platform, response renderer, unified thread
  * consumer).
  *
- * Behavior notes (preserved exactly from the previous inline implementation):
- *  - Backlog is per-agentId, capped at `backlogLimit` most-recent entries
- *    (default from `intervals.sseBacklogLimit`).
- *  - Backlog entries older than `backlogTtlMs` (default from
- *    `intervals.sseBacklogTtlMs`) are pruned lazily on every read AND every
- *    write.
+ * Behavior notes:
+ *  - Two backlog rings per agentId, both capped at `backlogLimit` most-recent
+ *    entries and TTL-pruned lazily on every read AND write: one for stream
+ *    events (`output`/`status`, high-volume, evict freely) and one for
+ *    everything else (interaction cards, terminal `complete`/`error`). The
+ *    split keeps a chatty turn's deltas from evicting an ask_user card before
+ *    the client can reconnect and replay it.
  *  - `broadcast` writes to every live connection; a connection is treated as
  *    dead when it reports `closed`/`destroyed`/`writableEnded` OR when a
  *    write throws — dead connections are removed silently (no throw, no log).
  *  - Backlog is ALWAYS remembered (even when no connections are attached) so
  *    a late subscriber can replay recent events.
+ *  - Cross-replica: `broadcast` also hands the event to the injected
+ *    `SseFanoutPublisher` (see `sse-fanout.ts`), and peer events arrive via
+ *    `deliverFromPeer`, which seeds the backlog too — so a client whose SSE
+ *    lands on (or fails over to) any pod can replay events produced on
+ *    another. Best-effort transport; durable terminal delivery stays on the
+ *    thread_response owner-gate in `unified-thread-consumer.ts`.
  */
 
 import { intervals } from "../../config/intervals.js";
 
-interface SseEvent {
+export interface SseEvent {
   event: string;
   data: unknown;
   timestamp: number;
 }
+
+/**
+ * Sink that fans broadcast events out to peer replicas. Injected by
+ * `SseFanout` via `setPublisher`; absent (single-replica / tests) means
+ * broadcasts stay local-only. Kept as a plain interface — not a hard
+ * dependency on Postgres — so `SseManager` stays a pure in-memory fan-out
+ * and the cross-pod transport can be swapped without touching broadcast
+ * call sites.
+ */
+export interface SseFanoutPublisher {
+  event(agentId: string, entry: SseEvent): void;
+  close(agentId: string, reason: string): void;
+}
+
+/**
+ * High-volume stream events kept in their own backlog ring so they cannot
+ * evict interaction cards / terminal events from replay.
+ */
+const STREAM_EVENTS = new Set(["output", "status"]);
 
 /**
  * Minimal shape of an SSE stream we can write to. Matches Hono's
@@ -47,6 +73,8 @@ export interface SseConnection {
 export class SseManager {
   private readonly connections = new Map<string, Set<SseConnection>>();
   private readonly backlog = new Map<string, SseEvent[]>();
+  private readonly streamBacklog = new Map<string, SseEvent[]>();
+  private publisher?: SseFanoutPublisher;
 
   constructor(
     private readonly backlogLimit = intervals.sseBacklogLimit,
@@ -54,46 +82,92 @@ export class SseManager {
   ) {}
 
   /**
-   * Append an event to the per-agent backlog and prune expired entries.
+   * Append an event to the per-agent backlog (stream ring for high-volume
+   * `output`/`status`, main ring for everything else) and prune expired
+   * entries.
    *
    * Called from `broadcast` and is safe to call on its own for callers that
    * want to seed the backlog without an active connection.
    */
   rememberEvent(agentId: string, event: SseEvent): void {
     this.pruneExpired(event.timestamp);
-    const existing = this.backlog.get(agentId) || [];
+    const ring = STREAM_EVENTS.has(event.event)
+      ? this.streamBacklog
+      : this.backlog;
+    const existing = ring.get(agentId) || [];
     const next = existing.concat(event).slice(-this.backlogLimit);
-    this.backlog.set(agentId, next);
+    ring.set(agentId, next);
   }
 
   /**
-   * Return the current fresh backlog for an agent. Always prunes expired
-   * entries first so callers never observe stale events.
+   * Return the current fresh backlog for an agent (both rings, merged in
+   * timestamp order). Always prunes expired entries first so callers never
+   * observe stale events.
    *
    * The optional `since` timestamp filters entries with `timestamp > since`.
    * Without it, the full retained backlog is returned.
    */
   getRecentEvents(agentId: string, since?: number): SseEvent[] {
     this.pruneExpired();
-    const entries = this.backlog.get(agentId) || [];
+    const merged = (this.backlog.get(agentId) || []).concat(
+      this.streamBacklog.get(agentId) || []
+    );
+    merged.sort((a, b) => a.timestamp - b.timestamp);
     if (typeof since === "number") {
-      return entries.filter((entry) => entry.timestamp > since);
+      return merged.filter((entry) => entry.timestamp > since);
     }
-    return entries;
+    return merged;
   }
 
   /**
-   * Remember the event, then write it to every live connection for `agentId`.
-   * Dead connections (closed / ended / threw on write) are removed silently.
-   * If the agent has no connections, only the backlog is updated.
+   * Remember the event, write it to every live local connection for
+   * `agentId`, and fan it out to peer replicas. The SSE connection for
+   * `agentId` may live on a different pod than the one producing this event:
+   * thread_response rows are claimed by whichever replica is free
+   * (SKIP-LOCKED), independent of the ClientIP affinity that pins the
+   * client's SSE to one pod. No-op (local-only) when no publisher is wired.
    */
   broadcast(agentId: string, event: string, data: unknown): void {
     const entry: SseEvent = { event, data, timestamp: Date.now() };
     this.rememberEvent(agentId, entry);
+    this.writeToConnections(agentId, entry);
+    this.publisher?.event(agentId, entry);
+  }
 
+  /**
+   * Deliver an event that originated on a peer replica (via `SseFanout`).
+   * ALWAYS seeds the backlog — even with no local connection — so a client
+   * that connects late or fails over to this pod (affinity break, pod
+   * replacement) can replay events produced elsewhere. Never republishes
+   * (that would loop the NOTIFY).
+   */
+  deliverFromPeer(agentId: string, entry: SseEvent): void {
+    this.rememberEvent(agentId, entry);
+    this.writeToConnections(agentId, entry);
+  }
+
+  /**
+   * Apply a peer replica's `closeAgent` so a reconnect landing here cannot
+   * replay backlog from a deleted session. Never republishes.
+   */
+  closeFromPeer(agentId: string, reason: string): void {
+    this.closeLocal(agentId, reason);
+  }
+
+  /**
+   * Register (or clear, with `undefined`) the sink that fans broadcast events
+   * out to peer replicas. Called once at startup by `SseFanout`.
+   */
+  setPublisher(publisher: SseFanoutPublisher | undefined): void {
+    this.publisher = publisher;
+  }
+
+  /** Write an event to every live connection for `agentId`, sweeping dead ones. */
+  private writeToConnections(agentId: string, entry: SseEvent): void {
     const connections = this.connections.get(agentId);
     if (!connections || connections.size === 0) return;
 
+    const { event, data } = entry;
     const dead = new Set<SseConnection>();
     for (const res of connections) {
       try {
@@ -172,9 +246,15 @@ export class SseManager {
    * `reason` first (best-effort — write errors are swallowed, matching the
    * previous inline DELETE /agents behavior). Also drops the backlog so a
    * later connection with the same key cannot replay stale completion
-   * events from the deleted session.
+   * events from the deleted session, and tells peer replicas to do the same
+   * (their backlogs are seeded by fan-out).
    */
   closeAgent(agentId: string, reason: string): void {
+    this.closeLocal(agentId, reason);
+    this.publisher?.close(agentId, reason);
+  }
+
+  private closeLocal(agentId: string, reason: string): void {
     const connections = this.connections.get(agentId);
     if (connections) {
       for (const connection of connections) {
@@ -198,18 +278,21 @@ export class SseManager {
       this.connections.delete(agentId);
     }
     this.backlog.delete(agentId);
+    this.streamBacklog.delete(agentId);
   }
 
   private pruneExpired(now = Date.now()): void {
-    for (const [agentId, entries] of this.backlog.entries()) {
-      const fresh = entries.filter(
-        (entry) => now - entry.timestamp <= this.backlogTtlMs
-      );
-      if (fresh.length === 0) {
-        this.backlog.delete(agentId);
-        continue;
+    for (const ring of [this.backlog, this.streamBacklog]) {
+      for (const [agentId, entries] of ring.entries()) {
+        const fresh = entries.filter(
+          (entry) => now - entry.timestamp <= this.backlogTtlMs
+        );
+        if (fresh.length === 0) {
+          ring.delete(agentId);
+          continue;
+        }
+        ring.set(agentId, fresh);
       }
-      this.backlog.set(agentId, fresh);
     }
   }
 }

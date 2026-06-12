@@ -75,6 +75,32 @@ function initializeMetrics() {
     "gauge"
   );
 
+  // Cross-replica SSE fan-out (services/sse-fanout.ts). published/received
+  // should track each other across the fleet (received ≈ published × (N-1));
+  // oversize > 0 means events fell back to local-only delivery and the
+  // runs.action_input ref design should be revisited before any owner-gate
+  // removal.
+  registerMetric(
+    "lobu_sse_fanout_published_total",
+    "SSE events published to peer replicas via pg_notify",
+    "counter"
+  );
+  registerMetric(
+    "lobu_sse_fanout_received_total",
+    "Peer SSE events received via LISTEN sse_fanout",
+    "counter"
+  );
+  registerMetric(
+    "lobu_sse_fanout_publish_failed_total",
+    "SSE fan-out NOTIFY attempts that failed",
+    "counter"
+  );
+  registerMetric(
+    "lobu_sse_fanout_oversize_total",
+    "SSE events skipped from fan-out for exceeding the NOTIFY payload cap",
+    "counter"
+  );
+
   // Scheduler + watcher-automation health. These back the prod alerting rules
   // (charts/lobu PrometheusRule): a silent scheduler / failing watcher tick is
   // exactly the failure mode that went undetected for 12 days (lobu#1046).

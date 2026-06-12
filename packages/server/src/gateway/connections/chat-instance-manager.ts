@@ -37,6 +37,10 @@ import {
   registerMessageHandlers,
 } from "./message-handler-bridge.js";
 import { getPlatformDescriptor, PLATFORM_REGISTRY } from "./platforms/index.js";
+import {
+  handleWebhookIngest,
+  prepareWebhookIngestConfig,
+} from "./webhook-ingest.js";
 import { SlackConnectionCoordinator } from "./slack-connection-coordinator.js";
 import {
   registerSlackAppHome,
@@ -102,13 +106,16 @@ const CLAIM_TTL_SECONDS = 45;
  * which is registered unconditionally in gateway/routes/public/agent.ts —
  * declaring it just persists the `agent_connections` row so `lobu apply`
  * converges; there is no instance to start/stop/restart and no webhook to
- * route. Deliberately NOT in the platform descriptor registry:
- * createPlatformAdapters() derives the PlatformRegistry entries from it, and
- * an adapterless platform must not get a registry entry either. Stateless by
- * construction, so it is multi-replica safe — hydration and the health sweep
- * skip it rather than retrying a doomed adapter start.
+ * route. `webhook` is the inbound push-source primitive (#1235): deliveries
+ * are handled per-request by `handleIngestWebhook` below, which reads the
+ * row + secret directly — no warm instance, no per-pod state. Deliberately
+ * NOT in the platform descriptor registry: createPlatformAdapters() derives
+ * the PlatformRegistry entries from it, and an adapterless platform must not
+ * get a registry entry either. Stateless by construction, so it is
+ * multi-replica safe — hydration and the health sweep skip it rather than
+ * retrying a doomed adapter start.
  */
-const ADAPTERLESS_PLATFORMS = new Set<string>(["rest"]);
+const ADAPTERLESS_PLATFORMS = new Set<string>(["rest", "webhook"]);
 
 function isAdapterlessPlatform(platform: string): boolean {
   return ADAPTERLESS_PLATFORMS.has(platform);
@@ -262,6 +269,13 @@ export class ChatInstanceManager {
     // e.g. Telegram auto-generates a strong webhook `secretToken` when the
     // caller didn't supply one, so its inbound webhook is never forgeable.
     descriptor?.prepareNewConnectionConfig?.(config);
+
+    // Webhook ingest connections are adapterless (no descriptor) but still
+    // need the same never-unauthenticated guarantee: auto-generate the
+    // bearer token when the caller didn't supply one.
+    if (platform === "webhook") {
+      prepareWebhookIngestConfig(config as Record<string, unknown>);
+    }
 
     const id = stableId ?? randomUUID().replace(/-/g, "").slice(0, 16);
     const now = Date.now();
@@ -618,6 +632,38 @@ export class ChatInstanceManager {
       await this.createStateAdapter()
     );
     return conversationState.listHistoryChannels(connectionId);
+  }
+
+  /**
+   * Inbound delivery for a `platform: "webhook"` connection (#1235). The
+   * public webhook route branches here BEFORE `handleWebhook` — a webhook
+   * source has no Chat SDK instance to warm (it's adapterless), so the
+   * handler reads the raw row + secret directly. Runs under the connection's
+   * own org context: this is an unauthenticated-route path, and both the
+   * Postgres secret store and the event insert are org-scoped.
+   */
+  async handleIngestWebhook(
+    connectionId: string,
+    request: Request
+  ): Promise<Response> {
+    const stored = await this.connectionStore.getConnection(connectionId);
+    if (!stored || stored.platform !== "webhook") {
+      return new Response(JSON.stringify({ error: "Connection not found" }), {
+        status: 404,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (!stored.organizationId) {
+      // handleWebhookIngest refuses org-less rows; no context to scope to.
+      return handleWebhookIngest(
+        stored,
+        request,
+        this.services.getSecretStore()
+      );
+    }
+    return orgContext.run({ organizationId: stored.organizationId }, () =>
+      handleWebhookIngest(stored, request, this.services.getSecretStore())
+    );
   }
 
   async handleWebhook(

@@ -177,6 +177,34 @@ export const GoogleChatConfigSchema = z.object({
     .openapi({ description: "Override bot username." }),
 });
 
+export const WebhookConfigSchema = z.object({
+  platform: z.literal("webhook"),
+  token: z.string().optional().openapi({
+    description:
+      "Bearer token authenticating inbound deliveries. Auto-generated when omitted; stored as a secret:// ref.",
+  }),
+  // Declarative configs (`lobu apply`) carry string values only, so the
+  // boolean also accepts its string spelling.
+  allowQueryToken: z
+    .union([z.boolean(), z.enum(["true", "false"])])
+    .optional()
+    .openapi({
+      description:
+        "Allow `?token=` auth for senders that cannot set headers (e.g. Sentry's legacy WebHooks plugin). Default false.",
+    }),
+  dedupeHeader: z.string().optional().openapi({
+    description:
+      "Request header whose value is the idempotency key (e.g. x-github-delivery). Defaults to sha256 of the raw body.",
+  }),
+  semanticType: z.string().optional().openapi({
+    description: "semantic_type stamped on ingested events. Default: content.",
+  }),
+  titlePath: z.string().optional().openapi({
+    description:
+      'JSON pointer into the payload extracted as the event title (e.g. "/event/title").',
+  }),
+});
+
 export const PlatformAdapterConfigSchema = z.discriminatedUnion("platform", [
   TelegramConfigSchema,
   SlackConfigSchema,
@@ -184,6 +212,7 @@ export const PlatformAdapterConfigSchema = z.discriminatedUnion("platform", [
   WhatsAppConfigSchema,
   TeamsConfigSchema,
   GoogleChatConfigSchema,
+  WebhookConfigSchema,
 ]);
 
 export type PlatformAdapterConfig = z.infer<typeof PlatformAdapterConfigSchema>;

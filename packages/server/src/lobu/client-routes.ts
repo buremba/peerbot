@@ -230,6 +230,43 @@ const PLATFORM_SCHEMAS: Record<
       },
     },
   },
+  webhook: {
+    name: 'Webhook (inbound)',
+    icon: 'webhook',
+    schema: {
+      type: 'object',
+      properties: {
+        token: {
+          type: 'string',
+          title: 'Token',
+          description:
+            'Bearer token for inbound deliveries. Auto-generated when left empty.',
+        },
+        allowQueryToken: {
+          type: 'boolean',
+          title: 'Allow ?token= auth',
+          description:
+            'Accept the token as a query parameter for senders that cannot set headers (e.g. Sentry legacy WebHooks plugin).',
+        },
+        dedupeHeader: {
+          type: 'string',
+          title: 'Dedupe Header',
+          description:
+            'Header carrying the delivery id (e.g. x-github-delivery). Defaults to a hash of the body.',
+        },
+        semanticType: {
+          type: 'string',
+          title: 'Semantic Type',
+          description: 'semantic_type stamped on ingested events. Default: content.',
+        },
+        titlePath: {
+          type: 'string',
+          title: 'Title Path',
+          description: 'JSON pointer extracted as the event title, e.g. /event/title.',
+        },
+      },
+    },
+  },
 };
 
 function withOrg(c: any, fn: () => Promise<Response>): Promise<Response> {

@@ -39,6 +39,26 @@ export type GoogleChatAdapterConfig = NonNullable<
  */
 export type RestPlatformConfig = { platform: "rest" };
 
+/**
+ * `webhook` is the inbound push-source primitive (#1235): external systems
+ * POST JSON to `POST /api/v1/webhooks/:connectionId` and the payload is
+ * persisted as an `events` row. Adapterless like `rest` — handled per
+ * request by gateway/connections/webhook-ingest.ts, no Chat SDK instance.
+ */
+export type WebhookIngestPlatformConfig = {
+  platform: "webhook";
+  /** Bearer token; auto-generated at create, stored as a `secret://` ref. */
+  token?: string;
+  /** Opt-in `?token=` auth for header-less senders. Default false. */
+  allowQueryToken?: boolean | string;
+  /** Header carrying the delivery id; else sha256(raw body). */
+  dedupeHeader?: string;
+  /** `events.semantic_type` for ingested rows; default "content". */
+  semanticType?: string;
+  /** JSON pointer extracted into `events.title`. */
+  titlePath?: string;
+};
+
 export type PlatformAdapterConfig =
   | TelegramAdapterConfig
   | SlackAdapterConfig
@@ -46,7 +66,8 @@ export type PlatformAdapterConfig =
   | WhatsAppAdapterConfig
   | TeamsAdapterConfig
   | GoogleChatAdapterConfig
-  | RestPlatformConfig;
+  | RestPlatformConfig
+  | WebhookIngestPlatformConfig;
 
 /** Narrow a connection's config to the Telegram shape. */
 export function isTelegramConfig(

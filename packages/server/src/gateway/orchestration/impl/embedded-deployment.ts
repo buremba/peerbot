@@ -1024,14 +1024,27 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
       child.once("exit", () => resolve());
     });
 
-    signalWorkerGroup(child, "SIGTERM");
+    // A false return means we couldn't deliver the signal at all (no pid, or
+    // both the group send and the child.kill fallback threw). Surface it — the
+    // old child.kill() would have thrown, so silence here would otherwise hide
+    // a worker we failed to stop. (process.kill itself returns void on success,
+    // so a true return is not proof of reaping — see signalWorkerGroup.)
+    if (!signalWorkerGroup(child, "SIGTERM")) {
+      logger.warn(
+        `Embedded worker ${deploymentName} (pid=${child.pid}) could not be signalled with SIGTERM`
+      );
+    }
 
     const killTimer = setTimeout(() => {
       if (child.exitCode === null && child.signalCode === null) {
         logger.warn(
           `Embedded worker ${deploymentName} did not exit after SIGTERM, sending SIGKILL`
         );
-        signalWorkerGroup(child, "SIGKILL");
+        if (!signalWorkerGroup(child, "SIGKILL")) {
+          logger.warn(
+            `Embedded worker ${deploymentName} (pid=${child.pid}) could not be signalled with SIGKILL`
+          );
+        }
       }
     }, intervals.workerKillTimeoutMs);
 

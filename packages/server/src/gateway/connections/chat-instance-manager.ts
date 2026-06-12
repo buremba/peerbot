@@ -446,6 +446,20 @@ export class ChatInstanceManager {
       nextConfig = merged;
     }
 
+    // Refuse a merged config the platform rejects (e.g. flipping a Telegram
+    // connection to polling mode under LOBU_CLOUD_MODE) BEFORE persisting —
+    // otherwise the refused config would be saved `active` and only the next
+    // lease tick / hydrate would error it, mirroring addConnection's
+    // create-time rejection.
+    if (nextConfig !== undefined) {
+      const rejection = getPlatformDescriptor(
+        connection.platform
+      )?.getConfigRejection?.(nextConfig as PlatformAdapterConfig);
+      if (rejection) {
+        throw new Error(rejection);
+      }
+    }
+
     // previousConfig holds `secret://` refs; nextConfig from the caller
     // holds plaintext values. Resolve previous to plaintext before
     // comparing so an idempotent re-apply with the same bot token

@@ -231,6 +231,63 @@ describe("row-versioned lazy hydration (webhook transports)", () => {
   });
 });
 
+describe("updateConnection config rejection (parity with addConnection)", () => {
+  test("flipping a Telegram connection to polling under cloud mode is refused before persist", async () => {
+    const originalCloud = process.env.LOBU_CLOUD_MODE;
+    process.env.LOBU_CLOUD_MODE = "1";
+    try {
+      const { orgContext } = await import(
+        "../../../lobu/stores/org-context.js"
+      );
+      const { manager, connectionStore } = await buildReplica();
+      await seedAgentRow("agent-upd-rej", { organizationId: "org-upd-rej" });
+      await orgContext.run({ organizationId: "org-upd-rej" }, async () => {
+        await connectionStore.saveConnection({
+          id: "conn-upd-rej",
+          platform: "telegram",
+          agentId: "agent-upd-rej",
+          organizationId: "org-upd-rej",
+          config: {
+            platform: "telegram",
+            botToken: "12345:fake",
+            mode: "webhook",
+          },
+          settings: { allowGroups: true },
+          metadata: {},
+          status: "active",
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+      });
+
+      await expect(
+        orgContext.run({ organizationId: "org-upd-rej" }, () =>
+          manager.updateConnection("conn-upd-rej", {
+            config: {
+              platform: "telegram",
+              botToken: "12345:fake",
+              mode: "polling",
+            },
+          })
+        )
+      ).rejects.toThrow(/Polling mode/);
+
+      // The refused config must NOT have been persisted.
+      const stored = await orgContext.run(
+        { organizationId: "org-upd-rej" },
+        () => connectionStore.getConnection("conn-upd-rej")
+      );
+      expect((stored!.config as any).mode).toBe("webhook");
+    } finally {
+      if (originalCloud !== undefined) {
+        process.env.LOBU_CLOUD_MODE = originalCloud;
+      } else {
+        delete process.env.LOBU_CLOUD_MODE;
+      }
+    }
+  });
+});
+
 describe("idx_agent_connections_slack_workspace (install race)", () => {
   test("a second non-stopped Slack connection for the same (org, teamId) is refused by the DB", async () => {
     const { orgContext } = await import("../../../lobu/stores/org-context.js");

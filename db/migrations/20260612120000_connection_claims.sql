@@ -54,3 +54,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_connections_slack_workspace
     WHERE platform = 'slack'
       AND metadata->>'teamId' IS NOT NULL
       AND status <> 'stopped';
+
+-- migrate:down
+
+DROP INDEX IF EXISTS public.idx_agent_connections_slack_workspace;
+DROP TABLE IF EXISTS public.connection_claims;
+-- The duplicate-demotion UPDATE is not reversed: demoted rows keep
+-- status='stopped' with the explanatory error_message (data, not schema).

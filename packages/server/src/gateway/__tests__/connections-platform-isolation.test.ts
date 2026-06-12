@@ -22,6 +22,7 @@ import {
   type PostedLinkButton,
   type PostedQuestion,
 } from "../interactions.js";
+import { shouldHandle } from "../connections/interaction-bridge.js";
 import {
   isTelegramConfig,
   isSlackConfig,
@@ -246,6 +247,66 @@ describe("InteractionService — connectionId is required", () => {
       svc.postOauthLink("u", "conv", "ch", undefined, undefined, "slack",
         "https://example.com", "Sign in")
     ).rejects.toThrow(/connectionId is required/);
+  });
+
+  // platform "api" has no Chat SDK connection — its cards are routed by
+  // conversationId through the API platform's event.platform === "api"
+  // subscriptions, and chat bridges drop foreign-platform events in
+  // shouldHandle. Requiring a connectionId here is the #847 regression that
+  // silently broke ask_user/tool-approval for every API/SPA session (the
+  // worker token for API rows never carries one).
+  test("postQuestion succeeds for platform api without a connectionId", async () => {
+    const svc = new InteractionService();
+    const received: unknown[] = [];
+    svc.on("question:created", (e) => received.push(e));
+
+    const posted = await svc.postQuestion(
+      "u", "api:conv-1", "api:conv-1", "api", undefined, "api", "Proceed?", ["Yes", "No"]
+    );
+
+    expect(posted.platform).toBe("api");
+    expect(received).toHaveLength(1);
+  });
+
+  test("postToolApproval succeeds for platform api without a connectionId", async () => {
+    const svc = new InteractionService();
+    const received: unknown[] = [];
+    svc.on("tool:approval-needed", (e) => received.push(e));
+
+    await svc.postToolApproval("req-1", "agent-1", "u", "api:conv-1", "api:conv-1",
+      undefined, undefined, "api", "mcp", "t", {}, "/mcp/mcp/tools/t");
+
+    expect(received).toHaveLength(1);
+  });
+
+  // The bridge-side half of the api exemption: a chat bridge must drop a
+  // connectionless event posted for a different platform, otherwise the
+  // connectionId fall-through would route api cards into chat tenants.
+  test("chat bridge shouldHandle drops connectionless api-platform events", () => {
+    const manager = {
+      has: () => true,
+      getInstance: () => ({ connection: { platform: "slack" } }),
+    };
+
+    expect(
+      shouldHandle(
+        { channelId: "api:conv-1", platform: "api" },
+        "slack",
+        "conn-1",
+        manager as never
+      )
+    ).toBe(false);
+
+    // Same-platform events without a connectionId still fall through to the
+    // bridge (pre-existing chat behavior, unchanged).
+    expect(
+      shouldHandle(
+        { channelId: "C1", platform: "slack" },
+        "slack",
+        "conn-1",
+        manager as never
+      )
+    ).toBe(true);
   });
 
   test("no event is emitted when connectionId is missing", async () => {

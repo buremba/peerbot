@@ -899,12 +899,24 @@ export function registerActionHandlers(
   });
 }
 
-function shouldHandle(
-  event: { teamId?: string; channelId: string; connectionId?: string },
+export function shouldHandle(
+  event: {
+    teamId?: string;
+    channelId: string;
+    connectionId?: string;
+    platform?: string;
+  },
   platform: string,
   connectionId: string,
   manager: ChatInstanceManager
 ): boolean {
+  // Platform isolation: a bridge only handles events posted for its own
+  // platform. This is what makes connectionless `platform: "api"` events
+  // (API sessions have no Chat SDK connection) safe — without it, the
+  // connectionId fall-through below would let any chat bridge pick them up.
+  if (event.platform && event.platform !== platform) {
+    return false;
+  }
   if (!manager.has(connectionId)) {
     logger.debug(
       { connectionId, eventConnectionId: event.connectionId },

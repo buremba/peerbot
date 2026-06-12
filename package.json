@@ -6,6 +6,9 @@
   "workspaces": [
     "packages/*"
   ],
+  "overrides": {
+    "sharp": "^0.34.4"
+  },
   "scripts": {
     "build": "cd packages/core && bun run build && cd ../agent-worker && bun run build && cd ../..",
     "format": "biome format --config-path config/biome.config.json --write .",

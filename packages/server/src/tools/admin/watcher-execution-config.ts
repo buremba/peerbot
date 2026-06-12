@@ -1,15 +1,15 @@
 import { Type } from '@sinclair/typebox';
-import { TypeCompiler } from '@sinclair/typebox/compiler';
 import { ToolUserError } from '../../utils/errors';
 import { isAdminOrOwnerRole } from '../access-control';
 
 /**
  * Per-watcher device-worker CLI execution settings (stored as the
- * `watchers.execution_config` jsonb). Standalone so the same shape both feeds
- * ManageWatchersSchema and compiles into a runtime validator — manage_watchers
- * args are otherwise NOT schema-validated at the call boundary, and an
- * unvalidated, type-wrong value would silently fail the device-worker's strict
- * payload decode (bricking every run of that watcher).
+ * `watchers.execution_config` jsonb). Standalone so the shape can feed
+ * ManageWatchersSchema (where boundary validation enforces it) while the
+ * authorization gate below stays callable from the CRUD handlers. A
+ * type-wrong value would silently fail the device-worker's strict payload
+ * decode (bricking every run of that watcher), hence `additionalProperties:
+ * false` — a typo'd setting must be rejected, not stored and ignored.
  */
 export const WatcherExecutionConfigSchema = Type.Object(
   {
@@ -55,8 +55,6 @@ export const WatcherExecutionConfigSchema = Type.Object(
   }
 );
 
-const executionConfigValidator = TypeCompiler.Compile(WatcherExecutionConfigSchema);
-
 // Permission modes that let the spawned agent act unattended without prompting.
 // Restricted to org owner/admin: a member-write actor can pin a watcher to
 // another user's device, so allowing them to set these would be a privilege
@@ -71,23 +69,13 @@ export interface ExecutionConfigCaller {
 }
 
 /**
- * Validate an incoming `execution_config`. `undefined` = unchanged, `null` =
- * clear — both pass. An object is validated against the schema
- * (types/enums/range); elevated permission modes require owner/admin. Throws
- * ToolUserError on rejection.
+ * Authorize an incoming `execution_config`. `undefined` = unchanged, `null` =
+ * clear — both pass. Shape/type/range validation happens at the tool boundary
+ * (WatcherExecutionConfigSchema is embedded in ManageWatchersSchema); this
+ * gate only enforces the role policy, which a schema cannot express.
  */
 export function assertValidExecutionConfig(value: unknown, caller: ExecutionConfigCaller): void {
   if (value === undefined || value === null) return;
-  if (typeof value !== 'object' || Array.isArray(value)) {
-    throw new ToolUserError('execution_config must be a JSON object or null.');
-  }
-  if (!executionConfigValidator.Check(value)) {
-    const errs = [...executionConfigValidator.Errors(value)]
-      .slice(0, 5)
-      .map((e) => `${e.path || '/'}: ${e.message}`)
-      .join('; ');
-    throw new ToolUserError(`Invalid execution_config — ${errs}`);
-  }
   const mode = (value as { permission_mode?: string }).permission_mode;
   // System/internal callers (apply, automation, default-provisioning) carry no
   // memberRole and already bypass action-access enforcement; don't block them.

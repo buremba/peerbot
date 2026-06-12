@@ -2,10 +2,9 @@
  * Generic factory for action-discriminated admin tools.
  *
  * The `manage_*` tools all share the same shape: an `action` discriminator,
- * a per-action handler, per-action required-field checks, and dispatch via
- * `routeAction` (which enforces the per-action access policy). This module
- * lets a tool declare itself as a map of `action -> { schema, handler }`
- * instead of hand-rolling that plumbing.
+ * a per-action handler, and dispatch via `routeAction` (which enforces the
+ * per-action access policy). This module lets a tool declare itself as a map
+ * of `action -> { schema, handler }` instead of hand-rolling that plumbing.
  *
  * Two flavors, matching the two schema shapes that exist today:
  *
@@ -14,6 +13,8 @@
  *   The factory derives the union schema from the declared variants, so the
  *   exposed JSON schema is identical to the previous hand-written
  *   `Type.Union([...])` as long as variants are declared in the same order.
+ *   Args are coerced + validated against the matched variant before dispatch
+ *   (`withValidatedArgs`), so per-action required fields come from the schema.
  *
  * - `defineFlatActionTool` — for tools that intentionally expose a single
  *   flat object schema with an `action` enum (kept flat for MCP clients and
@@ -31,23 +32,21 @@ import type { Static, TObject, TUnion } from '@sinclair/typebox';
 import { Type } from '@sinclair/typebox';
 import type { Env } from '../../index';
 import type { ToolContext } from '../registry';
+import { withValidatedArgs } from '../validate-args';
 import { requireField, routeAction } from './action-router';
 
 export interface ActionDefinition<S extends TObject = TObject, R = unknown> {
   /** TypeBox variant for this action (must carry the `action` literal). */
   schema: S;
-  /** Args fields asserted present (via `requireField`) before the handler runs. */
-  requires?: string[];
   handler: (args: Static<S>, ctx: ToolContext, env: Env) => Promise<R>;
 }
 
 /** Pair an action's TypeBox variant with its typed handler. */
 export function action<S extends TObject, R>(
   schema: S,
-  handler: (args: Static<S>, ctx: ToolContext, env: Env) => Promise<R>,
-  options?: { requires?: string[] }
+  handler: (args: Static<S>, ctx: ToolContext, env: Env) => Promise<R>
 ): ActionDefinition<S, R> {
-  return { schema, handler, requires: options?.requires };
+  return { schema, handler };
 }
 
 type AnyActions = Record<string, ActionDefinition<any, any>>;
@@ -65,12 +64,7 @@ function runActions<T extends AnyActions>(
   const record = args as Record<string, unknown> & { action: string };
   const handlers: Record<string, () => Promise<ResultOf<T>>> = {};
   for (const [name, def] of Object.entries(actions)) {
-    handlers[name] = () => {
-      for (const field of def.requires ?? []) {
-        requireField(record[field], field, name);
-      }
-      return def.handler(args, ctx, env);
-    };
+    handlers[name] = () => def.handler(args, ctx, env);
   }
   return routeAction<ResultOf<T>>(toolName, record.action, ctx, handlers);
 }
@@ -78,7 +72,9 @@ function runActions<T extends AnyActions>(
 /**
  * Define a union-schema action tool. Returns the derived `Type.Union` input
  * schema (variants in declaration order) and the `(args, env, ctx)` runner
- * used as the registry handler.
+ * used as the registry handler. The runner coerces + validates args against
+ * the matched action variant before dispatch (lobu#1137), so per-action
+ * required fields are enforced by the schema, not `requires` lists.
  */
 export function defineActionTool<T extends AnyActions>(
   toolName: string,
@@ -92,7 +88,9 @@ export function defineActionTool<T extends AnyActions>(
   >;
   return {
     schema,
-    run: (args, env, ctx) => runActions(toolName, actions, args, env, ctx),
+    run: withValidatedArgs(toolName, schema, (args: ArgsOf<T>, env: Env, ctx: ToolContext) =>
+      runActions(toolName, actions, args, env, ctx)
+    ),
   };
 }
 

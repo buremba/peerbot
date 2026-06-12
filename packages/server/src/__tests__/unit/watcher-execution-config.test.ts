@@ -3,13 +3,31 @@
  * elevated permission modes. The end-to-end persistence/round-trip is covered
  * in __tests__/integration/watchers/watchers-crud.test.ts; this pins the
  * validation rules and the privilege gate without the integration harness.
+ *
+ * Shape/type/range validation moved to the tool boundary (lobu#1137):
+ * WatcherExecutionConfigSchema is embedded in ManageWatchersSchema, and
+ * `withValidatedArgs` enforces it before the handler runs. The schema tests
+ * below therefore go through `validateToolArgs` with the full tool schema —
+ * the same path a real manage_watchers call takes — while the role-policy
+ * gate stays on `assertValidExecutionConfig`.
  */
 
 import { describe, expect, it } from 'bun:test';
+import { ManageWatchersSchema } from '../../tools/admin/manage_watchers';
 import {
   assertValidExecutionConfig,
   type ExecutionConfigCaller,
 } from '../../tools/admin/watcher-execution-config';
+import { validateToolArgs } from '../../tools/validate-args';
+import { ToolUserError } from '../../utils/errors';
+
+function validateUpdateWith(executionConfig: unknown): unknown {
+  return validateToolArgs('manage_watchers', ManageWatchersSchema, {
+    action: 'update',
+    watcher_id: '1',
+    execution_config: executionConfig,
+  });
+}
 
 const owner: ExecutionConfigCaller = { memberRole: 'owner', userId: 'u1', isAuthenticated: true };
 const admin: ExecutionConfigCaller = { memberRole: 'admin', userId: 'u2', isAuthenticated: true };
@@ -39,37 +57,34 @@ describe('assertValidExecutionConfig — passthrough', () => {
   });
 });
 
-describe('assertValidExecutionConfig — schema validation', () => {
+describe('execution_config boundary validation (via ManageWatchersSchema)', () => {
   it('rejects a non-object', () => {
-    expect(() => assertValidExecutionConfig('nope', owner)).toThrow(/must be a JSON object/i);
-    expect(() => assertValidExecutionConfig([1, 2], owner)).toThrow(/must be a JSON object/i);
+    expect(() => validateUpdateWith('nope')).toThrow(ToolUserError);
+    expect(() => validateUpdateWith([1, 2])).toThrow(ToolUserError);
   });
 
   it('rejects out-of-range timeout_seconds', () => {
-    expect(() => assertValidExecutionConfig({ timeout_seconds: 0 }, owner)).toThrow(
-      /execution_config/i
-    );
-    expect(() => assertValidExecutionConfig({ timeout_seconds: 999_999 }, owner)).toThrow(
-      /execution_config/i
-    );
+    expect(() => validateUpdateWith({ timeout_seconds: 0 })).toThrow(/execution_config/i);
+    expect(() => validateUpdateWith({ timeout_seconds: 999_999 })).toThrow(/execution_config/i);
   });
 
-  it('rejects a wrong-typed field (string where integer expected)', () => {
-    // This is the silent-brick case: an unvalidated string would fail the
-    // device-worker's strict payload decode and disable every run.
-    expect(() => assertValidExecutionConfig({ timeout_seconds: '600' }, owner)).toThrow(
-      /execution_config/i
-    );
+  it('coerces a numeric string timeout to an integer (silent-brick case)', () => {
+    // An unvalidated string would fail the device-worker's strict payload
+    // decode and disable every run. The boundary coerces '600' → 600, so the
+    // persisted value is a well-typed integer; a non-numeric string rejects.
+    const out = validateUpdateWith({ timeout_seconds: '600' }) as {
+      execution_config: { timeout_seconds: number };
+    };
+    expect(out.execution_config.timeout_seconds).toBe(600);
+    expect(() => validateUpdateWith({ timeout_seconds: 'abc' })).toThrow(/execution_config/i);
   });
 
   it('rejects unknown keys (additionalProperties: false)', () => {
-    expect(() => assertValidExecutionConfig({ bogus: true }, owner)).toThrow(/execution_config/i);
+    expect(() => validateUpdateWith({ bogus: true })).toThrow(/execution_config/i);
   });
 
   it('rejects an invalid permission_mode enum value', () => {
-    expect(() => assertValidExecutionConfig({ permission_mode: 'yolo' }, owner)).toThrow(
-      /execution_config/i
-    );
+    expect(() => validateUpdateWith({ permission_mode: 'yolo' })).toThrow(/execution_config/i);
   });
 });
 

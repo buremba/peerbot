@@ -3,6 +3,7 @@ import type { Env } from "../index";
 import { buildClientSDK, type SDKMode } from "../sandbox/client-sdk";
 import { runScript } from "../sandbox/run-script";
 import type { ToolContext } from "./registry";
+import { withValidatedArgs } from "./validate-args";
 
 const SCRIPT_FIELDS = {
   script: Type.String({
@@ -66,8 +67,14 @@ async function runSandbox(
   };
 }
 
-export const runSdkScript = (args: RunArgs, env: Env, ctx: ToolContext) =>
-  runSandbox("full", args, env, ctx);
+export const runSdkScript = withValidatedArgs(
+  "run_sdk",
+  RunSchema,
+  (args: RunArgs, env: Env, ctx: ToolContext) => runSandbox("full", args, env, ctx),
+);
 
-export const querySdkScript = (args: QueryArgs, env: Env, ctx: ToolContext) =>
-  runSandbox("read", args, env, ctx);
+export const querySdkScript = withValidatedArgs(
+  "query_sdk",
+  QuerySchema,
+  (args: QueryArgs, env: Env, ctx: ToolContext) => runSandbox("read", args, env, ctx),
+);

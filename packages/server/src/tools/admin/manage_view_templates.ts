@@ -12,6 +12,7 @@ import { ToolUserError } from '../../utils/errors';
 import { validateDataSourceQuery } from '../../utils/execute-data-sources';
 import { resolveUsernames } from '../../utils/resolve-usernames';
 import type { ToolContext } from '../registry';
+import { withValidatedArgs } from '../validate-args';
 import { defineFlatActionTool, flatAction } from './action-tool';
 
 // ============================================
@@ -110,15 +111,19 @@ type ManageViewTemplatesResult =
 // Main Function
 // ============================================
 
-export const manageViewTemplates = defineFlatActionTool<
-  ManageViewTemplatesArgs,
-  ManageViewTemplatesResult
->('manage_view_templates', {
-  set: flatAction(handleSet),
-  get: flatAction(handleGet),
-  rollback: flatAction(handleRollback),
-  remove_tab: flatAction(handleRemoveTab),
-});
+export const manageViewTemplates = withValidatedArgs(
+  'manage_view_templates',
+  ManageViewTemplatesSchema,
+  defineFlatActionTool<ManageViewTemplatesArgs, ManageViewTemplatesResult>(
+    'manage_view_templates',
+    {
+      set: flatAction(handleSet),
+      get: flatAction(handleGet),
+      rollback: flatAction(handleRollback),
+      remove_tab: flatAction(handleRemoveTab),
+    }
+  )
+);
 
 // ============================================
 // Helpers
@@ -147,31 +152,11 @@ async function verifyAccess(
 
   const rt = args.resource_type;
 
-  // Neither the SDK namespace path (action-call.ts) nor the REST/registry path
-  // (execute.ts only TypeBox-validates query_sdk/run_sdk) validates these args
-  // before the handler runs, so a missing/wrong-shaped call (e.g.
-  // `{ resource: 'entity' }`) reaches here with resource_type/resource_id
-  // undefined. For the entity branch that meant `WHERE id = Number(undefined)`
-  // → NaN → a raw `invalid input syntax for type bigint: "NaN"` Postgres error.
-  // Reject the bad shape with a clean ToolUserError instead.
-  if (rt !== 'entity_type' && rt !== 'entity') {
-    throw new ToolUserError(
-      `resource_type is required and must be 'entity' or 'entity_type' (got ${JSON.stringify(rt)})`
-    );
-  }
-
-  // Both branches below dereference resource_id; a missing one must fail
-  // handler-side, not reach the DB. (entity_type stringifies undefined to the
-  // literal "undefined" and queries by slug; entity coerces to NaN — both are
-  // rejected here so every shape fails consistently before any query.)
-  if (
-    args.resource_id === undefined ||
-    args.resource_id === null ||
-    String(args.resource_id).trim() === ''
-  ) {
-    throw new ToolUserError(
-      `resource_id is required (got ${JSON.stringify(args.resource_id)})`
-    );
+  // Boundary validation (`withValidatedArgs`) guarantees resource_type and
+  // resource_id are present and well-typed, but a whitespace-only string
+  // still satisfies the schema and would query for a blank slug.
+  if (String(args.resource_id).trim() === '') {
+    throw new ToolUserError(`resource_id is required (got ${JSON.stringify(args.resource_id)})`);
   }
 
   const id = rid(args);

@@ -25,6 +25,7 @@ import { getWorkspaceProvider } from '../workspace';
 import { isAdminOrOwnerRole } from './access-control';
 import { MEMBER_ENTITY_TYPE_SLUG } from './constants';
 import type { ToolContext } from './registry';
+import { withValidatedArgs } from './validate-args';
 
 export const ResolvePathSchema = Type.Object({
   path: Type.String({
@@ -261,16 +262,15 @@ function parsePathAndQuery(rawPath: string): { path: string; query: Record<strin
   return { path, query };
 }
 
-export function resolvePath(
-  args: ResolvePathArgs,
-  _env: Env,
-  ctx: ToolContext
-): Promise<ResolvePathResult> {
-  return Sentry.startSpan(
-    { name: 'resolve_path', op: 'function', attributes: { path: args.path } },
-    () => _resolvePath(args, ctx)
-  );
-}
+export const resolvePath = withValidatedArgs(
+  'resolve_path',
+  ResolvePathSchema,
+  (args: ResolvePathArgs, _env: Env, ctx: ToolContext): Promise<ResolvePathResult> =>
+    Sentry.startSpan(
+      { name: 'resolve_path', op: 'function', attributes: { path: args.path } },
+      () => _resolvePath(args, ctx)
+    )
+);
 
 async function _resolvePath(
   args: ResolvePathArgs,

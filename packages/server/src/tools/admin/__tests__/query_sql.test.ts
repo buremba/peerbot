@@ -15,24 +15,19 @@ const ctx: ToolContext = {
 };
 
 describe('querySql input validation', () => {
-  it('returns a structured error when callers send query instead of sql', async () => {
-    const result = await querySql(
-      { query: 'select * from events', sort_by: 'id' } as unknown as QuerySqlArgs,
-      {},
-      ctx
-    );
-
-    expect(result.error).toBe('sql (string) is required.');
-    expect(result.rows).toEqual([]);
-    expect(result.total_count).toBe(0);
+  // Shape errors (missing/mistyped fields, non-object args) now reject at the
+  // tool boundary (withValidatedArgs, lobu#1137) with the field name in the
+  // message, instead of resolving to a structured { error } result.
+  it('rejects callers that send query instead of sql, naming the missing field', async () => {
+    await expect(
+      querySql({ query: 'select * from events', sort_by: 'id' } as unknown as QuerySqlArgs, {}, ctx)
+    ).rejects.toThrow(/sql/);
   });
 
-  it('returns a structured error when tool arguments are not an object', async () => {
-    const result = await querySql(null as unknown as QuerySqlArgs, {}, ctx);
-
-    expect(result.error).toBe('Tool arguments must be an object.');
-    expect(result.rows).toEqual([]);
-    expect(result.total_count).toBe(0);
+  it('rejects non-object tool arguments', async () => {
+    await expect(querySql(null as unknown as QuerySqlArgs, {}, ctx)).rejects.toThrow(
+      /Invalid arguments for query_sql/
+    );
   });
 
   it('rejects an invalid sort_by column name (sort_by is optional, but must be a bare identifier when given)', async () => {

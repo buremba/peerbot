@@ -195,7 +195,9 @@ describe('watcher feedback contract', () => {
         {} as never,
         ownerCtx(workspace)
       )
-    ).rejects.toThrow(/unsupported mutation/);
+      // Boundary validation rejects the bad enum before the handler's own
+      // "unsupported mutation" check — both name the offending field.
+    ).rejects.toThrow(/mutation/);
 
     const other = await TestWorkspace.create({ name: 'Feedback Stranger Org' });
     const foreign = await seedWatcher(other, 'foreign');

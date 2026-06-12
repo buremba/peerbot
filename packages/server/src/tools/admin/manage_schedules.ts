@@ -19,7 +19,6 @@
  */
 
 import { type Static, Type } from '@sinclair/typebox';
-import { TypeCompiler } from '@sinclair/typebox/compiler';
 import { action, defineActionTool } from './action-tool';
 import {
   createScheduledJob,
@@ -106,8 +105,6 @@ const CancelAction = Type.Object({
   id: Type.String({ format: 'uuid' }),
 });
 
-const createValidator = TypeCompiler.Compile(CreateAction);
-
 // ============================================
 // Handler
 // ============================================
@@ -133,10 +130,6 @@ async function handleCreate(
   args: Static<typeof CreateAction>,
   ctx: ToolContext
 ): Promise<ToolResult> {
-  if (!createValidator.Check(args)) {
-    const errs = [...createValidator.Errors(args)];
-    return { error: `Invalid args: ${errs.map((e) => `${e.path} ${e.message}`).join('; ')}` };
-  }
   const runAtDate = new Date(args.run_at);
   if (Number.isNaN(runAtDate.getTime())) {
     return { error: `run_at is not a valid ISO timestamp: ${args.run_at}` };

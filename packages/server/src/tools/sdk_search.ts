@@ -8,6 +8,7 @@ import { type Static, Type } from "@sinclair/typebox";
 import type { Env } from "../index";
 import { METHOD_METADATA, type MethodMetadata } from "../sandbox/method-metadata";
 import type { ToolContext } from "./registry";
+import { withValidatedArgs } from "./validate-args";
 
 export const SdkSearchSchema = Type.Object({
   query: Type.String({
@@ -62,7 +63,9 @@ function renderDrillDown(path: string, meta: MethodMetadata): string {
   return lines.join("\n");
 }
 
-export async function sdkSearch(
+export const sdkSearch = withValidatedArgs("search_sdk", SdkSearchSchema, sdkSearchImpl);
+
+async function sdkSearchImpl(
   args: SdkSearchArgs,
   _env: Env,
   _ctx: ToolContext,

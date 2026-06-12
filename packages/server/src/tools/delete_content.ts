@@ -26,6 +26,7 @@ import logger from '../utils/logger';
 import { isSystemContext } from './access-control';
 import { TOMBSTONE_SEMANTIC_TYPE } from './constants';
 import type { ToolContext } from './registry';
+import { withValidatedArgs } from './validate-args';
 
 const DeleteContentSchema = Type.Object({
   event_id: Type.Optional(
@@ -55,7 +56,13 @@ export interface DeleteContentResult {
   already_superseded_ids: number[];
 }
 
-export async function deleteContent(
+export const deleteContent = withValidatedArgs(
+  'delete_knowledge',
+  DeleteContentSchema,
+  deleteContentImpl
+);
+
+async function deleteContentImpl(
   args: DeleteContentArgs,
   _env: Env,
   ctx: ToolContext

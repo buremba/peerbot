@@ -34,6 +34,7 @@ import {
 } from '../../utils/organization-access';
 import { WatcherExecutionConfigSchema } from './watcher-execution-config';
 import type { ToolContext } from '../registry';
+import { withValidatedArgs } from '../validate-args';
 import { defineFlatActionTool, flatAction } from './action-tool';
 import { requireWatcherAccess } from './manage_watchers/shared';
 import { handleCreate, handleUpdate, handleDelete, handleCreateFromVersion } from './manage_watchers/crud';
@@ -215,8 +216,8 @@ export const ManageWatchersSchema = Type.Object({
   model_config: Type.Optional(Type.Any({ description: '[create/update] AI model configuration' })),
   // Union with Null so `update` can clear a previously-saved config back to
   // NULL/defaults — omitted = unchanged, null = clear, object = replace. The
-  // object shape lives in WatcherExecutionConfigSchema (below) so it can also
-  // be compiled into a runtime validator (assertValidExecutionConfig).
+  // object shape lives in WatcherExecutionConfigSchema; the role-policy gate
+  // (assertValidExecutionConfig) stays in the CRUD handlers.
   execution_config: Type.Optional(Type.Union([Type.Null(), WatcherExecutionConfigSchema])),
   tags: Type.Optional(Type.Array(Type.String(), { description: '[create] Tags for filtering' })),
 
@@ -471,7 +472,13 @@ export const ListWatchersSchema = Type.Object({
 // Main Function
 // ============================================
 
-export async function manageWatchers(
+export const manageWatchers = withValidatedArgs(
+  'manage_watchers',
+  ManageWatchersSchema,
+  manageWatchersImpl
+);
+
+async function manageWatchersImpl(
   args: ManageWatchersArgs,
   env: Env,
   ctx: ToolContext
@@ -542,7 +549,13 @@ const runManageWatchers = defineFlatActionTool<ManageWatchersArgs, ManageWatcher
   }
 );
 
-export async function listWatchers(
+export const listWatchers = withValidatedArgs(
+  'list_watchers',
+  ListWatchersSchema,
+  listWatchersImpl
+);
+
+async function listWatchersImpl(
   args: ListWatchersArgs,
   env: Env,
   ctx: ToolContext

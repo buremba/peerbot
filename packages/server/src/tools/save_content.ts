@@ -23,6 +23,7 @@ import { trackWatcherReaction } from '../utils/watcher-reactions';
 import { isSystemContext } from './access-control';
 import { MEMBER_ENTITY_TYPE_SLUG } from './constants';
 import type { ToolContext } from './registry';
+import { withValidatedArgs } from './validate-args';
 import { buildEventViewUrl } from './view-urls';
 
 // ============================================
@@ -129,7 +130,9 @@ interface SaveContentResult {
 // Handler
 // ============================================
 
-export async function saveContent(
+export const saveContent = withValidatedArgs('save_memory', SaveContentSchema, saveContentImpl);
+
+async function saveContentImpl(
   args: SaveContentArgs,
   _env: Env,
   ctx: ToolContext

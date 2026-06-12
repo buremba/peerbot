@@ -47,6 +47,7 @@ import { trackWatcherReaction } from '../../utils/watcher-reactions';
 import { isAdminOrOwnerRole } from '../access-control';
 import { MEMBER_ENTITY_TYPE_SLUG } from '../constants';
 import type { ToolContext } from '../registry';
+import { withValidatedArgs } from '../validate-args';
 import { buildEntityViewUrl, getOrgUrlContext, toEntityInfo } from '../view-urls';
 import { defineFlatActionTool, flatAction } from './action-tool';
 import { SortOrderField } from './schemas/common-fields';
@@ -375,7 +376,13 @@ const runManageEntity = defineFlatActionTool<ManageEntityArgs, ManageEntityResul
   }
 );
 
-export async function manageEntity(
+export const manageEntity = withValidatedArgs(
+  'manage_entity',
+  ManageEntitySchema,
+  manageEntityImpl
+);
+
+async function manageEntityImpl(
   args: ManageEntityArgs,
   env: Env,
   ctx: ToolContext

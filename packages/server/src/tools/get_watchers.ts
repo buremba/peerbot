@@ -48,6 +48,7 @@ import {
 import { buildLatestWatcherRunJoinSql } from '../watchers/automation';
 import { getWorkspaceProvider } from '../workspace';
 import type { ToolContext } from './registry';
+import { withValidatedArgs } from './validate-args';
 
 // ============================================
 // Typebox Schema
@@ -319,7 +320,9 @@ async function requireWatcherReadAccess(
 // Tool Implementation
 // ============================================
 
-export async function getWatcher(
+export const getWatcher = withValidatedArgs('get_watcher', GetWatcherSchema, getWatcherImpl);
+
+async function getWatcherImpl(
   args: GetWatcherArgs,
   env: Env,
   ctx: ToolContext

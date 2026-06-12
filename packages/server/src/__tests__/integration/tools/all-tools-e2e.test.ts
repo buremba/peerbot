@@ -143,7 +143,7 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 				note: "lists entities of a type (create→delete asserted separately)",
 			},
 			manage_entity_schema: {
-				args: { action: "list" },
+				args: { schema_type: "entity_type", action: "list" },
 				coverage: "reachable",
 				note: "lists entity-type schemas for the org",
 			},

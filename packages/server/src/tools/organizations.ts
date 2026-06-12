@@ -16,6 +16,7 @@ import { type Static, Type } from '@sinclair/typebox';
 import type { Env } from '../index';
 import { getWorkspaceProvider } from '../workspace';
 import type { OrgInfo } from '../workspace/types';
+import { withValidatedArgs } from './validate-args';
 
 export const ListOrganizationsSchema = Type.Object({
   search: Type.Optional(
@@ -23,7 +24,13 @@ export const ListOrganizationsSchema = Type.Object({
   ),
 });
 
-export async function listOrganizations(
+export const listOrganizations = withValidatedArgs(
+  'list_organizations',
+  ListOrganizationsSchema,
+  listOrganizationsImpl
+);
+
+async function listOrganizationsImpl(
   args: Static<typeof ListOrganizationsSchema>,
   _env: Env,
   ctx: { userId: string; currentOrganizationId: string | null }

@@ -31,15 +31,18 @@ import {
   fetchIncludeSuperseded,
 } from './query';
 import { buildContentItems, fetchClassificationExcerpts } from './render';
-import { type GetContentArgs, getIncludeSupersededValidationErrors } from './schema';
+import { GetContentSchema, type GetContentArgs, getIncludeSupersededValidationErrors } from './schema';
 import type { ContentRow, GetContentResult, IdRow } from './types';
 import { handleWatcherMode } from './watcher-mode';
+import { withValidatedArgs } from '../validate-args';
 
 // ============================================
 // Main Function
 // ============================================
 
-export async function getContent(
+export const getContent = withValidatedArgs('read_knowledge', GetContentSchema, getContentImpl);
+
+async function getContentImpl(
   args: GetContentArgs,
   env: Env,
   ctx: ToolContext

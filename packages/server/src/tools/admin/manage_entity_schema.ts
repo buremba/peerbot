@@ -20,6 +20,7 @@ import { RESERVED_ENTITY_TYPES } from '../../utils/reserved';
 import { resolveUsernames } from '../../utils/resolve-usernames';
 import { ToolUserError } from '../../utils/errors';
 import type { ToolContext } from '../registry';
+import { withValidatedArgs } from '../validate-args';
 import { defineFlatActionTool, flatAction } from './action-tool';
 
 // ============================================
@@ -285,7 +286,13 @@ const runRelationshipTypeActions = defineFlatActionTool<
   list_rules: flatAction(rtHandleListRules),
 });
 
-export async function manageEntitySchema(
+export const manageEntitySchema = withValidatedArgs(
+  'manage_entity_schema',
+  ManageEntitySchemaSchema,
+  manageEntitySchemaImpl
+);
+
+async function manageEntitySchemaImpl(
   args: ManageEntitySchemaArgs,
   env: Env,
   ctx: ToolContext
@@ -365,10 +372,11 @@ function validateEntityMetadataSchemaDisplayConfig(
 }
 
 /**
- * Reject an empty/whitespace `backing.sql`. TypeBox's `minLength: 1` is not
- * enforced for this tool (it isn't in VALIDATED_TOOLS), so without this guard a
- * caller could persist a "derived" type whose view is blank — unqueryable and
- * with no inferable measures. `backing: null` (revert to stored) is fine.
+ * Reject an empty/whitespace `backing.sql`. TypeBox `minLength: 1` accepts a
+ * whitespace-only string, so boundary validation alone would let a caller
+ * persist a "derived" type whose view is blank — unqueryable and with no
+ * inferable measures. `backing: null` (revert to stored) is fine. The
+ * `[invalid_schema]`/422 error shape here is a contract `lobu apply` parses.
  */
 function assertValidBacking(backing: ManageEntitySchemaArgs['backing']): void {
   if (backing && typeof backing.sql === 'string' && backing.sql.trim() === '') {

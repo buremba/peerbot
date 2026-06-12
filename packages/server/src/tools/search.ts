@@ -18,6 +18,7 @@ import { expandSearchQueries } from '../utils/query-expansion';
 import { buildEntityUrl, getPublicWebUrl } from '../utils/url-builder';
 import { getWorkspaceProvider } from '../workspace';
 import type { ToolContext } from './registry';
+import { withValidatedArgs } from './validate-args';
 
 // ============================================
 // Typebox Schema
@@ -300,7 +301,9 @@ async function fetchContentSnippets(
   }));
 }
 
-export async function search(
+export const search = withValidatedArgs('search_memory', SearchSchema, searchImpl);
+
+async function searchImpl(
   args: SearchArgs,
   env: Env,
   ctx: ToolContext

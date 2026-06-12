@@ -184,13 +184,14 @@ describe('watcher CRUD', () => {
     await expect(
       owner.watchers.create({ ...base, slug: 'bad-1', execution_config: { timeout_seconds: 0 } })
     ).rejects.toThrow(/execution_config/i);
-    // wrong type (string where integer expected) — would otherwise brick the
-    // Swift payload decode at run time.
+    // uncoercible type (non-numeric string where integer expected) — would
+    // otherwise brick the Swift payload decode at run time. A numeric string
+    // like '600' is coerced to 600 by boundary validation instead.
     await expect(
       owner.watchers.create({
         ...base,
         slug: 'bad-2',
-        execution_config: { timeout_seconds: '600' },
+        execution_config: { timeout_seconds: 'abc' },
       } as never)
     ).rejects.toThrow(/execution_config/i);
     // unknown key (additionalProperties: false)

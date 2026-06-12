@@ -15,6 +15,7 @@ import { raceAbort } from '../../utils/race-abort';
 import { ADMIN_ONLY_QUERYABLE_TABLES, SAFE_COLUMN_DEFS } from '../../utils/table-schema';
 import { getCachedMembershipRole, getCachedOrgBySlug } from '../../workspace/multi-tenant';
 import type { ToolContext } from '../registry';
+import { withValidatedArgs } from '../validate-args';
 import { SortOrderField } from './schemas/common-fields';
 import { isAdminOrOwnerRole } from '../access-control';
 
@@ -136,19 +137,14 @@ function errorResult(message: string, startTime: number): QuerySqlResult {
   };
 }
 
-export async function querySql(
+export const querySql = withValidatedArgs('query_sql', QuerySqlSchema, querySqlImpl);
+
+async function querySqlImpl(
   args: QuerySqlArgs,
   _env: unknown,
   ctx: ToolContext
 ): Promise<QuerySqlResult> {
   const startTime = Date.now();
-
-  if (!args || typeof args !== 'object') {
-    return errorResult('Tool arguments must be an object.', startTime);
-  }
-  if (typeof args.sql !== 'string') {
-    return errorResult('sql (string) is required.', startTime);
-  }
 
   const baseSql = args.sql.trim();
   if (!baseSql) return errorResult('SQL query is required.', startTime);

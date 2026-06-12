@@ -26,6 +26,7 @@ import { ADMIN_ONLY_QUERYABLE_TABLES, SAFE_COLUMN_DEFS } from '../../utils/table
 import { ToolUserError } from '../../utils/errors';
 import logger from '../../utils/logger';
 import type { ToolContext } from '../registry';
+import { withValidatedArgs } from '../validate-args';
 import { isAdminOrOwnerRole } from '../access-control';
 
 export const MetricSeriesSchema = Type.Object({
@@ -51,7 +52,9 @@ export interface MetricSeriesResult {
   rows: unknown[][];
 }
 
-export async function metricSeries(
+export const metricSeries = withValidatedArgs('metric_series', MetricSeriesSchema, metricSeriesImpl);
+
+async function metricSeriesImpl(
   args: MetricSeriesArgs,
   _env: unknown,
   ctx: ToolContext

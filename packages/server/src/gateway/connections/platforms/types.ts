@@ -106,6 +106,19 @@ export interface ChatPlatformDescriptor {
    */
   resolveWebhookMode?(config: PlatformAdapterConfig): string;
 
+  /**
+   * True when this config makes the connection an *exclusive* transport: a
+   * persistent outbound loop (e.g. Telegram long-polling) where two replicas
+   * running it concurrently is incorrect, not just wasteful. Exclusive
+   * connections are started only by the lease-holding replica
+   * (`connection_claims`), never by request-path hydration. Absent hook /
+   * false = stateless webhook transport, hydratable on any replica.
+   */
+  requiresExclusiveStart?(
+    config: PlatformAdapterConfig,
+    ctx: { publicGatewayUrl: string }
+  ): boolean;
+
   /** Register the public per-connection webhook URL with the platform. */
   configureWebhook?(
     connection: PlatformConnection,

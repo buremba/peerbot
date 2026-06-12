@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentConnectionStore, StoredConnection } from "@lobu/core";
 import { createLogger, isSecretRef } from "@lobu/core";
 import { type AdapterPostableMessage, Chat } from "chat";
+import { getDb } from "../../db/client.js";
 import { orgContext, tryGetOrgId } from "../../lobu/stores/org-context.js";
 import { CommandDispatcher } from "../commands/command-dispatcher.js";
 import type { IFileHandler } from "../platform/file-handler.js";
@@ -86,6 +87,14 @@ function configsEqual(
 
 const logger = createLogger("chat-instance-manager");
 
+/**
+ * Exclusive-transport lease cadence. Each replica ticks every
+ * `EXCLUSIVE_TICK_MS`; a tick renews the heartbeats of held claims, so a
+ * claim whose heartbeat is older than `CLAIM_TTL_SECONDS` (3 missed ticks)
+ * belongs to a dead pod and is reclaimable by any replica.
+ */
+const EXCLUSIVE_TICK_MS = 15_000;
+const CLAIM_TTL_SECONDS = 45;
 
 /**
  * Platforms that are valid to declare on an agent but have no chat adapter to
@@ -96,9 +105,8 @@ const logger = createLogger("chat-instance-manager");
  * route. Deliberately NOT in the platform descriptor registry:
  * createPlatformAdapters() derives the PlatformRegistry entries from it, and
  * an adapterless platform must not get a registry entry either. Stateless by
- * construction, so it is multi-replica safe — every pod's boot reconciliation
- * sees the row as healthy (`active`) rather than retrying a doomed adapter
- * start.
+ * construction, so it is multi-replica safe — hydration and the health sweep
+ * skip it rather than retrying a doomed adapter start.
  */
 const ADAPTERLESS_PLATFORMS = new Set<string>(["rest"]);
 
@@ -116,6 +124,13 @@ interface ManagedInstance {
    * appendHistory + enqueueMessage path as typed messages.
    */
   messageBridge: MessageHandlerBridge;
+  /**
+   * `agent_connections.updated_at` of the row this instance was hydrated
+   * from. A pod-local instance is a pure memo of the row: when the stored
+   * row is newer (config edited on any replica), the next use re-hydrates,
+   * so replicas converge without cross-pod restart fan-out.
+   */
+  rowVersion: number;
   cleanup?: () => Promise<void>;
   interactionCleanup?: () => void;
 }
@@ -126,6 +141,18 @@ export class ChatInstanceManager {
   private publicGatewayUrl = "";
   private slackCoordinator!: SlackConnectionCoordinator;
   private connectionStore!: AgentConnectionStore;
+  /** Identity for `connection_claims.claimed_by` — unique per process. */
+  private podId = randomUUID();
+  private exclusiveTimer: ReturnType<typeof setInterval> | undefined;
+  /** Exclusive connections this replica currently holds the lease for. */
+  private exclusiveOwned = new Set<string>();
+  /**
+   * rowVersion of the last failed exclusive start per connection, so a
+   * broken config is retried once per row edit instead of every tick.
+   * Pod-local on purpose: retry bookkeeping is a local decision.
+   */
+  private lastExclusiveFailure = new Map<string, number>();
+  private exclusiveTickInFlight = false;
 
   /**
    * Public gateway base URL (`PUBLIC_WEB_URL` or derived) — exposed so the
@@ -136,6 +163,19 @@ export class ChatInstanceManager {
     return this.publicGatewayUrl;
   }
 
+  /**
+   * Lazy-first initialization: NO eager warm-start. A connection is a row,
+   * not a process — webhook-transport connections are hydrated on demand by
+   * `ensureConnectionRunning()` (inbound webhook, notification fan-out,
+   * platform routing, file uploads), keyed by the row's `updated_at` so
+   * config edits on any replica converge here on next use. Status health is
+   * owned by the periodic single-claimant `connection-health` task (see
+   * `sweepConnectionHealth`), not by boot side-effects racing across pods.
+   *
+   * The only connections that need a process identity are *exclusive*
+   * transports (Telegram long-polling), which the claim runner below starts
+   * on exactly one replica via the `connection_claims` lease.
+   */
   async initialize(services: CoreServices): Promise<void> {
     this.services = services;
     this.publicGatewayUrl = services.getPublicGatewayUrl();
@@ -147,129 +187,7 @@ export class ChatInstanceManager {
       return;
     }
     this.connectionStore = store;
-
-    const connections = await this.connectionStore.listConnections();
-    logger.debug(
-      { count: connections.length },
-      "Loading chat connections from agent_connections"
-    );
-
-    for (const stored of connections) {
-      // StoredConnection.config holds `secret://` refs for sensitive
-      // fields. startInstance() resolves them before handing config to
-      // the Chat SDK adapter; if a ref is unresolvable (e.g. the
-      // underlying secret was wiped), the connection is marked as
-      // errored so an operator can repair or remove it.
-      const connection = storedToPlatform(stored);
-
-      // Apply platform config guards before startInstance (e.g. Telegram's
-      // cloud-mode polling rejection) — otherwise a previously-persisted
-      // refused config would silently start at boot and bypass the
-      // create-time rejection in `addConnection()`. Mark the row errored so
-      // an operator notices.
-      const message =
-        connection.status === "active"
-          ? getPlatformDescriptor(connection.platform)?.getConfigRejection?.(
-              connection.config
-            )
-          : undefined;
-      if (message) {
-        logger.warn(
-          { id: connection.id, agentId: connection.agentId },
-          `Refusing to boot ${connection.platform} connection: ${message}`
-        );
-        // Self-bind the connection's owning org so the PostgreSQL-backed
-        // store's per-tenant predicate is satisfied — boot has no HTTP
-        // request and thus no ALS org context.
-        try {
-          const orgId = connection.organizationId;
-          const markErrored = () =>
-            this.connectionStore.updateConnection(connection.id, {
-              status: "error",
-              errorMessage: message,
-            });
-          if (orgId) {
-            await orgContext.run({ organizationId: orgId }, markErrored);
-          } else {
-            await markErrored();
-          }
-        } catch (markErr) {
-          logger.error(
-            { id: connection.id, error: String(markErr) },
-            "Failed to mark Telegram polling connection as errored"
-          );
-        }
-        continue;
-      }
-
-      try {
-        // Retry `error` rows alongside `active`: a previous boot's failure
-        // (transient deploy issue, temporary env breakage like the #692
-        // encryption-key parser regression) leaves the row stuck in `error`
-        // forever even after the underlying bug is fixed, because nothing
-        // else flips it back. `stopped` is operator-driven so we still
-        // skip those. On success startInstance() clears the error state
-        // when persistConnection() runs through a later restart/update.
-        if (connection.status === "active" || connection.status === "error") {
-          // Boot runs without an HTTP request, so AsyncLocalStorage has
-          // no orgId. startInstance() now self-binds the connection's
-          // agent org so PostgresSecretStore.get() resolves per-org
-          // refs correctly; see comment on startInstance().
-          await this.startInstance(connection);
-          if (connection.status === "error") {
-            // Recovered from a previous boot's failure — clear the error
-            // marker so the UI reflects reality. Bound to the connection's
-            // own org so the per-tenant WHERE predicate is satisfied.
-            const recoveryOrgId = connection.organizationId;
-            const clearError = () =>
-              this.connectionStore.updateConnection(connection.id, {
-                status: "active",
-                errorMessage: undefined,
-              });
-            if (recoveryOrgId) {
-              await orgContext.run(
-                { organizationId: recoveryOrgId },
-                clearError
-              );
-            } else {
-              await clearError();
-            }
-            logger.info(
-              { id: connection.id },
-              "Recovered previously-errored connection"
-            );
-          }
-        }
-      } catch (error) {
-        logger.error(
-          { id: connection.id, error: String(error) },
-          "Failed to load connection"
-        );
-        // Mark the row errored under the connection's own org context:
-        // boot has no HTTP request and no ALS org id, and the postgres
-        // store's saveConnection() requires getOrgId() — without the
-        // wrap the error-marker write itself throws and the row is left
-        // in `active`, masking the failure.
-        const errOrgId = connection.organizationId;
-        const markErrored = () =>
-          this.connectionStore.updateConnection(connection.id, {
-            status: "error",
-            errorMessage: `Startup failed: ${error instanceof Error ? error.message : String(error)}`,
-          });
-        try {
-          if (errOrgId) {
-            await orgContext.run({ organizationId: errOrgId }, markErrored);
-          } else {
-            await markErrored();
-          }
-        } catch (markErr) {
-          logger.error(
-            { id: connection.id, error: String(markErr) },
-            "Failed to mark connection as errored"
-          );
-        }
-      }
-    }
+    this.startExclusiveRunner();
   }
 
   async shutdown(): Promise<void> {
@@ -277,6 +195,26 @@ export class ChatInstanceManager {
       { count: this.instances.size },
       "Shutting down all connections"
     );
+    if (this.exclusiveTimer) {
+      clearInterval(this.exclusiveTimer);
+      this.exclusiveTimer = undefined;
+    }
+    // Release exclusive leases eagerly so a peer replica can claim within one
+    // tick instead of waiting out the TTL. Best-effort: pod death skips this
+    // and the TTL covers it.
+    if (this.exclusiveOwned.size > 0) {
+      try {
+        await getDb()`
+          DELETE FROM connection_claims WHERE claimed_by = ${this.podId}
+        `;
+      } catch (error) {
+        logger.warn(
+          { error: String(error) },
+          "Failed to release exclusive connection claims on shutdown"
+        );
+      }
+      this.exclusiveOwned.clear();
+    }
     const shutdownPromises = Array.from(this.instances.values()).map(
       async (instance) => {
         try {
@@ -343,12 +281,40 @@ export class ChatInstanceManager {
     };
 
     // Persist first (sensitive fields are moved into the secret store as
-    // refs) so a startInstance failure can't leave a running instance
-    // with no row, and a persist failure can't leave a half-baked entry.
+    // refs) so a start failure can't leave a running instance with no row,
+    // and a persist failure can't leave a half-baked entry. The instance is
+    // then hydrated from the persisted row — the same path every replica
+    // uses — so the memo key matches the row from the first start.
     await this.persistConnection(connection);
 
+    const stored = await this.connectionStore.getConnection(id);
+    if (!stored) {
+      throw new Error(`Connection ${id} did not persist`);
+    }
+
+    if (isAdapterlessPlatform(platform)) {
+      logger.info({ id, platform, agentId }, "Connection added");
+      return connection;
+    }
+
+    if (this.isExclusiveStored(stored)) {
+      // Exclusive transports start under the connection_claims lease — kick
+      // a tick now so a single-replica/dev setup gets its polling loop
+      // immediately. Runtime startup errors surface as status=error within
+      // a tick rather than failing the create: the lease owner may be a
+      // different replica, so synchronous start feedback is impossible here.
+      void this.exclusiveTick().catch((error) => {
+        logger.warn(
+          { id, error: String(error) },
+          "Exclusive tick after connection create failed"
+        );
+      });
+      logger.info({ id, platform, agentId }, "Connection added (lease-owned)");
+      return connection;
+    }
+
     try {
-      await this.startInstance(connection);
+      await this.hydrateFromRow(stored);
     } catch (error) {
       // Roll back in the safe order: secrets first, then the row that
       // anchors them. If secret cleanup throws, the row stays so an
@@ -398,24 +364,36 @@ export class ChatInstanceManager {
   async restartConnection(id: string): Promise<void> {
     await this.stopInstance(id);
 
-    const stored = await this.connectionStore.getConnection(id);
+    let stored = await this.connectionStore.getConnection(id);
     if (!stored) throw new Error(`Connection ${id} not found`);
-    const connection = storedToPlatform(stored);
 
-    connection.status = "active";
-    connection.errorMessage = undefined;
-    connection.updatedAt = Date.now();
+    // Restart is the explicit "make it run" operation: it un-stops stopped
+    // rows and clears error state, regardless of how the row got there.
+    if (stored.status !== "active" || stored.errorMessage) {
+      await this.writeConnectionStatus(stored, "active", undefined);
+      stored = (await this.connectionStore.getConnection(id)) ?? stored;
+    }
+
+    if (isAdapterlessPlatform(stored.platform)) return;
+
+    // Exclusive transports are lease-owned: the status reset above makes the
+    // claim runner (here or on the owning replica) retry on its next tick,
+    // but a request path never starts the polling loop itself.
+    if (this.isExclusiveStored(stored)) {
+      this.lastExclusiveFailure.delete(id);
+      return;
+    }
 
     try {
-      await this.startInstance(connection);
+      await this.hydrateFromRow(stored);
     } catch (error) {
-      // startInstance sets connection.status = "error" — persist so UI reflects it.
-      // Bind the connection's owning org so the per-tenant saveConnection() write
-      // succeeds even on the org-less restart paths (see persistConnectionScoped).
-      await this.persistConnectionScoped(connection);
+      await this.writeConnectionStatus(
+        stored,
+        "error",
+        `Startup failed: ${error instanceof Error ? error.message : String(error)}`
+      );
       throw error;
     }
-    await this.persistConnectionScoped(connection);
 
     logger.info({ id }, "Connection restarted");
   }
@@ -504,17 +482,38 @@ export class ChatInstanceManager {
     }
     connection.updatedAt = Date.now();
 
-    if (needsRestart && connection.status === "active") {
-      await this.stopInstance(id);
-      await this.startInstance(connection);
+    // Persist FIRST, then (re)start from the persisted row: the row is the
+    // source of truth and its post-write `updated_at` is the memo key every
+    // replica converges on. Starting before persisting would stamp the
+    // instance with a pre-write version and force a spurious re-hydrate on
+    // the next inbound request.
+    await this.persistConnection(connection);
+    const reread = await this.connectionStore.getConnection(id);
+    if (!reread) throw new Error(`Connection ${id} disappeared during update`);
+
+    if (
+      needsRestart &&
+      connection.status === "active" &&
+      !isAdapterlessPlatform(connection.platform)
+    ) {
+      if (this.isExclusiveStored(reread)) {
+        // Lease-owned: drop any local loop; the claim owner re-hydrates on
+        // its next tick via the rowVersion mismatch.
+        await this.stopInstance(id);
+        this.lastExclusiveFailure.delete(id);
+      } else {
+        // Eager restart on the serving pod for immediate config validation;
+        // other replicas converge lazily via the rowVersion memo.
+        await this.hydrateFromRow(reread);
+      }
     } else {
       const instance = this.instances.get(id);
       if (instance) {
         instance.connection = connection;
+        instance.rowVersion = reread.updatedAt;
       }
     }
 
-    await this.persistConnection(connection);
     return this.sanitizeConnection(connection);
   }
 
@@ -599,22 +598,15 @@ export class ChatInstanceManager {
     connectionId: string,
     request: Request
   ): Promise<Response> {
-    // Multi-replica: the per-connection webhook route (`/api/v1/webhooks/:id`)
-    // calls us directly — unlike the Slack `/slack/events` coordinator path,
-    // which pre-warms the connection via `ensureConnectionRunning` before
-    // forwarding here. A connection created or restarted on another replica has
-    // no live instance on this pod, so lazily start it from the store first;
-    // otherwise an inbound webhook (a platform event OR a slash command) that
-    // lands on a pod which hasn't warmed this connection 404s. Slack events
-    // mostly survive that via Slack's retries, but a one-shot slash command
-    // (e.g. `/lobu link <code>`) does not. `ensureConnectionRunning` is a no-op
-    // when the instance is already running, so the coordinator's existing
-    // pre-call stays harmless. Mirrors `postMessageToChannel`.
-    let instance = this.instances.get(connectionId);
-    if (!instance) {
-      const running = await this.ensureConnectionRunning(connectionId);
-      instance = running ? this.instances.get(connectionId) : undefined;
-    }
+    // Multi-replica: hydration is per-request and row-versioned. Any replica
+    // can receive any connection's webhook (the LB sprays platform deliveries
+    // across pods), so the instance is treated as a memo of the
+    // `agent_connections` row: fresh memo → serve, stale/missing → re-hydrate
+    // from the row, gone/stopped row → 404. The coordinator's `/slack/events`
+    // pre-call goes through the same check and stays harmless. Mirrors
+    // `postMessageToChannel`.
+    const running = await this.ensureConnectionRunning(connectionId);
+    const instance = running ? this.instances.get(connectionId) : undefined;
     if (!instance) {
       return new Response("Connection not found", { status: 404 });
     }
@@ -879,6 +871,9 @@ export class ChatInstanceManager {
         chat,
         conversationState,
         messageBridge,
+        // Callers that hydrate from a stored row (hydrateFromRow) overwrite
+        // this with the row's updated_at; this default covers direct starts.
+        rowVersion: connection.updatedAt,
         cleanup,
       });
 
@@ -1009,28 +1004,385 @@ export class ChatInstanceManager {
     });
   }
 
+  /**
+   * Make sure this replica serves the CURRENT row for `id`. The local
+   * instance is a memo keyed on `agent_connections.updated_at`: a fresh memo
+   * is served as-is (one PK read), a stale or missing one is re-hydrated
+   * from the row, and a deleted/stopped row tears the local instance down.
+   * This is the single convergence point that lets any replica handle any
+   * webhook-transport connection with no boot warm-start and no cross-pod
+   * restart fan-out.
+   */
   private async ensureConnectionRunning(id: string): Promise<boolean> {
-    if (this.has(id)) {
-      return true;
+    if (!this.connectionStore) return false;
+
+    const stored = await this.connectionStore.getConnection(id);
+    if (!stored || stored.status === "stopped") {
+      if (this.instances.has(id)) {
+        await this.stopInstance(id);
+      }
+      if (stored) logger.info({ id }, "Connection is stopped, not starting");
+      return false;
     }
 
-    // Don't auto-restart intentionally stopped connections
-    const stored = await this.connectionStore.getConnection(id);
-    if (stored?.status === "stopped") {
-      logger.info({ id }, "Connection is stopped, not auto-restarting");
-      return false;
+    if (isAdapterlessPlatform(stored.platform)) return false;
+
+    const existing = this.instances.get(id);
+    if (existing && existing.rowVersion === stored.updatedAt) return true;
+
+    // Exclusive transports (long-polling) belong to the connection_claims
+    // lease holder; a request path on a non-owner replica must not start a
+    // second loop. A stale owned instance is refreshed by the claim runner
+    // on its next tick.
+    if (this.isExclusiveStored(stored)) {
+      return existing !== undefined;
     }
 
     try {
-      await this.restartConnection(id);
-      return this.has(id);
+      await this.hydrateFromRow(stored);
+      return true;
     } catch (error) {
       logger.error(
         { id, error: String(error) },
-        "Failed to restart connection"
+        "Failed to hydrate connection"
+      );
+      await this.writeConnectionStatus(
+        stored,
+        "error",
+        `Startup failed: ${error instanceof Error ? error.message : String(error)}`
       );
       return false;
     }
+  }
+
+  /**
+   * Public hydration hook for out-of-class consumers that need a warm
+   * instance before a synchronous lookup (e.g. the internal file-upload
+   * route resolving a platform file handler on a pod that has never seen
+   * this connection).
+   */
+  async warmConnection(id: string): Promise<boolean> {
+    return this.ensureConnectionRunning(id);
+  }
+
+  /**
+   * Stop any stale local instance and start one from the given row,
+   * stamping the memo key. Throws on startup failure (caller decides how to
+   * persist the error). A successful start clears a pre-existing `error`
+   * status — the row provably works.
+   */
+  private async hydrateFromRow(stored: StoredConnection): Promise<void> {
+    // Config refusals (e.g. Telegram polling under LOBU_CLOUD_MODE) gate
+    // EVERY start path here — request hydration, the claim runner, restart —
+    // so a persisted refused config can never run, matching the create-time
+    // rejection in addConnection().
+    const rejection = getPlatformDescriptor(stored.platform)?.getConfigRejection?.(
+      stored.config as PlatformAdapterConfig
+    );
+    if (rejection) {
+      throw new Error(rejection);
+    }
+    await this.stopInstance(stored.id);
+    const connection = storedToPlatform(stored);
+    await this.startInstance(connection);
+    const instance = this.instances.get(stored.id);
+    if (!instance) {
+      throw new Error(
+        `Instance for connection ${stored.id} did not register after start`
+      );
+    }
+    instance.rowVersion = stored.updatedAt;
+    if (stored.status === "error") {
+      await this.writeConnectionStatus(stored, "active", undefined);
+      const reread = await this.connectionStore.getConnection(stored.id);
+      if (reread) instance.rowVersion = reread.updatedAt;
+      logger.info({ id: stored.id }, "Recovered previously-errored connection");
+    }
+  }
+
+  /**
+   * Persist a status transition under the connection's own org context
+   * (status writes happen on request-less paths: claim ticks, health sweep,
+   * webhook hydration). No-ops when the row already holds the target state,
+   * so repeated failures don't churn `updated_at` (which would invalidate
+   * every replica's memo for a connection that didn't change).
+   */
+  private async writeConnectionStatus(
+    row: Pick<
+      StoredConnection,
+      "id" | "organizationId" | "status" | "errorMessage"
+    >,
+    status: "active" | "error",
+    errorMessage: string | undefined
+  ): Promise<void> {
+    if (
+      row.status === status &&
+      (row.errorMessage ?? undefined) === errorMessage
+    ) {
+      return;
+    }
+    const write = () =>
+      this.connectionStore.updateConnection(row.id, { status, errorMessage });
+    try {
+      if (row.organizationId) {
+        await orgContext.run({ organizationId: row.organizationId }, write);
+      } else {
+        await write();
+      }
+    } catch (error) {
+      logger.error(
+        { id: row.id, error: String(error) },
+        "Failed to write connection status"
+      );
+    }
+  }
+
+  private isExclusiveStored(stored: StoredConnection): boolean {
+    return (
+      getPlatformDescriptor(stored.platform)?.requiresExclusiveStart?.(
+        stored.config as PlatformAdapterConfig,
+        { publicGatewayUrl: this.publicGatewayUrl }
+      ) ?? false
+    );
+  }
+
+  // --- Exclusive-transport claim runner ---
+
+  /**
+   * Start the per-replica claim loop for exclusive transports. Every tick
+   * each replica tries to claim/renew each exclusive connection's lease in
+   * `connection_claims`; the winner runs the (polling) instance, losers make
+   * sure they don't. The timer is unref'd so it never holds the process
+   * open.
+   */
+  private startExclusiveRunner(): void {
+    if (this.exclusiveTimer) return;
+    const timer = setInterval(() => {
+      void this.exclusiveTick().catch((error) => {
+        logger.warn(
+          { error: String(error) },
+          "Exclusive connection tick failed"
+        );
+      });
+    }, EXCLUSIVE_TICK_MS);
+    timer.unref?.();
+    this.exclusiveTimer = timer;
+    void this.exclusiveTick().catch((error) => {
+      logger.warn(
+        { error: String(error) },
+        "Initial exclusive connection tick failed"
+      );
+    });
+  }
+
+  private async exclusiveTick(): Promise<void> {
+    if (!this.connectionStore) return;
+    // Single-flight: a slow hydrate must not overlap the next interval tick
+    // (or an addConnection-triggered kick) and stop/start the same
+    // connection concurrently.
+    if (this.exclusiveTickInFlight) return;
+    this.exclusiveTickInFlight = true;
+    try {
+      await this.exclusiveTickInner();
+    } finally {
+      this.exclusiveTickInFlight = false;
+    }
+  }
+
+  private async exclusiveTickInner(): Promise<void> {
+    const stored = await this.connectionStore.listConnections();
+
+    const exclusiveRows = new Map<string, StoredConnection>();
+    for (const s of stored) {
+      if (s.status === "stopped") continue;
+      if (this.isExclusiveStored(s)) exclusiveRows.set(s.id, s);
+    }
+
+    // Connections we hold that vanished or are no longer exclusive: stop the
+    // local loop and free the lease row.
+    for (const id of [...this.exclusiveOwned]) {
+      if (!exclusiveRows.has(id)) {
+        await this.stopInstance(id);
+        this.exclusiveOwned.delete(id);
+        this.lastExclusiveFailure.delete(id);
+        await this.releaseClaim(id);
+      }
+    }
+
+    for (const s of exclusiveRows.values()) {
+      let owned = false;
+      try {
+        owned = await this.claimExclusive(s.id);
+      } catch (error) {
+        logger.warn(
+          { id: s.id, error: String(error) },
+          "Exclusive claim attempt failed"
+        );
+        if (this.exclusiveOwned.has(s.id)) {
+          // Fail closed: we can't prove the lease is still ours (claims
+          // table unreachable). If we kept polling, another replica could
+          // legitimately claim after the TTL and we'd have two pollers
+          // (split-brain). Stop until a renewal succeeds.
+          await this.stopInstance(s.id);
+          this.exclusiveOwned.delete(s.id);
+        }
+        continue;
+      }
+
+      if (!owned) {
+        if (this.exclusiveOwned.has(s.id)) {
+          // Lost the lease (e.g. our heartbeat lapsed during a long stall):
+          // another replica owns it now — running here too would 409.
+          await this.stopInstance(s.id);
+          this.exclusiveOwned.delete(s.id);
+        }
+        continue;
+      }
+
+      this.exclusiveOwned.add(s.id);
+      const instance = this.instances.get(s.id);
+      if (instance && instance.rowVersion === s.updatedAt) continue;
+      if (this.lastExclusiveFailure.get(s.id) === s.updatedAt) continue;
+
+      try {
+        await this.hydrateFromRow(s);
+        this.lastExclusiveFailure.delete(s.id);
+      } catch (error) {
+        logger.error(
+          { id: s.id, error: String(error) },
+          "Failed to start exclusive connection"
+        );
+        await this.writeConnectionStatus(
+          s,
+          "error",
+          `Startup failed: ${error instanceof Error ? error.message : String(error)}`
+        );
+        // Remember the post-write rowVersion so we retry only when the row
+        // actually changes (the status write itself bumps updated_at).
+        const reread = await this.connectionStore.getConnection(s.id);
+        this.lastExclusiveFailure.set(s.id, reread?.updatedAt ?? s.updatedAt);
+      }
+    }
+  }
+
+  /**
+   * Atomically claim or renew the lease for one exclusive connection. Wins
+   * when the row is ours (heartbeat renewal) or its heartbeat is older than
+   * the TTL (owner died). Exactly one replica's UPSERT can satisfy the
+   * conditional update per row at any moment — Postgres serializes on the
+   * row, so two racing replicas resolve to one owner.
+   */
+  private async claimExclusive(connectionId: string): Promise<boolean> {
+    const rows = await getDb()`
+      INSERT INTO connection_claims (connection_id, claimed_by, heartbeat_at)
+      VALUES (${connectionId}, ${this.podId}, now())
+      ON CONFLICT (connection_id) DO UPDATE
+        SET claimed_by = EXCLUDED.claimed_by, heartbeat_at = now()
+        WHERE connection_claims.claimed_by = EXCLUDED.claimed_by
+           OR connection_claims.heartbeat_at <
+              now() - make_interval(secs => ${CLAIM_TTL_SECONDS})
+      RETURNING connection_id
+    `;
+    return rows.length > 0;
+  }
+
+  private async releaseClaim(connectionId: string): Promise<void> {
+    try {
+      await getDb()`
+        DELETE FROM connection_claims
+        WHERE connection_id = ${connectionId} AND claimed_by = ${this.podId}
+      `;
+    } catch (error) {
+      logger.warn(
+        { id: connectionId, error: String(error) },
+        "Failed to release exclusive claim"
+      );
+    }
+  }
+
+  // --- Periodic health sweep (single claimant via TaskScheduler) ---
+
+  /**
+   * Validate every non-stopped connection's config without starting it:
+   * platform config rejections + secret-ref resolution. Replaces the old
+   * boot-time warm-start as the thing that keeps the `status` column honest,
+   * but runs on ONE replica per tick (TaskScheduler cron) instead of N pods
+   * racing status writes at every deploy.
+   *
+   * Recovery is deliberately narrow: only rows whose error THIS sweep wrote
+   * (`Health check failed: …`) are flipped back by a now-passing check.
+   * Runtime startup failures (`Startup failed: …`) are cleared by the paths
+   * that can actually prove a start works — request hydration and the claim
+   * runner — so the sweep can't flip-flop a connection whose secrets resolve
+   * but whose credentials are dead.
+   */
+  async sweepConnectionHealth(): Promise<{
+    checked: number;
+    errored: number;
+    recovered: number;
+  }> {
+    const result = { checked: 0, errored: 0, recovered: 0 };
+    if (!this.connectionStore) return result;
+
+    const stored = await this.connectionStore.listConnections();
+    for (const s of stored) {
+      if (s.status === "stopped" || isAdapterlessPlatform(s.platform)) {
+        continue;
+      }
+      result.checked += 1;
+
+      const rejection = getPlatformDescriptor(
+        s.platform
+      )?.getConfigRejection?.(s.config as PlatformAdapterConfig);
+      if (rejection) {
+        if (s.status !== "error") {
+          // Prefixed like every sweep-written error so a later sweep can
+          // recover the row once the rejection no longer applies (e.g. the
+          // config was edited) — recovery keys on this prefix.
+          await this.writeConnectionStatus(
+            s,
+            "error",
+            `Health check failed: ${rejection}`
+          );
+          result.errored += 1;
+        }
+        continue;
+      }
+
+      try {
+        const resolve = () =>
+          this.resolveConfigForRuntime(s.id, s.config as PlatformAdapterConfig);
+        if (s.organizationId) {
+          await orgContext.run({ organizationId: s.organizationId }, resolve);
+        } else {
+          await resolve();
+        }
+        // Recover rows whose recorded failure is exactly what this check
+        // just proved healthy: sweep-written errors, and secret-resolution
+        // startup failures (the #692 class: a deploy-wide env breakage marks
+        // every row, the fixed deploy must un-stick them without waiting for
+        // traffic). Other startup failures (dead tokens, adapter errors) are
+        // NOT recovered here — only a successful real start clears those.
+        const recoverable =
+          s.status === "error" &&
+          (s.errorMessage?.startsWith("Health check failed:") ||
+            s.errorMessage?.includes("Failed to resolve secret ref"));
+        if (recoverable) {
+          await this.writeConnectionStatus(s, "active", undefined);
+          result.recovered += 1;
+        }
+      } catch (error) {
+        if (s.status !== "error") {
+          await this.writeConnectionStatus(
+            s,
+            "error",
+            `Health check failed: ${error instanceof Error ? error.message : String(error)}`
+          );
+          result.errored += 1;
+        }
+      }
+    }
+    return result;
   }
 
   private async persistConnection(
@@ -1047,33 +1399,6 @@ export class ChatInstanceManager {
       ...connection,
       config: persistedConfig,
     });
-  }
-
-  /**
-   * persistConnection() rebound to the connection's owning org context.
-   *
-   * saveConnection() (and the per-org secret-store put() inside
-   * normalizeConfigForStorage()) require getOrgId() from AsyncLocalStorage.
-   * The restart path is reachable WITHOUT an HTTP request's org context —
-   * `ensureConnectionRunning()` is fired from the public per-connection
-   * webhook (`/api/v1/webhooks/:id`) and the notification fan-out
-   * (`postMessageToChannel`) on a cold pod that hasn't warmed the connection.
-   * Without rebinding, getOrgId() throws, the persist aborts, and the inbound
-   * message/notification is dropped (multi-replica). Bind the connection's
-   * own org so the per-tenant write hits the right bucket — mirroring
-   * startInstance()'s self-rebind. Legacy rows without an organizationId fall
-   * through to the caller's context (the global bucket still resolves).
-   */
-  private async persistConnectionScoped(
-    connection: PlatformConnection
-  ): Promise<void> {
-    if (connection.organizationId) {
-      return orgContext.run(
-        { organizationId: connection.organizationId },
-        () => this.persistConnection(connection)
-      );
-    }
-    return this.persistConnection(connection);
   }
 
   /**
@@ -1179,6 +1504,8 @@ export class ChatInstanceManager {
       isHealthy: () => true,
       extractRoutingInfo: (body: Record<string, unknown>) =>
         descriptor?.extractRoutingInfo?.(body) ?? null,
+      warmConnection: (connectionId: string) =>
+        this.warmConnection(connectionId),
       sendMessage: (
         token: string,
         message: string,
@@ -1381,12 +1708,14 @@ export class ChatInstanceManager {
       return { messages: [], nextCursor: null, hasMore: false };
     }
 
-    const instance = this.getInstance(connection.id);
-    if (!instance) {
-      return { messages: [], nextCursor: null, hasMore: false };
-    }
+    // History is row-backed state — no warm instance required (a cold pod
+    // answering this on behalf of a connection hydrated elsewhere must see
+    // the same history).
+    const conversationState =
+      this.getInstance(connection.id)?.conversationState ??
+      new ConversationStateStore(await this.createStateAdapter());
 
-    let entries: HistoryEntry[] = await instance.conversationState.getEntries(
+    let entries: HistoryEntry[] = await conversationState.getEntries(
       connection.id,
       channelId
     );
@@ -1424,9 +1753,12 @@ export class ChatInstanceManager {
     channelId: string,
     teamId?: string
   ): Promise<PlatformConnection | null> {
+    // Select from rows, not warm instances: with lazy hydration a fresh pod
+    // legitimately has zero instances while active connections exist. A warm
+    // instance is preferred only as a tiebreaker (it served traffic here).
     const connections = await this.listConnections({ platform: name });
-    const activeConnections = connections.filter((connection) =>
-      this.has(connection.id)
+    const activeConnections = connections.filter(
+      (connection) => connection.status === "active"
     );
     if (activeConnections.length === 0) return null;
     if (activeConnections.length === 1) return activeConnections[0] || null;
@@ -1436,18 +1768,21 @@ export class ChatInstanceManager {
     );
     if (teamMatch) return teamMatch;
 
-    // Fallback: prefer a connection that already has history for this channel.
+    // Prefer a connection that already has history for this channel; the
+    // state store is row-backed, so no warm instance is required to ask.
+    const conversationState = new ConversationStateStore(
+      await this.createStateAdapter()
+    );
     for (const connection of activeConnections) {
-      const instance = this.getInstance(connection.id);
-      if (!instance) continue;
-      if (
-        await instance.conversationState.hasHistory(connection.id, channelId)
-      ) {
+      if (await conversationState.hasHistory(connection.id, channelId)) {
         return connection;
       }
     }
 
-    return activeConnections[0] || null;
+    const warm = activeConnections.find((connection) =>
+      this.has(connection.id)
+    );
+    return warm ?? activeConnections[0] ?? null;
   }
 }
 

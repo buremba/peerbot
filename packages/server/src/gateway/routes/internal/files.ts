@@ -14,8 +14,13 @@ const logger = createLogger("file-routes");
 
 /**
  * Resolve the file handler for a given platform from the registry.
+ * Connections hydrate lazily per replica, and the pod that claims a worker's
+ * run is routinely not the pod that received the inbound webhook — so warm
+ * the connection from its row first, otherwise `getFileHandler` (a
+ * synchronous instance lookup) misses and every upload falls back to an
+ * artifact URL instead of a native platform upload.
  */
-function resolveFileHandler(
+async function resolveFileHandler(
   platformRegistry: PlatformRegistry,
   options: {
     platformName?: string;
@@ -24,11 +29,22 @@ function resolveFileHandler(
     conversationId?: string;
     teamId?: string;
   }
-): IFileHandler | null {
+): Promise<IFileHandler | null> {
   if (!options.platformName) return null;
   const platform = platformRegistry.get(options.platformName);
+  if (!platform) return null;
+  if (options.connectionId && platform.warmConnection) {
+    try {
+      await platform.warmConnection(options.connectionId);
+    } catch (error) {
+      logger.warn(
+        { connectionId: options.connectionId, error: String(error) },
+        "Failed to warm connection for file handler; falling back"
+      );
+    }
+  }
   return (
-    platform?.getFileHandler?.({
+    platform.getFileHandler?.({
       connectionId: options.connectionId,
       channelId: options.channelId,
       conversationId: options.conversationId,
@@ -68,7 +84,7 @@ export function createFileRoutes(
         return errorResponse(c, "Missing channel or conversation ID", 400);
       }
 
-      const fileHandler = resolveFileHandler(platformRegistry, {
+      const fileHandler = await resolveFileHandler(platformRegistry, {
         platformName: worker.platform,
         connectionId: worker.connectionId,
         channelId,
@@ -167,7 +183,7 @@ export function createFileRoutes(
         return errorResponse(c, "Missing channel or conversation ID", 400);
       }
 
-      const fileHandler = resolveFileHandler(platformRegistry, {
+      const fileHandler = await resolveFileHandler(platformRegistry, {
         platformName: worker.platform,
         connectionId: worker.connectionId,
         channelId,

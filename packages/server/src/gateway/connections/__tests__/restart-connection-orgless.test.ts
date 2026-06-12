@@ -75,7 +75,12 @@ async function buildManager() {
 async function seedConnection(
   connectionStore: any,
   orgContext: any,
-  args: { orgId: string; agentId: string; connectionId: string }
+  args: {
+    orgId: string;
+    agentId: string;
+    connectionId: string;
+    mode?: string;
+  }
 ): Promise<void> {
   await seedAgentRow(args.agentId, { organizationId: args.orgId });
   await orgContext.run({ organizationId: args.orgId }, async () => {
@@ -84,7 +89,11 @@ async function seedConnection(
       platform: "telegram",
       agentId: args.agentId,
       organizationId: args.orgId,
-      config: { platform: "telegram", botToken: "12345:fake-token" },
+      config: {
+        platform: "telegram",
+        botToken: "12345:fake-token",
+        ...(args.mode ? { mode: args.mode } : {}),
+      },
       settings: { allowGroups: true },
       metadata: {},
       // Start from an errored row so restart's "recover to active" persist runs.
@@ -106,11 +115,12 @@ describe("restartConnection org-context (multi-replica cold-pod webhook path)", 
       connectionId: "conn-A",
     });
 
-    // Stub the adapter boot so the test is network-free and focuses on the
-    // org-context-wrapped persistence (the boot path is already org-scoped via
-    // startInstance()). Success path: leave status as set by restartConnection.
+    // Telegram with no public gateway URL resolves to long-polling — an
+    // exclusive transport — so restartConnection only persists the status
+    // reset (the claim runner owns the actual start). Trip the test if a
+    // request path ever tries to start the polling loop directly.
     manager.startInstance = async () => {
-      /* no-op success */
+      throw new Error("request path must not start an exclusive transport");
     };
 
     // No orgContext.run() — mirrors the public /api/v1/webhooks/:id route and
@@ -135,6 +145,9 @@ describe("restartConnection org-context (multi-replica cold-pod webhook path)", 
       orgId: "org-B",
       agentId: "agent-B",
       connectionId: "conn-B",
+      // Explicit webhook mode: NOT an exclusive transport, so restart takes
+      // the hydrate path whose failure persist this test pins.
+      mode: "webhook",
     });
 
     // startInstance fails (e.g. unresolvable secret) — restartConnection must
@@ -157,6 +170,6 @@ describe("restartConnection org-context (multi-replica cold-pod webhook path)", 
     );
     expect(after).not.toBeNull();
     expect(after.status).toBe("error");
-    expect(after.errorMessage).toBe("boot blew up");
+    expect(after.errorMessage).toBe("Startup failed: boot blew up");
   });
 });

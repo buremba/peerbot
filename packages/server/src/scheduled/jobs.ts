@@ -8,6 +8,7 @@
 
 import type { Env } from '@lobu/connector-sdk';
 import type { CoreServices } from '../gateway/services/core-services';
+import { getChatInstanceManager } from '../lobu/gateway';
 import { cleanupExpiredMcpSessions } from '../mcp-handler';
 import logger from '../utils/logger';
 import { runWatcherAutomationTick } from '../watchers/automation';
@@ -123,6 +124,23 @@ function registerMaintenanceTasks(
       const result = await triggerEmbedBackfill(env);
       if (result.runsCreated > 0) {
         logger.info({ ...result }, '[task] trigger-embed-backfill enqueued runs');
+      }
+    },
+    { cron: '*/5 * * * *' },
+  );
+
+  // Connection health — keeps agent_connections.status honest now that boot
+  // no longer warm-starts (and status-marks) every connection on every pod.
+  // One claimant per tick validates config rejections + secret-ref
+  // resolution; instances themselves hydrate lazily on use.
+  scheduler.register(
+    'connection-health',
+    async () => {
+      const manager = getChatInstanceManager();
+      if (!manager) return;
+      const result = await manager.sweepConnectionHealth();
+      if (result.errored > 0 || result.recovered > 0) {
+        logger.info({ ...result }, '[task] connection-health swept');
       }
     },
     { cron: '*/5 * * * *' },

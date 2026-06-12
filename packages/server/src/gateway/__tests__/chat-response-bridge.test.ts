@@ -53,6 +53,7 @@ function createHarness(
       conversationState,
     }),
     has: () => true,
+    warmConnection: async () => true,
   };
   return { state, conversationState, manager };
 }
@@ -276,26 +277,39 @@ describe("ChatResponseBridge.handleDelta — AsyncIterable streaming", () => {
     expect(plainPosts).toEqual(["hello world"]);
   });
 
-  test("canHandle returns true for managed connections", () => {
+  test("ensureDeliverable hydrates and returns true for servable connections", async () => {
     const { target } = createStreamingTarget();
     const { manager } = createHarness(target);
     const bridge = new ChatResponseBridge(manager as any);
     expect(
-      bridge.canHandle({
+      await bridge.ensureDeliverable({
         ...basePayload,
         platformMetadata: { connectionId: "conn-1" },
       } as any)
     ).toBe(true);
   });
 
-  test("canHandle returns false when no connectionId", () => {
+  test("ensureDeliverable returns false when no connectionId", async () => {
     const { target } = createStreamingTarget();
     const { manager } = createHarness(target);
     const bridge = new ChatResponseBridge(manager as any);
     expect(
-      bridge.canHandle({
+      await bridge.ensureDeliverable({
         ...basePayload,
         platformMetadata: {},
+      } as any)
+    ).toBe(false);
+  });
+
+  test("ensureDeliverable returns false when this replica cannot run the connection", async () => {
+    const { target } = createStreamingTarget();
+    const { manager } = createHarness(target);
+    (manager as any).warmConnection = async () => false;
+    const bridge = new ChatResponseBridge(manager as any);
+    expect(
+      await bridge.ensureDeliverable({
+        ...basePayload,
+        platformMetadata: { connectionId: "conn-1" },
       } as any)
     ).toBe(false);
   });

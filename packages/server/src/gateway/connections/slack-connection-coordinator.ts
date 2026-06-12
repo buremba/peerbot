@@ -1,4 +1,5 @@
 import { createLogger } from "@lobu/core";
+import { isUniqueViolation } from "../../utils/pg-errors.js";
 import type { PlatformAdapterConfig, PlatformConnection } from "./types.js";
 import {
   parseSlackTeamJoinEvent,
@@ -146,8 +147,9 @@ export class SlackConnectionCoordinator {
       botUserId: installation.botUserId,
     };
 
-    const existing = await this.findConnectionByTeamId(teamId);
-    if (existing) {
+    const adoptExisting = async (
+      existing: PlatformConnection
+    ): Promise<PlatformConnection> => {
       const updated = await this.deps.updateConnection(existing.id, {
         agentId,
         config,
@@ -157,15 +159,41 @@ export class SlackConnectionCoordinator {
         await this.deps.restartConnection(existing.id);
       }
       return updated;
+    };
+
+    const existing = await this.findConnectionByTeamId(teamId);
+    if (existing) {
+      return adoptExisting(existing);
     }
 
-    return this.deps.addConnection(
-      "slack",
-      agentId,
-      config,
-      { allowGroups: true },
-      metadata
-    );
+    try {
+      return await this.deps.addConnection(
+        "slack",
+        agentId,
+        config,
+        { allowGroups: true },
+        metadata
+      );
+    } catch (error) {
+      // Two concurrent installs for the same workspace both pass the
+      // find-by-teamId check; the unique index
+      // `idx_agent_connections_slack_workspace` makes the second insert fail
+      // instead of creating a duplicate row. Converge on the winner. (The
+      // loser's pre-persisted secret refs under its discarded connection id
+      // are an acknowledged tiny leak, logged for operator hygiene.)
+      if (!isUniqueViolation(error, "idx_agent_connections_slack_workspace")) {
+        throw error;
+      }
+      logger.warn(
+        { teamId },
+        "Concurrent Slack install detected; adopting the winning connection"
+      );
+      const winner = await this.findConnectionByTeamId(teamId);
+      if (!winner) {
+        throw error;
+      }
+      return adoptExisting(winner);
+    }
   }
 
   async completeOAuthInstall(

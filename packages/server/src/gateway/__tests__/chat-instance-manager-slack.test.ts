@@ -198,7 +198,17 @@ describe("ChatInstanceManager.postMessageToChannel", () => {
     const manager = new ChatInstanceManager() as any;
     const post = mock(async () => ({ ts: "1.2" }));
     const channel = mock((_key: string) => ({ post }));
-    manager.instances.set("conn-1", { chat: { channel } });
+    // Row-versioned memo: the warm instance is served only while it matches
+    // the stored row's updated_at.
+    manager.connectionStore = {
+      getConnection: async () => ({
+        id: "conn-1",
+        platform: "slack",
+        status: "active",
+        updatedAt: 111,
+      }),
+    };
+    manager.instances.set("conn-1", { chat: { channel }, rowVersion: 111 });
 
     await manager.postMessageToChannel("conn-1", "slack:C0123ABCD", {
       markdown: "Weekly funnel digest",
@@ -214,7 +224,15 @@ describe("ChatInstanceManager.postMessageToChannel", () => {
     const manager = new ChatInstanceManager() as any;
     const post = mock(async () => ({ ts: "2.0" }));
     const channel = mock((_key: string) => ({ post }));
-    manager.instances.set("conn-1", { chat: { channel } });
+    manager.connectionStore = {
+      getConnection: async () => ({
+        id: "conn-1",
+        platform: "slack",
+        status: "active",
+        updatedAt: 111,
+      }),
+    };
+    manager.instances.set("conn-1", { chat: { channel }, rowVersion: 111 });
 
     const card = Card({
       title: "Weekly funnel digest",
@@ -238,15 +256,23 @@ describe("ChatInstanceManager.postMessageToChannel", () => {
     const post = mock(async () => ({ ts: "9.9" }));
     const channel = mock((_key: string) => ({ post }));
     manager.connectionStore = {
-      getConnection: async () => ({ id: "conn-x", status: "active" }),
+      getConnection: async () => ({
+        id: "conn-x",
+        platform: "slack",
+        status: "active",
+        updatedAt: 7,
+      }),
     };
-    manager.restartConnection = mock(async (id: string) => {
-      manager.instances.set(id, { chat: { channel } });
+    manager.hydrateFromRow = mock(async (stored: any) => {
+      manager.instances.set(stored.id, {
+        chat: { channel },
+        rowVersion: stored.updatedAt,
+      });
     });
 
     await manager.postMessageToChannel("conn-x", "slack:C9", { markdown: "hi" });
 
-    expect(manager.restartConnection).toHaveBeenCalledWith("conn-x");
+    expect(manager.hydrateFromRow).toHaveBeenCalled();
     expect(channel).toHaveBeenCalledWith("slack:C9");
     expect(post).toHaveBeenCalledWith({ markdown: "hi" });
   });
@@ -277,12 +303,18 @@ describe("ChatInstanceManager.handleWebhook (multi-replica)", () => {
       async () => new Response("handled", { status: 200 })
     );
     manager.connectionStore = {
-      getConnection: async () => ({ id: "conn-cold", status: "active" }),
+      getConnection: async () => ({
+        id: "conn-cold",
+        platform: "slack",
+        status: "active",
+        updatedAt: 7,
+      }),
     };
-    manager.restartConnection = mock(async (id: string) => {
-      manager.instances.set(id, {
+    manager.hydrateFromRow = mock(async (stored: any) => {
+      manager.instances.set(stored.id, {
         connection: { platform: "slack" },
         chat: { webhooks: { slack: webhookHandler } },
+        rowVersion: stored.updatedAt,
       });
     });
 
@@ -296,7 +328,7 @@ describe("ChatInstanceManager.handleWebhook (multi-replica)", () => {
     );
     const response = await manager.handleWebhook("conn-cold", request);
 
-    expect(manager.restartConnection).toHaveBeenCalledWith("conn-cold");
+    expect(manager.hydrateFromRow).toHaveBeenCalled();
     expect(webhookHandler).toHaveBeenCalled();
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("handled");

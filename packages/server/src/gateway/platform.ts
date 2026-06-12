@@ -202,6 +202,15 @@ export interface PlatformAdapter {
   ): Promise<void>;
 
   /**
+   * Hydrate the connection's instance on this replica from its stored row.
+   * Connections are lazy (no boot warm-start), so synchronous lookups like
+   * `getFileHandler` must be preceded by this on pods that haven't served
+   * the connection yet. Returns false when the connection can't run here
+   * (missing, stopped, exclusive-transport owned by another replica).
+   */
+  warmConnection?(connectionId: string): Promise<boolean>;
+
+  /**
    * Get the file handler for this platform.
    * Used by the file upload/download routes to route files
    * to the correct platform-specific handler.

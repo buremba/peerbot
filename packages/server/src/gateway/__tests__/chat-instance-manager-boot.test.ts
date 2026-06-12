@@ -1,26 +1,22 @@
 /**
- * Regression coverage for the boot path in ChatInstanceManager.initialize().
+ * Regression coverage for connection status health, previously owned by the
+ * eager boot loop in ChatInstanceManager.initialize() and now owned by the
+ * single-claimant `connection-health` sweep (sweepConnectionHealth).
  *
- * Pins the behaviour that prod regressed against on 2026-05-13: when the
- * #692 encryption-key parser tightening rejected a previously-valid env key,
- * every connection's secret resolution threw at boot. The catch block then
- * marked rows `status='error'` — and because `initialize()` only retried
- * `status='active'` rows, the followup encryption fix in #735 did not
- * recover the connections. They stayed stuck in `error` forever.
+ * Pins the behaviour that prod regressed against on 2026-05-13 (#692): an
+ * encryption-key parser tightening made every connection's secret resolution
+ * throw, rows were marked `status='error'` — and the followup fix did not
+ * recover them because nothing retried `error` rows. The sweep must:
  *
- * These tests pin three guarantees:
+ *   1. Mark connections whose secret refs no longer resolve as `error`,
+ *      under the connection's own org context (saveConnection requires it —
+ *      the sweep runs request-less).
+ *   2. Recover `error` rows whose recorded failure was a secret-resolution
+ *      failure once resolution succeeds again (the #692 class), without
+ *      flipping rows errored by live startup failures (dead tokens).
  *
- *   1. Boot retries `status='error'` connections (not just `active`), so a
- *      transient deploy-time failure self-heals on the next pod boot.
- *   2. On successful recovery, the `error` row is flipped back to `active`
- *      and `error_message` is cleared, under the connection's own org
- *      context (PostgresSecretStore.put/saveConnection require it).
- *   3. The error-marking branch wraps the per-tenant updateConnection write
- *      in the connection's org context — without the wrap the write itself
- *      throws (saveConnection calls getOrgId() strict) and the boot loop
- *      crashes silently, masking the underlying failure.
- *
- * Uses the embedded Postgres gateway test harness; no network.
+ * Uses the embedded Postgres gateway test harness; no network — the sweep
+ * never starts adapters.
  */
 
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
@@ -72,16 +68,18 @@ async function buildManagerAndStores(orgId: string, agentId: string) {
 }
 
 /**
- * Drive the public `initialize(services)` once — that's the path that runs
- * at server boot and the one we care about. Don't reach inside the manager
- * to call private helpers.
+ * Wire the manager's collaborators without initialize() — initialize starts
+ * the exclusive-claim runner, which is not under test here and whose async
+ * tick would race the assertions.
  */
-async function bootInitialize(manager: any, services: any): Promise<void> {
-  await manager.initialize(services);
+function wireManager(manager: any, services: any): void {
+  manager.services = services;
+  manager.publicGatewayUrl = "";
+  manager.connectionStore = services.getConnectionStore();
 }
 
-describe("ChatInstanceManager boot recovery", () => {
-  test("retries `error` connections and clears the error marker on success", async () => {
+describe("connection-health sweep (boot-loop successor)", () => {
+  test("recovers `error` rows whose secret-resolution failure has healed (#692 class)", async () => {
     const orgId = "test-org-recover";
     const agentId = "agent-recover";
     const { manager, connectionStore, secretStore, orgContext } =
@@ -109,7 +107,8 @@ describe("ChatInstanceManager boot recovery", () => {
         settings: { allowGroups: true },
         metadata: {},
         status: "error",
-        errorMessage: "Startup failed: previous deploy hiccup",
+        errorMessage:
+          'Startup failed: Failed to resolve secret ref for connection conn-recover-test field "botToken"',
         createdAt: Date.now(),
         updatedAt: Date.now(),
       });
@@ -123,25 +122,63 @@ describe("ChatInstanceManager boot recovery", () => {
       getCommandRegistry: () => undefined,
     } as any;
 
-    // The Telegram adapter will fail because the token is fake — that's
-    // fine. We're not testing adapter startup, we're testing that the
-    // secret resolution succeeded (no "Failed to resolve secret ref"
-    // message) and that the boot loop made a decision about the row's
-    // status without crashing.
-    await bootInitialize(manager, services);
+    wireManager(manager, services);
+    const result = await manager.sweepConnectionHealth();
+    expect(result.recovered).toBe(1);
 
     const stored = await orgContext.run({ organizationId: orgId }, () =>
       connectionStore.getConnection("conn-recover-test")
     );
     expect(stored).not.toBeNull();
-    // The secret resolved cleanly; whatever happened next (adapter init
-    // succeeding or failing for unrelated reasons), the row's
-    // error_message must not still be the original boot-time message.
-    // Either it's null (clean boot) or a new message reflecting a real
-    // post-resolution failure — never the pre-fix sentinel.
-    expect(stored!.errorMessage ?? "").not.toContain(
-      "Failed to resolve secret ref"
+    // The secret resolves again, and the recorded failure was a
+    // resolution failure — the sweep must un-stick the row.
+    expect(stored!.status).toBe("active");
+    expect(stored!.errorMessage ?? null).toBeNull();
+  });
+
+  test("does NOT recover `error` rows whose failure was not provably healed", async () => {
+    const orgId = "test-org-no-recover";
+    const agentId = "agent-no-recover";
+    const { manager, connectionStore, secretStore, orgContext } =
+      await buildManagerAndStores(orgId, agentId);
+
+    const tokenRef = await orgContext.run({ organizationId: orgId }, () =>
+      secretStore.put("connections/conn-dead-token/botToken", "resolvable")
     );
+    await orgContext.run({ organizationId: orgId }, async () => {
+      await connectionStore.saveConnection({
+        id: "conn-dead-token",
+        platform: "telegram",
+        agentId,
+        organizationId: orgId,
+        config: { platform: "telegram", botToken: tokenRef },
+        settings: { allowGroups: true },
+        metadata: {},
+        // Live startup failure (e.g. revoked token): secrets resolve fine,
+        // but only a successful real start may clear this.
+        status: "error",
+        errorMessage: "Startup failed: Telegram getMe returned 401",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    });
+
+    const services = {
+      getPublicGatewayUrl: () => "",
+      getSecretStore: () => secretStore,
+      getConnectionStore: () => connectionStore,
+      getChannelBindingService: () => ({ getBinding: async () => null }),
+      getCommandRegistry: () => undefined,
+    } as any;
+    wireManager(manager, services);
+
+    const result = await manager.sweepConnectionHealth();
+    expect(result.recovered).toBe(0);
+
+    const stored = await orgContext.run({ organizationId: orgId }, () =>
+      connectionStore.getConnection("conn-dead-token")
+    );
+    expect(stored!.status).toBe("error");
   });
 
   test("marks failed connections as `error` under the connection's org context", async () => {
@@ -185,7 +222,9 @@ describe("ChatInstanceManager boot recovery", () => {
       getCommandRegistry: () => undefined,
     } as any;
 
-    await bootInitialize(manager, services);
+    wireManager(manager, services);
+    const result = await manager.sweepConnectionHealth();
+    expect(result.errored).toBe(1);
 
     const stored = await orgContext.run({ organizationId: orgId }, () =>
       connectionStore.getConnection("conn-error-mark")

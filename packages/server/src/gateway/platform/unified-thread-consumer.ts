@@ -87,17 +87,20 @@ export class UnifiedThreadResponseConsumer {
 
     try {
       // Check if this response belongs to a Chat SDK connection — handle before legacy routing.
-      // If a Chat SDK connectionId is present but this gateway instance does not manage it,
-      // fail the job so another instance can retry instead of silently completing an undelivered reply.
+      // ensureDeliverable hydrates the connection from its row, so ANY replica that claims this
+      // job can deliver (connections are lazy; no pod is "the" warm pod). It returns false only
+      // when this replica genuinely can't run the connection (deleted/stopped, or an exclusive
+      // polling transport leased to another replica) — then fail the job so the retry lands
+      // somewhere that can, instead of silently completing an undelivered reply.
       const chatConnectionId = data.platformMetadata?.connectionId as string | undefined;
-      if (this.chatResponseBridge?.canHandle(data)) {
+      if (await this.chatResponseBridge?.ensureDeliverable(data)) {
         const sessionKey = `${data.userId}:${data.originalMessageId || data.messageId}`;
-        await this.routeToRenderer(this.chatResponseBridge, data, sessionKey);
+        await this.routeToRenderer(this.chatResponseBridge!, data, sessionKey);
         return;
       }
       if (chatConnectionId) {
         throw new Error(
-          `Chat SDK connection ${chatConnectionId} is not managed by this gateway instance`
+          `Chat SDK connection ${chatConnectionId} cannot be served by this gateway instance (deleted, stopped, or leased to another replica)`
         );
       }
 

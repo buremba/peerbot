@@ -325,6 +325,18 @@ export const telegramPlatform: ChatPlatformDescriptor = {
   resolveWebhookMode: (config) =>
     isTelegramConfig(config) ? (config.mode ?? "auto") : "auto",
 
+  // Long-polling is an exclusive transport: two replicas calling getUpdates
+  // for the same bot get 409s and drop updates nondeterministically, so the
+  // connection must run on exactly one replica (the connection_claims lease
+  // holder). Effective polling = explicit `mode: "polling"`, or `auto`
+  // resolving to polling because the gateway has no public URL to register
+  // a webhook against (tunnel-less dev).
+  requiresExclusiveStart: (config, ctx) => {
+    if (!isTelegramConfig(config)) return false;
+    const mode = config.mode ?? "auto";
+    return mode === "polling" || (mode === "auto" && !ctx.publicGatewayUrl);
+  },
+
   configureWebhook: async (connection, webhookUrl) => {
     if (!isTelegramConfig(connection.config)) return;
     const config = connection.config;

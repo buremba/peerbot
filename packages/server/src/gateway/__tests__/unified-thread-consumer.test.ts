@@ -198,10 +198,13 @@ describe("UnifiedThreadResponseConsumer interaction card owner-routing", () => {
   });
 });
 
-describe("UnifiedThreadResponseConsumer Chat SDK ownership", () => {
-  test("throws for Chat SDK connection responses not owned by this gateway", async () => {
+describe("UnifiedThreadResponseConsumer Chat SDK hydrate-on-claim", () => {
+  test("throws for Chat SDK connection responses this replica cannot serve", async () => {
+    // ensureDeliverable=false means hydration failed (deleted/stopped row or
+    // an exclusive transport leased elsewhere) — fail the job so the retry
+    // can land on a replica that can serve it.
     const chatResponseBridge = {
-      canHandle: mock(() => false),
+      ensureDeliverable: mock(async () => false),
       handleCompletion: mock(async () => undefined),
       handleError: mock(async () => undefined),
     };
@@ -209,16 +212,16 @@ describe("UnifiedThreadResponseConsumer Chat SDK ownership", () => {
 
     await expect(
       consumer.handleThreadResponse({ id: "job-1", data: basePayload })
-    ).rejects.toThrow(/not managed by this gateway instance/);
+    ).rejects.toThrow(/cannot be served by this gateway instance/);
 
-    expect(chatResponseBridge.canHandle).toHaveBeenCalledTimes(1);
+    expect(chatResponseBridge.ensureDeliverable).toHaveBeenCalledTimes(1);
     expect(chatResponseBridge.handleCompletion).not.toHaveBeenCalled();
     expect(platformRegistry.get).not.toHaveBeenCalled();
   });
 
-  test("routes Chat SDK responses through the owning gateway bridge", async () => {
+  test("routes Chat SDK responses after hydrating on the claiming replica", async () => {
     const chatResponseBridge = {
-      canHandle: mock(() => true),
+      ensureDeliverable: mock(async () => true),
       handleCompletion: mock(async () => undefined),
       handleError: mock(async () => undefined),
     };
@@ -226,7 +229,7 @@ describe("UnifiedThreadResponseConsumer Chat SDK ownership", () => {
 
     await consumer.handleThreadResponse({ id: "job-1", data: basePayload });
 
-    expect(chatResponseBridge.canHandle).toHaveBeenCalledTimes(1);
+    expect(chatResponseBridge.ensureDeliverable).toHaveBeenCalledTimes(1);
     expect(chatResponseBridge.handleCompletion).toHaveBeenCalledTimes(1);
     expect(platformRegistry.get).not.toHaveBeenCalled();
   });

@@ -276,15 +276,23 @@ export class ChatResponseBridge implements ResponseRenderer {
   }
 
   /**
-   * Check if this payload belongs to a Chat SDK connection.
-   * Returns false if the connection is not managed — the caller should fall through to legacy.
+   * Check if this payload belongs to a Chat SDK connection AND make this
+   * replica able to deliver it. Connections hydrate lazily (no boot
+   * warm-start), so whichever replica claims a thread_response hydrates the
+   * connection from its row before rendering — gating on a warm instance
+   * alone would make the webhook-receiving pod the only possible deliverer,
+   * which breaks the moment it restarts. Returns false for non-Chat-SDK
+   * payloads and for connections this replica cannot run (deleted, stopped,
+   * or an exclusive transport owned by another replica — the consumer's
+   * retry re-queues those until the owner claims the job).
    */
-  canHandle(data: ThreadResponsePayload): boolean {
+  async ensureDeliverable(data: ThreadResponsePayload): Promise<boolean> {
     const connectionId = platformMetadataString(
       data.platformMetadata,
       "connectionId"
     );
-    return !!connectionId && this.manager.has(connectionId);
+    if (!connectionId) return false;
+    return this.manager.warmConnection(connectionId);
   }
 
   async handleDelta(

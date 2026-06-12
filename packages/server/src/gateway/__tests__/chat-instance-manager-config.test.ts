@@ -426,9 +426,16 @@ describe("ChatInstanceManager — Telegram webhook auth E2E (finding #2)", () =>
       await buildManager(orgId, agentId);
 
     // Stub the heavy adapter-boot (full services) — we drive the real webhook
-    // router against a registered stub instance below.
+    // router against a registered stub instance below. Telegram with no
+    // public gateway URL is an exclusive transport, so also silence the
+    // claim runner: its async tick would otherwise race this test's stub
+    // instance (hydrate stops the stub, the stubbed start registers
+    // nothing, and the webhook 404s).
     manager.startInstance = async () => {
       /* exercised via registerStubInstance below */
+    };
+    manager.exclusiveTick = async () => {
+      /* lease-owned start path not under test here */
     };
     const created = await orgContext.run({ organizationId: orgId }, () =>
       manager.addConnection(
@@ -587,8 +594,17 @@ describe("ChatInstanceManager — config change detection (finding #8)", () => {
       stopped++;
       manager.instances.delete(cid);
     };
-    manager.startInstance = async () => {
+    manager.startInstance = async (conn: any) => {
       started++;
+      // Mirror real registration: updateConnection's hydrate path verifies
+      // the instance registered and stamps its rowVersion.
+      manager.instances.set(conn.id, {
+        connection: conn,
+        chat: {},
+        conversationState: {},
+        messageBridge: {},
+        rowVersion: conn.updatedAt,
+      });
     };
     restored = () => {
       manager.stopInstance = origStop;

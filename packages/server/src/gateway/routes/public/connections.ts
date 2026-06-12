@@ -224,10 +224,11 @@ export function createConnectionCrudRoutes(
     const platforms = [
       ...new Set(
         connections
+          // Status-based, not warm-instance-based: connections hydrate
+          // lazily, so an active row with no local instance is still usable.
           .filter(
             (connection) =>
               connection.status === "active" &&
-              manager.has(connection.id) &&
               supported.has(connection.platform)
           )
           .map((connection) => connection.platform)
@@ -252,7 +253,6 @@ export function createConnectionCrudRoutes(
     for (const connection of connections) {
       if (
         connection.status !== "active" ||
-        !manager.has(connection.id) ||
         !supported.has(connection.platform)
       ) {
         continue;

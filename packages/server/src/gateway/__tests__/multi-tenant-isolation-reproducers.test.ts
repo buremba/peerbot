@@ -472,7 +472,7 @@ describe("[finding 2] GrantStore queries scope to caller's organization id", () 
 
 // ─── Finding 4: Telegram cloud-mode polling guard at boot ────────────────────
 
-describe("[finding 4] ChatInstanceManager.initialize refuses Telegram polling rows in cloud", () => {
+describe("[finding 4] persisted Telegram polling rows are refused in cloud (claim-runner path)", () => {
   beforeAll(async () => {
     await ensureDbForGatewayTests();
   });
@@ -482,7 +482,7 @@ describe("[finding 4] ChatInstanceManager.initialize refuses Telegram polling ro
     await seedAgentRow("agent-1", { organizationId: "test-org" });
   });
 
-  test("a persisted `mode: polling` Telegram row is errored out at boot, not booted", async () => {
+  test("a persisted `mode: polling` Telegram row is errored by the claim runner, never started", async () => {
     const originalKey = process.env.ENCRYPTION_KEY;
     const originalCloud = process.env.LOBU_CLOUD_MODE;
     process.env.ENCRYPTION_KEY =
@@ -523,10 +523,15 @@ describe("[finding 4] ChatInstanceManager.initialize refuses Telegram polling ro
         getChannelBindingService: () => ({ getBinding: async () => null }),
       } as any;
       const manager = new mod.ChatInstanceManager() as any;
-      // initialize() consults isCloudMode + isPollingTelegramMode pre-
-      // startInstance; the row must end up `status='error'` without a
-      // running instance.
-      await manager.initialize(services);
+      // A persisted polling row in cloud is an exclusive transport whose
+      // start is gated by getConfigRejection at the hydrate chokepoint. The
+      // claim runner must claim it, refuse to start it, and mark the row
+      // errored — drive one tick directly (deterministic; initialize()'s
+      // own tick is fire-and-forget).
+      manager.services = services;
+      manager.publicGatewayUrl = services.getPublicGatewayUrl();
+      manager.connectionStore = connectionStore;
+      await manager.exclusiveTick();
 
       const stored = await orgContext.run(
         { organizationId: "test-org" },

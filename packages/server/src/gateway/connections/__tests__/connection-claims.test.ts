@@ -286,6 +286,46 @@ describe("updateConnection config rejection (parity with addConnection)", () => 
       }
     }
   });
+
+  test("a failing eager restart in updateConnection marks the persisted row errored", async () => {
+    const { orgContext } = await import("../../../lobu/stores/org-context.js");
+    const { manager, connectionStore } = await buildReplica();
+    await seedAgentRow("agent-upd-err", { organizationId: "org-upd-err" });
+    await orgContext.run({ organizationId: "org-upd-err" }, async () => {
+      await connectionStore.saveConnection({
+        id: "conn-upd-err",
+        platform: "slack",
+        agentId: "agent-upd-err",
+        organizationId: "org-upd-err",
+        config: { platform: "slack", botToken: "xoxb-old" },
+        settings: { allowGroups: true },
+        metadata: {},
+        status: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    });
+
+    manager.hydrateFromRow = async () => {
+      throw new Error("adapter exploded");
+    };
+
+    await expect(
+      orgContext.run({ organizationId: "org-upd-err" }, () =>
+        manager.updateConnection("conn-upd-err", {
+          config: { platform: "slack", botToken: "xoxb-broken" },
+        })
+      )
+    ).rejects.toThrow("adapter exploded");
+
+    // The new config persisted (the edit isn't silently lost), but the row
+    // must reflect that it cannot start — not sit `active` until next use.
+    const stored = await orgContext.run({ organizationId: "org-upd-err" }, () =>
+      connectionStore.getConnection("conn-upd-err")
+    );
+    expect(stored!.status).toBe("error");
+    expect(stored!.errorMessage ?? "").toContain("adapter exploded");
+  });
 });
 
 describe("idx_agent_connections_slack_workspace (install race)", () => {

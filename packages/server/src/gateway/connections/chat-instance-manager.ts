@@ -517,8 +517,20 @@ export class ChatInstanceManager {
         this.lastExclusiveFailure.delete(id);
       } else {
         // Eager restart on the serving pod for immediate config validation;
-        // other replicas converge lazily via the rowVersion memo.
-        await this.hydrateFromRow(reread);
+        // other replicas converge lazily via the rowVersion memo. On failure
+        // mark the row errored before rethrowing — the new config is already
+        // persisted, and leaving it `active` would misreport a connection
+        // that provably cannot start.
+        try {
+          await this.hydrateFromRow(reread);
+        } catch (error) {
+          await this.writeConnectionStatus(
+            reread,
+            "error",
+            `Startup failed: ${error instanceof Error ? error.message : String(error)}`
+          );
+          throw error;
+        }
       }
     } else {
       const instance = this.instances.get(id);

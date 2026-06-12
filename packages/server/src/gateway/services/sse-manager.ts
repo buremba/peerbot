@@ -34,6 +34,12 @@ export interface SseEvent {
   event: string;
   data: unknown;
   timestamp: number;
+  /**
+   * Process-local arrival order, assigned by `rememberEvent`. Replay sorts
+   * by (timestamp, seq) so events from the two backlog rings interleave
+   * deterministically even within the same millisecond.
+   */
+  seq?: number;
 }
 
 /**
@@ -75,6 +81,7 @@ export class SseManager {
   private readonly backlog = new Map<string, SseEvent[]>();
   private readonly streamBacklog = new Map<string, SseEvent[]>();
   private publisher?: SseFanoutPublisher;
+  private nextSeq = 0;
 
   constructor(
     private readonly backlogLimit = intervals.sseBacklogLimit,
@@ -95,7 +102,9 @@ export class SseManager {
       ? this.streamBacklog
       : this.backlog;
     const existing = ring.get(agentId) || [];
-    const next = existing.concat(event).slice(-this.backlogLimit);
+    const next = existing
+      .concat({ ...event, seq: this.nextSeq++ })
+      .slice(-this.backlogLimit);
     ring.set(agentId, next);
   }
 
@@ -112,7 +121,9 @@ export class SseManager {
     const merged = (this.backlog.get(agentId) || []).concat(
       this.streamBacklog.get(agentId) || []
     );
-    merged.sort((a, b) => a.timestamp - b.timestamp);
+    merged.sort(
+      (a, b) => a.timestamp - b.timestamp || (a.seq ?? 0) - (b.seq ?? 0)
+    );
     if (typeof since === "number") {
       return merged.filter((entry) => entry.timestamp > since);
     }

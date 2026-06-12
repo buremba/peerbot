@@ -189,14 +189,13 @@ describe("SseManager", () => {
     });
 
     expect(published).toEqual([{ agentId: "agent", event: "output" }]);
-    // Both rings retained the events (same-millisecond entries merge in
-    // ring order, so compare as a set).
-    expect(
-      mgr
-        .getRecentEvents("agent")
-        .map((entry) => entry.event)
-        .sort()
-    ).toEqual(["complete", "output"]);
+    // Replay merges both rings in deterministic arrival order — the seq
+    // tiebreaker keeps same-millisecond entries in the order they were
+    // remembered.
+    expect(mgr.getRecentEvents("agent").map((entry) => entry.event)).toEqual([
+      "output",
+      "complete",
+    ]);
 
     mgr.closeAgent("agent", "done");
     expect(published.at(-1)).toEqual({ agentId: "agent", event: "__close__" });

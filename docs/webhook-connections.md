@@ -47,8 +47,10 @@ POST /api/v1/webhooks/<connectionId>
 
 Responses: `202 {"ok":true,"id":<eventId>}` on persist (the insert commits
 before the ack; redeliveries return the existing id), `401` bad/missing
-token, `404` unknown connection, `413` body over 256 KB, `429` over 120
-deliveries/min per connection, `400` non-JSON body.
+token, `404` unknown connection, `413` body over 256 KB, `400` non-JSON
+body, `429` over 120 authenticated deliveries/min per connection (counted
+after token verification, so bad-token floods can't starve real senders;
+unauthenticated attempts are bounded separately per source IP).
 
 The raw parsed payload is preserved verbatim in `payload_data` (wrapped as
 `{"payload": ...}` when the JSON root is an array or primitive). Rows carry

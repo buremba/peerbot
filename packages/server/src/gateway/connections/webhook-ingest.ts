@@ -12,11 +12,12 @@
  * Request pipeline (persist BEFORE ack — a 202 issued before the insert
  * commits would lose the delivery on pod crash, and providers won't retry a
  * 2xx):
- *   1. body size cap (256 KB)              → 413
- *   2. per-connection rate limit (120/min) → 429
- *   3. token auth (constant-time)          → 401
- *   4. dedupe key: configured header value, else sha256(raw body)
- *   5. synchronous event insert            → 202 {"ok":true,"id":<eventId>}
+ *   1. body size cap (256 KB)                          → 413
+ *   2. pre-auth rate limit per (connection, source IP) → 429
+ *   3. token auth (constant-time)                      → 401
+ *   4. authenticated per-connection budget (120/min)   → 429
+ *   5. dedupe key: configured header value, else sha256(raw body)
+ *   6. synchronous event insert                        → 202 {"ok":true,"id":<eventId>}
  *
  * Idempotency: `events.connection_id` is a bigint FK to connector
  * `connections` (NOT `agent_connections`) and `events.origin_id` is only
@@ -35,18 +36,37 @@ import type { StoredConnection } from "@lobu/core";
 import { getDb } from "../../db/client.js";
 import { insertEvent } from "../../utils/insert-event.js";
 import logger from "../../utils/logger.js";
-import { getRateLimiter } from "../../utils/rate-limiter.js";
+import { getClientIP, getRateLimiter } from "../../utils/rate-limiter.js";
 import { resolveSecretValue, type SecretStore } from "../secrets/index.js";
 import type { WebhookIngestPlatformConfig } from "./types.js";
 
 /** Raw-body cap. Oversized deliveries are rejected, so stored payloads stay bounded. */
 export const WEBHOOK_INGEST_MAX_BODY_BYTES = 256 * 1024;
 
-/** Per-connection delivery budget (cluster-wide, fail-open like every limiter use). */
+/**
+ * Authenticated per-connection delivery budget (cluster-wide, fail-open like
+ * every limiter use). Counted only AFTER token verification — otherwise an
+ * attacker spamming bad tokens at a guessable connection id (apply-created
+ * ids are deterministic) could exhaust the budget and 429 real deliveries.
+ */
 export const WEBHOOK_INGEST_RATE_LIMIT = {
   limit: 120,
   windowSeconds: 60,
   errorMessage: "Webhook rate limit exceeded. Maximum 120 deliveries per minute.",
+};
+
+/**
+ * Pre-auth attempt budget per (connection, source IP). Bounds secret-store
+ * reads and brute-force attempts without letting unauthenticated traffic
+ * starve the authenticated budget above: a flooding source only exhausts its
+ * own bucket. Roomier than the delivery budget so a legitimate sender behind
+ * one egress IP (Sentry, GitHub) never trips it before the authenticated
+ * limit applies.
+ */
+export const WEBHOOK_INGEST_PREAUTH_RATE_LIMIT = {
+  limit: 240,
+  windowSeconds: 60,
+  errorMessage: "Too many webhook requests from this source. Try again shortly.",
 };
 
 /** Header-based alternative to `Authorization: Bearer` for senders that reserve it. */
@@ -226,18 +246,20 @@ export async function handleWebhookIngest(
     return json(413, { error: "Payload too large" });
   }
 
-  // 2. Rate limit (cluster-wide counters, fail-open on DB trouble — matching
+  // 2. Pre-auth rate limit, keyed by (connection, source IP) so a flood of
+  //    bad-token requests can't exhaust the authenticated delivery budget
+  //    below (cluster-wide counters, fail-open on DB trouble — matching
   //    every other limiter call site).
-  const rate = getRateLimiter().checkLimit(
-    `webhook-ingest:${stored.id}`,
-    WEBHOOK_INGEST_RATE_LIMIT
+  const preauthRate = getRateLimiter().checkLimit(
+    `webhook-ingest-preauth:${stored.id}:${getClientIP(request)}`,
+    WEBHOOK_INGEST_PREAUTH_RATE_LIMIT
   );
-  if (!rate.allowed) {
-    return new Response(JSON.stringify({ error: rate.errorMessage }), {
+  if (!preauthRate.allowed) {
+    return new Response(JSON.stringify({ error: preauthRate.errorMessage }), {
       status: 429,
       headers: {
         "content-type": "application/json",
-        "retry-after": String(rate.resetInSeconds),
+        "retry-after": String(preauthRate.resetInSeconds),
       },
     });
   }
@@ -260,6 +282,22 @@ export async function handleWebhookIngest(
     return json(401, { error: "Unauthorized" });
   }
 
+  // 4. Authenticated per-connection delivery budget — only verified senders
+  //    spend it.
+  const rate = getRateLimiter().checkLimit(
+    `webhook-ingest:${stored.id}`,
+    WEBHOOK_INGEST_RATE_LIMIT
+  );
+  if (!rate.allowed) {
+    return new Response(JSON.stringify({ error: rate.errorMessage }), {
+      status: 429,
+      headers: {
+        "content-type": "application/json",
+        "retry-after": String(rate.resetInSeconds),
+      },
+    });
+  }
+
   const rawBody = await readBodyWithCap(request, WEBHOOK_INGEST_MAX_BODY_BYTES);
   if (rawBody === null) {
     return json(413, { error: "Payload too large" });
@@ -272,7 +310,7 @@ export async function handleWebhookIngest(
     return json(400, { error: "Request body must be valid JSON" });
   }
 
-  // 4. Dedupe key: provider delivery id header when configured and present,
+  // 5. Dedupe key: provider delivery id header when configured and present,
   //    else a content hash. Either way redeliveries map to the same origin_id.
   let originId: string | undefined;
   let dedupeSource: "header" | "body-hash" = "body-hash";
@@ -303,7 +341,7 @@ export async function handleWebhookIngest(
       ? config.semanticType
       : "content";
 
-  // 5. Persist, then ack. A duplicate (pre-checked or raced) is still a 202 —
+  // 6. Persist, then ack. A duplicate (pre-checked or raced) is still a 202 —
   //    the provider delivered successfully; we just already had it.
   const existingId = await findExistingDeliveryId(
     organizationId,

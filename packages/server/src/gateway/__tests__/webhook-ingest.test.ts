@@ -22,7 +22,7 @@ import {
   ensureEncryptionKey,
   resetTestDatabase,
   seedAgentRow,
-} from "../../__tests__/helpers/db-setup.js";
+} from "./helpers/db-setup.js";
 
 const ORG = "org-webhook";
 const AGENT = "agent-webhook";
@@ -36,7 +36,7 @@ beforeEach(async () => {
   await resetTestDatabase();
   ensureEncryptionKey();
   const { resetRateLimiterForTests } = await import(
-    "../../../utils/rate-limiter.js"
+    "../../utils/rate-limiter.js"
   );
   resetRateLimiterForTests();
 }, 30_000);
@@ -82,12 +82,12 @@ async function ingest(
   row: ReturnType<typeof storedRow>,
   request: Request
 ): Promise<Response> {
-  const { handleWebhookIngest } = await import("../webhook-ingest.js");
+  const { handleWebhookIngest } = await import("../connections/webhook-ingest.js");
   return handleWebhookIngest(row, request, fakeSecretStore);
 }
 
 async function eventRows(connectionId = "whk1"): Promise<any[]> {
-  const { getDb } = await import("../../../db/client.js");
+  const { getDb } = await import("../../db/client.js");
   return getDb()`
     SELECT * FROM events
     WHERE connector_key = ${`webhook:${connectionId}`}
@@ -333,7 +333,7 @@ describe("handleWebhookIngest idempotency", () => {
 
   test("the partial unique index rejects duplicates at the database layer", async () => {
     await seedAgentRow(AGENT, { organizationId: ORG });
-    const { insertEvent } = await import("../../../utils/insert-event.js");
+    const { insertEvent } = await import("../../utils/insert-event.js");
     const params = {
       entityIds: [],
       organizationId: ORG,
@@ -367,9 +367,9 @@ describe("handleWebhookIngest idempotency", () => {
 });
 
 describe("handleWebhookIngest rate limiting", () => {
-  test("429 once the per-connection budget is exhausted", async () => {
+  test("429 once the authenticated per-connection budget is exhausted", async () => {
     await seedAgentRow(AGENT, { organizationId: ORG });
-    const { WEBHOOK_INGEST_RATE_LIMIT } = await import("../webhook-ingest.js");
+    const { WEBHOOK_INGEST_RATE_LIMIT } = await import("../connections/webhook-ingest.js");
     let limited: Response | undefined;
     for (let i = 0; i <= WEBHOOK_INGEST_RATE_LIMIT.limit; i++) {
       const res = await ingest(
@@ -384,18 +384,75 @@ describe("handleWebhookIngest rate limiting", () => {
     expect(limited).toBeDefined();
     expect(limited!.headers.get("retry-after")).toBeTruthy();
   });
+
+  test("unauthenticated floods cannot starve the authenticated budget", async () => {
+    await seedAgentRow(AGENT, { organizationId: ORG });
+    const { WEBHOOK_INGEST_RATE_LIMIT } = await import("../connections/webhook-ingest.js");
+    // The pi-review repro: exhaust the old shared budget with bad tokens,
+    // then deliver with the real one. The valid delivery must still land.
+    for (let i = 0; i <= WEBHOOK_INGEST_RATE_LIMIT.limit; i++) {
+      const res = await ingest(
+        storedRow(),
+        delivery({ i }, { headers: { authorization: "Bearer wrong" } })
+      );
+      expect(res.status).toBe(401);
+    }
+    const valid = await ingest(
+      storedRow(),
+      delivery({ legit: true }, { headers: bearer })
+    );
+    expect(valid.status).toBe(202);
+  });
+
+  test("a flooding source IP exhausts only its own pre-auth bucket", async () => {
+    await seedAgentRow(AGENT, { organizationId: ORG });
+    const { WEBHOOK_INGEST_PREAUTH_RATE_LIMIT } = await import(
+      "../connections/webhook-ingest.js"
+    );
+    // Flood past the pre-auth budget from one source address.
+    let flooderLimited = false;
+    for (let i = 0; i <= WEBHOOK_INGEST_PREAUTH_RATE_LIMIT.limit; i++) {
+      const res = await ingest(
+        storedRow(),
+        delivery(
+          { i },
+          {
+            headers: {
+              authorization: "Bearer wrong",
+              "x-forwarded-for": "203.0.113.7",
+            },
+          }
+        )
+      );
+      if (res.status === 429) {
+        flooderLimited = true;
+        break;
+      }
+    }
+    expect(flooderLimited).toBe(true);
+
+    // A different source delivering with the real token is unaffected.
+    const valid = await ingest(
+      storedRow(),
+      delivery(
+        { legit: true },
+        { headers: { ...bearer, "x-forwarded-for": "198.51.100.9" } }
+      )
+    );
+    expect(valid.status).toBe(202);
+  });
 });
 
 describe("ChatInstanceManager webhook wiring", () => {
   async function buildManager() {
-    const { ChatInstanceManager } = await import("../chat-instance-manager.js");
+    const { ChatInstanceManager } = await import("../connections/chat-instance-manager.js");
     const { createPostgresAgentConnectionStore } = await import(
-      "../../../lobu/stores/postgres-stores.js"
+      "../../lobu/stores/postgres-stores.js"
     );
     const { PostgresSecretStore } = await import(
-      "../../../lobu/stores/postgres-secret-store.js"
+      "../../lobu/stores/postgres-secret-store.js"
     );
-    const { SecretStoreRegistry } = await import("../../secrets/index.js");
+    const { SecretStoreRegistry } = await import("../secrets/index.js");
 
     const connectionStore = createPostgresAgentConnectionStore();
     const postgresSecretStore = new PostgresSecretStore();
@@ -417,7 +474,7 @@ describe("ChatInstanceManager webhook wiring", () => {
 
   test("addConnection auto-generates a token, secretizes it, starts no instance", async () => {
     await seedAgentRow(AGENT, { organizationId: ORG });
-    const { orgContext } = await import("../../../lobu/stores/org-context.js");
+    const { orgContext } = await import("../../lobu/stores/org-context.js");
     const { manager, connectionStore } = await buildManager();
 
     const created = await orgContext.run({ organizationId: ORG }, () =>
@@ -439,7 +496,7 @@ describe("ChatInstanceManager webhook wiring", () => {
 
   test("handleIngestWebhook round-trips a delivery through the real secret store", async () => {
     await seedAgentRow(AGENT, { organizationId: ORG });
-    const { orgContext } = await import("../../../lobu/stores/org-context.js");
+    const { orgContext } = await import("../../lobu/stores/org-context.js");
     const { manager } = await buildManager();
 
     const created = await orgContext.run({ organizationId: ORG }, () =>
@@ -475,7 +532,7 @@ describe("ChatInstanceManager webhook wiring", () => {
 
   test("handleIngestWebhook 404s for unknown ids and non-webhook platforms", async () => {
     await seedAgentRow(AGENT, { organizationId: ORG });
-    const { orgContext } = await import("../../../lobu/stores/org-context.js");
+    const { orgContext } = await import("../../lobu/stores/org-context.js");
     const { manager, connectionStore } = await buildManager();
 
     const missing = await manager.handleIngestWebhook(

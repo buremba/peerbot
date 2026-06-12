@@ -1,5 +1,21 @@
 # Changelog
 
+## [11.3.0](https://github.com/lobu-ai/lobu/compare/lobu-v11.2.0...lobu-v11.3.0) (2026-06-12)
+
+
+### Features
+
+* **examples:** add personal-agent example; move Revolut out of built-in connectors ([#1168](https://github.com/lobu-ai/lobu/issues/1168)) ([2c98d2b](https://github.com/lobu-ai/lobu/commit/2c98d2b9d6252ba594e662019e628a491f4040aa))
+* **memory:** guide the agent to supersede stored facts on update ([#1170](https://github.com/lobu-ai/lobu/issues/1170)) ([b39c61d](https://github.com/lobu-ai/lobu/commit/b39c61d12a8b32546ae978b3b2abe18b180a7dec))
+
+
+### Bug Fixes
+
+* **chart:** numeric runAsUser/UID so runAsNonRoot validates (prod 11.2.0 rollout wedge) ([#1228](https://github.com/lobu-ai/lobu/issues/1228)) ([da5ace1](https://github.com/lobu-ai/lobu/commit/da5ace1e84f749fdb70104a32a3b18413237c471))
+* **deps:** bump vitest to ^3.2.6 (GHSA arbitrary file read via vitest UI server) ([#1230](https://github.com/lobu-ai/lobu/issues/1230)) ([570ef50](https://github.com/lobu-ai/lobu/commit/570ef50df604b8ccec6a43d070bd8081f257ddac))
+* **orchestration:** kill the worker process group on teardown and bound the drain ([#1197](https://github.com/lobu-ai/lobu/issues/1197)) ([6193a9e](https://github.com/lobu-ai/lobu/commit/6193a9e2862c2738597a4aa15b7b5cf8a8843e77))
+* **server:** remove dead api_type from query_sql allowlist ([#1226](https://github.com/lobu-ai/lobu/issues/1226)) ([99bde4a](https://github.com/lobu-ai/lobu/commit/99bde4a573450014d3aad84300af62e1bfde57a5))
+
 ## [11.2.0](https://github.com/lobu-ai/lobu/compare/lobu-v11.1.0...lobu-v11.2.0) (2026-06-11)
 
 

@@ -50,9 +50,10 @@ export const WEBHOOK_INGEST_MAX_BODY_BYTES = 256 * 1024;
  * ids are deterministic) could exhaust the budget and 429 real deliveries.
  */
 export const WEBHOOK_INGEST_RATE_LIMIT = {
-  limit: 120,
-  windowSeconds: 60,
-  errorMessage: "Webhook rate limit exceeded. Maximum 120 deliveries per minute.",
+	limit: 120,
+	windowSeconds: 60,
+	errorMessage:
+		"Webhook rate limit exceeded. Maximum 120 deliveries per minute.",
 };
 
 /**
@@ -64,9 +65,10 @@ export const WEBHOOK_INGEST_RATE_LIMIT = {
  * limit applies.
  */
 export const WEBHOOK_INGEST_PREAUTH_RATE_LIMIT = {
-  limit: 240,
-  windowSeconds: 60,
-  errorMessage: "Too many webhook requests from this source. Try again shortly.",
+	limit: 240,
+	windowSeconds: 60,
+	errorMessage:
+		"Too many webhook requests from this source. Try again shortly.",
 };
 
 /** Header-based alternative to `Authorization: Bearer` for senders that reserve it. */
@@ -82,29 +84,29 @@ type WebhookIngestConfig = WebhookIngestPlatformConfig;
  * other credential.
  */
 export function prepareWebhookIngestConfig(
-  config: Record<string, unknown>
+	config: Record<string, unknown>,
 ): void {
-  if (typeof config.token !== "string" || config.token.length === 0) {
-    config.token = `${randomUUID()}${randomUUID()}`.replace(/-/g, "");
-  }
+	if (typeof config.token !== "string" || config.token.length === 0) {
+		config.token = `${randomUUID()}${randomUUID()}`.replace(/-/g, "");
+	}
 }
 
 function json(status: number, body: Record<string, unknown>): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
+	return new Response(JSON.stringify(body), {
+		status,
+		headers: { "content-type": "application/json" },
+	});
 }
 
 /** Constant-time equality over fixed-length digests (inputs vary in length). */
 function tokensMatch(presented: string, configured: string): boolean {
-  const a = createHash("sha256").update(presented).digest();
-  const b = createHash("sha256").update(configured).digest();
-  return timingSafeEqual(a, b);
+	const a = createHash("sha256").update(presented).digest();
+	const b = createHash("sha256").update(configured).digest();
+	return timingSafeEqual(a, b);
 }
 
 function isQueryTokenAllowed(config: WebhookIngestConfig): boolean {
-  return config.allowQueryAuth === true || config.allowQueryAuth === "true";
+	return config.allowQueryAuth === true || config.allowQueryAuth === "true";
 }
 
 /**
@@ -112,21 +114,21 @@ function isQueryTokenAllowed(config: WebhookIngestConfig): boolean {
  * or — only when the connection opted in — the `?token=` query param.
  */
 function extractPresentedToken(
-  request: Request,
-  config: WebhookIngestConfig
+	request: Request,
+	config: WebhookIngestConfig,
 ): string | undefined {
-  const authorization = request.headers.get("authorization");
-  if (authorization) {
-    const match = authorization.match(/^Bearer\s+(.+)$/i);
-    if (match) return match[1];
-  }
-  const headerToken = request.headers.get(TOKEN_HEADER);
-  if (headerToken) return headerToken;
-  if (isQueryTokenAllowed(config)) {
-    const queryToken = new URL(request.url).searchParams.get("token");
-    if (queryToken) return queryToken;
-  }
-  return undefined;
+	const authorization = request.headers.get("authorization");
+	if (authorization) {
+		const match = authorization.match(/^Bearer\s+(.+)$/i);
+		if (match) return match[1];
+	}
+	const headerToken = request.headers.get(TOKEN_HEADER);
+	if (headerToken) return headerToken;
+	if (isQueryTokenAllowed(config)) {
+		const queryToken = new URL(request.url).searchParams.get("token");
+		if (queryToken) return queryToken;
+	}
+	return undefined;
 }
 
 /**
@@ -135,84 +137,87 @@ function extractPresentedToken(
  * body into memory. Returns null when over the cap.
  */
 async function readBodyWithCap(
-  request: Request,
-  maxBytes: number
+	request: Request,
+	maxBytes: number,
 ): Promise<Uint8Array | null> {
-  if (!request.body) return new Uint8Array(0);
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => {});
-      return null;
-    }
-    chunks.push(value);
-  }
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return out;
+	if (!request.body) return new Uint8Array(0);
+	const reader = request.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		total += value.byteLength;
+		if (total > maxBytes) {
+			await reader.cancel().catch(() => {});
+			return null;
+		}
+		chunks.push(value);
+	}
+	const out = new Uint8Array(total);
+	let offset = 0;
+	for (const chunk of chunks) {
+		out.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	return out;
 }
 
 /** RFC 6901 JSON-pointer lookup; returns undefined on any miss. */
 function resolveJsonPointer(root: unknown, pointer: string): unknown {
-  if (!pointer.startsWith("/")) return undefined;
-  let current: unknown = root;
-  for (const rawSegment of pointer.slice(1).split("/")) {
-    const segment = rawSegment.replace(/~1/g, "/").replace(/~0/g, "~");
-    if (Array.isArray(current)) {
-      const index = Number(segment);
-      if (!Number.isInteger(index) || index < 0 || index >= current.length) {
-        return undefined;
-      }
-      current = current[index];
-    } else if (current !== null && typeof current === "object") {
-      if (!Object.hasOwn(current as object, segment)) return undefined;
-      current = (current as Record<string, unknown>)[segment];
-    } else {
-      return undefined;
-    }
-  }
-  return current;
+	if (!pointer.startsWith("/")) return undefined;
+	let current: unknown = root;
+	for (const rawSegment of pointer.slice(1).split("/")) {
+		const segment = rawSegment.replace(/~1/g, "/").replace(/~0/g, "~");
+		if (Array.isArray(current)) {
+			if (!/^(0|[1-9]\d*)$/.test(segment)) {
+				return undefined;
+			}
+			const index = Number.parseInt(segment, 10);
+			if (index >= current.length) {
+				return undefined;
+			}
+			current = current[index];
+		} else if (current !== null && typeof current === "object") {
+			if (!Object.hasOwn(current as object, segment)) return undefined;
+			current = (current as Record<string, unknown>)[segment];
+		} else {
+			return undefined;
+		}
+	}
+	return current;
 }
 
 function extractTitle(
-  payload: unknown,
-  titlePath: string | undefined
+	payload: unknown,
+	titlePath: string | undefined,
 ): string | undefined {
-  if (!titlePath) return undefined;
-  const value = resolveJsonPointer(payload, titlePath);
-  if (typeof value === "string" && value.length > 0) return value.slice(0, 500);
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value);
-  }
-  return undefined;
+	if (!titlePath) return undefined;
+	const value = resolveJsonPointer(payload, titlePath);
+	if (typeof value === "string" && value.length > 0) return value.slice(0, 500);
+	if (typeof value === "number" || typeof value === "boolean") {
+		return String(value);
+	}
+	return undefined;
 }
 
 function isUniqueViolation(error: unknown): boolean {
-  return (error as { code?: unknown } | null)?.code === "23505";
+	return (error as { code?: unknown } | null)?.code === "23505";
 }
 
 async function findExistingDeliveryId(
-  organizationId: string,
-  connectorKey: string,
-  originId: string
+	organizationId: string,
+	connectorKey: string,
+	originId: string,
 ): Promise<number | undefined> {
-  const rows = await getDb()`
+	const rows = await getDb()`
     SELECT id FROM events
     WHERE organization_id = ${organizationId}
       AND connector_key = ${connectorKey}
       AND origin_id = ${originId}
     LIMIT 1
   `;
-  return (rows[0] as { id: number } | undefined)?.id;
+	return (rows[0] as { id: number } | undefined)?.id;
 }
 
 /**
@@ -224,171 +229,171 @@ async function findExistingDeliveryId(
  * connection ids and outcome codes.
  */
 export async function handleWebhookIngest(
-  stored: StoredConnection,
-  request: Request,
-  secretStore: SecretStore
+	stored: StoredConnection,
+	request: Request,
+	secretStore: SecretStore,
 ): Promise<Response> {
-  const organizationId = stored.organizationId;
-  if (!organizationId) {
-    // Pre-Phase-C rows only; the storage layer requires org scoping today.
-    logger.error(
-      { connectionId: stored.id },
-      "[webhook-ingest] connection has no organization_id — refusing delivery"
-    );
-    return json(500, { error: "Connection is not org-scoped" });
-  }
-  const config = stored.config as WebhookIngestConfig;
+	const organizationId = stored.organizationId;
+	if (!organizationId) {
+		// Pre-Phase-C rows only; the storage layer requires org scoping today.
+		logger.error(
+			{ connectionId: stored.id },
+			"[webhook-ingest] connection has no organization_id — refusing delivery",
+		);
+		return json(500, { error: "Connection is not org-scoped" });
+	}
+	const config = stored.config as WebhookIngestConfig;
 
-  // 1. Size cap. Trust Content-Length only to reject early; the capped body
-  //    read below enforces the limit for chunked/lying senders.
-  const declaredLength = Number(request.headers.get("content-length") ?? "0");
-  if (declaredLength > WEBHOOK_INGEST_MAX_BODY_BYTES) {
-    return json(413, { error: "Payload too large" });
-  }
+	// 1. Size cap. Trust Content-Length only to reject early; the capped body
+	//    read below enforces the limit for chunked/lying senders.
+	const declaredLength = Number(request.headers.get("content-length") ?? "0");
+	if (declaredLength > WEBHOOK_INGEST_MAX_BODY_BYTES) {
+		return json(413, { error: "Payload too large" });
+	}
 
-  // 2. Pre-auth rate limit, keyed by (connection, source IP) so a flood of
-  //    bad-token requests can't exhaust the authenticated delivery budget
-  //    below (cluster-wide counters, fail-open on DB trouble — matching
-  //    every other limiter call site).
-  const preauthRate = getRateLimiter().checkLimit(
-    `webhook-ingest-preauth:${stored.id}:${getClientIP(request)}`,
-    WEBHOOK_INGEST_PREAUTH_RATE_LIMIT
-  );
-  if (!preauthRate.allowed) {
-    return new Response(JSON.stringify({ error: preauthRate.errorMessage }), {
-      status: 429,
-      headers: {
-        "content-type": "application/json",
-        "retry-after": String(preauthRate.resetInSeconds),
-      },
-    });
-  }
+	// 2. Pre-auth rate limit, keyed by (connection, source IP) so a flood of
+	//    bad-token requests can't exhaust the authenticated delivery budget
+	//    below (cluster-wide counters, fail-open on DB trouble — matching
+	//    every other limiter call site).
+	const preauthRate = getRateLimiter().checkLimit(
+		`webhook-ingest-preauth:${stored.id}:${getClientIP(request)}`,
+		WEBHOOK_INGEST_PREAUTH_RATE_LIMIT,
+	);
+	if (!preauthRate.allowed) {
+		return new Response(JSON.stringify({ error: preauthRate.errorMessage }), {
+			status: 429,
+			headers: {
+				"content-type": "application/json",
+				"retry-after": String(preauthRate.resetInSeconds),
+			},
+		});
+	}
 
-  // 3. Auth. Fail closed when no token is configured/resolvable — an ingest
-  //    endpoint must never be open just because its secret went missing.
-  const configuredToken = await resolveSecretValue(
-    secretStore,
-    typeof config.token === "string" ? config.token : undefined
-  );
-  if (!configuredToken) {
-    logger.warn(
-      { connectionId: stored.id },
-      "[webhook-ingest] no resolvable token configured — rejecting delivery"
-    );
-    return json(401, { error: "Unauthorized" });
-  }
-  const presentedToken = extractPresentedToken(request, config);
-  if (!presentedToken || !tokensMatch(presentedToken, configuredToken)) {
-    return json(401, { error: "Unauthorized" });
-  }
+	// 3. Auth. Fail closed when no token is configured/resolvable — an ingest
+	//    endpoint must never be open just because its secret went missing.
+	const configuredToken = await resolveSecretValue(
+		secretStore,
+		typeof config.token === "string" ? config.token : undefined,
+	);
+	if (!configuredToken) {
+		logger.warn(
+			{ connectionId: stored.id },
+			"[webhook-ingest] no resolvable token configured — rejecting delivery",
+		);
+		return json(401, { error: "Unauthorized" });
+	}
+	const presentedToken = extractPresentedToken(request, config);
+	if (!presentedToken || !tokensMatch(presentedToken, configuredToken)) {
+		return json(401, { error: "Unauthorized" });
+	}
 
-  // 4. Authenticated per-connection delivery budget — only verified senders
-  //    spend it.
-  const rate = getRateLimiter().checkLimit(
-    `webhook-ingest:${stored.id}`,
-    WEBHOOK_INGEST_RATE_LIMIT
-  );
-  if (!rate.allowed) {
-    return new Response(JSON.stringify({ error: rate.errorMessage }), {
-      status: 429,
-      headers: {
-        "content-type": "application/json",
-        "retry-after": String(rate.resetInSeconds),
-      },
-    });
-  }
+	// 4. Authenticated per-connection delivery budget — only verified senders
+	//    spend it.
+	const rate = getRateLimiter().checkLimit(
+		`webhook-ingest:${stored.id}`,
+		WEBHOOK_INGEST_RATE_LIMIT,
+	);
+	if (!rate.allowed) {
+		return new Response(JSON.stringify({ error: rate.errorMessage }), {
+			status: 429,
+			headers: {
+				"content-type": "application/json",
+				"retry-after": String(rate.resetInSeconds),
+			},
+		});
+	}
 
-  const rawBody = await readBodyWithCap(request, WEBHOOK_INGEST_MAX_BODY_BYTES);
-  if (rawBody === null) {
-    return json(413, { error: "Payload too large" });
-  }
+	const rawBody = await readBodyWithCap(request, WEBHOOK_INGEST_MAX_BODY_BYTES);
+	if (rawBody === null) {
+		return json(413, { error: "Payload too large" });
+	}
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(new TextDecoder().decode(rawBody));
-  } catch {
-    return json(400, { error: "Request body must be valid JSON" });
-  }
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(new TextDecoder().decode(rawBody));
+	} catch {
+		return json(400, { error: "Request body must be valid JSON" });
+	}
 
-  // 5. Dedupe key: provider delivery id header when configured and present,
-  //    else a content hash. Either way redeliveries map to the same origin_id.
-  let originId: string | undefined;
-  let dedupeSource: "header" | "body-hash" = "body-hash";
-  if (typeof config.dedupeHeader === "string" && config.dedupeHeader) {
-    const headerValue = request.headers.get(config.dedupeHeader);
-    if (headerValue) {
-      // Sender-controlled value feeding a btree index — keep entries bounded.
-      // Real delivery ids (UUIDs etc.) pass through verbatim; anything
-      // oversized collapses to its hash, which dedupes identically.
-      originId =
-        headerValue.length <= 256
-          ? headerValue
-          : createHash("sha256").update(headerValue).digest("hex");
-      dedupeSource = "header";
-    }
-  }
-  if (!originId) {
-    originId = createHash("sha256").update(rawBody).digest("hex");
-  }
+	// 5. Dedupe key: provider delivery id header when configured and present,
+	//    else a content hash. Either way redeliveries map to the same origin_id.
+	let originId: string | undefined;
+	let dedupeSource: "header" | "body-hash" = "body-hash";
+	if (typeof config.dedupeHeader === "string" && config.dedupeHeader) {
+		const headerValue = request.headers.get(config.dedupeHeader);
+		if (headerValue) {
+			// Sender-controlled value feeding a btree index — keep entries bounded.
+			// Real delivery ids (UUIDs etc.) pass through verbatim; anything
+			// oversized collapses to its hash, which dedupes identically.
+			originId =
+				headerValue.length <= 256
+					? headerValue
+					: createHash("sha256").update(headerValue).digest("hex");
+			dedupeSource = "header";
+		}
+	}
+	if (!originId) {
+		originId = createHash("sha256").update(rawBody).digest("hex");
+	}
 
-  const connectorKey = `webhook:${stored.id}`;
-  const payloadData =
-    parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : { payload: parsed };
-  const semanticType =
-    typeof config.semanticType === "string" && config.semanticType
-      ? config.semanticType
-      : "content";
+	const connectorKey = `webhook:${stored.id}`;
+	const payloadData =
+		parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+			? (parsed as Record<string, unknown>)
+			: { payload: parsed };
+	const semanticType =
+		typeof config.semanticType === "string" && config.semanticType
+			? config.semanticType
+			: "content";
 
-  // 6. Persist, then ack. A duplicate (pre-checked or raced) is still a 202 —
-  //    the provider delivered successfully; we just already had it.
-  const existingId = await findExistingDeliveryId(
-    organizationId,
-    connectorKey,
-    originId
-  );
-  if (existingId !== undefined) {
-    return json(202, { ok: true, id: existingId, duplicate: true });
-  }
+	// 6. Persist, then ack. A duplicate (pre-checked or raced) is still a 202 —
+	//    the provider delivered successfully; we just already had it.
+	const existingId = await findExistingDeliveryId(
+		organizationId,
+		connectorKey,
+		originId,
+	);
+	if (existingId !== undefined) {
+		return json(202, { ok: true, id: existingId, duplicate: true });
+	}
 
-  try {
-    const inserted = await insertEvent({
-      entityIds: [],
-      organizationId,
-      originId,
-      connectorKey,
-      semanticType,
-      payloadType: "json_template",
-      payloadData,
-      title: extractTitle(parsed, config.titlePath),
-      occurredAt: new Date(),
-      metadata: {
-        webhook_connection_id: stored.id,
-        dedupe_source: dedupeSource,
-      },
-    });
-    logger.info(
-      { connectionId: stored.id, eventId: inserted.id, dedupeSource },
-      "[webhook-ingest] delivery persisted"
-    );
-    return json(202, { ok: true, id: inserted.id });
-  } catch (error) {
-    if (isUniqueViolation(error)) {
-      const racedId = await findExistingDeliveryId(
-        organizationId,
-        connectorKey,
-        originId
-      );
-      if (racedId !== undefined) {
-        return json(202, { ok: true, id: racedId, duplicate: true });
-      }
-    }
-    logger.error(
-      { connectionId: stored.id, error: String(error) },
-      "[webhook-ingest] failed to persist delivery"
-    );
-    // Non-2xx so the provider retries; nothing was acked.
-    return json(500, { error: "Failed to persist delivery" });
-  }
+	try {
+		const inserted = await insertEvent({
+			entityIds: [],
+			organizationId,
+			originId,
+			connectorKey,
+			semanticType,
+			payloadType: "json_template",
+			payloadData,
+			title: extractTitle(parsed, config.titlePath),
+			occurredAt: new Date(),
+			metadata: {
+				webhook_connection_id: stored.id,
+				dedupe_source: dedupeSource,
+			},
+		});
+		logger.info(
+			{ connectionId: stored.id, eventId: inserted.id, dedupeSource },
+			"[webhook-ingest] delivery persisted",
+		);
+		return json(202, { ok: true, id: inserted.id });
+	} catch (error) {
+		if (isUniqueViolation(error)) {
+			const racedId = await findExistingDeliveryId(
+				organizationId,
+				connectorKey,
+				originId,
+			);
+			if (racedId !== undefined) {
+				return json(202, { ok: true, id: racedId, duplicate: true });
+			}
+		}
+		logger.error(
+			{ connectionId: stored.id, error: String(error) },
+			"[webhook-ingest] failed to persist delivery",
+		);
+		// Non-2xx so the provider retries; nothing was acked.
+		return json(500, { error: "Failed to persist delivery" });
+	}
 }

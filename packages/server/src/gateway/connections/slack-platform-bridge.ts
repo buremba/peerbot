@@ -449,6 +449,8 @@ async function startMcpConnectFlow(params: {
   }
   const httpServer = await mcpConfigService.getHttpServer(mcpId, agentId);
   if (!httpServer) return null;
+  const organizationId = connection.organizationId;
+  if (!organizationId) return null;
   const redirectUri = `${deps.publicGatewayUrl.replace(/\/+$/, "")}/mcp/oauth/callback`;
   const { authorizationUrl } = await startAuthCodeFlow({
     secretStore: deps.secretStore,
@@ -456,7 +458,7 @@ async function startMcpConnectFlow(params: {
     upstreamUrl: httpServer.upstreamUrl,
     agentId,
     userId,
-		organizationId: connection.organizationId,
+		organizationId,
     // Home-tab connect is always per-user.
     scopeKey: userId,
     wwwAuthenticate: null,

@@ -312,6 +312,7 @@ export async function completeAuthCodeFlow(
   if (!tokenData.access_token) {
     throw new Error("Token exchange response missing access_token");
   }
+  const accessToken = tokenData.access_token;
 
   const expiresAt =
     typeof tokenData.expires_in === "number"
@@ -320,7 +321,7 @@ export async function completeAuthCodeFlow(
 
 	await runWithOrganizationContext(organizationId, () =>
 		storeCredentialForScope(secretStore, agentId, scopeKey, mcpId, {
-    accessToken: tokenData.access_token,
+    accessToken,
     refreshToken: tokenData.refresh_token,
     expiresAt,
     clientId: client.clientId,

@@ -1,3 +1,5 @@
+import type { WorkerTokenData } from "@lobu/core";
+
 /**
  * Shared types for internal worker-facing routes.
  */
@@ -8,15 +10,6 @@
  */
 export type WorkerContext = {
   Variables: {
-    worker: {
-      userId: string;
-      conversationId: string;
-      channelId: string;
-      teamId?: string;
-      agentId?: string;
-      deploymentName: string;
-      platform?: string;
-      connectionId?: string;
-    };
+    worker: WorkerTokenData;
   };
 };

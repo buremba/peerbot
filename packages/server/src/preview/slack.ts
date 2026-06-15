@@ -407,25 +407,10 @@ export async function bindChatToPreviewAgent(args: {
   if (!target) return { status: 'not_available' };
 
   const { platform, teamId, channelId } = args;
-  if (teamId) {
-    // Org-scoped upsert: another tenant's binding for the same platform+channel
-    // is a different row and cannot be clobbered. `organization_id` is never
-    // reassigned, so a binding can't change owners.
-    await sql`
-      INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
-      VALUES (${org.organizationId}, ${target.id}, ${platform}, ${channelId}, ${teamId}, now())
-      ON CONFLICT (organization_id, platform, channel_id, team_id) DO UPDATE SET
-        agent_id = EXCLUDED.agent_id
-    `;
-  } else {
-    await sql`
-      INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
-      VALUES (${org.organizationId}, ${target.id}, ${platform}, ${channelId}, NULL, now())
-      ON CONFLICT (organization_id, platform, channel_id)
-        WHERE team_id IS NULL
-        DO UPDATE SET agent_id = EXCLUDED.agent_id
-    `;
-  }
+  // Org-scoped upsert (same dance as `upsertBinding`): another tenant's binding
+  // for the same platform+channel is a different row and cannot be clobbered,
+  // and `organization_id` is never reassigned, so a binding can't change owners.
+  await upsertBinding(sql, platform, channelId, teamId, target.id, org.organizationId);
   return { status: 'bound', agentId: target.id };
 }
 

@@ -13,7 +13,10 @@ export interface ExtensionScrapeConfig {
   scroll?: { max?: number; stall?: number; waitMs?: number; deep?: boolean };
   loggedOutWhen?: { pathRegex?: string; hostRegex?: string };
   rowSelector?: string;
-  group?: string;
+  /** Section/day grouping: iterate each `selector`, take its first text line as
+   * the group label (when `labelFromFirstLine`), and emit a row per
+   * `rowSelector` inside it. The engine reads `cfg.group.selector`. */
+  group?: { selector: string; rowSelector: string; labelFromFirstLine?: boolean };
   id?: { source: string; name?: string; regex?: string; group?: number };
   requireFields?: readonly string[];
   fields?: Record<

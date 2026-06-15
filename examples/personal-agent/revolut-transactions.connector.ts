@@ -42,6 +42,8 @@ import {
   type ConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
+  type ExtensionScrapeConfig,
+  extensionDomScrape,
   type SyncContext,
   type SyncResult,
 } from "@lobu/connector-sdk";
@@ -378,210 +380,88 @@ export class RevolutAuthWallError extends Error {
   }
 }
 
-function hostOf(url: string): string | null {
-  try {
-    return new URL(url).hostname.toLowerCase();
-  } catch {
-    return null;
-  }
+// ---------------------------------------------------------------------------
+// DOM scrape (declarative cs_scrape via the extension's content script)
+// ---------------------------------------------------------------------------
+
+const REVOLUT_ALLOWED_ORIGINS = ["revolut.com", "*.revolut.com"];
+
+// A transaction line carries either a currency symbol or a 3-letter ISO code,
+// plus a digit. A time line starts "HH:MM".
+const AMOUNT_LINE_RE = /[£$€¥₹₽₺₩₪₴₫₱฿₦]|\b[A-Z]{3}\b/;
+const TIME_LINE_RE = /^\d{1,2}:\d{2}/;
+
+// Declarative config for the extension's content-script scraper. The list is a
+// set of `[role="transactions-group"]` day sections (the group's first text
+// line is the day heading), each holding one `button` per transaction. We grab
+// every row's full innerText plus the clean merchant name ([class*=ItemTitle])
+// and parse amounts/time/desc out of the text in TS (rawRowToDomRow). The
+// content script handles scroll pagination + the virtualized-list dedup, so no
+// in-page accumulator is needed. `loggedOutWhen` flags the app->sso redirect.
+const REVOLUT_SCRAPE_CONFIG: ExtensionScrapeConfig = {
+  scroll: { max: 20, stall: 3, waitMs: 1500 },
+  loggedOutWhen: {
+    hostRegex: "sso\\.revolut\\.com",
+    pathRegex: "(signin|passcode|login)",
+  },
+  group: {
+    selector: '[role="transactions-group"]',
+    rowSelector: "button",
+    labelFromFirstLine: true,
+  },
+  requireFields: ["text"],
+  fields: {
+    text: { take: "text" },
+    title: { selector: '[class*="ItemTitle"]', take: "text", firstLine: true },
+  },
+};
+
+/** Convert one raw cs_scrape row ({ group, text, title }) into a RevolutDomRow,
+ * splitting the row's innerText into amount lines and a time line (the same
+ * shape buildTransactionsFromDom expects). */
+function rawRowToDomRow(raw: Record<string, unknown>): RevolutDomRow {
+  const text = typeof raw.text === "string" ? raw.text : "";
+  const lines = text
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const amounts = lines.filter((l) => AMOUNT_LINE_RE.test(l) && /\d/.test(l));
+  const timeRef = lines.find((l) => TIME_LINE_RE.test(l)) ?? "";
+  const title = typeof raw.title === "string" ? raw.title.trim() : "";
+  const desc = title || lines[0] || "";
+  const day = typeof raw.group === "string" ? raw.group : "";
+  return { day, desc, amounts, timeRef };
 }
 
 /**
- * Deterministic auth-wall detection. Revolut bounces an expired session from
- * `app.revolut.com` to `sso.revolut.com/passcode` (or `/signin`), so the
- * primary signal is the LANDED host differing from the REQUESTED host. As a
- * backstop, a page that rendered zero transaction rows AND shows a login form
- * (password / passcode input) is also an auth wall. We do NOT rely on URL
- * keywords alone — the host comparison catches the app→sso redirect cleanly.
- */
-export function isAuthWall(
-  requestedUrl: string,
-  landedUrl: string,
-  rowCount: number,
-  hasLoginForm: boolean
-): boolean {
-  const reqHost = hostOf(requestedUrl);
-  const landedHost = hostOf(landedUrl);
-  if (reqHost && landedHost && landedHost !== reqHost) return true;
-  if (rowCount === 0 && hasLoginForm) return true;
-  return false;
-}
-
-// ---------------------------------------------------------------------------
-// DOM scrape (runs in-page via the extension's `evaluate` op)
-// ---------------------------------------------------------------------------
-
-// The Revolut transaction list is virtualized: rows recycle out of the DOM as
-// you scroll, so we accumulate on `window.__lobuRevTxns` across calls and dedup
-// by a content key. Each transaction is a <button> inside a
-// `div[role="transactions-group"]` (one group per day; the group's first text
-// line is the day heading). A button's lines are
-//   [merchant/description, "HH:MM[ · ref]", "<sign><sym><amount>", ...fx].
-// `[class*=ItemTitle]` carries the clean merchant name.
-const HARVEST_EXPRESSION = `
-(() => {
-  const W = window;
-  W.__lobuRevTxns = W.__lobuRevTxns || {};
-  const acc = W.__lobuRevTxns;
-  const groups = [...document.querySelectorAll('[role="transactions-group"]')];
-  for (const g of groups) {
-    const day = (g.innerText || '').split('\\n')[0].trim();
-    let ord = 0;
-    for (const b of g.querySelectorAll('button')) {
-      const lines = b.innerText.split('\\n').map(s => s.trim()).filter(Boolean);
-      if (lines.length < 2) continue;
-      const amounts = lines.filter(l => /[£$€¥₹₽₺₩₪₴₫₱฿₦]|\\b[A-Z]{3}\\b/.test(l) && /\\d/.test(l));
-      if (!amounts.length) continue;
-      const titleEl = b.querySelector('[class*="ItemTitle"]');
-      const desc = titleEl ? titleEl.innerText.trim() : lines[0];
-      const timeRef = lines.find(l => /^\\d{1,2}:\\d{2}/.test(l)) || '';
-      const key = day + '|' + desc + '|' + amounts.join('/') + '|' + timeRef + '|' + (ord++);
-      if (!acc[key]) acc[key] = { day: day, desc: desc, amounts: amounts, timeRef: timeRef };
-    }
-  }
-  return Object.keys(acc).length;
-})()
-`;
-
-/** Scroll the transaction list to lazy-load older rows. */
-const SCROLL_EXPRESSION = `(async()=>{window.scrollTo(0,document.body.scrollHeight);if(document.scrollingElement)document.scrollingElement.scrollTop=document.scrollingElement.scrollHeight;await new Promise(r=>setTimeout(r,1500));return document.querySelectorAll('[role="transactions-group"] button').length})()`;
-
-/** Read the accumulated rows out of the page and clear the accumulator. */
-const COLLECT_EXPRESSION = `
-(() => {
-  const acc = window.__lobuRevTxns || {};
-  const rows = Object.values(acc);
-  window.__lobuRevTxns = {};
-  return rows;
-})()
-`;
-
-/** Probe whether the landed page is a login wall (URL + login-form presence). */
-const PROBE_EXPRESSION = `
-JSON.stringify({
-  url: location.href,
-  rowCount: document.querySelectorAll('[role="transactions-group"] button').length,
-  hasLoginForm: !!document.querySelector('input[type="password"], input[autocomplete="one-time-code"], input[inputmode="numeric"]')
-})
-`;
-
-interface ProbeResult {
-  url: string;
-  rowCount: number;
-  hasLoginForm: boolean;
-}
-
-/**
- * Render the Revolut transactions page in the paired Chrome and harvest rows.
- *
- * Tries `focus_mode:"window"` first (a background scrape window that renders
- * without switching the user's tab); if it yields nothing — the signature of a
- * fully-occluded background window Chrome throttled — retries once with
- * `bring_to_front`. The list is virtualized, so we harvest after each of
- * `maxScrolls` scroll steps and accumulate (dedup) in-page, then collect.
- *
- * On an auth wall (landed host != requested, or zero rows + a login form) we
- * `focus_tab` to surface the tab so the user can re-enter their passcode, then
- * throw `RevolutAuthWallError` — never silently scraping a logged-out page.
+ * Render the Revolut transactions page in the paired Chrome and harvest rows
+ * via one declarative `cs_scrape` (content script — no debugger, so the page
+ * renders normally). The content script scrolls `maxScrolls` times and returns
+ * deduped rows. On an auth wall (`loggedOutWhen` matched the app->sso redirect),
+ * `extensionDomScrape` reports `loggedIn:false` and we raise — never scrape a
+ * logged-out page.
  */
 async function scrapeTransactionRows(
   dispatcher: ChromeActionDispatcher,
   url: string,
   maxScrolls: number
 ): Promise<RevolutDomRow[]> {
-  const modes: Array<Record<string, unknown>> = [
-    { focus_mode: "window" },
-    { bring_to_front: true },
-  ];
-  for (const mode of modes) {
-    const nav = await dispatcher.dispatch<{
-      tab_id: number;
-      current_url?: string;
-    }>("navigate", {
-      url,
-      open_in_new_tab: true,
-      wait_for_load: true,
-      allowed_origins: ["revolut.com", "*.revolut.com", "app.revolut.com"],
-      ...mode,
-    });
-    const tabId = nav.tab_id;
-
-    // Probe the landed page for an auth wall before scraping.
-    let probe: ProbeResult = {
-      url: String(nav.current_url ?? url),
-      rowCount: 0,
-      hasLoginForm: false,
-    };
-    try {
-      const res = await dispatcher.dispatch<{ value?: unknown }>("evaluate", {
-        tab_id: tabId,
-        expression: PROBE_EXPRESSION,
-      });
-      if (typeof res?.value === "string") {
-        probe = JSON.parse(res.value) as ProbeResult;
-      }
-    } catch {
-      // Probe failure: fall back to the navigate-reported URL.
-    }
-
-    if (isAuthWall(url, probe.url, probe.rowCount, probe.hasLoginForm)) {
-      try {
-        await dispatcher.dispatch("focus_tab", { tab_id: tabId });
-      } catch {
-        // focus_tab may be unavailable on older extensions; best-effort
-        // foreground so the tab is at least visible for re-auth.
-        try {
-          await dispatcher.dispatch("navigate", {
-            tab_id: tabId,
-            url: probe.url,
-            open_in_new_tab: false,
-            bring_to_front: true,
-            wait_for_load: false,
-          });
-        } catch {
-          // Best-effort surfacing; ignore if the fallback navigate also fails.
-        }
-      }
-      throw new RevolutAuthWallError(probe.url);
-    }
-
-    try {
-      // Harvest the initial view, then scroll + harvest repeatedly.
-      await dispatcher.dispatch("evaluate", {
-        tab_id: tabId,
-        expression: HARVEST_EXPRESSION,
-      });
-      for (let i = 0; i < maxScrolls; i++) {
-        await dispatcher.dispatch("evaluate", {
-          tab_id: tabId,
-          expression: SCROLL_EXPRESSION,
-        });
-        await dispatcher.dispatch("evaluate", {
-          tab_id: tabId,
-          expression: HARVEST_EXPRESSION,
-        });
-      }
-      const collected = await dispatcher.dispatch<{ value?: unknown }>(
-        "evaluate",
-        {
-          tab_id: tabId,
-          expression: COLLECT_EXPRESSION,
-        }
-      );
-      const rows = Array.isArray(collected?.value)
-        ? (collected.value as RevolutDomRow[])
-        : [];
-      if (rows.length > 0) return rows;
-      // Empty: likely the background window was occluded → try the next mode.
-    } finally {
-      try {
-        await dispatcher.dispatch("close_tab", { tab_id: tabId });
-      } catch {
-        // best-effort; the stale-tab reaper backstops a missed close.
-      }
-    }
+  const result = await extensionDomScrape<RevolutDomRow>({
+    dispatcher,
+    url,
+    config: {
+      ...REVOLUT_SCRAPE_CONFIG,
+      scroll: { ...REVOLUT_SCRAPE_CONFIG.scroll, max: maxScrolls },
+    },
+    parseRows: (raw) => raw.map(rawRowToDomRow),
+    allowedOrigins: REVOLUT_ALLOWED_ORIGINS,
+    persistent: true,
+    focus: true,
+  });
+  if (!result.loggedIn) {
+    throw new RevolutAuthWallError(result.landedUrl ?? url);
   }
-  return [];
+  return result.items;
 }
 
 // ---------------------------------------------------------------------------
@@ -643,9 +523,10 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     faviconDomain: "app.revolut.com",
     authSchema: {
       // Auth is implicit via the paired Owletto extension's signed-in Chrome —
-      // no CDP, no cookie capture. Revolut's session expires periodically; when
-      // it does the sync surfaces the scrape tab (focus_tab) and fails with a
-      // "needs sign-in" message so the user can re-enter their passcode.
+      // no CDP, no cookie capture. The scrape runs in a focused persistent
+      // window; when Revolut's session expires the page redirects to sso.revolut
+      // .com, `loggedOutWhen` flags it, and the sync fails with a "needs sign-in"
+      // message so the user can re-enter their passcode in that window.
       methods: [{ type: "none" }],
     },
     feeds: {

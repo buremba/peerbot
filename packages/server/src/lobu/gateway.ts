@@ -384,6 +384,17 @@ export async function initLobuGateway(): Promise<Hono | null> {
           coreServices.getAgentSettingsStore()
         );
         unifiedConsumer.setChatResponseBridge(bridge);
+        // Cross-pod fan-out for chat-platform interaction cards (ask_user,
+        // tool-approval, link-button, status). The worker posts a card into
+        // its own pod's InteractionService; under N>1 replicas that pod
+        // rarely owns the connection's bridge, so the card must ride the
+        // thread_response queue to the owning pod. The local-warm check skips
+        // the queue when this pod already renders the card in-process.
+        const manager = chatInstanceManager;
+        unifiedConsumer.setInteractionService(
+          coreServices.getInteractionService(),
+          (connectionId: string) => manager.has(connectionId)
+        );
       }
     } catch (error) {
       logger.warn(

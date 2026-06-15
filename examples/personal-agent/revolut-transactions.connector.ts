@@ -519,7 +519,7 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     name: "Revolut",
     description:
       "Syncs Revolut account transactions by reading the rendered Revolut web app (no public API) through your paired Owletto Chrome session — no separate login, robust against Revolut's rotating internal API.",
-    version: "3.0.0",
+    version: "3.2.0",
     faviconDomain: "app.revolut.com",
     authSchema: {
       // Auth is implicit via the paired Owletto extension's signed-in Chrome —

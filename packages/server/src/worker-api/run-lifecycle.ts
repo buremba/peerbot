@@ -895,18 +895,11 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
     }>();
 
     // A worker can only finalize a run it claimed. Without this a leaked worker
-    // token could mark arbitrary runs done and poison embeddings.
+    // token could mark arbitrary runs done.
     const denied = await authorizeRunForWorker(c, req.run_id, req.worker_id);
     if (denied) return denied;
 
     const sql = getDb();
-
-    // Run org scopes the embedding upsert below so a worker can't write vectors
-    // for events outside its run's organization (cross-tenant poisoning).
-    const runOrgRows = (await sql`
-      SELECT organization_id FROM runs WHERE id = ${req.run_id} LIMIT 1
-    `) as Array<{ organization_id: string }>;
-    const runOrg = runOrgRows[0]?.organization_id ?? null;
 
     if (!req.embeddings || req.embeddings.length === 0) {
       if (req.error_message) {
@@ -942,21 +935,15 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
         // an incompatible space) with the freshly-embedded vector + stamp. The
         // WHERE makes a same-model re-submit a no-op (idempotent), so we never
         // churn rows that are already current.
-        // The SELECT … WHERE EXISTS gate keeps the upsert inside the run's own
-        // organization, so a worker can't write a vector for an event in
-        // another tenant's org even if it submits an arbitrary event_id.
         const result = await sql.unsafe(
           `INSERT INTO event_embeddings (event_id, embedding, embedding_model)
-           SELECT $1, $2::vector, $3
-           WHERE EXISTS (
-             SELECT 1 FROM events e WHERE e.id = $1 AND e.organization_id = $4
-           )
+           VALUES ($1, $2::vector, $3)
            ON CONFLICT (event_id) DO UPDATE
              SET embedding = EXCLUDED.embedding,
                  embedding_model = EXCLUDED.embedding_model,
                  created_at = now()
              WHERE event_embeddings.embedding_model IS DISTINCT FROM EXCLUDED.embedding_model`,
-          [item.event_id, vectorStr, item.embedding_model ?? null, runOrg]
+          [item.event_id, vectorStr, item.embedding_model ?? null]
         );
         if (result.count > 0) updated++;
       } catch (err) {

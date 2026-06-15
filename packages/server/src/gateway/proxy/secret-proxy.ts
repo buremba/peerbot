@@ -8,6 +8,7 @@ import type { ProviderUpstreamConfig } from "../modules/module-system.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import { readOrgSharedProviderApiKey } from "../../lobu/stores/provider-secrets.js";
 import type { SecretStore } from "../secrets/index.js";
+import { getClientIp } from "../utils/rate-limiter.js";
 
 /**
  * Caller-supplied resolver: agentId → orgId of the agent's owning org.
@@ -808,11 +809,12 @@ export class SecretProxy {
       // Legacy path: swap UUID placeholders in auth headers (non-provider secrets).
       // Read the originals from the request because we strip them from the
       // forwarded headers map above.
-      // Key the failure throttle on a non-spoofable identity: the bound agentId
-      // when present, else the verified socket peer. Forwarded headers are
-      // client-controlled, so keying on them would let a worker rotate the
-      // header to dodge the placeholder-enumeration throttle.
-      const source = urlAgentId ?? c.var.peerRemoteAddress ?? "unknown";
+      const source =
+        urlAgentId ??
+        getClientIp({
+          forwardedFor: c.req.header("x-forwarded-for"),
+          realIp: c.req.header("x-real-ip"),
+        });
       const apiKey = c.req.header("x-api-key");
       if (apiKey) {
         headers["x-api-key"] = await this.swap(

@@ -26,6 +26,16 @@ function isTokenExpiringSoon(expiresAt: Date | string | null): boolean {
   return new Date(expiresAt).getTime() <= Date.now() + TOKEN_EXPIRY_BUFFER_MS;
 }
 
+/**
+ * Per-account advisory-lock tag. `pg_advisory_xact_lock(hashtext($1))` keys the
+ * lock off this string and auto-releases at transaction end, serializing OAuth
+ * token refresh across replicas so two workers can't both rotate the same
+ * account's refresh token and clobber each other's result.
+ */
+function refreshLockTag(accountId: string): string {
+  return `oauth_account_refresh:${accountId}`;
+}
+
 export class CredentialService {
   constructor(private sql: DbClient) {}
 
@@ -62,13 +72,8 @@ export class CredentialService {
     // Check if token needs refresh
     if (tokens.expiresAt) {
       if (isTokenExpiringSoon(tokens.expiresAt) && tokens.refreshToken && oauthConfig) {
-        const newTokens = await this.refreshTokenGeneric({
-          ...oauthConfig,
-          refreshToken: tokens.refreshToken,
-        });
-
+        const newTokens = await this.refreshAccountUnderLock(accountId, oauthConfig);
         if (newTokens) {
-          await this.persistAccountTokens(accountId, newTokens);
           return {
             ...tokens,
             accessToken: newTokens.accessToken,
@@ -84,6 +89,10 @@ export class CredentialService {
   /**
    * Public method for refreshing tokens with explicit OAuth config.
    * Used by the MCP proxy to refresh tokens using connector-specific OAuth settings.
+   *
+   * Serialized per account under a Postgres advisory lock with the stored
+   * refresh token re-read inside the lock — so concurrent refreshes across
+   * replicas can't both rotate and clobber each other's persisted token.
    */
   async refreshWithConfig(config: {
     tokenUrl: string;
@@ -93,18 +102,77 @@ export class CredentialService {
     authMethod?: 'client_secret_post' | 'client_secret_basic' | 'none';
     accountId: string;
   }): Promise<{ accessToken: string; expiresAt: Date; refreshToken?: string } | null> {
-    const result = await this.refreshTokenGeneric(config);
-    if (!result) return null;
+    return this.refreshAccountUnderLock(config.accountId, {
+      tokenUrl: config.tokenUrl,
+      clientId: config.clientId,
+      clientSecret: config.clientSecret,
+      authMethod: config.authMethod,
+    });
+  }
 
-    await this.persistAccountTokens(config.accountId, result);
-    return result;
+  /**
+   * Refresh + persist an account's OAuth token under a per-account Postgres
+   * advisory lock. The lock is held for the whole transaction; the stored
+   * refresh token and expiry are RE-READ inside the lock so that if a
+   * concurrent refresh (this pod or another replica) already rotated the
+   * token, the loser uses the freshly-stored refresh token / no-ops on a
+   * still-valid expiry instead of replaying a rotated-away token.
+   */
+  private async refreshAccountUnderLock(
+    accountId: string,
+    oauthConfig: {
+      tokenUrl: string;
+      clientId: string;
+      clientSecret?: string;
+      authMethod?: 'client_secret_post' | 'client_secret_basic' | 'none';
+    }
+  ): Promise<{ accessToken: string; expiresAt: Date; refreshToken?: string } | null> {
+    return this.sql.begin(async (tx) => {
+      await tx.unsafe(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
+        refreshLockTag(accountId),
+      ]);
+
+      // Re-read under the lock: a concurrent refresh may have rotated the
+      // refresh token and pushed the expiry out while we waited to acquire it.
+      const rows = await tx`
+        SELECT
+          a."accessToken" as "accessToken",
+          a."refreshToken" as "refreshToken",
+          a."accessTokenExpiresAt" as "expiresAt"
+        FROM "account" a
+        WHERE a.id = ${accountId}
+        FOR UPDATE
+      `;
+      const current = rows[0] as
+        | { accessToken: string | null; refreshToken: string | null; expiresAt: Date | null }
+        | undefined;
+      if (!current?.refreshToken) return null;
+
+      // If the token is no longer expiring soon, another worker just rotated
+      // it — return the now-current credentials instead of refreshing again.
+      if (current.expiresAt && !isTokenExpiringSoon(current.expiresAt)) {
+        return current.accessToken
+          ? { accessToken: current.accessToken, expiresAt: new Date(current.expiresAt) }
+          : null;
+      }
+
+      const result = await this.refreshTokenGeneric({
+        ...oauthConfig,
+        refreshToken: current.refreshToken,
+      });
+      if (!result) return null;
+
+      await this.persistAccountTokens(accountId, result, tx);
+      return result;
+    });
   }
 
   private async persistAccountTokens(
     accountId: string,
-    tokens: { accessToken: string; expiresAt: Date; refreshToken?: string }
+    tokens: { accessToken: string; expiresAt: Date; refreshToken?: string },
+    sql: DbClient = this.sql
   ): Promise<void> {
-    await this.sql`
+    await sql`
       UPDATE "account"
       SET "accessToken" = ${tokens.accessToken},
           "accessTokenExpiresAt" = ${tokens.expiresAt.toISOString()},

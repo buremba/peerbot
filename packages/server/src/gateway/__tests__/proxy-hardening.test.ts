@@ -15,11 +15,11 @@
  * but the current implementation directly awaits this.client.judge() with no
  * deadline. Tests for timeout behaviour are omitted until the feature is re-added.
  *
- * NOTE: NAT64 address translation (64:ff9b::/96 prefix) is NOT currently handled
- * by isBlockedIpAddress — those addresses are treated as regular IPv6 addresses
- * and go through blockedIpv6List, which only blocks the ULA/link-local ranges.
- * A 64:ff9b::7f00:1 address (translating to 127.0.0.1) would currently NOT be
- * blocked. This is a security gap documented below.
+ * NOTE: NAT64 address translation (64:ff9b::/96 prefix) IS handled. The IP
+ * normalization + reserved-range matcher now live in the shared
+ * `gateway/proxy/ssrf-guard.ts` (`isReservedIp`); `isBlockedIpAddress` is the
+ * proxy-local alias for it. A 64:ff9b::7f00:1 literal decodes to 127.0.0.1 and
+ * is blocked — see http-proxy.test.ts and ssrf-guard-matcher.test.ts.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";

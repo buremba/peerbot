@@ -7,6 +7,7 @@
  */
 
 import { MCP_PROTOCOL_VERSION } from '@lobu/core';
+import { isReservedIp, stripIpv6Brackets } from '../gateway/proxy/ssrf-guard';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 import { TtlCache } from '../utils/ttl-cache';
@@ -317,7 +318,7 @@ export async function callTool(
  * HTTP egress proxy; this check just rejects the obvious cases at the
  * trust boundary so a private IP in the literal never reaches `fetch`.
  */
-function assertSafeUrl(url: string): void {
+export function assertSafeUrl(url: string): void {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -328,45 +329,23 @@ function assertSafeUrl(url: string): void {
     throw new Error(`Unsupported protocol: ${parsed.protocol}`);
   }
   // WHATWG URL keeps IPv6 hostnames bracketed (`[::1]`). Strip brackets so the
-  // string comparisons below match the bare literal.
-  let hostname = parsed.hostname.toLowerCase();
-  if (hostname.startsWith('[') && hostname.endsWith(']')) {
-    hostname = hostname.slice(1, -1);
+  // shared guard sees the bare literal.
+  const hostname = stripIpv6Brackets(parsed.hostname.toLowerCase());
+
+  // IP literals (in any spelling) go through the canonical SSRF guard — the
+  // same `isReservedIp` the gateway egress proxy uses. This closes the gap the
+  // previous hand-rolled regex variant left open: NAT64 (`64:ff9b::7f00:1`) and
+  // hex-form IPv4-mapped IPv6 (`::ffff:7f00:1`) were not matched here. A value
+  // that looks like an IP literal but won't parse fails closed (blocked).
+  if (isReservedIp(hostname)) {
+    throw new Error(`URL points to a private/internal address: ${hostname}`);
   }
-  // IPv6 zone identifiers (`fe80::1%eth0`) never change the routability
-  // decision; strip before pattern matching.
-  const zoneIdx = hostname.indexOf('%');
-  if (zoneIdx !== -1) hostname = hostname.slice(0, zoneIdx);
 
-  const isIpv4Loopback = /^127\./.test(hostname);
-  const isIpv6Loopback = hostname === '::1';
-  const isMappedLoopback =
-    hostname.startsWith('::ffff:127.') ||
-    hostname.startsWith('::ffff:7f') ||
-    hostname === '::ffff:0:0';
-  const isLinkLocalIpv6 = /^fe[89ab][0-9a-f]:/.test(hostname);
-  const isUniqueLocalIpv6 = /^f[cd][0-9a-f]{2}:/.test(hostname);
-  const isUnspecifiedIpv6 = hostname === '::' || hostname === '::0';
-  const isMulticastIpv6 = hostname.startsWith('ff');
-  // 100.64.0.0/10 (CGNAT) and 169.254.0.0/16 are routable but never to a
-  // service the gateway should be calling out to. 0.0.0.0/8 is "this network".
-  const isCgnat = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(hostname);
-
+  // Hostname forms the IP guard can't see (these never reach `net.isIP`):
+  // bare `localhost` and the `.local` / `.internal` private DNS suffixes.
   if (
     hostname === 'localhost' ||
-    hostname === '0.0.0.0' ||
-    isIpv4Loopback ||
-    isIpv6Loopback ||
-    isMappedLoopback ||
-    isLinkLocalIpv6 ||
-    isUniqueLocalIpv6 ||
-    isUnspecifiedIpv6 ||
-    isMulticastIpv6 ||
-    isCgnat ||
-    hostname.startsWith('169.254.') ||
-    hostname.startsWith('10.') ||
-    hostname.startsWith('192.168.') ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) ||
+    hostname.endsWith('.localhost') ||
     hostname.endsWith('.local') ||
     hostname.endsWith('.internal')
   ) {

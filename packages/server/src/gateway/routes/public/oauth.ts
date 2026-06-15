@@ -4,8 +4,11 @@
  * OAuth code exchange and redirect handling.
  */
 
+import type { AgentConfigStore } from "@lobu/core";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import type { ProviderOAuthStateStore } from "../../auth/oauth/state-store.js";
+import type { UserAgentsStore } from "../../auth/user-agents-store.js";
+import { verifyOwnedAgentAccess } from "../shared/agent-ownership.js";
 import { verifySettingsSessionOrToken } from "./settings-auth.js";
 
 const TAG = "Auth";
@@ -69,6 +72,15 @@ export interface OAuthRoutesConfig {
   providerStores?: Record<string, ProviderCredentialStore>;
   oauthClients?: Record<string, ProviderOAuthClient>;
   oauthStateStore?: ProviderOAuthStateStore;
+  /**
+   * Ownership stores used to confirm the session may mint OAuth state for the
+   * resolved `agentId`. Without these the `/login` handler would accept any
+   * `?agentId=` query param a valid (but unrelated) session presents — the
+   * same shape as sibling agent-scoped routes, so they share
+   * `verifyOwnedAgentAccess`.
+   */
+  userAgentsStore?: UserAgentsStore;
+  agentMetadataStore?: Pick<AgentConfigStore, "getMetadata">;
 }
 
 export function createOAuthRoutes(config: OAuthRoutesConfig): OpenAPIHono {
@@ -87,6 +99,18 @@ export function createOAuthRoutes(config: OAuthRoutesConfig): OpenAPIHono {
       return c.redirect(
         `/connect/oauth/login?returnUrl=${encodeURIComponent(returnUrl)}`
       );
+    }
+
+    // Ownership gate: a valid session must not be able to mint OAuth state
+    // for an arbitrary `?agentId=` it doesn't own. `verifyOwnedAgentAccess`
+    // is the same helper sibling agent-scoped routes use — admins bypass,
+    // a session bound to a different agent (or a non-owning user) is rejected.
+    const ownership = await verifyOwnedAgentAccess(session, agentId, {
+      userAgentsStore: config.userAgentsStore,
+      agentMetadataStore: config.agentMetadataStore,
+    });
+    if (!ownership.authorized) {
+      return c.json({ error: "You do not have access to this agent" }, 403);
     }
 
     const oauthClient = config.oauthClients?.[c.req.param("provider")];

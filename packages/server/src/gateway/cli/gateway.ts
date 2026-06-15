@@ -661,6 +661,8 @@ export function createGatewayApp(
             : undefined,
         oauthClients: { claude: claudeOAuthClient },
         oauthStateStore: claudeOAuthStateStore,
+        userAgentsStore: coreServices.getUserAgentsStore(),
+        agentMetadataStore: coreServices.getAgentMetadataStore(),
       });
       authRouter.route("", oauthRouter);
       registeredProviders.push("oauth");

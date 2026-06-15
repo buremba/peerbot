@@ -5,7 +5,12 @@
  */
 
 import type { Context } from 'hono';
-import { getRequiredAccessLevel, hasRequiredMcpScope, isPublicReadable } from '../auth/tool-access';
+import {
+  getRequiredAccessLevel,
+  hasRequiredMcpScope,
+  isPublicReadable,
+  SCOPE_CHECK_NOT_APPLICABLE,
+} from '../auth/tool-access';
 import type { Env } from '../index';
 import { trackMCPToolCall } from '../sentry';
 import { ToolNotRegisteredError } from '../utils/errors';
@@ -60,7 +65,17 @@ export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
     requestedAgentId: null,
     isAuthenticated: c.var.mcpIsAuthenticated || false,
     clientId: mcpAuthInfo?.clientId ?? null,
-    scopes: mcpAuthInfo?.scopes ?? null,
+    // Token callers (oauth/pat) carry real MCP scopes — pass them straight
+    // through so `hasRequiredMcpScope` gates on the actual grant. Session and
+    // anonymous callers have no scope dimension (they're gated by member role
+    // + public-readability upstream), so pass the explicit not-applicable
+    // sentinel rather than `null`/`undefined`, which now FAILS CLOSED in
+    // `hasRequiredMcpScope`. A token minted without scopes presents `[]`,
+    // which still denies — only the sentinel bypasses the scope check.
+    scopes:
+      mcpAuthInfo != null
+        ? (mcpAuthInfo.scopes ?? [])
+        : [...SCOPE_CHECK_NOT_APPLICABLE],
     tokenType,
     requestUrl: c.req.url,
     baseUrl: getConfiguredPublicOrigin() ?? '',

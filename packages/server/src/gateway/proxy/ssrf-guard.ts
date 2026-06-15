@@ -83,14 +83,34 @@ function expandIpv6ToHextets(addr: string): number[] {
   return [...left, ...zeros, ...rightWithSuffix];
 }
 
-type NormalizedHost =
+/**
+ * Result of running a host literal through {@link normalizeIpLiteral}.
+ *  - `ipv4`     — the value is (or decodes to) a bare IPv4 address.
+ *  - `ipv6`     — a genuine IPv6 address that doesn't embed an IPv4.
+ *  - `not-ip`   — not an IP literal at all (a DNS name); caller should resolve.
+ *  - `invalid`  — looks like an IP literal but doesn't cleanly parse → reject.
+ */
+export type NormalizedHost =
   | { kind: "ipv4"; value: string }
   | { kind: "ipv6"; value: string }
   | { kind: "not-ip" }
   | { kind: "invalid" };
 
-/** Collapse an IP literal to its canonical IPv4/IPv6 form (or not-ip/invalid). */
-function normalizeIpLiteral(host: string): NormalizedHost {
+/**
+ * Collapse an IP literal to its canonical IPv4/IPv6 form (or not-ip/invalid).
+ *
+ * Single funnel for every host literal that reaches the blocklist check —
+ * resolved DNS results and CONNECT/forward targets alike. Collapses the
+ * forms an attacker can use to dress up an internal address as something
+ * `net.BlockList` won't recognise:
+ *   - IPv4-mapped IPv6, dotted (`::ffff:127.0.0.1`) and hex (`::ffff:7f00:1`)
+ *   - NAT64 well-known prefix `64:ff9b::/96` (last 32 bits are an IPv4)
+ *   - zone IDs (`fe80::1%eth0` → strip `%eth0`)
+ *   - compressed / uppercase forms (handled by `net.isIP`)
+ * Anything that looks like an IP but doesn't parse returns `invalid` so the
+ * caller fails closed rather than falling through to a DNS lookup.
+ */
+export function normalizeIpLiteral(host: string): NormalizedHost {
   const zoneSplit = host.indexOf("%");
   const bare = (zoneSplit === -1 ? host : host.slice(0, zoneSplit)).trim();
   if (bare.length === 0) {
@@ -141,6 +161,21 @@ function normalizeIpLiteral(host: string): NormalizedHost {
   }
 
   return { kind: "ipv6", value: bare };
+}
+
+/**
+ * Strip surrounding brackets from an IPv6 literal so `net.isIP()` can
+ * recognise it. WHATWG URL parsing returns `parsedUrl.hostname` with
+ * brackets for IPv6 (e.g. `[::1]`), and `net.isIP("[::1]")` returns 0,
+ * which would cause the IP-blocklist check to be skipped and the value
+ * to fall through to a DNS lookup — bypassing the loopback/private-IP
+ * guards. Normalising to the bare address closes that hole.
+ */
+export function stripIpv6Brackets(host: string): string {
+  if (host.length >= 2 && host.startsWith("[") && host.endsWith("]")) {
+    return host.slice(1, -1);
+  }
+  return host;
 }
 
 /**

@@ -175,6 +175,31 @@ describe("UnifiedThreadResponseConsumer interaction card owner-routing", () => {
     expect(broadcast).not.toHaveBeenCalled();
   });
 
+  test("delivers a headless-sourced card on first claim without an SSE owner (F12)", async () => {
+    // A card emitted from a headless turn (watcher/scheduled/repair/internal)
+    // has no browser SSE on ANY pod. Before the source was stamped onto the
+    // card it owner-gated, re-queued 30x and dead-lettered, hanging the worker.
+    // Stamped headless, it must deliver on first claim instead.
+    const { consumer, broadcast, sseManager } = makeInteractionConsumer(false);
+
+    await consumer.handleThreadResponse({
+      id: "job-headless",
+      data: {
+        ...interactionPayload,
+        messageId: "m-int-headless",
+        platformMetadata: { source: "watcher-run" },
+      },
+    });
+
+    // Exempt: the owner check is short-circuited, so it never even asks.
+    expect(sseManager.hasActiveConnection).not.toHaveBeenCalled();
+    const questionBroadcasts = broadcast.mock.calls.filter(
+      (call: any[]) => call[1] === "question"
+    );
+    expect(questionBroadcasts.length).toBe(1);
+    expect(questionBroadcasts[0][0]).toBe("api:conv-1");
+  });
+
   test("delivers the card on the pod that owns the SSE connection", async () => {
     const { consumer, broadcast } = makeInteractionConsumer(true);
 

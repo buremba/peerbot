@@ -225,6 +225,12 @@ export class MessageConsumer {
             agentId: data.agentId,
             organizationId: data.organizationId,
             platform: data.platform,
+            // Carry the headless run origin so interaction cards emitted from
+            // this turn can be stamped headless and skip the SSE-owner gate.
+            source:
+              typeof data.platformMetadata?.source === "string"
+                ? data.platformMetadata.source
+                : undefined,
             runId: data.runId,
           }
         );

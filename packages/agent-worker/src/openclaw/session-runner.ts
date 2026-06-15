@@ -1294,6 +1294,10 @@ Use it when the user references past discussions or you need context.`);
             resolveTurnDone?.();
             if (session) {
               session.dispose();
+              // Null it so the outer `finally` (which also disposes when
+              // `session` is set) doesn't dispose a second time — a
+              // non-idempotent dispose would throw during cleanup.
+              session = null;
             }
           }
         });

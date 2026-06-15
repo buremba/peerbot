@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import * as nodeFs from "node:fs";
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import { createLogger } from "@lobu/core";
 import FormData from "form-data";
@@ -607,7 +609,11 @@ async function uploadGeneratedFile(
 ): Promise<TextResult | null> {
   let tempPath: string | null = null;
   try {
-    tempPath = `/tmp/${filename}_${Date.now()}`;
+    // Unique per call: a Date.now() suffix collides when two generate calls
+    // share a filename within the same millisecond, and the loser's finally
+    // unlink would delete the other's file mid-read. The on-disk name is
+    // independent of the upload filename (sent separately in the form data).
+    tempPath = path.join(os.tmpdir(), `lobu-gen-${randomUUID()}`);
     await fs.writeFile(tempPath, Buffer.from(buffer));
 
     const formData = new FormData();

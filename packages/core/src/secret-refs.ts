@@ -17,7 +17,11 @@ export function parseSecretRef(value: string): ParsedSecretRef | null {
   const remainder = match[2];
   if (!scheme || !remainder) return null;
 
-  const [path, fragment] = remainder.split("#", 2);
+  // Split on the FIRST `#` only — `split("#", 2)` would discard anything after
+  // a second `#`, silently dropping fragments like `kv/foo#field#sub`.
+  const hashIdx = remainder.indexOf("#");
+  const path = hashIdx === -1 ? remainder : remainder.slice(0, hashIdx);
+  const fragment = hashIdx === -1 ? undefined : remainder.slice(hashIdx + 1);
   if (!path) return null;
 
   return {

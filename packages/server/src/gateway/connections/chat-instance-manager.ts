@@ -1117,7 +1117,13 @@ export class ChatInstanceManager {
         `Instance for connection ${stored.id} did not register after start`
       );
     }
-    instance.rowVersion = stored.updatedAt;
+    // startInstance may backfill metadata (e.g. botUsername/botUserId on first
+    // start), bumping the row's updated_at. Stamp the memo key from the latest
+    // persisted value, not the pre-start snapshot — otherwise the next
+    // ensureConnectionRunning sees a version mismatch and needlessly tears the
+    // instance down and re-hydrates (re-running setWebhook/setMyCommands).
+    const afterStart = await this.connectionStore.getConnection(stored.id);
+    instance.rowVersion = afterStart?.updatedAt ?? stored.updatedAt;
     if (stored.status === "error") {
       await this.writeConnectionStatus(stored, "active", undefined);
       const reread = await this.connectionStore.getConnection(stored.id);

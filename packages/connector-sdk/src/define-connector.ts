@@ -38,6 +38,8 @@ import type {
   FeedDefinition,
   QueryContext,
   QueryResult,
+  ReflectContext,
+  ReflectResult,
   SyncContext,
   SyncResult,
 } from "./connector-types.js";
@@ -77,6 +79,12 @@ export interface ConnectorSpec
    * entities (returns rows, no persistence). Omitted ⇒ live queries unsupported.
    */
   query?(ctx: QueryContext): Promise<QueryResult>;
+  /**
+   * Optional metric-reflection handler. When provided, lowers to
+   * `ConnectorRuntime.reflectMetrics` — contributes entity types federating the
+   * source's native governed metrics. Omitted ⇒ no contributions.
+   */
+  reflectMetrics?(ctx: ReflectContext): Promise<ReflectResult>;
 }
 
 /** Constructor shape the connector-worker's `child-runner` detects and instantiates. */
@@ -181,6 +189,13 @@ export function defineConnector(spec: ConnectorSpec): ConnectorClass {
         return super.query(ctx);
       }
       return spec.query(ctx);
+    }
+
+    async reflectMetrics(ctx: ReflectContext): Promise<ReflectResult> {
+      if (!spec.reflectMetrics) {
+        return super.reflectMetrics(ctx);
+      }
+      return spec.reflectMetrics(ctx);
     }
   };
 }

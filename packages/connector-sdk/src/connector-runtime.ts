@@ -13,6 +13,8 @@ import type {
   ConnectorDefinition,
   QueryContext,
   QueryResult,
+  ReflectContext,
+  ReflectResult,
   SyncContext,
   SyncResult,
 } from './connector-types.js';
@@ -92,6 +94,18 @@ export abstract class ConnectorRuntime<C = Record<string, unknown>, F = Record<s
   // biome-ignore lint/correctness/noUnusedFunctionParameters: contract signature — subclasses receive the full QueryContext
   async query(ctx: QueryContext<F>): Promise<QueryResult> {
     throw new Error(`${this.definition.key} does not support live queries`);
+  }
+
+  /**
+   * Contribute entity types by FEDERATING the source's own governed metrics
+   * (e.g. Snowflake semantic views, dbt metrics). Returns derived entity types
+   * `backing`'d by live SQL over this connection — Lobu stores a pointer +
+   * governance, never re-authoring the metric. Default returns `[]` — connectors
+   * with no native semantic layer contribute none.
+   */
+  // biome-ignore lint/correctness/noUnusedFunctionParameters: contract signature — subclasses receive the full ReflectContext
+  async reflectMetrics(ctx: ReflectContext<F>): Promise<ReflectResult> {
+    return [];
   }
 
   /**

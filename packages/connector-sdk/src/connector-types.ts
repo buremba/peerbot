@@ -569,6 +569,61 @@ export interface QueryResult {
 }
 
 // =============================================================================
+// Metric reflection (warehouse federation)
+// =============================================================================
+
+/**
+ * Governance descriptor for a reflected measure column. The warehouse's own
+ * semantic view already aggregates the column, so this carries DECLARATION
+ * (which output columns are measures) + governance, not an aggregation.
+ */
+export interface ReflectedMeasure {
+  description: string;
+  tier?: 'gold' | 'silver' | 'bronze';
+  owner?: string;
+  /** Native grain, e.g. "order" vs "order_line" — a drift signal. */
+  grain: string;
+  /** Dimensions safe to group WITH this measure (else fan-out double-counting). */
+  safeDimensions?: string[];
+}
+
+/**
+ * An entity type a connector contributes by FEDERATING a warehouse's own
+ * governed metric (Snowflake `SEMANTIC_VIEW()` / dbt). The `backing.sql` runs
+ * LIVE against the connection via {@link ConnectorRuntime.query}; Lobu stores a
+ * thin pointer + governance and never re-authors the metric.
+ */
+export interface EntityTypeContribution {
+  key: string;
+  name?: string;
+  description?: string;
+  /** Read-only SQL over the warehouse, run live through this connection slug. */
+  backing: { sql: string; connection: string };
+  /** Native refresh cadence of the underlying view — a drift signal. */
+  freshness?: string;
+  /** DECLARES which output columns are measures, plus their governance. */
+  measures: Record<string, ReflectedMeasure>;
+  /** Output columns that are dimensions, plus their descriptions. */
+  dimensions?: Record<string, { description: string }>;
+}
+
+/**
+ * Context for {@link ConnectorRuntime.reflectMetrics} — enough to introspect the
+ * source's native semantic layer (e.g. list Snowflake semantic views).
+ */
+export interface ReflectContext<F = Record<string, unknown>> {
+  /** Connector options (typed via F). */
+  config: F;
+  /** OAuth/env credentials (if applicable). */
+  credentials: SyncCredentials | null;
+  /** Connection session state (browser cookies, tokens, etc.). */
+  sessionState?: Record<string, unknown> | null;
+}
+
+/** Result from ConnectorRuntime.reflectMetrics() — federated entity types. */
+export type ReflectResult = EntityTypeContribution[];
+
+// =============================================================================
 // Authentication Lifecycle
 // =============================================================================
 

@@ -48,6 +48,95 @@ export interface EntityBacking {
   connection?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Entity-bound metrics (declarative; the compiler lowers these to backing SQL)
+// ---------------------------------------------------------------------------
+
+/** Temporal truth a measure reads over the append-only event stream. */
+export type MetricReadMode = "current" | "raw" | { asOf: string };
+
+/**
+ * Cross-source fact-identity rule. DEFERRED — a no-op until a measure fuses more
+ * than one source. Shaped now so the {@link EventSet} schema needs no breaking
+ * change when the first multi-source measure ships; until then use
+ * {@link EventSet.dedupeKey} for same-source dedupe.
+ */
+export interface FactMatchRule {
+  /** Per-source field map normalizing heterogeneous rows to a common fact tuple. */
+  key: { amount: string; date: string; merchant?: string };
+  /** Match tolerances, e.g. `{ date: "2d", amount: 0 }`. */
+  tolerance?: { date?: string; amount?: number };
+  /** Source priority when the same fact is seen twice (e.g. `["revolut","gmail"]`). */
+  prefer?: string[];
+}
+
+/**
+ * A NAMED event set — how events resolve to this entity, at an explicit grain
+ * (the join key). An entity can resolve events in several roles/grains, so the
+ * grain is named, not implicit. The compiler lowers this to the base relation a
+ * measure aggregates over (resolve → reads-mask → dedupe → segment).
+ *
+ * v1 implements `by: "alias"` only; `"window"`/`"link"` and `factIdentity` are
+ * deferred. `where` predicates are raw SQL — parsed/validated/org-scoped by the
+ * compiler, never trusted verbatim.
+ */
+export interface EventSet {
+  /** alias: `field` ∈ entity aliases · window: `occurred_at` ∈ [start,end] · link: `events[].entity_ids`. */
+  by: "alias" | "window" | "link";
+  /** by:"alias" — event field matched against the entity's alias array. */
+  field?: string;
+  against?: "aliases";
+  /** by:"window" — entity property names bounding the time window. */
+  start?: string;
+  end?: string;
+  /** by:"window" — forbid an event attaching to more than one entity. */
+  cardinality?: "one_per_event";
+  /** Raw SQL predicate scoping the grain. */
+  where?: string;
+  /** Temporal truth to read. Default `"current"` (current_event_records). */
+  reads?: MetricReadMode;
+  /** Same-source identity: DISTINCT over this SQL-expression tuple, applied before aggregate. */
+  dedupeKey?: string[];
+  /** Cross-source identity — deferred (see {@link FactMatchRule}). */
+  factIdentity?: FactMatchRule;
+}
+
+export type MetricTier = "gold" | "silver" | "bronze";
+
+/** A governed aggregation bound to a named {@link EventSet} grain. */
+export interface Measure {
+  /** Name of the {@link EventSet} (on this entity) this measure aggregates over. */
+  eventSet: string;
+  agg: "sum" | "count" | "min" | "max" | "count_distinct";
+  /** SQL expression to aggregate (omit for `count`). */
+  expr?: string;
+  /** Extra raw-SQL predicate applied to this measure only. */
+  where?: string;
+  /** Name of a {@link Segment} (on this entity) applied per its `appliedBefore`. */
+  segment?: string;
+  /** REQUIRED — powers keyword discovery in the metric catalog. */
+  description: string;
+  owner?: string;
+  tier?: MetricTier;
+}
+
+/** A governed group-by. */
+export interface Dimension {
+  expr: string;
+  description: string;
+}
+
+/** A reusable named population filter (Anthropic "segment"). */
+export interface Segment {
+  description: string;
+  /** Raw SQL predicate. */
+  where: string;
+  /** Grain the filter applies at. */
+  on: "event" | "entity";
+  /** Ordering relative to dedupe. Default `"aggregate"`. */
+  appliedBefore?: "dedupe" | "aggregate";
+}
+
 export interface EntityType {
   readonly kind: "entityType";
   /** Stable slug — diff key. */
@@ -65,6 +154,20 @@ export interface EntityType {
    * the only discriminant; there is no separate `mode` field.
    */
   backing?: EntityBacking;
+  /**
+   * How events resolve to this entity, at named grains (the join key). The
+   * compiler lowers `eventSets` + `measures` into backing SQL.
+   */
+  eventSets?: Record<string, EventSet>;
+  /**
+   * Governed aggregations. DECLARED — there is no on-read inference; an entity is
+   * in the metric catalog only if it declares `measures`.
+   */
+  measures?: Record<string, Measure>;
+  /** Governed group-bys. */
+  dimensions?: Record<string, Dimension>;
+  /** Reusable named population filters. */
+  segments?: Record<string, Segment>;
 }
 
 export function defineEntityType(config: Omit<EntityType, "kind">): EntityType {

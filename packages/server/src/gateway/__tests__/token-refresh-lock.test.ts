@@ -13,7 +13,7 @@
  * drive the "already rotated" branch without a live DB.
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 
 interface RecordedCall {
   kind: "advisory_lock" | "lookup_org" | "other";
@@ -52,6 +52,14 @@ mock.module("../../db/client.js", () => ({
   ...realDbClient,
   getDb: () => fakeDb,
 }));
+
+// bun:test runs the whole `src/gateway` suite in one process, and mock.module
+// is process-global. Restore the real db/client after this file so the fake
+// `getDb` (which lacks `sql.json` etc.) doesn't leak into later suites
+// (AgentSettingsStore, action-handlers, …) and break them.
+afterAll(() => {
+  mock.module("../../db/client.js", () => realDbClient);
+});
 
 // Imported inside beforeEach (after mock.module) to comply with the
 // no-top-level-dynamic-import rule; the mock must be installed first.

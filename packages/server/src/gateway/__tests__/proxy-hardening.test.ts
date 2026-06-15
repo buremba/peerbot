@@ -142,18 +142,14 @@ function rule(overrides: Partial<ResolvedJudgeRule> = {}): ResolvedJudgeRule {
   };
 }
 
-// The proxy consults a DB-backed revoked-token store on cache miss (F1). These
-// tests run without a DB, so inject a fast stub that reports nothing revoked —
-// the real cross-replica revocation path is covered by http-proxy.test.ts.
-beforeEach(() => {
-  setProxyRevokedTokenStore({
-    isRevoked: async () => false,
-    isRevokedCached: () => false,
-  } as unknown as Parameters<typeof setProxyRevokedTokenStore>[0]);
-});
-afterEach(() => {
-  setProxyRevokedTokenStore(null);
-});
+// The proxy consults a DB-backed revoked-token store on cache miss (F1). The
+// proxy-server describes below run without a reachable DB, so they inject this
+// fast stub (nothing revoked) in their beforeEach. The real cross-replica
+// revocation path is covered by http-proxy.test.ts.
+const NOOP_REVOKED_STORE = {
+  isRevoked: async () => false,
+  isRevokedCached: () => false,
+} as unknown as Parameters<typeof setProxyRevokedTokenStore>[0];
 
 // ─── isBlockedIpAddress — unit tests ─────────────────────────────────────────
 
@@ -306,6 +302,7 @@ describe("HTTP Proxy — domain blocking edge cases", () => {
   beforeEach(() => {
     process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
     __testOnly.reset();
+    setProxyRevokedTokenStore(NOOP_REVOKED_STORE);
     // DNS mock: all names resolve to a public TEST-NET address (passes IP check).
     __testOnly.setDnsLookup(async () => [
       { address: "203.0.113.1", family: 4 },
@@ -535,6 +532,7 @@ describe("CRLF injection prevention in judge-provided reason", () => {
     process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
     process.env.WORKER_ALLOWED_DOMAINS = "";
     __testOnly.reset();
+    setProxyRevokedTokenStore(NOOP_REVOKED_STORE);
 
     policyStore.set("org-1", "agent-crlf", {
       judgedDomains: [{ domain: "example.com" }],

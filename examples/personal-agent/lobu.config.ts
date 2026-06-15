@@ -353,7 +353,7 @@ const trip = defineEntityType({
 // Revolut runs through the browser's live session over CDP, so its auth grant
 // is performed at runtime (lobu memory browser-auth) — no stored secret here.
 const revolutAuth = defineAuthProfile({
-  slug: "revolut-buremba",
+  slug: "revolut-mac",
   connector: "revolut",
   authKind: "browser_session",
   name: "Revolut (this Mac)",
@@ -366,7 +366,7 @@ const revolutConnection = defineConnection({
   slug: "revolut-buremba",
   connector: "revolut",
   name: "Revolut",
-  authProfile: "revolut-buremba",
+  authProfile: "revolut-mac",
   deviceWorkerId: DEVICE_WORKER_ID,
   feeds: [{ feed: "transactions", config: { max_scrolls: 100 } }],
 });

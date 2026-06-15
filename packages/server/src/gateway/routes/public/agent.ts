@@ -501,15 +501,21 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
    *                            run through verifyOwnedAgentAccess
    *
    * Returns a Response when the caller is not authorized (the handler
-   * should early-return it). Returns null on success.
+   * should early-return it). On success returns `{ organizationId }` — the
+   * org the agent was authorized under (resolved from `agent_users`, NOT the
+   * caller's ambient org-context), so the handler can stamp the worker token
+   * and session with the agent's real tenant. `organizationId` may be
+   * undefined for auth paths that don't resolve one (worker token / admin).
    */
   async function requireAgentOwnership(
     c: Context,
     resolvedAgentId: string,
     sessionForTenantCheck?: { organizationId?: string } | null
-  ): Promise<Response | null> {
+  ): Promise<Response | { organizationId?: string }> {
     const deny = () =>
       c.json({ success: false, error: "Forbidden" }, 403) as Response;
+
+    const bearer = tokenFromHeader(c);
 
     // Tenant guard: agent-id-string ownership is per (platform, userId,
     // agentId) — but the agentId string can repeat across tenants (the
@@ -521,10 +527,31 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     // ownership keeps the response uniform (no enumeration oracle on which
     // check failed). Routes that load a session before calling this MUST
     // pass it in; createAgent has no pre-existing session and passes null.
+    //
+    // The org we compare against MUST be an AUTHORITATIVE auth-method-bound
+    // org, NOT the request's ambient org-context:
+    //   - `authContext.organizationId` is set only by token auth (worker
+    //     token payload / external-OAuth userinfo) — authoritative.
+    //   - For PAT auth, `createLobuAuthBridge` sets `c.get("organizationId")`
+    //     from the PAT's pinned org (or a membership-verified `x-lobu-org`) —
+    //     authoritative, and a PAT always carries a Bearer token.
+    //   - For the SETTINGS-SESSION COOKIE path (the owletto SPA), there is NO
+    //     Bearer token; `createLobuOrgContextMiddleware` sets
+    //     `c.get("organizationId")` to the user's DEFAULT org, which need NOT
+    //     match the agent's org (e.g. owning `crm` in `org_lobucrm` while the
+    //     default org is personal). Using that ambient default here produced a
+    //     spurious 403 on every follow-up SPA request (GET / SSE / messages)
+    //     even though POST succeeded. So skip the ambient `organizationId`
+    //     guard for the cookie path and let `authorizeOwnership` below enforce
+    //     tenant isolation via the agent's REAL org resolved from
+    //     `agent_users` vs the session (the same authoritative resolution the
+    //     create path uses). Tenant isolation is preserved: a cookie caller
+    //     can only authorize against agent_users rows naming their own
+    //     (platform, userId), never another tenant's agent.
     if (sessionForTenantCheck?.organizationId) {
       const callerOrgId =
-        (c.get("organizationId") as string | undefined) ??
-        c.get("authContext")?.organizationId;
+        c.get("authContext")?.organizationId ??
+        (bearer ? (c.get("organizationId") as string | undefined) : undefined);
       if (
         callerOrgId &&
         sessionForTenantCheck.organizationId !== callerOrgId
@@ -547,7 +574,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     const authorizeOwnership = (access: {
       authorized: boolean;
       organizationId?: string;
-    }): Response | null => {
+    }): Response | { organizationId?: string } => {
       if (!access.authorized) return deny();
       const tenantOrg = sessionForTenantCheck?.organizationId;
       if (
@@ -557,10 +584,8 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       ) {
         return deny();
       }
-      return null;
+      return { organizationId: access.organizationId };
     };
-
-    const bearer = tokenFromHeader(c);
 
     // 1. Settings session cookie (or injected auth provider for embedded mode).
     const settingsSession = await verifySettingsSession(c);
@@ -587,7 +612,9 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
         return deny();
       }
       const workerAgentId = workerData.agentId || workerData.userId;
-      return workerAgentId && workerAgentId === resolvedAgentId ? null : deny();
+      return workerAgentId && workerAgentId === resolvedAgentId
+        ? { organizationId: workerData.organizationId }
+        : deny();
     }
 
     // 3. External OAuth (Lobu / memory-url userinfo).
@@ -711,18 +738,22 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       agentId = DEFAULT_AGENT_ID;
     }
 
-    const ownershipDenial = await requireAgentOwnership(c, agentId);
-    if (ownershipDenial) return ownershipDenial;
+    const ownership = await requireAgentOwnership(c, agentId);
+    if (ownership instanceof Response) return ownership;
 
     // Stamp the worker token with the agent's owning org so the egress
-    // proxy's per-tenant gates (grant/deny, judge cache, judge policy)
-    // can scope decisions by org. Prefer the agent's metadata; fall back
-    // to the caller's auth-context org for the default-agent route where
-    // the lookup above already proved ownership.
+    // proxy's per-tenant gates (grant/deny, judge cache, judge policy) can
+    // scope decisions by org. Prefer the org the ownership check resolved
+    // from `agent_users` — that's the agent's REAL tenant, even when the
+    // caller's ambient org-context is their (different) default org, which
+    // is exactly the SPA-chat case for an agent in a non-default org. Fall
+    // back to the ALS-scoped metadata lookup and then the caller's
+    // auth-context org for paths that don't resolve one (worker token).
     const metadataOrgId = ownershipMetadataStore
       ? (await ownershipMetadataStore.getMetadata(agentId))?.organizationId
       : undefined;
-    const tokenOrganizationId = metadataOrgId ?? callerOrgId;
+    const tokenOrganizationId =
+      ownership.organizationId ?? metadataOrgId ?? callerOrgId;
 
     const watcherIntent = intent?.kind === "watcher_run" ? intent : null;
     // userId backs `conversationId = ${agentId}_${userId}[_${thread}]`, which
@@ -889,7 +920,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       session.agentId || sessionKey,
       session
     );
-    if (denial) return denial;
+    if (denial instanceof Response) return denial;
 
     const hasActiveConnection = sseManager.hasActiveConnection(sessionKey);
 
@@ -918,7 +949,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       existingSession?.agentId || sessionKey,
       existingSession
     );
-    if (denial) return denial;
+    if (denial instanceof Response) return denial;
 
     // Close connections + drop backlog so a later connection with the same
     // key (rare, but possible with deterministic conversationIds) can't
@@ -955,7 +986,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       session.agentId || sessionKey,
       session
     );
-    if (denial) return denial;
+    if (denial instanceof Response) return denial;
 
     // Check connection limits
     if (sseManager.totalConnections() >= MAX_TOTAL_CONNECTIONS) {
@@ -1073,7 +1104,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       preSession?.agentId || agentId,
       preSession
     );
-    if (ownershipDenial) return ownershipDenial;
+    if (ownershipDenial instanceof Response) return ownershipDenial;
 
     // Parse body — multipart for file uploads, JSON otherwise
     const contentType = c.req.header("content-type") || "";

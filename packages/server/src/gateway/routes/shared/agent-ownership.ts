@@ -57,12 +57,16 @@ function sessionMatchesMetadataOwner(
  * human owning the same agentId across two orgs would get the wrong
  * row. Codex round 2 finding B on PR #865.
  *
- * Returns `undefined` if no `agent_users` row matches — the caller's
- * authorisation already required `ownsAgent` to be true, so this only
- * triggers for the admin / session.agentId paths where ownership isn't
- * enforced. Downstream code (snapshot fallback) treats `undefined` as
- * "no scope to query under" and returns null rather than serving cross-
- * tenant bytes.
+ * Returns `undefined` when the user owns no instance of `agentId` (no
+ * matching `agent_users` row in any org) OR owns it in more than one org.
+ * The non-admin path now treats a defined result as the authorisation
+ * signal itself: a single owning org means the caller demonstrably owns
+ * this agent (the row names their own platform+userId) and that org is the
+ * agent's real tenant — independent of the request's ambient org-context,
+ * which on the unscoped chat route is the caller's DEFAULT org and need
+ * not match the agent's org. Downstream code (snapshot fallback) treats
+ * `undefined` as "no scope to query under" and returns null rather than
+ * serving cross-tenant bytes.
  *
  * When `agent_users` has multiple rows (same user, same agentId,
  * multiple orgs) we deliberately take none — there's no way to pick
@@ -121,18 +125,30 @@ export async function verifyOwnedAgentAccess(
 
   const lookupUserId = resolveSettingsLookupUserId(session);
   if (config.userAgentsStore) {
-    const owns = await config.userAgentsStore.ownsAgent(
+    // Authorize against the org the agent ACTUALLY lives in, resolved from
+    // the authoritative `agent_users` mapping — NOT the caller's ambient
+    // org-context. The cookie/session routes (SPA chat: POST/GET
+    // /api/v1/agents[/*] + the EventSource SSE that can't send headers)
+    // reach here under `createLobuOrgContextMiddleware`, which pins the ALS
+    // org to the user's DEFAULT org. A user whose default org differs from
+    // the agent's org (e.g. owning `crm` in `org_lobucrm` while their
+    // personal org is the default) would fail an ALS-scoped `ownsAgent`
+    // lookup and get a spurious 403 on every chat run. `findAgentOrganizations`
+    // answers "which orgs does THIS user own THIS agent in" independent of
+    // the ambient org, so chat works for any agent the signed-in user
+    // legitimately owns. Tenant isolation holds: the result is keyed on the
+    // caller's own (platform, userId) — a caller can only authorize against
+    // agent_users rows that name them, never another tenant's agent. When the
+    // user owns the same agentId in multiple orgs we decline (orgs.length !==
+    // 1 in resolveAuthorizedOrgId) because the unscoped route carries no org
+    // selector to disambiguate tenant-safely.
+    const organizationId = await resolveAuthorizedOrgId(
+      config.userAgentsStore,
+      agentId,
       session.platform,
-      lookupUserId,
-      agentId
+      lookupUserId
     );
-    if (owns) {
-      const organizationId = await resolveAuthorizedOrgId(
-        config.userAgentsStore,
-        agentId,
-        session.platform,
-        lookupUserId
-      );
+    if (organizationId) {
       return {
         authorized: true,
         ownerPlatform: session.platform,

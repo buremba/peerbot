@@ -1,26 +1,10 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { SecretRef } from "@lobu/core";
 import { orgContext, tryGetOrgId } from "../../lobu/stores/org-context.js";
+import { completeAuthCodeFlow } from "../auth/mcp/oauth-flow.js";
+import { OAuthStateStore } from "../auth/oauth/state-store.js";
 import type { SecretListEntry, WritableSecretStore } from "../secrets/index.js";
-
-let statePayload: Record<string, unknown> | null = null;
-
-mock.module("../auth/oauth/state-store.js", () => ({
-	OAuthStateStore: class {
-		async create(data: Record<string, unknown>) {
-			statePayload = data;
-			return "state-token";
-		}
-
-		async peek() {
-			return statePayload ? { ...statePayload, createdAt: Date.now() } : null;
-		}
-
-		async consume() {
-			return statePayload ? { ...statePayload, createdAt: Date.now() } : null;
-		}
-	},
-}));
+import { ensureDbForGatewayTests, resetTestDatabase } from "./helpers/db-setup.js";
 
 class OrgScopedWritableStore implements WritableSecretStore {
 	private readonly entries = new Map<string, string>();
@@ -65,13 +49,25 @@ class OrgScopedWritableStore implements WritableSecretStore {
 	}
 }
 
+const MCP_OAUTH_STATE_PREFIX = "mcp-oauth:state";
+
+function mcpOAuthStateStore(): OAuthStateStore<Record<string, unknown>> {
+	return new OAuthStateStore(MCP_OAUTH_STATE_PREFIX, "mcp-oauth-state-test");
+}
+
 describe("MCP OAuth org context", () => {
 	const originalFetch = globalThis.fetch;
 
+	beforeAll(async () => {
+		await ensureDbForGatewayTests();
+	});
+
+	beforeEach(async () => {
+		await resetTestDatabase();
+	});
+
 	afterEach(() => {
-		statePayload = null;
 		globalThis.fetch = originalFetch;
-		mock.restore();
 	});
 
 	test("callback stores credentials in the organization persisted in OAuth state", async () => {
@@ -80,7 +76,7 @@ describe("MCP OAuth org context", () => {
 		const userId = "user-oauth";
 		const mcpId = "oauth-mcp";
 		const store = new OrgScopedWritableStore(orgId);
-		statePayload = {
+		const state = await mcpOAuthStateStore().create({
 			userId,
 			agentId,
 			organizationId: orgId,
@@ -92,7 +88,7 @@ describe("MCP OAuth org context", () => {
 			platform: "slack",
 			channelId: "channel",
 			conversationId: "conversation",
-		};
+		});
 		globalThis.fetch = async () =>
 			Response.json({
 				access_token: "oauth-access-token",
@@ -100,10 +96,9 @@ describe("MCP OAuth org context", () => {
 				expires_in: 3600,
 			});
 
-		const { completeAuthCodeFlow } = await import("../auth/mcp/oauth-flow.js");
 		await completeAuthCodeFlow({
 			secretStore: store,
-			state: "state-token",
+			state,
 			code: "code",
 			redirectUri: "https://gateway.example/mcp/oauth/callback",
 		});
@@ -122,7 +117,7 @@ describe("MCP OAuth org context", () => {
 
 	test("callback rejects OAuth state missing organizationId before token exchange", async () => {
 		const store = new OrgScopedWritableStore("org-oauth-callback-test");
-		statePayload = {
+		const state = await mcpOAuthStateStore().create({
 			userId: "user-oauth",
 			agentId: "agent-oauth",
 			codeVerifier: "verifier",
@@ -133,7 +128,7 @@ describe("MCP OAuth org context", () => {
 			platform: "slack",
 			channelId: "channel",
 			conversationId: "conversation",
-		};
+		});
 		const fetchMock = mock(() =>
 			Response.json({
 				access_token: "oauth-access-token",
@@ -141,11 +136,10 @@ describe("MCP OAuth org context", () => {
 		);
 		globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-		const { completeAuthCodeFlow } = await import("../auth/mcp/oauth-flow.js");
 		await expect(
 			completeAuthCodeFlow({
 				secretStore: store,
-				state: "state-token",
+				state,
 				code: "code",
 				redirectUri: "https://gateway.example/mcp/oauth/callback",
 			}),

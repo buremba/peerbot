@@ -141,7 +141,7 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 				note: "lists the declared metric catalog (measures/dimensions/segments) for the org",
 			},
 			query_metric: {
-				args: { entity_type: "metric_co", measure: "n" },
+				args: { entity_type: "metric-co", measure: "n" },
 				coverage: "round-trip",
 				note: "runs a declared measure end-to-end (compile → scope → execute); 0 rows is fine",
 			},
@@ -309,7 +309,7 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 			{
 				schema_type: "entity_type",
 				action: "create",
-				slug: "metric_co",
+				slug: "metric-co",
 				name: "Metric Co",
 				metrics_config: {
 					eventSets: { charges: { by: "alias", field: "metadata->>'description'" } },

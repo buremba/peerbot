@@ -122,6 +122,12 @@ export const ManageEntitySchemaSchema = Type.Object({
         "[entity_type: create/update] Makes the type DERIVED — a read-only SQL view. `{ sql }` runs over your org's internal tables; `{ sql, connection: <slug> }` runs LIVE against that connection's external database (read-only, no copy). `null` clears it (revert to a stored type); omit to leave unchanged. Read a derived type's rows by running its `backing_sql` (returned by `get`) through `query_sql` — and when `get` also returns a `backing_source`, pass it as `query_sql`'s `connection` so the view runs against the external DB instead of your internal tables. `get` also returns `measure_columns` (the view's aggregate columns, classified on read).",
     })
   ),
+  metrics_config: Type.Optional(
+    Type.Union([Type.Null(), Type.Record(Type.String(), Type.Unknown())], {
+      description:
+        "[entity_type: create/update] Declared metric contract (eventSets/measures/dimensions/segments — see @lobu/connector-sdk) stored verbatim. The metric compiler lowers it into backing SQL. `null` clears it; omit to leave unchanged.",
+    })
+  ),
 
   // Relationship type fields
   is_symmetric: Type.Optional(
@@ -184,6 +190,8 @@ interface EntityTypeRow {
   backing_sql?: string | null;
   /** Connection slug an external-backed derived view runs against; null ⇒ internal. */
   backing_source?: string | null;
+  /** Declared metric contract (eventSets/measures/dimensions/segments), stored verbatim; null ⇒ none. */
+  metrics_config?: Record<string, unknown> | null;
   is_system: boolean;
   created_by?: string | null;
   organization_id?: string | null;
@@ -308,10 +316,10 @@ async function manageEntitySchemaImpl(
 // ============================================
 
 const ENTITY_TYPE_COLUMNS =
-  'id, slug, name, description, icon, color, metadata_schema, event_kinds, backing_sql, backing_source, created_by, organization_id, created_at, updated_at, current_view_template_version_id';
+  'id, slug, name, description, icon, color, metadata_schema, event_kinds, backing_sql, backing_source, metrics_config, created_by, organization_id, created_at, updated_at, current_view_template_version_id';
 
 const ENTITY_TYPE_COLUMNS_WITH_ORG = `et.id, et.slug, et.name, et.description, et.icon, et.color,
-  et.metadata_schema, et.event_kinds, et.backing_sql, et.backing_source,
+  et.metadata_schema, et.event_kinds, et.backing_sql, et.backing_source, et.metrics_config,
   et.created_by, et.organization_id,
   et.created_at, et.updated_at, et.current_view_template_version_id,
   o.slug AS organization_slug`;
@@ -577,12 +585,13 @@ async function etHandleCreate(
   // a derived type are classified ON READ (see etHandleGet), never persisted.
   const metadataSchema = args.metadata_schema ? sql.json(args.metadata_schema) : null;
   const eventKinds = args.event_kinds ? sql.json(args.event_kinds) : null;
+  const metricsConfig = args.metrics_config ? sql.json(args.metrics_config) : null;
 
   const inserted = await sql`
     INSERT INTO entity_types (
       slug, name, description, icon, color,
       metadata_schema, event_kinds,
-      backing_sql, backing_source,
+      backing_sql, backing_source, metrics_config,
       organization_id, created_by,
       created_at, updated_at
     ) VALUES (
@@ -595,6 +604,7 @@ async function etHandleCreate(
       ${eventKinds},
       ${args.backing?.sql ?? null},
       ${args.backing?.connection ?? null},
+      ${metricsConfig},
       ${ctx.organizationId},
       ${ctx.userId},
       current_timestamp,
@@ -665,6 +675,11 @@ async function etHandleUpdate(
   // derived, null reverts it to stored) or omit it to leave backing unchanged.
   const hasBacking = args.backing !== undefined;
 
+  // Metrics set as a unit too: an object declares metrics, null clears them,
+  // omit to leave unchanged (mirrors backing).
+  const hasMetricsConfig = args.metrics_config !== undefined;
+  const metricsConfigJson = args.metrics_config ? sql.json(args.metrics_config) : null;
+
   await sql`
     UPDATE entity_types SET
       name = COALESCE(${args.name ?? null}, name),
@@ -686,6 +701,10 @@ async function etHandleUpdate(
       backing_source = CASE
         WHEN ${hasBacking} THEN ${args.backing?.connection ?? null}::text
         ELSE backing_source
+      END,
+      metrics_config = CASE
+        WHEN ${hasMetricsConfig} THEN ${metricsConfigJson}
+        ELSE metrics_config
       END,
       updated_by = ${ctx.userId},
       updated_at = current_timestamp

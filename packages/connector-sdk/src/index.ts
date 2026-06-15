@@ -15,6 +15,7 @@ export { defineConnector } from './define-connector.js';
 // compile/validate; lives here to satisfy config-isolation — see metrics.ts)
 export type {
   Dimension,
+  EntityMetrics,
   EventSet,
   FactMatchRule,
   Measure,

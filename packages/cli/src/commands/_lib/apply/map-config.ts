@@ -535,6 +535,21 @@ function mapEntityType(entity: EntityType): DesiredEntityType {
           },
         }
       : {}),
+    // Declared metrics, included only when present so a non-metric type never
+    // churns the diff (mirrors `backing`). The four fields round-trip verbatim.
+    ...(entity.eventSets ||
+    entity.measures ||
+    entity.dimensions ||
+    entity.segments
+      ? {
+          metrics: {
+            ...(entity.eventSets ? { eventSets: entity.eventSets } : {}),
+            ...(entity.measures ? { measures: entity.measures } : {}),
+            ...(entity.dimensions ? { dimensions: entity.dimensions } : {}),
+            ...(entity.segments ? { segments: entity.segments } : {}),
+          },
+        }
+      : {}),
   };
 }
 

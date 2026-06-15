@@ -116,6 +116,18 @@ export interface Segment {
   appliedBefore?: 'dedupe' | 'aggregate';
 }
 
+/**
+ * The declared metric contract for one entity type — the shape persisted in
+ * `entity_types.metrics_config`. Mirrors the metric fields on the CLI's
+ * `EntityType`; the apply path threads it through and the compiler reads it.
+ */
+export interface EntityMetrics {
+  eventSets?: Record<string, EventSet>;
+  measures?: Record<string, Measure>;
+  dimensions?: Record<string, Dimension>;
+  segments?: Record<string, Segment>;
+}
+
 // ---------------------------------------------------------------------------
 // Federation (warehouse metrics contributed by a connector via reflectMetrics)
 // ---------------------------------------------------------------------------

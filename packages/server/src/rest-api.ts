@@ -21,6 +21,7 @@ import {
 } from './tools/admin/connector-definition-helpers';
 import { manageClassifiers } from './tools/admin/manage_classifiers';
 import { listWatchers } from './tools/admin/manage_watchers';
+import { SCOPE_CHECK_NOT_APPLICABLE } from './auth/tool-access';
 import { executeTool, extractAuthContext, toToolContext } from './tools/execute';
 import { getContent } from './tools/get_content';
 import { getWatcher } from './tools/get_watchers';
@@ -76,6 +77,10 @@ function publicToolContext(requestUrl: string, organizationId: string): ToolCont
     isAuthenticated: false,
     clientId: null,
     tokenType: 'anonymous',
+    // Anonymous public REST readers have no MCP scope dimension (gated by
+    // org-scoping + public-readability). Sentinel keeps the read-scope guard
+    // from failing closed on legitimate public reads.
+    scopes: [...SCOPE_CHECK_NOT_APPLICABLE],
     scopedToOrg: true,
     allowCrossOrg: false,
     requestUrl,

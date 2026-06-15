@@ -1,3 +1,4 @@
+import { SCOPE_CHECK_NOT_APPLICABLE } from './auth/tool-access';
 import { getDb } from './db/client';
 import type { Env } from './index';
 import type { ToolContext } from './tools/registry';
@@ -111,6 +112,10 @@ function buildToolContext(requestUrl: string, organizationId: string): ToolConte
     memberRole: null,
     isAuthenticated: false,
     tokenType: 'anonymous',
+    // Anonymous public readers carry no MCP scope dimension — they're gated by
+    // org-scoping + public-readability filters, not by mcp:read. Pass the
+    // not-applicable sentinel so the read-scope guard doesn't fail closed.
+    scopes: [...SCOPE_CHECK_NOT_APPLICABLE],
     scopedToOrg: true,
     allowCrossOrg: false,
     requestUrl,

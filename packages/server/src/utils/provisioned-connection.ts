@@ -4,6 +4,7 @@
  * with proper typing and a simplified return interface.
  */
 
+import { SCOPE_CHECK_NOT_APPLICABLE } from '../auth/tool-access';
 import type { Env } from '../index';
 import { manageConnections } from '../tools/admin/manage_connections';
 import logger from './logger';
@@ -46,6 +47,8 @@ export async function createProvisionedConnection(
         memberRole: null,
         isAuthenticated: true,
         tokenType: 'session',
+        // Internal session-tier caller: no MCP scope dimension applies.
+        scopes: [...SCOPE_CHECK_NOT_APPLICABLE],
         scopedToOrg: true,
         allowCrossOrg: false,
         requestUrl: params.requestUrl,

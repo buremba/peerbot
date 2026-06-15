@@ -12,6 +12,7 @@
  */
 
 import type { ReactionContext } from '@lobu/connector-sdk';
+import { SCOPE_CHECK_NOT_APPLICABLE } from '../auth/tool-access';
 import type { Env } from '../index';
 import { buildClientSDK } from '../sandbox/client-sdk';
 import { runScript } from '../sandbox/run-script';
@@ -50,6 +51,10 @@ export async function executeReaction(options: ExecuteReactionOptions): Promise<
     memberRole: null,
     isAuthenticated: true,
     tokenType: 'session' as const,
+    // System-tier reaction (no user identity): scope dimension does not apply.
+    // It already qualifies as a system context, but pass the sentinel
+    // explicitly so the scope guards never fail closed here.
+    scopes: [...SCOPE_CHECK_NOT_APPLICABLE],
     scopedToOrg: true,
     allowCrossOrg: false,
   };

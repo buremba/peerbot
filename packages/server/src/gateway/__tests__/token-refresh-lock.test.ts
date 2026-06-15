@@ -53,7 +53,9 @@ mock.module("../../db/client.js", () => ({
   getDb: () => fakeDb,
 }));
 
-const { TokenRefreshJob } = await import("../proxy/token-refresh-job.js");
+// Imported inside beforeEach (after mock.module) to comply with the
+// no-top-level-dynamic-import rule; the mock must be installed first.
+let TokenRefreshJob: typeof import("../proxy/token-refresh-job.js").TokenRefreshJob;
 
 // ─── Fakes ────────────────────────────────────────────────────────────────────
 
@@ -100,7 +102,8 @@ const oauthClient = {
 };
 
 describe("TokenRefreshJob advisory lock (F5)", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    ({ TokenRefreshJob } = await import("../proxy/token-refresh-job.js"));
     calls.length = 0;
     oauthClient.refreshToken.mockClear();
   });

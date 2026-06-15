@@ -53,6 +53,7 @@ describe('read-tier SDK delegate scope guard (F3)', () => {
           userId: user.id,
           memberRole: 'owner',
           isAuthenticated: true,
+          tokenType: 'oauth',
           scopes: [], // token present but no mcp:* scopes
         } as SearchCtx
       )
@@ -73,6 +74,7 @@ describe('read-tier SDK delegate scope guard (F3)', () => {
           userId: user.id,
           memberRole: 'owner',
           isAuthenticated: true,
+          tokenType: 'oauth',
           scopes: ['profile'],
         } as SearchCtx
       )
@@ -93,6 +95,7 @@ describe('read-tier SDK delegate scope guard (F3)', () => {
         userId: user.id,
         memberRole: 'owner',
         isAuthenticated: true,
+        tokenType: 'oauth',
         scopes: ['mcp:read'],
       } as SearchCtx
     );
@@ -131,6 +134,7 @@ describe('read-tier SDK delegate scope guard (F3)', () => {
           userId: user.id,
           memberRole: 'owner',
           isAuthenticated: true,
+          tokenType: 'oauth',
           scopes: [],
         } as GetContentCtx
       )

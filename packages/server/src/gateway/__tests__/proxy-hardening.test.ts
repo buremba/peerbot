@@ -38,6 +38,7 @@ import {
   __testOnly,
   setProxyEgressJudge,
   setProxyPolicyStore,
+  setProxyRevokedTokenStore,
   startHttpProxy,
   stopHttpProxy,
 } from "../proxy/http-proxy.js";
@@ -140,6 +141,19 @@ function rule(overrides: Partial<ResolvedJudgeRule> = {}): ResolvedJudgeRule {
     ...overrides,
   };
 }
+
+// The proxy consults a DB-backed revoked-token store on cache miss (F1). These
+// tests run without a DB, so inject a fast stub that reports nothing revoked —
+// the real cross-replica revocation path is covered by http-proxy.test.ts.
+beforeEach(() => {
+  setProxyRevokedTokenStore({
+    isRevoked: async () => false,
+    isRevokedCached: () => false,
+  } as unknown as Parameters<typeof setProxyRevokedTokenStore>[0]);
+});
+afterEach(() => {
+  setProxyRevokedTokenStore(null);
+});
 
 // ─── isBlockedIpAddress — unit tests ─────────────────────────────────────────
 

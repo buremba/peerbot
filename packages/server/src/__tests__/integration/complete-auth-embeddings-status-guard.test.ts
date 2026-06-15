@@ -235,7 +235,7 @@ describe('completeEmbeddings status guard (late-completion-after-timeout)', () =
     await cleanupTestDatabase();
   });
 
-  it('does NOT resurrect a reaped embed run or write embeddings on late completion', async () => {
+  it('does NOT resurrect a reaped embed run, but still writes the idempotent embedding', async () => {
     const org = await createTestOrganization();
     const eventId = await insertEvent(org.id);
     const runId = await insertReapedEmbedRun(org.id);
@@ -250,20 +250,23 @@ describe('completeEmbeddings status guard (late-completion-after-timeout)', () =
     });
     await completeEmbeddings(ctx);
 
-    // Idempotent no-op.
-    expect(result().body).toEqual({ success: false, reason: 'already_finalized' });
+    // The embedding upsert is the handler's real job (idempotent, ownership-gated
+    // by authorizeRunForWorker) and runs regardless of the run state — this is the
+    // same path headless backfills use with run_id=-1.
+    expect(result().body).toEqual({ success: true, updated: 1 });
 
-    // Run stays terminal/timeout.
+    // But the run is NOT resurrected — the finalizeRun status guard leaves the
+    // reaped run terminal.
     const runAfter = (await sql`
-      SELECT status, items_collected FROM runs WHERE id = ${runId}
-    `) as Array<{ status: string; items_collected: number | string }>;
+      SELECT status FROM runs WHERE id = ${runId}
+    `) as Array<{ status: string }>;
     expect(runAfter[0].status).toBe('timeout');
 
-    // NO embedding was written for the event.
+    // The embedding was written for the event.
     const embRows = (await sql`
       SELECT event_id FROM event_embeddings WHERE event_id = ${eventId}
     `) as Array<{ event_id: number }>;
-    expect(embRows.length).toBe(0);
+    expect(embRows.length).toBe(1);
   });
 
   it('does NOT resurrect a reaped embed run on late empty/error completion', async () => {
@@ -279,7 +282,9 @@ describe('completeEmbeddings status guard (late-completion-after-timeout)', () =
     });
     await completeEmbeddings(ctx);
 
-    expect(result().body).toEqual({ success: false, reason: 'already_finalized' });
+    // The error response echoes the submitted message; the run transition is a
+    // guarded no-op so the reaped run is NOT resurrected.
+    expect(result().body).toEqual({ success: false, error: 'embed failed late' });
 
     const runAfter = (await sql`
       SELECT status, error_message FROM runs WHERE id = ${runId}

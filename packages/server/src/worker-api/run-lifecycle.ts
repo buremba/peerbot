@@ -969,56 +969,39 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
 
     if (!req.embeddings || req.embeddings.length === 0) {
       if (req.error_message) {
-        // Atomic terminal transition with the shared F2 guard (see finalizeRun),
-        // so a late/reaped completion is a no-op rather than resurrecting the run.
-        const failedRows = await finalizeRun(sql, {
+        // Guarded terminal transition (the status='running' AND claimed_by guard
+        // inside finalizeRun won't resurrect a reaped run). Ownership is already
+        // enforced by authorizeRunForWorker above.
+        await finalizeRun(sql, {
           runId: req.run_id,
           workerId: req.worker_id,
           status: 'failed',
           extraSet: sql`,
               error_message = ${req.error_message}`,
         });
-        if (failedRows.length === 0) {
-          logger.info(
-            { run_id: req.run_id, worker_id: req.worker_id },
-            '[completeEmbeddings] no-op: run already in terminal state'
-          );
-          return c.json({ success: false, reason: 'already_finalized' });
-        }
         return c.json({ success: false, error: req.error_message }, 400);
       }
-      // Empty batch means all events already had embeddings — mark as completed
-      const completedRows = await finalizeRun(sql, {
+      // Empty batch means all events already had embeddings — mark completed
+      // (best-effort; the guard makes it a no-op on an already-finalized run).
+      await finalizeRun(sql, {
         runId: req.run_id,
         workerId: req.worker_id,
         status: 'completed',
       });
-      if (completedRows.length === 0) {
-        logger.info(
-          { run_id: req.run_id, worker_id: req.worker_id },
-          '[completeEmbeddings] no-op: run already in terminal state'
-        );
-        return c.json({ success: false, reason: 'already_finalized' });
-      }
       return c.json({ success: true, updated: 0 });
     }
 
-    // Claim the run terminal up front with the shared F2 guard. If 0 rows the
-    // run was already finalized (e.g. reaped on timeout) — skip the embedding
-    // writes entirely so we don't apply side effects to a reaped run, and
-    // return an idempotent no-op.
-    const claimedRows = await finalizeRun(sql, {
+    // Guarded terminal transition (best-effort; the status='running' guard inside
+    // finalizeRun prevents resurrecting a reaped run). The embedding upsert below
+    // is the handler's real job and runs regardless — it is idempotent (ON
+    // CONFLICT replaces only stale-model rows) and ownership is already enforced
+    // by authorizeRunForWorker above. Headless backfills submit run_id=-1, for
+    // which the transition is intentionally a harmless no-op.
+    await finalizeRun(sql, {
       runId: req.run_id,
       workerId: req.worker_id,
       status: 'completed',
     });
-    if (claimedRows.length === 0) {
-      logger.info(
-        { run_id: req.run_id, worker_id: req.worker_id },
-        '[completeEmbeddings] no-op: run already in terminal state'
-      );
-      return c.json({ success: false, reason: 'already_finalized' });
-    }
 
     let updated = 0;
     for (const item of req.embeddings) {
@@ -1048,12 +1031,13 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
       }
     }
 
-    // Record the count on the run we already claimed above (we own the
-    // completed row, so a plain UPDATE is safe).
+    // Record the count on the run, guarded by claimant so a leaked/late worker
+    // can't stamp a run it doesn't own (harmless no-op for headless run_id=-1).
     await sql`
       UPDATE runs
       SET items_collected = ${updated}
       WHERE id = ${req.run_id}
+        AND claimed_by = ${req.worker_id}
     `;
 
     logger.info(

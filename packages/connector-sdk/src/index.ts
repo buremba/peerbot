@@ -11,6 +11,17 @@ export { default as ky, HTTPError } from 'ky';
 // Connector runtime & types (primary API)
 export { ConnectorRuntime } from './connector-runtime.js';
 export { defineConnector } from './define-connector.js';
+// Entity-bound metric layer contract (shared by CLI authoring + server
+// compile/validate; lives here to satisfy config-isolation — see metrics.ts)
+export type {
+  Dimension,
+  EventSet,
+  FactMatchRule,
+  Measure,
+  MetricReadMode,
+  MetricTier,
+  Segment,
+} from './metrics.js';
 export type {
   ConnectorActionSpec,
   ConnectorClass,

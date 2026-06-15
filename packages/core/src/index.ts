@@ -56,9 +56,6 @@ export {
   renderSkillMemorySection,
 } from "./lobu-guidance";
 export * from "./logger";
-// Entity-bound metric layer contract (shared by CLI authoring, connector
-// federation, and server compile/validate — see metrics.ts)
-export * from "./metrics";
 // Centralized Claude model ID constants
 export * from "./model-ids";
 // Module system

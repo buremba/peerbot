@@ -10,12 +10,15 @@
  * config and references.
  */
 
-import type { Dimension, EventSet, Measure, Segment } from "@lobu/core";
 import type {
   ConnectorClass,
   ConnectorRuntime,
+  Dimension,
+  EventSet,
+  Measure,
   ReactionClient,
   ReactionContext,
+  Segment,
 } from "@lobu/connector-sdk";
 import type { SecretRef } from "./secret.js";
 
@@ -52,9 +55,10 @@ export interface EntityBacking {
 }
 
 // ---------------------------------------------------------------------------
-// Entity-bound metrics — the contract types live in `@lobu/core` (shared by CLI
-// authoring, connector federation, and server compile/validate). Re-exported
-// here so configs can import them alongside `defineEntityType`.
+// Entity-bound metrics — the contract types live in `@lobu/connector-sdk`
+// (shared by CLI authoring, connector federation, and server compile/validate;
+// the config module may not import `@lobu/core` — see config-isolation.test.ts).
+// Re-exported here so configs can import them alongside `defineEntityType`.
 // ---------------------------------------------------------------------------
 export type {
   Dimension,
@@ -64,7 +68,7 @@ export type {
   MetricReadMode,
   MetricTier,
   Segment,
-} from "@lobu/core";
+} from "@lobu/connector-sdk";
 
 export interface EntityType {
   readonly kind: "entityType";

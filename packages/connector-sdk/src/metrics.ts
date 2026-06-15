@@ -1,15 +1,18 @@
 /**
  * Entity-bound metric layer — the PERSISTED contract shapes.
  *
- * These live in `@lobu/core` (not `@lobu/cli`) because three packages share
- * them: the CLI authors them (`defineEntityType`), connectors federate them
- * (`reflectMetrics`), and the server compiles/validates the stored JSON. The
- * server must not import the CLI, so the contract is core-owned.
+ * These live in `@lobu/connector-sdk` (not `@lobu/core`) because of two
+ * constraints that intersect here:
+ *  - the CLI config module (`@lobu/cli/config`) is loaded by jiti at `lobu apply`
+ *    time and is import-isolated to relative siblings + connector-sdk + typebox
+ *    (see config-isolation.test.ts) — it must NOT import `@lobu/core`'s heavy graph;
+ *  - the server compiles/validates the stored metric JSON and must NOT import the CLI.
+ * `connector-sdk` is the one shared package both can import, and it already
+ * carries entity contract types (EntityIdentitySpec, EntityLinkRule, …).
  *
- * Plain interfaces for now. A runtime validator (zod, matching core's stack)
- * lands with the persistence path that actually validates stored config.
- *
- * The compiler lowers `eventSets` + `measures` into backing SQL; nothing here
+ * Plain interfaces for now. A runtime validator (zod, in the layer that
+ * validates stored config) lands with the persistence path that uses it. The
+ * compiler lowers `eventSets` + `measures` into backing SQL; nothing here
  * executes. v1 implements `EventSet.by: "alias"` only.
  */
 
@@ -21,9 +24,9 @@
  *                 against `occurred_at` (event time, NOT system time). A richer
  *                 structured form (relative durations, system-time) is deferred.
  */
-export type MetricReadMode = "current" | "raw" | { asOf: string };
+export type MetricReadMode = 'current' | 'raw' | { asOf: string };
 
-export type MetricTier = "gold" | "silver" | "bronze";
+export type MetricTier = 'gold' | 'silver' | 'bronze';
 
 /**
  * Cross-source fact-identity rule. DEFERRED — a no-op until a measure fuses more
@@ -40,9 +43,9 @@ export interface FactMatchRule {
    * `{ amount: "metadata->>'amount'", at: "metadata->>'date'" }`.
    */
   key: Record<string, string>;
-  /** Per-key match tolerance, e.g. `{ at: "2d", amount: "0" }` (string; the compiler interprets). */
+  /** Per-key match tolerance, e.g. `{ at: '2d', amount: '0' }` (string; the compiler interprets). */
   tolerance?: Record<string, string>;
-  /** Source priority when the same fact is seen twice (e.g. `["revolut","gmail"]`). */
+  /** Source priority when the same fact is seen twice (e.g. `['revolut','gmail']`). */
   prefer?: string[];
 }
 
@@ -58,15 +61,15 @@ export interface FactMatchRule {
  */
 export interface EventSet {
   /** alias: `field` ∈ entity aliases · window: `occurred_at` ∈ [start,end] · link: `events[].entity_ids`. */
-  by: "alias" | "window" | "link";
+  by: 'alias' | 'window' | 'link';
   /** by:"alias" — event field matched against the entity's alias array. */
   field?: string;
-  against?: "aliases";
+  against?: 'aliases';
   /** by:"window" — entity property names bounding the time window. */
   start?: string;
   end?: string;
   /** by:"window" — forbid an event attaching to more than one entity. */
-  cardinality?: "one_per_event";
+  cardinality?: 'one_per_event';
   /** Raw SQL predicate scoping the grain. */
   where?: string;
   /** Temporal truth to read. Default `"current"` (current_event_records). */
@@ -81,7 +84,7 @@ export interface EventSet {
 export interface Measure {
   /** Name of the {@link EventSet} (on this entity) this measure aggregates over. */
   eventSet: string;
-  agg: "sum" | "count" | "min" | "max" | "count_distinct";
+  agg: 'sum' | 'count' | 'min' | 'max' | 'count_distinct';
   /** SQL expression to aggregate. Required for every `agg` except `count` (validated at apply). */
   expr?: string;
   /** Extra raw-SQL predicate applied to this measure only. */
@@ -108,9 +111,9 @@ export interface Segment {
   /** Raw SQL predicate. */
   where: string;
   /** Grain the filter applies at. */
-  on: "event" | "entity";
+  on: 'event' | 'entity';
   /** Ordering relative to dedupe. Default `"aggregate"`. */
-  appliedBefore?: "dedupe" | "aggregate";
+  appliedBefore?: 'dedupe' | 'aggregate';
 }
 
 // ---------------------------------------------------------------------------

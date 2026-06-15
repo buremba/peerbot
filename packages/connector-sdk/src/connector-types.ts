@@ -5,10 +5,10 @@
  * Defines the contract between connectors, the runtime, and the platform.
  */
 
-// Metric-reflection contract shapes live in @lobu/core (the persisted contract,
-// shared with CLI authoring + server compile/validate). Imported for local use
-// (ReflectResult) and re-exported below for connector authors.
-import type { EntityTypeContribution, ReflectedMeasure } from '@lobu/core';
+// Metric-reflection contract shapes live in ./metrics.ts (the persisted metric
+// contract — see that file for why connector-sdk, not core). Imported for local
+// use (ReflectResult) and re-exported below for connector authors.
+import type { EntityTypeContribution, ReflectedMeasure } from './metrics.js';
 
 // =============================================================================
 // Connector Definition

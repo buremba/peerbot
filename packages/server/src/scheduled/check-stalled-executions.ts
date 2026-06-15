@@ -28,13 +28,14 @@
  *    `claimed_at` and own 5-min stale sweep. Not touched here.
  *
  * Multi-pod safety: wrapped in `pg_try_advisory_lock`. A second gateway pod
- * (or the legacy `check-stalled-executions` cron tick) trying to reap
- * concurrently no-ops instead of double-failing rows.
+ * trying to reap concurrently no-ops instead of double-failing rows.
  *
- * The legacy `checkStalledExecutions(env)` entry point is preserved and now
- * delegates to `reapStaleRuns()` so the existing 5-minute TaskScheduler cron
- * still works — the 30s `setInterval` registered in the gateway boot path is
- * the primary cadence.
+ * Cadence: `reapStaleRuns()` is owned by exactly ONE caller — the 30s
+ * `setInterval` started by `startStaleRunReaper` in the gateway boot path
+ * (server-lifecycle.ts). The 5-minute `checkStalledExecutions` cron no longer
+ * calls it (the two firing it was redundant); the cron now only does the
+ * surrounding housekeeping (watcher reconcile/sweep, connect-token expiry,
+ * 30-day retention).
  */
 
 import type { ReservedSql } from 'postgres';
@@ -243,24 +244,19 @@ export function stopStaleRunReaper(): void {
 }
 
 /**
- * Legacy entry point used by the 5-minute `check-stalled-executions`
- * TaskScheduler cron. Delegates to `reapStaleRuns` and keeps the surrounding
- * housekeeping (watcher reconcile + stale watcher sweep + connect-token
- * expiry + 30-day retention) that the cron has owned all along. The 30s
- * setInterval handles the hot path; the cron is the periodic backstop for
- * the housekeeping that doesn't justify a separate interval.
+ * Periodic housekeeping run by the 5-minute `check-stalled-executions`
+ * TaskScheduler cron: watcher reconcile + stale watcher sweep + connect-token
+ * expiry + 30-day retention. These don't justify a dedicated interval each.
  *
- * Returns the legacy "stalled count" only so existing log lines / metrics
- * downstream of the cron keep their shape.
+ * Stale-run reaping is NOT done here — it is owned exclusively by the 30s
+ * `startStaleRunReaper` setInterval (server-lifecycle.ts), which is the single
+ * reaper cadence. Both calling `reapStaleRuns()` was redundant.
  */
 export async function checkStalledExecutions(_env: Env): Promise<void> {
   const sql = getDb();
 
-  // Isolate each phase: this cron is the safety net that reaps stuck runs, so a
-  // throw in watcher reconcile/sweep (e.g. the `malformed array literal` bug,
-  // lobu#1046) must NOT prevent reapStaleRuns from running — otherwise the reaper
-  // that would clear the very run triggering the throw is itself disabled
-  // (self-deadlock).
+  // Isolate each phase so a throw in one (e.g. the `malformed array literal`
+  // bug, lobu#1046) doesn't disable the rest of the housekeeping.
   try {
     await reconcileWatcherRuns(sql);
   } catch (error) {
@@ -270,11 +266,6 @@ export async function checkStalledExecutions(_env: Env): Promise<void> {
     await sweepStaleWatcherRuns(sql);
   } catch (error) {
     logger.error({ error }, '[StalledRuns] sweepStaleWatcherRuns failed');
-  }
-  try {
-    await reapStaleRuns();
-  } catch (error) {
-    logger.error({ error }, '[StalledRuns] reapStaleRuns failed');
   }
 
   try {

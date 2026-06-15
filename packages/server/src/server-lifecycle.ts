@@ -350,8 +350,8 @@ export function createServerLifecycle(
 		const taskScheduler = await bootTaskScheduler(getLobuCoreServices(), env);
 
 		// 5. 30s connector-run heartbeat-lost reaper. Cross-pod coordinated
-		// via advisory lock; the TaskScheduler cron also calls reapStaleRuns()
-		// every 5min as a backstop without double-failing rows.
+		// via advisory lock. This is the single reaper cadence — the
+		// `check-stalled-executions` cron no longer calls reapStaleRuns().
 		const stopReaper = startStaleRunReaper();
 
 		// 6. Wrapper app + HTTP server. Timeouts are locked at 75/76s so SSE

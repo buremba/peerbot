@@ -7,8 +7,10 @@
  */
 
 import type { ContentItem } from '@lobu/connector-sdk';
+import { hasRequiredMcpScope } from '../../auth/tool-access';
 import { createDbClientFromEnv, getDb } from '../../db/client';
 import type { Env } from '../../index';
+import { ToolUserError } from '../../utils/errors';
 import {
   getNormalizedScoreContent,
   getNormalizedScoreContentCount,
@@ -34,6 +36,7 @@ import { buildContentItems, fetchClassificationExcerpts } from './render';
 import { GetContentSchema, type GetContentArgs, getIncludeSupersededValidationErrors } from './schema';
 import type { ContentRow, GetContentResult, IdRow } from './types';
 import { handleWatcherMode } from './watcher-mode';
+import { isSystemContext } from '../access-control';
 import { withValidatedArgs } from '../validate-args';
 
 // ============================================
@@ -47,6 +50,13 @@ async function getContentImpl(
   env: Env,
   ctx: ToolContext
 ): Promise<GetContentResult> {
+  // SDK delegates (`client.knowledge.get`/`read`) skip `checkToolAccess`, so
+  // re-enforce the mcp:read scope here. System contexts (userId=null +
+  // auth=true) bypass — watcher reactions don't carry a user identity.
+  if (!isSystemContext(ctx) && !hasRequiredMcpScope('read', ctx.scopes)) {
+    throw new ToolUserError('read_knowledge requires an MCP session with read access.', 403);
+  }
+
   // Dual client: PG for auth, PG for data
   const pgSql = createDbClientFromEnv(env);
   const sql = getDb();

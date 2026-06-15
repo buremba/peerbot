@@ -624,9 +624,11 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
     //
     // The lock is held by a reserved Postgres connection for the lifetime
     // of the worker subprocess (released in the `exit` handler below). If
-    // another pod has the lock we surface a re-queueable failure so the
-    // runs queue retries on a different pod or after the current holder
-    // releases.
+    // another pod has the lock, that pod legitimately OWNS this turn and is
+    // running it to completion — we throw `ConversationOwnedElsewhereError`
+    // so this pod drops the spawn silently (no retry, no user-facing error).
+    // Retrying could never win: the holder keeps the lock for the whole
+    // worker lifetime.
     const conversationId =
       typeof messageData?.conversationId === "string"
         ? messageData.conversationId

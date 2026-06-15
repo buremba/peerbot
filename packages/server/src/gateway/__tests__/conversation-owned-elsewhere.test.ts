@@ -95,14 +95,22 @@ function makePayload(): MessagePayload {
   } as unknown as MessagePayload;
 }
 
-/** Poll `pred` until true or the deadline lapses. */
+/**
+ * Poll `pred` until true, THROWING if the deadline lapses. Throwing (vs
+ * returning silently) is load-bearing: the negative assertions below
+ * ("trackFailedDeployment never called") would pass spuriously if the awaited
+ * background path simply never ran — a timeout must fail the test, not be
+ * mistaken for the expected behavior.
+ */
 async function waitFor(
   pred: () => boolean,
   timeoutMs = 20_000,
 ): Promise<void> {
   const start = Date.now();
   while (!pred()) {
-    if (Date.now() - start > timeoutMs) return;
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`waitFor: predicate not satisfied within ${timeoutMs}ms`);
+    }
     await new Promise((r) => setTimeout(r, 25));
   }
 }

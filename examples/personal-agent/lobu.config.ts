@@ -7,11 +7,6 @@ import {
 } from "@lobu/cli/config";
 import type RevolutTransactionsConnector from "./revolut-transactions.connector.ts";
 
-// This Mac's device worker (Owletto). The Revolut connector runs here — the
-// Node worker co-located with the paired Owletto extension / signed-in Chrome —
-// and dispatches its DOM-scrape actions to that extension over the bridge.
-const DEVICE_WORKER_ID = "2c295bed-1dfa-4c8b-9f58-c20a62aadfc2";
-
 const personalAgent = defineAgent({
   id: "personal-agent",
   dir: ".",
@@ -358,15 +353,16 @@ const trip = defineEntityType({
 // the paired Owletto Chrome extension's signed-in session — there's no stored
 // secret and no browser-auth profile to grant.
 //
-// Pinned to this Mac's device worker: the connector runs there (where the
-// paired Owletto extension / signed-in Chrome lives) and dispatches its
-// DOM-scrape actions to the extension. max_scrolls is raised so the first run
-// paginates the full multi-year history.
+// Not device-pinned: the connector's sync() runs on a cloud Node worker and
+// dispatches its DOM-scrape actions down to whichever online paired Owletto
+// extension claims them (same model as LinkedIn). This is what makes Revolut
+// "extension-only" from the user's side — no Owletto Mac app required, just the
+// Chrome extension signed in to app.revolut.com. max_scrolls is raised so the
+// first run paginates the full multi-year history.
 const revolutConnection = defineConnection({
   slug: "revolut-buremba",
   connector: "revolut",
   name: "Revolut",
-  deviceWorkerId: DEVICE_WORKER_ID,
   feeds: [{ feed: "transactions", config: { max_scrolls: 100 } }],
 });
 

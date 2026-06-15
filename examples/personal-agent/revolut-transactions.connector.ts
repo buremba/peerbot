@@ -226,13 +226,17 @@ export function parseRevolutDate(
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-/** Deterministic id for a row that carries no DOM id: hash its stable fields. */
+/** Deterministic id for a row that carries no DOM id: hash its stable fields.
+ * `timeRef` (the row's "HH:MM[ · ref]" line) is part of the basis so two
+ * same-day transactions with the same merchant and amount but different times
+ * get distinct ids instead of colliding and being deduped away. */
 function synthesizeId(
   date: string,
   desc: string,
-  signedAmount: string
+  signedAmount: string,
+  timeRef: string
 ): string {
-  const basis = `${date}|${desc}|${signedAmount}`;
+  const basis = `${date}|${desc}|${signedAmount}|${timeRef}`;
   let h = 2166136261;
   for (let i = 0; i < basis.length; i++) {
     h ^= basis.charCodeAt(i);
@@ -262,7 +266,7 @@ export function buildTransactionsFromDom(
       money.amount < 0 ? `-${Math.abs(money.amount)}` : `${money.amount}`;
     const date = occurredAt.toISOString().slice(0, 10);
     out.push({
-      id: synthesizeId(date, desc, signedStr),
+      id: synthesizeId(date, desc, signedStr, (r?.timeRef ?? "").trim()),
       description: desc,
       amount: Math.abs(money.amount),
       direction: money.amount < 0 ? "out" : "in",

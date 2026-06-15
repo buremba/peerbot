@@ -14,25 +14,8 @@ import {
 import type { Browser, Cookie, Page } from 'playwright';
 
 // -----------------------------------------------------------------------------
-// Browser auth cookie helpers
+// Browser auth helpers
 // -----------------------------------------------------------------------------
-
-export function getBrowserCookies(
-  checkpoint: Record<string, unknown> | null,
-  sessionState: Record<string, unknown> | null | undefined,
-  connectorKey: string
-): any[] {
-  const sessionCookies = (sessionState?.cookies as any[]) ?? [];
-  const cookies = (checkpoint as any)?.cookies ?? sessionCookies;
-  // Device-bound browser profiles ship cookies via --user-data-dir on disk
-  // rather than this jsonb blob; the persistent context loads them itself.
-  if ((!cookies || cookies.length === 0) && !sessionState?.user_data_dir) {
-    throw new Error(
-      `No browser cookies found. Run: lobu memory browser-auth --connector ${connectorKey} --auth-profile-slug <SLUG>`
-    );
-  }
-  return cookies ?? [];
-}
 
 /**
  * Pull the device-bound managed --user-data-dir from session_state, if the
@@ -60,22 +43,6 @@ export function getBrowserCdpUrl(
 ): string | undefined {
   const value = sessionState?.cdp_url;
   return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
-export function validateCookieNotExpired(
-  cookies: any[],
-  cookieName: string,
-  connectorKey: string
-): void {
-  const cookie = cookies.find((c: any) => c.name === cookieName);
-  if (cookie?.expires && cookie.expires > 0) {
-    const expiresAt = new Date(cookie.expires * 1000);
-    if (expiresAt < new Date()) {
-      throw new Error(
-        `${cookieName} expired on ${expiresAt.toISOString()}. Re-run: lobu memory browser-auth --connector ${connectorKey} --auth-profile-slug <SLUG>`
-      );
-    }
-  }
 }
 
 // -----------------------------------------------------------------------------

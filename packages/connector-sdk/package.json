@@ -26,12 +26,6 @@
       "types": "./dist/identity-types.d.ts",
       "import": "./dist/identity-types.js"
     },
-    "./browser-mirror": {
-      "import": {
-        "types": "./dist/browser/mirror-cookies.d.ts",
-        "default": "./dist/browser/mirror-cookies.js"
-      }
-    },
     "./browser-devtools-active-port": {
       "import": {
         "types": "./dist/browser/devtools-active-port.d.ts",

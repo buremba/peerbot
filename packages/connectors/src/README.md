@@ -448,10 +448,6 @@ async sync(ctx: SyncContext): Promise<SyncResult> {
 
 **`filterByCheckpoint(events, checkpoint)`** - Filter events newer than `checkpoint.last_timestamp`. Returns all events if no checkpoint.
 
-**`getBrowserCookies(checkpoint, sessionState, connectorKey)`** - Extract browser cookies from checkpoint or session state. Throws with re-auth instructions if no cookies found.
-
-**`validateCookieNotExpired(cookies, cookieName, connectorKey)`** - Check a specific cookie hasn't expired. Throws with re-auth instructions if expired.
-
 ### Browser packages
 
 Browser connectors use `patchright` (an npm alias for Playwright). The SDK also exports `acquireBrowser()` and `captureErrorArtifacts()` as lower-level primitives, but prefer the `browser-scraper-utils.ts` wrappers.

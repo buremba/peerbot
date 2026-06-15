@@ -5,12 +5,9 @@ import { connectorSdkMock } from './connector-sdk.mock';
 // without the browser stack. Shared superset — see connector-sdk.mock.ts.
 mock.module('@lobu/connector-sdk', connectorSdkMock);
 
-const {
-  filterByCheckpoint,
-  getBrowserCookies,
-  validateCookieNotExpired,
-  validateUrlDomain,
-} = await import('../browser-scraper-utils.ts');
+const { filterByCheckpoint, validateUrlDomain } = await import(
+  '../browser-scraper-utils.ts'
+);
 
 describe('validateUrlDomain', () => {
   test('accepts a well-formed https URL on the expected domain', () => {
@@ -50,98 +47,6 @@ describe('validateUrlDomain', () => {
 
   test('accepts the apex domain itself (no subdomain)', () => {
     expect(() => validateUrlDomain('https://example.com/x', 'example.com')).not.toThrow();
-  });
-});
-
-describe('getBrowserCookies', () => {
-  test('prefers checkpoint cookies over session-state cookies', () => {
-    const cookies = getBrowserCookies(
-      { cookies: [{ name: 'checkpoint-cookie' }] },
-      { cookies: [{ name: 'session-cookie' }] },
-      'connector.x'
-    );
-    expect(cookies).toEqual([{ name: 'checkpoint-cookie' }]);
-  });
-
-  test('falls back to session-state cookies when checkpoint has none', () => {
-    const cookies = getBrowserCookies(
-      null,
-      { cookies: [{ name: 'session-cookie' }] },
-      'connector.x'
-    );
-    expect(cookies).toEqual([{ name: 'session-cookie' }]);
-  });
-
-  test('throws a descriptive error when no cookies are present anywhere', () => {
-    expect(() => getBrowserCookies(null, null, 'connector.x')).toThrow(
-      /No browser cookies found/
-    );
-    expect(() => getBrowserCookies(null, null, 'connector.x')).toThrow(/connector\.x/);
-  });
-
-  test('throws when checkpoint cookies array is empty and no session', () => {
-    expect(() => getBrowserCookies({ cookies: [] }, undefined, 'connector.x')).toThrow(
-      /No browser cookies found/
-    );
-  });
-
-  test('handles undefined sessionState explicitly', () => {
-    expect(() => getBrowserCookies(null, undefined, 'connector.x')).toThrow(
-      /No browser cookies found/
-    );
-  });
-});
-
-describe('validateCookieNotExpired', () => {
-  test('does nothing when the cookie is missing entirely', () => {
-    expect(() =>
-      validateCookieNotExpired([{ name: 'other' }], 'session', 'connector.x')
-    ).not.toThrow();
-  });
-
-  test('does nothing when the cookie has no expires field', () => {
-    expect(() =>
-      validateCookieNotExpired([{ name: 'session' }], 'session', 'connector.x')
-    ).not.toThrow();
-  });
-
-  test('does nothing when expires is 0 (session cookie)', () => {
-    expect(() =>
-      validateCookieNotExpired([{ name: 'session', expires: 0 }], 'session', 'connector.x')
-    ).not.toThrow();
-  });
-
-  test('does nothing when the cookie expires in the future', () => {
-    const futureUnix = Math.floor(Date.now() / 1000) + 60 * 60;
-    expect(() =>
-      validateCookieNotExpired(
-        [{ name: 'session', expires: futureUnix }],
-        'session',
-        'connector.x'
-      )
-    ).not.toThrow();
-  });
-
-  test('throws when the cookie has expired', () => {
-    const pastUnix = Math.floor(Date.now() / 1000) - 60 * 60 * 24;
-    expect(() =>
-      validateCookieNotExpired(
-        [{ name: 'session', expires: pastUnix }],
-        'session',
-        'connector.x'
-      )
-    ).toThrow(/session expired on/);
-  });
-
-  test('error message includes the connector slug for the re-auth hint', () => {
-    const pastUnix = Math.floor(Date.now() / 1000) - 60 * 60 * 24;
-    expect(() =>
-      validateCookieNotExpired(
-        [{ name: 'session', expires: pastUnix }],
-        'session',
-        'connector.x'
-      )
-    ).toThrow(/--connector connector\.x/);
   });
 });
 

@@ -601,6 +601,22 @@ function emitEntityType(
   if (e.properties && Object.keys(e.properties).length > 0) {
     fields.push(`properties: ${emitValue(e.properties, 1)}`);
   }
+  // Declared metrics round-trip as the four top-level fields on defineEntityType
+  // (not nested under `metrics`). Without this, `init --from-org` → `apply` would
+  // diff metrics as a change and wipe them. (NOTE: `backing` has the same
+  // pre-existing round-trip gap — tracked separately, not fixed here.)
+  if (e.metrics?.eventSets) {
+    fields.push(`eventSets: ${emitValue(e.metrics.eventSets, 1)}`);
+  }
+  if (e.metrics?.measures) {
+    fields.push(`measures: ${emitValue(e.metrics.measures, 1)}`);
+  }
+  if (e.metrics?.dimensions) {
+    fields.push(`dimensions: ${emitValue(e.metrics.dimensions, 1)}`);
+  }
+  if (e.metrics?.segments) {
+    fields.push(`segments: ${emitValue(e.metrics.segments, 1)}`);
+  }
   const name = minter.mint(e.slug, "Entity");
   return {
     name,

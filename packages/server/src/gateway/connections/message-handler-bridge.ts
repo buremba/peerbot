@@ -411,7 +411,8 @@ export class MessageHandlerBridge {
     } else if (trimmedLower === "/clear") {
       await this.conversationState()?.clearHistory(
         this.connection.id,
-        channelId
+        channelId,
+        conversationId
       );
       await thread.post({ text: "Chat history cleared." });
       return;
@@ -529,6 +530,7 @@ export class MessageHandlerBridge {
             await conversationState.appendHistory(
               this.connection.id,
               channelId,
+              conversationId,
               {
                 role: prior.author?.isMe ? "assistant" : "user",
                 content: text,
@@ -558,15 +560,23 @@ export class MessageHandlerBridge {
     }
 
     const conversationHistory =
-      (await conversationState?.getHistory(this.connection.id, channelId)) ??
-      [];
+      (await conversationState?.getHistory(
+        this.connection.id,
+        channelId,
+        conversationId
+      )) ?? [];
 
-    await conversationState?.appendHistory(this.connection.id, channelId, {
-      role: "user",
-      content: messageText,
-      authorName: message.author?.fullName,
-      timestamp: Date.now(),
-    });
+    await conversationState?.appendHistory(
+      this.connection.id,
+      channelId,
+      conversationId,
+      {
+        role: "user",
+        content: messageText,
+        authorName: message.author?.fullName,
+        timestamp: Date.now(),
+      }
+    );
 
     // Build payload and enqueue
     const traceId = generateTraceId(messageId);
@@ -722,15 +732,23 @@ export class MessageHandlerBridge {
 
     const conversationState = this.conversationState();
     const conversationHistory =
-      (await conversationState?.getHistory(this.connection.id, channelId)) ??
-      [];
+      (await conversationState?.getHistory(
+        this.connection.id,
+        channelId,
+        conversationId
+      )) ?? [];
 
-    await conversationState?.appendHistory(this.connection.id, channelId, {
-      role: "user",
-      content: value,
-      authorName,
-      timestamp: Date.now(),
-    });
+    await conversationState?.appendHistory(
+      this.connection.id,
+      channelId,
+      conversationId,
+      {
+        role: "user",
+        content: value,
+        authorName,
+        timestamp: Date.now(),
+      }
+    );
 
     const traceId = generateTraceId(messageId);
     const agentSettingsStore = this.services.getAgentSettingsStore();

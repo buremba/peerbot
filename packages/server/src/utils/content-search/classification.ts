@@ -70,6 +70,33 @@ export async function resolveClassifierVersionIds(
   return mapping;
 }
 
+/**
+ * Build a source-only EXISTS clause (no classifier-value filters).
+ *
+ * Mirrors the inline `$8` predicate emitted by `buildStandardWhereSql` so the
+ * date-sort and score-sort paths return identical rows when only a
+ * `classification_source` filter is supplied. Uses `latest_event_classifications`
+ * (the dedup'd, current-version-aware view) keyed by `f.id`.
+ *
+ * `tableAlias` is the alias of the outer event row (always `f` in both paths).
+ */
+export function buildSourceOnlyExistsClause(
+  classificationSource: 'user' | 'embedding' | 'llm',
+  baseParamIndex: number,
+  tableAlias = 'f'
+): { clause: string; params: any[] } {
+  return {
+    clause: `
+      EXISTS (
+        SELECT 1 FROM latest_event_classifications lc_source
+        WHERE lc_source.event_id = ${tableAlias}.id
+          AND lc_source.source = $${baseParamIndex}::text
+      )
+    `.trim(),
+    params: [classificationSource],
+  };
+}
+
 export function buildClassificationExistsClauses(
   filtersBySlug: Map<string, string[]>,
   classifierVersionIds: Map<string, number[]>,

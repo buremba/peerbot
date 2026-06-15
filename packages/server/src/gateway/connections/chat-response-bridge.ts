@@ -502,11 +502,16 @@ export class ChatResponseBridge implements ResponseRenderer {
     const historyText = payload.finalText ?? stream?.buffer;
     if (!blockedAtCompletion && historyText?.trim() && conversationState) {
       try {
-        await conversationState.appendHistory(connectionId, channelId, {
-          role: "assistant",
-          content: historyText,
-          timestamp: Date.now(),
-        });
+        await conversationState.appendHistory(
+          connectionId,
+          channelId,
+          payload.conversationId,
+          {
+            role: "assistant",
+            content: historyText,
+            timestamp: Date.now(),
+          }
+        );
       } catch (error) {
         logger.warn(
           { connectionId, channelId, error: String(error) },
@@ -520,9 +525,13 @@ export class ChatResponseBridge implements ResponseRenderer {
     if (completionMd.sessionReset) {
       const agentId = completionMd.agentId;
       try {
-        await conversationState?.clearHistory(connectionId, channelId);
+        await conversationState?.clearHistory(
+          connectionId,
+          channelId,
+          payload.conversationId
+        );
         logger.info(
-          { connectionId, channelId },
+          { connectionId, channelId, conversationId: payload.conversationId },
           "Cleared chat history for session reset"
         );
       } catch (error) {

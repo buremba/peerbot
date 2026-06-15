@@ -110,7 +110,7 @@ describe("ChatResponseBridge.handleDelta — AsyncIterable streaming", () => {
   test("sessionReset completion clears history via conversation state", async () => {
     const { target, drained } = createStreamingTarget();
     const { conversationState, manager } = createHarness(target);
-    await conversationState.appendHistory("conn-1", "123", {
+    await conversationState.appendHistory("conn-1", "123", "123", {
       role: "user",
       content: "old",
       timestamp: 1,
@@ -534,7 +534,13 @@ describe("ChatResponseBridge.handleCompletion — multi-replica finalText", () =
       "s"
     );
 
-    const history = await conversationState.getHistory("conn-1", "slack:C123");
+    // Thread-scoped: the assistant reply lands under the conversation's
+    // (channel, conversationId) bucket, not the bare channel.
+    const history = await conversationState.getHistory(
+      "conn-1",
+      "slack:C123",
+      "slack:C123:1700000000.123456"
+    );
     expect(history).toEqual([
       { role: "assistant", content: "persisted full reply", name: undefined },
     ]);

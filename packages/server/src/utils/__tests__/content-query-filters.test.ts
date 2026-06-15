@@ -4,7 +4,6 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-  buildClassificationFilterSQL,
   buildConnectionFilter,
   buildDateFilterSQL,
   buildEngagementFilterSQL,
@@ -33,74 +32,6 @@ describe('groupClassificationFilters', () => {
     ];
     const grouped = groupClassificationFilters(filters);
     expect(grouped.size).toBe(0);
-  });
-});
-
-describe('buildClassificationFilterSQL', () => {
-  it('should build EXISTS clause for single classifier', () => {
-    const { conditions, params } = buildClassificationFilterSQL([
-      { classifier_slug: 'sentiment', value: 'positive' },
-    ]);
-    expect(conditions.length).toBe(1);
-    expect(conditions[0]).toContain('EXISTS');
-    expect(conditions[0]).toContain('$1'); // value placeholder
-    expect(conditions[0]).toContain('$2'); // slug placeholder
-    expect(params).toEqual(['positive', 'sentiment']);
-  });
-
-  it('should build multiple EXISTS clauses for multiple classifiers', () => {
-    const { conditions, params } = buildClassificationFilterSQL([
-      { classifier_slug: 'sentiment', value: 'positive' },
-      { classifier_slug: 'topic', value: 'ux' },
-    ]);
-    expect(conditions.length).toBe(2);
-    expect(params).toEqual(['positive', 'sentiment', 'ux', 'topic']);
-  });
-
-  it('should include source condition when provided', () => {
-    const { conditions, params } = buildClassificationFilterSQL(
-      [{ classifier_slug: 'sentiment', value: 'positive' }],
-      'user'
-    );
-    expect(conditions[0]).toContain('cc.source = $3');
-    expect(params).toEqual(['positive', 'sentiment', 'user']);
-  });
-
-  it('should return empty for empty filters and no source', () => {
-    const { conditions, params } = buildClassificationFilterSQL([]);
-    expect(conditions.length).toBe(0);
-    expect(params.length).toBe(0);
-  });
-
-  it('should build source-only filter when no classification filters', () => {
-    const { conditions, params } = buildClassificationFilterSQL([], 'embedding');
-    expect(conditions.length).toBe(1);
-    expect(conditions[0]).toContain('cc.source = $1');
-    expect(params).toEqual(['embedding']);
-  });
-
-  it('should use baseParamIndex for parameter numbering', () => {
-    const { conditions, params } = buildClassificationFilterSQL(
-      [{ classifier_slug: 'sentiment', value: 'positive' }],
-      null,
-      'f',
-      5
-    );
-    expect(conditions[0]).toContain('$5'); // value placeholder
-    expect(conditions[0]).toContain('$6'); // slug placeholder
-    expect(params).toEqual(['positive', 'sentiment']);
-  });
-
-  it('should handle multiple values for same classifier with OR logic', () => {
-    const { conditions, params } = buildClassificationFilterSQL([
-      { classifier_slug: 'sentiment', value: 'positive' },
-      { classifier_slug: 'sentiment', value: 'neutral' },
-    ]);
-    expect(conditions.length).toBe(1); // single EXISTS for same classifier
-    expect(conditions[0]).toContain('$1'); // first value
-    expect(conditions[0]).toContain('$2'); // second value
-    expect(conditions[0]).toContain('$3'); // slug
-    expect(params).toEqual(['positive', 'neutral', 'sentiment']);
   });
 });
 

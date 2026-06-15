@@ -74,7 +74,7 @@ export async function postOAuthCompletionPrompt(
   const conversationHistory =
     connectionId && conversationState
       ? await conversationState
-          .getHistory(connectionId, channelId)
+          .getHistory(connectionId, channelId, conversationId || channelId)
           .catch(() => [])
       : [];
   // Derive the connection's owning org so the enqueued resume run carries

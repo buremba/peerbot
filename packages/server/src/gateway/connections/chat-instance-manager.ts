@@ -1716,7 +1716,7 @@ export class ChatInstanceManager {
   async getPlatformConversationHistory(
     name: string,
     channelId: string,
-    _conversationId: string | undefined,
+    conversationId: string | undefined,
     limit: number,
     before: string | undefined
   ): Promise<{
@@ -1741,9 +1741,14 @@ export class ChatInstanceManager {
       this.getInstance(connection.id)?.conversationState ??
       new ConversationStateStore(await this.createStateAdapter());
 
+    // Scope to the thread when the caller is inside one — otherwise a
+    // threaded platform's get_channel_history would return the WHOLE channel
+    // (thread B's messages bleeding into thread A). Non-threaded callers pass
+    // conversationId === channelId (or undefined), collapsing to the channel.
     let entries: HistoryEntry[] = await conversationState.getEntries(
       connection.id,
-      channelId
+      channelId,
+      conversationId ?? channelId
     );
 
     if (before) {
@@ -1800,7 +1805,9 @@ export class ChatInstanceManager {
       await this.createStateAdapter()
     );
     for (const connection of activeConnections) {
-      if (await conversationState.hasHistory(connection.id, channelId)) {
+      if (
+        await conversationState.hasHistoryForChannel(connection.id, channelId)
+      ) {
         return connection;
       }
     }

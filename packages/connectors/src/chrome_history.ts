@@ -14,13 +14,18 @@
  * apps/chrome/feeds-history.js in the extension.
  */
 
-import type { ConnectorDefinition } from '@lobu/connector-sdk';
-import { BridgeOnlyConnector } from './browser-scraper-utils.ts';
+import {
+  type ActionResult,
+  type ConnectorDefinition,
+  ConnectorRuntime,
+  type SyncContext,
+  type SyncResult,
+} from '@lobu/connector-sdk';
 
-export default class ChromeHistoryConnector extends BridgeOnlyConnector {
-  protected readonly bridgeMessage =
-    'chrome.history runs only on a worker advertising capability "browser.history" (Owletto for Chrome with history permission granted).';
+const BRIDGE_ONLY =
+  'chrome.history runs only on a worker advertising capability "browser.history" (Owletto for Chrome with history permission granted).';
 
+export default class ChromeHistoryConnector extends ConnectorRuntime {
   readonly definition: ConnectorDefinition = {
     key: 'chrome.history',
     name: 'Chrome history',
@@ -64,4 +69,12 @@ export default class ChromeHistoryConnector extends BridgeOnlyConnector {
       },
     },
   };
+
+  async sync(_ctx: SyncContext): Promise<SyncResult> {
+    throw new Error(BRIDGE_ONLY);
+  }
+
+  async execute(): Promise<ActionResult> {
+    throw new Error(BRIDGE_ONLY);
+  }
 }

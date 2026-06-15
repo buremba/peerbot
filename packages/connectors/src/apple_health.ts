@@ -22,14 +22,19 @@
  * the run would throw immediately instead of silently producing no events.
  */
 
-import type { ConnectorDefinition } from '@lobu/connector-sdk';
-import { BridgeOnlyConnector } from './browser-scraper-utils.ts';
+import {
+  type ActionResult,
+  type ConnectorDefinition,
+  ConnectorRuntime,
+  type SyncContext,
+  type SyncResult,
+} from '@lobu/connector-sdk';
 
-export default class AppleHealthConnector extends BridgeOnlyConnector {
-  protected readonly bridgeMessage =
-    'apple.health runs only on a worker advertising capability "healthkit" (Lobu with Apple Health permission). ' +
-    'This run was claimed by a worker without that capability — check connector_definitions.required_capability and the poll-time capability filter.';
+const BRIDGE_ONLY_MESSAGE =
+  'apple.health runs only on a worker advertising capability "healthkit" (Lobu with Apple Health permission). ' +
+  'This run was claimed by a worker without that capability — check connector_definitions.required_capability and the poll-time capability filter.';
 
+export default class AppleHealthConnector extends ConnectorRuntime {
   readonly definition: ConnectorDefinition = {
     key: 'apple.health',
     name: 'Apple Health',
@@ -122,4 +127,12 @@ export default class AppleHealthConnector extends BridgeOnlyConnector {
       },
     },
   };
+
+  async sync(_ctx: SyncContext): Promise<SyncResult> {
+    throw new Error(BRIDGE_ONLY_MESSAGE);
+  }
+
+  async execute(): Promise<ActionResult> {
+    throw new Error(BRIDGE_ONLY_MESSAGE);
+  }
 }

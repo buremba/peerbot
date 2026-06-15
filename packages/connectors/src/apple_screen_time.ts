@@ -12,13 +12,18 @@
  * leaving the device on iOS. The Mac path is the workable one.
  */
 
-import type { ConnectorDefinition } from '@lobu/connector-sdk';
-import { BridgeOnlyConnector } from './browser-scraper-utils.ts';
+import {
+  type ActionResult,
+  type ConnectorDefinition,
+  ConnectorRuntime,
+  type SyncContext,
+  type SyncResult,
+} from '@lobu/connector-sdk';
 
-export default class AppleScreenTimeConnector extends BridgeOnlyConnector {
-  protected readonly bridgeMessage =
-    'Apple Screen Time runs only on a worker advertising capability "screentime" (Lobu for Mac with Full Disk Access).';
+const BRIDGE_ONLY =
+  'Apple Screen Time runs only on a worker advertising capability "screentime" (Lobu for Mac with Full Disk Access).';
 
+export default class AppleScreenTimeConnector extends ConnectorRuntime {
   readonly definition: ConnectorDefinition = {
     key: 'apple.screen_time',
     name: 'Apple Screen Time',
@@ -66,4 +71,12 @@ export default class AppleScreenTimeConnector extends BridgeOnlyConnector {
       },
     },
   };
+
+  async sync(_ctx: SyncContext): Promise<SyncResult> {
+    throw new Error(BRIDGE_ONLY);
+  }
+
+  async execute(): Promise<ActionResult> {
+    throw new Error(BRIDGE_ONLY);
+  }
 }

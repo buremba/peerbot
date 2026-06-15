@@ -339,26 +339,6 @@ export async function withBrowserErrorCapture<T>(
 // Bridge-only connector base
 // -----------------------------------------------------------------------------
 
-/**
- * Base class for connectors that exist only as a definition — their `sync()` /
- * `execute()` run on a device/extension worker advertising a `requiredCapability`,
- * never server-side. Subclasses declare their `definition` plus a `bridgeMessage`
- * explaining the capability gate; both `sync()` and `execute()` throw it.
- */
-export abstract class BridgeOnlyConnector extends ConnectorRuntime {
-  abstract readonly definition: ConnectorDefinition;
-  /** Message thrown when a server-side worker reaches sync/execute despite the capability gate. */
-  protected abstract readonly bridgeMessage: string;
-
-  async sync(_ctx: SyncContext): Promise<SyncResult> {
-    throw new Error(this.bridgeMessage);
-  }
-
-  async execute(): Promise<ActionResult> {
-    throw new Error(this.bridgeMessage);
-  }
-}
-
 // -----------------------------------------------------------------------------
 // Review scraper driver
 // -----------------------------------------------------------------------------

@@ -26,6 +26,7 @@ const ctx: ToolContext = {
   memberRole: "owner",
   isAuthenticated: true,
   tokenType: "oauth",
+  scopes: ["mcp:read", "mcp:write", "mcp:admin"],
   scopedToOrg: false,
   allowCrossOrg: true,
 };

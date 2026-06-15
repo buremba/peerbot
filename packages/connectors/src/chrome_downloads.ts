@@ -15,13 +15,18 @@
  * apps/chrome/feeds-downloads.js in the extension.
  */
 
-import type { ConnectorDefinition } from '@lobu/connector-sdk';
-import { BridgeOnlyConnector } from './browser-scraper-utils.ts';
+import {
+  type ActionResult,
+  type ConnectorDefinition,
+  ConnectorRuntime,
+  type SyncContext,
+  type SyncResult,
+} from '@lobu/connector-sdk';
 
-export default class ChromeDownloadsConnector extends BridgeOnlyConnector {
-  protected readonly bridgeMessage =
-    'chrome.downloads runs only on a worker advertising capability "browser.downloads" (Owletto for Chrome with downloads permission granted).';
+const BRIDGE_ONLY =
+  'chrome.downloads runs only on a worker advertising capability "browser.downloads" (Owletto for Chrome with downloads permission granted).';
 
+export default class ChromeDownloadsConnector extends ConnectorRuntime {
   readonly definition: ConnectorDefinition = {
     key: 'chrome.downloads',
     name: 'Chrome downloads',
@@ -64,4 +69,12 @@ export default class ChromeDownloadsConnector extends BridgeOnlyConnector {
       },
     },
   };
+
+  async sync(_ctx: SyncContext): Promise<SyncResult> {
+    throw new Error(BRIDGE_ONLY);
+  }
+
+  async execute(): Promise<ActionResult> {
+    throw new Error(BRIDGE_ONLY);
+  }
 }

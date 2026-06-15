@@ -154,6 +154,7 @@ describe("Slack platform bridge", () => {
       id: "conn-1",
       platform: "slack",
       agentId: "agent-7",
+      organizationId: "org-test",
       metadata: { botUsername: "Lobster" },
       settings: {},
       ...over,

@@ -120,10 +120,13 @@ function makeApp(
   return { app, getStored: session.getStored };
 }
 
-async function postCreate(app: Hono): Promise<Response> {
+async function postCreate(
+  app: Hono,
+  extraHeaders: Record<string, string> = {}
+): Promise<Response> {
   return app.request("/api/v1/agents", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...extraHeaders },
     // The body userId is the SPA's synthetic per-browser id — irrelevant to
     // ownership, which is resolved from the authenticated session.
     body: JSON.stringify({
@@ -283,5 +286,47 @@ describe("POST /api/v1/agents — owner of a non-default-org agent", () => {
     const res = await postCreate(app);
 
     expect(res.status).toBe(403);
+  });
+
+  test("org-bound Bearer/PAT (authoritative org=A) is DENIED an agent that resolves to org=B, mints NO session", async () => {
+    // Tenant-isolation BLOCKER (pi-confirmed): the create path passes no
+    // `sessionForTenantCheck` (no pre-existing session), so the early guard
+    // can't fire. A Bearer/PAT pinned to org A whose user ALSO owns the same
+    // agentId in org B must NOT be allowed to mint a session for the org-B
+    // agent — that would be cross-tenant escalation. `authorizeOwnership`'s
+    // authoritative-caller-org guard catches it.
+    //
+    // Setup: the same OWNER_USER_ID owns `crm` in AGENT_ORG (seeded in
+    // beforeEach), but this request is pinned to CALLER_DEFAULT_ORG via a
+    // Bearer + ambient org. `findAgentOrganizations` resolves crm to AGENT_ORG;
+    // authoritativeCallerOrgId = CALLER_DEFAULT_ORG → mismatch → 403.
+    //
+    // NOTE: the COOKIE form of this exact scenario (same user, same orgs, NO
+    // Bearer) is the legitimate SPA case and returns 201 — proven by the first
+    // test above. The ONLY difference is the presence of an authoritative
+    // (Bearer-bound) caller org.
+    setAuthProvider(() => ownerSession());
+    const { app, getStored } = makeApp(
+      userAgentsStore,
+      agentMetadataStore,
+      // Ambient org is the PAT's pinned org A — authoritative because a Bearer
+      // is present on the request.
+      CALLER_DEFAULT_ORG
+    );
+
+    const res = await postCreate(app, {
+      // A non-worker, non-OAuth Bearer (PAT-shaped). The settings-session
+      // provider authenticates the user; the Bearer's presence is what makes
+      // the ambient org authoritative in requireAgentOwnership.
+      Authorization: "Bearer owl_pat_test_token",
+    });
+
+    expect(res.status).toBe(403);
+    expect((await res.json()) as { error?: string }).toEqual({
+      success: false,
+      error: "Forbidden",
+    });
+    // No session may be minted for the org-B agent.
+    expect(getStored()).toBeNull();
   });
 });

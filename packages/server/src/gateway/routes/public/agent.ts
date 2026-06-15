@@ -517,6 +517,20 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
 
     const bearer = tokenFromHeader(c);
 
+    // The caller's AUTHORITATIVE org, if the auth method bound one:
+    //   - `authContext.organizationId` is set only by token auth (worker
+    //     token payload / external-OAuth userinfo).
+    //   - For PAT auth, `createLobuAuthBridge` sets `c.get("organizationId")`
+    //     from the PAT's pinned org (or a membership-verified `x-lobu-org`),
+    //     and a PAT always carries a Bearer token — so gate the ambient read
+    //     on `bearer` to exclude the cookie path, whose `c.get("organizationId")`
+    //     is just the user's DEFAULT org (NOT authoritative for this agent).
+    // Undefined for the settings-session COOKIE path (no bearer, no authContext
+    // org), which correctly falls through to ownership resolution below.
+    const authoritativeCallerOrgId =
+      c.get("authContext")?.organizationId ??
+      (bearer ? (c.get("organizationId") as string | undefined) : undefined);
+
     // Tenant guard: agent-id-string ownership is per (platform, userId,
     // agentId) — but the agentId string can repeat across tenants (the
     // global `DEFAULT_AGENT_ID` constant, or two orgs that happen to share
@@ -549,12 +563,9 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     //     can only authorize against agent_users rows naming their own
     //     (platform, userId), never another tenant's agent.
     if (sessionForTenantCheck?.organizationId) {
-      const callerOrgId =
-        c.get("authContext")?.organizationId ??
-        (bearer ? (c.get("organizationId") as string | undefined) : undefined);
       if (
-        callerOrgId &&
-        sessionForTenantCheck.organizationId !== callerOrgId
+        authoritativeCallerOrgId &&
+        sessionForTenantCheck.organizationId !== authoritativeCallerOrgId
       ) {
         return deny();
       }
@@ -576,6 +587,30 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       organizationId?: string;
     }): Response | { organizationId?: string } => {
       if (!access.authorized) return deny();
+
+      // Cross-tenant guard #1: a caller with an AUTHORITATIVE org (token/PAT)
+      // must not act on an agent that resolves to a DIFFERENT org. createAgent
+      // passes no `sessionForTenantCheck` (there's no pre-existing session), so
+      // the early guard above can't catch this — without this check a PAT
+      // pinned to orgA whose user ALSO owns the same agentId in orgB would mint
+      // a session stamped orgB (cross-tenant escalation). The cookie path has
+      // no authoritative org → `authoritativeCallerOrgId` is undefined → this
+      // never fires for it (its isolation rides guard #2 below).
+      if (
+        authoritativeCallerOrgId &&
+        access.organizationId &&
+        access.organizationId !== authoritativeCallerOrgId
+      ) {
+        return deny();
+      }
+
+      // Cross-tenant guard #2: when a pre-existing session is supplied, the
+      // agent's resolved org must match the session's org. This is the
+      // authoritative isolation check for the settings-session COOKIE path
+      // (which has no `authoritativeCallerOrgId`): e.g. a cookie user reaching
+      // another org's session via a shared agentId (the global
+      // DEFAULT_AGENT_ID) resolves to their own org, which differs from the
+      // session's → deny.
       const tenantOrg = sessionForTenantCheck?.organizationId;
       if (
         tenantOrg &&

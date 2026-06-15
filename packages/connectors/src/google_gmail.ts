@@ -18,6 +18,7 @@ import {
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
+import { sleep } from './browser-scraper-utils.ts';
 
 // ---------------------------------------------------------------------------
 // Gmail API types
@@ -364,7 +365,7 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
           events.push(event);
           totalCollected++;
 
-          await this.sleep(this.RATE_LIMIT_MS);
+          await sleep(this.RATE_LIMIT_MS);
         } catch {
           /* skip individual thread failures */
         }
@@ -760,9 +761,5 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
 
   private createClient(token: string): HttpClient {
     return createHttpClient({ getAccessToken: () => token, errorPrefix: 'Gmail API' });
-  }
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

@@ -18,7 +18,7 @@ import {
   type SyncResult,
 } from '@lobu/connector-sdk';
 import type { Page } from 'playwright';
-import { validatePublicUrl } from './browser-scraper-utils.ts';
+import { sleep, validatePublicUrl } from './browser-scraper-utils.ts';
 
 interface PageSection {
   heading: string;
@@ -275,7 +275,7 @@ export default class WebsiteConnector extends ConnectorRuntime {
         }
 
         if (i < urls.length - 1) {
-          await this.sleep(this.PAGE_DELAY_MS);
+          await sleep(this.PAGE_DELAY_MS);
         }
       }
     } finally {
@@ -553,9 +553,5 @@ export default class WebsiteConnector extends ConnectorRuntime {
 
   private hash(text: string): string {
     return createHash('sha256').update(text).digest('hex').substring(0, 16);
-  }
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

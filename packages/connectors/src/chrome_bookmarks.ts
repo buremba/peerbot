@@ -14,18 +14,13 @@
  * apps/chrome/feeds-bookmarks.js in the extension.
  */
 
-import {
-  type ActionResult,
-  type ConnectorDefinition,
-  ConnectorRuntime,
-  type SyncContext,
-  type SyncResult,
-} from '@lobu/connector-sdk';
+import type { ConnectorDefinition } from '@lobu/connector-sdk';
+import { BridgeOnlyConnector } from './browser-scraper-utils.ts';
 
-const BRIDGE_ONLY =
-  'chrome.bookmarks runs only on a worker advertising capability "browser.bookmarks" (Owletto for Chrome with bookmarks permission granted).';
+export default class ChromeBookmarksConnector extends BridgeOnlyConnector {
+  protected readonly bridgeMessage =
+    'chrome.bookmarks runs only on a worker advertising capability "browser.bookmarks" (Owletto for Chrome with bookmarks permission granted).';
 
-export default class ChromeBookmarksConnector extends ConnectorRuntime {
   readonly definition: ConnectorDefinition = {
     key: 'chrome.bookmarks',
     name: 'Chrome bookmarks',
@@ -68,12 +63,4 @@ export default class ChromeBookmarksConnector extends ConnectorRuntime {
       },
     },
   };
-
-  async sync(_ctx: SyncContext): Promise<SyncResult> {
-    throw new Error(BRIDGE_ONLY);
-  }
-
-  async execute(): Promise<ActionResult> {
-    throw new Error(BRIDGE_ONLY);
-  }
 }

@@ -15,19 +15,13 @@
  *   - Bound to one specific Mac; requires WhatsApp Desktop installed.
  */
 
-import {
-  type ActionResult,
-  type ConnectorDefinition,
-  ConnectorRuntime,
-  IDENTITY,
-  type SyncContext,
-  type SyncResult,
-} from '@lobu/connector-sdk';
+import { type ConnectorDefinition, IDENTITY } from '@lobu/connector-sdk';
+import { BridgeOnlyConnector } from './browser-scraper-utils.ts';
 
-const BRIDGE_ONLY =
-  'WhatsApp (local) runs only on a worker advertising capability "whatsapp_local" (Lobu for Mac with WhatsApp Desktop installed).';
+export default class WhatsAppLocalConnector extends BridgeOnlyConnector {
+  protected readonly bridgeMessage =
+    'WhatsApp (local) runs only on a worker advertising capability "whatsapp_local" (Lobu for Mac with WhatsApp Desktop installed).';
 
-export default class WhatsAppLocalConnector extends ConnectorRuntime {
   readonly definition: ConnectorDefinition = {
     key: 'whatsapp.local',
     name: 'WhatsApp (this Mac)',
@@ -114,12 +108,4 @@ export default class WhatsAppLocalConnector extends ConnectorRuntime {
       },
     },
   };
-
-  async sync(_ctx: SyncContext): Promise<SyncResult> {
-    throw new Error(BRIDGE_ONLY);
-  }
-
-  async execute(): Promise<ActionResult> {
-    throw new Error(BRIDGE_ONLY);
-  }
 }

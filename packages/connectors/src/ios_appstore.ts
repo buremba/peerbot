@@ -12,6 +12,7 @@ import {
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
+import { sleep } from './browser-scraper-utils.ts';
 
 const IOS_HEADERS: Record<string, string> = {
   'User-Agent':
@@ -170,7 +171,7 @@ export default class IOSAppStoreConnector extends ConnectorRuntime {
 
       // 1 second delay between pages
       if (shouldContinue && page < MAX_PAGES) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        await sleep(1000);
       }
     }
 

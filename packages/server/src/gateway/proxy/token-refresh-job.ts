@@ -1,5 +1,5 @@
 import { createLogger } from "@lobu/core";
-import { getDb } from "../../db/client.js";
+import { type DbClient, getDb } from "../../db/client.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import type { OAuthClient } from "../auth/oauth/client.js";
 import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager.js";
@@ -42,7 +42,11 @@ function refreshLockTag(profileId: string): string {
 export class TokenRefreshJob {
   constructor(
     private authProfilesManager: AuthProfilesManager,
-    private refreshableProviders: RefreshableProvider[]
+    private refreshableProviders: RefreshableProvider[],
+    // Lazy db accessor; injectable so tests can drive the advisory-lock control
+    // flow with a fake DbClient instead of mock.module'ing the db/client module
+    // (which leaks process-globally across the bun:test gateway suite).
+    private getDbFn: () => DbClient = getDb
   ) {}
 
   /** One-shot scan + refresh of every OAuth profile. Invoked by the
@@ -101,7 +105,7 @@ export class TokenRefreshJob {
   }
 
   private async lookupAgentOrg(agentId: string): Promise<string | null> {
-    const sql = getDb();
+    const sql = this.getDbFn();
     const rows = await sql<{ organization_id: string }>`
       SELECT organization_id FROM agents WHERE id = ${agentId} LIMIT 1
     `;
@@ -161,7 +165,7 @@ export class TokenRefreshJob {
     oauthClient: OAuthClient,
     profileId: string
   ): Promise<void> {
-    const sql = getDb();
+    const sql = this.getDbFn();
     await sql.begin(async (tx) => {
       await tx.unsafe(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
         refreshLockTag(profileId),

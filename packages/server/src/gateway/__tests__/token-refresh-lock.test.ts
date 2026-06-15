@@ -9,11 +9,14 @@
  * and RE-READS expiry inside the lock — a loser that acquires the lock after
  * the winner committed sees a future expiry and no-ops.
  *
- * `../../db/client.js` is mocked so we can observe the lock + re-read flow and
- * drive the "already rotated" branch without a live DB.
+ * The test injects a fake `DbClient` into `TokenRefreshJob` (via its optional
+ * getDb accessor) so we can observe the lock + re-read flow and drive the
+ * "already rotated" branch without a live DB — and without a process-global
+ * `mock.module` that would leak across the bun:test gateway suite.
  */
 
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { TokenRefreshJob } from "../proxy/token-refresh-job.js";
 
 interface RecordedCall {
   kind: "advisory_lock" | "lookup_org" | "other";
@@ -44,26 +47,6 @@ const fakeDb = Object.assign(
     begin: async (fn: (sql: unknown) => Promise<unknown>) => fn(fakeDb),
   }
 );
-
-// Preserve every real export (other importers of this module need
-// PROD_PG_VALUE_OPTIONS, pgTextArray, etc.) — only `getDb` is overridden.
-const realDbClient = require("../../db/client.js");
-mock.module("../../db/client.js", () => ({
-  ...realDbClient,
-  getDb: () => fakeDb,
-}));
-
-// bun:test runs the whole `src/gateway` suite in one process, and mock.module
-// is process-global. Restore the real db/client after this file so the fake
-// `getDb` (which lacks `sql.json` etc.) doesn't leak into later suites
-// (AgentSettingsStore, action-handlers, …) and break them.
-afterAll(() => {
-  mock.module("../../db/client.js", () => realDbClient);
-});
-
-// Imported inside beforeEach (after mock.module) to comply with the
-// no-top-level-dynamic-import rule; the mock must be installed first.
-let TokenRefreshJob: typeof import("../proxy/token-refresh-job.js").TokenRefreshJob;
 
 // ─── Fakes ────────────────────────────────────────────────────────────────────
 
@@ -110,8 +93,7 @@ const oauthClient = {
 };
 
 describe("TokenRefreshJob advisory lock (F5)", () => {
-  beforeEach(async () => {
-    ({ TokenRefreshJob } = await import("../proxy/token-refresh-job.js"));
+  beforeEach(() => {
     calls.length = 0;
     oauthClient.refreshToken.mockClear();
   });
@@ -124,7 +106,7 @@ describe("TokenRefreshJob advisory lock (F5)", () => {
 
     const job = new TokenRefreshJob(manager as never, [
       { providerId: "claude", oauthClient: oauthClient as never },
-    ]);
+    ], () => fakeDb);
     await job.refreshForUserAgent("u1", "agent-1");
 
     expect(calls.some((c) => c.kind === "advisory_lock")).toBe(true);
@@ -142,7 +124,7 @@ describe("TokenRefreshJob advisory lock (F5)", () => {
 
     const job = new TokenRefreshJob(manager as never, [
       { providerId: "claude", oauthClient: oauthClient as never },
-    ]);
+    ], () => fakeDb);
     await job.refreshForUserAgent("u1", "agent-1");
 
     // Lock was taken, but the loser must NOT refresh or persist.
@@ -159,7 +141,7 @@ describe("TokenRefreshJob advisory lock (F5)", () => {
 
     const job = new TokenRefreshJob(manager as never, [
       { providerId: "claude", oauthClient: oauthClient as never },
-    ]);
+    ], () => fakeDb);
     await job.refreshForUserAgent("u1", "agent-1");
 
     // Cheap pre-check short-circuits before any lock/refresh.

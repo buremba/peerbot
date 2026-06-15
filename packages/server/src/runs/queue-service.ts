@@ -136,7 +136,15 @@ async function resolveActiveConnectorVersion(
     compiled_code: string | null;
     source_path: string | null;
   };
-  if (!compiled_code && !findBundledConnectorFile(params.connectorKey)) {
+  // Runnable if ANY runtime code source exists: stored compiled code, a
+  // source_path the runtime can compile on demand, or a bundled connector
+  // file. Union of all three so no run type (sync/auth/operation) regresses —
+  // resolveConnectorCode() resolves from whichever is present at execution.
+  if (
+    !compiled_code &&
+    !source_path &&
+    !findBundledConnectorFile(params.connectorKey)
+  ) {
     return { ok: false, reason: 'not-runnable', version };
   }
   return { ok: true, version, compiledCode: compiled_code, sourcePath: source_path };

@@ -13,6 +13,9 @@ import {
   type SyncResult,
 } from '@lobu/connector-sdk';
 import {
+  applyLookbackCutoff,
+  buildReviewCheckpoint,
+  filterByCheckpoint,
   getBrowserCdpUrl,
   getBrowserUserDataDir,
   handleCookieConsent,
@@ -91,6 +94,7 @@ export default class TrustpilotConnector extends ConnectorRuntime {
   async sync(ctx: SyncContext): Promise<SyncResult> {
     const businessUrl = ctx.config.business_url as string | undefined;
     const businessName = ctx.config.business_name as string | undefined;
+    const lookbackDays = ctx.config.lookback_days as number | undefined;
 
     if (!businessUrl && !businessName) {
       throw new Error('Either business_url or business_name is required');
@@ -124,10 +128,10 @@ export default class TrustpilotConnector extends ConnectorRuntime {
         // No reviews found on page
         return {
           events: [],
-          checkpoint: {
+          checkpoint: buildReviewCheckpoint([], ctx.checkpoint, {
             last_sync_at: new Date().toISOString(),
             last_page: 1,
-          },
+          }),
           metadata: { items_found: 0 },
         };
       }
@@ -167,7 +171,7 @@ export default class TrustpilotConnector extends ConnectorRuntime {
       // was missing/invalid in the DOM — `new Date("")` yields an Invalid
       // Date, which downstream sorting/checkpointing then can't compare, and
       // an empty `date` made `origin_id` collide on `-<author>` across rows.
-      const events: EventEnvelope[] = reviews.flatMap((review) => {
+      let events: EventEnvelope[] = reviews.flatMap((review) => {
         const content = review.title ? `${review.title}\n\n${review.text}` : review.text;
         const parsedDate = review.date ? new Date(review.date) : null;
         if (!parsedDate || Number.isNaN(parsedDate.getTime())) return [];
@@ -193,12 +197,18 @@ export default class TrustpilotConnector extends ConnectorRuntime {
         ];
       });
 
+      // Bound the emit window to lookback_days, drop already-seen reviews via
+      // the checkpoint, then sort newest-first so the checkpoint advances.
+      events = applyLookbackCutoff(events, lookbackDays);
+      events = filterByCheckpoint(events, ctx.checkpoint);
+      events.sort((a, b) => b.occurred_at.getTime() - a.occurred_at.getTime());
+
       return {
         events,
-        checkpoint: {
+        checkpoint: buildReviewCheckpoint(events, ctx.checkpoint, {
           last_sync_at: new Date().toISOString(),
           last_page: 1,
-        } as Record<string, unknown>,
+        }),
         metadata: {
           items_found: reviews.length,
         },

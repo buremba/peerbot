@@ -12,6 +12,9 @@ import {
   type SyncResult,
 } from '@lobu/connector-sdk';
 import {
+  applyLookbackCutoff,
+  buildReviewCheckpoint,
+  filterByCheckpoint,
   getBrowserCdpUrl,
   getBrowserUserDataDir,
   handleCookieConsent,
@@ -126,6 +129,7 @@ export default class CapterraConnector extends ConnectorRuntime {
   async sync(ctx: SyncContext): Promise<SyncResult> {
     const productId = ctx.config.product_id as string;
     const productName = ctx.config.product_name as string | undefined;
+    const lookbackDays = ctx.config.lookback_days as number | undefined;
 
     const baseUrl = productName
       ? `https://www.capterra.com/p/${productId}/${productName}/reviews`
@@ -239,7 +243,7 @@ export default class CapterraConnector extends ConnectorRuntime {
       const reviews = rawReviews.filter((r) => r.text.length > 0);
 
       // Transform to EventEnvelope
-      const events: EventEnvelope[] = reviews.map((review) => {
+      let events: EventEnvelope[] = reviews.map((review) => {
         const engagementData = {
           rating: review.rating,
           helpful_count: review.helpfulCount,
@@ -258,9 +262,17 @@ export default class CapterraConnector extends ConnectorRuntime {
         };
       });
 
+      // Bound the emit window to lookback_days, drop already-seen reviews via
+      // the checkpoint, then sort newest-first so the checkpoint advances.
+      events = applyLookbackCutoff(events, lookbackDays);
+      events = filterByCheckpoint(events, ctx.checkpoint);
+      events.sort((a, b) => b.occurred_at.getTime() - a.occurred_at.getTime());
+
       return {
         events,
-        checkpoint: { last_sync_at: new Date().toISOString() },
+        checkpoint: buildReviewCheckpoint(events, ctx.checkpoint, {
+          last_sync_at: new Date().toISOString(),
+        }),
         metadata: {
           items_found: rawReviews.length,
           items_skipped: rawReviews.length - reviews.length,

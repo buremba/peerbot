@@ -14,6 +14,9 @@ import {
   type SyncResult,
 } from '@lobu/connector-sdk';
 import {
+  applyLookbackCutoff,
+  buildReviewCheckpoint,
+  filterByCheckpoint,
   getBrowserCdpUrl,
   getBrowserUserDataDir,
   handleCookieConsent,
@@ -143,7 +146,7 @@ export default class GlassdoorConnector extends ConnectorRuntime {
 
   async sync(ctx: SyncContext): Promise<SyncResult> {
     const config = ctx.config as GlassdoorConfig;
-    const { company_name, company_id } = config;
+    const { company_name, company_id, lookback_days: lookbackDays } = config;
 
     if (!company_name) {
       return {
@@ -253,7 +256,7 @@ export default class GlassdoorConnector extends ConnectorRuntime {
       const validReviews = rawReviews.filter((r) => Boolean(r.pros || r.cons));
 
       // Transform to EventEnvelope format
-      const events: EventEnvelope[] = validReviews.map((review) => {
+      let events: EventEnvelope[] = validReviews.map((review) => {
         const externalId = deriveReviewExternalId(company_name, review);
         const content = `${review.title}\n\nPros: ${review.pros}\n\nCons: ${review.cons}`;
 
@@ -274,14 +277,22 @@ export default class GlassdoorConnector extends ConnectorRuntime {
         };
       });
 
+      // Bound the emit window to lookback_days, drop already-seen reviews via
+      // the checkpoint, then sort newest-first so the checkpoint advances.
+      events = applyLookbackCutoff(events, lookbackDays);
+      events = filterByCheckpoint(events, ctx.checkpoint);
+      events.sort((a, b) => b.occurred_at.getTime() - a.occurred_at.getTime());
+
+      const itemsSkipped = rawReviews.length - validReviews.length;
+
       return {
         events,
-        checkpoint: {
+        checkpoint: buildReviewCheckpoint(events, ctx.checkpoint, {
           last_sync_at: new Date().toISOString(),
-        } as Record<string, unknown>,
+        }),
         metadata: {
           items_found: events.length,
-          items_skipped: rawReviews.length - validReviews.length,
+          items_skipped: itemsSkipped,
         },
       };
     });

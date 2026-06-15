@@ -16,7 +16,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const connectorsDir = resolve(__dirname, "../../connectors/src");
 
 // Source files that are not standalone connector definitions.
-const SKIP = new Set(["index.ts", "browser-scraper-utils.ts"]);
+const SKIP = new Set(["browser-scraper-utils.ts"]);
 
 // Connector key -> simple-icons slug. Only the brand association is hand-kept;
 // the SVG path itself is pulled from simple-icons at generate time so logos

@@ -248,6 +248,39 @@ export function filterByCheckpoint(
   return events.filter((e) => e.occurred_at > cutoff);
 }
 
+/**
+ * Drop events older than `lookbackDays` before now. Bounds the emit window so a
+ * full-history scrape doesn't re-ingest stale reviews on every recurring sync.
+ * A non-positive/undefined `lookbackDays` leaves events untouched.
+ */
+export function applyLookbackCutoff(
+  events: EventEnvelope[],
+  lookbackDays: number | undefined
+): EventEnvelope[] {
+  if (!lookbackDays || lookbackDays <= 0) return events;
+  const cutoff = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
+  return events.filter((e) => e.occurred_at >= cutoff);
+}
+
+/**
+ * Build the next checkpoint for a review scraper after lookback + checkpoint
+ * filtering. Advances `last_timestamp` to the newest emitted event, falling
+ * back to the prior checkpoint's value when nothing new was emitted, and merges
+ * any extra fields (e.g. `last_sync_at`, `last_page`). Mirrors gmaps.ts so all
+ * review scrapers checkpoint identically.
+ */
+export function buildReviewCheckpoint(
+  events: EventEnvelope[],
+  previous: Record<string, unknown> | null,
+  extra: Record<string, unknown> = {}
+): Record<string, unknown> {
+  const priorTimestamp = (previous?.last_timestamp as string | undefined) ?? null;
+  return {
+    ...extra,
+    last_timestamp: events.length > 0 ? events[0].occurred_at.toISOString() : priorTimestamp,
+  };
+}
+
 // -----------------------------------------------------------------------------
 // Error handling with browser cleanup
 // -----------------------------------------------------------------------------

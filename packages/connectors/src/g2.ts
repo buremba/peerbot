@@ -13,6 +13,9 @@ import {
   type SyncResult,
 } from '@lobu/connector-sdk';
 import {
+  applyLookbackCutoff,
+  buildReviewCheckpoint,
+  filterByCheckpoint,
   getBrowserCdpUrl,
   getBrowserUserDataDir,
   handleCookieConsent,
@@ -33,11 +36,6 @@ interface G2Review {
   badges: string[];
   reviewUrl: string;
   helpfulCount: number;
-}
-
-interface G2Checkpoint {
-  last_sync_at?: string;
-  pages_crawled?: number;
 }
 
 const configSchema = {
@@ -97,6 +95,7 @@ export default class G2Connector extends ConnectorRuntime {
 
   async sync(ctx: SyncContext): Promise<SyncResult> {
     const productUrl = ctx.config.product_url as string;
+    const lookbackDays = ctx.config.lookback_days as number | undefined;
 
     if (!productUrl?.match(/^https:\/\/www\.g2\.com\/products\/[^/]+\/reviews/)) {
       return {
@@ -267,16 +266,25 @@ export default class G2Connector extends ConnectorRuntime {
         await new Promise((resolve) => setTimeout(resolve, 6000));
       }
 
-      const newCheckpoint: G2Checkpoint = {
-        last_sync_at: new Date().toISOString(),
-        pages_crawled: Math.min(5, allEvents.length > 0 ? Math.ceil(allEvents.length / 10) : 0),
-      };
+      const pagesCrawled = Math.min(
+        5,
+        allEvents.length > 0 ? Math.ceil(allEvents.length / 10) : 0
+      );
+
+      // Bound the emit window to lookback_days, drop already-seen reviews via
+      // the checkpoint, then sort newest-first so the checkpoint advances.
+      let events = applyLookbackCutoff(allEvents, lookbackDays);
+      events = filterByCheckpoint(events, ctx.checkpoint);
+      events.sort((a, b) => b.occurred_at.getTime() - a.occurred_at.getTime());
 
       return {
-        events: allEvents,
-        checkpoint: newCheckpoint as Record<string, unknown>,
+        events,
+        checkpoint: buildReviewCheckpoint(events, ctx.checkpoint, {
+          last_sync_at: new Date().toISOString(),
+          pages_crawled: pagesCrawled,
+        }),
         metadata: {
-          items_found: allEvents.length,
+          items_found: events.length,
         },
       };
     });

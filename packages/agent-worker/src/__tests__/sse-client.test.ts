@@ -148,6 +148,71 @@ describe("GatewayClient heartbeat ACKs", () => {
     expect(config.runJobToken).toBeUndefined();
   });
 
+  test("batched messages merge attachment files from every message (no data loss)", async () => {
+    // Regression test for F7: processBatchedMessages built the combined
+    // payload by spreading firstMessage.payload and only concatenating
+    // messageText, so files/images on the 2nd..Nth messages were dropped.
+    const client = new GatewayClient(
+      "https://gateway.example.com",
+      "worker-token",
+      "user-1",
+      "worker-1"
+    );
+
+    // Capture the combined payload without booting a real worker.
+    const processSingleMessage = mock(async () => undefined);
+    (client as any).processSingleMessage = processSingleMessage;
+
+    const file1 = { id: "f1", name: "first.png" };
+    const file2 = { id: "f2", name: "second.pdf" };
+
+    await (client as any).processBatchedMessages([
+      {
+        timestamp: 1000,
+        payload: {
+          botId: "lobu-bot",
+          userId: "user-1",
+          agentId: "default",
+          conversationId: "conv",
+          platform: "telegram",
+          channelId: "channel",
+          messageId: "msg-1",
+          messageText: "first",
+          platformMetadata: { files: [file1] },
+          agentOptions: {},
+        },
+      },
+      {
+        timestamp: 2000,
+        payload: {
+          botId: "lobu-bot",
+          userId: "user-1",
+          agentId: "default",
+          conversationId: "conv",
+          platform: "telegram",
+          channelId: "channel",
+          messageId: "msg-2",
+          messageText: "second",
+          // 2nd message carries the attachment that used to be dropped.
+          platformMetadata: { files: [file2] },
+          agentOptions: {},
+        },
+      },
+    ]);
+
+    expect(processSingleMessage).toHaveBeenCalledTimes(1);
+    const combined = processSingleMessage.mock.calls[0]?.[0];
+
+    // Both files survive, in message order.
+    expect(combined.payload.platformMetadata.files).toEqual([file1, file2]);
+    // Text concatenation ordering preserved.
+    expect(combined.payload.messageText).toBe(
+      "Message 1: first\n\nMessage 2: second"
+    );
+    // All message IDs forwarded for ACK.
+    expect(processSingleMessage.mock.calls[0]?.[1]).toEqual(["msg-1", "msg-2"]);
+  });
+
   test("ACKs heartbeat pings over the worker response endpoint", async () => {
     const fetchMock = mock(
       async (_url: string | URL | Request, _options?: RequestInit) =>

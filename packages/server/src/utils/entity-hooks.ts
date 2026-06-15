@@ -6,7 +6,12 @@
  * to prevent circular calls).
  */
 
+import { createElement } from 'react';
+import { sendTransactionalEmail } from '../email/send';
+import { InvitationEmail, invitationSubject } from '../email/templates/invitation';
 import type { Env } from '../index';
+import { getDb } from '../db/client';
+import { getConfiguredPublicOrigin } from './public-origin';
 import type { CreatedEntity, EntityData } from './entity-management';
 import logger from './logger';
 
@@ -45,8 +50,6 @@ export function getEntityHooks(entityType: string): EntityLifecycleHooks | undef
 // ---------------------------------------------------------------------------
 // $member hooks
 // ---------------------------------------------------------------------------
-
-import { getDb } from '../db/client';
 
 /**
  * Resolve the email field name from the $member entity type's metadata_schema.
@@ -129,15 +132,9 @@ registerEntityHooks('$member', {
       `;
       if (invRows.length === 0) return;
 
-      const { getConfiguredPublicOrigin } = await import('./public-origin');
       const baseUrl = getConfiguredPublicOrigin() || 'http://localhost:8787';
       const acceptUrl = `${baseUrl}/auth/accept-invitation?invitationId=${invRows[0].id}`;
 
-      const { createElement } = await import('react');
-      const { sendTransactionalEmail } = await import('../email/send');
-      const { InvitationEmail, invitationSubject } = await import(
-        '../email/templates/invitation'
-      );
       await sendTransactionalEmail({
         env: ctx.env,
         to: email,

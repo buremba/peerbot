@@ -26,6 +26,8 @@ import {
   SettingsManager,
 } from "@mariozechner/pi-coding-agent";
 import type { ProgressUpdate, SessionExecutionResult } from "../core/types";
+import { createEmbeddedBashOps } from "../embedded/just-bash-bootstrap";
+import { consumePendingConfigNotifications } from "../gateway/pending-config-notifications";
 import { getApiKeyEnvVarForProvider } from "../shared/provider-auth-hints";
 import type { GatewayParams } from "../shared/tool-implementations";
 import { isRecord } from "../shared/type-guards";
@@ -786,15 +788,6 @@ export async function runAISession(
     workspaceDir,
   };
 
-  // Dynamic import is justified: just-bash-bootstrap transitively pulls in
-  // the embedded MCP server and its heavy deps (child_process, fs watchers).
-  // Deferring keeps the cold-start path lean and avoids loading the MCP
-  // runtime before the workspace is ready. Static import would force
-  // the module to initialise at worker process startup, wasting memory for
-  // runs that never reach this point (e.g. early auth errors).
-  const { createEmbeddedBashOps } = await import(
-    "../embedded/just-bash-bootstrap"
-  );
   const embeddedBashOps: import("@mariozechner/pi-coding-agent").BashOperations =
     await createEmbeddedBashOps({
       workspaceDir,
@@ -1357,16 +1350,6 @@ Use it when the user references past discussions or you need context.`);
     }
 
     // Consume any pending config change notifications from SSE events.
-    // Dynamic import is justified: sse-client runs a top-level singleton
-    // EventSource connection and registers global process-level handlers.
-    // A static import would start that connection at module load time (worker
-    // startup), before the gateway URL / token env vars are validated.
-    // Circular-dependency risk: sse-client imports gateway types that
-    // transitively depend on worker internals; deferring the import breaks
-    // the cycle without introducing a separate entry point.
-    const { consumePendingConfigNotifications } = await import(
-      "../gateway/sse-client"
-    );
     const configNotifications = consumePendingConfigNotifications();
 
     let configNotice = "";

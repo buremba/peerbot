@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { createLogger } from "@lobu/core";
 import FormData from "form-data";
+import { invalidateSessionContextCache } from "../openclaw/session-context";
 import { fetchAudioProviderSuggestions } from "./audio-provider-suggestions";
 
 const logger = createLogger("shared-tools");
@@ -506,9 +507,6 @@ export async function checkMcpLogin(
     if (statusResult.error) return statusResult.error;
 
     if (statusResult.data?.authenticated) {
-      const { invalidateSessionContextCache } = await import(
-        "../openclaw/session-context"
-      );
       invalidateSessionContextCache();
       return jsonResult({
         status: "already_authenticated",
@@ -535,9 +533,6 @@ export async function checkMcpLogin(
 
     const pollStatus = pollResult.data?.status || "error";
     if (pollStatus === "complete") {
-      const { invalidateSessionContextCache } = await import(
-        "../openclaw/session-context"
-      );
       invalidateSessionContextCache();
       return jsonResult({
         status: "complete",

@@ -4,7 +4,6 @@ import type {
   AgentConnectionStore,
   CommandRegistry,
   InstructionProvider,
-  UserSuggestion,
 } from "@lobu/core";
 import type { AgentMetadataStore } from "./auth/agent-metadata-store.js";
 import type { McpConfigService } from "./auth/mcp/config-service.js";
@@ -118,38 +117,6 @@ export interface PlatformAdapter {
   getInstructionProvider?(): InstructionProvider | null;
 
   /**
-   * Render non-blocking suggestions
-   * Platform should display this as suggested prompts/quick replies
-   *
-   * @param suggestion - The suggestions to render
-   */
-  renderSuggestion?(suggestion: UserSuggestion): Promise<void>;
-
-  /**
-   * Set conversation status indicator
-   * Used to show "is running...", "Waiting for approval...", etc.
-   * Pass null/undefined to clear the status
-   *
-   * @param channelId - Channel identifier
-   * @param conversationId - Conversation identifier
-   * @param status - Status message to display, or null to clear
-   */
-  setThreadStatus?(
-    channelId: string,
-    conversationId: string,
-    status: string | null
-  ): Promise<void>;
-
-  /**
-   * Check if the provided token matches the platform's configured bot token
-   * Used to detect self-messaging for direct queueing
-   *
-   * @param token - Token to check
-   * @returns True if this is the platform's own bot token
-   */
-  isOwnBotToken?(token: string): boolean;
-
-  /**
    * Send a message via the messaging API
    * Uses polymorphic routing info extracted from the request
    *
@@ -180,26 +147,6 @@ export interface PlatformAdapter {
   }>;
 
   /**
-   * Render authentication status for OAuth providers (MCP servers, Claude, etc.)
-   * Displays connection status in platform-specific UI (e.g., Slack home tab)
-   *
-   * @param userId - User ID to render status for
-   * @param providers - Array of OAuth providers with their connection status
-   * @returns Promise that resolves when rendering is complete
-   */
-  renderAuthStatus?(
-    userId: string,
-    providers: Array<{
-      id: string;
-      name: string;
-      isAuthenticated: boolean;
-      loginUrl?: string;
-      logoutUrl?: string;
-      metadata?: Record<string, any>;
-    }>
-  ): Promise<void>;
-
-  /**
    * Hydrate the connection's instance on this replica from its stored row.
    * Connections are lazy (no boot warm-start), so synchronous lookups like
    * `getFileHandler` must be preceded by this on pods that haven't served
@@ -228,30 +175,6 @@ export interface PlatformAdapter {
    * @returns ResponseRenderer instance or undefined if platform handles responses differently
    */
   getResponseRenderer?(): ResponseRenderer | undefined;
-
-  /**
-   * Check if a channel ID represents a group/channel vs a DM.
-   * Used by space-resolver to determine space type.
-   *
-   * @param channelId - Channel identifier to check
-   * @returns True if this is a group/channel, false if DM
-   */
-  isGroupChannel?(channelId: string): boolean;
-
-  /**
-   * Get display information for the platform.
-   * Used in UI to show platform-specific icons and names.
-   *
-   * @returns Display info with name and icon (SVG or emoji)
-   */
-  getDisplayInfo?(): {
-    /** Human-readable platform name */
-    name: string;
-    /** SVG icon markup or emoji */
-    icon: string;
-    /** Optional logo URL */
-    logoUrl?: string;
-  };
 
   /**
    * Extract routing info from platform-specific request body.

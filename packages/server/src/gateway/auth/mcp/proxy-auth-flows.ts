@@ -27,6 +27,7 @@ export type OnAuthRequiredHandler = (
 	teamId: string | undefined,
 	connectionId: string | undefined,
 	platform: string | undefined,
+	source: string | undefined,
 ) => Promise<void>;
 
 /**
@@ -66,6 +67,7 @@ export class McpAuthFlows {
 		conversationId: string;
 		teamId?: string;
 		connectionId?: string;
+		source?: string;
 		deviceAuthFallback: boolean;
 	}): Promise<AuthRequiredPayload | null> {
 		// Drain the body so the connection can be reused.
@@ -84,6 +86,7 @@ export class McpAuthFlows {
 				params.teamId,
 				params.connectionId,
 				params.platform,
+				params.source,
 			);
 			return payload;
 		};
@@ -128,6 +131,7 @@ export class McpAuthFlows {
 		teamId: string | undefined,
 		connectionId: string | undefined,
 		platform: string | undefined,
+		source: string | undefined,
 	): Promise<void> {
 		if (!this.onAuthRequired) return;
 		await this.onAuthRequired(
@@ -140,6 +144,7 @@ export class McpAuthFlows {
 			teamId,
 			connectionId,
 			platform,
+			source,
 		).catch((err) =>
 			logger.error(
 				{ mcpId, error: String(err) },

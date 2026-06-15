@@ -282,7 +282,8 @@ export class InteractionService extends EventEmitter {
     platform: string,
     url: string,
     label: string,
-    body?: string
+    body?: string,
+    source?: string
   ): Promise<PostedLinkButton> {
     return this.postLinkButton(
       userId,
@@ -294,7 +295,8 @@ export class InteractionService extends EventEmitter {
       url,
       label,
       "oauth",
-      body
+      body,
+      source
     );
   }
 

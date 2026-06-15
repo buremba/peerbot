@@ -25,12 +25,6 @@
     "./identity-types": {
       "types": "./dist/identity-types.d.ts",
       "import": "./dist/identity-types.js"
-    },
-    "./browser-devtools-active-port": {
-      "import": {
-        "types": "./dist/browser/devtools-active-port.d.ts",
-        "default": "./dist/browser/devtools-active-port.js"
-      }
     }
   },
   "files": [

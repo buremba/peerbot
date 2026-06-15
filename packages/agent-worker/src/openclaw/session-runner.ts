@@ -379,6 +379,12 @@ export interface RunAISessionParams {
   /** Arbitrary platform-level metadata (e.g. { sessionReset: true, files: [...] }). */
   platformMetadata: unknown;
   agentId: string | undefined;
+  /**
+   * Per-run worker token minted by the dispatcher (carries `source` + `runId`).
+   * Used for gateway calls (interactions, MCP) so headless-run cards are stamped
+   * with their origin; falls back to the deployment WORKER_TOKEN when absent.
+   */
+  runJobToken?: string;
 
   // Resolved workspace directory (from WorkspaceManager)
   workspaceDir: string;
@@ -437,6 +443,7 @@ export async function runAISession(
     platform,
     platformMetadata,
     agentId,
+    runJobToken,
     workspaceDir,
     progressProcessor,
     onSessionFilePathResolved,
@@ -779,7 +786,11 @@ export async function runAISession(
 
   const gwParams: GatewayParams = {
     gatewayUrl: getOptionalEnv("DISPATCHER_URL", ""),
-    workerToken: getOptionalEnv("WORKER_TOKEN", ""),
+    // Prefer the per-run token: it carries the headless `source`, so interaction
+    // and MCP cards from headless turns are stamped headless (and skip the
+    // SSE-owner gate) instead of dead-lettering. The deployment WORKER_TOKEN is
+    // the fallback for legacy direct-enqueue runs with no per-run token.
+    workerToken: runJobToken || getOptionalEnv("WORKER_TOKEN", ""),
     channelId,
     conversationId,
     platform,

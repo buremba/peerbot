@@ -797,7 +797,8 @@ export class CoreServices {
       conversationId,
       teamId,
       connectionId,
-      platform
+      platform,
+      source
     ) => {
       if (payload.url) {
         await this.interactionService?.postOauthLink(
@@ -809,7 +810,8 @@ export class CoreServices {
           platform || "unknown",
           payload.url,
           `Connect ${mcpId}`,
-          `Sign in to ${mcpId} so I can use its tools on your behalf.`
+          `Sign in to ${mcpId} so I can use its tools on your behalf.`,
+          source
         );
         return;
       }

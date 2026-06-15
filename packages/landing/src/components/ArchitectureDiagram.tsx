@@ -11,9 +11,9 @@ const GENERIC_CONNECTOR_ROWS: ReadonlyArray<{
   label: string;
   href: string;
 }> = [
-  { label: "50+ built-in connectors", href: GITHUB_CONNECTORS_TREE_URL },
-  { label: "any MCP server", href: "/guides/mcp-proxy/" },
-  { label: "custom via connector-sdk", href: "/getting-started/connector-sdk/" },
+  { label: "Slack, CRM, docs", href: GITHUB_CONNECTORS_TREE_URL },
+  { label: "webhooks and live events", href: "/guides/mcp-proxy/" },
+  { label: "agent-written connectors", href: "/getting-started/connector-sdk/" },
 ];
 
 // Fallback entity rows when no use case is active (the homepage). Labelled
@@ -60,7 +60,6 @@ export function ArchitectureDiagram({ slug }: { slug?: string } = {}) {
     <div class="flex flex-col gap-6">
       <Header />
       <DiagramBoard rows={rows} connectorRows={connectorRows} />
-      <PulseStyles />
     </div>
   );
 }
@@ -75,19 +74,19 @@ function Header() {
         class="mb-3 font-mono text-[11.5px] font-semibold uppercase tracking-[0.12em]"
         style={{ color: "var(--color-tg-accent)" }}
       >
-        Architecture
+        Operating loop
       </div>
       <h2
         class="font-display text-[1.85rem] font-bold leading-[1.1] tracking-tight sm:text-[2.25rem]"
         style={{ color: "var(--color-page-text)" }}
       >
-        Raw events in. Typed memory out. Agents act.
+        One loop behind every AI teammate.
       </h2>
       <p
         class="mx-auto mt-3 max-w-2xl text-[15px] leading-relaxed"
         style={{ color: "var(--color-page-text-muted)" }}
       >
-        Connectors stream events into memory. Watchers derive typed entities. Agents read it, talk to users, and act.
+        Connect sources, keep shared memory current, and expose safe actions to chat, APIs, CLI, and MCP clients.
       </p>
     </div>
   );
@@ -135,9 +134,9 @@ function DesktopBoard({
   return (
     <div class="grid grid-cols-[1fr_auto_1.1fr_auto_1.1fr] items-stretch gap-x-2">
       <ConnectorsColumn connectorRows={connectorRows} />
-      <ColumnArrow label="events" />
+      <ColumnArrow label="updates" />
       <MemoryColumn rows={rows} />
-      <ColumnArrow label="chat" sublabel="read" split />
+      <ColumnArrow label="uses" />
       <AgentsColumn />
     </div>
   );
@@ -153,9 +152,9 @@ function MobileBoard({
   return (
     <div class="flex flex-col gap-4">
       <ConnectorsColumn connectorRows={connectorRows} />
-      <VerticalArrow label="events" />
+      <VerticalArrow label="updates" />
       <MemoryColumn rows={rows} />
-      <VerticalArrow label="chat · read" />
+      <VerticalArrow label="uses" />
       <AgentsColumn />
     </div>
   );
@@ -171,7 +170,7 @@ function ConnectorsColumn({
   connectorRows: readonly ConnectorRow[];
 }) {
   return (
-    <ColumnCard heading="Connectors" footer="stream events from any source">
+    <ColumnCard heading="Connect the work" footer="built-ins, live events, or code">
       <div class="flex flex-col gap-2">
         {connectorRows.map((row) => (
           <SourceRow key={row.label} label={row.label} href={row.href} />
@@ -187,10 +186,9 @@ function MemoryColumn({
   rows: readonly ArchitectureEntityRow[];
 }) {
   return (
-    <ColumnCard heading="Memory" footer="append-only knowledge graph">
-      <div class="flex flex-col">
-        <StreamBox label="events" />
-        <DerivationArrow />
+    <ColumnCard heading="Build shared memory" footer="records humans can inspect and edit">
+      <div class="flex flex-col gap-3">
+        <GoalBox />
         <EntitiesTable rows={rows} />
       </div>
     </ColumnCard>
@@ -199,9 +197,9 @@ function MemoryColumn({
 
 function AgentsColumn() {
   return (
-    <ColumnCard heading="Agents" footer="reach users, or call from code">
+    <ColumnCard heading="Act anywhere" footer="same memory, same guardrails">
       <div class="flex flex-col gap-3">
-        <SubBlock heading="Chat bots">
+        <SubBlock heading="Team channels">
           <div class="grid grid-cols-3 gap-1.5">
             {messagingChannels.map((c) => (
               <a
@@ -221,9 +219,9 @@ function AgentsColumn() {
             ))}
           </div>
         </SubBlock>
-        <SubBlock heading="Other agents">
+        <SubBlock heading="Agent access">
           <div class="flex flex-wrap gap-1.5">
-            {(["HTTP", "MCP", "SDK"] as const).map((p) => (
+            {(["CLI", "MCP", "API", "SDK"] as const).map((p) => (
               <span
                 key={p}
                 class="rounded-lg border px-2 py-1 font-mono text-[11px]"
@@ -238,8 +236,8 @@ function AgentsColumn() {
             ))}
           </div>
         </SubBlock>
-        <SubBlock heading="External services">
-          <SourceRow label="reactions" href="/getting-started/reaction-sdk/" />
+        <SubBlock heading="Actions">
+          <SourceRow label="tools + approvals" href="/getting-started/reaction-sdk/" />
         </SubBlock>
       </div>
     </ColumnCard>
@@ -338,32 +336,27 @@ function SubBlock({
   );
 }
 
-/**
- * Two stream boxes (events / entities). Pulse dots live inside as
- * absolutely-positioned spans driven by pure CSS keyframes. The keyframes
- * are gated by `@media (prefers-reduced-motion: reduce)` so reduced-motion
- * sessions see a static frame.
- */
-function StreamBox({ label }: { label: string }) {
+function GoalBox() {
   return (
     <div
-      class="relative flex items-center overflow-hidden rounded-lg border px-3 py-2.5"
+      class="rounded-lg border px-3 py-2.5"
       style={{
         borderColor: "var(--color-page-border)",
         backgroundColor: "var(--color-page-surface-dim)",
       }}
     >
-      <span
+      <div
+        class="mb-1 font-mono text-[10px] uppercase tracking-[0.14em]"
+        style={{ color: "var(--color-page-text-muted)" }}
+      >
+        Goal
+      </div>
+      <div
         class="font-mono text-[12px]"
         style={{ color: "var(--color-page-text)" }}
       >
-        {label}
-      </span>
-      <span class="ml-auto inline-flex items-center gap-1.5">
-        <span class="lobu-pulse-dot lobu-pulse-dot--a" aria-hidden="true" />
-        <span class="lobu-pulse-dot lobu-pulse-dot--b" aria-hidden="true" />
-        <span class="lobu-pulse-dot lobu-pulse-dot--c" aria-hidden="true" />
-      </span>
+        watch renewal risk
+      </div>
     </div>
   );
 }
@@ -372,7 +365,7 @@ function StreamBox({ label }: { label: string }) {
  * Entities widget: small table grid. Header row + 3 placeholder rows
  * to signal "structured records, not freeform text". Cells use neutral
  * monospace dashes/blocks so the table reads as a schema preview rather
- * than fake data. Sits in the same box family as StreamBox.
+ * than fake data.
  */
 function EntitiesTable({
   rows,
@@ -443,34 +436,6 @@ function EntitiesTable({
           ))}
         </div>
       </div>
-    </div>
-  );
-}
-
-function DerivationArrow() {
-  return (
-    <div class="flex items-center justify-between gap-2 py-1.5 pl-3">
-      <svg width="10" height="20" viewBox="0 0 10 20" aria-hidden="true">
-        <title>derive</title>
-        <path
-          d="M5 0 V14 M2 11 L5 15 L8 11"
-          stroke="var(--color-tg-accent)"
-          stroke-width="1.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          fill="none"
-        />
-      </svg>
-      <span
-        class="ml-auto rounded-lg px-2 py-0.5 font-mono text-[10.5px]"
-        style={{
-          backgroundColor: "var(--color-page-bg)",
-          color: "var(--color-page-text-muted)",
-          border: "1px solid var(--color-page-border)",
-        }}
-      >
-        LLM watcher
-      </span>
     </div>
   );
 }
@@ -563,34 +528,5 @@ function VerticalArrow({ label }: { label: string }) {
         />
       </svg>
     </div>
-  );
-}
-
-/**
- * Pure-CSS pulse animation. Three small dots in the `events` box pulse on
- * a stagger to telegraph "live stream". Reduced motion drops the keyframes
- * and leaves the dots at a static rest opacity.
- */
-function PulseStyles() {
-  return (
-    <style>{`
-      .lobu-pulse-dot {
-        width: 4px;
-        height: 4px;
-        border-radius: 9999px;
-        background: var(--color-tg-accent);
-        display: inline-block;
-        opacity: 0.35;
-      }
-      @media (prefers-reduced-motion: no-preference) {
-        .lobu-pulse-dot--a { animation: lobu-pulse 1.8s ease-in-out infinite; animation-delay: 0s; }
-        .lobu-pulse-dot--b { animation: lobu-pulse 1.8s ease-in-out infinite; animation-delay: 0.3s; }
-        .lobu-pulse-dot--c { animation: lobu-pulse 1.8s ease-in-out infinite; animation-delay: 0.6s; }
-      }
-      @keyframes lobu-pulse {
-        0%, 100% { opacity: 0.2; transform: scale(0.9); }
-        50%       { opacity: 1;   transform: scale(1.15); }
-      }
-    `}</style>
   );
 }

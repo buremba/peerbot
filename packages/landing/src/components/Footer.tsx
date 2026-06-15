@@ -45,7 +45,56 @@ const COLUMNS: FooterColumn[] = [
   },
 ];
 
-export function Footer() {
+export function Footer({ compact = false }: { compact?: boolean }) {
+  if (compact) {
+    return (
+      <footer
+        class="px-6 sm:px-8 py-8"
+        style={{
+          background: "var(--color-page-bg)",
+          color: "var(--color-page-text-muted)",
+          borderTop: "1px solid var(--color-page-border)",
+        }}
+      >
+        <div class="mx-auto flex max-w-[72rem] flex-col gap-4 text-[13px] sm:flex-row sm:items-center sm:justify-between">
+          <a
+            href="/"
+            class="inline-flex items-center gap-2 font-bold tracking-tight"
+            style={{
+              color: "var(--color-page-text)",
+              fontFamily: "var(--font-display)",
+            }}
+          >
+            <img src="/lobster-icon.svg" alt="Lobu" class="h-6 w-6" />
+            Lobu
+          </a>
+          <div class="flex flex-wrap gap-x-4 gap-y-2">
+            <a href="/getting-started/" class="hover:opacity-80">
+              Docs
+            </a>
+            <a href="/blog/" class="hover:opacity-80">
+              Blog
+            </a>
+            <a
+              href={GITHUB_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="hover:opacity-80"
+            >
+              GitHub
+            </a>
+            <a href="/privacy/" class="hover:opacity-80">
+              Privacy
+            </a>
+            <a href="/terms/" class="hover:opacity-80">
+              Terms
+            </a>
+          </div>
+        </div>
+      </footer>
+    );
+  }
+
   return (
     <footer
       class="px-6 sm:px-8 pt-20 pb-10 mt-12"
@@ -73,8 +122,7 @@ export function Footer() {
               class="mt-4 text-[13px] leading-relaxed max-w-xs"
               style={{ color: "var(--color-page-text-muted)" }}
             >
-              Open-source backend for multi-user AI agents. Self-hostable,
-              isolated, and source-backed.
+              AI teammates that watch and act.
             </p>
           </div>
           {COLUMNS.map((col) => (

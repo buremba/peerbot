@@ -2,6 +2,7 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  ConversationOwnedElsewhereError,
   createLogger,
   ErrorCode,
   type MessagePayload,
@@ -623,9 +624,11 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
     //
     // The lock is held by a reserved Postgres connection for the lifetime
     // of the worker subprocess (released in the `exit` handler below). If
-    // another pod has the lock we surface a re-queueable failure so the
-    // runs queue retries on a different pod or after the current holder
-    // releases.
+    // another pod has the lock, that pod legitimately OWNS this turn and is
+    // running it to completion — we throw `ConversationOwnedElsewhereError`
+    // so this pod drops the spawn silently (no retry, no user-facing error).
+    // Retrying could never win: the holder keeps the lock for the whole
+    // worker lifetime.
     const conversationId =
       typeof messageData?.conversationId === "string"
         ? messageData.conversationId
@@ -681,16 +684,20 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
         );
       }
       if (!convLock) {
-        // Another pod is running this conversation. Surface as a
-        // re-queueable failure — the runs queue's standard retry path
-        // re-delivers with a delay (`retry_delay_seconds` set per
-        // run_type). No need to special-case here.
+        // Another pod legitimately OWNS this conversation turn and is running
+        // the worker to completion. This is NOT a failure — it is the cross-pod
+        // "handled elsewhere" signal. Throw the typed
+        // `ConversationOwnedElsewhereError` so the orchestrator drops THIS pod's
+        // spawn silently (no retry, no user-facing "Worker startup failed", no
+        // Critical log). The winning pod discharges the shared turn-liveness
+        // marker on its successful reply, so the user still gets the answer.
+        // Retrying here can never win: the winner holds the session-level
+        // advisory lock for the entire worker subprocess lifetime.
         logger.info(
-          `Conversation lock busy for ${organizationId}/${agentId}/${conversationId}; deferring spawn`
+          `Conversation lock owned by another pod for ${organizationId}/${agentId}/${conversationId}; dropping this pod's spawn (handled elsewhere)`
         );
-        throw new OrchestratorError(
-          ErrorCode.DEPLOYMENT_CREATE_FAILED,
-          "Conversation lock busy on another pod"
+        throw new ConversationOwnedElsewhereError(
+          "Conversation owned by another replica"
         );
       }
     }

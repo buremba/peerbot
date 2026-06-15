@@ -39,18 +39,18 @@ type LandingSnippets = {
 
 const snippets = snippetsManifest as LandingSnippets;
 
-const SETUP_PROMPT = `I want to build a Lobu agent with you. Lobu is an open-source, event-sourced backend for AI agents: connectors emit events, memory keeps a structured knowledge graph, and agents react in real time and run on a schedule. Set it up with me end to end.
+const SETUP_PROMPT = `I want to build a Lobu agent with you. Lobu helps create internal AI teammates: give them a goal, connect company tools, build living memory, and let them collaborate with humans and take approved actions anywhere the team works. Set it up with me end to end.
 
 1. Interview me, one question at a time. Wait for my answer before the next. Don't batch them, don't guess, and don't fake any credentials:
    - What is the agent for? (one sentence)
    - Who uses it: just me, my team, or each of my customers (multi-tenant)?
    - What should it remember? (we'll model this as 1-3 entity types)
-   - Where does its data come from? Lobu has built-in connectors for Slack, Gmail, GitHub, Google Calendar, Outlook, websites, RSS, Reddit, X, LinkedIn, YouTube, Hacker News, Product Hunt, and more — or you can write a custom connector for any other source (an API, a webhook, a CSV). Tell me the source and I'll map it to a built-in connector or plan a custom one. Pick one to start.
+   - Where does its data come from? Lobu has built-in connectors for Slack, Gmail, GitHub, Google Calendar, Outlook, websites, RSS, Reddit, X, LinkedIn, YouTube, Hacker News, Product Hunt, and more, or you can write a custom connector for any other source (an API, a webhook, a CSV). Tell me the source and I'll map it to a built-in connector or plan a custom one. Pick one to start.
    - Where do people talk to it? (Slack, Telegram, Discord, WhatsApp, web/HTTP, or MCP)
    - Anything on a schedule? (optional: one watcher, e.g. a daily summary)
    - Which LLM provider key do I have: Anthropic, OpenAI, or Z.ai?
 
-2. Scaffold it: check my Node is 22-24 (Lobu rejects 25+; help me switch if not), then run npx @lobu/cli@latest init with the name and the provider from above. Postgres is built in — lobu run starts an embedded one, so don't ask me for a database unless I want an external Postgres (then I set DATABASE_URL). Read the AGENTS.md it writes (your guide to the config API: the define* helpers, connectors, auth, watchers, memory), and read examples/lobu-crm/lobu.config.ts before writing any connection, watcher, or reaction so you match the real field names instead of guessing. Then, before writing config, explain to me in plain terms how Lobu will work for my case: how the connector collects my data incrementally (feeds run on a schedule and only pull what's new since the last run — no re-ingesting), how each item becomes an event that memory turns into the entities above, and how both the watcher and the chat read that memory. Keep it short.
+2. Scaffold it: check my Node is 22-24 (Lobu rejects 25+; help me switch if not), then run npx @lobu/cli@latest init with the name and the provider from above. Postgres is built in, so lobu run starts an embedded one. Don't ask me for a database unless I want an external Postgres (then I set DATABASE_URL). Read the AGENTS.md it writes (your guide to the config API: the define* helpers, connectors, auth, watchers, memory), and read examples/lobu-crm/lobu.config.ts before writing any connection, watcher, or reaction so you match the real field names instead of guessing. Then, before writing config, explain to me in plain terms how Lobu will work for my case: how the connector collects my data incrementally (feeds run on a schedule and only pull what's new since the last run, no re-ingesting), how each item becomes an event that memory turns into the entities above, and how both the watcher and the chat read that memory. Keep it short.
 
 3. Build it from my answers: edit lobu.config.ts plus any connector, reaction, and skill files it needs. Then tell me in one go every secret you'll need (API keys, OAuth client id/secret, bot tokens) and we'll add them to .env together as secret(...) placeholders. Never invent one, and for OAuth sources authorize the account in the admin UI rather than hand-crafting a token.
 
@@ -75,15 +75,14 @@ export function LandingPage(props: {
   const memorySchemaSnippet = uc?.memorySchema ?? snippets.memorySchema;
   const watcherSnippet = uc?.watcher ?? snippets.watcher;
   const agentConfigSnippet = uc?.agentConfig ?? snippets.agentConfig;
-  // null means the example for this use case has no reaction / skill — hide
+  // null means the example for this use case has no reaction / skill. Hide
   // that panel rather than substituting a foreign example's code.
   const reactionSnippet = uc ? uc.reaction : snippets.reaction;
   const skillSnippet = uc ? uc.skill : snippets.skill;
 
-  // The canonical homepage stays benefit-led: outcome artifact + a plain
-  // 3-step explanation, with the deep code living in the docs. The
-  // /for/<useCase> and /connect-from SEO pages keep the per-primitive code
-  // sections, which is their whole purpose.
+  // The canonical homepage stays benefit-led: hero, one concrete operating
+  // loop, then use cases. The /for/<useCase> and /connect-from SEO pages keep
+  // the per-primitive code sections, which is their whole purpose.
   const isHome = !props.defaultUseCaseId;
 
   return (
@@ -94,7 +93,6 @@ export function LandingPage(props: {
           <Container className="pt-10 pb-4 sm:pt-14">
             <ProactiveLoop />
           </Container>
-          <HowItWorks />
         </>
       ) : (
         <>
@@ -191,27 +189,24 @@ function Hero() {
     <section class="px-4 pb-12 pt-20 text-center sm:pb-16 sm:pt-28">
       <Container>
         <h1
-          class="hero-rise hero-rise-1 mx-auto max-w-[58rem] font-display text-[clamp(2.25rem,4.8vw,3.5rem)] font-bold leading-[1.06] tracking-[-0.028em]"
+          class="hero-rise hero-rise-1 mx-auto max-w-[78rem] font-display text-[clamp(2.25rem,4.15vw,3.25rem)] font-bold leading-[1.06] tracking-[-0.028em]"
           style={{ color: "var(--color-page-text)" }}
         >
-          Build{" "}
+          Build AI teammates that{" "}
           <em class="not-italic" style={{ color: "var(--color-tg-accent)" }}>
-            proactive
+            watch
           </em>{" "}
-          AI agents on a graph
-          <br />
-          that{" "}
+          and{" "}
           <em class="not-italic" style={{ color: "var(--color-tg-accent)" }}>
-            builds itself
+            act
           </em>
         </h1>
         <p
           class="hero-rise hero-rise-2 mx-auto mt-5 max-w-[44rem] text-[17px] leading-[1.55]"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          Connect your company's data in real time, plug in your model, and let
-          your agents act the moment something changes, as a bot, an API, or
-          another agent.
+          Lobu connects your tools, keeps shared memory current, and gives
+          agents safe ways to act across chat, APIs, CLI, and MCP.
         </p>
         <div class="hero-rise hero-rise-3 mt-8 flex flex-wrap items-center justify-center gap-3">
           <button
@@ -246,10 +241,9 @@ function Hero() {
           class="hero-rise hero-rise-4 mt-3.5 text-[13px]"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          Paste it into <span class="font-mono">claude code</span>,{" "}
+          Paste into <span class="font-mono">claude code</span>,{" "}
           <span class="font-mono">cursor</span>, or{" "}
-          <span class="font-mono">opencode</span>, and it scaffolds the project
-          for you.
+          <span class="font-mono">opencode</span> to scaffold a project.
         </p>
         <p
           class="hero-rise hero-rise-4 mt-2.5 flex flex-wrap items-center justify-center gap-2 text-[13px]"
@@ -331,23 +325,19 @@ function BrowseExamplesSection() {
     bySlug.get(slug)
   ).filter((ex): ex is ExampleEntry => Boolean(ex));
   return (
-    <section
-      class="border-t py-16"
-      style={{ borderColor: "var(--color-page-border)" }}
-    >
+    <section class="py-16">
       <Container>
         <div class="mb-10 text-center">
           <Eyebrow>Solutions</Eyebrow>
           <SectionHeading className="mx-auto">
-            Pick a use case to see it end to end.
+            See what agents can watch.
           </SectionHeading>
           <p
             class="mx-auto mt-3 max-w-[42rem] text-[14.5px]"
             style={{ color: "var(--color-page-text-muted)" }}
           >
-            Each page walks through the connectors, memory shape, and watchers
-            for one team, and ships as a working example you can{" "}
-            <code class="font-mono text-[13.5px]">lobu apply</code>.
+            Each example shows the sources, memory, and actions for one AI
+            teammate.
           </p>
         </div>
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
@@ -391,142 +381,6 @@ function BrowseExamplesSection() {
         </div>
       </Container>
     </section>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/*  How it works: the benefit-led, mostly-code-free homepage explainer.       */
-/*  Three plain steps + a single collapsed lobu.config.ts as the "it's real"  */
-/*  anchor. The per-primitive code deep-dives live in the docs (linked).      */
-/* -------------------------------------------------------------------------- */
-
-function HowItWorks() {
-  const steps: Array<{
-    n: string;
-    title: string;
-    body: preact.ComponentChildren;
-    link: { href: string; label: string };
-  }> = [
-    {
-      n: "1",
-      title: "Connect your data, in real time",
-      body: (
-        <>
-          Stream company data the moment it happens: 50+ built-in connectors,
-          any MCP server, or your own in TypeScript. On-device connectors even
-          capture context no cloud agent can see.
-        </>
-      ),
-      link: {
-        href: "/getting-started/connector-sdk/",
-        label: "Connecting data",
-      },
-    },
-    {
-      n: "2",
-      title: "It builds itself into memory",
-      body: (
-        <>
-          Watchers turn the raw stream into typed, queryable records, the moment
-          events arrive or on a schedule. You describe what to track in plain
-          language; there's no ETL to maintain.
-        </>
-      ),
-      link: { href: "/getting-started/memory/", label: "Watchers & memory" },
-    },
-    {
-      n: "3",
-      title: "Agents act where your team works",
-      body: (
-        <>
-          On the model you choose, agents respond and flag what matters the
-          moment memory changes, right where your team already works, as a Slack
-          bot, an API, or another agent.
-        </>
-      ),
-      link: { href: "/getting-started/", label: "Building agents" },
-    },
-  ];
-
-  return (
-    <Container className="py-16 sm:py-20">
-      <div class="mb-10 text-center">
-        <Eyebrow>How it works</Eyebrow>
-        <SectionHeading className="mx-auto">
-          From your data to an agent that acts.
-        </SectionHeading>
-        <p
-          class="mx-auto mt-3 max-w-[36rem] text-[15px]"
-          style={{ color: "var(--color-page-text-muted)" }}
-        >
-          Three steps. No data pipeline to wire up, no glue code to maintain.
-        </p>
-      </div>
-
-      <div class="grid gap-6 md:grid-cols-3">
-        {steps.map((step) => (
-          <div
-            key={step.n}
-            class="flex min-w-0 flex-col rounded-lg border p-6"
-            style={{
-              borderColor: "var(--color-page-border)",
-              backgroundColor: "var(--color-page-surface)",
-            }}
-          >
-            <div
-              class="mb-4 flex h-8 w-8 items-center justify-center rounded-full font-mono text-[14px] font-bold"
-              style={{
-                backgroundColor: "var(--color-page-bg)",
-                border: "1px solid var(--color-tg-accent)",
-                color: "var(--color-tg-accent)",
-              }}
-            >
-              {step.n}
-            </div>
-            <h3
-              class="mb-2 text-[1.05rem] font-bold tracking-tight"
-              style={{ color: "var(--color-page-text)" }}
-            >
-              {step.title}
-            </h3>
-            <p
-              class="mb-4 flex-1 text-[14.5px] leading-[1.55]"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              {step.body}
-            </p>
-            <ProductLink href={step.link.href}>{step.link.label}</ProductLink>
-          </div>
-        ))}
-      </div>
-
-      <div class="mx-auto mt-12 max-w-[46rem]">
-        <p
-          class="mb-3 text-center text-[14.5px]"
-          style={{ color: "var(--color-page-text-muted)" }}
-        >
-          It's all one typed file.{" "}
-          <code class="font-mono text-[13px]">lobu apply</code> deploys it.
-        </p>
-        <CodeBlock
-          badge="lobu.config.ts"
-          snippet={snippets.agentConfig}
-          collapsible
-        />
-        <div class="text-center">
-          <ExampleFooterLink slug="sales" />
-        </div>
-        <p
-          class="mt-6 text-center text-[13.5px]"
-          style={{ color: "var(--color-page-text-muted)" }}
-        >
-          Curious how Lobu stacks up against other agent runtimes?{" "}
-          <ProductLink href="/getting-started/comparison/">
-            See the comparison
-          </ProductLink>
-        </p>
-      </div>
-    </Container>
   );
 }
 
@@ -668,8 +522,7 @@ function UseCaseShowcaseSection({
     {
       id: "config",
       eyebrow: "lobu.config.ts",
-      blurb:
-        "One typed file declares the agent and wires entities, watchers, connectors, and skills.",
+      blurb: "Declare the agent, sources, memory, and skills in one file.",
       primary: {
         snippet: agentConfig,
         badge: "lobu.config.ts",
@@ -681,8 +534,7 @@ function UseCaseShowcaseSection({
     {
       id: "connectors",
       eyebrow: "Connectors",
-      blurb:
-        "Built-in, MCP, or a custom *.connector.ts: one typed event stream from every source.",
+      blurb: "Use built-ins, MCP, webhooks, or custom connector code.",
       primary: {
         snippet: connector,
         badge: "typescript",
@@ -695,8 +547,7 @@ function UseCaseShowcaseSection({
     {
       id: "memory",
       eyebrow: "Memory",
-      blurb:
-        "Declare entity types in TypeScript. Lobu stores them as append-only events with full audit.",
+      blurb: "Shared records your team can inspect, edit, and reuse.",
       primary: {
         snippet: memorySchema,
         badge: "entities",
@@ -708,8 +559,7 @@ function UseCaseShowcaseSection({
     {
       id: "watchers",
       eyebrow: "Watchers",
-      blurb:
-        "Prompt + extraction schema. The LLM runs, validates, and writes typed memory; no ETL code.",
+      blurb: "Tell Lobu what to watch. Agents keep memory current.",
       primary: {
         snippet: watcher,
         badge: "reactive + dreaming",
@@ -731,8 +581,7 @@ function UseCaseShowcaseSection({
     tabs.push({
       id: "skills",
       eyebrow: "Skills",
-      blurb:
-        "A SKILL.md folder: instructions, TS tools, Nix packages, and per-domain egress policy.",
+      blurb: "Instructions, tools, packages, and network policy in one folder.",
       primary: { snippet: skill, badge: "skill", maxHeight: "32rem" },
       docHref: "/getting-started/",
       docLabel: "Skills guide",
@@ -746,14 +595,12 @@ function UseCaseShowcaseSection({
     <Container className="py-16 sm:py-20">
       <div class="mb-8 text-center">
         <Eyebrow>What ships</Eyebrow>
-        <SectionHeading className="mx-auto">
-          One typed file wires it together.
-        </SectionHeading>
+        <SectionHeading className="mx-auto">See what ships.</SectionHeading>
         <p
           class="mx-auto mt-3 max-w-[42rem] text-[15px]"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          Pick a piece to see the code for this use case. Click again to hide.
+          Pick a piece to inspect the code. Click again to hide.
         </p>
       </div>
 
@@ -842,111 +689,21 @@ function RunAnywhereSection() {
     eyebrow: string;
     title: string;
     body: preact.ComponentChildren;
-    code: preact.ComponentChildren;
   }> = [
     {
       eyebrow: "Local",
-      title: "Embedded, single process.",
-      body: (
-        <>
-          Gateway, workers, memory, embeddings, all in one Node process.
-          Postgres is the only external.
-        </>
-      ),
-      code: (
-        <>
-          <span style={{ color: "var(--color-landing-code-comment)" }}>$</span>{" "}
-          lobu run{"\n"}
-          <span style={{ color: "var(--color-landing-code-comment)" }}>→</span>{" "}
-          gateway{"   "}
-          <span style={{ color: "var(--color-landing-code-key)" }}>:8787</span>
-          {"\n"}
-          <span style={{ color: "var(--color-landing-code-comment)" }}>→</span>{" "}
-          worker{"    "}
-          <span style={{ color: "var(--color-landing-code-string)" }}>
-            pid=&lt;n&gt;
-          </span>
-          {"\n"}
-          <span style={{ color: "var(--color-landing-code-comment)" }}>→</span>{" "}
-          memory{"    "}
-          <span style={{ color: "var(--color-landing-code-string)" }}>
-            N entities
-          </span>
-          {"\n"}
-          <span style={{ color: "var(--color-landing-code-comment)" }}>→</span>{" "}
-          watchers{"  "}
-          <span style={{ color: "var(--color-landing-code-string)" }}>
-            N armed
-          </span>
-        </>
-      ),
+      title: "Run on your laptop.",
+      body: "Boot the gateway, workers, memory, and embeddings with one command.",
     },
     {
       eyebrow: "Self-host",
-      title: "Docker. Helm. Your cloud.",
-      body: (
-        <>
-          Helm chart and Dockerfiles in the repo (
-          <code class="font-mono text-[13px]">charts/lobu/</code>,{" "}
-          <code class="font-mono text-[13px]">docker/app/</code>). Run on GCP,
-          AWS, Fly, Render, or bare metal.
-        </>
-      ),
-      code: (
-        <>
-          <span style={{ color: "var(--color-landing-code-comment)" }}>
-            # Kubernetes
-          </span>
-          {"\n"}
-          <span style={{ color: "var(--color-landing-code-comment)" }}>$</span>{" "}
-          helm install lobu ./charts/lobu{"\n\n"}
-          <span style={{ color: "var(--color-landing-code-comment)" }}>
-            # Docker
-          </span>
-          {"\n"}
-          <span style={{ color: "var(--color-landing-code-comment)" }}>$</span>{" "}
-          docker build -f docker/app/Dockerfile .
-        </>
-      ),
+      title: "Run in your cloud.",
+      body: "Deploy with Docker or Helm when data and controls need to stay with you.",
     },
     {
       eyebrow: "Lobu Cloud",
-      title: "Managed runtime.",
-      body: (
-        <>
-          Same code, run by Lobu. Per-user isolation, secret proxy, automatic
-          upgrades.
-        </>
-      ),
-      code: (
-        <>
-          <span style={{ color: "var(--color-landing-code-comment)" }}>$</span>{" "}
-          lobu apply{"\n"}
-          <span style={{ color: "var(--color-landing-code-comment)" }}>→</span>{" "}
-          org{"      "}
-          <span style={{ color: "var(--color-landing-code-string)" }}>
-            &lt;your-org&gt;
-          </span>
-          {"\n"}
-          <span style={{ color: "var(--color-landing-code-comment)" }}>→</span>{" "}
-          region{"   "}
-          <span style={{ color: "var(--color-landing-code-string)" }}>
-            &lt;your-region&gt;
-          </span>
-          {"\n"}
-          <span style={{ color: "var(--color-landing-code-comment)" }}>→</span>{" "}
-          agents{"   "}
-          <span style={{ color: "var(--color-landing-code-string)" }}>
-            N deployed
-          </span>
-          {"\n"}
-          <span style={{ color: "var(--color-landing-code-comment)" }}>→</span>{" "}
-          gateway{"  "}
-          <span style={{ color: "var(--color-landing-code-string)" }}>
-            &lt;your-org&gt;.lobu.run
-          </span>
-        </>
-      ),
+      title: "Let Lobu run it.",
+      body: "Use the same project with managed isolation, secrets, and upgrades.",
     },
   ];
   return (
@@ -954,18 +711,8 @@ function RunAnywhereSection() {
       <div class="mb-10 text-center">
         <Eyebrow>Run anywhere</Eyebrow>
         <SectionHeading className="mx-auto">
-          Local, your cloud, or Lobu Cloud.
+          Local, self-hosted, or managed.
         </SectionHeading>
-        <p
-          class="mx-auto mt-3 max-w-[34rem] text-[15px]"
-          style={{ color: "var(--color-page-text-muted)" }}
-        >
-          Same <code class="font-mono text-[13px]">lobu.config.ts</code> +{" "}
-          <code class="font-mono text-[13px]">*.connector.ts</code> +{" "}
-          <code class="font-mono text-[13px]">agents/</code>. One command to
-          boot embedded; Docker + Helm for self-hosting; Lobu Cloud when you
-          don't want to run it yourself.
-        </p>
       </div>
       <div class="grid gap-6 md:grid-cols-3">
         {cards.map((card) => (
@@ -985,20 +732,11 @@ function RunAnywhereSection() {
               {card.title}
             </h3>
             <p
-              class="mb-4 text-[14.5px] leading-[1.55]"
+              class="text-[14.5px] leading-[1.55]"
               style={{ color: "var(--color-page-text-muted)" }}
             >
               {card.body}
             </p>
-            <pre
-              class="overflow-x-auto rounded-lg px-3 py-2.5 font-mono text-[12.5px] leading-[1.65]"
-              style={{
-                backgroundColor: "var(--color-landing-code-bg)",
-                color: "var(--color-landing-code-text)",
-              }}
-            >
-              {card.code}
-            </pre>
           </div>
         ))}
       </div>

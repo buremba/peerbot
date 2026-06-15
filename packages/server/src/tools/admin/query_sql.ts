@@ -139,7 +139,7 @@ function errorResult(message: string, startTime: number): QuerySqlResult {
 
 export const querySql = withValidatedArgs('query_sql', QuerySqlSchema, querySqlImpl);
 
-async function querySqlImpl(
+export async function querySqlImpl(
   args: QuerySqlArgs,
   _env: unknown,
   ctx: ToolContext

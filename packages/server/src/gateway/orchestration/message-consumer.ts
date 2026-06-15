@@ -1,4 +1,5 @@
 import {
+  ConversationOwnedElsewhereError,
   createChildSpan,
   createLogger,
   ErrorCode,
@@ -54,10 +55,14 @@ export class MessageConsumer {
   constructor(
     config: OrchestratorConfig,
     deploymentManager: BaseDeploymentManager,
+    // Test seam: the production path always uses the real Postgres-backed
+    // RunsQueue. Tests inject a fake so `handleMessage` can be driven without a
+    // database. Not a configuration knob — no caller passes this outside tests.
+    queue: IMessageQueue = new RunsQueue(),
   ) {
     this.config = config;
     this.deploymentManager = deploymentManager;
-    this.queue = new RunsQueue();
+    this.queue = queue;
   }
 
   /**
@@ -401,6 +406,26 @@ export class MessageConsumer {
         traceId,
         childTraceparent
       ).catch((bgError) => {
+        // Cross-pod handled-elsewhere signal: another replica won the
+        // per-conversation lock and is running this turn to completion. This is
+        // NOT a failure on this pod — drop silently. No Sentry capture, no
+        // Critical log, no `trackFailedDeployment` (which would surface a
+        // spurious "Worker startup failed" to the user and, via
+        // `failTurnIfPending`, race the winning pod's reply to terminalize the
+        // shared turn marker). The winner discharges the marker on its reply.
+        if (bgError instanceof ConversationOwnedElsewhereError) {
+          logger.info(
+            {
+              traceId,
+              deploymentName,
+              userId: data.userId,
+              conversationId: effectiveConversationId,
+            },
+            "Conversation owned by another replica — dropping this pod's spawn (handled elsewhere)"
+          );
+          return;
+        }
+
         // Capture error for monitoring and alerting
         Sentry.captureException(bgError, {
           tags: {
@@ -662,6 +687,12 @@ export class MessageConsumer {
         baseDelay: 2000,
         strategy: "linear",
         jitter: true,
+        // Don't burn retries (~14s) on the cross-pod handled-elsewhere signal:
+        // the winning replica holds the session-level advisory lock for the
+        // whole worker subprocess lifetime, so a retry here can never win.
+        // Abort immediately and let the `.catch` above drop silently.
+        shouldRetry: (error) =>
+          !(error instanceof ConversationOwnedElsewhereError),
         onRetry: (attempt, error) => {
           logger.warn(
             { traceId, deploymentName, attempt, maxAttempts: 3 },

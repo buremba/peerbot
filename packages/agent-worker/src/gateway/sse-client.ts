@@ -15,6 +15,7 @@ import {
 } from "@lobu/core";
 import { z } from "zod";
 import type { WorkerConfig, WorkerExecutor } from "../core/types";
+import { createGatewayClient } from "../shared/gateway-client";
 import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
 import { OpenClawWorker } from "../openclaw/worker";
 import { invalidateSessionContextCache } from "../openclaw/session-context";
@@ -283,41 +284,28 @@ export class GatewayClient {
   }
 
   /**
-   * Send a quick delivery receipt to the gateway confirming job was received.
-   * Fire-and-forget — don't block job processing on the receipt send.
+   * Fire-and-forget POST to `/worker/response` confirming inbound worker
+   * activity. Backs both the per-job delivery receipt (so the gateway knows
+   * the job wasn't lost to a stale SSE connection) and the heartbeat ACK (so
+   * stale cleanup keys off verified inbound activity, not outbound SSE
+   * writes). Never blocks job processing on the send.
    */
-  private sendDeliveryReceipt(jobId: string): void {
-    const url = `${this.dispatcherUrl}/worker/response`;
-    fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.workerToken}`,
-      },
-      body: JSON.stringify({ jobId, received: true }),
-      signal: AbortSignal.timeout(10_000),
-    }).catch((err) => {
-      logger.warn(`Failed to send delivery receipt for job ${jobId}:`, err);
-    });
-  }
-
-  /**
-   * Send a heartbeat ACK back to the gateway so stale cleanup is based on
-   * verified inbound worker activity rather than outbound SSE writes.
-   */
-  private sendHeartbeatAck(): void {
-    const url = `${this.dispatcherUrl}/worker/response`;
-    fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.workerToken}`,
-      },
-      body: JSON.stringify({ received: true, heartbeat: true }),
-      signal: AbortSignal.timeout(10_000),
-    }).catch((err) => {
-      logger.warn("Failed to send heartbeat ACK:", err);
-    });
+  private postReceipt(
+    body: Record<string, unknown>,
+    failureContext: string
+  ): void {
+    createGatewayClient({
+      baseUrl: this.dispatcherUrl,
+      token: this.workerToken,
+    })
+      .request("/worker/response", {
+        method: "POST",
+        body: JSON.stringify(body),
+        timeoutMs: 10_000,
+      })
+      .catch((err) => {
+        logger.warn(`Failed to send ${failureContext}:`, err);
+      });
   }
 
   private reconnectsExhausted = false;
@@ -387,7 +375,7 @@ export class GatewayClient {
 
       if (eventType === "ping") {
         logger.debug("Received heartbeat ping from dispatcher");
-        this.sendHeartbeatAck();
+        this.postReceipt({ received: true, heartbeat: true }, "heartbeat ACK");
         return;
       }
 
@@ -437,7 +425,10 @@ export class GatewayClient {
           // not inside the validated payload.
           const jobId = parsedData.jobId as string | undefined;
           if (jobId) {
-            this.sendDeliveryReceipt(jobId);
+            this.postReceipt(
+              { jobId, received: true },
+              `delivery receipt for job ${jobId}`
+            );
           }
 
           // Zod validates structure but passthrough allows extra fields

@@ -1,3 +1,5 @@
+import { createGatewayClient } from "./gateway-client";
+
 interface AudioProviderSuggestions {
   providerIds: string[];
   providerDisplayList: string;
@@ -109,16 +111,15 @@ export async function fetchAudioProviderSuggestions(params: {
   workerToken: string;
   fetchFn?: typeof fetch;
 }): Promise<AudioProviderSuggestions> {
-  const fetchFn = params.fetchFn || fetch;
   try {
-    const response = await fetchFn(
-      `${params.gatewayUrl}/internal/audio/capabilities`,
-      {
-        headers: { Authorization: `Bearer ${params.workerToken}` },
-        // Capability probing is best-effort; never block the agent turn on it.
-        signal: AbortSignal.timeout(15_000),
-      }
-    );
+    const response = await createGatewayClient({
+      baseUrl: params.gatewayUrl,
+      token: params.workerToken,
+      fetchFn: params.fetchFn,
+    }).request("/internal/audio/capabilities", {
+      // Capability probing is best-effort; never block the agent turn on it.
+      timeoutMs: 15_000,
+    });
     if (!response.ok) {
       return getFallbackSuggestions(null);
     }

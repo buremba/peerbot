@@ -6,6 +6,7 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { createLogger } from "@lobu/core";
+import { createGatewayClient } from "../shared/gateway-client";
 
 const logger = createLogger("transcript-snapshot");
 
@@ -32,11 +33,12 @@ interface TranscriptSnapshotOptions {
 export async function hydrateFromSnapshot(
   opts: TranscriptSnapshotOptions
 ): Promise<boolean> {
-  const url = `${opts.gatewayUrl}/worker/transcript/snapshot`;
-  const res = await fetch(url, {
+  const res = await createGatewayClient({
+    baseUrl: opts.gatewayUrl,
+    token: opts.workerToken,
+  }).request("/worker/transcript/snapshot", {
     method: "GET",
-    headers: { Authorization: `Bearer ${opts.workerToken}` },
-    signal: AbortSignal.timeout(30_000),
+    timeoutMs: 30_000,
   });
 
   // 404 = no completed snapshot for this (org, agent, conv). First turn or
@@ -132,14 +134,12 @@ export async function writeSnapshot(
     return;
   }
 
-  const url = `${opts.gatewayUrl}/worker/transcript/snapshot`;
   try {
-    const res = await fetch(url, {
+    const res = await createGatewayClient({
+      baseUrl: opts.gatewayUrl,
+      token: opts.workerToken,
+    }).request("/worker/transcript/snapshot", {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${opts.workerToken}`,
-        "Content-Type": "application/json",
-      },
       body: JSON.stringify({
         terminalStatus: opts.terminalStatus,
         snapshotJsonl: body,
@@ -147,7 +147,7 @@ export async function writeSnapshot(
       }),
       // Snapshots can be large (633 KB max measured); 60s timeout covers
       // slow links + PG TOAST writes.
-      signal: AbortSignal.timeout(60_000),
+      timeoutMs: 60_000,
     });
     if (!res.ok) {
       // 409 = UNIQUE (org, agent, conv, run_id) collision. Means another
@@ -187,12 +187,13 @@ export async function writeSnapshot(
 export async function clearSnapshots(
   opts: Pick<TranscriptSnapshotOptions, "gatewayUrl" | "workerToken">
 ): Promise<void> {
-  const url = `${opts.gatewayUrl}/worker/transcript/snapshot`;
   try {
-    const res = await fetch(url, {
+    const res = await createGatewayClient({
+      baseUrl: opts.gatewayUrl,
+      token: opts.workerToken,
+    }).request("/worker/transcript/snapshot", {
       method: "DELETE",
-      headers: { Authorization: `Bearer ${opts.workerToken}` },
-      signal: AbortSignal.timeout(30_000),
+      timeoutMs: 30_000,
     });
     if (!res.ok) {
       logger.warn(

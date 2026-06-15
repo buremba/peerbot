@@ -5,6 +5,7 @@ import { createLogger } from "@lobu/core";
 import FormData from "form-data";
 import { invalidateSessionContextCache } from "../openclaw/session-context";
 import { fetchAudioProviderSuggestions } from "./audio-provider-suggestions";
+import { createGatewayClient } from "./gateway-client";
 
 const logger = createLogger("shared-tools");
 
@@ -58,22 +59,18 @@ async function gatewayFetch<T>(
   errorPrefix: string
 ): Promise<{ data?: T; error?: TextResult }> {
   const { method, body, headers: extraHeaders } = options;
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${gw.workerToken}`,
-    ...extraHeaders,
-  };
-  if (body) {
-    headers["Content-Type"] = "application/json";
-  }
 
   let response: Response;
   try {
-    response = await fetch(`${gw.gatewayUrl}${urlPath}`, {
+    response = await createGatewayClient({
+      baseUrl: gw.gatewayUrl,
+      token: gw.workerToken,
+    }).request(urlPath, {
       method,
-      headers,
       body,
+      headers: extraHeaders,
       // A stalled gateway must not hang the agent turn indefinitely.
-      signal: AbortSignal.timeout(60_000),
+      timeoutMs: 60_000,
     });
   } catch (err) {
     if (err instanceof Error && err.name === "TimeoutError") {

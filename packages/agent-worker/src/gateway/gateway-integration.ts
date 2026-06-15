@@ -9,6 +9,7 @@ import {
   type WorkerTransport,
   type WorkerTransportConfig,
 } from "@lobu/core";
+import { createGatewayClient } from "../shared/gateway-client";
 import type { ResponseData } from "./types";
 
 const logger = createLogger("http-worker-transport");
@@ -264,6 +265,10 @@ export class HttpWorkerTransport implements WorkerTransport {
 
   private async sendResponse(data: ResponseData): Promise<void> {
     const responseUrl = `${this.gatewayUrl}/worker/response`;
+    const gateway = createGatewayClient({
+      baseUrl: this.gatewayUrl,
+      token: this.workerToken,
+    });
     const basePayload = {
       ...data,
       ...(this.platform && !data.platform ? { platform: this.platform } : {}),
@@ -286,14 +291,10 @@ export class HttpWorkerTransport implements WorkerTransport {
           }${payload.statusUpdate ? " statusUpdate" : ""}${payload.customEvent ? ` customEvent=${payload.customEvent.name}` : ""}`
         );
 
-        const response = await fetch(responseUrl, {
+        const response = await gateway.request("/worker/response", {
           method: "POST",
-          headers: {
-            Authorization: `Bearer ${this.workerToken}`,
-            "Content-Type": "application/json",
-          },
           body: JSON.stringify(payload),
-          signal: AbortSignal.timeout(30_000),
+          timeoutMs: 30_000,
         });
 
         if (!response.ok) {

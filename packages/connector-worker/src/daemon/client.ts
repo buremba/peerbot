@@ -264,7 +264,7 @@ export class WorkerClient implements ExecutorClient {
     return this.authToken ? { Authorization: `Bearer ${this.authToken}` } : {};
   }
 
-  private async post(path: string, body: Record<string, unknown>): Promise<Response> {
+  private async post<B = unknown>(path: string, body: B): Promise<Response> {
     const response = await fetch(`${this.apiUrl}${path}`, {
       method: 'POST',
       headers: {
@@ -280,12 +280,12 @@ export class WorkerClient implements ExecutorClient {
     return response;
   }
 
-  private async requestJson<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  private async requestJson<T, B = unknown>(path: string, body: B): Promise<T> {
     const response = await this.post(path, body);
     return response.json() as Promise<T>;
   }
 
-  private async requestVoid(path: string, body: Record<string, unknown>): Promise<void> {
+  private async requestVoid<B = unknown>(path: string, body: B): Promise<void> {
     await this.post(path, body);
   }
 
@@ -322,14 +322,14 @@ export class WorkerClient implements ExecutorClient {
    * Stream content batch to backend
    */
   async stream(batch: StreamBatch): Promise<void> {
-    await this.requestVoid('/api/workers/stream', batch as unknown as Record<string, unknown>);
+    await this.requestVoid('/api/workers/stream', batch);
   }
 
   /**
    * Report sync run completion
    */
   async complete(req: CompleteRequest): Promise<void> {
-    await this.requestVoid('/api/workers/complete', req as unknown as Record<string, unknown>);
+    await this.requestVoid('/api/workers/complete', req);
   }
 
   /**
@@ -338,7 +338,7 @@ export class WorkerClient implements ExecutorClient {
   async completeAction(req: CompleteActionRequest): Promise<void> {
     await this.requestVoid(
       '/api/workers/complete-action',
-      req as unknown as Record<string, unknown>
+      req
     );
   }
 
@@ -358,7 +358,7 @@ export class WorkerClient implements ExecutorClient {
   async completeEmbeddings(req: CompleteEmbeddingsRequest): Promise<void> {
     await this.requestVoid(
       '/api/workers/complete-embeddings',
-      req as unknown as Record<string, unknown>
+      req
     );
   }
 
@@ -368,7 +368,7 @@ export class WorkerClient implements ExecutorClient {
   async emitAuthArtifact(req: EmitAuthArtifactRequest): Promise<void> {
     await this.requestVoid(
       '/api/workers/emit-auth-artifact',
-      req as unknown as Record<string, unknown>
+      req
     );
   }
 
@@ -378,7 +378,7 @@ export class WorkerClient implements ExecutorClient {
   async pollAuthSignal(req: PollAuthSignalRequest): Promise<PollAuthSignalResponse> {
     return this.requestJson<PollAuthSignalResponse>(
       '/api/workers/poll-auth-signal',
-      req as unknown as Record<string, unknown>
+      req
     );
   }
 
@@ -386,7 +386,7 @@ export class WorkerClient implements ExecutorClient {
    * Report auth run completion — writes credentials + metadata to auth_profiles.
    */
   async completeAuth(req: CompleteAuthRequest): Promise<void> {
-    await this.requestVoid('/api/workers/complete-auth', req as unknown as Record<string, unknown>);
+    await this.requestVoid('/api/workers/complete-auth', req);
   }
 
   /**
@@ -397,7 +397,7 @@ export class WorkerClient implements ExecutorClient {
   async dispatchChromeAction(req: DispatchChromeActionRequest): Promise<Record<string, unknown>> {
     const result = await this.requestJson<DispatchChromeActionResponse>(
       '/api/workers/dispatch-chrome-action',
-      req as unknown as Record<string, unknown>
+      req
     );
     if (result.status === 'completed') {
       return result.output ?? {};

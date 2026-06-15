@@ -578,8 +578,8 @@ export interface QueryResult {
 // =============================================================================
 
 // The contributed shapes (EntityTypeContribution, ReflectedMeasure) are the
-// persisted metric contract and live in @lobu/core (imported above). Re-exported
-// here for connector authors.
+// persisted metric contract and live in ./metrics.ts (imported above).
+// Re-exported here for connector authors.
 export type { EntityTypeContribution, ReflectedMeasure };
 
 /**

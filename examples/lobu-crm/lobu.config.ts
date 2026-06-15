@@ -25,7 +25,7 @@ const crm = defineAgent({
   providers: [
     {
       id: "z-ai",
-      model: "z-ai/glm-4.7",
+      model: "z-ai/glm-5.2",
       key: secret("Z_AI_API_KEY"),
     },
   ],

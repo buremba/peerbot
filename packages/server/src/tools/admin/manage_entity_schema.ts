@@ -10,6 +10,7 @@
 
 import { type Static, Type } from '@sinclair/typebox';
 import type { AutoCreateWhenRule } from '@lobu/connector-sdk';
+import { validateEntityMetrics } from '@lobu/connector-sdk';
 import { type DbClient, getDb } from '../../db/client';
 import { measureColumns } from '../../utils/infer-measures';
 import type { Env } from '../../index';
@@ -344,6 +345,20 @@ function invalidSchema(message: string): ToolUserError {
   return new ToolUserError(`[invalid_schema] ${message}`, 422);
 }
 
+/**
+ * Authoritative server-side validation of a declared metrics_config. Catches
+ * the referential/shape errors the CLI also checks (a measure naming a missing
+ * eventSet/segment, a non-`count` measure without `expr`), so a non-CLI writer
+ * (SDK / API) cannot persist a broken metric contract. No-op for null/omitted.
+ */
+function assertValidMetricsConfig(metricsConfig: unknown): void {
+  if (metricsConfig == null) return;
+  const errors = validateEntityMetrics(metricsConfig);
+  if (errors.length > 0) {
+    throw invalidSchema(`invalid metrics_config: ${errors.join('; ')}`);
+  }
+}
+
 function validateEntityMetadataSchemaDisplayConfig(
   metadataSchema: Record<string, unknown> | undefined
 ): void {
@@ -583,6 +598,7 @@ async function etHandleCreate(
 
   // metadata_schema is stored as the author sent it — measure/dimension roles for
   // a derived type are classified ON READ (see etHandleGet), never persisted.
+  assertValidMetricsConfig(args.metrics_config);
   const metadataSchema = args.metadata_schema ? sql.json(args.metadata_schema) : null;
   const eventKinds = args.event_kinds ? sql.json(args.event_kinds) : null;
   const metricsConfig = args.metrics_config ? sql.json(args.metrics_config) : null;
@@ -654,6 +670,7 @@ async function etHandleUpdate(
   if (args.metadata_schema !== undefined) {
     validateEntityMetadataSchemaDisplayConfig(args.metadata_schema);
   }
+  assertValidMetricsConfig(args.metrics_config);
   assertValidBacking(args.backing);
   // Converting a populated stored type to a derived (view-backed) type would
   // orphan its existing rows (the view ignores them). Reject it.

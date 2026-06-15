@@ -272,6 +272,24 @@ describe("mapProjectToDesiredState", () => {
     expect(byKey.person?.metrics).toBeUndefined();
   });
 
+  test("rejects invalid metrics at load time (measure naming a missing eventSet)", () => {
+    const bad = defineEntityType({
+      key: "company",
+      name: "Company",
+      measures: {
+        spend: {
+          eventSet: "charges", // not declared
+          agg: "sum",
+          expr: "x",
+          description: "Spend.",
+        },
+      },
+    });
+    expect(() =>
+      mapProjectToDesiredState(defineConfig({ agents: [], entities: [bad] }))
+    ).toThrow(/invalid metrics.*eventSet "charges"/i);
+  });
+
   test("rejects an empty backing.sql at load time (before any remote mutation)", () => {
     const bad = defineEntityType({
       key: "bad",

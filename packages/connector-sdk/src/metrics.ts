@@ -128,6 +128,79 @@ export interface EntityMetrics {
   segments?: Record<string, Segment>;
 }
 
+const AGGS = new Set(['sum', 'count', 'min', 'max', 'count_distinct']);
+
+/**
+ * Validate a declared {@link EntityMetrics} contract. Returns a list of human
+ * error messages (empty ⇒ valid). Defensive about shape so it can validate
+ * untyped JSON at the server boundary as well as typed config at apply time.
+ *
+ * Catches what TypeScript can't: name references (a measure naming a missing
+ * eventSet/segment still typechecks — they're strings) and the
+ * `expr`-required-except-`count` rule. Pure; no Typebox-schema duplication of
+ * the structural guarantees authoring already gets from the types.
+ */
+export function validateEntityMetrics(metrics: unknown): string[] {
+  const errors: string[] = [];
+  if (metrics == null) return errors;
+  if (typeof metrics !== 'object' || Array.isArray(metrics)) {
+    return ['metrics must be an object'];
+  }
+  const m = metrics as Record<string, unknown>;
+  const asRecord = (v: unknown): Record<string, unknown> =>
+    v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+
+  const eventSets = asRecord(m.eventSets);
+  const segments = asRecord(m.segments);
+  const measures = asRecord(m.measures);
+  const dimensions = asRecord(m.dimensions);
+  const eventSetNames = new Set(Object.keys(eventSets));
+  const segmentNames = new Set(Object.keys(segments));
+
+  for (const [name, raw] of Object.entries(measures)) {
+    const meas = asRecord(raw);
+    const agg = meas.agg;
+    if (typeof agg !== 'string' || !AGGS.has(agg)) {
+      errors.push(`measure "${name}": invalid agg "${String(agg)}"`);
+    }
+    if (agg !== 'count' && (typeof meas.expr !== 'string' || meas.expr.trim() === '')) {
+      errors.push(`measure "${name}": expr is required for agg "${String(agg)}"`);
+    }
+    if (typeof meas.eventSet !== 'string' || !eventSetNames.has(meas.eventSet)) {
+      errors.push(
+        `measure "${name}": eventSet "${String(meas.eventSet)}" is not a declared eventSet`,
+      );
+    }
+    if (typeof meas.description !== 'string' || meas.description.trim() === '') {
+      errors.push(`measure "${name}": description is required`);
+    }
+    const segs = meas.segments;
+    if (segs !== undefined) {
+      if (!Array.isArray(segs)) {
+        errors.push(`measure "${name}": segments must be an array`);
+      } else {
+        for (const s of segs) {
+          if (typeof s !== 'string' || !segmentNames.has(s)) {
+            errors.push(`measure "${name}": segment "${String(s)}" is not a declared segment`);
+          }
+        }
+      }
+    }
+  }
+
+  for (const [name, raw] of Object.entries(dimensions)) {
+    const dim = asRecord(raw);
+    if (typeof dim.expr !== 'string' || dim.expr.trim() === '') {
+      errors.push(`dimension "${name}": expr is required`);
+    }
+    if (typeof dim.description !== 'string' || dim.description.trim() === '') {
+      errors.push(`dimension "${name}": description is required`);
+    }
+  }
+
+  return errors;
+}
+
 // ---------------------------------------------------------------------------
 // Federation (warehouse metrics contributed by a connector via reflectMetrics)
 // ---------------------------------------------------------------------------

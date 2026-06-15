@@ -17,7 +17,7 @@ const SAFE_LINK_BUTTON_SCHEMES = new Set(["http:", "https:"]);
  * client (e.g. `javascript:`, `data:`, `vbscript:`, `file:`) when posted
  * as a link button. We only accept normal web URLs.
  */
-function assertSafeLinkButtonUrl(url: string): void {
+export function assertSafeLinkButtonUrl(url: string): void {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -49,7 +49,7 @@ function assertSafeLinkButtonUrl(url: string): void {
  * there is no bridge to leak through. Requiring a connectionId here is what
  * silently broke ask_user/tool-approval for every API/SPA session (#847).
  */
-function assertRoutableInteraction(
+export function assertRoutableInteraction(
   connectionId: string | undefined,
   platform: string,
   kind: string

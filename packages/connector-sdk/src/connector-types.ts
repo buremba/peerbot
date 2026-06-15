@@ -5,6 +5,11 @@
  * Defines the contract between connectors, the runtime, and the platform.
  */
 
+// Metric-reflection contract shapes live in @lobu/core (the persisted contract,
+// shared with CLI authoring + server compile/validate). Imported for local use
+// (ReflectResult) and re-exported below for connector authors.
+import type { EntityTypeContribution, ReflectedMeasure } from '@lobu/core';
+
 // =============================================================================
 // Connector Definition
 // =============================================================================
@@ -572,40 +577,10 @@ export interface QueryResult {
 // Metric reflection (warehouse federation)
 // =============================================================================
 
-/**
- * Governance descriptor for a reflected measure column. The warehouse's own
- * semantic view already aggregates the column, so this carries DECLARATION
- * (which output columns are measures) + governance, not an aggregation.
- */
-export interface ReflectedMeasure {
-  description: string;
-  tier?: 'gold' | 'silver' | 'bronze';
-  owner?: string;
-  /** Native grain, e.g. "order" vs "order_line" — a drift signal. */
-  grain: string;
-  /** Dimensions safe to group WITH this measure (else fan-out double-counting). */
-  safeDimensions?: string[];
-}
-
-/**
- * An entity type a connector contributes by FEDERATING a warehouse's own
- * governed metric (Snowflake `SEMANTIC_VIEW()` / dbt). The `backing.sql` runs
- * LIVE against the connection via {@link ConnectorRuntime.query}; Lobu stores a
- * thin pointer + governance and never re-authors the metric.
- */
-export interface EntityTypeContribution {
-  key: string;
-  name?: string;
-  description?: string;
-  /** Read-only SQL over the warehouse, run live through this connection slug. */
-  backing: { sql: string; connection: string };
-  /** Native refresh cadence of the underlying view — a drift signal. */
-  freshness?: string;
-  /** DECLARES which output columns are measures, plus their governance. */
-  measures: Record<string, ReflectedMeasure>;
-  /** Output columns that are dimensions, plus their descriptions. */
-  dimensions?: Record<string, { description: string }>;
-}
+// The contributed shapes (EntityTypeContribution, ReflectedMeasure) are the
+// persisted metric contract and live in @lobu/core (imported above). Re-exported
+// here for connector authors.
+export type { EntityTypeContribution, ReflectedMeasure };
 
 /**
  * Context for {@link ConnectorRuntime.reflectMetrics} — enough to introspect the

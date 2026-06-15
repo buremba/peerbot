@@ -114,6 +114,7 @@ beforeAll(async () => {
   validToken = generateWorkerToken("user1", "conv1", "deploy1", {
     channelId: "ch1",
     agentId: "agent1",
+    organizationId: "test-org",
   });
   originalFetch = globalThis.fetch;
 });

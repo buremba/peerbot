@@ -54,6 +54,13 @@ describe("sanitizeFilename", () => {
     expect(sanitizeFilename("/path/to/file.txt")).toBe("file.txt");
     expect(sanitizeFilename("C:\\Users\\doc.pdf")).toBe("doc.pdf");
   });
+
+  test("preserves non-ASCII letters and digits instead of mangling them", () => {
+    // ASCII `\w` would turn these into underscores and collide distinct names.
+    expect(sanitizeFilename("отчёт.pdf")).toBe("отчёт.pdf");
+    expect(sanitizeFilename("履歴.csv")).toBe("履歴.csv");
+    expect(sanitizeFilename("café_münü.txt")).toBe("café_münü.txt");
+  });
 });
 
 describe("sanitizeConversationId", () => {
@@ -190,6 +197,18 @@ describe("sanitizeForLogging", () => {
     expect(result.safe).toBe(1);
     // Sanity: ensure no global pollution.
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
+  test("does not leak sensitive values nested past the depth cap", () => {
+    // Build an object nested deeper than MAX_SANITIZE_DEPTH (8) with a secret
+    // at the bottom. Previously the depth cap returned the raw object, leaking
+    // the token verbatim; now it returns a placeholder.
+    let deep: Record<string, unknown> = { token: "super-secret-value" };
+    for (let i = 0; i < 12; i++) deep = { nested: deep };
+    const result = sanitizeForLogging(deep);
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("super-secret-value");
+    expect(serialized).toContain("[Truncated:max-depth]");
   });
 });
 

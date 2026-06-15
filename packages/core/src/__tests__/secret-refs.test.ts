@@ -23,6 +23,16 @@ describe("secret refs", () => {
     });
   });
 
+  test("keeps the whole fragment when it contains a '#'", () => {
+    // split("#", 2) used to drop everything after the second segment.
+    expect(parseSecretRef("vault://kv/foo#field#sub")).toEqual({
+      raw: "vault://kv/foo#field#sub",
+      scheme: "vault",
+      path: "kv/foo",
+      fragment: "field#sub",
+    });
+  });
+
   test("rejects non-secret refs", () => {
     expect(parseSecretRef("not-a-ref")).toBeNull();
     expect(isSecretRef("not-a-ref")).toBe(false);

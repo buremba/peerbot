@@ -9,7 +9,17 @@
  *    (cross-agent credential theft — unchanged behaviour, pinned here)
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { randomBytes } from "node:crypto";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "bun:test";
+import { generateWorkerToken } from "@lobu/core";
 import type { SecretStore } from "../../gateway/secrets/index.js";
 import {
   __resetPlaceholderCacheForTests,
@@ -160,6 +170,64 @@ describe("secret-proxy failed-resolution throttle", () => {
         "x-forwarded-for": "203.0.113.99",
       });
     }
+    expect(captured[captured.length - 1]!.headers.authorization).toBe(
+      "Bearer real-secret"
+    );
+  });
+});
+
+describe("secret-proxy throttle keys on the signed worker identity", () => {
+  const prevKey = process.env.ENCRYPTION_KEY;
+  beforeAll(() => {
+    process.env.ENCRYPTION_KEY = randomBytes(32).toString("base64");
+  });
+  afterAll(() => {
+    if (prevKey === undefined) delete process.env.ENCRYPTION_KEY;
+    else process.env.ENCRYPTION_KEY = prevKey;
+  });
+
+  it("a worker can't dodge the throttle by rotating x-forwarded-for when it carries a signed token", async () => {
+    const proxy = makeProxy("real-secret");
+    const tokenX = generateWorkerToken("u", "c", "deploy-x", {
+      channelId: "ch",
+      agentId: "agent-x",
+    });
+
+    // 20 bad lookups from the SAME signed identity but a DIFFERENT forged
+    // x-forwarded-for each time. If the throttle keyed on the header these
+    // would land in 20 distinct buckets and never trip.
+    for (let i = 0; i < 20; i++) {
+      await callProxy(
+        proxy,
+        "/v1/thing",
+        `${PLACEHOLDER_PREFIX}${crypto.randomUUID()}`,
+        { "x-lobu-worker-token": tokenX, "x-forwarded-for": `10.0.0.${i}` }
+      );
+    }
+
+    // A valid placeholder from the same identity is still throttled.
+    const placeholder = generatePlaceholder(
+      "agent-a",
+      "MY_TOKEN",
+      "builtin:deployments/d/agent-a/MY_TOKEN",
+      "d"
+    );
+    await callProxy(proxy, "/v1/thing", placeholder, {
+      "x-lobu-worker-token": tokenX,
+      "x-forwarded-for": "10.0.0.250",
+    });
+    expect(captured[captured.length - 1]!.headers.authorization).toBe(
+      "Bearer "
+    );
+
+    // A DIFFERENT signed identity is an independent bucket → resolves.
+    const tokenY = generateWorkerToken("u", "c", "deploy-y", {
+      channelId: "ch",
+      agentId: "agent-y",
+    });
+    await callProxy(proxy, "/v1/thing", placeholder, {
+      "x-lobu-worker-token": tokenY,
+    });
     expect(captured[captured.length - 1]!.headers.authorization).toBe(
       "Bearer real-secret"
     );

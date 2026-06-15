@@ -1017,6 +1017,12 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       stream.onAbort(cleanup);
       const detachAbortBridge = bindRequestAbortToStream(requestSignal, stream);
 
+      // Snapshot the backlog BEFORE registering, with no await in between so the
+      // two run atomically on the single-threaded event loop. Otherwise a
+      // broadcast landing during the `connected` write below would be delivered
+      // live AND still be in the backlog we replay — duplicating it (and
+      // possibly reordering it after later live events) for the client.
+      const backlog = sseManager.getRecentEvents(sseKey);
       sseManager.addConnection(sseKey, stream);
       connectionAdded = true;
 
@@ -1029,7 +1035,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
           }),
         });
 
-        for (const entry of sseManager.getRecentEvents(sseKey)) {
+        for (const entry of backlog) {
           await stream.writeSSE({
             event: entry.event,
             data: JSON.stringify(entry.data),

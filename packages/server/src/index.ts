@@ -858,7 +858,7 @@ app.get('/api/auth-config', async (c) => {
  */
 app.get('/api/invitation-preview', async (c) => {
   const rateLimiter = getRateLimiter();
-  const clientIP = getClientIP(c.req.raw);
+  const clientIP = getClientIP(c.req.raw, c.var.peerRemoteAddress);
   const rateLimit = rateLimiter.checkLimit(
     `rate:invitation-preview:${clientIP}`,
     RateLimitPresets.INVITATION_PREVIEW_PER_IP_MINUTE
@@ -1202,7 +1202,7 @@ app.get('/api/features', (c) => {
  */
 app.post('/api/:orgSlug/join', async (c) => {
   const rateLimiter = getRateLimiter();
-  const clientIP = getClientIP(c.req.raw);
+  const clientIP = getClientIP(c.req.raw, c.var.peerRemoteAddress);
   const rateLimit = rateLimiter.checkLimit(
     `rate:join-public-org:${clientIP}`,
     RateLimitPresets.JOIN_PUBLIC_ORG_PER_IP_HOUR

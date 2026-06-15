@@ -34,8 +34,11 @@ export function getOptionalEnv(
 export function getOptionalNumber(name: string, defaultValue: number): number {
   const value = process.env[name];
   if (!value) return defaultValue;
-  const parsed = parseInt(value, 10);
-  if (Number.isNaN(parsed)) {
+  // Use Number() not parseInt(): parseInt silently accepts trailing garbage
+  // ("100ms" -> 100, "3.5" -> 3), so a typo'd env value would pass instead of
+  // failing loud.
+  const parsed = Number(value.trim());
+  if (!Number.isInteger(parsed)) {
     throw new ConfigError(
       `Invalid number for ${name}: ${value} (expected integer)`
     );

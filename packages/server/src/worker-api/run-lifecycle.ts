@@ -1158,7 +1158,10 @@ export async function completeAuthRun(c: Context<{ Bindings: Env }>) {
     }>();
 
     // Ownership gate — a worker can only finalize runs it claimed. Mirrors the
-    // other /complete handlers.
+    // other /complete handlers. Without it a leaked worker token could finalize
+    // an arbitrary auth run and inject credentials into the linked auth_profiles
+    // row. authorizeRunForWorker waves through token-auth (non-'user') mode, so
+    // the claimant/status guard inside finalizeRun is what protects that path.
     const denied = await authorizeRunForWorker(c, req.run_id, req.worker_id);
     if (denied) return denied;
 

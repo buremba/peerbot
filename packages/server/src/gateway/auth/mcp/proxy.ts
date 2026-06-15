@@ -71,6 +71,7 @@ export class McpProxy {
 		teamId: string | undefined,
 		connectionId: string | undefined,
 		platform: string | undefined,
+		source: string | undefined,
 	) => Promise<void>;
 
 	/** Callback invoked when an MCP auth flow is started or already pending. */
@@ -630,6 +631,7 @@ export class McpProxy {
 			tokenData.teamId,
 			tokenData.connectionId,
 			tokenData.platform,
+			tokenData.source,
 		).catch((err) =>
 			logger.error(
 				{ requestId, error: String(err) },

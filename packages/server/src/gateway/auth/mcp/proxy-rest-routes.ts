@@ -229,6 +229,7 @@ async function handleCallToolAuthenticated(
 				conversationId: auth.tokenData.conversationId || "",
 				teamId: auth.tokenData.teamId,
 				connectionId: auth.tokenData.connectionId,
+				source: auth.tokenData.source,
 				deviceAuthFallback: true,
 			});
 			return c.json(
@@ -316,6 +317,7 @@ async function handleCallToolAuthenticated(
 						auth.tokenData.teamId,
 						auth.tokenData.connectionId,
 						auth.tokenData.platform,
+						auth.tokenData.source,
 					);
 				}
 				return c.json(

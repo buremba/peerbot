@@ -114,7 +114,7 @@ export class ApiPlatform implements PlatformAdapter {
    */
   private enqueueInteractionCard(
     queue: IMessageQueue,
-    event: { conversationId: string; userId?: string },
+    event: { conversationId: string; userId?: string; source?: string },
     name: string,
     data: Record<string, unknown>
   ): void {
@@ -127,6 +127,13 @@ export class ApiPlatform implements PlatformAdapter {
       platform: "api",
       teamId: "api",
       timestamp: Date.now(),
+      // Stamp the headless run origin so the owner-gate exempts cards from
+      // headless turns — no browser SSE exists on any pod for them, so an
+      // owner-gated card would re-queue 30x and dead-letter. Interactive turns
+      // carry no source and stay owner-routed.
+      ...(event.source
+        ? { platformMetadata: { source: event.source } }
+        : {}),
       customEvent: { name, data, requireSseOwner: true },
     };
     void queue

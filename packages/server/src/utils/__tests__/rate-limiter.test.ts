@@ -170,12 +170,36 @@ describe('getClientIP', () => {
     }
   });
 
-  it('uses the leftmost X-Forwarded-For entry without TRUSTED_PROXY', () => {
+  it('without TRUSTED_PROXY keys on the socket peer, ignoring forwarded headers', () => {
     delete process.env.TRUSTED_PROXY;
     const req = new Request('http://x.test', {
       headers: { 'X-Forwarded-For': '1.1.1.1, 2.2.2.2, 3.3.3.3' },
     });
-    expect(getClientIP(req)).toBe('1.1.1.1');
+    expect(getClientIP(req, '9.9.9.9')).toBe('9.9.9.9');
+  });
+
+  it('without TRUSTED_PROXY, a spoofed X-Forwarded-For cannot change the key', () => {
+    delete process.env.TRUSTED_PROXY;
+    // Same peer, attacker rotates the forwarded header between requests — the
+    // rate-limit key must stay constant (this is the bypass the fix closes).
+    const a = getClientIP(
+      new Request('http://x.test', { headers: { 'X-Forwarded-For': 'a.a.a.a' } }),
+      '9.9.9.9'
+    );
+    const b = getClientIP(
+      new Request('http://x.test', { headers: { 'X-Forwarded-For': 'b.b.b.b' } }),
+      '9.9.9.9'
+    );
+    expect(a).toBe('9.9.9.9');
+    expect(b).toBe('9.9.9.9');
+  });
+
+  it('without TRUSTED_PROXY and no peer, returns "unknown"', () => {
+    delete process.env.TRUSTED_PROXY;
+    const req = new Request('http://x.test', {
+      headers: { 'X-Forwarded-For': '1.1.1.1' },
+    });
+    expect(getClientIP(req)).toBe('unknown');
   });
 
   it('uses the rightmost X-Forwarded-For entry with TRUSTED_PROXY', () => {
@@ -186,14 +210,15 @@ describe('getClientIP', () => {
     expect(getClientIP(req)).toBe('3.3.3.3');
   });
 
-  it('falls back to CF-Connecting-IP, X-Real-IP, then "unknown"', () => {
-    delete process.env.TRUSTED_PROXY;
+  it('with TRUSTED_PROXY falls back to CF-Connecting-IP, X-Real-IP, then peer/unknown', () => {
+    process.env.TRUSTED_PROXY = 'true';
     expect(
       getClientIP(new Request('http://x.test', { headers: { 'CF-Connecting-IP': '4.4.4.4' } }))
     ).toBe('4.4.4.4');
     expect(
       getClientIP(new Request('http://x.test', { headers: { 'X-Real-IP': '5.5.5.5' } }))
     ).toBe('5.5.5.5');
+    expect(getClientIP(new Request('http://x.test'), '8.8.8.8')).toBe('8.8.8.8');
     expect(getClientIP(new Request('http://x.test'))).toBe('unknown');
   });
 });

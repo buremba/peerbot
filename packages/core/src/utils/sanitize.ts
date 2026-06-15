@@ -19,8 +19,10 @@ export function sanitizeFilename(
   // Remove any directory path components
   const basename = filename.replace(/^.*[\\/]/, "");
 
-  // Remove null bytes and other dangerous characters
-  const sanitized = basename.replace(/[^\w\s.-]/g, "_");
+  // Remove null bytes and other dangerous characters. Use Unicode-aware classes
+  // so non-ASCII letters/digits (CJK, Cyrillic, accented Latin) are preserved
+  // rather than mangled to underscores (which also collapses distinct names).
+  const sanitized = basename.replace(/[^\p{L}\p{N}\s.\-_]/gu, "_");
 
   // Prevent hidden files and parent directory references
   const safe = sanitized.replace(/^\.+/, "").replace(/\.{2,}/g, ".");
@@ -101,7 +103,10 @@ function sanitizeInner(
   seen: WeakSet<object>
 ): any {
   if (!obj || typeof obj !== "object") return obj;
-  if (depth >= MAX_SANITIZE_DEPTH) return obj;
+  // Past the depth cap, return a placeholder rather than the raw object — a
+  // returned subtree is never walked again, so a sensitive key nested deeper
+  // than the cap would otherwise be logged unredacted.
+  if (depth >= MAX_SANITIZE_DEPTH) return "[Truncated:max-depth]";
   // Cycle guard: object graphs with back-references (Express req/res, error
   // .cause chains, ORM rows) would otherwise recurse forever. Depth cap above
   // already bounds stack depth, but returning "[Circular]" gives a more useful

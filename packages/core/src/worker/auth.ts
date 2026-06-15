@@ -27,6 +27,15 @@ export interface WorkerTokenData {
   deploymentName: string;
   timestamp: number;
   platform?: string;
+  /**
+   * Headless run origin (`platformMetadata.source`, e.g. watcher-run /
+   * scheduled-job / connector-repair / internal). Carried so interaction
+   * cards emitted from a headless turn can be stamped headless and exempted
+   * from the SSE-owner gate — no browser SSE connection exists on any pod for
+   * a headless run, so an owner-gated card would dead-letter. Absent for
+   * interactive (browser-driven) runs.
+   */
+  source?: string;
   sessionKey?: string;
   traceId?: string;
   /** Unique token ID — enables targeted revocation. */
@@ -54,6 +63,8 @@ export function generateWorkerToken(
     organizationId?: string;
     connectionId?: string;
     platform?: string;
+    /** Headless run origin — see WorkerTokenData.source. */
+    source?: string;
     sessionKey?: string;
     traceId?: string;
     /**
@@ -81,6 +92,7 @@ export function generateWorkerToken(
     deploymentName,
     timestamp: Date.now(),
     platform: options.platform,
+    source: options.source,
     sessionKey: options.sessionKey,
     traceId: options.traceId,
     jti: randomUUID(),

@@ -143,7 +143,8 @@ export class InteractionService extends EventEmitter {
     connectionId: string | undefined,
     platform: string,
     question: string,
-    options: string[]
+    options: string[],
+    source?: string
   ): Promise<PostedQuestion> {
     assertRoutableInteraction(connectionId, platform, "question");
     if (this.beforeCreateHook) {
@@ -160,6 +161,7 @@ export class InteractionService extends EventEmitter {
       platform,
       question,
       options,
+      source,
     };
 
     logger.info(
@@ -190,7 +192,8 @@ export class InteractionService extends EventEmitter {
     mcpId: string,
     toolName: string,
     args: Record<string, unknown>,
-    grantPattern: string
+    grantPattern: string,
+    source?: string
   ): Promise<PostedToolApproval> {
     assertRoutableInteraction(connectionId, platform, "tool approval");
     if (this.beforeCreateHook) {
@@ -210,6 +213,7 @@ export class InteractionService extends EventEmitter {
       toolName,
       args,
       grantPattern,
+      source,
     };
 
     logger.info(
@@ -234,7 +238,8 @@ export class InteractionService extends EventEmitter {
     url: string,
     label: string,
     linkType: "settings" | "install" | "oauth",
-    body?: string
+    body?: string,
+    source?: string
   ): Promise<PostedLinkButton> {
     assertRoutableInteraction(connectionId, platform, "link button");
     assertSafeLinkButtonUrl(url);
@@ -254,6 +259,7 @@ export class InteractionService extends EventEmitter {
       label,
       body,
       linkType,
+      source,
     };
 
     logger.info(
@@ -276,7 +282,8 @@ export class InteractionService extends EventEmitter {
     platform: string,
     url: string,
     label: string,
-    body?: string
+    body?: string,
+    source?: string
   ): Promise<PostedLinkButton> {
     return this.postLinkButton(
       userId,
@@ -288,7 +295,8 @@ export class InteractionService extends EventEmitter {
       url,
       label,
       "oauth",
-      body
+      body,
+      source
     );
   }
 

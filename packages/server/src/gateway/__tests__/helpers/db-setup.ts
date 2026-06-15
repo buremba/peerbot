@@ -8,12 +8,16 @@
  *
  * Tests that don't need PG (pure helpers, classification logic, etc.) can
  * skip calling this entirely and pay no cost.
+ *
+ * Suite teardown is registered in bun-test-teardown.ts (bunfig preload).
+ * startEmbeddedBackend's beforeExit/exit hooks are a fallback on interrupt.
  */
 
 import { closeDbSingleton, getDb } from "../../../db/client.js";
 import {
   type EmbeddedBackend,
   startEmbeddedBackend,
+  stopActiveEmbeddedBackend,
 } from "../../../__tests__/setup/embedded-postgres-backend.js";
 import {
   cleanupTestDatabase,
@@ -47,9 +51,27 @@ export function ensureDbForGatewayTests(): Promise<void> {
     // setup-time connections around.
     await closeTestDb();
     await closeDbSingleton();
-  })();
+  })().catch(async (err) => {
+    await stopDbForGatewayTests();
+    throw err;
+  });
 
   return initPromise;
+}
+
+/** Stop and forget the embedded gateway-test database, if this process owns one. */
+export async function stopDbForGatewayTests(): Promise<void> {
+  const embeddedUrl = backend?.url;
+  await closeTestDb();
+  await closeDbSingleton();
+  if (backend) {
+    await stopActiveEmbeddedBackend();
+  }
+  if (embeddedUrl && process.env.DATABASE_URL === embeddedUrl) {
+    delete process.env.DATABASE_URL;
+  }
+  backend = null;
+  initPromise = null;
 }
 
 /**
@@ -68,6 +90,11 @@ export function ensureEncryptionKey(): void {
 
 /** Truncate every test-known table without dropping the schema. */
 export async function resetTestDatabase(): Promise<void> {
+  if (!process.env.DATABASE_URL || !initPromise) {
+    await ensureDbForGatewayTests();
+  } else {
+    await initPromise;
+  }
   await cleanupTestDatabase();
 }
 

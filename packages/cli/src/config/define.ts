@@ -32,8 +32,10 @@ export type ConnectorRef = string | ConnectorClass;
  * Presence is the discriminant: an entity type with `backing` is derived; without
  * it, it is **stored** (the default — a curated entity like a Company or a
  * hand-named Trip). There is no separate `mode` field — "derived" just means
- * "has a view". Read a derived type's rows by running its SQL through `query_sql`;
- * measure vs. dimension columns are classified on read (not declared here).
+ * "has a view". Read a derived type's rows by running its SQL through `query_sql`.
+ * NOTE: with the declared metric layer (see {@link Measure}), measures/dimensions
+ * are DECLARED, not inferred on read — a derived type is in the metric catalog
+ * only if it declares them.
  */
 export interface EntityBacking {
   /** ANSI SELECT over other relations (events, entities, …). */
@@ -52,7 +54,14 @@ export interface EntityBacking {
 // Entity-bound metrics (declarative; the compiler lowers these to backing SQL)
 // ---------------------------------------------------------------------------
 
-/** Temporal truth a measure reads over the append-only event stream. */
+/**
+ * Temporal truth a measure reads over the append-only event stream:
+ * - `"current"` — `current_event_records` (superseded rows masked); the default.
+ * - `"raw"`     — `events` verbatim, including superseded rows (audit/debug).
+ * - `{ asOf }`  — point-in-time snapshot; `asOf` is an ISO-8601 instant compared
+ *                 against `occurred_at` (event time, NOT system time). A richer
+ *                 structured form (relative durations, system-time) is deferred.
+ */
 export type MetricReadMode = "current" | "raw" | { asOf: string };
 
 /**
@@ -60,12 +69,18 @@ export type MetricReadMode = "current" | "raw" | { asOf: string };
  * than one source. Shaped now so the {@link EventSet} schema needs no breaking
  * change when the first multi-source measure ships; until then use
  * {@link EventSet.dedupeKey} for same-source dedupe.
+ *
+ * Domain-agnostic: keys are logical field names, not a fixed finance tuple.
  */
 export interface FactMatchRule {
-  /** Per-source field map normalizing heterogeneous rows to a common fact tuple. */
-  key: { amount: string; date: string; merchant?: string };
-  /** Match tolerances, e.g. `{ date: "2d", amount: 0 }`. */
-  tolerance?: { date?: string; amount?: number };
+  /**
+   * Per-source field map normalizing heterogeneous rows to a common fact tuple:
+   * logical field name → SQL expression. e.g.
+   * `{ amount: "metadata->>'amount'", at: "metadata->>'date'" }`.
+   */
+  key: Record<string, string>;
+  /** Per-key match tolerance, e.g. `{ at: "2d", amount: "0" }` (string; the compiler interprets). */
+  tolerance?: Record<string, string>;
   /** Source priority when the same fact is seen twice (e.g. `["revolut","gmail"]`). */
   prefer?: string[];
 }
@@ -108,12 +123,14 @@ export interface Measure {
   /** Name of the {@link EventSet} (on this entity) this measure aggregates over. */
   eventSet: string;
   agg: "sum" | "count" | "min" | "max" | "count_distinct";
-  /** SQL expression to aggregate (omit for `count`). */
+  /** SQL expression to aggregate. Required for every `agg` except `count` (validated at apply). */
   expr?: string;
   /** Extra raw-SQL predicate applied to this measure only. */
   where?: string;
-  /** Name of a {@link Segment} (on this entity) applied per its `appliedBefore`. */
-  segment?: string;
+  /** Names of {@link Segment}s (on this entity) to AND in, each applied per its `appliedBefore`. */
+  segments?: string[];
+  /** Dimensions safe to group WITH this measure; omitted ⇒ unknown (the compiler treats conservatively). */
+  safeDimensions?: string[];
   /** REQUIRED — powers keyword discovery in the metric catalog. */
   description: string;
   owner?: string;

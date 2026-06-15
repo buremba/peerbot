@@ -612,6 +612,12 @@ export interface EntityTypeContribution {
  * source's native semantic layer (e.g. list Snowflake semantic views).
  */
 export interface ReflectContext<F = Record<string, unknown>> {
+  /**
+   * The Lobu connection slug being reflected. Stamp this into each
+   * {@link EntityTypeContribution} `backing.connection` so live queries route
+   * back through the right connection (the connector cannot otherwise know it).
+   */
+  connectionSlug: string;
   /** Connector options (typed via F). */
   config: F;
   /** OAuth/env credentials (if applicable). */

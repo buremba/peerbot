@@ -357,13 +357,15 @@ const trip = defineEntityType({
 // dispatches its DOM-scrape actions down to whichever online paired Owletto
 // extension claims them (same model as LinkedIn). This is what makes Revolut
 // "extension-only" from the user's side — no Owletto Mac app required, just the
-// Chrome extension signed in to app.revolut.com. max_scrolls is raised so the
-// first run paginates the full multi-year history.
+// Chrome extension signed in to app.revolut.com. max_scrolls is capped so a
+// single run fits inside the extension's 90s per-run cap (≈150s at 100 scrolls
+// always timed out); 20 scrolls (~55s) reliably completes, and scheduled
+// incremental syncs keep history current from the top each run.
 const revolutConnection = defineConnection({
   slug: "revolut-buremba",
   connector: "revolut",
   name: "Revolut",
-  feeds: [{ feed: "transactions", config: { max_scrolls: 100 } }],
+  feeds: [{ feed: "transactions", config: { max_scrolls: 20 } }],
 });
 
 export default defineConfig({

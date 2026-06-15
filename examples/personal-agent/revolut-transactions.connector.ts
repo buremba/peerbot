@@ -446,6 +446,28 @@ async function scrapeTransactionRows(
   url: string,
   maxScrolls: number
 ): Promise<RevolutDomRow[]> {
+  // Force the reused persistent window back to the TOP before scraping.
+  //
+  // The extension reuses one long-lived window and its `genericScrape` harvests
+  // from the tab's CURRENT scroll position, only scrolling further DOWN. Revolut
+  // virtualizes off-screen rows, so a window left scrolled deep into history by
+  // the previous run would harvest only OLD rows and walk the sync backwards in
+  // time. The extension only reloads a reused window when the path CHANGES, so
+  // we bounce through a non-transactions route first; the subsequent scrape
+  // navigate then reloads `/transactions` fresh — rendering the newest rows at
+  // the top — regardless of where the prior run left the tab.
+  try {
+    await dispatcher.dispatch("navigate", {
+      persistent: true,
+      focus: true,
+      url: REVOLUT_RESET_URL,
+      allowed_origins: REVOLUT_ALLOWED_ORIGINS,
+    });
+  } catch {
+    // Best-effort: if the reset navigate fails the scrape below still runs;
+    // worst case it harvests from a stale scroll position (the prior behaviour).
+  }
+
   const result = await extensionDomScrape<RevolutDomRow>({
     dispatcher,
     url,
@@ -473,6 +495,10 @@ async function scrapeTransactionRows(
 // `/transactions?accountType=pocket&walletId=<uuid>&pocketId=<uuid>` — point a
 // second feed's `start_url` there to sync a non-default currency pocket.
 const DEFAULT_START_URL = "https://app.revolut.com/transactions";
+// A non-transactions route used only to force the reused persistent window to
+// reload (the extension reloads a reused window only when the path changes), so
+// the real scrape navigate lands on a freshly-rendered, scrolled-to-top page.
+const REVOLUT_RESET_URL = "https://app.revolut.com/home";
 
 const configSchema = {
   type: "object",
@@ -519,7 +545,7 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     name: "Revolut",
     description:
       "Syncs Revolut account transactions by reading the rendered Revolut web app (no public API) through your paired Owletto Chrome session — no separate login, robust against Revolut's rotating internal API.",
-    version: "3.2.0",
+    version: "3.3.0",
     faviconDomain: "app.revolut.com",
     authSchema: {
       // Auth is implicit via the paired Owletto extension's signed-in Chrome —

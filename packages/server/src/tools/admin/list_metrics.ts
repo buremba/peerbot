@@ -48,7 +48,7 @@ async function listMetricsImpl(
     throw new Error('list_metrics requires a bound organization');
   }
   const sql = getDb();
-  const rows = await sql<{ slug: string; name: string | null; metrics_config: unknown }[]>`
+  const rows = (await sql`
     SELECT slug, name, metrics_config
     FROM entity_types
     WHERE organization_id = ${ctx.organizationId}
@@ -56,7 +56,7 @@ async function listMetricsImpl(
       AND metrics_config IS NOT NULL
       ${args.entity_type ? sql`AND slug = ${args.entity_type}` : sql``}
     ORDER BY slug
-  `;
+  `) as unknown as Array<{ slug: string; name: string | null; metrics_config: unknown }>;
 
   const needle = args.q?.toLowerCase();
   const matches = (...vals: (string | undefined)[]) =>

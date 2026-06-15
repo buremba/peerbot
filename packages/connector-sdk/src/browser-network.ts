@@ -18,8 +18,6 @@ import { sdkLogger } from './logger.js';
 export interface BrowserNetworkConfig {
   /** URL patterns to intercept (glob or regex). Matched against response URLs. */
   interceptPatterns: (string | RegExp)[];
-  /** Cookie domains required for auth (e.g., ['x.com', '.x.com']) */
-  authDomains: string[];
   /** Maximum number of scroll iterations for pagination (default: 10) */
   maxScrolls?: number;
   /** Delay between scrolls in ms (default: 2000) */

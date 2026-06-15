@@ -2,7 +2,7 @@
  * Device-scoped browser auth profile CRUD.
  *
  * The Mac app uses these to create, list, and revoke browser-session auth
- * profiles bound to a physical device worker (mirror mode and CDP-attach).
+ * profiles bound to a physical device worker (CDP-attach).
  *
  *   GET    /api/workers/me/auth-profiles?worker_id=...
  *   POST   /api/workers/me/auth-profiles

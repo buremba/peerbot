@@ -366,7 +366,6 @@ async function syncViaBrowser(
   const result = await browserNetworkSync<XTweet>({
     config: {
       interceptPatterns: [/\/i\/api\/graphql\/.*Search/],
-      authDomains: ['x.com', '.x.com'],
       maxScrolls,
       scrollDelayMs: 2000,
       responseTimeoutMs: 5000,

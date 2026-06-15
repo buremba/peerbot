@@ -39,6 +39,8 @@ export interface EntitySchemaNamespace {
      * (read-only pushdown) instead of the org's internal tables.
      */
     backing?: { sql: string; connection?: string } | null;
+    /** Declared metric contract (eventSets/measures/dimensions/segments); `null` clears it. */
+    metrics_config?: Record<string, unknown> | null;
   }): Promise<unknown>;
   updateType(input: {
     slug: string;
@@ -51,6 +53,8 @@ export interface EntitySchemaNamespace {
     /** Set/clear the derived view; omit to leave backing unchanged. With
      *  `connection`, the view reads live from that external connection (pushdown). */
     backing?: { sql: string; connection?: string } | null;
+    /** Set/clear declared metrics; `null` clears, omit to leave unchanged. */
+    metrics_config?: Record<string, unknown> | null;
   }): Promise<unknown>;
   deleteType(slug: string): Promise<unknown>;
   auditType(slug: string): Promise<unknown>;

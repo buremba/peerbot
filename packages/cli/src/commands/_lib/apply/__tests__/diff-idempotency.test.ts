@@ -215,7 +215,12 @@ describe("computeDiff — idempotency (applying twice is a no-op)", () => {
             name: "Company",
             metrics: {
               measures: {
-                spend: { eventSet: "charges", agg: "sum", expr: "x", description: "v2" },
+                spend: {
+                  eventSet: "charges",
+                  agg: "sum",
+                  expr: "x",
+                  description: "v2",
+                },
               },
             },
           },
@@ -240,7 +245,8 @@ describe("computeDiff — idempotency (applying twice is a no-op)", () => {
     const plan = computeDiff(desired, remote);
     const row = plan.rows.find((r) => r.kind === "entity-type");
     expect(row?.verb).toBe("update");
-    if (row?.kind === "entity-type") expect(row.changedFields).toContain("metrics");
+    if (row?.kind === "entity-type")
+      expect(row.changedFields).toContain("metrics");
   });
 
   test("entity type: no metrics on either side is a noop (no churn)", () => {

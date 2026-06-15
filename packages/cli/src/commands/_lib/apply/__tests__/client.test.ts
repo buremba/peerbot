@@ -284,7 +284,12 @@ describe("ApplyClient — prune", () => {
   test("listEntityTypes hoists metrics_config to metrics; null/empty stays undefined", async () => {
     const metrics = {
       measures: {
-        spend: { eventSet: "charges", agg: "sum", expr: "x", description: "Spend." },
+        spend: {
+          eventSet: "charges",
+          agg: "sum",
+          expr: "x",
+          description: "Spend.",
+        },
       },
     };
     const client = new ApplyClient(

@@ -159,6 +159,66 @@ describe('entity schema CRUD', () => {
       await owner.entity_schema.deleteType('spend-by-vendor');
     });
 
+    it('round-trips declared metrics_config verbatim (create → get → update → clear)', async () => {
+      type Got = { entity_type?: { metrics_config?: Record<string, unknown> | null } };
+      const metrics = {
+        eventSets: {
+          charges: {
+            by: 'alias',
+            field: "metadata->>'description'",
+            against: 'aliases',
+            where: "semantic_type='transaction'",
+            dedupeKey: ["metadata->>'date'", "metadata->>'amount'"],
+          },
+        },
+        segments: {
+          outflow: {
+            description: 'Money out.',
+            where: "metadata->>'direction'='out'",
+            on: 'event',
+            appliedBefore: 'dedupe',
+          },
+        },
+        measures: {
+          spend: {
+            eventSet: 'charges',
+            agg: 'sum',
+            expr: "(metadata->>'amount')::numeric",
+            segments: ['outflow'],
+            description: 'Total outflow.',
+          },
+        },
+        dimensions: { currency: { expr: "metadata->>'currency'", description: 'Currency.' } },
+      };
+
+      await owner.entity_schema.createType({
+        slug: 'metric-company',
+        name: 'Company',
+        metrics_config: metrics,
+      });
+      const created = (await owner.entity_schema.getType('metric-company')) as Got;
+      // Stored and read back verbatim (jsonb round-trip).
+      expect(created.entity_type?.metrics_config).toEqual(metrics);
+
+      // Update a measure → metrics_config changes.
+      const updatedMetrics = { ...metrics, measures: { spend: { ...metrics.measures.spend, agg: 'count' } } };
+      await owner.entity_schema.updateType({
+        slug: 'metric-company',
+        metrics_config: updatedMetrics,
+      });
+      const updated = (await owner.entity_schema.getType('metric-company')) as Got;
+      expect((updated.entity_type?.metrics_config as typeof metrics)?.measures?.spend?.agg).toBe(
+        'count'
+      );
+
+      // Clear with null → no metrics.
+      await owner.entity_schema.updateType({ slug: 'metric-company', metrics_config: null });
+      const cleared = (await owner.entity_schema.getType('metric-company')) as Got;
+      expect(cleared.entity_type?.metrics_config ?? null).toBeNull();
+
+      await owner.entity_schema.deleteType('metric-company');
+    });
+
     it('a stored type carries no backing_sql', async () => {
       await owner.entity_schema.createType({ slug: 'plain-thing', name: 'Plain' });
       const got = (await owner.entity_schema.getType('plain-thing')) as {

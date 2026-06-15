@@ -1,10 +1,10 @@
 # Lobu
 
-> Open-source backend for multi-user AI agents with isolated workers, per-user OAuth, connected sources, shared memory, and secrets agents never see. Self-hosted Lobu runs as a single Node process and uses Postgres with pgvector as the only required external service.
+> Build AI teammates that watch and act. Lobu connects your tools, keeps shared memory current, and gives agents safe ways to act.
 
 ## What Lobu does
 
-Lobu runs multi-user agents where your team already works: Slack, Telegram, WhatsApp, Discord, Microsoft Teams, Google Chat, REST API, and MCP-capable clients. Each user or channel gets an isolated worker with gateway-mediated credentials, scoped network egress, and approval flows for sensitive tool calls. Lobu Memory keeps typed entities, decisions, observations, and preferences reusable across conversations and agents.
+Lobu runs goal-driven AI teammates where your team already works: Slack, Telegram, WhatsApp, Discord, Microsoft Teams, Google Chat, REST API, and MCP-capable clients. Agents connect to company systems, turn updates into shared memory, collaborate with humans, and act safely in your tools. Each user or channel gets an isolated worker with gateway-mediated credentials, scoped network egress, and approval flows for sensitive tool calls.
 
 ## Connect any agent to Lobu
 
@@ -12,7 +12,7 @@ The canonical MCP endpoint at [https://lobu.ai/mcp](https://lobu.ai/mcp) lets MC
 
 ## Start here
 
-- [Home](https://lobu.ai/): Product overview, memory, skills, platforms, and architecture
+- [Home](https://lobu.ai/): Product overview, connectors, memory, agents, platforms, and architecture
 - [Getting started](https://lobu.ai/getting-started/): Install and run your first agent
 - [Comparison](https://lobu.ai/getting-started/comparison/): How Lobu compares to other agent platforms
 - [Serverless OpenClaw](https://lobu.ai/serverless-openclaw/): Managed runtime and usage-based billing

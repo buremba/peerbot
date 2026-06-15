@@ -48,6 +48,13 @@ const GRAPH_FIELDS: ReadonlyArray<readonly [string, string]> = [
   ["renewal_in", "21 days"],
 ];
 
+const SOURCE_EVENTS = [
+  "Product usage",
+  "CRM renewal date",
+  "Support tickets",
+  "Slack notes",
+] as const;
+
 function GraphCard() {
   return (
     <div
@@ -64,7 +71,7 @@ function GraphCard() {
           class="font-mono text-[11px] uppercase tracking-[0.16em]"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          Memory · entity
+          Live company memory
         </span>
         <span
           class="rounded-md border px-2 py-0.5 font-mono text-[10.5px]"
@@ -96,13 +103,30 @@ function GraphCard() {
       </div>
 
       <div
-        class="border-t pt-2 text-[11.5px]"
-        style={{
-          borderColor: "var(--color-page-border)",
-          color: "var(--color-page-text-muted)",
-        }}
+        class="border-t pt-2"
+        style={{ borderColor: "var(--color-page-border)" }}
       >
-        derived from 1,204 raw events by a watcher, no app code
+        <div
+          class="mb-2 text-[11.5px]"
+          style={{ color: "var(--color-page-text-muted)" }}
+        >
+          Built from 1,204 source events:
+        </div>
+        <div class="flex flex-wrap gap-1.5">
+          {SOURCE_EVENTS.map((event) => (
+            <span
+              key={event}
+              class="rounded-md border px-2 py-1 text-[11px]"
+              style={{
+                borderColor: "var(--color-page-border)",
+                color: "var(--color-page-text-muted)",
+                backgroundColor: "var(--color-page-surface)",
+              }}
+            >
+              {event}
+            </span>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -154,15 +178,14 @@ export function ProactiveLoop() {
           class="font-display text-[1.85rem] font-bold leading-[1.1] tracking-tight sm:text-[2.25rem]"
           style={{ color: "var(--color-page-text)" }}
         >
-          The graph notices. The agent acts.
+          Shared memory updates. The agent acts.
         </h2>
         <p
           class="mx-auto mt-3 max-w-2xl text-[15px] leading-relaxed"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          Raw events stream in and build a typed record. When it crosses a line
-          you set, an agent flags it on its own and proposes the next step. Chat
-          is just one surface; the same loop fires over MCP or HTTP.
+          Usage, CRM, support, and Slack updates become one account record. When
+          renewal risk rises, the revenue agent proposes the next step.
         </p>
       </div>
 

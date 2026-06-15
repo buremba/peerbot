@@ -1,5 +1,10 @@
 import type { EntityMetrics } from "@lobu/connector-sdk";
 import type { AgentSettings } from "@lobu/core";
+import {
+  extractApiError,
+  fetchWithRetry,
+  parseJsonResponse,
+} from "../../../internal/http.js";
 import { resolveApiClient } from "../../../internal/index.js";
 import { ApiError } from "../../memory/_lib/errors.js";
 import type {
@@ -245,38 +250,15 @@ function hoistEntityTypeSchema(
   return out;
 }
 
-function extractApiError(
-  parsed: Record<string, unknown>,
-  status: number,
-  statusText: string
-): { message: string; code?: string } {
-  if (typeof parsed.error === "string") {
-    return { message: parsed.error };
-  }
-  if (isRecord(parsed.error)) {
-    const message =
-      typeof parsed.error.message === "string"
-        ? parsed.error.message
-        : `HTTP ${status} ${statusText}`;
-    const code =
-      typeof parsed.error.code === "string" ? parsed.error.code : undefined;
-    return code ? { message, code } : { message };
-  }
-  return { message: `HTTP ${status} ${statusText}` };
-}
-
 async function parseResponseBody(
   res: Response,
   url: string
 ): Promise<Record<string, unknown>> {
-  const raw = await res.text();
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return isRecord(parsed) ? parsed : { value: parsed };
-  } catch {
-    throw new ApiError(`Invalid JSON from ${url}: ${raw.slice(0, 500)}`);
-  }
+  const parsed = await parseJsonResponse(res, url, (message) => {
+    throw new ApiError(message);
+  });
+  if (parsed === undefined) return {};
+  return isRecord(parsed) ? parsed : { value: parsed };
 }
 
 // ── Client ─────────────────────────────────────────────────────────────────
@@ -324,7 +306,7 @@ export class ApplyClient {
       },
     };
     if (body !== undefined) init.body = JSON.stringify(body);
-    const res = await this.fetchImpl(url, init);
+    const res = await fetchWithRetry(url, init, { fetchImpl: this.fetchImpl });
     const parsed = await parseResponseBody(res, url);
 
     if (!okStatuses.includes(res.status) && !res.ok) {

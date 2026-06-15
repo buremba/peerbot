@@ -28,6 +28,7 @@ import { printText } from "../../internal/output.js";
 
 import type { EventEnvelope } from "@lobu/connector-sdk";
 import { resolveContext } from "../../internal/context.js";
+import { fetchWithRetry } from "../../internal/http.js";
 import { getUsableToken, resolveOrg } from "../memory/_lib/openclaw-auth.js";
 import {
   compileConnectorFromFile,
@@ -82,7 +83,7 @@ function apiBaseFrom(agentApiUrl: string): string {
 }
 
 async function authedGet<T>(apiUrl: string, token: string): Promise<T> {
-  const res = await fetch(apiUrl, {
+  const res = await fetchWithRetry(apiUrl, {
     headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
   });
   if (!res.ok) {

@@ -3,8 +3,10 @@ import {
   getActiveOrg,
   resolveContext,
   type ResolvedContext,
+  validateOrgSlug as validateOrgSlugShared,
 } from "./context.js";
 import { getToken, loadCredentials } from "./credentials.js";
+import { extractApiError, fetchWithRetry, parseJsonResponse } from "./http.js";
 
 interface ApiClientOptions {
   context?: string;
@@ -61,11 +63,19 @@ export class ApiClient {
       init.body = JSON.stringify(body);
     }
 
-    const response = await this.fetchImpl(url, init);
-    const parsed = await parseResponse(response, url);
+    const response = await fetchWithRetry(url, init, {
+      fetchImpl: this.fetchImpl,
+    });
+    const parsed = await parseJsonResponse(response, url, (message) => {
+      throw new ApiClientError(message, response.status);
+    });
     const okStatuses = options.okStatuses ?? [200, 201, 204];
     if (!response.ok || !okStatuses.includes(response.status)) {
-      const { message, code } = extractError(parsed, response);
+      const { message, code } = extractApiError(
+        parsed,
+        response.status,
+        response.statusText
+      );
       throw new ApiClientError(
         `${method} ${path} failed: ${message}`,
         response.status,
@@ -235,12 +245,16 @@ async function getOrganizationsFromUserInfo(
       : await loadCredentials(contextName);
   const endpoint =
     creds?.oauth?.userinfoEndpoint ?? `${apiBaseUrl}/oauth/userinfo`;
-  const response = await fetchImpl(endpoint, {
-    headers: {
-      Accept: "application/json",
-      Authorization: `Bearer ${token}`,
+  const response = await fetchWithRetry(
+    endpoint,
+    {
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+      },
     },
-  });
+    { fetchImpl }
+  );
   if (!response.ok) return [];
   const data = (await response.json().catch(() => null)) as Record<
     string,
@@ -262,73 +276,14 @@ async function getOrganizationsFromUserInfo(
   return result;
 }
 
-async function parseResponse(
-  response: Response,
-  url: string
-): Promise<unknown> {
-  if (response.status === 204) return undefined;
-  const raw = await response.text();
-  if (!raw) return undefined;
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    if (!response.ok) return { error: raw };
-    throw new ApiClientError(
-      `Invalid JSON from ${url}: ${raw.slice(0, 500)}`,
-      response.status
-    );
-  }
-}
-
-function extractError(
-  parsed: unknown,
-  response: Response
-): { message: string; code?: string } {
-  if (parsed && typeof parsed === "object") {
-    const record = parsed as Record<string, unknown>;
-    if (typeof record.error === "string") {
-      return {
-        message:
-          pickString(record, "error_description") ??
-          pickString(record, "message") ??
-          record.error,
-        code: pickString(record, "code") ?? record.error,
-      };
-    }
-    if (record.error && typeof record.error === "object") {
-      const error = record.error as Record<string, unknown>;
-      return {
-        message:
-          pickString(error, "message") ??
-          `HTTP ${response.status} ${response.statusText}`,
-        code: pickString(error, "code"),
-      };
-    }
-    if (typeof record.message === "string") {
-      return { message: record.message, code: pickString(record, "code") };
-    }
-    if (typeof record.error_description === "string") {
-      return {
-        message: record.error_description,
-        code: pickString(record, "error"),
-      };
-    }
-  }
-  return { message: `HTTP ${response.status} ${response.statusText}` };
-}
-
-function pickString(
-  record: Record<string, unknown>,
-  key: string
-): string | undefined {
-  return typeof record[key] === "string" ? record[key] : undefined;
-}
-
+/**
+ * Wrap the shared {@link validateOrgSlugShared} so the typed `ApiClientError`
+ * (carrying the same human message) propagates instead of a bare `Error`.
+ */
 function validateOrgSlug(slug: string): string {
-  if (!/^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/.test(slug)) {
-    throw new ApiClientError(
-      `Invalid organization slug "${slug}". Slugs may only contain alphanumeric characters, hyphens, and underscores.`
-    );
+  try {
+    return validateOrgSlugShared(slug);
+  } catch (err) {
+    throw new ApiClientError(err instanceof Error ? err.message : String(err));
   }
-  return slug;
 }

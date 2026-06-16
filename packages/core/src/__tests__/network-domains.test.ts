@@ -67,6 +67,28 @@ describe("normalizeDomainPattern", () => {
     expect(normalizeDomainPattern("api.github.com")).toBe("api.github.com");
   });
 
+  // IDN / Unicode → punycode (#10): stored patterns must be ASCII so they
+  // compare equal to the xn-- host that `new URL().hostname` produces on the
+  // HTTP egress path. Runtime fact: new URL("http://münchen.de/").hostname
+  // === "xn--mnchen-3ya.de".
+  test("converts a Unicode host to punycode", () => {
+    expect(normalizeDomainPattern("münchen.de")).toBe("xn--mnchen-3ya.de");
+  });
+
+  test("converts a Unicode wildcard suffix to punycode", () => {
+    expect(normalizeDomainPattern("*.münchen.de")).toBe(".xn--mnchen-3ya.de");
+  });
+
+  test("uppercase Unicode host lowercases then punycodes", () => {
+    expect(normalizeDomainPattern("MÜNCHEN.DE")).toBe("xn--mnchen-3ya.de");
+  });
+
+  test("leaves an already-punycode host unchanged (idempotent)", () => {
+    expect(normalizeDomainPattern("xn--mnchen-3ya.de")).toBe(
+      "xn--mnchen-3ya.de"
+    );
+  });
+
   // Star-only wildcard (edge)
   test("star-only becomes empty dot prefix (.)", () => {
     // "*.".slice(2) = "" → "." + "" = "."

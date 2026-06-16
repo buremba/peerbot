@@ -406,6 +406,56 @@ describe("HTTP Proxy Domain Filtering (unrestricted mode)", () => {
   });
 });
 
+// ─── IDN / Unicode egress matching (#10 + #11) ───────────────────────────────
+// A Unicode WORKER_DISALLOWED_DOMAINS entry must block BOTH the punycode host
+// the HTTP path derives (`new URL().hostname` === "xn--mnchen-3ya.de") AND the
+// raw Unicode host the CONNECT path extracts verbatim ("münchen.de"). Before
+// the fix, normalizeDomainPattern only lowercased the pattern (stayed Unicode)
+// and canonicalizeHostname didn't punycode the CONNECT host, so the HTTP host
+// slipped past the blocklist and CONNECT vs HTTP disagreed for the same host.
+
+describe("HTTP Proxy IDN/Unicode egress matching", () => {
+  const HTTP_HOST = "xn--mnchen-3ya.de"; // what `new URL("http://münchen.de/").hostname` yields
+  const CONNECT_HOST = "münchen.de"; // what the CONNECT parser returns verbatim
+
+  beforeAll(() => {
+    process.env.WORKER_ALLOWED_DOMAINS = "*";
+    process.env.WORKER_DISALLOWED_DOMAINS = "münchen.de";
+    __testOnly.reset();
+  });
+
+  afterAll(() => {
+    process.env.WORKER_ALLOWED_DOMAINS = "*";
+    delete process.env.WORKER_DISALLOWED_DOMAINS;
+    __testOnly.reset();
+  });
+
+  test("punycode host (HTTP path) is blocked by the Unicode blocklist entry", async () => {
+    const decision = await __testOnly.checkDomainAccess(
+      HTTP_HOST,
+      "idn-test-agent",
+      undefined
+    );
+    expect(decision.allowed).toBe(false);
+    expect(decision.source).toBe("global");
+  });
+
+  test("Unicode host (CONNECT path) is blocked by the same blocklist entry", async () => {
+    const decision = await __testOnly.checkDomainAccess(
+      CONNECT_HOST,
+      "idn-test-agent",
+      undefined
+    );
+    expect(decision.allowed).toBe(false);
+    expect(decision.source).toBe("global");
+  });
+
+  test("CONNECT and HTTP forms canonicalize to the same ASCII name", () => {
+    expect(__testOnly.canonicalizeHostname(CONNECT_HOST)).toBe(HTTP_HOST);
+    expect(__testOnly.canonicalizeHostname(HTTP_HOST)).toBe(HTTP_HOST);
+  });
+});
+
 // ─── DNS pinning / rebinding tests ───────────────────────────────────────────
 // Regression coverage for https://github.com/lobu-ai/lobu/issues/252.
 // The proxy must do exactly one DNS lookup per request, validate that result,

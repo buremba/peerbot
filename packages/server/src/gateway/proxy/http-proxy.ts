@@ -3,6 +3,7 @@ import type { LookupAddress } from "node:dns";
 import * as dns from "node:dns/promises";
 import * as http from "node:http";
 import * as net from "node:net";
+import { domainToASCII } from "node:url";
 import type { WorkerTokenData } from "@lobu/core";
 import { createLogger, verifyWorkerToken } from "@lobu/core";
 import {
@@ -446,9 +447,19 @@ async function validateProxyAuth(
  * blocklist in unrestricted+blocklist mode (matches neither the exact nor the
  * `.suffix` pattern) while the plain form is blocked. Strip trailing dots so
  * every matcher sees the same name DNS will ultimately resolve.
+ *
+ * It also IDNA/punycode-normalizes the host. The HTTP path derives the host
+ * from `new URL().hostname` (already `xn--` ASCII), but the CONNECT path's raw
+ * parser returns the host verbatim (possibly Unicode). Configured allow/deny
+ * patterns are stored as punycode (see `normalizeDomainPattern`), so a Unicode
+ * CONNECT host would otherwise never match its punycode blocklist entry (and
+ * CONNECT vs HTTP would disagree for the same IDN host). Routing both through
+ * `domainToASCII` makes every matcher see the one canonical ASCII name.
  */
 function canonicalizeHostname(hostname: string): string {
-  return hostname.replace(/\.+$/, "");
+  const stripped = hostname.replace(/\.+$/, "");
+  const ascii = domainToASCII(stripped);
+  return (ascii !== "" ? ascii : stripped).toLowerCase();
 }
 
 function matchesDomainPattern(hostname: string, patterns: string[]): boolean {

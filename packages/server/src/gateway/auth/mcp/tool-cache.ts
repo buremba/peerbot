@@ -1,4 +1,5 @@
 import { createLogger } from "@lobu/core";
+import { getOrgId } from "../../../lobu/stores/org-context.js";
 
 const logger = createLogger("mcp-tool-cache");
 
@@ -83,10 +84,21 @@ export class McpToolCache {
     return info?.instructions;
   }
 
+  /**
+   * Cache keys are org-scoped. The McpToolCache is a process-wide singleton
+   * shared by every org, but agentId is NOT globally unique (agents PK is
+   * (organization_id, id) and ids are human slugs), so two orgs with the same
+   * agentId+mcpId would otherwise collide — letting org A's tool annotations
+   * auto-approve org B's destructive tool call. Every get/set runs inside
+   * `runWithOrganizationContext`, so we derive the org from that context
+   * rather than threading it through every signature (which could be forgotten
+   * at a call site).
+   */
   private buildKey(mcpId: string, agentId?: string): string {
+    const orgId = getOrgId();
     if (agentId) {
-      return `mcp:tools:${agentId}:${mcpId}`;
+      return `mcp:tools:${orgId}:${agentId}:${mcpId}`;
     }
-    return `mcp:tools:${mcpId}`;
+    return `mcp:tools:${orgId}:${mcpId}`;
   }
 }

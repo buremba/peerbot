@@ -1,6 +1,6 @@
 import { verifyWorkerToken, type WorkerTokenData } from "@lobu/core";
 import type { Context } from "hono";
-import { orgContext } from "../../../lobu/stores/org-context.js";
+import { getOrgId, orgContext } from "../../../lobu/stores/org-context.js";
 import { getRevokedTokenStore } from "../revoked-token-store.js";
 import type { McpTool } from "./tool-cache.js";
 
@@ -218,17 +218,23 @@ export function computeScopeKey(
 
 /**
  * Build a session-store key for the upstream Mcp-Session-Id associated
- * with a specific (agent, mcp, scope) triple. Scoping by scopeKey prevents
- * two users (or user-vs-channel credentials) from sharing a single
- * upstream session, which would leak context across scopes.
+ * with a specific (org, agent, mcp, scope) tuple. The session store is a
+ * process-wide Map, and agentId is NOT globally unique (agents PK is
+ * (organization_id, id)), so the key MUST be org-scoped to stop two orgs
+ * sharing the same agentId+mcpId from bleeding upstream session handles into
+ * each other. Scoping by scopeKey additionally prevents two users (or
+ * user-vs-channel credentials) within an org from sharing a single upstream
+ * session. The org is read from `runWithOrganizationContext` (every caller
+ * runs inside it) so no signature need carry it.
  */
 export function buildSessionKey(
 	agentId: string,
 	mcpId: string,
 	scopeKey?: string,
 ): string {
+	const orgId = getOrgId();
 	const scope = scopeKey ?? "_unscoped";
-	return `mcp:session:${agentId}:${mcpId}:${scope}`;
+	return `mcp:session:${orgId}:${agentId}:${mcpId}:${scope}`;
 }
 
 export async function getRequestBodyAsText(c: Context): Promise<string> {

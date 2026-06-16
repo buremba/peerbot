@@ -23,6 +23,7 @@ import {
 } from "bun:test";
 import { generateWorkerToken, type SecretRef } from "@lobu/core";
 import { MockMessageQueue } from "@lobu/core/testing";
+import { orgContext } from "../../lobu/stores/org-context.js";
 import { McpProxy } from "../auth/mcp/proxy.js";
 import { McpToolCache } from "../auth/mcp/tool-cache.js";
 import { GrantStore } from "../permissions/grant-store.js";
@@ -448,9 +449,12 @@ describe("cross-agent JWT isolation", () => {
     });
     const app = proxy.getApp();
 
-    // Seed destructive tool in cache for both agents
-    await toolCache.set("shared-mcp", [{ name: "delete_everything" }], "agent1");
-    await toolCache.set("shared-mcp", [{ name: "delete_everything" }], "agent2");
+    // Seed destructive tool in cache for both agents (org-scoped cache → seed
+    // in the same org as the agent tokens).
+    orgContext.run({ organizationId: "test-org" }, () => {
+      toolCache.set("shared-mcp", [{ name: "delete_everything" }], "agent1");
+      toolCache.set("shared-mcp", [{ name: "delete_everything" }], "agent2");
+    });
 
     // Grant only to agent1
     await grantStore.grant(
@@ -554,11 +558,17 @@ describe("tool registry collision — same tool name on two MCPs", () => {
 
   test("tool cache is keyed per (mcpId, agentId) — no cross-MCP cache pollution", async () => {
     const toolCache = new McpToolCache();
-    await toolCache.set("mcp-a", [{ name: "send_message", annotations: { readOnlyHint: true } }], "agent1");
-    await toolCache.set("mcp-b", [{ name: "send_message" }], "agent1");
-
-    const toolsA = await toolCache.get("mcp-a", "agent1");
-    const toolsB = await toolCache.get("mcp-b", "agent1");
+    const { toolsA, toolsB } = orgContext.run(
+      { organizationId: "test-org" },
+      () => {
+        toolCache.set("mcp-a", [{ name: "send_message", annotations: { readOnlyHint: true } }], "agent1");
+        toolCache.set("mcp-b", [{ name: "send_message" }], "agent1");
+        return {
+          toolsA: toolCache.get("mcp-a", "agent1"),
+          toolsB: toolCache.get("mcp-b", "agent1"),
+        };
+      }
+    );
 
     expect(toolsA).toHaveLength(1);
     expect(toolsB).toHaveLength(1);
@@ -594,7 +604,9 @@ describe("tool approval — onToolBlocked and wildcard grants", () => {
     };
 
     const app = proxy.getApp();
-    await toolCache.set("test-mcp", [{ name: "nuke_db" }], "agent1");
+    orgContext.run({ organizationId: "test-org" }, () => {
+      toolCache.set("test-mcp", [{ name: "nuke_db" }], "agent1");
+    });
 
     successFetch({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "done" }] } });
 
@@ -616,14 +628,16 @@ describe("tool approval — onToolBlocked and wildcard grants", () => {
   test("wildcard grant /mcp/<id>/tools/* covers all tools of that server", async () => {
     const toolCache = new McpToolCache();
     const grantStore = new GrantStore();
-    await toolCache.set(
-      "gh-mcp",
-      [
-        { name: "create_issue" },
-        { name: "delete_repo" },
-      ],
-      "agent1"
-    );
+    orgContext.run({ organizationId: "test-org" }, () => {
+      toolCache.set(
+        "gh-mcp",
+        [
+          { name: "create_issue" },
+          { name: "delete_repo" },
+        ],
+        "agent1"
+      );
+    });
 
     // Wildcard grant for the whole server
     await grantStore.grant(
@@ -728,7 +742,9 @@ describe("tool approval — onToolBlocked and wildcard grants", () => {
   test("onToolBlocked receives correct agentId and tool metadata", async () => {
     const toolCache = new McpToolCache();
     const grantStore = new GrantStore();
-    await toolCache.set("audit-mcp", [{ name: "drop_table" }], "agent1");
+    orgContext.run({ organizationId: "test-org" }, () => {
+      toolCache.set("audit-mcp", [{ name: "drop_table" }], "agent1");
+    });
 
     const configSource = createConfigSource({
       "audit-mcp": { id: "audit-mcp", upstreamUrl: "http://audit.example.com/mcp" },
@@ -854,31 +870,36 @@ describe("SSE-framed JSON-RPC response", () => {
 // ---------------------------------------------------------------------------
 
 describe("in-memory session TTL", () => {
-  test("McpToolCache returns null after TTL expires", async () => {
+  test("McpToolCache returns null after TTL expires", () => {
     const cache = new McpToolCache();
-    await cache.set("mcp-x", [{ name: "tool1" }], "agent1");
+    // Cache reads/writes derive the org from context.
+    orgContext.run({ organizationId: "test-org" }, () => {
+      cache.set("mcp-x", [{ name: "tool1" }], "agent1");
 
-    // Check hit immediately
-    const hit = await cache.get("mcp-x", "agent1");
-    expect(hit).not.toBeNull();
-    expect(hit![0].name).toBe("tool1");
+      // Check hit immediately
+      const hit = cache.get("mcp-x", "agent1");
+      expect(hit).not.toBeNull();
+      expect(hit![0].name).toBe("tool1");
 
-    // Manually expire by probing the expiry logic via a never-set key
-    const miss = await cache.get("mcp-x-nonexistent", "agent1");
-    expect(miss).toBeNull();
+      // Manually expire by probing the expiry logic via a never-set key
+      const miss = cache.get("mcp-x-nonexistent", "agent1");
+      expect(miss).toBeNull();
+    });
   });
 
-  test("McpToolCache per-agent isolation — agent2 cache miss for agent1 entry", async () => {
+  test("McpToolCache per-agent isolation — agent2 cache miss for agent1 entry", () => {
     const cache = new McpToolCache();
-    await cache.set("mcp-iso", [{ name: "private_tool" }], "agent1");
+    orgContext.run({ organizationId: "test-org" }, () => {
+      cache.set("mcp-iso", [{ name: "private_tool" }], "agent1");
 
-    const forAgent1 = await cache.get("mcp-iso", "agent1");
-    const forAgent2 = await cache.get("mcp-iso", "agent2");
-    const noAgent = await cache.get("mcp-iso");
+      const forAgent1 = cache.get("mcp-iso", "agent1");
+      const forAgent2 = cache.get("mcp-iso", "agent2");
+      const noAgent = cache.get("mcp-iso");
 
-    expect(forAgent1).not.toBeNull();
-    expect(forAgent2).toBeNull();
-    expect(noAgent).toBeNull();
+      expect(forAgent1).not.toBeNull();
+      expect(forAgent2).toBeNull();
+      expect(noAgent).toBeNull();
+    });
   });
 });
 

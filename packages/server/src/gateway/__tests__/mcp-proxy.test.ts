@@ -8,6 +8,7 @@ import {
 } from "bun:test";
 import { generateWorkerToken, type SecretRef } from "@lobu/core";
 import { MockMessageQueue } from "@lobu/core/testing";
+import { orgContext } from "../../lobu/stores/org-context.js";
 import { McpProxy } from "../auth/mcp/proxy.js";
 import { McpToolCache } from "../auth/mcp/tool-cache.js";
 import { GrantStore } from "../permissions/grant-store.js";
@@ -511,8 +512,11 @@ describe("McpProxy", () => {
       });
       const app = proxy.getApp();
 
-      // Pre-populate cache with a tool that has no annotations (default destructive)
-      await toolCache.set("test-mcp", [{ name: "dangerous_tool" }], "agent1");
+      // Pre-populate cache with a tool that has no annotations (default destructive).
+      // The cache is org-scoped, so seed it in the same org as `validToken`.
+      orgContext.run({ organizationId: "test-org" }, () => {
+        toolCache.set("test-mcp", [{ name: "dangerous_tool" }], "agent1");
+      });
 
       const res = await app.request("/test-mcp/tools/dangerous_tool", {
         method: "POST",
@@ -534,8 +538,11 @@ describe("McpProxy", () => {
       });
       const app = proxy.getApp();
 
-      // Pre-populate cache with a tool that has no annotations (default destructive)
-      await toolCache.set("test-mcp", [{ name: "dangerous_tool" }], "agent1");
+      // Pre-populate cache with a tool that has no annotations (default destructive).
+      // The cache is org-scoped, so seed it in the same org as `validToken`.
+      orgContext.run({ organizationId: "test-org" }, () => {
+        toolCache.set("test-mcp", [{ name: "dangerous_tool" }], "agent1");
+      });
 
       // Grant access
       await grantStore.grant(
@@ -574,12 +581,14 @@ describe("McpProxy", () => {
       });
       const app = proxy.getApp();
 
-      // Pre-populate cache with a read-only tool
-      await toolCache.set(
-        "test-mcp",
-        [{ name: "read_tool", annotations: { readOnlyHint: true } }],
-        "agent1"
-      );
+      // Pre-populate cache with a read-only tool (seed in `validToken`'s org).
+      orgContext.run({ organizationId: "test-org" }, () => {
+        toolCache.set(
+          "test-mcp",
+          [{ name: "read_tool", annotations: { readOnlyHint: true } }],
+          "agent1"
+        );
+      });
 
       mockUpstreamFetch({
         jsonrpc: "2.0",
@@ -607,12 +616,14 @@ describe("McpProxy", () => {
       });
       const app = proxy.getApp();
 
-      // Pre-populate cache with a non-destructive tool
-      await toolCache.set(
-        "test-mcp",
-        [{ name: "safe_tool", annotations: { destructiveHint: false } }],
-        "agent1"
-      );
+      // Pre-populate cache with a non-destructive tool (seed in `validToken`'s org).
+      orgContext.run({ organizationId: "test-org" }, () => {
+        toolCache.set(
+          "test-mcp",
+          [{ name: "safe_tool", annotations: { destructiveHint: false } }],
+          "agent1"
+        );
+      });
 
       mockUpstreamFetch({
         jsonrpc: "2.0",

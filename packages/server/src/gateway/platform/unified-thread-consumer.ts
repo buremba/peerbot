@@ -446,9 +446,14 @@ export class UnifiedThreadResponseConsumer {
           conversationId: data.conversationId,
           platform: "api",
         };
-        // SSE sessions key on conversationId (see ApiResponseRenderer); reuse it
-        // so delta rolling-tail + terminal scan share one per-turn key.
-        const guardKey = data.conversationId || data.messageId;
+        // Key the rolling-tail + blocked state per TURN, not per conversation:
+        // a worker's deltas and its terminal row share `originalMessageId`, but a
+        // conversation hosts many turns. Keying on conversationId would let one
+        // turn's leftover tail (`…sk-a`) fuse with the next turn's first delta
+        // (`bcdef…`) into a phantom match, or let one turn's terminal clear()
+        // wipe a concurrent turn's blocked flag. originalMessageId scopes both
+        // to a single turn.
+        const guardKey = data.originalMessageId || data.messageId;
 
         // Suppress streaming deltas that carry — or, via the rolling tail,
         // complete — a secret. Best-effort under N>1: deltas aren't owner-gated,

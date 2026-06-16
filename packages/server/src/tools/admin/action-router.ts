@@ -48,7 +48,8 @@ export async function routeAction<TResult>(
 ): Promise<TResult> {
   const handler = handlers[action];
   if (!handler) {
-    throw new Error(`Unknown action: ${action}`);
+    // Unknown action is a caller/input fault (a 4xx), not an operational error.
+    throw new ToolUserError(`Unknown action: ${action}`, 400);
   }
 
   enforceActionAccess(toolName, action, ctx);
@@ -80,7 +81,9 @@ export async function routeAction<TResult>(
  */
 export function requireField<T>(value: T | undefined | null, fieldName: string, action: string): T {
   if (value === undefined || value === null) {
-    throw new Error(`${fieldName} is required for ${action} action`);
+    // Missing required input is a caller fault (a 400), not an operational
+    // error — so it returns the right status and stays out of the Sentry feed.
+    throw new ToolUserError(`${fieldName} is required for ${action} action`, 400);
   }
   return value;
 }

@@ -518,7 +518,7 @@ async function etHandleGet(
   slug: string | undefined,
   ctx: ToolContext
 ): Promise<ManageEntitySchemaResult> {
-  if (!slug) throw new Error('slug is required for get action');
+  if (!slug) throw new ToolUserError('slug is required for get action', 400);
 
   const sql = getDb();
   const fetchRow = () =>
@@ -562,19 +562,20 @@ async function etHandleCreate(
   args: ManageEntitySchemaArgs,
   ctx: ToolContext
 ): Promise<ManageEntitySchemaResult> {
-  if (!args.slug) throw new Error('slug is required for create action');
-  if (!args.name) throw new Error('name is required for create action');
-  if (!ctx.userId) throw new Error('Authentication required to create entity types');
+  if (!args.slug) throw new ToolUserError('slug is required for create action', 400);
+  if (!args.name) throw new ToolUserError('name is required for create action', 400);
+  if (!ctx.userId) throw new ToolUserError('Authentication required to create entity types', 401);
 
   if (args.slug.startsWith('$')) {
-    throw new Error("Entity type slugs starting with '$' are reserved for system types");
+    throw new ToolUserError("Entity type slugs starting with '$' are reserved for system types", 422);
   }
 
   const slug = args.slug.toLowerCase().replace(/[^a-z0-9-]/g, '-');
 
   if (RESERVED_ENTITY_TYPES.includes(slug)) {
-    throw new Error(
-      `Cannot create entity type with reserved slug '${slug}'. Reserved: ${RESERVED_ENTITY_TYPES.join(', ')}`
+    throw new ToolUserError(
+      `Cannot create entity type with reserved slug '${slug}'. Reserved: ${RESERVED_ENTITY_TYPES.join(', ')}`,
+      422
     );
   }
 
@@ -650,8 +651,8 @@ async function etHandleUpdate(
   args: ManageEntitySchemaArgs,
   ctx: ToolContext
 ): Promise<ManageEntitySchemaResult> {
-  if (!args.slug) throw new Error('slug is required for update action');
-  if (!ctx.userId) throw new Error('Authentication required to update entity types');
+  if (!args.slug) throw new ToolUserError('slug is required for update action', 400);
+  if (!ctx.userId) throw new ToolUserError('Authentication required to update entity types', 401);
 
   const sql = getDb();
 
@@ -662,7 +663,7 @@ async function etHandleUpdate(
       AND organization_id = ${ctx.organizationId}
     LIMIT 1
   `;
-  if (existing.length === 0) throw new Error(`Entity type '${args.slug}' not found`);
+  if (existing.length === 0) throw new ToolUserError(`Entity type '${args.slug}' not found`, 404);
 
   const current = existing[0];
 
@@ -677,8 +678,9 @@ async function etHandleUpdate(
   if (args.backing?.sql) {
     const existingCount = await getEntityCountForType(Number(current.id), ctx.organizationId);
     if (existingCount > 0) {
-      throw new Error(
-        `Cannot make entity type '${args.slug}' derived: ${existingCount} stored ${existingCount === 1 ? 'entity exists' : 'entities exist'}. Delete them first.`
+      throw new ToolUserError(
+        `Cannot make entity type '${args.slug}' derived: ${existingCount} stored ${existingCount === 1 ? 'entity exists' : 'entities exist'}. Delete them first.`,
+        409
       );
     }
   }
@@ -753,8 +755,8 @@ async function etHandleDelete(
   slug: string | undefined,
   ctx: ToolContext
 ): Promise<ManageEntitySchemaResult> {
-  if (!slug) throw new Error('slug is required for delete action');
-  if (!ctx.userId) throw new Error('Authentication required to delete entity types');
+  if (!slug) throw new ToolUserError('slug is required for delete action', 400);
+  if (!ctx.userId) throw new ToolUserError('Authentication required to delete entity types', 401);
 
   const sql = getDb();
 
@@ -765,13 +767,14 @@ async function etHandleDelete(
       AND organization_id = ${ctx.organizationId}
     LIMIT 1
   `;
-  if (existing.length === 0) throw new Error(`Entity type '${slug}' not found`);
+  if (existing.length === 0) throw new ToolUserError(`Entity type '${slug}' not found`, 404);
 
   const current = existing[0];
   const entityCount = await getEntityCountForType(Number(current.id), ctx.organizationId);
   if (entityCount > 0) {
-    throw new Error(
-      `Cannot delete entity type '${slug}': ${entityCount} entities of this type exist. Remove or reassign them first.`
+    throw new ToolUserError(
+      `Cannot delete entity type '${slug}': ${entityCount} entities of this type exist. Remove or reassign them first.`,
+      409
     );
   }
 
@@ -804,7 +807,7 @@ async function etHandleAudit(
   slug: string | undefined,
   ctx: ToolContext
 ): Promise<ManageEntitySchemaResult> {
-  if (!slug) throw new Error('slug is required for audit action');
+  if (!slug) throw new ToolUserError('slug is required for audit action', 400);
 
   const sql = getDb();
 
@@ -816,7 +819,7 @@ async function etHandleAudit(
      LIMIT 1`,
     [slug, ctx.organizationId]
   );
-  if (existing.length === 0) throw new Error(`Entity type '${slug}' not found`);
+  if (existing.length === 0) throw new ToolUserError(`Entity type '${slug}' not found`, 404);
 
   const entityTypeId = existing[0].id;
 
@@ -876,7 +879,7 @@ async function requireRelationshipType(
   ctx: ToolContext,
   mode: 'read' | 'write' = 'write'
 ): Promise<{ typeId: number; sql: ReturnType<typeof getDb> }> {
-  if (!slug) throw new Error(`slug is required for ${action} action`);
+  if (!slug) throw new ToolUserError(`slug is required for ${action} action`, 400);
 
   const sql = getDb();
 
@@ -891,7 +894,7 @@ async function requireRelationshipType(
       ORDER BY (rt.organization_id = ${ctx.organizationId}) DESC, rt.id ASC
       LIMIT 1
     `;
-    if (rows.length === 0) throw new Error(`Relationship type "${slug}" not found`);
+    if (rows.length === 0) throw new ToolUserError(`Relationship type "${slug}" not found`, 404);
     return { typeId: Number(rows[0].id), sql };
   }
 
@@ -907,7 +910,7 @@ async function requireRelationshipType(
       AND organization_id = ${ctx.organizationId}
     LIMIT 1
   `;
-  if (existing.length === 0) throw new Error(`Relationship type "${slug}" not found`);
+  if (existing.length === 0) throw new ToolUserError(`Relationship type "${slug}" not found`, 404);
 
   return { typeId: Number(existing[0].id), sql };
 }
@@ -938,7 +941,7 @@ async function resolveInverseType(
     LIMIT 1
   `;
   if (rows.length === 0) {
-    throw new Error(`Inverse relationship type "${inverseSlug}" not found`);
+    throw new ToolUserError(`Inverse relationship type "${inverseSlug}" not found`, 404);
   }
   return { id: Number(rows[0].id), ownedByCaller: Boolean(rows[0].owned) };
 }
@@ -1020,7 +1023,7 @@ async function rtHandleGet(
   args: ManageEntitySchemaArgs,
   ctx: ToolContext
 ): Promise<ManageEntitySchemaResult> {
-  if (!args.slug) throw new Error('slug is required for get action');
+  if (!args.slug) throw new ToolUserError('slug is required for get action', 400);
 
   const sql = getDb();
   const rows = await sql`
@@ -1056,11 +1059,11 @@ async function rtHandleCreate(
   args: ManageEntitySchemaArgs,
   ctx: ToolContext
 ): Promise<ManageEntitySchemaResult> {
-  if (!args.slug) throw new Error('slug is required for create action');
-  if (!args.name) throw new Error('name is required for create action');
+  if (!args.slug) throw new ToolUserError('slug is required for create action', 400);
+  if (!args.name) throw new ToolUserError('name is required for create action', 400);
 
   if (args.slug.startsWith('$')) {
-    throw new Error("Relationship type slugs starting with '$' are reserved for system types");
+    throw new ToolUserError("Relationship type slugs starting with '$' are reserved for system types", 422);
   }
 
   const sql = getDb();
@@ -1155,7 +1158,7 @@ async function rtHandleUpdate(
       inverseTypeId = null;
     } else {
       const inverse = await resolveInverseType(sql, args.inverse_type_slug, ctx);
-      if (inverse.id === typeId) throw new Error('inverse_type_id cannot point to self');
+      if (inverse.id === typeId) throw new ToolUserError('inverse_type_id cannot point to self', 422);
       inverseTypeId = inverse.id;
     }
   }
@@ -1221,8 +1224,9 @@ async function rtHandleDelete(
   // under a deleted definition.
   const relationshipCount = await getRelationshipCountForType(typeId, ctx.organizationId);
   if (relationshipCount > 0) {
-    throw new Error(
-      `Cannot delete relationship type '${args.slug}': ${relationshipCount} relationships of this type exist. Remove or reassign them first.`
+    throw new ToolUserError(
+      `Cannot delete relationship type '${args.slug}': ${relationshipCount} relationships of this type exist. Remove or reassign them first.`,
+      409
     );
   }
 
@@ -1258,9 +1262,9 @@ async function rtHandleAddRule(
   ctx: ToolContext
 ): Promise<ManageEntitySchemaResult> {
   if (!args.source_entity_type_slug)
-    throw new Error('source_entity_type_slug is required for add_rule action');
+    throw new ToolUserError('source_entity_type_slug is required for add_rule action', 400);
   if (!args.target_entity_type_slug)
-    throw new Error('target_entity_type_slug is required for add_rule action');
+    throw new ToolUserError('target_entity_type_slug is required for add_rule action', 400);
 
   const { typeId, sql } = await requireRelationshipType(args.slug, 'add_rule', ctx);
 
@@ -1312,7 +1316,7 @@ async function rtHandleRemoveRule(
   args: ManageEntitySchemaArgs,
   ctx: ToolContext
 ): Promise<ManageEntitySchemaResult> {
-  if (!args.rule_id) throw new Error('rule_id is required for remove_rule action');
+  if (!args.rule_id) throw new ToolUserError('rule_id is required for remove_rule action', 400);
 
   const sql = getDb();
 
@@ -1323,11 +1327,11 @@ async function rtHandleRemoveRule(
     WHERE r.id = ${args.rule_id} AND r.deleted_at IS NULL
     LIMIT 1
   `;
-  if (ruleRows.length === 0) throw new Error(`Rule ${args.rule_id} not found`);
+  if (ruleRows.length === 0) throw new ToolUserError(`Rule ${args.rule_id} not found`, 404);
 
   const ruleOrgId = String(ruleRows[0].organization_id ?? '');
   if (ruleOrgId && ruleOrgId !== ctx.organizationId) {
-    throw new Error('Access denied: rule belongs to another organization');
+    throw new ToolUserError('Access denied: rule belongs to another organization', 403);
   }
 
   await sql`

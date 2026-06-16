@@ -14,7 +14,16 @@
 
 import { describe, expect, it } from 'vitest';
 import { ToolUserError } from '../../../utils/errors';
-import { errorLogLevel } from '../action-router';
+import { errorLogLevel, requireField, routeAction } from '../action-router';
+import type { ToolContext } from '../../registry';
+
+const systemCtx = {
+  organizationId: 'org_123',
+  userId: null,
+  memberRole: null,
+  isAuthenticated: true,
+  scopes: ['mcp:admin'],
+} as unknown as ToolContext;
 
 describe('errorLogLevel', () => {
   it('logs a ToolUserError at warn (any status)', () => {
@@ -27,5 +36,29 @@ describe('errorLogLevel', () => {
     expect(errorLogLevel(new Error('boom'))).toBe('error');
     expect(errorLogLevel('a thrown string')).toBe('error');
     expect(errorLogLevel(undefined)).toBe('error');
+  });
+});
+
+describe('requireField', () => {
+  it('throws a 400 ToolUserError when the value is missing', () => {
+    try {
+      requireField(undefined, 'slug', 'create');
+      throw new Error('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(ToolUserError);
+      expect((err as ToolUserError).httpStatus).toBe(400);
+    }
+  });
+
+  it('returns the value when present', () => {
+    expect(requireField('x', 'slug', 'create')).toBe('x');
+  });
+});
+
+describe('routeAction unknown action', () => {
+  it('throws a 400 ToolUserError for an unregistered action', async () => {
+    await expect(routeAction('manage_entity', 'nope', systemCtx, {})).rejects.toBeInstanceOf(
+      ToolUserError
+    );
   });
 });

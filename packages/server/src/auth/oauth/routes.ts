@@ -320,7 +320,7 @@ oauthRoutes.post('/oauth/register', async (c) => {
   if (c.env.RATE_LIMIT_ENABLED !== 'false') {
     try {
       const rateLimiter = getRateLimiter();
-      const clientIP = getClientIP(c.req.raw);
+      const clientIP = getClientIP(c.req.raw, c.var.peerRemoteAddress);
       const rateLimit = await rateLimiter.checkLimit(
         `rate:oauth:register:${clientIP}`,
         RateLimitPresets.OAUTH_REGISTER_PER_IP_HOUR
@@ -731,7 +731,7 @@ oauthRoutes.post('/oauth/device/email', async (c) => {
   if (c.env.RATE_LIMIT_ENABLED !== 'false') {
     try {
       const rateLimiter = getRateLimiter();
-      const clientIP = getClientIP(c.req.raw);
+      const clientIP = getClientIP(c.req.raw, c.var.peerRemoteAddress);
       const rateLimit = await rateLimiter.checkLimit(
         `rate:oauth:device-email:${clientIP}`,
         RateLimitPresets.DEVICE_EMAIL_PER_IP_HOUR

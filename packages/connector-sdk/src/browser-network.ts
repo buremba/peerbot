@@ -5,13 +5,12 @@
  * Two-layer cascade:
  *   1. CDP — Playwright's connectOverCDP to user's real Chrome (default context).
  *      Works for network interception because we just open a tab and listen.
- *   2. Playwright — launch headless browser with stored cookies (fallback).
+ *   2. Playwright — launch headless browser (fallback).
  *
  * Both paths share the same intercept → scroll → parse pipeline.
- * Fresh cookies are always captured and returned for persistence.
  */
 
-import type { Browser, BrowserContext, Cookie, Page, Response } from 'playwright';
+import type { Browser, BrowserContext, Page, Response } from 'playwright';
 import { resolveCdpUrl } from './browser/cdp.js';
 import { captureErrorArtifacts, launchBrowser } from './browser/launcher.js';
 import { sdkLogger } from './logger.js';
@@ -19,8 +18,6 @@ import { sdkLogger } from './logger.js';
 export interface BrowserNetworkConfig {
   /** URL patterns to intercept (glob or regex). Matched against response URLs. */
   interceptPatterns: (string | RegExp)[];
-  /** Cookie domains required for auth (e.g., ['x.com', '.x.com']) */
-  authDomains: string[];
   /** Maximum number of scroll iterations for pagination (default: 10) */
   maxScrolls?: number;
   /** Delay between scrolls in ms (default: 2000) */
@@ -35,7 +32,6 @@ export interface BrowserNetworkConfig {
 
 export interface BrowserNetworkResult<TItem> {
   items: TItem[];
-  cookies: Cookie[];
   apiCallCount: number;
   /** Which browser backend was used */
   backend: 'cdp' | 'playwright';
@@ -69,22 +65,10 @@ interface NetworkBrowser {
 
 async function acquireForNetworkSync(
   cdpUrl: string | 'auto' | null | undefined,
-  cookies: Cookie[],
   stealth: boolean,
   userDataDir: string | undefined
 ): Promise<NetworkBrowser> {
-  // Mirror-mode priority: when the caller already handed us a populated
-  // cookie set and didn't pin a specific CDP endpoint, force the headless
-  // Playwright + addCookies path. Otherwise an auto-CDP discovery would
-  // attach to the user's running Chrome (e.g. M144 remote-debugging
-  // toggle) and silently bypass the cookies we just decrypted — fine in
-  // the sense that it'd still scrape, but it'd be running through the
-  // user's live session instead of the isolated mirror we promised.
-  if (cookies.length > 0 && cdpUrl === 'auto') {
-    cdpUrl = null;
-  }
-
-  // --- Persistent profile path: cookies live on disk ---
+  // --- Persistent profile path: session lives on disk ---
   if (userDataDir) {
     const playwrightModule = 'playwright';
     const { chromium } = await import(/* @vite-ignore */ playwrightModule);
@@ -95,13 +79,10 @@ async function acquireForNetworkSync(
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
     })) as BrowserContext;
     try {
-      if (cookies.length > 0) {
-        await context.addCookies(cookies);
-      }
       const pages = context.pages();
       const page = pages.length > 0 ? pages[0] : await context.newPage();
       sdkLogger.info(
-        { userDataDir, cookies: cookies.length },
+        { userDataDir },
         '[BrowserNetwork] Launched with persistent --user-data-dir'
       );
       return {
@@ -113,8 +94,8 @@ async function acquireForNetworkSync(
         screenshotDir,
       };
     } catch (err) {
-      // addCookies / newPage failed — close the persistent context so we
-      // don't leak a long-lived Chromium process holding the profile lock.
+      // newPage failed — close the persistent context so we don't leak a
+      // long-lived Chromium process holding the profile lock.
       await context.close().catch(() => {});
       throw err;
     }
@@ -171,14 +152,10 @@ async function acquireForNetworkSync(
     }
   }
 
-  // --- Layer 2: Playwright with stored cookies ---
+  // --- Layer 2: Playwright headless fallback ---
   const { browser, screenshotDir } = await launchBrowser({ stealth });
   try {
     const context = (await (browser as Browser).newContext()) as BrowserContext;
-    if (cookies.length > 0) {
-      await context.addCookies(cookies);
-      sdkLogger.info({ count: cookies.length }, '[BrowserNetwork] Loaded persisted cookies');
-    }
     const page = await context.newPage();
 
     return {
@@ -202,20 +179,18 @@ async function acquireForNetworkSync(
 export async function browserNetworkSync<TItem>(opts: {
   config: BrowserNetworkConfig;
   url: string;
-  /** Stored cookies for Playwright fallback. Can be empty if CDP is expected. */
-  cookies: Cookie[];
   parseResponse: (url: string, json: unknown) => TItem[];
   triggerNextPage?: (page: Page) => Promise<void>;
   checkAuth?: (page: Page) => Promise<boolean>;
   /**
    * CDP endpoint URL, 'auto' to auto-discover, or null/undefined to skip CDP.
-   * When set, CDP is tried first; if unavailable, falls back to Playwright + cookies.
+   * When set, CDP is tried first; if unavailable, falls back to headless Playwright.
    */
   cdpUrl?: string | 'auto' | null;
   /**
    * Device-bound managed --user-data-dir. When set, Playwright launches via
-   * launchPersistentContext and CDP is skipped — cookies live on disk in this
-   * profile dir.
+   * launchPersistentContext and CDP is skipped — the session lives on disk in
+   * this profile dir.
    */
   userDataDir?: string;
 }): Promise<BrowserNetworkResult<TItem>> {
@@ -231,7 +206,6 @@ export async function browserNetworkSync<TItem>(opts: {
 
   const acquired = await acquireForNetworkSync(
     opts.userDataDir ? null : (opts.cdpUrl ?? null),
-    opts.cookies,
     cfg.stealth ?? false,
     opts.userDataDir
   );
@@ -274,7 +248,7 @@ export async function browserNetworkSync<TItem>(opts: {
         const msg =
           backend === 'cdp'
             ? 'Authentication check failed via CDP — you may not be logged in to this site in Chrome'
-            : 'Authentication failed — cookies may be expired. Re-run: lobu memory browser-auth';
+            : 'Authentication failed — the browser session is not logged in. Re-run: lobu memory browser-auth';
         throw new Error(msg);
       }
     }
@@ -313,12 +287,7 @@ export async function browserNetworkSync<TItem>(opts: {
       prevCount = items.length;
     }
 
-    // Always capture cookies — regardless of backend, these get persisted
-    const cookies = await context.cookies(
-      cfg.authDomains.map((d) => (d.startsWith('http') ? d : `https://${d}`))
-    );
-
-    return { items, cookies, apiCallCount, backend };
+    return { items, apiCallCount, backend };
   } catch (error: any) {
     if (page) {
       await captureErrorArtifacts(page, error, 'browser-network', screenshotDir);

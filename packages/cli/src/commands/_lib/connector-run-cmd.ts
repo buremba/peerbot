@@ -19,7 +19,7 @@
  * down, and we get the same isolation production gets.
  */
 
-import { existsSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -58,21 +58,6 @@ interface ResolvedAuthProfile {
   browser_kind: string | null;
   cdp_url: string | null;
   device_worker_id: string | null;
-  /** Mirror-mode fields. When source_profile_dir is set, the connector
-   * subprocess decrypts cookies from the user's Chrome locally instead of
-   * launching anything. See packages/connector-sdk/src/browser/mirror-cookies.ts. */
-  auth_data?: {
-    source_profile_dir?: string | null;
-    source_browser_root?: string | null;
-    source_browser?: string | null;
-    mode?: string | null;
-    /** Per-profile opt-in to CDP attach. When true and the user's Chrome
-     * is exposing remote debugging, the connector subprocess attaches
-     * via the live CDP socket; otherwise it sticks to mirror cookies.
-     * Default false — Lobu doesn't probe the user's browser process
-     * without explicit consent, even when DevToolsActivePort is there. */
-    allow_cdp_attach?: boolean;
-  };
 }
 
 interface ResolvedFeed {
@@ -253,25 +238,10 @@ export async function connectorRun(
     );
   }
 
-  // Two auth shapes for a browser_session profile:
-  //   1. Mirror mode (auth_data.source_profile_dir set): decrypt cookies
-  //      from the user's Chrome via keychain at sync time. The source
-  //      dir must exist on this machine.
-  //   2. CDP attach (cdp_url set, no source_profile_dir): the user is
-  //      running Chrome with --remote-debugging-port and we attach.
-  const mirrorSourceDir = profile.auth_data?.source_profile_dir;
-  const mirrorBrowserRoot = profile.auth_data?.source_browser_root;
-  const mirrorSourceBrowser = profile.auth_data?.source_browser ?? "chrome";
-  if (mirrorSourceDir && mirrorBrowserRoot) {
-    const sourceProfilePath = `${mirrorBrowserRoot}/${mirrorSourceDir}`;
-    if (!existsSync(sourceProfilePath)) {
-      throw new Error(
-        `Source Chrome profile not found at ${sourceProfilePath}.\n` +
-          `The profile may have been deleted or renamed in your Chrome — re-pick in the Lobu menu bar.`
-      );
-    }
-  }
-  if (profile.cdp_url && !mirrorSourceDir) {
+  // browser_session auth is CDP attach: the user runs Chrome with
+  // --remote-debugging-port (launched by `lobu memory browser-auth`) and the
+  // connector subprocess attaches over CDP via the profile's cdp_url.
+  if (profile.cdp_url) {
     printText(
       `Profile uses CDP at ${profile.cdp_url} — make sure that Chrome is running with --remote-debugging-port.`
     );
@@ -311,14 +281,7 @@ export async function connectorRun(
     const summary = {
       connector_key: connectorKey,
       auth_profile: profile.slug,
-      mode: mirrorSourceDir ? "mirror" : "cdp",
-      mirror: mirrorSourceDir
-        ? {
-            source_profile_dir: mirrorSourceDir,
-            source_browser_root: mirrorBrowserRoot,
-            source_browser: mirrorSourceBrowser,
-          }
-        : null,
+      mode: "cdp",
       cdp_url: profile.cdp_url,
       profile_status: profile.status,
       feed_id: feed?.id,
@@ -341,68 +304,10 @@ export async function connectorRun(
   printText(`Compiling ${connectorKey} from ${sourcePath}...`);
   const compiledCode = await compileConnectorFromFile(sourcePath);
 
-  // Build the ExecutorJob shape that executeCompiledConnector expects.
-  // For mirror profiles we layer two acquisition paths:
-  //   1. DevToolsActivePort lookup against the source Chrome's
-  //      user-data root. If the file is there, Chrome is exposing a
-  //      live CDP WebSocket — either the user toggled the M144 setting
-  //      at chrome://inspect/#remote-debugging, or they launched Chrome
-  //      with --remote-debugging-port. Either way, we attach via CDP and
-  //      run inside the user's actual Chrome session. Best fidelity for
-  //      fingerprint-pinned sites (Revolut etc.).
-  //   2. Keychain-decrypted cookies. If Chrome isn't exposing CDP, the
-  //      connector subprocess falls back to headless Playwright with
-  //      these cookies injected via addCookies. Covers ~90% of sites.
-  //
-  // The connector subprocess's browser-network.ts tries CDP first when
-  // cdp_url is explicitly set, falls through to cookies on failure.
+  // The connector subprocess attaches over CDP when cdp_url is set — the
+  // profile row carries the --remote-debugging-port endpoint the user pinned
+  // at `lobu memory browser-auth` time.
   const sessionState: Record<string, unknown> = {};
-  if (mirrorSourceDir && mirrorBrowserRoot) {
-    const { acquireMirroredCookies } = await import(
-      "@lobu/connector-sdk/browser-mirror"
-    );
-    const { readDevToolsActivePort } = await import(
-      "@lobu/connector-sdk/browser-devtools-active-port"
-    );
-
-    // Layer 1: DevToolsActivePort — *only* when the user explicitly
-    // opted into CDP for this profile. Otherwise we never probe their
-    // Chrome's debug surface, even if M144 is enabled for other tools.
-    // Default-off matches the "no surprise dialogs" UX: the only way
-    // Lobu attaches to a live Chrome is if the user checked the box at
-    // profile-create time.
-    if (profile.auth_data?.allow_cdp_attach === true) {
-      const activePort = await readDevToolsActivePort(mirrorBrowserRoot);
-      if (activePort) {
-        printText(
-          `Detected Chrome CDP at ${activePort.wsUrl} (via DevToolsActivePort).`
-        );
-        sessionState.cdp_url = activePort.wsUrl;
-      } else {
-        printText(
-          "CDP attach allowed for this profile, but Chrome isn't exposing remote debugging — falling back to mirror cookies."
-        );
-      }
-    }
-
-    // Layer 2: cookies. Always acquire — even if CDP attach succeeds,
-    // the cookies are a free fallback in case the CDP socket drops
-    // mid-sync. Cheap to skip on CDP success in practice.
-    printText(
-      `Acquiring cookies from ${mirrorBrowserRoot}/${mirrorSourceDir}...`
-    );
-    const acquired = await acquireMirroredCookies({
-      sourceBrowser: mirrorSourceBrowser,
-      userDataRoot: mirrorBrowserRoot,
-      sourceProfileDir: mirrorSourceDir,
-    });
-    printText(
-      `  Kept ${acquired.cookies.length} cookies (skipped ${acquired.skipped_google_count} Google-account cookies, ${acquired.total_decrypted_count} total).`
-    );
-    sessionState.cookies = acquired.cookies;
-  }
-  // Explicit cdp_url on the profile row overrides DevToolsActivePort
-  // auto-discovery — the user pinned a specific port at create time.
   if (profile.cdp_url) sessionState.cdp_url = profile.cdp_url;
 
   // Lazy-import the worker so the CLI startup doesn't pay this cost for

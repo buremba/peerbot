@@ -894,6 +894,11 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
       error_message?: string;
     }>();
 
+    // A worker can only finalize a run it claimed. Without this a leaked worker
+    // token could mark arbitrary runs done.
+    const denied = await authorizeRunForWorker(c, req.run_id, req.worker_id);
+    if (denied) return denied;
+
     const sql = getDb();
 
     if (!req.embeddings || req.embeddings.length === 0) {
@@ -904,6 +909,8 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
               completed_at = current_timestamp,
               error_message = ${req.error_message}
           WHERE id = ${req.run_id}
+            AND status = 'running'
+            AND claimed_by = ${req.worker_id}
         `;
         return c.json({ success: false, error: req.error_message }, 400);
       }
@@ -913,6 +920,8 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
         SET status = 'completed',
             completed_at = current_timestamp
         WHERE id = ${req.run_id}
+          AND status = 'running'
+          AND claimed_by = ${req.worker_id}
       `;
       return c.json({ success: true, updated: 0 });
     }
@@ -952,6 +961,8 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
           completed_at = current_timestamp,
           items_collected = ${updated}
       WHERE id = ${req.run_id}
+        AND status = 'running'
+        AND claimed_by = ${req.worker_id}
     `;
 
     logger.info(
@@ -974,11 +985,16 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
  */
 export async function emitAuthArtifact(c: Context<{ Bindings: Env }>) {
   try {
-    const { run_id, artifact } = await c.req.json<{
+    const { run_id, worker_id, artifact } = await c.req.json<{
       run_id: number;
       worker_id: string;
       artifact: Record<string, unknown>;
     }>();
+
+    // Only the claimant may write the run's checkpoint/heartbeat — otherwise any
+    // worker could clobber another tenant's auth artifact or keep its run alive.
+    const denied = await authorizeRunForWorker(c, run_id, worker_id);
+    if (denied) return denied;
 
     const sql = getDb();
 
@@ -987,6 +1003,8 @@ export async function emitAuthArtifact(c: Context<{ Bindings: Env }>) {
       SET checkpoint = ${sql.json({ artifact, emitted_at: new Date().toISOString() })},
           last_heartbeat_at = current_timestamp
       WHERE id = ${run_id}
+        AND status = 'running'
+        AND claimed_by = ${worker_id}
     `;
 
     return c.json({ success: true });
@@ -1003,11 +1021,16 @@ export async function emitAuthArtifact(c: Context<{ Bindings: Env }>) {
  */
 export async function pollAuthSignal(c: Context<{ Bindings: Env }>) {
   try {
-    const { run_id, signal_name } = await c.req.json<{
+    const { run_id, worker_id, signal_name } = await c.req.json<{
       run_id: number;
       worker_id: string;
       signal_name: string;
     }>();
+
+    // Only the claimant may drain a run's pending auth signal — otherwise any
+    // worker could consume (and thereby DoS) another tenant's interactive auth.
+    const denied = await authorizeRunForWorker(c, run_id, worker_id);
+    if (denied) return denied;
 
     const sql = getDb();
 
@@ -1015,6 +1038,7 @@ export async function pollAuthSignal(c: Context<{ Bindings: Env }>) {
       const rows = (await tx`
         SELECT auth_signal FROM runs
         WHERE id = ${run_id}
+          AND claimed_by = ${worker_id}
         FOR UPDATE
       `) as Array<{ auth_signal: Record<string, unknown> | null }>;
 
@@ -1055,6 +1079,14 @@ export async function completeAuthRun(c: Context<{ Bindings: Env }>) {
       exit_reason?: 'ok' | 'error_message' | 'timeout' | 'oom' | 'crash';
     }>();
 
+    // A worker can only finalize an auth run it claimed. Without this a leaked
+    // worker token could finalize an arbitrary auth run and inject credentials
+    // into the linked auth_profiles row. The claimant/status guards on the
+    // UPDATEs below additionally protect the token-auth (non-'user') mode that
+    // authorizeRunForWorker waves through.
+    const denied = await authorizeRunForWorker(c, req.run_id, req.worker_id);
+    if (denied) return denied;
+
     const sql = getDb();
 
     const runRows =
@@ -1070,6 +1102,8 @@ export async function completeAuthRun(c: Context<{ Bindings: Env }>) {
           exit_signal = ${req.exit_signal ?? null},
           exit_reason = ${req.exit_reason ?? null}
       WHERE id = ${req.run_id}
+        AND status = 'running'
+        AND claimed_by = ${req.worker_id}
       RETURNING auth_profile_id, organization_id
     `) as Array<{ auth_profile_id: number | null; organization_id: string }>)
         : ((await sql`
@@ -1079,6 +1113,8 @@ export async function completeAuthRun(c: Context<{ Bindings: Env }>) {
           error_message = ${req.error_message ?? null},
           auth_signal = NULL
       WHERE id = ${req.run_id}
+        AND status = 'running'
+        AND claimed_by = ${req.worker_id}
       RETURNING auth_profile_id, organization_id
     `) as Array<{ auth_profile_id: number | null; organization_id: string }>);
 

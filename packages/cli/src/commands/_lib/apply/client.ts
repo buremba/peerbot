@@ -1,3 +1,4 @@
+import type { EntityMetrics } from "@lobu/connector-sdk";
 import type { AgentSettings } from "@lobu/core";
 import { resolveApiClient } from "../../../internal/index.js";
 import { ApiError } from "../../memory/_lib/errors.js";
@@ -37,6 +38,8 @@ export interface RemoteEntityType {
   properties?: Record<string, unknown>;
   /** Present only for derived types (mirrors {@link DesiredEntityType.backing}). */
   backing?: EntityBacking;
+  /** Declared metrics (mirrors {@link DesiredEntityType.metrics}); hoisted from the row's `metrics_config`. */
+  metrics?: EntityMetrics;
   /**
    * Owning org id. The list endpoint also returns *public* types from OTHER
    * orgs (`o.visibility = 'public'`), so prune must compare this against the
@@ -197,6 +200,7 @@ function hoistEntityTypeSchema(
     metadata_schema?: unknown;
     backing_sql?: string | null;
     backing_source?: string | null;
+    metrics_config?: unknown;
   }
 ): RemoteEntityType {
   const schema = row.metadata_schema;
@@ -228,6 +232,15 @@ function hoistEntityTypeSchema(
         ? { connection: row.backing_source }
         : {}),
     };
+  }
+  // Hoist metrics_config → `metrics` only when the column holds a non-empty
+  // object, so a type with no declared metrics stays `undefined` on both sides
+  // and never churns the diff (mirrors `backing`).
+  if (
+    isRecord(row.metrics_config) &&
+    Object.keys(row.metrics_config).length > 0
+  ) {
+    out.metrics = row.metrics_config as EntityMetrics;
   }
   return out;
 }
@@ -574,7 +587,8 @@ export class ApplyClient {
     // `properties`/`required`. Fold them into `metadata_schema` so the schema
     // actually persists (otherwise every apply re-reports a `properties`
     // update because the stored schema stays empty).
-    const { slug, name, description, required, properties, backing } = entity;
+    const { slug, name, description, required, properties, backing, metrics } =
+      entity;
     const payload: Record<string, unknown> = { slug };
     if (name !== undefined) payload.name = name;
     if (description !== undefined) payload.description = description;
@@ -595,6 +609,9 @@ export class ApplyClient {
           ...(backing.connection ? { connection: backing.connection } : {}),
         }
       : null;
+    // Metrics sent on every upsert so it is deterministic: an object declares
+    // the type's metrics; `null` clears them. Stored verbatim in metrics_config.
+    payload.metrics_config = metrics ?? null;
     return this.upsertSchemaResource("entity_type", payload);
   }
 

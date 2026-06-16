@@ -22,4 +22,11 @@ export interface BaseMessage {
   teamId?: string;
   /** Originating PlatformConnection id, when applicable. */
   connectionId?: string;
+  /**
+   * Headless run origin (`platformMetadata.source`) when the message was
+   * produced by a server-side turn with no browser SSE connection. Lets the
+   * API platform stamp interaction cards headless so they skip the SSE-owner
+   * gate instead of dead-lettering. Absent for interactive/user-driven turns.
+   */
+  source?: string;
 }

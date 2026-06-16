@@ -134,6 +134,17 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 				coverage: "reachable",
 				note: "full SDK sandbox in dry_run mode — reads run, writes are previewed, no model",
 			},
+			// ── metric layer ────────────────────────────────────────────────────────
+			list_metrics: {
+				args: {},
+				coverage: "reachable",
+				note: "lists the declared metric catalog (measures/dimensions/segments) for the org",
+			},
+			query_metric: {
+				args: { entity_type: "metric-co", measure: "n" },
+				coverage: "round-trip",
+				note: "runs a declared measure end-to-end (compile → scope → execute); 0 rows is fine",
+			},
 			// ── REST/admin surface ──────────────────────────────────────────────────
 			manage_entity: {
 				// The create→delete round-trip is asserted in its own dedicated test;
@@ -290,6 +301,24 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 		const createdEntityId = created.entity?.id;
 		expect(createdEntityId).toBeDefined();
 		entityId = createdEntityId as number;
+
+		// Seed a metric-bearing entity type so query_metric/list_metrics are real
+		// round-trips (no events → 0 rows, which is a valid, error-free result).
+		await executeTool(
+			"manage_entity_schema",
+			{
+				schema_type: "entity_type",
+				action: "create",
+				slug: "metric-co",
+				name: "Metric Co",
+				metrics_config: {
+					eventSets: { charges: { by: "alias", field: "metadata->>'description'" } },
+					measures: { n: { eventSet: "charges", agg: "count", description: "Charge count." } },
+				},
+			},
+			TEST_ENV,
+			authCtx,
+		);
 
 		// Seed one watcher so get_watcher / list_watchers are real round-trips.
 		const watcher = (await executeTool(

@@ -383,25 +383,30 @@ export function resetRateLimiterForTests(): void {
  * back to `CF-Connecting-IP` / `X-Real-IP`. This is the abuse-resistant mode and
  * operators behind a tunnel/reverse-proxy should set it.
  *
- * Without `TRUSTED_PROXY` we still key on the *leftmost* `X-Forwarded-For` entry
- * as a best-effort fallback. That value is client-spoofable, but spoofing only
- * lets an attacker evade *their own* limit (the pre-existing behavior) — far less
- * harmful than collapsing every caller into one shared `'unknown'` bucket, which
- * would let a single client throttle the public rate-limited endpoints (OAuth
- * dynamic client registration, invitation preview, public-org join) for everyone.
+ * Without `TRUSTED_PROXY` we key on the *socket peer address* (`peerAddress`,
+ * stashed from the Node adapter's `socket.remoteAddress`). Forwarded headers are
+ * fully client-controlled here, so keying on them lets an attacker rotate the
+ * header per request to evade per-IP limits (e.g. email-bombing arbitrary
+ * recipients via `/oauth/device/email`, or flooding OAuth dynamic client
+ * registration). The peer address is per-connection and non-spoofable, so it
+ * keys distinct callers correctly without collapsing everyone into `'unknown'`.
+ * `'unknown'` is only returned when no peer is available (outside the Node
+ * adapter, e.g. unit tests via `app.request()`).
  */
-export function getClientIP(request: Request): string {
+export function getClientIP(request: Request, peerAddress?: string | null): string {
   const trustForwarded = process.env.TRUSTED_PROXY === 'true' || process.env.TRUSTED_PROXY === '1';
-  const xff = request.headers.get('X-Forwarded-For');
-  if (xff) {
-    const parts = xff.split(',').map((p) => p.trim()).filter(Boolean);
-    if (parts.length > 0) {
-      return trustForwarded ? parts[parts.length - 1]! : parts[0]!;
+  if (trustForwarded) {
+    const xff = request.headers.get('X-Forwarded-For');
+    if (xff) {
+      const parts = xff.split(',').map((p) => p.trim()).filter(Boolean);
+      // Rightmost entry = the address the trusted proxy actually observed.
+      if (parts.length > 0) return parts[parts.length - 1]!;
     }
+    const cf = request.headers.get('CF-Connecting-IP');
+    if (cf) return cf.trim();
+    const xreal = request.headers.get('X-Real-IP');
+    if (xreal) return xreal.trim();
   }
-  const cf = request.headers.get('CF-Connecting-IP');
-  if (cf) return cf.trim();
-  const xreal = request.headers.get('X-Real-IP');
-  if (xreal) return xreal.trim();
+  if (peerAddress && peerAddress.trim()) return peerAddress.trim();
   return 'unknown';
 }

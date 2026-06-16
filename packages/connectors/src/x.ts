@@ -3,7 +3,7 @@
  *
  * Supports two auth modes:
  * - OAuth 2.0 user context against the X API v2 (preferred when available)
- * - Browser session cookies for scraping/network interception fallback
+ * - Browser CDP session for scraping/network interception fallback
  */
 
 import {
@@ -20,9 +20,7 @@ import {
 } from '@lobu/connector-sdk';
 import {
   getBrowserCdpUrl,
-  getBrowserCookies,
   getBrowserUserDataDir,
-  validateCookieNotExpired,
 } from './browser-scraper-utils';
 
 interface XCheckpoint {
@@ -216,8 +214,7 @@ function tweetToEvent(tweet: XTweet): EventEnvelope {
 function finalizeSyncResult(
   tweets: XTweet[],
   checkpoint: XCheckpoint,
-  metadata: Record<string, unknown>,
-  authUpdate?: Record<string, unknown> | null
+  metadata: Record<string, unknown>
 ): SyncResult {
   const seenIds = new Set<string>();
   const deduped = tweets.filter((tweet) => {
@@ -239,7 +236,6 @@ function finalizeSyncResult(
   return {
     events,
     checkpoint: newCheckpoint as unknown as Record<string, unknown>,
-    ...(authUpdate ? { auth_update: authUpdate } : {}),
     metadata: {
       items_found: events.length,
       items_skipped: tweets.length - deduped.length,
@@ -366,20 +362,10 @@ async function syncViaBrowser(
 
   const userDataDir = getBrowserUserDataDir(ctx.sessionState);
   const cdpUrl = getBrowserCdpUrl(ctx.sessionState) ?? 'auto';
-  let cookies: any[] = [];
-  if (!userDataDir) {
-    try {
-      cookies = getBrowserCookies(ctx.checkpoint as any, ctx.sessionState as any, 'x');
-      validateCookieNotExpired(cookies, 'auth_token', 'x');
-    } catch {
-      // No stored cookies — CDP will be the only path
-    }
-  }
 
   const result = await browserNetworkSync<XTweet>({
     config: {
       interceptPatterns: [/\/i\/api\/graphql\/.*Search/],
-      authDomains: ['x.com', '.x.com'],
       maxScrolls,
       scrollDelayMs: 2000,
       responseTimeoutMs: 5000,
@@ -387,7 +373,6 @@ async function syncViaBrowser(
     },
     url: searchUrl,
     cdpUrl,
-    cookies,
     userDataDir,
     parseResponse: parseBrowserSearchResponse,
     checkAuth: async (page) => {
@@ -396,15 +381,10 @@ async function syncViaBrowser(
     },
   });
 
-  return finalizeSyncResult(
-    result.items,
-    checkpoint,
-    {
-      backend: result.backend,
-      api_calls: result.apiCallCount,
-    },
-    { cookies: result.cookies }
-  );
+  return finalizeSyncResult(result.items, checkpoint, {
+    backend: result.backend,
+    api_calls: result.apiCallCount,
+  });
 }
 
 const configSchema = {
@@ -485,10 +465,10 @@ export default class XConnector extends ConnectorRuntime {
         },
         {
           type: 'browser',
-          capture: 'cli',
+          capture: 'cdp',
           requiredDomains: ['x.com', '.x.com'],
           description:
-            'Fallback for browser-based scraping when API access is unavailable or insufficient.',
+            'Fallback for browser-based scraping when API access is unavailable or insufficient. Connects over CDP to a Chrome the user is running with --remote-debugging-port (or launched by `lobu memory browser-auth`).',
         },
       ],
     },

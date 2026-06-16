@@ -95,14 +95,20 @@ describe("getOptionalNumber", () => {
     expect(getOptionalNumber(VAR, 99)).toBe(0);
   });
 
-  test("truncates float to integer (parseInt semantics)", () => {
+  test("throws on a non-integer float instead of silently truncating", () => {
+    // Was parseInt("3.9") -> 3 (silent). Now a non-integer fails loud.
     set("3.9");
-    expect(getOptionalNumber(VAR, 0)).toBe(3);
+    expect(() => getOptionalNumber(VAR, 0)).toThrow(/Invalid number/);
   });
 
-  test("throws for float-only string that parseInt returns NaN for", () => {
+  test("throws on trailing non-numeric garbage instead of accepting a prefix", () => {
+    // Was parseInt("100ms") -> 100 (silent). A typo'd unit must now throw.
+    set("100ms");
+    expect(() => getOptionalNumber(VAR, 0)).toThrow(/Invalid number/);
+  });
+
+  test("throws for float-only string", () => {
     set(".5");
-    // parseInt(".5") = NaN
     expect(() => getOptionalNumber(VAR, 0)).toThrow(/Invalid number/);
   });
 });

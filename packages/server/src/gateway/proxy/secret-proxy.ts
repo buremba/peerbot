@@ -464,6 +464,37 @@ export class SecretProxy {
    * then relies on `agentOrgResolver` (DB lookup keyed by URL agentId) to
    * fill in the expected org.
    */
+  /**
+   * Stable, non-spoofable identity for abuse-tracking, taken from the SIGNED
+   * worker token (agentId, else deployment). Returns undefined when no valid
+   * token is present so the caller can fall back to a weaker signal.
+   */
+  private extractWorkerTokenIdentity(c: Context): string | undefined {
+    const header =
+      c.req.header("x-lobu-worker-token") ||
+      c.req.header("X-Lobu-Worker-Token");
+    const candidate = header || c.req.query("worker_token") || undefined;
+    const fromToken = (data: ReturnType<typeof verifyWorkerToken>) =>
+      data?.agentId ?? data?.deploymentName ?? undefined;
+    if (candidate) {
+      const id = fromToken(verifyWorkerToken(candidate));
+      if (id) return id;
+    }
+    const auth = c.req.header("authorization");
+    if (auth) {
+      const parts = auth.split(" ");
+      const tok =
+        parts.length === 2 && parts[0]?.toLowerCase() === "bearer"
+          ? parts[1]
+          : null;
+      if (tok && !tok.includes(PLACEHOLDER_PREFIX)) {
+        const id = fromToken(verifyWorkerToken(tok));
+        if (id) return id;
+      }
+    }
+    return undefined;
+  }
+
   private extractWorkerTokenOrg(c: Context): string | undefined {
     const header =
       c.req.header("x-lobu-worker-token") ||
@@ -809,8 +840,14 @@ export class SecretProxy {
       // Legacy path: swap UUID placeholders in auth headers (non-provider secrets).
       // Read the originals from the request because we strip them from the
       // forwarded headers map above.
+      // Throttle key, most-trustworthy first: the validated URL agentId, then
+      // the SIGNED worker-token identity (a worker can't forge it), and only as
+      // a last resort the client-controlled forwarding headers. Keying on the
+      // headers alone let a compromised worker rotate `x-forwarded-for` to dodge
+      // the placeholder-enumeration throttle.
       const source =
         urlAgentId ??
+        this.extractWorkerTokenIdentity(c) ??
         getClientIp({
           forwardedFor: c.req.header("x-forwarded-for"),
           realIp: c.req.header("x-real-ip"),

@@ -20,8 +20,11 @@ import {
 import { ToolUserError } from '../utils/errors';
 import { resolveMemberSchemaFieldsFromSchema } from '../utils/member-entity-type';
 import { stripMemberEmailsFromRows } from '../utils/member-redaction';
+import { derivedRowName, derivedRowSlug } from '../utils/entity-management';
+import { measureColumns as inferMeasureColumns } from '../utils/infer-measures';
 import { RESERVED_PATHS } from '../utils/reserved';
 import { getWorkspaceProvider } from '../workspace';
+import { querySqlImpl } from './admin/query_sql';
 import { isAdminOrOwnerRole } from './access-control';
 import { MEMBER_ENTITY_TYPE_SLUG } from './constants';
 import type { ToolContext } from './registry';
@@ -78,6 +81,11 @@ export interface ResolvedEntityDetails extends ResolvedPathEntity {
   total_content: number;
   active_connections: number;
   watchers_count: number;
+  // Derived ("view") entity: synthesized from the type's `backing_sql` filtered
+  // to this slug, not a stored `entities` row. `metadata` holds the full view
+  // row; `measure_columns` are its aggregate columns. Stored entities omit both.
+  is_derived?: boolean;
+  measure_columns?: string[];
 }
 
 export interface ChildEntity {
@@ -435,6 +443,21 @@ async function _resolvePath(
       `;
 
     if (row.length === 0) {
+      // The slug isn't a stored entity. It may be a row of a DERIVED ("view")
+      // entity type, whose rows are produced by `backing_sql`, not stored in
+      // `entities`. Synthesize the same response shape so the routed detail page
+      // renders it like any other entity (read-only, id-keyed tabs hidden).
+      const derived = await resolveDerivedLeaf(sql, ctx, workspace, segment);
+      if (derived) {
+        resolvedPath.push({
+          id: derived.id,
+          entity_type: derived.entity_type,
+          slug: derived.slug,
+          name: derived.name,
+        });
+        resolvedEntity = derived;
+        continue;
+      }
       throw new ToolUserError(
         `Entity not found for ${segment.entity_type}/${segment.slug}`,
         404
@@ -550,7 +573,7 @@ async function _resolvePath(
   let children: ChildEntity[] = [];
   let siblings: SiblingEntity[] = [];
 
-  if (resolvedEntity) {
+  if (resolvedEntity && !resolvedEntity.is_derived) {
     // Fetch children + siblings without per-row COUNT subqueries.
     // content_count is omitted to avoid expensive GIN index scans over the events table.
     const [childRows, siblingRows] = await Promise.all([
@@ -617,6 +640,85 @@ type DbClient = ReturnType<typeof getDb>;
 
 function toVersionNumber(v: unknown): number | null {
   return v ? Number(v) : null;
+}
+
+/**
+ * Resolve a single row of a derived ("view") entity type by slug. Returns null
+ * when the type isn't derived or the slug isn't among its rows — the caller then
+ * falls back to the normal 404.
+ *
+ * Derived rows aren't stored in `entities`; the type's `backing_sql` produces
+ * them with stable `id`/`slug` columns. We run that SQL through the same
+ * executor the list view uses (`querySqlImpl` — internal org-scoping or
+ * connection pushdown, both already validated for this view), then match the
+ * requested slug in memory. We page through the view (not just the first page)
+ * so a row past the first page still resolves; matching in memory — rather than
+ * interpolating the slug into the view SQL — keeps the SQL injection-free for
+ * both the internal and connection-backed paths.
+ */
+async function resolveDerivedLeaf(
+  sql: DbClient,
+  ctx: ToolContext,
+  workspace: ResolvedWorkspace,
+  segment: { entity_type: string; slug: string }
+): Promise<ResolvedEntityDetails | null> {
+  const etRows = await sql`
+    SELECT backing_sql, backing_source
+    FROM entity_types
+    WHERE slug = ${segment.entity_type}
+      AND organization_id = ${workspace.id}
+      AND deleted_at IS NULL
+    LIMIT 1
+  `;
+  const backingSql = etRows[0]?.backing_sql as string | null | undefined;
+  if (!backingSql) return null;
+
+  const backingSource = (etRows[0]?.backing_source as string | null | undefined) ?? undefined;
+  // measure_columns isn't stored — it's inferred from the backing SQL (same as
+  // `get_type`), so the detail view can right-align/badge aggregate columns.
+  const measures = inferMeasureColumns(backingSql);
+
+  // Page through the view until the slug is found or the rows run out. A bounded
+  // page count caps the work on a pathologically large view (which would also be
+  // slow to list); in practice derived types have tens of rows, so page 1 hits.
+  const PAGE = 500;
+  const MAX_PAGES = 40;
+  let match: Record<string, unknown> | undefined;
+  for (let pageNum = 0; pageNum < MAX_PAGES; pageNum += 1) {
+    const result = await querySqlImpl(
+      { sql: backingSql, connection: backingSource, limit: PAGE, offset: pageNum * PAGE },
+      undefined,
+      ctx
+    );
+    if (result.error) return null;
+    match = result.rows.find((r) => derivedRowSlug(r) === segment.slug);
+    if (match) break;
+    if (!result.has_more || result.rows.length < PAGE) break;
+  }
+  if (!match) return null;
+
+  const name = derivedRowName(match, segment.slug);
+
+  return {
+    // Derived rows have no stored numeric id; routing/identity use the slug, and
+    // the id-keyed tabs (knowledge/connectors/watchers) are hidden client-side.
+    id: 0,
+    entity_type: segment.entity_type,
+    slug: segment.slug,
+    name,
+    parent_id: null,
+    metadata: match,
+    json_template: null,
+    json_template_version: null,
+    template_data: null,
+    tabs: [],
+    created_at: new Date().toISOString(),
+    total_content: 0,
+    active_connections: 0,
+    watchers_count: 0,
+    is_derived: true,
+    measure_columns: measures,
+  };
 }
 
 function emptyResult(

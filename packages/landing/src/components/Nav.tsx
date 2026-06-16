@@ -284,7 +284,6 @@ export function Nav({ currentPath: _currentPath = "/" }: NavProps) {
         style={{
           backgroundColor: "var(--color-page-bg-overlay)",
           backdropFilter: "blur(12px)",
-          borderBottom: "1px solid var(--color-page-border)",
         }}
       >
         <div class="max-w-[72rem] mx-auto flex items-center gap-3 h-16">

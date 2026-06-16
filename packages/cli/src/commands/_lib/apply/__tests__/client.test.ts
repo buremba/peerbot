@@ -238,6 +238,82 @@ describe("ApplyClient — prune", () => {
     const body = JSON.parse(String(calls[0]?.init?.body));
     expect(body.backing).toBeNull();
   });
+
+  test("upsertEntityType POSTs metrics_config for a metric type", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    const metrics = {
+      measures: {
+        spend: {
+          eventSet: "charges",
+          agg: "sum" as const,
+          expr: "x",
+          description: "Spend.",
+        },
+      },
+    };
+    await client.upsertEntityType({ slug: "company", metrics });
+
+    const body = JSON.parse(String(calls[0]?.init?.body));
+    expect(body.metrics_config).toEqual(metrics);
+  });
+
+  test("upsertEntityType POSTs metrics_config:null for a non-metric type", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    await client.upsertEntityType({ slug: "company", name: "Company" });
+
+    const body = JSON.parse(String(calls[0]?.init?.body));
+    expect(body.metrics_config).toBeNull();
+  });
+
+  test("listEntityTypes hoists metrics_config to metrics; null/empty stays undefined", async () => {
+    const metrics = {
+      measures: {
+        spend: {
+          eventSet: "charges",
+          agg: "sum",
+          expr: "x",
+          description: "Spend.",
+        },
+      },
+    };
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async () =>
+        new Response(
+          JSON.stringify({
+            entity_types: [
+              { slug: "company", metrics_config: metrics },
+              { slug: "person", metrics_config: null },
+              { slug: "empty", metrics_config: {} },
+            ],
+          }),
+          { status: 200 }
+        )) as typeof fetch
+    );
+
+    const types = await client.listEntityTypes();
+    const byKey = Object.fromEntries(types.map((t) => [t.slug, t]));
+    expect(byKey.company?.metrics).toEqual(metrics);
+    // null and empty {} both hoist to undefined → no diff churn for non-metric types.
+    expect(byKey.person?.metrics).toBeUndefined();
+    expect(byKey.empty?.metrics).toBeUndefined();
+  });
 });
 
 // Issue #1177: a 422 schema-validation error from `create` must NOT be

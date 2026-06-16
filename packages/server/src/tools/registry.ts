@@ -20,7 +20,9 @@
 import { getPublicReadableActions, getRequiredAccessLevel } from '../auth/tool-access';
 import type { Env } from '../index';
 import { INTERNAL_REST_TOOLS } from './admin';
+import { ListMetricsSchema, listMetrics } from './admin/list_metrics';
 import { MetricSeriesSchema, metricSeries } from './admin/metric_series';
+import { QueryMetricSchema, queryMetric } from './admin/query_metric';
 import { QuerySqlSchema, querySql } from './admin/query_sql';
 import { ListOrganizationsSchema } from './organizations';
 import { ResolvePathSchema, resolvePath } from './resolve_path';
@@ -150,9 +152,25 @@ const TOOLS: ToolDefinition[] = [
     handler: querySdkScript,
   },
   {
+    name: 'list_metrics',
+    description:
+      'List the DECLARED, governed metrics — measures / dimensions / segments (with descriptions) per entity type. Use this FIRST to discover what metrics exist; pass `q` to keyword-search. Then run one with `query_metric`. Prefer governed metrics over hand-written `query_sql` so numbers stay consistent.',
+    inputSchema: ListMetricsSchema,
+    annotations: READ_ONLY,
+    handler: listMetrics,
+  },
+  {
+    name: 'query_metric',
+    description:
+      'Run a DECLARED metric (discover them via `list_metrics`) and get its rows: pass entity_type + measure, optional `by` dimensions / `segment` / `entity_id`. The metric layer enforces resolution, dedupe, segment, and aggregation, so results are consistent and governed. PREFER this over `query_sql` whenever a declared measure answers the question; fall back to `query_sql` only when no metric covers the ask.',
+    inputSchema: QueryMetricSchema,
+    annotations: READ_ONLY,
+    handler: queryMetric,
+  },
+  {
     name: 'query_sql',
     description:
-      'Run a paginated, sortable, searchable read-only SQL query. Table references auto-scope to the bound org. The query is wrapped as a subquery, so inner ORDER BY / LIMIT / window functions are fine; pagination + sort come from the sort_by/limit/offset args. Do NOT use positional parameters ($1, $2, …). Optional `org_slug` (OAuth on /mcp only) redirects the query to a different member org; rejected on /mcp/{slug} and on PAT auth.',
+      'Run a paginated, sortable, searchable read-only SQL query. Table references auto-scope to the bound org. The query is wrapped as a subquery, so inner ORDER BY / LIMIT / window functions are fine; pagination + sort come from the sort_by/limit/offset args. Do NOT use positional parameters ($1, $2, …). Optional `org_slug` (OAuth on /mcp only) redirects the query to a different member org; rejected on /mcp/{slug} and on PAT auth. NOTE: this is the FALLBACK — if a declared metric covers the ask, use `query_metric` (see `list_metrics`) instead, so numbers match the governed definitions.',
     inputSchema: QuerySqlSchema,
     annotations: READ_ONLY,
     handler: querySql,

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  ConversationOwnedElsewhereError,
   createLogger,
   ErrorCode,
   extractTraceId,
@@ -361,6 +362,14 @@ export abstract class BaseDeploymentManager {
 
       await this.ensureDeployment(deploymentName, userId, userId, messageData);
     } catch (error) {
+      // "Owned by another replica" is not a failure — it's the cross-pod
+      // handled-elsewhere signal. Re-throw it UNCHANGED so the orchestrator can
+      // distinguish it from a genuine startup failure and drop silently;
+      // wrapping it in DEPLOYMENT_CREATE_FAILED here would erase that
+      // distinction and resurface the user-facing "Worker startup failed".
+      if (error instanceof ConversationOwnedElsewhereError) {
+        throw error;
+      }
       throw new OrchestratorError(
         ErrorCode.DEPLOYMENT_CREATE_FAILED,
         `Failed to create worker deployment: ${error instanceof Error ? error.message : String(error)}`,

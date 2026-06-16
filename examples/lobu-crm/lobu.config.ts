@@ -25,10 +25,15 @@ const crm = defineAgent({
   providers: [
     {
       id: "z-ai",
-      model: "z-ai/glm-4.7",
+      model: "z-ai/glm-5.2",
       key: secret("Z_AI_API_KEY"),
     },
   ],
+  // Hosted Slack preview: redeem a `/lobu link <code>` by DMing the hosted Lobu
+  // Slack bot to bind a DM/channel to this agent (writes agent_channel_bindings).
+  preview: {
+    slack: { enabled: true, surfaces: ["dm", "channel"], codeTtlMinutes: 15 },
+  },
   network: {
     allowed: [
       "github.com",

@@ -33,12 +33,9 @@ export async function restGetAuthProfileForRun(c: Context<{ Bindings: Env }>) {
   const profile = await getAuthProfileBySlug(auth.organizationId, slug);
   if (!profile) return c.json({ error: `Auth profile '${slug}' not found` }, 404);
 
-  // Pass through the read-only fields the CLI's local executor consumes,
-  // plus the mirror-mode fields nested in auth_data. Sensitive auth_data
-  // subkeys (cookie blobs from legacy CLI captures) are filtered out —
-  // the CLI's mirror path re-decrypts locally rather than trusting a
-  // server-side copy.
-  const authData = (profile.auth_data ?? {}) as Record<string, unknown>;
+  // Pass through the read-only fields the CLI's local executor consumes.
+  // browser_session auth is CDP attach (cdp_url); no cookie/auth_data
+  // material is ever returned to the CLI.
   return c.json({
     profile: {
       id: profile.id,
@@ -50,13 +47,6 @@ export async function restGetAuthProfileForRun(c: Context<{ Bindings: Env }>) {
       browser_kind: profile.browser_kind,
       cdp_url: profile.cdp_url,
       device_worker_id: profile.device_worker_id,
-      auth_data: {
-        source_profile_dir: authData.source_profile_dir ?? null,
-        source_browser_root: authData.source_browser_root ?? null,
-        source_browser: authData.source_browser ?? null,
-        mode: authData.mode ?? null,
-        allow_cdp_attach: authData.allow_cdp_attach === true,
-      },
     },
   });
 }

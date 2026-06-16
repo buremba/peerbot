@@ -1,16 +1,11 @@
 import {
   connectorFromFile,
   defineAgent,
-  defineAuthProfile,
   defineConfig,
   defineConnection,
   defineEntityType,
 } from "@lobu/cli/config";
 import type RevolutTransactionsConnector from "./revolut-transactions.connector.ts";
-
-// This Mac's device worker (Owletto). Syncs/actions for device-pinned
-// connections run here — where the logged-in Chrome / CDP session lives.
-const DEVICE_WORKER_ID = "2c295bed-1dfa-4c8b-9f58-c20a62aadfc2";
 
 const personalAgent = defineAgent({
   id: "personal-agent",
@@ -20,10 +15,14 @@ const personalAgent = defineAgent({
     "A personal agent that tracks finances, people, companies, subscriptions, trips, and topics across the user's own data.",
   // No cloud provider key: runs on the local/Mac-app device worker and inherits
   // the org's default provider. No ANTHROPIC_API_KEY needed.
+  //
+  // The Revolut connector no longer makes worker-side HTTP requests to Revolut:
+  // it reads the rendered DOM through the paired Owletto Chrome extension, which
+  // runs inside the user's own browser (its own network context), so the worker
+  // egress allowlist no longer needs `app.revolut.com` / `.revolut.com`. We keep
+  // the github/npm entries that the CLI uses to compile the connector.
   network: {
     allowed: [
-      "app.revolut.com",
-      ".revolut.com",
       "github.com",
       ".github.com",
       ".githubusercontent.com",
@@ -350,24 +349,20 @@ const trip = defineEntityType({
   },
 });
 
-// Revolut runs through the browser's live session over CDP, so its auth grant
-// is performed at runtime (lobu memory browser-auth) — no stored secret here.
-const revolutAuth = defineAuthProfile({
-  slug: "revolut-mac",
-  connector: "revolut",
-  authKind: "browser_session",
-  name: "Revolut (this Mac)",
-});
-
-// Connection pinned to THIS Mac's device worker: the sync runs where the
-// logged-in Revolut Chrome / CDP session lives, not in the cloud. max_scrolls
-// is raised so the first run paginates the full multi-year history.
+// Revolut auth is implicit: the connector reads the rendered web app through
+// the paired Owletto Chrome extension's signed-in session — there's no stored
+// secret and no browser-auth profile to grant.
+//
+// Not device-pinned: the connector's sync() runs on a cloud Node worker and
+// dispatches its DOM-scrape actions down to whichever online paired Owletto
+// extension claims them (same model as LinkedIn). This is what makes Revolut
+// "extension-only" from the user's side — no Owletto Mac app required, just the
+// Chrome extension signed in to app.revolut.com. max_scrolls is raised so the
+// first run paginates the full multi-year history.
 const revolutConnection = defineConnection({
   slug: "revolut-buremba",
   connector: "revolut",
   name: "Revolut",
-  authProfile: "revolut-mac",
-  deviceWorkerId: DEVICE_WORKER_ID,
   feeds: [{ feed: "transactions", config: { max_scrolls: 100 } }],
 });
 
@@ -383,6 +378,5 @@ export default defineConfig({
     "Personal agent tracking finances, people, companies, subscriptions, trips, and topics.",
   agents: [personalAgent],
   entities: [person, company, asset, subscription, topic, trip],
-  authProfiles: [revolutAuth],
   connections: [revolutConnection],
 });

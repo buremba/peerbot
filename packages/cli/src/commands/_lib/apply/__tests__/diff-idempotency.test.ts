@@ -177,6 +177,93 @@ describe("computeDiff — idempotency (applying twice is a no-op)", () => {
       expect(row.changedFields).toContain("backing");
   });
 
+  test("entity type: same declared metrics is a noop (round-trips verbatim)", () => {
+    const metrics = {
+      eventSets: { charges: { by: "alias" as const, field: "metadata->>'d'" } },
+      measures: {
+        spend: {
+          eventSet: "charges",
+          agg: "sum" as const,
+          expr: "(metadata->>'a')::numeric",
+          description: "Spend.",
+        },
+      },
+    };
+    const desired = buildState([], {
+      memorySchema: {
+        entityTypes: [{ slug: "company", name: "Company", metrics }],
+        relationshipTypes: [],
+      },
+    });
+    const afterFirstApply: RemoteSnapshot = {
+      ...emptyRemote(),
+      // Remote hoists metrics_config verbatim — structurally identical to desired.
+      entityTypes: [{ slug: "company", name: "Company", metrics }],
+    };
+    const plan = computeDiff(desired, afterFirstApply);
+    const row = plan.rows.find((r) => r.kind === "entity-type");
+    expect(row?.verb).toBe("noop");
+    expect(plan.counts.update).toBe(0);
+  });
+
+  test("entity type: a changed measure is an update (metrics diffed)", () => {
+    const desired = buildState([], {
+      memorySchema: {
+        entityTypes: [
+          {
+            slug: "company",
+            name: "Company",
+            metrics: {
+              measures: {
+                spend: {
+                  eventSet: "charges",
+                  agg: "sum",
+                  expr: "x",
+                  description: "v2",
+                },
+              },
+            },
+          },
+        ],
+        relationshipTypes: [],
+      },
+    });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      entityTypes: [
+        {
+          slug: "company",
+          name: "Company",
+          metrics: {
+            measures: {
+              spend: { eventSet: "charges", agg: "count", description: "v1" },
+            },
+          },
+        },
+      ],
+    };
+    const plan = computeDiff(desired, remote);
+    const row = plan.rows.find((r) => r.kind === "entity-type");
+    expect(row?.verb).toBe("update");
+    if (row?.kind === "entity-type")
+      expect(row.changedFields).toContain("metrics");
+  });
+
+  test("entity type: no metrics on either side is a noop (no churn)", () => {
+    const desired = buildState([], {
+      memorySchema: {
+        entityTypes: [{ slug: "person", name: "Person" }],
+        relationshipTypes: [],
+      },
+    });
+    const afterFirstApply: RemoteSnapshot = {
+      ...emptyRemote(),
+      entityTypes: [{ slug: "person", name: "Person" }],
+    };
+    const plan = computeDiff(desired, afterFirstApply);
+    expect(plan.counts.update).toBe(0);
+  });
+
   test("derived entity type: same backing.connection is a noop (external-backed)", () => {
     const sql = "SELECT org, count(*) AS n FROM customers GROUP BY org";
     const desired = buildState([], {

@@ -121,7 +121,9 @@ export function createPiiScanGuardrail<S extends GuardrailStage>(
 // -- secret-scan (output, stage-locked) -------------------------------------
 
 const SECRET_PATTERNS: Array<{ name: string; re: RegExp }> = [
-  { name: "openai-key", re: /sk-[a-zA-Z0-9]{20,}/ },
+  // Allow hyphens so prefixed keys (Anthropic `sk-ant-…`, OpenAI `sk-proj-…`)
+  // are matched, not truncated at the first hyphen.
+  { name: "openai-key", re: /sk-[a-zA-Z0-9-]{20,}/ },
   { name: "github-pat", re: /ghp_[a-zA-Z0-9]{36}/ },
   { name: "aws-access-key", re: /AKIA[0-9A-Z]{16}/ },
   {

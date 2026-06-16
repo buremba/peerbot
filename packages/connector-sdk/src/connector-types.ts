@@ -5,6 +5,11 @@
  * Defines the contract between connectors, the runtime, and the platform.
  */
 
+// Metric-reflection contract shapes live in ./metrics.ts (the persisted metric
+// contract — see that file for why connector-sdk, not core). Imported for local
+// use (ReflectResult) and re-exported below for connector authors.
+import type { EntityTypeContribution, ReflectedMeasure } from './metrics.js';
+
 // =============================================================================
 // Connector Definition
 // =============================================================================
@@ -567,6 +572,37 @@ export interface QueryResult {
   /** Total matching rows (for pagination), when cheaply available. */
   total?: number;
 }
+
+// =============================================================================
+// Metric reflection (warehouse federation)
+// =============================================================================
+
+// The contributed shapes (EntityTypeContribution, ReflectedMeasure) are the
+// persisted metric contract and live in ./metrics.ts (imported above).
+// Re-exported here for connector authors.
+export type { EntityTypeContribution, ReflectedMeasure };
+
+/**
+ * Context for {@link ConnectorRuntime.reflectMetrics} — enough to introspect the
+ * source's native semantic layer (e.g. list Snowflake semantic views).
+ */
+export interface ReflectContext<F = Record<string, unknown>> {
+  /**
+   * The Lobu connection slug being reflected. Stamp this into each
+   * {@link EntityTypeContribution} `backing.connection` so live queries route
+   * back through the right connection (the connector cannot otherwise know it).
+   */
+  connectionSlug: string;
+  /** Connector options (typed via F). */
+  config: F;
+  /** OAuth/env credentials (if applicable). */
+  credentials: SyncCredentials | null;
+  /** Connection session state (browser cookies, tokens, etc.). */
+  sessionState?: Record<string, unknown> | null;
+}
+
+/** Result from ConnectorRuntime.reflectMetrics() — federated entity types. */
+export type ReflectResult = EntityTypeContribution[];
 
 // =============================================================================
 // Authentication Lifecycle

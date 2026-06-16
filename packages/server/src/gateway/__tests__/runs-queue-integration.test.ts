@@ -5,13 +5,11 @@
  * SKIP LOCKED concurrency, graceful shutdown release, priority + expires_at +
  * retryDelay options, startup recovery scan.
  *
- * The SKIP LOCKED concurrency test drives multiple pooled connections against
- * the real embedded Postgres; the production guarantee (FOR UPDATE SKIP LOCKED
- * is row-locked at the heap-tuple level) holds because the SQL is identical.
+ * The SKIP LOCKED test runs the production claim SQL against real embedded
+ * Postgres so row-lock semantics are covered without SQL mocks.
  */
 
 import {
-  afterAll,
   afterEach,
   beforeAll,
   beforeEach,
@@ -45,10 +43,6 @@ afterEach(async () => {
   }
 });
 
-afterAll(async () => {
-  // No global teardown — db-setup.ts owns the embedded Postgres lifecycle.
-});
-
 describe("RunsQueue — SKIP LOCKED claim concurrency", () => {
   test("each row is consumed exactly once across concurrent claim loops", async () => {
     if (!queue) throw new Error("queue not started");
@@ -62,11 +56,9 @@ describe("RunsQueue — SKIP LOCKED claim concurrency", () => {
       consumed.push(job.data.i);
     };
 
-    // Spawn 4 worker registrations against the same queue. Inside one
-    // RunsQueue instance, each work() call replaces the previous worker for
-    // the same queue name, so we test the single-worker SKIP LOCKED path.
-    // Cross-process contention is identical SQL so this still demonstrates
-    // the row-level claim semantics.
+    // Inside one RunsQueue instance, a queue name has one active worker loop.
+    // This still exercises the production SKIP LOCKED claim SQL against real
+    // Postgres, without mocking the row-lock behavior.
     await queue.work("test-skip-locked", handler);
 
     // Drain — poll until all claimed.
@@ -191,11 +183,13 @@ describe("RunsQueue — action_input JSONB shape", () => {
     }>;
 
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.shape).toBe("object");
+    const row = rows[0];
+    expect(row).toBeDefined();
+    expect(row?.shape).toBe("object");
     // Direct `->>` extraction works on the object shape — the exact
     // accessor the snapshot-route verifier relies on.
-    expect(rows[0]!.extracted_agent_id).toBe("marketing");
-    expect(rows[0]!.extracted_conv_id).toBe("telegram:6570514069");
+    expect(row?.extracted_agent_id).toBe("marketing");
+    expect(row?.extracted_conv_id).toBe("telegram:6570514069");
   });
 });
 

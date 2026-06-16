@@ -14,6 +14,7 @@ import {
   pgTextArray,
 } from '../db/client';
 import type { Env } from '../index';
+import { querySqlImpl } from '../tools/admin/query_sql';
 import type { ToolContext } from '../tools/registry';
 import { entityLinkMatchSql } from './content-search';
 import { type EntityHookContext, getEntityHooks } from './entity-hooks';
@@ -809,6 +810,30 @@ export async function listEntities(
     };
   }
 
+  // Derived ("view") entity types have no rows in `entities` — their rows come
+  // from `backing_sql`. Return them in the standard list shape so the frontend
+  // renders them with the normal table (no derived-specific UI path).
+  if (filters.entity_type) {
+    const etRows = await sql`
+      SELECT backing_sql, backing_source
+      FROM entity_types
+      WHERE slug = ${filters.entity_type}
+        AND organization_id = ${ctx.organizationId}
+        AND deleted_at IS NULL
+      LIMIT 1
+    `;
+    const backingSql = etRows[0]?.backing_sql as string | null | undefined;
+    if (backingSql) {
+      return listDerivedEntities(
+        filters.entity_type,
+        backingSql,
+        (etRows[0]?.backing_source as string | null | undefined) ?? undefined,
+        { limit, offset, search: filters.search },
+        ctx
+      );
+    }
+  }
+
   const conditions: string[] = ['e.deleted_at IS NULL'];
   const params: unknown[] = [];
   let paramIdx = 1;
@@ -915,6 +940,94 @@ export async function listEntities(
   const totalCount = Number(totalCountResult[0]?.total_count || 0);
 
   return { entities, hasMore, totalCount, limit, offset, sortBy, sortOrder: normalizedSortOrder };
+}
+
+/**
+ * Routing key for a derived row: the slug the backing SQL projects, falling
+ * back to its `id` column. Both the list and the detail resolver derive the key
+ * the same way so a listed row's link always resolves. Empty ⇒ unroutable.
+ */
+export function derivedRowSlug(row: Record<string, unknown>): string {
+  const raw = row.slug ?? row.id;
+  return raw != null ? String(raw).trim() : '';
+}
+
+/** Display name for a derived row: its name/title column, else the slug. */
+export function derivedRowName(row: Record<string, unknown>, slug: string): string {
+  const raw = row.name ?? row.title ?? slug;
+  return raw != null && String(raw).trim() ? String(raw) : slug;
+}
+
+/**
+ * List rows of a derived ("view") entity type by running its `backing_sql`
+ * through the same executor the detail/query paths use (`querySqlImpl` —
+ * internal org-scoping or connection pushdown, both already validated for this
+ * view). Maps each row to the standard `CreatedEntity` shape so the frontend
+ * treats derived rows like any other entity. Rows have no stored numeric id;
+ * the projected `slug` (or `id`) is the routing key, so the synthetic `id` is
+ * page-local and used only for table keys. Rows that project no slug/id are
+ * unroutable and dropped (they can't link to a detail page).
+ */
+async function listDerivedEntities(
+  entityType: string,
+  backingSql: string,
+  backingSource: string | undefined,
+  page: { limit: number; offset: number; search?: string },
+  ctx: ToolContext
+): Promise<{
+  entities: CreatedEntity[];
+  hasMore: boolean;
+  totalCount: number;
+  limit: number;
+  offset: number;
+  sortBy: string;
+  sortOrder: 'asc' | 'desc';
+}> {
+  // Search pushes down only on the internal path (the connection path rejects
+  // search_term); external derived views simply ignore the search box.
+  const search =
+    page.search && !backingSource
+      ? { search_term: page.search, search_columns: ['name'] }
+      : {};
+  const result = await querySqlImpl(
+    { sql: backingSql, connection: backingSource, limit: page.limit, offset: page.offset, ...search },
+    undefined,
+    ctx
+  );
+  if (result.error) {
+    throw new ToolUserError(`Derived view '${entityType}' failed: ${result.error}`, 400);
+  }
+
+  const createdAt = new Date();
+  const entities: CreatedEntity[] = [];
+  result.rows.forEach((row, index) => {
+    const slug = derivedRowSlug(row);
+    // Drop unroutable rows: without a slug/id the detail link goes nowhere.
+    if (!slug) return;
+    entities.push({
+      id: page.offset + index + 1,
+      entity_type: entityType,
+      name: derivedRowName(row, slug),
+      slug,
+      parent_id: null,
+      metadata: row,
+      created_at: createdAt,
+      total_content: 0,
+      active_connections: 0,
+      watchers_count: 0,
+      children_count: 0,
+    });
+  });
+
+  return {
+    entities,
+    hasMore: result.has_more,
+    totalCount: result.total_count,
+    limit: page.limit,
+    offset: page.offset,
+    sortBy: 'created_at',
+    sortOrder: 'desc',
+  };
 }
 
 // ============================================

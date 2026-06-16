@@ -12,7 +12,7 @@
 
 import type { GlobalSetupContext } from 'vitest/node';
 import { closeDbSingleton } from '../../db/client';
-import { type EmbeddedBackend, startEmbeddedBackend } from './embedded-postgres-backend';
+import { startEmbeddedBackend, stopActiveEmbeddedBackend } from './embedded-postgres-backend';
 import { closeTestDb, setupTestDatabase } from './test-db';
 
 // Make the resolved test DATABASE_URL available to forked test workers via
@@ -27,8 +27,6 @@ declare module 'vitest' {
   }
 }
 
-let embedded: EmbeddedBackend | null = null;
-
 export async function setup({ provide }: GlobalSetupContext): Promise<void> {
   if (process.env.SKIP_TEST_DB_SETUP === '1') {
     console.log('\n⚠️  Skipping test database setup (SKIP_TEST_DB_SETUP=1).\n');
@@ -42,7 +40,7 @@ export async function setup({ provide }: GlobalSetupContext): Promise<void> {
     console.log(`\n🗄️  Using Postgres at ${databaseUrl}`);
   } else {
     console.log('\n🐘 No DATABASE_URL — spawning ephemeral embedded Postgres...');
-    embedded = await startEmbeddedBackend();
+    const embedded = await startEmbeddedBackend();
     process.env.DATABASE_URL = embedded.url;
     process.env.PGSSLMODE = 'disable';
     console.log(`✅ Embedded Postgres ready at ${embedded.url}`);
@@ -67,8 +65,5 @@ export async function setup({ provide }: GlobalSetupContext): Promise<void> {
 }
 
 export async function teardown(): Promise<void> {
-  if (embedded) {
-    await embedded.stop();
-    embedded = null;
-  }
+  await stopActiveEmbeddedBackend();
 }

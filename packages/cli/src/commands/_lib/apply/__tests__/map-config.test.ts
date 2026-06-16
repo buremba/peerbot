@@ -219,6 +219,77 @@ describe("mapProjectToDesiredState", () => {
     expect(byKey.company?.backing).toBeUndefined();
   });
 
+  test("maps a declared entity's metrics; non-metric entities carry none", () => {
+    const company = defineEntityType({
+      key: "company",
+      name: "Company",
+      properties: { aliases: { type: "array" } },
+      eventSets: {
+        charges: {
+          by: "alias",
+          field: "metadata->>'description'",
+          against: "aliases",
+          where: "semantic_type='transaction'",
+          dedupeKey: ["metadata->>'date'", "metadata->>'amount'"],
+        },
+      },
+      segments: {
+        outflow: {
+          description: "Money out.",
+          where: "metadata->>'direction'='out'",
+          on: "event",
+          appliedBefore: "dedupe",
+        },
+      },
+      measures: {
+        spend: {
+          eventSet: "charges",
+          agg: "sum",
+          expr: "(metadata->>'amount')::numeric",
+          segments: ["outflow"],
+          description: "Total outflow.",
+        },
+      },
+      dimensions: {
+        currency: { expr: "metadata->>'currency'", description: "Currency." },
+      },
+    });
+    const person = defineEntityType({ key: "person", name: "Person" });
+    const state = mapProjectToDesiredState(
+      defineConfig({ agents: [], entities: [company, person] })
+    );
+    const byKey = Object.fromEntries(
+      state.memorySchema.entityTypes.map((e) => [e.slug, e])
+    );
+    // The four metric fields round-trip verbatim under `metrics`.
+    expect(byKey.company?.metrics?.measures?.spend?.agg).toBe("sum");
+    expect(byKey.company?.metrics?.eventSets?.charges?.by).toBe("alias");
+    expect(byKey.company?.metrics?.segments?.outflow?.on).toBe("event");
+    expect(byKey.company?.metrics?.dimensions?.currency?.expr).toBe(
+      "metadata->>'currency'"
+    );
+    // A non-metric entity carries no `metrics` — keeps the diff churn-free.
+    expect(byKey.person?.metrics).toBeUndefined();
+  });
+
+  test("rejects invalid metrics at load time (measure naming a missing eventSet)", () => {
+    const bad = defineEntityType({
+      key: "company",
+      name: "Company",
+      measures: {
+        spend: {
+          eventSet: "charges", // not declared
+          agg: "sum",
+          expr: "x",
+          description: "Spend.",
+        },
+      },
+    });
+    expect(() =>
+      mapProjectToDesiredState(defineConfig({ agents: [], entities: [bad] }))
+    ).toThrow(/invalid metrics.*eventSet "charges"/i);
+  });
+
   test("rejects an empty backing.sql at load time (before any remote mutation)", () => {
     const bad = defineEntityType({
       key: "bad",

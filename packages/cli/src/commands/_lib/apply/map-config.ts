@@ -8,6 +8,7 @@
  * unit-tested without importing `lobu.config.ts`.
  */
 
+import { validateEntityMetrics } from "@lobu/connector-sdk";
 import type { AgentSettings } from "@lobu/core";
 import { CronExpressionParser } from "cron-parser";
 import type {
@@ -513,6 +514,28 @@ function mapEntityType(entity: EntityType): DesiredEntityType {
       `entity type "${entity.key}" has an empty backing.sql`
     );
   }
+  // Declared metrics, included only when present so a non-metric type never
+  // churns the diff (mirrors `backing`). The four fields round-trip verbatim.
+  const metrics =
+    entity.eventSets || entity.measures || entity.dimensions || entity.segments
+      ? {
+          ...(entity.eventSets ? { eventSets: entity.eventSets } : {}),
+          ...(entity.measures ? { measures: entity.measures } : {}),
+          ...(entity.dimensions ? { dimensions: entity.dimensions } : {}),
+          ...(entity.segments ? { segments: entity.segments } : {}),
+        }
+      : undefined;
+  // Fail loud in the CLI (before any remote mutation) on referential/shape
+  // errors the types can't catch — a measure naming a missing eventSet/segment,
+  // or a non-`count` measure without `expr`. The server re-validates.
+  if (metrics) {
+    const errors = validateEntityMetrics(metrics);
+    if (errors.length > 0) {
+      throw new ValidationError(
+        `entity type "${entity.key}" has invalid metrics: ${errors.join("; ")}`
+      );
+    }
+  }
   return {
     slug: entity.key,
     ...(entity.name ? { name: entity.name } : {}),
@@ -535,6 +558,7 @@ function mapEntityType(entity: EntityType): DesiredEntityType {
           },
         }
       : {}),
+    ...(metrics ? { metrics } : {}),
   };
 }
 

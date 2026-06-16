@@ -157,6 +157,7 @@ async function handleProxyRequestAuthenticated(
 				connectionId: tokenData.connectionId,
 				workerToken: sessionToken,
 				organizationId: tokenData.organizationId,
+				source: tokenData.source,
 			},
 		);
 	} catch (error) {
@@ -185,6 +186,7 @@ async function forwardRequest(
 		connectionId?: string;
 		workerToken?: string;
 		organizationId?: string;
+		source?: string;
 	},
 ): Promise<Response> {
 	const ssrfBlock = await ssrfBlockResponse(httpServer, mcpId, agentId);
@@ -283,6 +285,7 @@ async function forwardRequest(
 			conversationId: authContext.conversationId,
 			teamId: authContext.teamId,
 			connectionId: authContext.connectionId,
+			source: authContext.source,
 			deviceAuthFallback: false,
 		});
 		const finalPayload = payload ?? {

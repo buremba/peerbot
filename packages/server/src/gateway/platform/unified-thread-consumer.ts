@@ -11,11 +11,48 @@ import type {
   QueueJob,
   ThreadResponsePayload,
 } from "../infrastructure/queue/index.js";
+import { TERMINAL_DELIVERY_SEND_OPTS } from "../infrastructure/queue/index.js";
+import type { InteractionService } from "../interactions.js";
 import type { PlatformRegistry } from "../platform.js";
 import type { SseManager } from "../services/sse-manager.js";
 import type { ResponseRenderer } from "./response-renderer.js";
 
 const logger = createLogger("unified-thread-consumer");
+
+/**
+ * customEvent.name for a CHAT-PLATFORM interaction card (ask_user question,
+ * tool-approval, link-button, status message) that must reach the pod holding
+ * the connection's in-process interaction bridge.
+ *
+ * Unlike API interaction cards — which the browser receives over an SSE socket
+ * pinned to one pod and which `routeToRenderer` owner-gates on
+ * `SseManager.hasActiveConnection` — a chat card is rendered by the in-process
+ * `registerInteractionBridge` listener that only exists on the pod where the
+ * connection is warm. The worker posts the card into ITS pod's local
+ * `InteractionService`; under N>1 replicas (Slack webhooks don't pin to the
+ * connection's pod) that is routinely NOT the bridge pod, so the card was lost.
+ *
+ * Fan-out mirrors the API path: the producer (`registerChatInteractionFanout`)
+ * enqueues every non-api interaction onto the shared `thread_response` queue;
+ * the consumer below claims it on some replica, gates delivery on
+ * `ChatResponseBridge.ensureDeliverable` (the SAME `warmConnection` owner-gate
+ * the chat-response text path uses), and on success re-emits the event onto
+ * THIS pod's local `InteractionService` so the existing bridge renders it
+ * unchanged. A non-owning pod throws to re-queue until the owning pod claims.
+ */
+const CHAT_INTERACTION_EVENT = "chat-interaction";
+
+/**
+ * Map of InteractionService emit channel → the event payload that travels on
+ * it. Carried inside the `chat-interaction` customEvent so the consumer can
+ * re-emit on the correct channel without re-deriving it.
+ */
+interface ChatInteractionEnvelope {
+  /** The InteractionService event name (e.g. "question:created"). */
+  eventName: string;
+  /** The original posted-interaction payload (PostedQuestion, etc.). */
+  event: Record<string, unknown> & { id?: string; connectionId?: string };
+}
 
 /**
  * `platformMetadata.source` values for turns dispatched server-side with no
@@ -37,6 +74,8 @@ const HEADLESS_SOURCES = new Set([
  */
 export class UnifiedThreadResponseConsumer {
   private chatResponseBridge?: ChatResponseBridge;
+  private interactionService?: InteractionService;
+  private chatInteractionFanoutCleanup?: () => void;
 
   constructor(
     private queue: IMessageQueue,
@@ -46,6 +85,36 @@ export class UnifiedThreadResponseConsumer {
 
   setChatResponseBridge(bridge: ChatResponseBridge): void {
     this.chatResponseBridge = bridge;
+  }
+
+  /**
+   * Wire the cross-pod fan-out for CHAT-PLATFORM interaction cards. Registers a
+   * producer that enqueues a non-api posted interaction onto the
+   * `thread_response` queue ONLY when this (producing) pod does not already own
+   * the connection's bridge, and stores the service so the consumer can re-emit
+   * a claimed card onto this pod's local bridge. Idempotent: re-registering
+   * tears down the previous subscriber first.
+   *
+   * `isConnectionWarmLocally` lets the producer skip the enqueue when the local
+   * bridge will render the card in-process (same `emit` cycle) — that prevents a
+   * double render in the worker-pod == owner-pod topology, and makes the N=1
+   * path a pure no-op (no queue traffic, local render only).
+   *
+   * Must be called alongside `setChatResponseBridge` — the consumer branch for
+   * `chat-interaction` rows gates on `ensureDeliverable`, so without the bridge
+   * a fanned-out card can never be delivered.
+   */
+  setInteractionService(
+    interactionService: InteractionService,
+    isConnectionWarmLocally: (connectionId: string) => boolean
+  ): void {
+    this.chatInteractionFanoutCleanup?.();
+    this.interactionService = interactionService;
+    this.chatInteractionFanoutCleanup = registerChatInteractionFanout(
+      interactionService,
+      this.queue,
+      isConnectionWarmLocally
+    );
   }
 
   /**
@@ -72,6 +141,8 @@ export class UnifiedThreadResponseConsumer {
    * Stop the consumer.
    */
   async stop(): Promise<void> {
+    this.chatInteractionFanoutCleanup?.();
+    this.chatInteractionFanoutCleanup = undefined;
     await this.queue.stop();
     logger.info("Unified thread response consumer stopped");
   }
@@ -86,6 +157,16 @@ export class UnifiedThreadResponseConsumer {
 
     if (!data?.messageId) {
       logger.error(`Invalid thread response data: ${JSON.stringify(data)}`);
+      return;
+    }
+
+    // CHAT-PLATFORM interaction card fan-out (ask_user/tool-approval/
+    // link-button/status). Handled before the text/terminal routing below
+    // because these rows also carry a `connectionId` and would otherwise be
+    // mis-routed through the chat-response-bridge text path. See
+    // CHAT_INTERACTION_EVENT for the cross-pod rationale.
+    if (data.customEvent?.name === CHAT_INTERACTION_EVENT) {
+      await this.handleChatInteraction(data);
       return;
     }
 
@@ -164,6 +245,83 @@ export class UnifiedThreadResponseConsumer {
     } finally {
       span?.end();
     }
+  }
+
+  /**
+   * Deliver a fanned-out CHAT-PLATFORM interaction card on the pod that owns
+   * the connection's bridge.
+   *
+   * Owner-gate: `ensureDeliverable` warms the connection from its row on this
+   * replica and returns false only when this replica genuinely can't run it
+   * (deleted/stopped, or an exclusive transport leased to another replica). On
+   * false we throw so the row re-queues until the owning pod claims it — exactly
+   * the chat-response text path's behaviour. On true the connection is warm
+   * here, so `registerInteractionBridge` is subscribed to this pod's
+   * `InteractionService`; re-emitting the original event renders the card.
+   *
+   * No-double-render: the re-emitted event keeps its ORIGINAL `id`. The bridge's
+   * per-connection `handledEvents` set dedups by id, so if this same pod also
+   * produced the card (N=1, or worker-pod == bridge-pod), the local emit already
+   * rendered it and the re-emit is a no-op. The has-check + mark happen
+   * synchronously at the top of each bridge handler, before any await, so even a
+   * concurrent local-emit + re-emit cannot both render.
+   */
+  private async handleChatInteraction(
+    data: ThreadResponsePayload
+  ): Promise<void> {
+    const envelope = data.customEvent?.data as
+      | ChatInteractionEnvelope
+      | undefined;
+    if (!envelope?.eventName || !envelope.event) {
+      logger.error(
+        `Invalid chat-interaction envelope for message ${data.messageId}`
+      );
+      return;
+    }
+
+    if (!this.interactionService) {
+      // Fail the job so it re-queues until a replica with the fan-out wired
+      // claims it, rather than silently dropping the card.
+      throw new Error(
+        `Chat interaction card ${data.messageId} cannot be delivered: no InteractionService wired on this gateway instance`
+      );
+    }
+
+    // Defense-in-depth: the row's routing key (platformMetadata.connectionId,
+    // what ensureDeliverable warms) MUST match the connectionId tagged on the
+    // event we're about to re-emit. A mismatched/corrupted envelope could
+    // otherwise render an event tagged for connection A onto connection B's
+    // warm pod. Drop on mismatch — never re-emit a misrouted card.
+    const rowConnectionId = data.platformMetadata?.connectionId as
+      | string
+      | undefined;
+    const eventConnectionId = envelope.event.connectionId;
+    if (
+      eventConnectionId &&
+      rowConnectionId &&
+      eventConnectionId !== rowConnectionId
+    ) {
+      logger.warn(
+        `Dropping chat interaction ${envelope.event.id ?? data.messageId} (${envelope.eventName}): envelope connectionId ${eventConnectionId} does not match row connectionId ${rowConnectionId}`
+      );
+      return;
+    }
+
+    const deliverable = await this.chatResponseBridge?.ensureDeliverable(data);
+    if (!deliverable) {
+      throw new Error(
+        `Chat interaction card for connection ${
+          rowConnectionId ?? "unknown"
+        } cannot be served by this gateway instance (deleted, stopped, or leased to another replica); re-queueing for owner delivery`
+      );
+    }
+
+    // Re-emit on this pod's local InteractionService so the in-process bridge
+    // (now warm for this connection) renders the card with the original id.
+    this.interactionService.emit(envelope.eventName, envelope.event);
+    logger.info(
+      `Delivered chat interaction ${envelope.event.id ?? data.messageId} (${envelope.eventName}) on owning replica`
+    );
   }
 
   /**
@@ -307,4 +465,110 @@ export class UnifiedThreadResponseConsumer {
     }
   }
 
+}
+
+/**
+ * The InteractionService emit channels that carry a CHAT-PLATFORM interaction
+ * card, mapped to whether the event's `id` is durable enough to drive the
+ * bridge's per-connection `handledEvents` dedup (all of them are — every posted
+ * interaction gets a unique `id`). Status messages are included so a cross-pod
+ * status note isn't silently dropped.
+ */
+const CHAT_INTERACTION_CHANNELS = [
+  "question:created",
+  "tool:approval-needed",
+  "link-button:created",
+  "status-message:created",
+] as const;
+
+/**
+ * Register the producer side of the chat-interaction fan-out.
+ *
+ * For every NON-api posted interaction, enqueue a `thread_response` row carrying
+ * the event so the consumer delivers it on the connection-owning pod. API
+ * interactions are skipped — `ApiPlatform` already fans those out to the SSE
+ * owner. Returns a cleanup function that detaches every listener.
+ *
+ * Mirrors `ApiPlatform.enqueueInteractionCard`: same queue, same
+ * `TERMINAL_DELIVERY_SEND_OPTS` re-claim budget. The card's `connectionId` is
+ * placed on `platformMetadata` so `ensureDeliverable` can warm the connection,
+ * and on the row's `platform`/`teamId` so the row is unambiguously a chat row.
+ *
+ * `isConnectionWarmLocally(connectionId)` short-circuits the enqueue when this
+ * pod already owns the connection: the local interaction bridge renders the
+ * card from the same `emit`, so a queue round-trip would only risk a duplicate
+ * render on whichever pod claims it.
+ */
+export function registerChatInteractionFanout(
+  interactionService: InteractionService,
+  queue: IMessageQueue,
+  isConnectionWarmLocally: (connectionId: string) => boolean
+): () => void {
+  const handlers: Array<[string, (event: unknown) => void]> = [];
+
+  for (const eventName of CHAT_INTERACTION_CHANNELS) {
+    const handler = (event: unknown) => {
+      const ev = event as {
+        id?: string;
+        platform?: string;
+        connectionId?: string;
+        conversationId?: string;
+        channelId?: string;
+        userId?: string;
+        teamId?: string;
+      };
+      // API cards are owner-routed to the SSE socket by ApiPlatform; chat cards
+      // need a connectionId to warm the owning pod's bridge.
+      if (!ev || ev.platform === "api") return;
+      if (!ev.connectionId) return;
+
+      // This pod already owns the connection — the in-process bridge renders
+      // the card from this same emit (and its per-connection `handledEvents`
+      // dedups any later re-emit). Enqueuing would risk a duplicate render on
+      // whichever pod claims the job. Skip the cross-pod hop entirely.
+      if (isConnectionWarmLocally(ev.connectionId)) return;
+
+      const envelope: ChatInteractionEnvelope = {
+        eventName,
+        event: ev as Record<string, unknown>,
+      };
+      const payload: ThreadResponsePayload = {
+        messageId: ev.id ?? `chat-int-${Date.now()}`,
+        conversationId: ev.conversationId ?? ev.channelId ?? "",
+        channelId: ev.channelId ?? "",
+        userId: ev.userId ?? "",
+        platform: ev.platform,
+        teamId: ev.teamId ?? ev.platform ?? "",
+        timestamp: Date.now(),
+        // connectionId on platformMetadata is what ensureDeliverable reads to
+        // warm the owning replica's connection.
+        platformMetadata: { connectionId: ev.connectionId },
+        customEvent: {
+          name: CHAT_INTERACTION_EVENT,
+          data: envelope as unknown as Record<string, unknown>,
+        },
+      };
+      // The enqueue is fire-and-forget (the emitter is synchronous), but for an
+      // interaction card a silent enqueue failure means a PERMANENTLY LOST card
+      // with no retry — the worker's ask_user/approval turn hangs forever. Log
+      // it as an error with full routing context so the drop is observable
+      // rather than invisible.
+      void queue
+        .send("thread_response", payload, TERMINAL_DELIVERY_SEND_OPTS)
+        .catch((err) => {
+          logger.error(
+            `Failed to enqueue chat interaction card ${ev.id ?? "unknown"} (${eventName}) for connection ${ev.connectionId} — card is LOST (no retry):`,
+            err
+          );
+        });
+    };
+    interactionService.on(eventName, handler);
+    handlers.push([eventName, handler]);
+  }
+
+  return () => {
+    for (const [eventName, handler] of handlers) {
+      interactionService.off(eventName, handler);
+    }
+  };
 }

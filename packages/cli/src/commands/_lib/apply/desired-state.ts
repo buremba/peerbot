@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type {
   ConnectorAuthSchema,
   ConnectorDefinition,
+  EntityMetrics,
   FeedDefinition,
 } from "@lobu/connector-sdk";
 import type { AgentSettings } from "@lobu/core";
@@ -57,6 +58,13 @@ export interface DesiredEntityType {
    * {@link EntityBacking}.
    */
   backing?: EntityBacking;
+  /**
+   * Declared metric contract (eventSets/measures/dimensions/segments). Present
+   * only when the type declares metrics; absent ⇒ not in the metric catalog.
+   * Normalized so a type with no metrics compares equal on both sides and never
+   * churns the diff (mirrors `backing`).
+   */
+  metrics?: EntityMetrics;
 }
 
 export interface DesiredRelationshipType {

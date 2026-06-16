@@ -2,7 +2,7 @@
  * Device-scoped browser auth profile CRUD.
  *
  * The Mac app uses these to create, list, and revoke browser-session auth
- * profiles bound to a physical device worker (mirror mode and CDP-attach).
+ * profiles bound to a physical device worker (CDP-attach).
  *
  *   GET    /api/workers/me/auth-profiles?worker_id=...
  *   POST   /api/workers/me/auth-profiles
@@ -88,14 +88,11 @@ export async function listMyDeviceAuthProfiles(c: Context<{ Bindings: Env }>) {
 /**
  * POST /api/workers/me/auth-profiles
  *
- * Body: { worker_id, display_name, browser_kind, cdp_url?, auth_data? }
+ * Body: { worker_id, display_name, browser_kind, cdp_url }
  *
- * Create a browser-session auth profile bound to this device. The two
- * supported shapes are mirror (auth_data.source_profile_dir, cookies
- * decrypted on the device at sync time) and CDP attach (cdp_url, Lobu
- * connects to a Chrome the user is running with remote debugging).
- * Cookies stay on the device; server's auth_data carries only the
- * non-secret pointer to the source profile.
+ * Create a browser-session auth profile bound to this device. Auth is CDP
+ * attach: Lobu connects to a Chrome the user runs with remote debugging
+ * (cdp_url). No cookies ever touch the server.
  */
 export async function createMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
   let body: {
@@ -103,17 +100,6 @@ export async function createMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
     display_name?: string;
     browser_kind?: string;
     cdp_url?: string;
-    auth_data?: {
-      source_profile_dir?: string;
-      source_browser_root?: string;
-      source_browser?: string;
-      mode?: string;
-      /** Opt-in per profile. When true and DevToolsActivePort exists at
-       * sync time, the connector subprocess attaches via CDP to the
-       * user's running Chrome. Default false — Lobu only touches the
-       * user's browser process when explicitly granted. */
-      allow_cdp_attach?: boolean;
-    };
   };
   try {
     body = await c.req.json();
@@ -124,118 +110,46 @@ export async function createMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
   const displayName = (body.display_name ?? '').trim();
   const browserKind = (body.browser_kind ?? '').trim() as BrowserKind;
   const cdpUrl = (body.cdp_url ?? '').trim();
-  const mirrorSourceDir = (body.auth_data?.source_profile_dir ?? '').trim();
-  const mirrorBrowserRoot = (body.auth_data?.source_browser_root ?? '').trim();
-  const mirrorSourceBrowser = (body.auth_data?.source_browser ?? '').trim();
   if (!workerId || !displayName || !browserKind) {
     return c.json({ error: 'worker_id, display_name, browser_kind are required' }, 400);
   }
   if (!BROWSER_KIND_SET.has(browserKind)) {
     return c.json({ error: `browser_kind must be one of: ${[...BROWSER_KIND_SET].join(', ')}` }, 400);
   }
-  // Two valid shapes for a browser_session profile:
-  //   - Mirror mode (optionally with CDP override on auth_data.allow_cdp_attach):
-  //     auth_data.source_profile_dir + source_browser_root set; cdp_url may
-  //     pin a port the user wants the connector to attach to.
-  //   - Pure CDP attach: cdp_url only, no mirror fields.
-  const hasMirrorSourceDir = mirrorSourceDir.length > 0;
-  const hasMirrorBrowserRoot = mirrorBrowserRoot.length > 0;
-  // Reject partial mirror metadata loudly. Without this check, a request
-  // that supplies only source_profile_dir (no source_browser_root) plus a
-  // cdp_url would pass as "pure CDP attach" and silently drop the mirror
-  // intent. The caller meant mirror but the row would never apply it.
-  if (hasMirrorSourceDir !== hasMirrorBrowserRoot) {
-    return c.json(
-      {
-        error:
-          'mirror mode requires both auth_data.source_profile_dir and auth_data.source_browser_root',
-      },
-      400
-    );
-  }
-  const isMirror = hasMirrorSourceDir && hasMirrorBrowserRoot;
-  if (!isMirror && cdpUrl.length === 0) {
-    return c.json(
-      {
-        error:
-          'browser_session needs auth_data.source_profile_dir (mirror) or cdp_url (attach)',
-      },
-      400
-    );
+  if (cdpUrl.length === 0) {
+    return c.json({ error: 'browser_session needs cdp_url (CDP attach)' }, 400);
   }
   const { device, error } = await resolveDeviceWorkerForRequest(c, workerId);
   if (error) return error;
   try {
-    // Idempotency key:
-    //   - Mirror mode: (org, device, browser_kind, auth_data.source_profile_dir)
-    //   - CDP/legacy:  (org, device, browser_kind) — only one of these per
-    //     device since they describe Lobu-owned or device-owned Chrome
-    //     state, not per-profile state.
-    // This lets the user mirror multiple Chrome profiles (Default + Work)
-    // on the same Mac without collisions, while a re-add of the same source
-    // profile updates the existing row instead of erroring.
+    // Idempotency key: (org, device, browser_kind) — one CDP-attach profile
+    // per browser per device; a re-add updates the existing row.
     const sql = getDb();
-    const existingRows = isMirror
-      ? ((await sql`
-          SELECT id, organization_id, slug, display_name, connector_key,
-                 profile_kind, status, auth_data, account_id, provider,
-                 created_by, created_at, updated_at,
-                 device_worker_id, browser_kind, user_data_dir, cdp_url
-          FROM auth_profiles
-          WHERE organization_id = ${device!.organization_id}
-            AND device_worker_id = ${device!.id}
-            AND profile_kind = 'browser_session'
-            AND browser_kind = ${browserKind}
-            AND auth_data->>'source_profile_dir' = ${mirrorSourceDir}
-            AND status <> 'revoked'
-          ORDER BY created_at ASC
-          LIMIT 1
-        `) as unknown as Array<Record<string, unknown>>)
-      : ((await sql`
-          SELECT id, organization_id, slug, display_name, connector_key,
-                 profile_kind, status, auth_data, account_id, provider,
-                 created_by, created_at, updated_at,
-                 device_worker_id, browser_kind, user_data_dir, cdp_url
-          FROM auth_profiles
-          WHERE organization_id = ${device!.organization_id}
-            AND device_worker_id = ${device!.id}
-            AND profile_kind = 'browser_session'
-            AND browser_kind = ${browserKind}
-            AND (auth_data->>'source_profile_dir') IS NULL
-            AND status <> 'revoked'
-          ORDER BY created_at ASC
-          LIMIT 1
-        `) as unknown as Array<Record<string, unknown>>);
-    // For mirror mode, the non-secret config lives in auth_data so we don't
-    // pollute the column surface with mirror-specific fields. The Mac app
-    // re-decrypts cookies at sync time, so we never write a cookie blob.
-    const newAuthData = isMirror
-      ? {
-          mode: 'mirror',
-          source_profile_dir: mirrorSourceDir,
-          source_browser_root: mirrorBrowserRoot,
-          source_browser: mirrorSourceBrowser || 'chrome',
-          // Strict opt-in. Anything other than explicit `true` becomes
-          // `false` — including missing field on an existing row that the
-          // Mac app hasn't migrated yet. Keeps Lobu from touching the
-          // user's Chrome unless they actively checked the box.
-          allow_cdp_attach: body.auth_data?.allow_cdp_attach === true,
-        }
-      : {};
-    // Mirror profiles are usable immediately (cookies live in the
-    // user's Chrome already). Pure CDP attach is pending until first run.
-    const initialStatus = !isMirror && cdpUrl ? 'pending_auth' : 'active';
+    const existingRows = (await sql`
+      SELECT id, organization_id, slug, display_name, connector_key,
+             profile_kind, status, auth_data, account_id, provider,
+             created_by, created_at, updated_at,
+             device_worker_id, browser_kind, user_data_dir, cdp_url
+      FROM auth_profiles
+      WHERE organization_id = ${device!.organization_id}
+        AND device_worker_id = ${device!.id}
+        AND profile_kind = 'browser_session'
+        AND browser_kind = ${browserKind}
+        AND status <> 'revoked'
+      ORDER BY created_at ASC
+      LIMIT 1
+    `) as unknown as Array<Record<string, unknown>>;
+    // CDP attach is pending until the first run authenticates against the
+    // live Chrome session.
+    const initialStatus = 'pending_auth';
     if (existingRows.length > 0) {
       const existing = existingRows[0]!;
-      // Refresh the volatile fields on re-mirror so the user can switch
-      // a profile between cookies-only and live-Chrome by re-clicking
-      // Mirror with a different checkbox state.
       const updated = (await sql`
         UPDATE auth_profiles
         SET user_data_dir = NULL,
-            cdp_url = ${cdpUrl || null},
+            cdp_url = ${cdpUrl},
             display_name = ${displayName},
-            auth_data = ${sql.json(newAuthData)},
+            auth_data = ${sql.json({})},
             status = ${initialStatus},
             updated_at = now()
         WHERE id = ${existing.id as number}
@@ -256,8 +170,8 @@ export async function createMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
       deviceWorkerId: device!.id,
       browserKind,
       userDataDir: null,
-      cdpUrl: cdpUrl || null,
-      authData: newAuthData,
+      cdpUrl,
+      authData: {},
     });
     return c.json({ profile });
   } catch (err) {

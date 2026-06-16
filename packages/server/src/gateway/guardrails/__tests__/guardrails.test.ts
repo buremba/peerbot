@@ -23,6 +23,7 @@ import {
   TextJudge,
 } from "../index.js";
 import type { JudgeClient, JudgeVerdict } from "../../proxy/egress-judge/types.js";
+import { registerBuiltinGuardrails } from "../builtins.js";
 
 // --- Helpers ---------------------------------------------------------------
 
@@ -644,5 +645,29 @@ describe("resolveAgentGuardrails (aggregator)", () => {
     );
     expect(inlineNames.length).toBe(2);
     expect(new Set(inlineNames).size).toBe(2);
+  });
+});
+
+describe("secret-scan builtin", () => {
+  const registry = new GuardrailRegistry();
+  registerBuiltinGuardrails(registry);
+  const secretScan = registry.get("output", "secret-scan");
+
+  const run = (text: string) => secretScan!.run({ text } as never);
+
+  test("flags an Anthropic sk-ant- key (hyphenated)", async () => {
+    // The old /sk-[a-zA-Z0-9]{20,}/ stopped at the hyphen and missed these.
+    const res = await run("here is sk-ant-api03-AbcDefGhiJklMnoPqrStuvWx0123 please");
+    expect(res.tripped).toBe(true);
+  });
+
+  test("still flags a plain sk- key", async () => {
+    const res = await run("token sk-abcdefghij0123456789ABCDEF here");
+    expect(res.tripped).toBe(true);
+  });
+
+  test("does not flag ordinary prose", async () => {
+    const res = await run("the quick brown fox jumps over the lazy dog");
+    expect(res.tripped).toBe(false);
   });
 });

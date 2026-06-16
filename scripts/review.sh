@@ -150,6 +150,9 @@ UNIT_EXIT=0
 } > "$UNIT_LOG" 2>&1
 set -e
 
+echo ">> make clean-test-pg before integration"
+make clean-test-pg
+
 echo ">> integration tests → $INTEGRATION_LOG"
 set +e
 INTEGRATION_EXIT=0

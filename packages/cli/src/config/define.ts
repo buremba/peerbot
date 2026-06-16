@@ -13,8 +13,12 @@
 import type {
   ConnectorClass,
   ConnectorRuntime,
+  Dimension,
+  EventSet,
+  Measure,
   ReactionClient,
   ReactionContext,
+  Segment,
 } from "@lobu/connector-sdk";
 import type { SecretRef } from "./secret.js";
 
@@ -32,8 +36,10 @@ export type ConnectorRef = string | ConnectorClass;
  * Presence is the discriminant: an entity type with `backing` is derived; without
  * it, it is **stored** (the default — a curated entity like a Company or a
  * hand-named Trip). There is no separate `mode` field — "derived" just means
- * "has a view". Read a derived type's rows by running its SQL through `query_sql`;
- * measure vs. dimension columns are classified on read (not declared here).
+ * "has a view". Read a derived type's rows by running its SQL through `query_sql`.
+ * NOTE: with the declared metric layer (see {@link Measure}), measures/dimensions
+ * are DECLARED, not inferred on read — a derived type is in the metric catalog
+ * only if it declares them.
  */
 export interface EntityBacking {
   /** ANSI SELECT over other relations (events, entities, …). */
@@ -47,6 +53,22 @@ export interface EntityBacking {
    */
   connection?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Entity-bound metrics — the contract types live in `@lobu/connector-sdk`
+// (shared by CLI authoring, connector federation, and server compile/validate;
+// the config module may not import `@lobu/core` — see config-isolation.test.ts).
+// Re-exported here so configs can import them alongside `defineEntityType`.
+// ---------------------------------------------------------------------------
+export type {
+  Dimension,
+  EventSet,
+  FactMatchRule,
+  Measure,
+  MetricReadMode,
+  MetricTier,
+  Segment,
+} from "@lobu/connector-sdk";
 
 export interface EntityType {
   readonly kind: "entityType";
@@ -65,6 +87,20 @@ export interface EntityType {
    * the only discriminant; there is no separate `mode` field.
    */
   backing?: EntityBacking;
+  /**
+   * How events resolve to this entity, at named grains (the join key). The
+   * compiler lowers `eventSets` + `measures` into backing SQL.
+   */
+  eventSets?: Record<string, EventSet>;
+  /**
+   * Governed aggregations. DECLARED — there is no on-read inference; an entity is
+   * in the metric catalog only if it declares `measures`.
+   */
+  measures?: Record<string, Measure>;
+  /** Governed group-bys. */
+  dimensions?: Record<string, Dimension>;
+  /** Reusable named population filters. */
+  segments?: Record<string, Segment>;
 }
 
 export function defineEntityType(config: Omit<EntityType, "kind">): EntityType {

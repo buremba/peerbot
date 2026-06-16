@@ -20,9 +20,9 @@
  * need to know how the run is routed (sync vs queued) — they just await
  * the dispatcher.
  *
- * Migration scope: LinkedIn is fully on this path (no Playwright
- * fallback). Revolut and X still use `browserNetworkSync`; we keep that
- * helper alive for them and drop it once every consumer has migrated.
+ * Migration scope: LinkedIn and Revolut are on this extension path (no
+ * Playwright fallback). X still uses `browserNetworkSync` (CDP attach); we
+ * keep that helper alive for it and drop it once every consumer has migrated.
  */
 
 import { sdkLogger } from './logger.js';

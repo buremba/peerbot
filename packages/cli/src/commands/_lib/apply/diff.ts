@@ -481,6 +481,12 @@ function diffEntityType(
         name: "backing",
         changed: (d, r) => !deepEqual(d.backing, r.backing),
       },
+      {
+        // metrics_config round-trips verbatim; both sides omit it for a
+        // non-metric type, so deepEqual(undefined, undefined) ⇒ no churn.
+        name: "metrics",
+        changed: (d, r) => !deepEqual(d.metrics, r.metrics),
+      },
     ],
   }) as EntityTypeDiffRow;
 }

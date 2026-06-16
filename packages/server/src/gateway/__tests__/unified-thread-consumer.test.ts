@@ -1,5 +1,9 @@
 import { describe, expect, mock, test } from "bun:test";
-import { UnifiedThreadResponseConsumer } from "../platform/unified-thread-consumer.js";
+import { InteractionService } from "../interactions.js";
+import {
+  registerChatInteractionFanout,
+  UnifiedThreadResponseConsumer,
+} from "../platform/unified-thread-consumer.js";
 
 const basePayload = {
   messageId: "m1",
@@ -173,6 +177,31 @@ describe("UnifiedThreadResponseConsumer interaction card owner-routing", () => {
     expect(sseManager.hasActiveConnection).toHaveBeenCalledWith("api:conv-1");
     // Must NOT broadcast into the wrong pod's SseManager.
     expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  test("delivers a headless-sourced card on first claim without an SSE owner (F12)", async () => {
+    // A card emitted from a headless turn (watcher/scheduled/repair/internal)
+    // has no browser SSE on ANY pod. Before the source was stamped onto the
+    // card it owner-gated, re-queued 30x and dead-lettered, hanging the worker.
+    // Stamped headless, it must deliver on first claim instead.
+    const { consumer, broadcast, sseManager } = makeInteractionConsumer(false);
+
+    await consumer.handleThreadResponse({
+      id: "job-headless",
+      data: {
+        ...interactionPayload,
+        messageId: "m-int-headless",
+        platformMetadata: { source: "watcher-run" },
+      },
+    });
+
+    // Exempt: the owner check is short-circuited, so it never even asks.
+    expect(sseManager.hasActiveConnection).not.toHaveBeenCalled();
+    const questionBroadcasts = broadcast.mock.calls.filter(
+      (call: any[]) => call[1] === "question"
+    );
+    expect(questionBroadcasts.length).toBe(1);
+    expect(questionBroadcasts[0][0]).toBe("api:conv-1");
   });
 
   test("delivers the card on the pod that owns the SSE connection", async () => {
@@ -404,5 +433,256 @@ describe("UnifiedThreadResponseConsumer Chat SDK hydrate-on-claim", () => {
 
     expect(platformRegistry.get).toHaveBeenCalledWith("telegram");
     expect(renderer.handleCompletion).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Cross-pod fan-out for CHAT-PLATFORM interaction cards (the bug fixed here):
+// a worker posts an ask_user card into ITS pod's InteractionService, but under
+// N>1 replicas (Slack webhooks don't pin to the connection's pod) that pod
+// rarely owns the connection's interaction bridge — so the card was lost. The
+// producer rides the thread_response queue; the consumer re-emits it on the
+// owning pod, gated by the same ensureDeliverable/warmConnection owner-gate the
+// text path uses, and dedups against the bridge's per-connection handledEvents.
+describe("chat interaction fan-out producer (registerChatInteractionFanout)", () => {
+  function makeFanout(opts?: { warmLocally?: boolean }) {
+    const send = mock(async () => "job-id");
+    const queue = { send } as any;
+    const svc = new InteractionService();
+    const warm = opts?.warmLocally ?? false;
+    const cleanup = registerChatInteractionFanout(
+      svc,
+      queue,
+      (_id: string) => warm
+    );
+    return { svc, send, cleanup };
+  }
+
+  const slackQuestion = {
+    id: "q_slack_1",
+    userId: "U1",
+    conversationId: "slack:D095:thread",
+    channelId: "D095",
+    teamId: "T1",
+    connectionId: "cfa916c95eb64939",
+    platform: "slack",
+    question: "Proceed?",
+    options: ["Yes", "No"],
+  };
+
+  test("enqueues a chat card when this pod does NOT own the connection", () => {
+    const { svc, send } = makeFanout({ warmLocally: false });
+
+    svc.emit("question:created", slackQuestion);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    const [queueName, payload, opts] = send.mock.calls[0] as any[];
+    expect(queueName).toBe("thread_response");
+    // connectionId rides platformMetadata so ensureDeliverable can warm the
+    // owning replica's connection.
+    expect(payload.platformMetadata.connectionId).toBe("cfa916c95eb64939");
+    expect(payload.platform).toBe("slack");
+    expect(payload.customEvent.name).toBe("chat-interaction");
+    expect(payload.customEvent.data.eventName).toBe("question:created");
+    expect(payload.customEvent.data.event.id).toBe("q_slack_1");
+    // Raised-retry re-claim budget, same as terminal/API-card delivery.
+    expect(opts).toMatchObject({ retryLimit: 30, retryDelay: 1 });
+  });
+
+  test("does NOT enqueue when this pod already owns the connection (local render handles it)", () => {
+    const { svc, send } = makeFanout({ warmLocally: true });
+
+    svc.emit("question:created", slackQuestion);
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  test("does NOT enqueue api cards (ApiPlatform owner-routes those to the SSE)", () => {
+    const { svc, send } = makeFanout({ warmLocally: false });
+
+    svc.emit("question:created", {
+      ...slackQuestion,
+      platform: "api",
+      connectionId: undefined,
+    });
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  test("does NOT enqueue chat cards missing a connectionId", () => {
+    const { svc, send } = makeFanout({ warmLocally: false });
+
+    svc.emit("question:created", { ...slackQuestion, connectionId: undefined });
+
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  test("fans out every interaction channel (approval, link-button, status)", () => {
+    const { svc, send } = makeFanout({ warmLocally: false });
+
+    svc.emit("tool:approval-needed", {
+      ...slackQuestion,
+      id: "req_1",
+    });
+    svc.emit("link-button:created", {
+      ...slackQuestion,
+      id: "lb_1",
+    });
+    svc.emit("status-message:created", {
+      ...slackQuestion,
+      id: "sm_1",
+    });
+
+    expect(send).toHaveBeenCalledTimes(3);
+    const names = send.mock.calls.map(
+      (c: any[]) => c[1].customEvent.data.eventName
+    );
+    expect(names).toEqual([
+      "tool:approval-needed",
+      "link-button:created",
+      "status-message:created",
+    ]);
+  });
+
+  test("cleanup detaches all listeners (no fan-out after teardown)", () => {
+    const { svc, send, cleanup } = makeFanout({ warmLocally: false });
+    cleanup();
+
+    svc.emit("question:created", slackQuestion);
+
+    expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe("chat interaction fan-out consumer (handleChatInteraction)", () => {
+  function makeChatInteractionRow(connectionId = "cfa916c95eb64939") {
+    return {
+      messageId: "q_slack_1",
+      conversationId: "slack:D095:thread",
+      channelId: "D095",
+      userId: "U1",
+      platform: "slack",
+      teamId: "slack",
+      timestamp: 42,
+      platformMetadata: { connectionId },
+      customEvent: {
+        name: "chat-interaction",
+        data: {
+          eventName: "question:created",
+          event: {
+            id: "q_slack_1",
+            connectionId,
+            platform: "slack",
+            question: "Proceed?",
+            options: ["Yes", "No"],
+          },
+        },
+      },
+    };
+  }
+
+  function makeConsumer(ensureDeliverable: boolean) {
+    const queue = {
+      start: mock(async () => undefined),
+      stop: mock(async () => undefined),
+      createQueue: mock(async () => undefined),
+      work: mock(async () => undefined),
+      send: mock(async () => "id"),
+    };
+    const platformRegistry = { get: mock(() => undefined) };
+    const sseManager = { broadcast: mock(() => undefined) };
+    const consumer = new UnifiedThreadResponseConsumer(
+      queue as any,
+      platformRegistry as any,
+      sseManager as any
+    ) as any;
+    const chatResponseBridge = {
+      ensureDeliverable: mock(async () => ensureDeliverable),
+      handleCompletion: mock(async () => undefined),
+      handleError: mock(async () => undefined),
+    };
+    consumer.setChatResponseBridge(chatResponseBridge);
+    const svc = new InteractionService();
+    // Wire the interaction service with a not-warm-locally producer guard so
+    // re-emit drives the consumer-side path under test.
+    consumer.setInteractionService(svc, (_id: string) => false);
+    return { consumer, svc, chatResponseBridge, platformRegistry };
+  }
+
+  test("re-emits the card onto the local InteractionService on the OWNING pod", async () => {
+    const { consumer, svc, chatResponseBridge, platformRegistry } =
+      makeConsumer(true);
+    const rendered: any[] = [];
+    svc.on("question:created", (e: any) => rendered.push(e));
+
+    await consumer.handleThreadResponse({
+      id: "job-1",
+      data: makeChatInteractionRow(),
+    });
+
+    // Owner-gate consulted (warmConnection), then re-emitted exactly once with
+    // the ORIGINAL id (drives the bridge's handledEvents dedup).
+    expect(chatResponseBridge.ensureDeliverable).toHaveBeenCalledTimes(1);
+    expect(rendered.length).toBe(1);
+    expect(rendered[0].id).toBe("q_slack_1");
+    // Never falls through to the platform-renderer text path.
+    expect(platformRegistry.get).not.toHaveBeenCalled();
+  });
+
+  test("re-queues (throws) and does NOT render on a pod that can't serve the connection", async () => {
+    const { consumer, svc, chatResponseBridge } = makeConsumer(false);
+    const rendered: any[] = [];
+    svc.on("question:created", (e: any) => rendered.push(e));
+
+    await expect(
+      consumer.handleThreadResponse({ id: "job-2", data: makeChatInteractionRow() })
+    ).rejects.toThrow(/cannot be served by this gateway instance/);
+
+    expect(chatResponseBridge.ensureDeliverable).toHaveBeenCalledTimes(1);
+    // The card is NOT lost on the wrong pod — it throws to re-queue, and never
+    // renders locally.
+    expect(rendered.length).toBe(0);
+  });
+
+  test("drops (does NOT re-emit) when the envelope connectionId mismatches the row connectionId", async () => {
+    const { consumer, svc, chatResponseBridge } = makeConsumer(true);
+    const rendered: any[] = [];
+    svc.on("question:created", (e: any) => rendered.push(e));
+
+    const row = makeChatInteractionRow("conn-A");
+    // Corrupt the envelope so the event is tagged for a DIFFERENT connection
+    // than the row's routing key (what ensureDeliverable would warm).
+    (row.customEvent.data.event as any).connectionId = "conn-B";
+
+    await consumer.handleThreadResponse({ id: "job-mismatch", data: row });
+
+    // Guard fires before the owner-gate: we must not warm or render a misrouted
+    // card onto connection conn-A's warm pod.
+    expect(rendered.length).toBe(0);
+    expect(chatResponseBridge.ensureDeliverable).not.toHaveBeenCalled();
+  });
+
+  test("idempotent / at-most-once: a re-claim of the SAME card renders once via the bridge dedup", async () => {
+    // Simulate the bridge's per-connection handledEvents dedup: a listener that
+    // renders each id at most once. Both the local emit (owner pod produced) and
+    // the queue re-emit carry the SAME id, so the second is a no-op — proving no
+    // double-render across the produce+consume seam.
+    const { consumer, svc } = makeConsumer(true);
+    const handled = new Set<string>();
+    let renders = 0;
+    svc.on("question:created", (e: any) => {
+      if (handled.has(e.id)) return; // mirrors bridge markHandled(event.id)
+      handled.add(e.id);
+      renders += 1;
+    });
+
+    // First delivery (e.g. local emit on the owner pod, or first queue claim).
+    svc.emit("question:created", makeChatInteractionRow().customEvent.data.event);
+    // Second delivery of the same card via the queue consumer (re-claim/retry).
+    await consumer.handleThreadResponse({
+      id: "job-3",
+      data: makeChatInteractionRow(),
+    });
+
+    expect(renders).toBe(1);
   });
 });

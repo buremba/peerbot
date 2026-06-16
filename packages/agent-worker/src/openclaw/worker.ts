@@ -42,15 +42,11 @@ import {
 } from "./session-runner";
 import { type TerminalStatus, writeSnapshot } from "./transcript-snapshot";
 
-// Re-export pure utilities from session-runner so existing imports of this
-// module continue to resolve without change.
+// Re-export the session-runner utilities that other modules import via this
+// barrel.
 export {
-  countCompactionsOnCurrentBranch,
   estimatePromptTokenCost,
-  getLatestAssistantText,
-  MEMORY_FLUSH_STATE_CUSTOM_TYPE,
   type ResolvedMemoryFlushConfig,
-  readLastFlushedCompactionCount,
   replaceBasePromptIdentity,
   resolveMemoryFlushConfig,
 } from "./session-runner";
@@ -524,6 +520,7 @@ export class OpenClawWorker implements WorkerExecutor {
       platform: this.config.platform,
       platformMetadata: this.config.platformMetadata,
       agentId: this.config.agentId,
+      runJobToken: this.config.runJobToken,
       workspaceDir: this.workspaceManager.getCurrentWorkingDirectory(),
       progressProcessor: this.progressProcessor,
       onSessionFilePathResolved: (filePath) => {

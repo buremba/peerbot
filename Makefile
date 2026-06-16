@@ -185,14 +185,20 @@ clean-workers:
 # Orphaned `lobu-test-pg-*` embedded-Postgres clusters from other worktrees'
 # integration runs eat macOS shared-memory slots (SHMMNI=32), and `lobu run` /
 # `make review`'s integration suite then fail with "could not create shared
-# memory segment: No space left on device" (shmget). Reap them.
+# memory segment: No space left on device" (shmget). They ALSO leak their data
+# dir (~150-400 MB each) to $TMPDIR — a session of killed runs once piled up
+# 65 GB and filled the disk. Reap both the processes (SHM) and the dirs (disk).
 clean-test-pg:
 	@echo "🧹 Reaping orphaned lobu-test-pg embedded-Postgres clusters..."
 	@pkill -f 'lobu-test-pg' 2>/dev/null || true
 	@pkill -f '@embedded-postgres' 2>/dev/null || true
 	@sleep 1
+	@before=$$(df -m "$${TMPDIR:-/tmp}" 2>/dev/null | awk 'END{print $$4}'); \
+		find "$${TMPDIR:-/tmp}" -maxdepth 1 -name 'lobu-test-pg-*' -prune -exec rm -rf {} + 2>/dev/null || true; \
+		after=$$(df -m "$${TMPDIR:-/tmp}" 2>/dev/null | awk 'END{print $$4}'); \
+		echo "freed ~$$((after - before)) MB of leaked cluster dirs"
 	@echo "shm segments now: $$(ipcs -m 2>/dev/null | awk '/^m/{c++} END{print c+0}') / 32"
-	@echo "✅ Test-PG clusters reaped"
+	@echo "✅ Test-PG clusters + dirs reaped"
 
 # --- Local AI review gate ---------------------------------------------------
 # Local-only: runs the deterministic suites in cwd, then invokes pi against

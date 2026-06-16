@@ -10,7 +10,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { injectPgvector, resolveEmbeddedNativeDir } from '@lobu/pgvector-embedded';
@@ -38,6 +38,54 @@ export interface EmbeddedBackend {
 }
 
 let active: EmbeddedBackend | null = null;
+let reapedStaleClusters = false;
+
+/**
+ * Reap orphaned `lobu-test-pg-*` clusters left by prior runs that were KILLED
+ * (SIGKILL / timeout / OOM / ENOSPC / `pkill`) before teardown could run — those
+ * paths skip BOTH the `beforeExit` hook and `async-exit-hook`, so the data dir
+ * (~150-400 MB each) leaks to tmp forever. A whole session of killed runs once
+ * piled up 65 GB and filled the disk; `make clean-test-pg` only freed SHM slots,
+ * never the dirs. This reaps any cluster older than the threshold (no test run
+ * lives that long), once per process, best-effort. Self-healing: every run
+ * cleans up the previous runs' leaks, so a kill can never accumulate.
+ */
+/** 1h — far longer than any integration run, so a hit is definitely orphaned. */
+export const STALE_CLUSTER_MS = 60 * 60 * 1000;
+
+/**
+ * Pure, testable core: remove `lobu-test-pg-*` dirs under `dir` whose mtime is
+ * older than `staleMs` relative to `now`. Returns how many were removed.
+ */
+export function reapStaleClustersIn(dir: string, now: number, staleMs: number): number {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const name of entries) {
+    if (!name.startsWith('lobu-test-pg-')) continue;
+    const path = join(dir, name);
+    try {
+      if (now - statSync(path).mtimeMs > staleMs) {
+        rmSync(path, { recursive: true, force: true });
+        removed++;
+      }
+    } catch {
+      // Racing another run's own cleanup, or a permission quirk — ignore.
+    }
+  }
+  return removed;
+}
+
+function reapStaleClusters(): void {
+  if (reapedStaleClusters) return;
+  reapedStaleClusters = true;
+  reapStaleClustersIn(tmpdir(), Date.now(), STALE_CLUSTER_MS);
+}
+
 let activeStopImpl: (() => Promise<void>) | null = null;
 let activeExitStopImpl: (() => void) | null = null;
 let stopPromise: Promise<void> | null = null;
@@ -97,6 +145,10 @@ export function stopActiveEmbeddedBackend(): Promise<void> {
 export async function startEmbeddedBackend(): Promise<EmbeddedBackend> {
   if (stopPromise) await stopPromise;
   if (active) return active;
+
+  // Self-heal: clear orphaned clusters from previously-killed runs before we add
+  // our own, so a kill can never accumulate disk (see reapStaleClusters).
+  reapStaleClusters();
 
   injectPgvector(resolveEmbeddedNativeDir());
 

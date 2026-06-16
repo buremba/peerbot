@@ -1,7 +1,10 @@
 import { verifyWorkerToken } from "@lobu/core";
 import type { Context, Next } from "hono";
 import { orgContext } from "../../lobu/stores/org-context.js";
-import { verifySettingsSession } from "../routes/public/settings-auth.js";
+import {
+  verifySettingsSession,
+  verifySettingsSessionOrToken,
+} from "../routes/public/settings-auth.js";
 import type { ExternalAuthClient } from "./external/client.js";
 import { getRevokedTokenStore } from "./revoked-token-store.js";
 
@@ -46,6 +49,14 @@ export function createApiAuthMiddleware(opts: {
   externalAuthClient?: ExternalAuthClient;
   allowWorkerToken?: boolean;
   allowSettingsSession?: boolean;
+  /**
+   * Also accept the settings session via a `?token=` query param (an encrypted,
+   * short-lived ticket). Needed for the agent SSE stream: the embedded panel
+   * opens it with EventSource, which can't send an Authorization header. Without
+   * this, a header-less ticket request is rejected with 401 here before the
+   * route's own ownership check ever runs.
+   */
+  allowSettingsQueryToken?: boolean;
 }) {
   const revokedTokens = getRevokedTokenStore();
 
@@ -64,10 +75,13 @@ export function createApiAuthMiddleware(opts: {
   };
 
   return async (c: Context, next: Next) => {
-    // 1. Try settings session cookie when explicitly allowed.
-    // verifySettingsSession now enforces jti revocation internally.
+    // 1. Try settings session cookie when explicitly allowed (and, when opted
+    //    in, a `?token=` ticket for header-less EventSource SSE clients).
+    //    verifySettingsSession now enforces jti revocation internally.
     if (opts.allowSettingsSession) {
-      const session = await verifySettingsSession(c);
+      const session = opts.allowSettingsQueryToken
+        ? await verifySettingsSessionOrToken(c, "token")
+        : await verifySettingsSession(c);
       if (session) {
         return runWithContext({ userId: session.userId }, c, next);
       }

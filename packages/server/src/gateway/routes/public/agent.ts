@@ -425,6 +425,9 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     createApiAuthMiddleware({
       externalAuthClient,
       allowSettingsSession: true,
+      // The embedded panel opens the SSE stream with EventSource (no
+      // Authorization header), authenticating via a short-lived ?token= ticket.
+      allowSettingsQueryToken: true,
     })
   );
 

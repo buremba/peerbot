@@ -714,6 +714,14 @@ export interface ActionContext {
   credentials: SyncCredentials | null;
   /** Connection config */
   config: Record<string, unknown>;
+  /**
+   * Per-run session state. The connector-worker splices a live
+   * `chrome_dispatcher` (a `ChromeActionDispatcher`) onto this for action runs
+   * the same way it does for syncs, so on-demand actions can drive the paired
+   * Owletto Chrome extension (e.g. scrape a page the agent chose at runtime).
+   * Null when no session/dispatcher applies.
+   */
+  sessionState?: Record<string, unknown> | null;
 }
 
 /**

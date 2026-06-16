@@ -20,6 +20,7 @@ import { resolveExecutionAuth } from '../../utils/execution-context';
 import { insertEvent } from '../../utils/insert-event';
 import logger from '../../utils/logger';
 import { createConnectorOperationRun } from '../../runs/queue-service';
+import { dispatchChromeActionToExtension } from '../../worker-api/dispatch-chrome-action';
 import { buildEventPermalink } from '../../utils/url-builder';
 import { trackWatcherReaction } from '../../utils/watcher-reactions';
 import type { ToolContext } from '../registry';
@@ -242,10 +243,41 @@ async function executeLocalActionInline(
             ? operation.backend_config.actionKey
             : operation.operation_key,
         actionInput,
-        config: { ...envStrings, ...connectionCredentials },
+        // Merge the connection's own config (e.g. a Deliveroo connection's
+        // `restaurants_url`) into the action config, the way a sync merges its
+        // feed config. Connection config is authoritative (last), matching
+        // sync's `mergeEnv(env, creds, feedConfig)` precedence.
+        config: {
+          ...envStrings,
+          ...connectionCredentials,
+          ...((connection.config as Record<string, unknown> | null) ?? {}),
+        },
         env: envStrings,
         sessionState,
         credentials,
+      },
+      hooks: {
+        // Let an inline connector action drive the paired Owletto Chrome
+        // extension (the office-bot Deliveroo connector scrapes restaurant
+        // search + menu pages this way). The connector calls
+        // `ctx.sessionState.chrome_dispatcher.dispatch(...)`; that surfaces here
+        // and we resolve a chrome worker + run the device action in-process,
+        // the same bridge syncs use over HTTP.
+        onChromeDispatch: async (actionKey, actionInput) => {
+          const dispatchResult = await dispatchChromeActionToExtension({
+            organizationId,
+            actionKey,
+            actionInput,
+            parentRunId: runId,
+          });
+          if (dispatchResult.status !== 'completed') {
+            throw new Error(
+              dispatchResult.error_message ??
+                `chrome action '${actionKey}' ${dispatchResult.status}`
+            );
+          }
+          return dispatchResult.output ?? {};
+        },
       },
     });
 

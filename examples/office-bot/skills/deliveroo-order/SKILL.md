@@ -1,61 +1,59 @@
 ---
 name: deliveroo-order
-description: Read a restaurant's Deliveroo menu and assemble a group-order basket for the office lunch. Use in step 2 of the lunch run, after orders are collected. Reading menus and building a basket is allowed; completing checkout or touching payment is NOT.
-nixPackages:
-  - chromium
-network:
-  # Deliveroo is a flat allow (not LLM-judged): the egress judge needs an
-  # ANTHROPIC_API_KEY, and this skill's script has no checkout/payment path.
-  allow:
-    - registry.npmjs.org
-    - .npmjs.org
-    - playwright.azureedge.net
-    - cdn.playwright.dev
-    - deliveroo.co.uk
-    - .deliveroo.co.uk
-    - deliveroo.com
-    - .deliveroo.com
+description: Turn collected lunch orders into a clean per-person order list for a human to place on Deliveroo. Use in step 2 of the lunch run, after orders are collected. The live menu is fetched automatically by the lunch-finalize reaction (via the Owletto Chrome extension) — this skill never places an order or touches payment.
 ---
 
-# Deliveroo group order
+# Deliveroo lunch order
 
-This skill bundles a small browser script — `deliveroo.ts`, next to this file — that drives a headless Chromium against Deliveroo using the office account's stored cookies. The agent shells out to it; the script never completes checkout or touches payment.
+Deliveroo menus are read **on demand** by the **`deliveroo` connector**, which
+drives the office's signed-in Chrome via the paired **Owletto extension** (no
+Playwright, no cookies — see `deliveroo.connector.ts`). The connector exposes
+two on-demand actions, not a feed:
 
-> **Status: spike.** Deliveroo has no public API, the site changes, and the group-order URL shape may be web-only / short-lived. The script does its best and exits non-zero on anything it can't do. **When it fails, the lunch run falls back to a manual order list** (see `SOUL.md` step 6) — that's expected, not a bug. Hardening the selectors is the Phase 0 follow-up.
+- `search_restaurants({ query })` — restaurants near the office matching the
+  query, each as `{ name, url }`.
+- `read_menu({ restaurant_url })` — that restaurant's live menu items
+  (`{ name, price, price_minor, description, kcal }`).
 
-## Auth
+These actions need the watcher's system context, so the **agent does not call
+them in-turn** — the `lunch-finalize` **reaction** does (see
+`lunch-deliveroo.reaction.ts`). After the agent's turn picks a restaurant, the
+reaction searches for it, reads the live menu, and posts the menu + Deliveroo
+order link back into the channel for a human to place.
 
-Cookies come from `lobu memory browser-auth --connector deliveroo --auth-profile-slug office`. The script reads them from the path in `$DELIVEROO_COOKIES` (defaults to `./deliveroo-cookies.json` in the worker workspace). If the file is missing or the session is expired, the script exits with code `3` — treat that as "fall back to manual".
+This skill is **assemble + hand-off only**. It does not drive a basket, place an
+order, or touch payment — a human does the checkout on Deliveroo.
 
-## Commands
+## How the agent uses it
 
-Run with `bun` (or `node` via tsx — `bun` is simplest):
+1. **Pick the restaurant** for today (from thread suggestions, or a usual spot
+   in `USER.md`), and put its name in the run's extraction (`restaurant`). The
+   reaction will fetch that restaurant's live menu automatically.
+2. **Collect orders** in the thread, then write the per-person list into the
+   `lunch-run` entity (who ordered what, with notes), and post a clean summary:
+   each person → item → price, plus the subtotal and a per-head check against
+   the `USER.md` budget.
+3. **Hand off to a human**: `@here` someone with the restaurant link and the
+   order list, and ask them to place and pay for it on Deliveroo. Record the
+   restaurant + basket status on the `lunch-run` entity (`basket_url: null`
+   until a human shares the group-order link, if they make one).
 
-```bash
-# 1. Find a restaurant (slug/URL) near the office delivery address
-bun deliveroo.ts search "franco manca"            # → prints candidate {name, url}
+The reaction's live-menu post (with exact item names + prices straight off
+Deliveroo) lands in the thread alongside your summary — use it to sanity-check
+prices, or let people reorder against it.
 
-# 2. Read a menu — numbered, with prices, ready to show in the thread
-bun deliveroo.ts menu "<restaurant-url>"           # → JSON [{n, name, price, id}]
-bun deliveroo.ts menu "<restaurant-url>" --top 8   # popular shortlist only
+## When the menu isn't available
 
-# 3. Build the basket from collected orders
-bun deliveroo.ts basket "<restaurant-url>" orders.json
-#   orders.json = [{ "person": "Burak", "item": "Pizza name", "notes": "no onions" }, ...]
-#   → prints { basketUrl, subtotal, lines: [{person, item, matched, price}] }
-#   (stops at the basket — does NOT check out)
-
-# Always-safe rehearsal: prints what it would do, never opens a browser, no cookies needed
-bun deliveroo.ts basket "<restaurant-url>" orders.json --dry-run
-```
-
-## How the agent uses it (recap)
-
-1. After picking the restaurant, `search` (if you only have a name) → `menu --top 8` → post the shortlist in the thread.
-2. After orders are in, write `orders.json` and run `basket`.
-3. On a clean run, post `basketUrl` + `subtotal` in the summary and `@here` someone to check out and pay.
-4. On **any** non-zero exit (code `3` = auth, anything else = scrape/layout failure), skip the basket, post the per-person order list, and tell people to place it manually. Note it in the `lunch-run` entity (`basket_url: null`).
+If the reaction can't fetch a menu (no paired Owletto extension online, the
+office account isn't signed into Deliveroo, or no restaurant matched), it logs
+and skips — that's expected, not an error. **Fall back to the manual order
+list** (see `SOUL.md` step 6) and say so. The order still gets collected and
+handed off; only the auto-fetched live menu is missing. To change the office
+delivery location, edit `restaurants_url` on the `deliveroo-office` connection
+in `lobu.config.ts`.
 
 ## What this skill must never do
 
-Complete an order, enter or read payment details, change the delivery address, or edit the account profile. The egress judge enforces this at the network layer; the script also simply has no checkout path.
+Place or complete an order, enter or read payment details, change the delivery
+address, or edit the Deliveroo account. It only reads menus and assembles a list
+for a human to act on.

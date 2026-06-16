@@ -169,6 +169,33 @@ export interface ReactionClient {
     send(input: NotificationsSendInput): Promise<{ notified_count: number }>;
   };
 
+  /**
+   * Run a connection's operations (connector actions / MCP tools) on demand.
+   * Reactions run in the watcher's system context, so they may execute
+   * operations the agent itself can't call in-turn — e.g. driving the paired
+   * Owletto Chrome extension via a connector action. Pass `watcher_source` for
+   * run attribution back to the firing window.
+   */
+  operations: {
+    /** List the operations available on a connection (or the whole org). */
+    listAvailable(input?: {
+      connection_id?: number;
+      entity_id?: number;
+    }): Promise<unknown>;
+    /** Execute one operation and wait for its result. */
+    execute(input: {
+      connection_id: number;
+      operation_key: string;
+      input?: Record<string, unknown>;
+      watcher_source?: { watcher_id: number; window_id: number };
+    }): Promise<{
+      status?: "completed" | "failed" | "timeout" | "pending_approval";
+      output?: Record<string, unknown>;
+      error_message?: string;
+      run_id?: number;
+    }>;
+  };
+
   /** Run a read-only SQL query against the org's Postgres. */
   query(sql: string): Promise<unknown[]>;
 

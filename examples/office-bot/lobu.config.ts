@@ -1,11 +1,16 @@
 import {
+  connectorFromFile,
   defineAgent,
   defineConfig,
+  defineConnection,
   defineEntityType,
   defineWatcher,
+  reactionFromFile,
   secret,
   skillFromFile,
 } from "@lobu/cli/config";
+import type DeliverooConnector from "./deliveroo.connector.ts";
+import type lunchDeliverooReaction from "./lunch-deliveroo.reaction.ts";
 
 const foodOrdering = defineAgent({
   id: "food-ordering",
@@ -105,6 +110,21 @@ const lunchRun = defineEntityType({
   },
 });
 
+// The office's Deliveroo connection. Feedless — it exposes only on-demand
+// actions (search_restaurants / read_menu) that the lunch-finalize reaction
+// drives through the paired Owletto Chrome extension. `restaurants_url` is the
+// office's delivery-location restaurants list (set it to your office postcode's
+// Deliveroo page — the geohash pins delivery to that address).
+const deliverooConn = defineConnection({
+  slug: "deliveroo-office",
+  connector: "deliveroo",
+  name: "Deliveroo — office",
+  config: {
+    restaurants_url:
+      "https://deliveroo.co.uk/restaurants/london/the-city?fulfillment_method=DELIVERY&geohash=gcpvjcnm9jsv",
+  },
+});
+
 const lunchOpen = defineWatcher({
   agent: foodOrdering,
   slug: "lunch-open",
@@ -138,6 +158,9 @@ const lunchFinalize = defineWatcher({
   notification: { priority: "high" },
   tags: ["lunch", "daily"],
   minCooldownSeconds: 600,
+  reaction: reactionFromFile<typeof lunchDeliverooReaction>(
+    "./lunch-deliveroo.reaction.ts"
+  ),
   reactionsGuidance:
     "When the run ends in `placed` or `manual`, store the basket link + per-head cost\nback into a `lunch:placed` event on the lunch-run entity so the next day's\nlunch-open can read the most-recent restaurant.\n",
   prompt:
@@ -161,11 +184,15 @@ const lunchFinalize = defineWatcher({
 });
 
 export default defineConfig({
+  connectors: [
+    connectorFromFile<typeof DeliverooConnector>("./deliveroo.connector.ts"),
+  ],
   org: "lobu-team",
   orgName: "Lobu Team",
   orgDescription: "Office-ops agents — first up: the weekday lunch order",
   organizationId: "UdNAH1bb3csC842vhOgxAHVcfX4tYU5A",
   agents: [foodOrdering],
   entities: [lunchRun],
+  connections: [deliverooConn],
   watchers: [lunchOpen, lunchFinalize],
 });

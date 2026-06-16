@@ -41,6 +41,103 @@ interface DispatchChromeActionBody {
 // the /api/me/devices "online" flag.
 const DEVICE_ONLINE_WINDOW_MINUTES = 20;
 
+export interface ChromeActionDispatchResult {
+  status: 'completed' | 'failed' | 'timeout';
+  output?: Record<string, unknown>;
+  error_message?: string;
+}
+
+/**
+ * Core chrome-action dispatch, callable in-process (no HTTP Context):
+ *
+ *   1. Pick an online paired Owletto chrome connection in `organizationId`.
+ *   2. Enqueue a device-bound chrome action run via `createConnectorOperationRun`.
+ *   3. Await completion via `waitForDeviceActionRun` and return its output.
+ *
+ * Used by the HTTP bridge (a connector on the worker fleet, after it has
+ * authorized the parent sync run) AND by `manage_operations` inline action
+ * execution (a connector action — e.g. the office-bot Deliveroo connector —
+ * running in-gateway that wants to scrape the paired extension). Caller is
+ * responsible for any parent-run authorization; this function only resolves a
+ * chrome worker and drives the run.
+ */
+export async function dispatchChromeActionToExtension(params: {
+  organizationId: string;
+  actionKey: string;
+  actionInput: Record<string, unknown>;
+  /** Parent run id, for log correlation only. */
+  parentRunId?: number;
+}): Promise<ChromeActionDispatchResult> {
+  const { organizationId, actionKey, actionInput, parentRunId } = params;
+  const sql = getDb();
+
+  // (1) Pick an online chrome connection in this org.
+  const chromeConnectionRows = (await sql`
+    SELECT
+      con.id AS connection_id,
+      con.device_worker_id,
+      dw.last_seen_at
+    FROM connections con
+    JOIN device_workers dw ON dw.id = con.device_worker_id
+    WHERE con.organization_id = ${organizationId}
+      AND con.connector_key = 'chrome'
+      AND con.status = 'active'
+      AND con.deleted_at IS NULL
+      AND dw.capabilities::jsonb @> '["browser.debugger"]'::jsonb
+      AND dw.last_seen_at > now() - make_interval(mins => ${DEVICE_ONLINE_WINDOW_MINUTES})
+    ORDER BY dw.last_seen_at DESC
+    LIMIT 1
+  `) as Array<{
+    connection_id: number;
+    device_worker_id: string;
+    last_seen_at: Date | string;
+  }>;
+
+  if (chromeConnectionRows.length === 0) {
+    return {
+      status: 'failed',
+      error_message:
+        'No online paired Owletto Chrome extension in this organization. Pair a Chrome extension first (and make sure it is running).',
+    };
+  }
+  const chromeConnection = chromeConnectionRows[0];
+
+  // (2) Insert a device-bound chrome connector action run.
+  let runId: number;
+  try {
+    runId = await createConnectorOperationRun({
+      organizationId,
+      connectionId: chromeConnection.connection_id,
+      connectorKey: 'chrome',
+      operationKey: actionKey,
+      operationInput: actionInput ?? {},
+      approvalMode: 'device',
+      requireCompiledCode: false,
+    });
+  } catch (err) {
+    const msg = errorMessage(err);
+    logger.error(
+      { err: msg, parent_run_id: parentRunId, action_key: actionKey },
+      '[dispatchChromeAction] createConnectorOperationRun failed'
+    );
+    return { status: 'failed', error_message: msg };
+  }
+
+  logger.info(
+    {
+      run_id: runId,
+      parent_run_id: parentRunId,
+      action_key: actionKey,
+      chrome_connection_id: chromeConnection.connection_id,
+      device_worker_id: chromeConnection.device_worker_id,
+    },
+    '[dispatchChromeAction] dispatched'
+  );
+
+  // (3) Wait for the chrome extension to claim and complete.
+  return waitForDeviceActionRun(runId, organizationId);
+}
+
 export async function dispatchChromeAction(c: Context<{ Bindings: Env }>) {
   let body: DispatchChromeActionBody;
   try {
@@ -97,72 +194,13 @@ export async function dispatchChromeAction(c: Context<{ Bindings: Env }>) {
   }
   const organizationId = parentRun.organization_id;
 
-  // (2) Pick an online chrome connection in this org.
-  const chromeConnectionRows = (await sql`
-    SELECT
-      con.id AS connection_id,
-      con.device_worker_id,
-      dw.last_seen_at
-    FROM connections con
-    JOIN device_workers dw ON dw.id = con.device_worker_id
-    WHERE con.organization_id = ${organizationId}
-      AND con.connector_key = 'chrome'
-      AND con.status = 'active'
-      AND con.deleted_at IS NULL
-      AND dw.capabilities::jsonb @> '["browser.debugger"]'::jsonb
-      AND dw.last_seen_at > now() - make_interval(mins => ${DEVICE_ONLINE_WINDOW_MINUTES})
-    ORDER BY dw.last_seen_at DESC
-    LIMIT 1
-  `) as Array<{
-    connection_id: number;
-    device_worker_id: string;
-    last_seen_at: Date | string;
-  }>;
-
-  if (chromeConnectionRows.length === 0) {
-    return c.json({
-      status: 'failed',
-      error_message:
-        'No online paired Owletto Chrome extension in this organization. Pair a Chrome extension first (and make sure it is running).',
-    });
-  }
-  const chromeConnection = chromeConnectionRows[0];
-
-  // (3) Insert a device-bound chrome connector action run. Same helper
-  // manage_operations.execute uses for device-bound calls.
-  let runId: number;
-  try {
-    runId = await createConnectorOperationRun({
-      organizationId,
-      connectionId: chromeConnection.connection_id,
-      connectorKey: 'chrome',
-      operationKey: body.action_key,
-      operationInput: body.action_input ?? {},
-      approvalMode: 'device',
-      requireCompiledCode: false,
-    });
-  } catch (err) {
-    const msg = errorMessage(err);
-    logger.error(
-      { err: msg, parent_run_id: body.parent_run_id, action_key: body.action_key },
-      '[dispatchChromeAction] createConnectorOperationRun failed'
-    );
-    return c.json({ status: 'failed', error_message: msg });
-  }
-
-  logger.info(
-    {
-      run_id: runId,
-      parent_run_id: body.parent_run_id,
-      action_key: body.action_key,
-      chrome_connection_id: chromeConnection.connection_id,
-      device_worker_id: chromeConnection.device_worker_id,
-    },
-    '[dispatchChromeAction] dispatched'
-  );
-
-  // (4) Wait for the chrome extension to claim and complete. Shared with
-  // manage_operations.execute's device-bound path.
-  const result = await waitForDeviceActionRun(runId, organizationId);
+  // (2-4) Resolve a chrome worker, enqueue the device action run, and await
+  // completion — shared with manage_operations inline action execution.
+  const result = await dispatchChromeActionToExtension({
+    organizationId,
+    actionKey: body.action_key,
+    actionInput: body.action_input ?? {},
+    parentRunId: body.parent_run_id,
+  });
   return c.json(result);
 }

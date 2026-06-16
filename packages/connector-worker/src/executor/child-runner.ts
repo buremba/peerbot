@@ -179,9 +179,22 @@ async function executeConnectorRuntime(
   }
 
   if (job.mode === 'action') {
+    // Splice the same live `chrome_dispatcher` onto the action context that
+    // syncs get, so on-demand actions can drive the paired Owletto extension
+    // (e.g. scrape a page the agent picked at runtime). Re-created in the child
+    // every run — it closes over the IPC channel and can't travel the wire.
+    const sessionStateForAction = {
+      ...(job.sessionState ?? {}),
+      chrome_dispatcher: {
+        dispatch: (actionKey: string, actionInput: Record<string, unknown>) =>
+          dispatchChromeAction(actionKey, actionInput),
+      },
+    } as Record<string, unknown>;
+
     const actionResult = await instance.execute({
       actionKey: job.actionKey,
       input: job.actionInput,
+      sessionState: sessionStateForAction,
       credentials: job.credentials,
       config: { ...job.env, ...job.config },
     });

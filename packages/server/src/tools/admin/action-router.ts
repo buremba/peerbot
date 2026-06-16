@@ -1,4 +1,5 @@
 import { getRequiredAccessLevel } from '../../auth/tool-access';
+import { ToolUserError } from '../../utils/errors';
 import logger from '../../utils/logger';
 import { enforceRoleScopeAccess, isSystemContext } from '../access-control';
 import type { ToolContext } from '../registry';
@@ -13,6 +14,16 @@ import type { ToolContext } from '../registry';
  *     list: () => handleList(args, env, ctx),
  *   });
  */
+/**
+ * Log level for an error caught in `routeAction`. ToolUserError is an expected
+ * client fault (the REST/MCP layer turns it into a 4xx) — log it at `warn` so it
+ * stays diagnosable without paging or leaking to the Sentry alert feed. Genuine
+ * handler faults log at `error`. Exported for direct unit testing.
+ */
+export function errorLogLevel(error: unknown): 'warn' | 'error' {
+  return error instanceof ToolUserError ? 'warn' : 'error';
+}
+
 function enforceActionAccess(toolName: string, action: string, ctx: ToolContext): void {
   // Watcher reactions and other in-process system calls historically run with
   // userId=null + isAuthenticated=true. Preserve that path while enforcing the
@@ -45,7 +56,13 @@ export async function routeAction<TResult>(
   try {
     return await handler();
   } catch (error) {
-    logger.error(
+    // ToolUserError is an expected client fault (bad input, not-found,
+    // permission denied, conflict) that the REST/MCP layer turns into a 4xx for
+    // the caller — it is NOT an operational error. Logging it at `error` both
+    // spams the error log and (via the pino→Sentry bridge) created noisy alerts
+    // for routine 409/403 outcomes. Log at `warn` so it stays diagnosable
+    // without paging; genuine handler faults still log at `error`.
+    logger[errorLogLevel(error)](
       {
         error,
         error_message: error instanceof Error ? error.message : String(error),

@@ -51,6 +51,23 @@ const SENTRY_DEDUPE_WINDOW_MS = 60_000;
 const SENTRY_DEDUPE_MAX_ENTRIES = 1000;
 const sentryDedupe: Map<string, number> = new Map();
 
+/**
+ * True when a pino-serialized error represents an expected client fault that
+ * should NOT be forwarded to Sentry: a `ToolUserError`, or anything carrying a
+ * 4xx `httpStatus` (bad input, not-found, permission denied, conflict). These
+ * are already returned to the caller as a 4xx and are not operational alerts.
+ * Exported for direct unit testing (the integration suite runs with
+ * `isolate: false`, so module-level mocking of this path is unreliable).
+ */
+export function isExpectedClientFaultLog(
+  errObj: { type?: string; httpStatus?: number } | undefined
+): boolean {
+  if (!errObj) return false;
+  if (errObj.type === 'ToolUserError') return true;
+  const status = errObj.httpStatus;
+  return typeof status === 'number' && status >= 400 && status < 500;
+}
+
 function fingerprintAndCapture(parsed: Record<string, unknown>): void {
   const level = parsed.level;
   if (level !== 'error' && level !== 'fatal') return;
@@ -61,10 +78,24 @@ function fingerprintAndCapture(parsed: Record<string, unknown>): void {
 
   const msg = typeof parsed.msg === 'string' ? parsed.msg : 'logger.error';
   // pino.stdSerializers.err normalises both `err` and `error` (see serializers
-  // config below) to objects with `type` / `message` / `stack`.
+  // config below) to objects with `type` / `message` / `stack` (plus any own
+  // enumerable fields such as ToolUserError's `httpStatus`).
   const errObj =
-    (parsed.err as { type?: string; message?: string; stack?: string } | undefined) ??
-    (parsed.error as { type?: string; message?: string; stack?: string } | undefined);
+    (parsed.err as
+      | { type?: string; message?: string; stack?: string; httpStatus?: number }
+      | undefined) ??
+    (parsed.error as
+      | { type?: string; message?: string; stack?: string; httpStatus?: number }
+      | undefined);
+
+  // Expected client-fault outcomes (ToolUserError and anything carrying a 4xx
+  // httpStatus — bad input, not-found, permission denied, conflict) are already
+  // returned to the caller as a 4xx response; they are NOT operational alerts.
+  // `trackMCPToolCall` / `captureServerError` already skip them at the
+  // captureException layer, but a handler that *logs* the error (e.g.
+  // `routeAction`'s catch) still reaches this pino bridge. Skip here too so the
+  // three capture paths stay consistent and the alert feed stays clean.
+  if (isExpectedClientFaultLog(errObj)) return;
 
   // Include err.message in the fingerprint — pre-fix, "(msg, err.type,
   // top stack frame)" grouped distinct errors raised from the same

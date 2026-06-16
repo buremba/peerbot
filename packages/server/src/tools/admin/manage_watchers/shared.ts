@@ -274,7 +274,13 @@ export async function requireWatcherAccess(
   for (const row of rows) {
     const watcherOrgId = row.organization_id ? String(row.organization_id) : null;
     if (!watcherOrgId || watcherOrgId !== ctx.organizationId) {
-      throw new Error(`Access denied: watcher ${row.id} does not belong to your organization`);
+      // Cross-org access attempt is a client/permission fault, not a server
+      // error — surface it as a 403 ToolUserError so the REST layer returns the
+      // right status and it stays out of the operational alert feed.
+      throw new ToolUserError(
+        `Access denied: watcher ${row.id} does not belong to your organization`,
+        403
+      );
     }
 
     const entityIds = parseWatcherEntityIds(row.entity_ids);

@@ -435,6 +435,13 @@ jobs:
             echo "::endgroup::"
           done
 
+      # Report-only for now: knip surfaces unused files / exports / deps to
+      # establish a baseline. Non-blocking (continue-on-error) until the
+      # baseline is triaged — then this can be promoted to a hard gate.
+      - name: Dead-code report (knip, non-blocking)
+        continue-on-error: true
+        run: bun run knip
+
   migrations:
     # Catches the class of bug that has now broken prod twice in one
     # session: a migration file that's syntactically a SQL file but that

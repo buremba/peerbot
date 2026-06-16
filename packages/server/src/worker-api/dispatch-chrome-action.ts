@@ -67,8 +67,11 @@ export async function dispatchChromeActionToExtension(params: {
   actionInput: Record<string, unknown>;
   /** Parent run id, for log correlation only. */
   parentRunId?: number;
+  /** Abort the wait early (e.g. the calling reaction hit its budget). */
+  abortSignal?: AbortSignal;
 }): Promise<ChromeActionDispatchResult> {
-  const { organizationId, actionKey, actionInput, parentRunId } = params;
+  const { organizationId, actionKey, actionInput, parentRunId, abortSignal } =
+    params;
   const sql = getDb();
 
   // (1) Pick an online chrome connection in this org.
@@ -135,7 +138,7 @@ export async function dispatchChromeActionToExtension(params: {
   );
 
   // (3) Wait for the chrome extension to claim and complete.
-  return waitForDeviceActionRun(runId, organizationId);
+  return waitForDeviceActionRun(runId, organizationId, abortSignal);
 }
 
 export async function dispatchChromeAction(c: Context<{ Bindings: Env }>) {

@@ -189,13 +189,30 @@ async function completeRunInline(
   return { status: 'completed', output };
 }
 
+/**
+ * Build the `config` an inline connector action sees. Precedence low → high:
+ * process env, then resolved connection credentials, then the connection's own
+ * `config` (authoritative — mirrors the sync path's
+ * `mergeEnv(env, connectionCredentials, feedConfig)`). Connection config is
+ * last so an action can read e.g. a Deliveroo connection's `restaurants_url`.
+ * Exported for unit testing the merge precedence.
+ */
+export function buildActionConfig(
+  envStrings: Record<string, string | undefined>,
+  connectionCredentials: Record<string, unknown>,
+  connectionConfig: Record<string, unknown> | null | undefined
+): Record<string, unknown> {
+  return { ...envStrings, ...connectionCredentials, ...(connectionConfig ?? {}) };
+}
+
 async function executeLocalActionInline(
   runId: number,
   organizationId: string,
   connection: ConnectionRow,
   operation: OperationDescriptor,
   actionInput: Record<string, unknown>,
-  env: Env
+  env: Env,
+  abortSignal?: AbortSignal
 ): Promise<InlineExecutionResult> {
   const sql = getDb();
 
@@ -245,13 +262,12 @@ async function executeLocalActionInline(
         actionInput,
         // Merge the connection's own config (e.g. a Deliveroo connection's
         // `restaurants_url`) into the action config, the way a sync merges its
-        // feed config. Connection config is authoritative (last), matching
-        // sync's `mergeEnv(env, creds, feedConfig)` precedence.
-        config: {
-          ...envStrings,
-          ...connectionCredentials,
-          ...((connection.config as Record<string, unknown> | null) ?? {}),
-        },
+        // feed config. See buildActionConfig for the precedence.
+        config: buildActionConfig(
+          envStrings,
+          connectionCredentials,
+          connection.config as Record<string, unknown> | null
+        ),
         env: envStrings,
         sessionState,
         credentials,
@@ -269,6 +285,7 @@ async function executeLocalActionInline(
             actionKey,
             actionInput,
             parentRunId: runId,
+            abortSignal,
           });
           if (dispatchResult.status !== 'completed') {
             throw new Error(
@@ -453,10 +470,19 @@ async function executeOperationInline(
   connection: ConnectionRow,
   operation: OperationDescriptor,
   actionInput: Record<string, unknown>,
-  env: Env
+  env: Env,
+  abortSignal?: AbortSignal
 ): Promise<InlineExecutionResult> {
   if (operation.backend === 'local_action') {
-    return executeLocalActionInline(runId, organizationId, connection, operation, actionInput, env);
+    return executeLocalActionInline(
+      runId,
+      organizationId,
+      connection,
+      operation,
+      actionInput,
+      env,
+      abortSignal
+    );
   }
   if (operation.backend === 'mcp_tool') {
     return executeMcpToolInline(runId, organizationId, connection, operation, actionInput);
@@ -514,7 +540,13 @@ async function handleListAvailable(
 // pick it up.
 export async function waitForDeviceActionRun(
   runId: number,
-  organizationId: string
+  organizationId: string,
+  /**
+   * Abort the wait early (e.g. a watcher reaction hit its wall-clock budget).
+   * On abort we stop polling and finalize the run as `timeout` so the orphaned
+   * poll loop and any in-flight device work don't leak past the caller.
+   */
+  abortSignal?: AbortSignal,
 ): Promise<{
   status: 'completed' | 'failed' | 'timeout';
   output?: Record<string, unknown>;
@@ -565,6 +597,9 @@ export async function waitForDeviceActionRun(
           ? row.claimed_at.getTime()
           : new Date(row.claimed_at).getTime();
     }
+    // Caller aborted (e.g. reaction timeout) — stop polling and let the
+    // timeout finalization below mark the run, so we don't leak this loop.
+    if (abortSignal?.aborted) break;
     const now = Date.now();
     if (claimedAtMs != null) {
       if (now - claimedAtMs >= POST_CLAIM_BUDGET_MS) break;
@@ -778,7 +813,11 @@ async function handleExecute(
   // here until it flips to completed/failed/timeout, or we hit the
   // device-action timeout. Returns action_output on success.
   if (approvalMode === 'device') {
-    const result = await waitForDeviceActionRun(runId, ctx.organizationId);
+    const result = await waitForDeviceActionRun(
+      runId,
+      ctx.organizationId,
+      ctx.abortSignal
+    );
     if (result.status === 'completed') {
       return {
         action: 'execute',
@@ -809,7 +848,8 @@ async function handleExecute(
     connection,
     operation,
     input,
-    env
+    env,
+    ctx.abortSignal
   );
   if (result.status === 'completed') {
     return {

@@ -15,6 +15,14 @@
  * Both actions drive the paired Owletto Chrome extension. If no extension is
  * online (or the connection isn't set up) the reaction logs and returns — the
  * agent's own summary already handed the order off, so this is additive.
+ *
+ * Budget note: reaction scripts run under a ~60s wall-clock cap, and each
+ * `operations.execute` blocks until the extension claims + completes the scrape.
+ * So this is best-effort — it expects the office extension to be online and
+ * responsive (search is a light list scrape; read_menu is capped to a few
+ * scrolls to stay quick). If the budget is exceeded the reaction is aborted
+ * (the operation's poll is cancelled, see waitForDeviceActionRun's abortSignal)
+ * and the agent's summary still stands.
  */
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
@@ -43,11 +51,12 @@ export default async (
     return;
   }
 
-  // Find the office's Deliveroo connection in this org.
+  // Find the office's Deliveroo connection. `client.query` is already scoped to
+  // this reaction's org, so no org predicate is needed (and string-interpolating
+  // one in would be a poor pattern to copy).
   const connRows = (await client.query(
     `SELECT id FROM connections
      WHERE connector_key = 'deliveroo'
-       AND organization_id = '${ctx.organization_id}'
        AND deleted_at IS NULL
      ORDER BY created_at ASC
      LIMIT 1`
@@ -76,17 +85,22 @@ export default async (
     return;
   }
   const found = (search.output as SearchOutput | undefined)?.restaurants ?? [];
-  if (found.length === 0) {
+  // search_restaurants falls back to the full nearby list when nothing matches
+  // the query by name, so confirm the top hit actually matches before reading
+  // its menu — otherwise we'd post a menu for a restaurant nobody asked for.
+  const needle = restaurant.toLowerCase();
+  const pick = found.find((r) => r.name.toLowerCase().includes(needle));
+  if (!pick) {
     client.log(`No Deliveroo restaurant matched "${restaurant}".`);
     return;
   }
-  const pick = found[0];
 
-  // (2) Read its live menu.
+  // (2) Read its live menu. Cap the scroll so the scrape stays inside the
+  // reaction budget (the full menu isn't needed for a shortlist).
   const menu = await client.operations.execute({
     connection_id: connectionId,
     operation_key: "read_menu",
-    input: { restaurant_url: pick.url },
+    input: { restaurant_url: pick.url, max_scrolls: 6 },
     watcher_source: watcherSource,
   });
   if (menu.status !== "completed") {

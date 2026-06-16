@@ -387,6 +387,15 @@ async function executeActionRun(
       executor: subprocessExecutor,
       job: {
         mode: 'action',
+        // NOTE: unlike the gateway's inline action path (manage_operations
+        // `executeLocalActionInline`, which merges the connection's own config
+        // so an action can read e.g. a `restaurants_url`), this worker-fleet
+        // action path does not yet receive per-connection config (the poll
+        // response doesn't carry it). Connectors whose actions need connection
+        // config — and the extension-driving ones, which also need an
+        // onChromeDispatch hook not wired here — run on the inline path. If a
+        // future connector needs config on the fleet path, plumb the
+        // connection config into the action poll response and merge it here.
         actionKey: action_key,
         actionInput: (action_input ?? {}) as Record<string, unknown>,
         config: mergeEnv(env, job.connection_credentials, null),

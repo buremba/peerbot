@@ -26,6 +26,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
+import { waitForDeviceActionRun } from '../../tools/admin/manage_operations';
 import { cleanupTestDatabase, getTestDb } from '../setup/test-db';
 import { createTestOrganization } from '../setup/test-fixtures';
 
@@ -325,5 +326,32 @@ describe('waitForDeviceActionRun', () => {
     `) as Array<{ status: string; action_output: Record<string, unknown> | null }>;
     expect(final[0].status).toBe('timeout');
     expect(final[0].action_output).toBeNull();
+  });
+
+  // Exercises the REAL exported helper (not the mirror) for the abortSignal
+  // path added so a watcher reaction hitting its wall-clock budget cancels the
+  // poll loop instead of leaking it. An already-aborted signal short-circuits
+  // on the first iteration, so this stays fast despite the real 60s budget.
+  it('aborts the wait + finalizes the run as timeout when the abort signal fires', async () => {
+    const org = await createTestOrganization();
+    await insertChromeConnector(org.id);
+    const connId = await insertChromeConnection(org.id);
+    const runId = await insertPendingActionRun(org.id, connId, {});
+
+    const controller = new AbortController();
+    controller.abort(); // already aborted before we start waiting
+
+    const start = Date.now();
+    const out = await waitForDeviceActionRun(runId, org.id, controller.signal);
+    const elapsed = Date.now() - start;
+
+    expect(out.status).toBe('timeout');
+    expect(elapsed).toBeLessThan(5_000); // did NOT sit through the 60s budget
+
+    const sql = getTestDb();
+    const rows = (await sql`
+      SELECT status FROM runs WHERE id = ${runId}
+    `) as Array<{ status: string }>;
+    expect(rows[0].status).toBe('timeout');
   });
 });

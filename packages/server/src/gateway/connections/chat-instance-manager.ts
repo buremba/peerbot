@@ -644,7 +644,8 @@ export class ChatInstanceManager {
    */
   async handleIngestWebhook(
     connectionId: string,
-    request: Request
+    request: Request,
+    peerAddress?: string | null
   ): Promise<Response> {
     // A stopped row is deliberately off — refuse deliveries exactly like a
     // stopped chat connection (whose instance would not be running). Error
@@ -662,11 +663,17 @@ export class ChatInstanceManager {
       return handleWebhookIngest(
         stored,
         request,
-        this.services.getSecretStore()
+        this.services.getSecretStore(),
+        peerAddress
       );
     }
     return orgContext.run({ organizationId: stored.organizationId }, () =>
-      handleWebhookIngest(stored, request, this.services.getSecretStore())
+      handleWebhookIngest(
+        stored,
+        request,
+        this.services.getSecretStore(),
+        peerAddress
+      )
     );
   }
 

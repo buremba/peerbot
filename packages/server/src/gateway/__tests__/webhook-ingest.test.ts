@@ -84,11 +84,12 @@ const bearer = { authorization: `Bearer ${TOKEN}` };
 async function ingest(
 	row: ReturnType<typeof storedRow>,
 	request: Request,
+	peerAddress?: string | null,
 ): Promise<Response> {
 	const { handleWebhookIngest } = await import(
 		"../connections/webhook-ingest.js"
 	);
-	return handleWebhookIngest(row, request, fakeSecretStore);
+	return handleWebhookIngest(row, request, fakeSecretStore, peerAddress);
 }
 
 async function eventRows(connectionId = "whk1"): Promise<any[]> {
@@ -468,20 +469,15 @@ describe("handleWebhookIngest rate limiting", () => {
 		const { WEBHOOK_INGEST_PREAUTH_RATE_LIMIT } = await import(
 			"../connections/webhook-ingest.js"
 		);
-		// Flood past the pre-auth budget from one source address.
+		// Flood past the pre-auth budget from one source address. The source is
+		// the socket peer address (getClientIP ignores X-Forwarded-For unless
+		// TRUSTED_PROXY is set), so we drive it via the peerAddress arg.
 		let flooderLimited = false;
 		for (let i = 0; i <= WEBHOOK_INGEST_PREAUTH_RATE_LIMIT.limit; i++) {
 			const res = await ingest(
 				storedRow(),
-				delivery(
-					{ i },
-					{
-						headers: {
-							authorization: "Bearer wrong",
-							"x-forwarded-for": "203.0.113.7",
-						},
-					},
-				),
+				delivery({ i }, { headers: { authorization: "Bearer wrong" } }),
+				"203.0.113.7",
 			);
 			if (res.status === 429) {
 				flooderLimited = true;
@@ -493,10 +489,8 @@ describe("handleWebhookIngest rate limiting", () => {
 		// A different source delivering with the real token is unaffected.
 		const valid = await ingest(
 			storedRow(),
-			delivery(
-				{ legit: true },
-				{ headers: { ...bearer, "x-forwarded-for": "198.51.100.9" } },
-			),
+			delivery({ legit: true }, { headers: bearer }),
+			"198.51.100.9",
 		);
 		expect(valid.status).toBe(202);
 	});

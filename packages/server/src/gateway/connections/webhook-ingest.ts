@@ -291,6 +291,7 @@ export async function handleWebhookIngest(
 	stored: StoredConnection,
 	request: Request,
 	secretStore: SecretStore,
+	peerAddress?: string | null,
 ): Promise<Response> {
 	const organizationId = stored.organizationId;
 	if (!organizationId) {
@@ -315,7 +316,7 @@ export async function handleWebhookIngest(
 	//    below (cluster-wide counters, fail-open on DB trouble — matching
 	//    every other limiter call site).
 	const preauthRate = getRateLimiter().checkLimit(
-		`webhook-ingest-preauth:${stored.id}:${getClientIP(request)}`,
+		`webhook-ingest-preauth:${stored.id}:${getClientIP(request, peerAddress)}`,
 		WEBHOOK_INGEST_PREAUTH_RATE_LIMIT,
 	);
 	if (!preauthRate.allowed) {

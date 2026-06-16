@@ -197,9 +197,16 @@ export function createConnectionWebhookRoutes(
 
     try {
       // Ingest-only webhook connections (#1235) have no Chat SDK instance to
-      // warm — branch before handleWebhook's lazy hydration path.
+      // warm — branch before handleWebhook's lazy hydration path. Pass the
+      // socket peer address so the per-source pre-auth rate limit keys on the
+      // real client even without TRUSTED_PROXY (getClientIP only trusts
+      // X-Forwarded-For behind a trusted proxy).
       if (connection.platform === "webhook") {
-        return await manager.handleIngestWebhook(connectionId, c.req.raw);
+        return await manager.handleIngestWebhook(
+          connectionId,
+          c.req.raw,
+          c.var.peerRemoteAddress
+        );
       }
       const response = await manager.handleWebhook(connectionId, c.req.raw);
       return response;

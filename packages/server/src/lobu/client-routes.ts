@@ -264,6 +264,12 @@ const PLATFORM_SCHEMAS: Record<
           title: 'Title Path',
           description: 'JSON pointer extracted as the event title, e.g. /event/title.',
         },
+        searchable: {
+          type: 'boolean',
+          title: 'Searchable (semantic memory)',
+          description:
+            'Index ingested payloads into semantic memory so agents can recall them. Default off — watcher SQL only.',
+        },
       },
     },
   },

@@ -57,6 +57,13 @@ export type WebhookIngestPlatformConfig = {
   semanticType?: string;
   /** JSON pointer extracted into `events.title`. */
   titlePath?: string;
+  /**
+   * Index ingested payloads into semantic memory (render `payload_text` →
+   * embed → recallable via `search_memory`). Default false: store-only, so
+   * the row is reachable by watcher SQL but never floods semantic memory
+   * with high-volume/low-value webhook traffic.
+   */
+  searchable?: boolean | string;
 };
 
 export type PlatformAdapterConfig =

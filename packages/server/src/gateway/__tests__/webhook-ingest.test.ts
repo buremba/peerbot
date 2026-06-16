@@ -287,6 +287,34 @@ describe("handleWebhookIngest body handling", () => {
 		const rows = await eventRows();
 		expect(rows[0].title).toBeNull();
 	});
+
+	test("searchable:true renders payload_text so the row is embeddable", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		await ingest(
+			storedRow({}, { semanticType: "alert", searchable: true }),
+			delivery(
+				{ event: { title: "ZeroDivisionError", level: "error" } },
+				{ headers: bearer },
+			),
+		);
+		const rows = await eventRows();
+		// Non-empty payload_text is the gate the embed-backfill keys on; the
+		// flattened "path: value" projection carries searchable tokens.
+		expect(rows[0].payload_text).toContain("event.title: ZeroDivisionError");
+		expect(rows[0].payload_text).toContain("event.level: error");
+	});
+
+	test("default (searchable off) leaves payload_text null — store-only", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		await ingest(
+			storedRow({}, { semanticType: "alert" }),
+			delivery({ event: { title: "ZeroDivisionError" } }, { headers: bearer }),
+		);
+		const rows = await eventRows();
+		// No payload_text → embed-backfill skips it → never enters semantic
+		// memory; the row is still reachable by watcher SQL on connector_key.
+		expect(rows[0].payload_text).toBeNull();
+	});
 });
 
 describe("handleWebhookIngest idempotency", () => {

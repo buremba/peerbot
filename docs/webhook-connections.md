@@ -36,14 +36,21 @@ it in plaintext — copy it then.
 | `dedupeHeader` | — | Header carrying the provider's delivery id (e.g. `x-github-delivery`). Without it, the idempotency key is `sha256(raw body)`. |
 | `semanticType` | `content` | `events.semantic_type` stamped on ingested rows. |
 | `titlePath` | — | JSON pointer extracted into `events.title` (e.g. `/event/title`). |
+| `searchable` | `false` | Index payloads into semantic memory (`search_memory`). Off = store-only, reachable by watcher SQL; leave off for high-volume/low-value sources to keep recall clean. |
+
+Bodies must be JSON. A non-JSON body (form-encoded, XML, plain text) is
+rejected with `400`; content-type-aware ingest is not implemented.
 
 ## Deliver
 
 ```
-POST /api/v1/webhooks/<connectionId>
+POST /lobu/api/v1/webhooks/<connectionId>
   Authorization: Bearer <token>        # or x-lobu-webhook-token: <token>
   # or ?token=<token> when allowQueryAuth is enabled
 ```
+
+(The gateway mounts under `/lobu`, so the full path is
+`<gateway>/lobu/api/v1/webhooks/<connectionId>`.)
 
 Responses: `202 {"ok":true,"id":<eventId>}` on persist (the insert commits
 before the ack; redeliveries return the existing id), `401` bad/missing
@@ -53,9 +60,19 @@ after token verification, so bad-token floods can't starve real senders;
 unauthenticated attempts are bounded separately per source IP).
 
 The raw parsed payload is preserved verbatim in `payload_data` (wrapped as
-`{"payload": ...}` when the JSON root is an array or primitive). Rows carry
+`{"payload": ...}` when the JSON root is an array or primitive). When
+`searchable` is enabled it is also rendered to a flat `dotted.path: value`
+text projection in `payload_text` (capped at 8 KB) so the row is embedded by
+the backfill and surfaced by semantic recall / `search_memory`; with
+`searchable` off (the default) `payload_text` stays null and the row is
+reachable only by watcher SQL / `query_sql`. Rows carry
 `connector_key = 'webhook:<connectionId>'`; redelivery dedupe is enforced by
 a partial unique index on `(organization_id, connector_key, origin_id)`.
+
+Without `dedupeHeader`, the idempotency key is `sha256(raw body)` — so two
+*distinct* deliveries with byte-identical bodies (e.g. a fixed `{"status":"ok"}`
+heartbeat) collapse to one stored event. Set `dedupeHeader` to the provider's
+delivery-id header for periodic or repeating senders.
 
 ## React with a watcher
 
@@ -75,7 +92,7 @@ plan:
 1. Create a webhook connection with `allowQueryAuth: true`,
    `semanticType: "alert"`, `titlePath: "/event/title"`.
 2. In Sentry: project → Settings → Integrations → WebHooks → add
-   `https://<gateway>/api/v1/webhooks/<connectionId>?token=<token>`.
+   `https://<gateway>/lobu/api/v1/webhooks/<connectionId>?token=<token>`.
 3. Add a watcher on the agent (1-min cron) with the source above and a
    prompt that triages each issue and posts a summary to a Slack channel via
    the agent's existing Slack connection.

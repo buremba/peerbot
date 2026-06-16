@@ -203,6 +203,13 @@ export const WebhookConfigSchema = z.object({
     description:
       'JSON pointer into the payload extracted as the event title (e.g. "/event/title").',
   }),
+  searchable: z
+    .union([z.boolean(), z.enum(["true", "false"])])
+    .optional()
+    .openapi({
+      description:
+        "Index ingested payloads into semantic memory (search_memory). Default false: store-only, reachable by watcher SQL.",
+    }),
 });
 
 export const PlatformAdapterConfigSchema = z.discriminatedUnion("platform", [

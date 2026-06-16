@@ -110,6 +110,17 @@ function isQueryTokenAllowed(config: WebhookIngestConfig): boolean {
 }
 
 /**
+ * Whether to project the payload into `payload_text` so the row is embedded
+ * and recallable via `search_memory`. Off by default — store-only rows stay
+ * cheap and keep high-volume webhook noise out of semantic memory; watchers
+ * read them via SQL regardless. Accepts the string spelling because
+ * declarative (`lobu apply`) configs carry string values only.
+ */
+function isSearchableEnabled(config: WebhookIngestConfig): boolean {
+	return config.searchable === true || config.searchable === "true";
+}
+
+/**
  * Extract the presented token: `Authorization: Bearer`, the dedicated header,
  * or — only when the connection opted in — the `?token=` query param.
  */
@@ -186,6 +197,54 @@ function resolveJsonPointer(root: unknown, pointer: string): unknown {
 		}
 	}
 	return current;
+}
+
+/** Cap on the rendered `payload_text` so a large delivery can't bloat the
+ * search index / embedding input. The raw payload is always preserved in
+ * full in `payload_data` — this is only the searchable text projection. */
+export const WEBHOOK_PAYLOAD_TEXT_MAX_CHARS = 8 * 1024;
+
+/**
+ * Render the parsed payload into a flat text document for `events.payload_text`.
+ * Without this the column is null, so the embed-backfill (which skips rows with
+ * empty payload_text) never embeds the row and it stays invisible to semantic
+ * recall / `search_memory` — reachable only by watcher SQL. Leaf scalars become
+ * `dotted.path: value` lines, so the JSON structure doubles as searchable
+ * context (e.g. `event.title: ZeroDivisionError`). Bounded by
+ * WEBHOOK_PAYLOAD_TEXT_MAX_CHARS.
+ */
+export function renderPayloadText(payload: unknown): string {
+	const lines: string[] = [];
+	let budget = WEBHOOK_PAYLOAD_TEXT_MAX_CHARS;
+	const push = (text: string): void => {
+		if (budget <= 0) return;
+		const clipped = text.length > budget ? text.slice(0, budget) : text;
+		lines.push(clipped);
+		budget -= clipped.length + 1; // + newline
+	};
+	const walk = (node: unknown, path: string): void => {
+		if (budget <= 0) return;
+		if (
+			node === null ||
+			typeof node === "string" ||
+			typeof node === "number" ||
+			typeof node === "boolean"
+		) {
+			push(path ? `${path}: ${String(node)}` : String(node));
+			return;
+		}
+		if (Array.isArray(node)) {
+			node.forEach((item, i) => walk(item, path ? `${path}.${i}` : String(i)));
+			return;
+		}
+		if (typeof node === "object") {
+			for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+				walk(value, path ? `${path}.${key}` : key);
+			}
+		}
+	};
+	walk(payload, "");
+	return lines.join("\n");
 }
 
 function extractTitle(
@@ -366,6 +425,12 @@ export async function handleWebhookIngest(
 			semanticType,
 			payloadType: "json_template",
 			payloadData,
+			// Opt-in searchable text projection: only when `searchable` is set
+			// do we render payload_text, which is the gate the embed-backfill
+			// keys on (it skips empty payload_text). Default off keeps the row
+			// store-only (watcher SQL) and out of semantic memory. The full
+			// payload always stays in payload_data; this is lossy-by-cap.
+			content: isSearchableEnabled(config) ? renderPayloadText(parsed) : null,
 			title: extractTitle(parsed, config.titlePath),
 			occurredAt: new Date(),
 			metadata: {

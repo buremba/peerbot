@@ -442,7 +442,6 @@ async function fixSchemaConstraints(db: postgres.Sql): Promise<void> {
         completed_at timestamp with time zone,
         created_at timestamp with time zone NOT NULL DEFAULT now()
       );
-      CREATE INDEX IF NOT EXISTS idx_connect_tokens_token ON connect_tokens (token);
       CREATE INDEX IF NOT EXISTS idx_connect_tokens_connection_id ON connect_tokens (connection_id);
     `);
   } catch {

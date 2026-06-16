@@ -198,13 +198,6 @@ function normalizeRuntimeProvider(provider: any, models: ProviderModelOption[]):
   };
 }
 
-function getClaudeOAuthRuntime() {
-  return {
-    oauthClient: new OAuthClient(CLAUDE_PROVIDER),
-    createAuthProfileLabel,
-  };
-}
-
 // ── Route-level middleware ───────────────────────────────────────────────────
 //
 // Every agent route is org-scoped: it requires a valid auth context (`mcpAuth`)
@@ -704,7 +697,7 @@ routes.get('/:agentId/providers/:providerId/oauth/start', async (c) => {
     return c.json({ error: 'Embedded Lobu auth is not available' }, 503);
   }
 
-  const { oauthClient } = getClaudeOAuthRuntime();
+  const oauthClient = new OAuthClient(CLAUDE_PROVIDER);
   const codeVerifier = oauthClient.generateCodeVerifier();
   const state = await oauthStateStore.create({
     userId: user.id,
@@ -757,7 +750,7 @@ routes.post('/:agentId/providers/:providerId/oauth/code', async (c) => {
   if (stateData.agentId !== agentId || stateData.userId !== user.id) {
     return c.json({ error: 'OAuth state does not match this agent session' }, 403);
   }
-  const { oauthClient, createAuthProfileLabel } = getClaudeOAuthRuntime();
+  const oauthClient = new OAuthClient(CLAUDE_PROVIDER);
 
   try {
     const credentials = await oauthClient.exchangeCodeForToken(

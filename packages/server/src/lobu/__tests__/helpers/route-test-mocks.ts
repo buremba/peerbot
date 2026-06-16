@@ -45,9 +45,11 @@ export const chatManagerStash: { manager: any } = { manager: null };
 /**
  * Mutable holder for whatever `getLobuCoreServices()` should return. Defaults
  * to `null` (the historical behavior every other route test relies on); the
- * OAuth-route test (agent-routes-oauth-redirect.test.ts) sets a fake exposing
- * `getOAuthStateStore()` + `getAuthProfilesManager()` so the
- * `/providers/:provider/oauth/{start,code}` handlers can run.
+ * OAuth-route test (agent-routes-oauth-redirect.test.ts) sets it to a REAL
+ * `AuthProfilesManager` + OAuth state store (DB-backed, via
+ * `buildRealClaudeAuthStack()`) so the
+ * `/providers/:provider/oauth/{start,code}` handlers run against the genuine
+ * `upsertProfile` guard — not a fake that would mask a missing `userId`.
  */
 export const coreServicesStash: { services: any } = { services: null };
 

@@ -50,8 +50,9 @@ export class ApiPlatform implements PlatformAdapter {
 
     // Subscribe to interaction events and deliver them to SSE clients.
     //
-    // These cards (ask_user question, tool-approval, link-button) are raised by
-    // the worker on ITS pod, but the browser's SSE stream is pinned by ClientIP
+    // These cards (ask_user question, tool-approval, link-button, status
+    // message) are raised by the worker on ITS pod, but the browser's SSE
+    // stream is pinned by ClientIP
     // affinity to a possibly DIFFERENT pod. The SseManager is per-pod and
     // in-memory, so broadcasting directly here would land the card on the
     // worker's pod, which the browser is not connected to — the user never sees
@@ -100,6 +101,22 @@ export class ApiPlatform implements PlatformAdapter {
       this.enqueueInteractionCard(queue, event, "suggestion", {
         type: "suggestion",
         prompts: event.prompts,
+      });
+    });
+
+    // Status messages (e.g. "Processing…", MCP auth prompts) are pushed to the
+    // browser's SSE socket the same way as the cards above, so under N>1 they
+    // hit the same cross-pod loss: posted on the worker's pod, the browser's SSE
+    // is pinned to a different pod and never sees the status. Enqueue onto the
+    // owner-gated thread_response queue like the others. The SSE event name is
+    // `status` and the SPA reads `payload.status` (see ApiResponseRenderer.
+    // handleStatusUpdate + owletto lobu-runtime-provider), so the card data must
+    // surface as `{ type: "status", status: <text> }`.
+    interactionService.on("status-message:created", (event: any) => {
+      if (event.platform !== "api") return;
+      this.enqueueInteractionCard(queue, event, "status", {
+        type: "status",
+        status: event.text,
       });
     });
 

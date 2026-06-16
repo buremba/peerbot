@@ -108,6 +108,15 @@ export interface PostedToolApproval extends BaseMessage {
 export interface PostedStatusMessage extends BaseMessage {
   platform: string;
   text: string;
+  /**
+   * Dispatch origin (watcher-run/connector-repair/scheduled-job/internal) for a
+   * headless turn. Propagated onto the cross-pod thread_response row so the
+   * consumer's headless owner-gate exemption applies — without it a status
+   * message from a headless turn would owner-gate, re-queue 30x and dead-letter
+   * (no SSE/bridge owner exists on any pod). Matches PostedQuestion/
+   * PostedToolApproval.
+   */
+  source?: string;
 }
 
 /**
@@ -310,7 +319,8 @@ export class InteractionService extends EventEmitter {
     teamId: string | undefined,
     connectionId: string | undefined,
     platform: string,
-    text: string
+    text: string,
+    source?: string
   ): Promise<PostedStatusMessage> {
     assertRoutableInteraction(connectionId, platform, "status message");
     if (this.beforeCreateHook) {
@@ -325,6 +335,7 @@ export class InteractionService extends EventEmitter {
       connectionId,
       platform,
       text,
+      source,
     };
 
     logger.info(

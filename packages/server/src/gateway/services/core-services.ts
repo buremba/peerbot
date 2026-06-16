@@ -822,7 +822,8 @@ export class CoreServices {
         teamId,
         connectionId,
         platform || "unknown",
-        payload.message
+        payload.message,
+        source
       );
     };
     logger.debug("MCP proxy initialized");

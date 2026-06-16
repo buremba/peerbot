@@ -74,11 +74,21 @@ export class ApiResponseRenderer implements ResponseRenderer {
       return;
     }
 
-    // Broadcast completion to SSE clients
+    // Broadcast completion to SSE clients.
+    //
+    // Carry the worker's authoritative `finalText` (the full assistant reply,
+    // added to the terminal row in gateway-integration.signalCompletion for
+    // exactly this cross-replica reason). Streaming `output` deltas stay
+    // best-effort under N>1: a delta row claimed on a non-owning pod is lost
+    // (the SseManager is per-pod), so the SPA's accumulated text can be
+    // truncated. The SPA repairs from `finalText` on this terminal event —
+    // without it a cross-pod delta loss would leave a permanently truncated
+    // message with no repair. (Empty string when nothing was streamed.)
     this.sseManager.broadcast(sessionId, "complete", {
       type: "complete",
       messageId: payload.messageId,
       processedMessageIds: payload.processedMessageIds,
+      finalText: payload.finalText,
       timestamp: payload.timestamp || Date.now(),
     });
 

@@ -442,7 +442,17 @@ export class UnifiedThreadResponseConsumer {
       return;
     }
 
-    // Handle streaming delta
+    // Handle streaming delta.
+    //
+    // Deltas (and the typing/status heartbeat above) stay best-effort under N>1
+    // replicas: they are NOT owner-gated (the isApiRow gate above scopes to
+    // terminal + requireSseOwner rows only), so a delta row claimed on a pod
+    // that does not hold the client's SSE socket is silently lost — re-queuing
+    // every delta would churn the queue with no benefit. This is accepted: the
+    // terminal `complete` event carries the worker's authoritative `finalText`,
+    // from which the API renderer/SPA repair any missed deltas (see
+    // ApiResponseRenderer.handleCompletion). Per-delta cross-pod fan-out (a
+    // durable SSE-session→pod registry) is the future hardening, deferred.
     if (data.delta && renderer.handleDelta) {
       await renderer.handleDelta(data, sessionKey);
       // Early return if no error - delta processing is complete

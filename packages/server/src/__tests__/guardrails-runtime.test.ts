@@ -417,6 +417,55 @@ describe('ChatResponseBridge — wired output guardrail', () => {
     expect(rows.length).toBe(1);
     expect(rows[0]!.metadata.guardrail).toBe('secret-scan');
   });
+
+  it('scans finalText at completion for a LIVE-STREAMING (telegram) reply — catches a secret longer than the per-delta window', async () => {
+    // Regression: the completion full-text scan was gated on
+    // `deliversAtCompletion`, so live-streaming platforms (telegram) only had
+    // the bounded per-delta window. A secret LONGER than that window trips no
+    // per-delta scan and previously landed in history unscanned. The completion
+    // scan now runs for every strategy.
+    const { target, posted } = createCapturingTarget();
+    const manager = createManager(target, agentId, orgId); // telegram = live-streaming
+    const bridge = new ChatResponseBridge(manager as any);
+
+    const registry = new GuardrailRegistry();
+    registerBuiltinGuardrails(registry);
+    const settingsStore = new AgentSettingsStore(
+      createPostgresAgentConfigStore()
+    );
+    bridge.setGuardrails(registry, settingsStore);
+
+    // A JWT well over the 512-char per-delta window — only the full-text
+    // completion scan can see it whole. No handleDelta is called.
+    const longJwt = `eyJhbGciOiJSUzI1NiJ9.eyJ${'A'.repeat(900)}.${'S'.repeat(342)}`;
+    const payload = {
+      messageId: 'm1',
+      channelId: '123',
+      conversationId: '123',
+      userId: 'u1',
+      teamId: 't1',
+      timestamp: 0,
+      platform: 'telegram',
+      platformMetadata: { connectionId: 'conn-1', chatId: '123' },
+      finalText: `your token is ${longJwt}`,
+      processedMessageIds: ['m1'],
+    };
+
+    await orgContext.run({ organizationId: orgId }, async () => {
+      await bridge.handleCompletion(payload as any, 's');
+    });
+
+    const blockPost = posted.find((p) =>
+      p.text?.startsWith('Message blocked by guardrail')
+    );
+    expect(blockPost).toBeDefined();
+    expect(blockPost!.text).toMatch(/jwt/);
+
+    await flushPendingGuardrailAudits();
+    const rows = await fetchGuardrailEvents(orgId, 'output');
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.metadata.guardrail).toBe('secret-scan');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────

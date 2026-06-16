@@ -381,18 +381,21 @@ export class ChatResponseBridge implements ResponseRenderer {
     const canDeliverFromFinalText =
       strategy.deliversAtCompletion && !!payload.finalText?.trim();
 
-    // Output guardrail for the post-once path. A post-once strategy delivers
-    // here from the full text, so the per-delta scan in handleDelta is NOT a
-    // sufficient guard under N>1 replicas: this completing pod may have scanned
-    // no deltas (cross-pod) or only the subset it claimed, and a secret split
-    // across deltas that scattered to different pods trips no per-delta scan.
-    // `blockedStreams` is pod-local and cannot protect a cross-replica
-    // completion. So scan the full delivered text once here; on a trip, post
-    // the block message and suppress both delivery and history. (Live-streaming
-    // strategies can't defer — they already streamed per-delta — so this only
-    // runs for deliversAtCompletion strategies.)
+    // Output guardrail on the full delivered text, for EVERY strategy. The
+    // per-delta scan in handleDelta only sees a bounded rolling window, so a
+    // secret LONGER than that window (e.g. a multi-hundred-char JWT / OAuth
+    // access token) trips no per-delta scan at all. And under N>1 replicas a
+    // completing pod may have scanned no deltas (cross-pod) or only the subset
+    // it claimed; `blockedStreams` is pod-local and can't protect a cross-pod
+    // completion. So scan the full authoritative text once here regardless of
+    // strategy. On a trip: post the block message and suppress both delivery
+    // and history. (A live-streaming strategy already emitted its per-delta
+    // bytes — those can't be unsent — but this keeps the secret OUT of stored
+    // history and audits the trip; a post-once strategy blocks before any
+    // delivery. Previously this scan ran only for post-once strategies, so a
+    // long secret streamed live escaped entirely.)
     let blockedAtCompletion = false;
-    if (strategy.deliversAtCompletion) {
+    {
       const completionText = payload.finalText ?? stream?.buffer ?? "";
       if (completionText.trim()) {
         const trip = await this.runOutputGuardrails(completionText, payload, ctx);

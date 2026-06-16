@@ -104,11 +104,24 @@ const SECRET_PATTERNS: Array<{ name: string; re: RegExp }> = [
   // Allow hyphens so prefixed keys (Anthropic `sk-ant-…`, OpenAI `sk-proj-…`)
   // are matched, not truncated at the first hyphen.
   { name: "openai-key", re: /sk-[a-zA-Z0-9-]{20,}/ },
-  { name: "github-pat", re: /ghp_[a-zA-Z0-9]{36}/ },
-  { name: "aws-access-key", re: /AKIA[0-9A-Z]{16}/ },
+  // GitHub tokens: classic PAT (ghp_) AND OAuth/app/user/refresh tokens
+  // (gho_/ghu_/ghs_/ghr_) — the `ghp_`-only pattern missed every non-PAT form.
+  { name: "github-token", re: /gh[oprsu]_[A-Za-z0-9]{36,}/ },
+  // GitHub fine-grained PAT (`github_pat_…`) — a different shape entirely.
+  { name: "github-fine-grained-pat", re: /github_pat_[0-9A-Za-z_]{22,}/ },
+  // AWS access key IDs. AKIA = long-term; ASIA = temporary/STS session creds
+  // (ubiquitous in assumed-role agent environments); AGPA/AIDA/AROA = other
+  // principal-id prefixes. The AKIA-only pattern missed STS keys entirely.
+  { name: "aws-access-key", re: /(AKIA|ASIA|AGPA|AIDA|AROA)[0-9A-Z]{16}/ },
+  // JWT: header.payload.signature, all base64url. Header AND payload each
+  // base64url-encode a JSON object, so both begin `eyJ`. The previous `{40,}`
+  // floor on the header missed standard tokens — a canonical HS256 header is
+  // only 33 base64url chars after `eyJ`. Require `eyJ` on the first two
+  // segments (a strong structural signal that avoids false positives) with a
+  // sane minimum length on each.
   {
     name: "jwt",
-    re: /eyJ[A-Za-z0-9_-]{40,}\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/,
+    re: /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/,
   },
 ];
 

@@ -125,6 +125,68 @@ describe("safeStringify", () => {
   });
 });
 
+// --- secret-scan -----------------------------------------------------------
+
+describe("secret-scan builtin", () => {
+  function secretScan() {
+    const reg = new GuardrailRegistry();
+    registerBuiltinGuardrails(reg);
+    const g = reg.get("output", "secret-scan");
+    if (!g) throw new Error("secret-scan not registered");
+    return g;
+  }
+
+  async function tripped(text: string): Promise<boolean> {
+    const r = await secretScan().run({
+      agentId: "a",
+      userId: "u",
+      platform: "slack",
+      text,
+    });
+    return r.tripped === true;
+  }
+
+  // A canonical HS256 JWT: header is base64url({"alg":"HS256","typ":"JWT"}) =
+  // 36 chars (only 33 after `eyJ`), which the old `{40,}` floor missed.
+  const HS256_JWT =
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" +
+    ".eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ" +
+    ".SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+
+  test("trips on a standard HS256 JWT (regression: 33-char header < old {40,} floor)", async () => {
+    expect(await tripped(`token: ${HS256_JWT}`)).toBe(true);
+  });
+
+  test("trips on a JWT longer than the per-delta scan window", async () => {
+    // A realistic OIDC access token with a large payload — well over 512 chars.
+    const bigPayload = "A".repeat(900);
+    const longJwt = `eyJhbGciOiJSUzI1NiJ9.eyJ${bigPayload}.${"S".repeat(342)}`;
+    expect(longJwt.length).toBeGreaterThan(512);
+    expect(await tripped(longJwt)).toBe(true);
+  });
+
+  test("trips on GitHub OAuth/app tokens (gho_/ghu_/ghs_/ghr_) and fine-grained PATs", async () => {
+    expect(await tripped(`gho_${"A".repeat(36)}`)).toBe(true);
+    expect(await tripped(`ghs_${"b".repeat(36)}`)).toBe(true);
+    expect(await tripped(`github_pat_${"1aB2".repeat(8)}`)).toBe(true);
+    // Classic PAT still caught.
+    expect(await tripped(`ghp_${"c".repeat(36)}`)).toBe(true);
+  });
+
+  test("trips on AWS temporary (STS / ASIA) and other principal-id access keys", async () => {
+    expect(await tripped("ASIAY34FZKBOKMUTVV7A")).toBe(true);
+    expect(await tripped("AROAEXAMPLEID1234567")).toBe(true);
+    // Long-term AKIA still caught.
+    expect(await tripped("AKIAIOSFODNN7EXAMPLE")).toBe(true);
+  });
+
+  test("does NOT trip on benign prose (no false positive)", async () => {
+    expect(await tripped("Here is a perfectly normal sentence about tokens.")).toBe(
+      false
+    );
+  });
+});
+
 // --- pii-scan --------------------------------------------------------------
 
 describe("pii-scan builtin", () => {

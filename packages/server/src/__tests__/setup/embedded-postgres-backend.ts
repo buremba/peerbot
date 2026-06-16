@@ -10,13 +10,14 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { injectPgvector, resolveEmbeddedNativeDir } from '@lobu/pgvector-embedded';
 import exitHook from 'async-exit-hook';
 import EmbeddedPostgres from 'embedded-postgres';
 import { withFreePortRetry } from './free-port';
+import { reapStaleClustersIn, STALE_CLUSTER_MS } from './reap-stale-clusters';
 
 // Importing `embedded-postgres` registers async-exit-hook, whose `beforeExit`
 // handler force-exits with code 0 (`process.nextTick(process.exit.bind(null, 0))`).
@@ -46,66 +47,11 @@ let reapedStaleClusters = false;
  * paths skip BOTH the `beforeExit` hook and `async-exit-hook`, so the data dir
  * (~150-400 MB each) leaks to tmp forever. A whole session of killed runs once
  * piled up 65 GB and filled the disk; `make clean-test-pg` only freed SHM slots,
- * never the dirs. This reaps any cluster older than the threshold (no test run
- * lives that long), once per process, best-effort. Self-healing: every run
- * cleans up the previous runs' leaks, so a kill can never accumulate.
+ * never the dirs. Self-healing: every run reaps the previous runs' leaks, once
+ * per process, before adding its own — so a kill can never accumulate. The pure
+ * logic lives in ./reap-stale-clusters (no embedded-postgres import, so the
+ * no-database unit suite can test it directly).
  */
-/** 1h — far longer than any integration run, so an *idle* hit is orphaned. */
-export const STALE_CLUSTER_MS = 60 * 60 * 1000;
-
-/**
- * True if `dir` holds a running Postgres: a `postmaster.pid` whose PID is a live
- * process. embedded-postgres writes this on start and removes it on clean stop,
- * so it's the authoritative "is this cluster in use" marker — never reap a dir
- * with a live owner, regardless of age (a long watch/CI run can exceed 1h).
- */
-function clusterIsLive(dir: string): boolean {
-  let pid: number;
-  try {
-    pid = Number.parseInt(readFileSync(join(dir, 'postmaster.pid'), 'utf8').split('\n', 1)[0], 10);
-  } catch {
-    return false; // no pid file → cleanly stopped or never started
-  }
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0); // signal 0 = liveness probe; throws if the PID is gone
-    return true;
-  } catch (err) {
-    // ESRCH → process gone (dead, safe to reap). EPERM → exists but not ours
-    // (another user's live cluster) → treat as live, do not reap.
-    return (err as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
-
-/**
- * Pure, testable core: remove `lobu-test-pg-*` dirs under `dir` that are both
- * older than `staleMs` (relative to `now`) AND have no live Postgres owner.
- * The liveness gate means a still-running cluster is never deleted even if it
- * has outlived the staleness window. Returns how many were removed.
- */
-export function reapStaleClustersIn(dir: string, now: number, staleMs: number): number {
-  let entries: string[];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return 0;
-  }
-  let removed = 0;
-  for (const name of entries) {
-    if (!name.startsWith('lobu-test-pg-')) continue;
-    const path = join(dir, name);
-    try {
-      if (now - statSync(path).mtimeMs <= staleMs) continue; // too young — maybe active
-      if (clusterIsLive(path)) continue; // running owner — never reap, any age
-      rmSync(path, { recursive: true, force: true });
-      removed++;
-    } catch {
-      // Racing another run's own cleanup, or a permission quirk — ignore.
-    }
-  }
-  return removed;
-}
-
 function reapStaleClusters(): void {
   if (reapedStaleClusters) return;
   reapedStaleClusters = true;

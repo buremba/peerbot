@@ -7,6 +7,7 @@
  * every embedded-PG start, so a kill can never accumulate. This pins that logic.
  */
 
+import { spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -15,13 +16,21 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
+
+/**
+ * A PID that is reliably dead across runtimes: spawn a process to completion
+ * (spawnSync reaps it), so its PID is freed. More portable than a magic
+ * out-of-range number, which `process.kill(pid, 0)` handles inconsistently
+ * (node throws ESRCH; bun can report it as alive).
+ */
+function deadPid(): number {
+  const r = spawnSync(process.execPath, ['-e', '0']);
+  return r.pid ?? 2147483646;
+}
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import {
-  reapStaleClustersIn,
-  STALE_CLUSTER_MS,
-} from '../setup/embedded-postgres-backend';
+import { reapStaleClustersIn, STALE_CLUSTER_MS } from '../setup/reap-stale-clusters';
 
 describe('reapStaleClustersIn', () => {
   let root: string;
@@ -61,7 +70,7 @@ describe('reapStaleClustersIn', () => {
     const live = makeDir('lobu-test-pg-LIVE', STALE_CLUSTER_MS + 60_000);
     writeFileSync(join(live, 'postmaster.pid'), `${process.pid}\n/some/data\n`); // our own live PID
     const deadOwner = makeDir('lobu-test-pg-DEAD', STALE_CLUSTER_MS + 60_000);
-    writeFileSync(join(deadOwner, 'postmaster.pid'), '2147483646\n/some/data\n'); // PID that isn't running
+    writeFileSync(join(deadOwner, 'postmaster.pid'), `${deadPid()}\n/some/data\n`); // reaped PID — not running
 
     const removed = reapStaleClustersIn(root, now, STALE_CLUSTER_MS);
 

@@ -4,29 +4,17 @@ description: Read a restaurant's Deliveroo menu and assemble a group-order baske
 nixPackages:
   - chromium
 network:
+  # Deliveroo is a flat allow (not LLM-judged): the egress judge needs an
+  # ANTHROPIC_API_KEY, and this skill's script has no checkout/payment path.
   allow:
     - registry.npmjs.org
     - .npmjs.org
     - playwright.azureedge.net
     - cdn.playwright.dev
-  judge:
-    - domain: deliveroo.co.uk
-      judge: deliveroo
-    - domain: .deliveroo.co.uk
-      judge: deliveroo
-    - domain: deliveroo.com
-      judge: deliveroo
-    - domain: .deliveroo.com
-      judge: deliveroo
-judges:
-  deliveroo: >
-    Allow GET requests that read restaurant listings, menus, item details, and
-    the current basket. Allow POST/PUT requests whose effect is limited to
-    building or modifying a basket / group order (add, remove, change quantity;
-    create a shareable group-order link). DENY anything that completes checkout,
-    submits payment, reads or writes saved payment methods, changes the delivery
-    address, or modifies the account profile. If the effect is unclear, fail
-    closed and deny with a reason.
+    - deliveroo.co.uk
+    - .deliveroo.co.uk
+    - deliveroo.com
+    - .deliveroo.com
 ---
 
 # Deliveroo group order

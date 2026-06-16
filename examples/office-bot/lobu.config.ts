@@ -7,9 +7,6 @@ import {
   skillFromFile,
 } from "@lobu/cli/config";
 
-const DELIVEROO_JUDGE =
-  "Allow GET requests that read restaurant listings, menus, item details, and the\ncurrent basket. Allow POST/PUT requests whose effect is limited to building or\nmodifying a basket / group order (adding, removing, changing quantity of items;\ncreating a shareable group-order link). DENY anything that completes checkout,\nsubmits payment, reads or writes saved payment methods, changes the delivery\naddress, or modifies the account profile. If the request's effect is unclear,\nfail closed and deny with a reason.\n";
-
 const foodOrdering = defineAgent({
   id: "food-ordering",
   name: "food-ordering",
@@ -28,6 +25,10 @@ const foodOrdering = defineAgent({
     slack: { enabled: true, surfaces: ["dm", "channel"], codeTtlMinutes: 15 },
   },
   network: {
+    // Deliveroo is a flat allow rather than LLM-judged: the egress judge needs
+    // an ANTHROPIC_API_KEY (OAuth tokens are rejected for direct API use), and
+    // the deliveroo-order skill's script has no checkout/payment path, so the
+    // per-request judge was defense-in-depth we opt out of here.
     allowed: [
       "api.z.ai",
       ".z.ai",
@@ -35,14 +36,11 @@ const foodOrdering = defineAgent({
       ".npmjs.org",
       "playwright.azureedge.net",
       "cdn.playwright.dev",
+      "deliveroo.co.uk",
+      ".deliveroo.co.uk",
+      "deliveroo.com",
+      ".deliveroo.com",
     ],
-    judged: [
-      { domain: "deliveroo.co.uk", judge: "deliveroo" },
-      { domain: ".deliveroo.co.uk", judge: "deliveroo" },
-      { domain: "deliveroo.com", judge: "deliveroo" },
-      { domain: ".deliveroo.com", judge: "deliveroo" },
-    ],
-    judges: { deliveroo: DELIVEROO_JUDGE },
   },
 });
 

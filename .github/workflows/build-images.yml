@@ -151,8 +151,8 @@ jobs:
             SKIP_WEB_BUILD=${{ steps.submodule.outputs.stubbed == 'true' }}
             VITE_SENTRY_DSN=${{ secrets.VITE_SENTRY_DSN }}
             VITE_ENVIRONMENT=production
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,mode=min,scope=app
 
       - name: Make image public
         run: |

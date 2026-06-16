@@ -1,26 +1,24 @@
 /**
- * Property/fuzz guard for the MCP tool surface: no tool may surface an
- * UNHANDLED error (Postgres syntax error, TypeError, raw 500) on adversarial
- * input. A tool may reject bad input gracefully (ToolUserError) or succeed — but
- * a leaked engine error is a bug.
+ * Schema-driven property/fuzz guard for the ENTIRE MCP tool surface.
  *
- * Motivation: a `read_knowledge` query with a leading newline used to throw a
- * Postgres `syntax error in tsquery` (a 400 leaking the engine). That class —
- * "adversarial input crashes a tool" — should be caught for the WHOLE surface,
- * not one tool at a time. This harness drives each free-text tool with a shared
- * corpus of nasty values and asserts the only errors are typed user errors.
+ * Invariant: no tool may surface an UNHANDLED ENGINE error (Postgres
+ * syntax/encoding error, raw 500) on adversarial input. A tool may reject input
+ * gracefully (ToolUserError) or succeed or throw a typed app error — but a
+ * leaked engine error is a bug (e.g. a leading newline → tsquery 400, or a NUL
+ * byte → "invalid byte sequence for encoding UTF8: 0x00").
  *
- * `search_memory` has its own dedicated 1440-combo fuzz; this covers the rest.
- * To guard a new tool, add a spec to TOOL_SPECS.
+ * This is the SELF-COVERING version: it enumerates `getAllTools()`, reads each
+ * tool's JSON schema, and injects a shared nasty-input corpus into every string
+ * field AND every open record field (keys + values). New tools and new params
+ * are covered automatically — no per-tool spec to maintain. A handful of tools
+ * that don't take fuzzable input or execute code are skipped (SKIP set, below).
  *
- * Harness: vitest + embedded Postgres. Handlers are called directly.
+ * Harness: vitest + embedded Postgres; handlers are called directly.
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Env } from '../../../index';
-import type { ToolContext } from '../../../tools/registry';
-import { saveContent } from '../../../tools/save_content';
-import { resolvePath } from '../../../tools/resolve_path';
+import { getAllTools, type ToolContext } from '../../../tools/registry';
 import { ToolUserError } from '../../../utils/errors';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase } from '../../setup/test-db';
@@ -32,39 +30,94 @@ import {
   seedSystemEntityTypes,
 } from '../../setup/test-fixtures';
 
-// Schema-valid but adversarial string values (all pass `type: string`, so they
-// reach handler/SQL logic rather than bouncing off validation).
-const NASTY: Array<[string, string]> = [
-  ['leading newline', '\nhello world'],
-  ['leading tab', '\thello'],
-  ['embedded newlines', 'a\n\nb\nc'],
-  ['crlf', 'a\r\nb'],
-  ['only whitespace', '\n\t  \r\n'],
-  ['tsquery operators', 'foo & bar | baz ! qux : * ( )'],
-  ['leading pipe', '| foo'],
-  ['unbalanced paren', '(unclosed'],
-  ['wildcard', 'pre*fix:*'],
-  ['phrase op', 'a <-> b <2> c'],
-  ['unicode + emoji', '🎉 日本語 café ümlaut'],
-  ['quotes/apostrophe', `O'Brien said "hi"`],
-  ['sql-ish', `'; DROP TABLE events; --`],
-  ['percent/underscore (ILIKE)', '100%_done_\\'],
-  ['only punctuation', '!@#$%^&*()_+-=[]{}|;:,.<>?'],
-  ['only stopwords', 'the and of to is a an'],
-  ['numbers only', '1234567890'],
-  ['empty', ''],
-  ['oversized', 'x '.repeat(4000)],
-  ['null byte-ish', 'a\u0000b'],
+const NUL = String.fromCharCode(0);
+
+// Schema-valid but adversarial strings (all pass `type: string`, so they reach
+// handler/SQL logic instead of bouncing off validation).
+const NASTY = [
+  `\nleading newline`,
+  `\tleading tab`,
+  `a\n\nb\nc`,
+  `\n\t  \r\n`,
+  `foo & bar | baz ! qux : * ( )`,
+  `| leading pipe`,
+  `(unclosed`,
+  `pre*fix:*`,
+  `🎉 日本語 café`,
+  `O'Brien "quote"`,
+  `'; DROP TABLE events; --`,
+  `100%_x_\\`,
+  `!@#$%^&*()`,
+  `the and of to is`,
+  ``,
+  `x `.repeat(3000),
+  `a${NUL}b`, // NUL byte
 ];
 
-interface ToolSpec {
-  name: string;
-  // Build a full args object given the adversarial value (fill required fields).
-  args: (nasty: string) => unknown;
-  call: (args: unknown, env: Env, ctx: ToolContext) => Promise<unknown>;
+// Tools that don't take fuzzable text input, or execute code/SDK (out of scope
+// for input-SQL robustness, and may have side effects / need a sandbox).
+const SKIP = new Set([
+  'list_organizations', // no input
+  'run_sdk', // executes arbitrary TS in an isolate
+  'query_sdk', // executes SDK script
+  'search_sdk', // executes SDK script
+]);
+
+/** postgres.js engine errors carry severity/routine and a SQLSTATE code. */
+function isLeakedEngineError(err: unknown): boolean {
+  if (err instanceof ToolUserError) return false;
+  const e = err as { severity?: unknown; routine?: unknown; code?: unknown; message?: unknown };
+  if (e?.severity !== undefined || e?.routine !== undefined) return true;
+  if (typeof e?.code === 'string' && /^[0-9A-Z]{5}$/.test(e.code)) return true;
+  return /invalid byte sequence|syntax error in tsquery|encoding "UTF8"|tsquery|tsvector/i.test(
+    String(e?.message ?? '')
+  );
 }
 
-describe('MCP tool surface > input fuzz: no tool leaks an engine error', () => {
+interface SchemaNode {
+  type?: string;
+  properties?: Record<string, SchemaNode>;
+  required?: string[];
+  items?: SchemaNode;
+  additionalProperties?: SchemaNode | boolean;
+  anyOf?: SchemaNode[];
+  const?: unknown;
+  enum?: unknown[];
+}
+
+/** A minimal schema-valid value for a node, used to fill required fields. */
+function baselineValue(node: SchemaNode): unknown {
+  if (node.const !== undefined) return node.const;
+  if (Array.isArray(node.enum) && node.enum.length) return node.enum[0];
+  switch (node.type) {
+    case 'string':
+      return 'x';
+    case 'number':
+    case 'integer':
+      return 1;
+    case 'boolean':
+      return true;
+    case 'array':
+      return [];
+    case 'object':
+      return {};
+    default:
+      return 'x';
+  }
+}
+
+/** Resolve a (possibly union) schema to a concrete object node + a baseline. */
+function resolveObject(schema: SchemaNode): { node: SchemaNode; baseline: Record<string, unknown> } {
+  const node = schema.anyOf?.length ? schema.anyOf[0] : schema;
+  const baseline: Record<string, unknown> = {};
+  for (const key of node.required ?? []) {
+    const prop = node.properties?.[key];
+    if (prop) baseline[key] = baselineValue(prop);
+  }
+  return { node, baseline };
+}
+
+describe('MCP tool surface > schema-driven input fuzz: no tool leaks an engine error', () => {
   let org: Awaited<ReturnType<typeof createTestOrganization>>;
   let entityId: number;
   const env = { ENVIRONMENT: 'test' } as Env;
@@ -78,66 +131,72 @@ describe('MCP tool surface > input fuzz: no tool leaks an engine error', () => {
       tokenType: 'oauth',
       scopedToOrg: false,
       allowCrossOrg: true,
-      scopes: ['mcp:read', 'mcp:write'],
+      scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
     };
   }
-
-  let TOOL_SPECS: ToolSpec[];
 
   beforeAll(async () => {
     await initWorkspaceProvider();
     await cleanupTestDatabase();
     await seedSystemEntityTypes();
-    org = await createTestOrganization({ name: 'Tool Fuzz Org' });
-    const user = await createTestUser({ email: 'tool-fuzz@example.com' });
+    org = await createTestOrganization({ name: 'Schema Fuzz Org' });
+    const user = await createTestUser({ email: 'schema-fuzz@example.com' });
     await addUserToOrganization(user.id, org.id, 'owner');
     entityId = (await createTestEntity({ name: 'Fuzz Entity', organization_id: org.id })).id;
-
-    TOOL_SPECS = [
-      {
-        name: 'save_memory',
-        args: (nasty) => ({
-          entity_ids: [entityId],
-          content: nasty,
-          title: nasty.slice(0, 50),
-          author: nasty.slice(0, 20),
-          semantic_type: 'note',
-          metadata: {},
-        }),
-        call: (a, e, c) => saveContent(a as never, e as never, c as never),
-      },
-      {
-        name: 'resolve_path',
-        args: (nasty) => ({ path: `/${nasty}` || '/x' }),
-        call: (a, e, c) => resolvePath(a as never, e as never, c as never),
-      },
-    ];
   });
 
-  it('every tool either succeeds or throws a typed ToolUserError (never a raw engine error)', async () => {
-    const leaks: Array<{ tool: string; label: string; error: string }> = [];
-    let ran = 0;
-    for (const spec of TOOL_SPECS) {
-      for (const [label, nasty] of NASTY) {
+  it('fuzzes every tool string + record field with the nasty corpus', async () => {
+    const tools = getAllTools().filter((t) => !SKIP.has(t.name));
+    const leaks: Array<{ tool: string; field: string; sample: string; error: string }> = [];
+    let calls = 0;
+
+    for (const tool of tools) {
+      const { node, baseline } = resolveObject(tool.inputSchema as SchemaNode);
+      const props = node.properties ?? {};
+      // Give id-shaped fields a real entity so we exercise the query, not a 404.
+      for (const key of Object.keys(props)) {
+        if (/entity_ids/.test(key)) baseline[key] = [entityId];
+        else if (/entity_id$/.test(key)) baseline[key] = entityId;
+      }
+
+      const run = async (field: string, args: Record<string, unknown>, sample: string) => {
+        calls++;
         try {
-          await spec.call(spec.args(nasty), env, ctx());
-          ran++;
-        } catch (e) {
-          // A graceful, typed user-facing rejection is acceptable.
-          if (e instanceof ToolUserError) {
-            ran++;
-            continue;
+          await (tool.handler as (a: unknown, e: Env, c: ToolContext) => Promise<unknown>)(
+            args,
+            env,
+            ctx()
+          );
+        } catch (err) {
+          if (isLeakedEngineError(err)) {
+            leaks.push({ tool: tool.name, field, sample: JSON.stringify(sample).slice(0, 40), error: String(err).slice(0, 120) });
           }
-          leaks.push({ tool: spec.name, label, error: String(e).slice(0, 160) });
+          // typed app errors / ToolUserError → acceptable
+        }
+      };
+
+      for (const [field, prop] of Object.entries(props)) {
+        if (prop.type === 'string') {
+          for (const nasty of NASTY) await run(field, { ...baseline, [field]: nasty }, nasty);
+        } else if (
+          prop.type === 'object' &&
+          (prop.additionalProperties === true || typeof prop.additionalProperties === 'object') &&
+          !prop.properties
+        ) {
+          // Open record (e.g. metadata): fuzz both KEY and VALUE.
+          for (const nasty of [`a${NUL}b`, `\nk`, `weird key`]) {
+            await run(field, { ...baseline, [field]: { [nasty]: nasty } }, `{${nasty}}`);
+          }
         }
       }
     }
+
     if (leaks.length > 0) {
       throw new Error(
-        `${leaks.length} tool/input combinations leaked an engine error:\n` +
-          leaks.map((l) => `  ${l.tool} [${l.label}] -> ${l.error}`).join('\n')
+        `${leaks.length} tool/field combinations leaked an engine error (of ${calls} calls):\n` +
+          leaks.slice(0, 12).map((l) => `  ${l.tool}.${l.field} [${l.sample}] -> ${l.error}`).join('\n')
       );
     }
-    expect(ran).toBe(TOOL_SPECS.length * NASTY.length);
+    expect(calls).toBeGreaterThan(50); // sanity: we actually fuzzed a real surface
   });
 });

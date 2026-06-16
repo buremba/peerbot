@@ -73,15 +73,16 @@ function actionOf(variant: TSchema): string {
  *   (`before_occurred_at`) are Type.String; the list→page round trip must
  *   survive validation.
  */
+const stripNul = (str: string): string =>
+  str.indexOf('\u0000') === -1 ? str : str.replace(/\u0000/g, '');
+
 function normalizeArgs(value: unknown): unknown {
   // Postgres text columns and tsquery cannot contain NUL (0x00): a string
   // carrying one raises `invalid byte sequence for encoding "UTF8": 0x00`,
   // which would leak from any tool that passes the value into SQL (surfaced by
   // the tool-input fuzz against resolve_path). Strip it at the single tool-arg
   // chokepoint so no handler has to defend against it individually.
-  if (typeof value === 'string') {
-    return value.includes('\u0000') ? value.replace(/\u0000/g, '') : value;
-  }
+  if (typeof value === 'string') return stripNul(value);
   if (value instanceof Date) return value.toISOString();
   if (Array.isArray(value)) return value.map(normalizeArgs);
   if (value && typeof value === 'object') {
@@ -89,7 +90,7 @@ function normalizeArgs(value: unknown): unknown {
     if (proto === Object.prototype || proto === null) {
       const out: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(value)) {
-        if (v !== undefined) out[k] = normalizeArgs(v);
+        if (v !== undefined) out[stripNul(k)] = normalizeArgs(v);
       }
       return out;
     }

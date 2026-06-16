@@ -54,13 +54,13 @@ RUN mkdir -p packages/cli packages/landing packages/lobu-cli packages/browser-ex
 # Node doesn't understand.
 RUN --mount=type=cache,target=/root/.bun/install/cache bun install --linker=hoisted
 
-# Force rebuild of source layers
-ARG CACHEBUST=default
-ARG APP_GIT_SHA=unknown
-ARG APP_BUILD_TIME=unknown
-RUN echo "Build: ${CACHEBUST}" && date > /tmp/.build-time
-
-# Source code
+# Source code. BuildKit content-hashes each COPY, so a change to any package's
+# source invalidates that layer and everything downstream (tsc/bundle/frontend)
+# automatically — no manual cache-bust needed. The previous
+# `ARG CACHEBUST=${git.sha}` busted ALL source layers on every commit, forcing a
+# full recompile each build even when nothing relevant changed; dropping it lets
+# unchanged layers be reused from the cache (see cache-to mode=max in
+# build-images.yml).
 COPY config/ config/
 COPY packages/core/ packages/core/
 COPY packages/agent-worker/ packages/agent-worker/

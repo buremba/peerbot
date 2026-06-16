@@ -203,6 +203,44 @@ describe("connection_claims lease (exclusive transports)", () => {
     expect(manager.exclusiveFailures.has("conn-transient")).toBe(false);
   });
 
+  test("backoff accumulates across retries even when the transient error MESSAGE varies (no updated_at churn)", async () => {
+    const { manager, connectionStore } = await buildReplica();
+    await seedTelegramPolling(
+      connectionStore,
+      "org-vary",
+      "agent-vary",
+      "conn-vary"
+    );
+
+    // Every hydrate throws with a DIFFERENT message — real transient start
+    // errors vary between attempts (ETIMEDOUT vs ECONNRESET, socket addresses,
+    // request ids). The error STATUS must only be written on the first failure,
+    // otherwise a changing message bumps updated_at every retry, resets the
+    // backoff record (keyed on updated_at), and defeats the exponential backoff.
+    let calls = 0;
+    manager.hydrateFromRow = async () => {
+      calls += 1;
+      throw new Error(`transient boom #${calls}`);
+    };
+
+    // Tick 1: first failure → status written once, attempts = 1.
+    await manager.exclusiveTick();
+    const afterFirst = await connectionStore.getConnection("conn-vary");
+    const v1 = afterFirst!.updatedAt;
+    expect(manager.exclusiveFailures.get("conn-vary")!.attempts).toBe(1);
+
+    // Elapse the backoff and retry — fails again with a DIFFERENT message.
+    manager.exclusiveFailures.get("conn-vary")!.nextRetryAt = Date.now() - 1;
+    await manager.exclusiveTick();
+    expect(calls).toBe(2);
+
+    const afterSecond = await connectionStore.getConnection("conn-vary");
+    // The varying message must NOT re-write the status / bump updated_at...
+    expect(afterSecond!.updatedAt).toBe(v1);
+    // ...so the backoff keeps ACCUMULATING (attempts → 2) instead of resetting.
+    expect(manager.exclusiveFailures.get("conn-vary")!.attempts).toBe(2);
+  });
+
   test("removeConnection deletes the connection_claims lease row (no orphan)", async () => {
     const { getDb } = await import("../../../db/client.js");
     const { manager, connectionStore } = await buildReplica();

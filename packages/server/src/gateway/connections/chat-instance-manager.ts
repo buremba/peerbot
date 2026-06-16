@@ -1347,18 +1347,29 @@ export class ChatInstanceManager {
           { id: s.id, error: String(error) },
           "Failed to start exclusive connection"
         );
-        await this.writeConnectionStatus(
-          s,
-          "error",
-          `Startup failed: ${error instanceof Error ? error.message : String(error)}`
-        );
-        // Schedule a bounded, exponentially-backed-off retry. The status write
-        // above bumps updated_at, so key the record on the POST-write version:
-        // a genuine config edit later produces yet another version and resets
-        // the backoff (record cleared on the version mismatch). We KEEP the
-        // lease through the failure (no releaseClaim) on purpose — releasing it
-        // would just bounce the same transient failure around N replicas
-        // (flapping). One owner retrying on a capped backoff is the calmer,
+        // Write the error STATUS only on the FIRST failure for this config
+        // version. On a backed-off retry we deliberately do NOT re-write it:
+        // transient start errors vary between attempts (ETIMEDOUT vs
+        // ECONNRESET, socket addresses, request ids), and writing a *different*
+        // message would bump updated_at every tick — which resets the backoff
+        // (the record is keyed on updated_at) and churns the DB. The first
+        // error is representative; every attempt's detail is in the log above.
+        const isRetry = !!failure && failure.rowVersion === s.updatedAt;
+        if (!isRetry) {
+          await this.writeConnectionStatus(
+            s,
+            "error",
+            `Startup failed: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+        // Schedule a bounded, exponentially-backed-off retry. The first-failure
+        // status write above bumps updated_at once; subsequent retries leave it
+        // stable, so the record keys cleanly on the post-write version. A
+        // genuine config edit later produces yet another version and resets the
+        // backoff (record cleared on the version mismatch). We KEEP the lease
+        // through the failure (no releaseClaim) on purpose — releasing it would
+        // just bounce the same transient failure around N replicas (flapping).
+        // One owner retrying on a capped backoff is the calmer,
         // multi-replica-correct behaviour.
         const reread = await this.connectionStore.getConnection(s.id);
         const rowVersion = reread?.updatedAt ?? s.updatedAt;

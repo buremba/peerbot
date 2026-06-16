@@ -97,6 +97,16 @@ function installCoreServices(upsert: UpsertCapture): void {
     getOAuthStateStore: () => stateStore,
     getAuthProfilesManager: () => ({
       async upsertProfile(args: any) {
+        // Mirror the real AuthProfilesManager.upsertProfile guard: persisting a
+        // profile requires the owning principal's userId. If the route omits it
+        // (the prod bug after the redirect_uri fix), the persist throws and the
+        // whole login fails AFTER a successful token exchange — so the fake must
+        // enforce it too, or the test would pass against a broken route.
+        if (!args.userId) {
+          throw new Error(
+            'upsertProfile requires userId — declared agents cannot be mutated'
+          );
+        }
         upsert.calls.push(args);
       },
     }),
@@ -195,10 +205,13 @@ describe('Claude OAuth redirect_uri must match between authorize and exchange', 
     expect(exchangeParams.get('redirect_uri')).toBe(authorizeRedirectUri);
     expect(exchangeParams.get('redirect_uri')).toBe(EXPECTED_REDIRECT_URI);
 
-    // The rotated credentials were persisted as a Claude oauth profile.
+    // The rotated credentials were persisted as a Claude oauth profile —
+    // crucially scoped to the authenticated session user (`userId`), which the
+    // real upsertProfile guard requires. Omitting it threw post-exchange in prod.
     expect(upsert.calls).toHaveLength(1);
     expect(upsert.calls[0]).toMatchObject({
       agentId: AGENT,
+      userId: USER,
       provider: 'claude',
       authType: 'oauth',
       credential: 'sk-ant-oat01-test-access',

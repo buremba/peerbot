@@ -774,6 +774,12 @@ routes.post('/:agentId/providers/:providerId/oauth/code', async (c) => {
 
     await authProfilesManager.upsertProfile({
       agentId,
+      // The profile is owned by the authenticated session user (the same
+      // principal whose id was checked against the OAuth state above).
+      // upsertProfile requires it — without it the persist throws
+      // "upsertProfile requires userId" and the whole login fails AFTER a
+      // successful token exchange.
+      userId: user.id,
       provider: providerId,
       credential: credentials.accessToken,
       authType: 'oauth',

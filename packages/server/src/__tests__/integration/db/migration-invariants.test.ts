@@ -71,6 +71,57 @@ describe('migration invariants', () => {
       `;
       expect(rows).toHaveLength(1);
     });
+
+    it('stale orphan tables entity_read_grant + mcp_proxy_sessions are dropped (2026-06-16 audit)', async () => {
+      const sql = getTestDb();
+      const rows = await sql<{ table_name: string }[]>`
+        SELECT table_name FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name IN ('entity_read_grant', 'mcp_proxy_sessions')
+      `;
+      expect(rows).toHaveLength(0);
+    });
+
+    it('vestigial columns are dropped (2026-06-16 audit)', async () => {
+      const sql = getTestDb();
+      const rows = await sql<{ table_name: string; column_name: string }[]>`
+        SELECT table_name, column_name FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND (
+            (table_name = 'agents' AND column_name IN ('agent_integrations', 'skill_registries', 'skill_auto_granted_domains'))
+            OR (table_name = 'device_workers' AND column_name IN ('first_seen_at', 'notification_budget_per_day'))
+            OR (table_name = 'organization' AND column_name = 'repair_agents_enabled')
+          )
+      `;
+      expect(rows).toHaveLength(0);
+    });
+
+    it('missing FK indexes were added and the duplicate token_hash index removed (2026-06-16 audit)', async () => {
+      const sql = getTestDb();
+      const present = await sql<{ indexname: string }[]>`
+        SELECT indexname FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname IN (
+            'idx_runs_window_id',
+            'oauth_tokens_parent_token_id_idx',
+            'oauth_tokens_organization_id_idx'
+          )
+      `;
+      expect(present.map((r) => r.indexname).sort()).toEqual([
+        'idx_runs_window_id',
+        'oauth_tokens_organization_id_idx',
+        'oauth_tokens_parent_token_id_idx',
+      ]);
+
+      // The redundant non-unique copy is gone; the UNIQUE index on token_hash stays.
+      const hashIdx = await sql<{ indexname: string }[]>`
+        SELECT indexname FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND tablename = 'oauth_tokens'
+          AND indexname IN ('oauth_tokens_token_hash_idx', 'oauth_tokens_token_hash_key')
+      `;
+      expect(hashIdx.map((r) => r.indexname)).toEqual(['oauth_tokens_token_hash_key']);
+    });
   });
 
   describe('functional contract: pending oauth_account uniqueness is per-user (#1121)', () => {

@@ -460,6 +460,10 @@ describe("[finding 2] GrantStore queries scope to caller's organization id", () 
     } finally {
       await stopHttpProxy(proxyServer);
       __testOnly.reset();
+      // The proxy grant store is a module-global; clear it so it doesn't leak
+      // into other proxy suites in the same bun:test process (where its
+      // DB-backed lookups wedge their request handling).
+      setProxyGrantStore(null);
       delete process.env.ENCRYPTION_KEY;
       delete process.env.WORKER_ALLOWED_DOMAINS;
     }

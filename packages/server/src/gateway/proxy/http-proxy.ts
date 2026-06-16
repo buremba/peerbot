@@ -377,36 +377,13 @@ interface ValidatedProxy {
  * Validate proxy authentication by verifying the encrypted worker token
  * and cross-checking the claimed deployment name.
  *
- * Async because the revocation check must be authoritative under N>1
- * replicas: a worker token revoked on pod A is invisible to pod B's
- * in-memory cache, so the cache-only `isRevokedCached` fast-path would keep
- * egressing a killed token until the entry happened to expire. The DB-backed
- * `isRevoked()` consults Postgres on a cache miss (the only shared source of
- * truth), with a same-process cache fast-path so the common case stays cheap.
- * Both proxy callers already await DNS/domain checks, so adding an await here
- * is free; a token confirmed revoked in Postgres fails closed.
+ * Revocation is checked against the synchronous in-memory cache only, so the DB
+ * never blocks egress. Under N>1 replicas a token revoked on pod A is initially
+ * invisible to pod B's cache; on a cache miss we fire a background DB refresh
+ * (fire-and-forget) that pulls the revoke into the cache, so the next request
+ * for that jti is denied — closing the cross-pod gap within one request rather
+ * than waiting out the cache TTL.
  */
-// Upper bound on the DB-backed revocation lookup so a slow/unreachable Postgres
-// never wedges the proxy auth path (and the request socket). On timeout we use
-// the cache verdict, which is the pre-DB behavior.
-const REVOCATION_DB_TIMEOUT_MS = 2_000;
-
-async function isRevokedBounded(
-  store: RevokedTokenStore,
-  jti: string
-): Promise<boolean> {
-  if (store.isRevokedCached(jti)) return true;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<boolean>((resolve) => {
-    timer = setTimeout(() => resolve(false), REVOCATION_DB_TIMEOUT_MS);
-  });
-  try {
-    return await Promise.race([store.isRevoked(jti), timeout]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
 async function validateProxyAuth(
   req: http.IncomingMessage
 ): Promise<ValidatedProxy | null> {
@@ -423,21 +400,22 @@ async function validateProxyAuth(
     return null;
   }
 
-  // DB-backed revocation check: cache fast-path, Postgres on miss. This is the
-  // only place a cross-replica revoke becomes visible — a `jti` killed on
-  // another pod is not in this pod's cache, so a cache-only check would wave it
-  // through. Bounded so a slow/unavailable DB never blocks egress: on timeout we
-  // fall back to the cache verdict (an unknown jti is `not revoked`), which is
-  // exactly the pre-DB behavior — no security regression, just lost cross-pod
-  // freshness for that one request.
-  if (
-    tokenData.jti &&
-    (await isRevokedBounded(getProxyRevokedTokenStore(), tokenData.jti))
-  ) {
-    logger.warn(
-      `Proxy auth failed: revoked jti (claimed deployment: ${creds.deploymentName})`
-    );
-    return null;
+  // Revocation check. The hot path is the synchronous in-memory cache so a
+  // slow/unavailable DB never blocks egress. On a cache miss we allow this
+  // request (the pre-existing behavior) but kick off a background DB refresh, so
+  // a jti revoked on ANOTHER replica is pulled into this pod's cache and denied
+  // on the next request — closing the cross-pod gap within one request instead of
+  // waiting out the cache TTL (or the token's lifetime). `isRevoked` fails open
+  // on a DB error and swallows its own rejections.
+  if (tokenData.jti) {
+    const store = getProxyRevokedTokenStore();
+    if (store.isRevokedCached(tokenData.jti)) {
+      logger.warn(
+        `Proxy auth failed: revoked jti (claimed deployment: ${creds.deploymentName})`
+      );
+      return null;
+    }
+    void store.isRevoked(tokenData.jti).catch(() => {});
   }
 
   const deploymentMatch =

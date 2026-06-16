@@ -409,7 +409,7 @@ const sendMessageRoute = createRoute({
 // Create OpenAPI Hono App
 // =============================================================================
 
-export interface AgentApiConfig {
+interface AgentApiConfig {
   queueProducer: QueueProducer;
   sessionManager: ISessionManager;
   sseManager: SseManager;

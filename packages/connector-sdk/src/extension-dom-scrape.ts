@@ -33,6 +33,9 @@ export interface ExtensionScrapeResult {
   landedUrl?: string;
   loggedIn?: boolean;
   rows?: Array<Record<string, unknown>>;
+  /** Set by the extension when the in-page scrape script threw (e.g. CSP
+   * blocked injection). Distinct from a clean logged-out result. */
+  error?: unknown;
   [k: string]: unknown;
 }
 
@@ -75,12 +78,25 @@ export async function extensionDomScrape<TItem>(opts: {
     allowed_origins: opts.allowedOrigins,
   });
   const result = observation?.result;
-  const items = opts.parseRows(result?.rows ?? []);
+  // Fail loudly on a broken scrape. A missing result (dispatch never produced
+  // one) or an `error` field (the in-page script threw — e.g. CSP blocked
+  // injection) must NOT be silently coerced into a logged-in, zero-row
+  // "success": that masks DOM/selector breakage as an empty sync and can let a
+  // connector advance its checkpoint or report health on no data. A genuine
+  // auth wall is different — the engine returns `loggedIn:false` with no error,
+  // which is preserved below for the caller to handle.
+  if (!result) {
+    throw new Error('cs_scrape returned no result — the content-script dispatch did not complete.');
+  }
+  if (typeof result.error === 'string' && result.error) {
+    throw new Error(`cs_scrape failed in the page: ${result.error}`);
+  }
+  const items = opts.parseRows(result.rows ?? []);
   return {
     items,
-    loggedIn: result?.loggedIn !== false,
-    count: result?.count ?? items.length,
-    host: result?.host,
-    landedUrl: result?.landedUrl,
+    loggedIn: result.loggedIn !== false,
+    count: result.count ?? items.length,
+    host: result.host,
+    landedUrl: result.landedUrl,
   };
 }

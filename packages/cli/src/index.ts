@@ -53,12 +53,6 @@ async function getPackageVersion(): Promise<string> {
  * commands needing a different wording (e.g. "Org slug override (defaults to
  * [memory].org)") keep their own explicit `.option(...)` call.
  */
-export interface CommonActionOpts {
-  context?: string;
-  org?: string;
-  json?: boolean;
-}
-
 function withCommonOpts(
   cmd: Command,
   opts: { org?: boolean; json?: boolean } = {}

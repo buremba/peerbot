@@ -709,7 +709,11 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
       session.authCtx.isAuthenticated = true;
       session.authCtx.userId = freshCtx.userId;
       session.authCtx.clientId = freshCtx.clientId;
-      session.authCtx.scopes = freshCtx.scopes ?? null;
+      // `extractAuthContext` always yields a concrete scope array (real scopes
+      // for token callers, the not-applicable sentinel for session/anonymous).
+      // Assign it straight through — `hasRequiredMcpScope` fails closed on
+      // null, so coercing to null would wrongly deny a valid refreshed session.
+      session.authCtx.scopes = freshCtx.scopes;
 
       if (session.authCtx.scopedToOrg) {
         if (freshCtx.organizationId !== session.authCtx.organizationId) {

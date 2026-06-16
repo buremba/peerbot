@@ -24,7 +24,7 @@
 import { getDb } from "../../db/client.js";
 import type { PostedQuestion } from "../interactions.js";
 
-export interface StoredPendingQuestion {
+interface StoredPendingQuestion {
   question: PostedQuestion;
 }
 

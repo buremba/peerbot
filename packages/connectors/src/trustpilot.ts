@@ -12,14 +12,7 @@ import {
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
-import {
-  getBrowserCdpUrl,
-  getBrowserUserDataDir,
-  handleCookieConsent,
-  openStealthBrowser,
-  validateUrlDomain,
-  withBrowserErrorCapture,
-} from './browser-scraper-utils.ts';
+import { runReviewScrape } from './browser-scraper-utils.ts';
 
 interface TrustpilotReview {
   rating: number;
@@ -101,108 +94,91 @@ export default class TrustpilotConnector extends ConnectorRuntime {
     const baseUrl =
       businessUrl ||
       `https://www.trustpilot.com/review/${encodeURIComponent(businessName ?? '')}`;
-    validateUrlDomain(baseUrl, 'trustpilot.com');
 
-    const userDataDir = getBrowserUserDataDir(ctx.sessionState);
-    const cdpUrl = getBrowserCdpUrl(ctx.sessionState) ?? 'auto';
-    const session = await openStealthBrowser({ cdpUrl, userDataDir });
+    return runReviewScrape(ctx, {
+      connectorKey: 'trustpilot-sync',
+      baseUrl,
+      expectedDomain: 'trustpilot.com',
+      cookieConsentSelector: '[data-cookie-consent-accept]',
+      reviewCardSelector: '[data-service-review-card-paper]',
+      gotoTimeoutMs: 30000,
+      extract: async (page, cardsFound) => {
+        if (!cardsFound) {
+          // No reviews found on page
+          return {
+            events: [],
+            checkpointExtra: { last_page: 1 },
+            metadata: () => ({ items_found: 0 }),
+          };
+        }
 
-    return withBrowserErrorCapture(session, 'trustpilot-sync', async (page) => {
-      await page.goto(baseUrl, {
-        waitUntil: 'domcontentloaded',
-        timeout: 30000,
-      });
-
-      await handleCookieConsent(page, '[data-cookie-consent-accept]');
-
-      // Wait for review cards to load
-      try {
-        await page.waitForSelector('[data-service-review-card-paper]', {
-          timeout: 10000,
-        });
-      } catch {
-        // No reviews found on page
-        return {
-          events: [],
-          checkpoint: {
-            last_sync_at: new Date().toISOString(),
-            last_page: 1,
-          },
-          metadata: { items_found: 0 },
-        };
-      }
-
-      // Extract raw reviews from the page
-      const rawReviews = await page.evaluate(() => {
-        const reviewElements = Array.from(
-          document.querySelectorAll('[data-service-review-card-paper]')
-        );
-
-        return reviewElements.map((el: Element) => {
-          const ratingElement = el.querySelector('[data-service-review-rating]');
-          const titleElement = el.querySelector('[data-service-review-title-typography]');
-          const textElement = el.querySelector('[data-service-review-text-typography]');
-          const dateElement = el.querySelector('time');
-          const authorElement = el.querySelector('[data-consumer-name-typography]');
-
-          const rating = parseInt(
-            ratingElement?.getAttribute('data-service-review-rating') || '0',
-            10
+        // Extract raw reviews from the page
+        const rawReviews = await page.evaluate(() => {
+          const reviewElements = Array.from(
+            document.querySelectorAll('[data-service-review-card-paper]')
           );
 
-          return {
-            rating,
-            title: titleElement?.textContent?.trim() || '',
-            text: textElement?.textContent?.trim() || '',
-            date: dateElement?.getAttribute('datetime') || '',
-            author: authorElement?.textContent?.trim() || '',
-          };
+          return reviewElements.map((el: Element) => {
+            const ratingElement = el.querySelector('[data-service-review-rating]');
+            const titleElement = el.querySelector('[data-service-review-title-typography]');
+            const textElement = el.querySelector('[data-service-review-text-typography]');
+            const dateElement = el.querySelector('time');
+            const authorElement = el.querySelector('[data-consumer-name-typography]');
+
+            const rating = parseInt(
+              ratingElement?.getAttribute('data-service-review-rating') || '0',
+              10
+            );
+
+            return {
+              rating,
+              title: titleElement?.textContent?.trim() || '',
+              text: textElement?.textContent?.trim() || '',
+              date: dateElement?.getAttribute('datetime') || '',
+              author: authorElement?.textContent?.trim() || '',
+            };
+          });
         });
-      });
 
-      // Filter reviews with meaningful content (more than 10 chars)
-      const reviews: TrustpilotReview[] = rawReviews.filter((r) => r.text && r.text.length > 10);
+        // Filter reviews with meaningful content (more than 10 chars)
+        const reviews: TrustpilotReview[] = rawReviews.filter((r) => r.text && r.text.length > 10);
 
-      // Transform to EventEnvelope format. Drop rows whose `date` attribute
-      // was missing/invalid in the DOM — `new Date("")` yields an Invalid
-      // Date, which downstream sorting/checkpointing then can't compare, and
-      // an empty `date` made `origin_id` collide on `-<author>` across rows.
-      const events: EventEnvelope[] = reviews.flatMap((review) => {
-        const content = review.title ? `${review.title}\n\n${review.text}` : review.text;
-        const parsedDate = review.date ? new Date(review.date) : null;
-        if (!parsedDate || Number.isNaN(parsedDate.getTime())) return [];
+        // Transform to EventEnvelope format. Drop rows whose `date` attribute
+        // was missing/invalid in the DOM — `new Date("")` yields an Invalid
+        // Date, which downstream sorting/checkpointing then can't compare, and
+        // an empty `date` made `origin_id` collide on `-<author>` across rows.
+        const events: EventEnvelope[] = reviews.flatMap((review) => {
+          const content = review.title ? `${review.title}\n\n${review.text}` : review.text;
+          const parsedDate = review.date ? new Date(review.date) : null;
+          if (!parsedDate || Number.isNaN(parsedDate.getTime())) return [];
 
-        return [
-          {
-            origin_id: `${review.date}-${review.author}`,
-            payload_text: content,
-            author_name: review.author,
-            occurred_at: parsedDate,
-            origin_type: 'review',
-            score: calculateEngagementScore('trustpilot', {
-              rating: review.rating,
-              helpful_count: 0,
-            }),
-            source_url: baseUrl,
-            metadata: {
-              rating: review.rating,
-              helpful_count: 0,
-              title: review.title,
+          return [
+            {
+              origin_id: `${review.date}-${review.author}`,
+              payload_text: content,
+              author_name: review.author,
+              occurred_at: parsedDate,
+              origin_type: 'review',
+              score: calculateEngagementScore('trustpilot', {
+                rating: review.rating,
+                helpful_count: 0,
+              }),
+              source_url: baseUrl,
+              metadata: {
+                rating: review.rating,
+                helpful_count: 0,
+                title: review.title,
+              },
             },
-          },
-        ];
-      });
+          ];
+        });
 
-      return {
-        events,
-        checkpoint: {
-          last_sync_at: new Date().toISOString(),
-          last_page: 1,
-        } as Record<string, unknown>,
-        metadata: {
-          items_found: reviews.length,
-        },
-      };
+        return {
+          events,
+          checkpointExtra: { last_page: 1 },
+          metadata: () => ({ items_found: reviews.length }),
+        };
+      },
     });
   }
 }

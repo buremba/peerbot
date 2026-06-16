@@ -24,7 +24,7 @@ import { isAbsolute, join, normalize, relative, sep } from 'node:path';
 import type { Snapshot } from '../file-source.js';
 import { matchesGlob } from './glob.js';
 
-export interface GitSnapshotOptions {
+interface GitSnapshotOptions {
   exclude?: (relativePath: string) => boolean;
 }
 

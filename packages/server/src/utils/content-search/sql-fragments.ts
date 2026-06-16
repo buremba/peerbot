@@ -5,7 +5,7 @@
 
 import type { ContentSearchResult } from './types';
 
-export const CONTEXT_CASE_SQL = `
+const CONTEXT_CASE_SQL = `
         CASE
           WHEN f.origin_parent_id IS NOT NULL
             AND NOT EXISTS (SELECT 1 FROM result_set rs2 JOIN current_event_records f2 ON rs2.id = f2.id WHERE f2.origin_id = f.origin_parent_id)
@@ -32,15 +32,15 @@ export const CONTEXT_CASE_SQL = `
           ELSE NULL
         END as root_context`;
 
-export const FINAL_JOINS_SQL = `
+const FINAL_JOINS_SQL = `
       LEFT JOIN connections c ON c.id = f.connection_id
       LEFT JOIN thread_meta tm ON tm.content_id = f.id`;
 
-export const FINAL_JOINS_WITH_CLASSIFICATIONS_SQL = `${FINAL_JOINS_SQL}
+const FINAL_JOINS_WITH_CLASSIFICATIONS_SQL = `${FINAL_JOINS_SQL}
       LEFT JOIN latest_classifications lc_all ON lc_all.event_id = f.id
       LEFT JOIN event_classifiers fcl_all ON lc_all.classifier_id = fcl_all.id`;
 
-export const PARENT_ROOT_JOINS_SQL = `
+const PARENT_ROOT_JOINS_SQL = `
       LEFT JOIN LATERAL (
         SELECT p.author_name, p.title, p.payload_text, p.occurred_at, p.source_url, p.score
         FROM current_event_records p
@@ -62,11 +62,11 @@ export const PARENT_ROOT_JOINS_SQL = `
         LIMIT 1
       ) root ON true`;
 
-export const BASE_COLUMNS_SQL = `f.id, f.entity_ids, f.connection_id, f.payload_text, f.title, f.author_name, f.source_url, f.occurred_at, f.semantic_type,
+const BASE_COLUMNS_SQL = `f.id, f.entity_ids, f.connection_id, f.payload_text, f.title, f.author_name, f.source_url, f.occurred_at, f.semantic_type,
           f.connector_key as platform, f.origin_id, f.origin_parent_id, f.score, f.metadata, f.payload_type, f.payload_data, f.payload_template, f.attachments, f.origin_type,
           f.interaction_type, f.interaction_status, f.interaction_input_schema, f.interaction_input, f.interaction_output, f.interaction_error, f.supersedes_event_id`;
 
-export const CLASSIFICATION_COLUMNS_SQL = `fcl_all.attribute_key as classifier_attribute_key,
+const CLASSIFICATION_COLUMNS_SQL = `fcl_all.attribute_key as classifier_attribute_key,
           lc_all."values" as classifier_values,
           lc_all.confidences as classifier_confidences,
           lc_all.source as classifier_source,
@@ -100,7 +100,7 @@ ${PARENT_ROOT_JOINS_SQL}
  * Aggregate classification rows into a keyed object in TypeScript.
  * Replaces PostgreSQL jsonb_object_agg with in-memory aggregation.
  */
-export function aggregateClassifications(
+function aggregateClassifications(
   rows: Array<{
     id: number;
     classifier_attribute_key: string | null;

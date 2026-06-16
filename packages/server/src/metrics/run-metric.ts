@@ -14,7 +14,7 @@ import { getDb } from "../db/client";
 import { validateAndScopeQuery } from "../utils/execute-data-sources";
 import { compileMetricSql } from "./compiler";
 
-export interface RunMetricInput {
+interface RunMetricInput {
   organizationId: string;
   /** Entity type slug (e.g. "company"). */
   entityType: string;

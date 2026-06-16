@@ -42,7 +42,7 @@ export interface ScheduledJobRow {
   updated_at: string;
 }
 
-export interface CreateScheduledJobParams {
+interface CreateScheduledJobParams {
   organizationId: string;
   actionType: string;
   actionArgs: Record<string, unknown>;

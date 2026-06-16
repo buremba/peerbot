@@ -45,7 +45,7 @@ type CachedMetadata =
     }
   | undefined;
 
-export type ExtractedConnectorCatalogMetadata = {
+type ExtractedConnectorCatalogMetadata = {
   key: string;
   name: string;
   description: string | null;
@@ -254,7 +254,7 @@ const CATALOG_MANIFEST_VERSION = 1;
  */
 export const CATALOG_MANIFEST_FILENAME = '.catalog-manifest.json';
 
-export interface CatalogManifest {
+interface CatalogManifest {
   version: number;
   // null = file carries no ConnectorRuntime class (utility/index file). Recorded
   // so the runtime doesn't recompile it just to rediscover it's not a connector.

@@ -19,7 +19,7 @@ import { defineFlatActionTool, flatAction } from './action-tool';
 // View template versioning types + helpers
 // ============================================
 
-export interface ViewTemplateVersionRow {
+interface ViewTemplateVersionRow {
   id: number;
   version: number;
   tab_name: string | null;
@@ -31,7 +31,7 @@ export interface ViewTemplateVersionRow {
   created_at: string;
 }
 
-export interface ViewTemplateTabInfo {
+interface ViewTemplateTabInfo {
   tab_name: string;
   tab_order: number;
   current_version: number;

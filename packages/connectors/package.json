@@ -31,9 +31,6 @@
     "src"
   ],
   "exports": {
-    ".": "./src/index.ts",
     "./*": "./src/*.ts"
-  },
-  "main": "src/index.ts",
-  "types": "src/index.ts"
+  }
 }

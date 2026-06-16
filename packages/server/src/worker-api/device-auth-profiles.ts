@@ -19,7 +19,7 @@ import {
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 
-export const BROWSER_KIND_SET: ReadonlySet<BrowserKind> = new Set(['chrome', 'brave', 'arc', 'edge']);
+const BROWSER_KIND_SET: ReadonlySet<BrowserKind> = new Set(['chrome', 'brave', 'arc', 'edge']);
 
 /**
  * Resolve the device_workers row for the authenticated user + workerId.

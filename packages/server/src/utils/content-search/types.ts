@@ -150,7 +150,7 @@ export interface ContentSearchResponse {
   page: ContentSearchPageInfo;
 }
 
-export interface DateCursor {
+interface DateCursor {
   direction: 'before' | 'after';
   occurredAtIso: string;
   id: number;

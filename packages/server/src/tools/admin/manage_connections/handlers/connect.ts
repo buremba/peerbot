@@ -11,7 +11,7 @@ import {
   insertConnectionWithSlug,
   resolveNewConnectionSlug,
 } from '../../../../utils/connections';
-import { applyEntityLinkOverrides } from '../../../../utils/entity-link-overrides';
+import { applyEntityLinkOverrides } from '../../../../utils/entity-link-validation';
 import { recordLifecycleEvent } from '../../../../utils/insert-event';
 import logger from '../../../../utils/logger';
 import { ensureConnectorInstalled } from '../../../../utils/ensure-connector-installed';

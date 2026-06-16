@@ -13,14 +13,7 @@ import {
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
-import {
-  getBrowserCdpUrl,
-  getBrowserUserDataDir,
-  handleCookieConsent,
-  openStealthBrowser,
-  validateUrlDomain,
-  withBrowserErrorCapture,
-} from './browser-scraper-utils.ts';
+import { runReviewScrape } from './browser-scraper-utils.ts';
 
 /**
  * Generates a deterministic external ID for a Glassdoor review.
@@ -156,40 +149,27 @@ export default class GlassdoorConnector extends ConnectorRuntime {
     const baseUrl = company_id
       ? `https://www.glassdoor.com/Reviews/company-reviews-${company_id}.htm`
       : `https://www.glassdoor.com/Reviews/${company_name}-reviews-SRCH_KE0.htm`;
-    validateUrlDomain(baseUrl, 'glassdoor.com');
 
-    const userDataDir = getBrowserUserDataDir(ctx.sessionState);
-    const cdpUrl = getBrowserCdpUrl(ctx.sessionState) ?? 'auto';
-    const session = await openStealthBrowser({ cdpUrl, userDataDir });
-
-    return withBrowserErrorCapture(session, 'glassdoor-sync', async (page) => {
-      // Configure viewport and user-agent to mimic a real browser
-      await page.setViewportSize({ width: 1920, height: 1080 });
-      await page.setExtraHTTPHeaders({
-        'User-Agent':
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      });
-
-      // Navigate to the reviews page
-      await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-
-      await handleCookieConsent(page, '#onetrust-accept-btn-handler');
-
-      // Human-like delay before interacting with the page
-      await page.waitForTimeout(2000);
-
-      // Wait for review elements to render
-      try {
-        await page.waitForSelector(
-          '[data-test="review-list-item"], .empReview, [data-test="employerReview"]',
-          { timeout: 10000 }
-        );
-      } catch {
-        // Reviews may not be present (auth wall, empty page, etc.)
-      }
-
-      // Extract raw reviews from the page DOM
-      const rawReviews = await page.evaluate((): GlassdoorReview[] => {
+    return runReviewScrape(ctx, {
+      connectorKey: 'glassdoor-sync',
+      baseUrl,
+      expectedDomain: 'glassdoor.com',
+      cookieConsentSelector: '#onetrust-accept-btn-handler',
+      reviewCardSelector: '[data-test="review-list-item"], .empReview, [data-test="employerReview"]',
+      gotoTimeoutMs: 30000,
+      // Human-like delay before interacting with the page.
+      postConsentDelayMs: 2000,
+      // Configure viewport and user-agent to mimic a real browser.
+      prepare: async (page) => {
+        await page.setViewportSize({ width: 1920, height: 1080 });
+        await page.setExtraHTTPHeaders({
+          'User-Agent':
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        });
+      },
+      extract: async (page) => {
+        // Extract raw reviews from the page DOM
+        const rawReviews = await page.evaluate((): GlassdoorReview[] => {
         // Try multiple selector strategies as Glassdoor frequently changes their HTML
         const reviewElements =
           Array.from(document.querySelectorAll('[data-test="review-list-item"]')).length > 0
@@ -247,43 +227,44 @@ export default class GlassdoorConnector extends ConnectorRuntime {
             author: authorEl?.textContent?.trim() || '',
           };
         });
-      });
+        });
 
-      // Filter reviews that have at least pros or cons
-      const validReviews = rawReviews.filter((r) => Boolean(r.pros || r.cons));
+        // Filter reviews that have at least pros or cons
+        const validReviews = rawReviews.filter((r) => Boolean(r.pros || r.cons));
 
-      // Transform to EventEnvelope format
-      const events: EventEnvelope[] = validReviews.map((review) => {
-        const externalId = deriveReviewExternalId(company_name, review);
-        const content = `${review.title}\n\nPros: ${review.pros}\n\nCons: ${review.cons}`;
+        // Transform to EventEnvelope format
+        const events: EventEnvelope[] = validReviews.map((review) => {
+          const externalId = deriveReviewExternalId(company_name, review);
+          const content = `${review.title}\n\nPros: ${review.pros}\n\nCons: ${review.cons}`;
+
+          return {
+            origin_id: externalId,
+            payload_text: content,
+            author_name: review.author || undefined,
+            occurred_at: review.date ? new Date(review.date) : new Date(),
+            origin_type: 'review',
+            score: calculateEngagementScore('glassdoor', { rating: review.rating }),
+            source_url: `${baseUrl}#review_${review.id}`,
+            metadata: {
+              rating: review.rating,
+              title: review.title,
+              pros: review.pros,
+              cons: review.cons,
+            },
+          };
+        });
+
+        const itemsSkipped = rawReviews.length - validReviews.length;
 
         return {
-          origin_id: externalId,
-          payload_text: content,
-          author_name: review.author || undefined,
-          occurred_at: review.date ? new Date(review.date) : new Date(),
-          origin_type: 'review',
-          score: calculateEngagementScore('glassdoor', { rating: review.rating }),
-          source_url: `${baseUrl}#review_${review.id}`,
-          metadata: {
-            rating: review.rating,
-            title: review.title,
-            pros: review.pros,
-            cons: review.cons,
-          },
+          events,
+          checkpointExtra: {},
+          metadata: (finalEvents) => ({
+            items_found: finalEvents.length,
+            items_skipped: itemsSkipped,
+          }),
         };
-      });
-
-      return {
-        events,
-        checkpoint: {
-          last_sync_at: new Date().toISOString(),
-        } as Record<string, unknown>,
-        metadata: {
-          items_found: events.length,
-          items_skipped: rawReviews.length - validReviews.length,
-        },
-      };
+      },
     });
   }
 }

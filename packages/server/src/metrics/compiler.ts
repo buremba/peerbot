@@ -17,10 +17,10 @@
 
 import type { EntityMetrics } from "@lobu/connector-sdk";
 
-export class MetricCompileError extends Error {}
-export class MetricNotImplementedError extends MetricCompileError {}
+class MetricCompileError extends Error {}
+class MetricNotImplementedError extends MetricCompileError {}
 
-export interface CompileMetricInput {
+interface CompileMetricInput {
   /** entity_types.id, for the alias-resolution join. */
   entityTypeId: number;
   /** The entity type's declared metric contract (from metrics_config). */

@@ -15,7 +15,7 @@ import {
   compileConnectorFromFile,
   findBundledConnectorFile,
 } from './connector-catalog';
-import { extractConnectorMetadata } from './connector-compiler';
+import { extractConnectorMetadata, validateConnectorMetadata } from './connector-compiler';
 import { upsertConnectorDefinitionRecords } from './connector-definition-install';
 import logger from './logger';
 
@@ -63,10 +63,7 @@ export async function ensureConnectorInstalled(params: {
     // Compile temporarily to extract metadata (key, name, feeds, etc.)
     const compiledCode = await compileConnectorFromFile(filePath);
     const metadata = await extractConnectorMetadata(compiledCode);
-
-    if (!metadata.key || !metadata.name || !metadata.version) {
-      throw new Error('Connector must have key, name, and version.');
-    }
+    validateConnectorMetadata(metadata);
 
     const sourcePath = bundledConnectorSourcePath(filePath);
     await upsertConnectorDefinitionRecords({

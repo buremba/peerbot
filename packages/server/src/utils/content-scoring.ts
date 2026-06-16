@@ -1,8 +1,8 @@
 import { getDb } from '../db/client';
 import {
-  buildClassificationFilterSQL,
   buildFeedFilter,
   buildRunFilter,
+  groupClassificationFilters,
 } from './content-query-filters';
 import {
   buildConnectionVisibilityClause,
@@ -11,6 +11,12 @@ import {
   entityLinkMatchSql,
   fetchEntityIdentityScopes,
 } from './content-search';
+import {
+  buildClassificationExistsClauses,
+  buildSourceOnlyExistsClause,
+  resolveClassifierVersionIds,
+} from './content-search/classification';
+import type { DbClient } from '../db/client';
 import logger from './logger';
 import { getScoringFormulaSql, resolveStoredScoringProfile } from './scoring-profiles';
 import { validateAndFormatIds, validateNumericId } from './sql-validation';
@@ -93,12 +99,18 @@ interface NormalizedScoreContent {
   >;
 }
 
-function buildFilterConditionsAndJoins(
+async function buildFilterConditionsAndJoins(
+  sql: DbClient,
   entityId: number,
   filters?: NormalizedScoreFilters,
   baseParamIndex: number = 1,
   entityScopes?: EntityIdentityScope[]
-): { filterConditions: string[]; additionalJoins: string[]; params: unknown[] } {
+): Promise<{
+  filterConditions: string[];
+  additionalJoins: string[];
+  params: unknown[];
+  dropAll: boolean;
+}> {
   let paramIndex = baseParamIndex;
   const params: unknown[] = [];
   // Use the trimmed UNION when scopes were pre-fetched. Falls back to the
@@ -186,17 +198,38 @@ function buildFilterConditionsAndJoins(
     filterConditions.push(`f.interaction_status = $${paramIndex++}`);
   }
 
-  if (filters?.classification_filters || filters?.classification_source) {
-    const { conditions: classificationConditions, params: classificationParams } =
-      buildClassificationFilterSQL(
-        filters.classification_filters || [],
-        filters.classification_source,
-        'f',
-        paramIndex
-      );
-    filterConditions.push(...classificationConditions);
-    params.push(...classificationParams);
-    paramIndex += classificationParams.length;
+  // Classification filters share the single version-ID-aware builder used by
+  // the date-sort path (see content-search/list-path.ts), so the score-sort
+  // and date-sort paths return identical row sets for the same filter.
+  let dropAll = false;
+  const classificationFilters = filters?.classification_filters ?? [];
+  const filtersBySlug =
+    classificationFilters.length > 0 ? groupClassificationFilters(classificationFilters) : null;
+
+  if (filtersBySlug && filtersBySlug.size > 0) {
+    const classifierVersionIds = await resolveClassifierVersionIds(sql, filtersBySlug, entityId);
+    const classificationExists = buildClassificationExistsClauses(
+      filtersBySlug,
+      classifierVersionIds,
+      filters?.classification_source,
+      paramIndex
+    );
+    if (!classificationExists) {
+      // A requested classifier has no current version — the date path returns
+      // an empty result here, so the score path must too.
+      dropAll = true;
+    } else {
+      filterConditions.push(...classificationExists.clauses);
+      params.push(...classificationExists.params);
+      paramIndex += classificationExists.params.length;
+    }
+  } else if (filters?.classification_source) {
+    // Source-only filter (no classifier-value filters): mirror the inline `$8`
+    // predicate in buildStandardWhereSql so both sort paths match.
+    const sourceOnly = buildSourceOnlyExistsClause(filters.classification_source, paramIndex, 'f');
+    filterConditions.push(sourceOnly.clause);
+    params.push(...sourceOnly.params);
+    paramIndex += sourceOnly.params.length;
   }
 
   if (filters?.visibility_scope) {
@@ -217,7 +250,7 @@ function buildFilterConditionsAndJoins(
     }
   }
 
-  return { filterConditions, additionalJoins, params };
+  return { filterConditions, additionalJoins, params, dropAll };
 }
 export async function getNormalizedScoreContent(
   entityId: number,
@@ -323,7 +356,11 @@ export async function getNormalizedScoreContent(
     filterConditions,
     additionalJoins,
     params: filterParams,
-  } = buildFilterConditionsAndJoins(entityId, filters, 1, entityScopes);
+    dropAll,
+  } = await buildFilterConditionsAndJoins(sql, entityId, filters, 1, entityScopes);
+  if (dropAll) {
+    return [];
+  }
   const whereClause = filterConditions.join(' AND ');
   const joinClause = additionalJoins.join(' ');
 
@@ -454,7 +491,11 @@ export async function getNormalizedScoreContentCount(
     filterConditions,
     additionalJoins,
     params: filterParams,
-  } = buildFilterConditionsAndJoins(entityId, filters, 1, entityScopes);
+    dropAll,
+  } = await buildFilterConditionsAndJoins(sql, entityId, filters, 1, entityScopes);
+  if (dropAll) {
+    return 0;
+  }
   const whereClause = filterConditions.join(' AND ');
   const joinClause = additionalJoins.join(' ');
 

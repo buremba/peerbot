@@ -44,7 +44,7 @@ import { gitHttpsOnlyClient as http } from './git-http.js';
 
 const DEFAULT_BRANCH = 'main';
 
-export interface ParsedGitUri {
+interface ParsedGitUri {
   url: string;
   ref: string;
 }

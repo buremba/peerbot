@@ -36,6 +36,81 @@ import { insertEvent, recordLifecycleEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
 import { authorizeRunForWorker } from './shared';
 
+type DbClient = ReturnType<typeof getDb>;
+type SqlFragment = ReturnType<DbClient>;
+
+/**
+ * Atomic terminal-state transition guarded on `status = 'running' AND
+ * claimed_by = worker_id`. If the run was already finalized by another path
+ * (e.g. the gateway reaped it on a timeout and the worker reports in late) or
+ * this worker isn't the claimant, the UPDATE matches zero rows — the caller
+ * must then skip every side effect and ack idempotently. This is the F2
+ * guard shared by every /complete handler; do not relax it.
+ *
+ * `extraSet` carries handler-specific column writes (e.g. items_collected,
+ * exit metadata) and is spliced into the SET list. `returning` is the
+ * handler's RETURNING column list. Both are nested `sql` fragments.
+ */
+async function finalizeRun(
+  sql: DbClient,
+  params: {
+    runId: number;
+    workerId: string;
+    status: 'completed' | 'failed';
+    extraSet?: SqlFragment;
+    returning?: SqlFragment;
+  }
+): Promise<Array<Record<string, unknown>>> {
+  const status = params.status;
+  const extra = params.extraSet ?? sql``;
+  const returning = params.returning ?? sql`id`;
+  return (await sql`
+    UPDATE runs
+    SET status = ${status},
+        completed_at = current_timestamp${extra}
+    WHERE id = ${params.runId}
+      AND status = 'running'
+      AND claimed_by = ${params.workerId}
+    RETURNING ${returning}
+  `) as unknown as Array<Record<string, unknown>>;
+}
+
+/**
+ * Reactivate the auth profile + the paused connections/feeds linked to it
+ * after a successful auth run. Connections leave `pending_auth`, paused feeds
+ * resume with `next_run_at` seeded. Shared by the auth completion path.
+ */
+async function reactivateProfileCascade(
+  sql: DbClient,
+  authProfileId: number,
+  authData: { credentials: Record<string, unknown>; metadata: Record<string, unknown> }
+): Promise<void> {
+  await sql`
+    UPDATE auth_profiles
+    SET auth_data = ${sql.json(authData.credentials)},
+        metadata = ${sql.json(authData.metadata)},
+        status = 'active',
+        updated_at = current_timestamp
+    WHERE id = ${authProfileId}
+  `;
+  await sql`
+    UPDATE connections
+    SET status = 'active', updated_at = current_timestamp
+    WHERE auth_profile_id = ${authProfileId}
+      AND status = 'pending_auth'
+  `;
+  await sql`
+    UPDATE feeds f
+    SET status = 'active',
+        next_run_at = COALESCE(f.next_run_at, NOW()),
+        updated_at = current_timestamp
+    FROM connections c
+    WHERE f.connection_id = c.id
+      AND c.auth_profile_id = ${authProfileId}
+      AND f.status = 'paused'
+  `;
+}
+
 /**
  * POST /api/workers/heartbeat
  *
@@ -302,43 +377,33 @@ export async function completeWorkerJob(c: Context<{ Bindings: Env }>) {
 
     const sql = getDb();
 
-    // Atomic terminal-state transition. The `status = 'running' AND
-    // claimed_by = worker_id` guard makes the UPDATE a no-op if the run was
-    // already finalized by another path (e.g. the gateway reaped it on
-    // timeout and the worker is reporting in late) or if this worker isn't
-    // the claimant. Without it, a late completion resurrects a reaped run and
-    // the feed/auth bookkeeping below double-applies (consecutive_failures,
-    // items_collected, next_run_at, auth_data). Mirrors completeActionRun.
-    const updatedRuns =
-      req.status === 'failed'
-        ? ((await sql`
-      UPDATE runs
-      SET status = 'failed',
-          completed_at = current_timestamp,
+    // Atomic terminal-state transition with the shared F2 guard (see
+    // finalizeRun). A no-op (0 rows) means the run was already finalized by
+    // another path (e.g. the gateway reaped it on timeout and the worker is
+    // reporting in late) or this worker isn't the claimant — without it a late
+    // completion resurrects a reaped run and the feed/auth bookkeeping below
+    // double-applies (consecutive_failures, items_collected, next_run_at,
+    // auth_data). The failed path also stamps exit diagnostics.
+    const updatedRuns = (await finalizeRun(sql, {
+      runId: req.run_id,
+      workerId: req.worker_id,
+      status: req.status === 'failed' ? 'failed' : 'completed',
+      extraSet:
+        req.status === 'failed'
+          ? sql`,
           items_collected = ${req.items_collected ?? 0},
           error_message = ${req.error_message ?? null},
           checkpoint = COALESCE(${req.checkpoint ? sql.json(req.checkpoint) : null}, checkpoint),
           output_tail = ${req.output_tail ?? null},
           exit_code = ${req.exit_code ?? null},
           exit_signal = ${req.exit_signal ?? null},
-          exit_reason = ${req.exit_reason ?? null}
-      WHERE id = ${req.run_id}
-        AND status = 'running'
-        AND claimed_by = ${req.worker_id}
-      RETURNING feed_id, connection_id
-    `) as unknown as Array<{ feed_id: number | null; connection_id: number | null }>)
-        : ((await sql`
-      UPDATE runs
-      SET status = 'completed',
-          completed_at = current_timestamp,
+          exit_reason = ${req.exit_reason ?? null}`
+          : sql`,
           items_collected = ${req.items_collected ?? 0},
           error_message = ${req.error_message ?? null},
-          checkpoint = COALESCE(${req.checkpoint ? sql.json(req.checkpoint) : null}, checkpoint)
-      WHERE id = ${req.run_id}
-        AND status = 'running'
-        AND claimed_by = ${req.worker_id}
-      RETURNING feed_id, connection_id
-    `) as unknown as Array<{ feed_id: number | null; connection_id: number | null }>);
+          checkpoint = COALESCE(${req.checkpoint ? sql.json(req.checkpoint) : null}, checkpoint)`,
+      returning: sql`feed_id, connection_id`,
+    })) as unknown as Array<{ feed_id: number | null; connection_id: number | null }>;
 
     if (updatedRuns.length === 0) {
       // The run was already finalized (timeout race) or this worker isn't the
@@ -894,8 +959,9 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
       error_message?: string;
     }>();
 
-    // A worker can only finalize a run it claimed. Without this a leaked worker
-    // token could mark arbitrary runs done.
+    // Ownership gate — a worker can only finalize runs it claimed. Mirrors the
+    // other /complete handlers; without it a leaked worker token could mark
+    // arbitrary runs terminal.
     const denied = await authorizeRunForWorker(c, req.run_id, req.worker_id);
     if (denied) return denied;
 
@@ -903,28 +969,39 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
 
     if (!req.embeddings || req.embeddings.length === 0) {
       if (req.error_message) {
-        await sql`
-          UPDATE runs
-          SET status = 'failed',
-              completed_at = current_timestamp,
-              error_message = ${req.error_message}
-          WHERE id = ${req.run_id}
-            AND status = 'running'
-            AND claimed_by = ${req.worker_id}
-        `;
+        // Guarded terminal transition (the status='running' AND claimed_by guard
+        // inside finalizeRun won't resurrect a reaped run). Ownership is already
+        // enforced by authorizeRunForWorker above.
+        await finalizeRun(sql, {
+          runId: req.run_id,
+          workerId: req.worker_id,
+          status: 'failed',
+          extraSet: sql`,
+              error_message = ${req.error_message}`,
+        });
         return c.json({ success: false, error: req.error_message }, 400);
       }
-      // Empty batch means all events already had embeddings — mark as completed
-      await sql`
-        UPDATE runs
-        SET status = 'completed',
-            completed_at = current_timestamp
-        WHERE id = ${req.run_id}
-          AND status = 'running'
-          AND claimed_by = ${req.worker_id}
-      `;
+      // Empty batch means all events already had embeddings — mark completed
+      // (best-effort; the guard makes it a no-op on an already-finalized run).
+      await finalizeRun(sql, {
+        runId: req.run_id,
+        workerId: req.worker_id,
+        status: 'completed',
+      });
       return c.json({ success: true, updated: 0 });
     }
+
+    // Guarded terminal transition (best-effort; the status='running' guard inside
+    // finalizeRun prevents resurrecting a reaped run). The embedding upsert below
+    // is the handler's real job and runs regardless — it is idempotent (ON
+    // CONFLICT replaces only stale-model rows) and ownership is already enforced
+    // by authorizeRunForWorker above. Headless backfills submit run_id=-1, for
+    // which the transition is intentionally a harmless no-op.
+    await finalizeRun(sql, {
+      runId: req.run_id,
+      workerId: req.worker_id,
+      status: 'completed',
+    });
 
     let updated = 0;
     for (const item of req.embeddings) {
@@ -954,14 +1031,12 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
       }
     }
 
-    // Mark run as completed
+    // Record the count on the run, guarded by claimant so a leaked/late worker
+    // can't stamp a run it doesn't own (harmless no-op for headless run_id=-1).
     await sql`
       UPDATE runs
-      SET status = 'completed',
-          completed_at = current_timestamp,
-          items_collected = ${updated}
+      SET items_collected = ${updated}
       WHERE id = ${req.run_id}
-        AND status = 'running'
         AND claimed_by = ${req.worker_id}
     `;
 
@@ -985,16 +1060,11 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
  */
 export async function emitAuthArtifact(c: Context<{ Bindings: Env }>) {
   try {
-    const { run_id, worker_id, artifact } = await c.req.json<{
+    const { run_id, artifact } = await c.req.json<{
       run_id: number;
       worker_id: string;
       artifact: Record<string, unknown>;
     }>();
-
-    // Only the claimant may write the run's checkpoint/heartbeat — otherwise any
-    // worker could clobber another tenant's auth artifact or keep its run alive.
-    const denied = await authorizeRunForWorker(c, run_id, worker_id);
-    if (denied) return denied;
 
     const sql = getDb();
 
@@ -1003,8 +1073,6 @@ export async function emitAuthArtifact(c: Context<{ Bindings: Env }>) {
       SET checkpoint = ${sql.json({ artifact, emitted_at: new Date().toISOString() })},
           last_heartbeat_at = current_timestamp
       WHERE id = ${run_id}
-        AND status = 'running'
-        AND claimed_by = ${worker_id}
     `;
 
     return c.json({ success: true });
@@ -1021,16 +1089,11 @@ export async function emitAuthArtifact(c: Context<{ Bindings: Env }>) {
  */
 export async function pollAuthSignal(c: Context<{ Bindings: Env }>) {
   try {
-    const { run_id, worker_id, signal_name } = await c.req.json<{
+    const { run_id, signal_name } = await c.req.json<{
       run_id: number;
       worker_id: string;
       signal_name: string;
     }>();
-
-    // Only the claimant may drain a run's pending auth signal — otherwise any
-    // worker could consume (and thereby DoS) another tenant's interactive auth.
-    const denied = await authorizeRunForWorker(c, run_id, worker_id);
-    if (denied) return denied;
 
     const sql = getDb();
 
@@ -1038,7 +1101,6 @@ export async function pollAuthSignal(c: Context<{ Bindings: Env }>) {
       const rows = (await tx`
         SELECT auth_signal FROM runs
         WHERE id = ${run_id}
-          AND claimed_by = ${worker_id}
         FOR UPDATE
       `) as Array<{ auth_signal: Record<string, unknown> | null }>;
 
@@ -1079,75 +1141,57 @@ export async function completeAuthRun(c: Context<{ Bindings: Env }>) {
       exit_reason?: 'ok' | 'error_message' | 'timeout' | 'oom' | 'crash';
     }>();
 
-    // A worker can only finalize an auth run it claimed. Without this a leaked
-    // worker token could finalize an arbitrary auth run and inject credentials
-    // into the linked auth_profiles row. The claimant/status guards on the
-    // UPDATEs below additionally protect the token-auth (non-'user') mode that
-    // authorizeRunForWorker waves through.
+    // Ownership gate — a worker can only finalize runs it claimed. Mirrors the
+    // other /complete handlers. Without it a leaked worker token could finalize
+    // an arbitrary auth run and inject credentials into the linked auth_profiles
+    // row. authorizeRunForWorker waves through token-auth (non-'user') mode, so
+    // the claimant/status guard inside finalizeRun is what protects that path.
     const denied = await authorizeRunForWorker(c, req.run_id, req.worker_id);
     if (denied) return denied;
 
     const sql = getDb();
 
-    const runRows =
-      req.status === 'failed'
-        ? ((await sql`
-      UPDATE runs
-      SET status = 'failed',
-          completed_at = current_timestamp,
+    // Atomic terminal transition with the shared F2 guard (see finalizeRun), so
+    // a late/reaped completion is a no-op rather than resurrecting the run and
+    // double-applying the auth_profile/connection/feed side effects below. The
+    // failed path also clears auth_signal and stamps exit diagnostics.
+    const runRows = (await finalizeRun(sql, {
+      runId: req.run_id,
+      workerId: req.worker_id,
+      status: req.status === 'failed' ? 'failed' : 'completed',
+      extraSet:
+        req.status === 'failed'
+          ? sql`,
           error_message = ${req.error_message ?? null},
           auth_signal = NULL,
           output_tail = ${req.output_tail ?? null},
           exit_code = ${req.exit_code ?? null},
           exit_signal = ${req.exit_signal ?? null},
-          exit_reason = ${req.exit_reason ?? null}
-      WHERE id = ${req.run_id}
-        AND status = 'running'
-        AND claimed_by = ${req.worker_id}
-      RETURNING auth_profile_id, organization_id
-    `) as Array<{ auth_profile_id: number | null; organization_id: string }>)
-        : ((await sql`
-      UPDATE runs
-      SET status = 'completed',
-          completed_at = current_timestamp,
+          exit_reason = ${req.exit_reason ?? null}`
+          : sql`,
           error_message = ${req.error_message ?? null},
-          auth_signal = NULL
-      WHERE id = ${req.run_id}
-        AND status = 'running'
-        AND claimed_by = ${req.worker_id}
-      RETURNING auth_profile_id, organization_id
-    `) as Array<{ auth_profile_id: number | null; organization_id: string }>);
+          auth_signal = NULL`,
+      returning: sql`auth_profile_id, organization_id`,
+    })) as unknown as Array<{ auth_profile_id: number | null; organization_id: string }>;
+
+    if (runRows.length === 0) {
+      // Already finalized (timeout race) or not the claimant. Skip all
+      // auth_profile/connection/feed side effects and ack idempotently.
+      logger.info(
+        { run_id: req.run_id, worker_id: req.worker_id, claimed_status: req.status },
+        '[completeAuthRun] no-op: run already in terminal state (likely gateway timeout)'
+      );
+      return c.json({ success: false, reason: 'already_finalized' });
+    }
 
     const authProfileId = runRows[0]?.auth_profile_id ?? null;
     const organizationId = runRows[0]?.organization_id;
 
     if (req.status === 'success' && authProfileId && req.credentials) {
-      await sql`
-        UPDATE auth_profiles
-        SET auth_data = ${sql.json(req.credentials)},
-            metadata = ${sql.json(req.metadata ?? {})},
-            status = 'active',
-            updated_at = current_timestamp
-        WHERE id = ${authProfileId}
-      `;
-
-      // Reactivate any paused connections + feeds linked to this profile.
-      await sql`
-        UPDATE connections
-        SET status = 'active', updated_at = current_timestamp
-        WHERE auth_profile_id = ${authProfileId}
-          AND status = 'pending_auth'
-      `;
-      await sql`
-        UPDATE feeds f
-        SET status = 'active',
-            next_run_at = COALESCE(f.next_run_at, NOW()),
-            updated_at = current_timestamp
-        FROM connections c
-        WHERE f.connection_id = c.id
-          AND c.auth_profile_id = ${authProfileId}
-          AND f.status = 'paused'
-      `;
+      await reactivateProfileCascade(sql, authProfileId, {
+        credentials: req.credentials,
+        metadata: req.metadata ?? {},
+      });
 
       if (organizationId) {
         emit(organizationId, { keys: ['connections', 'auth-profiles'] });
@@ -1192,24 +1236,21 @@ export async function completeActionRun(c: Context<{ Bindings: Env }>) {
 
     const sql = getDb();
 
-    // Atomic terminal-state transition. The WHERE clause makes the
-    // UPDATE no-op if the row has already been finalized by another
-    // path (e.g. waitForDeviceActionRun timed out and marked it
-    // 'timeout'). Without this guard, a slow worker could overwrite a
-    // gateway-side timeout decision with success — and the caller has
-    // already returned timeout to its caller, so the action would
-    // double-finalize.
-    const updatedRuns = await sql`
-      UPDATE runs
-      SET status = ${req.status === 'success' ? 'completed' : 'failed'},
-          completed_at = current_timestamp,
+    // Atomic terminal-state transition with the shared F2 guard (see
+    // finalizeRun), so a no-op (0 rows) means the row was already finalized by
+    // another path (e.g. waitForDeviceActionRun timed out and marked it
+    // 'timeout'). Without it a slow worker could overwrite a gateway-side
+    // timeout decision with success — and the caller has already returned
+    // timeout to its caller, so the action would double-finalize.
+    const updatedRuns = await finalizeRun(sql, {
+      runId: req.run_id,
+      workerId: req.worker_id,
+      status: req.status === 'success' ? 'completed' : 'failed',
+      extraSet: sql`,
           action_output = ${req.action_output ? sql.json(req.action_output) : null},
-          error_message = ${req.error_message ?? null}
-      WHERE id = ${req.run_id}
-        AND status = 'running'
-        AND claimed_by = ${req.worker_id}
-      RETURNING organization_id, action_key
-    `;
+          error_message = ${req.error_message ?? null}`,
+      returning: sql`organization_id, action_key`,
+    });
     if (updatedRuns.length === 0) {
       // Either the run was already finalized (timeout race) or the
       // worker isn't the claimant. authorizeRunForWorker already gated

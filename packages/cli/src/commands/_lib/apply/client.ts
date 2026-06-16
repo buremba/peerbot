@@ -1,5 +1,10 @@
 import type { EntityMetrics } from "@lobu/connector-sdk";
 import type { AgentSettings } from "@lobu/core";
+import {
+  extractApiError,
+  fetchWithRetry,
+  parseJsonResponse,
+} from "../../../internal/http.js";
 import { resolveApiClient } from "../../../internal/index.js";
 import { ApiError } from "../../memory/_lib/errors.js";
 import type {
@@ -57,7 +62,7 @@ export interface RemoteRelationshipType {
   organization_id?: string;
 }
 
-export interface RemoteOrg {
+interface RemoteOrg {
   id: string;
   slug: string;
   name?: string;
@@ -91,7 +96,7 @@ export interface RemoteWatcher {
   // NB: reaction_script is NOT in list_watchers — push always (idempotent).
 }
 
-export interface UpsertPlatformResult {
+interface UpsertPlatformResult {
   /** Server reports `noop: true` when the desired config matches what's stored. */
   noop?: boolean;
   /** When the config materially changed, the live worker is restarted. */
@@ -101,7 +106,7 @@ export interface UpsertPlatformResult {
   platform?: RemotePlatform;
 }
 
-export interface UpsertEntityTypeResult {
+interface UpsertEntityTypeResult {
   created?: boolean;
   updated?: boolean;
   noop?: boolean;
@@ -154,7 +159,7 @@ export interface RemoteFeed {
   config?: Record<string, unknown> | null;
 }
 
-export interface InstallConnectorResult {
+interface InstallConnectorResult {
   connectorKey: string;
   updated: boolean;
   version?: string;
@@ -166,7 +171,7 @@ export interface InstallConnectorResult {
  * operator must open to complete auth; `status` is the state the server
  * reports (`pending_auth` until auth completes).
  */
-export interface EnsureAuthProfileResult {
+interface EnsureAuthProfileResult {
   created: boolean;
   updated: boolean;
   status?: string;
@@ -245,43 +250,20 @@ function hoistEntityTypeSchema(
   return out;
 }
 
-function extractApiError(
-  parsed: Record<string, unknown>,
-  status: number,
-  statusText: string
-): { message: string; code?: string } {
-  if (typeof parsed.error === "string") {
-    return { message: parsed.error };
-  }
-  if (isRecord(parsed.error)) {
-    const message =
-      typeof parsed.error.message === "string"
-        ? parsed.error.message
-        : `HTTP ${status} ${statusText}`;
-    const code =
-      typeof parsed.error.code === "string" ? parsed.error.code : undefined;
-    return code ? { message, code } : { message };
-  }
-  return { message: `HTTP ${status} ${statusText}` };
-}
-
 async function parseResponseBody(
   res: Response,
   url: string
 ): Promise<Record<string, unknown>> {
-  const raw = await res.text();
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return isRecord(parsed) ? parsed : { value: parsed };
-  } catch {
-    throw new ApiError(`Invalid JSON from ${url}: ${raw.slice(0, 500)}`);
-  }
+  const parsed = await parseJsonResponse(res, url, (message) => {
+    throw new ApiError(message);
+  });
+  if (parsed === undefined) return {};
+  return isRecord(parsed) ? parsed : { value: parsed };
 }
 
 // ── Client ─────────────────────────────────────────────────────────────────
 
-export interface ApplyClientConfig {
+interface ApplyClientConfig {
   apiBaseUrl: string;
   orgSlug: string;
   token: string;
@@ -324,7 +306,7 @@ export class ApplyClient {
       },
     };
     if (body !== undefined) init.body = JSON.stringify(body);
-    const res = await this.fetchImpl(url, init);
+    const res = await fetchWithRetry(url, init, { fetchImpl: this.fetchImpl });
     const parsed = await parseResponseBody(res, url);
 
     if (!okStatuses.includes(res.status) && !res.ok) {
@@ -1326,7 +1308,7 @@ export function isDuplicateError(err: ApiError): boolean {
 
 // ── Top-level resolver ─────────────────────────────────────────────────────
 
-export interface ResolvedClient {
+interface ResolvedClient {
   client: ApplyClient;
   apiBaseUrl: string;
   orgSlug: string;

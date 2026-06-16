@@ -14,7 +14,7 @@ import {
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
-import { validatePublicUrl } from './browser-scraper-utils.ts';
+import { sleep, validatePublicUrl } from './browser-scraper-utils.ts';
 
 // ---------------------------------------------------------------------------
 // Algolia HN API types
@@ -306,7 +306,7 @@ export default class HackerNewsConnector extends ConnectorRuntime {
       if (response.status === 429) {
         const retryAfter = response.headers.get('Retry-After');
         const waitMs = retryAfter ? Math.min(60_000, Math.max(1, Number(retryAfter)) * 1000) : 5000;
-        await this.sleep(Number.isFinite(waitMs) ? waitMs : 5000);
+        await sleep(Number.isFinite(waitMs) ? waitMs : 5000);
         continue;
       }
 
@@ -343,7 +343,7 @@ export default class HackerNewsConnector extends ConnectorRuntime {
       page++;
 
       if (hasMore) {
-        await this.sleep(this.PAGE_DELAY_MS);
+        await sleep(this.PAGE_DELAY_MS);
       }
     }
 
@@ -455,7 +455,7 @@ export default class HackerNewsConnector extends ConnectorRuntime {
           };
         }
 
-        await this.sleep(this.FETCH_DELAY_MS);
+        await sleep(this.FETCH_DELAY_MS);
       }
     }
   }
@@ -526,13 +526,5 @@ export default class HackerNewsConnector extends ConnectorRuntime {
     } catch {
       return null;
     }
-  }
-
-  // -------------------------------------------------------------------------
-  // Utilities
-  // -------------------------------------------------------------------------
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

@@ -335,7 +335,7 @@ describe("MessageHandlerBridge.handleMessage — thread backfill", () => {
       direction: "forward",
     });
 
-    const entries = await conversationState.getEntries(CONN_ID, CHANNEL_ID);
+    const entries = await conversationState.getEntries(CONN_ID, CHANNEL_ID, THREAD_ID);
     // 2 backfilled (current message id is skipped) + the current mention
     // message (mention text stripped of `<@U_BOT>`).
     expect(entries.map((e) => e.content)).toEqual([
@@ -372,7 +372,7 @@ describe("MessageHandlerBridge.handleMessage — thread backfill", () => {
 
     await bridge.handleMessage(thread, makeMessage(), "mention");
 
-    const entries = await conversationState.getEntries(CONN_ID, CHANNEL_ID);
+    const entries = await conversationState.getEntries(CONN_ID, CHANNEL_ID, THREAD_ID);
     expect(entries[0]?.role).toBe("user");
     expect(entries[1]?.role).toBe("assistant");
   });
@@ -412,7 +412,7 @@ describe("MessageHandlerBridge.handleMessage — thread backfill", () => {
     await bridge.handleMessage(thread, makeMessage(), "subscribed");
 
     expect(fetchMessages).toHaveBeenCalledTimes(1);
-    const entries = await conversationState.getEntries(CONN_ID, CHANNEL_ID);
+    const entries = await conversationState.getEntries(CONN_ID, CHANNEL_ID, THREAD_ID);
     expect(entries.map((e) => e.content)).toContain("earlier note");
   });
 
@@ -431,7 +431,7 @@ describe("MessageHandlerBridge.handleMessage — thread backfill", () => {
     // First mention — fetch throws, marker is released.
     await bridge.handleMessage(thread, makeMessage({ id: "M_A" }), "mention");
     expect(fetchMessages).toHaveBeenCalledTimes(1);
-    let entries = await conversationState.getEntries(CONN_ID, CHANNEL_ID);
+    let entries = await conversationState.getEntries(CONN_ID, CHANNEL_ID, THREAD_ID);
     // Only the current message survives — no backfill from the throw.
     expect(entries.map((e) => e.content)).toEqual([
       "what was the prior context?",
@@ -440,7 +440,7 @@ describe("MessageHandlerBridge.handleMessage — thread backfill", () => {
     // Second mention — claim is free, fetch retries and succeeds.
     await bridge.handleMessage(thread, makeMessage({ id: "M_B" }), "mention");
     expect(fetchMessages).toHaveBeenCalledTimes(2);
-    entries = await conversationState.getEntries(CONN_ID, CHANNEL_ID);
+    entries = await conversationState.getEntries(CONN_ID, CHANNEL_ID, THREAD_ID);
     expect(entries.map((e) => e.content)).toContain("recovered");
   });
 
@@ -457,7 +457,7 @@ describe("MessageHandlerBridge.handleMessage — thread backfill", () => {
     await bridge.handleMessage(thread, makeMessage({ id: "M_B" }), "mention");
 
     // Only the two current mentions land in history.
-    const entries = await conversationState.getEntries(CONN_ID, CHANNEL_ID);
+    const entries = await conversationState.getEntries(CONN_ID, CHANNEL_ID, THREAD_ID);
     expect(entries).toHaveLength(2);
   });
 });

@@ -15,9 +15,16 @@ import {
 } from "@lobu/core";
 import { z } from "zod";
 import type { WorkerConfig, WorkerExecutor } from "../core/types";
+import { createGatewayClient } from "../shared/gateway-client";
 import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
+import { OpenClawWorker } from "../openclaw/worker";
+import { invalidateSessionContextCache } from "../openclaw/session-context";
 import { HttpWorkerTransport } from "./gateway-integration";
 import { MessageBatcher } from "./message-batcher";
+import {
+  type ConfigChangeEntry,
+  pushPendingConfigNotifications,
+} from "./pending-config-notifications";
 
 const logger = createLogger("sse-client");
 
@@ -25,26 +32,6 @@ type AbortControllerLike = {
   abort(): void;
   readonly signal: AbortSignal;
 };
-
-// --- Pending config change notifications ---
-
-interface ConfigChangeEntry {
-  category: string;
-  action: string;
-  summary: string;
-  details?: string[];
-}
-
-const pendingConfigNotifications: ConfigChangeEntry[] = [];
-
-/**
- * Returns and clears all pending config change notifications.
- * Called by the worker before building the next prompt.
- */
-export function consumePendingConfigNotifications(): ConfigChangeEntry[] {
-  if (pendingConfigNotifications.length === 0) return [];
-  return pendingConfigNotifications.splice(0);
-}
 
 // Zod schemas for runtime validation of SSE event data
 const ConnectedEventSchema = z.object({
@@ -297,41 +284,28 @@ export class GatewayClient {
   }
 
   /**
-   * Send a quick delivery receipt to the gateway confirming job was received.
-   * Fire-and-forget — don't block job processing on the receipt send.
+   * Fire-and-forget POST to `/worker/response` confirming inbound worker
+   * activity. Backs both the per-job delivery receipt (so the gateway knows
+   * the job wasn't lost to a stale SSE connection) and the heartbeat ACK (so
+   * stale cleanup keys off verified inbound activity, not outbound SSE
+   * writes). Never blocks job processing on the send.
    */
-  private sendDeliveryReceipt(jobId: string): void {
-    const url = `${this.dispatcherUrl}/worker/response`;
-    fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.workerToken}`,
-      },
-      body: JSON.stringify({ jobId, received: true }),
-      signal: AbortSignal.timeout(10_000),
-    }).catch((err) => {
-      logger.warn(`Failed to send delivery receipt for job ${jobId}:`, err);
-    });
-  }
-
-  /**
-   * Send a heartbeat ACK back to the gateway so stale cleanup is based on
-   * verified inbound worker activity rather than outbound SSE writes.
-   */
-  private sendHeartbeatAck(): void {
-    const url = `${this.dispatcherUrl}/worker/response`;
-    fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.workerToken}`,
-      },
-      body: JSON.stringify({ received: true, heartbeat: true }),
-      signal: AbortSignal.timeout(10_000),
-    }).catch((err) => {
-      logger.warn("Failed to send heartbeat ACK:", err);
-    });
+  private postReceipt(
+    body: Record<string, unknown>,
+    failureContext: string
+  ): void {
+    createGatewayClient({
+      baseUrl: this.dispatcherUrl,
+      token: this.workerToken,
+    })
+      .request("/worker/response", {
+        method: "POST",
+        body: JSON.stringify(body),
+        timeoutMs: 10_000,
+      })
+      .catch((err) => {
+        logger.warn(`Failed to send ${failureContext}:`, err);
+      });
   }
 
   private reconnectsExhausted = false;
@@ -401,16 +375,13 @@ export class GatewayClient {
 
       if (eventType === "ping") {
         logger.debug("Received heartbeat ping from dispatcher");
-        this.sendHeartbeatAck();
+        this.postReceipt({ received: true, heartbeat: true }, "heartbeat ACK");
         return;
       }
 
       if (eventType === "config_changed") {
         logger.info(
           "Received config_changed event from gateway, invalidating session context cache"
-        );
-        const { invalidateSessionContextCache } = await import(
-          "../openclaw/session-context"
         );
         invalidateSessionContextCache();
 
@@ -421,7 +392,7 @@ export class GatewayClient {
             ? (parsed.changes as ConfigChangeEntry[])
             : [];
           if (changes.length > 0) {
-            pendingConfigNotifications.push(...changes);
+            pushPendingConfigNotifications(changes);
             logger.info(
               `Queued ${changes.length} config change notification(s)`
             );
@@ -454,7 +425,10 @@ export class GatewayClient {
           // not inside the validated payload.
           const jobId = parsedData.jobId as string | undefined;
           if (jobId) {
-            this.sendDeliveryReceipt(jobId);
+            this.postReceipt(
+              { jobId, received: true },
+              `delivery receipt for job ${jobId}`
+            );
           }
 
           // Zod validates structure but passthrough allows extra fields
@@ -742,11 +716,28 @@ export class GatewayClient {
       .map((msg, index) => `Message ${index + 1}: ${msg.payload.messageText}`)
       .join("\n\n");
 
+    // Merge attachment files across ALL batched messages so images/files on
+    // the 2nd..Nth messages aren't dropped. The first message's
+    // platformMetadata is the base (it carries routing context); we only
+    // override `files` with the concatenated set, preserving message order.
+    const mergedFiles = messages.flatMap((msg) => {
+      const files = msg.payload.platformMetadata?.files;
+      return Array.isArray(files) ? files : [];
+    });
+
+    const combinedPlatformMetadata: Record<string, unknown> = {
+      ...firstMessage.payload.platformMetadata,
+    };
+    if (mergedFiles.length > 0) {
+      combinedPlatformMetadata.files = mergedFiles;
+    }
+
     const batchedMessage: QueuedMessage = {
       timestamp: firstMessage.timestamp,
       payload: {
         ...firstMessage.payload,
         messageText: combinedPrompt,
+        platformMetadata: combinedPlatformMetadata,
         agentOptions: firstMessage.payload.agentOptions,
       },
     };
@@ -803,7 +794,6 @@ export class GatewayClient {
       );
 
       // Worker will decide whether to continue session based on workspace state
-      const { OpenClawWorker } = await import("../openclaw/worker");
       this.currentWorker = new OpenClawWorker(workerConfig);
 
       const workerTransport = this.currentWorker.getWorkerTransport();

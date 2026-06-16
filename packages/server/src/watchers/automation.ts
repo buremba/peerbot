@@ -585,7 +585,7 @@ export async function materializeDueWatcherRuns(
   };
 }
 
-export interface WatcherAutomationTickResult {
+interface WatcherAutomationTickResult {
   reset: number | null;
   reconciled: number | null;
   dueWatchers: number | null;

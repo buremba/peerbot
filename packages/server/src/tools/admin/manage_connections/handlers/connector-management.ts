@@ -10,7 +10,7 @@ import type { Env } from '../../../../index';
 import { getDb } from '../../../../db/client';
 import { getOperationsSummaryBatch } from '../../../../operations/catalog';
 import { normalizeAuthValues } from '../../../../utils/auth-profiles';
-import { applyEntityLinkOverrides } from '../../../../utils/entity-link-overrides';
+import { applyEntityLinkOverrides } from '../../../../utils/entity-link-validation';
 import logger from '../../../../utils/logger';
 import {
   installConnectorDefinitionFromSource,

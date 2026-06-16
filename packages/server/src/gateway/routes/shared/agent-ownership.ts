@@ -7,7 +7,7 @@ interface AgentOwnershipConfig {
   agentMetadataStore?: Pick<AgentConfigStore, "getMetadata">;
 }
 
-export interface AgentOwnershipResult {
+interface AgentOwnershipResult {
   authorized: boolean;
   ownerPlatform?: string;
   ownerUserId?: string;

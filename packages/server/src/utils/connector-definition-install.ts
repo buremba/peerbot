@@ -14,6 +14,7 @@ import {
   type ConnectorMetadata,
   compileConnectorSource,
   extractConnectorMetadata,
+  validateConnectorMetadata,
 } from './connector-compiler';
 
 type SqlClient = ReturnType<typeof getDb>;
@@ -146,9 +147,7 @@ export async function resolveConnectorInstallSource(params: {
   }
 
   const metadata = await extractConnectorMetadata(compiledCode);
-  if (!metadata.key || !metadata.name || !metadata.version) {
-    throw new Error('Connector must have key, name, and version.');
-  }
+  validateConnectorMetadata(metadata);
 
   return {
     metadata,

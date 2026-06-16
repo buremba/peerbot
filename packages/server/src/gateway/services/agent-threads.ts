@@ -27,7 +27,7 @@ const logger = createLogger("agent-threads");
  * a session, but with no notion of provider/model/network/MCP overrides:
  * internal callers always inherit the agent's stored settings.
  */
-export interface CreateThreadForAgentArgs {
+interface CreateThreadForAgentArgs {
   /** Target agent id. The session and resulting thread will be scoped to this agent. */
   agentId: string;
   /** Owning organization id (informational; persisted onto the session). */
@@ -46,7 +46,7 @@ export interface CreateThreadForAgentArgs {
   userId?: string;
 }
 
-export interface CreateThreadForAgentResult {
+interface CreateThreadForAgentResult {
   /** Thread / session identifier (also referred to as `conversationId`). */
   threadId: string;
   /** Worker token usable by the caller's HTTP client (rarely needed internally). */
@@ -107,7 +107,7 @@ export async function createThreadForAgent(
   return { threadId: conversationId, token, expiresAt };
 }
 
-export interface EnqueueAgentMessageArgs {
+interface EnqueueAgentMessageArgs {
   /** Thread id (conversationId) returned by `createThreadForAgent`. */
   threadId: string;
   /** Plain-text user message body. */
@@ -118,7 +118,7 @@ export interface EnqueueAgentMessageArgs {
   source?: string;
 }
 
-export interface EnqueueAgentMessageResult {
+interface EnqueueAgentMessageResult {
   messageId: string;
   jobId: string;
 }

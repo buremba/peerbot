@@ -37,6 +37,7 @@ import {
   type PlatformResponseStrategy,
   type StreamState,
 } from "./platform-strategies/index.js";
+import { resolveChatTarget } from "./platforms/shared.js";
 
 const logger = createLogger("chat-response-bridge");
 
@@ -305,7 +306,7 @@ export class ChatResponseBridge implements ResponseRenderer {
     const ctx = this.extractResponseContext(payload);
     if (!ctx) return null;
 
-    const { strategy, instance, channelId } = ctx;
+    const { strategy, channelId } = ctx;
     const key = `${channelId}:${payload.conversationId}`;
 
     // A prior delta tripped — drop everything else for this stream. The
@@ -346,23 +347,12 @@ export class ChatResponseBridge implements ResponseRenderer {
         this.streams.delete(key);
       }
       const blockText = `Message blocked by guardrail: ${trip.reason ?? trip.guardrail}`;
-      try {
-        const target = await this.resolveTarget(
-          instance,
-          channelId,
-          payload.conversationId,
-          platformMetadataString(payload.platformMetadata, "responseThreadId"),
-          readPlatformMetadata(payload.platformMetadata)
-        );
-        if (target) {
-          await target.post(blockText);
-        }
-      } catch (err) {
-        logger.error(
-          { err: String(err) },
-          "Failed to post guardrail block message"
-        );
-      }
+      await this.postToPayloadTarget(
+        payload,
+        ctx,
+        blockText,
+        "Failed to post guardrail block message"
+      );
       return null;
     }
 
@@ -374,14 +364,7 @@ export class ChatResponseBridge implements ResponseRenderer {
       ctx,
       payload,
       existing: current,
-      resolveTarget: () =>
-        this.resolveTarget(
-          instance,
-          channelId,
-          payload.conversationId,
-          platformMetadataString(payload.platformMetadata, "responseThreadId"),
-          readPlatformMetadata(payload.platformMetadata)
-        ),
+      resolveTarget: () => this.resolveTargetForPayload(ctx, payload),
     });
 
     if (next) {
@@ -399,7 +382,7 @@ export class ChatResponseBridge implements ResponseRenderer {
     const ctx = this.extractResponseContext(payload);
     if (!ctx) return;
 
-    const { connectionId, strategy, channelId, instance } = ctx;
+    const { connectionId, strategy, channelId } = ctx;
     const key = `${channelId}:${payload.conversationId}`;
 
     // If a guardrail blocked this stream mid-flight, skip completion
@@ -461,24 +444,12 @@ export class ChatResponseBridge implements ResponseRenderer {
         if (trip) {
           blockedAtCompletion = true;
           const blockText = `Message blocked by guardrail: ${trip.reason ?? trip.guardrail}`;
-          try {
-            const target = await this.resolveTarget(
-              instance,
-              channelId,
-              payload.conversationId,
-              platformMetadataString(
-                payload.platformMetadata,
-                "responseThreadId"
-              ),
-              readPlatformMetadata(payload.platformMetadata)
-            );
-            if (target) await target.post(blockText);
-          } catch (err) {
-            logger.error(
-              { err: String(err) },
-              "Failed to post guardrail block message at completion"
-            );
-          }
+          await this.postToPayloadTarget(
+            payload,
+            ctx,
+            blockText,
+            "Failed to post guardrail block message at completion"
+          );
         }
       }
     }
@@ -502,11 +473,16 @@ export class ChatResponseBridge implements ResponseRenderer {
     const historyText = payload.finalText ?? stream?.buffer;
     if (!blockedAtCompletion && historyText?.trim() && conversationState) {
       try {
-        await conversationState.appendHistory(connectionId, channelId, {
-          role: "assistant",
-          content: historyText,
-          timestamp: Date.now(),
-        });
+        await conversationState.appendHistory(
+          connectionId,
+          channelId,
+          payload.conversationId,
+          {
+            role: "assistant",
+            content: historyText,
+            timestamp: Date.now(),
+          }
+        );
       } catch (error) {
         logger.warn(
           { connectionId, channelId, error: String(error) },
@@ -520,9 +496,13 @@ export class ChatResponseBridge implements ResponseRenderer {
     if (completionMd.sessionReset) {
       const agentId = completionMd.agentId;
       try {
-        await conversationState?.clearHistory(connectionId, channelId);
+        await conversationState?.clearHistory(
+          connectionId,
+          channelId,
+          payload.conversationId
+        );
         logger.info(
-          { connectionId, channelId },
+          { connectionId, channelId, conversationId: payload.conversationId },
           "Cleared chat history for session reset"
         );
       } catch (error) {
@@ -604,7 +584,7 @@ export class ChatResponseBridge implements ResponseRenderer {
     const ctx = this.extractResponseContext(payload);
     if (!ctx) return;
 
-    const { connectionId, instance, channelId } = ctx;
+    const { connectionId, channelId } = ctx;
     const key = `${channelId}:${payload.conversationId}`;
 
     // Clean up stream — close iterator so the adapter call resolves.
@@ -666,40 +646,21 @@ export class ChatResponseBridge implements ResponseRenderer {
     }
 
     // Fallback: plain text error via Chat SDK
-    try {
-      const target = await this.resolveTarget(
-        instance,
-        channelId,
-        payload.conversationId,
-        platformMetadataString(payload.platformMetadata, "responseThreadId"),
-        readPlatformMetadata(payload.platformMetadata)
-      );
-      if (target) {
-        await target.post(`Error: ${payload.error}`);
-      }
-    } catch (error) {
-      logger.error(
-        { connectionId, error: String(error) },
-        "Failed to send error message"
-      );
-    }
+    await this.postToPayloadTarget(
+      payload,
+      ctx,
+      `Error: ${payload.error}`,
+      "Failed to send error message"
+    );
   }
 
   async handleStatusUpdate(payload: ThreadResponsePayload): Promise<void> {
     const ctx = this.extractResponseContext(payload);
     if (!ctx) return;
 
-    const { instance, channelId } = ctx;
-
     // Show typing indicator
     try {
-      const target = await this.resolveTarget(
-        instance,
-        channelId,
-        payload.conversationId,
-        platformMetadataString(payload.platformMetadata, "responseThreadId"),
-        readPlatformMetadata(payload.platformMetadata)
-      );
+      const target = await this.resolveTargetForPayload(ctx, payload);
       if (target) {
         await target.startTyping?.("Processing...");
       }
@@ -714,16 +675,10 @@ export class ChatResponseBridge implements ResponseRenderer {
     const ctx = this.extractResponseContext(payload);
     if (!ctx) return;
 
-    const { connectionId, instance, channelId } = ctx;
+    const { connectionId } = ctx;
 
     try {
-      const target = await this.resolveTarget(
-        instance,
-        channelId,
-        payload.conversationId,
-        platformMetadataString(payload.platformMetadata, "responseThreadId"),
-        readPlatformMetadata(payload.platformMetadata)
-      );
+      const target = await this.resolveTargetForPayload(ctx, payload);
       if (target) {
         const { processedContent, linkButtons } = extractSettingsLinkButtons(
           payload.content
@@ -772,6 +727,43 @@ export class ChatResponseBridge implements ResponseRenderer {
 
   // --- Private ---
 
+  /**
+   * Resolve the Chat-SDK post target for a payload, marshalling the
+   * channel/conversation/responseThreadId/sender-hint arguments out of the
+   * payload + context the same way at every call site.
+   */
+  private resolveTargetForPayload(
+    ctx: ResponseContext,
+    payload: ThreadResponsePayload
+  ): Promise<any | null> {
+    return this.resolveTarget(
+      ctx.instance,
+      ctx.channelId,
+      payload.conversationId,
+      platformMetadataString(payload.platformMetadata, "responseThreadId"),
+      readPlatformMetadata(payload.platformMetadata)
+    );
+  }
+
+  /**
+   * Resolve the payload's target and post `content` to it, swallowing and
+   * logging any failure. Shared by the guardrail-block and error-fallback
+   * paths — a delivery failure here must never throw back into the consumer.
+   */
+  private async postToPayloadTarget(
+    payload: ThreadResponsePayload,
+    ctx: ResponseContext,
+    content: unknown,
+    logMessage: string
+  ): Promise<void> {
+    try {
+      const target = await this.resolveTargetForPayload(ctx, payload);
+      if (target) await target.post(content);
+    } catch (err) {
+      logger.error({ connectionId: ctx.connectionId, err: String(err) }, logMessage);
+    }
+  }
+
   private async resolveTarget(
     instance: any,
     channelId: string,
@@ -779,96 +771,21 @@ export class ChatResponseBridge implements ResponseRenderer {
     responseThreadId?: string,
     platformMetadata: PlatformMetadata = {}
   ): Promise<any | null> {
-    const platform = instance.connection.platform;
-    const chat = instance.chat;
-
-    // If we have a full thread ID (e.g. telegram:{chatId}:{topicId}), use
-    // createThread so the response lands in the correct forum topic.
-    if (responseThreadId) {
-      const adapter = chat.getAdapter?.(platform);
-      const createThread = (chat as any).createThread;
-      if (adapter && typeof createThread === "function") {
-        try {
-          // Build the initialMessage from the inbound sender so the Chat SDK
-          // can populate `_currentMessage.author` for `handleStream` (it reads
-          // `.author.userId` unconditionally — passing `{}` crashes there).
-          const currentMessage = buildCurrentMessageFromMetadata(
-            responseThreadId,
-            platformMetadata
-          );
-          const thread = await createThread.call(
-            chat,
-            adapter,
-            responseThreadId,
-            currentMessage,
-            false
-          );
-          if (thread) return thread;
-        } catch (error) {
-          logger.debug(
-            { platform, responseThreadId, error: String(error) },
-            "createThread from responseThreadId failed, falling back"
-          );
-        }
-      }
-    }
-
-    const channelKey = `${platform}:${channelId}`;
-
-    if (!conversationId || conversationId === channelId) {
-      const channel = chat.channel?.(channelKey);
-      if (channel) {
-        return channel;
-      }
-      logger.warn(
-        {
-          platform,
-          channelId,
-          channelKey,
-          conversationId,
-          hasChannelFn: !!chat.channel,
-        },
-        "chat.channel() returned null for DM"
-      );
-      return null;
-    }
-
-    // Threaded fallback: `conversationId` is the Chat SDK's canonical
-    // `thread.id` (e.g. `slack:{channel}:{parent_thread_ts}`) — pass it
-    // straight to `createThread`.
-    const adapter = chat.getAdapter?.(platform);
-    const createThread = (chat as any).createThread;
-    if (adapter && typeof createThread === "function") {
-      try {
-        const currentMessage = buildCurrentMessageFromMetadata(
-          conversationId,
-          platformMetadata
-        );
-        const thread = await createThread.call(
-          chat,
-          adapter,
-          conversationId,
-          currentMessage,
-          false
-        );
-        if (thread) return thread;
-      } catch (error) {
-        logger.warn(
-          { platform, conversationId, error: String(error) },
-          "createThread with conversationId failed"
-        );
-      }
-    }
-
-    // Last-resort channel-level fallback so the response still lands somewhere
-    // instead of silently disappearing.
-    const channel = chat.channel?.(channelKey);
-    if (!channel) {
-      logger.warn(
-        { platform, channelId, channelKey, conversationId },
-        "resolveTarget: unable to resolve thread or channel"
-      );
-    }
-    return channel ?? null;
+    // Build the initialMessage from the inbound sender so the Chat SDK can
+    // populate `_currentMessage.author` for `handleStream` (it reads
+    // `.author.userId` unconditionally — passing `{}` crashes there). The
+    // `threadId` field on the message is cosmetic (the SDK derives the thread
+    // id from the positional arg), so one message serves both createThread
+    // branches.
+    const currentMessage = buildCurrentMessageFromMetadata(
+      responseThreadId ?? conversationId ?? channelId,
+      platformMetadata
+    );
+    return resolveChatTarget(instance.chat, instance.connection.platform, {
+      channelId,
+      conversationId,
+      responseThreadId,
+      currentMessage,
+    });
   }
 }

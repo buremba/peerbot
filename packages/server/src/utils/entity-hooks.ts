@@ -6,7 +6,13 @@
  * to prevent circular calls).
  */
 
+import { createElement } from 'react';
+import { sendTransactionalEmail } from '../email/send';
+import { InvitationEmail, invitationSubject } from '../email/templates/invitation';
 import type { Env } from '../index';
+import { getDb } from '../db/client';
+import { resolveMemberSchemaFields } from './member-entity';
+import { getConfiguredPublicOrigin } from './public-origin';
 import type { CreatedEntity, EntityData } from './entity-management';
 import logger from './logger';
 
@@ -46,31 +52,9 @@ export function getEntityHooks(entityType: string): EntityLifecycleHooks | undef
 // $member hooks
 // ---------------------------------------------------------------------------
 
-import { getDb } from '../db/client';
-
-/**
- * Resolve the email field name from the $member entity type's metadata_schema.
- * Uses the `x-email` annotation; falls back to 'email'.
- */
-async function resolveMemberEmailField(organizationId: string): Promise<string> {
-  const sql = getDb();
-  const rows = await sql`
-    SELECT metadata_schema FROM entity_types
-    WHERE slug = '$member' AND deleted_at IS NULL AND organization_id = ${organizationId}
-    LIMIT 1
-  `;
-  if (rows.length === 0) return 'email';
-  const schema = rows[0].metadata_schema as
-    | { properties?: Record<string, { 'x-email'?: boolean }> }
-    | undefined;
-  const props = schema?.properties;
-  if (!props) return 'email';
-  return Object.entries(props).find(([, p]) => p['x-email'])?.[0] ?? 'email';
-}
-
 registerEntityHooks('$member', {
   async beforeCreate(data, ctx) {
-    const emailField = await resolveMemberEmailField(ctx.organizationId);
+    const { emailField } = await resolveMemberSchemaFields(ctx.organizationId);
     const meta = { ...(data.metadata ?? {}) };
     const email = meta[emailField] as string | undefined;
 
@@ -104,7 +88,7 @@ registerEntityHooks('$member', {
   },
 
   async afterCreate(entity, ctx) {
-    const emailField = await resolveMemberEmailField(ctx.organizationId);
+    const { emailField } = await resolveMemberSchemaFields(ctx.organizationId);
     const meta = entity.metadata as Record<string, unknown> | null;
     const email = meta?.[emailField] as string | undefined;
     if (!email || !ctx.env) return;
@@ -129,15 +113,9 @@ registerEntityHooks('$member', {
       `;
       if (invRows.length === 0) return;
 
-      const { getConfiguredPublicOrigin } = await import('./public-origin');
       const baseUrl = getConfiguredPublicOrigin() || 'http://localhost:8787';
       const acceptUrl = `${baseUrl}/auth/accept-invitation?invitationId=${invRows[0].id}`;
 
-      const { createElement } = await import('react');
-      const { sendTransactionalEmail } = await import('../email/send');
-      const { InvitationEmail, invitationSubject } = await import(
-        '../email/templates/invitation'
-      );
       await sendTransactionalEmail({
         env: ctx.env,
         to: email,
@@ -151,7 +129,7 @@ registerEntityHooks('$member', {
   },
 
   async beforeDelete(entity, ctx) {
-    const emailField = await resolveMemberEmailField(ctx.organizationId);
+    const { emailField } = await resolveMemberSchemaFields(ctx.organizationId);
     const email = entity.metadata?.[emailField] as string | undefined;
     if (!email) return;
 

@@ -195,7 +195,7 @@ function loadCallableServices(): CallableServices | null {
   };
 }
 
-export interface RepairTriggerDeps {
+interface RepairTriggerDeps {
   /** Override the gateway services (used in tests). */
   services?: CallableServices;
   /** Override the env-loaded config (used in tests). */

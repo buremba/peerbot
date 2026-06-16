@@ -12,7 +12,7 @@ import {
 } from '@react-email/components';
 import type { CSSProperties, ReactNode } from 'react';
 
-export interface BrandedEmailProps {
+interface BrandedEmailProps {
   preview: string;
   heading: string;
   intro: string;

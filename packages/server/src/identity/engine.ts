@@ -54,7 +54,7 @@ type Sql = ReturnType<typeof getDb>;
  * fresh BetterAuth account row. `sourceAccountId` is kept for provenance
  * only.
  */
-export interface AccountIdentity {
+interface AccountIdentity {
 	/** Identifier of the connector implementation (events.connector_key). */
 	connectorKey: string;
 	/** Provider's immutable account id. The durable join key. */

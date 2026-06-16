@@ -27,7 +27,7 @@ import { declaredConnectorKeys, referencedConnectorKeys } from "./shared.js";
 
 // ── Diff verbs ──────────────────────────────────────────────────────────────
 
-export type DiffVerb = "create" | "update" | "noop" | "drift" | "delete";
+type DiffVerb = "create" | "update" | "noop" | "drift" | "delete";
 
 interface BaseRow {
   verb: DiffVerb;
@@ -860,12 +860,12 @@ export interface RemoteSnapshot {
  * The subset of {@link DesiredState} the diff consumes — everything except the
  * apply-only knobs (prune flag, org metadata, requiredSecrets).
  */
-export type DesiredStateForDiff = Pick<
+type DesiredStateForDiff = Pick<
   DesiredState,
   "agents" | "memorySchema" | "watchers" | "connectors"
 >;
 
-export interface ComputeDiffOptions {
+interface ComputeDiffOptions {
   /** Limit the diff to a subset of resource kinds. */
   only?: "agents" | "memory";
   /**

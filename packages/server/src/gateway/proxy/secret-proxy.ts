@@ -19,7 +19,7 @@ import { getClientIp } from "../utils/rate-limiter.js";
  * collapses to dead code. The deployment manager wires a DB-backed
  * resolver with a small TTL cache at boot.
  */
-export type AgentOrgResolver = (agentId: string) => Promise<string | null>;
+type AgentOrgResolver = (agentId: string) => Promise<string | null>;
 
 const logger = createLogger("secret-proxy");
 

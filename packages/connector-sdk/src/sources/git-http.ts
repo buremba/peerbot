@@ -140,7 +140,7 @@ async function drain(stream: IncomingMessage): Promise<void> {
  * but if they did, the resulting GET would surface as a server-side error
  * rather than silently completing.
  */
-export async function gitHttpRequest(req: GitHttpRequest): Promise<GitHttpResponse> {
+async function gitHttpRequest(req: GitHttpRequest): Promise<GitHttpResponse> {
   let cur: GitHttpRequest = req;
   let lastBuffered: Buffer | undefined;
   for (let i = 0; i <= MAX_REDIRECTS; i++) {

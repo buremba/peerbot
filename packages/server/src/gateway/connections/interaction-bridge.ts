@@ -17,6 +17,7 @@ import {
   deletePendingQuestion,
   storePendingQuestion,
 } from "./pending-interaction-store.js";
+import { resolveChatTarget } from "./platforms/shared.js";
 import type { PlatformConnection } from "./types.js";
 
 const logger = createLogger("chat-interaction-bridge");
@@ -973,60 +974,14 @@ async function resolveThread(
   }
 
   try {
-    const chat = instance.chat;
-    const platform = instance.connection.platform;
-
-    // `channelId` is the bare platform channel id (e.g. `"C09EH3ASNQ1"`). The
-    // Chat SDK's `chat.channel()` parses the first `:`-segment as the adapter
-    // name, so we must prefix with `${platform}:`.
-    const channelKey = `${platform}:${channelId}`;
-
-    // DM shortcut: buildMessagePayload stores `conversationId === channelId`
-    // for DMs (channel-level, not thread-level).
-    if (!conversationId || conversationId === channelId) {
-      const channel = chat.channel?.(channelKey);
-      if (channel) return channel;
-      logger.debug(
-        { connectionId, platform, channelId, channelKey },
-				"resolveThread: chat.channel() returned null for DM",
-      );
-      return null;
-    }
-
-    // Group threads: conversationId is the Chat SDK's canonical `thread.id`
-    // (e.g. `"slack:{channel}:{parent_thread_ts}"`). Pass it directly to
-    // `createThread` — the adapter decodes it back into the correct
-    // thread-scoped post (e.g. `conversations.replies` for Slack).
-    const adapter = chat.getAdapter?.(platform);
-    const createThread = (chat as any).createThread;
-    if (adapter && typeof createThread === "function") {
-      try {
-        const thread = await createThread.call(
-          chat,
-          adapter,
-          conversationId,
-          undefined,
-					false,
-        );
-        if (thread) return thread;
-      } catch (error) {
-        logger.debug(
-          { connectionId, platform, conversationId, error: String(error) },
-					"resolveThread: createThread failed",
-        );
-      }
-    }
-
-    // Last-resort fallback: post at channel level so we still surface the
-    // interaction instead of silently dropping it.
-    const channel = chat.channel?.(channelKey);
-    if (!channel) {
-      logger.warn(
-        { connectionId, platform, channelId, channelKey, conversationId },
-				"resolveThread: unable to resolve thread or channel — dropping interaction",
-      );
-    }
-    return channel ?? null;
+    // No `currentMessage` / `responseThreadId` for interactions — the bridge
+    // resolves the post target purely from channelId + the canonical
+    // conversation thread id.
+    return await resolveChatTarget(
+      instance.chat,
+      instance.connection.platform,
+      { channelId, conversationId },
+    );
   } catch (error) {
     logger.debug(
       { connectionId, channelId, conversationId, error: String(error) },

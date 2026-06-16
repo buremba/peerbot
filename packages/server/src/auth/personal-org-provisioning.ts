@@ -100,7 +100,7 @@ async function lockPersonalOrgForUser(userId: string, sql: Sql): Promise<void> {
 export async function findExistingPersonalOrg(
 	userId: string,
 	sql: Sql,
-): Promise<{ id: string; slug: string } | null> {
+): Promise<{ id: string; slug: string; name: string } | null> {
 	// Idempotency: an org tagged with this user.id in metadata is already this
 	// user's personal one. Re-running the hook (e.g. after a transient failure)
 	// is a no-op. The ORDER BY keeps resolution deterministic if legacy data ever
@@ -108,14 +108,14 @@ export async function findExistingPersonalOrg(
 	// organization.metadata is `text` storing JSON; cast to jsonb and use ->>
 	// instead of LIKE so a userId containing % or _ can't match unintended rows.
 	const existing = await sql`
-    SELECT id, slug FROM "organization"
+    SELECT id, slug, name FROM "organization"
     WHERE metadata IS NOT NULL
       AND (metadata::jsonb)->>'personal_org_for_user_id' = ${userId}
     ORDER BY "createdAt" ASC, id ASC
     LIMIT 1
   `;
 	if (existing.length === 0) return null;
-	return existing[0] as { id: string; slug: string };
+	return existing[0] as { id: string; slug: string; name: string };
 }
 
 export async function ensurePersonalOrganization(

@@ -54,7 +54,7 @@ export async function* walkDirectoryRelative(root: string): AsyncIterable<string
  * `*` so we can distinguish `*` from `**` without ambiguity, and so literal
  * regex metacharacters get escaped exactly once.
  */
-export function globToRegExp(glob: string): RegExp {
+function globToRegExp(glob: string): RegExp {
   let re = '^';
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i];

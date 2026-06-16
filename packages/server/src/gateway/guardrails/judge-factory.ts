@@ -21,16 +21,6 @@ function getSharedJudge(): TextJudge {
   return sharedJudge;
 }
 
-/** Reset for tests — clears the shared judge so the next call rebuilds it. */
-export function _resetSharedJudgeForTests(): void {
-  sharedJudge = undefined;
-}
-
-/** Allow tests to inject a fake without going through the singleton. */
-export function _setSharedJudgeForTests(judge: TextJudge): void {
-  sharedJudge = judge;
-}
-
 /**
  * Extract the inspectable text from each stage's context. `pre-tool` has no
  * single text field, so we serialize the tool name + arguments so the judge
@@ -83,7 +73,7 @@ export function inlineJudgeHash(
   return h.digest("hex").slice(0, 8);
 }
 
-export interface JudgeGuardrailOptions {
+interface JudgeGuardrailOptions {
   /**
    * Override the auto-generated `inline:<stage>:<hash8>` name. Used by the
    * aggregator to give skill-provided inline judges a name that survives the

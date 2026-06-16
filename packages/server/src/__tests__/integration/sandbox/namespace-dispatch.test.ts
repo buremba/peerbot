@@ -47,6 +47,7 @@ describe("ClientSDK namespace dispatch (read paths)", () => {
       memberRole: "owner",
       isAuthenticated: true,
       tokenType: "oauth",
+      scopes: ["mcp:read", "mcp:write", "mcp:admin"],
       scopedToOrg: false,
       allowCrossOrg: true,
     };

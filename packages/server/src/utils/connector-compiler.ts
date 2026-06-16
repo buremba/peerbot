@@ -121,3 +121,13 @@ export async function extractConnectorMetadata(compiledCode: string): Promise<Co
     runnerCode: CONNECTOR_RUNNER_CODE,
   });
 }
+
+/**
+ * Assert that extracted connector metadata carries the required identity
+ * fields. Throws with the canonical message used across the install paths.
+ */
+export function validateConnectorMetadata(metadata: ConnectorMetadata): void {
+  if (!metadata.key || !metadata.name || !metadata.version) {
+    throw new Error('Connector must have key, name, and version.');
+  }
+}

@@ -20,13 +20,13 @@ const logger = createLogger("guardrail-aggregator");
  * here so callers can pass either the toml-parsed entries or the in-memory
  * agent representation.
  */
-export interface AgentInlineGuardrailEntry {
+interface AgentInlineGuardrailEntry {
   stage: GuardrailStage;
   judge: string;
   tools?: string[];
 }
 
-export interface AgentGuardrailExtras {
+interface AgentGuardrailExtras {
   /**
    * Inline guardrails declared in `[[agents.<id>.guardrails_inline]]`. Each
    * materializes into an ad-hoc `inline:<stage>:<hash8>` guardrail.
@@ -39,7 +39,7 @@ export interface AgentGuardrailExtras {
   disabled?: string[];
 }
 
-export interface ResolvedAgentGuardrails {
+interface ResolvedAgentGuardrails {
   /** Effective per-stage guardrail instances, after merge + dedup + exclude. */
   byStage: Record<GuardrailStage, Guardrail[]>;
   /**

@@ -19,7 +19,7 @@
  * time with bounded stack and cannot itself be exploited.
  */
 
-export interface MetadataLimits {
+interface MetadataLimits {
   /** Maximum nesting depth (object/array levels) before bailing. */
   maxDepth: number;
   /** Maximum number of values visited (keys + array elements) before bailing. */

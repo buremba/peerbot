@@ -90,7 +90,7 @@ export async function assertEntityIdsInOrg(
  */
 const NUMERIC_ID_TABLES = ['watchers', 'watcher_windows', 'watcher_window_events', 'watcher_versions'] as const;
 
-export type NumericIdTable = (typeof NUMERIC_ID_TABLES)[number];
+type NumericIdTable = (typeof NUMERIC_ID_TABLES)[number];
 
 /**
  * Allocate the next numeric id for a whitelisted table (`COALESCE(MAX(id), 0) + 1`).

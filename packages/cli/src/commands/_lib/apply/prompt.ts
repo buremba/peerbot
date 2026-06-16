@@ -1,7 +1,7 @@
 import { confirm } from "@inquirer/prompts";
 import { ValidationError } from "../../memory/_lib/errors.js";
 
-export interface ConfirmOptions {
+interface ConfirmOptions {
   /** Skip the prompt and treat as approved. CI / scripted apply path. */
   yes: boolean;
   /** Plan summary line to show next to the prompt for confirmation context. */

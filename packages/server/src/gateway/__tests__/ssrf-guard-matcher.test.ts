@@ -52,4 +52,14 @@ describe("isReservedIp — hardened matcher", () => {
     expect(isReservedIp("::ffff:zzzz:1")).toBe(true); // looks like IPv6, won't parse
     expect(isReservedIp("not-an-ip.example.com")).toBe(false); // hostname → resolve later
   });
+
+  // NAT64 well-known prefix 64:ff9b::/96 carries an IPv4 in its trailing 32
+  // bits. This is the spelling the MCP proxy's old regex guard missed (F10) —
+  // both copies now share this matcher, so it's pinned in one place.
+  test("NAT64 64:ff9b::/96 decodes to the embedded IPv4 and is judged on that", () => {
+    expect(isReservedIp("64:ff9b::7f00:1")).toBe(true); // → 127.0.0.1
+    expect(isReservedIp("64:ff9b::a9fe:a9fe")).toBe(true); // → 169.254.169.254
+    expect(isReservedIp("64:ff9b:0:0:0:0:7f00:1")).toBe(true); // expanded form
+    expect(isReservedIp("64:ff9b::808:808")).toBe(false); // → 8.8.8.8 (public)
+  });
 });

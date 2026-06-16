@@ -39,6 +39,7 @@ import {
   type ProviderCredentialStore,
 } from "../routes/public/oauth.js";
 import {
+  type AuthProvider,
   setAuthProvider,
   verifySettingsSessionOrToken,
 } from "../routes/public/settings-auth.js";
@@ -57,7 +58,7 @@ interface CreateGatewayAppOptions {
     | import("../connections/chat-instance-manager.js").ChatInstanceManager
     | null;
   /** Custom auth provider for embedded mode. When set, gateway delegates auth to this function instead of using cookie-based sessions. */
-  authProvider?: import("../routes/public/settings-auth.js").AuthProvider;
+  authProvider?: AuthProvider;
 }
 
 /**
@@ -661,6 +662,8 @@ export function createGatewayApp(
             : undefined,
         oauthClients: { claude: claudeOAuthClient },
         oauthStateStore: claudeOAuthStateStore,
+        userAgentsStore: coreServices.getUserAgentsStore(),
+        agentMetadataStore: coreServices.getAgentMetadataStore(),
       });
       authRouter.route("", oauthRouter);
       registeredProviders.push("oauth");

@@ -11,14 +11,7 @@ import {
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
-import {
-  getBrowserCdpUrl,
-  getBrowserUserDataDir,
-  handleCookieConsent,
-  openStealthBrowser,
-  validateUrlDomain,
-  withBrowserErrorCapture,
-} from './browser-scraper-utils.ts';
+import { runReviewScrape } from './browser-scraper-utils.ts';
 
 interface CapterraReview {
   id: string;
@@ -130,26 +123,17 @@ export default class CapterraConnector extends ConnectorRuntime {
     const baseUrl = productName
       ? `https://www.capterra.com/p/${productId}/${productName}/reviews`
       : `https://www.capterra.com/p/${productId}/reviews`;
-    validateUrlDomain(baseUrl, 'capterra.com');
 
-    const userDataDir = getBrowserUserDataDir(ctx.sessionState);
-    const cdpUrl = getBrowserCdpUrl(ctx.sessionState) ?? 'auto';
-    const session = await openStealthBrowser({ cdpUrl, userDataDir });
-
-    return withBrowserErrorCapture(session, 'capterra-sync', async (page) => {
-      await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-
-      await handleCookieConsent(page, '[data-test="cookie-accept"], #onetrust-accept-btn-handler');
-
-      // Wait for review cards
-      try {
-        await page.waitForSelector('[data-test="review-card"], .review-card', { timeout: 10000 });
-      } catch {
-        // Review selectors not found - page structure may have changed
-      }
-
-      // Extract reviews using page.evaluate
-      const rawReviews: CapterraReview[] = await page.evaluate(() => {
+    return runReviewScrape(ctx, {
+      connectorKey: 'capterra-sync',
+      baseUrl,
+      expectedDomain: 'capterra.com',
+      cookieConsentSelector: '[data-test="cookie-accept"], #onetrust-accept-btn-handler',
+      reviewCardSelector: '[data-test="review-card"], .review-card',
+      gotoTimeoutMs: 30000,
+      extract: async (page) => {
+        // Extract reviews using page.evaluate
+        const rawReviews: CapterraReview[] = await page.evaluate(() => {
         const reviewElements = Array.from(
           document.querySelectorAll('[data-test="review-card"], .review-card')
         );
@@ -233,39 +217,40 @@ export default class CapterraConnector extends ConnectorRuntime {
             helpfulCount,
           };
         });
-      });
+        });
 
-      // Filter reviews with content
-      const reviews = rawReviews.filter((r) => r.text.length > 0);
+        // Filter reviews with content
+        const reviews = rawReviews.filter((r) => r.text.length > 0);
 
-      // Transform to EventEnvelope
-      const events: EventEnvelope[] = reviews.map((review) => {
-        const engagementData = {
-          rating: review.rating,
-          helpful_count: review.helpfulCount,
-        };
+        // Transform to EventEnvelope
+        const events: EventEnvelope[] = reviews.map((review) => {
+          const engagementData = {
+            rating: review.rating,
+            helpful_count: review.helpfulCount,
+          };
+
+          return {
+            origin_id: review.id,
+            title: review.title,
+            payload_text: review.text,
+            author_name: review.author,
+            occurred_at: new Date(review.date),
+            origin_type: 'review',
+            score: calculateEngagementScore('capterra', engagementData),
+            source_url: baseUrl,
+            metadata: engagementData,
+          };
+        });
 
         return {
-          origin_id: review.id,
-          title: review.title,
-          payload_text: review.text,
-          author_name: review.author,
-          occurred_at: new Date(review.date),
-          origin_type: 'review',
-          score: calculateEngagementScore('capterra', engagementData),
-          source_url: baseUrl,
-          metadata: engagementData,
+          events,
+          checkpointExtra: {},
+          metadata: () => ({
+            items_found: rawReviews.length,
+            items_skipped: rawReviews.length - reviews.length,
+          }),
         };
-      });
-
-      return {
-        events,
-        checkpoint: { last_sync_at: new Date().toISOString() },
-        metadata: {
-          items_found: rawReviews.length,
-          items_skipped: rawReviews.length - reviews.length,
-        },
-      };
+      },
     });
   }
 }

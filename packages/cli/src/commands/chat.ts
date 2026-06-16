@@ -50,7 +50,7 @@ async function setLastThread(
   });
 }
 
-export interface ChatOptions {
+interface ChatOptions {
   agent?: string;
   gateway?: string;
   user?: string;

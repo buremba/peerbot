@@ -63,13 +63,13 @@ async function readAppliedSchemaVersion(sql: DbClient): Promise<string | null> {
   return rows[0]?.version ?? null;
 }
 
-export interface SchemaVersionMismatch {
+interface SchemaVersionMismatch {
   kind: 'mismatch';
   expected: string;
   applied: string | null;
 }
 
-export interface SchemaVersionOk {
+interface SchemaVersionOk {
   kind: 'ok';
   expected: string | null;
   applied: string | null;

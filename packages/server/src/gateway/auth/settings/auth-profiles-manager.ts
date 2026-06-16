@@ -22,7 +22,7 @@ const LAZY_REFRESH_BUFFER_MS = 5 * 60 * 1000;
  * before that point, lazy refresh is a no-op and the periodic safety-net task
  * handles everything.
  */
-export interface LazyRefreshHooks {
+interface LazyRefreshHooks {
   /** Fire-and-forget — used when the token is still valid but expiring soon.
    *  Implementation should dedup across pods (idempotency-keyed scheduler spawn). */
   triggerAsync: (userId: string, agentId: string) => Promise<void>;

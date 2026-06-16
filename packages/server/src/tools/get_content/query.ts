@@ -16,13 +16,13 @@ import type { GetContentArgs } from './schema';
 import type { ClassificationStatsRow, ContentRow, GetContentResult } from './types';
 
 /** Connection-visibility scope derived from the tool context. */
-export interface VisibilityScope {
+interface VisibilityScope {
   organizationId: string;
   userId: string | null;
 }
 
 /** Shared shape returned by the direct list branches. */
-export interface ListPageResult {
+interface ListPageResult {
   rawContent: ContentRow[];
   total: number;
   pageInfo: GetContentResult['page'];

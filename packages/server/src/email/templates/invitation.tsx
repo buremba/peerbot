@@ -1,6 +1,6 @@
 import { BrandedEmail } from './BrandedEmail';
 
-export interface InvitationProps {
+interface InvitationProps {
   inviterName?: string | null;
   orgName: string;
   acceptUrl: string;

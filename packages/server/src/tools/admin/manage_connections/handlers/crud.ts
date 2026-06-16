@@ -23,7 +23,7 @@ import {
   isConnectionSlugUniqueViolation,
   resolveNewConnectionSlug,
 } from '../../../../utils/connections';
-import { applyEntityLinkOverrides } from '../../../../utils/entity-link-overrides';
+import { applyEntityLinkOverrides } from '../../../../utils/entity-link-validation';
 import { recordChangeEvent, recordLifecycleEvent } from '../../../../utils/insert-event';
 import logger from '../../../../utils/logger';
 import { syncOAuthConnectionsForAuthProfile } from '../../../../utils/oauth-connection-state';

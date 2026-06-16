@@ -17,7 +17,7 @@ import type { ToolContext } from './registry';
 
 type UrlContext = Pick<ToolContext, 'organizationId' | 'requestUrl' | 'baseUrl'>;
 
-export interface OrgUrlContext {
+interface OrgUrlContext {
   ownerSlug: string | null;
   baseUrl: string | undefined;
 }
@@ -30,7 +30,7 @@ export async function getOrgUrlContext(ctx: UrlContext): Promise<OrgUrlContext> 
   };
 }
 
-export interface ViewEntityRow {
+interface ViewEntityRow {
   entity_type: string;
   slug: string;
   parent_entity_type?: string | null;

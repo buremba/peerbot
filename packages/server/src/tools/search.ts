@@ -8,6 +8,7 @@
  */
 
 import { type Static, Type } from '@sinclair/typebox';
+import { hasRequiredMcpScope } from '../auth/tool-access';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { entityLinkMatchSql, searchContentByText } from '../utils/content-search';
@@ -308,6 +309,17 @@ async function searchImpl(
   env: Env,
   ctx: ToolContext
 ): Promise<UnifiedSearchResult> {
+  // SDK delegates (`client.knowledge.search`) skip `checkToolAccess`, so
+  // re-enforce the mcp:read scope here — but only for MCP token callers
+  // (oauth/pat). Session/anonymous/system callers carry no MCP scope dimension
+  // (they're gated by member role + public-readability at the query level), which
+  // mirrors how extractAuthContext assigns scopes: real scopes for oauth/pat, a
+  // not-applicable sentinel otherwise.
+  const isMcpTokenCaller = ctx.tokenType === 'oauth' || ctx.tokenType === 'pat';
+  if (isMcpTokenCaller && !hasRequiredMcpScope('read', ctx.scopes)) {
+    throw new ToolUserError('search_memory requires an MCP session with read access.', 403);
+  }
+
   const includeContent = args.include_content ?? true;
   const contentLimit = Math.min(args.content_limit ?? 5, 50);
 

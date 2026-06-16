@@ -6,6 +6,7 @@
  */
 
 import type { DbClient } from '../../db/client';
+import { findExistingPersonalOrg } from '../personal-org-provisioning';
 import { PersonalAccessTokenService } from '../tokens';
 import { OAuthClientsStore } from './clients';
 import { AVAILABLE_SCOPES } from './scopes';
@@ -444,12 +445,11 @@ export class OAuthProvider {
       `;
       organizationSlug = (orgResult[0]?.slug as string) ?? null;
     } else {
-      const personalOrg = await this.sql`
-        SELECT slug FROM "organization"
-        WHERE (metadata::jsonb)->>'personal_org_for_user_id' = ${authInfo.userId}
-        LIMIT 1
-      `;
-      organizationSlug = (personalOrg[0]?.slug as string) ?? null;
+      const personalOrg = await findExistingPersonalOrg(
+        authInfo.userId,
+        this.sql
+      );
+      organizationSlug = personalOrg?.slug ?? null;
     }
 
     const orgs = await this.sql`

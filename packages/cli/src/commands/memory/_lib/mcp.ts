@@ -221,22 +221,27 @@ export async function mcpRpc(
 }
 
 /**
- * Call a Lobu memory tool over the REST proxy at `POST /api/{orgSlug}/{toolName}`.
+ * Shared REST-proxy call against `{origin}/api/{orgSlug}/{path}`, reusing the
+ * same auth resolution and localhost/docker-host fallback as `mcpRpc`. Returns
+ * the raw handler result as parsed JSON (no MCP envelope). Throws `ApiError` on
+ * non-2xx, surfacing the server's `{ error }` message when present.
  *
- * Reuses the same auth resolution and localhost/docker-host fallback as
- * `mcpRpc`. Returns the raw handler result as parsed JSON (no MCP envelope).
- * Throws `ApiError` on non-2xx, surfacing the server's `{ error }` message
- * when present.
+ * `restToolCall` (POST) and `restGet` (GET) are thin wrappers — they differ only
+ * in HTTP method/body and the labels used in the no-org and failure messages.
  */
-export async function restToolCall<T = unknown>(
+async function restCall<T>(
   mcpUrl: string,
-  toolName: string,
-  args: Record<string, unknown>,
+  path: string,
+  opts: {
+    method: "GET" | "POST";
+    body?: Record<string, unknown>;
+    failureLabel: string;
+    noOrgMessage: (mcpUrl: string) => string;
+  },
   contextName?: string
 ): Promise<T> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
+  const headers: Record<string, string> = {};
+  if (opts.body !== undefined) headers["Content-Type"] = "application/json";
   const tokenResult = await getUsableToken(mcpUrl, contextName);
   if (tokenResult) {
     headers.Authorization = `Bearer ${tokenResult.token}`;
@@ -246,18 +251,16 @@ export async function restToolCall<T = unknown>(
   // session's bound org so callers using a bare `/mcp` URL still resolve.
   const orgSlug = orgFromMcpUrl(mcpUrl) ?? tokenResult?.session.org ?? null;
   if (!orgSlug) {
-    throw new ApiError(
-      `Cannot call ${toolName}: no org slug on MCP URL ${mcpUrl}. Use --org or run: lobu memory org set <org>`
-    );
+    throw new ApiError(opts.noOrgMessage(mcpUrl));
   }
 
   const baseUrl = new URL(mcpUrl).origin;
-  const endpoint = `${baseUrl}/api/${orgSlug}/${toolName}`;
+  const endpoint = `${baseUrl}/api/${orgSlug}/${path}`;
 
   const { response: res, usedUrl } = await fetchMcpWithFallback(endpoint, {
-    method: "POST",
+    method: opts.method,
     headers,
-    body: JSON.stringify(args),
+    ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
   });
 
   const raw = await res.text();
@@ -279,7 +282,7 @@ export async function restToolCall<T = unknown>(
         ? `${authContext}. Try --context <name> or run \`lobu context use <name>\`.`
         : authContext;
     throw new ApiError(
-      `${toolName} failed via ${usedUrl}: ${message}${hint}`,
+      `${opts.failureLabel} failed via ${usedUrl}: ${message}${hint}`,
       res.status
     );
   }
@@ -288,60 +291,47 @@ export async function restToolCall<T = unknown>(
 }
 
 /**
- * GET sibling of `restToolCall` — fetches `${origin}/api/${orgSlug}/${path}`
- * using the same auth-resolution + localhost-fallback chain. Used by
- * `lobu call --list` to hit `GET /api/<org>/tools` without spinning up an MCP
- * session for discovery.
+ * Call a Lobu memory tool over the REST proxy at `POST /api/{orgSlug}/{toolName}`.
  */
-export async function restGet<T = unknown>(
+export function restToolCall<T = unknown>(
+  mcpUrl: string,
+  toolName: string,
+  args: Record<string, unknown>,
+  contextName?: string
+): Promise<T> {
+  return restCall<T>(
+    mcpUrl,
+    toolName,
+    {
+      method: "POST",
+      body: args,
+      failureLabel: toolName,
+      noOrgMessage: (url) =>
+        `Cannot call ${toolName}: no org slug on MCP URL ${url}. Use --org or run: lobu memory org set <org>`,
+    },
+    contextName
+  );
+}
+
+/**
+ * GET sibling of `restToolCall` — fetches `${origin}/api/${orgSlug}/${path}`.
+ * Used by `lobu call --list` to hit `GET /api/<org>/tools` without spinning up
+ * an MCP session for discovery.
+ */
+export function restGet<T = unknown>(
   mcpUrl: string,
   path: string,
   contextName?: string
 ): Promise<T> {
-  const headers: Record<string, string> = {};
-  const tokenResult = await getUsableToken(mcpUrl, contextName);
-  if (tokenResult) {
-    headers.Authorization = `Bearer ${tokenResult.token}`;
-  }
-
-  const orgSlug = orgFromMcpUrl(mcpUrl) ?? tokenResult?.session.org ?? null;
-  if (!orgSlug) {
-    throw new ApiError(
-      `Cannot GET ${path}: no org slug on MCP URL ${mcpUrl}. Use --org or run: lobu org set <slug>`
-    );
-  }
-
-  const baseUrl = new URL(mcpUrl).origin;
-  const endpoint = `${baseUrl}/api/${orgSlug}/${path}`;
-
-  const { response: res, usedUrl } = await fetchMcpWithFallback(endpoint, {
-    method: "GET",
-    headers,
-  });
-
-  const raw = await res.text();
-  if (!res.ok) {
-    let message = `${res.status} ${res.statusText}`;
-    if (raw) {
-      try {
-        const body = JSON.parse(raw) as { error?: string };
-        if (body?.error) message = body.error;
-      } catch {
-        message = raw;
-      }
-    }
-    const authContext = tokenResult
-      ? ` using context "${tokenResult.contextName}"`
-      : " without an access token";
-    const hint =
-      res.status === 401
-        ? `${authContext}. Try --context <name> or run \`lobu context use <name>\`.`
-        : authContext;
-    throw new ApiError(
-      `GET ${path} failed via ${usedUrl}: ${message}${hint}`,
-      res.status
-    );
-  }
-
-  return (raw.length > 0 ? JSON.parse(raw) : {}) as T;
+  return restCall<T>(
+    mcpUrl,
+    path,
+    {
+      method: "GET",
+      failureLabel: `GET ${path}`,
+      noOrgMessage: (url) =>
+        `Cannot GET ${path}: no org slug on MCP URL ${url}. Use --org or run: lobu org set <slug>`,
+    },
+    contextName
+  );
 }

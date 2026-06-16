@@ -1,6 +1,13 @@
 import type { KnipConfig } from "knip";
 
 const config: KnipConfig = {
+  rules: {
+    // `core/src/model-ids.ts` intentionally exports semantic aliases of the
+    // same value (DEFAULT_AGENT_MODEL = the sonnet id, EGRESS_JUDGE_MODEL = the
+    // haiku id). Those are meaningful names, not accidental duplication —
+    // collapsing them would lose intent, so don't flag duplicate exports.
+    duplicates: "off",
+  },
   ignore: [
     // Submodule — cleaned up via its own repo / PR.
     "packages/owletto/**",
@@ -8,8 +15,6 @@ const config: KnipConfig = {
     // a superset of helpers, so "unused export" noise here is expected.
     "packages/client/src/generated/**",
   ],
-  // Bun-style "npm:foo@x" import specifiers used by connectors.
-  ignoreUnresolved: ["^npm:"],
   workspaces: {
     // Connector source files are loaded by file path
     // (scripts/lobu/install-connectors.ts), not imported as modules.
@@ -31,7 +36,34 @@ const config: KnipConfig = {
       ignoreDependencies: [
         // Loaded via dynamic specifier in src/index.ts.
         "@lobu/worker",
+        // Native media/ML deps reached at runtime by connector bundles
+        // (embeddings, image processing), not statically imported in src/.
+        "@xenova/transformers",
+        "jimp",
+        "sharp",
       ],
+    },
+    "packages/connector-sdk": {
+      entry: [
+        "src/**/*.test.ts",
+        "src/__tests__/**/*.ts",
+        // Public subpath `@lobu/connector-sdk/identity-types` (package.json
+        // exports) — a TypeBox schema module consumed by external connectors,
+        // so its exports (e.g. the `$id`-registered MatchStrategy schema) have
+        // no in-repo importer and must be treated as public API, not dead.
+        "src/identity-types.ts",
+      ],
+      ignoreDependencies: [
+        // Browser connector backend (CDP) — used under src/browser/, reached
+        // at runtime not via the SDK's main entry graph.
+        "playwright",
+        // Type-only dep for the `tar` file source.
+        "@types/tar",
+      ],
+    },
+    "packages/client": {
+      // Generated openapi-ts client (ignored above) is the only consumer.
+      ignoreDependencies: ["@hey-api/client-fetch"],
     },
     "packages/embeddings": {
       // main points at dist/; the source entries are index, the standalone
@@ -46,9 +78,6 @@ const config: KnipConfig = {
         "src/**/*.test.ts",
       ],
     },
-    "packages/connector-sdk": {
-      entry: ["src/**/*.test.ts", "src/__tests__/**/*.ts"],
-    },
     "packages/server": {
       entry: [
         // Main server boot (package main points at compiled dist/, so knip
@@ -58,9 +87,6 @@ const config: KnipConfig = {
         "src/instrument.ts",
         "src/embedded-runtime.ts",
         "src/utils/assert-node-version.ts",
-        // Embedded server boot path; previously also used by `lobu start`
-        // before the CLI merge collapsed everything onto `lobu run`.
-        "src/start-local.ts",
         // Reached via cross-workspace import from scripts/lobu/sync-local.ts.
         "src/lib/feed-sync.ts",
         // Dynamically imported at runtime by reaction-executor.
@@ -72,8 +98,6 @@ const config: KnipConfig = {
         "scripts/**/*.mjs",
       ],
       ignoreDependencies: [
-        // Loaded via dynamic _require() in execute-data-sources.ts.
-        "node-sql-parser",
         // Activated by `vitest --coverage`.
         "@vitest/coverage-v8",
       ],
@@ -83,9 +107,6 @@ const config: KnipConfig = {
         // Cloudflare Pages functions — file-based routing (every file under
         // functions/ is a route entry, not an imported module).
         "functions/**/*.ts",
-        // Wired through a custom Astro plugin in astro.config.mjs.
-        "src/settings-mock/mock-api.ts",
-        "src/settings-mock/mock-context.tsx",
         // Starlight customCss — referenced from astro.config.mjs.
         "src/styles/starlight-shared.css",
         "src/styles/starlight-theme.css",
@@ -101,8 +122,6 @@ const config: KnipConfig = {
         // Tests run via `bun test packages/cli` in CI (nested __tests__ dirs).
         "src/**/*.test.ts",
         "src/**/__tests__/**/*.ts",
-        // Ambient module declaration for node:sqlite (used by memory browser-auth).
-        "src/types/node-sqlite.d.ts",
         // Public config DSL — `defineAgent`/`defineConfig`/`defineConnector`/…
         // are imported by USER `lobu.config.ts` files outside this repo, so
         // knip can't see the consumers. As entry files their exports are
@@ -112,6 +131,61 @@ const config: KnipConfig = {
         "src/config/secret.ts",
         // Build helper invoked as `node scripts/build.cjs`.
         "scripts/build.cjs",
+      ],
+      // The published `lobu` CLI is an umbrella: its build bundles @lobu/server
+      // and @lobu/worker, so it re-declares THEIR runtime deps in its own
+      // package.json (npm installs them for the bundled output). knip only sees
+      // cli/src, which doesn't import these directly, so it flags them — but
+      // every one is used by the bundled server/worker at runtime. Listed
+      // explicitly so a real unused cli dep would still surface.
+      ignoreDependencies: [
+        "@anthropic-ai/sdk",
+        "@aws-sdk/client-bedrock",
+        "@aws-sdk/client-secrets-manager",
+        "@chat-adapter/discord",
+        "@chat-adapter/gchat",
+        "@chat-adapter/slack",
+        "@chat-adapter/teams",
+        "@chat-adapter/telegram",
+        "@chat-adapter/whatsapp",
+        "@hono/node-server",
+        "@hono/zod-openapi",
+        "@lobu/embeddings",
+        "@lobu/worker",
+        "@mariozechner/pi-ai",
+        "@modelcontextprotocol/sdk",
+        "@opentelemetry/api",
+        "@opentelemetry/exporter-trace-otlp-grpc",
+        "@opentelemetry/resources",
+        "@opentelemetry/sdk-trace-node",
+        "@opentelemetry/semantic-conventions",
+        "@polyglot-sql/sdk",
+        "@react-email/components",
+        "@react-email/render",
+        "@scalar/hono-api-reference",
+        "@sentry/node",
+        "@better-auth/passkey",
+        "better-auth",
+        "chat",
+        "dotenv",
+        "embedded-postgres",
+        "esbuild",
+        "handlebars",
+        "hono",
+        "hono-pino",
+        "isomorphic-git",
+        "jimp",
+        "ky",
+        "kysely",
+        "kysely-postgres-js",
+        "pino",
+        "react",
+        "resend",
+        "sharp",
+        "tar",
+        "vite",
+        "winston",
+        "zod",
       ],
     },
     ".": {
@@ -124,7 +198,6 @@ const config: KnipConfig = {
         "examples/**/lobu.config.ts",
         "examples/**/*.connector.ts",
         "examples/**/*.reaction.ts",
-        "examples/**/*.eval.ts",
         "examples/**/evals/**/*.ts",
         "examples/**/skills/**/*.ts",
       ],

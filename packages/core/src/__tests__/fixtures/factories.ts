@@ -5,11 +5,9 @@
  * the fields they care about while getting sensible defaults for the rest.
  */
 
-import type { InstructionContext } from "../../types";
-
 // Re-export WorkerConfig shape (worker package owns the interface).
 // We duplicate a minimal version here to avoid a circular dependency.
-export interface TestWorkerConfig {
+interface TestWorkerConfig {
   sessionKey: string;
   userId: string;
   agentId: string;
@@ -43,19 +41,6 @@ export function createWorkerConfig(
     }),
     teamId: "T1234567890",
     workspace: { baseDirectory: "/tmp/test-workspace" },
-    ...overrides,
-  };
-}
-
-export function createInstructionContext(
-  overrides: Partial<InstructionContext> = {}
-): InstructionContext {
-  return {
-    userId: "U1234567890",
-    agentId: "agent-test",
-    sessionKey: "test-session-key",
-    workingDirectory: "/tmp/test-workspace/test-thread",
-    availableProjects: [],
     ...overrides,
   };
 }

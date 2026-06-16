@@ -185,20 +185,6 @@ export class ApiPlatform implements PlatformAdapter {
   }
 
   /**
-   * Suggestions are broadcast via interaction events above
-   */
-  async renderSuggestion(): Promise<void> {
-    /* noop — suggestions broadcast via interaction events */
-  }
-
-  /**
-   * API platform doesn't have thread status indicators
-   */
-  async setThreadStatus(): Promise<void> {
-    // Status is sent via SSE events
-  }
-
-  /**
    * Send a message via API platform
    * Creates or reuses a session and queues the message for processing
    *

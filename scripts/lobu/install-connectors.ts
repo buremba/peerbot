@@ -17,7 +17,7 @@ import { getDb } from '../../packages/server/src/db/client';
 import { compileConnectorFromFile } from '../../packages/server/src/utils/connector-catalog';
 import { extractConnectorMetadata } from '../../packages/server/src/utils/connector-compiler';
 import { upsertConnectorDefinitionRecords } from '../../packages/server/src/utils/connector-definition-install';
-import { applyEntityLinkOverrides } from '../../packages/server/src/utils/entity-link-overrides';
+import { applyEntityLinkOverrides } from '../../packages/server/src/utils/entity-link-validation';
 
 const { values } = parseArgs({
   options: {

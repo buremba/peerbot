@@ -33,7 +33,7 @@ const logger = createLogger("gateway");
  * 3. Gateway calls initialize() on each platform with CoreServices
  * 4. Gateway calls start() on each platform
  */
-export interface GatewayOptions {
+interface GatewayOptions {
   /** Agent settings + metadata store. Defaults to InMemoryAgentStore. */
   configStore?: AgentConfigStore;
   /** Connections + channel bindings store. Defaults to InMemoryAgentStore. */

@@ -35,9 +35,9 @@ import { isSentryReported, markSentryReported } from "./sentry";
 import logger from "./utils/logger";
 import { initWorkspaceProvider } from "./workspace";
 
-export type ServerMode = "postgres" | "embedded-postgres";
+type ServerMode = "postgres" | "embedded-postgres";
 
-export interface ServerLifecycleConfig {
+interface ServerLifecycleConfig {
 	mode: ServerMode;
 	env: Env;
 	host: string;
@@ -69,7 +69,7 @@ export interface ServerLifecycleConfig {
 	extraTeardown?: Array<() => Promise<void> | void>;
 }
 
-export interface ServerLifecycleHandles {
+interface ServerLifecycleHandles {
 	/** Starts the listener and registers signal handlers. Resolves once listening. */
 	start: () => Promise<void>;
 }
@@ -350,8 +350,8 @@ export function createServerLifecycle(
 		const taskScheduler = await bootTaskScheduler(getLobuCoreServices(), env);
 
 		// 5. 30s connector-run heartbeat-lost reaper. Cross-pod coordinated
-		// via advisory lock; the TaskScheduler cron also calls reapStaleRuns()
-		// every 5min as a backstop without double-failing rows.
+		// via advisory lock. This is the single reaper cadence — the
+		// `check-stalled-executions` cron no longer calls reapStaleRuns().
 		const stopReaper = startStaleRunReaper();
 
 		// 6. Wrapper app + HTTP server. Timeouts are locked at 75/76s so SSE

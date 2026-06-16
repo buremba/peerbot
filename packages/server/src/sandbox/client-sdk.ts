@@ -91,7 +91,7 @@ export class CrossOrgAccessDenied extends SdkError {
   }
 }
 
-export interface ResolvedOrgMembership {
+interface ResolvedOrgMembership {
   orgId: string;
   slug: string;
   role: string | null;
@@ -132,7 +132,7 @@ export async function resolveOrgMembership(
   return { orgId, slug, role, visibility };
 }
 
-export interface BuildClientSDKOptions {
+interface BuildClientSDKOptions {
   mode?: SDKMode;
   allowCrossOrg?: boolean;
   /**

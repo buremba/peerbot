@@ -21,7 +21,7 @@ import { type Credentials, saveCredentials } from "../internal/credentials.js";
 import { parseEnvContent } from "../internal/index.js";
 import { loadProjectLink } from "../internal/project-link.js";
 
-export interface DevOptions {
+interface DevOptions {
   port?: string;
   quiet?: boolean;
   verbose?: boolean;

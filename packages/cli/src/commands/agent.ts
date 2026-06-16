@@ -195,7 +195,7 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-export interface AgentScaffoldOptions {
+interface AgentScaffoldOptions {
   cwd?: string;
   name?: string;
   description?: string;

@@ -10,13 +10,19 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { ToolNotRegisteredError } from '../../utils/errors';
 import { routeAction } from '../../tools/admin/action-router';
-import { type AuthContext, checkToolAccess } from '../../tools/execute';
+import {
+  type AuthContext,
+  checkToolAccess,
+  extractAuthContext,
+} from '../../tools/execute';
 import { getTool, type ToolContext } from '../../tools/registry';
 import {
   getRequiredAccessLevel,
+  hasRequiredMcpScope,
   isPublicReadable,
   requiresMemberWrite,
   requiresOwnerAdmin,
+  SCOPE_CHECK_NOT_APPLICABLE,
 } from '../tool-access';
 
 describe('requiresOwnerAdmin', () => {
@@ -157,6 +163,99 @@ describe('member write access', () => {
   it('should keep entity deletion as admin-only', () => {
     expect(requiresMemberWrite('manage_entity', { action: 'delete' }, false)).toBe(false);
     expect(getRequiredAccessLevel('manage_entity', { action: 'delete' }, false)).toBe('admin');
+  });
+});
+
+describe('extractAuthContext scopes (F8 source side)', () => {
+  type FakeVars = {
+    mcpAuthInfo?: { scopes?: string[]; userId?: string; clientId?: string } | null;
+    session?: { userId?: string } | null;
+    organizationId?: string | null;
+    memberRole?: string | null;
+    mcpIsAuthenticated?: boolean;
+  };
+
+  function fakeCtx(vars: FakeVars, url = 'http://localhost/mcp/acme') {
+    return {
+      req: {
+        url,
+        param: (_k: string) => undefined,
+        header: (_k: string) => undefined,
+      },
+      var: vars,
+    } as unknown as Parameters<typeof extractAuthContext>[0];
+  }
+
+  it('passes real token scopes through for oauth/pat callers', () => {
+    const ctx = extractAuthContext(
+      fakeCtx({
+        mcpAuthInfo: { scopes: ['mcp:read', 'mcp:write'], userId: 'u1' },
+        mcpIsAuthenticated: true,
+        organizationId: 'org_1',
+      })
+    );
+    expect(ctx.scopes).toEqual(['mcp:read', 'mcp:write']);
+  });
+
+  it('emits [] (denies) for a token minted with no scopes — never the bypass sentinel', () => {
+    const ctx = extractAuthContext(
+      fakeCtx({ mcpAuthInfo: { userId: 'u1' }, mcpIsAuthenticated: true })
+    );
+    expect(ctx.scopes).toEqual([]);
+    expect(hasRequiredMcpScope('read', ctx.scopes)).toBe(false);
+  });
+
+  it('emits the not-applicable sentinel for a session caller (no mcpAuthInfo)', () => {
+    const ctx = extractAuthContext(
+      fakeCtx({ mcpAuthInfo: null, session: { userId: 'u1' }, mcpIsAuthenticated: true })
+    );
+    expect(ctx.scopes).toEqual([...SCOPE_CHECK_NOT_APPLICABLE]);
+  });
+
+  it('emits the not-applicable sentinel for anonymous callers', () => {
+    const ctx = extractAuthContext(fakeCtx({ mcpAuthInfo: null, session: null }));
+    expect(ctx.scopes).toEqual([...SCOPE_CHECK_NOT_APPLICABLE]);
+  });
+});
+
+describe('hasRequiredMcpScope — fail closed on null (F8)', () => {
+  // SECURITY INVARIANT: a null/undefined scope set is an under-specified
+  // caller, NOT a grant of full access. Before the fix this returned `true`,
+  // so any path that built an AuthContext with `scopes: undefined` silently
+  // bypassed every MCP scope gate.
+  it('returns false for null scopes at every access level', () => {
+    expect(hasRequiredMcpScope('read', null)).toBe(false);
+    expect(hasRequiredMcpScope('write', null)).toBe(false);
+    expect(hasRequiredMcpScope('admin', null)).toBe(false);
+  });
+
+  it('returns false for undefined scopes at every access level', () => {
+    expect(hasRequiredMcpScope('read', undefined)).toBe(false);
+    expect(hasRequiredMcpScope('write', undefined)).toBe(false);
+    expect(hasRequiredMcpScope('admin', undefined)).toBe(false);
+  });
+
+  it('returns false for an empty scope array (token minted without scopes)', () => {
+    expect(hasRequiredMcpScope('read', [])).toBe(false);
+    expect(hasRequiredMcpScope('admin', [])).toBe(false);
+  });
+
+  it('honors real token scopes by tier', () => {
+    expect(hasRequiredMcpScope('read', ['mcp:read'])).toBe(true);
+    expect(hasRequiredMcpScope('write', ['mcp:read'])).toBe(false);
+    expect(hasRequiredMcpScope('write', ['mcp:write'])).toBe(true);
+    expect(hasRequiredMcpScope('admin', ['mcp:write'])).toBe(false);
+    expect(hasRequiredMcpScope('admin', ['mcp:admin'])).toBe(true);
+  });
+
+  it('treats the not-applicable sentinel as a bypass (session/anonymous auth)', () => {
+    // The sentinel means "scope dimension does not apply" — these callers are
+    // gated by role + public-readability upstream, not by token scopes.
+    expect(hasRequiredMcpScope('read', SCOPE_CHECK_NOT_APPLICABLE)).toBe(true);
+    expect(hasRequiredMcpScope('write', SCOPE_CHECK_NOT_APPLICABLE)).toBe(true);
+    expect(hasRequiredMcpScope('admin', SCOPE_CHECK_NOT_APPLICABLE)).toBe(true);
+    // The sentinel is `['*']` — not a scope any oauth/pat token can present.
+    expect(SCOPE_CHECK_NOT_APPLICABLE).toEqual(['*']);
   });
 });
 

@@ -12,7 +12,7 @@ import {
 	resolveMemberSchemaFields,
 } from "../utils/member-entity";
 
-export interface PersonalSubject {
+interface PersonalSubject {
 	userId: string;
 	email: string;
 	name?: string | null;

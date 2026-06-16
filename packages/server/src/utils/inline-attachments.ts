@@ -56,14 +56,14 @@ interface MaterializedAttachment {
   duration_ms?: number | null;
 }
 
-export interface StreamItemLike {
+interface StreamItemLike {
   id: string;
   attachments?: unknown[];
   metadata?: Record<string, unknown>;
 }
 
 /** Per-item record of audio attachments that the gateway should transcribe. */
-export interface AudioTranscriptionPending {
+interface AudioTranscriptionPending {
   originId: string;
   artifactId: string;
   filename: string;

@@ -54,8 +54,9 @@ function mockEmbeddingsCtx(body: unknown): {
   let captured: { body: unknown; status: number } = { body: undefined, status: 200 };
   const ctx = {
     req: { json: async () => body },
-    // No workerAuthMode → authorizeRunForWorker is a no-op, isolating the
-    // upsert/idempotency under test (same approach as the other guard tests).
+    // completeEmbeddings now calls authorizeRunForWorker, which reads
+    // c.var.workerAuthMode (no-op unless 'user'). Provide an empty var bag so
+    // the token-mode path is exercised instead of crashing on undefined.
     var: {},
     json: (b: unknown, status?: number) => {
       captured = { body: b, status: status ?? 200 };

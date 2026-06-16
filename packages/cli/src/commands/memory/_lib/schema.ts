@@ -6,7 +6,7 @@
  * Bump CURRENT_SCHEMA_VERSION when making breaking changes.
  */
 
-export const CURRENT_SCHEMA_VERSION = 2;
+const CURRENT_SCHEMA_VERSION = 2;
 
 export type DataRecordType = "entity" | "relationship";
 
@@ -34,8 +34,6 @@ export interface SeedRelationshipSchema {
   confidence?: number;
   source?: "ui" | "llm" | "feed" | "api";
 }
-
-export type DataSchema = SeedEntitySchema | SeedRelationshipSchema;
 
 // ── Validation ──────────────────────────────────────────────────────
 

@@ -11,7 +11,7 @@ import type { SettingsTokenPayload } from "../../auth/settings/token-service.js"
  * base payload plus a random `jti` minted at issue time so a leaked cookie
  * can be revoked via the `revoked_tokens` store.
  */
-export type SettingsSession = SettingsTokenPayload & { jti?: string };
+type SettingsSession = SettingsTokenPayload & { jti?: string };
 
 export type AuthProvider = (c: Context) => SettingsSession | null;
 

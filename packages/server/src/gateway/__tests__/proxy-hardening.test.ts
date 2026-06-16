@@ -15,11 +15,11 @@
  * but the current implementation directly awaits this.client.judge() with no
  * deadline. Tests for timeout behaviour are omitted until the feature is re-added.
  *
- * NOTE: NAT64 address translation (64:ff9b::/96 prefix) is NOT currently handled
- * by isBlockedIpAddress — those addresses are treated as regular IPv6 addresses
- * and go through blockedIpv6List, which only blocks the ULA/link-local ranges.
- * A 64:ff9b::7f00:1 address (translating to 127.0.0.1) would currently NOT be
- * blocked. This is a security gap documented below.
+ * NOTE: NAT64 address translation (64:ff9b::/96 prefix) IS handled. The IP
+ * normalization + reserved-range matcher now live in the shared
+ * `gateway/proxy/ssrf-guard.ts` (`isReservedIp`); `isBlockedIpAddress` is the
+ * proxy-local alias for it. A 64:ff9b::7f00:1 literal decodes to 127.0.0.1 and
+ * is blocked — see http-proxy.test.ts and ssrf-guard-matcher.test.ts.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -38,6 +38,7 @@ import {
   __testOnly,
   setProxyEgressJudge,
   setProxyPolicyStore,
+  setProxyRevokedTokenStore,
   startHttpProxy,
   stopHttpProxy,
 } from "../proxy/http-proxy.js";
@@ -140,6 +141,15 @@ function rule(overrides: Partial<ResolvedJudgeRule> = {}): ResolvedJudgeRule {
     ...overrides,
   };
 }
+
+// The proxy consults a DB-backed revoked-token store on cache miss (F1). The
+// proxy-server describes below run without a reachable DB, so they inject this
+// fast stub (nothing revoked) in their beforeEach. The real cross-replica
+// revocation path is covered by http-proxy.test.ts.
+const NOOP_REVOKED_STORE = {
+  isRevoked: async () => false,
+  isRevokedCached: () => false,
+} as unknown as Parameters<typeof setProxyRevokedTokenStore>[0];
 
 // ─── isBlockedIpAddress — unit tests ─────────────────────────────────────────
 
@@ -292,6 +302,7 @@ describe("HTTP Proxy — domain blocking edge cases", () => {
   beforeEach(() => {
     process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
     __testOnly.reset();
+    setProxyRevokedTokenStore(NOOP_REVOKED_STORE);
     // DNS mock: all names resolve to a public TEST-NET address (passes IP check).
     __testOnly.setDnsLookup(async () => [
       { address: "203.0.113.1", family: 4 },
@@ -521,6 +532,7 @@ describe("CRLF injection prevention in judge-provided reason", () => {
     process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
     process.env.WORKER_ALLOWED_DOMAINS = "";
     __testOnly.reset();
+    setProxyRevokedTokenStore(NOOP_REVOKED_STORE);
 
     policyStore.set("org-1", "agent-crlf", {
       judgedDomains: [{ domain: "example.com" }],

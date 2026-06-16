@@ -51,7 +51,7 @@ const contextConfigPath = () => join(configDir(), "config.json");
  * A resolved cloud credential: the bearer token to send to the cloud and the
  * cloud's base origin (no trailing path) the token-fetch endpoint lives under.
  */
-export interface CloudCredential {
+interface CloudCredential {
 	/** Bearer token (`Bearer <token>`) — a login access token, or LOBU_CLOUD_PAT. */
 	token: string;
 	/** Cloud base origin, e.g. `https://app.lobu.ai` (no `/api/v1`, no trailing slash). */

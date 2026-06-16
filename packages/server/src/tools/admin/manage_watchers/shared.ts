@@ -27,9 +27,9 @@ export interface WatcherOperationResult {
   version?: number;
 }
 
-export type WatcherAccessMode = 'read' | 'write';
+type WatcherAccessMode = 'read' | 'write';
 
-export interface WatcherAccessRow {
+interface WatcherAccessRow {
   id: string | number;
   organization_id: string | null;
   entity_ids: unknown;
@@ -48,14 +48,14 @@ export interface WatcherAccessRow {
  * `requireObject` (with `parseError`/`shapeError` messages) additionally rejects
  * non-object / array results — used for `extracted_data`.
  */
-export function coerceJson(value: unknown, opts: { onError: 'keep' }): unknown;
-export function coerceJson<T>(value: unknown, opts: { onError: 'throw'; label: string }): T | undefined;
-export function coerceJson<T>(value: unknown, opts: { onError: { fallback: T } }): T;
-export function coerceJson(
+function coerceJson(value: unknown, opts: { onError: 'keep' }): unknown;
+function coerceJson<T>(value: unknown, opts: { onError: 'throw'; label: string }): T | undefined;
+function coerceJson<T>(value: unknown, opts: { onError: { fallback: T } }): T;
+function coerceJson(
   value: unknown,
   opts: { requireObject: { parseError: string; shapeError: string } }
 ): Record<string, unknown>;
-export function coerceJson(
+function coerceJson(
   value: unknown,
   opts: {
     onError?: 'keep' | 'throw' | { fallback: unknown };
@@ -112,7 +112,7 @@ export function normalizeExtractedData(value: unknown): Record<string, unknown> 
   });
 }
 
-export function normalizeStringArray(values: unknown): string[] {
+function normalizeStringArray(values: unknown): string[] {
   if (!Array.isArray(values)) return [];
   return Array.from(
     new Set(
@@ -153,7 +153,7 @@ export function summarizeResults(results: WatcherOperationResult[]) {
 // Watcher config validation
 // ============================================
 
-export function validateWatcherConfig(input: {
+function validateWatcherConfig(input: {
   prompt?: string;
   extraction_schema?: unknown;
   classifiers?: unknown[];
@@ -240,7 +240,7 @@ export function assertWatcherVersionConfigValid(parsed: {
 // Watcher access control
 // ============================================
 
-export function parseWatcherEntityIds(raw: unknown): number[] {
+function parseWatcherEntityIds(raw: unknown): number[] {
   if (Array.isArray(raw)) return raw.map(Number).filter((id) => Number.isFinite(id));
   if (typeof raw === 'string') {
     return raw
@@ -253,7 +253,7 @@ export function parseWatcherEntityIds(raw: unknown): number[] {
   return [];
 }
 
-export async function getWatcherAccessRows(watcherIds: string[]): Promise<WatcherAccessRow[]> {
+async function getWatcherAccessRows(watcherIds: string[]): Promise<WatcherAccessRow[]> {
   if (watcherIds.length === 0) return [];
   const sql = getDb();
   const placeholders = watcherIds.map((_, idx) => `$${idx + 1}`).join(',');

@@ -15,14 +15,14 @@ import { PersonalAccessTokenService } from "./tokens";
 
 const PAT_PREFIX = "owl_pat_";
 
-export interface PatUserRow {
+interface PatUserRow {
 	id: string;
 	name: string;
 	email: string;
 	emailVerified: boolean;
 }
 
-export interface PatAuthSuccess {
+interface PatAuthSuccess {
 	ok: true;
 	userId: string;
 	organizationId: string;
@@ -34,14 +34,14 @@ export interface PatAuthSuccess {
 	patInfo: AuthInfo;
 }
 
-export interface PatAuthFailure {
+interface PatAuthFailure {
 	ok: false;
 	status: 401 | 403;
 	error: string;
 	error_description: string;
 }
 
-export type PatAuthResult = PatAuthSuccess | PatAuthFailure;
+type PatAuthResult = PatAuthSuccess | PatAuthFailure;
 
 /**
  * Extract a `owl_pat_*` bearer value from an Authorization header, or `null`

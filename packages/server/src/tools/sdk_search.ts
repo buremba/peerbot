@@ -25,7 +25,7 @@ export const SdkSearchSchema = Type.Object({
   ),
 });
 
-export type SdkSearchArgs = Static<typeof SdkSearchSchema>;
+type SdkSearchArgs = Static<typeof SdkSearchSchema>;
 
 interface MatchRow {
   path: string;

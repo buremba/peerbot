@@ -56,7 +56,7 @@ function hashPolicy(policy: string): string {
   return createHash("sha256").update(policy).digest("hex");
 }
 
-export interface TextJudgeOptions {
+interface TextJudgeOptions {
   client?: JudgeClient;
   defaultModel?: string;
   cacheTtlMs?: number;

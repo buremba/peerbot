@@ -28,14 +28,14 @@ import type {
 const logger = createLogger("chat-platform-telegram");
 
 /** Read `botToken` from a Telegram connection config, or undefined. */
-export function telegramBotToken(
+function telegramBotToken(
   config: TelegramAdapterConfig
 ): string | undefined {
   return typeof config.botToken === "string" ? config.botToken : undefined;
 }
 
 /** Read `apiBaseUrl` from a Telegram connection config (with default). */
-export function telegramApiBase(config: TelegramAdapterConfig): string {
+function telegramApiBase(config: TelegramAdapterConfig): string {
   return typeof config.apiBaseUrl === "string" && config.apiBaseUrl
     ? config.apiBaseUrl
     : "https://api.telegram.org";

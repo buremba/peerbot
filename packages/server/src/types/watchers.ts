@@ -67,33 +67,6 @@ export interface WatcherWindow {
 }
 
 // ============================================
-// Classification Timeline
-// ============================================
-
-interface ClassificationTimelinePoint {
-  date: string;
-  classifier_slug: string;
-  classifier_name: string;
-  value: string;
-  count: number;
-}
-
-interface ClassificationTimelineTotals {
-  date: string;
-  count: number;
-}
-
-export interface ClassificationTimeline {
-  granularity: string;
-  range: {
-    start: string;
-    end: string;
-  };
-  totals: ClassificationTimelineTotals[];
-  series: ClassificationTimelinePoint[];
-}
-
-// ============================================
 // Keying Config
 // ============================================
 
@@ -116,19 +89,6 @@ export interface WatcherVersionInfo {
   name: string;
   created_at: string;
   is_current: boolean;
-}
-
-// ============================================
-// Entity Context
-// ============================================
-
-export interface EntityContext {
-  entity_id: string;
-  entity_name: string;
-  entity_type: string;
-  total_content: number;
-  active_connections: number;
-  latest_content_date: string | null;
 }
 
 // ============================================

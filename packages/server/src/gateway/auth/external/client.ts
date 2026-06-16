@@ -14,7 +14,7 @@ const EXTERNAL_AUTH_CACHE_KEY = "external:auth:client:v3";
 const DISCOVERY_CACHE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_SCOPE = "profile:read";
 
-export interface ExternalAuthConfig {
+interface ExternalAuthConfig {
   issuerUrl: string;
   clientId?: string;
   clientSecret?: string;
@@ -43,7 +43,7 @@ interface WellKnownMetadata {
   grant_types_supported?: string[];
 }
 
-export interface UserInfoResponse {
+interface UserInfoResponse {
   sub: string;
   email: string;
   name?: string;

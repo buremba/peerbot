@@ -1,5 +1,5 @@
 import { createLogger } from "@lobu/core";
-import { getDb } from "../../db/client.js";
+import { type DbClient, getDb } from "../../db/client.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import type { OAuthClient } from "../auth/oauth/client.js";
 import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager.js";
@@ -14,6 +14,18 @@ interface RefreshableProvider {
 }
 
 /**
+ * Postgres advisory-lock namespace for OAuth-profile refresh serialization.
+ * `pg_advisory_xact_lock(hashtext($1))` derives the int8 key from a per-profile
+ * string, so the lock is automatically released when the wrapping transaction
+ * ends. Cross-replica safe: a refresh in flight on pod A blocks pod B until A
+ * commits, at which point B re-reads the now-rotated expiry and no-ops instead
+ * of persisting a token A already rotated away (the lost-update race fixed here).
+ */
+function refreshLockTag(profileId: string): string {
+  return `oauth_token_refresh:${profileId}`;
+}
+
+/**
  * Proactive OAuth token refresher.
  *
  * Wired as a periodic task via TaskScheduler (see `scheduled/jobs.ts`).
@@ -22,15 +34,19 @@ interface RefreshableProvider {
  * 2. Refreshes any token expiring within `EXPIRY_BUFFER_MS` via its provider's OAuth client.
  * 3. Writes the rotated credentials back through `AuthProfilesManager.upsertProfile`.
  *
- * Per-pod `refreshLocks` dedup concurrent refreshes for the same profile;
- * cross-pod dedup happens at the scheduler level (one row per cron tick).
+ * Each per-profile refresh runs under a Postgres advisory lock keyed on the
+ * profile id, with the expiry RE-READ inside the lock — so concurrent refreshes
+ * across replicas serialize and the loser no-ops instead of overwriting a
+ * freshly-rotated refresh token with a stale one.
  */
 export class TokenRefreshJob {
-  private refreshLocks = new Map<string, Promise<void>>();
-
   constructor(
     private authProfilesManager: AuthProfilesManager,
-    private refreshableProviders: RefreshableProvider[]
+    private refreshableProviders: RefreshableProvider[],
+    // Lazy db accessor; injectable so tests can drive the advisory-lock control
+    // flow with a fake DbClient instead of mock.module'ing the db/client module
+    // (which leaks process-globally across the bun:test gateway suite).
+    private getDbFn: () => DbClient = getDb
   ) {}
 
   /** One-shot scan + refresh of every OAuth profile. Invoked by the
@@ -49,7 +65,7 @@ export class TokenRefreshJob {
       // strand every later user's tokens until the next 30-min tick.
       try {
         await orgContext.run({ organizationId }, () =>
-          this.maybeRefresh(userId, agentId)
+          this.doRefresh(userId, agentId)
         );
       } catch (err) {
         logger.warn(
@@ -63,8 +79,9 @@ export class TokenRefreshJob {
   /**
    * Refresh tokens for a single (userId, agentId). Public so the
    * `refresh-token-for-user-agent` task and AuthProfilesManager's at-use-time
-   * lazy path can both call it. Per-pod `refreshLocks` dedup concurrent calls
-   * for the same key in this process.
+   * lazy path can both call it. Concurrent calls — in this process or across
+   * replicas — serialize per profile via the Postgres advisory lock in
+   * `doRefresh`.
    *
    * Looks up the agent's org and establishes an `orgContext` scope before
    * delegating, so `PostgresSecretStore` reads/writes resolve against the
@@ -83,33 +100,16 @@ export class TokenRefreshJob {
       return;
     }
     return orgContext.run({ organizationId }, () =>
-      this.maybeRefresh(userId, agentId)
+      this.doRefresh(userId, agentId)
     );
   }
 
   private async lookupAgentOrg(agentId: string): Promise<string | null> {
-    const sql = getDb();
+    const sql = this.getDbFn();
     const rows = await sql<{ organization_id: string }>`
       SELECT organization_id FROM agents WHERE id = ${agentId} LIMIT 1
     `;
     return rows[0]?.organization_id ?? null;
-  }
-
-  private async maybeRefresh(userId: string, agentId: string): Promise<void> {
-    const lockKey = `${userId}:${agentId}`;
-    const existing = this.refreshLocks.get(lockKey);
-    if (existing) {
-      await existing;
-      return;
-    }
-
-    const promise = this.doRefresh(userId, agentId);
-    this.refreshLocks.set(lockKey, promise);
-    try {
-      await promise;
-    } finally {
-      this.refreshLocks.delete(lockKey);
-    }
   }
 
   private async doRefresh(userId: string, agentId: string): Promise<void> {
@@ -126,39 +126,18 @@ export class TokenRefreshJob {
 
       if (!oauthProfile?.metadata?.refreshToken) continue;
 
+      // Cheap pre-check outside the lock: skip the lock + re-read entirely for
+      // the overwhelming majority of profiles that aren't near expiry.
       const expiresAt = oauthProfile.metadata.expiresAt || 0;
-      const isExpiring = expiresAt <= Date.now() + EXPIRY_BUFFER_MS;
-      if (!isExpiring) continue;
-
-      logger.info(
-        `Refreshing ${providerId} token for user ${userId} agent ${agentId} profile ${oauthProfile.id}`,
-        { expiresAt: new Date(expiresAt).toISOString() }
-      );
+      if (expiresAt > Date.now() + EXPIRY_BUFFER_MS) continue;
 
       try {
-        const newCredentials = await oauthClient.refreshToken(
-          oauthProfile.metadata.refreshToken
-        );
-
-        await this.authProfilesManager.upsertProfile({
-          agentId,
+        await this.refreshProfileUnderLock(
           userId,
-          id: oauthProfile.id,
-          provider: oauthProfile.provider,
-          credential: newCredentials.accessToken,
-          authType: "oauth",
-          label: oauthProfile.label,
-          model: oauthProfile.model,
-          metadata: {
-            ...oauthProfile.metadata,
-            refreshToken: newCredentials.refreshToken,
-            expiresAt: newCredentials.expiresAt,
-          },
-          makePrimary: false,
-        });
-
-        logger.info(
-          `Token refreshed for user ${userId} agent ${agentId} (${providerId})`
+          agentId,
+          providerId,
+          oauthClient,
+          oauthProfile.id
         );
       } catch (error) {
         logger.error(
@@ -170,5 +149,82 @@ export class TokenRefreshJob {
         );
       }
     }
+  }
+
+  /**
+   * Acquire the per-profile advisory lock, RE-READ the profile's expiry inside
+   * the lock, and only then refresh + persist. The transaction holds the lock
+   * until it returns, so a concurrent refresh on another replica blocks here;
+   * once it wins and commits its rotated token, the loser re-reads the now-future
+   * expiry and no-ops rather than overwriting the freshly-rotated refresh token.
+   */
+  private async refreshProfileUnderLock(
+    userId: string,
+    agentId: string,
+    providerId: string,
+    oauthClient: OAuthClient,
+    profileId: string
+  ): Promise<void> {
+    const sql = this.getDbFn();
+    await sql.begin(async (tx) => {
+      await tx.unsafe(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
+        refreshLockTag(profileId),
+      ]);
+
+      // Re-read under the lock — another replica may have rotated this profile
+      // while we waited to acquire it.
+      const profiles = await this.authProfilesManager.getProviderProfiles(
+        agentId,
+        providerId,
+        userId
+      );
+      const oauthProfile = profiles.find((profile) => profile.id === profileId);
+      if (
+        !oauthProfile ||
+        oauthProfile.authType !== "oauth" ||
+        !oauthProfile.metadata?.refreshToken
+      ) {
+        return;
+      }
+
+      const expiresAt = oauthProfile.metadata.expiresAt || 0;
+      if (expiresAt > Date.now() + EXPIRY_BUFFER_MS) {
+        logger.debug(
+          `Skipping ${providerId} refresh for profile ${profileId} — already rotated by another worker`,
+          { expiresAt: new Date(expiresAt).toISOString() }
+        );
+        return;
+      }
+
+      logger.info(
+        `Refreshing ${providerId} token for user ${userId} agent ${agentId} profile ${profileId}`,
+        { expiresAt: new Date(expiresAt).toISOString() }
+      );
+
+      const newCredentials = await oauthClient.refreshToken(
+        oauthProfile.metadata.refreshToken
+      );
+
+      await this.authProfilesManager.upsertProfile({
+        agentId,
+        userId,
+        id: oauthProfile.id,
+        provider: oauthProfile.provider,
+        credential: newCredentials.accessToken,
+        authType: "oauth",
+        label: oauthProfile.label,
+        model: oauthProfile.model,
+        metadata: {
+          ...oauthProfile.metadata,
+          refreshToken: newCredentials.refreshToken,
+          expiresAt: newCredentials.expiresAt,
+        },
+        makePrimary: false,
+      });
+
+      logger.info(
+        `Token refreshed for user ${userId} agent ${agentId} (${providerId})`
+      );
+    });
   }
 }

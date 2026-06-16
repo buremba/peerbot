@@ -181,12 +181,33 @@ export function getRequiredAccessLevel(
   return 'read';
 }
 
+/**
+ * Sentinel scope that means "MCP scope check is not applicable to this
+ * caller" — used for session-cookie and anonymous auth, where authorization
+ * is gated by member role and public-readability instead of token scopes
+ * (those auth types never carry MCP scopes). It is NOT a scope an OAuth/PAT
+ * token can ever present (`parseScopes` only emits `mcp:*`), so it cannot be
+ * forged by a token-based caller.
+ *
+ * INVARIANT: `hasRequiredMcpScope` must FAIL CLOSED on `null`/`undefined`.
+ * A missing scope set is an unauthenticated/under-specified caller, never a
+ * grant of full access. Callers that legitimately have no scope dimension
+ * (session/anonymous) pass this sentinel explicitly; token callers pass their
+ * real scopes (or `[]` for a token minted without any, which then denies).
+ */
+export const SCOPE_CHECK_NOT_APPLICABLE: readonly string[] = ['*'];
+
 export function hasRequiredMcpScope(
   requiredAccess: ToolAccessLevel,
-  scopes: string[] | null | undefined
+  scopes: readonly string[] | null | undefined
 ): boolean {
-  if (scopes == null) return true;
+  // Fail closed: a null/undefined scope set means the caller presented no
+  // MCP scope claim. It must NOT be treated as full access.
+  if (scopes == null) return false;
   if (scopes.length === 0) return false;
+  // Session/anonymous bypass sentinel: scope dimension does not apply (these
+  // callers are gated by role + public-readability upstream).
+  if (scopes.includes('*')) return true;
   const scopeSet = new Set(scopes);
   if (requiredAccess === 'read') {
     return scopeSet.has('mcp:read') || scopeSet.has('mcp:write') || scopeSet.has('mcp:admin');

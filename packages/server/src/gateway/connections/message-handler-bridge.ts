@@ -411,7 +411,8 @@ export class MessageHandlerBridge {
     } else if (trimmedLower === "/clear") {
       await this.conversationState()?.clearHistory(
         this.connection.id,
-        channelId
+        channelId,
+        conversationId
       );
       await thread.post({ text: "Chat history cleared." });
       return;
@@ -529,6 +530,7 @@ export class MessageHandlerBridge {
             await conversationState.appendHistory(
               this.connection.id,
               channelId,
+              conversationId,
               {
                 role: prior.author?.isMe ? "assistant" : "user",
                 content: text,
@@ -557,23 +559,110 @@ export class MessageHandlerBridge {
       }
     }
 
-    const conversationHistory =
-      (await conversationState?.getHistory(this.connection.id, channelId)) ??
-      [];
-
-    await conversationState?.appendHistory(this.connection.id, channelId, {
-      role: "user",
-      content: messageText,
-      authorName: message.author?.fullName,
-      timestamp: Date.now(),
+    await this.enqueueUserTurn({
+      agentId,
+      userId,
+      channelId,
+      conversationId,
+      messageId,
+      messageText,
+      isGroup,
+      thread,
+      teamId,
+      payloadTeamId: isGroup ? channelId : platform,
+      senderUsername: message.author?.userName,
+      senderDisplayName: message.author?.fullName,
+      responseThreadId: thread.id,
+      extraMetadata: {
+        ...(ingestedFiles.length > 0 && { files: ingestedFiles }),
+        ...(sessionReset && { sessionReset: true }),
+      },
+      spanName: "message_received",
+      logMessage: "Message enqueued via Chat SDK bridge",
     });
+  }
+
+  /**
+   * Shared enqueue tail for inbound turns. Owns the history append, payload
+   * build, queue enqueue, and typing indicator that `handleMessage` and
+   * `ingestClick` both perform identically; each caller supplies its
+   * inbound-specific fields (message text, sender hints, span name, …).
+   *
+   * `senderDisplayName` doubles as the history `authorName` — both callers
+   * pass the same value for the two.
+   */
+  private async enqueueUserTurn(args: {
+    agentId: string;
+    userId: string;
+    channelId: string;
+    conversationId: string;
+    messageId: string;
+    messageText: string;
+    isGroup: boolean;
+    thread: any;
+    /**
+     * Platform-native team/workspace id (Slack: team_id) carried on
+     * platformMetadata as a Chat-SDK ephemeral/DM routing hint. Undefined for
+     * platforms with no workspace concept (Telegram, etc.).
+     */
+    teamId: string | undefined;
+    /** The `teamId` field passed to `buildMessagePayload` (routing key). */
+    payloadTeamId: string;
+    senderUsername?: string;
+    senderDisplayName?: string;
+    responseThreadId?: string;
+    extraMetadata?: Record<string, unknown>;
+    spanName: string;
+    logMessage: string;
+    logExtra?: Record<string, unknown>;
+  }): Promise<void> {
+    const {
+      agentId,
+      userId,
+      channelId,
+      conversationId,
+      messageId,
+      messageText,
+      isGroup,
+      thread,
+      teamId,
+      payloadTeamId,
+      senderUsername,
+      senderDisplayName,
+      responseThreadId,
+      extraMetadata,
+      spanName,
+      logMessage,
+      logExtra,
+    } = args;
+    const platform = this.connection.platform;
+
+    const conversationState = this.conversationState();
+    const conversationHistory =
+      (await conversationState?.getHistory(
+        this.connection.id,
+        channelId,
+        conversationId
+      )) ?? [];
+
+    await conversationState?.appendHistory(
+      this.connection.id,
+      channelId,
+      conversationId,
+      {
+        role: "user",
+        content: messageText,
+        authorName: senderDisplayName,
+        timestamp: Date.now(),
+      }
+    );
 
     // Build payload and enqueue
     const traceId = generateTraceId(messageId);
     const agentSettingsStore = this.services.getAgentSettingsStore();
 
     // Create root span for distributed tracing
-    const { span: rootSpan, traceparent } = createRootSpan("message_received", {
+    const { span: rootSpan, traceparent } = createRootSpan(spanName, {
       "lobu.agent_id": agentId,
       "lobu.message_id": messageId,
       "lobu.platform": platform,
@@ -592,7 +681,7 @@ export class MessageHandlerBridge {
         userId,
         botId: platform,
         conversationId,
-        teamId: isGroup ? channelId : platform,
+        teamId: payloadTeamId,
         agentId,
         organizationId: this.connection.organizationId,
         messageId,
@@ -604,21 +693,17 @@ export class MessageHandlerBridge {
           agentId,
           chatId: channelId,
           senderId: userId,
-          senderUsername: message.author?.userName,
-          senderDisplayName: message.author?.fullName,
-          // Platform-native team/workspace id (Slack: team_id). Used by the
-          // Chat SDK as a fallback hint for ephemeral/DM routing. Undefined
-          // for platforms that don't carry a workspace concept (Telegram, etc.)
+          senderUsername,
+          senderDisplayName,
           teamId,
           isGroup,
           connectionId: this.connection.id,
           responseChannel: channelId,
           responseId: messageId,
-          responseThreadId: thread.id,
+          responseThreadId,
           conversationHistory:
             conversationHistory.length > 0 ? conversationHistory : undefined,
-          ...(ingestedFiles.length > 0 && { files: ingestedFiles }),
-          ...(sessionReset && { sessionReset: true }),
+          ...extraMetadata,
         },
         agentOptions,
       });
@@ -633,8 +718,9 @@ export class MessageHandlerBridge {
           messageId,
           agentId,
           connectionId: this.connection.id,
+          ...logExtra,
         },
-        "Message enqueued via Chat SDK bridge"
+        logMessage
       );
 
       // Show typing indicator
@@ -720,90 +806,23 @@ export class MessageHandlerBridge {
     }
     const agentId = resolved.agentId;
 
-    const conversationState = this.conversationState();
-    const conversationHistory =
-      (await conversationState?.getHistory(this.connection.id, channelId)) ??
-      [];
-
-    await conversationState?.appendHistory(this.connection.id, channelId, {
-      role: "user",
-      content: value,
-      authorName,
-      timestamp: Date.now(),
+    await this.enqueueUserTurn({
+      agentId,
+      userId,
+      channelId,
+      conversationId,
+      messageId,
+      messageText: value,
+      isGroup,
+      thread,
+      teamId,
+      payloadTeamId: teamId || platform,
+      senderUsername: authorUsername,
+      senderDisplayName: authorName,
+      responseThreadId: responseThreadId ?? thread.id,
+      spanName: "question_click_received",
+      logMessage: "Question click enqueued via Chat SDK bridge",
+      logExtra: { value },
     });
-
-    const traceId = generateTraceId(messageId);
-    const agentSettingsStore = this.services.getAgentSettingsStore();
-
-    const { span: rootSpan, traceparent } = createRootSpan(
-      "question_click_received",
-      {
-        "lobu.agent_id": agentId,
-        "lobu.message_id": messageId,
-        "lobu.platform": platform,
-        "lobu.connection_id": this.connection.id,
-      }
-    );
-
-    try {
-      const agentOptions = await resolveAgentOptions(
-        agentId,
-        {},
-        agentSettingsStore
-      );
-
-      const payload = buildMessagePayload({
-        platform,
-        userId,
-        botId: platform,
-        conversationId,
-        teamId: teamId || platform,
-        agentId,
-        organizationId: this.connection.organizationId,
-        messageId,
-        messageText: value,
-        channelId,
-        platformMetadata: {
-          traceId,
-          traceparent: traceparent || undefined,
-          agentId,
-          chatId: channelId,
-          senderId: userId,
-          senderUsername: authorUsername,
-          senderDisplayName: authorName,
-          teamId,
-          isGroup,
-          connectionId: this.connection.id,
-          responseChannel: channelId,
-          responseId: messageId,
-          responseThreadId: responseThreadId ?? thread.id,
-          conversationHistory:
-            conversationHistory.length > 0 ? conversationHistory : undefined,
-        },
-        agentOptions,
-      });
-
-      const queueProducer = this.services.getQueueProducer();
-      await queueProducer.enqueueMessage(payload);
-
-      logger.info(
-        {
-          traceId,
-          messageId,
-          agentId,
-          connectionId: this.connection.id,
-          value,
-        },
-        "Question click enqueued via Chat SDK bridge"
-      );
-
-      try {
-        await thread.startTyping?.("Processing...");
-      } catch {
-        // best effort
-      }
-    } finally {
-      rootSpan?.end();
-    }
   }
 }

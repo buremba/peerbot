@@ -207,7 +207,6 @@
         "@opentelemetry/semantic-conventions": "^1.28.0",
         "@sentry/node": "^10.23.0",
         "winston": "^3.17.0",
-        "zod": "^4.1.12",
       },
       "devDependencies": {
         "@types/bun": "1.2.11",

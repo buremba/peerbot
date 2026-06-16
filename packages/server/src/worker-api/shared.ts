@@ -14,7 +14,7 @@ import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { runInWorkerScope } from '../utils/device-claimable-orgs';
 
-export const WORKER_CAPABILITY_NAME_RE = /^[a-z][a-z0-9_.:-]{0,63}$/;
+const WORKER_CAPABILITY_NAME_RE = /^[a-z][a-z0-9_.:-]{0,63}$/;
 
 export function normalizeAdvertisedCapabilities(capabilities: Record<string, boolean>): string[] {
   return Array.from(

@@ -6,12 +6,26 @@
  */
 
 import {
+  type ActionResult,
   acquireBrowser,
   type CdpPage,
   captureErrorArtifacts,
+  type ConnectorDefinition,
+  ConnectorRuntime,
   type EventEnvelope,
+  type SyncContext,
+  type SyncResult,
 } from '@lobu/connector-sdk';
 import type { Browser, Cookie, Page } from 'playwright';
+
+// -----------------------------------------------------------------------------
+// Timing
+// -----------------------------------------------------------------------------
+
+/** Resolve after `ms` milliseconds. Shared across scraper rate-limit/delay loops. */
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 // -----------------------------------------------------------------------------
 // Browser auth helpers
@@ -248,6 +262,39 @@ export function filterByCheckpoint(
   return events.filter((e) => e.occurred_at > cutoff);
 }
 
+/**
+ * Drop events older than `lookbackDays` before now. Bounds the emit window so a
+ * full-history scrape doesn't re-ingest stale reviews on every recurring sync.
+ * A non-positive/undefined `lookbackDays` leaves events untouched.
+ */
+export function applyLookbackCutoff(
+  events: EventEnvelope[],
+  lookbackDays: number | undefined
+): EventEnvelope[] {
+  if (!lookbackDays || lookbackDays <= 0) return events;
+  const cutoff = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
+  return events.filter((e) => e.occurred_at >= cutoff);
+}
+
+/**
+ * Build the next checkpoint for a review scraper after lookback + checkpoint
+ * filtering. Advances `last_timestamp` to the newest emitted event, falling
+ * back to the prior checkpoint's value when nothing new was emitted, and merges
+ * any extra fields (e.g. `last_sync_at`, `last_page`). Mirrors gmaps.ts so all
+ * review scrapers checkpoint identically.
+ */
+export function buildReviewCheckpoint(
+  events: EventEnvelope[],
+  previous: Record<string, unknown> | null,
+  extra: Record<string, unknown> = {}
+): Record<string, unknown> {
+  const priorTimestamp = (previous?.last_timestamp as string | undefined) ?? null;
+  return {
+    ...extra,
+    last_timestamp: events.length > 0 ? events[0].occurred_at.toISOString() : priorTimestamp,
+  };
+}
+
 // -----------------------------------------------------------------------------
 // Error handling with browser cleanup
 // -----------------------------------------------------------------------------
@@ -286,4 +333,108 @@ export async function withBrowserErrorCapture<T>(
       await session.browser.close();
     }
   }
+}
+
+// -----------------------------------------------------------------------------
+// Bridge-only connector base
+// -----------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
+// Review scraper driver
+// -----------------------------------------------------------------------------
+
+/**
+ * What a per-site `extract` returns: the raw (pre-pipeline) events scraped from
+ * the page(s), the per-site checkpoint extras to merge, and a `metadata` builder
+ * that receives the FINAL (post lookback+checkpoint+sort) events so sites can
+ * report either raw or emitted counts.
+ */
+export interface ReviewExtractResult {
+  events: EventEnvelope[];
+  checkpointExtra: Record<string, unknown>;
+  metadata: (finalEvents: EventEnvelope[]) => Record<string, unknown>;
+}
+
+export interface RunReviewScrapeOptions {
+  /** Short connector name for error-artifact filenames, e.g. "trustpilot-sync". */
+  connectorKey: string;
+  /** First page URL to load (already validated/constructed by the caller). */
+  baseUrl: string;
+  /** Domain the URL must belong to (passed to validateUrlDomain). */
+  expectedDomain: string;
+  /** CSS selector for the cookie-consent accept button. */
+  cookieConsentSelector: string;
+  /** CSS selector that review cards match; the driver waits for it after consent. */
+  reviewCardSelector: string;
+  /** page.goto timeout (ms). */
+  gotoTimeoutMs: number;
+  /** Optional per-site page setup run before navigation (viewport, headers). */
+  prepare?: (page: Page | CdpPage) => Promise<void>;
+  /** Optional delay (ms) after cookie consent, before waiting for cards. */
+  postConsentDelayMs?: number;
+  /**
+   * Per-site extraction. Receives the loaded page and whether the review-card
+   * selector appeared within the wait window. Returns raw events + checkpoint
+   * extras + a metadata builder.
+   */
+  extract: (page: Page | CdpPage, cardsFound: boolean) => Promise<ReviewExtractResult>;
+}
+
+/**
+ * Shared driver for browser-based review scrapers (Trustpilot, G2, Capterra,
+ * Glassdoor). Owns the session preamble (user-data-dir → cdp → stealth browser →
+ * error capture), domain validation, navigation, cookie consent, the review-card
+ * wait, and the F11 incremental pipeline: applyLookbackCutoff → filterByCheckpoint
+ * → sort newest-first → buildReviewCheckpoint. Each site supplies only its
+ * selectors and an `extract` callback.
+ */
+export async function runReviewScrape(
+  ctx: SyncContext,
+  opts: RunReviewScrapeOptions
+): Promise<SyncResult> {
+  validateUrlDomain(opts.baseUrl, opts.expectedDomain);
+  const lookbackDays = ctx.config.lookback_days as number | undefined;
+
+  const userDataDir = getBrowserUserDataDir(ctx.sessionState);
+  const cdpUrl = getBrowserCdpUrl(ctx.sessionState) ?? 'auto';
+  const session = await openStealthBrowser({ cdpUrl, userDataDir });
+
+  return withBrowserErrorCapture(session, opts.connectorKey, async (page) => {
+    if (opts.prepare) await opts.prepare(page);
+
+    await page.goto(opts.baseUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: opts.gotoTimeoutMs,
+    });
+
+    await handleCookieConsent(page, opts.cookieConsentSelector);
+
+    if (opts.postConsentDelayMs) await page.waitForTimeout(opts.postConsentDelayMs);
+
+    let cardsFound = false;
+    try {
+      await page.waitForSelector(opts.reviewCardSelector, { timeout: 10000 });
+      cardsFound = true;
+    } catch {
+      // Cards never appeared — extract decides whether to bail or continue.
+    }
+
+    const extracted = await opts.extract(page, cardsFound);
+
+    // F11 incremental pipeline: bound the emit window to lookback_days, drop
+    // already-seen reviews via the checkpoint, then sort newest-first so the
+    // checkpoint advances.
+    let events = applyLookbackCutoff(extracted.events, lookbackDays);
+    events = filterByCheckpoint(events, ctx.checkpoint);
+    events.sort((a, b) => b.occurred_at.getTime() - a.occurred_at.getTime());
+
+    return {
+      events,
+      checkpoint: buildReviewCheckpoint(events, ctx.checkpoint, {
+        last_sync_at: new Date().toISOString(),
+        ...extracted.checkpointExtra,
+      }),
+      metadata: extracted.metadata(events),
+    };
+  });
 }

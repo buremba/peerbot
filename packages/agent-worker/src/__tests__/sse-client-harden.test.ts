@@ -16,10 +16,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import {
-  GatewayClient,
-  consumePendingConfigNotifications,
-} from "../gateway/sse-client";
+import { consumePendingConfigNotifications } from "../gateway/pending-config-notifications";
+import { GatewayClient } from "../gateway/sse-client";
 
 // ---------------------------------------------------------------------------
 // Helpers

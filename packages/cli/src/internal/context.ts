@@ -10,6 +10,27 @@ const CONTEXTS_FILE = join(LOBU_CONFIG_DIR, "config.json");
 
 export const DEFAULT_LOBU_MCP_URL = "https://lobu.ai/mcp";
 
+/**
+ * Org slugs are lowercase alphanumerics plus `-`/`_`, no leading/trailing
+ * separator. Single source of truth for both the API client's slug guard and
+ * `setActiveOrg` validation.
+ */
+export const ORG_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/;
+
+/**
+ * Validate an org slug against {@link ORG_SLUG_PATTERN}, throwing `Error` with a
+ * consistent message when it doesn't match. Callers that need a typed error
+ * (e.g. `ApiClientError`) catch and rewrap.
+ */
+export function validateOrgSlug(slug: string): string {
+  if (!ORG_SLUG_PATTERN.test(slug)) {
+    throw new Error(
+      `Invalid organization slug "${slug}". Slugs may only contain alphanumeric characters, hyphens, and underscores.`
+    );
+  }
+  return slug;
+}
+
 export interface LobuServerConfig {
   port?: number;
   host?: string;
@@ -113,11 +134,7 @@ export async function setActiveOrg(
   if (!trimmed) {
     throw new Error("Organization slug cannot be empty.");
   }
-  if (!/^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/.test(trimmed)) {
-    throw new Error(
-      `Invalid organization slug "${orgSlug}". Slugs may only contain alphanumeric characters, hyphens, and underscores.`
-    );
-  }
+  validateOrgSlug(trimmed);
 
   const config = await loadContextConfig();
   const name = contextName || config.currentContext;

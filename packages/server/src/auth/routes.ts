@@ -15,6 +15,7 @@ import { errorMessage } from '../utils/errors';
 import { resolveBaseUrl } from './base-url';
 import { createAuth } from './index';
 import { mcpAuth, requireAuth } from './middleware';
+import { findExistingPersonalOrg } from './personal-org-provisioning';
 import { OAuthClientsStore } from './oauth/clients';
 import { OAuthProvider } from './oauth/provider';
 import { AVAILABLE_PAT_SCOPES, DEFAULT_SCOPES_STRING } from './oauth/scopes';
@@ -577,13 +578,7 @@ credentialRoutes.post('/local-init', async (c) => {
   const user = humanRows[0] ?? userRows[0]!;
 
   // Find the user's personal org (provisioned by databaseHooks.user.create.after).
-  const orgRows = (await sql`
-    SELECT id, slug, name
-      FROM "organization"
-     WHERE (metadata::jsonb)->>'personal_org_for_user_id' = ${user.id}
-     LIMIT 1
-  `) as unknown as Array<{ id: string; slug: string; name: string }>;
-  const org = orgRows[0];
+  const org = await findExistingPersonalOrg(user.id, sql);
   if (!org) {
     return c.json(
       {

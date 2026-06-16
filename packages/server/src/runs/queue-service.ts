@@ -81,6 +81,76 @@ async function softDeleteOrphanFeed(
 }
 
 /**
+ * Resolve the active connector version (pinned_version → newest active
+ * connector_definition) and, when `requireRunnable`, verify the
+ * connector_versions row has compiled_code OR a bundled source file on disk.
+ * Returns a discriminated result so each caller maps the failure modes to its
+ * own behavior (sync soft-deletes the orphan feed; auth/action throw).
+ */
+type ConnectorVersionResolution =
+  | { ok: true; version: string; compiledCode: string | null; sourcePath: string | null }
+  | { ok: false; reason: 'no-definition' }
+  | { ok: false; reason: 'no-version'; version: string }
+  | { ok: false; reason: 'not-runnable'; version: string };
+
+async function resolveActiveConnectorVersion(
+  sql: DbClient,
+  params: {
+    orgId: string;
+    connectorKey: string;
+    requireRunnable: boolean;
+    pinnedVersion?: string | null;
+  }
+): Promise<ConnectorVersionResolution> {
+  let version: string;
+  if (params.pinnedVersion) {
+    version = params.pinnedVersion;
+  } else {
+    const defRows = await sql`
+      SELECT version FROM connector_definitions
+      WHERE key = ${params.connectorKey}
+        AND organization_id = ${params.orgId}
+        AND status = 'active'
+      ORDER BY updated_at DESC, id DESC
+      LIMIT 1
+    `;
+    if (defRows.length === 0) {
+      return { ok: false, reason: 'no-definition' };
+    }
+    version = (defRows[0] as { version: string }).version;
+  }
+
+  if (!params.requireRunnable) {
+    return { ok: true, version, compiledCode: null, sourcePath: null };
+  }
+
+  const versionRows = await sql`
+    SELECT compiled_code, source_path FROM connector_versions
+    WHERE connector_key = ${params.connectorKey} AND version = ${version}
+    LIMIT 1
+  `;
+  if (versionRows.length === 0) {
+    return { ok: false, reason: 'no-version', version };
+  }
+  const { compiled_code, source_path } = versionRows[0] as {
+    compiled_code: string | null;
+    source_path: string | null;
+  };
+  // Runnable if ANY runtime code source exists: stored compiled code, a
+  // source_path the runtime can compile on demand, or a bundled connector
+  // file. Union of all three so no run type (sync/auth/operation) regresses —
+  // resolveConnectorCode() resolves from whichever is present at execution.
+  if (
+    !compiled_code &&
+    !source_path &&
+    !findBundledConnectorFile(params.connectorKey)
+  ) {
+    return { ok: false, reason: 'not-runnable', version };
+  }
+  return { ok: true, version, compiledCode: compiled_code, sourcePath: source_path };
+}
+
+/**
  * Create a pending sync run for a feed (within an existing client/tx). Returns
  * the run ID, or null if skipped — a duplicate active sync run, or an
  * unresolvable orphan feed that was soft-deleted (see softDeleteOrphanFeed).
@@ -134,21 +204,17 @@ async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<n
     return null;
   }
 
-  // Resolve connector version: pinned_version → connector_definitions.version
-  let connectorVersion: string;
-
-  if (feed.pinned_version) {
-    connectorVersion = feed.pinned_version;
-  } else {
-    const defRows = await sql`
-      SELECT version FROM connector_definitions
-      WHERE key = ${feed.connector_key}
-        AND organization_id = ${feed.organization_id}
-        AND status = 'active'
-      ORDER BY updated_at DESC, id DESC
-      LIMIT 1
-    `;
-    if (defRows.length === 0) {
+  // Resolve connector version: pinned_version → connector_definitions.version,
+  // then verify the version has compiled code or a bundled source for on-demand
+  // compilation.
+  const resolved = await resolveActiveConnectorVersion(sql, {
+    orgId: feed.organization_id,
+    connectorKey: feed.connector_key,
+    requireRunnable: true,
+    pinnedVersion: feed.pinned_version,
+  });
+  if (!resolved.ok) {
+    if (resolved.reason === 'no-definition') {
       // The connector was archived/uninstalled in this org but the feed wasn't
       // soft-deleted (see softDeleteOrphanFeed for why we soft-delete rather
       // than warn-and-return).
@@ -160,39 +226,25 @@ async function createSyncRunWithClient(sql: DbClient, feedId: number): Promise<n
       );
       return null;
     }
-    connectorVersion = (defRows[0] as { version: string }).version;
-  }
-
-  // Verify connector version exists and has compiled code or a source_path for on-demand compilation
-  const versionRows = await sql`
-    SELECT compiled_code, source_path FROM connector_versions
-    WHERE connector_key = ${feed.connector_key} AND version = ${connectorVersion}
-    LIMIT 1
-  `;
-  if (versionRows.length === 0) {
-    throw new Error(
-      `No connector version '${connectorVersion}' found for '${feed.connector_key}'. Build/register connector code first.`
-    );
-  }
-
-  const { compiled_code } = versionRows[0] as {
-    compiled_code: string | null;
-    source_path: string | null;
-  };
-  if (!compiled_code && !findBundledConnectorFile(feed.connector_key)) {
-    // Version is registered but has neither persisted compiled code nor a
-    // bundled source file to compile on demand (e.g. a connector key like
-    // `chrome.tabs` that was never a standalone bundled connector). It can
-    // never run — treat it as an orphan so it stops storming CheckDueFeeds
-    // with a per-poll error instead of looping forever (#1012).
+    if (resolved.reason === 'no-version') {
+      throw new Error(
+        `No connector version '${resolved.version}' found for '${feed.connector_key}'. Build/register connector code first.`
+      );
+    }
+    // not-runnable: version is registered but has neither persisted compiled
+    // code nor a bundled source file to compile on demand (e.g. a connector key
+    // like `chrome.tabs` that was never a standalone bundled connector). It can
+    // never run — treat it as an orphan so it stops storming CheckDueFeeds with
+    // a per-poll error instead of looping forever (#1012).
     await softDeleteOrphanFeed(
       sql,
       feedId,
       feed,
-      `no compiled code and no bundled source for version '${connectorVersion}'.`
+      `no compiled code and no bundled source for version '${resolved.version}'.`
     );
     return null;
   }
+  const connectorVersion = resolved.version;
 
   const inserted = await sql`
     INSERT INTO runs (
@@ -399,39 +451,26 @@ export async function createAuthRun(params: {
 }): Promise<number> {
   const sql = getDb();
 
-  // Resolve connector version
-  const defRows = await sql`
-    SELECT version FROM connector_definitions
-    WHERE key = ${params.connectorKey}
-      AND organization_id = ${params.organizationId}
-      AND status = 'active'
-    ORDER BY updated_at DESC, id DESC
-    LIMIT 1
-  `;
-  if (defRows.length === 0) {
-    throw new Error(`No active connector definition found for '${params.connectorKey}'.`);
-  }
-  const connectorVersion = (defRows[0] as { version: string }).version;
-
-  const versionRows = await sql`
-    SELECT compiled_code, source_path FROM connector_versions
-    WHERE connector_key = ${params.connectorKey} AND version = ${connectorVersion}
-    LIMIT 1
-  `;
-  if (versionRows.length === 0) {
+  // Resolve + verify the connector version is runnable.
+  const resolved = await resolveActiveConnectorVersion(sql, {
+    orgId: params.organizationId,
+    connectorKey: params.connectorKey,
+    requireRunnable: true,
+  });
+  if (!resolved.ok) {
+    if (resolved.reason === 'no-definition') {
+      throw new Error(`No active connector definition found for '${params.connectorKey}'.`);
+    }
+    if (resolved.reason === 'no-version') {
+      throw new Error(
+        `No connector version '${resolved.version}' found for '${params.connectorKey}'.`
+      );
+    }
     throw new Error(
-      `No connector version '${connectorVersion}' found for '${params.connectorKey}'.`
+      `Connector '${params.connectorKey}' has no compiled code or source_path for version '${resolved.version}'.`
     );
   }
-  const { compiled_code, source_path } = versionRows[0] as {
-    compiled_code: string | null;
-    source_path: string | null;
-  };
-  if (!compiled_code && !source_path) {
-    throw new Error(
-      `Connector '${params.connectorKey}' has no compiled code or source_path for version '${connectorVersion}'.`
-    );
-  }
+  const connectorVersion = resolved.version;
 
   try {
     const inserted = await sql`
@@ -498,43 +537,27 @@ export async function createConnectorOperationRun(params: {
   const approvalStatus = params.approvalMode === 'queued' ? 'pending' : 'auto';
   const status = params.approvalMode === 'inline' ? 'running' : 'pending';
 
-  // Resolve connector version from connector_definitions
-  const defRows = await sql`
-    SELECT version FROM connector_definitions
-    WHERE key = ${params.connectorKey}
-      AND organization_id = ${params.organizationId}
-      AND status = 'active'
-    ORDER BY updated_at DESC, id DESC
-    LIMIT 1
-  `;
-  if (defRows.length === 0) {
-    throw new Error(`No active connector definition found for '${params.connectorKey}'.`);
-  }
-  const connectorVersion = (defRows[0] as { version: string }).version;
-
-  // Verify connector version exists and has compiled code or source_path for on-demand compilation
-  if (params.requireCompiledCode) {
-    const versionRows = await sql`
-      SELECT compiled_code, source_path FROM connector_versions
-      WHERE connector_key = ${params.connectorKey} AND version = ${connectorVersion}
-      LIMIT 1
-    `;
-    if (versionRows.length === 0) {
+  // Resolve connector version, verifying it is runnable only when the caller
+  // requires compiled code (device/inline executors that load the bundle).
+  const resolved = await resolveActiveConnectorVersion(sql, {
+    orgId: params.organizationId,
+    connectorKey: params.connectorKey,
+    requireRunnable: params.requireCompiledCode ?? false,
+  });
+  if (!resolved.ok) {
+    if (resolved.reason === 'no-definition') {
+      throw new Error(`No active connector definition found for '${params.connectorKey}'.`);
+    }
+    if (resolved.reason === 'no-version') {
       throw new Error(
-        `No connector version '${connectorVersion}' found for '${params.connectorKey}'. Build/register connector code first.`
+        `No connector version '${resolved.version}' found for '${params.connectorKey}'. Build/register connector code first.`
       );
     }
-
-    const { compiled_code, source_path } = versionRows[0] as {
-      compiled_code: string | null;
-      source_path: string | null;
-    };
-    if (!compiled_code && !source_path) {
-      throw new Error(
-        `Connector '${params.connectorKey}' has no compiled code or source_path for version '${connectorVersion}'.`
-      );
-    }
+    throw new Error(
+      `Connector '${params.connectorKey}' has no compiled code or source_path for version '${resolved.version}'.`
+    );
   }
+  const connectorVersion = resolved.version;
 
   const inserted = await sql`
     INSERT INTO runs (

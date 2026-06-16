@@ -28,8 +28,40 @@ export const HISTORY_TTL_MS = 86_400_000; // 24 hours
 const SESSION_TTL_MS = DEFAULTS.SESSION_TTL_MS;
 const HISTORY_INDEX_LOCK_TTL_MS = 5_000;
 
-function historyKey(connectionId: string, channelId: string): string {
-  return `history:${connectionId}:${channelId}`;
+// Separator between channelId and conversationId in a scope key. Pipe is safe:
+// platform channel/conversation ids (Slack `C…`/`slack:C…:ts`, Telegram numeric
+// / `telegram:…`) never contain it, so the split back to a channel is exact.
+const SCOPE_SEP = "|";
+
+/**
+ * History is scoped to a single conversation, not a whole channel. For
+ * threaded platforms (Slack threads, Telegram forum topics) two distinct
+ * threads in the same channel must NOT share a sliding window — otherwise
+ * thread B's messages bleed into thread A's context (and into
+ * `get_channel_history`). Non-threaded callers pass `conversationId ===
+ * channelId`, which collapses the scope back to the channel.
+ */
+function historyScope(channelId: string, conversationId: string): string {
+  return conversationId && conversationId !== channelId
+    ? `${channelId}${SCOPE_SEP}${conversationId}`
+    : channelId;
+}
+
+/**
+ * Recover the underlying channel id from an index member. Members are either a
+ * bare `channelId` (non-threaded) or `${channelId}${SCOPE_SEP}${conversationId}`.
+ */
+function channelFromScope(scope: string): string {
+  const sep = scope.indexOf(SCOPE_SEP);
+  return sep === -1 ? scope : scope.slice(0, sep);
+}
+
+function historyKey(
+  connectionId: string,
+  channelId: string,
+  conversationId: string
+): string {
+  return `history:${connectionId}:${historyScope(channelId, conversationId)}`;
 }
 
 export function historyIndexKey(connectionId: string): string {
@@ -97,9 +129,14 @@ export class ConversationStateStore {
 
   async getHistory(
     connectionId: string,
-    channelId: string
+    channelId: string,
+    conversationId: string = channelId
   ): Promise<HistoryMessage[]> {
-    const entries = await this.getEntries(connectionId, channelId);
+    const entries = await this.getEntries(
+      connectionId,
+      channelId,
+      conversationId
+    );
 
     return entries.slice(-MAX_HISTORY_MESSAGES).map((entry) => ({
       role: entry.role,
@@ -110,37 +147,74 @@ export class ConversationStateStore {
 
   async getEntries(
     connectionId: string,
-    channelId: string
+    channelId: string,
+    conversationId: string = channelId
   ): Promise<HistoryEntry[]> {
     return this.state.getList<HistoryEntry>(
-      historyKey(connectionId, channelId)
+      historyKey(connectionId, channelId, conversationId)
     );
   }
 
   async appendHistory(
     connectionId: string,
     channelId: string,
+    conversationId: string,
     entry: HistoryEntry
   ): Promise<void> {
     await Promise.all([
-      this.trackHistoryChannel(connectionId, channelId),
-      this.state.appendToList(historyKey(connectionId, channelId), entry, {
-        maxLength: MAX_HISTORY_MESSAGES,
-        ttlMs: HISTORY_TTL_MS,
-      }),
+      this.trackHistoryScope(connectionId, channelId, conversationId),
+      this.state.appendToList(
+        historyKey(connectionId, channelId, conversationId),
+        entry,
+        {
+          maxLength: MAX_HISTORY_MESSAGES,
+          ttlMs: HISTORY_TTL_MS,
+        }
+      ),
     ]);
   }
 
-  async clearHistory(connectionId: string, channelId: string): Promise<void> {
+  async clearHistory(
+    connectionId: string,
+    channelId: string,
+    conversationId: string = channelId
+  ): Promise<void> {
     await Promise.all([
-      this.state.delete(historyKey(connectionId, channelId)),
-      this.removeHistoryChannel(connectionId, channelId),
+      this.state.delete(historyKey(connectionId, channelId, conversationId)),
+      this.removeHistoryScope(connectionId, channelId, conversationId),
     ]);
   }
 
-  async hasHistory(connectionId: string, channelId: string): Promise<boolean> {
-    const entries = await this.getEntries(connectionId, channelId);
+  async hasHistory(
+    connectionId: string,
+    channelId: string,
+    conversationId: string = channelId
+  ): Promise<boolean> {
+    const entries = await this.getEntries(
+      connectionId,
+      channelId,
+      conversationId
+    );
     return entries.length > 0;
+  }
+
+  /**
+   * True when the connection has stored history under ANY conversation scope
+   * within the given channel. Conversation-agnostic — used by connection
+   * selection ("which connection owns this channel"), which must still match a
+   * channel whose history is now split across per-thread scopes.
+   */
+  async hasHistoryForChannel(
+    connectionId: string,
+    channelId: string
+  ): Promise<boolean> {
+    const index = await this.state.get<HistoryChannelIndex>(
+      historyIndexKey(connectionId)
+    );
+    if (!index) return false;
+    return Object.keys(index).some(
+      (scope) => channelFromScope(scope) === channelId
+    );
   }
 
   /**
@@ -181,36 +255,47 @@ export class ConversationStateStore {
       historyIndexKey(connectionId)
     );
     if (!index) return [];
-    return Object.keys(index);
+    // Index members are conversation-scoped (`channel` or `channel conv`);
+    // collapse back to distinct channel ids for callers that want a target.
+    return Array.from(
+      new Set(Object.keys(index).map((scope) => channelFromScope(scope)))
+    );
   }
 
   async clearAllHistory(connectionId: string): Promise<number> {
-    const channels = await this.listHistoryChannels(connectionId);
+    const index = await this.state.get<HistoryChannelIndex>(
+      historyIndexKey(connectionId)
+    );
+    const scopes = index ? Object.keys(index) : [];
     await Promise.all([
-      ...channels.map((channelId) =>
-        this.state.delete(historyKey(connectionId, channelId))
+      ...scopes.map((scope) =>
+        this.state.delete(`history:${connectionId}:${scope}`)
       ),
       this.state.delete(historyIndexKey(connectionId)),
     ]);
-    return channels.length;
+    return scopes.length;
   }
 
-  private async trackHistoryChannel(
+  private async trackHistoryScope(
     connectionId: string,
-    channelId: string
+    channelId: string,
+    conversationId: string
   ): Promise<void> {
+    const scope = historyScope(channelId, conversationId);
     await this.updateHistoryIndex(connectionId, (index) => {
-      index[channelId] = Date.now();
+      index[scope] = Date.now();
       return index;
     });
   }
 
-  private async removeHistoryChannel(
+  private async removeHistoryScope(
     connectionId: string,
-    channelId: string
+    channelId: string,
+    conversationId: string
   ): Promise<void> {
+    const scope = historyScope(channelId, conversationId);
     await this.updateHistoryIndex(connectionId, (index) => {
-      delete index[channelId];
+      delete index[scope];
       return index;
     });
   }

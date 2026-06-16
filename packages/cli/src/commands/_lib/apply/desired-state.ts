@@ -706,7 +706,7 @@ export function validateAuthProfileAgainstConnector(
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
-export interface LoadDesiredStateOptions {
+interface LoadDesiredStateOptions {
   /** Project root (directory containing `lobu.config.ts`). */
   cwd: string;
   /** Env to resolve `$VAR` refs against; defaults to `process.env`. */

@@ -10,9 +10,11 @@ import * as crypto from "node:crypto";
 import type { LookupAddress } from "node:dns";
 import * as http from "node:http";
 import * as net from "node:net";
-import { generateWorkerToken } from "@lobu/core";
+import { generateWorkerToken, verifyWorkerToken } from "@lobu/core";
+import type { RevokedTokenStore } from "../auth/revoked-token-store.js";
 import {
   __testOnly,
+  setProxyRevokedTokenStore,
   startHttpProxy,
   stopHttpProxy,
 } from "../proxy/http-proxy.js";
@@ -173,6 +175,101 @@ describe("HTTP Proxy Authentication", () => {
       });
       // Should pass auth — either upstream response or 502 (network error)
       expect(res.statusCode).not.toBe(407);
+    });
+  });
+
+  // ─── F1: cross-replica revocation ───────────────────────────────────────────
+  // A worker token revoked on pod A is invisible to pod B's in-memory cache.
+  // The proxy auth path must consult the DB-backed `isRevoked()` on a cache
+  // miss, not the cache-only `isRevokedCached()`. We model "revoked on another
+  // pod" with a store whose cache (`isRevokedCached`) reports the jti as
+  // unknown but whose authoritative `isRevoked()` (DB) reports it revoked.
+  describe("revoked worker token (multi-replica)", () => {
+    // A jti already known-revoked in THIS pod's cache (revoked locally, or
+    // pulled in by a prior background refresh). The hot path denies it.
+    function makeCachedRevokedStore(revokedJti: string): RevokedTokenStore {
+      return {
+        async isRevoked(jti: string): Promise<boolean> {
+          return jti === revokedJti;
+        },
+        isRevokedCached(jti: string): boolean {
+          return jti === revokedJti;
+        },
+      } as unknown as RevokedTokenStore;
+    }
+
+    afterEach(() => {
+      setProxyRevokedTokenStore(null);
+    });
+
+    test("denies an HTTP request whose jti is revoked in this pod's cache (407)", async () => {
+      const deploymentName = "revoked-http-worker";
+      const token = createValidToken(deploymentName);
+      const jti = verifyWorkerToken(token)?.jti;
+      expect(jti).toBeTruthy();
+
+      setProxyRevokedTokenStore(makeCachedRevokedStore(jti!));
+
+      const res = await rawProxyRequest("http://example.com/", {
+        proxyAuth: makeBasicAuth(deploymentName, token),
+      });
+      expect(res.statusCode).toBe(407);
+    });
+
+    test("denies a CONNECT tunnel whose jti is revoked in this pod's cache (407)", async () => {
+      const deploymentName = "revoked-connect-worker";
+      const token = createValidToken(deploymentName);
+      const jti = verifyWorkerToken(token)?.jti;
+      expect(jti).toBeTruthy();
+
+      setProxyRevokedTokenStore(makeCachedRevokedStore(jti!));
+
+      const res = await connectRequest("example.com", 443, {
+        proxyAuth: makeBasicAuth(deploymentName, token),
+      });
+      expect(res.statusLine).toContain("407");
+    });
+
+    test("a DIFFERENT (non-revoked) token still passes auth under the same store", async () => {
+      const deploymentName = "live-worker";
+      const token = createValidToken(deploymentName);
+      // Revoke some OTHER jti — this token must remain valid.
+      setProxyRevokedTokenStore(makeCachedRevokedStore("some-other-jti"));
+
+      const res = await rawProxyRequest("http://example.com/", {
+        proxyAuth: makeBasicAuth(deploymentName, token),
+      });
+      expect(res.statusCode).not.toBe(407);
+    });
+
+    test("a cross-replica revoke not yet cached is allowed once, then refreshed into the cache via a background DB lookup", async () => {
+      const deploymentName = "cross-replica-worker";
+      const token = createValidToken(deploymentName);
+      const jti = verifyWorkerToken(token)?.jti;
+      expect(jti).toBeTruthy();
+
+      let isRevokedCalls = 0;
+      // The shared DB sees the cross-pod revoke; this pod's cache hasn't yet.
+      const store = {
+        async isRevoked(j: string): Promise<boolean> {
+          isRevokedCalls += 1;
+          return j === jti;
+        },
+        isRevokedCached(_j: string): boolean {
+          return false;
+        },
+      } as unknown as RevokedTokenStore;
+      setProxyRevokedTokenStore(store);
+
+      // First request: cache miss → allowed (egress is never blocked on the DB),
+      // but the proxy must fire a background refresh so a later request is denied.
+      const res = await rawProxyRequest("http://example.com/", {
+        proxyAuth: makeBasicAuth(deploymentName, token),
+      });
+      expect(res.statusCode).not.toBe(407);
+
+      await new Promise((r) => setTimeout(r, 50));
+      expect(isRevokedCalls).toBeGreaterThan(0);
     });
   });
 

@@ -40,7 +40,6 @@
       "@lobu/openclaw-plugin": ["packages/openclaw-plugin/src/index.ts"],
       "@lobu/openclaw-plugin/*": ["packages/openclaw-plugin/src/*"],
       "@lobu/connector-worker/*": ["packages/connector-worker/src/*"],
-      "@lobu/connectors": ["packages/connectors/src/index.ts"],
       "@lobu/connectors/*": ["packages/connectors/src/*"]
     }
   },

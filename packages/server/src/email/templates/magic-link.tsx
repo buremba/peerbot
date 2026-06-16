@@ -1,6 +1,6 @@
 import { BrandedEmail } from './BrandedEmail';
 
-export interface MagicLinkProps {
+interface MagicLinkProps {
   url: string;
   /**
    * 'sign-in' (default) is a normal login link. 'authorize' is used when an

@@ -50,7 +50,7 @@ export interface SseEvent {
  * and the cross-pod transport can be swapped without touching broadcast
  * call sites.
  */
-export interface SseFanoutPublisher {
+interface SseFanoutPublisher {
   event(agentId: string, entry: SseEvent): void;
   close(agentId: string, reason: string): void;
 }

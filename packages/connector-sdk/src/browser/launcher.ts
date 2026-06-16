@@ -196,20 +196,3 @@ export async function captureErrorArtifacts(
     sdkLogger.error({ error: captureError }, '[BrowserLauncher] Failed to capture error artifacts');
   }
 }
-
-/**
- * Wrap feed execution with error artifact capture
- */
-export async function withErrorCapture<T>(
-  fn: () => Promise<T>,
-  page: any,
-  feedType: string,
-  screenshotDir: string
-): Promise<T> {
-  try {
-    return await fn();
-  } catch (error: any) {
-    await captureErrorArtifacts(page, error, feedType, screenshotDir);
-    throw error;
-  }
-}

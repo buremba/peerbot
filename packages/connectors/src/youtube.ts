@@ -16,6 +16,7 @@ import {
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
+import { sleep } from './browser-scraper-utils.ts';
 
 // ---------------------------------------------------------------------------
 // YouTube API types
@@ -327,7 +328,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
             } catch {
               /* transcript fetch is best-effort */
             }
-            await this.sleep(this.RATE_LIMIT_MS);
+            await sleep(this.RATE_LIMIT_MS);
           }
 
           const hasTranscript = transcript != null && transcript.length > 0;
@@ -468,7 +469,7 @@ export default class YouTubeConnector extends ConnectorRuntime {
       results.push(...data.items);
 
       if (i + 50 < videoIds.length) {
-        await this.sleep(this.RATE_LIMIT_MS);
+        await sleep(this.RATE_LIMIT_MS);
       }
     }
 
@@ -654,9 +655,5 @@ export default class YouTubeConnector extends ConnectorRuntime {
       headers.Authorization = `Bearer ${auth.accessToken}`;
     }
     return this.http.raw(parsedUrl.toString(), { headers });
-  }
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

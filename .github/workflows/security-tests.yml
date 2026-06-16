@@ -83,9 +83,10 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      - name: Build core (server tests import from @lobu/core dist)
+      - name: Build core + connector-sdk (server tests import from their dist)
         run: |
           cd packages/core && bun run build && cd ../..
+          cd packages/connector-sdk && bun run build && cd ../..
 
       - name: Verify Postgres + pgvector
         run: |

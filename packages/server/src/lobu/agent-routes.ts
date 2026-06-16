@@ -14,6 +14,7 @@ import { providerOrgSecretName } from './stores/provider-secrets';
 import { OAuthClient } from '../gateway/auth/oauth/client';
 import { CLAUDE_PROVIDER } from '../gateway/auth/oauth/providers';
 import { ChannelBindingService } from '../gateway/channels/binding-service';
+import { configsEqual } from '../gateway/connections/config-equal';
 import { createAuthProfileLabel } from '../gateway/auth/settings/auth-profiles-manager';
 import type { Env } from '../index';
 import { getConfiguredPublicOrigin } from '../utils/public-origin';
@@ -1244,13 +1245,13 @@ routes.put('/:agentId/platforms/by-stable-id/:stableId', async (c) => {
     }
     merged.platform = platform;
 
-    const configChanged = !configsShallowEqual(merged, previousConfig);
+    const configChanged = !configsEqual(merged, previousConfig);
     // Settings (allowFrom, allowGroups, etc.) are persisted alongside the
     // platform config and are part of "did anything change?" — a
     // settings-only update must trigger willRestart, not be silently noop'd.
     const previousSettings = (current.settings ?? {}) as Record<string, unknown>;
     const mergedSettings = { allowGroups: true, ...settings } as Record<string, unknown>;
-    const settingsChanged = !configsShallowEqual(mergedSettings, previousSettings);
+    const settingsChanged = !configsEqual(mergedSettings, previousSettings);
 
     if (!configChanged && !settingsChanged) {
       return c.json({ noop: true, platform: current }, 200);
@@ -1279,20 +1280,6 @@ routes.put('/:agentId/platforms/by-stable-id/:stableId', async (c) => {
     );
   });
 });
-
-// Shallow equality check matching ChatInstanceManager.configsEqual semantics.
-function configsShallowEqual(
-  a: Record<string, unknown>,
-  b: Record<string, unknown>
-): boolean {
-  const aKeys = Object.keys(a);
-  const bKeys = Object.keys(b);
-  if (aKeys.length !== bKeys.length) return false;
-  for (const key of aKeys) {
-    if (a[key] !== b[key]) return false;
-  }
-  return true;
-}
 
 // ── Get platform ─────────────────────────────────────────────────────────────
 

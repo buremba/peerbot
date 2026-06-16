@@ -53,41 +53,8 @@ import {
   type PlatformAdapterConfig,
   type PlatformConnection,
 } from "./types.js";
+import { configsEqual } from "./config-equal.js";
 
-/**
- * Stable canonical JSON serialization: object keys sorted recursively so two
- * structurally-equal configs serialize identically regardless of key insertion
- * order. Arrays preserve order (order is significant for things like scope
- * lists). Used by `configsEqual` to deep-compare nested config (Discord/Teams
- * OAuth blocks, scope arrays) — a shallow `!==` compares nested objects by
- * reference and never sees a changed inner field, so a stale config would
- * persist without restarting the adapter.
- */
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value) ?? "null";
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
-  }
-  const entries = Object.keys(value as Record<string, unknown>)
-    .sort()
-    .map(
-      (key) =>
-        `${JSON.stringify(key)}:${stableStringify(
-          (value as Record<string, unknown>)[key]
-        )}`
-    );
-  return `{${entries.join(",")}}`;
-}
-
-/** Deep structural equality for plain config objects (nested-aware). */
-function configsEqual(
-  a: Record<string, unknown>,
-  b: Record<string, unknown>
-): boolean {
-  return stableStringify(a) === stableStringify(b);
-}
 
 const logger = createLogger("chat-instance-manager");
 

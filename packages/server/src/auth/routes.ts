@@ -466,8 +466,7 @@ credentialRoutes.post('/extension-session', async (c) => {
 const SSE_TICKET_TTL_MS = 10 * 60 * 1000;
 
 /**
- * Mint a short-lived ticket the embedded SPA appends to SSE URLs as
- * `?access_token=`.
+ * Mint a short-lived ticket the embedded SPA appends to SSE URLs as `?token=`.
  *
  * EventSource can't send `Authorization`, so the cross-site iframe (which has
  * no session cookie) can't authenticate its streams the way `fetch` does. This

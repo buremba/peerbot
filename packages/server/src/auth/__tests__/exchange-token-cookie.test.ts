@@ -1,3 +1,4 @@
+import { Hono } from 'hono';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { cleanupTestDatabase } from '../../__tests__/setup/test-db';
 import {
@@ -9,7 +10,10 @@ import {
   createTestUser,
 } from '../../__tests__/setup/test-fixtures';
 import { get, postForm } from '../../__tests__/setup/test-helpers';
-import { verifySettingsToken } from '../../gateway/routes/public/settings-auth';
+import {
+  verifySettingsSessionOrToken,
+  verifySettingsToken,
+} from '../../gateway/routes/public/settings-auth';
 
 // Two deep-link entry points, two postures:
 //   - GET /exchange-token: first-party tab (CLI/menu-bar) → Lax session cookie.
@@ -167,6 +171,37 @@ describe('SSE ticket (/api/sse-ticket)', () => {
     const payload = await verifySettingsToken(ticket);
     expect(payload?.platform).toBe('external');
     expect((payload?.userId ?? '').length).toBeGreaterThan(0);
+  });
+
+  it('the ticket authenticates through the gate the agent SSE route uses', async () => {
+    const sessionToken = await sessionTokenForNewUser(
+      'sse-gate-org',
+      'sse-gate@test.example.com'
+    );
+    const { ticket } = (await (
+      await get('/api/sse-ticket', { token: sessionToken })
+    ).json()) as { ticket: string };
+
+    // Mirror the agent-events ownership gate verbatim: verifySettingsSessionOrToken(c,'token').
+    const probe = new Hono();
+    probe.get('/probe', async (c) => {
+      const s = await verifySettingsSessionOrToken(c, 'token');
+      return c.json({ userId: s?.userId ?? null, platform: s?.platform ?? null });
+    });
+
+    const withTicket = (await (
+      await probe.fetch(
+        new Request(`http://localhost/probe?token=${encodeURIComponent(ticket)}`)
+      )
+    ).json()) as { userId: string | null; platform: string | null };
+    expect(withTicket.userId).toBeTruthy();
+    expect(withTicket.platform).toBe('external');
+
+    // No ?token → the gate resolves no session (would deny ownership).
+    const without = (await (
+      await probe.fetch(new Request('http://localhost/probe'))
+    ).json()) as { userId: string | null };
+    expect(without.userId).toBeNull();
   });
 
   it('serves the bootstrap page with retry-on-failure handling (no silent redirect)', async () => {

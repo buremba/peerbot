@@ -511,6 +511,32 @@ jobs:
             exit 1
           fi
 
+      - name: Lock-safety lint for new migrations (squawk)
+        # `dbmate up` proves a migration APPLIES to an empty DB; it does not
+        # prove it's safe to apply at prod row counts. squawk catches the
+        # prod-lock-outage class — CREATE INDEX without CONCURRENTLY,
+        # table-rewriting NOT NULL / DEFAULT adds, constraints missing NOT
+        # VALID, etc. Scoped to migrations ADDED/MODIFIED in this PR (the
+        # squashed baseline is unparseable + immutable, and the existing
+        # backlog shouldn't block new work). Excludes:
+        #   - ban-drop-column: this repo does intentional two-phase column drops
+        #   - require-timeout-settings: handled at the deploy layer (no existing
+        #     migration sets per-statement timeouts)
+        # Pinned squawk version matches the `db:lint` package.json script.
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          changed=$(git diff --name-only --diff-filter=AM "$BASE_SHA"...HEAD -- 'db/migrations/*.sql' \
+            | grep -v '^db/migrations/00000000000000_baseline\.sql$' || true)
+          if [ -z "$changed" ]; then
+            echo "No new or modified migrations to lint."
+            exit 0
+          fi
+          echo "Linting migrations:"
+          echo "$changed"
+          echo "$changed" | xargs npx --yes squawk-cli@2.58.0 --exclude=ban-drop-column,require-timeout-settings
+
       - name: Install dbmate
         run: |
           curl -fsSL -o /usr/local/bin/dbmate \

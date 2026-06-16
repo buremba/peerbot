@@ -10,7 +10,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { injectPgvector, resolveEmbeddedNativeDir } from '@lobu/pgvector-embedded';
@@ -50,12 +50,38 @@ let reapedStaleClusters = false;
  * lives that long), once per process, best-effort. Self-healing: every run
  * cleans up the previous runs' leaks, so a kill can never accumulate.
  */
-/** 1h — far longer than any integration run, so a hit is definitely orphaned. */
+/** 1h — far longer than any integration run, so an *idle* hit is orphaned. */
 export const STALE_CLUSTER_MS = 60 * 60 * 1000;
 
 /**
- * Pure, testable core: remove `lobu-test-pg-*` dirs under `dir` whose mtime is
- * older than `staleMs` relative to `now`. Returns how many were removed.
+ * True if `dir` holds a running Postgres: a `postmaster.pid` whose PID is a live
+ * process. embedded-postgres writes this on start and removes it on clean stop,
+ * so it's the authoritative "is this cluster in use" marker — never reap a dir
+ * with a live owner, regardless of age (a long watch/CI run can exceed 1h).
+ */
+function clusterIsLive(dir: string): boolean {
+  let pid: number;
+  try {
+    pid = Number.parseInt(readFileSync(join(dir, 'postmaster.pid'), 'utf8').split('\n', 1)[0], 10);
+  } catch {
+    return false; // no pid file → cleanly stopped or never started
+  }
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0); // signal 0 = liveness probe; throws if the PID is gone
+    return true;
+  } catch (err) {
+    // ESRCH → process gone (dead, safe to reap). EPERM → exists but not ours
+    // (another user's live cluster) → treat as live, do not reap.
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * Pure, testable core: remove `lobu-test-pg-*` dirs under `dir` that are both
+ * older than `staleMs` (relative to `now`) AND have no live Postgres owner.
+ * The liveness gate means a still-running cluster is never deleted even if it
+ * has outlived the staleness window. Returns how many were removed.
  */
 export function reapStaleClustersIn(dir: string, now: number, staleMs: number): number {
   let entries: string[];
@@ -69,10 +95,10 @@ export function reapStaleClustersIn(dir: string, now: number, staleMs: number): 
     if (!name.startsWith('lobu-test-pg-')) continue;
     const path = join(dir, name);
     try {
-      if (now - statSync(path).mtimeMs > staleMs) {
-        rmSync(path, { recursive: true, force: true });
-        removed++;
-      }
+      if (now - statSync(path).mtimeMs <= staleMs) continue; // too young — maybe active
+      if (clusterIsLive(path)) continue; // running owner — never reap, any age
+      rmSync(path, { recursive: true, force: true });
+      removed++;
     } catch {
       // Racing another run's own cleanup, or a permission quirk — ignore.
     }

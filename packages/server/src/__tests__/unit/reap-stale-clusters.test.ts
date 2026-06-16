@@ -7,7 +7,14 @@
  * every embedded-PG start, so a kill can never accumulate. This pins that logic.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -46,6 +53,21 @@ describe('reapStaleClustersIn', () => {
     expect(existsSync(stale)).toBe(false); // reaped
     expect(existsSync(fresh)).toBe(true); // too young — a possibly-active run
     expect(existsSync(other)).toBe(true); // wrong prefix — never touched
+  });
+
+  it('keeps an OLD cluster that is still running (live postmaster.pid)', () => {
+    // A long watch/CI run can outlive the staleness window — its data dir must
+    // never be reaped while the cluster is alive (the review blocker).
+    const live = makeDir('lobu-test-pg-LIVE', STALE_CLUSTER_MS + 60_000);
+    writeFileSync(join(live, 'postmaster.pid'), `${process.pid}\n/some/data\n`); // our own live PID
+    const deadOwner = makeDir('lobu-test-pg-DEAD', STALE_CLUSTER_MS + 60_000);
+    writeFileSync(join(deadOwner, 'postmaster.pid'), '2147483646\n/some/data\n'); // PID that isn't running
+
+    const removed = reapStaleClustersIn(root, now, STALE_CLUSTER_MS);
+
+    expect(existsSync(live)).toBe(true); // live owner → never reaped, despite age
+    expect(existsSync(deadOwner)).toBe(false); // stale pid file, process gone → reaped
+    expect(removed).toBe(1);
   });
 
   it('is a no-op on a missing directory (never throws)', () => {

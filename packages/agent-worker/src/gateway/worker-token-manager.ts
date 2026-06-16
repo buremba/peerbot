@@ -15,17 +15,20 @@
  * The manager holds the current live token and refreshes it against the gateway
  * `/worker/token/refresh` endpoint, which mints a fresh 2h token with the same
  * claims ONLY while the deployment still has an in-flight turn (deployment-
- * liveness revocation model). Two triggers:
- *   - proactive: when the token is close to expiry (checked before each gateway
- *     call), refresh ahead of the 401.
- *   - reactive: a 401 from any gateway call triggers a single refresh + retry.
+ * liveness revocation model). Three triggers:
+ *   - timer (proactive, the load-bearing one for a >2h turn): a scheduled
+ *     refresh fires at the start of the proactive window so the token is
+ *     renewed even if the turn makes NO gateway call — the refresh request must
+ *     travel with a still-valid bearer, since the route rejects an already-
+ *     expired token before the liveness gate.
+ *   - pre-call (proactive): ensureFresh() refreshes ahead of a gateway call
+ *     that happens to land inside the window.
+ *   - reactive: a 401 from a gateway call triggers a single refresh + retry.
  *
- * On a successful refresh the manager updates its in-memory token AND
- * `process.env.WORKER_TOKEN`, so every per-turn env-reader (session-context,
- * snapshot hydrate/clear, deliverFinalResult's hint) and any subsequently-read
- * consumer picks up the live token. Callers that captured the token elsewhere
- * (e.g. HttpWorkerTransport's field) register an onRefresh listener to stay in
- * sync.
+ * The manager is the single source of truth: callers read getToken() (or go
+ * through fetchWithRefresh). On a successful refresh it also mirrors the token
+ * into `process.env.WORKER_TOKEN`, so every per-turn env-reader (session-
+ * context, snapshot hydrate/clear, deliverFinalResult's hint) picks it up.
  */
 
 import { createLogger, ensureBaseUrl, getOptionalEnv } from "@lobu/core";
@@ -51,7 +54,9 @@ function assumedTtlMs(): number {
  */
 const PROACTIVE_REFRESH_FRACTION = 0.2;
 
-export type RefreshListener = (token: string) => void;
+/** Retry cadence for the timer-driven refresh after a transient denial/failure
+ *  near the window edge, so one miss doesn't permanently disable auto-refresh. */
+const AUTO_REFRESH_RETRY_MS = 30_000;
 
 export class WorkerTokenManager {
   private token: string;
@@ -61,9 +66,15 @@ export class WorkerTokenManager {
    *  which only makes the proactive refresh fire earlier, never later). */
   private issuedAtMs: number;
   private readonly gatewayUrl: string;
-  private readonly listeners: RefreshListener[] = [];
   /** De-dupe concurrent refreshes: many gateway calls can race a 401. */
   private inFlight: Promise<string | null> | null = null;
+  /** Timer that fires a refresh at the start of the proactive window, so the
+   *  token is renewed even when the worker makes NO gateway call before expiry
+   *  (the >2h single-turn case where on-demand refresh would otherwise fire
+   *  too late — the bearer would already be expired and the route rejects it
+   *  before the liveness gate). */
+  private autoRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private autoRefreshEnabled = false;
 
   constructor(initialToken: string, gatewayUrl: string, issuedAtMs?: number) {
     this.token = initialToken;
@@ -76,14 +87,61 @@ export class WorkerTokenManager {
   }
 
   /** Adopt a new token from outside (e.g. the per-turn runJobToken swap at the
-   *  start of each turn). Resets the issued-at clock. */
+   *  start of each turn). Resets the issued-at clock and re-arms the timer. */
   adopt(token: string, issuedAtMs: number = Date.now()): void {
     this.token = token;
     this.issuedAtMs = issuedAtMs;
+    if (this.autoRefreshEnabled) this.armAutoRefresh();
   }
 
-  onRefresh(listener: RefreshListener): void {
-    this.listeners.push(listener);
+  /**
+   * Start timer-driven proactive refresh. The worker enables this for the
+   * duration of a turn so a long-running turn that makes no gateway calls still
+   * renews its token BEFORE it hard-expires (refresh must travel with a still-
+   * valid bearer — the route rejects an already-expired token before the
+   * liveness gate). Idempotent; safe to call every turn.
+   */
+  enableAutoRefresh(): void {
+    this.autoRefreshEnabled = true;
+    this.armAutoRefresh();
+  }
+
+  /** Stop the timer (turn end / shutdown / tests). */
+  disableAutoRefresh(): void {
+    this.autoRefreshEnabled = false;
+    if (this.autoRefreshTimer) {
+      clearTimeout(this.autoRefreshTimer);
+      this.autoRefreshTimer = null;
+    }
+  }
+
+  /** (Re)schedule the next proactive refresh at the start of the proactive
+   *  window. If already inside the window, fire on the next tick. */
+  private armAutoRefresh(): void {
+    if (this.autoRefreshTimer) {
+      clearTimeout(this.autoRefreshTimer);
+      this.autoRefreshTimer = null;
+    }
+    const ttl = assumedTtlMs();
+    const fireAt = this.issuedAtMs + ttl * (1 - PROACTIVE_REFRESH_FRACTION);
+    const delay = Math.max(0, fireAt - Date.now());
+    const timer = setTimeout(() => {
+      this.autoRefreshTimer = null;
+      // refresh() re-arms via adopt() on success; on failure (e.g. deployment
+      // not yet/no-longer live) re-arm a short retry so a transient denial near
+      // the window edge doesn't permanently disable the timer.
+      void this.refresh().then((tok) => {
+        if (!tok && this.autoRefreshEnabled && !this.autoRefreshTimer) {
+          this.autoRefreshTimer = setTimeout(
+            () => this.armAutoRefresh(),
+            AUTO_REFRESH_RETRY_MS
+          );
+          this.autoRefreshTimer.unref?.();
+        }
+      });
+    }, delay);
+    timer.unref?.();
+    this.autoRefreshTimer = timer;
   }
 
   /** True when the token is within the proactive-refresh window of expiry. */
@@ -141,18 +199,9 @@ export class WorkerTokenManager {
         return null;
       }
       this.adopt(body.token);
-      // Keep every env-reader and registered consumer on the live token.
+      // Mirror into the env so the env-reading consumers (session-context,
+      // snapshot hydrate/clear, the audio-permission hint) use the live token.
       process.env.WORKER_TOKEN = body.token;
-      for (const l of this.listeners) {
-        try {
-          l(body.token);
-        } catch (err) {
-          logger.warn(
-            { err: err instanceof Error ? err.message : String(err) },
-            "Worker token refresh listener threw"
-          );
-        }
-      }
       logger.info("Refreshed worker token");
       return body.token;
     } catch (err) {
@@ -208,7 +257,8 @@ export function adoptWorkerToken(token: string): void {
   getWorkerTokenManager().adopt(token);
 }
 
-/** Test-only: reset the process-wide manager. */
+/** Test-only: reset the process-wide manager (clears any pending timer). */
 export function __resetWorkerTokenManagerForTests(): void {
+  manager?.disableAutoRefresh();
   manager = null;
 }

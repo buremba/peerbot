@@ -67,13 +67,6 @@ export class HttpWorkerTransport implements WorkerTransport {
     this.jobId = jobId;
   }
 
-  setWorkerToken(workerToken: string): void {
-    // Delegate to the single source of truth. Called per-turn with the fresh
-    // runJobToken (and by the manager's onRefresh listener) so all gateway
-    // calls — here and elsewhere — converge on the same live token.
-    getWorkerTokenManager().adopt(workerToken);
-  }
-
   async signalDone(finalDelta?: string): Promise<void> {
     // Send final delta if there is one
     if (finalDelta) {

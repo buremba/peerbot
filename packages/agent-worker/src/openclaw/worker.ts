@@ -19,7 +19,10 @@ import type {
 } from "../core/types";
 import { WorkspaceManager } from "../core/workspace";
 import { HttpWorkerTransport } from "../gateway/gateway-integration";
-import { adoptWorkerToken } from "../gateway/worker-token-manager";
+import {
+  adoptWorkerToken,
+  getWorkerTokenManager,
+} from "../gateway/worker-token-manager";
 import { generateCustomInstructions } from "../instructions/builder";
 import { ProjectsInstructionProvider } from "../instructions/providers";
 import { fetchAudioProviderSuggestions } from "../shared/audio-provider-suggestions";
@@ -186,6 +189,11 @@ export class OpenClawWorker implements WorkerExecutor {
     // env-reading consumers (session-context, snapshot hydrate/clear, the
     // audio-permission hint).
     adoptWorkerToken(this.config.runJobToken);
+    // Timer-driven proactive refresh: renew the token before it hard-expires
+    // even if this turn makes NO gateway call (the >2h single-turn case — an
+    // on-demand-only refresh would fire too late, with an already-expired
+    // bearer the route rejects before the liveness gate). Disabled in finally.
+    getWorkerTokenManager().enableAutoRefresh();
 
     try {
       this.progressProcessor.reset();
@@ -375,6 +383,10 @@ export class OpenClawWorker implements WorkerExecutor {
         agentId: this.config.agentId,
         runId: this.config.runId,
       });
+    } finally {
+      // Stop the timer-driven proactive refresh for this turn. A warm worker's
+      // next turn re-adopts a fresh per-run token and re-enables it.
+      getWorkerTokenManager().disableAutoRefresh();
     }
   }
 

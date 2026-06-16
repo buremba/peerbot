@@ -156,6 +156,49 @@ describe("proactive refresh (before expiry)", () => {
   });
 });
 
+describe("timer-driven refresh (>2h turn with NO gateway call)", () => {
+  test("the timer refreshes BEFORE expiry even when no gateway call is made", async () => {
+    // The load-bearing fix for the >2h single-turn case: an on-demand-only
+    // refresh would fire too late (expired bearer → route rejects pre-liveness).
+    // Short TTL so the proactive window (last 20%) opens almost immediately.
+    process.env.WORKER_TOKEN_TTL_MS = "200"; // window starts at age 160ms
+    stubFetch({ refreshToken: "timer-refreshed" });
+    const mgr = getWorkerTokenManager();
+    mgr.adopt("will-expire-soon", Date.now());
+    mgr.enableAutoRefresh();
+    try {
+      // Wait past the proactive-window start but before hard expiry would have
+      // mattered — NO fetchWithRefresh / ensureFresh call in between.
+      await new Promise((r) => setTimeout(r, 260));
+      expect(mgr.getToken()).toBe("timer-refreshed");
+      expect(process.env.WORKER_TOKEN).toBe("timer-refreshed");
+    } finally {
+      mgr.disableAutoRefresh();
+    }
+  });
+
+  test("disableAutoRefresh stops further timer refreshes", async () => {
+    process.env.WORKER_TOKEN_TTL_MS = "200";
+    let refreshCount = 0;
+    globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/worker/token/refresh")) {
+        refreshCount += 1;
+        return new Response(JSON.stringify({ token: `r${refreshCount}` }), {
+          status: 200,
+        });
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    const mgr = getWorkerTokenManager();
+    mgr.adopt("seed", Date.now());
+    mgr.enableAutoRefresh();
+    mgr.disableAutoRefresh();
+    await new Promise((r) => setTimeout(r, 260));
+    expect(refreshCount).toBe(0);
+  });
+});
+
 describe("reactive refresh (401 → refresh → retry)", () => {
   test(">2h single turn: a 401 on the terminal POST refreshes and retries with the live token", async () => {
     process.env.WORKER_TOKEN_TTL_MS = "100000"; // not near expiry → no proactive

@@ -174,4 +174,28 @@ describe("POST /worker/token/refresh", () => {
     const res = await postRefresh("not-a-real-token");
     expect(res.status).toBe(401);
   });
+
+  test("SECURITY: an already-EXPIRED token cannot refresh even while the turn is live", async () => {
+    // This bounds the leak window: refresh must travel with a still-valid
+    // bearer. verifyWorkerToken (inside authenticateWorker) rejects an expired
+    // token BEFORE the liveness gate, so an attacker who grabs an expired token
+    // cannot resurrect it via refresh, live deployment or not.
+    await armLiveTurn();
+    const prevTtl = process.env.WORKER_TOKEN_TTL_MS;
+    const prevSkew = process.env.WORKER_TOKEN_CLOCK_SKEW_MS;
+    process.env.WORKER_TOKEN_TTL_MS = "1"; // 1ms TTL
+    process.env.WORKER_TOKEN_CLOCK_SKEW_MS = "0";
+    try {
+      const expired = mintToken({ runId: 42 });
+      // Past TTL + skew (1ms + 0ms).
+      await new Promise((r) => setTimeout(r, 10));
+      const res = await postRefresh(expired);
+      expect(res.status).toBe(401);
+    } finally {
+      if (prevTtl === undefined) delete process.env.WORKER_TOKEN_TTL_MS;
+      else process.env.WORKER_TOKEN_TTL_MS = prevTtl;
+      if (prevSkew === undefined) delete process.env.WORKER_TOKEN_CLOCK_SKEW_MS;
+      else process.env.WORKER_TOKEN_CLOCK_SKEW_MS = prevSkew;
+    }
+  });
 });

@@ -32,10 +32,10 @@ import {
   updateAuthProfile,
 } from '../../utils/auth-profiles';
 import { createConnectToken } from '../../utils/connect-tokens';
-import { getWorkspaceRole } from '../../utils/organization-access';
 import type { ToolContext } from '../registry';
 import { action, defineActionTool } from './action-tool';
 import { getScopedConnectorDefinition } from './connector-definition-helpers';
+import { callerIsAdmin } from './helpers/db-helpers';
 import {
   buildOAuthConnectConfig,
   getBrowserMethods,
@@ -46,7 +46,6 @@ import {
   resolveRequestedOAuthScopes,
   serializeAuthProfile,
 } from './helpers/connection-helpers';
-import { isAdminOrOwnerRole } from '../access-control';
 
 // ============================================
 // Schema
@@ -182,6 +181,16 @@ type ManageAuthProfilesResult =
       auth_profile: any | null;
     };
 
+/**
+ * Standard "auth profile not found" error result. Centralizes the message that
+ * four handlers (get / test / delete / set_default) previously repeated
+ * verbatim after a `getAuthProfileBySlug` miss. Returns the `{ error }` shape
+ * (not a throw) to preserve the existing 200-with-error-body response.
+ */
+function authProfileNotFound(slug: string): { error: string } {
+  return { error: `Auth profile '${slug}' not found` };
+}
+
 // ============================================
 // Main Function (Action Router)
 // ============================================
@@ -226,7 +235,7 @@ async function handleGetAuthProfile(
 ): Promise<ManageAuthProfilesResult> {
   const authProfile = await getAuthProfileBySlug(ctx.organizationId, args.auth_profile_slug);
   if (!authProfile) {
-    return { error: `Auth profile '${args.auth_profile_slug}' not found` };
+    return authProfileNotFound(args.auth_profile_slug);
   }
 
   return {
@@ -241,7 +250,7 @@ async function handleTestAuthProfile(
 ): Promise<ManageAuthProfilesResult> {
   const authProfile = await getAuthProfileBySlug(ctx.organizationId, args.auth_profile_slug);
   if (!authProfile) {
-    return { error: `Auth profile '${args.auth_profile_slug}' not found` };
+    return authProfileNotFound(args.auth_profile_slug);
   }
 
   if (authProfile.profile_kind === 'browser_session') {
@@ -418,10 +427,7 @@ async function handleCreateAuthProfile(
   // org-shared credential (env keys, OAuth app client_id/secret, browser
   // session, interactive). Gate non-personal kinds on admin role.
   if (args.profile_kind !== 'oauth_account') {
-    const role = ctx.userId
-      ? await getWorkspaceRole(getDb(), ctx.organizationId, ctx.userId)
-      : null;
-    if (role !== 'admin' && role !== 'owner') {
+    if (!(await callerIsAdmin(getDb(), ctx))) {
       return {
         error: `Only admins can create ${args.profile_kind} auth profiles. Ask an organization owner or admin to configure these credentials.`,
       };
@@ -494,11 +500,7 @@ async function handleCreateAuthProfile(
       // otherwise a member who knows another member's pending profile slug
       // could mint a fresh connect token for it and complete OAuth into a
       // profile already referenced by someone else's connections.
-      const role = ctx.userId
-        ? await getWorkspaceRole(getDb(), ctx.organizationId, ctx.userId)
-        : null;
-      const callerIsAdmin = isAdminOrOwnerRole(role);
-      if (!callerIsAdmin && existing.created_by !== ctx.userId) {
+      if (!(await callerIsAdmin(getDb(), ctx)) && existing.created_by !== ctx.userId) {
         return {
           error: `Auth profile '${existing.slug}' belongs to another user. Choose a different slug.`,
         };
@@ -678,17 +680,14 @@ async function handleUpdateAuthProfile(
     args.auth_profile_slug
   );
   if (existingForRoleCheck) {
-    const role = ctx.userId
-      ? await getWorkspaceRole(getDb(), ctx.organizationId, ctx.userId)
-      : null;
-    const callerIsAdmin = isAdminOrOwnerRole(role);
-    if (existingForRoleCheck.profile_kind !== 'oauth_account' && !callerIsAdmin) {
+    const isAdmin = await callerIsAdmin(getDb(), ctx);
+    if (existingForRoleCheck.profile_kind !== 'oauth_account' && !isAdmin) {
       return {
         error: `Only admins can modify ${existingForRoleCheck.profile_kind} auth profiles.`,
       };
     }
     if (
-      !callerIsAdmin &&
+      !isAdmin &&
       existingForRoleCheck.profile_kind === 'oauth_account' &&
       existingForRoleCheck.created_by !== ctx.userId
     ) {
@@ -858,7 +857,7 @@ async function handleDeleteAuthProfile(
   const sql = getDb();
   const existing = await getAuthProfileBySlug(ctx.organizationId, args.auth_profile_slug);
   if (!existing) {
-    return { error: `Auth profile '${args.auth_profile_slug}' not found` };
+    return authProfileNotFound(args.auth_profile_slug);
   }
 
   // Check if active connections reference this profile
@@ -974,7 +973,7 @@ async function handleSetDefaultAuthProfile(
   if (args.auth_profile_slug !== null) {
     const target = await getAuthProfileBySlug(ctx.organizationId, args.auth_profile_slug);
     if (!target) {
-      return { error: `Auth profile '${args.auth_profile_slug}' not found` };
+      return authProfileNotFound(args.auth_profile_slug);
     }
     if (target.profile_kind !== 'oauth_app') {
       return {

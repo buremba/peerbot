@@ -10,19 +10,17 @@
  * somehow bypassed the capability gate — same pattern as apple_screen_time.ts.
  */
 
-import {
-  type ActionResult,
-  type ConnectorDefinition,
-  ConnectorRuntime,
-  type SyncContext,
-  type SyncResult,
-} from '@lobu/connector-sdk';
+import { BridgeOnlyConnector, type ConnectorDefinition } from '@lobu/connector-sdk';
 
 const BRIDGE_ONLY_MESSAGE =
   'local.directory runs only on a worker advertising capability "local_directory" (Lobu for Mac). ' +
   'This run was claimed by a worker without that capability — check connector_definitions.required_capability and the poll-time capability filter.';
 
-export default class LocalDirectoryConnector extends ConnectorRuntime {
+export default class LocalDirectoryConnector extends BridgeOnlyConnector {
+  constructor() {
+    super(BRIDGE_ONLY_MESSAGE);
+  }
+
   readonly definition: ConnectorDefinition = {
     key: 'local.directory',
     name: 'Local Folder',
@@ -80,12 +78,4 @@ export default class LocalDirectoryConnector extends ConnectorRuntime {
       },
     },
   };
-
-  async sync(_ctx: SyncContext): Promise<SyncResult> {
-    throw new Error(BRIDGE_ONLY_MESSAGE);
-  }
-
-  async execute(): Promise<ActionResult> {
-    throw new Error(BRIDGE_ONLY_MESSAGE);
-  }
 }

@@ -30,19 +30,17 @@
  * throws immediately instead of silently producing zero events.
  */
 
-import {
-  type ActionResult,
-  type ConnectorDefinition,
-  ConnectorRuntime,
-  type SyncContext,
-  type SyncResult,
-} from '@lobu/connector-sdk';
+import { BridgeOnlyConnector, type ConnectorDefinition } from '@lobu/connector-sdk';
 
 const BRIDGE_ONLY_MESSAGE =
   'apple.photos runs only on a worker advertising capability "photos" (Lobu Mac app with Photos permission). ' +
   'This run was claimed by a worker without that capability — check connector_definitions.required_capability and the poll-time capability filter.';
 
-export default class ApplePhotosConnector extends ConnectorRuntime {
+export default class ApplePhotosConnector extends BridgeOnlyConnector {
+  constructor() {
+    super(BRIDGE_ONLY_MESSAGE);
+  }
+
   readonly definition: ConnectorDefinition = {
     key: 'apple.photos',
     name: 'Apple Photos',
@@ -171,12 +169,4 @@ export default class ApplePhotosConnector extends ConnectorRuntime {
       },
     },
   };
-
-  async sync(_ctx: SyncContext): Promise<SyncResult> {
-    throw new Error(BRIDGE_ONLY_MESSAGE);
-  }
-
-  async execute(): Promise<ActionResult> {
-    throw new Error(BRIDGE_ONLY_MESSAGE);
-  }
 }

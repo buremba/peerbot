@@ -269,7 +269,7 @@ export default class ProductHuntConnector extends ConnectorRuntime {
     const previousCheckpoint = ctx.checkpoint as ProductHuntCheckpoint | null;
 
     const http = createHttpClient({
-      getAccessToken: () => token,
+      token,
       headers: { Accept: 'application/json' },
       errorPrefix: 'Product Hunt API',
     });

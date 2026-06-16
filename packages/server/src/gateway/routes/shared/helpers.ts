@@ -11,6 +11,11 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { SettingsTokenPayload } from "../../auth/settings/token-service.js";
 import { verifySettingsSession } from "../public/settings-auth.js";
 import type { WorkerContext } from "../internal/types.js";
+import {
+  type AgentOwnershipConfig,
+  type AgentOwnershipResult,
+  verifyOwnedAgentAccess,
+} from "./agent-ownership.js";
 
 /**
  * Return a standard JSON error response with the shape `{ error: message }`.
@@ -81,4 +86,74 @@ export function getVerifiedWorker(
     );
   }
   return worker;
+}
+
+interface WithOwnedAgentOptions {
+  /** Ownership stores used by `verifyOwnedAgentAccess`. */
+  access: AgentOwnershipConfig;
+  /** Logged on the unexpected-error 500 path, e.g. "Failed to delete agent". */
+  errorLabel: string;
+  /** Logger used for the 500 path. Matches `createLogger`'s (message, meta). */
+  logger: { error: (message: string, meta?: unknown) => void };
+  /** Status returned when ownership is denied (404 for agents, 403 elsewhere). */
+  deniedStatus?: ContentfulStatusCode;
+  /** Body message returned when ownership is denied. */
+  deniedMessage?: string;
+}
+
+/**
+ * Collapse the auth → agentId-param → ownership → try/catch preamble that every
+ * agent-scoped CRUD handler reimplements.
+ *
+ * Behavior contract (preserved byte-for-byte from the inline handlers):
+ *  - missing session → 401 `Unauthorized` (via `requireSession`)
+ *  - missing `agentId` path param → 400 `Missing agentId`
+ *  - admin sessions BYPASS the ownership check entirely; `access` is then
+ *    `{ authorized: true }` with no owner fields, exactly like the inline code
+ *  - non-admin sessions run `verifyOwnedAgentAccess`; on denial the configured
+ *    `deniedStatus`/`deniedMessage` is returned (default 404 / "Agent not found
+ *    or not owned by you")
+ *  - the handler runs inside a try/catch that logs `errorLabel` and returns
+ *    500 `Internal server error`
+ *
+ * The handler receives the resolved `{ session, agentId, access }` so callers
+ * that need `ownerPlatform`/`ownerUserId` (delete) read them off `access`.
+ */
+export async function withOwnedAgent(
+  c: Context,
+  options: WithOwnedAgentOptions,
+  handler: (ctx: {
+    session: SettingsTokenPayload;
+    agentId: string;
+    access: AgentOwnershipResult;
+  }) => Promise<Response>
+): Promise<Response> {
+  const session = await requireSession(c);
+  if (session instanceof Response) return session;
+
+  const agentId = c.req.param("agentId");
+  if (!agentId) {
+    return errorResponse(c, "Missing agentId", 400);
+  }
+
+  // Ownership resolution runs inside the try/catch so a thrown store error maps
+  // to the same logged 500 the inline handlers produced.
+  try {
+    let access: AgentOwnershipResult = { authorized: true };
+    if (!session.isAdmin) {
+      access = await verifyOwnedAgentAccess(session, agentId, options.access);
+      if (!access.authorized) {
+        return errorResponse(
+          c,
+          options.deniedMessage ?? "Agent not found or not owned by you",
+          options.deniedStatus ?? 404
+        );
+      }
+    }
+
+    return await handler({ session, agentId, access });
+  } catch (error) {
+    options.logger.error(options.errorLabel, { error, agentId });
+    return errorResponse(c, "Internal server error", 500);
+  }
 }

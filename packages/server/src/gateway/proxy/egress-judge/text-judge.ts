@@ -1,18 +1,6 @@
 import { createHash } from "node:crypto";
-import { createLogger } from "@lobu/core";
-import { AnthropicJudgeClient } from "./anthropic-client.js";
 import { VerdictCache } from "./cache.js";
-import { CircuitBreaker } from "./circuit-breaker.js";
-import type { JudgeClient, JudgeVerdict } from "./types.js";
-import {
-  DEFAULT_JUDGE_MODEL,
-  DEFAULT_JUDGE_TIMEOUT_MS,
-  JudgeTimeoutError,
-  envTimeoutMs,
-  withTimeout,
-} from "./judge-utils.js";
-
-const logger = createLogger("text-judge");
+import { JudgeRunner, type JudgeRunnerOptions } from "./judge-runner.js";
 
 /**
  * Separator between policy and text when hashing the cache key. ASCII 0x1F
@@ -56,58 +44,26 @@ function hashPolicy(policy: string): string {
   return createHash("sha256").update(policy).digest("hex");
 }
 
-interface TextJudgeOptions {
-  client?: JudgeClient;
-  defaultModel?: string;
-  cacheTtlMs?: number;
-  cacheMaxEntries?: number;
-  breakerFailureThreshold?: number;
-  breakerCooldownMs?: number;
-  judgeTimeoutMs?: number;
-}
-
 /**
  * Reusable text judge: takes a policy + a chunk of text and returns
- * `{ allow, reason }`. Shares the same Anthropic client, verdict cache and
- * circuit breaker shape as the egress judge -- the cache is scoped to text
- * judges (separate instance) so verdicts from request-shaped requests can't
- * satisfy text-shaped ones.
+ * `{ allow, reason }`. Shares the cache/breaker/timeout/dedup machinery with
+ * the egress judge via {@link JudgeRunner} -- the cache is a separate instance
+ * so verdicts from request-shaped requests can't satisfy text-shaped ones.
  *
  * Single-threaded Node event loop; no locks. Concurrent calls for the same
- * `(policy, text)` are deduped via the in-flight map.
+ * `(policy, text)` are deduped via the runner's in-flight map.
  */
-export class TextJudge {
-  private readonly cache: VerdictCache;
-  private readonly breaker: CircuitBreaker;
-  private readonly inFlight = new Map<string, Promise<JudgeVerdict>>();
-  private readonly defaultModel: string;
-  private readonly judgeTimeoutMs: number;
-  private _client: JudgeClient | undefined;
-
-  constructor(options: TextJudgeOptions = {}) {
-    this.cache = new VerdictCache(
-      options.cacheTtlMs ?? 5 * 60_000,
-      options.cacheMaxEntries ?? 2000
+export class TextJudge extends JudgeRunner<{ allow: boolean; reason: string }> {
+  constructor(options: JudgeRunnerOptions = {}) {
+    super(
+      {
+        loggerName: "text-judge",
+        logPrefix: "Text judge",
+        separator: "--",
+        deniedSuffix: "denied",
+      },
+      options
     );
-    this.breaker = new CircuitBreaker(
-      options.breakerFailureThreshold ?? 5,
-      options.breakerCooldownMs ?? 30_000
-    );
-    this.defaultModel = options.defaultModel ?? DEFAULT_JUDGE_MODEL;
-    this.judgeTimeoutMs =
-      options.judgeTimeoutMs ?? envTimeoutMs() ?? DEFAULT_JUDGE_TIMEOUT_MS;
-    this._client = options.client;
-  }
-
-  /**
-   * Defer client construction until first call so callers with no judge
-   * guardrails never require ANTHROPIC_API_KEY.
-   */
-  private get client(): JudgeClient {
-    if (!this._client) {
-      this._client = new AnthropicJudgeClient();
-    }
-    return this._client;
   }
 
   /**
@@ -135,80 +91,18 @@ export class TextJudge {
       hostname: hashTextJudgeKey(policy, text),
     });
 
-    const cached = this.cache.get(cacheKey);
-    if (cached) {
-      return { allow: cached.verdict === "allow", reason: cached.reason };
-    }
-
-    const existing = this.inFlight.get(cacheKey);
-    if (existing) {
-      const v = await existing;
-      return { allow: v.verdict === "allow", reason: v.reason };
-    }
-
-    const pending = this.runJudge(
-      policy,
-      text,
-      policyHash,
+    return this.run({
       cacheKey,
-      options
-    ).finally(() => {
-      this.inFlight.delete(cacheKey);
+      policyHash,
+      model: options.model,
+      buildPrompts: () => ({
+        systemPrompt: TEXT_JUDGE_SYSTEM_PROMPT,
+        userPrompt: buildUserPrompt(policy, text),
+      }),
+      decorate: (verdict) => ({
+        allow: verdict.verdict === "allow",
+        reason: verdict.reason,
+      }),
     });
-    this.inFlight.set(cacheKey, pending);
-    const v = await pending;
-    return { allow: v.verdict === "allow", reason: v.reason };
   }
-
-  private async runJudge(
-    policy: string,
-    text: string,
-    policyHash: string,
-    cacheKey: string,
-    options: { model?: string }
-  ): Promise<JudgeVerdict> {
-    if (!this.breaker.canProceed(policyHash)) {
-      logger.warn("Text judge circuit open -- failing closed", { policyHash });
-      return {
-        verdict: "deny",
-        reason: "Judge unavailable (circuit breaker open); denied",
-      };
-    }
-
-    const model = options.model ?? this.defaultModel;
-    try {
-      const verdict = await withTimeout(
-        this.client.judge({
-          model,
-          systemPrompt: TEXT_JUDGE_SYSTEM_PROMPT,
-          userPrompt: buildUserPrompt(policy, text),
-        }),
-        this.judgeTimeoutMs
-      );
-      this.breaker.onSuccess(policyHash);
-      this.cache.set(cacheKey, verdict);
-      return verdict;
-    } catch (err) {
-      this.breaker.onFailure(policyHash);
-      const timedOut = err instanceof JudgeTimeoutError;
-      logger.error(
-        timedOut
-          ? "Text judge call timed out -- failing closed"
-          : "Text judge call failed -- failing closed",
-        {
-          policyHash,
-          model,
-          timeoutMs: timedOut ? this.judgeTimeoutMs : undefined,
-          error: err instanceof Error ? err.message : String(err),
-        }
-      );
-      return {
-        verdict: "deny",
-        reason: timedOut
-          ? "Judge call timed out; denied"
-          : "Judge call failed; denied",
-      };
-    }
-  }
-
 }

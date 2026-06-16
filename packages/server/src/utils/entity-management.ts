@@ -6,6 +6,7 @@
  * Organization scoping ensures data isolation.
  */
 
+import { slugify } from '@lobu/core';
 import {
   createDbClientFromEnv,
   type DbClient,
@@ -106,17 +107,6 @@ export interface EntityData {
   external_ids?: Record<string, any>;
   market?: string | null;
   link?: string | null;
-}
-
-/**
- * Generate a URL-safe slug from a string.
- * NOTE: duplicated in packages/owletto/src/lib/url.ts (separate package boundary).
- */
-export function generateSlug(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, ''); // trim leading/trailing hyphens
 }
 
 export interface CreatedEntity {
@@ -278,7 +268,7 @@ export async function createEntity(
   const entityTypeId = typeRow[0].id;
 
   // Generate slug from name if not provided
-  const slug = data.slug || generateSlug(data.name);
+  const slug = data.slug || slugify(data.name);
 
   const metadata = mergeConvenienceFields(data, data.metadata || {}, 'create');
 
@@ -368,7 +358,7 @@ export async function updateEntity(
   }
 
   // Generate new slug if provided or name is being updated
-  const newSlug = data.slug ?? (data.name ? generateSlug(data.name) : null);
+  const newSlug = data.slug ?? (data.name ? slugify(data.name) : null);
 
   const metadataUpdates = mergeConvenienceFields(data, data.metadata ?? {}, 'update');
   const hasMetadataUpdates = Object.keys(metadataUpdates).length > 0;

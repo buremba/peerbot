@@ -1022,6 +1022,33 @@ Use it when the user references past discussions or you need context.`);
     messageProvider: platform,
   };
 
+  // Fire the plugin `agent_end` hook with the live session messages. No-op
+  // when the session never came up (the catch path before construction). An
+  // `error` makes it a failure; its absence makes it a success.
+  const emitAgentEnd = async (error?: string): Promise<void> => {
+    if (!session) return;
+    await runPluginHooks({
+      plugins: loadedPlugins,
+      hook: "agent_end",
+      event: {
+        success: error === undefined,
+        ...(error !== undefined ? { error } : {}),
+        messages: session.messages as unknown as Record<string, unknown>[],
+      },
+      ctx: pluginHookContext,
+    });
+  };
+
+  // The single `SessionExecutionResult` shape every exit path returns. An
+  // `error` flips success off and sets exitCode 1.
+  const buildResult = (error?: string): SessionExecutionResult => ({
+    success: error === undefined,
+    exitCode: error === undefined ? 0 : 1,
+    output: "",
+    ...(error !== undefined ? { error } : {}),
+    sessionKey,
+  });
+
   try {
     const createdSession = await buildAgentSession({
       cwd: workspaceDir,
@@ -1360,12 +1387,7 @@ Use it when the user references past discussions or you need context.`);
       if (deltaTimer) clearTimeout(deltaTimer);
       await stopPluginServices(loadedPlugins);
 
-      return {
-        success: true,
-        exitCode: 0,
-        output: "",
-        sessionKey,
-      };
+      return buildResult();
     }
 
     // Consume any pending config change notifications from SSE events.
@@ -1425,39 +1447,16 @@ Use it when the user references past discussions or you need context.`);
 
     const sessionError = progressProcessor.consumeFatalErrorMessage();
     if (sessionError) {
-      await runPluginHooks({
-        plugins: loadedPlugins,
-        hook: "agent_end",
-        event: {
-          success: false,
-          error: sessionError,
-          messages: session.messages as unknown as Record<string, unknown>[],
-        },
-        ctx: pluginHookContext,
-      });
+      await emitAgentEnd(sessionError);
       const errorWithHint = maybeBuildAuthHintMessage(
         sessionError,
         rawProvider,
         modelId
       );
-      return {
-        success: false,
-        exitCode: 1,
-        output: "",
-        error: errorWithHint,
-        sessionKey,
-      };
+      return buildResult(errorWithHint);
     }
 
-    await runPluginHooks({
-      plugins: loadedPlugins,
-      hook: "agent_end",
-      event: {
-        success: true,
-        messages: session.messages as unknown as Record<string, unknown>[],
-      },
-      ctx: pluginHookContext,
-    });
+    await emitAgentEnd();
 
     // Hand the fully-streamed assistant output to the progress processor so
     // the success path's checkSandboxLeak() (worker.execute) actually runs
@@ -1468,39 +1467,17 @@ Use it when the user references past discussions or you need context.`);
       isFinal: true,
     });
 
-    return {
-      success: true,
-      exitCode: 0,
-      output: "",
-      sessionKey,
-    };
+    return buildResult();
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    if (session) {
-      await runPluginHooks({
-        plugins: loadedPlugins,
-        hook: "agent_end",
-        event: {
-          success: false,
-          error: errorMsg,
-          messages: session.messages as unknown as Record<string, unknown>[],
-        },
-        ctx: pluginHookContext,
-      });
-    }
+    await emitAgentEnd(errorMsg);
     const errorWithHint = maybeBuildAuthHintMessage(
       errorMsg,
       provider,
       modelId
     );
 
-    return {
-      success: false,
-      exitCode: 1,
-      output: "",
-      error: errorWithHint,
-      sessionKey,
-    };
+    return buildResult(errorWithHint);
   } finally {
     if (heartbeatTimer) {
       clearInterval(heartbeatTimer);

@@ -7,11 +7,11 @@
 
 import { serializeSigned } from 'hono/utils/cookie';
 import { hashClientSecret } from '../../auth/oauth/clients';
+import { slugify } from '@lobu/core';
 import { generateSecureToken, hashToken } from '../../auth/oauth/utils';
 import { pgBigintArray, pgTextArray } from '../../db/client';
 import { ensureUniqueConnectionSlug } from '../../utils/connections';
 import { getConfiguredEmbeddingModel } from '../../utils/embeddings';
-import { generateSlug } from '../../utils/entity-management';
 import type { ToolContext } from '../../tools/registry';
 import { getTestDb } from './test-db';
 
@@ -293,7 +293,7 @@ export async function createTestEntity(options: {
   created_by?: string;
 }): Promise<TestEntity> {
   const sql = getTestDb();
-  const slug = generateSlug(options.name);
+  const slug = slugify(options.name);
   const metadata = options.domain ? { domain: options.domain } : {};
 
   // Resolve created_by: use provided user ID or find any existing user in the org

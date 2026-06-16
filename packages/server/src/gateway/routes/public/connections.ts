@@ -11,19 +11,23 @@
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import type { AgentConfigStore } from "@lobu/core";
 import { createLogger } from "@lobu/core";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
 import type { ChatInstanceManager } from "../../connections/chat-instance-manager.js";
+import type { PlatformConnection } from "../../connections/types.js";
 import {
   PlatformAdapterConfigSchema,
   SupportedPlatformSchema,
 } from "../schemas/platform-config.js";
 import { verifyOwnedAgentAccess } from "../shared/agent-ownership.js";
 import { requireSession } from "../shared/helpers.js";
+import {
+  ErrorResponseSchema,
+  errorResponses,
+} from "../shared/openapi-responses.js";
 
 const logger = createLogger("connection-routes");
 const TAG = "Connections";
-const ErrorResponseSchema = z.object({ error: z.string() });
 const FlexibleObjectSchema = z.record(z.string(), z.unknown());
 
 const UserConfigScopeSchema = z.enum([
@@ -57,6 +61,28 @@ async function getLocalTestDefaultTarget(
 ): Promise<string | undefined> {
   const channels = await manager.listHistoryChannels(connectionId);
   return channels[0];
+}
+
+/**
+ * Shared scaffolding for the dev-only local-test endpoints: refuse in
+ * production, then return the active connections on a locally-testable
+ * platform. Returns `null` to signal the production refusal (the caller maps
+ * it to a 404). Status-based, not warm-instance-based: connections hydrate
+ * lazily, so an active row with no local instance is still usable.
+ */
+async function getActiveLocalTestConnections(
+  manager: ChatInstanceManager
+): Promise<PlatformConnection[] | null> {
+  if (process.env.NODE_ENV === "production") {
+    return null;
+  }
+
+  const supported = new Set<string>(LOCAL_TEST_PLATFORMS);
+  const connections = await manager.listConnections();
+  return connections.filter(
+    (connection) =>
+      connection.status === "active" && supported.has(connection.platform)
+  );
 }
 
 // Per-platform config Zod schemas live in ../schemas/platform-config.ts —
@@ -105,22 +131,10 @@ const ListConnectionsRoute = createRoute({
         },
       },
     },
-    401: {
-      description: "Unauthorized",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-    403: {
-      description: "Forbidden",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
+    ...errorResponses(ErrorResponseSchema, {
+      401: "Unauthorized",
+      403: "Forbidden",
+    }),
   },
 });
 
@@ -141,30 +155,11 @@ const GetConnectionRoute = createRoute({
         },
       },
     },
-    401: {
-      description: "Unauthorized",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-    403: {
-      description: "Forbidden",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
-    404: {
-      description: "Connection not found",
-      content: {
-        "application/json": {
-          schema: ErrorResponseSchema,
-        },
-      },
-    },
+    ...errorResponses(ErrorResponseSchema, {
+      401: "Unauthorized",
+      403: "Forbidden",
+      404: "Connection not found",
+    }),
   },
 });
 
@@ -228,50 +223,31 @@ export function createConnectionCrudRoutes(
 ): OpenAPIHono {
   const app = new OpenAPIHono();
 
-  const listLocalTestPlatforms = async (c: any): Promise<any> => {
-    if (process.env.NODE_ENV === "production") {
+  const listLocalTestPlatforms = async (c: Context): Promise<Response> => {
+    const connections = await getActiveLocalTestConnections(manager);
+    if (!connections) {
       return c.json({ error: "Not found" }, 404);
     }
 
-    const supported = new Set<string>(LOCAL_TEST_PLATFORMS);
-    const connections = await manager.listConnections();
     const platforms = [
-      ...new Set(
-        connections
-          // Status-based, not warm-instance-based: connections hydrate
-          // lazily, so an active row with no local instance is still usable.
-          .filter(
-            (connection) =>
-              connection.status === "active" &&
-              supported.has(connection.platform)
-          )
-          .map((connection) => connection.platform)
-      ),
+      ...new Set(connections.map((connection) => connection.platform)),
     ];
 
     return c.json(platforms);
   };
 
-  const listLocalTestTargets = async (c: any): Promise<any> => {
-    if (process.env.NODE_ENV === "production") {
+  const listLocalTestTargets = async (c: Context): Promise<Response> => {
+    const connections = await getActiveLocalTestConnections(manager);
+    if (!connections) {
       return c.json({ error: "Not found" }, 404);
     }
 
-    const supported = new Set<string>(LOCAL_TEST_PLATFORMS);
-    const connections = await manager.listConnections();
     const targets = new Map<
       string,
       { platform: string; defaultTarget?: string; agentId?: string }
     >();
 
     for (const connection of connections) {
-      if (
-        connection.status !== "active" ||
-        !supported.has(connection.platform)
-      ) {
-        continue;
-      }
-
       if (!targets.has(connection.platform)) {
         targets.set(connection.platform, {
           platform: connection.platform,

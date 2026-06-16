@@ -25,6 +25,7 @@ import {
   type WritableSecretStore,
 } from "../secrets/index.js";
 import { runInBatches } from "./deployment-utils.js";
+import { buildWorkerTokenClaims } from "./worker-token-claims.js";
 
 const logger = createLogger("orchestrator");
 
@@ -55,23 +56,12 @@ export function buildDeploymentWorkerToken(args: {
     args.conversationId,
     args.deploymentName,
     {
-      channelId: args.channelId,
-      teamId: args.teamId,
-      platform: args.platform,
-      agentId: args.agentId,
-      organizationId: args.organizationId,
-      connectionId:
-        typeof args.platformMetadata?.connectionId === "string"
-          ? args.platformMetadata.connectionId
-          : undefined,
-      // Headless run origin — mirror runJobToken so a worker that falls back
-      // to this deployment-lifetime token still stamps headless interaction
-      // cards instead of dead-lettering them behind the SSE-owner gate. Same
-      // omitted-claim class as the connectionId P0 (#1274).
-      source:
-        typeof args.platformMetadata?.source === "string"
-          ? args.platformMetadata.source
-          : undefined,
+      // Shared routing claims — kept in lockstep with the per-run mint via
+      // `buildWorkerTokenClaims` so a worker that falls back to this
+      // deployment-lifetime token carries the same connectionId/source and
+      // doesn't dead-letter its interaction cards (#1274).
+      ...buildWorkerTokenClaims(args),
+      // Deployment-token-specific claim.
       traceId: args.traceId,
     }
   );

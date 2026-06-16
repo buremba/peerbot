@@ -9,7 +9,7 @@ export { Type } from '@sinclair/typebox';
 export type { KyInstance, Options } from 'ky';
 export { default as ky, HTTPError } from 'ky';
 // Connector runtime & types (primary API)
-export { ConnectorRuntime } from './connector-runtime.js';
+export { BridgeOnlyConnector, ConnectorRuntime } from './connector-runtime.js';
 export { defineConnector } from './define-connector.js';
 export { validateEntityMetrics } from './metrics.js';
 // Entity-bound metric layer contract (shared by CLI authoring + server
@@ -122,8 +122,12 @@ export {
   normalizeWaJid,
 } from './identity-normalize.js';
 // HTTP client (auth + retry + 429 Retry-After)
-export type { CreateHttpClientOptions, HttpClient } from './http-client.js';
-export { createHttpClient, HttpStatusError } from './http-client.js';
+export type {
+  CreateHttpClientOptions,
+  HttpClient,
+  RequireBearerClientOptions,
+} from './http-client.js';
+export { createHttpClient, HttpStatusError, requireBearerClient } from './http-client.js';
 // Logger
 export { sdkLogger, sdkLogger as logger } from './logger.js';
 // Pagination generators

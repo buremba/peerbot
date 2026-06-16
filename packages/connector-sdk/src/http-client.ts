@@ -8,6 +8,7 @@
  * truncated response body.
  */
 
+import type { SyncCredentials } from './connector-types.js';
 import { withHttpRetry } from './retry.js';
 import { sleep } from './sleep.js';
 
@@ -57,6 +58,13 @@ interface HttpClientRetryOptions {
 }
 
 export interface CreateHttpClientOptions {
+  /**
+   * Static bearer token shorthand: sent as `Authorization: Bearer <token>`
+   * (unless the request already sets one). Use this when the token never
+   * changes for the client's lifetime; for refresh/rotation use
+   * `getAccessToken`. Ignored when `getAccessToken` is also set.
+   */
+  token?: string;
   /**
    * Called once per request; a truthy return value is sent as
    * `Authorization: Bearer <token>` (unless the request already sets one).
@@ -111,8 +119,8 @@ export function createHttpClient(options: CreateHttpClientOptions = {}): HttpCli
     new Headers(init?.headers).forEach((value, key) => {
       headers.set(key, value);
     });
-    if (options.getAccessToken && !headers.has('authorization')) {
-      const token = await options.getAccessToken();
+    if (!headers.has('authorization')) {
+      const token = options.getAccessToken ? await options.getAccessToken() : options.token;
       if (token) headers.set('Authorization', `Bearer ${token}`);
     }
     return headers;
@@ -193,4 +201,39 @@ export function createHttpClient(options: CreateHttpClientOptions = {}): HttpCli
   };
 
   return { raw, request, json, get, post };
+}
+
+export interface RequireBearerClientOptions {
+  /** Prefix for error messages, e.g. `'Spotify API'`. Default `'HTTP'`. */
+  errorPrefix?: string;
+  /**
+   * Human-readable connector name for the missing-auth error message
+   * (`'<label> requires OAuth authentication.'`). Defaults to `errorPrefix`.
+   */
+  label?: string;
+  /** Static headers applied to every request (per-request headers win). */
+  headers?: Record<string, string>;
+}
+
+/**
+ * Resolve a connector's OAuth bearer token and build an auth-aware
+ * `HttpClient` for it. Throws if `credentials.accessToken` is missing — the
+ * preamble every OAuth-backed connector hand-rolls. For connectors that fall
+ * back to an app-only token or an API key, keep the custom resolution and call
+ * `createHttpClient({ token })` directly.
+ */
+export function requireBearerClient(
+  credentials: SyncCredentials | null,
+  options: RequireBearerClientOptions = {}
+): HttpClient {
+  const accessToken = credentials?.accessToken;
+  if (!accessToken) {
+    const label = options.label ?? options.errorPrefix ?? 'This connector';
+    throw new Error(`${label} requires OAuth authentication.`);
+  }
+  return createHttpClient({
+    token: accessToken,
+    errorPrefix: options.errorPrefix,
+    headers: options.headers,
+  });
 }

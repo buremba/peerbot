@@ -1,10 +1,6 @@
 import type { EntityMetrics } from "@lobu/connector-sdk";
 import type { AgentSettings } from "@lobu/core";
-import {
-  extractApiError,
-  fetchWithRetry,
-  parseJsonResponse,
-} from "../../../internal/http.js";
+import { ApiClient, type HttpMethod } from "../../../internal/api-client.js";
 import { resolveApiClient } from "../../../internal/index.js";
 import { ApiError } from "../../memory/_lib/errors.js";
 import type {
@@ -250,17 +246,6 @@ function hoistEntityTypeSchema(
   return out;
 }
 
-async function parseResponseBody(
-  res: Response,
-  url: string
-): Promise<Record<string, unknown>> {
-  const parsed = await parseJsonResponse(res, url, (message) => {
-    throw new ApiError(message);
-  });
-  if (parsed === undefined) return {};
-  return isRecord(parsed) ? parsed : { value: parsed };
-}
-
 // ── Client ─────────────────────────────────────────────────────────────────
 
 interface ApplyClientConfig {
@@ -277,58 +262,55 @@ interface ApplyClientConfig {
  * unset and pick up `globalThis.fetch`.
  */
 export class ApplyClient {
-  private readonly apiBaseUrl: string;
   private readonly orgSlug: string;
-  private readonly token: string;
-  private readonly fetchImpl: typeof fetch;
+  private readonly http: ApiClient;
 
   constructor(cfg: ApplyClientConfig, fetchImpl: typeof fetch = fetch) {
-    this.apiBaseUrl = cfg.apiBaseUrl;
     this.orgSlug = cfg.orgSlug;
-    this.token = cfg.token;
-    this.fetchImpl = fetchImpl;
+    this.http = new ApiClient(cfg.apiBaseUrl, cfg.token, fetchImpl);
   }
 
-  // ── HTTP shape (mirrors openclaw-cmd.ts:postJson, locally scoped) ────────
-
+  /**
+   * Delegates the fetch/parse/non-ok-error pipeline to the shared
+   * {@link ApiClient}, then layers on the apply-specific shape:
+   *   - the body is coerced to a record (`undefined`→`{}`, non-record→`{value}`)
+   *   - a body-level `error` string is treated as a failure even on a 2xx
+   *
+   * Apply endpoints only ever return the listed `okStatuses` (200/201/204) on
+   * success or a 4xx/5xx on failure, so `ApiClient`'s status gate produces the
+   * same outcome the local pipeline did. `Content-Type: application/json` is
+   * sent on every request (no `Accept`) to mirror the previous wire shape.
+   */
   private async request<T>(
-    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+    method: HttpMethod,
     path: string,
     body?: unknown,
     okStatuses: number[] = [200, 201, 204]
   ): Promise<{ status: number; body: T }> {
-    const url = `${this.apiBaseUrl}${path}`;
-    const init: RequestInit = {
+    const { status, body: raw } = await this.http.requestWithStatus<unknown>(
       method,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.token}`,
-      },
-    };
-    if (body !== undefined) init.body = JSON.stringify(body);
-    const res = await fetchWithRetry(url, init, { fetchImpl: this.fetchImpl });
-    const parsed = await parseResponseBody(res, url);
+      path,
+      body,
+      { okStatuses, sendAccept: false, alwaysJsonContentType: true }
+    );
 
-    if (!okStatuses.includes(res.status) && !res.ok) {
-      const { message, code } = extractApiError(
-        parsed,
-        res.status,
-        res.statusText
-      );
-      throw new ApiError(
-        `${method} ${path} failed: ${message}${code ? ` [${code}]` : ""}`,
-        res.status
-      );
+    let parsed: Record<string, unknown>;
+    if (raw === undefined) {
+      parsed = {};
+    } else if (isRecord(raw)) {
+      parsed = raw;
+    } else {
+      parsed = { value: raw };
     }
 
     if (typeof parsed.error === "string" && parsed.error.length > 0) {
       throw new ApiError(
         `${method} ${path} returned error: ${parsed.error}`,
-        res.status
+        status
       );
     }
 
-    return { status: res.status, body: parsed as T };
+    return { status, body: parsed as T };
   }
 
   // ── Organization ──────────────────────────────────────────────────────────

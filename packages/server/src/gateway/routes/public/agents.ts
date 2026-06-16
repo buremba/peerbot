@@ -18,11 +18,12 @@ import type {
 import type { SettingsTokenPayload } from "../../auth/settings/token-service.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
 import type { ChannelBindingService } from "../../channels/binding-service.js";
+import { resolveSettingsLookupUserId } from "../shared/agent-ownership.js";
 import {
-  resolveSettingsLookupUserId,
-  verifyOwnedAgentAccess,
-} from "../shared/agent-ownership.js";
-import { errorResponse, requireSession } from "../shared/helpers.js";
+  errorResponse,
+  requireSession,
+  withOwnedAgent,
+} from "../shared/helpers.js";
 
 const logger = createLogger("agent-routes");
 
@@ -198,128 +199,110 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
     }
   });
 
+  const ownershipAccessConfig = {
+    userAgentsStore: config.userAgentsStore,
+    agentMetadataStore: config.agentMetadataStore,
+  };
+
   // PATCH /api/v1/agents/{agentId} - Update agent name/description
-  router.patch("/:agentId", async (c) => {
-    const payload = await requireSession(c);
-    if (payload instanceof Response) return payload;
+  router.patch("/:agentId", async (c) =>
+    withOwnedAgent(
+      c,
+      {
+        access: ownershipAccessConfig,
+        errorLabel: "Failed to update agent",
+        logger,
+      },
+      async ({ agentId }) => {
+        const body = await c.req.json<{
+          name?: string;
+          description?: string;
+        }>();
+        const updates: { name?: string; description?: string } = {};
 
-    const agentId = c.req.param("agentId");
-    if (!agentId) {
-      return errorResponse(c, "Missing agentId", 400);
-    }
-
-    try {
-      // Verify ownership (admins bypass)
-      if (!payload.isAdmin) {
-        const access = await verifyOwnedAgentAccess(payload, agentId, {
-          userAgentsStore: config.userAgentsStore,
-          agentMetadataStore: config.agentMetadataStore,
-        });
-        if (!access.authorized) {
-          return errorResponse(c, "Agent not found or not owned by you", 404);
+        if (body.name !== undefined) {
+          const name = body.name.trim();
+          if (!name || name.length > 100) {
+            return errorResponse(c, "Name must be 1-100 characters", 400);
+          }
+          updates.name = name;
         }
-      }
 
-      const body = await c.req.json<{ name?: string; description?: string }>();
-      const updates: { name?: string; description?: string } = {};
-
-      if (body.name !== undefined) {
-        const name = body.name.trim();
-        if (!name || name.length > 100) {
-          return errorResponse(c, "Name must be 1-100 characters", 400);
+        if (body.description !== undefined) {
+          const desc = body.description.trim();
+          if (desc.length > 200) {
+            return errorResponse(
+              c,
+              "Description must be at most 200 characters",
+              400
+            );
+          }
+          updates.description = desc;
         }
-        updates.name = name;
-      }
 
-      if (body.description !== undefined) {
-        const desc = body.description.trim();
-        if (desc.length > 200) {
-          return errorResponse(
-            c,
-            "Description must be at most 200 characters",
-            400
-          );
+        if (Object.keys(updates).length === 0) {
+          return errorResponse(c, "No fields to update", 400);
         }
-        updates.description = desc;
-      }
 
-      if (Object.keys(updates).length === 0) {
-        return errorResponse(c, "No fields to update", 400);
+        await config.agentMetadataStore.updateMetadata(agentId, updates);
+        logger.info(`Updated agent identity for ${agentId}`);
+        return c.json({ success: true });
       }
-
-      await config.agentMetadataStore.updateMetadata(agentId, updates);
-      logger.info(`Updated agent identity for ${agentId}`);
-      return c.json({ success: true });
-    } catch (error) {
-      logger.error("Failed to update agent", { error, agentId });
-      return errorResponse(c, "Internal server error", 500);
-    }
-  });
+    )
+  );
 
   // DELETE /api/v1/agents/{agentId} - Delete an agent
-  router.delete("/:agentId", async (c) => {
-    const payload = await requireSession(c);
-    if (payload instanceof Response) return payload;
+  router.delete("/:agentId", async (c) =>
+    withOwnedAgent(
+      c,
+      {
+        access: ownershipAccessConfig,
+        errorLabel: "Failed to delete agent",
+        logger,
+      },
+      async ({ session, agentId, access }) => {
+        // Owner fields are only populated for non-admin sessions (admins
+        // bypass the ownership check), matching the prior inline behavior.
+        const ownerPlatform = access.ownerPlatform;
+        const ownerUserId = access.ownerUserId;
 
-    const agentId = c.req.param("agentId");
-    if (!agentId) {
-      return errorResponse(c, "Missing agentId", 400);
-    }
+        // Auto-unbind all channels
+        const unboundCount =
+          await config.channelBindingService.deleteAllBindings(agentId);
 
-    try {
-      // Verify ownership (admins bypass)
-      let ownerPlatform: string | undefined;
-      let ownerUserId: string | undefined;
-      if (!payload.isAdmin) {
-        const access = await verifyOwnedAgentAccess(payload, agentId, {
-          userAgentsStore: config.userAgentsStore,
-          agentMetadataStore: config.agentMetadataStore,
-        });
-        if (!access.authorized) {
-          return errorResponse(c, "Agent not found or not owned by you", 404);
-        }
-        ownerPlatform = access.ownerPlatform;
-        ownerUserId = access.ownerUserId;
-      }
+        // Delete settings
+        await config.agentSettingsStore.deleteSettings(agentId);
 
-      // Auto-unbind all channels
-      const unboundCount =
-        await config.channelBindingService.deleteAllBindings(agentId);
+        // Delete metadata
+        await config.agentMetadataStore.deleteAgent(agentId);
 
-      // Delete settings
-      await config.agentSettingsStore.deleteSettings(agentId);
-
-      // Delete metadata
-      await config.agentMetadataStore.deleteAgent(agentId);
-
-      // Remove from user's list
-      await config.userAgentsStore.removeAgent(
-        payload.platform,
-        resolveSettingsLookupUserId(payload),
-        agentId
-      );
-      if (
-        ownerPlatform &&
-        ownerUserId &&
-        (ownerPlatform !== payload.platform || ownerUserId !== payload.userId)
-      ) {
+        // Remove from user's list
         await config.userAgentsStore.removeAgent(
-          ownerPlatform,
-          ownerUserId,
+          session.platform,
+          resolveSettingsLookupUserId(session),
           agentId
         );
+        if (
+          ownerPlatform &&
+          ownerUserId &&
+          (ownerPlatform !== session.platform ||
+            ownerUserId !== session.userId)
+        ) {
+          await config.userAgentsStore.removeAgent(
+            ownerPlatform,
+            ownerUserId,
+            agentId
+          );
+        }
+
+        logger.info(
+          `Deleted agent ${agentId} (unbound ${unboundCount} channels)`
+        );
+
+        return c.json({ success: true, unboundChannels: unboundCount });
       }
-
-      logger.info(
-        `Deleted agent ${agentId} (unbound ${unboundCount} channels)`
-      );
-
-      return c.json({ success: true, unboundChannels: unboundCount });
-    } catch (error) {
-      logger.error("Failed to delete agent", { error, agentId });
-      return errorResponse(c, "Internal server error", 500);
-    }
-  });
+    )
+  );
 
   logger.debug("Agent management routes registered");
   return router;

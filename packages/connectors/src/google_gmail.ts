@@ -760,6 +760,6 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
   }
 
   private createClient(token: string): HttpClient {
-    return createHttpClient({ getAccessToken: () => token, errorPrefix: 'Gmail API' });
+    return createHttpClient({ token, errorPrefix: 'Gmail API' });
   }
 }

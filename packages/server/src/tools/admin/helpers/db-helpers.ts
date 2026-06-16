@@ -6,6 +6,27 @@
  */
 
 import { type DbClient, pgBigintArray } from '../../../db/client';
+import { getWorkspaceRole } from '../../../utils/organization-access';
+import { isAdminOrOwnerRole } from '../../access-control';
+
+/**
+ * Resolve whether the caller holds admin-tier (admin/owner) access in their
+ * bound org. Anonymous / userless callers (`userId == null`) are never admin,
+ * so we skip the membership lookup and return false — matching the hand-rolled
+ * `ctx.userId ? getWorkspaceRole(...) : null` + `isAdminOrOwnerRole(role)`
+ * pattern these handlers previously inlined.
+ *
+ * Takes an explicit `sql` so callers inside a transaction pass their tx client
+ * (admin gating must see uncommitted rows in the same tx).
+ */
+export async function callerIsAdmin(
+  sql: DbClient,
+  ctx: { organizationId: string; userId: string | null }
+): Promise<boolean> {
+  if (!ctx.userId) return false;
+  const role = await getWorkspaceRole(sql, ctx.organizationId, ctx.userId);
+  return isAdminOrOwnerRole(role);
+}
 
 /**
  * Valid tables for requireExists. Uses a whitelist so we can safely

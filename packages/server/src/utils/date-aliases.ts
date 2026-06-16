@@ -1,5 +1,3 @@
-import { inferWatcherGranularityFromDays } from '@lobu/connector-sdk';
-
 /**
  * Date Alias Parsing Utility
  *
@@ -131,24 +129,6 @@ export function parseDateAlias(alias: string, referenceDate: Date = new Date()):
       '  - Relative: 7d, 30d, 90d, 1m, 3m, 6m, 1y (d=days, w=weeks, m=months, q=quarters, y=years)\n' +
       '  - ISO 8601: 2025-01-01 or 2025-01-01T12:00:00Z'
   );
-}
-
-/**
- * Calculate the difference in days between two dates
- * Used for granularity inference
- */
-export function daysBetween(start: Date, end: Date): number {
-  const msPerDay = 1000 * 60 * 60 * 24;
-  return Math.abs(Math.floor((end.getTime() - start.getTime()) / msPerDay));
-}
-
-/**
- * Infer the best granularity based on a date range
- * @param daysDiff - Number of days in the range
- * @returns Suggested granularity
- */
-export function inferGranularity(daysDiff: number): string {
-  return inferWatcherGranularityFromDays(daysDiff);
 }
 
 /**

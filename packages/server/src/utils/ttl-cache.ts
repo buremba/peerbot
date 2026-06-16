@@ -19,6 +19,20 @@ export class TtlCache<V> {
     this.store.set(key, { value, expiresAt: Date.now() + this.ttlMs });
   }
 
+  /**
+   * Return the cached value for `key`, or compute it via `loader`, store it, and
+   * return it on a miss. Collapses the get/null-check/set boilerplate at call
+   * sites. Per-pod cache (no cross-replica sharing) — identical semantics to a
+   * manual get-then-set.
+   */
+  async getOrSet(key: string, loader: () => Promise<V>): Promise<V> {
+    const cached = this.get(key);
+    if (cached !== undefined) return cached;
+    const value = await loader();
+    this.set(key, value);
+    return value;
+  }
+
   delete(key: string): void {
     this.store.delete(key);
   }

@@ -1,14 +1,11 @@
 import { createHash } from "node:crypto";
 import type {
   Guardrail,
-  GuardrailContext,
   GuardrailStage,
-  InputGuardrailContext,
-  OutputGuardrailContext,
   PreToolGuardrailContext,
 } from "@lobu/core";
 import { TextJudge } from "../proxy/egress-judge/text-judge.js";
-import { safeStringify } from "./safe-stringify.js";
+import { extractStageText } from "./stage-text.js";
 
 /**
  * Lazily-constructed singleton TextJudge so multiple judge guardrails share
@@ -21,30 +18,6 @@ function getSharedJudge(): TextJudge {
   return sharedJudge;
 }
 
-/**
- * Extract the inspectable text from each stage's context. `pre-tool` has no
- * single text field, so we serialize the tool name + arguments so the judge
- * can reason about it.
- */
-function extractText<S extends GuardrailStage>(
-  stage: S,
-  ctx: GuardrailContext[S]
-): string {
-  switch (stage) {
-    case "input":
-      return (ctx as InputGuardrailContext).message;
-    case "output":
-      return (ctx as OutputGuardrailContext).text;
-    case "pre-tool": {
-      const c = ctx as PreToolGuardrailContext;
-      // safeStringify so BigInt / circular args don't throw — a thrown
-      // guardrail is treated as a pass by the runner.
-      return `tool: ${c.toolName}\narguments: ${safeStringify(c.arguments)}`;
-    }
-    default:
-      throw new Error(`Unknown guardrail stage: ${String(stage)}`);
-  }
-}
 
 /**
  * Short stable id for an inline judge — first 8 chars of
@@ -129,7 +102,12 @@ export function createJudgeGuardrail<S extends GuardrailStage>(
         }
       }
       const judge = options.judge ?? getSharedJudge();
-      const text = extractText(stage, ctx);
+      // Prefix `pre-tool` args with the tool name so the judge can reason
+      // about which tool is being called.
+      const text = extractStageText(stage, ctx, {
+        includeToolName: true,
+        throwOnUnknown: true,
+      });
       const verdict = await judge.decide(policy, text, { model: options.model });
       if (verdict.allow) {
         return { tripped: false };

@@ -265,7 +265,7 @@ async function syncViaOAuthApi(
   }
 
   const http = createHttpClient({
-    getAccessToken: () => accessToken,
+    token: accessToken,
     headers: { 'Content-Type': 'application/json' },
     errorPrefix: 'X API',
   });

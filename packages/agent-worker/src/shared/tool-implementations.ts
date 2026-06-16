@@ -21,6 +21,24 @@ function textResult(text: string): TextResult {
   return { content: [{ type: "text" as const, text }] };
 }
 
+/**
+ * Join the `text` of every `{ type: "text" }` block in an MCP/tool content
+ * array with newlines. Centralizes the `.filter(...).map(...).join("\n")`
+ * idiom that every caller (link-button errors, MCP tool results, the MCP CLI)
+ * otherwise hand-rolls. Tolerates blocks with a missing `text` field.
+ */
+export function joinTextContent(
+  content: Array<{ type: string; text?: string }> | undefined
+): string {
+  return (content ?? [])
+    .filter(
+      (c): c is { type: "text"; text: string } =>
+        c.type === "text" && typeof c.text === "string"
+    )
+    .map((c) => c.text)
+    .join("\n");
+}
+
 /** TextResult carrying a JSON-encoded payload (MCP auth tool responses). */
 function jsonResult(payload: Record<string, unknown>): TextResult {
   return textResult(JSON.stringify(payload));
@@ -120,10 +138,7 @@ async function postLinkButton(
   );
 
   if (error) {
-    const text = error.content
-      .filter((c) => c.type === "text")
-      .map((c) => c.text)
-      .join("\n");
+    const text = joinTextContent(error.content);
     throw new Error(text || "Failed to post link button");
   }
 }
@@ -202,6 +217,58 @@ async function formDataToBuffer(formData: FormData): Promise<Buffer> {
     formData.on("error", (err: Error) => reject(err));
     formData.resume();
   });
+}
+
+// ============================================================================
+// Utility: multipart upload to /internal/files/upload
+// ============================================================================
+
+/**
+ * POST a pre-built `FormData` to the gateway's file-upload endpoint. Owns the
+ * buffer-serialization, the worker-auth + channel/conversation headers, the
+ * `Content-Length`, the abort budget, and the `TimeoutError` → discriminated
+ * result mapping that both `uploadUserFile` and `uploadGeneratedFile`
+ * otherwise hand-roll. Callers keep their own success/error body handling
+ * (the two endpoints surface different fields), so this returns the raw
+ * `Response` on success and a `timedOut` flag instead of a `TextResult`.
+ *
+ * The `FormData` body is built by the caller (buffer vs. read-stream), so the
+ * streaming behaviour of generated-file uploads is preserved exactly.
+ */
+async function uploadMultipart(
+  gw: GatewayParams,
+  options: {
+    formData: FormData;
+    extraHeaders?: Record<string, string>;
+    timeoutMs?: number;
+  }
+): Promise<{ ok: true; response: Response } | { ok: false; timedOut: true }> {
+  const formDataBuffer = await formDataToBuffer(options.formData);
+  const fdHeaders = options.formData.getHeaders();
+
+  try {
+    const response = await fetch(`${gw.gatewayUrl}/internal/files/upload`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${gw.workerToken}`,
+        "X-Channel-Id": gw.channelId,
+        "X-Conversation-Id": gw.conversationId,
+        ...fdHeaders,
+        "Content-Length": formDataBuffer.length.toString(),
+        ...options.extraHeaders,
+      },
+      body: formDataBuffer,
+      // A stalled gateway upload must not wedge the agent turn forever —
+      // a 5-minute ceiling is well above any legitimate file delivery.
+      signal: AbortSignal.timeout(options.timeoutMs ?? 300_000),
+    });
+    return { ok: true, response };
+  } catch (err) {
+    if (err instanceof Error && err.name === "TimeoutError") {
+      return { ok: false, timedOut: true };
+    }
+    throw err;
+  }
 }
 
 // ============================================================================
@@ -306,33 +373,11 @@ export async function uploadUserFile(
       formData.append("comment", args.description);
     }
 
-    const formDataBuffer = await formDataToBuffer(formData);
-    const fdHeaders = formData.getHeaders();
-
-    let response: Response;
-    try {
-      response = await fetch(`${gw.gatewayUrl}/internal/files/upload`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${gw.workerToken}`,
-          "X-Channel-Id": gw.channelId,
-          "X-Conversation-Id": gw.conversationId,
-          ...fdHeaders,
-          "Content-Length": formDataBuffer.length.toString(),
-        },
-        body: formDataBuffer,
-        // A stalled gateway upload must not wedge the agent turn forever —
-        // a 5-minute ceiling is well above any legitimate file delivery.
-        signal: AbortSignal.timeout(300_000),
-      });
-    } catch (err) {
-      if (err instanceof Error && err.name === "TimeoutError") {
-        return textResult(
-          `Error: Failed to show file to user: upload timed out`
-        );
-      }
-      throw err;
+    const upload = await uploadMultipart(gw, { formData });
+    if (!upload.ok) {
+      return textResult(`Error: Failed to show file to user: upload timed out`);
     }
+    const response = upload.response;
 
     if (!response.ok) {
       const error = await response.text();
@@ -616,33 +661,13 @@ async function uploadGeneratedFile(
     formData.append("filename", filename);
     formData.append("comment", "Generated content");
 
-    const formDataBuffer = await formDataToBuffer(formData);
-    const fdHeaders = formData.getHeaders();
-
-    let uploadResponse: Response;
-    try {
-      uploadResponse = await fetch(`${gw.gatewayUrl}/internal/files/upload`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${gw.workerToken}`,
-          "X-Channel-Id": gw.channelId,
-          "X-Conversation-Id": gw.conversationId,
-          ...fdHeaders,
-          "Content-Length": formDataBuffer.length.toString(),
-          ...extraHeaders,
-        },
-        body: formDataBuffer,
-        signal: AbortSignal.timeout(300_000),
-      });
-    } catch (err) {
-      if (err instanceof Error && err.name === "TimeoutError") {
-        return textResult(`Generated content but upload timed out`);
-      }
-      throw err;
+    const upload = await uploadMultipart(gw, { formData, extraHeaders });
+    if (!upload.ok) {
+      return textResult(`Generated content but upload timed out`);
     }
 
-    if (!uploadResponse.ok) {
-      const uploadError = await uploadResponse.text();
+    if (!upload.response.ok) {
+      const uploadError = await upload.response.text();
       return textResult(`Generated content but failed to send: ${uploadError}`);
     }
 
@@ -652,6 +677,108 @@ async function uploadGeneratedFile(
       await fs.unlink(tempPath).catch(() => undefined);
     }
   }
+}
+
+// ============================================================================
+// Shared driver: generate media → upload to the user
+// ============================================================================
+
+/**
+ * Shared skeleton for `generate_image` / `generate_audio`: optional preflight
+ * "is this configured?" check → POST the generate request → map `!ok` into one
+ * of three operator-facing messages (provider-list / missing-scope / generic)
+ * → read the binary body → upload it via `uploadGeneratedFile`. The two public
+ * tools below are thin config objects over this; only the endpoint, preflight,
+ * MIME→ext mapping, scope-substring match, and wording differ.
+ */
+async function generateAndUploadMedia(
+  gw: GatewayParams,
+  config: {
+    label: string;
+    logLine: string;
+    /**
+     * Pre-generation gate. Returns a `notConfigured` message to short-circuit
+     * with, or `null` to proceed. Also exposes the resolved provider list so
+     * the missing-scope branch can reference it.
+     */
+    preflight: () => Promise<{
+      notConfigured: string | null;
+      providerList: string;
+    }>;
+    endpoint: string;
+    requestBody: Record<string, unknown>;
+    /** Substring scan over the lowercased error message → missing-scope path. */
+    missingScopeMatch: (lowerError: string) => boolean;
+    extFromMime: (mimeType: string) => string;
+    defaultMimeType: string;
+    providerHeader: string;
+    uploadFilename: (ext: string) => string;
+    uploadHeaders?: Record<string, string>;
+    messages: {
+      providerListFailure: (errorMessage: string) => string;
+      missingScopeFailure: (providerList: string) => string;
+      genericFailure: (errorMessage: string) => string;
+      success: (provider: string) => string;
+      uploadLog: (provider: string) => string;
+    };
+  }
+): Promise<TextResult> {
+  return withErrorHandling(config.label, async () => {
+    logger.info(config.logLine);
+
+    const { notConfigured, providerList } = await config.preflight();
+    if (notConfigured) {
+      return textResult(notConfigured);
+    }
+
+    const response = await createGatewayClient({
+      baseUrl: gw.gatewayUrl,
+      token: gw.workerToken,
+    }).request(config.endpoint, {
+      method: "POST",
+      body: JSON.stringify(config.requestBody),
+      // Generation can take a while at high quality, but never minutes — cap
+      // the wait so a stalled upstream provider doesn't hang the agent turn.
+      timeoutMs: 120_000,
+    });
+
+    if (!response.ok) {
+      const errorData = (await parseErrorBody(response)) as {
+        error?: string;
+        availableProviders?: string[];
+      };
+      const errorMessage = errorData.error || "Unknown error";
+      const lowerError = errorMessage.toLowerCase();
+
+      if (errorData.availableProviders?.length) {
+        return textResult(config.messages.providerListFailure(errorMessage));
+      }
+
+      if (config.missingScopeMatch(lowerError)) {
+        return textResult(config.messages.missingScopeFailure(providerList));
+      }
+
+      return textResult(config.messages.genericFailure(errorMessage));
+    }
+
+    const buffer = await response.arrayBuffer();
+    const mimeType =
+      response.headers.get("Content-Type") || config.defaultMimeType;
+    const provider = response.headers.get(config.providerHeader) || "unknown";
+    const ext = config.extFromMime(mimeType);
+
+    const uploadError = await uploadGeneratedFile(
+      gw,
+      buffer,
+      config.uploadFilename(ext),
+      mimeType,
+      config.uploadHeaders
+    );
+    if (uploadError) return uploadError;
+
+    logger.info(config.messages.uploadLog(provider));
+    return textResult(config.messages.success(provider));
+  });
 }
 
 // ============================================================================
@@ -674,93 +801,59 @@ export async function generateImage(
     format?: "png" | "jpeg" | "webp";
   }
 ): Promise<TextResult> {
-  return withErrorHandling("generate_image", async () => {
-    logger.info(`generate_image: ${args.prompt.substring(0, 80)}...`);
+  return generateAndUploadMedia(gw, {
+    label: "generate_image",
+    logLine: `generate_image: ${args.prompt.substring(0, 80)}...`,
+    preflight: async () => {
+      const capResponse = await createGatewayClient({
+        baseUrl: gw.gatewayUrl,
+        token: gw.workerToken,
+      }).request("/internal/images/capabilities", { timeoutMs: 30_000 });
 
-    const capResponse = await fetch(
-      `${gw.gatewayUrl}/internal/images/capabilities`,
-      {
-        headers: { Authorization: `Bearer ${gw.workerToken}` },
-        signal: AbortSignal.timeout(30_000),
+      if (capResponse.ok) {
+        const capabilities = (await capResponse.json()) as {
+          available: boolean;
+          providers?: Array<{ provider: string; name: string }>;
+        };
+        if (!capabilities.available) {
+          const providerList =
+            capabilities.providers?.map((p) => p.name).join(", ") || "OpenAI";
+          return {
+            notConfigured: `Image generation is not configured. Supported providers: ${providerList}.\n\nAsk an admin to connect one of these providers for the base agent.`,
+            providerList,
+          };
+        }
       }
-    );
-
-    if (capResponse.ok) {
-      const capabilities = (await capResponse.json()) as {
-        available: boolean;
-        providers?: Array<{ provider: string; name: string }>;
-      };
-      if (!capabilities.available) {
-        const providerList =
-          capabilities.providers?.map((p) => p.name).join(", ") || "OpenAI";
-        return textResult(
-          `Image generation is not configured. Supported providers: ${providerList}.\n\nAsk an admin to connect one of these providers for the base agent.`
-        );
-      }
-    }
-
-    const response = await fetch(`${gw.gatewayUrl}/internal/images/generate`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${gw.workerToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        prompt: args.prompt,
-        size: args.size,
-        quality: args.quality,
-        background: args.background,
-        format: args.format,
-      }),
-      // Image gen can take a while at high quality, but never minutes — cap
-      // the wait so a stalled upstream provider doesn't hang the agent turn.
-      signal: AbortSignal.timeout(120_000),
-    });
-
-    if (!response.ok) {
-      const errorData = (await parseErrorBody(response)) as {
-        error?: string;
-        availableProviders?: string[];
-      };
-      const errorMessage = errorData.error || "Unknown error";
-      const lowerError = errorMessage.toLowerCase();
-      const missingImagePermission =
-        lowerError.includes("missing scopes") ||
-        lowerError.includes("missing_scope") ||
-        (lowerError.includes("scope") &&
-          (lowerError.includes("image") ||
-            lowerError.includes("model.request")));
-
-      if (errorData.availableProviders?.length) {
-        return textResult(
-          `Image generation failed: ${errorMessage}.\n\nAsk an admin to connect one of the supported providers for the base agent.`
-        );
-      }
-
-      if (missingImagePermission) {
-        return textResult(
-          `Image generation failed because the current credential lacks required image permissions.\n\nAsk an admin to connect a provider with image generation access for the base agent.`
-        );
-      }
-
-      return textResult(`Error generating image: ${errorMessage}`);
-    }
-
-    const imageBuffer = await response.arrayBuffer();
-    const mimeType = response.headers.get("Content-Type") || "image/png";
-    const provider = response.headers.get("X-Image-Provider") || "unknown";
-    const ext = imageExtFromMime(mimeType);
-
-    const uploadError = await uploadGeneratedFile(
-      gw,
-      imageBuffer,
-      `generated_image.${ext}`,
-      mimeType
-    );
-    if (uploadError) return uploadError;
-
-    logger.info(`Image generated and sent using ${provider}`);
-    return textResult(`Image sent successfully (generated with ${provider}).`);
+      return { notConfigured: null, providerList: "OpenAI" };
+    },
+    endpoint: "/internal/images/generate",
+    requestBody: {
+      prompt: args.prompt,
+      size: args.size,
+      quality: args.quality,
+      background: args.background,
+      format: args.format,
+    },
+    missingScopeMatch: (lowerError) =>
+      lowerError.includes("missing scopes") ||
+      lowerError.includes("missing_scope") ||
+      (lowerError.includes("scope") &&
+        (lowerError.includes("image") || lowerError.includes("model.request"))),
+    extFromMime: imageExtFromMime,
+    defaultMimeType: "image/png",
+    providerHeader: "X-Image-Provider",
+    uploadFilename: (ext) => `generated_image.${ext}`,
+    messages: {
+      providerListFailure: (errorMessage) =>
+        `Image generation failed: ${errorMessage}.\n\nAsk an admin to connect one of the supported providers for the base agent.`,
+      missingScopeFailure: () =>
+        `Image generation failed because the current credential lacks required image permissions.\n\nAsk an admin to connect a provider with image generation access for the base agent.`,
+      genericFailure: (errorMessage) =>
+        `Error generating image: ${errorMessage}`,
+      success: (provider) =>
+        `Image sent successfully (generated with ${provider}).`,
+      uploadLog: (provider) => `Image generated and sent using ${provider}`,
+    },
   });
 }
 
@@ -778,81 +871,51 @@ export async function generateAudio(
   gw: GatewayParams,
   args: { text: string; voice?: string; speed?: number }
 ): Promise<TextResult> {
-  return withErrorHandling("generate_audio", async () => {
-    logger.info(`generate_audio: ${args.text.substring(0, 50)}...`);
+  return generateAndUploadMedia(gw, {
+    label: "generate_audio",
+    logLine: `generate_audio: ${args.text.substring(0, 50)}...`,
+    preflight: async () => {
+      const suggestions = await fetchAudioProviderSuggestions({
+        gatewayUrl: gw.gatewayUrl,
+        workerToken: gw.workerToken,
+      });
+      const providerList =
+        suggestions.providerDisplayList || "an audio-capable provider";
 
-    const suggestions = await fetchAudioProviderSuggestions({
-      gatewayUrl: gw.gatewayUrl,
-      workerToken: gw.workerToken,
-    });
-    const providerList =
-      suggestions.providerDisplayList || "an audio-capable provider";
-
-    if (suggestions.available === false) {
-      return textResult(
-        `Audio generation is not configured. To enable it, ask an admin to connect one of the available providers for the base agent: ${providerList}.`
-      );
-    }
-
-    const response = await fetch(`${gw.gatewayUrl}/internal/audio/synthesize`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${gw.workerToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        text: args.text,
-        voice: args.voice,
-        speed: args.speed,
-      }),
-      signal: AbortSignal.timeout(120_000),
-    });
-
-    if (!response.ok) {
-      const errorData = (await parseErrorBody(response)) as {
-        error?: string;
-        availableProviders?: string[];
-      };
-      const errorMessage = errorData.error || "Unknown error";
-      const lowerError = errorMessage.toLowerCase();
-      const missingOpenAiAudioScope =
-        (lowerError.includes("missing scopes") ||
-          lowerError.includes("missing_scope")) &&
-        lowerError.includes("api.model.audio.request");
-
-      if (errorData.availableProviders?.length) {
-        return textResult(
-          `Audio generation failed: ${errorMessage}. No provider configured.\n\nAsk an admin to connect an audio provider for the base agent.`
-        );
+      if (suggestions.available === false) {
+        return {
+          notConfigured: `Audio generation is not configured. To enable it, ask an admin to connect one of the available providers for the base agent: ${providerList}.`,
+          providerList,
+        };
       }
-
-      if (missingOpenAiAudioScope) {
-        return textResult(
-          `Audio generation failed because the current OpenAI token lacks api.model.audio.request.\n\nAsk an admin to connect a provider with audio permission for the base agent, or to connect an alternative audio provider (${providerList}).`
-        );
-      }
-
-      return textResult(`Error generating audio: ${errorMessage}`);
-    }
-
-    const audioBuffer = await response.arrayBuffer();
-    const mimeType = response.headers.get("Content-Type") || "audio/mpeg";
-    const provider = response.headers.get("X-Audio-Provider") || "unknown";
-    const ext = audioExtFromMime(mimeType);
-
-    const uploadError = await uploadGeneratedFile(
-      gw,
-      audioBuffer,
-      `voice_response.${ext}`,
-      mimeType,
-      { "X-Voice-Message": "true" }
-    );
-    if (uploadError) return uploadError;
-
-    logger.info(`Audio generated and sent using ${provider}`);
-    return textResult(
-      `Voice message sent successfully (generated with ${provider}).`
-    );
+      return { notConfigured: null, providerList };
+    },
+    endpoint: "/internal/audio/synthesize",
+    requestBody: {
+      text: args.text,
+      voice: args.voice,
+      speed: args.speed,
+    },
+    missingScopeMatch: (lowerError) =>
+      (lowerError.includes("missing scopes") ||
+        lowerError.includes("missing_scope")) &&
+      lowerError.includes("api.model.audio.request"),
+    extFromMime: audioExtFromMime,
+    defaultMimeType: "audio/mpeg",
+    providerHeader: "X-Audio-Provider",
+    uploadFilename: (ext) => `voice_response.${ext}`,
+    uploadHeaders: { "X-Voice-Message": "true" },
+    messages: {
+      providerListFailure: (errorMessage) =>
+        `Audio generation failed: ${errorMessage}. No provider configured.\n\nAsk an admin to connect an audio provider for the base agent.`,
+      missingScopeFailure: (providerList) =>
+        `Audio generation failed because the current OpenAI token lacks api.model.audio.request.\n\nAsk an admin to connect a provider with audio permission for the base agent, or to connect an alternative audio provider (${providerList}).`,
+      genericFailure: (errorMessage) =>
+        `Error generating audio: ${errorMessage}`,
+      success: (provider) =>
+        `Voice message sent successfully (generated with ${provider}).`,
+      uploadLog: (provider) => `Audio generated and sent using ${provider}`,
+    },
   });
 }
 
@@ -958,27 +1021,22 @@ export async function callMcpTool(
     let response: Response;
     const wantsJson = TOOLS_REQUESTING_JSON_FORMAT.has(toolName);
     try {
-      const headers: Record<string, string> = {
-        Authorization: `Bearer ${gw.workerToken}`,
-        "Content-Type": "application/json",
-      };
       // Retrieval tools (`search_memory`) opt into JSON-encoded results so the
       // worker → SSE `tool_use` event can carry structured `result_summary`
       // (event ids + snippet text) to clients like @lobu/promptfoo-provider for
       // RAG assertions. Other tools keep the formatted-markdown output the
       // agent has been seeing. External MCP servers ignore the header.
-      if (wantsJson) headers["x-mcp-format"] = "json";
-      response = await fetch(
-        `${gw.gatewayUrl}/mcp/${mcpId}/tools/${toolName}`,
-        {
-          method: "POST",
-          headers,
-          body: JSON.stringify(args),
-          // Third-party MCP server on the other side — give it a generous
-          // budget but never wait forever.
-          signal: AbortSignal.timeout(120_000),
-        }
-      );
+      response = await createGatewayClient({
+        baseUrl: gw.gatewayUrl,
+        token: gw.workerToken,
+      }).request(`/mcp/${mcpId}/tools/${toolName}`, {
+        method: "POST",
+        headers: wantsJson ? { "x-mcp-format": "json" } : undefined,
+        body: JSON.stringify(args),
+        // Third-party MCP server on the other side — give it a generous
+        // budget but never wait forever.
+        timeoutMs: 120_000,
+      });
     } catch (err) {
       if (err instanceof Error && err.name === "TimeoutError") {
         return textResult(`Error: MCP tool ${mcpId}/${toolName} timed out`);
@@ -1010,19 +1068,13 @@ export async function callMcpTool(
     }
 
     if (!response.ok || data.isError) {
-      const contentText = data.content
-        ?.filter((c) => c.type === "text")
-        .map((c) => c.text)
-        .join("\n");
+      const contentText = joinTextContent(data.content);
       const errorMsg =
         data.error || contentText || `${toolName} failed (${response.status})`;
       return textResult(`Error: ${errorMsg}`);
     }
 
-    const text = data.content
-      ?.filter((c) => c.type === "text")
-      .map((c) => c.text)
-      .join("\n");
+    const text = joinTextContent(data.content);
     return textResult(text || `${toolName} completed.`);
   });
 }

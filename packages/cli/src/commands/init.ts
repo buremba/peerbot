@@ -10,7 +10,7 @@ import {
 } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { confirm, input, password, select } from "@inquirer/prompts";
-import { DEFAULT_AGENT_MODEL } from "@lobu/core";
+import { DEFAULT_AGENT_MODEL, slugify } from "@lobu/core";
 import chalk from "chalk";
 import ora from "ora";
 import { promptPlatformConfig } from "../commands/platforms/platform-prompts.js";
@@ -37,7 +37,7 @@ type NetworkChoice = (typeof NETWORK_CHOICES)[number];
 const MEMORY_CHOICES = ["none", "lobu-cloud", "lobu-custom"] as const;
 type MemoryChoice = (typeof MEMORY_CHOICES)[number];
 
-interface InitOptions {
+export interface InitOptions {
   yes?: boolean;
   here?: boolean;
   port?: string;
@@ -871,14 +871,6 @@ function validateProjectName(value: string): string | true {
     return "Project name must be lowercase alphanumeric with hyphens only";
   }
   return true;
-}
-
-function slugify(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
 }
 
 interface PromptOrDefaultOptions<T> {

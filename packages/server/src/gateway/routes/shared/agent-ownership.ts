@@ -2,12 +2,12 @@ import type { AgentConfigStore } from "@lobu/core";
 import type { SettingsTokenPayload } from "../../auth/settings/token-service.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
 
-interface AgentOwnershipConfig {
+export interface AgentOwnershipConfig {
   userAgentsStore?: UserAgentsStore;
   agentMetadataStore?: Pick<AgentConfigStore, "getMetadata">;
 }
 
-interface AgentOwnershipResult {
+export interface AgentOwnershipResult {
   authorized: boolean;
   ownerPlatform?: string;
   ownerUserId?: string;

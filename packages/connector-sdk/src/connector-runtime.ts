@@ -125,3 +125,37 @@ export abstract class ConnectorRuntime<C = Record<string, unknown>, F = Record<s
     throw new Error(`${this.definition.key} does not support interactive authentication`);
   }
 }
+
+/**
+ * Base class for device-bound connectors whose real `sync()`/`execute()` run
+ * inside a device bridge (the Owletto Chrome extension or the Lobu Mac/iOS app),
+ * not on the server-side worker fleet. The server only ever holds the connector
+ * DEFINITION; the cloud-side methods exist purely as safety stubs that throw if a
+ * worker without the connector's `requiredCapability` somehow claims the run.
+ *
+ * Subclasses declare only their `definition` and pass the bridge-only message to
+ * `super()`; both `sync()` and `execute()` throw that exact message.
+ *
+ * @example
+ * ```ts
+ * export default class ChromeHistoryConnector extends BridgeOnlyConnector {
+ *   constructor() {
+ *     super('chrome.history runs only on a worker advertising capability "browser.history".');
+ *   }
+ *   readonly definition: ConnectorDefinition = { ... };
+ * }
+ * ```
+ */
+export abstract class BridgeOnlyConnector extends ConnectorRuntime {
+  constructor(private readonly bridgeMessage: string) {
+    super();
+  }
+
+  async sync(): Promise<SyncResult> {
+    throw new Error(this.bridgeMessage);
+  }
+
+  async execute(): Promise<ActionResult> {
+    throw new Error(this.bridgeMessage);
+  }
+}

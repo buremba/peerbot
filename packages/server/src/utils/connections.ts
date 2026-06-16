@@ -7,8 +7,8 @@
  * in db/migrations/20260512131703_connections_slug.sql mirrors their semantics.
  */
 
+import { slugify } from '@lobu/core';
 import { type DbClient, getDb } from '../db/client';
-import { generateSlug } from './entity-management';
 
 /**
  * Server-side slug format guard. Lowercase letters/digits/hyphens, 1–63 chars,
@@ -50,7 +50,7 @@ export function isConnectionSlugUniqueViolation(err: unknown): boolean {
  */
 export function slugifyConnectionName(value: string | null | undefined): string {
   if (!value) return '';
-  return generateSlug(value);
+  return slugify(value);
 }
 
 /** Whether a slug is already used by a live (`deleted_at IS NULL`) connection in the org. */

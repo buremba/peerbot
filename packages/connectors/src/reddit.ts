@@ -294,7 +294,7 @@ export default class RedditConnector extends ConnectorRuntime {
     cutoffDate.setDate(cutoffDate.getDate() - lookbackDays);
 
     const http = createHttpClient({
-      getAccessToken: () => accessToken,
+      token: accessToken,
       headers: { 'User-Agent': this.USER_AGENT },
       errorPrefix: 'Reddit API',
     });

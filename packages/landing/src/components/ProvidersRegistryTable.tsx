@@ -1,4 +1,5 @@
 import providersConfig from "@providers-config";
+import { cellStyle, DataTable } from "./DataTable";
 
 interface ProviderConfig {
   displayName: string;
@@ -25,20 +26,6 @@ const providerRows = providers.flatMap((providerEntry) =>
   }))
 );
 
-const cellStyle = {
-  padding: "8px 12px",
-  borderBottom: "1px solid var(--color-page-border)",
-  fontSize: "13px",
-  color: "var(--color-page-text-muted)",
-};
-
-const headerCellStyle = {
-  ...cellStyle,
-  fontWeight: 600,
-  color: "var(--color-page-text)",
-  backgroundColor: "var(--color-page-surface-dim)",
-};
-
 function Badge({ text }: { text: string }) {
   return (
     <span
@@ -60,61 +47,44 @@ function Badge({ text }: { text: string }) {
 
 export function ProvidersRegistryTable() {
   return (
-    <div style={{ overflowX: "auto" }}>
-      <table
-        style={{
-          width: "100%",
-          borderCollapse: "collapse",
-          border: "1px solid var(--color-page-border)",
-        }}
-      >
-        <thead>
-          <tr>
-            <th style={headerCellStyle}>Provider</th>
-            <th style={headerCellStyle}>ID</th>
-            <th style={headerCellStyle}>Default Model</th>
-            <th style={headerCellStyle}>SDK Compat</th>
-            <th style={headerCellStyle}>Base URL</th>
-            <th style={headerCellStyle}>Models Endpoint</th>
-          </tr>
-        </thead>
-        <tbody>
-          {providerRows.map((provider) => (
-            <tr key={`${provider.id}:${provider.displayName}`}>
-              <td
-                style={{
-                  ...cellStyle,
-                  fontWeight: 500,
-                  color: "var(--color-page-text)",
-                }}
-              >
-                {provider.displayName}
-              </td>
-              <td style={cellStyle}>
-                <Badge text={provider.id} />
-              </td>
-              <td style={cellStyle}>
-                <code style={{ fontSize: "12px" }}>
-                  {provider.defaultModel}
-                </code>
-              </td>
-              <td style={cellStyle}>
-                <Badge text={provider.sdkCompat} />
-              </td>
-              <td style={cellStyle}>
-                <code style={{ fontSize: "12px" }}>
-                  {provider.upstreamBaseUrl}
-                </code>
-              </td>
-              <td style={cellStyle}>
-                <code style={{ fontSize: "12px" }}>
-                  {provider.modelsEndpoint}
-                </code>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <DataTable
+      headers={[
+        "Provider",
+        "ID",
+        "Default Model",
+        "SDK Compat",
+        "Base URL",
+        "Models Endpoint",
+      ]}
+    >
+      {providerRows.map((provider) => (
+        <tr key={`${provider.id}:${provider.displayName}`}>
+          <td
+            style={{
+              ...cellStyle,
+              fontWeight: 500,
+              color: "var(--color-page-text)",
+            }}
+          >
+            {provider.displayName}
+          </td>
+          <td style={cellStyle}>
+            <Badge text={provider.id} />
+          </td>
+          <td style={cellStyle}>
+            <code style={{ fontSize: "12px" }}>{provider.defaultModel}</code>
+          </td>
+          <td style={cellStyle}>
+            <Badge text={provider.sdkCompat} />
+          </td>
+          <td style={cellStyle}>
+            <code style={{ fontSize: "12px" }}>{provider.upstreamBaseUrl}</code>
+          </td>
+          <td style={cellStyle}>
+            <code style={{ fontSize: "12px" }}>{provider.modelsEndpoint}</code>
+          </td>
+        </tr>
+      ))}
+    </DataTable>
   );
 }

@@ -1,4 +1,5 @@
 import { MCP_PROTOCOL_VERSION } from "@lobu/core";
+import { extractApiError } from "../../../internal/http.js";
 import { ApiError } from "./errors.js";
 import {
   getUsableToken,
@@ -268,8 +269,11 @@ async function restCall<T>(
     let message = `${res.status} ${res.statusText}`;
     if (raw) {
       try {
-        const body = JSON.parse(raw) as { error?: string };
-        if (body?.error) message = body.error;
+        message = extractApiError(
+          JSON.parse(raw),
+          res.status,
+          res.statusText
+        ).message;
       } catch {
         message = raw;
       }

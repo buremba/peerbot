@@ -12,6 +12,7 @@
 import { getDb } from '../db/client';
 import { formatAjvError, getAjv } from './ajv-singleton';
 import { exceedsValidationLimits, isEmptyObject } from './metadata-limits';
+import { TtlCache } from './ttl-cache';
 
 // ============================================
 // Types
@@ -75,12 +76,9 @@ function findClosestKind(kind: string, validKinds: string[]): string | null {
 
 const CACHE_TTL_MS = 60_000; // 60 seconds
 
-interface EventKindsCacheEntry {
-  value: Record<string, EventKindDefinition> | null;
-  expiresAt: number;
-}
-
-const eventKindsCache = new Map<string, EventKindsCacheEntry>();
+// Per-pod cache. A cached `null` means "no event_kinds defined, accept any kind"
+// and is a real value, distinct from a cache miss.
+const eventKindsCache = new TtlCache<Record<string, EventKindDefinition> | null>(CACHE_TTL_MS);
 
 // ============================================
 // Event Kinds Resolution
@@ -93,29 +91,24 @@ const eventKindsCache = new Map<string, EventKindsCacheEntry>();
 async function getMemberEventKinds(
   orgId: string
 ): Promise<Record<string, EventKindDefinition> | null> {
-  const cacheKey = `${orgId}:$member`;
-  const now = Date.now();
-  const cached = eventKindsCache.get(cacheKey);
-  if (cached && cached.expiresAt > now) return cached.value;
-
-  const sql = getDb();
-  const rows = await sql`
-    SELECT event_kinds
-    FROM entity_types
-    WHERE slug = '$member'
-      AND organization_id = ${orgId}
-      AND deleted_at IS NULL
-    LIMIT 1
-  `;
-  let result: Record<string, EventKindDefinition> | null = null;
-  if (rows.length > 0) {
-    const eventKinds = rows[0].event_kinds;
-    if (eventKinds && typeof eventKinds === 'object') {
-      result = eventKinds as Record<string, EventKindDefinition>;
+  return eventKindsCache.getOrSet(`${orgId}:$member`, async () => {
+    const sql = getDb();
+    const rows = await sql`
+      SELECT event_kinds
+      FROM entity_types
+      WHERE slug = '$member'
+        AND organization_id = ${orgId}
+        AND deleted_at IS NULL
+      LIMIT 1
+    `;
+    if (rows.length > 0) {
+      const eventKinds = rows[0].event_kinds;
+      if (eventKinds && typeof eventKinds === 'object') {
+        return eventKinds as Record<string, EventKindDefinition>;
+      }
     }
-  }
-  eventKindsCache.set(cacheKey, { value: result, expiresAt: now + CACHE_TTL_MS });
-  return result;
+    return null;
+  });
 }
 
 /**
@@ -126,31 +119,26 @@ async function getEntityTypeEventKinds(
   orgId: string,
   entityId: number
 ): Promise<Record<string, EventKindDefinition> | null> {
-  const cacheKey = `${orgId}:entity:${entityId}`;
-  const now = Date.now();
-  const cached = eventKindsCache.get(cacheKey);
-  if (cached && cached.expiresAt > now) return cached.value;
-
-  const sql = getDb();
-  const rows = await sql`
-    SELECT et.event_kinds
-    FROM entities e
-    JOIN entity_types et ON et.id = e.entity_type_id
-    WHERE e.id = ${entityId}
-      AND e.organization_id = ${orgId}
-      AND e.deleted_at IS NULL
-      AND et.deleted_at IS NULL
-    LIMIT 1
-  `;
-  let result: Record<string, EventKindDefinition> | null = null;
-  if (rows.length > 0) {
-    const eventKinds = rows[0].event_kinds;
-    if (eventKinds && typeof eventKinds === 'object') {
-      result = eventKinds as Record<string, EventKindDefinition>;
+  return eventKindsCache.getOrSet(`${orgId}:entity:${entityId}`, async () => {
+    const sql = getDb();
+    const rows = await sql`
+      SELECT et.event_kinds
+      FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE e.id = ${entityId}
+        AND e.organization_id = ${orgId}
+        AND e.deleted_at IS NULL
+        AND et.deleted_at IS NULL
+      LIMIT 1
+    `;
+    if (rows.length > 0) {
+      const eventKinds = rows[0].event_kinds;
+      if (eventKinds && typeof eventKinds === 'object') {
+        return eventKinds as Record<string, EventKindDefinition>;
+      }
     }
-  }
-  eventKindsCache.set(cacheKey, { value: result, expiresAt: now + CACHE_TTL_MS });
-  return result;
+    return null;
+  });
 }
 
 /**
@@ -162,31 +150,26 @@ async function getConnectorEventKinds(
   feedKey: string,
   orgId: string
 ): Promise<Record<string, EventKindDefinition> | null> {
-  const cacheKey = `${orgId}:${connectorKey}:${feedKey}`;
-  const now = Date.now();
-  const cached = eventKindsCache.get(cacheKey);
-  if (cached && cached.expiresAt > now) return cached.value;
-
-  const sql = getDb();
-  const rows = await sql`
-    SELECT feeds_schema
-    FROM connector_definitions
-    WHERE key = ${connectorKey}
-      AND organization_id = ${orgId}
-    LIMIT 1
-  `;
-  let result: Record<string, EventKindDefinition> | null = null;
-  if (rows.length > 0) {
-    const feedsSchema = rows[0].feeds_schema as Record<string, any> | null;
-    if (feedsSchema) {
-      const feedDef = feedsSchema[feedKey];
-      if (feedDef?.eventKinds) {
-        result = feedDef.eventKinds as Record<string, EventKindDefinition>;
+  return eventKindsCache.getOrSet(`${orgId}:${connectorKey}:${feedKey}`, async () => {
+    const sql = getDb();
+    const rows = await sql`
+      SELECT feeds_schema
+      FROM connector_definitions
+      WHERE key = ${connectorKey}
+        AND organization_id = ${orgId}
+      LIMIT 1
+    `;
+    if (rows.length > 0) {
+      const feedsSchema = rows[0].feeds_schema as Record<string, any> | null;
+      if (feedsSchema) {
+        const feedDef = feedsSchema[feedKey];
+        if (feedDef?.eventKinds) {
+          return feedDef.eventKinds as Record<string, EventKindDefinition>;
+        }
       }
     }
-  }
-  eventKindsCache.set(cacheKey, { value: result, expiresAt: now + CACHE_TTL_MS });
-  return result;
+    return null;
+  });
 }
 
 // ============================================

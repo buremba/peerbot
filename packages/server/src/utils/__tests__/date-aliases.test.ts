@@ -3,13 +3,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import {
-  daysBetween,
-  formatDateISO,
-  inferGranularity,
-  parseDateAlias,
-  toEndOfDay,
-} from '../date-aliases';
+import { formatDateISO, parseDateAlias, toEndOfDay } from '../date-aliases';
 
 describe('parseDateAlias', () => {
   const ref = new Date('2025-06-15T12:00:00Z');
@@ -111,47 +105,6 @@ describe('parseDateAlias', () => {
     it('should throw for invalid ISO date', () => {
       expect(() => parseDateAlias('2025-99-99', ref)).toThrow();
     });
-  });
-});
-
-describe('daysBetween', () => {
-  it('should calculate days between two dates', () => {
-    const a = new Date('2025-01-01');
-    const b = new Date('2025-01-15');
-    expect(daysBetween(a, b)).toBe(14);
-  });
-
-  it('should return absolute difference', () => {
-    const a = new Date('2025-01-15');
-    const b = new Date('2025-01-01');
-    expect(daysBetween(a, b)).toBe(14);
-  });
-
-  it('should return 0 for same date', () => {
-    const a = new Date('2025-01-01');
-    expect(daysBetween(a, a)).toBe(0);
-  });
-});
-
-describe('inferGranularity', () => {
-  it('should return daily for <= 14 days', () => {
-    expect(inferGranularity(7)).toBe('daily');
-    expect(inferGranularity(14)).toBe('daily');
-  });
-
-  it('should return weekly for 15-90 days', () => {
-    expect(inferGranularity(15)).toBe('weekly');
-    expect(inferGranularity(90)).toBe('weekly');
-  });
-
-  it('should return monthly for 91-365 days', () => {
-    expect(inferGranularity(91)).toBe('monthly');
-    expect(inferGranularity(365)).toBe('monthly');
-  });
-
-  it('should return quarterly for > 365 days', () => {
-    expect(inferGranularity(366)).toBe('quarterly');
-    expect(inferGranularity(730)).toBe('quarterly');
   });
 });
 

@@ -18,7 +18,7 @@
 import { readFile } from "node:fs/promises";
 
 import { printJson } from "../internal/output.js";
-import { ValidationError } from "./memory/_lib/errors.js";
+import { parseJsonObject, ValidationError } from "./memory/_lib/errors.js";
 import { restGet, restToolCall } from "./memory/_lib/mcp.js";
 import {
   getSessionForOrg,
@@ -88,19 +88,7 @@ async function readStdinJson(): Promise<Record<string, unknown> | null> {
   }
   const raw = Buffer.concat(chunks).toString("utf8").trim();
   if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new ValidationError(
-        "stdin JSON must be a top-level object (got array or primitive)."
-      );
-    }
-    return parsed as Record<string, unknown>;
-  } catch (error) {
-    if (error instanceof ValidationError) throw error;
-    const message = error instanceof Error ? error.message : String(error);
-    throw new ValidationError(`Invalid JSON on stdin: ${message}`);
-  }
+  return parseJsonObject(raw, "on stdin");
 }
 
 async function readInputFile(path: string): Promise<Record<string, unknown>> {
@@ -113,19 +101,7 @@ async function readInputFile(path: string): Promise<Record<string, unknown>> {
       `Failed to read --input-file ${path}: ${message}`
     );
   }
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new ValidationError(
-        `--input-file ${path}: JSON must be a top-level object.`
-      );
-    }
-    return parsed as Record<string, unknown>;
-  } catch (error) {
-    if (error instanceof ValidationError) throw error;
-    const message = error instanceof Error ? error.message : String(error);
-    throw new ValidationError(`Invalid JSON in ${path}: ${message}`);
-  }
+  return parseJsonObject(raw, `in ${path}`);
 }
 
 /** Build the args payload from the three mutually-exclusive sources. */

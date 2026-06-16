@@ -141,6 +141,7 @@ export type { McpStatus, McpToolDef } from "./utils/mcp-tool-instructions";
 export * from "./utils/network-domains";
 export * from "./utils/retry";
 export * from "./utils/sanitize";
+export { slugify } from "./utils/slug";
 // Shared OpenClaw session.jsonl parser (gateway + worker).
 export {
   entryToMessage,

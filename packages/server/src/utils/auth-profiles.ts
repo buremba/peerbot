@@ -1,5 +1,5 @@
+import { slugify } from '@lobu/core';
 import { getDb } from '../db/client';
-import { generateSlug } from './entity-management';
 import { ToolUserError } from './errors';
 import { isUniqueViolation } from './pg-errors';
 
@@ -216,7 +216,7 @@ export function browserSessionIsUsable(
 }
 
 function sanitizeProfileSlug(value: string): string {
-  const slug = generateSlug(value);
+  const slug = slugify(value);
   if (!slug) {
     throw new Error('Auth profile slug must contain at least one letter or number');
   }

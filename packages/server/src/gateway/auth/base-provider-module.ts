@@ -213,6 +213,60 @@ export abstract class BaseProviderModule
     return envVars;
   }
 
+  /**
+   * Resolve a usable credential for the agent, applying the standard precedence:
+   *   1. per-user auth profile (refreshed when a userId is in context)
+   *   2. org-shared API key written by `lobu apply`
+   *   3. system env var (only when `includeSystemEnv` is set)
+   *
+   * Returns the credential and which tier produced it, so callers can keep
+   * their tier-specific logging. `buildEnvVars` omits the system-env tier (the
+   * worker resolves that via `injectSystemKeyFallback`); `getCredential`
+   * includes it.
+   */
+  private async resolveCredential(
+    agentId: string,
+    context: ProviderCredentialContext | undefined,
+    opts: { includeSystemEnv: boolean }
+  ): Promise<{
+    credential: string;
+    source: "profile" | "org" | "system";
+  } | null> {
+    const profile = await this.authProfilesManager.getBestProfile(
+      agentId,
+      this.providerId,
+      undefined,
+      context
+    );
+    const profileCredential =
+      profile && context?.userId
+        ? await this.authProfilesManager.ensureFreshCredential(profile, {
+            userId: context.userId,
+            agentId,
+          })
+        : profile?.credential;
+    if (profileCredential) {
+      return { credential: profileCredential, source: "profile" };
+    }
+
+    const orgKey = await readOrgSharedProviderKey(this.providerId, context);
+    if (orgKey) {
+      return { credential: orgKey, source: "org" };
+    }
+
+    if (opts.includeSystemEnv) {
+      const sysVar =
+        this.providerConfig.systemEnvVarName ||
+        this.providerConfig.credentialEnvVarName;
+      const systemKey = process.env[sysVar];
+      if (systemKey) {
+        return { credential: systemKey, source: "system" };
+      }
+    }
+
+    return null;
+  }
+
   async buildEnvVars(
     agentId: string,
     envVars: Record<string, string>,
@@ -220,33 +274,16 @@ export abstract class BaseProviderModule
   ): Promise<Record<string, string>> {
     const credVar = this.providerConfig.credentialEnvVarName;
     if (!envVars[credVar]) {
-      const profile = await this.authProfilesManager.getBestProfile(
-        agentId,
-        this.providerId,
-        undefined,
-        context
-      );
-      const credential = profile && context?.userId
-        ? await this.authProfilesManager.ensureFreshCredential(profile, {
-            userId: context.userId,
-            agentId,
-          })
-        : profile?.credential;
-      if (credential) {
+      const resolved = await this.resolveCredential(agentId, context, {
+        includeSystemEnv: false,
+      });
+      if (resolved) {
         logger.info(
-          `Injecting ${credVar} for agent ${agentId} (${this.providerId})`
+          resolved.source === "org"
+            ? `Injecting ${credVar} for agent ${agentId} (${this.providerId}) from org-shared secret`
+            : `Injecting ${credVar} for agent ${agentId} (${this.providerId})`
         );
-        envVars[credVar] = credential;
-      } else {
-        // No per-user auth profile — fall back to the org-shared API key
-        // declared via `lobu apply` (`provider:<id>:apiKey` in agent_secrets).
-        const orgKey = await readOrgSharedProviderKey(this.providerId, context);
-        if (orgKey) {
-          logger.info(
-            `Injecting ${credVar} for agent ${agentId} (${this.providerId}) from org-shared secret`
-          );
-          envVars[credVar] = orgKey;
-        }
+        envVars[credVar] = resolved.credential;
       }
     }
     return envVars;
@@ -260,27 +297,10 @@ export abstract class BaseProviderModule
     agentId: string,
     context?: ProviderCredentialContext
   ): Promise<string | null> {
-    const profile = await this.authProfilesManager.getBestProfile(
-      agentId,
-      this.providerId,
-      undefined,
-      context
-    );
-    const credential = profile && context?.userId
-      ? await this.authProfilesManager.ensureFreshCredential(profile, {
-          userId: context.userId,
-          agentId,
-        })
-      : profile?.credential;
-    if (credential) {
-      return credential;
-    }
-    const orgKey = await readOrgSharedProviderKey(this.providerId, context);
-    if (orgKey) return orgKey;
-    const sysVar =
-      this.providerConfig.systemEnvVarName ||
-      this.providerConfig.credentialEnvVarName;
-    return process.env[sysVar] || null;
+    const resolved = await this.resolveCredential(agentId, context, {
+      includeSystemEnv: true,
+    });
+    return resolved?.credential ?? null;
   }
 
   /** Build a structured placeholder for proxy mode (default: "lobu-proxy"). */

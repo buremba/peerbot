@@ -241,6 +241,20 @@ function safeDecodePathSegment(value: string | undefined): string | undefined {
 }
 
 /**
+ * Parse the token out of a `Bearer <token>` authorization header. Returns the
+ * token (possibly empty string for `"Bearer "`) when the header is a
+ * well-formed two-part bearer, else null. Case-insensitive on the scheme.
+ */
+function parseBearer(authHeader: string | undefined): string | null {
+  if (!authHeader) return null;
+  const parts = authHeader.split(" ");
+  if (parts.length === 2 && parts[0]?.toLowerCase() === "bearer") {
+    return parts[1] ?? null;
+  }
+  return null;
+}
+
+/**
  * Walk the documented provider-credential resolution chain
  * (provider-secrets.ts) at the egress proxy:
  *   1. per-user auth profile credential (resolved by the caller)
@@ -455,69 +469,64 @@ export class SecretProxy {
   }
 
   /**
-   * Extract the worker token from a dedicated `x-lobu-worker-token` header
-   * (or query param of the same name — useful for SSE that can't set
-   * headers), verify it, and return the bound `organizationId`. Falls back
-   * to verifying the bearer credential when it isn't a placeholder.
-   *
-   * Returns `undefined` when no verifiable token is present — the caller
-   * then relies on `agentOrgResolver` (DB lookup keyed by URL agentId) to
-   * fill in the expected org.
+   * The dedicated worker-token string: `x-lobu-worker-token` header (either
+   * casing) or the `worker_token` query param (used by SSE callers that can't
+   * set headers). Returns undefined when neither is present.
    */
+  private getWorkerTokenString(c: Context): string | undefined {
+    const header =
+      c.req.header("x-lobu-worker-token") ||
+      c.req.header("X-Lobu-Worker-Token");
+    return header || c.req.query("worker_token") || undefined;
+  }
+
+  /**
+   * Verified worker-token claims in resolution order: the dedicated
+   * worker-token first, then the `authorization: Bearer` credential WHEN it
+   * isn't a `lobu_secret_<uuid>` placeholder (the bearer is normally a
+   * placeholder, but legacy callers pass the worker JWT directly). Each entry
+   * is the decoded payload; callers read the first that carries the field they
+   * need, preserving the original per-field fallback precedence.
+   */
+  private verifiedWorkerClaims(
+    c: Context
+  ): Array<NonNullable<ReturnType<typeof verifyWorkerToken>>> {
+    const out: Array<NonNullable<ReturnType<typeof verifyWorkerToken>>> = [];
+    const candidate = this.getWorkerTokenString(c);
+    if (candidate) {
+      const data = verifyWorkerToken(candidate);
+      if (data) out.push(data);
+    }
+    const tok = parseBearer(c.req.header("authorization"));
+    if (tok && !tok.includes(PLACEHOLDER_PREFIX)) {
+      const data = verifyWorkerToken(tok);
+      if (data) out.push(data);
+    }
+    return out;
+  }
+
   /**
    * Stable, non-spoofable identity for abuse-tracking, taken from the SIGNED
    * worker token (agentId, else deployment). Returns undefined when no valid
    * token is present so the caller can fall back to a weaker signal.
    */
   private extractWorkerTokenIdentity(c: Context): string | undefined {
-    const header =
-      c.req.header("x-lobu-worker-token") ||
-      c.req.header("X-Lobu-Worker-Token");
-    const candidate = header || c.req.query("worker_token") || undefined;
-    const fromToken = (data: ReturnType<typeof verifyWorkerToken>) =>
-      data?.agentId ?? data?.deploymentName ?? undefined;
-    if (candidate) {
-      const id = fromToken(verifyWorkerToken(candidate));
+    for (const data of this.verifiedWorkerClaims(c)) {
+      const id = data.agentId ?? data.deploymentName ?? undefined;
       if (id) return id;
-    }
-    const auth = c.req.header("authorization");
-    if (auth) {
-      const parts = auth.split(" ");
-      const tok =
-        parts.length === 2 && parts[0]?.toLowerCase() === "bearer"
-          ? parts[1]
-          : null;
-      if (tok && !tok.includes(PLACEHOLDER_PREFIX)) {
-        const id = fromToken(verifyWorkerToken(tok));
-        if (id) return id;
-      }
     }
     return undefined;
   }
 
+  /**
+   * The `organizationId` bound into the SIGNED worker token. Returns undefined
+   * when no verifiable token carries one — the caller then relies on
+   * `agentOrgResolver` (DB lookup keyed by URL agentId) to fill in the
+   * expected org.
+   */
   private extractWorkerTokenOrg(c: Context): string | undefined {
-    const header =
-      c.req.header("x-lobu-worker-token") ||
-      c.req.header("X-Lobu-Worker-Token");
-    const candidate = header || c.req.query("worker_token") || undefined;
-    if (candidate) {
-      const data = verifyWorkerToken(candidate);
-      if (data?.organizationId) return data.organizationId;
-    }
-    // The bearer credential is normally a `lobu_secret_<uuid>` placeholder
-    // but legacy callers may pass the worker JWT directly. Verify if it
-    // looks like one (long, no placeholder prefix).
-    const auth = c.req.header("authorization");
-    if (auth) {
-      const parts = auth.split(" ");
-      const tok =
-        parts.length === 2 && parts[0]?.toLowerCase() === "bearer"
-          ? parts[1]
-          : null;
-      if (tok && !tok.includes(PLACEHOLDER_PREFIX)) {
-        const data = verifyWorkerToken(tok);
-        if (data?.organizationId) return data.organizationId;
-      }
+    for (const data of this.verifiedWorkerClaims(c)) {
+      if (data.organizationId) return data.organizationId;
     }
     return undefined;
   }
@@ -531,11 +540,7 @@ export class SecretProxy {
     if (apiKey) return apiKey;
     const auth = c.req.header("authorization");
     if (!auth) return null;
-    const parts = auth.split(" ");
-    if (parts.length === 2 && parts[0]?.toLowerCase() === "bearer") {
-      return parts[1] ?? null;
-    }
-    return auth;
+    return parseBearer(auth) ?? auth;
   }
 
   /**
@@ -699,9 +704,7 @@ export class SecretProxy {
         // provider-credential path below, which injects the URL agent's real
         // key). The token already carries the agentId it was minted for.
         const workerTokenStr =
-          c.req.header("x-lobu-worker-token") ||
-          c.req.header("X-Lobu-Worker-Token") ||
-          c.req.query("worker_token") ||
+          this.getWorkerTokenString(c) ||
           (!callerToken.includes(PLACEHOLDER_PREFIX)
             ? callerToken
             : undefined);
@@ -863,10 +866,10 @@ export class SecretProxy {
 
       const auth = c.req.header("authorization");
       if (auth) {
-        const parts = auth.split(" ");
-        if (parts.length === 2 && parts[0]?.toLowerCase() === "bearer") {
+        const bearer = parseBearer(auth);
+        if (bearer !== null) {
           const swapped = await this.swap(
-            parts[1]!,
+            bearer,
             source,
             expectedOrganizationId
           );

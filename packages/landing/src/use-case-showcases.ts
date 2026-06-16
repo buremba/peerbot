@@ -151,19 +151,19 @@ const memoryStepPanels: Record<
         {
           label: "Community concierge",
           detail: "Answers questions like who should meet this week and why.",
-          platform: { id: "slack", label: "Slack" },
+          platform: { id: "slack" },
         },
         {
           label: "Member search agent",
           detail:
             "Finds members by topic, project, or recent activity using the shared graph.",
-          platform: { id: "openclaw", label: "OpenClaw" },
+          platform: { id: "openclaw" },
         },
         {
           label: "Intro drafting workflow",
           detail:
             "Prepares warm intro drafts for Slack or email and waits for approval before sending.",
-          platform: { id: "claude", label: "Claude" },
+          platform: { id: "claude" },
         },
       ],
     },
@@ -240,19 +240,19 @@ const memoryStepPanels: Record<
           label: "Subscription manager",
           detail:
             "Handles plan changes, skips, and upgrades with customer context and approval flows.",
-          platform: { id: "slack", label: "Slack" },
+          platform: { id: "slack" },
         },
         {
           label: "Order support agent",
           detail:
             "Resolves order inquiries, tracks deliveries, and processes returns.",
-          platform: { id: "openclaw", label: "OpenClaw" },
+          platform: { id: "openclaw" },
         },
         {
           label: "Customer insights assistant",
           detail:
             "Summarizes customer history, preferences, and lifetime value for support and sales.",
-          platform: { id: "claude", label: "Claude" },
+          platform: { id: "claude" },
         },
       ],
     },
@@ -329,19 +329,19 @@ const memoryStepPanels: Record<
           label: "Deal screener",
           detail:
             "Checks company signals, funding history, and team background before first calls.",
-          platform: { id: "slack", label: "Slack" },
+          platform: { id: "slack" },
         },
         {
           label: "Portfolio monitor",
           detail:
             "Tracks portfolio company growth, competitive moves, and follow-on opportunities.",
-          platform: { id: "openclaw", label: "OpenClaw" },
+          platform: { id: "openclaw" },
         },
         {
           label: "IC assistant",
           detail:
             "Prep investment committee memos with company context and market analysis.",
-          platform: { id: "claude", label: "Claude" },
+          platform: { id: "claude" },
         },
       ],
     },
@@ -418,25 +418,25 @@ const memoryStepPanels: Record<
           label: "Risk review agent",
           detail:
             "Flags unresolved clauses and approval blockers in active negotiations.",
-          platform: { id: "slack", label: "Slack" },
+          platform: { id: "slack" },
         },
         {
           label: "Negotiation assistant",
           detail:
             "Recalls fallback language and prior concessions before the next draft.",
-          platform: { id: "claude", label: "Claude" },
+          platform: { id: "claude" },
         },
         {
           label: "Counterparty brief agent",
           detail:
             "Summarizes prior asks, objections, and open terms for the same external party.",
-          platform: { id: "chatgpt", label: "ChatGPT" },
+          platform: { id: "chatgpt" },
         },
         {
           label: "Draft prep workflow",
           detail:
             "Carries approved edits and unresolved risks into the next review cycle.",
-          platform: { id: "openclaw", label: "OpenClaw" },
+          platform: { id: "openclaw" },
         },
       ],
     },
@@ -513,25 +513,25 @@ const memoryStepPanels: Record<
           label: "Variance analyst",
           detail:
             "Explains why an account moved and what still needs reconciliation before close.",
-          platform: { id: "slack", label: "Slack" },
+          platform: { id: "slack" },
         },
         {
           label: "Reporting assistant",
           detail:
             "Carries reconciliation context into month-end updates and leadership reporting.",
-          platform: { id: "claude", label: "Claude" },
+          platform: { id: "claude" },
         },
         {
           label: "Exception triage agent",
           detail:
             "Surfaces which refunds, payouts, or adjustments still need owner follow-up.",
-          platform: { id: "chatgpt", label: "ChatGPT" },
+          platform: { id: "chatgpt" },
         },
         {
           label: "Audit prep workflow",
           detail:
             "Keeps explanations attached to the originating systems and imported evidence.",
-          platform: { id: "openclaw", label: "OpenClaw" },
+          platform: { id: "openclaw" },
         },
       ],
     },
@@ -608,25 +608,25 @@ const memoryStepPanels: Record<
           label: "Renewal prep agent",
           detail:
             "Pulls current risks, owners, and blockers before a customer call or QBR.",
-          platform: { id: "slack", label: "Slack" },
+          platform: { id: "slack" },
         },
         {
           label: "Forecast brief assistant",
           detail:
             "Generates consistent leadership updates from the same account memory.",
-          platform: { id: "claude", label: "Claude" },
+          platform: { id: "claude" },
         },
         {
           label: "Expansion context agent",
           detail:
             "Recalls which team owns the rollout, where adoption is growing, and what is blocking expansion.",
-          platform: { id: "chatgpt", label: "ChatGPT" },
+          platform: { id: "chatgpt" },
         },
         {
           label: "Next-step workflow",
           detail:
             "Hands the right commercial follow-up to chat agents and planning tools.",
-          platform: { id: "openclaw", label: "OpenClaw" },
+          platform: { id: "openclaw" },
         },
       ],
     },
@@ -703,25 +703,25 @@ const memoryStepPanels: Record<
           label: "Standup agent",
           detail:
             "Answers what is blocked, who owns it, and which milestone is at risk.",
-          platform: { id: "slack", label: "Slack" },
+          platform: { id: "slack" },
         },
         {
           label: "Planning assistant",
           detail:
             "Brings prior docs, owners, and dependencies into the next planning session.",
-          platform: { id: "claude", label: "Claude" },
+          platform: { id: "claude" },
         },
         {
           label: "Launch readiness agent",
           detail:
             "Uses one shared memory graph for rollout status, docs, and unresolved risks.",
-          platform: { id: "chatgpt", label: "ChatGPT" },
+          platform: { id: "chatgpt" },
         },
         {
           label: "Stakeholder update workflow",
           detail:
             "Generates Monday risk updates from the same project record leadership already trusts.",
-          platform: { id: "openclaw", label: "OpenClaw" },
+          platform: { id: "openclaw" },
         },
       ],
     },
@@ -798,25 +798,25 @@ const memoryStepPanels: Record<
           label: "Decision recall agent",
           detail:
             "Answers what was approved, what is blocked, and which region or budget line it affects.",
-          platform: { id: "claude", label: "Claude" },
+          platform: { id: "claude" },
         },
         {
           label: "Assignment tracker",
           detail:
             "Keeps action items visible across future workflows and follow-ups.",
-          platform: { id: "slack", label: "Slack" },
+          platform: { id: "slack" },
         },
         {
           label: "Document QA assistant",
           detail:
             "Answers from the extracted graph without re-reading every memo in full.",
-          platform: { id: "chatgpt", label: "ChatGPT" },
+          platform: { id: "chatgpt" },
         },
         {
           label: "Board prep workflow",
           detail:
             "Carries pending decisions and blockers into the next briefing cycle.",
-          platform: { id: "openclaw", label: "OpenClaw" },
+          platform: { id: "openclaw" },
         },
       ],
     },

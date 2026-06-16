@@ -9,10 +9,15 @@
  */
 
 import type { KeyingConfig } from '../types/watchers';
+import { getValueAtPath } from './object-path';
 
 /**
  * Slugify a string for use in stable keys.
- * Converts to lowercase, replaces spaces/special chars with hyphens.
+ *
+ * NOTE: This is intentionally NOT the shared `generateSlug`. Stable keys are
+ * persisted and used to merge entities across windows, so its output must stay
+ * byte-stable — it keeps word chars (`\w`) and converts underscores, which
+ * differs from the URL-slug rules. Do not consolidate this with generateSlug.
  */
 function slugify(value: string): string {
   return value
@@ -22,21 +27,6 @@ function slugify(value: string): string {
     .replace(/[\s_]+/g, '-') // Replace spaces and underscores with hyphens
     .replace(/-+/g, '-') // Collapse multiple hyphens
     .replace(/^-|-$/g, ''); // Remove leading/trailing hyphens
-}
-
-/**
- * Get a nested value from an object using a dot-notation path.
- * Example: getPath({a: {b: 1}}, 'a.b') returns 1
- */
-function getPath(obj: unknown, path: string): unknown {
-  if (!obj || typeof obj !== 'object') return undefined;
-
-  return path.split('.').reduce((acc, key) => {
-    if (acc && typeof acc === 'object' && key in acc) {
-      return (acc as Record<string, unknown>)[key];
-    }
-    return undefined;
-  }, obj as unknown);
 }
 
 /**
@@ -59,7 +49,7 @@ function getPath(obj: unknown, path: string): unknown {
  * { problems: [{ category: "Stability", name: "App Crashes", problem_key: "stability::app-crashes" }] }
  */
 export function computeStableKeys(data: Record<string, unknown>, config: KeyingConfig): void {
-  const entities = getPath(data, config.entity_path);
+  const entities = getValueAtPath(data, config.entity_path);
 
   if (!Array.isArray(entities)) {
     // No entities to process, or path doesn't resolve to an array

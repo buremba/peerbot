@@ -36,6 +36,11 @@ import { fileURLToPath } from "node:url";
 
 import chalk from "chalk";
 import { Command } from "commander";
+// Type-only imports of command option shapes. These are erased at compile time
+// (no runtime module load), so they do NOT defeat the lazy-import hot path —
+// the handler modules are still pulled in only inside each `.action`.
+import type { AgentCommandOptions } from "./commands/agent.js";
+import type { InitOptions } from "./commands/init.js";
 import { GATEWAY_DEFAULT_URL } from "./internal/index.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -173,53 +178,28 @@ Memory:
     .action(
       async (
         name: string | undefined,
-        options: {
-          yes?: boolean;
-          here?: boolean;
-          port?: string;
-          publicUrl?: string;
-          network?: string;
-          provider?: string;
-          providerKey?: string;
-          platform?: string;
-          memory?: string;
-          memoryUrl?: string;
-          otelEndpoint?: string;
+        // Commander's raw shape: `sentry` is a tristate (true=--sentry,
+        // false=--no-sentry, undefined=neither) and `fromOrg` is string|true.
+        // Every other field maps 1:1 onto InitOptions, so we spread and only
+        // normalize those two below.
+        options: Omit<InitOptions, "sentry" | "noSentry" | "fromOrg"> & {
           sentry?: boolean;
-          slackPreview?: boolean;
-          listProviders?: boolean;
-          fromOrg?: string | boolean;
-          url?: string;
+          fromOrg?: string | true;
         }
       ) => {
         const { initCommand } = await import("./commands/init.js");
-        // Commander gives a tristate: true for --sentry, false for
-        // --no-sentry, undefined for neither.
         // `--from-org` with no value is `true`; normalize to "" (active org).
         const fromOrg =
           options.fromOrg === undefined
             ? undefined
             : options.fromOrg === true
               ? ""
-              : (options.fromOrg as string);
+              : options.fromOrg;
         await initCommand(process.cwd(), name, {
-          yes: options.yes,
-          here: options.here,
-          port: options.port,
-          publicUrl: options.publicUrl,
-          network: options.network,
-          provider: options.provider,
-          providerKey: options.providerKey,
-          platform: options.platform,
-          memory: options.memory,
-          memoryUrl: options.memoryUrl,
-          otelEndpoint: options.otelEndpoint,
+          ...options,
           sentry: options.sentry === true,
           noSentry: options.sentry === false,
-          slackPreview: options.slackPreview,
-          listProviders: options.listProviders,
           fromOrg,
-          url: options.url,
         });
       }
     );
@@ -629,21 +609,17 @@ Memory:
   withCommonOpts(agent.command("list").description("List agents"), {
     org: true,
     json: true,
-  }).action(
-    async (options: { context?: string; org?: string; json?: boolean }) => {
-      const { agentListCommand } = await import("./commands/agent.js");
-      await agentListCommand(options);
-    }
-  );
+  }).action(async (options: AgentCommandOptions) => {
+    const { agentListCommand } = await import("./commands/agent.js");
+    await agentListCommand(options);
+  });
 
   withCommonOpts(agent.command("get <agentId>").description("Get an agent"), {
     org: true,
-  }).action(
-    async (agentId: string, options: { context?: string; org?: string }) => {
-      const { agentGetCommand } = await import("./commands/agent.js");
-      await agentGetCommand(agentId, options);
-    }
-  );
+  }).action(async (agentId: string, options: AgentCommandOptions) => {
+    const { agentGetCommand } = await import("./commands/agent.js");
+    await agentGetCommand(agentId, options);
+  });
 
   withCommonOpts(
     agent
@@ -655,13 +631,7 @@ Memory:
   ).action(
     async (
       agentId: string,
-      options: {
-        name?: string;
-        description?: string;
-        context?: string;
-        org?: string;
-        json?: boolean;
-      }
+      options: AgentCommandOptions & { name?: string; description?: string }
     ) => {
       const { agentCreateCommand } = await import("./commands/agent.js");
       await agentCreateCommand(agentId, options);
@@ -695,13 +665,7 @@ Memory:
   ).action(
     async (
       agentId: string,
-      options: {
-        name?: string;
-        description?: string;
-        context?: string;
-        org?: string;
-        json?: boolean;
-      }
+      options: AgentCommandOptions & { name?: string; description?: string }
     ) => {
       const { agentUpdateCommand } = await import("./commands/agent.js");
       await agentUpdateCommand(agentId, options);
@@ -717,7 +681,7 @@ Memory:
   ).action(
     async (
       agentId: string,
-      options: { yes?: boolean; context?: string; org?: string }
+      options: AgentCommandOptions & { yes?: boolean }
     ) => {
       const { agentDeleteCommand } = await import("./commands/agent.js");
       await agentDeleteCommand(agentId, options);
@@ -737,7 +701,7 @@ Memory:
   ).action(
     async (
       agentId: string,
-      options: { output?: string; context?: string; org?: string }
+      options: AgentCommandOptions & { output?: string }
     ) => {
       const { agentConfigGetCommand } = await import("./commands/agent.js");
       await agentConfigGetCommand(agentId, options);
@@ -756,12 +720,7 @@ Memory:
   ).action(
     async (
       agentId: string,
-      options: {
-        file: string;
-        context?: string;
-        org?: string;
-        json?: boolean;
-      }
+      options: AgentCommandOptions & { file: string }
     ) => {
       const { agentConfigPatchCommand } = await import("./commands/agent.js");
       await agentConfigPatchCommand(agentId, options);

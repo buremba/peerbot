@@ -28,13 +28,27 @@ type ExampleLink = {
   href: string;
 };
 
+/**
+ * Agent-connection client a how-it-works panel item is attributed to. The
+ * human-readable label is derived from {@link USE_CASE_PLATFORM_LABELS} at
+ * render time, so the data only stores the id.
+ */
+export type UseCasePlatformId = "slack" | "openclaw" | "chatgpt" | "claude";
+
+/** Canonical id → display label for {@link UseCasePlatformId}. */
+export const USE_CASE_PLATFORM_LABELS: Record<UseCasePlatformId, string> = {
+  slack: "Slack",
+  openclaw: "OpenClaw",
+  chatgpt: "ChatGPT",
+  claude: "Claude",
+};
+
 type HowItWorksPanelItem = {
   label: string;
   detail: string;
   meta?: string;
   platform?: {
-    id: "slack" | "openclaw" | "chatgpt" | "claude";
-    label: string;
+    id: UseCasePlatformId;
   };
 };
 

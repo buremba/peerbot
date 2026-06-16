@@ -1,4 +1,5 @@
 import { createLogger } from "@lobu/core";
+import { Actions, Button, Card, CardText, LinkButton } from "chat";
 import {
   type PendingToolInvocation,
 	takePendingTool,
@@ -263,12 +264,52 @@ export function registerInteractionBridge(
     pendingSentMessages.delete(questionId);
     return { question: stored.question, sent: cached?.sent };
   }
-  const onQuestionCreated = async (event: PostedQuestion) => {
-    try {
-      if (!shouldHandle(event, platform, connectionId, manager)) return;
-      if (handledEvents.has(event.id)) return;
-      markHandled(event.id);
 
+  /**
+   * Shared preamble for every InteractionService handler: platform/tenant
+   * guard, per-connection dedup (Slack retries the same webhook for up to
+   * 5min), thread resolution, and a catch-all so one handler's failure never
+   * escapes into the event emitter. `handler` runs only once per event id with
+   * a resolved thread; org/user sub-checks stay inline in each body.
+   */
+  function withResolvedThread<
+    E extends {
+      id: string;
+      channelId: string;
+      conversationId: string;
+      platform?: string;
+    },
+  >(
+    eventName: string,
+    handler: (event: E, thread: any) => Promise<void>,
+  ): (event: E) => Promise<void> {
+    return async (event: E) => {
+      try {
+        if (!shouldHandle(event, platform, connectionId, manager)) return;
+        if (handledEvents.has(event.id)) return;
+        markHandled(event.id);
+
+        const thread = await resolveThread(
+          manager,
+          connectionId,
+          event.channelId,
+          event.conversationId,
+        );
+        if (!thread) return;
+
+        await handler(event, thread);
+      } catch (error) {
+        logger.error(
+          { connectionId, error: String(error) },
+          `Unhandled error in ${eventName} handler`,
+        );
+      }
+    };
+  }
+
+  const onQuestionCreated = withResolvedThread<PostedQuestion>(
+    "question:created",
+    async (event, thread) => {
       // Cross-tenant scoping: every pending row must carry the bridge's
       // org. Without a known org we can't safely persist or claim, so
       // drop the event rather than write an un-scoped row.
@@ -287,14 +328,6 @@ export function registerInteractionBridge(
         );
         return;
       }
-
-      const thread = await resolveThread(
-        manager,
-        connectionId,
-        event.channelId,
-				event.conversationId,
-      );
-      if (!thread) return;
 
       // Persist the pending row BEFORE posting the card. If the persist
       // fails we never show buttons that would no-op on click. If the row
@@ -316,7 +349,6 @@ export function registerInteractionBridge(
         return;
       }
 
-      const { Card, CardText, Actions, Button } = await import("chat");
       const buttons = event.options.map((option, i) =>
         Button({
           id: `question:${event.id}:${i}`,
@@ -359,33 +391,16 @@ export function registerInteractionBridge(
         return;
       }
       rememberSentMessage(event.id, sent);
-    } catch (error) {
-      logger.error(
-        { connectionId, error: String(error) },
-				"Unhandled error in question:created handler",
-      );
-    }
-  };
+    },
+  );
 
-  const onToolApprovalNeeded = async (event: PostedToolApproval) => {
-    try {
-      if (!shouldHandle(event, platform, connectionId, manager)) return;
-      if (handledEvents.has(event.id)) return;
-      markHandled(event.id);
-
+  const onToolApprovalNeeded = withResolvedThread<PostedToolApproval>(
+    "tool:approval-needed",
+    async (event, thread) => {
       const argsText = formatToolArgs(event.args);
       const text = `Tool Approval\n${event.mcpId} → ${event.toolName}\n${argsText}`;
       const tid = event.id;
 
-      const thread = await resolveThread(
-        manager,
-        connectionId,
-        event.channelId,
-				event.conversationId,
-      );
-      if (!thread) return;
-
-      const { Card, CardText, Actions, Button } = await import("chat");
       const card = Card({
         children: [
           CardText(
@@ -428,29 +443,12 @@ export function registerInteractionBridge(
       if (sent) {
         trackApprovalCard(tid, sent);
       }
-    } catch (error) {
-      logger.error(
-        { connectionId, error: String(error) },
-				"Unhandled error in tool:approval-needed handler",
-      );
-    }
-  };
+    },
+  );
 
-  const onLinkButtonCreated = async (event: PostedLinkButton) => {
-    try {
-      if (!shouldHandle(event, platform, connectionId, manager)) return;
-      if (handledEvents.has(event.id)) return;
-      markHandled(event.id);
-
-      const thread = await resolveThread(
-        manager,
-        connectionId,
-        event.channelId,
-				event.conversationId,
-      );
-      if (!thread) return;
-
-      const { Card, CardText, Actions, LinkButton } = await import("chat");
+  const onLinkButtonCreated = withResolvedThread<PostedLinkButton>(
+    "link-button:created",
+    async (event, thread) => {
       const linkButton = LinkButton({
         url: event.url,
         label: event.label,
@@ -475,28 +473,12 @@ export function registerInteractionBridge(
         connectionId,
 				"link button interaction",
       );
-    } catch (error) {
-      logger.error(
-        { connectionId, error: String(error) },
-				"Unhandled error in link-button:created handler",
-      );
-    }
-  };
+    },
+  );
 
-  const onStatusMessageCreated = async (event: PostedStatusMessage) => {
-    try {
-      if (!shouldHandle(event, platform, connectionId, manager)) return;
-      if (handledEvents.has(event.id)) return;
-      markHandled(event.id);
-
-      const thread = await resolveThread(
-        manager,
-        connectionId,
-        event.channelId,
-				event.conversationId,
-      );
-      if (!thread) return;
-
+  const onStatusMessageCreated = withResolvedThread<PostedStatusMessage>(
+    "status-message:created",
+    async (event, thread) => {
       try {
         await thread.post(event.text);
       } catch (error) {
@@ -505,13 +487,8 @@ export function registerInteractionBridge(
 					"Failed to post status message interaction",
         );
       }
-    } catch (error) {
-      logger.error(
-        { connectionId, error: String(error) },
-				"Unhandled error in status-message:created handler",
-      );
-    }
-  };
+    },
+  );
 
   interactionService.on("question:created", onQuestionCreated);
   interactionService.on("tool:approval-needed", onToolApprovalNeeded);
@@ -582,7 +559,6 @@ export function registerInteractionBridge(
         // Visible "user submitted X" receipt so the click is acknowledged
         // in-thread even before the worker responds.
         try {
-          const { Card, CardText } = await import("chat");
           const card = Card({ children: [CardText(receiptText)] });
           await thread
             .post({ card, fallbackText: receiptText })

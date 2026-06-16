@@ -9,31 +9,18 @@ import { join } from "node:path";
 import chalk from "chalk";
 import { resolveApiClient } from "../internal/index.js";
 import { printJson } from "../internal/output.js";
+import { agentCountsText, fetchAgents } from "./_lib/agents-view.js";
 
-interface AgentCommandOptions {
+export interface AgentCommandOptions {
   context?: string;
   org?: string;
   json?: boolean;
 }
 
-interface AgentItem {
-  agentId: string;
-  name: string;
-  description?: string;
-  connectionCount?: number;
-  activeConnectionCount?: number;
-  clientCount?: number;
-  status?: string;
-}
-
 export async function agentListCommand(
   options: AgentCommandOptions = {}
 ): Promise<void> {
-  const { client, orgSlug } = await resolveApiClient(options);
-  const data = await client.get<{ agents?: AgentItem[] }>(
-    `/api/${orgSlug}/agents`
-  );
-  const agents = data.agents ?? [];
+  const { agents, orgSlug } = await fetchAgents(options);
 
   if (options.json) {
     printJson(agents);
@@ -51,9 +38,7 @@ export async function agentListCommand(
     const description = agent.description
       ? chalk.dim(` — ${agent.description}`)
       : "";
-    const counts = chalk.dim(
-      `connections:${agent.connectionCount ?? 0} active:${agent.activeConnectionCount ?? 0} clients:${agent.clientCount ?? 0}`
-    );
+    const counts = chalk.dim(agentCountsText(agent));
     console.log(
       `  ${chalk.green("●")} ${chalk.bold(agent.agentId)} ${counts}${status}${description}`
     );

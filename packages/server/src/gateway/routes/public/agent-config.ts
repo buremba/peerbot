@@ -10,6 +10,7 @@ import type {
   ModelOption,
   SkillConfig,
 } from "@lobu/core";
+import type { Context } from "hono";
 import type { ProviderCatalogService } from "../../auth/provider-catalog.js";
 import { collectProviderModelOptions } from "../../auth/provider-model-options.js";
 
@@ -35,12 +36,15 @@ import {
   type ModelProviderModule,
 } from "../../modules/module-system.js";
 import type { GrantStore } from "../../permissions/grant-store.js";
-import { errorResponse } from "../shared/helpers.js";
 import { createTokenVerifier } from "../shared/agent-ownership.js";
+import { errorResponse } from "../shared/helpers.js";
+import {
+  ErrorResponseSchema,
+  errorResponses,
+} from "../shared/openapi-responses.js";
 import { verifySettingsSessionOrToken } from "./settings-auth.js";
 
 const TAG = "Configuration";
-const ErrorResponse = z.object({ error: z.string() });
 const TokenQuery = z.object({ token: z.string().optional() });
 const REDACTED_VALUE = "__LOBU_REDACTED__";
 
@@ -64,10 +68,9 @@ const getConfigRoute = createRoute({
         },
       },
     },
-    401: {
-      description: "Unauthorized",
-      content: { "application/json": { schema: ErrorResponse } },
-    },
+    ...errorResponses(ErrorResponseSchema, {
+      401: "Unauthorized",
+    }),
   },
 });
 
@@ -352,10 +355,27 @@ export function createAgentConfigRoutes(
     };
   };
 
-  app.openapi(getConfigRoute, async (c): Promise<any> => {
+  /**
+   * Resolve the `agentId` path param and verify the settings session/token for
+   * it. Returns the verified payload plus agentId, or a 401 Response to
+   * early-return. Collapses the identical preamble every config handler ran.
+   */
+  const requireConfigAuth = async (
+    c: Context
+  ): Promise<{ agentId: string; payload: SettingsTokenPayload } | Response> => {
     const agentId = c.req.param("agentId") || "";
-    const payload = await verifyToken(await verifySettingsSessionOrToken(c), agentId);
+    const payload = await verifyToken(
+      await verifySettingsSessionOrToken(c),
+      agentId
+    );
     if (!payload) return errorResponse(c, "Unauthorized", 401);
+    return { agentId, payload };
+  };
+
+  app.openapi(getConfigRoute, async (c): Promise<any> => {
+    const auth = await requireConfigAuth(c);
+    if (auth instanceof Response) return auth;
+    const { agentId, payload } = auth;
     const providerModels = await collectProviderModelOptions(
       agentId,
       payload.userId
@@ -374,9 +394,9 @@ export function createAgentConfigRoutes(
 
   // GET /providers/catalog
   app.get("/providers/catalog", async (c): Promise<any> => {
-    const agentId = c.req.param("agentId") || "";
-    const payload = await verifyToken(await verifySettingsSessionOrToken(c), agentId);
-    if (!payload) return errorResponse(c, "Unauthorized", 401);
+    const auth = await requireConfigAuth(c);
+    if (auth instanceof Response) return auth;
+    const { agentId } = auth;
 
     if (!config.providerCatalogService) {
       return errorResponse(c, "Provider catalog not available", 503);
@@ -407,14 +427,10 @@ export function createAgentConfigRoutes(
 
     // GET /grants - List all active grants
     app.get("/grants", async (c) => {
-      const agentId = c.req.param("agentId") || "";
-      const payload = await verifyToken(
-        await verifySettingsSessionOrToken(c),
-        agentId
-      );
-      if (!payload) return errorResponse(c, "Unauthorized", 401);
+      const auth = await requireConfigAuth(c);
+      if (auth instanceof Response) return auth;
 
-      const grants = await grantStore.listGrants(agentId);
+      const grants = await grantStore.listGrants(auth.agentId);
       return c.json(grants);
     });
   }

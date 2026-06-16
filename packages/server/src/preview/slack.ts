@@ -1,4 +1,5 @@
 import { createHash, randomInt } from 'node:crypto';
+import { slugify } from '@lobu/core';
 import type { Context } from 'hono';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
@@ -59,14 +60,6 @@ interface ClaimPayload {
 
 function codeHash(code: string): string {
   return createHash('sha256').update(code.trim().toLowerCase()).digest('hex');
-}
-
-function slugify(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 32);
 }
 
 // Uppercase letters + digits — readable, no ambiguous punctuation, and a fixed
@@ -154,7 +147,7 @@ export async function createPreviewClaim(c: Context<{ Bindings: Env }>) {
 
   const surfaces = normalizeSurfaces(body.surfaces);
   const ttlMinutes = normalizeTtlMinutes(body.ttl_minutes);
-  const codePrefix = slugify(agentId) || 'agent';
+  const codePrefix = slugify(agentId, { maxLength: 32 }) || 'agent';
   const sql = getDb();
 
   const agentRows = await sql<{ id: string }>`

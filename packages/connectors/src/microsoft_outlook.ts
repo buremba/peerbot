@@ -8,10 +8,10 @@
 import {
   type ConnectorDefinition,
   ConnectorRuntime,
-  createHttpClient,
   type EventEnvelope,
   type HttpClient,
   paginateByCursor,
+  requireBearerClient,
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
@@ -227,15 +227,10 @@ export default class MicrosoftOutlookConnector extends ConnectorRuntime {
   // -------------------------------------------------------------------------
 
   async sync(ctx: SyncContext): Promise<SyncResult> {
-    const accessToken = ctx.credentials?.accessToken;
-    if (!accessToken) {
-      throw new Error('Microsoft Outlook requires OAuth authentication.');
-    }
-
-    const http = createHttpClient({
-      getAccessToken: () => accessToken,
-      headers: { 'Content-Type': 'application/json' },
+    const http = requireBearerClient(ctx.credentials, {
       errorPrefix: 'Microsoft Graph API',
+      label: 'Microsoft Outlook',
+      headers: { 'Content-Type': 'application/json' },
     });
 
     switch (ctx.feedKey) {

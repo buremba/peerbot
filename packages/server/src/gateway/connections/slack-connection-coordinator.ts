@@ -1,4 +1,5 @@
 import { createLogger } from "@lobu/core";
+import { Chat } from "chat";
 import { isUniqueViolation } from "../../utils/pg-errors.js";
 import type { PlatformAdapterConfig, PlatformConnection } from "./types.js";
 import {
@@ -404,7 +405,6 @@ export class SlackConnectionCoordinator {
   }
 
   private async createOAuthChat(options?: { requireOAuth?: boolean }) {
-    const { Chat } = await import("chat");
     const { createSlackAdapter } = await import("@chat-adapter/slack");
 
     const adapter = createSlackAdapter(

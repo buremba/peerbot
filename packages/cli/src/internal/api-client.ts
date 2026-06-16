@@ -1,3 +1,4 @@
+import { ApiError } from "../commands/memory/_lib/errors.js";
 import {
   findContextByUrl,
   getActiveOrg,
@@ -28,15 +29,18 @@ interface OrganizationInfo {
   name?: string;
 }
 
-class ApiClientError extends Error {
-  constructor(
-    message: string,
-    public readonly status?: number,
-    public readonly code?: string
-  ) {
-    super(message);
-    this.name = "ApiClientError";
-  }
+/** HTTP verbs the CLI's REST clients issue. */
+export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+export interface RequestWithStatusOptions {
+  okStatuses?: number[];
+  /** Send `Accept: application/json` (default). Off matches the apply client. */
+  sendAccept?: boolean;
+  /**
+   * Always send `Content-Type: application/json` even with no body. Default
+   * sends it only when a body is present.
+   */
+  alwaysJsonContentType?: boolean;
 }
 
 export class ApiClient {
@@ -46,28 +50,36 @@ export class ApiClient {
     private readonly fetchImpl: typeof fetch = fetch
   ) {}
 
-  async request<T>(
-    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+  /**
+   * Single HTTP chokepoint: fetch (with retry) → parse JSON → throw `ApiError`
+   * on a non-ok / non-allowed status. Returns the response status alongside the
+   * parsed body so callers that branch on status (e.g. `lobu apply`'s 404/409
+   * handling) don't reimplement the fetch/parse/error pipeline.
+   */
+  async requestWithStatus<T>(
+    method: HttpMethod,
     path: string,
     body?: unknown,
-    options: { okStatuses?: number[] } = {}
-  ): Promise<T> {
+    options: RequestWithStatusOptions = {}
+  ): Promise<{ status: number; body: T }> {
     const url = path.startsWith("http") ? path : `${this.apiBaseUrl}${path}`;
     const headers: Record<string, string> = {
-      Accept: "application/json",
       Authorization: `Bearer ${this.token}`,
     };
+    if (options.sendAccept !== false) headers.Accept = "application/json";
     const init: RequestInit = { method, headers };
     if (body !== undefined) {
       headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(body);
+    } else if (options.alwaysJsonContentType) {
+      headers["Content-Type"] = "application/json";
     }
 
     const response = await fetchWithRetry(url, init, {
       fetchImpl: this.fetchImpl,
     });
     const parsed = await parseJsonResponse(response, url, (message) => {
-      throw new ApiClientError(message, response.status);
+      throw new ApiError(message, response.status);
     });
     const okStatuses = options.okStatuses ?? [200, 201, 204];
     if (!response.ok || !okStatuses.includes(response.status)) {
@@ -76,13 +88,28 @@ export class ApiClient {
         response.status,
         response.statusText
       );
-      throw new ApiClientError(
+      throw new ApiError(
         `${method} ${path} failed: ${message}`,
         response.status,
         code
       );
     }
-    return parsed as T;
+    return { status: response.status, body: parsed as T };
+  }
+
+  async request<T>(
+    method: HttpMethod,
+    path: string,
+    body?: unknown,
+    options: { okStatuses?: number[] } = {}
+  ): Promise<T> {
+    const { body: parsed } = await this.requestWithStatus<T>(
+      method,
+      path,
+      body,
+      options
+    );
+    return parsed;
   }
 
   get<T>(path: string): Promise<T> {
@@ -112,7 +139,7 @@ export async function resolveApiClient(
   const token = process.env.LOBU_API_TOKEN || (await getToken(target.name));
 
   if (!token) {
-    throw new ApiClientError(
+    throw new ApiError(
       `Not logged in to context "${target.name}". Run \`lobu login${options.context ? ` --context ${target.name}` : ""}\` first.`,
       401
     );
@@ -141,7 +168,7 @@ export async function listOrganizations(
   const target = await resolveApiTarget(options);
   const token = process.env.LOBU_API_TOKEN || (await getToken(target.name));
   if (!token) {
-    throw new ApiClientError(
+    throw new ApiError(
       `Not logged in to context "${target.name}". Run \`lobu login${options.context ? ` --context ${target.name}` : ""}\` first.`,
       401
     );
@@ -175,7 +202,7 @@ async function resolveApiTarget(
   const apiBaseUrl = apiBaseFromContextUrl(options.apiUrl);
   const contextApiBaseUrl = apiBaseFromContextUrl(requested.url);
   if (!process.env.LOBU_API_TOKEN && apiBaseUrl !== contextApiBaseUrl) {
-    throw new ApiClientError(
+    throw new ApiError(
       `Refusing to send stored context credentials for "${requested.name}" to ${apiBaseUrl}. Add a context for that URL or set LOBU_API_TOKEN explicitly.`
     );
   }
@@ -222,12 +249,12 @@ async function resolveOrgSlug(
   }
 
   if (organizations.length > 1) {
-    throw new ApiClientError(
+    throw new ApiError(
       `Multiple organizations are available (${organizations.map((org) => org.slug).join(", ")}). Run \`lobu org set <slug>\` or pass \`--org <slug>\`.`
     );
   }
 
-  throw new ApiClientError(
+  throw new ApiError(
     "No organization selected. Run `lobu org set <slug>` or pass `--org <slug>`."
   );
 }
@@ -277,13 +304,13 @@ async function getOrganizationsFromUserInfo(
 }
 
 /**
- * Wrap the shared {@link validateOrgSlugShared} so the typed `ApiClientError`
+ * Wrap the shared {@link validateOrgSlugShared} so the typed `ApiError`
  * (carrying the same human message) propagates instead of a bare `Error`.
  */
 function validateOrgSlug(slug: string): string {
   try {
     return validateOrgSlugShared(slug);
   } catch (err) {
-    throw new ApiClientError(err instanceof Error ? err.message : String(err));
+    throw new ApiError(err instanceof Error ? err.message : String(err));
   }
 }

@@ -34,6 +34,7 @@ import {
   generateDeploymentName,
   type OrchestratorConfig,
 } from "./base-deployment-manager.js";
+import { buildWorkerTokenClaims } from "./worker-token-claims.js";
 
 const logger = createLogger("orchestrator");
 
@@ -77,26 +78,13 @@ export function buildRunJobToken(args: {
     args.conversationId,
     args.deploymentName,
     {
-      channelId: args.channelId,
-      teamId: args.teamId,
-      agentId: args.agentId,
-      organizationId: args.organizationId,
-      platform: args.platform,
-      // PRIMARY auth → must carry connectionId, or interaction posts
-      // (ask_user / tool approval / link button) hit
-      // `assertRoutableInteraction`, which rejects a chat-platform
-      // interaction with no connectionId, and every ask_user 500s (#1274).
-      connectionId:
-        typeof args.platformMetadata?.connectionId === "string"
-          ? args.platformMetadata.connectionId
-          : undefined,
-      // Headless run origin → interaction cards from this turn are stamped
-      // headless and skip the SSE-owner gate (no browser SSE exists on any
-      // pod for a headless run, so an owner-gated card dead-letters).
-      source:
-        typeof args.platformMetadata?.source === "string"
-          ? args.platformMetadata.source
-          : undefined,
+      // PRIMARY auth → shared routing claims (channelId, teamId, platform,
+      // agentId, organizationId, connectionId, source) are minted via
+      // `buildWorkerTokenClaims`, kept in lockstep with the deployment-token
+      // mint. connectionId in particular MUST be present or interaction posts
+      // hit `assertRoutableInteraction` and every ask_user 500s (#1274).
+      ...buildWorkerTokenClaims(args),
+      // Per-run-token-specific claims.
       runId: args.runId,
       messageId: args.messageId,
     }

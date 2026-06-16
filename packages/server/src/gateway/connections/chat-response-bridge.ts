@@ -18,6 +18,7 @@ import {
   type GuardrailRegistry,
   runGuardrailInstances,
 } from "@lobu/core";
+import { Actions, Card, CardText, LinkButton } from "chat";
 import { getDb } from "../../db/client.js";
 import { getOrganizationSlug } from "../../utils/url-builder.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
@@ -346,11 +347,10 @@ export class ChatResponseBridge implements ResponseRenderer {
         }
         this.streams.delete(key);
       }
-      const blockText = `Message blocked by guardrail: ${trip.reason ?? trip.guardrail}`;
-      await this.postToPayloadTarget(
+      await this.postGuardrailBlock(
         payload,
         ctx,
-        blockText,
+        trip,
         "Failed to post guardrail block message"
       );
       return null;
@@ -443,11 +443,10 @@ export class ChatResponseBridge implements ResponseRenderer {
         const trip = await this.runOutputGuardrails(completionText, payload, ctx);
         if (trip) {
           blockedAtCompletion = true;
-          const blockText = `Message blocked by guardrail: ${trip.reason ?? trip.guardrail}`;
-          await this.postToPayloadTarget(
+          await this.postGuardrailBlock(
             payload,
             ctx,
-            blockText,
+            trip,
             "Failed to post guardrail block message at completion"
           );
         }
@@ -632,14 +631,11 @@ export class ChatResponseBridge implements ResponseRenderer {
     // into the admin UI when we can resolve one. The settings page for an
     // agent is `<publicWebUrl>/<orgSlug>/agents/<agentId>`.
     if (payload.errorCode === "NO_MODEL_CONFIGURED") {
-      const errCtx = this.extractResponseContext(payload);
-      const settingsUrl = errCtx
-        ? await buildAgentSettingsUrl(
-            this.manager.getPublicGatewayUrl(),
-            this.resolveOrganizationId(payload, errCtx) ?? undefined,
-            this.resolveAgentId(payload, errCtx) ?? undefined
-          )
-        : null;
+      const settingsUrl = await buildAgentSettingsUrl(
+        this.manager.getPublicGatewayUrl(),
+        this.resolveOrganizationId(payload, ctx) ?? undefined,
+        this.resolveAgentId(payload, ctx) ?? undefined
+      );
       payload.error = settingsUrl
         ? `No model configured. Connect a provider at ${settingsUrl}`
         : "No model configured. Ask an admin to connect a provider for the base agent.";
@@ -686,9 +682,6 @@ export class ChatResponseBridge implements ResponseRenderer {
 
         if (linkButtons.length > 0) {
           try {
-            const { Actions, Card, CardText, LinkButton } = await import(
-              "chat"
-            );
             const card = Card({
               children: [
                 CardText(processedContent),
@@ -762,6 +755,21 @@ export class ChatResponseBridge implements ResponseRenderer {
     } catch (err) {
       logger.error({ connectionId: ctx.connectionId, err: String(err) }, logMessage);
     }
+  }
+
+  /**
+   * Post the user-facing "blocked by guardrail" notice for a trip. Shared by
+   * the per-delta scan in handleDelta and the post-once scan in
+   * handleCompletion so the block copy stays identical across both paths.
+   */
+  private postGuardrailBlock(
+    payload: ThreadResponsePayload,
+    ctx: ResponseContext,
+    trip: { guardrail: string; reason?: string },
+    logMessage: string
+  ): Promise<void> {
+    const blockText = `Message blocked by guardrail: ${trip.reason ?? trip.guardrail}`;
+    return this.postToPayloadTarget(payload, ctx, blockText, logMessage);
   }
 
   private async resolveTarget(

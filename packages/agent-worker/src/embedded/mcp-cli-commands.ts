@@ -19,6 +19,7 @@ import type { GatewayParams } from "../shared/tool-implementations";
 import {
   callMcpTool,
   checkMcpLogin,
+  joinTextContent,
   logoutMcp,
   startMcpLogin,
 } from "../shared/tool-implementations";
@@ -236,10 +237,7 @@ export function buildMcpServerHandler(
 
     try {
       const result = await deps.callTool(gw, mcpId, subcommand, parsed.payload);
-      const text = result.content
-        .filter((c) => c.type === "text")
-        .map((c) => c.text)
-        .join("\n");
+      const text = joinTextContent(result.content);
       return { stdout: text ? `${text}\n` : "", stderr: "", exitCode: 0 };
     } catch (err) {
       return {
@@ -277,7 +275,7 @@ async function runAuthSubcommand(
 
   if (verb === "login") {
     const res = await startMcpLogin(gw, { mcpId });
-    const text = extractText(res.content);
+    const text = joinTextContent(res.content);
     return {
       stdout: `${summariseAuthStart(text, mcpId)}\n`,
       stderr: "",
@@ -287,7 +285,7 @@ async function runAuthSubcommand(
 
   if (verb === "check") {
     const res = await checkMcpLogin(gw, { mcpId });
-    const text = extractText(res.content);
+    const text = joinTextContent(res.content);
     const parsed = tryJson(text);
     if (parsed?.authenticated === true) {
       await refreshRef(ref, mcpId, "check");
@@ -301,7 +299,7 @@ async function runAuthSubcommand(
 
   if (verb === "logout") {
     const res = await logoutMcp(gw, { mcpId });
-    const text = extractText(res.content);
+    const text = joinTextContent(res.content);
     // Tools that required auth are now unreachable — refresh so the next
     // invocation sees the empty state.
     await refreshRef(ref, mcpId, "logout");
@@ -313,16 +311,6 @@ async function runAuthSubcommand(
     stderr: `unknown auth subcommand: ${verb ?? "(none)"}. Use login|check|logout.\n`,
     exitCode: 2,
   };
-}
-
-function extractText(content: Array<{ type: string; text?: string }>): string {
-  return content
-    .filter(
-      (c): c is { type: "text"; text: string } =>
-        c.type === "text" && typeof c.text === "string"
-    )
-    .map((c) => c.text)
-    .join("\n");
 }
 
 export function summariseAuthStart(rawText: string, mcpId: string): string {

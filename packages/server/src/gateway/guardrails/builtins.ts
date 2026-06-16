@@ -1,13 +1,11 @@
 import type {
   Guardrail,
-  GuardrailContext,
   GuardrailRegistry,
   GuardrailStage,
-  InputGuardrailContext,
   OutputGuardrailContext,
   PreToolGuardrailContext,
 } from "@lobu/core";
-import { safeStringify } from "./safe-stringify.js";
+import { extractStageText } from "./stage-text.js";
 
 /**
  * Built-in guardrails registered by the gateway at startup. Three primitives:
@@ -79,25 +77,6 @@ function scanForPii(text: string): { kind: string; match: string } | null {
   return scanCreditCard(text);
 }
 
-function extractTextForPii<S extends GuardrailStage>(
-  stage: S,
-  ctx: GuardrailContext[S]
-): string {
-  switch (stage) {
-    case "input":
-      return (ctx as InputGuardrailContext).message;
-    case "output":
-      return (ctx as OutputGuardrailContext).text;
-    case "pre-tool":
-      // safeStringify so BigInt / circular tool args don't throw — a thrown
-      // guardrail is treated as a pass by the runner, which silently weakens
-      // pii-scan exactly when the input is weird enough to deserve scrutiny.
-      return safeStringify((ctx as PreToolGuardrailContext).arguments);
-    default:
-      return "";
-  }
-}
-
 export function createPiiScanGuardrail<S extends GuardrailStage>(
   stage: S,
   name = "pii-scan"
@@ -106,7 +85,8 @@ export function createPiiScanGuardrail<S extends GuardrailStage>(
     name,
     stage,
     async run(ctx) {
-      const text = extractTextForPii(stage, ctx);
+      // pii-scan scans the tool arguments alone (no tool-name prefix).
+      const text = extractStageText(stage, ctx);
       const hit = scanForPii(text);
       if (!hit) return { tripped: false };
       return {

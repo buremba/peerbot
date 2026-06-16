@@ -84,19 +84,20 @@ export abstract class BaseOAuth2Client {
   // ============================================================================
 
   /**
-   * Common token exchange implementation
-   * Subclasses must implement buildTokenExchangeRequest
+   * Shared POST to a token endpoint. Serializes the body per `contentType`,
+   * sets the matching `Content-Type` header (merged after any caller headers so
+   * it always wins), checks `response.ok`, parses the token response, and
+   * validates for OAuth errors / a present `access_token`. The two public
+   * operations differ only in their log prefix and whether a form-encoded
+   * response body is accepted (`parseFormResponse`), so both delegate here.
    */
-  protected async exchangeToken<T>(
+  private async postTokenRequest<T>(
     tokenUrl: string,
     requestBody: Record<string, string | number> | URLSearchParams,
-    contentType: "json" | "form" = "json",
-    additionalHeaders?: Record<string, string>
+    contentType: "json" | "form",
+    additionalHeaders: Record<string, string> | undefined,
+    opts: { label: string; failPrefix: string; parseFormResponse: boolean }
   ): Promise<T> {
-    this.logger.info(`Exchanging code for token at ${tokenUrl}`, {
-      contentType,
-    });
-
     try {
       const body =
         contentType === "json"
@@ -118,11 +119,6 @@ export abstract class BaseOAuth2Client {
         headers["Content-Type"] = "application/x-www-form-urlencoded";
       }
 
-      this.logger.debug(`Token exchange request`, {
-        contentType,
-        tokenUrl,
-      });
-
       const response = await fetch(tokenUrl, {
         method: "POST",
         headers,
@@ -131,21 +127,20 @@ export abstract class BaseOAuth2Client {
 
       if (!response.ok) {
         const errorText = await response.text();
-        this.logger.error(`Token exchange failed: ${response.status}`, {
+        this.logger.error(`${opts.failPrefix}: ${response.status}`, {
           errorText,
         });
         throw new Error(
-          `Token exchange failed: ${response.status} ${response.statusText}`
+          `${opts.failPrefix}: ${response.status} ${response.statusText}`
         );
       }
 
-      const responseContentType = response.headers.get("content-type") || "";
       let tokenData: any;
-
-      // Parse response based on content type
-      if (responseContentType.includes("application/json")) {
-        tokenData = await response.json();
-      } else {
+      const responseContentType = response.headers.get("content-type") || "";
+      if (
+        opts.parseFormResponse &&
+        !responseContentType.includes("application/json")
+      ) {
         // Handle form-encoded responses (e.g., some OAuth providers)
         const text = await response.text();
         const params = new URLSearchParams(text);
@@ -158,9 +153,10 @@ export abstract class BaseOAuth2Client {
           refresh_token: params.get("refresh_token") || undefined,
           scope: params.get("scope") || undefined,
         };
+      } else {
+        tokenData = await response.json();
       }
 
-      // Check for OAuth error response
       if ("error" in tokenData) {
         throw new Error(
           `OAuth error: ${tokenData.error} - ${tokenData.error_description || ""}`
@@ -168,18 +164,44 @@ export abstract class BaseOAuth2Client {
       }
 
       if (!tokenData.access_token) {
-        throw new Error("No access token in response");
+        throw new Error(`No access token in ${opts.label} response`);
       }
 
       this.logger.info(
-        `Token exchange successful, expires_in: ${tokenData.expires_in}s`
+        `${opts.label} successful, expires_in: ${tokenData.expires_in}s`
       );
 
       return tokenData as T;
     } catch (error) {
-      this.logger.error("Token exchange failed", { error });
+      this.logger.error(`${opts.label} failed`, { error });
       throw error;
     }
+  }
+
+  /**
+   * Common token exchange implementation
+   * Subclasses must implement buildTokenExchangeRequest
+   */
+  protected async exchangeToken<T>(
+    tokenUrl: string,
+    requestBody: Record<string, string | number> | URLSearchParams,
+    contentType: "json" | "form" = "json",
+    additionalHeaders?: Record<string, string>
+  ): Promise<T> {
+    this.logger.info(`Exchanging code for token at ${tokenUrl}`, {
+      contentType,
+    });
+    return this.postTokenRequest<T>(
+      tokenUrl,
+      requestBody,
+      contentType,
+      additionalHeaders,
+      {
+        label: "Token exchange",
+        failPrefix: "Token exchange failed",
+        parseFormResponse: true,
+      }
+    );
   }
 
   /**
@@ -193,65 +215,17 @@ export abstract class BaseOAuth2Client {
     additionalHeaders?: Record<string, string>
   ): Promise<T> {
     this.logger.info(`Refreshing token at ${tokenUrl}`);
-
-    try {
-      const body =
-        contentType === "json"
-          ? JSON.stringify(requestBody)
-          : requestBody instanceof URLSearchParams
-            ? requestBody.toString()
-            : new URLSearchParams(
-                requestBody as Record<string, string>
-              ).toString();
-
-      const headers: Record<string, string> = {
-        Accept: "application/json",
-        ...additionalHeaders,
-      };
-
-      if (contentType === "json") {
-        headers["Content-Type"] = "application/json";
-      } else {
-        headers["Content-Type"] = "application/x-www-form-urlencoded";
+    return this.postTokenRequest<T>(
+      tokenUrl,
+      requestBody,
+      contentType,
+      additionalHeaders,
+      {
+        label: "Token refresh",
+        failPrefix: "Token refresh failed",
+        parseFormResponse: false,
       }
-
-      const response = await fetch(tokenUrl, {
-        method: "POST",
-        headers,
-        body,
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        this.logger.error(`Token refresh failed: ${response.status}`, {
-          errorText,
-        });
-        throw new Error(
-          `Token refresh failed: ${response.status} ${response.statusText}`
-        );
-      }
-
-      const tokenData = (await response.json()) as any;
-
-      if ("error" in tokenData) {
-        throw new Error(
-          `OAuth error: ${tokenData.error} - ${tokenData.error_description || ""}`
-        );
-      }
-
-      if (!tokenData.access_token) {
-        throw new Error("No access token in refresh response");
-      }
-
-      this.logger.info(
-        `Token refresh successful, expires_in: ${tokenData.expires_in}s`
-      );
-
-      return tokenData as T;
-    } catch (error) {
-      this.logger.error("Token refresh failed", { error });
-      throw error;
-    }
+    );
   }
 
   /**

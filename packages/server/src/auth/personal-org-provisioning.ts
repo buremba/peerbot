@@ -7,6 +7,7 @@
  * to receive auto-installed agents or per-user mirrored schemas.
  */
 
+import { slugify as slugifyBase } from "@lobu/core";
 import { getDb } from "../db/client";
 import { RESERVED_PATHS_SET } from "../utils/reserved";
 import { generateSecureToken } from "./oauth/utils";
@@ -35,14 +36,9 @@ const PERSONAL_ORG_LOCK_NAMESPACE = 0x706f7267; // "porg"
 
 type Sql = ReturnType<typeof getDb>;
 
+// Org slugs strip diacritics (NFKD) and cap length so they stay route-safe.
 export function slugify(input: string): string {
-	return input
-		.toLowerCase()
-		.normalize("NFKD")
-		.replace(/[\u0300-\u036f]/g, "")
-		.replace(/[^a-z0-9]+/g, "-")
-		.replace(/^-+|-+$/g, "")
-		.slice(0, MAX_SLUG_LENGTH);
+	return slugifyBase(input, { normalize: true, maxLength: MAX_SLUG_LENGTH });
 }
 
 export function deriveSlugCandidate(user: UserLike): string {

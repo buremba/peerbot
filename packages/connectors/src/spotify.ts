@@ -8,11 +8,11 @@
 import {
   type ConnectorDefinition,
   ConnectorRuntime,
-  createHttpClient,
   type EventEnvelope,
   type HttpClient,
   paginateByCursor,
   paginateByOffset,
+  requireBearerClient,
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
@@ -300,14 +300,9 @@ export default class SpotifyConnector extends ConnectorRuntime {
   // -------------------------------------------------------------------------
 
   async sync(ctx: SyncContext): Promise<SyncResult> {
-    const accessToken = ctx.credentials?.accessToken;
-    if (!accessToken) {
-      throw new Error('Spotify requires OAuth authentication.');
-    }
-
-    const http = createHttpClient({
-      getAccessToken: () => accessToken,
+    const http = requireBearerClient(ctx.credentials, {
       errorPrefix: 'Spotify API',
+      label: 'Spotify',
     });
 
     switch (ctx.feedKey) {

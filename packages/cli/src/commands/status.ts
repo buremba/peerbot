@@ -1,23 +1,10 @@
 import chalk from "chalk";
-import { resolveApiClient } from "../internal/index.js";
-
-interface AgentStatusItem {
-  agentId: string;
-  name: string;
-  connectionCount?: number;
-  activeConnectionCount?: number;
-  clientCount?: number;
-  status?: string;
-}
+import { agentCountsText, fetchAgents } from "./_lib/agents-view.js";
 
 export async function statusCommand(
   options: { context?: string; org?: string } = {}
 ): Promise<void> {
-  const { client, orgSlug, apiBaseUrl } = await resolveApiClient(options);
-  const data = await client.get<{ agents?: AgentStatusItem[] }>(
-    `/api/${orgSlug}/agents`
-  );
-  const agents = data.agents ?? [];
+  const { agents, orgSlug, apiBaseUrl } = await fetchAgents(options);
 
   console.log(chalk.bold("\n  Lobu"));
   console.log(chalk.dim(`  API: ${apiBaseUrl}`));
@@ -35,7 +22,7 @@ export async function statusCommand(
     const icon = active ? chalk.green("●") : chalk.dim("○");
     console.log(
       `  ${icon} ${chalk.bold(agent.name)} ${chalk.dim(`(${agent.agentId})`)}  ${chalk.dim(
-        `connections:${agent.connectionCount ?? 0} active:${agent.activeConnectionCount ?? 0} clients:${agent.clientCount ?? 0}`
+        agentCountsText(agent)
       )}`
     );
   }

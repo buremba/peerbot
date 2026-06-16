@@ -32,6 +32,7 @@ import type { SseManager } from "../../services/sse-manager.js";
 import type { ISessionManager, ThreadSession } from "../../session.js";
 import { verifyOwnedAgentAccess } from "../shared/agent-ownership.js";
 import { errorResponse } from "../shared/helpers.js";
+import { errorResponses } from "../shared/openapi-responses.js";
 import { verifySettingsSession } from "./settings-auth.js";
 
 const logger = createLogger("agent-api");
@@ -283,14 +284,10 @@ const createAgentRoute = createRoute({
       description: "Agent created",
       content: { "application/json": { schema: CreateAgentResponseSchema } },
     },
-    400: {
-      description: "Invalid request",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-    401: {
-      description: "Unauthorized",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
+    ...errorResponses(ErrorResponseSchema, {
+      400: "Invalid request",
+      401: "Unauthorized",
+    }),
   },
 });
 
@@ -306,14 +303,10 @@ const getAgentRoute = createRoute({
       description: "Agent status",
       content: { "application/json": { schema: AgentStatusResponseSchema } },
     },
-    401: {
-      description: "Unauthorized",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-    404: {
-      description: "Not found",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
+    ...errorResponses(ErrorResponseSchema, {
+      401: "Unauthorized",
+      404: "Not found",
+    }),
   },
 });
 
@@ -329,14 +322,10 @@ const deleteAgentRoute = createRoute({
       description: "Agent deleted",
       content: { "application/json": { schema: SuccessResponseSchema } },
     },
-    401: {
-      description: "Unauthorized",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-    404: {
-      description: "Not found",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
+    ...errorResponses(ErrorResponseSchema, {
+      401: "Unauthorized",
+      404: "Not found",
+    }),
   },
 });
 
@@ -353,14 +342,10 @@ const getAgentEventsRoute = createRoute({
       description: "SSE stream",
       content: { "text/event-stream": { schema: z.string() } },
     },
-    401: {
-      description: "Unauthorized",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-    429: {
-      description: "Too many connections",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
+    ...errorResponses(ErrorResponseSchema, {
+      401: "Unauthorized",
+      429: "Too many connections",
+    }),
   },
 });
 
@@ -386,22 +371,12 @@ const sendMessageRoute = createRoute({
       description: "Message queued",
       content: { "application/json": { schema: SendMessageResponseSchema } },
     },
-    400: {
-      description: "Invalid request",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-    401: {
-      description: "Unauthorized",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-    403: {
-      description: "Forbidden - worker tokens cannot route to platforms",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
-    404: {
-      description: "Agent not found",
-      content: { "application/json": { schema: ErrorResponseSchema } },
-    },
+    ...errorResponses(ErrorResponseSchema, {
+      400: "Invalid request",
+      401: "Unauthorized",
+      403: "Forbidden - worker tokens cannot route to platforms",
+      404: "Agent not found",
+    }),
   },
 });
 

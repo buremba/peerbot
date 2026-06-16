@@ -22,6 +22,8 @@ import { normalizeIdentifier } from '@lobu/connector-sdk';
 import { getDb, pgTextArray } from '../db/client';
 import { resolveEntityLinkRules } from './entity-link-validation';
 import logger from './logger';
+import { getValueAtPath } from './object-path';
+import { TtlCache } from './ttl-cache';
 
 interface BatchItem {
   origin_type?: string;
@@ -34,36 +36,23 @@ interface RuleMap {
 }
 
 const RULES_CACHE_TTL_MS = 60_000;
-const rulesCache = new Map<string, { value: RuleMap; expiresAt: number }>();
-const creatorCache = new Map<string, { value: string | null; expiresAt: number }>();
+// Per-pod caches — no cross-replica sharing.
+const rulesCache = new TtlCache<RuleMap>(RULES_CACHE_TTL_MS);
+const creatorCache = new TtlCache<string | null>(RULES_CACHE_TTL_MS);
 
 async function resolveOrgCreator(orgId: string): Promise<string | null> {
-  const now = Date.now();
-  const cached = creatorCache.get(orgId);
-  if (cached && cached.expiresAt > now) return cached.value;
-
-  const sql = getDb();
-  const rows = await sql<{ userId: string }>`
-    SELECT "userId"
-    FROM "member"
-    WHERE "organizationId" = ${orgId}
-    ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
-             "createdAt" ASC
-    LIMIT 1
-  `;
-  const value = rows.length > 0 ? rows[0].userId : null;
-  creatorCache.set(orgId, { value, expiresAt: now + RULES_CACHE_TTL_MS });
-  return value;
-}
-
-function readPath(source: unknown, path: string): unknown {
-  const parts = path.split('.');
-  let cur: unknown = source;
-  for (const p of parts) {
-    if (cur == null || typeof cur !== 'object') return undefined;
-    cur = (cur as Record<string, unknown>)[p];
-  }
-  return cur;
+  return creatorCache.getOrSet(orgId, async () => {
+    const sql = getDb();
+    const rows = await sql<{ userId: string }>`
+      SELECT "userId"
+      FROM "member"
+      WHERE "organizationId" = ${orgId}
+      ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,
+               "createdAt" ASC
+      LIMIT 1
+    `;
+    return rows.length > 0 ? rows[0].userId : null;
+  });
 }
 
 function randomSlug(entityType: string): string {
@@ -81,37 +70,33 @@ async function loadEntityLinkRules(params: {
   orgId: string;
 }): Promise<RuleMap> {
   const cacheKey = `${params.orgId}:${params.connectorKey}:${params.feedKey}`;
-  const now = Date.now();
-  const cached = rulesCache.get(cacheKey);
-  if (cached && cached.expiresAt > now) return cached.value;
+  return rulesCache.getOrSet(cacheKey, async () => {
+    const sql = getDb();
+    const rows = await sql`
+      SELECT feeds_schema, entity_link_overrides
+      FROM connector_definitions
+      WHERE key = ${params.connectorKey}
+        AND organization_id = ${params.orgId}
+      LIMIT 1
+    `;
 
-  const sql = getDb();
-  const rows = await sql`
-    SELECT feeds_schema, entity_link_overrides
-    FROM connector_definitions
-    WHERE key = ${params.connectorKey}
-      AND organization_id = ${params.orgId}
-    LIMIT 1
-  `;
-
-  const result: RuleMap = {};
-  const feedsSchema = rows[0]?.feeds_schema as Record<string, any> | null | undefined;
-  const overrides = rows[0]?.entity_link_overrides as EntityLinkOverrides | null | undefined;
-  const feedDef = feedsSchema?.[params.feedKey];
-  const eventKinds = feedDef?.eventKinds as
-    | Record<string, { entityLinks?: EntityLinkRule[] }>
-    | undefined;
-  if (eventKinds) {
-    for (const [kind, def] of Object.entries(eventKinds)) {
-      if (Array.isArray(def?.entityLinks) && def.entityLinks.length > 0) {
-        const resolved = resolveEntityLinkRules(def.entityLinks, overrides);
-        if (resolved.length > 0) result[kind] = resolved;
+    const result: RuleMap = {};
+    const feedsSchema = rows[0]?.feeds_schema as Record<string, any> | null | undefined;
+    const overrides = rows[0]?.entity_link_overrides as EntityLinkOverrides | null | undefined;
+    const feedDef = feedsSchema?.[params.feedKey];
+    const eventKinds = feedDef?.eventKinds as
+      | Record<string, { entityLinks?: EntityLinkRule[] }>
+      | undefined;
+    if (eventKinds) {
+      for (const [kind, def] of Object.entries(eventKinds)) {
+        if (Array.isArray(def?.entityLinks) && def.entityLinks.length > 0) {
+          const resolved = resolveEntityLinkRules(def.entityLinks, overrides);
+          if (resolved.length > 0) result[kind] = resolved;
+        }
       }
     }
-  }
-
-  rulesCache.set(cacheKey, { value: result, expiresAt: now + RULES_CACHE_TTL_MS });
-  return result;
+    return result;
+  });
 }
 
 export function clearEntityLinkRulesCache(): void {
@@ -128,7 +113,7 @@ type ExtractedLink = {
 function extractLink(item: BatchItem, rule: EntityLinkRule): ExtractedLink | null {
   const identities: ExtractedLink['identities'] = [];
   for (const spec of rule.identities) {
-    const raw = readPath(item, spec.eventPath);
+    const raw = getValueAtPath(item, spec.eventPath);
     if (typeof raw !== 'string' || raw.length === 0) continue;
     const normalized = normalizeIdentifier(spec.namespace, raw);
     if (!normalized) continue;
@@ -143,12 +128,12 @@ function extractLink(item: BatchItem, rule: EntityLinkRule): ExtractedLink | nul
   const traits = new Map<string, unknown>();
   if (rule.traits) {
     for (const [key, spec] of Object.entries(rule.traits)) {
-      const value = readPath(item, spec.eventPath);
+      const value = getValueAtPath(item, spec.eventPath);
       if (value !== undefined) traits.set(key, value);
     }
   }
 
-  const rawTitle = rule.titlePath ? readPath(item, rule.titlePath) : undefined;
+  const rawTitle = rule.titlePath ? getValueAtPath(item, rule.titlePath) : undefined;
   const title = typeof rawTitle === 'string' && rawTitle.trim() ? rawTitle.trim() : '';
 
   return { identities, traits, title };

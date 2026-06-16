@@ -87,13 +87,6 @@ export const GetContentSchema = Type.Object({
       maximum: 1.0,
     })
   ),
-  rewrite_query: Type.Optional(
-    Type.Boolean({
-      description:
-        'Expand a conversational/underspecified query into focused keyword variants (LLM) and union their results to improve recall. Default false.',
-      default: false,
-    })
-  ),
   classification_filters: Type.Optional(
     Type.Record(Type.String(), Type.Array(Type.String()), {
       description:

@@ -9,12 +9,12 @@
  *
  * This helper asks a small LLM to rewrite the question into a few focused
  * keyword search queries (filler stripped, synonym variants added). The caller
- * (read_knowledge / get_content) searches the raw query AND each variant with
- * an over-fetched internal limit, then FUSES the candidates by best relevance
- * score per event — so a variant-found session can displace a less-relevant
- * raw row into the top-k. The benchmark adapter calls
- * read_knowledge({ rewrite_query: true }) and gets this recall lift from the
- * SERVER, so it's a product capability, not adapter glue.
+ * (read_knowledge / get_content) invokes it ONLY as an on-miss rescue: when the
+ * primary single-query search returns nothing, it searches each variant with an
+ * over-fetched internal limit and FUSES the candidates by best relevance score
+ * per event, recovering a session the raw phrasing could not reach. There is no
+ * caller-facing flag — the rescue self-heals on a total miss, so a query that
+ * already found something never pays for it.
  *
  * Statelessness: this is a pure per-request retrieval helper. It holds no
  * shared/in-memory state, so it is trivially correct under N>1 app replicas —

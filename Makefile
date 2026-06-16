@@ -194,9 +194,16 @@ clean-test-pg:
 	@pkill -f '@embedded-postgres' 2>/dev/null || true
 	@sleep 1
 	@before=$$(df -m "$${TMPDIR:-/tmp}" 2>/dev/null | awk 'END{print $$4}'); \
-		find "$${TMPDIR:-/tmp}" -maxdepth 1 -name 'lobu-test-pg-*' -prune -exec rm -rf {} + 2>/dev/null || true; \
+		for d in "$${TMPDIR:-/tmp}"/lobu-test-pg-*; do \
+			[ -d "$$d" ] || continue; \
+			pid=$$(head -1 "$$d/postmaster.pid" 2>/dev/null); \
+			if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
+				echo "  skip live cluster $$d (pid $$pid)"; continue; \
+			fi; \
+			rm -rf "$$d"; \
+		done; \
 		after=$$(df -m "$${TMPDIR:-/tmp}" 2>/dev/null | awk 'END{print $$4}'); \
-		echo "freed ~$$((after - before)) MB of leaked cluster dirs"
+		echo "freed ~$$((after - before)) MB of leaked cluster dirs (live clusters skipped)"
 	@echo "shm segments now: $$(ipcs -m 2>/dev/null | awk '/^m/{c++} END{print c+0}') / 32"
 	@echo "✅ Test-PG clusters + dirs reaped"
 

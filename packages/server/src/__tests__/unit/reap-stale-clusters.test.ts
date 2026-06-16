@@ -43,9 +43,13 @@ describe('reapStaleClustersIn', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  function makeDir(name: string, ageMs: number): string {
+  // Writing the pid file must happen BEFORE utimesSync — creating a file inside
+  // the dir bumps the dir's mtime, which would otherwise make a "stale" dir look
+  // fresh and the reaper would skip it.
+  function makeDir(name: string, ageMs: number, pid?: number): string {
     const p = join(root, name);
     mkdirSync(p, { recursive: true });
+    if (pid !== undefined) writeFileSync(join(p, 'postmaster.pid'), `${pid}\n/some/data\n`);
     const t = (now - ageMs) / 1000; // utimes wants seconds
     utimesSync(p, t, t);
     return p;
@@ -67,10 +71,8 @@ describe('reapStaleClustersIn', () => {
   it('keeps an OLD cluster that is still running (live postmaster.pid)', () => {
     // A long watch/CI run can outlive the staleness window — its data dir must
     // never be reaped while the cluster is alive (the review blocker).
-    const live = makeDir('lobu-test-pg-LIVE', STALE_CLUSTER_MS + 60_000);
-    writeFileSync(join(live, 'postmaster.pid'), `${process.pid}\n/some/data\n`); // our own live PID
-    const deadOwner = makeDir('lobu-test-pg-DEAD', STALE_CLUSTER_MS + 60_000);
-    writeFileSync(join(deadOwner, 'postmaster.pid'), `${deadPid()}\n/some/data\n`); // reaped PID — not running
+    const live = makeDir('lobu-test-pg-LIVE', STALE_CLUSTER_MS + 60_000, process.pid); // our own live PID
+    const deadOwner = makeDir('lobu-test-pg-DEAD', STALE_CLUSTER_MS + 60_000, deadPid()); // reaped PID
 
     const removed = reapStaleClustersIn(root, now, STALE_CLUSTER_MS);
 

@@ -1,16 +1,12 @@
 /**
  * Worker-side live token manager — the single source of truth for the current
- * worker token. Worker tokens carry a fixed timestamp and are rejected 2h later
- * (the short TTL is the leak-revocation property); this manager keeps a >2h
- * single turn alive by refreshing against `/worker/token/refresh`. The
- * server-side per-turn liveness gate (and the cross-turn case) is documented at
- * the gateway route + its route tests.
- *
- * Callers read getToken() (or go through fetchWithRefresh). Refresh has three
- * triggers: timer (proactive — renews even when the turn makes NO gateway call,
- * the load-bearing path since the route rejects an already-expired bearer),
- * pre-call ensureFresh(), and reactive (a 401 → one refresh + retry). On success
- * it mirrors the token into `process.env.WORKER_TOKEN` for env-readers.
+ * worker token. Worker tokens are rejected 2h after issue (the short TTL is the
+ * leak-revocation property); this manager keeps a >2h single turn alive by
+ * refreshing against `/worker/token/refresh`, mirroring each new token into
+ * `process.env.WORKER_TOKEN` for env-readers. Callers read getToken() or go
+ * through fetchWithRefresh(); the proactive/pre-call/reactive refresh triggers
+ * are documented on the methods below, and the server-side per-turn liveness
+ * gate at the gateway route + its tests.
  */
 
 import { createLogger, ensureBaseUrl, getOptionalEnv } from "@lobu/core";

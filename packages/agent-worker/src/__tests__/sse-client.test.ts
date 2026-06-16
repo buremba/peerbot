@@ -1,11 +1,21 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { GatewayClient } from "../gateway/sse-client";
+import { __resetWorkerTokenManagerForTests } from "../gateway/worker-token-manager";
 
 describe("GatewayClient heartbeat ACKs", () => {
   const originalFetch = globalThis.fetch;
 
+  // The GatewayClient constructor seeds the process-wide WorkerTokenManager, and
+  // SSE auth + heartbeat ACKs read its live token. Reset the singleton around
+  // each test so a token seeded/adopted by an earlier test can't leak in and
+  // make the ACK send the wrong bearer.
+  beforeEach(() => {
+    __resetWorkerTokenManagerForTests();
+  });
+
   afterEach(() => {
     globalThis.fetch = originalFetch;
+    __resetWorkerTokenManagerForTests();
   });
 
   test("accepts nested platform metadata on job events", async () => {

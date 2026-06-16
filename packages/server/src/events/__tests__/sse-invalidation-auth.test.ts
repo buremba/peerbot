@@ -61,6 +61,18 @@ describe('invalidationSseAuth (embedded SSE ticket)', () => {
     expect(res.status).not.toBe(200);
   });
 
+  it('a member of org A cannot open org B\'s stream with their ticket (cross-org isolation)', async () => {
+    const orgA = await createTestOrganization({ slug: 'inv-org-a' });
+    const orgB = await createTestOrganization({ slug: 'inv-org-b' });
+    const user = await createTestUser({ email: 'inv-cross@test.example.com' });
+    await addUserToOrganization(user.id, orgA.id, 'owner'); // member of A only
+
+    // Their valid ticket, pointed at org B's slug → membership check fails → not 200.
+    const res = await getEvents('inv-org-b', `?token=${encodeURIComponent(ticket(user.id))}`);
+    expect(res.status).not.toBe(200);
+    expect(orgB.id).not.toBe(orgA.id);
+  });
+
   it('no ticket falls through to mcpAuth (not 200 without a cookie/bearer)', async () => {
     await createTestOrganization({ slug: 'inv-noticket-org' });
     const res = await getEvents('inv-noticket-org', '');

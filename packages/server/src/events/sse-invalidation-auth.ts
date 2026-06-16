@@ -17,6 +17,8 @@ import { getCachedOrgBySlug } from "../workspace/multi-tenant.js";
  * normal `mcpAuth` path unchanged. GET-only (EventSource is always GET).
  */
 export async function invalidationSseAuth(c: Context, next: Next) {
+  // Keep the ?token= ticket out of the next page's Referer.
+  c.header("Referrer-Policy", "no-referrer");
   const ticket = c.req.method === "GET" ? c.req.query("token") : undefined;
   if (ticket) {
     const session = await verifySettingsToken(ticket);

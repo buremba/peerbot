@@ -22,7 +22,7 @@ import {
   extendTurnDeadlines,
   failTurnIfPending,
   failTurnsForDeployment,
-  hasLiveTurnForDeployment,
+  hasLiveTurnForMessage,
   sweepExpiredTurns,
   type TurnRouting,
 } from "../orchestration/turn-liveness.js";
@@ -221,19 +221,19 @@ describe("turn-liveness", () => {
  * across every production terminalization path, against real Postgres so the
  * cross-pod authority (shared `public.runs`) is exercised, not mocked.
  */
-describe("hasLiveTurnForDeployment (token-refresh liveness gate)", () => {
+describe("hasLiveTurnForMessage (token-refresh liveness gate)", () => {
   test("false when no turn has ever been armed", async () => {
-    expect(await hasLiveTurnForDeployment("dep-never")).toBe(false);
+    expect(await hasLiveTurnForMessage("dep-never", "m1")).toBe(false);
   });
 
   test("true while a turn is in-flight (armed, not discharged)", async () => {
     await armTurnTimeout(queue, routing("dep-live", "m1"));
-    expect(await hasLiveTurnForDeployment("dep-live")).toBe(true);
+    expect(await hasLiveTurnForMessage("dep-live", "m1")).toBe(true);
   });
 
   test("REFRESH DENIED: false after the turn terminalizes via a real reply", async () => {
     await armTurnTimeout(queue, routing("dep-reply", "m1"));
-    expect(await hasLiveTurnForDeployment("dep-reply")).toBe(true);
+    expect(await hasLiveTurnForMessage("dep-reply", "m1")).toBe(true);
 
     // Worker replied → commitTerminalReply deletes the marker. Refresh must now
     // be denied — the token chain ends with the work.
@@ -243,15 +243,15 @@ describe("hasLiveTurnForDeployment (token-refresh liveness gate)", () => {
       reply("dep-reply", "m1"),
       null
     );
-    expect(await hasLiveTurnForDeployment("dep-reply")).toBe(false);
+    expect(await hasLiveTurnForMessage("dep-reply", "m1")).toBe(false);
   });
 
   test("REFRESH DENIED: false after the worker dies (fast path)", async () => {
     await armTurnTimeout(queue, routing("dep-dead", "m1"));
-    expect(await hasLiveTurnForDeployment("dep-dead")).toBe(true);
+    expect(await hasLiveTurnForMessage("dep-dead", "m1")).toBe(true);
 
     await failTurnsForDeployment("dep-dead", "worker died");
-    expect(await hasLiveTurnForDeployment("dep-dead")).toBe(false);
+    expect(await hasLiveTurnForMessage("dep-dead", "m1")).toBe(false);
   });
 
   test("REFRESH DENIED: false for a lapsed-but-UNSWEPT marker (post-deadline, pre-sweep gap)", async () => {
@@ -260,24 +260,24 @@ describe("hasLiveTurnForDeployment (token-refresh liveness gate)", () => {
     // stopped heartbeating. The gate must NOT authorize refresh here: liveness is
     // the deadline (heartbeat), not whether the sweep has run yet.
     await armTurnTimeout(queue, routing("dep-lapsed", "m1"));
-    expect(await hasLiveTurnForDeployment("dep-lapsed")).toBe(true);
+    expect(await hasLiveTurnForMessage("dep-lapsed", "m1")).toBe(true);
 
     await expireAllMarkers(); // run_at → past, WITHOUT sweeping (row still pending)
     expect(await markerCount("dep-lapsed")).toBe(1); // row not deleted
-    expect(await hasLiveTurnForDeployment("dep-lapsed")).toBe(false);
+    expect(await hasLiveTurnForMessage("dep-lapsed", "m1")).toBe(false);
 
     // And a live heartbeat extend brings it back (legitimately-long turn).
     await extendTurnDeadlines("dep-lapsed");
-    expect(await hasLiveTurnForDeployment("dep-lapsed")).toBe(true);
+    expect(await hasLiveTurnForMessage("dep-lapsed", "m1")).toBe(true);
   });
 
   test("REFRESH DENIED: false after the deadline lapses and is swept (hung worker)", async () => {
     await armTurnTimeout(queue, routing("dep-hung", "m1"));
-    expect(await hasLiveTurnForDeployment("dep-hung")).toBe(true);
+    expect(await hasLiveTurnForMessage("dep-hung", "m1")).toBe(true);
 
     await expireAllMarkers();
     await sweepExpiredTurns();
-    expect(await hasLiveTurnForDeployment("dep-hung")).toBe(false);
+    expect(await hasLiveTurnForMessage("dep-hung", "m1")).toBe(false);
   });
 
   test(">2h single turn stays refreshable: heartbeat extends keep the gate true past the original deadline", async () => {
@@ -287,15 +287,39 @@ describe("hasLiveTurnForDeployment (token-refresh liveness gate)", () => {
     // ...but the worker's heartbeat pushed the deadline forward before any sweep.
     await extendTurnDeadlines("dep-long");
     // The marker is still pending → a legitimately-long turn can still refresh.
-    expect(await hasLiveTurnForDeployment("dep-long")).toBe(true);
+    expect(await hasLiveTurnForMessage("dep-long", "m1")).toBe(true);
     // And a sweep does NOT terminalize it (deadline is in the future again).
     await sweepExpiredTurns();
-    expect(await hasLiveTurnForDeployment("dep-long")).toBe(true);
+    expect(await hasLiveTurnForMessage("dep-long", "m1")).toBe(true);
   });
 
   test("scoped per deployment: one deployment's live turn doesn't authorize another", async () => {
     await armTurnTimeout(queue, routing("dep-X", "m1"));
-    expect(await hasLiveTurnForDeployment("dep-X")).toBe(true);
-    expect(await hasLiveTurnForDeployment("dep-Y")).toBe(false);
+    expect(await hasLiveTurnForMessage("dep-X", "m1")).toBe(true);
+    expect(await hasLiveTurnForMessage("dep-Y", "m1")).toBe(false);
+  });
+
+  test("CROSS-TURN LEAK CLOSED: a completed turn's token can't refresh while a LATER turn on the same deployment is live", async () => {
+    // Turn 1 (messageId m1) and turn 2 (messageId m2) on the SAME deployment.
+    // Both armed → both live.
+    await armTurnTimeout(queue, routing("dep-multi", "m1"));
+    await armTurnTimeout(queue, routing("dep-multi", "m2"));
+    expect(await hasLiveTurnForMessage("dep-multi", "m1")).toBe(true);
+    expect(await hasLiveTurnForMessage("dep-multi", "m2")).toBe(true);
+
+    // Turn 1 completes (its marker is deleted) while turn 2 is STILL live.
+    await commitTerminalReply(
+      "dep-multi",
+      ["m1"],
+      reply("dep-multi", "m1"),
+      null
+    );
+
+    // The KEY assertion: turn 1's (still-valid) token can no longer refresh,
+    // even though the deployment has a live turn (m2). A per-deployment gate
+    // would have wrongly returned true here — the privilege leak across runs.
+    expect(await hasLiveTurnForMessage("dep-multi", "m1")).toBe(false);
+    // Turn 2's own token still refreshes (its turn is genuinely live).
+    expect(await hasLiveTurnForMessage("dep-multi", "m2")).toBe(true);
   });
 });

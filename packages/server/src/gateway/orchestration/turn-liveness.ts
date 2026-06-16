@@ -165,13 +165,14 @@ export async function extendTurnDeadlines(
 }
 
 /**
- * Is any turn still in-flight for this deployment?
+ * Is the SPECIFIC turn `(deploymentName, messageId)` still in-flight?
  *
  * The `internal:turn_timeout` marker (a pending row in `public.runs`) is the
  * authoritative, cross-pod record that a turn is in-flight: it is armed at
- * dispatch ({@link armTurnTimeout}) and deleted — atomically, first-writer-wins
- * — the instant the turn terminalizes via ANY path ({@link commitTerminalReply}
- * on a worker reply, {@link failTurnsForDeployment} on worker death,
+ * dispatch ({@link armTurnTimeout}) keyed on `deploymentName:messageId`
+ * ({@link turnMarkerKey}) and deleted — atomically, first-writer-wins — the
+ * instant THAT turn terminalizes via ANY path ({@link commitTerminalReply} on a
+ * worker reply, {@link failTurnsForDeployment} on worker death,
  * {@link sweepExpiredTurns} on a lapsed deadline, {@link failTurnIfPending} on
  * startup failure). While a turn legitimately runs long, the worker's 20s
  * heartbeat pushes the marker's deadline (`run_at`) forward
@@ -179,11 +180,17 @@ export async function extendTurnDeadlines(
  * deadline and this returns true; a hung or dead worker stops heartbeating, the
  * deadline lapses, and this returns false.
  *
- * This is the liveness gate for worker-token refresh: a fresh token is minted
- * only while the deployment has live work. Once all turns terminalize, the
- * marker(s) are gone, refresh is denied, and the token chain dies — that
- * deletion IS the revocation path (the leak window is bounded by how long the
- * work actually runs, not an unbounded refresh chain).
+ * This is the liveness gate for worker-token refresh: both the marker and the
+ * worker's per-run token are minted in the same dispatch
+ * (MessageConsumer.handleMessage) carrying the same `messageId`, so a fresh
+ * token is minted only while the token's OWN turn is live — not merely any turn
+ * on the deployment. That closes the cross-turn leak: a still-valid token from
+ * turn T1 cannot refresh once T1's marker is gone, even if a later unrelated
+ * turn T2 on the same deployment is live (T2's marker has a different
+ * messageId). Once the turn terminalizes the marker is gone, refresh is denied,
+ * and the token chain dies — that deletion IS the revocation path (the leak
+ * window is bounded by how long the turn actually runs, not an unbounded refresh
+ * chain).
  *
  * **Deadline predicate (`run_at > now()`):** the marker is deleted by the sweep
  * only on its periodic tick (`turnLivenessSweepIntervalMs`), so between a lapsed
@@ -200,10 +207,12 @@ export async function extendTurnDeadlines(
  * is deliberately NOT the dispatching `runs.id` the token was minted for — that
  * `messages`-queue run completes the moment `handleMessage` enqueues to the
  * thread queue, long before the turn finishes, so gating on it would deny
- * refresh on a still-live turn.
+ * refresh on a still-live turn; the turn-timeout marker keyed on `messageId` is
+ * the durable in-flight signal instead.
  */
-export async function hasLiveTurnForDeployment(
-  deploymentName: string
+export async function hasLiveTurnForMessage(
+  deploymentName: string,
+  messageId: string
 ): Promise<boolean> {
   const sql = getDb();
   // status + run_type + queue_name match the partial predicate / leading column
@@ -216,6 +225,7 @@ export async function hasLiveTurnForDeployment(
       AND run_type = 'internal'
       AND queue_name = ${TURN_TIMEOUT_QUEUE}
       AND action_input->>'deploymentName' = ${deploymentName}
+      AND action_input->>'messageId' = ${messageId}
       AND run_at > now()
     LIMIT 1
   `;

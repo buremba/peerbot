@@ -50,6 +50,17 @@ export interface WorkerTokenData {
    * codex round 2, finding A on PR #865.
    */
   runId?: number;
+  /**
+   * Per-turn message id this token's work was dispatched for. Set alongside
+   * {@link runId} by the runs-queue dispatcher (MessageConsumer.handleMessage),
+   * which arms the turn-timeout marker with the SAME `messageId`. The token
+   * refresh gate uses it to require a live marker for THIS turn specifically
+   * (`deploymentName:messageId`), not merely any live turn on the deployment —
+   * otherwise a still-valid token from a completed turn could refresh while a
+   * later, unrelated turn on the same deployment is live. Long-lived deployment
+   * tokens do NOT carry it.
+   */
+  messageId?: string;
 }
 
 export function generateWorkerToken(
@@ -75,6 +86,12 @@ export function generateWorkerToken(
      * for the consumption contract.
      */
     runId?: number;
+    /**
+     * Per-turn message id, set alongside `runId` by the runs-queue dispatcher.
+     * Binds token refresh to this turn's own liveness marker. See
+     * WorkerTokenData.messageId.
+     */
+    messageId?: string;
   }
 ): string {
   if (!options.channelId) {
@@ -97,6 +114,7 @@ export function generateWorkerToken(
     traceId: options.traceId,
     jti: randomUUID(),
     runId: options.runId,
+    messageId: options.messageId,
   };
 
   return encrypt(JSON.stringify(payload));

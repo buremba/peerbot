@@ -64,6 +64,12 @@ export function buildRunJobToken(args: {
   platform?: string;
   platformMetadata?: Record<string, unknown>;
   runId?: number;
+  /**
+   * Per-turn binding for token refresh: the turn-timeout marker is armed with
+   * this SAME messageId, so the refresh gate requires a live marker for THIS
+   * turn (deploymentName:messageId), not merely any live turn on the deployment.
+   */
+  messageId?: string;
 }): string | undefined {
   if (args.runId === undefined) return undefined;
   return generateWorkerToken(
@@ -92,6 +98,7 @@ export function buildRunJobToken(args: {
           ? args.platformMetadata.source
           : undefined,
       runId: args.runId,
+      messageId: args.messageId,
     }
   );
 }
@@ -284,6 +291,11 @@ export class MessageConsumer {
         platform: data.platform,
         platformMetadata: data.platformMetadata,
         runId: data.runId,
+        // Per-turn binding for token refresh: the turn-timeout marker is armed
+        // below with this SAME messageId, so the refresh gate can require a live
+        // marker for THIS turn (deploymentName:messageId) rather than any live
+        // turn on the deployment.
+        messageId: data.messageId,
       });
 
       logger.info(

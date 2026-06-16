@@ -26,6 +26,7 @@ import {
   adoptWorkerToken,
   getWorkerTokenManager,
 } from "../gateway/worker-token-manager";
+import { writeSnapshot } from "../openclaw/transcript-snapshot";
 
 let originalFetch: typeof globalThis.fetch;
 let capturedAuth: string[];
@@ -251,5 +252,72 @@ describe("refresh denied = the revocation property", () => {
     ]);
     expect([a, b, c]).toEqual(["shared", "shared", "shared"]);
     expect(refreshCalls).toBe(1);
+  });
+});
+
+describe("refreshed token propagation (the refresh must not be a no-op)", () => {
+  // GatewayParams.workerToken is a GETTER reading the live manager token, not a
+  // captured string. session-runner builds it that way so every MCP/interaction
+  // gateway call after a mid-turn refresh sends the NEW bearer. This asserts the
+  // getter contract: mutating the manager (as refresh() does) is visible through
+  // the getter without rebuilding GatewayParams.
+  test("a GatewayParams-style workerToken getter reflects a mid-turn refresh", () => {
+    const mgr = getWorkerTokenManager();
+    mgr.adopt("turn-token", Date.now());
+    // The exact shape session-runner builds.
+    const gwParams = {
+      get workerToken() {
+        return getWorkerTokenManager().getToken();
+      },
+    };
+    expect(gwParams.workerToken).toBe("turn-token");
+    // A mid-turn refresh swaps the live token...
+    mgr.adopt("mid-turn-refreshed", Date.now());
+    // ...and the getter reflects it WITHOUT GatewayParams being rebuilt. A
+    // captured string would still read "turn-token" here (the original bug).
+    expect(gwParams.workerToken).toBe("mid-turn-refreshed");
+  });
+
+  test("the snapshot write uses the LIVE manager token, not the original per-run token", async () => {
+    process.env.WORKER_TOKEN_TTL_MS = "100000";
+    let snapshotAuth: string | null = null;
+    globalThis.fetch = mock(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.endsWith("/worker/transcript/snapshot")) {
+          snapshotAuth =
+            (init?.headers as Record<string, string> | undefined)
+              ?.Authorization ?? null;
+          return new Response("{}", { status: 200 });
+        }
+        return new Response("{}", { status: 200 });
+      }
+    ) as unknown as typeof globalThis.fetch;
+
+    const mgr = getWorkerTokenManager();
+    // Turn started with the per-run token, then refreshed mid-turn.
+    mgr.adopt("original-run-token", Date.now());
+    mgr.adopt("refreshed-run-token", Date.now());
+
+    // Write a temp session file so writeSnapshot has bytes to POST.
+    const tmp = `${process.env.TMPDIR ?? "/tmp"}/snap-${Date.now()}.jsonl`;
+    const { promises: fsp } = await import("node:fs");
+    await fsp.writeFile(tmp, '{"role":"user","content":"hi"}\n', "utf-8");
+    try {
+      // Mirrors OpenClawWorker.cleanup(): bearer = getWorkerTokenManager().getToken().
+      await writeSnapshot({
+        sessionFile: tmp,
+        gatewayUrl: "http://gw.test/lobu",
+        workerToken: getWorkerTokenManager().getToken(),
+        terminalStatus: "completed",
+        runId: 7,
+      });
+      // The snapshot POST carried the REFRESHED token, not the original — a
+      // captured `this.config.runJobToken` would have sent (and 401'd on) the
+      // now-expired original.
+      expect(snapshotAuth).toBe("Bearer refreshed-run-token");
+    } finally {
+      await fsp.rm(tmp, { force: true });
+    }
   });
 });

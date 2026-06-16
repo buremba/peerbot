@@ -3,15 +3,17 @@
  * (`POST /worker/token/refresh`) against a real Postgres (embedded PG18 in CI).
  *
  * The endpoint mints a fresh 2h worker token from a currently-valid one, gated
- * on deployment-liveness: a fresh token is issued ONLY while an in-flight
- * turn-timeout marker exists for the token's deployment (the cross-pod-
- * authoritative liveness signal in shared `public.runs`). When the work goes
- * terminal the marker is gone and refresh is DENIED — that denial is the
- * revocation property (a leaked token's chain ends with its work).
+ * on PER-TURN liveness: a fresh token is issued ONLY while an in-flight
+ * turn-timeout marker exists for the token's OWN turn — `(deploymentName,
+ * messageId)`, the cross-pod-authoritative liveness signal in shared
+ * `public.runs`. When THAT turn goes terminal the marker is gone and refresh is
+ * DENIED — even if a later, unrelated turn on the same deployment is live. That
+ * denial is the revocation property (a leaked token's chain ends with its turn).
  *
  * The liveness gate itself (across every terminalization path) is unit-tested
  * in turn-liveness.test.ts; this file is the end-to-end route surface: auth,
- * the runId-eligibility gate, the liveness gate, and the minted-token claims.
+ * the runId/messageId-eligibility gate, the per-turn liveness gate, and the
+ * minted-token claims.
  */
 
 import {
@@ -26,6 +28,7 @@ import { generateWorkerToken, verifyWorkerToken } from "@lobu/core";
 import { RunsQueue } from "../infrastructure/queue/runs-queue.js";
 import {
   armTurnTimeout,
+  commitTerminalReply,
   failTurnsForDeployment,
 } from "../orchestration/turn-liveness.js";
 import { WorkerGateway } from "../gateway/index.js";
@@ -95,7 +98,7 @@ async function postRefresh(token: string) {
 
 const DEPLOYMENT = "lobu-worker-agent-1";
 
-function mintToken(opts: { runId?: number }): string {
+function mintToken(opts: { runId?: number; messageId?: string }): string {
   return generateWorkerToken("user-1", "conv-1", DEPLOYMENT, {
     channelId: "chan-1",
     agentId: "agent-1",
@@ -103,12 +106,13 @@ function mintToken(opts: { runId?: number }): string {
     connectionId: "connection-1",
     source: "watcher-run",
     runId: opts.runId,
+    messageId: opts.messageId,
   });
 }
 
-function armLiveTurn(): Promise<void> {
+function armLiveTurn(messageId = "m1"): Promise<void> {
   return armTurnTimeout(queue, {
-    messageId: "m1",
+    messageId,
     channelId: "chan-1",
     conversationId: "conv-1",
     userId: "user-1",
@@ -119,9 +123,9 @@ function armLiveTurn(): Promise<void> {
 }
 
 describe("POST /worker/token/refresh", () => {
-  test("mints a fresh token while the deployment has a live turn", async () => {
-    await armLiveTurn();
-    const original = mintToken({ runId: 42 });
+  test("mints a fresh token while THIS turn is live", async () => {
+    await armLiveTurn("m1");
+    const original = mintToken({ runId: 42, messageId: "m1" });
 
     const res = await postRefresh(original);
     expect(res.status).toBe(200);
@@ -129,27 +133,30 @@ describe("POST /worker/token/refresh", () => {
     expect(typeof body.token).toBe("string");
     expect(body.token).not.toBe(original);
 
-    // Fresh token verifies and preserves the claims (incl. runId, connectionId,
-    // source — the superset the per-run token carries).
+    // Fresh token verifies and preserves the claims (incl. runId, messageId,
+    // connectionId, source — the superset the per-run token carries). The
+    // messageId MUST be preserved or the refreshed token couldn't itself be
+    // refreshed again (its own turn-liveness gate would have nothing to match).
     const data = verifyWorkerToken(body.token);
     expect(data).not.toBeNull();
     expect(data!.runId).toBe(42);
+    expect(data!.messageId).toBe("m1");
     expect(data!.connectionId).toBe("connection-1");
     expect(data!.source).toBe("watcher-run");
     expect(data!.deploymentName).toBe(DEPLOYMENT);
     expect(data!.organizationId).toBe("org-1");
   });
 
-  test("REVOCATION: denied (403) once the deployment has no live turn", async () => {
-    // No armed turn → the deployment is not live → refresh must be refused.
-    const original = mintToken({ runId: 42 });
+  test("REVOCATION: denied (403) once this turn has no live marker", async () => {
+    // No armed turn → the turn is not live → refresh must be refused.
+    const original = mintToken({ runId: 42, messageId: "m1" });
     const res = await postRefresh(original);
     expect(res.status).toBe(403);
   });
 
   test("REVOCATION: a token that was refreshable becomes non-refreshable after the turn terminalizes", async () => {
-    await armLiveTurn();
-    const original = mintToken({ runId: 42 });
+    await armLiveTurn("m1");
+    const original = mintToken({ runId: 42, messageId: "m1" });
 
     // First refresh succeeds while live.
     expect((await postRefresh(original)).status).toBe(200);
@@ -162,10 +169,45 @@ describe("POST /worker/token/refresh", () => {
     expect(res.status).toBe(403);
   });
 
+  test("CROSS-TURN LEAK CLOSED: a COMPLETED turn's token is denied (403) even while a LATER turn on the same deployment is live", async () => {
+    // Two turns on the SAME deployment. Turn 1 = m1, turn 2 = m2.
+    await armLiveTurn("m1");
+    await armLiveTurn("m2");
+    const turn1Token = mintToken({ runId: 1, messageId: "m1" });
+
+    // Turn 1's token can refresh while turn 1 is live.
+    expect((await postRefresh(turn1Token)).status).toBe(200);
+
+    // Turn 1 COMPLETES (its marker is deleted) while turn 2 (m2) is STILL live.
+    await commitTerminalReply(
+      DEPLOYMENT,
+      ["m1"],
+      { messageId: "m1", deploymentName: DEPLOYMENT },
+      "org-1"
+    );
+
+    // The KEY security assertion: turn 1's still-valid token is now DENIED, even
+    // though the deployment has a live turn (m2). A per-deployment gate would
+    // have wrongly minted a fresh token here (privilege leak across runs).
+    const res = await postRefresh(turn1Token);
+    expect(res.status).toBe(403);
+
+    // Turn 2's own token still refreshes (its turn is genuinely live).
+    const turn2Token = mintToken({ runId: 2, messageId: "m2" });
+    expect((await postRefresh(turn2Token)).status).toBe(200);
+  });
+
   test("denied (403) for a token with no runId (legacy direct-enqueue, no marker to gate on)", async () => {
-    await armLiveTurn();
-    const noRunId = mintToken({}); // runId omitted
+    await armLiveTurn("m1");
+    const noRunId = mintToken({ messageId: "m1" }); // runId omitted
     const res = await postRefresh(noRunId);
+    expect(res.status).toBe(403);
+  });
+
+  test("denied (403) for a token with no messageId (no per-turn marker to gate on)", async () => {
+    await armLiveTurn("m1");
+    const noMessageId = mintToken({ runId: 42 }); // messageId omitted
+    const res = await postRefresh(noMessageId);
     expect(res.status).toBe(403);
   });
 
@@ -186,7 +228,7 @@ describe("POST /worker/token/refresh", () => {
     process.env.WORKER_TOKEN_TTL_MS = "1"; // 1ms TTL
     process.env.WORKER_TOKEN_CLOCK_SKEW_MS = "0";
     try {
-      const expired = mintToken({ runId: 42 });
+      const expired = mintToken({ runId: 42, messageId: "m1" });
       // Past TTL + skew (1ms + 0ms).
       await new Promise((r) => setTimeout(r, 10));
       const res = await postRefresh(expired);

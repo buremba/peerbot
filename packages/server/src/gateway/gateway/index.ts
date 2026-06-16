@@ -28,7 +28,7 @@ import type { IMessageQueue } from "../infrastructure/queue/index.js";
 import {
   commitTerminalReply,
   extendTurnDeadlines,
-  hasLiveTurnForDeployment,
+  hasLiveTurnForMessage,
 } from "../orchestration/turn-liveness.js";
 import type { InstructionService } from "../services/instruction-service.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
@@ -698,23 +698,29 @@ export class WorkerGateway {
    * This endpoint lets the worker swap its in-flight token for a fresh 2h one
    * with the SAME claims, without lengthening the TTL.
    *
-   * The revocation model is deployment-liveness (a user-confirmed decision): we
-   * mint a fresh token ONLY while {@link hasLiveTurnForDeployment} reports an
-   * in-flight turn-timeout marker for the token's `deploymentName`. The marker
-   * is the cross-pod-authoritative liveness signal (shared `public.runs`, the
-   * same row every terminalization path deletes atomically). When the work goes
-   * terminal the marker is gone, refresh is denied, and the chain dies — so the
-   * leak window is bounded by how long the work actually runs, not by an
-   * unbounded refresh chain. A leaked-but-expired token can't refresh
-   * (verifyWorkerToken rejects it first), and a jti-revoked token can't refresh
-   * (the revoked-token check below). The fresh token gets its OWN jti, so it can
-   * be independently revoked.
+   * The revocation model is PER-TURN liveness: we mint a fresh token ONLY while
+   * {@link hasLiveTurnForMessage} reports an in-flight turn-timeout marker for
+   * the token's OWN turn — `(deploymentName, messageId)`, not merely any live
+   * turn on the deployment. The marker and the token are minted together at
+   * dispatch (MessageConsumer.handleMessage) carrying the same `messageId`, and
+   * the marker is the cross-pod-authoritative liveness signal (shared
+   * `public.runs`, the same row every terminalization path deletes atomically).
+   * When THIS turn goes terminal the marker is gone, refresh is denied, and the
+   * chain dies — so the leak window is bounded by how long this turn actually
+   * runs, not by an unbounded refresh chain. Gating per-turn (not per-deployment)
+   * closes the cross-turn leak: a still-valid token from a COMPLETED turn cannot
+   * refresh while a later, unrelated turn on the same deployment is live (that
+   * turn's marker has a different messageId). A leaked-but-expired token can't
+   * refresh (verifyWorkerToken rejects it first), and a jti-revoked token can't
+   * refresh (the revoked-token check below). The fresh token gets its OWN jti,
+   * so it can be independently revoked.
    *
-   * Tokens with no `runId` (legacy direct-enqueue path) are denied: they don't
-   * go through the runs-queue dispatch that arms a turn-timeout marker, so there
-   * is no liveness signal to gate on. Those workers keep using their deployment
-   * token (and the warm-worker-across-turns case is already covered by the
-   * per-turn fresh-token adoption — each turn mints a new token).
+   * Tokens with no `runId`/`messageId` (legacy direct-enqueue path) are denied:
+   * they don't go through the runs-queue dispatch that arms a turn-timeout
+   * marker, so there is no per-turn liveness signal to gate on. Those workers
+   * keep using their deployment token (and the warm-worker-across-turns case is
+   * already covered by the per-turn fresh-token adoption — each turn mints a new
+   * token).
    */
   private async handleTokenRefresh(c: Context): Promise<Response> {
     const auth = await this.authenticateWorker(c);
@@ -726,9 +732,9 @@ export class WorkerGateway {
     }
     const { tokenData } = auth;
 
-    // No runId → no turn-timeout marker exists for this token's work, so we
-    // have no liveness signal. Deny rather than mint blind.
-    if (typeof tokenData.runId !== "number") {
+    // No runId/messageId → no turn-timeout marker exists for this token's work,
+    // so we have no per-turn liveness signal. Deny rather than mint blind.
+    if (typeof tokenData.runId !== "number" || !tokenData.messageId) {
       return c.json({ error: "Token not eligible for refresh" }, 403);
     }
 
@@ -736,16 +742,25 @@ export class WorkerGateway {
       return c.json({ error: "Token missing deployment scope" }, 400);
     }
 
-    const live = await hasLiveTurnForDeployment(tokenData.deploymentName);
+    const live = await hasLiveTurnForMessage(
+      tokenData.deploymentName,
+      tokenData.messageId
+    );
     if (!live) {
-      // The deployment has no in-flight turn — the work is terminal (reply
-      // committed, worker died, or deadline swept). Refusing here is the
-      // revocation property: the token chain ends with the work.
+      // THIS token's turn has no in-flight marker — the turn is terminal (reply
+      // committed, worker died, or deadline swept), even if a later unrelated
+      // turn on the same deployment is still live. Refusing here is the
+      // revocation property: the token chain ends with the turn it was minted
+      // for, so a completed turn's token can't piggyback on a newer turn.
       logger.info(
-        { deploymentName: tokenData.deploymentName, runId: tokenData.runId },
-        "Token refresh denied: no live turn for deployment"
+        {
+          deploymentName: tokenData.deploymentName,
+          runId: tokenData.runId,
+          messageId: tokenData.messageId,
+        },
+        "Token refresh denied: no live turn for this message"
       );
-      return c.json({ error: "No live turn for deployment" }, 403);
+      return c.json({ error: "No live turn for token" }, 403);
     }
 
     // Mint a fresh token with identical claims (fresh timestamp + new jti).
@@ -764,11 +779,16 @@ export class WorkerGateway {
         sessionKey: tokenData.sessionKey,
         traceId: tokenData.traceId,
         runId: tokenData.runId,
+        messageId: tokenData.messageId,
       }
     );
 
     logger.info(
-      { deploymentName: tokenData.deploymentName, runId: tokenData.runId },
+      {
+        deploymentName: tokenData.deploymentName,
+        runId: tokenData.runId,
+        messageId: tokenData.messageId,
+      },
       "Issued refreshed worker token"
     );
     return c.json({ token: refreshed });

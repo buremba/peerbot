@@ -227,4 +227,40 @@ describe("ChannelBindingService is org-scoped (no cross-tenant takeover)", () =>
     expect(cross?.source).toBe("binding");
     expect(cross?.organizationId).toBe(ORG_A);
   });
+
+  test("getBindingAnyOrg reflects the most recent re-link (created_at bumps on upsert)", async () => {
+    const svc = new ChannelBindingService();
+    const TEAM = "T999";
+    const AGENT_A2 = "agent-a2";
+    await seedAgentRow(AGENT_A2, { organizationId: ORG_A });
+
+    // Org A binds, then org B binds the same physical channel (newer row),
+    // then org A RE-LINKS to a different agent. getBindingAnyOrg orders by
+    // created_at, so the re-link MUST bump created_at past org B's row —
+    // otherwise the channel resolves to the stale (org B) binding.
+    await svc.createBinding(AGENT_A, PLATFORM, CHANNEL, TEAM, {
+      organizationId: ORG_A,
+    });
+    await svc.createBinding(AGENT_B, PLATFORM, CHANNEL, TEAM, {
+      organizationId: ORG_B,
+    });
+    await svc.createBinding(AGENT_A2, PLATFORM, CHANNEL, TEAM, {
+      organizationId: ORG_A,
+    });
+
+    const any = await svc.getBindingAnyOrg(PLATFORM, CHANNEL, TEAM);
+    expect(any?.agentId).toBe(AGENT_A2);
+    expect(any?.organizationId).toBe(ORG_A);
+
+    const resolved = await resolveAgentId({
+      platform: PLATFORM,
+      channelId: CHANNEL,
+      teamId: TEAM,
+      organizationId: ORG_B,
+      channelBindingService: svc,
+      crossOrg: true,
+    });
+    expect(resolved?.agentId).toBe(AGENT_A2);
+    expect(resolved?.organizationId).toBe(ORG_A);
+  });
 });

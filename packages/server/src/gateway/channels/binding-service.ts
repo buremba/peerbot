@@ -144,7 +144,8 @@ export class ChannelBindingService {
         INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
         VALUES (${orgId}, ${agentId}, ${platform}, ${channelId}, ${teamId}, now())
         ON CONFLICT (organization_id, platform, channel_id, team_id) DO UPDATE SET
-          agent_id = EXCLUDED.agent_id
+          agent_id = EXCLUDED.agent_id,
+          created_at = EXCLUDED.created_at
       `;
     } else {
       // For team_id IS NULL the unique constraint above doesn't fire (PG
@@ -155,7 +156,8 @@ export class ChannelBindingService {
         VALUES (${orgId}, ${agentId}, ${platform}, ${channelId}, NULL, now())
         ON CONFLICT (organization_id, platform, channel_id)
           WHERE team_id IS NULL
-          DO UPDATE SET agent_id = EXCLUDED.agent_id
+          DO UPDATE SET agent_id = EXCLUDED.agent_id,
+            created_at = EXCLUDED.created_at
       `;
     }
     logger.info(`Created binding: ${platform}/${channelId} → ${agentId}`);

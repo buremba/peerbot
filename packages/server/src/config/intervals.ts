@@ -81,9 +81,10 @@ export const intervals = {
   },
 
   /** Default turn-liveness deadline. Comfortably exceeds the worker's 20s
-   *  heartbeat interval so a live worker (which extends on every heartbeat)
-   *  is never falsely failed; a silent/dead worker lapses within this window
-   *  of its last heartbeat. */
+   *  status_update interval so a live worker (which extends the deadline on
+   *  every status_update — plus on the 30s SSE-ping ACK and delivery receipts)
+   *  is never falsely failed; a silent/dead worker lapses within this window of
+   *  its last worker-driven signal. */
   get turnDefaultDeadlineMs(): number {
     return parseEnvInt('TURN_DEFAULT_DEADLINE_MS', 60_000);
   },

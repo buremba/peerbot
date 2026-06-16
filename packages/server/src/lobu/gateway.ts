@@ -366,6 +366,16 @@ export async function initLobuGateway(): Promise<Hono | null> {
     );
     logger.info('[Lobu] Embedded orchestrator injected core services');
 
+    // Wire the deployment manager's idle clock into the worker gateway so every
+    // worker-driven HTTP response (delta / status_update / ACK / terminal reply)
+    // refreshes the deployment's lastActivity. Without this the idle reaper can
+    // scale a worker running one long turn to 0 mid-turn (its lastActivity stays
+    // frozen at last dispatch). Both objects exist here; they are built
+    // separately so the wiring lives at the composition root.
+    coreServices
+      .getWorkerGateway()
+      ?.setDeploymentActivityTracker(orchestrator.getDeploymentManager());
+
     // Initialize Chat SDK connection manager for platform connections
     chatInstanceManager = new ChatInstanceManager();
     try {

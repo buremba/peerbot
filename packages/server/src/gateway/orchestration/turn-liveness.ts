@@ -25,9 +25,11 @@
  *  - Backstop (deadline): {@link sweepExpiredTurns} runs periodically on every
  *    replica and fails markers whose deadline has lapsed. Covers a hung worker
  *    (alive, never replies) and a worker-pod death (the marker outlives the pod
- *    and another replica sweeps it). The deadline is pushed forward by the
- *    worker's 20s heartbeat ({@link extendTurnDeadlines}), so a live-but-slow
- *    worker is never falsely failed, while a silent one lapses.
+ *    and another replica sweeps it). The deadline is pushed forward
+ *    ({@link extendTurnDeadlines}) by any worker-driven liveness signal —
+ *    primarily the worker's 20s status_update, plus the 30s SSE-ping ACK and
+ *    delivery receipts — so a live-but-slow worker is never falsely failed,
+ *    while a silent one lapses.
  *
  * ## Multi-replica
  * Arming/extending/discharging all happen on the worker's owning pod (worker
@@ -125,8 +127,9 @@ export async function armTurnTimeout(
 
 /**
  * Push the deadline forward for all in-flight turns of a deployment. Called on
- * the worker's heartbeat ACK — a worker-driven liveness signal, so a live but
- * slow worker keeps its markers fresh while a silent one lapses.
+ * any worker-driven liveness signal — primarily the worker's 20s status_update,
+ * plus the 30s SSE-ping ACK and delivery receipts — so a live but slow worker
+ * keeps its markers fresh while a silent one lapses.
  */
 export async function extendTurnDeadlines(
   deploymentName: string,
@@ -170,9 +173,10 @@ export async function extendTurnDeadlines(
  * The `internal:turn_timeout` marker (a pending `public.runs` row, armed at
  * dispatch keyed on `deploymentName:messageId`) is the authoritative cross-pod
  * record that a turn is live: every terminalization path deletes it
- * transactionally (first-writer-wins), and the worker's 20s heartbeat pushes its
- * `run_at` deadline forward while the turn legitimately runs long — so any
- * replica reads the true state from shared `public.runs`.
+ * transactionally (first-writer-wins), and any worker-driven liveness signal
+ * (primarily the worker's 20s status_update) pushes its `run_at` deadline
+ * forward while the turn legitimately runs long — so any replica reads the true
+ * state from shared `public.runs`.
  *
  * This is the liveness gate for worker-token refresh. The marker and the per-run
  * token are minted in the same dispatch (MessageConsumer.handleMessage) with the

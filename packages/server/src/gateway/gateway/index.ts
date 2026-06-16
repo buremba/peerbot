@@ -42,6 +42,17 @@ import { createTranscriptRoutes } from "./transcript-routes.js";
 const logger = createLogger("worker-gateway");
 
 /**
+ * Minimal seam onto the deployment manager's idle clock. Any worker-driven
+ * signal (HTTP response / ACK) must refresh the deployment's `lastActivity` so
+ * the idle reaper doesn't scale a long-running-but-active worker to 0 mid-turn.
+ * Narrow on purpose: the gateway only needs to touch the idle clock, not the
+ * full deployment lifecycle.
+ */
+export interface DeploymentActivityTracker {
+  updateDeploymentActivity(deploymentName: string): Promise<void>;
+}
+
+/**
  * Worker Gateway - SSE and HTTP endpoints for worker communication
  * Workers connect via SSE to receive jobs, send responses via HTTP POST
  * Uses encrypted tokens for authentication and routing
@@ -58,6 +69,7 @@ export class WorkerGateway {
   private providerCatalogService?: ProviderCatalogService;
   private agentSettingsStore?: AgentSettingsStore;
   private secretStore?: WritableSecretStore;
+  private deploymentActivityTracker?: DeploymentActivityTracker;
 
   constructor(
     queue: IMessageQueue,
@@ -97,6 +109,18 @@ export class WorkerGateway {
    */
   getConnectionManager(): WorkerConnectionManager {
     return this.connectionManager;
+  }
+
+  /**
+   * Wire the deployment manager's idle clock so worker responses keep a
+   * long-running worker alive in the idle reaper. Injected after construction
+   * because the gateway and the orchestrator (which owns the deployment
+   * manager) are built separately; the gateway runs without it (the tracker is
+   * optional) but then a worker active past WORKER_IDLE_CLEANUP_MINUTES with no
+   * new inbound message can be reaped mid-turn.
+   */
+  setDeploymentActivityTracker(tracker: DeploymentActivityTracker): void {
+    this.deploymentActivityTracker = tracker;
   }
 
   /**
@@ -377,8 +401,25 @@ export class WorkerGateway {
 
     const { deploymentName } = auth.tokenData;
 
-    // Update connection activity
+    // Update connection activity (SSE stale-cleanup clock).
     this.connectionManager.touchConnection(deploymentName);
+    // Also refresh the DEPLOYMENT manager's idle clock. `touchConnection` above
+    // only feeds the connection manager's stale-SSE sweep — it does NOT touch
+    // `EmbeddedWorkerEntry.lastActivity`, which the idle reaper
+    // (reconcileDeployments → buildDeploymentInfoSummary.isIdle) reads. Without
+    // this, that timestamp stays frozen at the last dispatch, so a worker
+    // running a single long turn (no new inbound message) past
+    // WORKER_IDLE_CLEANUP_MINUTES is scaled to 0 and killed mid-turn. Every
+    // worker-driven HTTP response (delta, status_update, ACK, terminal reply)
+    // hits this path, so any liveness signal keeps the idle clock fresh; a
+    // truly silent worker still stops POSTing and ages out as intended.
+    void this.deploymentActivityTracker
+      ?.updateDeploymentActivity(deploymentName)
+      .catch((err) => {
+        logger.warn(
+          `[WORKER-GATEWAY] Failed to refresh deployment activity for ${deploymentName}: ${err}`
+        );
+      });
 
     try {
       const body = await c.req.json();
@@ -424,6 +465,18 @@ export class WorkerGateway {
         // but slow worker is never falsely failed by the sweep. Best-effort.
         void extendTurnDeadlines(deploymentName);
         return c.json({ success: true });
+      }
+
+      // The worker's 20s status_update (HEARTBEAT_INTERVAL_MS in
+      // session-runner.ts) carries `statusUpdate` and NO `received` flag, so it
+      // falls through the ACK block above. It is the most frequent worker-driven
+      // liveness signal — far more frequent than the 30s SSE-ping ACK — so it
+      // must refresh the turn-liveness deadline too, otherwise a live worker
+      // emitting status updates every 20s could still lapse the 60s deadline on
+      // ~2 consecutive missed ping ACKs and be falsely failed by the sweep.
+      // Best-effort, same as the ACK path.
+      if (enrichedResponse.statusUpdate) {
+        void extendTurnDeadlines(deploymentName);
       }
 
       // Log for debugging

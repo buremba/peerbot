@@ -15,6 +15,7 @@ import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { ApiKeyProviderModule } from "../auth/api-key-provider-module.js";
 import { BedrockProviderModule } from "../auth/bedrock/provider-module.js";
 import { ChatGPTOAuthModule } from "../auth/chatgpt/chatgpt-oauth-module.js";
+import { ChatGPTDeviceCodeClient } from "../auth/chatgpt/device-code-client.js";
 import { ClaudeOAuthModule } from "../auth/claude/oauth-module.js";
 import { ExternalAuthClient } from "../auth/external/client.js";
 import { GeminiCliModule } from "../auth/gemini/cli-module.js";
@@ -553,7 +554,11 @@ export class CoreServices {
       );
     }
     this.tokenRefreshJob = new TokenRefreshJob(this.authProfilesManager, [
-      { providerId: "claude", oauthClient: new OAuthClient(CLAUDE_PROVIDER) },
+      { providerId: "claude", refresher: new OAuthClient(CLAUDE_PROVIDER) },
+      {
+        providerId: "chatgpt",
+        refresher: new ChatGPTDeviceCodeClient(),
+      },
     ]);
     logger.debug("Token refresh job constructed");
 

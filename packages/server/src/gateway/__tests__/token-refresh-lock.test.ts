@@ -105,7 +105,7 @@ describe("TokenRefreshJob advisory lock (F5)", () => {
     });
 
     const job = new TokenRefreshJob(manager as never, [
-      { providerId: "claude", oauthClient: oauthClient as never },
+      { providerId: "claude", refresher: oauthClient as never },
     ], () => fakeDb);
     await job.refreshForUserAgent("u1", "agent-1");
 
@@ -123,7 +123,7 @@ describe("TokenRefreshJob advisory lock (F5)", () => {
     });
 
     const job = new TokenRefreshJob(manager as never, [
-      { providerId: "claude", oauthClient: oauthClient as never },
+      { providerId: "claude", refresher: oauthClient as never },
     ], () => fakeDb);
     await job.refreshForUserAgent("u1", "agent-1");
 
@@ -140,7 +140,7 @@ describe("TokenRefreshJob advisory lock (F5)", () => {
     });
 
     const job = new TokenRefreshJob(manager as never, [
-      { providerId: "claude", oauthClient: oauthClient as never },
+      { providerId: "claude", refresher: oauthClient as never },
     ], () => fakeDb);
     await job.refreshForUserAgent("u1", "agent-1");
 

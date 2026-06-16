@@ -54,13 +54,13 @@ RUN mkdir -p packages/cli packages/landing packages/lobu-cli packages/browser-ex
 # Node doesn't understand.
 RUN --mount=type=cache,target=/root/.bun/install/cache bun install --linker=hoisted
 
-# Source code. BuildKit content-hashes each COPY, so a change to any package's
-# source invalidates that layer and everything downstream (tsc/bundle/frontend)
-# automatically — no manual cache-bust needed. The previous
-# `ARG CACHEBUST=${git.sha}` busted ALL source layers on every commit, forcing a
-# full recompile each build even when nothing relevant changed; dropping it lets
-# unchanged layers be reused from the cache (see cache-to mode=max in
-# build-images.yml).
+# Force rebuild of source layers
+ARG CACHEBUST=default
+ARG APP_GIT_SHA=unknown
+ARG APP_BUILD_TIME=unknown
+RUN echo "Build: ${CACHEBUST}" && date > /tmp/.build-time
+
+# Source code
 COPY config/ config/
 COPY packages/core/ packages/core/
 COPY packages/agent-worker/ packages/agent-worker/
@@ -156,8 +156,17 @@ COPY --from=builder /app/packages/owletto ./packages/owletto
 # Database migrations
 COPY db/migrations ./db/migrations
 
-# Install Playwright/patchright Chromium for browser-based connectors
-RUN npx patchright install chromium 2>/dev/null || npx playwright install chromium 2>/dev/null || true
+# Install Playwright/patchright Chromium for browser-based connectors.
+# PLAYWRIGHT_BROWSERS_PATH pins both the install target and the runtime lookup to
+# an absolute, HOME-independent path (default is $HOME/.cache/ms-playwright, which
+# differs by USER and breaks the connector child forked in another cwd). chmod 755
+# keeps it readable regardless of which user the runtime resolves to. The install
+# must fail the build loudly — the old `2>/dev/null ... || true` silently shipped
+# images with no Chromium. `playwright` is the patchright alias, so a single
+# patchright install is deterministic.
+RUN mkdir -p /ms-playwright && chmod 755 /ms-playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npx patchright install chromium
 
 # Build metadata + environment defaults
 ARG APP_GIT_SHA=unknown

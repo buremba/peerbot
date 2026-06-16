@@ -19,6 +19,10 @@ import type {
 } from "../core/types";
 import { WorkspaceManager } from "../core/workspace";
 import { HttpWorkerTransport } from "../gateway/gateway-integration";
+import {
+  adoptWorkerToken,
+  getWorkerTokenManager,
+} from "../gateway/worker-token-manager";
 import { generateCustomInstructions } from "../instructions/builder";
 import { ProjectsInstructionProvider } from "../instructions/providers";
 import { fetchAudioProviderSuggestions } from "../shared/audio-provider-suggestions";
@@ -150,6 +154,22 @@ export class OpenClawWorker implements WorkerExecutor {
         "WorkerConfig.runJobToken is missing — MessageConsumer did not mint a per-run worker token"
       );
     }
+
+    // Adopt the freshly-minted per-run runJobToken as this turn's live gateway
+    // credential. It's a strict superset of the spawn-time WORKER_TOKEN's claims
+    // (+ connectionId/source/runId) with a fresh timestamp, so it's non-expired
+    // even on a warm worker whose spawn-time token has aged past the 2h TTL
+    // (#1266). The manager becomes the single source of truth: the transport's
+    // POSTs read it via fetchWithRefresh, and it's mirrored into
+    // process.env.WORKER_TOKEN for the env-readers (session-context, snapshot
+    // hydrate/clear, the audio hint). The spawnHook still strips WORKER_TOKEN by
+    // KEY from agent bash, so mutating the env value is safe.
+    adoptWorkerToken(this.config.runJobToken);
+    // Timer-driven proactive refresh: renew the token before it hard-expires
+    // even if this turn makes NO gateway call (the >2h single-turn case — an
+    // on-demand-only refresh would fire too late, with an already-expired
+    // bearer the route rejects before the liveness gate). Disabled in finally.
+    getWorkerTokenManager().enableAutoRefresh();
 
     try {
       this.progressProcessor.reset();
@@ -339,6 +359,10 @@ export class OpenClawWorker implements WorkerExecutor {
         agentId: this.config.agentId,
         runId: this.config.runId,
       });
+    } finally {
+      // Stop the timer-driven proactive refresh for this turn. A warm worker's
+      // next turn re-adopts a fresh per-run token and re-enables it.
+      getWorkerTokenManager().disableAutoRefresh();
     }
   }
 
@@ -387,12 +411,19 @@ export class OpenClawWorker implements WorkerExecutor {
       // body.runId`, so the deployment-lifetime WORKER_TOKEN cannot be
       // used here — it would carry no `runId` and the route would 403.
       // Codex round 2 finding A.
-      const runJobToken = this.config.runJobToken;
-      if (gatewayUrl && runJobToken && typeof runId === "number") {
+      //
+      // `this.config.runJobToken` only PROVES this run had a per-run mint
+      // (legacy direct-enqueue runs have none → skip). The bearer we send
+      // is the LIVE token from the manager, not this captured original: a
+      // long turn may have refreshed it mid-run, in which case the original
+      // is already expired and would 401 here. The refreshed token carries
+      // the same `runId`, so the snapshot route's equality check still holds.
+      const hadPerRunToken = Boolean(this.config.runJobToken);
+      if (gatewayUrl && hadPerRunToken && typeof runId === "number") {
         await writeSnapshot({
           sessionFile: this.sessionFilePath,
           gatewayUrl,
-          workerToken: runJobToken,
+          workerToken: getWorkerTokenManager().getToken(),
           terminalStatus: this.terminalStatus,
           runId,
         });
@@ -519,7 +550,6 @@ export class OpenClawWorker implements WorkerExecutor {
       platform: this.config.platform,
       platformMetadata: this.config.platformMetadata,
       agentId: this.config.agentId,
-      runJobToken: this.config.runJobToken,
       workspaceDir: this.workspaceManager.getCurrentWorkingDirectory(),
       progressProcessor: this.progressProcessor,
       onSessionFilePathResolved: (filePath) => {

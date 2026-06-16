@@ -16,6 +16,7 @@ import {
 import { z } from "zod";
 import type { WorkerConfig, WorkerExecutor } from "../core/types";
 import { createGatewayClient } from "../shared/gateway-client";
+import { getWorkerTokenManager } from "./worker-token-manager";
 import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
 import { OpenClawWorker } from "../openclaw/worker";
 import { invalidateSessionContextCache } from "../openclaw/session-context";
@@ -130,6 +131,12 @@ export class GatewayClient {
   ) {
     this.dispatcherUrl = dispatcherUrl;
     this.workerToken = workerToken;
+    // Seed the process-wide token manager from the boot token. The SSE client
+    // boots before any per-run token is adopted, and both its stream auth and
+    // its delivery receipts read the manager's live token — so a turn running
+    // past the 2h TTL keeps authenticating after a refresh instead of pinning
+    // the now-expired boot bearer.
+    getWorkerTokenManager().seed(workerToken);
     this.userId = userId;
     this.deploymentName = deploymentName;
     this.httpPort = httpPort;
@@ -190,10 +197,14 @@ export class GatewayClient {
       `Connecting to dispatcher at ${streamUrl} (attempt ${this.reconnectAttempts + 1})`
     );
 
+    // Refresh proactively if near expiry, then read the live token so a
+    // reconnect after the 2h TTL authenticates with the renewed bearer rather
+    // than the now-expired boot token.
+    await getWorkerTokenManager().ensureFresh();
     const response = await fetch(streamUrl, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${this.workerToken}`,
+        Authorization: `Bearer ${getWorkerTokenManager().getToken()}`,
         Accept: "text/event-stream",
       },
       signal: abortController.signal,
@@ -294,15 +305,20 @@ export class GatewayClient {
     body: Record<string, unknown>,
     failureContext: string
   ): void {
-    createGatewayClient({
-      baseUrl: this.dispatcherUrl,
-      token: this.workerToken,
-    })
-      .request("/worker/response", {
-        method: "POST",
-        body: JSON.stringify(body),
-        timeoutMs: 10_000,
-      })
+    // These receipts are what keep the turn alive against stale cleanup, so
+    // route them through the token manager: a turn past the 2h TTL refreshes
+    // (reactively on a 401) instead of a stale bearer getting the turn swept.
+    getWorkerTokenManager()
+      .fetchWithRefresh((tok) =>
+        createGatewayClient({
+          baseUrl: this.dispatcherUrl,
+          token: tok,
+        }).request("/worker/response", {
+          method: "POST",
+          body: JSON.stringify(body),
+          timeoutMs: 10_000,
+        })
+      )
       .catch((err) => {
         logger.warn(`Failed to send ${failureContext}:`, err);
       });

@@ -1,16 +1,30 @@
 import { createLogger } from "@lobu/core";
 import { type DbClient, getDb } from "../../db/client.js";
 import { orgContext } from "../../lobu/stores/org-context.js";
-import type { OAuthClient } from "../auth/oauth/client.js";
+import type { OAuthCredentials } from "../auth/oauth/credentials.js";
 import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager.js";
 
 const logger = createLogger("token-refresh-job");
 
 const EXPIRY_BUFFER_MS = 5 * 60 * 1000; // Refresh tokens expiring within 5 minutes
 
+// Profile auth types that carry a refresh token we can rotate. "oauth" =
+// Claude (authorization-code), "device-code" = ChatGPT/Codex.
+const REFRESHABLE_AUTH_TYPES = new Set(["oauth", "device-code"]);
+
+/**
+ * Anything that can swap a refresh token for fresh credentials. Both the
+ * Claude `OAuthClient` (authorization-code flow) and the ChatGPT
+ * `ChatGPTDeviceCodeClient` (device-code flow) implement this, so both can be
+ * registered as refreshable providers.
+ */
+export interface TokenRefresher {
+  refreshToken(refreshToken: string): Promise<OAuthCredentials>;
+}
+
 interface RefreshableProvider {
   providerId: string;
-  oauthClient: OAuthClient;
+  refresher: TokenRefresher;
 }
 
 /**
@@ -113,7 +127,7 @@ export class TokenRefreshJob {
   }
 
   private async doRefresh(userId: string, agentId: string): Promise<void> {
-    for (const { providerId, oauthClient } of this.refreshableProviders) {
+    for (const { providerId, refresher } of this.refreshableProviders) {
       const profiles = await this.authProfilesManager.getProviderProfiles(
         agentId,
         providerId,
@@ -121,7 +135,8 @@ export class TokenRefreshJob {
       );
       const oauthProfile = profiles.find(
         (profile) =>
-          profile.authType === "oauth" && !!profile.metadata?.refreshToken
+          REFRESHABLE_AUTH_TYPES.has(profile.authType) &&
+          !!profile.metadata?.refreshToken
       );
 
       if (!oauthProfile?.metadata?.refreshToken) continue;
@@ -136,7 +151,7 @@ export class TokenRefreshJob {
           userId,
           agentId,
           providerId,
-          oauthClient,
+          refresher,
           oauthProfile.id
         );
       } catch (error) {
@@ -162,7 +177,7 @@ export class TokenRefreshJob {
     userId: string,
     agentId: string,
     providerId: string,
-    oauthClient: OAuthClient,
+    refresher: TokenRefresher,
     profileId: string
   ): Promise<void> {
     const sql = this.getDbFn();
@@ -181,7 +196,7 @@ export class TokenRefreshJob {
       const oauthProfile = profiles.find((profile) => profile.id === profileId);
       if (
         !oauthProfile ||
-        oauthProfile.authType !== "oauth" ||
+        !REFRESHABLE_AUTH_TYPES.has(oauthProfile.authType) ||
         !oauthProfile.metadata?.refreshToken
       ) {
         return;
@@ -201,7 +216,7 @@ export class TokenRefreshJob {
         { expiresAt: new Date(expiresAt).toISOString() }
       );
 
-      const newCredentials = await oauthClient.refreshToken(
+      const newCredentials = await refresher.refreshToken(
         oauthProfile.metadata.refreshToken
       );
 
@@ -211,7 +226,7 @@ export class TokenRefreshJob {
         id: oauthProfile.id,
         provider: oauthProfile.provider,
         credential: newCredentials.accessToken,
-        authType: "oauth",
+        authType: oauthProfile.authType,
         label: oauthProfile.label,
         model: oauthProfile.model,
         metadata: {

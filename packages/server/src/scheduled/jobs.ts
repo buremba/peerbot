@@ -13,6 +13,7 @@ import { cleanupExpiredMcpSessions } from '../mcp-handler';
 import logger from '../utils/logger';
 import { runWatcherAutomationTick } from '../watchers/automation';
 import { checkStalledExecutions } from './check-stalled-executions';
+import { runConnectorHealthCheck } from '../connectors/connector-health';
 import { runClassificationReconciliation } from './classification-reconciliation';
 import { registerScheduledJobsTicker } from './scheduled-jobs-service';
 import { TaskScheduler } from './task-scheduler';
@@ -144,6 +145,32 @@ function registerMaintenanceTasks(
       }
     },
     { cron: '*/5 * * * *' },
+  );
+
+  // Connector health alerter — surfaces connectors that have silently died
+  // (every feed failing, an active connection collecting nothing, or a feed
+  // that stopped syncing for days) which the per-feed repair-agent can't catch
+  // (it only fires when a worker actually runs). Single-claimant per tick;
+  // alerts fire on the transition into unhealthy via a Postgres-mediated marker
+  // (connections.unhealthy_alerted_at), and ride the existing pino→Sentry→Slack
+  // path — no new alerting infra. Read-only over connections/feeds otherwise.
+  scheduler.register(
+    'connector-health-alert',
+    async () => {
+      const result = await runConnectorHealthCheck();
+      if (result.newlyAlerted > 0 || result.recovered > 0) {
+        logger.info(
+          {
+            scanned: result.scanned,
+            unhealthy: result.unhealthy,
+            newly_alerted: result.newlyAlerted,
+            recovered: result.recovered,
+          },
+          '[task] connector-health-alert swept'
+        );
+      }
+    },
+    { cron: '*/15 * * * *' }
   );
 
   scheduler.register(

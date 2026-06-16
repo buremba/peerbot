@@ -165,6 +165,53 @@ export async function extendTurnDeadlines(
 }
 
 /**
+ * Is the SPECIFIC turn `(deploymentName, messageId)` still in-flight?
+ *
+ * The `internal:turn_timeout` marker (a pending `public.runs` row, armed at
+ * dispatch keyed on `deploymentName:messageId`) is the authoritative cross-pod
+ * record that a turn is live: every terminalization path deletes it
+ * transactionally (first-writer-wins), and the worker's 20s heartbeat pushes its
+ * `run_at` deadline forward while the turn legitimately runs long — so any
+ * replica reads the true state from shared `public.runs`.
+ *
+ * This is the liveness gate for worker-token refresh. The marker and the per-run
+ * token are minted in the same dispatch (MessageConsumer.handleMessage) with the
+ * same `messageId`, so a token refreshes only while ITS OWN turn is live — not
+ * merely any turn on the deployment. Once the turn terminalizes the marker is
+ * gone and refresh is denied: that deletion IS the revocation path, bounding the
+ * leak window to how long the turn actually runs rather than an unbounded refresh
+ * chain. It is deliberately NOT gated on the dispatching `runs.id` the token was
+ * minted for — that `messages`-queue run completes the moment `handleMessage`
+ * enqueues, long before the turn finishes.
+ *
+ * The `run_at > now()` predicate (not a bare `status = 'pending'`) excludes a
+ * marker whose deadline has lapsed but which the periodic sweep hasn't deleted
+ * yet — otherwise a hung/dead worker's turn would keep authorizing refreshes in
+ * that gap, widening the leak past the deadline the heartbeat was meant to hold.
+ */
+export async function hasLiveTurnForMessage(
+  deploymentName: string,
+  messageId: string
+): Promise<boolean> {
+  const sql = getDb();
+  // status + run_type + queue_name match the partial predicate / leading column
+  // of `runs_lobu_claim_idx`, so this is an index probe, not a scan of the
+  // 30-day `runs` retention. `run_at > now()` excludes lapsed-but-unswept
+  // markers (see the deadline-predicate note above).
+  const rows = await sql<{ ok: number }>`
+    SELECT 1 AS ok FROM public.runs
+    WHERE status = 'pending'
+      AND run_type = 'internal'
+      AND queue_name = ${TURN_TIMEOUT_QUEUE}
+      AND action_input->>'deploymentName' = ${deploymentName}
+      AND action_input->>'messageId' = ${messageId}
+      AND run_at > now()
+    LIMIT 1
+  `;
+  return rows.length > 0;
+}
+
+/**
  * Fast path: fail every in-flight turn of a deployment whose worker has just
  * died unexpectedly. Atomic per the `DELETE … RETURNING` election — only this
  * caller gets the rows, and the terminal error is enqueued in the same

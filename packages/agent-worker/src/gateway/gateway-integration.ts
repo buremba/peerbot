@@ -11,6 +11,7 @@ import {
 } from "@lobu/core";
 import { createGatewayClient } from "../shared/gateway-client";
 import type { ResponseData } from "./types";
+import { getWorkerTokenManager } from "./worker-token-manager";
 
 const logger = createLogger("http-worker-transport");
 
@@ -20,7 +21,6 @@ const logger = createLogger("http-worker-transport");
  */
 export class HttpWorkerTransport implements WorkerTransport {
   private gatewayUrl: string;
-  private workerToken: string;
   private userId: string;
   private channelId: string;
   private conversationId: string;
@@ -46,7 +46,12 @@ export class HttpWorkerTransport implements WorkerTransport {
 
   constructor(config: WorkerTransportConfig) {
     this.gatewayUrl = config.gatewayUrl;
-    this.workerToken = config.workerToken;
+    // Seed the process-wide token manager from the boot token if it hasn't been
+    // initialized yet (the manager otherwise lazy-inits from env). The manager
+    // is the single source of truth for the live token — this transport's
+    // gateway POSTs read it via fetchWithRefresh, so there is no per-transport
+    // token field to drift.
+    getWorkerTokenManager().seed(config.workerToken);
     this.userId = config.userId;
     this.channelId = config.channelId;
     this.conversationId = config.conversationId;
@@ -265,10 +270,6 @@ export class HttpWorkerTransport implements WorkerTransport {
 
   private async sendResponse(data: ResponseData): Promise<void> {
     const responseUrl = `${this.gatewayUrl}/worker/response`;
-    const gateway = createGatewayClient({
-      baseUrl: this.gatewayUrl,
-      token: this.workerToken,
-    });
     const basePayload = {
       ...data,
       ...(this.platform && !data.platform ? { platform: this.platform } : {}),
@@ -291,11 +292,23 @@ export class HttpWorkerTransport implements WorkerTransport {
           }${payload.statusUpdate ? " statusUpdate" : ""}${payload.customEvent ? ` customEvent=${payload.customEvent.name}` : ""}`
         );
 
-        const response = await gateway.request("/worker/response", {
-          method: "POST",
-          body: JSON.stringify(payload),
-          timeoutMs: 30_000,
-        });
+        // Route through the token manager so a turn running past the token's
+        // 2h TTL refreshes (proactively when near expiry, reactively on a 401)
+        // against the deployment-liveness-gated /worker/token/refresh endpoint.
+        // The manager is the single source of truth for the live token; it
+        // hands the current token to this callback, which binds a fresh gateway
+        // client to that live bearer for each (re)try — keeping the shared
+        // auth/content-type/timeout boilerplate from the gateway client.
+        const response = await getWorkerTokenManager().fetchWithRefresh((tok) =>
+          createGatewayClient({ baseUrl: this.gatewayUrl, token: tok }).request(
+            "/worker/response",
+            {
+              method: "POST",
+              body: JSON.stringify(payload),
+              timeoutMs: 30_000,
+            }
+          )
+        );
 
         if (!response.ok) {
           throw new Error(

@@ -105,9 +105,22 @@ export async function launchBrowser(
       screenshotDir,
     };
   } catch (error: any) {
-    if (error.message?.includes("Executable doesn't exist") || error.code === 'MODULE_NOT_FOUND') {
+    // The Chromium binary is present in the image but the runtime looked in the
+    // wrong directory — almost always a PLAYWRIGHT_BROWSERS_PATH mismatch between
+    // the install path and the lookup path (e.g. $HOME/.cache vs /ms-playwright).
+    if (error.message?.includes("Executable doesn't exist")) {
+      const browsersPath = process.env.PLAYWRIGHT_BROWSERS_PATH ?? '(unset → $HOME/.cache/ms-playwright)';
       throw new Error(
-        'Playwright not installed or Chromium browser missing.\n' +
+        `Chromium binary not found at PLAYWRIGHT_BROWSERS_PATH=${browsersPath} — image install path mismatch.\n` +
+          'Ensure Chromium is installed into this exact directory (npx playwright install chromium) ' +
+          'and that PLAYWRIGHT_BROWSERS_PATH matches both at install time and at runtime.'
+      );
+    }
+
+    // The playwright/patchright package itself is not resolvable.
+    if (error.code === 'MODULE_NOT_FOUND') {
+      throw new Error(
+        'Playwright not installed.\n' +
           'Install with: npm install -D playwright && npx playwright install chromium'
       );
     }

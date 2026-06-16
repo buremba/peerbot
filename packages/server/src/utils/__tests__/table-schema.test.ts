@@ -119,7 +119,7 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
   const INTENTIONALLY_OMITTED: Record<string, Set<string>> = {
     entities: new Set(['embedding', 'content_tsv', 'content_hash']),
     events: new Set([]),
-    connections: new Set(['credentials']),
+    connections: new Set(['credentials', 'unhealthy_alerted_at']),
     // Large per-connector JSONB blobs — too big and structure-dependent to expose
     // via raw SQL. Callers should hit the typed connector handler instead.
     connector_definitions: new Set([

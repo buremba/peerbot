@@ -124,12 +124,13 @@ FROM node:22-slim AS runtime
 
 WORKDIR /app
 
-# curl for health checks, dbmate for migrations, bun for tsx-equivalent, Chromium deps for connectors
+# curl for health checks, dbmate for migrations, bun for tsx-equivalent.
+# No Chromium runtime libs: browser-based connectors (website/trustpilot) run on
+# the external worker fleet (its own image ships Chromium) and the Owletto Chrome
+# extension — the gateway never launches a browser, so the ~150MB Chromium
+# install + its X11/GTK deps are dropped here to shrink the image + speed builds.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       curl ca-certificates unzip \
-      libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libdbus-1-3 \
-      libxkbcommon0 libatspi2.0-0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
-      libgbm1 libpango-1.0-0 libcairo2 libasound2 libwayland-client0 \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL https://github.com/amacneil/dbmate/releases/download/v2.22.0/dbmate-linux-amd64 -o /usr/local/bin/dbmate \
     && chmod +x /usr/local/bin/dbmate \
@@ -156,17 +157,10 @@ COPY --from=builder /app/packages/owletto ./packages/owletto
 # Database migrations
 COPY db/migrations ./db/migrations
 
-# Install Playwright/patchright Chromium for browser-based connectors.
-# PLAYWRIGHT_BROWSERS_PATH pins both the install target and the runtime lookup to
-# an absolute, HOME-independent path (default is $HOME/.cache/ms-playwright, which
-# differs by USER and breaks the connector child forked in another cwd). chmod 755
-# keeps it readable regardless of which user the runtime resolves to. The install
-# must fail the build loudly — the old `2>/dev/null ... || true` silently shipped
-# images with no Chromium. `playwright` is the patchright alias, so a single
-# patchright install is deterministic.
-RUN mkdir -p /ms-playwright && chmod 755 /ms-playwright
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN npx patchright install chromium
+# No Chromium install: the gateway never launches a browser. Browser-based
+# connectors run on the external worker fleet (docker/worker/Dockerfile ships
+# Chromium) and via the Owletto Chrome extension. Dropping the ~150MB patchright
+# install removes the single biggest per-build download from this image.
 
 # Build metadata + environment defaults
 ARG APP_GIT_SHA=unknown

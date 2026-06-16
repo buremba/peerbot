@@ -22,6 +22,7 @@ import {
   extendTurnDeadlines,
   failTurnIfPending,
   failTurnsForDeployment,
+  hasLiveTurnForDeployment,
   sweepExpiredTurns,
   type TurnRouting,
 } from "../orchestration/turn-liveness.js";
@@ -209,5 +210,75 @@ describe("turn-liveness", () => {
     await commitTerminalReply("dep-A", ["same"], reply("dep-A", "same"), null);
     expect(await markerCount("dep-A")).toBe(0);
     expect(await markerCount("dep-B")).toBe(1);
+  });
+});
+
+/**
+ * The deployment-liveness gate that authorizes worker-token refresh. A fresh
+ * token is minted ONLY while an in-flight turn-timeout marker exists for the
+ * deployment; once the work terminalizes the marker is gone and refresh is
+ * denied (the revocation property). These assert the gate tracks the marker
+ * across every production terminalization path, against real Postgres so the
+ * cross-pod authority (shared `public.runs`) is exercised, not mocked.
+ */
+describe("hasLiveTurnForDeployment (token-refresh liveness gate)", () => {
+  test("false when no turn has ever been armed", async () => {
+    expect(await hasLiveTurnForDeployment("dep-never")).toBe(false);
+  });
+
+  test("true while a turn is in-flight (armed, not discharged)", async () => {
+    await armTurnTimeout(queue, routing("dep-live", "m1"));
+    expect(await hasLiveTurnForDeployment("dep-live")).toBe(true);
+  });
+
+  test("REFRESH DENIED: false after the turn terminalizes via a real reply", async () => {
+    await armTurnTimeout(queue, routing("dep-reply", "m1"));
+    expect(await hasLiveTurnForDeployment("dep-reply")).toBe(true);
+
+    // Worker replied → commitTerminalReply deletes the marker. Refresh must now
+    // be denied — the token chain ends with the work.
+    await commitTerminalReply(
+      "dep-reply",
+      ["m1"],
+      reply("dep-reply", "m1"),
+      null
+    );
+    expect(await hasLiveTurnForDeployment("dep-reply")).toBe(false);
+  });
+
+  test("REFRESH DENIED: false after the worker dies (fast path)", async () => {
+    await armTurnTimeout(queue, routing("dep-dead", "m1"));
+    expect(await hasLiveTurnForDeployment("dep-dead")).toBe(true);
+
+    await failTurnsForDeployment("dep-dead", "worker died");
+    expect(await hasLiveTurnForDeployment("dep-dead")).toBe(false);
+  });
+
+  test("REFRESH DENIED: false after the deadline lapses and is swept (hung worker)", async () => {
+    await armTurnTimeout(queue, routing("dep-hung", "m1"));
+    expect(await hasLiveTurnForDeployment("dep-hung")).toBe(true);
+
+    await expireAllMarkers();
+    await sweepExpiredTurns();
+    expect(await hasLiveTurnForDeployment("dep-hung")).toBe(false);
+  });
+
+  test(">2h single turn stays refreshable: heartbeat extends keep the gate true past the original deadline", async () => {
+    await armTurnTimeout(queue, routing("dep-long", "m1"));
+    // Simulate the original deadline having passed...
+    await expireAllMarkers();
+    // ...but the worker's heartbeat pushed the deadline forward before any sweep.
+    await extendTurnDeadlines("dep-long");
+    // The marker is still pending → a legitimately-long turn can still refresh.
+    expect(await hasLiveTurnForDeployment("dep-long")).toBe(true);
+    // And a sweep does NOT terminalize it (deadline is in the future again).
+    await sweepExpiredTurns();
+    expect(await hasLiveTurnForDeployment("dep-long")).toBe(true);
+  });
+
+  test("scoped per deployment: one deployment's live turn doesn't authorize another", async () => {
+    await armTurnTimeout(queue, routing("dep-X", "m1"));
+    expect(await hasLiveTurnForDeployment("dep-X")).toBe(true);
+    expect(await hasLiveTurnForDeployment("dep-Y")).toBe(false);
   });
 });

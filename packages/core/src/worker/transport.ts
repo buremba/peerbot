@@ -15,6 +15,19 @@ export interface WorkerTransport {
   setJobId(jobId: string): void;
 
   /**
+   * Swap the bearer token used for gateway calls.
+   *
+   * The transport is constructed at worker boot with the deployment-lifetime
+   * WORKER_TOKEN (the only token available before the first turn). That token
+   * expires after WORKER_TOKEN_TTL_MS (2h, #1266), but a warm worker can serve
+   * a conversation well past that window — its terminal `signalDone`/
+   * `signalError` POSTs would then 401. Each turn carries a freshly-minted
+   * per-run token (`runJobToken`); the worker swaps it in here at turn start so
+   * gateway calls always use a non-expired token.
+   */
+  setWorkerToken(workerToken: string): void;
+
+  /**
    * Send a streaming delta to the gateway
    *
    * @param delta - The content delta to send

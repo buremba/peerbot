@@ -19,6 +19,7 @@ import type {
 } from "../core/types";
 import { WorkspaceManager } from "../core/workspace";
 import { HttpWorkerTransport } from "../gateway/gateway-integration";
+import { adoptWorkerToken } from "../gateway/worker-token-manager";
 import { generateCustomInstructions } from "../instructions/builder";
 import { ProjectsInstructionProvider } from "../instructions/providers";
 import { fetchAudioProviderSuggestions } from "../shared/audio-provider-suggestions";
@@ -150,6 +151,41 @@ export class OpenClawWorker implements WorkerExecutor {
         "WorkerConfig.runJobToken is missing — MessageConsumer did not mint a per-run worker token"
       );
     }
+
+    // Adopt the freshly-minted per-run token for EVERY gateway call this turn.
+    //
+    // The deployment-lifetime WORKER_TOKEN is minted once at subprocess spawn
+    // and never re-minted while the worker stays warm. Its TTL is 2h (#1266 —
+    // an intentional security property: a leaked token must die fast). But a
+    // continuously-active conversation keeps one subprocess alive past the idle
+    // reap indefinitely, so after 2h that spawn-time token is expired and any
+    // worker→gateway call that still reads it 401s.
+    //
+    // The per-run `runJobToken` is minted fresh per message (recent timestamp →
+    // never expired at turn start) and is a strict superset of the deployment
+    // token's claims (org/agent/conv + connectionId after #1274 + source + the
+    // run-scoping `runId`). Swapping it in here covers two consumer classes:
+    //   1. process.env.WORKER_TOKEN — read by the per-turn session-context
+    //      fetch, the snapshot hydrate (GET, runId-agnostic) / clear (DELETE,
+    //      runId-agnostic) calls, and deliverFinalResult's audio-permission
+    //      hint. Mutating the env is safe: the just-bash spawnHook strips
+    //      WORKER_TOKEN by KEY (not value) before agent bash runs, so agent-
+    //      authored shells still never see it — the strip is undefeated.
+    //   2. the HttpWorkerTransport, which captured the (now-stale) token at
+    //      construction time (worker boot, before any per-run token existed)
+    //      and uses it for the terminal signalDone/signalError POSTs.
+    // The deployment token stays the boot/constructor credential (it's the only
+    // token available before the first turn); we only override it per-turn.
+    //
+    // Adopting through the manager also resets its TTL clock. The manager is
+    // the single source of truth for the live token: the transport's gateway
+    // POSTs read it via fetchWithRefresh, so a SINGLE turn running past the 2h
+    // TTL refreshes its token mid-turn (manager.refresh() →
+    // /worker/token/refresh, gated on deployment-liveness) and the terminal POST
+    // still uses a live token. process.env.WORKER_TOKEN is mirrored too, for the
+    // env-reading consumers (session-context, snapshot hydrate/clear, the
+    // audio-permission hint).
+    adoptWorkerToken(this.config.runJobToken);
 
     try {
       this.progressProcessor.reset();

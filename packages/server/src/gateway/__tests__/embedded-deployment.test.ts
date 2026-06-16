@@ -193,6 +193,30 @@ describe("EmbeddedDeploymentManager", () => {
       ]);
     });
 
+    test("falls back to a plain spawn when nix packages are declared but nix-shell is absent", async () => {
+      // Where nix-shell is unavailable (the prod app image bakes Chromium in
+      // directly rather than via Nix), an agent that declares nix packages must
+      // still spawn — degraded, without those packages — rather than crash the
+      // worker with `spawn nix-shell ENOENT`. Force the absent path via the
+      // operator flag so the test is deterministic regardless of host nix.
+      const prev = process.env.LOBU_DISABLE_NIX_SHELL;
+      process.env.LOBU_DISABLE_NIX_SHELL = "1";
+      try {
+        const msg = createTestMessagePayload({
+          nixConfig: { packages: ["chromium"] },
+        });
+        await manager.ensureDeployment("worker-nix", "user-1", "user-1", msg);
+        expect(mockChildProcesses).toHaveLength(1);
+        const cmd = mockSpawn.mock.calls.at(-1)?.[0];
+        // NOT nix-shell — fell back to the direct worker invocation.
+        expect(cmd).not.toBe("nix-shell");
+        expect(cmd).toBe(process.execPath);
+      } finally {
+        if (prev === undefined) process.env.LOBU_DISABLE_NIX_SHELL = undefined;
+        else process.env.LOBU_DISABLE_NIX_SHELL = prev;
+      }
+    });
+
     test("ensureDeployment with different names returns multiple entries", async () => {
       const msg1 = createTestMessagePayload({ agentId: "agent-a" });
       const msg2 = createTestMessagePayload({

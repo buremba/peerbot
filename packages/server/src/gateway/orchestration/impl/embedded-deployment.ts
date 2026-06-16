@@ -64,6 +64,35 @@ export function signalWorkerGroup(
  * cgroup limits + IPAddressDeny + capability drops. macOS dev hosts and
  * Linux hosts without user systemd fall back to plain `child_process.spawn`.
  */
+/**
+ * Detect once whether `nix-shell` is available. Skills/agents declare native
+ * deps via `nixConfig.packages`, which we normally provision by wrapping the
+ * worker in `nix-shell -p …`. Containers/hosts without Nix (e.g. the prod app
+ * image, which bakes Chromium in directly rather than via Nix) won't have it,
+ * so we fall back to a plain spawn — mirroring `locateSystemdRun`'s graceful
+ * degradation — instead of crashing the worker with `spawn nix-shell ENOENT`.
+ * The declared packages are simply unavailable in that turn unless the image
+ * already provides them; a turn that doesn't use them runs fine.
+ */
+let cachedNixShell: string | null | undefined;
+function locateNixShell(): string | null {
+  if (cachedNixShell !== undefined) return cachedNixShell;
+  if (process.env.LOBU_DISABLE_NIX_SHELL === "1") {
+    cachedNixShell = null;
+    return cachedNixShell;
+  }
+  try {
+    execFileSync("nix-shell", ["--version"], {
+      stdio: "ignore",
+      timeout: 5_000,
+    });
+    cachedNixShell = "nix-shell";
+  } catch {
+    cachedNixShell = null;
+  }
+  return cachedNixShell;
+}
+
 let cachedSystemdRun: string | null | undefined;
 function locateSystemdRun(): string | null {
   if (cachedSystemdRun !== undefined) return cachedSystemdRun;
@@ -745,7 +774,13 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
       let command: string;
       let spawnArgs: string[];
 
-      if (nixPackages.length > 0) {
+      // Only wrap in nix-shell when nix packages are declared AND nix-shell is
+      // actually present. Without it (e.g. the prod app image, which bakes
+      // Chromium in directly), fall back to a plain spawn rather than crashing
+      // the worker with `spawn nix-shell ENOENT` — the same graceful
+      // degradation as the systemd-run wrap below.
+      const nixShell = nixPackages.length > 0 ? locateNixShell() : null;
+      if (nixPackages.length > 0 && nixShell) {
         // `nix-shell -p <arg>` evaluates each <arg> as a Nix *expression*, so a
         // bare package string like `pkgs.fetchurl; builtins.exec …` or
         // `import ./evil.nix` would run code at evaluation time. Never forward
@@ -756,7 +791,7 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
         // Wrap in nix-shell so nix binaries are on PATH. `-E` takes a single
         // expression that resolves to the build inputs; `pkgs` is bound to the
         // nixpkgs set via a `let` and every ref was validated above.
-        command = "nix-shell";
+        command = nixShell;
         spawnArgs = [
           "-E",
           `let pkgs = import <nixpkgs> {}; in pkgs.mkShell { buildInputs = [ ${packageRefs.join(" ")} ]; }`,
@@ -767,6 +802,11 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
           `Spawning embedded worker ${deploymentName} with nix packages: ${nixPackages.join(", ")}`
         );
       } else {
+        if (nixPackages.length > 0) {
+          logger.warn(
+            `nix-shell not available — spawning worker ${deploymentName} WITHOUT nix packages [${nixPackages.join(", ")}]. Declared native deps are unavailable unless baked into the runtime image; set LOBU_DISABLE_NIX_SHELL=1 to silence this probe.`
+          );
+        }
         command = workerInvocation.command;
         spawnArgs = workerInvocation.args;
       }

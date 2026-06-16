@@ -18,6 +18,7 @@ import {
 } from '../utils/auth-profiles';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
+import { parseJsonBody } from '../gateway/routes/shared/helpers';
 
 const BROWSER_KIND_SET: ReadonlySet<BrowserKind> = new Set(['chrome', 'brave', 'arc', 'edge']);
 
@@ -95,17 +96,13 @@ export async function listMyDeviceAuthProfiles(c: Context<{ Bindings: Env }>) {
  * (cdp_url). No cookies ever touch the server.
  */
 export async function createMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
-  let body: {
+  const body = await parseJsonBody<{
     worker_id?: string;
     display_name?: string;
     browser_kind?: string;
     cdp_url?: string;
-  };
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: 'Invalid JSON body' }, 400);
-  }
+  }>(c);
+  if (body instanceof Response) return body;
   const workerId = (body.worker_id ?? '').trim();
   const displayName = (body.display_name ?? '').trim();
   const browserKind = (body.browser_kind ?? '').trim() as BrowserKind;
@@ -192,12 +189,8 @@ export async function deleteMyDeviceAuthProfile(c: Context<{ Bindings: Env }>) {
   if (!Number.isFinite(profileId)) {
     return c.json({ error: 'invalid profile id' }, 400);
   }
-  let body: { worker_id?: string };
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: 'Invalid JSON body' }, 400);
-  }
+  const body = await parseJsonBody<{ worker_id?: string }>(c);
+  if (body instanceof Response) return body;
   const workerId = (body.worker_id ?? '').trim();
   if (!workerId) {
     return c.json({ error: 'worker_id is required' }, 400);

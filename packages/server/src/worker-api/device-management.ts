@@ -21,6 +21,7 @@ import { errorMessage } from '../utils/errors';
 import { recordLifecycleEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
 import { getWorkspaceRole } from '../utils/organization-access';
+import { parseJsonBody } from '../gateway/routes/shared/helpers';
 
 /**
  * GET /api/me/devices
@@ -167,12 +168,11 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
     );
   }
 
-  let body: { platform?: string; label?: string };
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: 'Invalid or missing JSON body' }, 400);
-  }
+  const body = await parseJsonBody<{ platform?: string; label?: string }>(
+    c,
+    'Invalid or missing JSON body'
+  );
+  if (body instanceof Response) return body;
   const platform = (body.platform ?? '').trim();
   if (!platform) {
     return c.json({ error: 'platform is required' }, 400);

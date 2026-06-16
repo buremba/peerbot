@@ -13,9 +13,12 @@ import pino from 'pino';
  * - fatal (60): Fatal errors
  */
 
-// Determine log level from environment
+// Determine log level from environment.
+// Reads process.env.ENVIRONMENT (set to "production" by the Helm chart). The
+// previous `(globalThis as any).ENVIRONMENT` was never assigned anywhere, so
+// production silently logged at debug level (verbose + costly).
 const getLogLevel = (): pino.Level => {
-  const env = (globalThis as any).ENVIRONMENT || 'development';
+  const env = process.env.ENVIRONMENT || process.env.NODE_ENV || 'development';
 
   if (env === 'production') {
     return 'info';

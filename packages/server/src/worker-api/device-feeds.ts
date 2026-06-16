@@ -18,6 +18,7 @@ import type { Env } from '../index';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 import { resolveDeviceWorkerForRequest } from './device-auth-profiles';
+import { parseJsonBody } from '../gateway/routes/shared/helpers';
 
 async function resolveDeviceConnection(
   c: Context<{ Bindings: Env }>,
@@ -102,18 +103,14 @@ export async function listMyDeviceFeeds(c: Context<{ Bindings: Env }>) {
  * for local.directory.files).
  */
 export async function createMyDeviceFeed(c: Context<{ Bindings: Env }>) {
-  let body: {
+  const body = await parseJsonBody<{
     worker_id?: string;
     connector_key?: string;
     feed_key?: string;
     display_name?: string;
     config?: Record<string, unknown>;
-  };
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: 'Invalid JSON body' }, 400);
-  }
+  }>(c);
+  if (body instanceof Response) return body;
   const workerId = (body.worker_id ?? '').trim();
   const connectorKey = (body.connector_key ?? '').trim();
   const feedKey = (body.feed_key ?? '').trim();
@@ -178,12 +175,8 @@ export async function deleteMyDeviceFeed(c: Context<{ Bindings: Env }>) {
   if (!Number.isFinite(feedId)) {
     return c.json({ error: 'invalid feed id' }, 400);
   }
-  let body: { worker_id?: string; connector_key?: string };
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: 'Invalid JSON body' }, 400);
-  }
+  const body = await parseJsonBody<{ worker_id?: string; connector_key?: string }>(c);
+  if (body instanceof Response) return body;
   const workerId = (body.worker_id ?? '').trim();
   const connectorKey = (body.connector_key ?? '').trim();
   if (!workerId || !connectorKey) {

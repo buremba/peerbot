@@ -5,6 +5,7 @@ import type { Env } from '../index';
 import { errorMessage } from '../utils/errors';
 import logger from '../utils/logger';
 import { requireOrgUser } from '../utils/require-org-user';
+import { parseJsonBody } from '../gateway/routes/shared/helpers';
 
 // Slack Preview lets people trying Lobu locally talk to their agent through the
 // hosted "Lobu Developer" Slack workspace before they have their own bot token.
@@ -130,12 +131,11 @@ export async function createPreviewClaim(c: Context<{ Bindings: Env }>) {
   const auth = requireOrgUser(c);
   if (!auth) return c.json({ error: 'Unauthorized' }, 401);
 
-  let body: Record<string, unknown>;
-  try {
-    body = (await c.req.json()) as Record<string, unknown>;
-  } catch {
-    return c.json({ error: 'Invalid or missing JSON body' }, 400);
-  }
+  const body = await parseJsonBody<Record<string, unknown>>(
+    c,
+    'Invalid or missing JSON body'
+  );
+  if (body instanceof Response) return body;
 
   const agentId = typeof body.agent_id === 'string' ? body.agent_id.trim() : '';
   if (!agentId) return c.json({ error: 'agent_id is required' }, 400);

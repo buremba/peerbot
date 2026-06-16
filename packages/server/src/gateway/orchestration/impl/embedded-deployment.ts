@@ -9,6 +9,7 @@ import {
   OrchestratorError,
   retryWithBackoff,
 } from "@lobu/core";
+import { nixPackageAttrRef as nixPackageAttrRefBase } from "@lobu/connector-sdk/nix-package";
 import { intervals } from "../../../config/intervals.js";
 import { getDb } from "../../../db/client.js";
 import type { ModelProviderModule } from "../../modules/module-system.js";
@@ -461,67 +462,18 @@ function buildShellCommand(command: string, args: string[]): string {
 }
 
 /**
- * Nix attribute namespaces that hold per-language package sets. A skill may
- * reference a leaf inside one of these (e.g. `python3Packages.requests`); both
- * the namespace and the leaf are validated and the result is re-emitted as an
- * explicit `pkgs.<...>` reference — the raw string is never handed to nix.
- */
-const NIX_PACKAGE_NAMESPACES = new Set([
-  "python3Packages",
-  "python311Packages",
-  "python312Packages",
-  "nodePackages",
-  "perlPackages",
-  "rubyPackages",
-  "haskellPackages",
-  "rPackages",
-  "ocamlPackages",
-  "luaPackages",
-]);
-
-const NIX_LEAF_RE = /^[a-z0-9_][a-z0-9_-]*$/;
-const NIX_ATTR_LEAF_RE = /^[a-zA-Z0-9_][a-zA-Z0-9_-]*$/;
-
-/**
  * Validate a skill-declared Nix package name and return a safe Nix attribute
- * reference (`pkgs.<name>`). `nix-shell -p` evaluates each argument as a Nix
- * *expression*, so a bare string like `pkgs.fetchurl; builtins.exec ...` or
- * `import ./evil.nix` would run code at evaluation time. We never forward the
- * raw string: it must be a strict leaf identifier (`^[a-z0-9_][a-z0-9_-]*$`) or a
- * `<known-namespace>.<leaf>` attr path, and it is re-emitted as an explicit
- * `pkgs.<...>` attribute reference.
+ * reference (`pkgs.<name>`). Delegates to the canonical sanitizer in
+ * @lobu/connector-sdk (shared with the connector-worker executor so the two
+ * paths can't drift), wrapping failures in an `OrchestratorError` for the
+ * deployment surface.
  */
 export function nixPackageAttrRef(pkg: string): string {
-  // Defence in depth: reject obvious shell/Nix metacharacters up front.
-  if (/[\s;&|`$(){}<>'"\\!*?#]/.test(pkg)) {
-    throw new OrchestratorError(
-      ErrorCode.DEPLOYMENT_CREATE_FAILED,
-      `Invalid nix package name: ${pkg}`
-    );
-  }
-  const dot = pkg.indexOf(".");
-  if (dot === -1) {
-    if (!NIX_LEAF_RE.test(pkg)) {
-      throw new OrchestratorError(
-        ErrorCode.DEPLOYMENT_CREATE_FAILED,
-        `Invalid nix package name: ${pkg}`
-      );
-    }
-    return `pkgs.${pkg}`;
-  }
-  const namespace = pkg.slice(0, dot);
-  const leaf = pkg.slice(dot + 1);
-  if (
-    !NIX_PACKAGE_NAMESPACES.has(namespace) ||
-    leaf.includes(".") ||
-    !NIX_ATTR_LEAF_RE.test(leaf)
-  ) {
-    throw new OrchestratorError(
-      ErrorCode.DEPLOYMENT_CREATE_FAILED,
-      `Invalid nix package name: ${pkg}`
-    );
-  }
-  return `pkgs.${namespace}.${leaf}`;
+  return nixPackageAttrRefBase(
+    pkg,
+    (message) =>
+      new OrchestratorError(ErrorCode.DEPLOYMENT_CREATE_FAILED, message)
+  );
 }
 
 export class EmbeddedDeploymentManager extends BaseDeploymentManager {

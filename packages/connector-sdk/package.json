@@ -22,6 +22,16 @@
         "default": "./dist/define-connector.js"
       }
     },
+    "./nix-package": {
+      "import": {
+        "types": "./dist/nix-package.d.ts",
+        "default": "./dist/nix-package.js"
+      },
+      "require": {
+        "types": "./dist/nix-package.d.ts",
+        "default": "./dist/nix-package.js"
+      }
+    },
     "./identity-types": {
       "types": "./dist/identity-types.d.ts",
       "import": "./dist/identity-types.js"

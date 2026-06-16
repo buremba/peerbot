@@ -35,6 +35,7 @@ import { configuredEmbeddingModelSqlLiteral } from '../utils/embeddings';
 import { insertEvent, recordLifecycleEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
 import { authorizeRunForWorker } from './shared';
+import { parseJsonBody } from '../gateway/routes/shared/helpers';
 
 type DbClient = ReturnType<typeof getDb>;
 type SqlFragment = ReturnType<DbClient>;
@@ -610,7 +611,7 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
     return c.json({ error: 'Invalid runId' }, 400);
   }
 
-  let body: {
+  const body = await parseJsonBody<{
     worker_id: string;
     output?: string;
     error?: string;
@@ -618,12 +619,8 @@ export async function completeWatcherRun(c: Context<{ Bindings: Env }>) {
     exit_code?: number | null;
     exit_signal?: string | null;
     exit_reason?: 'ok' | 'error_message' | 'timeout' | 'oom' | 'crash';
-  };
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ error: 'Invalid or missing JSON body' }, 400);
-  }
+  }>(c, 'Invalid or missing JSON body');
+  if (body instanceof Response) return body;
 
   // allowTerminal: when the CLI agent already completed the run via MCP
   // complete_window, the exit report arrives against a terminal run — that's

@@ -134,6 +134,8 @@ export type {
   PaginateByOffsetOptions,
 } from './pagination.js';
 export { paginateByCursor, paginateByOffset } from './pagination.js';
+// Nix package-name sanitizer (shared by gateway orchestrator + connector-worker)
+export { nixPackageAttrRef } from './nix-package.js';
 // Retry
 export { withHttpRetry } from './retry.js';
 // Scoring

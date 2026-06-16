@@ -25,6 +25,26 @@ export function errorResponse(
 }
 
 /**
+ * Parse the request body as JSON, or return a 400 error response.
+ *
+ * Collapses the repeated `try { body = await c.req.json() } catch { 400 }`
+ * dance. Handlers call this and early-return when the result is a Response:
+ *
+ *   const body = await parseJsonBody<{ worker_id?: string }>(c);
+ *   if (body instanceof Response) return body;
+ */
+export async function parseJsonBody<T = unknown>(
+  c: Context,
+  message = "Invalid JSON body"
+): Promise<T | Response> {
+  try {
+    return (await c.req.json()) as T;
+  } catch {
+    return errorResponse(c, message, 400);
+  }
+}
+
+/**
  * Resolve the settings session payload, or return a 401 error response.
  *
  * Handlers should call this and early-return when the result is a Response:

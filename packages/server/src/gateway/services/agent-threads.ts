@@ -160,6 +160,12 @@ export async function enqueueAgentMessage(
     messageText,
     platformMetadata: {
       agentId: realAgentId,
+      // Echoed on every response row so an output-guardrail trip audit
+      // (org-scoped `events`) can attribute the org. Without it a trip on this
+      // dispatch path still blocks but writes no audit row.
+      ...(session.organizationId
+        ? { organizationId: session.organizationId }
+        : {}),
       source: args.source || "internal",
       dryRun: session.dryRun || false,
     },

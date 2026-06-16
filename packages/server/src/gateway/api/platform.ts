@@ -257,10 +257,16 @@ export class ApiPlatform implements PlatformAdapter {
     // Update session activity
     await sessionManager.touchSession(agentId);
 
-    // Prepare message with file info if provided
+    // Prepare message with file info if provided. Carry organizationId when the
+    // session has it so an output-guardrail trip audit (org-scoped `events`)
+    // can attribute the org — without it a trip still blocks but writes no
+    // audit row.
     const platformMetadata: Record<string, any> = {
       agentId,
       source: "messaging-api",
+      ...(session.organizationId
+        ? { organizationId: session.organizationId }
+        : {}),
     };
 
     if (options.files && options.files.length > 0) {

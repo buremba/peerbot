@@ -450,12 +450,17 @@ export class UnifiedThreadResponseConsumer {
         if (data.delta) {
           if (await this.outputGuardrail.hasOutputGuardrails(agentId)) return;
         } else if (data.error || data.processedMessageIds?.length) {
-          // Terminal row: scan the worker's authoritative finalText on this
-          // (owner-gated) pod. On a trip, replace the broadcast text with the
-          // block notice so the secret never reaches the client and never lands
-          // in stored history.
-          if (data.finalText) {
-            const trip = await this.outputGuardrail.scanFinal(data.finalText, {
+          // Terminal row: scan whichever authoritative text the renderer will
+          // broadcast — the reply (`finalText`, via handleCompletion) OR the
+          // error (`data.error`, via handleError; ApiResponseRenderer sends it
+          // raw and the SPA persists it). Scan on this (owner-gated) pod and, on
+          // a trip, replace whichever was present with the block notice so the
+          // secret reaches neither path and never lands in stored history.
+          const terminalText =
+            data.finalText ||
+            (typeof data.error === "string" ? data.error : "");
+          if (terminalText) {
+            const trip = await this.outputGuardrail.scanFinal(terminalText, {
               agentId,
               organizationId: md.organizationId,
               userId: data.userId,
@@ -463,11 +468,13 @@ export class UnifiedThreadResponseConsumer {
               platform: "api",
             });
             if (trip) {
+              const blockMsg = `Message blocked by guardrail: ${
+                trip.reason ?? trip.guardrail
+              }`;
               data = {
                 ...data,
-                finalText: `Message blocked by guardrail: ${
-                  trip.reason ?? trip.guardrail
-                }`,
+                finalText: data.finalText ? blockMsg : data.finalText,
+                error: data.error != null ? blockMsg : data.error,
               };
             }
           }

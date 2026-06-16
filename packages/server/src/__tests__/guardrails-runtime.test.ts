@@ -147,7 +147,7 @@ describe('ChatResponseBridge — wired output guardrail', () => {
     await db`TRUNCATE agents CASCADE`;
   });
 
-  it('blocks a delta containing a full secret, posts the block message, audits the trip', async () => {
+  it('withholds streaming deltas and blocks the secret at completion, posts the block message, audits the trip', async () => {
     const { target, posted } = createCapturingTarget();
     const manager = createManager(target, agentId, orgId);
     const bridge = new ChatResponseBridge(manager as any);
@@ -168,143 +168,44 @@ describe('ChatResponseBridge — wired output guardrail', () => {
       platformMetadata: {
         connectionId: 'conn-1',
         chatId: '123',
-        // agentId omitted on purpose — fallback to connection.agentId
-        // organizationId omitted on purpose — fallback to connection.organizationId
+        // agentId/organizationId omitted on purpose — connection fallback.
       },
     };
 
     await orgContext.run({ organizationId: orgId }, async () => {
+      // Streaming deltas are WITHHELD for guardrail agents — nothing posts here.
       await bridge.handleDelta(
         { ...payload, delta: 'here is sk-abcdefghij0123456789AB please' },
         'session-1'
       );
+      expect(posted.length).toBe(0);
+
+      // The full authoritative finalText is scanned at completion and blocked.
+      await bridge.handleCompletion(
+        {
+          ...payload,
+          finalText: 'here is sk-abcdefghij0123456789AB please',
+          processedMessageIds: ['m1'],
+        } as any,
+        'session-1'
+      );
     });
 
-    // The capturing target should have received exactly the block message,
-    // not the leaked delta.
-    expect(posted).toEqual([
-      expect.objectContaining({
-        text: expect.stringContaining('Message blocked by guardrail'),
-      }),
-    ]);
-    expect(posted[0]?.text).toMatch(/openai-key/);
+    // Only the block message reaches the channel — never the secret.
+    expect(
+      posted.some((p) => p.text?.includes('Message blocked by guardrail'))
+    ).toBe(true);
+    expect(
+      posted.some((p) => p.text?.includes('sk-abcdefghij0123456789AB'))
+    ).toBe(false);
 
     await flushPendingGuardrailAudits();
-
     const rows = await fetchGuardrailEvents(orgId, 'output');
     expect(rows.length).toBe(1);
     expect(rows[0]!.metadata.guardrail).toBe('secret-scan');
     expect(rows[0]!.metadata.stage).toBe('output');
     expect(rows[0]!.metadata.agent_id).toBe(agentId);
     expect(rows[0]!.metadata.conversation_id).toBe('123');
-  });
-
-  it('catches a secret split across two stream chunks via rolling buffer', async () => {
-    const { target, posted } = createCapturingTarget();
-    const manager = createManager(target, agentId, orgId);
-    const bridge = new ChatResponseBridge(manager as any);
-
-    const registry = new GuardrailRegistry();
-    registerBuiltinGuardrails(registry);
-    const settingsStore = new AgentSettingsStore(createPostgresAgentConfigStore());
-    bridge.setGuardrails(registry, settingsStore);
-
-    const payload = {
-      messageId: 'm1',
-      channelId: '123',
-      conversationId: '123',
-      userId: 'u1',
-      teamId: 't1',
-      timestamp: 0,
-      platform: 'telegram',
-      platformMetadata: { connectionId: 'conn-1', chatId: '123' },
-    };
-
-    // First chunk doesn't contain the full pattern.
-    await orgContext.run({ organizationId: orgId }, async () => {
-      await bridge.handleDelta({ ...payload, delta: 'leaking sk-a' }, 's');
-      // Second chunk, in isolation, doesn't match either. Only the
-      // concatenation of (rolling tail + this delta) trips the regex.
-      await bridge.handleDelta(
-        { ...payload, delta: 'bcdefghij0123456789ABCD done' },
-        's'
-      );
-    });
-
-    const blockPost = posted.find((p) =>
-      p.text?.startsWith('Message blocked by guardrail')
-    );
-    expect(blockPost).toBeDefined();
-    expect(blockPost!.text).toMatch(/openai-key/);
-
-    await flushPendingGuardrailAudits();
-    const rows = await fetchGuardrailEvents(orgId, 'output');
-    expect(rows.length).toBe(1);
-  });
-
-  it('isFullReplacement clears the rolling tail before scanning (no false positive across replacement)', async () => {
-    // Regression: scanning ran BEFORE the fullReplacement dispose, so the
-    // tail still contained the prior delta and the next scan operated on
-    // (prior-delta + replacement-text), synthesizing matches that exist
-    // in neither piece alone. The fix moves the replacement handling
-    // ahead of the scan + tail-update.
-    const { target, posted } = createCapturingTarget();
-    const manager = createManager(target, agentId, orgId);
-    const bridge = new ChatResponseBridge(manager as any);
-
-    const registry = new GuardrailRegistry();
-    registerBuiltinGuardrails(registry);
-    const settingsStore = new AgentSettingsStore(
-      createPostgresAgentConfigStore()
-    );
-    bridge.setGuardrails(registry, settingsStore);
-
-    const payload = {
-      messageId: 'm1',
-      channelId: '123',
-      conversationId: '123',
-      userId: 'u1',
-      teamId: 't1',
-      timestamp: 0,
-      platform: 'telegram',
-      platformMetadata: { connectionId: 'conn-1', chatId: '123' },
-    };
-
-    // Choose two chunks that are individually safe but whose
-    // concatenation matches the openai-key regex (`sk-` + 20+ alnum).
-    //   prior:        "...ends with sk-a"
-    //   replacement:  "bcdefghij0123456789AB starts fresh"
-    // Pre-fix: tail = "...sk-a", scanText = tail + replacement → match.
-    // Post-fix: replacement clears the tail first → scanText is just the
-    // replacement, which does NOT match.
-    await orgContext.run({ organizationId: orgId }, async () => {
-      await bridge.handleDelta(
-        { ...payload, delta: 'first reply ending with sk-a' },
-        's-1'
-      );
-      // Second message arrives as a full replacement. Despite the prior
-      // delta still being in the tail, the scan must run only against the
-      // replacement text.
-      await bridge.handleDelta(
-        {
-          ...payload,
-          delta: 'bcdefghij0123456789AB starts fresh',
-          isFullReplacement: true,
-        },
-        's-2'
-      );
-    });
-
-    // No block message should have been posted — neither delta on its own
-    // contains a secret, and the replacement properly resets the tail.
-    const blockPost = posted.find((p) =>
-      p.text?.startsWith('Message blocked by guardrail')
-    );
-    expect(blockPost).toBeUndefined();
-
-    await flushPendingGuardrailAudits();
-    const rows = await fetchGuardrailEvents(orgId, 'output');
-    expect(rows.length).toBe(0);
   });
 
   it('audits the trip even when platformMetadata.organizationId is missing (connection fallback)', async () => {
@@ -345,8 +246,12 @@ describe('ChatResponseBridge — wired output guardrail', () => {
     };
 
     await orgContext.run({ organizationId: orgId }, async () => {
-      await bridge.handleDelta(
-        { ...payload, delta: 'token AKIAIOSFODNN7EXAMPLE leaked' },
+      await bridge.handleCompletion(
+        {
+          ...payload,
+          finalText: 'token AKIAIOSFODNN7EXAMPLE leaked',
+          processedMessageIds: ['m1'],
+        } as any,
         's'
       );
     });
@@ -465,6 +370,73 @@ describe('ChatResponseBridge — wired output guardrail', () => {
     const rows = await fetchGuardrailEvents(orgId, 'output');
     expect(rows.length).toBe(1);
     expect(rows[0]!.metadata.guardrail).toBe('secret-scan');
+  });
+
+  // Finding 2 (grok [medium]) — FIXED: the per-stream state machine
+  // (blockedStreams/guardrailTails) that leaked across turns is gone. A turn
+  // that trips a guardrail and then ERRORS leaves NO stale state, so the next
+  // turn in the same conversation delivers normally. PASS = the bug is gone.
+  it('F2-FIXED: a tripped+errored turn does not block the next turn in the same conversation', async () => {
+    const { target, posted } = createCapturingTarget();
+    const manager = createManager(target, agentId, orgId);
+    const bridge = new ChatResponseBridge(manager as any);
+
+    const registry = new GuardrailRegistry();
+    registerBuiltinGuardrails(registry);
+    const settingsStore = new AgentSettingsStore(
+      createPostgresAgentConfigStore()
+    );
+    bridge.setGuardrails(registry, settingsStore);
+
+    const base = {
+      channelId: '123',
+      conversationId: '123',
+      userId: 'u1',
+      teamId: 't1',
+      timestamp: 0,
+      platform: 'telegram',
+      platformMetadata: { connectionId: 'conn-1', chatId: '123' },
+    };
+
+    await orgContext.run({ organizationId: orgId }, async () => {
+      // Turn A: streaming withheld; the secret trips at completion.
+      await bridge.handleDelta(
+        { ...base, messageId: 'A', delta: 'leak sk-abcdefghij0123456789AB' },
+        'sA'
+      );
+      await bridge.handleCompletion(
+        {
+          ...base,
+          messageId: 'A',
+          finalText: 'leak sk-abcdefghij0123456789AB',
+          processedMessageIds: ['A'],
+        } as any,
+        'sA'
+      );
+      // Turn A also errors out.
+      await bridge.handleError(
+        { ...base, messageId: 'A', error: 'turn failed' } as any,
+        'sA'
+      );
+      // Turn B: a brand-new, clean turn in the same conversation completes.
+      await bridge.handleCompletion(
+        {
+          ...base,
+          messageId: 'B',
+          finalText: 'here is your clean answer',
+          processedMessageIds: ['B'],
+        } as any,
+        'sB'
+      );
+    });
+
+    // Turn B's clean content is delivered (no stale state suppressing it).
+    const deliveredCleanAnswer = posted.some(
+      (p) =>
+        p.text?.includes('clean answer') ||
+        p.iterableChunks?.some((c) => c.includes('clean answer'))
+    );
+    expect(deliveredCleanAnswer).toBe(true);
   });
 });
 
@@ -958,6 +930,77 @@ describe('UnifiedThreadResponseConsumer — wired output guardrail (API path)', 
   afterAll(async () => {
     const db = getTestDb();
     await db`TRUNCATE agents CASCADE`;
+  });
+
+  // Finding 1 (grok [medium]) — FIXED: a secret in an ERROR row's `data.error`
+  // is now scanned (the terminal branch scans `finalText ?? error`) and replaced
+  // with the block notice before broadcast.
+  it('F1-FIXED: a secret in data.error is scanned and blocked, not broadcast', async () => {
+    const { sse, events } = createCapturingSse();
+    const consumer = createConsumer(sse);
+
+    const payload = {
+      messageId: 'm1',
+      channelId: 'api:conv-1',
+      conversationId: 'conv-1',
+      userId: 'u1',
+      teamId: 'api',
+      platform: 'api',
+      timestamp: 0,
+      error: 'upstream error: token sk-abcdefghij0123456789AB leaked',
+      platformMetadata: { agentId, organizationId: orgId },
+    };
+
+    await orgContext.run({ organizationId: orgId }, async () => {
+      await consumer.handleThreadResponse({ id: '1', data: payload });
+    });
+
+    const errEvt = events.find(
+      (e) => e.event === 'error' || e.event === 'agent-error'
+    );
+    expect(errEvt).toBeDefined();
+    // The secret must NOT be in the broadcast; the block notice replaces it.
+    expect(JSON.stringify(errEvt!.payload)).not.toContain(
+      'sk-abcdefghij0123456789AB'
+    );
+    expect(JSON.stringify(errEvt!.payload)).toContain(
+      'Message blocked by guardrail'
+    );
+  });
+
+  // VERIFY Finding 3 (grok [low]): when platformMetadata omits organizationId
+  // (as the agent-threads/messaging-api dispatch paths do), a trip still BLOCKS
+  // but writes NO audit row. PASS = the audit gap is real.
+  it('VERIFY-F3: a trip with no organizationId blocks but drops the audit row', async () => {
+    const { sse, events } = createCapturingSse();
+    const consumer = createConsumer(sse);
+
+    const payload = {
+      messageId: 'm1',
+      channelId: 'api:conv-1',
+      conversationId: 'conv-1',
+      userId: 'u1',
+      teamId: 'api',
+      platform: 'api',
+      timestamp: 0,
+      processedMessageIds: ['m1'],
+      finalText: 'your key is sk-abcdefghij0123456789AB',
+      // organizationId intentionally ABSENT (mirrors the internal dispatch paths)
+      platformMetadata: { agentId },
+    };
+
+    await orgContext.run({ organizationId: orgId }, async () => {
+      await consumer.handleThreadResponse({ id: '1', data: payload });
+    });
+
+    // Block still works.
+    const complete = events.find((e) => e.event === 'complete');
+    expect(complete!.payload.finalText).toContain('Message blocked by guardrail');
+
+    // But no audit row lands (org unresolvable).
+    await flushPendingGuardrailAudits();
+    const rows = await fetchGuardrailEvents(orgId, 'output');
+    expect(rows.length).toBe(0);
   });
 
   it('blocks a secret in the terminal finalText, broadcasts the block message instead, audits the trip', async () => {

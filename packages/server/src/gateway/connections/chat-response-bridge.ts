@@ -19,8 +19,8 @@ import { getDb } from "../../db/client.js";
 import { getOrganizationSlug } from "../../utils/url-builder.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import {
-  OUTPUT_GUARDRAIL_SCAN_WINDOW as GUARDRAIL_SCAN_WINDOW,
-  runOutputGuardrailScan,
+  OutputGuardrailScanner,
+  type OutputGuardrailTrip,
 } from "../guardrails/output-scan.js";
 import type { ThreadResponsePayload } from "../infrastructure/queue/index.js";
 import { extractSettingsLinkButtons } from "../platform/link-buttons.js";
@@ -109,15 +109,16 @@ interface ResponseContext {
 export class ChatResponseBridge implements ResponseRenderer {
   private streams = new Map<string, StreamState>();
   /**
-   * Streams whose output guardrail has tripped — every subsequent delta
-   * and the final completion buffer must be dropped before reaching the
-   * platform.
+   * Output-stage guardrails. Shared with the API/SSE path
+   * (UnifiedThreadResponseConsumer) so both surfaces enforce ONE policy:
+   * when an agent has output guardrails, streaming deltas are withheld and
+   * only the scanned, authoritative terminal text is delivered. This replaces
+   * the bridge's former per-delta rolling-tail scanner + blockedStreams set —
+   * that state was pod-local (so it never caught a secret split across deltas
+   * on different replicas) and was not cleared on the error path (a trip then
+   * an error left the next turn's stream silently blocked).
    */
-  private blockedStreams = new Set<string>();
-  /** Per-stream rolling tail of recently emitted output text. */
-  private guardrailTails = new Map<string, string>();
-  private guardrailRegistry?: GuardrailRegistry;
-  private agentSettingsStore?: AgentSettingsStore;
+  private readonly outputGuardrail = new OutputGuardrailScanner();
 
   constructor(private manager: ChatInstanceManager) {}
 
@@ -129,8 +130,7 @@ export class ChatResponseBridge implements ResponseRenderer {
     registry?: GuardrailRegistry,
     settingsStore?: AgentSettingsStore
   ): void {
-    this.guardrailRegistry = registry;
-    this.agentSettingsStore = settingsStore;
+    this.outputGuardrail.setGuardrails(registry, settingsStore);
   }
 
   /**
@@ -168,45 +168,36 @@ export class ChatResponseBridge implements ResponseRenderer {
   }
 
   /**
-   * Append `delta` to the per-stream tail and return the scan window
-   * (`tail + delta`, capped at `GUARDRAIL_SCAN_WINDOW` chars). The stored
-   * tail is the same window — next call sees the most recent emitted text
-   * even when individual deltas exceed the cap.
+   * Whether this payload's agent has output guardrails configured. When true,
+   * streaming deltas are withheld and only the scanned terminal text is sent.
    */
-  private scanWindowWithTail(key: string, delta: string): string {
-    const combined = (this.guardrailTails.get(key) ?? "") + delta;
-    const window =
-      combined.length > GUARDRAIL_SCAN_WINDOW
-        ? combined.slice(-GUARDRAIL_SCAN_WINDOW)
-        : combined;
-    this.guardrailTails.set(key, window);
-    return window;
+  private async hasOutputGuardrails(
+    payload: ThreadResponsePayload,
+    ctx: ResponseContext
+  ): Promise<boolean> {
+    const agentId = this.resolveAgentId(payload, ctx);
+    if (!agentId) return false;
+    return this.outputGuardrail.hasOutputGuardrails(agentId);
   }
 
   /**
-   * Run output-stage guardrails for `scanText` (already includes any
-   * rolling tail). Returns the trip outcome (already audited) on block,
-   * `null` when safe to send. Runner failures are logged and pass.
+   * Scan the authoritative terminal text (reply or error). Returns the trip
+   * (already audited) on block, `null` when safe to send / no guardrails.
    */
-  private async runOutputGuardrails(
-    scanText: string,
+  private async scanTerminalOutput(
+    text: string,
     payload: ThreadResponsePayload,
     ctx: ResponseContext
-  ): Promise<{ guardrail: string; reason?: string } | null> {
+  ): Promise<OutputGuardrailTrip | null> {
     const agentId = this.resolveAgentId(payload, ctx);
-    if (!agentId) return null;
-    return runOutputGuardrailScan(
-      this.guardrailRegistry,
-      this.agentSettingsStore,
-      scanText,
-      {
-        agentId,
-        organizationId: this.resolveOrganizationId(payload, ctx),
-        userId: payload.userId,
-        conversationId: payload.conversationId,
-        platform: ctx.platform,
-      }
-    );
+    if (!agentId || !text) return null;
+    return this.outputGuardrail.scanFinal(text, {
+      agentId,
+      organizationId: this.resolveOrganizationId(payload, ctx),
+      userId: payload.userId,
+      conversationId: payload.conversationId,
+      platform: ctx.platform,
+    });
   }
 
   private extractResponseContext(
@@ -265,50 +256,18 @@ export class ChatResponseBridge implements ResponseRenderer {
     const { strategy, channelId } = ctx;
     const key = `${channelId}:${payload.conversationId}`;
 
-    // A prior delta tripped — drop everything else for this stream. The
-    // worker may keep streaming because trip handling here is async to it.
-    if (this.blockedStreams.has(key)) return null;
+    // Withhold streaming deltas when the agent has output guardrails: a secret
+    // split across deltas (and, under N>1, scattered across replicas) cannot be
+    // reliably scanned mid-stream, so we don't stream at all. The full,
+    // authoritative text is scanned and delivered at completion instead
+    // (handleCompletion). Agents without output guardrails stream unchanged.
+    if (await this.hasOutputGuardrails(payload, ctx)) return null;
 
-    // Full-replacement must dispose the prior stream and clear the tail
-    // BEFORE scanning. Otherwise the tail still holds the previous delta's
-    // last bytes and the scan runs against (prior + replacement), which
-    // can synthesize a regex match present in neither piece alone.
+    // Full-replacement disposes the prior stream so the strategy starts fresh.
     const existingForReplacement = this.streams.get(key);
     if (payload.isFullReplacement && existingForReplacement) {
       await strategy.disposeOnFullReplacement(existingForReplacement);
       this.streams.delete(key);
-      this.guardrailTails.delete(key);
-    }
-
-    // Per-delta output guardrails scan `tail + delta` so a secret split
-    // across chunks ("sk-ab" then "cd…") still trips on the second chunk.
-    const scanText = this.scanWindowWithTail(key, payload.delta);
-    const trip = await this.runOutputGuardrails(scanText, payload, ctx);
-    if (trip) {
-      this.blockedStreams.add(key);
-      this.guardrailTails.delete(key);
-      // Close any in-flight strategy stream so the partial output already
-      // delivered terminates cleanly. We can't unsend delivered bytes, but
-      // closing prevents further deltas from being appended.
-      const existingStream = this.streams.get(key);
-      if (existingStream) {
-        try {
-          await strategy.disposeOnFullReplacement(existingStream);
-        } catch (err) {
-          logger.debug(
-            { err: String(err) },
-            "Failed to dispose stream on guardrail block (continuing)"
-          );
-        }
-        this.streams.delete(key);
-      }
-      await this.postGuardrailBlock(
-        payload,
-        ctx,
-        trip,
-        "Failed to post guardrail block message"
-      );
-      return null;
     }
 
     // After the (possible) full-replacement dispose, `current` is
@@ -340,20 +299,6 @@ export class ChatResponseBridge implements ResponseRenderer {
     const { connectionId, strategy, channelId } = ctx;
     const key = `${channelId}:${payload.conversationId}`;
 
-    // If a guardrail blocked this stream mid-flight, skip completion
-    // entirely: stream was disposed at trip time, the block message was
-    // posted, and we don't want the partial buffer landing in history.
-    if (this.blockedStreams.has(key)) {
-      this.blockedStreams.delete(key);
-      this.streams.delete(key);
-      this.guardrailTails.delete(key);
-      logger.info(
-        { connectionId, channelId, conversationId: payload.conversationId },
-        "Completion suppressed — stream was blocked by guardrail"
-      );
-      return;
-    }
-
     const stream = this.streams.get(key);
     if (stream) {
       // Close the iterator and drain the in-flight post regardless of
@@ -381,24 +326,27 @@ export class ChatResponseBridge implements ResponseRenderer {
     const canDeliverFromFinalText =
       strategy.deliversAtCompletion && !!payload.finalText?.trim();
 
-    // Output guardrail on the full delivered text, for EVERY strategy. The
-    // per-delta scan in handleDelta only sees a bounded rolling window, so a
-    // secret LONGER than that window (e.g. a multi-hundred-char JWT / OAuth
-    // access token) trips no per-delta scan at all. And under N>1 replicas a
-    // completing pod may have scanned no deltas (cross-pod) or only the subset
-    // it claimed; `blockedStreams` is pod-local and can't protect a cross-pod
-    // completion. So scan the full authoritative text once here regardless of
-    // strategy. On a trip: post the block message and suppress both delivery
-    // and history. (A live-streaming strategy already emitted its per-delta
-    // bytes — those can't be unsent — but this keeps the secret OUT of stored
-    // history and audits the trip; a post-once strategy blocks before any
-    // delivery. Previously this scan ran only for post-once strategies, so a
-    // long secret streamed live escaped entirely.)
+    // When streaming was WITHHELD (guardrail agent), no deltas were sent on any
+    // replica, so the authoritative finalText must be delivered here even for a
+    // live-streaming strategy — its own handleCompletion returns early without a
+    // local stream. (For non-guardrail agents this is false, preserving the
+    // existing cross-pod no-double-post behavior.)
+    const deliverWithheldFinalText =
+      !strategy.deliversAtCompletion &&
+      !stream &&
+      !!payload.finalText?.trim() &&
+      (await this.hasOutputGuardrails(payload, ctx));
+
+    // Output guardrail on the full, authoritative terminal text. This is the
+    // SINGLE enforcement point (deltas were withheld upstream for guardrail
+    // agents), so it is replica-safe: it scans `payload.finalText` — set by the
+    // worker on every completion — not pod-local stream buffers. On a trip:
+    // post the block message and suppress both delivery and history.
     let blockedAtCompletion = false;
     {
       const completionText = payload.finalText ?? stream?.buffer ?? "";
       if (completionText.trim()) {
-        const trip = await this.runOutputGuardrails(completionText, payload, ctx);
+        const trip = await this.scanTerminalOutput(completionText, payload, ctx);
         if (trip) {
           blockedAtCompletion = true;
           await this.postGuardrailBlock(
@@ -413,10 +361,17 @@ export class ChatResponseBridge implements ResponseRenderer {
 
     if (!blockedAtCompletion && (stream || canDeliverFromFinalText)) {
       await strategy.handleCompletion({ ctx, payload, stream: stream ?? null });
+    } else if (!blockedAtCompletion && deliverWithheldFinalText) {
+      // Post the scanned finalText directly — the live-streaming strategy can't
+      // deliver it stream-less, and nothing was streamed (deltas withheld).
+      await this.postToPayloadTarget(
+        payload,
+        ctx,
+        payload.finalText as string,
+        "Failed to deliver withheld final text"
+      );
     }
     if (stream) this.streams.delete(key);
-    // Next stream on the same key starts with a fresh tail.
-    this.guardrailTails.delete(key);
 
     const conversationState =
       this.manager.getInstance(connectionId)?.conversationState;
@@ -597,6 +552,20 @@ export class ChatResponseBridge implements ResponseRenderer {
       payload.error = settingsUrl
         ? `No model configured. Connect a provider at ${settingsUrl}`
         : "No model configured. Ask an admin to connect a provider for the base agent.";
+    }
+
+    // Scan the error text before surfacing it — a provider/stack-trace error
+    // can echo a secret. On a trip, post the generic block message instead of
+    // the raw error.
+    const errorTrip = await this.scanTerminalOutput(payload.error, payload, ctx);
+    if (errorTrip) {
+      await this.postGuardrailBlock(
+        payload,
+        ctx,
+        errorTrip,
+        "Failed to post guardrail block on error"
+      );
+      return;
     }
 
     // Fallback: plain text error via Chat SDK

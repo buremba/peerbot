@@ -488,7 +488,7 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     const channelBindingService =
       opts.binding === undefined
         ? undefined
-        : { getBinding: mock(async () => opts.binding) };
+        : { getBinding: mock(async () => opts.binding), getBindingAnyOrg: mock(async () => opts.binding) };
     const services = {
       getArtifactStore: () => null,
       getPublicGatewayUrl: () => "https://gateway.example.com",

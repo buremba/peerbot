@@ -451,7 +451,9 @@ export async function previewUnlinkedNotice(
   return [
     "👋 This chat isn't linked to a Lobu agent yet.",
     '',
-    `Run \`lobu apply\` then \`lobu run\` to get a \`${linkCommand(platform)} <code>\`, and send it here.`,
+    'New to Lobu? Scaffold a project with `npx @lobu/cli init`, then:',
+    '`lobu apply` to sync it, and `lobu run` to get a ' +
+      `\`${linkCommand(platform)} <code>\` — paste that code here to link this chat.`,
   ].join('\n');
 }
 

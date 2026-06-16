@@ -127,6 +127,7 @@ describe("ChatInstanceManager Slack marketplace support", () => {
         getConnectionStore: () => connectionStore,
         getChannelBindingService: () => ({
           getBinding: async () => null,
+          getBindingAnyOrg: async () => null,
         }),
       } as any;
 

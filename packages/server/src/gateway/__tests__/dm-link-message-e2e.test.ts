@@ -59,7 +59,7 @@ describe("DM bare-code message → real consume→bind (previewMode)", () => {
       registerBuiltInCommands(registry, { agentSettingsStore: {} as never });
       const dispatcher = new CommandDispatcher({
         registry,
-        channelBindingService: { getBinding: mock(async () => null) } as never,
+        channelBindingService: { getBinding: mock(async () => null), getBindingAnyOrg: mock(async () => null) } as never,
       });
 
       const conversationState = new ConversationStateStore(
@@ -80,7 +80,7 @@ describe("DM bare-code message → real consume→bind (previewMode)", () => {
       const services = {
         getArtifactStore: () => null,
         getPublicGatewayUrl: () => "https://gateway.example.com",
-        getChannelBindingService: () => ({ getBinding: mock(async () => null) }),
+        getChannelBindingService: () => ({ getBinding: mock(async () => null), getBindingAnyOrg: mock(async () => null) }),
         getAgentMetadataStore: () => undefined,
         getUserAgentsStore: () => undefined,
         getTranscriptionService: () => undefined,

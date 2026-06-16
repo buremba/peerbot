@@ -51,10 +51,12 @@ export function createApiAuthMiddleware(opts: {
   allowSettingsSession?: boolean;
   /**
    * Also accept the settings session via a `?token=` query param (an encrypted,
-   * short-lived ticket). Needed for the agent SSE stream: the embedded panel
-   * opens it with EventSource, which can't send an Authorization header. Without
-   * this, a header-less ticket request is rejected with 401 here before the
-   * route's own ownership check ever runs.
+   * short-lived ticket) — but only for **GET** requests. Needed for the agent
+   * SSE stream: the embedded panel opens it with EventSource (always a GET),
+   * which can't send an Authorization header; without this, a header-less ticket
+   * request is 401'd here before the route's own ownership check runs. Scoped to
+   * GET so a leaked URL ticket can't drive headerless mutations (create / send /
+   * delete / approve) — those still require an Authorization header.
    */
   allowSettingsQueryToken?: boolean;
 }) {
@@ -79,9 +81,12 @@ export function createApiAuthMiddleware(opts: {
     //    in, a `?token=` ticket for header-less EventSource SSE clients).
     //    verifySettingsSession now enforces jti revocation internally.
     if (opts.allowSettingsSession) {
-      const session = opts.allowSettingsQueryToken
-        ? await verifySettingsSessionOrToken(c, "token")
-        : await verifySettingsSession(c);
+      // The `?token=` ticket is accepted only for GET (EventSource SSE);
+      // mutations always require an Authorization header.
+      const session =
+        opts.allowSettingsQueryToken && c.req.method === "GET"
+          ? await verifySettingsSessionOrToken(c, "token")
+          : await verifySettingsSession(c);
       if (session) {
         return runWithContext({ userId: session.userId }, c, next);
       }

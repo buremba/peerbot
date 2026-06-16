@@ -45,10 +45,10 @@ const SETUP_PROMPT = `I want to build a Lobu agent with you. Lobu helps create i
    - What is the agent for? (one sentence)
    - Who uses it: just me, my team, or each of my customers (multi-tenant)?
    - What should it remember? (we'll model this as 1-3 entity types)
-   - Where does its data come from? Lobu has built-in connectors for Slack, Gmail, GitHub, Google Calendar, Outlook, websites, RSS, Reddit, X, LinkedIn, YouTube, Hacker News, Product Hunt, and more, or you can write a custom connector for any other source (an API, a webhook, a CSV). Tell me the source and I'll map it to a built-in connector or plan a custom one. Pick one to start.
+   - Where does its data come from? Lobu has built-in connectors for Gmail, GitHub, Google Calendar, Outlook, websites, RSS, Reddit, X, LinkedIn, YouTube, Hacker News, Product Hunt, WhatsApp, Spotify, and more, or you can write a custom connector for any other source (an API, a webhook, a CSV). Tell me the source and I'll map it to a built-in connector or plan a custom one. Pick one to start.
    - Where do people talk to it? (Slack, Telegram, Discord, WhatsApp, web/HTTP, or MCP)
    - Anything on a schedule? (optional: one watcher, e.g. a daily summary)
-   - Which LLM provider key do I have: Anthropic, OpenAI, or Z.ai?
+   - Which LLM provider key do I have: Anthropic (ANTHROPIC_API_KEY), OpenAI, Gemini, Groq, DeepSeek, Mistral, Z.ai, or another (16 providers supported)?
 
 2. Scaffold it: check my Node is 22-24 (Lobu rejects 25+; help me switch if not), then run npx @lobu/cli@latest init with the name and the provider from above. Postgres is built in, so lobu run starts an embedded one. Don't ask me for a database unless I want an external Postgres (then I set DATABASE_URL). Read the AGENTS.md it writes (your guide to the config API: the define* helpers, connectors, auth, watchers, memory), and read examples/lobu-crm/lobu.config.ts before writing any connection, watcher, or reaction so you match the real field names instead of guessing. Then, before writing config, explain to me in plain terms how Lobu will work for my case: how the connector collects my data incrementally (feeds run on a schedule and only pull what's new since the last run, no re-ingesting), how each item becomes an event that memory turns into the entities above, and how both the watcher and the chat read that memory. Keep it short.
 

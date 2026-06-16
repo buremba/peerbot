@@ -9,7 +9,7 @@ const localDev = {
       code: "npx @lobu/cli@latest init my-agent",
     },
     {
-      label: "Set DATABASE_URL in .env, then boot",
+      label: "Boot the stack (embedded Postgres is zero-config)",
       code: "cd my-agent && npx @lobu/cli@latest run",
     },
     { label: "Open the docs", code: "open http://localhost:8787/api/docs" },

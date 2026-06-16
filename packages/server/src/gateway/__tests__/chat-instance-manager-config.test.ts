@@ -70,7 +70,7 @@ async function buildManager(orgId: string, agentId: string) {
     getPublicGatewayUrl: () => "",
     getSecretStore: () => secretStore,
     getConnectionStore: () => connectionStore,
-    getChannelBindingService: () => ({ getBinding: async () => null }),
+    getChannelBindingService: () => ({ getBinding: async () => null, getBindingAnyOrg: async () => null }),
     getCommandRegistry: () => undefined,
   } as any;
 

@@ -206,7 +206,7 @@ What `sync()` receives. Every field is read-only.
 | `emitEvents(events)` | Optional streaming hook: flush a chunk before the run ends |
 | `updateCheckpoint(cp)` | Optional progress-checkpoint hook for long-running syncs |
 
-`SyncContext` does not currently expose generics for `config` / `checkpoint`. Declare your own interfaces and convert at the boundary, as the example above does with `readCheckpoint`.
+`SyncContext<C, F>` is generic: `C` types the checkpoint, `F` types the feed config. Passing your concrete types to `ConnectorRuntime<C, F>` propagates them into `sync(ctx: SyncContext<C, F>)` so `ctx.checkpoint` and `ctx.config` are already typed and no cast is needed. The example above uses untyped defaults and wraps the cast in `readCheckpoint` for clarity.
 
 ### `EventEnvelope`
 
@@ -372,7 +372,7 @@ The rule of thumb: **npm is bundled (compile-time), native is nix (run-time).** 
 ## See it in production
 
 - [`examples/ecommerce/stripe-charges.connector.ts`](https://github.com/lobu-ai/lobu/blob/main/examples/ecommerce/stripe-charges.connector.ts): REST API, `env_keys` auth, timestamp checkpoint.
-- [`examples/lobu-crm/funnel-form.connector.ts`](https://github.com/lobu-ai/lobu/blob/main/examples/lobu-crm/funnel-form.connector.ts): small custom HTTP API, ID-set dedupe.
+- [`examples/lobu-crm/npm-downloads.connector.ts`](https://github.com/lobu-ai/lobu/blob/main/examples/lobu-crm/npm-downloads.connector.ts): small public HTTP API, ID-set dedupe.
 
 ## See also
 

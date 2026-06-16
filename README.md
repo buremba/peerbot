@@ -14,10 +14,11 @@ https://github.com/user-attachments/assets/d72a9286-0325-4b8b-afc0-c1efe9c96f4e
 
 - **REST API** — programmatic agent creation, control, and state. [![API Docs](https://img.shields.io/badge/API_Docs-0096FF?style=for-the-badge&logo=readme&logoColor=white)](https://lobu.ai/reference/api-reference/)
 - **Slack** — multi-channel/DM agents with rich interactivity.
-- **Telegram** — long-polling bot with interactive workflows.
+- **Telegram** — webhook or polling bot with interactive workflows.
 - **WhatsApp** — WhatsApp Business Cloud API.
 - **Discord** — channel + DM bot support.
 - **Teams** — Microsoft Teams bot.
+- **Google Chat** — Cards v2, Workspace spaces.
 
 ## Quick Start
 
@@ -57,7 +58,7 @@ Single-process Node remains the simplest deployment: run it with `node`, `pm2`, 
     -f your-values.yaml
   ```
   See `charts/lobu/values.yaml` for the full set of tunables. At minimum supply an
-  ingress host, a `secretName` Secret containing `DATABASE_URL` + `JWT_SECRET` +
+  ingress host, a `secretName` Secret containing `DATABASE_URL` + `ENCRYPTION_KEY` +
   `BETTER_AUTH_SECRET` + provider API keys, and a `database.existingSecret`.
 
 ## Architecture
@@ -89,7 +90,7 @@ Every Lobu agent ships with tools for autonomous execution and persistence:
 
 | Feature | Built-in Tools |
 | --- | --- |
-| **Autonomous scheduling** — one-time or cron | `ScheduleReminder`, `ListReminders`, `CancelReminder` |
+| **Autonomous scheduling** — one-time or cron | `manage_schedules` |
 | **Human-in-the-loop** — pause on button input, resume on answer | `ask_user` |
 | **Full Linux toolbox** — sandboxed shell, file edit, search | `bash`, `read`, `write`, `edit`, `grep`, `find`, `ls` |
 | **Conversation context** — pull earlier thread messages | `get_channel_history` |
@@ -121,7 +122,7 @@ Lobu is the **infrastructure layer** for autonomous agents. Frameworks like Lang
 | --- | --- | --- |
 | Scale to zero | Workers scale down when idle | Requires always-on machine |
 | Multi-tenant | Single bot, per-channel/DM isolation | One instance per setup |
-| Multi-platform | Slack, Telegram, WhatsApp, Discord, Teams, REST API | [15+ chat platforms](https://openclaw.ai/integrations) |
+| Multi-platform | Slack, Telegram, WhatsApp, Discord, Teams, Google Chat, REST API | [15+ chat platforms](https://openclaw.ai/integrations) |
 | Runtime | OpenClaw engine (sandboxed/proxied) | Native OpenClaw |
 | Onboarding | Config page with per-provider OAuth | CLI setup |
 | MCP access | Proxied through gateway, secrets isolated | Direct from agent |

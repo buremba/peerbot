@@ -172,4 +172,95 @@ describe("ChannelBindingService is org-scoped (no cross-tenant takeover)", () =>
     expect(a?.agentId).toBe(AGENT_A);
     expect(b?.agentId).toBe(AGENT_B);
   });
+
+  // Preview exception: the hosted preview bot is ONE connection (in its own
+  // org) that fans out to agents in OTHER orgs — `/lobu link <code>` binds
+  // under the claim's org, not the connection's. The org-scoped read can never
+  // find that binding, so a linked chat keeps getting "isn't linked". The fix:
+  // previewMode resolves org-agnostically and routes by the binding's own org.
+  test("getBindingAnyOrg finds a binding regardless of caller org, with its org", async () => {
+    const svc = new ChannelBindingService();
+    const TEAM = "T999";
+    await svc.createBinding(AGENT_A, PLATFORM, CHANNEL, TEAM, {
+      organizationId: ORG_A,
+    });
+
+    // Org-scoped read from a DIFFERENT org (the preview connection's org) misses.
+    expect(await svc.getBinding(PLATFORM, CHANNEL, TEAM, ORG_B)).toBeNull();
+
+    // Org-agnostic read finds it AND surfaces the binding's owning org.
+    const any = await svc.getBindingAnyOrg(PLATFORM, CHANNEL, TEAM);
+    expect(any?.agentId).toBe(AGENT_A);
+    expect(any?.organizationId).toBe(ORG_A);
+  });
+
+  test("resolveAgentId crossOrg routes a preview connection to the bound agent's org", async () => {
+    const svc = new ChannelBindingService();
+    const TEAM = "T999";
+    // Agent A's chat is linked under ORG_A.
+    await svc.createBinding(AGENT_A, PLATFORM, CHANNEL, TEAM, {
+      organizationId: ORG_A,
+    });
+
+    // A message arrives on a previewMode connection owned by ORG_B.
+    // Without crossOrg the org-scoped read misses -> falls back to the
+    // connection's owning agent (here none) -> drops/"isn't linked".
+    const scoped = await resolveAgentId({
+      platform: PLATFORM,
+      channelId: CHANNEL,
+      teamId: TEAM,
+      organizationId: ORG_B,
+      channelBindingService: svc,
+    });
+    expect(scoped).toBeNull();
+
+    // With crossOrg it resolves to A's agent and returns A's org for routing.
+    const cross = await resolveAgentId({
+      platform: PLATFORM,
+      channelId: CHANNEL,
+      teamId: TEAM,
+      organizationId: ORG_B,
+      channelBindingService: svc,
+      crossOrg: true,
+    });
+    expect(cross?.agentId).toBe(AGENT_A);
+    expect(cross?.source).toBe("binding");
+    expect(cross?.organizationId).toBe(ORG_A);
+  });
+
+  test("getBindingAnyOrg reflects the most recent re-link (created_at bumps on upsert)", async () => {
+    const svc = new ChannelBindingService();
+    const TEAM = "T999";
+    const AGENT_A2 = "agent-a2";
+    await seedAgentRow(AGENT_A2, { organizationId: ORG_A });
+
+    // Org A binds, then org B binds the same physical channel (newer row),
+    // then org A RE-LINKS to a different agent. getBindingAnyOrg orders by
+    // created_at, so the re-link MUST bump created_at past org B's row —
+    // otherwise the channel resolves to the stale (org B) binding.
+    await svc.createBinding(AGENT_A, PLATFORM, CHANNEL, TEAM, {
+      organizationId: ORG_A,
+    });
+    await svc.createBinding(AGENT_B, PLATFORM, CHANNEL, TEAM, {
+      organizationId: ORG_B,
+    });
+    await svc.createBinding(AGENT_A2, PLATFORM, CHANNEL, TEAM, {
+      organizationId: ORG_A,
+    });
+
+    const any = await svc.getBindingAnyOrg(PLATFORM, CHANNEL, TEAM);
+    expect(any?.agentId).toBe(AGENT_A2);
+    expect(any?.organizationId).toBe(ORG_A);
+
+    const resolved = await resolveAgentId({
+      platform: PLATFORM,
+      channelId: CHANNEL,
+      teamId: TEAM,
+      organizationId: ORG_B,
+      channelBindingService: svc,
+      crossOrg: true,
+    });
+    expect(resolved?.agentId).toBe(AGENT_A2);
+    expect(resolved?.organizationId).toBe(ORG_A);
+  });
 });

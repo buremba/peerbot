@@ -2,7 +2,7 @@
 #
 # Quick start (from examples/personal-finance):
 #   bun install
-#   export LOBU_TOKEN=$(lobu token)
+#   export LOBU_TOKEN=$(lobu token --raw)
 #   bun run evals          # promptfoo eval -c evals/promptfooconfig.yaml
 #   bun run evals:view     # comparison grid in the browser
 #

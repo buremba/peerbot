@@ -1,10 +1,11 @@
 /**
  * A reference to a secret resolved at `lobu apply` time from the environment
- * (`.env` / `process.env`). The real value is never embedded in committed code;
- * `secret("GITHUB_TOKEN")` is the TypeScript spelling of TOML's `$GITHUB_TOKEN`.
+ * (`.env` / `process.env`). The real value is never embedded in committed code.
  *
- * The apply loader resolves the reference to a `$NAME` placeholder, collects it
- * into the required-secrets set, and pushes the resolved value to the server.
+ * The apply loader collects each reference into the required-secrets set. For
+ * provider `key` fields the resolved value is pushed to the server's secrets
+ * store; for MCP and auth-profile credentials a `$NAME` placeholder is stored
+ * and the real value is resolved at worker egress time, never uploaded.
  */
 export interface SecretRef {
   readonly $secret: string;

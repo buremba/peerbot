@@ -48,7 +48,7 @@ const assistant = defineAgent({
   dir: "./agents/assistant",
   // Guardrails enabled for this agent (names registered in the gateway's
   // GuardrailRegistry).
-  guardrails: ["secret-scan", "prompt-injection"],
+  guardrails: ["secret-scan", "pii-scan"],
   // Providers (order = priority, first available is used).
   providers: [
     {
@@ -194,7 +194,7 @@ Connections, the memory schema, and watchers are declared at the project level (
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `id` | string | yes | Agent ID. Must match `^[a-z0-9][a-z0-9-]*$` (lowercase alphanumeric with hyphens) |
+| `id` | string | yes | Agent ID. Must match `^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$` (lowercase alphanumeric with hyphens; cannot start or end with a hyphen) |
 | `name` | string | no | Display name shown in the admin UI |
 | `description` | string | no | Short description shown in the admin UI |
 | `dir` | string | no | Path to the agent content directory holding `IDENTITY.md`, `SOUL.md`, `USER.md`. Relative to the config file; defaults to `./agents/<id>` |
@@ -326,7 +326,7 @@ preview: {
 const assistant = defineAgent({
   id: "assistant",
   dir: "./agents/assistant",
-  guardrails: ["secret-scan", "prompt-injection"],
+  guardrails: ["secret-scan", "pii-scan"],
 });
 ```
 
@@ -493,7 +493,7 @@ Returns a write-only secret reference resolved at `lobu apply` time from the env
 key: secret("OPENROUTER_API_KEY")
 ```
 
-The apply loader resolves the reference to a `$NAME` placeholder, collects it into the required-secrets set, and pushes the resolved value to the server.
+The apply loader resolves the reference at apply time. For provider `key` fields, the resolved value is pushed to the server's secrets store. For MCP credentials and auth-profile credentials, a `$NAME` placeholder is stored; the real value is resolved at worker egress time and never uploaded.
 
 ### `Type`
 
@@ -509,7 +509,7 @@ For dev-time previews, `defineAgent({ preview: { slack: { enabled: true } } })` 
 
 Entity types, relationship types, and watchers are the memory schema. Declare them with `defineEntityType` / `defineRelationshipType` / `defineWatcher` and list them in `defineConfig`. `lobu apply` reconciles them against your org. See [`lobu memory`](/reference/lobu-memory/) and [`lobu apply`](/reference/lobu-apply/).
 
-The org slug comes from `defineConfig({ org })`. `MEMORY_URL` remains available as an optional base-endpoint override for local or custom Lobu deployments.
+The org slug comes from `defineConfig({ org })`. `MEMORY_URL` is available as an optional base-endpoint override for local or custom Lobu deployments.
 
 ## Validation
 

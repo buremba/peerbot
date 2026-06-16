@@ -74,7 +74,7 @@ Chat platforms are not synced by `lobu apply`. Connect them through the `/agents
 
 - Chat platforms (connect them through the admin UI or CRUD API)
 - Memory data (entities, relationships, knowledge events)
-- Secret values — `lobu apply` only checks that the env vars referenced via `secret("VAR")` in `lobu.config.ts` are present locally, never uploads their values
+- Secret values — provider API keys (from `defineAgent({ providers })`) are pushed to the server's secrets store. All other `secret("VAR")` refs (MCP credentials, auth-profile credentials) are stored as `$VAR` placeholders; their real values are never uploaded.
 - Anything not in the list above
 
 ## Plan output
@@ -118,7 +118,7 @@ Before any mutation, `lobu apply` collects every `secret("VAR")` reference in `l
 
 Each name must be set in the apply runner's environment (e.g. via `.env` loaded by your shell). Any missing name short-circuits the apply with a list of every missing var.
 
-Secret values are never uploaded by `lobu apply`. Use your deployment's secret manager.
+Provider API keys are pushed to the server's secrets store (encrypted at rest). Other credential refs (MCP headers, auth-profile credentials) are stored as `$VAR` placeholders and resolved at worker egress time — their real values are never uploaded.
 
 ## Drift
 

@@ -204,7 +204,7 @@ The old standalone Lobu starter skills are folded into a single bundled `lobu` s
 npx skills add lobu-ai/lobu --skill lobu
 ```
 
-Local skills are still discovered from `skills/<id>/SKILL.md` and `agents/<agent-id>/skills/<id>/SKILL.md`.
+Local skills are referenced explicitly from `lobu.config.ts` via `skillFromFile`. There is no directory auto-discovery.
 
 ## Related
 

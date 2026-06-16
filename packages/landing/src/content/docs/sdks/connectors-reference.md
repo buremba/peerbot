@@ -28,11 +28,13 @@ import {
 Abstract base class. Every connector extends it.
 
 ```ts
-abstract class ConnectorRuntime {
+abstract class ConnectorRuntime<C = Record<string, unknown>, F = Record<string, unknown>> {
   abstract readonly definition: ConnectorDefinition;
-  abstract sync(ctx: SyncContext): Promise<SyncResult>;
-  abstract execute(ctx: ActionContext): Promise<ActionResult>;
-  authenticate(ctx: AuthContext): Promise<AuthResult>; // default throws
+  abstract sync(ctx: SyncContext<C, F>): Promise<SyncResult<C>>;
+  async execute(ctx: ActionContext): Promise<ActionResult>; // default: { success: false, error: "Actions not supported" }
+  async query(ctx: QueryContext<F>): Promise<QueryResult>;  // default: throws
+  async reflectMetrics(ctx: ReflectContext<F>): Promise<ReflectResult>; // default: []
+  async authenticate(ctx: AuthContext): Promise<AuthResult>; // default: throws
 }
 ```
 
@@ -40,7 +42,9 @@ abstract class ConnectorRuntime {
 |--------|----------|-------------|
 | `definition` | yes | Static metadata: key, name, version, auth, feeds, actions. See [`ConnectorDefinition`](#connectordefinition). |
 | `sync(ctx)` | yes | Pull data. Receives last checkpoint, returns events + new checkpoint. |
-| `execute(ctx)` | yes | Run an action. Stub it with `{ success: false, error: "no actions" }` for read-only connectors. |
+| `execute(ctx)` | no | Run an action. Default returns `{ success: false, error: "Actions not supported" }` — override only when `actions` are declared. |
+| `query(ctx)` | no | Run a live read-only query without persisting events. Used for virtual-feed reads. Default throws. |
+| `reflectMetrics(ctx)` | no | Federate entity types from the source's native semantic layer (e.g. Snowflake). Default returns `[]`. |
 | `authenticate(ctx)` | no | Only required when `authSchema.methods` includes `{ type: "interactive" }`. Stream `AuthArtifact`s, await UI signals. |
 
 ---
@@ -264,15 +268,6 @@ const IDENTITY = {
 type IdentityNamespace = (typeof IDENTITY)[keyof typeof IDENTITY];
 ```
 
-### `FeedMode`
-
-```ts
-enum FeedMode {
-  sync = "sync",       // connector code runs on a worker
-  virtual = "virtual", // backed by saved queries (future)
-}
-```
-
 ---
 
 ## `ActionDefinition`
@@ -298,15 +293,16 @@ interface ActionDefinition {
 ## `SyncContext`
 
 ```ts
-interface SyncContext {
+interface SyncContext<C = Record<string, unknown>, F = Record<string, unknown>> {
   feedKey: string;
-  config: Record<string, unknown>;
-  checkpoint: Record<string, unknown> | null;
+  feedId?: number | null;  // stable id of this feed instance; undefined for direct/programmatic calls
+  config: F;
+  checkpoint: C | null;
   credentials: SyncCredentials | null;
   entityIds: number[];
   sessionState?: Record<string, unknown> | null;
   emitEvents?: (events: EventEnvelope[]) => Promise<void>;
-  updateCheckpoint?: (checkpoint: Record<string, unknown> | null) => Promise<void>;
+  updateCheckpoint?: (checkpoint: C | null) => Promise<void>;
 }
 
 interface SyncCredentials {
@@ -327,9 +323,9 @@ interface SyncCredentials {
 ## `SyncResult`
 
 ```ts
-interface SyncResult {
+interface SyncResult<C = Record<string, unknown>> {
   events: EventEnvelope[];
-  checkpoint: Record<string, unknown> | null;
+  checkpoint: C | null;
   auth_update?: Record<string, unknown> | null;
   metadata?: {
     items_found?: number;
@@ -522,12 +518,11 @@ The package also re-exports a few utilities so connectors share one implementati
 |--------|---------|
 | `ky`, `HTTPError`, `KyInstance`, `Options` | Shared HTTP client. |
 | `withHttpRetry(fn, opts?)` | Retry-with-backoff wrapper for transient HTTP failures. |
-| `calculateEngagementScore(signals)` | Maps raw engagement metrics into a normalised 0–100 `score`. |
+| `calculateEngagementScore(signals)` | Maps raw engagement metrics into a normalised 0-100 `score`. |
 | `Type`, `Static` | Re-exported TypeBox builders for `configSchema` / `inputSchema` / `outputSchema`. |
 | `sdkLogger` (alias `logger`) | Connector-scoped logger; output is captured by the run record. |
 | `normalizeEmail`, `normalizePhone`, `normalizeGithubLogin`, … | Identifier normalisers; call these before populating `EntityIdentitySpec` paths. |
-| `SOURCE_NATIVE_EVENT_TYPES`, `isSourceNativeEventType` | The canonical event-type taxonomy. |
 | `WATCHER_TIME_GRANULARITIES`, `alignToWatcherWindowStart`, … | Time helpers used by watcher scheduling. |
-| Browser SDK: `acquireBrowser`, `launchBrowser`, `launchStealthBrowser`, `CdpPage`, `browserNetworkSync`, etc. | Headless / CDP / stealth browser primitives for `browser` and `cdp` capture. |
+| Browser SDK: `acquireBrowser`, `launchBrowser`, `CdpPage`, `browserNetworkSync`, `extensionNetworkSync`, etc. | Headless / CDP / extension browser primitives for `browser` and `cdp` capture. |
 
 See the [source on GitHub](https://github.com/lobu-ai/lobu/tree/main/packages/connector-sdk/src) for the full helper surface.

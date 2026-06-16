@@ -238,6 +238,11 @@ export function buildMessagePayload(params: {
  *
  * Returns `null` when neither resolves — the caller should drop the message.
  * Pure resolution: never writes a binding.
+ *
+ * `crossOrg` is for hosted preview connections only: the bot lives in one org
+ * but `/lobu link <code>` binds agents from OTHER orgs, so the lookup must be
+ * org-agnostic and the binding's own `organizationId` is returned for routing.
+ * Leave it false for normal bots, where org-scoping is the multi-tenant guard.
  */
 export async function resolveAgentId(params: {
   platform: string;
@@ -246,27 +251,51 @@ export async function resolveAgentId(params: {
   agentId?: string;
   organizationId?: string;
   channelBindingService?: ChannelBindingService;
-}): Promise<{ agentId: string; source: "binding" | "connection" } | null> {
-  const { platform, channelId, teamId, agentId, organizationId, channelBindingService } =
-    params;
+  crossOrg?: boolean;
+}): Promise<{
+  agentId: string;
+  source: "binding" | "connection";
+  organizationId?: string;
+} | null> {
+  const {
+    platform,
+    channelId,
+    teamId,
+    agentId,
+    organizationId,
+    channelBindingService,
+    crossOrg,
+  } = params;
 
   if (channelBindingService) {
     // Bindings are org-scoped (a channel_id can be bound independently by
     // multiple tenants), so the read MUST be scoped to the inbound
     // connection's org — otherwise getBinding falls back to an org-less query
-    // and can route a message to another tenant's agent.
-    const binding = await channelBindingService.getBinding(
-      platform,
-      channelId,
-      teamId,
-      organizationId
-    );
+    // and can route a message to another tenant's agent. Preview connections
+    // are the deliberate exception: they fan out across orgs (see crossOrg).
+    const binding = crossOrg
+      ? await channelBindingService.getBindingAnyOrg(platform, channelId, teamId)
+      : await channelBindingService.getBinding(
+          platform,
+          channelId,
+          teamId,
+          organizationId
+        );
     if (binding) {
       logger.info(
-        { agentId: binding.agentId, platform, channelId },
+        {
+          agentId: binding.agentId,
+          platform,
+          channelId,
+          bindingOrg: binding.organizationId,
+        },
         "Routing via existing channel binding"
       );
-      return { agentId: binding.agentId, source: "binding" };
+      return {
+        agentId: binding.agentId,
+        source: "binding",
+        organizationId: binding.organizationId,
+      };
     }
   }
 
@@ -275,7 +304,7 @@ export async function resolveAgentId(params: {
       { agentId, platform, channelId },
       "Routing to connection's owning agent"
     );
-    return { agentId, source: "connection" };
+    return { agentId, source: "connection", organizationId };
   }
 
   return null;

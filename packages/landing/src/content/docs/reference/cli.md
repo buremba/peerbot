@@ -44,7 +44,7 @@ Interactive prompts guide you through provider, platform, network access policy,
 
 ### `run` (aliases: `dev`, `start`)
 
-Run the embedded Lobu stack. `lobu.config.ts` is not required. With no `DATABASE_URL`, the command starts an embedded Postgres (PG18 + pgvector) and stores data under `~/.lobu/data` (override with `LOBU_DATA_DIR`). If `DATABASE_URL` is set in the environment or `.env`, Lobu uses that external Postgres instead.
+Run the embedded Lobu stack. `lobu.config.ts` is not required. With no `DATABASE_URL`, the command starts an embedded Postgres (PG18 + pgvector) and stores data under `~/.lobu/pgdata` (override with `LOBU_DATA_DIR`). If `DATABASE_URL` is set in the environment or `.env`, Lobu uses that external Postgres instead.
 
 ```bash
 npx @lobu/cli@latest run
@@ -160,7 +160,7 @@ npx @lobu/cli@latest chat "Status update" -c staging
 | `-u, --user <id>` | User ID to impersonate, e.g. `telegram:12345`. With this flag the message routes through the user's platform (Telegram/Slack) |
 | `-t, --thread <id>` | Thread/conversation ID for multi-turn conversations |
 | `-g, --gateway <url>` | Gateway URL (default: `http://localhost:8787` or from `.env`) |
-| `--dry-run` | Process without persisting history |
+| `--dry-run` | Skip side-effecting tool calls (sandbox writes, sdk_run mutations). The turn still runs and history is still persisted. |
 | `--new` | Force a new session (ignore an existing one) |
 | `-C, --continue` | Resume the last thread for this `(context, agent)` |
 | `--auto-approve` | Auto-approve every tool call — use only in trusted environments |
@@ -175,7 +175,7 @@ Lobu does not ship its own eval runner. Use [promptfoo](https://www.promptfoo.de
 
 ```bash
 bun add -D promptfoo @lobu/promptfoo-provider
-LOBU_TOKEN=$(npx @lobu/cli@latest token) \
+LOBU_TOKEN=$(npx @lobu/cli@latest token --raw) \
   bunx promptfoo eval -c agents/<agent-id>/evals/promptfooconfig.yaml
 ```
 

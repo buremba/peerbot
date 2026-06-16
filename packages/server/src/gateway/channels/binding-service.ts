@@ -16,6 +16,9 @@ interface ChannelBinding {
   channelId: string;
   agentId: string;
   teamId?: string;
+  /** Org that owns this binding. Preview messages arrive on a connection in a
+   * different org, so the caller needs the binding's own org to route. */
+  organizationId?: string;
   createdAt: number;
 }
 
@@ -25,6 +28,7 @@ function rowToBinding(row: Record<string, any>): ChannelBinding {
     channelId: row.channel_id,
     teamId: row.team_id ?? undefined,
     agentId: row.agent_id,
+    organizationId: row.organization_id ?? undefined,
     createdAt:
       row.created_at instanceof Date
         ? row.created_at.getTime()
@@ -78,6 +82,44 @@ export class ChannelBindingService {
     return rowToBinding(rows[0]);
   }
 
+  /**
+   * Resolve a binding by its physical channel WITHOUT scoping to a caller org.
+   *
+   * The hosted preview bot is one connection (in its own org) that fans out to
+   * agents across MANY orgs — a `/lobu link <code>` writes the binding under the
+   * claim's org, not the connection's. The normal org-scoped {@link getBinding}
+   * would never find it. A physical Slack channel is unique per workspace, so
+   * `(platform, channel_id, team_id)` identifies exactly one place; we return
+   * the most recent binding (and its org) for it. Use ONLY for previewMode
+   * connections — for normal bots, org-scoping is the multi-tenant guardrail.
+   */
+  async getBindingAnyOrg(
+    platform: string,
+    channelId: string,
+    teamId?: string
+  ): Promise<ChannelBinding | null> {
+    const sql = getDb();
+    const rows = teamId
+      ? await sql`
+          SELECT * FROM agent_channel_bindings
+          WHERE platform = ${platform}
+            AND channel_id = ${channelId}
+            AND team_id = ${teamId}
+          ORDER BY created_at DESC
+          LIMIT 1
+        `
+      : await sql`
+          SELECT * FROM agent_channel_bindings
+          WHERE platform = ${platform}
+            AND channel_id = ${channelId}
+            AND team_id IS NULL
+          ORDER BY created_at DESC
+          LIMIT 1
+        `;
+    if (rows.length === 0) return null;
+    return rowToBinding(rows[0]);
+  }
+
   async createBinding(
     agentId: string,
     platform: string,
@@ -102,7 +144,8 @@ export class ChannelBindingService {
         INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
         VALUES (${orgId}, ${agentId}, ${platform}, ${channelId}, ${teamId}, now())
         ON CONFLICT (organization_id, platform, channel_id, team_id) DO UPDATE SET
-          agent_id = EXCLUDED.agent_id
+          agent_id = EXCLUDED.agent_id,
+          created_at = EXCLUDED.created_at
       `;
     } else {
       // For team_id IS NULL the unique constraint above doesn't fire (PG
@@ -113,7 +156,8 @@ export class ChannelBindingService {
         VALUES (${orgId}, ${agentId}, ${platform}, ${channelId}, NULL, now())
         ON CONFLICT (organization_id, platform, channel_id)
           WHERE team_id IS NULL
-          DO UPDATE SET agent_id = EXCLUDED.agent_id
+          DO UPDATE SET agent_id = EXCLUDED.agent_id,
+            created_at = EXCLUDED.created_at
       `;
     }
     logger.info(`Created binding: ${platform}/${channelId} → ${agentId}`);

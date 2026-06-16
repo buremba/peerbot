@@ -36,7 +36,7 @@ docker run --rm \
   -e NODE_ENV=production \
   -e PUBLIC_WEB_URL=https://lobu.example.com \
   -e DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/lobu?sslmode=require' \
-  -e JWT_SECRET='replace-with-a-long-random-value' \
+  -e ENCRYPTION_KEY='replace-with-a-long-random-value' \
   -e BETTER_AUTH_SECRET='replace-with-a-long-random-value' \
   -e ANTHROPIC_API_KEY='sk-ant-...' \
   ghcr.io/lobu-ai/lobu-app:latest

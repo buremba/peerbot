@@ -39,7 +39,7 @@ Prefer editing these files directly instead of burying behavior in ad hoc code.
 2. Make the smallest prompt, config, skill, or eval change that solves the task.
 3. Run `npx @lobu/cli@latest validate` after changing `lobu.config.ts` or skill definitions.
 4. Test behavior with `npx @lobu/cli@latest chat "..."` or the project's testing instructions.
-5. Run `LOBU_TOKEN=$(npx @lobu/cli@latest token) bunx promptfoo eval -c agents/<id>/evals/promptfooconfig.yaml` when the behavior should be captured as a regression test.
+5. Run `LOBU_TOKEN=$(npx @lobu/cli@latest token --raw) bunx promptfoo eval -c agents/<id>/evals/promptfooconfig.yaml` when the behavior should be captured as a regression test.
 
 If the repository already provides project-specific test scripts, use those.
 

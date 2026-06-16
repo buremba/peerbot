@@ -3,7 +3,7 @@ title: Troubleshooting
 description: Common issues and how to fix them.
 ---
 
-Lobu boots as a single Node process: `lobu run`. A scaffolded project defaults to an **embedded Postgres** (PG18 + pgvector, entry `start-local.bundle.mjs`), so `DATABASE_URL` is optional — set it only when you want an external Postgres, in which case the entry is `server.bundle.mjs`. The monorepo `make dev` always requires `DATABASE_URL`. Worker subprocesses are spawned by the gateway's `EmbeddedDeploymentManager`. There is no Redis.
+Lobu boots as a single Node process: `lobu run`. A scaffolded project defaults to an **embedded Postgres** (PG18 + pgvector), so `DATABASE_URL` is optional — set it only when you want an external Postgres. The monorepo `make dev` always requires `DATABASE_URL`. Worker subprocesses are spawned by the gateway's `EmbeddedDeploymentManager`. There is no Redis.
 
 ## Worker won't start
 
@@ -103,9 +103,8 @@ curl -v http://localhost:8118
 ## Out of memory / disk space
 
 ```bash
-# Check Node process memory (the entry is server.bundle.mjs with an external
-# Postgres, or start-local.bundle.mjs with the default embedded-Postgres backend)
-ps -o pid,rss,command -p "$(pgrep -f '(server|start-local)\.bundle\.mjs')"
+# Check Node process memory (entry: server.bundle.mjs)
+ps -o pid,rss,command -p "$(pgrep -f 'server\.bundle\.mjs')"
 
 # Workspaces accumulate per agent under ./workspaces/
 # Clear stale ones if disk is filling up:

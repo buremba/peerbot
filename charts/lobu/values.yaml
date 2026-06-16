@@ -238,7 +238,7 @@ ingress:
   tls: []
 
 # Secret reference (must exist in namespace)
-# Contains: JWT_SECRET, GITHUB_TOKEN, etc.
+# Contains: ENCRYPTION_KEY, BETTER_AUTH_SECRET, provider API keys, etc.
 secretName: ""
 
 # Database settings (for connecting to CNPG cluster)

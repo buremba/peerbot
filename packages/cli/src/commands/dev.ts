@@ -742,17 +742,26 @@ async function printPreviewInstructions(cwd: string): Promise<void> {
         surfaces: cfg.surfaces ?? ["dm"],
         ttl_minutes: cfg.codeTtlMinutes ?? 15,
       });
-      console.log(chalk.dim(`  agent:        ${agentId}`));
-      console.log(chalk.dim(`  platform:     ${platform}`));
-      if (claim.join_url)
-        console.log(chalk.dim(`  join:         ${claim.join_url}`));
-      console.log(chalk.dim(`  command:      ${claim.command}`));
-      console.log(chalk.dim(`  expires:      ${claim.expires_at}`));
-      console.log(
-        chalk.dim(
-          `  Join the hosted Lobu ${platform} workspace and send the command above to @Lobu.`
-        )
-      );
+      console.log(chalk.dim(`  agent:    ${agentId}`));
+      console.log(chalk.dim(`  platform: ${platform}`));
+      console.log(chalk.dim(`  expires:  ${claim.expires_at}`));
+      console.log();
+      if (claim.join_url) {
+        console.log(
+          chalk.dim(
+            `  1. Join the hosted Lobu ${platform} workspace: ${chalk.underline(claim.join_url)}`
+          )
+        );
+        console.log(
+          chalk.dim(`  2. DM @Lobu there: ${chalk.bold(claim.command)}`)
+        );
+      } else {
+        console.log(
+          chalk.dim(
+            `  In the hosted Lobu ${platform} workspace, DM @Lobu: ${chalk.bold(claim.command)}`
+          )
+        );
+      }
     } catch (error) {
       console.log(
         chalk.yellow(

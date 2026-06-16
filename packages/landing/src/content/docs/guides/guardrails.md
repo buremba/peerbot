@@ -31,7 +31,7 @@ Three primitives ship from the gateway and are registered at boot. Reference the
 
 | Name | Stage(s) | Catches |
 |---|---|---|
-| `secret-scan` | `output` | Credential-shaped strings in worker output: OpenAI keys (`sk-…`), GitHub PATs (`ghp_…`), AWS access keys (`AKIA…`), and JWT-shaped tokens. Cheap enough to run per streaming delta. |
+| `secret-scan` | `output` | Credential-shaped strings in worker output: API keys starting with `sk-` (OpenAI, Anthropic, and similar), GitHub PATs (`ghp_…`), AWS access keys (`AKIA…`), and JWT-shaped tokens. Cheap enough to run per streaming delta. |
 | `pii-scan` | `input`, `output`, `pre-tool` | Emails, US-shaped phone numbers, and Luhn-valid 13-19 digit card-shaped runs. On `pre-tool` it scans the serialized tool arguments. |
 | `forbidden-tools` | `pre-tool` | A hardcoded deny list: `delete_repo`, `delete_branch`, `drop_table`. |
 

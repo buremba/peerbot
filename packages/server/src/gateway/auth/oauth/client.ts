@@ -82,7 +82,7 @@ export class OAuthClient extends BaseOAuth2Client {
     const tokenData = await this.exchangeToken<OAuthTokenResponse>(
       this.config.tokenUrl,
       body,
-      "json",
+      this.config.tokenRequestFormat ?? "json",
       this.config.customHeaders
     );
 
@@ -106,7 +106,7 @@ export class OAuthClient extends BaseOAuth2Client {
       refreshToken,
       {
         customHeaders: this.config.customHeaders,
-        contentType: "json",
+        contentType: this.config.tokenRequestFormat ?? "json",
         tokenEndpointAuthMethod: this.config.tokenEndpointAuthMethod,
       }
     );

@@ -41,6 +41,13 @@ export interface OAuthProviderConfig {
   extraAuthParams?: Record<string, string>;
   /** Extra static fields to include in the token exchange body */
   extraTokenParams?: Record<string, string | number>;
+  /**
+   * Encoding for the token-endpoint request body. RFC 6749 §4.1.3 mandates
+   * `form` (`application/x-www-form-urlencoded`); some lenient providers also
+   * accept `json`. Defaults to `json` to preserve existing behavior for
+   * providers not explicitly set.
+   */
+  tokenRequestFormat?: "json" | "form";
 }
 
 /**
@@ -50,11 +57,17 @@ export interface OAuthProviderConfig {
  * (`loginWithClaudeAi: true, inferenceOnly: true`). Anthropic's token endpoint
  * 429s any failed code exchange using this client_id, so we must match the
  * expected request shape exactly: claude.com authorize URL, the `code=true`
- * query flag, `user:inference` scope, and a long `expires_in` in the exchange.
+ * query flag, `user:inference` scope, and — critically — an
+ * `application/x-www-form-urlencoded` token-exchange body (`tokenRequestFormat:
+ * "form"`). The binary POSTs the exchange as form-encoded; sending JSON makes
+ * Anthropic fail to parse the body and return
+ * `invalid_grant: Invalid 'redirect_uri'`.
  *
- * Endpoints extracted from the current `@anthropic-ai/claude-code` binary —
- * Anthropic moved them from `claude.ai`/`console.anthropic.com` to
- * `claude.com`/`platform.claude.com` and the old hosts reject requests.
+ * Endpoints + request shape extracted from the current `@anthropic-ai/claude-code`
+ * binary — Anthropic moved hosts from `claude.ai`/`console.anthropic.com` to
+ * `claude.com`/`platform.claude.com` and the old hosts reject requests. The
+ * genuine exchange body is `{grant_type, code, redirect_uri, client_id,
+ * code_verifier, state}` with no `expires_in`.
  */
 export const CLAUDE_PROVIDER: OAuthProviderConfig = {
   id: "claude",
@@ -70,5 +83,5 @@ export const CLAUDE_PROVIDER: OAuthProviderConfig = {
   tokenEndpointAuthMethod: "none",
   requireRefreshToken: true,
   extraAuthParams: { code: "true" },
-  extraTokenParams: { expires_in: 31536000 },
+  tokenRequestFormat: "form",
 };

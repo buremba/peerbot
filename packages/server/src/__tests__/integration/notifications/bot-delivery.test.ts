@@ -17,6 +17,8 @@ async function seedSlackConnection(opts: {
   agentId: string;
   connectionId: string;
   status?: string;
+  settings?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
 }): Promise<void> {
   const sql = getTestDb();
   await sql`
@@ -24,7 +26,7 @@ async function seedSlackConnection(opts: {
       (id, organization_id, agent_id, platform, config, settings, metadata, status, created_at, updated_at)
     VALUES (
       ${opts.connectionId}, ${opts.organizationId}, ${opts.agentId}, 'slack',
-      ${sql.json({})}, ${sql.json({})}, ${sql.json({})}, ${opts.status ?? 'active'}, NOW(), NOW()
+      ${sql.json({})}, ${sql.json(opts.settings ?? {})}, ${sql.json(opts.metadata ?? {})}, ${opts.status ?? 'active'}, NOW(), NOW()
     )
   `;
 }
@@ -135,5 +137,112 @@ describe('resolveBotDeliveryTargets', () => {
 
     const targets = await resolveBotDeliveryTargets(org.id, 'conn-2');
     expect(targets.map((t) => t.connectionId)).toEqual(['conn-2']);
+  });
+
+  // --- Hosted-preview cross-org delivery (the proactive-notification bug) ---
+  // The shared preview bot is ONE connection, in its OWN org, under a placeholder
+  // agent, that fans out to agents across many orgs. A `/lobu link <code>` writes
+  // the binding under the LINKING org. So the org-scoped (org, agent) JOIN misses
+  // it on both columns and proactive notifications (incl. reaction posts) drop.
+
+  it('cross-org: delivers a tenant org binding through the shared previewMode connection', async () => {
+    const hostOrg = await createTestOrganization(); // where the hosted preview conn lives
+    const tenantOrg = await createTestOrganization(); // the org that /lobu link'd a channel
+    await createTestAgent({ organizationId: hostOrg.id, agentId: 'concierge' });
+    await createTestAgent({ organizationId: tenantOrg.id, agentId: 'food-ordering' });
+
+    await seedSlackConnection({
+      organizationId: hostOrg.id,
+      agentId: 'concierge',
+      connectionId: 'preview-conn',
+      settings: { previewMode: true },
+      metadata: {}, // hosted preview invariant: no teamId
+    });
+    await seedBinding({
+      organizationId: tenantOrg.id, // binding lives in the TENANT org, not the conn's org
+      agentId: 'food-ordering', // and points at a DIFFERENT agent than the conn's
+      channelId: 'slack:C0LUNCH',
+    });
+
+    const targets = await resolveBotDeliveryTargets(tenantOrg.id);
+    expect(targets).toEqual([
+      { connectionId: 'preview-conn', platform: 'slack', channelKey: 'slack:C0LUNCH' },
+    ]);
+  });
+
+  it('cross-org guardrail: a NORMAL (non-preview) connection in another org is never used', async () => {
+    const otherOrg = await createTestOrganization();
+    const tenantOrg = await createTestOrganization();
+    await createTestAgent({ organizationId: otherOrg.id, agentId: 'crm' });
+    await createTestAgent({ organizationId: tenantOrg.id, agentId: 'food-ordering' });
+
+    await seedSlackConnection({
+      organizationId: otherOrg.id,
+      agentId: 'crm',
+      connectionId: 'normal-conn',
+      settings: {}, // NOT previewMode
+    });
+    await seedBinding({
+      organizationId: tenantOrg.id,
+      agentId: 'food-ordering',
+      channelId: 'slack:C0LUNCH',
+    });
+
+    // Multi-tenant wall: org-scoping holds for normal bots.
+    expect(await resolveBotDeliveryTargets(tenantOrg.id)).toEqual([]);
+  });
+
+  it('cross-org guardrail: a previewMode connection WITH metadata.teamId is not used cross-org', async () => {
+    const hostOrg = await createTestOrganization();
+    const tenantOrg = await createTestOrganization();
+    await createTestAgent({ organizationId: hostOrg.id, agentId: 'concierge' });
+    await createTestAgent({ organizationId: tenantOrg.id, agentId: 'food-ordering' });
+
+    await seedSlackConnection({
+      organizationId: hostOrg.id,
+      agentId: 'concierge',
+      connectionId: 'preview-conn',
+      settings: { previewMode: true },
+      metadata: { teamId: 'T_HOST' }, // a real workspace-bound install, not the hosted preview
+    });
+    await seedBinding({
+      organizationId: tenantOrg.id,
+      agentId: 'food-ordering',
+      channelId: 'slack:C0LUNCH',
+    });
+
+    expect(await resolveBotDeliveryTargets(tenantOrg.id)).toEqual([]);
+  });
+
+  it('does not double-deliver when the org owns its own connection on that channel', async () => {
+    const hostOrg = await createTestOrganization();
+    const tenantOrg = await createTestOrganization();
+    await createTestAgent({ organizationId: hostOrg.id, agentId: 'concierge' });
+    const tenantAgent = await createTestAgent({
+      organizationId: tenantOrg.id,
+      agentId: 'food-ordering',
+    });
+
+    await seedSlackConnection({
+      organizationId: hostOrg.id,
+      agentId: 'concierge',
+      connectionId: 'preview-conn',
+      settings: { previewMode: true },
+    });
+    await seedSlackConnection({
+      organizationId: tenantOrg.id,
+      agentId: tenantAgent.agentId,
+      connectionId: 'own-conn',
+    });
+    await seedBinding({
+      organizationId: tenantOrg.id,
+      agentId: tenantAgent.agentId,
+      channelId: 'slack:C0LUNCH',
+    });
+
+    // Only the org's own connection — the preview branch is skipped (NOT EXISTS).
+    expect(await resolveBotDeliveryTargets(tenantOrg.id)).toEqual([
+      { connectionId: 'own-conn', platform: 'slack', channelKey: 'slack:C0LUNCH' },
+    ]);
   });
 });

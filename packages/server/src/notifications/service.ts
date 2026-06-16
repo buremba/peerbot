@@ -49,30 +49,94 @@ interface BotDeliveryTarget {
 }
 
 /**
- * Resolve where a notification should be posted: the org's active chat
- * connections JOINed to their channel bindings. A connection with no binding
- * has no target and is omitted; a connection bound to several channels yields
- * one target each. Exported for testing the delivery path against a real DB.
+ * Resolve where a notification should be posted.
+ *
+ * Two branches, UNIONed:
+ *
+ *   (A) The org's OWN active chat connections JOINed to their channel bindings,
+ *       scoped to (org, agent) — the multi-tenant default. A connection with no
+ *       binding has no target; a connection bound to several channels yields one
+ *       target each.
+ *
+ *   (B) Hosted-preview cross-org delivery. The hosted preview bot is ONE
+ *       connection living in its OWN org under a placeholder agent, that fans
+ *       out to agents across MANY orgs — a `/lobu link <code>` writes the
+ *       binding under the claim's org, never the connection's. So branch (A)'s
+ *       `(org, agent)` JOIN misses it on BOTH columns and proactive
+ *       notifications silently drop. This branch resolves the org's bindings
+ *       through the shared preview connection, mirroring the inbound
+ *       `getBindingAnyOrg` exception. It is gated HARD to previewMode
+ *       connections with no `metadata.teamId` (the hosted-bot invariant, same as
+ *       `getDefaultConnection`) and is NOT joined on `agent_id`, so a normal
+ *       tenant bot can never be used to deliver cross-org.
+ *
+ * Single-workspace assumption: with exactly one hosted preview connection per
+ * platform today, (B) matches on platform alone. When a second hosted workspace
+ * appears, persist its Slack team id (e.g. `settings.hostedWorkspaceTeamId`) and
+ * add `AND ac.settings->>'hostedWorkspaceTeamId' = b.team_id` so a binding only
+ * resolves the connection actually installed in its workspace (Slack channel ids
+ * are workspace-scoped, not global).
+ *
+ * Exported for testing the delivery path against a real DB.
  */
 export async function resolveBotDeliveryTargets(
   organizationId: string,
   connectionId?: string | null
 ): Promise<BotDeliveryTarget[]> {
   const sql = getDb();
+  const connFilterA = connectionId ? sql`AND ac.id = ${connectionId}` : sql``;
+  const connFilterB = connectionId ? sql`AND pc.id = ${connectionId}` : sql``;
   const rows = (await sql`
-    SELECT ac.id, ac.platform, b.channel_id
-    FROM agent_connections ac
-    JOIN agent_channel_bindings b
-      ON b.organization_id = ac.organization_id
-     AND b.agent_id = ac.agent_id
-     AND b.platform = ac.platform
-    WHERE ac.organization_id = ${organizationId}
-      AND ac.status = 'active'
-      ${connectionId ? sql`AND ac.id = ${connectionId}` : sql``}
+    SELECT id, platform, channel_id, created_at FROM (
+      -- (A) the org's own connections, scoped to (org, agent)
+      SELECT ac.id, ac.platform, b.channel_id, b.created_at
+      FROM agent_connections ac
+      JOIN agent_channel_bindings b
+        ON b.organization_id = ac.organization_id
+       AND b.agent_id = ac.agent_id
+       AND b.platform = ac.platform
+      WHERE ac.organization_id = ${organizationId}
+        AND ac.status = 'active'
+        ${connFilterA}
+
+      UNION
+
+      -- (B) hosted-preview cross-org: this org's bindings via the shared preview
+      -- connection. NO agent_id join (preview conn's agent != the binding's);
+      -- gated to previewMode + no metadata.teamId so a normal bot is never used.
+      SELECT pc.id, pc.platform, b.channel_id, b.created_at
+      FROM agent_channel_bindings b
+      JOIN agent_connections pc
+        ON pc.platform = b.platform
+       AND pc.status = 'active'
+       AND pc.settings->'previewMode' = 'true'::jsonb
+       AND (pc.metadata->>'teamId') IS NULL
+      WHERE b.organization_id = ${organizationId}
+        ${connFilterB}
+        -- Skip if the org already owns an active connection on this channel
+        -- (branch A covers it) so we don't double-post.
+        AND NOT EXISTS (
+          SELECT 1
+          FROM agent_connections own
+          JOIN agent_channel_bindings ob
+            ON ob.organization_id = own.organization_id
+           AND ob.agent_id = own.agent_id
+           AND ob.platform = own.platform
+          WHERE own.organization_id = ${organizationId}
+            AND own.status = 'active'
+            AND ob.platform = b.platform
+            AND ob.channel_id = b.channel_id
+        )
+    ) targets
     -- Deliver in binding-creation order so earlier bindings (the primary
     -- channel) are attempted first when an agent is bound to several.
-    ORDER BY b.created_at ASC
-  `) as Array<{ id: string; platform: string; channel_id: string }>;
+    ORDER BY created_at ASC
+  `) as Array<{
+    id: string;
+    platform: string;
+    channel_id: string;
+    created_at: Date;
+  }>;
 
   return rows.map((row) => ({
     connectionId: row.id,

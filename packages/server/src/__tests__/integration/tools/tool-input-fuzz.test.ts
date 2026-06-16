@@ -158,7 +158,15 @@ describe('MCP tool surface > schema-driven input fuzz: no tool leaks an engine e
     for (const t of tools) expect(typeof t.handler).toBe('function');
 
     const leaks: Array<{ tool: string; field: string; sample: string; error: string }> = [];
+    // A tool only counts as actually fuzzed if at least one call got PAST arg
+    // validation into the handler. A union/action tool whose baseline can't be
+    // synthesized is rejected by validateToolArgs ("Invalid arguments for …") and
+    // never exercises its SQL — tracking this prevents a silent false-green.
+    const reachedHandler = new Set<string>();
     let calls = 0;
+
+    const isValidationReject = (err: unknown): boolean =>
+      err instanceof ToolUserError && /^Invalid arguments for /.test(err.message);
 
     for (const tool of tools) {
       const { node, baseline } = resolveObject(tool.inputSchema as SchemaNode);
@@ -177,7 +185,9 @@ describe('MCP tool surface > schema-driven input fuzz: no tool leaks an engine e
             env,
             ctx()
           );
+          reachedHandler.add(tool.name); // succeeded → handler ran
         } catch (err) {
+          if (!isValidationReject(err)) reachedHandler.add(tool.name); // threw past validation
           if (isLeakedEngineError(err)) {
             leaks.push({ tool: tool.name, field, sample: JSON.stringify(sample).slice(0, 40), error: String(err).slice(0, 120) });
           }
@@ -207,6 +217,20 @@ describe('MCP tool surface > schema-driven input fuzz: no tool leaks an engine e
           leaks.slice(0, 12).map((l) => `  ${l.tool}.${l.field} [${l.sample}] -> ${l.error}`).join('\n')
       );
     }
-    expect(calls).toBeGreaterThan(50); // sanity: we actually fuzzed a real surface
+
+    // The fuzz is only meaningful if calls actually reached handlers. Require the
+    // high-risk SQL/text tools to be genuinely exercised (not just rejected at
+    // validation) — this is what makes a false-green impossible.
+    expect(calls).toBeGreaterThan(50);
+    for (const must of ['search_memory', 'save_memory', 'resolve_path']) {
+      expect(reachedHandler.has(must), `${must} must reach its handler`).toBe(true);
+    }
+    // Surface which tools the generator could NOT drive into their handler
+    // (e.g. action-union tools whose baseline validation rejects) — visible, not
+    // a silent gap. These are a known coverage limit, not a pass-by-omission.
+    const notReached = tools.map((t) => t.name).filter((n) => !reachedHandler.has(n));
+    if (notReached.length) {
+      console.warn(`[tool-fuzz] not exercised (baseline rejected at validation): ${notReached.join(', ')}`);
+    }
   });
 });

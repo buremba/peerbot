@@ -26,7 +26,7 @@ kubectl -n lobu create secret generic lobu-db \
   --from-literal=uri='postgresql://USER:PASSWORD@HOST:5432/lobu?sslmode=require'
 
 kubectl -n lobu create secret generic lobu-secrets \
-  --from-literal=JWT_SECRET='replace-with-a-long-random-value' \
+  --from-literal=ENCRYPTION_KEY='replace-with-a-long-random-value' \
   --from-literal=BETTER_AUTH_SECRET='replace-with-a-long-random-value' \
   --from-literal=ANTHROPIC_API_KEY='sk-ant-...'
 ```

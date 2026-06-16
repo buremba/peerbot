@@ -178,7 +178,7 @@ For automated quality checks, use [promptfoo](https://www.promptfoo.dev) via the
 
 ```bash
 bun add -D promptfoo @lobu/promptfoo-provider
-export LOBU_TOKEN=$(npx @lobu/cli@latest token)
+export LOBU_TOKEN=$(npx @lobu/cli@latest token --raw)
 
 bunx promptfoo eval -c agents/<agent-id>/evals/promptfooconfig.yaml
 bunx promptfoo eval -c <config> --filter-pattern basic-qa

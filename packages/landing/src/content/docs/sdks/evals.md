@@ -15,7 +15,7 @@ bun add -D promptfoo @lobu/promptfoo-provider
 npx @lobu/cli@latest run
 
 # 3. Mint a token + run evals.
-export LOBU_TOKEN=$(npx @lobu/cli@latest token)
+export LOBU_TOKEN=$(npx @lobu/cli@latest token --raw)
 bunx promptfoo eval -c agents/<agent-id>/evals/promptfooconfig.yaml
 bunx promptfoo view
 ```

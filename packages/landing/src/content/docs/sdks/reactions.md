@@ -191,7 +191,7 @@ The second argument is a `ClientSDK` injected by the sandbox. It is **not import
 
 | Method | Use |
 |--------|-----|
-| `save({ entity_ids?, content, semantic_type, title?, slug?, metadata? })` | Append a new event to memory. Set `entity_ids` to attach to the right entities, `semantic_type` to classify it, `supersedes_event_id` to tombstone an earlier event. |
+| `save({ entity_ids?, content, semantic_type, title?, slug?, metadata? })` | Append a new event to memory. Set `entity_ids` to attach to the right entities, `semantic_type` to classify it. To tombstone an earlier event use `delete`. |
 | `search({ query?, entity_type?, entity_id?, limit?, ... })` | Hybrid (vector + full-text) search across the org's events. Use to dedupe before writing. |
 | `read({ content_id? \| watcher_id?, entity_ids?, since?, until?, limit? })` | Fetch a single event by id, or pull events from a watcher window. |
 | `delete(event_id)` or `delete({ event_id?, event_ids?, reason? })` | Append a tombstone for one or more events. `events` is append-only: `delete` writes a superseding row, never `DELETE`s. |

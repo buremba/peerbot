@@ -25,7 +25,7 @@ Calling agents from TypeScript? Reach for the typed [`@lobu/client`](/sdks/clien
 
 ```bash
 # Send a message to an agent
-curl -X POST http://localhost:8787/api/v1/agents/{agentId}/messages \
+curl -X POST http://localhost:8787/lobu/api/v1/agents/{agentId}/messages \
   -H "Authorization: Bearer $LOBU_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -37,7 +37,7 @@ curl -X POST http://localhost:8787/api/v1/agents/{agentId}/messages \
 To route the message into a Slack workspace instead, set `platform` to `slack` and include a `slack` routing object:
 
 ```bash
-curl -X POST http://localhost:8787/api/v1/agents/{agentId}/messages \
+curl -X POST http://localhost:8787/lobu/api/v1/agents/{agentId}/messages \
   -H "Authorization: Bearer $LOBU_API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{

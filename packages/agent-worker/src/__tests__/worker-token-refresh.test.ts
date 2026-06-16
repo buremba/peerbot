@@ -262,6 +262,39 @@ describe("reactive refresh (401 → refresh → retry)", () => {
   });
 });
 
+describe("refresh epoch guard (no clobber across the turn boundary)", () => {
+  test("a refresh resolving after the next turn adopts is discarded", async () => {
+    // Hold the refresh response open until we explicitly release it. The
+    // Promise executor runs synchronously, so releaseRefresh is assigned before
+    // any use (definite assignment).
+    let releaseRefresh!: (tok: string) => void;
+    const refreshGate = new Promise<string>((res) => {
+      releaseRefresh = res;
+    });
+    globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/worker/token/refresh")) {
+        const tok = await refreshGate;
+        return new Response(JSON.stringify({ token: tok }), { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const mgr = getWorkerTokenManager();
+    mgr.adopt("turn-1-token");
+    // Turn 1 kicks off a refresh that stays in flight (blocked on the gate).
+    const refreshPromise = mgr.refresh();
+    // Turn 1 ends; turn 2 starts and adopts its own fresh token.
+    adoptWorkerToken("turn-2-token");
+    // Now turn 1's refresh finally resolves with a refreshed-turn-1 token.
+    releaseRefresh("refreshed-turn-1-token");
+    await refreshPromise;
+    // The stale refresh must NOT clobber turn 2's live token.
+    expect(mgr.getToken()).toBe("turn-2-token");
+    expect(process.env.WORKER_TOKEN).toBe("turn-2-token");
+  });
+});
+
 describe("refresh denied = the revocation property", () => {
   test("when the gateway denies refresh (deployment not live → 403), keep the old token, do not loop", async () => {
     process.env.WORKER_TOKEN_TTL_MS = "100000";

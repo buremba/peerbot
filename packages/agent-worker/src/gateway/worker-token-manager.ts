@@ -55,6 +55,11 @@ export class WorkerTokenManager {
    *  from an auxiliary transport cannot roll a live/refreshed token back to the
    *  stale boot bearer. */
   private initialized = false;
+  /** Bumped on every token change (seed/adopt). A refresh captures it at start
+   *  and discards its result if a newer token was adopted while the refresh was
+   *  in flight — so a long turn's late-resolving refresh can't clobber the next
+   *  turn's freshly-adopted token. */
+  private epoch = 0;
 
   constructor(initialToken: string, gatewayUrl: string, issuedAtMs?: number) {
     this.token = initialToken;
@@ -72,6 +77,7 @@ export class WorkerTokenManager {
     this.token = token;
     this.issuedAtMs = issuedAtMs;
     this.initialized = true;
+    this.epoch++;
     if (this.autoRefreshEnabled) this.armAutoRefresh();
   }
 
@@ -88,6 +94,7 @@ export class WorkerTokenManager {
     this.token = token;
     this.issuedAtMs = issuedAtMs;
     this.initialized = true;
+    this.epoch++;
     if (this.autoRefreshEnabled) this.armAutoRefresh();
   }
 
@@ -173,11 +180,16 @@ export class WorkerTokenManager {
   }
 
   private async doRefresh(): Promise<string | null> {
+    // Capture the token + epoch this refresh is for, so a result that resolves
+    // after a newer token was adopted (the next turn's adoptWorkerToken) is
+    // discarded instead of clobbering the live token.
+    const refreshingToken = this.token;
+    const refreshingEpoch = this.epoch;
     try {
       const url = `${ensureBaseUrl(this.gatewayUrl)}/worker/token/refresh`;
       const res = await fetch(url, {
         method: "POST",
-        headers: { Authorization: `Bearer ${this.token}` },
+        headers: { Authorization: `Bearer ${refreshingToken}` },
         signal: AbortSignal.timeout(15_000),
       });
       if (!res.ok) {
@@ -194,6 +206,15 @@ export class WorkerTokenManager {
       if (!body.token) {
         logger.warn("Worker token refresh returned no token");
         return null;
+      }
+      if (this.epoch !== refreshingEpoch) {
+        // A newer token was adopted while this refresh was in flight (e.g. the
+        // next turn started). Discard this stale result and keep the live token;
+        // a reactive 401 retry will use it.
+        logger.info(
+          "Discarding stale worker-token refresh (newer token adopted mid-refresh)"
+        );
+        return this.token;
       }
       this.adopt(body.token);
       // Mirror into the env so the env-reading consumers (session-context,

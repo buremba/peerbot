@@ -225,6 +225,17 @@ export class MessageConsumer {
             agentId: data.agentId,
             organizationId: data.organizationId,
             platform: data.platform,
+            // The worker uses this per-run token as its PRIMARY gateway auth
+            // (session-runner: `runJobToken || WORKER_TOKEN`), so it must carry
+            // connectionId — otherwise interaction posts (ask_user / tool
+            // approval / link button) hit `assertRoutableInteraction`, which
+            // rejects a chat-platform interaction with no connectionId, and
+            // every ask_user 500s. Mirrors base-deployment-manager's
+            // deployment-lifetime worker token.
+            connectionId:
+              typeof data.platformMetadata?.connectionId === "string"
+                ? data.platformMetadata.connectionId
+                : undefined,
             // Carry the headless run origin so interaction cards emitted from
             // this turn can be stamped headless and skip the SSE-owner gate.
             source:

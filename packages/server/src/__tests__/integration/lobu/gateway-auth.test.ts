@@ -345,4 +345,36 @@ describe('Lobu embedded Agent API auth bridge', () => {
       expect(body.error_description).toContain('not scoped to an organization');
     });
   });
+
+  describe('Better Auth session token via Bearer (embedded extension iframe)', () => {
+    it('resolves the user from a Bearer session token (the path /api/extension-session feeds)', async () => {
+      // The embedded iframe sends the session token from /api/extension-session
+      // as `Authorization: Bearer`. With no owl_pat_ prefix the bridge falls
+      // through the PAT check into getSession({ headers }), where the bearer()
+      // plugin resolves the raw session token directly (no cookie signature
+      // needed). This is the exact link that feeds c.get('user') → authProvider
+      // → verifySettingsSession on the org-scoped /api/:orgSlug/* routes the
+      // panel calls — so proving it here proves the panel authenticates.
+      const session = await createTestSession(user.id);
+
+      const { status, body } = await fetchTest(app, { token: session.token });
+
+      expect(status).toBe(200);
+      expect(body.ok).toBe(true);
+      expect(body.userId).toBe(user.id);
+      // A real Better Auth session, not the PAT pseudo-session (`pat:*`).
+      expect(body.sessionId).not.toMatch(/^pat:/);
+    });
+
+    it('rejects a bogus Bearer session token (no user)', async () => {
+      const { status, body } = await fetchTest(app, {
+        token: 'definitely-not-a-real-session-token',
+      });
+
+      expect(status).toBe(401);
+      expect(body.reason).toBe('no-user');
+      // Falls through to Better Auth (not the PAT path) → no bridge-level error.
+      expect(body.error).toBeUndefined();
+    });
+  });
 });

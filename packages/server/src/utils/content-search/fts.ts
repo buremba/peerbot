@@ -54,7 +54,14 @@ export function buildTsqueryString(queryText: string): string | null {
   return tokens.length > 0 ? tokens.join(' | ') : null;
 }
 
-const NORMALIZED_QUERY_SQL = `trim(regexp_replace(regexp_replace(lower($1), '\\m(${STOPWORDS.join('|')})\\M', ' ', 'g'), '[^a-z0-9\\s]+', ' ', 'g'))`;
+// NOTE: the final `regexp_replace(..., '\\s+', ' ', 'g')` collapses ALL
+// whitespace runs (incl. newlines/tabs) to a single space BEFORE trim. Postgres
+// `trim()` only strips spaces, so without this a query with a leading newline or
+// tab survives trim and the TSQUERY_SQL `\\s+ -> ' | '` step below turns it into
+// a leading ' | ' — which makes `to_tsquery` throw a syntax error (a multi-line
+// or content-derived read_knowledge query would 400). Collapsing first keeps the
+// OR-of-lexemes semantics while making the tsquery robust to arbitrary input.
+const NORMALIZED_QUERY_SQL = `trim(regexp_replace(regexp_replace(regexp_replace(lower($1), '\\m(${STOPWORDS.join('|')})\\M', ' ', 'g'), '[^a-z0-9\\s]+', ' ', 'g'), '\\s+', ' ', 'g'))`;
 export const TSQUERY_SQL = `CASE WHEN NULLIF(${NORMALIZED_QUERY_SQL}, '') IS NOT NULL THEN to_tsquery('english', regexp_replace(${NORMALIZED_QUERY_SQL}, '\\s+', ' | ', 'g')) ELSE NULL END`;
 
 export function buildSearchDocumentExpr(alias: string): string {

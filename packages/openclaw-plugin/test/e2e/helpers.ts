@@ -13,8 +13,45 @@ import { resolve } from 'node:path';
 import postgres from 'postgres';
 
 // ---------------------------------------------------------------------------
+// Prod safety guard
+// ---------------------------------------------------------------------------
+
+// This suite signs up REAL users and writes to whatever DB/app DATABASE_URL +
+// APP_URL point at. Pointed at prod it permanently contaminates it (this is how
+// the orphaned `E2E User e2e-*` personal orgs ended up in prod). Hard-abort on
+// any host that looks like prod. Substrings are matched against the raw
+// connection string / URL so a Postgres URL host, a k8s service host, and an
+// http origin are all covered.
+const PROD_HOST_MARKERS = [
+  'lobu.ai', // app.lobu.ai, lobu.ai, *.lobu.ai (APP_URL + any prod HTTP origin)
+  'lobu-ai-prod-db', // prod Postgres StatefulSet service host
+  'summaries-prod', // prod k8s namespace embedded in service hostnames
+];
+
+function assertNotProd(label: string, value: string | undefined): void {
+  if (!value) return;
+  const lower = value.toLowerCase();
+  const hit = PROD_HOST_MARKERS.find((m) => lower.includes(m));
+  if (hit) {
+    throw new Error(
+      `[e2e] Refusing to run: ${label} resolves to a production host ` +
+        `(matched "${hit}"). This suite creates real users/orgs and would ` +
+        `contaminate prod. Point DATABASE_URL and APP_URL at a local/dev ` +
+        `instance instead.`
+    );
+  }
+}
+
+function assertNotProdTargets(): void {
+  assertNotProd('APP_URL', process.env.APP_URL);
+  assertNotProd('DATABASE_URL', process.env.DATABASE_URL);
+}
+
+// ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
+
+assertNotProdTargets();
 
 export const APP_URL = process.env.APP_URL || 'http://localhost:8787';
 
@@ -26,6 +63,7 @@ function getDb(): postgres.Sql {
     if (!url) {
       throw new Error('DATABASE_URL is required for e2e tests');
     }
+    assertNotProd('DATABASE_URL', url);
     sql = postgres(url, {
       max: 3,
       idle_timeout: 20,
@@ -665,6 +703,26 @@ export async function cleanupTestData(): Promise<void> {
   await db`DELETE FROM "member" WHERE "userId" IN (
     SELECT id FROM "user" WHERE email LIKE '%@e2e-test.example.com'
   )`;
+  // signUpTestUser() hits the real /api/auth/sign-up/email endpoint, which runs
+  // ensurePersonalOrganization() and auto-provisions a *private personal org*
+  // for the new user. That org's id is `org_<token>` (NOT `org_e2e_*`), so the
+  // `org_e2e_%` filters below never matched it — it survived teardown as an
+  // orphan (0 members, a lone `$member` entity type, 0 events). Ownership is
+  // recorded in organization.metadata (text JSON) under `personal_org_for_user_id`
+  // = user.id (see personal-org-provisioning.ts). Resolve those orgs by the
+  // still-present e2e user rows and tear them down too, in FK-dependency order
+  // (events/entities/entity_types/member → organization), BEFORE the user rows
+  // are deleted below.
+  await db`
+    UPDATE entities SET parent_id = NULL
+    WHERE organization_id IN (
+      SELECT id FROM "organization"
+      WHERE metadata IS NOT NULL
+        AND (metadata::jsonb)->>'personal_org_for_user_id' IN (
+          SELECT id FROM "user" WHERE email LIKE '%@e2e-test.example.com'
+        )
+    )
+  `;
   // Delete events + entities in test orgs (must precede user/org deletion due to FKs).
   // events has a DB-level append-only guard (trg_events_append_only); test
   // teardown is sanctioned maintenance, so opt in with the transaction-scoped
@@ -673,10 +731,51 @@ export async function cleanupTestData(): Promise<void> {
   await db.begin(async (tx) => {
     await tx`SET LOCAL lobu.allow_event_delete = 'on'`;
     await tx`DELETE FROM events WHERE organization_id LIKE 'org_e2e_%'`;
+    await tx`
+      DELETE FROM events
+      WHERE organization_id IN (
+        SELECT id FROM "organization"
+        WHERE metadata IS NOT NULL
+          AND (metadata::jsonb)->>'personal_org_for_user_id' IN (
+            SELECT id FROM "user" WHERE email LIKE '%@e2e-test.example.com'
+          )
+      )
+    `;
   });
   // Clear parent references before deleting entities (parent_id has RESTRICT)
   await db`UPDATE entities SET parent_id = NULL WHERE organization_id LIKE 'org_e2e_%'`;
   await db`DELETE FROM entities WHERE organization_id LIKE 'org_e2e_%'`;
+  await db`
+    DELETE FROM entities
+    WHERE organization_id IN (
+      SELECT id FROM "organization"
+      WHERE metadata IS NOT NULL
+        AND (metadata::jsonb)->>'personal_org_for_user_id' IN (
+          SELECT id FROM "user" WHERE email LIKE '%@e2e-test.example.com'
+        )
+    )
+  `;
+  await db`
+    DELETE FROM entity_types
+    WHERE organization_id IN (
+      SELECT id FROM "organization"
+      WHERE metadata IS NOT NULL
+        AND (metadata::jsonb)->>'personal_org_for_user_id' IN (
+          SELECT id FROM "user" WHERE email LIKE '%@e2e-test.example.com'
+        )
+    )
+  `;
+
+  // Drop the auto-provisioned personal orgs while the e2e user rows still exist
+  // (the membership/metadata link is resolved off user.id). Their member rows
+  // were already removed above by the email-matched member delete.
+  await db`
+    DELETE FROM "organization"
+    WHERE metadata IS NOT NULL
+      AND (metadata::jsonb)->>'personal_org_for_user_id' IN (
+        SELECT id FROM "user" WHERE email LIKE '%@e2e-test.example.com'
+      )
+  `;
 
   await db`DELETE FROM "user" WHERE email LIKE '%@e2e-test.example.com'`;
   await db`DELETE FROM "user" WHERE id LIKE 'user_e2e_%'`;

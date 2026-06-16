@@ -28,6 +28,22 @@ cd "$REPO_ROOT"
 
 PORT="${PORT:-8787}"
 APP_URL="${APP_URL:-http://127.0.0.1:${PORT}}"
+
+# Prod safety guard: this suite signs up REAL users and writes to whatever
+# DATABASE_URL + APP_URL point at. Pointed at prod it permanently contaminates
+# it (that is how the orphaned `E2E User e2e-*` personal orgs ended up in prod).
+# Hard-abort on any host that looks like prod before booting anything. Keep in
+# sync with PROD_HOST_MARKERS in packages/openclaw-plugin/test/e2e/helpers.ts.
+for marker in lobu.ai lobu-ai-prod-db summaries-prod; do
+  for target in "DATABASE_URL=$DATABASE_URL" "APP_URL=$APP_URL"; do
+    if [[ "${target#*=}" == *"$marker"* ]]; then
+      echo "Refusing to run: ${target%%=*} resolves to a production host (matched \"$marker\")." >&2
+      echo "   This suite creates real users/orgs and would contaminate prod." >&2
+      echo "   Point DATABASE_URL and APP_URL at a local/dev instance instead." >&2
+      exit 1
+    fi
+  done
+done
 LOG="$(mktemp -t lobu-e2e-server.XXXXXX.log)"
 PIDFILE="$(mktemp -t lobu-e2e-server.XXXXXX.pid)"
 FAKE_LLM_PIDFILE="$(mktemp -t lobu-e2e-fake-llm.XXXXXX.pid)"

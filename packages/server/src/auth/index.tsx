@@ -86,7 +86,14 @@ export function clearAuthCacheForTests(): void {
  * OAuth providers are dynamically loaded from connector_definitions where login_enabled=true.
  * This allows enabling/disabling login providers via the admin UI without code changes.
  */
-export async function createAuth(env: Env, request?: Request) {
+// Return type is annotated explicitly (matching `authCache`'s element type)
+// rather than inferred: the inferred `betterAuth({...})` instance type inlines
+// a reference to better-auth's bundled `zod/v4/core`, which is non-portable in
+// a clean (Docker) install layout and trips TS2742 during `tsc --noEmit`.
+export async function createAuth(
+	env: Env,
+	request?: Request
+): Promise<ReturnType<typeof betterAuth>> {
 	const organizationId = (await resolveRequestOrganizationId(request)) ?? null;
 	const cacheKey = organizationId ?? "__system__";
 	const cached = authCache.get(cacheKey);
@@ -880,5 +887,5 @@ export async function createAuth(env: Env, request?: Request) {
 	// shape, required-vs-optional database/secret); the cache stores the general
 	// Auth<BetterAuthOptions> shape, so widen via unknown.
 	authCache.set(cacheKey, auth as unknown as ReturnType<typeof betterAuth>);
-	return auth;
+	return auth as unknown as ReturnType<typeof betterAuth>;
 }

@@ -18,7 +18,7 @@
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Env } from '../../../index';
-import { getAllTools, type ToolContext } from '../../../tools/registry';
+import { getAllTools, getTool, type ToolContext } from '../../../tools/registry';
 import { ToolUserError } from '../../../utils/errors';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase } from '../../setup/test-db';
@@ -146,7 +146,17 @@ describe('MCP tool surface > schema-driven input fuzz: no tool leaks an engine e
   });
 
   it('fuzzes every tool string + record field with the nasty corpus', async () => {
-    const tools = getAllTools().filter((t) => !SKIP.has(t.name));
+    // getAllTools() returns metadata WITHOUT handlers; getTool() returns the full
+    // definition (raw schema + handler). Resolve to real handlers so we actually
+    // execute the tools — and assert each is callable so this can never silently
+    // pass without running anything (the false-green the review caught).
+    const tools = getAllTools()
+      .filter((t) => !SKIP.has(t.name))
+      .map((t) => getTool(t.name))
+      .filter((d): d is NonNullable<typeof d> => !!d);
+    expect(tools.length).toBeGreaterThan(5);
+    for (const t of tools) expect(typeof t.handler).toBe('function');
+
     const leaks: Array<{ tool: string; field: string; sample: string; error: string }> = [];
     let calls = 0;
 

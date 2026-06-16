@@ -763,7 +763,12 @@ routes.post('/:agentId/providers/:providerId/oauth/code', async (c) => {
     const credentials = await oauthClient.exchangeCodeForToken(
       parts[0].trim(),
       stateData.codeVerifier,
-      'https://console.anthropic.com/oauth/code/callback',
+      // No redirect_uri override: the exchange MUST reuse the exact redirect_uri
+      // the authorize step sent (CLAUDE_PROVIDER.redirectUri, via buildAuthUrl in
+      // the /start handler above). Passing a different value here — the old
+      // `console.anthropic.com` callback — makes Anthropic reject the exchange
+      // with `invalid_grant: Invalid 'redirect_uri'`.
+      undefined,
       parts[1].trim()
     );
 

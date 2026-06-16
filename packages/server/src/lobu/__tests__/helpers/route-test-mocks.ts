@@ -42,6 +42,15 @@ export const authStash: AuthStash = {
  */
 export const chatManagerStash: { manager: any } = { manager: null };
 
+/**
+ * Mutable holder for whatever `getLobuCoreServices()` should return. Defaults
+ * to `null` (the historical behavior every other route test relies on); the
+ * OAuth-route test (agent-routes-oauth-redirect.test.ts) sets a fake exposing
+ * `getOAuthStateStore()` + `getAuthProfilesManager()` so the
+ * `/providers/:provider/oauth/{start,code}` handlers can run.
+ */
+export const coreServicesStash: { services: any } = { services: null };
+
 let installed = false;
 
 /**
@@ -71,7 +80,7 @@ export function installRouteTestMocks(): void {
   // Resolves to src/lobu/gateway — imported by agent-routes.ts as `./gateway`.
   mock.module('../../gateway', () => ({
     getChatInstanceManager: () => chatManagerStash.manager,
-    getLobuCoreServices: () => null,
+    getLobuCoreServices: () => coreServicesStash.services,
     initLobuGateway: async () => null,
     stopLobuGateway: async () => {},
     isLobuGatewayRunning: () => false,

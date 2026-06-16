@@ -28,6 +28,7 @@ import { connectRoutes } from './connect/routes';
 import { getDb } from './db/client';
 import * as invalidationEmitter from './events/emitter';
 import { streamInvalidationEvents } from './events/sse';
+import { invalidationSseAuth } from './events/sse-invalidation-auth';
 import { isExcludedSpaPath } from './http/spa-route-filter';
 import { isShuttingDown } from './lifecycle-state';
 import { restGetAuthProfileForRun, restGetFeedForRun } from './connector-run/routes';
@@ -1177,7 +1178,7 @@ app.route('/api/agents/platforms', platformSchemaRoutes);
 // ============================================
 // SSE Invalidation Events (for frontend cache sync)
 // ============================================
-app.get('/api/:orgSlug/events', mcpAuth, async (c) => {
+app.get('/api/:orgSlug/events', invalidationSseAuth, async (c) => {
   const orgId = c.get('organizationId');
   if (!orgId) return c.json({ error: 'Organization context required' }, 401);
 

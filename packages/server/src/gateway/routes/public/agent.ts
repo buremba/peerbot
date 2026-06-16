@@ -33,7 +33,7 @@ import type { ISessionManager, ThreadSession } from "../../session.js";
 import { verifyOwnedAgentAccess } from "../shared/agent-ownership.js";
 import { errorResponse } from "../shared/helpers.js";
 import { errorResponses } from "../shared/openapi-responses.js";
-import { verifySettingsSession } from "./settings-auth.js";
+import { verifySettingsSessionOrToken } from "./settings-auth.js";
 
 const logger = createLogger("agent-api");
 
@@ -597,8 +597,12 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       return { organizationId: access.organizationId };
     };
 
-    // 1. Settings session cookie (or injected auth provider for embedded mode).
-    const settingsSession = await verifySettingsSession(c);
+    // 1. Settings session cookie (or injected auth provider for embedded mode),
+    //    or a short-lived `?token=` ticket — the embedded panel's SSE stream
+    //    uses EventSource, which can't send Authorization, so it authenticates
+    //    via a ticket from /api/sse-ticket. verifySettingsToken decrypts it to
+    //    the same SettingsSession shape the cookie path yields.
+    const settingsSession = await verifySettingsSessionOrToken(c, "token");
     if (settingsSession) {
       const access = await verifyOwnedAgentAccess(
         settingsSession,

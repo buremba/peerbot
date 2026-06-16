@@ -9,6 +9,7 @@ import {
   createTestUser,
 } from '../../__tests__/setup/test-fixtures';
 import { get, postForm } from '../../__tests__/setup/test-helpers';
+import { verifySettingsToken } from '../../gateway/routes/public/settings-auth';
 
 // Two deep-link entry points, two postures:
 //   - GET /exchange-token: first-party tab (CLI/menu-bar) → Lax session cookie.
@@ -121,5 +122,59 @@ describe('deep-link token exchange', () => {
       (o) => o.slug
     );
     expect(anonSlugs).not.toContain(slug);
+  });
+});
+
+// EventSource can't send Authorization, so the embedded panel's SSE streams
+// authenticate with a short-lived ?token= ticket from /api/sse-ticket. The
+// ticket decrypts to the same SettingsSession shape the cookie path yields, so
+// the agent-ownership check (verifySettingsSessionOrToken) accepts it.
+describe('SSE ticket (/api/sse-ticket)', () => {
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+  });
+
+  async function sessionTokenForNewUser(slug: string, email: string): Promise<string> {
+    const org = await createTestOrganization({ slug });
+    const user = await createTestUser({ email });
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const { token: pat } = await createTestPAT(user.id, org.id, { scope: 'profile:read' });
+    const exchange = await postForm('/api/extension-session', { token: pat });
+    return ((await exchange.json()) as { session_token: string }).session_token;
+  }
+
+  it('requires a Bearer token', async () => {
+    expect((await get('/api/sse-ticket')).status).toBe(401);
+    expect((await get('/api/sse-ticket', { token: 'garbage' })).status).toBe(401);
+  });
+
+  it('mints a ticket that decrypts to the user as a first-party-shaped settings session', async () => {
+    const sessionToken = await sessionTokenForNewUser(
+      'sse-ticket-org',
+      'sse-ticket@test.example.com'
+    );
+
+    const res = await get('/api/sse-ticket', { token: sessionToken });
+    expect(res.status).toBe(200);
+    const { ticket } = (await res.json()) as { ticket: string };
+    expect(ticket.length).toBeGreaterThan(0);
+    // The ticket never carries the raw session token.
+    expect(ticket).not.toContain(sessionToken);
+
+    // It decrypts to the user with platform 'external' — the shape
+    // verifyOwnedAgentAccess keys on for the web/cookie path, so the agent
+    // stream authorizes the same owner.
+    const payload = await verifySettingsToken(ticket);
+    expect(payload?.platform).toBe('external');
+    expect((payload?.userId ?? '').length).toBeGreaterThan(0);
+  });
+
+  it('serves the bootstrap page with retry-on-failure handling (no silent redirect)', async () => {
+    const res = await get('/api/extension-bootstrap');
+    const html = await res.text();
+    // On exchange failure it surfaces an error + Retry instead of redirecting
+    // to a token-less app (which would just hang on a spinner).
+    expect(html).toContain('owl-retry');
+    expect(html).toContain('function fail');
   });
 });

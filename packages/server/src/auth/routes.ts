@@ -8,6 +8,7 @@
  */
 
 import { createHmac } from 'node:crypto';
+import { encrypt } from '@lobu/core';
 import { type Context, Hono } from 'hono';
 import { createDbClientFromEnv } from '../db/client';
 import type { Env } from '../index';
@@ -459,6 +460,54 @@ credentialRoutes.post('/extension-session', async (c) => {
   return c.json({ session_token: sessionToken });
 });
 
+// TTL for SSE tickets — long enough to cover a single agent response (incl.
+// EventSource auto-reconnects mid-stream), short enough that a leaked URL is
+// near-useless. The SPA mints a fresh ticket per stream.
+const SSE_TICKET_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Mint a short-lived ticket the embedded SPA appends to SSE URLs as
+ * `?access_token=`.
+ *
+ * EventSource can't send `Authorization`, so the cross-site iframe (which has
+ * no session cookie) can't authenticate its streams the way `fetch` does. This
+ * endpoint — authenticated by the Bearer session token the SPA already holds —
+ * returns an encrypted, short-lived token (the same `verifySettingsToken`
+ * shape) carrying just the user id. Stateless: any replica decrypts it, so it's
+ * multi-replica safe with no shared store. The raw session token never goes in
+ * a URL.
+ */
+credentialRoutes.get('/sse-ticket', async (c) => {
+  c.header('Referrer-Policy', 'no-referrer');
+  c.header('Cache-Control', 'no-store');
+
+  const authHeader = c.req.header('Authorization');
+  const bearer = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  if (!bearer) {
+    return c.json(
+      { error: 'unauthorized', error_description: 'Bearer token required' },
+      401
+    );
+  }
+
+  const userId = await resolveDeepLinkToken(c, bearer);
+  if (!userId) {
+    return c.json(
+      { error: 'invalid_token', error_description: 'token is invalid, expired, or revoked' },
+      401
+    );
+  }
+
+  // platform: 'external' matches the owletto web/cookie session shape so the
+  // agent-ownership check (`verifyOwnedAgentAccess`, which keys on platform)
+  // resolves the SAME owner it would for a first-party web session. No jti →
+  // no revocation lookup needed; the short TTL is the bound.
+  const ticket = encrypt(
+    JSON.stringify({ userId, platform: 'external', exp: Date.now() + SSE_TICKET_TTL_MS })
+  );
+  return c.json({ ticket });
+});
+
 /**
  * Bootstrap page for the Owletto extension's side-panel iframe.
  *
@@ -486,21 +535,41 @@ credentialRoutes.get('/extension-bootstrap', (c) => {
   history.replaceState(null, "", location.pathname);
   var next = worker ? "/#worker=" + encodeURIComponent(worker) : "/";
   if (!token) { location.replace("/"); return; }
-  var body = new URLSearchParams();
-  body.set("token", token);
-  fetch("/api/extension-session", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
-  })
-    .then(function (r) { return r.ok ? r.json() : null; })
-    .then(function (data) {
-      if (data && data.session_token) {
-        try { sessionStorage.setItem("owletto.session_token", data.session_token); } catch (e) {}
-      }
-      location.replace(next);
+  function fail(msg) {
+    // Surface a real error instead of redirecting to a token-less app, which
+    // would just render signed-out and hang on a spinner — the exact failure
+    // this whole flow exists to avoid.
+    document.body.innerHTML =
+      '<div style="font:14px/1.5 system-ui,sans-serif;color:#334155;padding:24px;max-width:24rem">' +
+      '<p style="margin:0 0 .5rem;font-weight:600">Could not connect to your Owletto.</p>' +
+      '<p style="margin:0 0 1rem;color:#64748b"></p>' +
+      '<button id="owl-retry" style="font:inherit;padding:.4rem .9rem;border:1px solid #cbd5e1;border-radius:.4rem;background:#f8fafc;cursor:pointer">Retry</button>' +
+      '</div>';
+    document.querySelectorAll("p")[1].textContent = msg;
+    var b = document.getElementById("owl-retry");
+    if (b) b.onclick = attempt;
+  }
+  function attempt() {
+    document.body.textContent = "Connecting\\u2026";
+    var body = new URLSearchParams();
+    body.set("token", token);
+    fetch("/api/extension-session", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
     })
-    .catch(function () { location.replace(next); });
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (data) {
+        if (data && data.session_token) {
+          try { sessionStorage.setItem("owletto.session_token", data.session_token); } catch (e) {}
+          location.replace(next);
+        } else {
+          fail("Your session may have expired. Re-pair from the extension if this keeps happening.");
+        }
+      })
+      .catch(function () { fail("Network error reaching the gateway."); });
+  }
+  attempt();
 })();
 </script></body>`
   );

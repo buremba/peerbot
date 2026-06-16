@@ -8,8 +8,6 @@ import { secureHeaders } from "hono/secure-headers";
 import type { AgentMetadata } from "../auth/agent-metadata-store.js";
 import { takePendingTool } from "../auth/mcp/pending-tool-store.js";
 import { setEnvResolver } from "../auth/mcp/string-substitution.js";
-import { OAuthClient } from "../auth/oauth/client.js";
-import { CLAUDE_PROVIDER } from "../auth/oauth/providers.js";
 import { createAuthProfileLabel } from "../auth/settings/auth-profiles-manager.js";
 import { SystemEnvStore } from "../auth/system-env-store.js";
 import { getMetricsText } from "../metrics/prometheus.js";
@@ -34,10 +32,6 @@ import {
 import { createPublicFileRoutes } from "../routes/public/files.js";
 import { createLandingRoutes } from "../routes/public/landing.js";
 import { createMcpOAuthRoutes } from "../routes/public/mcp-oauth.js";
-import {
-  createOAuthRoutes,
-  type ProviderCredentialStore,
-} from "../routes/public/oauth.js";
 import {
   type AuthProvider,
   setAuthProvider,
@@ -582,7 +576,6 @@ export function createGatewayApp(
     }
 
     const agentSettingsStore = coreServices.getAgentSettingsStore();
-    const claudeOAuthStateStore = coreServices.getOAuthStateStore();
 
     const providerStores: Record<
       string,
@@ -651,22 +644,6 @@ export function createGatewayApp(
       logger.debug(
 				"Agent config routes enabled at :8080/api/v1/agents/{id}/config",
       );
-    }
-
-    if (agentSettingsStore) {
-      const claudeOAuthClient = new OAuthClient(CLAUDE_PROVIDER);
-      const oauthRouter = createOAuthRoutes({
-        providerStores:
-          Object.keys(providerStores).length > 0
-            ? (providerStores as Record<string, ProviderCredentialStore>)
-            : undefined,
-        oauthClients: { claude: claudeOAuthClient },
-        oauthStateStore: claudeOAuthStateStore,
-        userAgentsStore: coreServices.getUserAgentsStore(),
-        agentMetadataStore: coreServices.getAgentMetadataStore(),
-      });
-      authRouter.route("", oauthRouter);
-      registeredProviders.push("oauth");
     }
 
     if (registeredProviders.length > 0) {

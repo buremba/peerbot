@@ -18,7 +18,6 @@ const INTERNAL_PREFIXES = [
 // platform webhooks, system probes, and infra endpoints
 const EXCLUDED_ROUTES = [
   "/", // Landing page
-  "/api/v1/auth/{provider}/login", // OAuth redirect (browser-only)
   "/api/v1/reload", // Dev-only config reload, not a public API
   "/slack/install", // Slack app install
   "/slack/oauth_callback", // Slack OAuth callback

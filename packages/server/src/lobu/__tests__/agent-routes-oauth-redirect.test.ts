@@ -41,12 +41,16 @@ import {
   ensureDbForGatewayTests,
   resetTestDatabase,
 } from '../../gateway/__tests__/helpers/db-setup.js';
-import { createOAuthStateStore } from '../../gateway/auth/oauth/state-store.js';
+import { orgContext } from '../stores/org-context';
 import {
   authStash,
   coreServicesStash,
   installRouteTestMocks,
 } from './helpers/route-test-mocks';
+import {
+  buildRealClaudeAuthStack,
+  type RealClaudeAuthStack,
+} from './helpers/real-claude-auth-stack';
 
 installRouteTestMocks();
 
@@ -87,32 +91,6 @@ async function seedOrgAndAgent(): Promise<void> {
   `;
 }
 
-interface UpsertCapture {
-  calls: any[];
-}
-
-function installCoreServices(upsert: UpsertCapture): void {
-  const stateStore = createOAuthStateStore('claude');
-  coreServicesStash.services = {
-    getOAuthStateStore: () => stateStore,
-    getAuthProfilesManager: () => ({
-      async upsertProfile(args: any) {
-        // Mirror the real AuthProfilesManager.upsertProfile guard: persisting a
-        // profile requires the owning principal's userId. If the route omits it
-        // (the prod bug after the redirect_uri fix), the persist throws and the
-        // whole login fails AFTER a successful token exchange — so the fake must
-        // enforce it too, or the test would pass against a broken route.
-        if (!args.userId) {
-          throw new Error(
-            'upsertProfile requires userId — declared agents cannot be mutated'
-          );
-        }
-        upsert.calls.push(args);
-      },
-    }),
-  };
-}
-
 /** Captures the body POSTed to Anthropic's token endpoint, returns a fake
  *  token. Every other URL falls through to the real fetch. */
 function installTokenEndpointMock(captured: {
@@ -142,6 +120,8 @@ function installTokenEndpointMock(captured: {
 }
 
 describe('Claude OAuth redirect_uri must match between authorize and exchange', () => {
+  let stack: RealClaudeAuthStack;
+
   beforeEach(async () => {
     await resetTestDatabase();
     await seedOrgAndAgent();
@@ -154,6 +134,17 @@ describe('Claude OAuth redirect_uri must match between authorize and exchange', 
     authStash.organizationId = ORG;
     authStash.authSource = 'session';
     authStash.mcpAuthInfo = null;
+
+    // Use the REAL AuthProfilesManager (DB-backed) so the genuine
+    // `upsertProfile` userId guard runs — not a fake mirroring it. This is what
+    // makes the test fail for the same reason prod did (lobu #1321).
+    stack = await orgContext.run({ organizationId: ORG }, () =>
+      buildRealClaudeAuthStack()
+    );
+    coreServicesStash.services = {
+      getOAuthStateStore: () => stack.oauthStateStore,
+      getAuthProfilesManager: () => stack.authProfilesManager,
+    };
   });
 
   afterEach(() => {
@@ -162,8 +153,6 @@ describe('Claude OAuth redirect_uri must match between authorize and exchange', 
   });
 
   test('exchange reuses the authorize redirect_uri (no console.anthropic.com override)', async () => {
-    const upsert: UpsertCapture = { calls: [] };
-    installCoreServices(upsert);
     const captured: {
       url?: string;
       contentType?: string | null;
@@ -205,16 +194,19 @@ describe('Claude OAuth redirect_uri must match between authorize and exchange', 
     expect(exchangeParams.get('redirect_uri')).toBe(authorizeRedirectUri);
     expect(exchangeParams.get('redirect_uri')).toBe(EXPECTED_REDIRECT_URI);
 
-    // The rotated credentials were persisted as a Claude oauth profile —
-    // crucially scoped to the authenticated session user (`userId`), which the
-    // real upsertProfile guard requires. Omitting it threw post-exchange in prod.
-    expect(upsert.calls).toHaveLength(1);
-    expect(upsert.calls[0]).toMatchObject({
-      agentId: AGENT,
-      userId: USER,
+    // The credential was actually persisted via the REAL AuthProfilesManager,
+    // scoped to the authenticated session user. Read it back through the same
+    // manager (under the agent's org) — if the route had omitted `userId`, the
+    // real upsertProfile guard would have thrown and the request would have
+    // 400'd above, so reaching a stored profile here is the genuine proof.
+    const stored = await orgContext.run({ organizationId: ORG }, () =>
+      stack.authProfilesManager.getProviderProfiles(AGENT, 'claude', USER)
+    );
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({
       provider: 'claude',
       authType: 'oauth',
-      credential: 'sk-ant-oat01-test-access',
     });
+    expect(stored[0]?.credential).toBe('sk-ant-oat01-test-access');
   });
 });

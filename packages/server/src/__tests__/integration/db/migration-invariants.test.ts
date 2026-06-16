@@ -122,6 +122,31 @@ describe('migration invariants', () => {
       `;
       expect(hashIdx.map((r) => r.indexname)).toEqual(['oauth_tokens_token_hash_key']);
     });
+
+    it('redundant/dead indexes are dropped while their covering indexes remain (2026-06-16 audit round 2)', async () => {
+      const sql = getTestDb();
+      // Dropped: idx_events_source_embedding (dup of event_embeddings_pkey),
+      // idx_connect_tokens_token (dup of the UNIQUE connect_tokens_token_key),
+      // geo_places_location_idx (postgis index superseded by geo_places_earth_idx).
+      const dropped = await sql<{ indexname: string }[]>`
+        SELECT indexname FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname IN ('idx_events_source_embedding', 'idx_connect_tokens_token', 'geo_places_location_idx')
+      `;
+      expect(dropped).toHaveLength(0);
+
+      // The covering indexes that make the drops safe must still exist.
+      const kept = await sql<{ indexname: string }[]>`
+        SELECT indexname FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname IN ('event_embeddings_pkey', 'connect_tokens_token_key', 'geo_places_earth_idx')
+      `;
+      expect(kept.map((r) => r.indexname).sort()).toEqual([
+        'connect_tokens_token_key',
+        'event_embeddings_pkey',
+        'geo_places_earth_idx',
+      ]);
+    });
   });
 
   describe('functional contract: pending oauth_account uniqueness is per-user (#1121)', () => {

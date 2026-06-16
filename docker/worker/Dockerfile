@@ -97,6 +97,13 @@ COPY --from=builder --chown=worker:worker /app/packages/connector-worker ./packa
 
 # Install patchright's Chromium (declared as `playwright` alias in worker package.json).
 # Use bunx from the worker workspace so bun's resolver finds the alias.
+# PLAYWRIGHT_BROWSERS_PATH pins BOTH the install target and the runtime lookup to
+# an absolute, HOME-independent path. Without it patchright defaults to
+# $HOME/.cache/ms-playwright (/home/worker/.cache/ms-playwright), and the connector
+# child spawned via fork() in a different cwd can fail to resolve the binary ->
+# "Executable doesn't exist". /ms-playwright is created + chowned to worker above;
+# subprocess.ts already forwards PLAYWRIGHT_BROWSERS_PATH to the connector child.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 USER 1001
 WORKDIR /app/packages/connector-worker
 RUN bunx --bun playwright install chromium

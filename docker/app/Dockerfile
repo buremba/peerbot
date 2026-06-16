@@ -156,8 +156,17 @@ COPY --from=builder /app/packages/owletto ./packages/owletto
 # Database migrations
 COPY db/migrations ./db/migrations
 
-# Install Playwright/patchright Chromium for browser-based connectors
-RUN npx patchright install chromium 2>/dev/null || npx playwright install chromium 2>/dev/null || true
+# Install Playwright/patchright Chromium for browser-based connectors.
+# PLAYWRIGHT_BROWSERS_PATH pins both the install target and the runtime lookup to
+# an absolute, HOME-independent path (default is $HOME/.cache/ms-playwright, which
+# differs by USER and breaks the connector child forked in another cwd). chmod 755
+# keeps it readable regardless of which user the runtime resolves to. The install
+# must fail the build loudly — the old `2>/dev/null ... || true` silently shipped
+# images with no Chromium. `playwright` is the patchright alias, so a single
+# patchright install is deterministic.
+RUN mkdir -p /ms-playwright && chmod 755 /ms-playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npx patchright install chromium
 
 # Build metadata + environment defaults
 ARG APP_GIT_SHA=unknown

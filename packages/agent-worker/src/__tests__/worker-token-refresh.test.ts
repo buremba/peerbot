@@ -135,6 +135,37 @@ describe("per-turn token adoption (transport reads the live manager token)", () 
   });
 });
 
+describe("seed() never clobbers a live token (aux-transport rollback guard)", () => {
+  test("constructing an aux transport after adopt cannot roll the token back", async () => {
+    stubFetch();
+    // Turn start: adopt the live per-run token (mirrors OpenClawWorker.execute).
+    adoptWorkerToken("live-run-token");
+    // An exec job mid-turn constructs an auxiliary transport from the STALE boot
+    // token — its constructor seed() must no-op, not clobber the live token.
+    const aux = makeTransport("stale-boot-token");
+    expect(getWorkerTokenManager().getToken()).toBe("live-run-token");
+    await aux.signalCompletion();
+    expect(capturedAuth.every((a) => a === "Bearer live-run-token")).toBe(true);
+    expect(capturedAuth).not.toContain("Bearer stale-boot-token");
+  });
+
+  test("seed() is a no-op once a token has been adopted", () => {
+    const mgr = getWorkerTokenManager();
+    mgr.adopt("live-token");
+    mgr.seed("stale-boot-token");
+    expect(mgr.getToken()).toBe("live-token");
+  });
+
+  test("seed() sets the token while uninitialized, then no-ops on a re-seed", () => {
+    const mgr = getWorkerTokenManager();
+    mgr.seed("boot-token");
+    expect(mgr.getToken()).toBe("boot-token");
+    // A second aux transport seeding a different token must not change it.
+    mgr.seed("other-token");
+    expect(mgr.getToken()).toBe("boot-token");
+  });
+});
+
 describe("proactive refresh (before expiry)", () => {
   test("a near-expiry token is refreshed before the gateway call", async () => {
     process.env.WORKER_TOKEN_TTL_MS = "1000"; // 1s TTL → window = last 200ms

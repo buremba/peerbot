@@ -51,7 +51,7 @@ export class HttpWorkerTransport implements WorkerTransport {
     // is the single source of truth for the live token — this transport's
     // gateway POSTs read it via fetchWithRefresh, so there is no per-transport
     // token field to drift.
-    getWorkerTokenManager().adopt(config.workerToken);
+    getWorkerTokenManager().seed(config.workerToken);
     this.userId = config.userId;
     this.channelId = config.channelId;
     this.conversationId = config.conversationId;

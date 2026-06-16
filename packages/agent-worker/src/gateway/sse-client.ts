@@ -136,7 +136,7 @@ export class GatewayClient {
     // its delivery receipts read the manager's live token — so a turn running
     // past the 2h TTL keeps authenticating after a refresh instead of pinning
     // the now-expired boot bearer.
-    getWorkerTokenManager().adopt(workerToken);
+    getWorkerTokenManager().seed(workerToken);
     this.userId = userId;
     this.deploymentName = deploymentName;
     this.httpPort = httpPort;
@@ -569,7 +569,10 @@ export class GatewayClient {
     // Create transport for sending responses back to gateway
     const transport = new HttpWorkerTransport({
       gatewayUrl: this.dispatcherUrl,
-      workerToken: this.workerToken,
+      // Prefer this exec job's per-run token over the stale boot token so the
+      // manager seeds with the right bearer; seed() no-ops anyway once a live
+      // token is adopted, but this keeps the value correct on a cold first seed.
+      workerToken: data.runJobToken ?? this.workerToken,
       userId: data.userId,
       channelId: data.channelId,
       conversationId,

@@ -57,6 +57,11 @@ export class WorkerTokenManager {
    *  before the liveness gate). */
   private autoRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private autoRefreshEnabled = false;
+  /** True once a token has been explicitly seeded, adopted, or refreshed.
+   *  Distinguishes a real token from the lazy env default so a later seed()
+   *  from an auxiliary transport cannot roll a live/refreshed token back to the
+   *  stale boot bearer. */
+  private initialized = false;
 
   constructor(initialToken: string, gatewayUrl: string, issuedAtMs?: number) {
     this.token = initialToken;
@@ -73,6 +78,23 @@ export class WorkerTokenManager {
   adopt(token: string, issuedAtMs: number = Date.now()): void {
     this.token = token;
     this.issuedAtMs = issuedAtMs;
+    this.initialized = true;
+    if (this.autoRefreshEnabled) this.armAutoRefresh();
+  }
+
+  /**
+   * Seed from a boot/deployment token WITHOUT clobbering a token that was
+   * already adopted (the per-run runJobToken) or refreshed. Auxiliary transports
+   * are constructed mid-turn from the stale boot token, so calling adopt() there
+   * would roll the live token back to the now-expired boot bearer and 401 the
+   * rest of the turn. Seed takes effect only once — while the manager still
+   * holds its lazy env default — and no-ops thereafter.
+   */
+  seed(token: string, issuedAtMs: number = Date.now()): void {
+    if (this.initialized) return;
+    this.token = token;
+    this.issuedAtMs = issuedAtMs;
+    this.initialized = true;
     if (this.autoRefreshEnabled) this.armAutoRefresh();
   }
 

@@ -951,29 +951,65 @@ describe('UnifiedThreadResponseConsumer — wired output guardrail (API path)', 
     expect(rows[0]!.metadata.agent_id).toBe(agentId);
   });
 
-  it('suppresses a streaming delta that carries a secret (no output broadcast)', async () => {
+  it('withholds ALL streaming deltas for a guardrail-enabled agent (cross-pod split-secret cannot leak)', async () => {
     const { sse, events } = createCapturingSse();
     const consumer = createConsumer(sse);
 
-    const payload = {
-      messageId: 'm1',
-      channelId: 'api:conv-1',
-      conversationId: 'conv-1',
-      userId: 'u1',
-      teamId: 'api',
-      platform: 'api',
-      timestamp: 0,
-      delta: 'here it is sk-abcdefghij0123456789AB done',
-      platformMetadata: { agentId, organizationId: orgId },
-    };
+    // Even a delta that LOOKS clean is withheld — a secret could be split across
+    // deltas claimed on different replicas, which no per-pod scan would catch.
+    // The scanned finalText is delivered at completion instead.
+    for (const delta of ['here it is ', 'sk-abcdefghij', '0123456789AB done']) {
+      await orgContext.run({ organizationId: orgId }, async () => {
+        await consumer.handleThreadResponse({
+          id: '1',
+          data: {
+            messageId: 'm1',
+            channelId: 'api:conv-1',
+            conversationId: 'conv-1',
+            originalMessageId: 'm1',
+            userId: 'u1',
+            teamId: 'api',
+            platform: 'api',
+            timestamp: 0,
+            delta,
+            platformMetadata: { agentId, organizationId: orgId },
+          },
+        });
+      });
+    }
+
+    // No delta reaches the client as an `output` event.
+    expect(events.filter((e) => e.event === 'output').length).toBe(0);
+  });
+
+  it('streams deltas normally for an agent with NO output guardrails', async () => {
+    const { sse, events } = createCapturingSse();
+    const consumer = createConsumer(sse);
+
+    // A separate agent with no guardrails configured — streaming is unaffected.
+    const plain = await createTestAgent({ organizationId: orgId });
 
     await orgContext.run({ organizationId: orgId }, async () => {
-      await consumer.handleThreadResponse({ id: '1', data: payload });
+      await consumer.handleThreadResponse({
+        id: '1',
+        data: {
+          messageId: 'm2',
+          channelId: 'api:conv-2',
+          conversationId: 'conv-2',
+          originalMessageId: 'm2',
+          userId: 'u1',
+          teamId: 'api',
+          platform: 'api',
+          timestamp: 0,
+          delta: 'streaming token',
+          platformMetadata: { agentId: plain.agentId, organizationId: orgId },
+        },
+      });
     });
 
-    // The leaking delta must not reach the client as an `output` event.
     const outputs = events.filter((e) => e.event === 'output');
-    expect(outputs.length).toBe(0);
+    expect(outputs.length).toBe(1);
+    expect(outputs[0]!.payload.content).toBe('streaming token');
   });
 
   it('passes a clean finalText through unchanged (no false block)', async () => {

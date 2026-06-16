@@ -439,50 +439,29 @@ export class UnifiedThreadResponseConsumer {
       const md = readPlatformMetadata(data.platformMetadata);
       const agentId = md.agentId;
       if (agentId) {
-        const gctx = {
-          agentId,
-          organizationId: md.organizationId,
-          userId: data.userId,
-          conversationId: data.conversationId,
-          platform: "api",
-        };
-        // Key the rolling-tail + blocked state per TURN, not per conversation:
-        // a worker's deltas and its terminal row share `originalMessageId`, but a
-        // conversation hosts many turns. Keying on conversationId would let one
-        // turn's leftover tail (`…sk-a`) fuse with the next turn's first delta
-        // (`bcdef…`) into a phantom match, or let one turn's terminal clear()
-        // wipe a concurrent turn's blocked flag. originalMessageId scopes both
-        // to a single turn.
-        const guardKey = data.originalMessageId || data.messageId;
-
-        // Suppress streaming deltas that carry — or, via the rolling tail,
-        // complete — a secret. Best-effort under N>1: deltas aren't owner-gated,
-        // so a delta claimed on another replica is lost regardless; the terminal
-        // scan below re-checks the full finalText on the owning pod.
+        // Withhold streaming deltas for agents that configured output
+        // guardrails. Deltas are NOT owner-gated under N>1, so a secret split
+        // across deltas claimed on different pods would trip no per-pod scan and
+        // could reach a streaming SSE client before the terminal scan. We can't
+        // scan a partial cross-pod stream safely, so we don't stream at all:
+        // the full, scanned `finalText` is delivered on the terminal `complete`
+        // event instead (the SPA renders from it). Agents without output
+        // guardrails stream normally — `hasOutputGuardrails` returns false.
         if (data.delta) {
-          if (this.outputGuardrail.isBlocked(guardKey)) return;
-          const trip = await this.outputGuardrail.scanDelta(
-            guardKey,
-            data.delta,
-            gctx
-          );
-          if (trip) return;
-        }
-
-        // Terminal rows carry the worker's authoritative finalText. Scan it; on
-        // a trip, replace the broadcast text with the block notice so the SPA's
-        // finalText repair (ApiResponseRenderer.handleCompletion) shows the
-        // block instead of the secret. Then release per-session scanner state.
-        const isTerminalRow = !!(
-          data.error || data.processedMessageIds?.length
-        );
-        if (isTerminalRow) {
+          if (await this.outputGuardrail.hasOutputGuardrails(agentId)) return;
+        } else if (data.error || data.processedMessageIds?.length) {
+          // Terminal row: scan the worker's authoritative finalText on this
+          // (owner-gated) pod. On a trip, replace the broadcast text with the
+          // block notice so the secret never reaches the client and never lands
+          // in stored history.
           if (data.finalText) {
-            const trip = await this.outputGuardrail.scanFinal(
-              guardKey,
-              data.finalText,
-              gctx
-            );
+            const trip = await this.outputGuardrail.scanFinal(data.finalText, {
+              agentId,
+              organizationId: md.organizationId,
+              userId: data.userId,
+              conversationId: data.conversationId,
+              platform: "api",
+            });
             if (trip) {
               data = {
                 ...data,
@@ -492,7 +471,6 @@ export class UnifiedThreadResponseConsumer {
               };
             }
           }
-          this.outputGuardrail.clear(guardKey);
         }
       }
     }

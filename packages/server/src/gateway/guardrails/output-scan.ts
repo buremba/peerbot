@@ -108,19 +108,23 @@ export async function runOutputGuardrailScan(
 }
 
 /**
- * Stateful output-guardrail scanner for renderers that lack their own stream
- * state (the API/SSE path). Owns the per-session rolling tail and a blocked-set
- * so once a stream trips, subsequent deltas on this pod are suppressed. The
- * authoritative enforcement is the terminal `scanFinal` on the worker's full
- * `finalText` (owner-gated, replica-safe); per-delta scanning is best-effort
- * defense-in-depth (deltas aren't owner-gated under N>1, so a delta claimed on
- * another pod is lost anyway — the terminal scan re-checks the full text).
+ * Output-guardrail scanner for renderers that lack their own stream state (the
+ * API/SSE path). Enforcement is the terminal `scanFinal` on the worker's full,
+ * authoritative `finalText` — owner-gated, so it runs on the SSE-owning pod and
+ * is replica-safe regardless of how delta rows scattered.
+ *
+ * Per-delta scanning is deliberately NOT done here: deltas are not owner-gated
+ * under N>1, so a secret split across deltas claimed on different pods would
+ * trip no per-pod scan and could reach a streaming client before the terminal
+ * scan. Instead, `hasOutputGuardrails` lets the consumer WITHHOLD streaming
+ * deltas entirely for an agent that configured output guardrails and deliver
+ * only the scanned `finalText` at completion — a hard guarantee that no
+ * unscanned token reaches the client, at the cost of token-by-token streaming
+ * for those agents. Agents without output guardrails stream unaffected.
  */
 export class OutputGuardrailScanner {
   private registry?: GuardrailRegistry;
   private settingsStore?: AgentSettingsStore;
-  private tails = new Map<string, string>();
-  private blocked = new Set<string>();
 
   setGuardrails(
     registry?: GuardrailRegistry,
@@ -134,65 +138,38 @@ export class OutputGuardrailScanner {
     return !!(this.registry && this.settingsStore);
   }
 
-  isBlocked(key: string): boolean {
-    return this.blocked.has(key);
-  }
-
   /**
-   * Scan a streaming delta using `tail + delta`. On a trip, marks the session
-   * blocked and clears the tail. Returns the trip (already audited) or `null`.
+   * Whether `agentId` has ANY output-stage guardrail configured. When true the
+   * consumer withholds streaming deltas and delivers only the scanned
+   * `finalText`. Fails open (returns false) on a lookup error — consistent with
+   * guardrails never blocking on infra failure. Resolution rides the
+   * AgentSettingsStore's own memoization (the chat bridge resolves per-delta the
+   * same way), so no extra cache is kept here (avoids config-edit staleness).
    */
-  async scanDelta(
-    key: string,
-    delta: string,
-    ctx: OutputScanContext
-  ): Promise<OutputGuardrailTrip | null> {
-    if (!this.enabled || !delta) return null;
-    const combined = (this.tails.get(key) ?? "") + delta;
-    const window =
-      combined.length > OUTPUT_GUARDRAIL_SCAN_WINDOW
-        ? combined.slice(-OUTPUT_GUARDRAIL_SCAN_WINDOW)
-        : combined;
-    this.tails.set(key, window);
-
-    const trip = await runOutputGuardrailScan(
-      this.registry,
-      this.settingsStore,
-      window,
-      ctx
-    );
-    if (trip) {
-      this.blocked.add(key);
-      this.tails.delete(key);
+  async hasOutputGuardrails(agentId: string): Promise<boolean> {
+    if (!this.enabled || !agentId) return false;
+    try {
+      const settings = await this.settingsStore!.getSettings(agentId);
+      const resolved = resolveAgentGuardrails(
+        settings ?? { guardrails: [] },
+        (settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),
+        this.registry!
+      );
+      return resolved.byStage.output.length > 0;
+    } catch {
+      return false;
     }
-    return trip;
   }
 
   /**
    * Scan the authoritative final text at terminal time. Returns the trip
-   * (already audited) or `null`. Does not need prior delta state — it scans the
-   * full text, so it blocks correctly even when delta rows landed on other
-   * replicas.
+   * (already audited) or `null`. Scans the full text, so it blocks correctly
+   * even when delta rows landed on other replicas.
    */
   async scanFinal(
-    key: string,
     text: string,
     ctx: OutputScanContext
   ): Promise<OutputGuardrailTrip | null> {
-    if (!this.enabled) return null;
-    const trip = await runOutputGuardrailScan(
-      this.registry,
-      this.settingsStore,
-      text,
-      ctx
-    );
-    if (trip) this.blocked.add(key);
-    return trip;
-  }
-
-  /** Release per-session state once a stream reaches its terminal row. */
-  clear(key: string): void {
-    this.tails.delete(key);
-    this.blocked.delete(key);
+    return runOutputGuardrailScan(this.registry, this.settingsStore, text, ctx);
   }
 }

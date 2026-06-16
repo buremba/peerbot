@@ -174,15 +174,25 @@ export async function extendTurnDeadlines(
  * on a worker reply, {@link failTurnsForDeployment} on worker death,
  * {@link sweepExpiredTurns} on a lapsed deadline, {@link failTurnIfPending} on
  * startup failure). While a turn legitimately runs long, the worker's 20s
- * heartbeat pushes the marker's deadline forward ({@link extendTurnDeadlines}),
- * so the marker stays `pending` and this returns true; a hung or dead worker
- * stops heartbeating, the marker lapses and is swept, and this returns false.
+ * heartbeat pushes the marker's deadline (`run_at`) forward
+ * ({@link extendTurnDeadlines}), so the marker stays pending with a future
+ * deadline and this returns true; a hung or dead worker stops heartbeating, the
+ * deadline lapses, and this returns false.
  *
  * This is the liveness gate for worker-token refresh: a fresh token is minted
  * only while the deployment has live work. Once all turns terminalize, the
  * marker(s) are gone, refresh is denied, and the token chain dies — that
  * deletion IS the revocation path (the leak window is bounded by how long the
  * work actually runs, not an unbounded refresh chain).
+ *
+ * **Deadline predicate (`run_at > now()`):** the marker is deleted by the sweep
+ * only on its periodic tick (`turnLivenessSweepIntervalMs`), so between a lapsed
+ * deadline and the next sweep the row is still `pending`. A bare `status =
+ * 'pending'` check would authorize a refresh in that gap — for work whose
+ * deadline has already passed (the worker is hung/dead, just not yet swept),
+ * widening the leak window past the deadline the heartbeat was supposed to keep
+ * alive. Requiring a future deadline ties authorization to genuine liveness
+ * (the heartbeat) rather than to sweep latency.
  *
  * Cross-pod authoritative: this reads the same shared `public.runs` table that
  * every terminalization path mutates transactionally, so any replica sees the
@@ -198,13 +208,15 @@ export async function hasLiveTurnForDeployment(
   const sql = getDb();
   // status + run_type + queue_name match the partial predicate / leading column
   // of `runs_lobu_claim_idx`, so this is an index probe, not a scan of the
-  // 30-day `runs` retention.
+  // 30-day `runs` retention. `run_at > now()` excludes lapsed-but-unswept
+  // markers (see the deadline-predicate note above).
   const rows = await sql<{ ok: number }>`
     SELECT 1 AS ok FROM public.runs
     WHERE status = 'pending'
       AND run_type = 'internal'
       AND queue_name = ${TURN_TIMEOUT_QUEUE}
       AND action_input->>'deploymentName' = ${deploymentName}
+      AND run_at > now()
     LIMIT 1
   `;
   return rows.length > 0;

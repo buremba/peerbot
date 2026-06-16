@@ -254,6 +254,23 @@ describe("hasLiveTurnForDeployment (token-refresh liveness gate)", () => {
     expect(await hasLiveTurnForDeployment("dep-dead")).toBe(false);
   });
 
+  test("REFRESH DENIED: false for a lapsed-but-UNSWEPT marker (post-deadline, pre-sweep gap)", async () => {
+    // The marker row still exists with status='pending' (the sweep runs only on
+    // its periodic tick), but its deadline has passed — a hung/dead worker that
+    // stopped heartbeating. The gate must NOT authorize refresh here: liveness is
+    // the deadline (heartbeat), not whether the sweep has run yet.
+    await armTurnTimeout(queue, routing("dep-lapsed", "m1"));
+    expect(await hasLiveTurnForDeployment("dep-lapsed")).toBe(true);
+
+    await expireAllMarkers(); // run_at → past, WITHOUT sweeping (row still pending)
+    expect(await markerCount("dep-lapsed")).toBe(1); // row not deleted
+    expect(await hasLiveTurnForDeployment("dep-lapsed")).toBe(false);
+
+    // And a live heartbeat extend brings it back (legitimately-long turn).
+    await extendTurnDeadlines("dep-lapsed");
+    expect(await hasLiveTurnForDeployment("dep-lapsed")).toBe(true);
+  });
+
   test("REFRESH DENIED: false after the deadline lapses and is swept (hung worker)", async () => {
     await armTurnTimeout(queue, routing("dep-hung", "m1"));
     expect(await hasLiveTurnForDeployment("dep-hung")).toBe(true);

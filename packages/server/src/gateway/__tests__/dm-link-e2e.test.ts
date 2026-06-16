@@ -64,7 +64,7 @@ describe("DM /lobu link <code> — real consume→bind chain", () => {
       });
       const dispatcher = new CommandDispatcher({
         registry,
-        channelBindingService: { getBinding: mock(async () => null) } as never,
+        channelBindingService: { getBinding: mock(async () => null), getBindingAnyOrg: mock(async () => null) } as never,
       });
 
       const replies: string[] = [];

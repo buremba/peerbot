@@ -233,7 +233,8 @@ async function upsertBinding(
       INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
       VALUES (${organizationId}, ${agentId}, ${platform}, ${channelId}, ${teamId}, now())
       ON CONFLICT (organization_id, platform, channel_id, team_id) DO UPDATE SET
-        agent_id = EXCLUDED.agent_id
+        agent_id = EXCLUDED.agent_id,
+        created_at = EXCLUDED.created_at
     `;
   } else {
     await tx`
@@ -241,7 +242,8 @@ async function upsertBinding(
       VALUES (${organizationId}, ${agentId}, ${platform}, ${channelId}, NULL, now())
       ON CONFLICT (organization_id, platform, channel_id)
         WHERE team_id IS NULL
-        DO UPDATE SET agent_id = EXCLUDED.agent_id
+        DO UPDATE SET agent_id = EXCLUDED.agent_id,
+          created_at = EXCLUDED.created_at
     `;
   }
 }
@@ -451,7 +453,9 @@ export async function previewUnlinkedNotice(
   return [
     "👋 This chat isn't linked to a Lobu agent yet.",
     '',
-    `Run \`lobu apply\` then \`lobu run\` to get a \`${linkCommand(platform)} <code>\`, and send it here.`,
+    'New to Lobu? Scaffold a project with `npx @lobu/cli init`, then:',
+    '`lobu apply` to sync it, and `lobu run` to get a ' +
+      `\`${linkCommand(platform)} <code>\` — paste that code here to link this chat.`,
   ].join('\n');
 }
 

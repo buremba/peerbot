@@ -313,6 +313,10 @@ export class MessageHandlerBridge {
       (message.raw as Record<string, unknown> | undefined)?.team;
     const teamId = typeof rawTeamId === "string" ? rawTeamId : undefined;
 
+    // Preview connections fan out to agents in OTHER orgs (a `/lobu link <code>`
+    // binds under the claim's org, not this connection's), so resolve the
+    // binding org-agnostically and route by the binding's own org.
+    const isPreview = this.connection.settings?.previewMode === true;
     const resolved = await resolveAgentId({
       platform,
       channelId,
@@ -320,6 +324,7 @@ export class MessageHandlerBridge {
       agentId: this.connection.agentId,
       organizationId: this.connection.organizationId,
       channelBindingService,
+      crossOrg: isPreview,
     });
     if (!resolved) {
       logger.warn(
@@ -330,19 +335,16 @@ export class MessageHandlerBridge {
     }
 
     const agentId = resolved.agentId;
+    const routingOrgId =
+      resolved.organizationId ?? this.connection.organizationId;
 
     // Track first-time-seen user → agent association for visibility in the
     // admin API. Idempotent — agent_users has a (agent_id, platform, user_id)
     // unique constraint.
     const userAgentsStore = this.services.getUserAgentsStore();
-    if (userAgentsStore && this.connection.organizationId) {
+    if (userAgentsStore && routingOrgId) {
       try {
-        await userAgentsStore.addAgent(
-          platform,
-          userId,
-          agentId,
-          this.connection.organizationId
-        );
+        await userAgentsStore.addAgent(platform, userId, agentId, routingOrgId);
       } catch (error) {
         logger.warn(
           { agentId, userId, error: String(error) },
@@ -561,6 +563,7 @@ export class MessageHandlerBridge {
 
     await this.enqueueUserTurn({
       agentId,
+      organizationId: routingOrgId,
       userId,
       channelId,
       conversationId,
@@ -593,6 +596,9 @@ export class MessageHandlerBridge {
    */
   private async enqueueUserTurn(args: {
     agentId: string;
+    /** Org the turn runs under. For preview connections this is the bound
+     * agent's org (cross-org), not necessarily the connection's org. */
+    organizationId: string | undefined;
     userId: string;
     channelId: string;
     conversationId: string;
@@ -618,6 +624,7 @@ export class MessageHandlerBridge {
   }): Promise<void> {
     const {
       agentId,
+      organizationId,
       userId,
       channelId,
       conversationId,
@@ -683,7 +690,7 @@ export class MessageHandlerBridge {
         conversationId,
         teamId: payloadTeamId,
         agentId,
-        organizationId: this.connection.organizationId,
+        organizationId,
         messageId,
         messageText,
         channelId,
@@ -789,6 +796,7 @@ export class MessageHandlerBridge {
     const isGroup = conversationId !== channelId;
 
     const channelBindingService = this.services.getChannelBindingService();
+    const isPreview = this.connection.settings?.previewMode === true;
     const resolved = await resolveAgentId({
       platform,
       channelId,
@@ -796,6 +804,7 @@ export class MessageHandlerBridge {
       agentId: this.connection.agentId,
       organizationId: this.connection.organizationId,
       channelBindingService,
+      crossOrg: isPreview,
     });
     if (!resolved) {
       logger.warn(
@@ -805,9 +814,12 @@ export class MessageHandlerBridge {
       return;
     }
     const agentId = resolved.agentId;
+    const routingOrgId =
+      resolved.organizationId ?? this.connection.organizationId;
 
     await this.enqueueUserTurn({
       agentId,
+      organizationId: routingOrgId,
       userId,
       channelId,
       conversationId,

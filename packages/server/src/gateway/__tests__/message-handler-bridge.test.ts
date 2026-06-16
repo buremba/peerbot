@@ -464,7 +464,7 @@ describe("MessageHandlerBridge.handleMessage — thread backfill", () => {
 
 describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", () => {
   function makePreviewHarness(opts: {
-    binding?: { agentId: string } | null;
+    binding?: { agentId: string; organizationId?: string } | null;
     previewMode?: boolean;
     commandDispatcher?: {
       tryHandleSlashText?: (...args: any[]) => Promise<boolean>;
@@ -477,6 +477,9 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
       id: CONN_ID,
       platform: "slack",
       agentId: TEMPLATE_AGENT_ID,
+      // The hosted preview connection lives in its OWN org; bound agents may
+      // live in OTHER orgs (see the cross-org test below).
+      organizationId: "org-connection",
       config: { platform: "slack" } as any,
       settings: { allowGroups: true, previewMode: opts.previewMode ?? true },
       metadata: { botUsername: "testbot", botUserId: "U_BOT" },
@@ -488,7 +491,7 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     const channelBindingService =
       opts.binding === undefined
         ? undefined
-        : { getBinding: mock(async () => opts.binding) };
+        : { getBinding: mock(async () => opts.binding), getBindingAnyOrg: mock(async () => opts.binding) };
     const services = {
       getArtifactStore: () => null,
       getPublicGatewayUrl: () => "https://gateway.example.com",
@@ -542,6 +545,27 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
         (c: unknown[]) => !String(c[0]).includes("/lobu link")
       )
     ).toBe(true);
+  });
+
+  test("cross-org: routes the worker turn under the BOUND agent's org, not the connection's", async () => {
+    // Regression for the hosted-preview cross-org bug: a `/lobu link <code>`
+    // binds an agent that lives in a DIFFERENT org than the preview connection.
+    // The worker turn MUST run under the binding's org, or the agent's workspace
+    // (knowledge, secrets, providers) resolves under the wrong tenant.
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      binding: { agentId: "food-ordering", organizationId: "org-bound" },
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(thread, makeMessage(), "mention");
+
+    expect(enqueueMessage).toHaveBeenCalledTimes(1);
+    const payload = enqueueMessage.mock.calls[0]?.[0] as any;
+    expect(payload.agentId ?? payload.platformMetadata?.agentId).toBe(
+      "food-ordering"
+    );
+    // The binding's org wins over the connection's org ("org-connection").
+    expect(payload.organizationId).toBe("org-bound");
   });
 
   test("`/lobu link <code>` DM message dispatches link before the preview menu", async () => {

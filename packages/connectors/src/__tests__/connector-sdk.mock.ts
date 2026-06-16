@@ -33,6 +33,9 @@ export function connectorSdkMock() {
     acquireBrowser: notUsed('acquireBrowser'),
     captureErrorArtifacts: notUsed('captureErrorArtifacts'),
     extensionNetworkSync: notUsed('extensionNetworkSync'),
+    createHttpClient: notUsed('createHttpClient'),
+    paginateByCursor: notUsed('paginateByCursor'),
+    paginateByOffset: notUsed('paginateByOffset'),
     ConnectorRuntime: class {},
     calculateEngagementScore: () => 0,
     extensionDomScrape: async (opts: DomScrapeOpts) => {

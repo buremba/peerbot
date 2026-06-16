@@ -42,7 +42,13 @@ interface SpotifyAlbum {
 }
 
 interface SpotifyTrack {
-  id: string;
+  /**
+   * Spotify catalog track id. Null for local files and unavailable tracks —
+   * use `trackKey()` for a stable per-track identifier, never `track.id`
+   * directly in an origin_id (otherwise every local track collides on
+   * `..._track_null` and supersedes the others).
+   */
+  id: string | null;
   name: string;
   artists: SpotifyArtist[];
   album: SpotifyAlbum;
@@ -110,6 +116,17 @@ interface SpotifyCheckpoint {
 
 function artistNames(artists: SpotifyArtist[]): string {
   return artists.map((a) => a.name).join(', ');
+}
+
+/**
+ * Stable per-track identifier for origin_ids. Spotify omits `id` for local
+ * files and unavailable tracks; falling back to the always-present `uri`
+ * (e.g. `spotify:local:...`) keeps each track distinct. Without this, every
+ * id-less track collapses onto `..._track_null` and the dedup path supersedes
+ * them down to a single surviving row (silent data loss).
+ */
+export function trackKey(track: { id: string | null; uri: string }): string {
+  return track.id ?? track.uri;
 }
 
 function albumArt(images: SpotifyImage[]): string | undefined {
@@ -331,7 +348,7 @@ export default class SpotifyConnector extends ConnectorRuntime {
       for (const item of items) {
         const track = item.track;
         events.push({
-          origin_id: `spotify_track_${track.id}`,
+          origin_id: `spotify_track_${trackKey(track)}`,
           title: track.name,
           payload_text: `${track.name} by ${artistNames(track.artists)} — ${track.album.name}`,
           author_name: artistNames(track.artists),
@@ -423,7 +440,7 @@ export default class SpotifyConnector extends ConnectorRuntime {
           if (!item.track) continue;
           const track = item.track;
           trackEvents.push({
-            origin_id: `spotify_pl_${pl.id}_track_${track.id}`,
+            origin_id: `spotify_pl_${pl.id}_track_${trackKey(track)}`,
             title: track.name,
             payload_text: `${track.name} by ${artistNames(track.artists)}`,
             author_name: artistNames(track.artists),
@@ -490,7 +507,7 @@ export default class SpotifyConnector extends ConnectorRuntime {
         const track = item.track;
         const playedAt = new Date(item.played_at);
         events.push({
-          origin_id: `spotify_play_${track.id}_${playedAt.getTime()}`,
+          origin_id: `spotify_play_${trackKey(track)}_${playedAt.getTime()}`,
           title: track.name,
           payload_text: `${track.name} by ${artistNames(track.artists)}`,
           author_name: artistNames(track.artists),
@@ -527,6 +544,8 @@ export default class SpotifyConnector extends ConnectorRuntime {
     const timeRange = (ctx.config.time_range as string) ?? 'medium_term';
     const events: EventEnvelope[] = [];
     let rank = 1;
+    // UTC-midnight bucket so re-syncs within the same day dedup (see occurred_at below).
+    const snapshotDay = new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`);
 
     const pages = paginateByOffset(
       async (offset) => {
@@ -541,12 +560,18 @@ export default class SpotifyConnector extends ConnectorRuntime {
     for await (const items of pages) {
       for (const track of items) {
         events.push({
-          origin_id: `spotify_top_${timeRange}_${track.id}`,
+          origin_id: `spotify_top_${timeRange}_${trackKey(track)}`,
           title: `#${rank} ${track.name}`,
           payload_text: `${track.name} by ${artistNames(track.artists)} — ${track.album.name}`,
           author_name: artistNames(track.artists),
           source_url: track.external_urls.spotify,
-          occurred_at: new Date(),
+          // Day-bucketed snapshot time. A bare `new Date()` makes every sync
+          // look new (occurred_at always differs), so an unchanged top-tracks
+          // ranking supersedes itself on each run and the events table grows
+          // unbounded with masked rows. Bucketing to UTC midnight lets an
+          // identical same-day snapshot dedup while still recording the new
+          // ranking whenever it actually shifts.
+          occurred_at: snapshotDay,
           origin_type: 'top_track',
           metadata: {
             artist: artistNames(track.artists),

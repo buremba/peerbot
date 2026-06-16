@@ -154,6 +154,95 @@ describe("connection_claims lease (exclusive transports)", () => {
     expect(other.instances.has("conn-poll")).toBe(false);
   });
 
+  test("a TRANSIENT exclusive-start failure is retried automatically after backoff, with NO row edit", async () => {
+    const { manager, connectionStore } = await buildReplica();
+    await seedTelegramPolling(
+      connectionStore,
+      "org-transient",
+      "agent-transient",
+      "conn-transient"
+    );
+
+    // First hydrate throws (Telegram 5xx / DB blip class) — this leaves the
+    // row errored. Subsequent hydrates succeed.
+    let calls = 0;
+    manager.hydrateFromRow = async (stored: any) => {
+      calls += 1;
+      if (calls === 1) throw new Error("transient boom (5xx)");
+      manager.instances.set(stored.id, {
+        connection: { id: stored.id, platform: stored.platform },
+        chat: {},
+        conversationState: {},
+        messageBridge: {},
+        rowVersion: stored.updatedAt,
+      });
+    };
+
+    // Tick 1: claims the lease, hydrate throws → row errored, backoff scheduled.
+    await manager.exclusiveTick();
+    expect(manager.instances.has("conn-transient")).toBe(false);
+    const errored = await connectionStore.getConnection("conn-transient");
+    expect(errored!.status).toBe("error");
+    expect(errored!.errorMessage ?? "").toContain("Startup failed");
+
+    // A failure record exists and gates the very next tick (still in backoff).
+    const failure = manager.exclusiveFailures.get("conn-transient");
+    expect(failure).toBeDefined();
+    await manager.exclusiveTick();
+    expect(manager.instances.has("conn-transient")).toBe(false);
+    expect(calls).toBe(1); // gated — no second hydrate attempt yet
+
+    // Simulate elapsed backoff WITHOUT any config/row edit: the time-based gate
+    // must now allow re-hydration. (Old code keyed retry purely on updated_at,
+    // so it would NEVER retry without a human edit — this is the regression.)
+    manager.exclusiveFailures.get("conn-transient").nextRetryAt = Date.now() - 1;
+    await manager.exclusiveTick();
+    expect(calls).toBe(2);
+    expect(manager.instances.has("conn-transient")).toBe(true);
+    // Success clears the failure record.
+    expect(manager.exclusiveFailures.has("conn-transient")).toBe(false);
+  });
+
+  test("removeConnection deletes the connection_claims lease row (no orphan)", async () => {
+    const { getDb } = await import("../../../db/client.js");
+    const { manager, connectionStore } = await buildReplica();
+    await seedTelegramPolling(
+      connectionStore,
+      "org-rm",
+      "agent-rm",
+      "conn-rm-claim"
+    );
+
+    // Register a minimal instance whose conversationState is a no-op stub, so
+    // removeConnection's history-cleanup is network/DB-free and the test
+    // isolates the claim-row deletion (the behaviour under test).
+    manager.hydrateFromRow = async (stored: any) => {
+      manager.instances.set(stored.id, {
+        connection: { id: stored.id, platform: stored.platform },
+        conversationState: { clearAllHistory: async () => 0 },
+        rowVersion: stored.updatedAt,
+      });
+    };
+
+    // Claim the lease for this connection.
+    await manager.exclusiveTick();
+    expect(manager.instances.has("conn-rm-claim")).toBe(true);
+    const before = await getDb()`
+      SELECT 1 FROM connection_claims WHERE connection_id = 'conn-rm-claim'
+    `;
+    expect(before.length).toBe(1);
+
+    // Remove the connection: the lease row must be gone (no FK cascade exists).
+    const { orgContext } = await import("../../../lobu/stores/org-context.js");
+    await orgContext.run({ organizationId: "org-rm" }, () =>
+      manager.removeConnection("conn-rm-claim")
+    );
+    const after = await getDb()`
+      SELECT 1 FROM connection_claims WHERE connection_id = 'conn-rm-claim'
+    `;
+    expect(after.length).toBe(0);
+  });
+
   test("request paths never start an exclusive connection on a non-owner replica", async () => {
     const { manager: a } = await buildReplica();
     const { manager: b, connectionStore } = await buildReplica();

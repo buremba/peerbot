@@ -26,6 +26,27 @@ import type { ToolContext } from './registry';
 import { withValidatedArgs } from './validate-args';
 import { buildEventViewUrl } from './view-urls';
 
+/**
+ * True when a Postgres error is the unique-violation (23505) on the partial
+ * index that guards "at most one event supersedes a given target". The loser
+ * of a concurrent-supersede race hits this; postgres.js exposes the SQLSTATE
+ * on `code` and the index name on `constraint`/`constraint_name`.
+ */
+function isSupersededByUniqueViolation(error: unknown): boolean {
+  const err = error as {
+    code?: unknown;
+    constraint?: unknown;
+    constraint_name?: unknown;
+    message?: unknown;
+  };
+  if (err?.code !== '23505') return false;
+  return (
+    err.constraint === 'idx_events_superseded_by' ||
+    err.constraint_name === 'idx_events_superseded_by' ||
+    (typeof err.message === 'string' && err.message.includes('idx_events_superseded_by'))
+  );
+}
+
 // ============================================
 // Typebox Schema
 // ============================================
@@ -266,8 +287,11 @@ async function saveContentImpl(
         AND organization_id = ${ctx.organizationId}
     `;
     if (existing.length === 0) {
-      throw new Error(
-        `Cannot supersede event ${args.supersedes_event_id}: not found in this organization`
+      // Stale supersede target (already gone / wrong org) is a user fault, not
+      // an infra error — ToolUserError so it doesn't fire a Sentry alert.
+      throw new ToolUserError(
+        `Cannot supersede event ${args.supersedes_event_id}: not found in this organization`,
+        404
       );
     }
     const superseding = await sql`
@@ -276,8 +300,9 @@ async function saveContentImpl(
       LIMIT 1
     `;
     if (superseding.length > 0) {
-      throw new Error(
-        `Cannot supersede event ${args.supersedes_event_id}: already superseded by event ${superseding[0].id}`
+      throw new ToolUserError(
+        `Cannot supersede event ${args.supersedes_event_id}: already superseded by event ${superseding[0].id}`,
+        409
       );
     }
   }
@@ -285,25 +310,44 @@ async function saveContentImpl(
   // 6. Insert into events
   const externalId = `uc_${crypto.randomUUID()}`;
 
-  const row = await insertEvent({
-    entityIds: finalEntityIds,
-    organizationId: ctx.organizationId,
-    originId: externalId,
-    title: args.title,
-    payloadType,
-    content: args.content ?? null,
-    payloadData: args.payload_data,
-    payloadTemplate: args.payload_template ?? null,
-    attachments: args.attachments,
-    authorName: args.author,
-    sourceUrl: args.source_url ?? null,
-    occurredAt: args.occurred_at ?? null,
-    semanticType,
-    metadata: args.metadata,
-    createdBy: ctx.userId,
-    clientId: ctx.clientId,
-    supersedesEventId: args.supersedes_event_id ?? null,
-  });
+  let row: Awaited<ReturnType<typeof insertEvent>>;
+  try {
+    row = await insertEvent({
+      entityIds: finalEntityIds,
+      organizationId: ctx.organizationId,
+      originId: externalId,
+      title: args.title,
+      payloadType,
+      content: args.content ?? null,
+      payloadData: args.payload_data,
+      payloadTemplate: args.payload_template ?? null,
+      attachments: args.attachments,
+      authorName: args.author,
+      sourceUrl: args.source_url ?? null,
+      occurredAt: args.occurred_at ?? null,
+      semanticType,
+      metadata: args.metadata,
+      createdBy: ctx.userId,
+      clientId: ctx.clientId,
+      supersedesEventId: args.supersedes_event_id ?? null,
+    });
+  } catch (error) {
+    // The "already superseded?" SELECT above is non-atomic: two concurrent
+    // supersedes of the same target both pass the read, both INSERT, and the
+    // loser hits the partial unique index idx_events_superseded_by with a raw
+    // 23505. The unique index protects the invariant (no data loss) — surface
+    // it as a clean 409 user error instead of a raw DB error + Sentry alert.
+    if (
+      args.supersedes_event_id &&
+      isSupersededByUniqueViolation(error)
+    ) {
+      throw new ToolUserError(
+        `Cannot supersede event ${args.supersedes_event_id}: already superseded by a concurrent write`,
+        409
+      );
+    }
+    throw error;
+  }
 
   // 6b. Auto-link: scan content for entity name mentions.
   // Awaited so the background work doesn't outlive the tool call and reject

@@ -68,6 +68,16 @@ const EXCLUSIVE_TICK_MS = 15_000;
 const CLAIM_TTL_SECONDS = 45;
 
 /**
+ * Bounded exponential backoff for a failed exclusive start. A transient
+ * failure must be retried automatically (instead of latching DEAD until a
+ * human edits the row), but the retry must NOT flap: the backoff starts at one
+ * tick and doubles, capped so a genuinely-broken connection costs at most one
+ * short start attempt per `EXCLUSIVE_FAILURE_MAX_BACKOFF_MS` window.
+ */
+const EXCLUSIVE_FAILURE_BASE_BACKOFF_MS = EXCLUSIVE_TICK_MS;
+const EXCLUSIVE_FAILURE_MAX_BACKOFF_MS = 10 * 60_000;
+
+/**
  * Platforms that are valid to declare on an agent but have no chat adapter to
  * run. `rest` is the HTTP Agent API (`POST /lobu/api/v1/agents/:id/messages`),
  * which is registered unconditionally in gateway/routes/public/agent.ts —
@@ -121,11 +131,19 @@ export class ChatInstanceManager {
   /** Exclusive connections this replica currently holds the lease for. */
   private exclusiveOwned = new Set<string>();
   /**
-   * rowVersion of the last failed exclusive start per connection, so a
-   * broken config is retried once per row edit instead of every tick.
-   * Pod-local on purpose: retry bookkeeping is a local decision.
+   * Backoff bookkeeping for a failed exclusive start, keyed by connection id.
+   * `rowVersion` is the post-failure `updated_at` so a row edit resets the
+   * backoff; `attempts` drives exponential backoff; `nextRetryAt` is the
+   * epoch-ms gate so a TRANSIENT failure (Telegram 5xx, DB blip, secret
+   * hiccup) is retried automatically instead of latching DEAD forever, while
+   * a genuinely-bad config still only burns one short tick per backoff window.
+   * Pod-local on purpose: this replica holds the lease, so its retry cadence
+   * is a purely local decision (see the N>1 reasoning in the PR body).
    */
-  private lastExclusiveFailure = new Map<string, number>();
+  private exclusiveFailures = new Map<
+    string,
+    { rowVersion: number; attempts: number; nextRetryAt: number }
+  >();
   private exclusiveTickInFlight = false;
 
   /**
@@ -339,6 +357,13 @@ export class ChatInstanceManager {
     );
     await this.connectionStore.deleteConnection(id);
 
+    // Drop any lease row for this connection. `connection_claims` has no FK
+    // cascade onto agent_connections, so without this an exclusive connection's
+    // claim leaks if the owner pod crashes before its next tick. Delete by
+    // connection_id only (NOT podId-scoped): removeConnection can run on a
+    // non-owner replica, which must still be able to clear the dead owner's row.
+    await this.deleteClaimForConnection(id);
+
     logger.info({ id, historyDeleted, secretsDeleted }, "Connection removed");
   }
 
@@ -361,7 +386,7 @@ export class ChatInstanceManager {
     // claim runner (here or on the owning replica) retry on its next tick,
     // but a request path never starts the polling loop itself.
     if (this.isExclusiveStored(stored)) {
-      this.lastExclusiveFailure.delete(id);
+      this.exclusiveFailures.delete(id);
       return;
     }
 
@@ -495,7 +520,7 @@ export class ChatInstanceManager {
         // Lease-owned: drop any local loop; the claim owner re-hydrates on
         // its next tick via the rowVersion mismatch.
         await this.stopInstance(id);
-        this.lastExclusiveFailure.delete(id);
+        this.exclusiveFailures.delete(id);
       } else {
         // Eager restart on the serving pod for immediate config validation;
         // other replicas converge lazily via the rowVersion memo. On failure
@@ -1260,7 +1285,7 @@ export class ChatInstanceManager {
       if (!exclusiveRows.has(id)) {
         await this.stopInstance(id);
         this.exclusiveOwned.delete(id);
-        this.lastExclusiveFailure.delete(id);
+        this.exclusiveFailures.delete(id);
         await this.releaseClaim(id);
       }
     }
@@ -1298,11 +1323,25 @@ export class ChatInstanceManager {
       this.exclusiveOwned.add(s.id);
       const instance = this.instances.get(s.id);
       if (instance && instance.rowVersion === s.updatedAt) continue;
-      if (this.lastExclusiveFailure.get(s.id) === s.updatedAt) continue;
+
+      // Backoff gate: skip a re-hydration only while a prior failure for THIS
+      // row version is still inside its backoff window. Once nextRetryAt has
+      // passed we retry even though updated_at is unchanged — that's what turns
+      // a transient start failure from "DEAD until a human edits the row" into
+      // "retried automatically with exponential backoff". A row edit (different
+      // updatedAt) clears the record below and retries immediately.
+      const failure = this.exclusiveFailures.get(s.id);
+      if (
+        failure &&
+        failure.rowVersion === s.updatedAt &&
+        Date.now() < failure.nextRetryAt
+      ) {
+        continue;
+      }
 
       try {
         await this.hydrateFromRow(s);
-        this.lastExclusiveFailure.delete(s.id);
+        this.exclusiveFailures.delete(s.id);
       } catch (error) {
         logger.error(
           { id: s.id, error: String(error) },
@@ -1313,10 +1352,28 @@ export class ChatInstanceManager {
           "error",
           `Startup failed: ${error instanceof Error ? error.message : String(error)}`
         );
-        // Remember the post-write rowVersion so we retry only when the row
-        // actually changes (the status write itself bumps updated_at).
+        // Schedule a bounded, exponentially-backed-off retry. The status write
+        // above bumps updated_at, so key the record on the POST-write version:
+        // a genuine config edit later produces yet another version and resets
+        // the backoff (record cleared on the version mismatch). We KEEP the
+        // lease through the failure (no releaseClaim) on purpose — releasing it
+        // would just bounce the same transient failure around N replicas
+        // (flapping). One owner retrying on a capped backoff is the calmer,
+        // multi-replica-correct behaviour.
         const reread = await this.connectionStore.getConnection(s.id);
-        this.lastExclusiveFailure.set(s.id, reread?.updatedAt ?? s.updatedAt);
+        const rowVersion = reread?.updatedAt ?? s.updatedAt;
+        const prior =
+          failure && failure.rowVersion === rowVersion ? failure.attempts : 0;
+        const attempts = prior + 1;
+        const backoff = Math.min(
+          EXCLUSIVE_FAILURE_BASE_BACKOFF_MS * 2 ** (attempts - 1),
+          EXCLUSIVE_FAILURE_MAX_BACKOFF_MS
+        );
+        this.exclusiveFailures.set(s.id, {
+          rowVersion,
+          attempts,
+          nextRetryAt: Date.now() + backoff,
+        });
       }
     }
   }
@@ -1352,6 +1409,25 @@ export class ChatInstanceManager {
       logger.warn(
         { id: connectionId, error: String(error) },
         "Failed to release exclusive claim"
+      );
+    }
+  }
+
+  /**
+   * Pod-agnostic claim delete for connection removal. Unlike `releaseClaim`,
+   * this is NOT scoped to `this.podId`: the connection row is being deleted, so
+   * any replica's lease for it is dead and must go, even if a different replica
+   * (or a since-crashed one) owns it.
+   */
+  private async deleteClaimForConnection(connectionId: string): Promise<void> {
+    try {
+      await getDb()`
+        DELETE FROM connection_claims WHERE connection_id = ${connectionId}
+      `;
+    } catch (error) {
+      logger.warn(
+        { id: connectionId, error: String(error) },
+        "Failed to delete exclusive claim on connection removal"
       );
     }
   }

@@ -149,16 +149,17 @@ describe("seed() never clobbers a live token (aux-transport rollback guard)", ()
     expect(capturedAuth).not.toContain("Bearer stale-boot-token");
   });
 
-  test("exec job: adopting its own run token overrides a previous turn's token", async () => {
+  test("warm worker turn 2: re-adopting overrides turn 1's token (seed can't undo it)", async () => {
     stubFetch();
-    // A previous chat turn left its token in the process-wide manager.
-    adoptWorkerToken("previous-turn-token");
-    // handleExecJob adopts THIS exec's run token before building its transport.
-    adoptWorkerToken("exec-run-token");
+    // Turn 1 on a warm worker left its token in the process-wide manager.
+    adoptWorkerToken("turn-1-token");
+    // Turn 2 re-adopts its own fresh per-run token (OpenClawWorker.execute).
+    adoptWorkerToken("turn-2-token");
+    // A transport built for turn 2 seeds (no-op) and must use turn-2's token.
     const aux = makeTransport("boot-token");
     await aux.signalCompletion();
-    expect(capturedAuth.every((a) => a === "Bearer exec-run-token")).toBe(true);
-    expect(capturedAuth).not.toContain("Bearer previous-turn-token");
+    expect(capturedAuth.every((a) => a === "Bearer turn-2-token")).toBe(true);
+    expect(capturedAuth).not.toContain("Bearer turn-1-token");
   });
 
   test("seed() is a no-op once a token has been adopted", () => {

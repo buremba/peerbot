@@ -1,4 +1,5 @@
 import { createLogger } from "@lobu/core";
+import type { OAuthCredentials } from "../oauth/credentials.js";
 
 const logger = createLogger("chatgpt-device-code");
 
@@ -181,6 +182,56 @@ export class ChatGPTDeviceCodeClient {
       refreshToken: data.refresh_token,
       expiresIn: data.expires_in,
       accountId,
+    };
+  }
+
+  /**
+   * Exchange a stored refresh token for a fresh access token.
+   *
+   * Same OAuth token endpoint and form-encoding as {@link exchangeCode} (RFC
+   * 6749 §6). Returns {@link OAuthCredentials} so this client can be registered
+   * directly in the gateway's `TokenRefreshJob` alongside the Claude
+   * `OAuthClient`. OpenAI does not always rotate the refresh token, so the
+   * existing one is preserved when the response omits it — otherwise the stored
+   * refresh token would be wiped on every refresh.
+   */
+  async refreshToken(refreshToken: string): Promise<OAuthCredentials> {
+    const response = await fetch(TOKEN_EXCHANGE_URL, {
+      method: "POST",
+      headers: TOKEN_HEADERS,
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: CLIENT_ID,
+        refresh_token: refreshToken,
+        scope: OAUTH_SCOPE,
+      }).toString(),
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      logger.error("Token refresh failed", {
+        status: response.status,
+        body: text,
+      });
+      throw new Error(`Token refresh failed: ${response.status}`);
+    }
+
+    const data = (await response.json()) as {
+      access_token?: string;
+      refresh_token?: string;
+      expires_in?: number;
+    };
+
+    if (!data.access_token) {
+      throw new Error("Refresh response missing access_token");
+    }
+
+    return {
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token ?? refreshToken,
+      tokenType: "Bearer",
+      expiresAt: Date.now() + (data.expires_in ?? 0) * 1000,
+      scopes: OAUTH_SCOPE.split(" "),
     };
   }
 

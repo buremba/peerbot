@@ -134,4 +134,40 @@ describe("ChatGPTDeviceCodeClient encoding", () => {
     const client = new ChatGPTDeviceCodeClient();
     expect(await client.pollForToken("dev_abc", "ABCD-1234")).toBeNull();
   });
+
+  test("refresh exchange is form-encoded with grant_type=refresh_token", async () => {
+    const client = new ChatGPTDeviceCodeClient();
+    const creds = await client.refreshToken("rt_old");
+
+    expect(creds.accessToken).toBe(fakeJwt("acc_123"));
+    expect(creds.refreshToken).toBe("rt_test"); // rotated value from the response
+
+    const refresh = calls.find((c) => c.url === TOKEN_EXCHANGE_URL);
+    expect(refresh).toBeDefined();
+    expect(refresh!.contentType).toBe("application/x-www-form-urlencoded");
+    const form = new URLSearchParams(refresh!.rawBody);
+    expect(form.get("grant_type")).toBe("refresh_token");
+    expect(form.get("refresh_token")).toBe("rt_old");
+    expect(form.get("client_id")).toBeTruthy();
+    expect(form.get("scope")).toBeTruthy();
+    expect(refresh!.rawBody.trim().startsWith("{")).toBe(false);
+  });
+
+  test("refresh preserves the existing refresh_token when the response omits it", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === TOKEN_EXCHANGE_URL) {
+        return new Response(
+          // No refresh_token in the response — OpenAI doesn't always rotate it.
+          JSON.stringify({ access_token: fakeJwt("acc_9"), expires_in: 864_000 }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof globalThis.fetch;
+
+    const client = new ChatGPTDeviceCodeClient();
+    const creds = await client.refreshToken("rt_keep");
+    expect(creds.refreshToken).toBe("rt_keep"); // not wiped
+  });
 });

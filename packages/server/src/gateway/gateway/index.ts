@@ -686,41 +686,18 @@ export class WorkerGateway {
   }
 
   /**
-   * Mint a fresh worker token from a currently-valid one, gated on
-   * deployment-liveness.
+   * Mint a fresh same-claims token from a currently-valid one, so a >2h turn
+   * doesn't die when its token hits the 2h TTL (the short TTL is the leak-
+   * revocation path; this swaps the token without lengthening it).
    *
-   * Why this exists: the deployment-lifetime WORKER_TOKEN is minted once at
-   * subprocess spawn and the per-run token once per message; both carry a fixed
-   * `timestamp` and expire 2h later (WORKER_TOKEN_TTL_MS, an intentional
-   * security property — the short TTL is the leak-revocation path). A worker can
-   * legitimately outlive that window: a single turn running >2h (long
-   * autonomous / watcher run) would see even its per-run token expire mid-turn.
-   * This endpoint lets the worker swap its in-flight token for a fresh 2h one
-   * with the SAME claims, without lengthening the TTL.
-   *
-   * The revocation model is PER-TURN liveness: we mint a fresh token ONLY while
-   * {@link hasLiveTurnForMessage} reports an in-flight turn-timeout marker for
-   * the token's OWN turn — `(deploymentName, messageId)`, not merely any live
-   * turn on the deployment. The marker and the token are minted together at
-   * dispatch (MessageConsumer.handleMessage) carrying the same `messageId`, and
-   * the marker is the cross-pod-authoritative liveness signal (shared
-   * `public.runs`, the same row every terminalization path deletes atomically).
-   * When THIS turn goes terminal the marker is gone, refresh is denied, and the
-   * chain dies — so the leak window is bounded by how long this turn actually
-   * runs, not by an unbounded refresh chain. Gating per-turn (not per-deployment)
-   * closes the cross-turn leak: a still-valid token from a COMPLETED turn cannot
-   * refresh while a later, unrelated turn on the same deployment is live (that
-   * turn's marker has a different messageId). A leaked-but-expired token can't
-   * refresh (verifyWorkerToken rejects it first), and a jti-revoked token can't
-   * refresh (the revoked-token check below). The fresh token gets its OWN jti,
-   * so it can be independently revoked.
-   *
-   * Tokens with no `runId`/`messageId` (legacy direct-enqueue path) are denied:
-   * they don't go through the runs-queue dispatch that arms a turn-timeout
-   * marker, so there is no per-turn liveness signal to gate on. Those workers
-   * keep using their deployment token (and the warm-worker-across-turns case is
-   * already covered by the per-turn fresh-token adoption — each turn mints a new
-   * token).
+   * Contract: requires a valid per-run token (`runId` + `messageId`) AND a live
+   * turn-timeout marker for the token's OWN turn ({@link hasLiveTurnForMessage}
+   * on `(deploymentName, messageId)`). Gating per-turn — not per-deployment —
+   * is the load-bearing invariant: it closes the cross-turn leak where a still-
+   * valid token from a COMPLETED turn refreshes off a later, unrelated turn's
+   * liveness on the same deployment. Expired (verifyWorkerToken) and jti-revoked
+   * tokens are rejected before the gate; the fresh token gets its own jti.
+   * Legacy direct-enqueue tokens (no runId/messageId → no marker) are denied.
    */
   private async handleTokenRefresh(c: Context): Promise<Response> {
     const auth = await this.authenticateWorker(c);

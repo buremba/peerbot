@@ -1,34 +1,16 @@
 /**
- * Worker-side live token manager.
+ * Worker-side live token manager — the single source of truth for the current
+ * worker token. Worker tokens carry a fixed timestamp and are rejected 2h later
+ * (the short TTL is the leak-revocation property); this manager keeps a >2h
+ * single turn alive by refreshing against `/worker/token/refresh`. The
+ * server-side per-turn liveness gate (and the cross-turn case) is documented at
+ * the gateway route + its route tests.
  *
- * Background: every worker token (the deployment-lifetime WORKER_TOKEN minted at
- * spawn, and the per-run runJobToken minted per message) carries a fixed
- * `timestamp` and is rejected by the gateway 2h later (WORKER_TOKEN_TTL_MS — an
- * intentional security property; the short TTL is the leak-revocation path). A
- * worker can outlive that window:
- *   - across turns: each new turn already mints a fresh per-run token (the
- *     per-turn adoption in OpenClawWorker.execute() swaps it into env + the
- *     transport), so the cross-turn case is covered without this manager.
- *   - within ONE turn running >2h (long autonomous / watcher run): even the
- *     turn's runJobToken expires mid-turn. THIS is what the manager fixes.
- *
- * The manager holds the current live token and refreshes it against the gateway
- * `/worker/token/refresh` endpoint, which mints a fresh 2h token with the same
- * claims ONLY while the deployment still has an in-flight turn (deployment-
- * liveness revocation model). Three triggers:
- *   - timer (proactive, the load-bearing one for a >2h turn): a scheduled
- *     refresh fires at the start of the proactive window so the token is
- *     renewed even if the turn makes NO gateway call — the refresh request must
- *     travel with a still-valid bearer, since the route rejects an already-
- *     expired token before the liveness gate.
- *   - pre-call (proactive): ensureFresh() refreshes ahead of a gateway call
- *     that happens to land inside the window.
- *   - reactive: a 401 from a gateway call triggers a single refresh + retry.
- *
- * The manager is the single source of truth: callers read getToken() (or go
- * through fetchWithRefresh). On a successful refresh it also mirrors the token
- * into `process.env.WORKER_TOKEN`, so every per-turn env-reader (session-
- * context, snapshot hydrate/clear, deliverFinalResult's hint) picks it up.
+ * Callers read getToken() (or go through fetchWithRefresh). Refresh has three
+ * triggers: timer (proactive — renews even when the turn makes NO gateway call,
+ * the load-bearing path since the route rejects an already-expired bearer),
+ * pre-call ensureFresh(), and reactive (a 401 → one refresh + retry). On success
+ * it mirrors the token into `process.env.WORKER_TOKEN` for env-readers.
  */
 
 import { createLogger, ensureBaseUrl, getOptionalEnv } from "@lobu/core";

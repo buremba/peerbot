@@ -213,7 +213,7 @@ export interface DispatchChromeActionRequest {
   action_input: Record<string, unknown>;
 }
 
-export interface DispatchChromeActionResponse {
+interface DispatchChromeActionResponse {
   status: 'completed' | 'failed' | 'timeout';
   output?: Record<string, unknown>;
   error_message?: string;

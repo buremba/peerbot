@@ -27,7 +27,7 @@ import {
   resolveServerUrl,
 } from "./memory/_lib/openclaw-auth.js";
 
-export interface CallOptions {
+interface CallOptions {
   org?: string;
   context?: string;
   inputFile?: string;

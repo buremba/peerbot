@@ -427,7 +427,7 @@ export function recordChangeEvent(params: ChangeEventParams): void {
 // Lifecycle Event (entity create / update / delete)
 // ============================================
 
-export type LifecycleOp = 'created' | 'updated' | 'deleted';
+type LifecycleOp = 'created' | 'updated' | 'deleted';
 
 interface LifecycleEventParams {
   organizationId: string;

@@ -53,7 +53,6 @@ import {
   UpdateConnectorDefaultRepairAgentAction,
 } from './manage_connections/schemas';
 
-export type { ManageConnectionsResult } from './manage_connections/schemas';
 
 // ============================================
 // Main Function (Action Router)

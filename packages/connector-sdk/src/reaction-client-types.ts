@@ -12,10 +12,6 @@
  *     await client.knowledge.save({ content: "...", semantic_type: "digest" });
  *   };
  */
-import type { ReactionContext } from "./reaction-sdk.js";
-
-export type { ReactionContext };
-
 /**
  * A rich card for chat delivery, as a plain serializable object — a `chat`
  * `CardElement` built with the card primitives (`Card`, `Section`, `Field`,

@@ -20,7 +20,7 @@ import { isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import type { Snapshot } from '../file-source.js';
 import { matchesGlob, walkDirectoryRelative } from './glob.js';
 
-export interface DirectorySnapshotOptions {
+interface DirectorySnapshotOptions {
   /**
    * Predicate run against each POSIX-style relative path during walk and
    * read. Returning `true` excludes the path. Used to hide internal dirs

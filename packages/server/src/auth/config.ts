@@ -307,7 +307,7 @@ export function clearLoginProviderCachesForTests(): void {
   baselineProviderCache.clear();
 }
 
-export async function getBaselineLoginProviderConfigs(): Promise<EnabledLoginProviderConfig[]> {
+async function getBaselineLoginProviderConfigs(): Promise<EnabledLoginProviderConfig[]> {
   const cached = baselineProviderCache.get(BASELINE_CACHE_KEY);
   if (cached) return cached;
 

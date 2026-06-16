@@ -50,16 +50,16 @@ const logger = createLogger('task-scheduler');
 
 const TASK_QUEUE_NAME = 'task';
 
-export interface TaskContext<P = unknown> {
+interface TaskContext<P = unknown> {
   /** Decoded task payload. */
   payload: P;
   /** runs.id — useful for correlating logs. */
   taskRunId: number;
 }
 
-export type TaskHandler<P = unknown> = (ctx: TaskContext<P>) => Promise<void>;
+type TaskHandler<P = unknown> = (ctx: TaskContext<P>) => Promise<void>;
 
-export interface SpawnOptions {
+interface SpawnOptions {
   /** Dedup key. While a row with this key is in (pending|claimed|running),
    *  spawn() is a no-op. */
   idempotencyKey?: string;

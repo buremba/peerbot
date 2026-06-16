@@ -364,7 +364,7 @@ function isRealOpenAIBaseUrl(baseUrl: string): boolean {
 // Params interface
 // ---------------------------------------------------------------------------
 
-export interface RunAISessionParams {
+interface RunAISessionParams {
   // Inputs from the caller
   userPrompt: string;
   customInstructions: string;

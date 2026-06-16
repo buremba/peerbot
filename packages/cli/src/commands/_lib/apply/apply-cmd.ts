@@ -41,7 +41,7 @@ import {
 } from "./render.js";
 import { declaredConnectorKeys, referencedConnectorKeys } from "./shared.js";
 
-export interface ApplyOptions {
+interface ApplyOptions {
   cwd?: string;
   dryRun?: boolean;
   yes?: boolean;
@@ -466,7 +466,7 @@ async function installConnectorDefinitions(
  * avoids rejecting a connection's config against a stale installed schema when
  * the same apply updates that connector.
  */
-export interface ValidateConnectorStateOptions {
+interface ValidateConnectorStateOptions {
   /**
    * Connector keys whose JSON-schema validation should be skipped in this pass
    * (the locally-declared ones in the *pre*-install pass — they're schema-

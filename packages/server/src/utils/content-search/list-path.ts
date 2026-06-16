@@ -44,7 +44,7 @@ import { buildStandardParams, buildStandardWhereSql, WINDOW_JOIN_SQL } from './p
  * CTE pair, param indexing, dedup, and the response shape — is identical, so
  * it lives here. The generated SQL and parameter binding are unchanged.
  */
-export async function executeListQuery(args: {
+async function executeListQuery(args: {
   sql: DbClient;
   joinSql: string;
   whereExpr: string;

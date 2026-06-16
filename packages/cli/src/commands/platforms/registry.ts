@@ -5,7 +5,7 @@
  * from this registry.
  */
 
-export interface PlatformField {
+interface PlatformField {
   /** Key emitted into the platform config block (e.g. "botToken"). */
   key: string;
   /** Env var the value is stored under; the config references `$ENV_VAR`. */
@@ -18,7 +18,7 @@ export interface PlatformField {
   placeholder?: boolean;
 }
 
-export interface PlatformDefinition {
+interface PlatformDefinition {
   id: string;
   /** Display name used in the `lobu init` platform picker. */
   displayName: string;

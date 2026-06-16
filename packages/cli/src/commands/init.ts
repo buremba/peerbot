@@ -37,7 +37,7 @@ type NetworkChoice = (typeof NETWORK_CHOICES)[number];
 const MEMORY_CHOICES = ["none", "lobu-cloud", "lobu-custom"] as const;
 type MemoryChoice = (typeof MEMORY_CHOICES)[number];
 
-export interface InitOptions {
+interface InitOptions {
   yes?: boolean;
   here?: boolean;
   port?: string;
@@ -161,7 +161,7 @@ function printProviderList(): void {
  * blank scaffold and `--from-org`. Merges into an existing package.json
  * (preserving the user's fields) and never overwrites an existing tsconfig.
  */
-export async function scaffoldProjectPackaging(
+async function scaffoldProjectPackaging(
   projectDir: string,
   projectName: string,
   cliVersion: string
@@ -937,7 +937,7 @@ function humanizeSlug(slug: string): string {
  * (entity / relationship) are added later with `defineEntityType` etc.; chat
  * platforms can also still be wired up in the `/agents` UI after apply.
  */
-export async function generateLobuConfig(
+async function generateLobuConfig(
   projectDir: string,
   options: {
     agentName: string;

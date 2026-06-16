@@ -47,7 +47,7 @@ const STATEMENT_TIMEOUT_MS = 5000;
 const MAX_ROWS = 2000;
 
 
-export interface MetricSeriesResult {
+interface MetricSeriesResult {
   columns: string[];
   rows: unknown[][];
 }

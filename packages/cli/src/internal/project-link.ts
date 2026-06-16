@@ -4,7 +4,7 @@ import { join } from "node:path";
 const LINK_DIR = ".lobu";
 const LINK_FILE = "project.json";
 
-export interface ProjectLink {
+interface ProjectLink {
   context: string;
   org: string;
   /** ISO timestamp the link was written. */

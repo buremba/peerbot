@@ -11,6 +11,5 @@ export { TERMINAL_DELIVERY_SEND_OPTS } from "./types.js";
 export type {
   IMessageQueue,
   QueueJob,
-  QueueOptions,
   ThreadResponsePayload,
 } from "./types.js";

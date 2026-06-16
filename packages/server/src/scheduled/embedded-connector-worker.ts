@@ -25,7 +25,7 @@ import { intervals } from '../config/intervals';
 import type { Env } from '../index';
 import logger from '../utils/logger';
 
-export interface EmbeddedConnectorWorkerHandle {
+interface EmbeddedConnectorWorkerHandle {
   /** Stop polling. In-flight jobs continue to completion (or `wait()`). */
   stop(): void;
   /** Wait for any in-flight jobs to drain after `stop()`. */

@@ -13,7 +13,7 @@ import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { resolveExecutionAuth } from '../utils/execution-context';
 
-export interface ConnectorQueryParams {
+interface ConnectorQueryParams {
   organizationId: string;
   /** Connection slug (org-scoped). */
   connectionSlug: string;
@@ -30,7 +30,7 @@ export interface ConnectorQueryParams {
   sort?: { column: string; order: 'asc' | 'desc' };
 }
 
-export interface ConnectorQueryResult {
+interface ConnectorQueryResult {
   rows: Record<string, unknown>[];
   columns: { name: string; type: string }[];
   total?: number;

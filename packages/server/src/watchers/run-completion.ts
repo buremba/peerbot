@@ -2,7 +2,7 @@ import type { DbClient } from '../db/client';
 import { getDb, pgTextArray } from '../db/client';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 
-export type WatcherTerminalResult = { ok: true } | { ok: false; error: string };
+type WatcherTerminalResult = { ok: true } | { ok: false; error: string };
 
 export async function findWindowIdForRun(sql: DbClient, runId: number): Promise<number | null> {
   const rows = await sql`

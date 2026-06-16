@@ -14,7 +14,7 @@ import { z } from "@hono/zod-openapi";
 // then crash the adapter at runtime with a confusing 401 from Telegram.
 const TELEGRAM_BOT_TOKEN_RE = /^\d{6,12}:[A-Za-z0-9_-]{30,}$/;
 
-export const TelegramConfigSchema = z.object({
+const TelegramConfigSchema = z.object({
   platform: z.literal("telegram"),
   botToken: z
     .string()
@@ -44,7 +44,7 @@ export const TelegramConfigSchema = z.object({
     .openapi({ description: "Custom Telegram API base URL." }),
 });
 
-export const SlackConfigSchema = z.object({
+const SlackConfigSchema = z.object({
   platform: z.literal("slack"),
   botToken: z.string().optional().openapi({
     description: "Bot token (xoxb-...). Required for single-workspace mode.",
@@ -77,7 +77,7 @@ export const SlackConfigSchema = z.object({
     .openapi({ description: "Override bot username." }),
 });
 
-export const DiscordConfigSchema = z.object({
+const DiscordConfigSchema = z.object({
   platform: z.literal("discord"),
   botToken: z
     .string()
@@ -100,7 +100,7 @@ export const DiscordConfigSchema = z.object({
     .openapi({ description: "Override bot username." }),
 });
 
-export const WhatsAppConfigSchema = z.object({
+const WhatsAppConfigSchema = z.object({
   platform: z.literal("whatsapp"),
   accessToken: z.string().optional().openapi({
     description: "System User access token for WhatsApp Cloud API.",
@@ -124,7 +124,7 @@ export const WhatsAppConfigSchema = z.object({
   userName: z.string().optional().openapi({ description: "Bot display name." }),
 });
 
-export const TeamsConfigSchema = z.object({
+const TeamsConfigSchema = z.object({
   platform: z.literal("teams"),
   appId: z.string().optional().openapi({ description: "Microsoft App ID." }),
   appPassword: z
@@ -145,7 +145,7 @@ export const TeamsConfigSchema = z.object({
     .openapi({ description: "Override bot username." }),
 });
 
-export const GoogleChatConfigSchema = z.object({
+const GoogleChatConfigSchema = z.object({
   platform: z.literal("gchat"),
   credentials: z.string().optional().openapi({
     description:
@@ -186,21 +186,9 @@ export const PlatformAdapterConfigSchema = z.discriminatedUnion("platform", [
   GoogleChatConfigSchema,
 ]);
 
-export type PlatformAdapterConfig = z.infer<typeof PlatformAdapterConfigSchema>;
-
 /** Derived from the discriminated union — no separate list to maintain. */
-export const SUPPORTED_PLATFORMS = PlatformAdapterConfigSchema.options.map(
+const SUPPORTED_PLATFORMS = PlatformAdapterConfigSchema.options.map(
   (s) => s.shape.platform.value
 ) as [string, ...string[]];
 
 export const SupportedPlatformSchema = z.enum(SUPPORTED_PLATFORMS);
-
-/**
- * Validate an unknown payload against the per-platform config union.
- * Returns the standard Zod safeParse result so callers keep full error detail.
- */
-export function validatePlatformConfig(
-  input: unknown
-): z.ZodSafeParseResult<PlatformAdapterConfig> {
-  return PlatformAdapterConfigSchema.safeParse(input);
-}

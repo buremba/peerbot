@@ -40,14 +40,14 @@ export interface RunScriptOptions {
   extraArgs?: unknown[];
 }
 
-export interface LogEntry {
+interface LogEntry {
   level: "log" | "warn" | "error";
   message: string;
   data?: Record<string, unknown>;
   ts: number;
 }
 
-export interface SdkCallTraceEntry {
+interface SdkCallTraceEntry {
   path: string;
   orgPath: string[];
   access: MethodAccess | "unknown";
@@ -55,7 +55,7 @@ export interface SdkCallTraceEntry {
   skipped: boolean;
 }
 
-export interface RunScriptResult {
+interface RunScriptResult {
   success: boolean;
   returnValue?: unknown;
   logs: LogEntry[];

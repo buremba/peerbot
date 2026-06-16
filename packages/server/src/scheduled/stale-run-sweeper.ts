@@ -25,7 +25,7 @@
 import { PG_INTERVAL_PATTERN } from '../config/intervals';
 import type { DbClient } from '../db/client';
 
-export interface StaleRunSweepSpec {
+interface StaleRunSweepSpec {
   /** `runs.run_type` values covered by this sweep. */
   runTypes: readonly string[];
   /**
@@ -72,7 +72,7 @@ function runTypeListSql(runTypes: readonly string[]): string {
 }
 
 /** SQL boolean expr: this row has a live heartbeat signal per the spec. */
-export function hasHeartbeatSql(semantics: StaleRunSweepSpec['heartbeatSemantics']): string {
+function hasHeartbeatSql(semantics: StaleRunSweepSpec['heartbeatSemantics']): string {
   return semantics === 'beat-after-claim'
     ? `(last_heartbeat_at IS NOT NULL
        AND claimed_at IS NOT NULL

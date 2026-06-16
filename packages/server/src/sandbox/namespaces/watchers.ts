@@ -28,7 +28,7 @@ type WatcherActionInput = Omit<ManageWatchersArgs, "action" | "watcher_id"> & {
  * `watchers.execution_config` jsonb and the manage_watchers TypeBox schema).
  * Every field is optional; omitted fields fall back to dispatcher/CLI defaults.
  */
-export interface WatcherExecutionConfig {
+interface WatcherExecutionConfig {
   /** Wall-clock cap in seconds for the device-worker CLI run (default 600). */
   timeout_seconds?: number;
   /** Per-run dollar ceiling (claude: --max-budget-usd). */

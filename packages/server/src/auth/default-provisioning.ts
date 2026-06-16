@@ -32,8 +32,8 @@ export const DEFAULT_AGENT_SENTINEL = 'default_agent_provisioned';
 export const DEFAULT_WATCHER_SENTINEL = 'default_watcher_provisioned';
 
 export const DEFAULT_AGENT_ID = 'owletto-default';
-export const DEFAULT_AGENT_NAME = 'Owletto Personal';
-export const DEFAULT_AGENT_IDENTITY =
+const DEFAULT_AGENT_NAME = 'Owletto Personal';
+const DEFAULT_AGENT_IDENTITY =
   "You are the user's personal assistant on their Mac. " +
   'You help them stay productive by surfacing relevant context ' +
   'and useful summaries. ' +
@@ -41,16 +41,16 @@ export const DEFAULT_AGENT_IDENTITY =
   'clearly and suggest what the user could connect or track next.';
 
 export const DEFAULT_WATCHER_SLUG = 'daily-checkin';
-export const DEFAULT_WATCHER_NAME = 'Daily check-in';
-export const DEFAULT_WATCHER_SCHEDULE = '0 9 * * *';
-export const DEFAULT_WATCHER_PROMPT =
+const DEFAULT_WATCHER_NAME = 'Daily check-in';
+const DEFAULT_WATCHER_SCHEDULE = '0 9 * * *';
+const DEFAULT_WATCHER_PROMPT =
   'Summarize what the user worked on yesterday in 1-2 sentences. ' +
   'Suggest 1-3 concrete priorities for today. ' +
   "If you don't have recent history or context for this user, " +
   'say that clearly and suggest what the user could connect ' +
   'or track next (calendar, browser activity, etc.).';
 
-export const DEFAULT_WATCHER_EXTRACTION_SCHEMA = {
+const DEFAULT_WATCHER_EXTRACTION_SCHEMA = {
   type: 'object',
   properties: { summary: { type: 'string' } },
 };

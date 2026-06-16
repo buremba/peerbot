@@ -7,7 +7,7 @@ const logger = createLogger("worker");
  * Context threaded from `worker.ts` so a captured provider/model failure
  * carries the tags that make "openai doesn't work" triageable in Sentry.
  */
-export interface ExecutionErrorContext {
+interface ExecutionErrorContext {
   provider?: string;
   model?: string;
   agentId?: string;

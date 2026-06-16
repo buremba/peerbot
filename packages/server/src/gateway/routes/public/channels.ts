@@ -17,7 +17,7 @@ import { verifySettingsSession } from "./settings-auth.js";
 
 const logger = createLogger("channel-binding-routes");
 
-export interface ChannelBindingRoutesConfig {
+interface ChannelBindingRoutesConfig {
   channelBindingService: ChannelBindingService;
   userAgentsStore?: UserAgentsStore;
   agentMetadataStore?: AgentMetadataStore;

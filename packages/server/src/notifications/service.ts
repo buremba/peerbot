@@ -41,7 +41,7 @@ interface CreateNotificationParams {
  * without failing the others. A connection bound to several channels posts to
  * each.
  */
-export interface BotDeliveryTarget {
+interface BotDeliveryTarget {
   connectionId: string;
   platform: string;
   /** Platform-prefixed channel id ready for `chat.channel()`, e.g. "slack:C0123ABCD". */

@@ -179,23 +179,6 @@ const forbiddenToolsGuardrail: Guardrail<"pre-tool"> = {
 // -- lookup tables ----------------------------------------------------------
 
 /**
- * Factory map used by the aggregator to instantiate built-ins by name.
- * Stage-locked builtins (secret-scan, forbidden-tools) ignore the stage
- * parameter and return their canonical stage instance cast to the caller's
- * generic; the aggregator only requests them at their natural stage.
- */
-export const BUILTIN_GUARDRAIL_FACTORIES: Record<
-  string,
-  <S extends GuardrailStage>(stage: S, name?: string) => Guardrail<S>
-> = {
-  "pii-scan": createPiiScanGuardrail,
-  "secret-scan": <S extends GuardrailStage>(_stage: S, _name?: string) =>
-    secretScanGuardrail as unknown as Guardrail<S>,
-  "forbidden-tools": <S extends GuardrailStage>(_stage: S, _name?: string) =>
-    forbiddenToolsGuardrail as unknown as Guardrail<S>,
-};
-
-/**
  * Register all gateway built-ins on the shared registry exactly once at boot.
  * Duplicate registration is a programmer error (the registry throws).
  */

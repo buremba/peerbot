@@ -23,7 +23,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-export type SourceKind = 'git' | 'tarball' | 'local';
+type SourceKind = 'git' | 'tarball' | 'local';
 
 export interface ManifestEntry {
   path: string;
@@ -36,7 +36,7 @@ export interface Manifest {
   fetched_at: string;
 }
 
-export interface CacheMeta {
+interface CacheMeta {
   uri: string;
   kind: SourceKind;
 }
@@ -154,7 +154,7 @@ export async function writeManifest(path: string, manifest: Manifest): Promise<v
   await writeFile(path, JSON.stringify(manifest, null, 2), 'utf8');
 }
 
-export async function readMeta(path: string): Promise<CacheMeta | null> {
+async function readMeta(path: string): Promise<CacheMeta | null> {
   try {
     const raw = await readFile(path, 'utf8');
     return JSON.parse(raw) as CacheMeta;

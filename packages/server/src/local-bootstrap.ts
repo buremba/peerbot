@@ -27,7 +27,7 @@ import { ensureDefaultAgent } from "./auth/default-provisioning";
 import { ensureInstallOperator } from "./auth/install-operator";
 import logger from "./utils/logger";
 
-export type PreListenHook = () => Promise<void> | void;
+type PreListenHook = () => Promise<void> | void;
 
 /**
  * The two local-install provisioning hooks, in order. `databaseUrl` must be

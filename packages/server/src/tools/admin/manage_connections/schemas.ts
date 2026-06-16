@@ -39,7 +39,7 @@ export const ListConnectorDefinitionsAction = Type.Object({
   ),
 });
 
-export const EntityLinkOverridesSchema = Type.Union(
+const EntityLinkOverridesSchema = Type.Union(
   [
     Type.Null(),
     Type.Record(

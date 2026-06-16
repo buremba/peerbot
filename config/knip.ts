@@ -37,7 +37,15 @@ const config: KnipConfig = {
       ],
     },
     "packages/connector-sdk": {
-      entry: ["src/**/*.test.ts", "src/__tests__/**/*.ts"],
+      entry: [
+        "src/**/*.test.ts",
+        "src/__tests__/**/*.ts",
+        // Public subpath `@lobu/connector-sdk/identity-types` (package.json
+        // exports) — a TypeBox schema module consumed by external connectors,
+        // so its exports (e.g. the `$id`-registered MatchStrategy schema) have
+        // no in-repo importer and must be treated as public API, not dead.
+        "src/identity-types.ts",
+      ],
       ignoreDependencies: [
         // Browser connector backend (CDP) — used under src/browser/, reached
         // at runtime not via the SDK's main entry graph.

@@ -14,7 +14,7 @@
  * bytes on the wire is not this module's job.
  */
 
-export type TokenEndpointAuthMethod = 'none' | 'client_secret_basic' | 'client_secret_post';
+type TokenEndpointAuthMethod = 'none' | 'client_secret_basic' | 'client_secret_post';
 
 /**
  * Wire profile for {@link buildRefreshRequest}:
@@ -26,9 +26,9 @@ export type TokenEndpointAuthMethod = 'none' | 'client_secret_basic' | 'client_s
  *   with Basic auth the credentials go raw (unencoded) in the header and
  *   `client_id` is omitted from the body; defaults to `client_secret_post`.
  */
-export type RefreshWireProfile = 'mcp-credential' | 'account-credential';
+type RefreshWireProfile = 'mcp-credential' | 'account-credential';
 
-export interface RefreshRequestOptions {
+interface RefreshRequestOptions {
   profile: RefreshWireProfile;
   clientId: string;
   clientSecret?: string;
@@ -39,13 +39,13 @@ export interface RefreshRequestOptions {
   resource?: string;
 }
 
-export interface RefreshHttpRequest {
+interface RefreshHttpRequest {
   headers: Record<string, string>;
   body: string;
 }
 
 /** Build an RFC 6749 §2.3.1 Basic client-authentication header value. */
-export function buildBasicClientAuthHeader(
+function buildBasicClientAuthHeader(
   clientId: string,
   clientSecret: string,
   options: { urlEncode: boolean }
@@ -117,7 +117,7 @@ export function buildRefreshRequest(options: RefreshRequestOptions): RefreshHttp
   return { headers, body: body.toString() };
 }
 
-export interface ParsedRefreshedTokens {
+interface ParsedRefreshedTokens {
   accessToken: string;
   /** New refresh token, or `previousRefreshToken` when the server didn't rotate. */
   refreshToken?: string;

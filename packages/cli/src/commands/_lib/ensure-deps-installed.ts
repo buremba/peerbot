@@ -23,7 +23,7 @@ const ensuredRoots = new Set<string>();
  * `package.json`) is what stops a connector inside a monorepo from resolving to
  * the monorepo's root package.json and triggering a wrong-directory install.
  */
-export function findProjectRoot(fromFile: string): string | null {
+function findProjectRoot(fromFile: string): string | null {
   let dir = dirname(fromFile);
   for (let i = 0; i < 40; i++) {
     if (existsSync(join(dir, "lobu.config.ts"))) return dir;

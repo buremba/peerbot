@@ -51,7 +51,7 @@ import { buildStaleRunWhereSql } from './stale-run-sweeper';
  *  channel ids and the due-feeds lock; the high bits are arbitrary. */
 const REAPER_ADVISORY_LOCK_KEY = 0x726e7372; // 'rnsr' — runs-reaper
 
-export interface ReapStaleRunsResult {
+interface ReapStaleRunsResult {
   /** Whether the advisory lock was acquired. False means another pod is
    *  already running the sweep; the caller should treat this as a no-op. */
   acquired: boolean;
@@ -235,7 +235,7 @@ export function startStaleRunReaper(): () => void {
   return stopStaleRunReaper;
 }
 
-export function stopStaleRunReaper(): void {
+function stopStaleRunReaper(): void {
   if (activeInterval) {
     clearInterval(activeInterval);
     activeInterval = null;

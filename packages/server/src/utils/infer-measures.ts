@@ -16,7 +16,7 @@ import { Dialect, ast, parse } from '@polyglot-sql/sdk';
 
 type Node = ast.Expression;
 
-export interface DerivedColumn {
+interface DerivedColumn {
   name: string;
   role: 'measure' | 'dimension';
 }

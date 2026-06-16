@@ -40,7 +40,7 @@ export interface RegisteredClient {
   clientSecret?: string;
 }
 
-export interface DeviceAuthorization {
+interface DeviceAuthorization {
   deviceCode: string;
   userCode: string;
   verificationUri: string;

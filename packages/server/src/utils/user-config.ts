@@ -18,7 +18,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-export interface UserServerConfig {
+interface UserServerConfig {
   port?: number;
   host?: string;
   cwd?: string;

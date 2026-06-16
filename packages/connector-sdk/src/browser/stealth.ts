@@ -10,7 +10,7 @@ type Page = any;
 
 import { sdkLogger } from '../logger.js';
 
-export interface StealthBrowserOptions {
+interface StealthBrowserOptions {
   headless?: boolean;
   debug?: boolean;
   userAgent?: string;
@@ -24,7 +24,7 @@ export interface StealthBrowserOptions {
   };
 }
 
-export interface StealthBrowser {
+interface StealthBrowser {
   browser: Browser;
   context: BrowserContext;
   page: Page;
@@ -142,97 +142,4 @@ function getRealisticHeaders(): Record<string, string> {
     'Sec-Fetch-User': '?1',
     'Cache-Control': 'max-age=0',
   };
-}
-
-/**
- * Human-like delay (50-200ms random)
- */
-export function getRandomDelay(): number {
-  return Math.random() * (200 - 50) + 50;
-}
-
-/**
- * Random scroll behavior to mimic human browsing
- */
-export async function randomScroll(page: Page, direction: 'down' | 'up' = 'down'): Promise<void> {
-  const scrollY = (Math.floor(Math.random() * 500) + 200) * (direction === 'down' ? 1 : -1);
-
-  await page.evaluate((y: number) => {
-    window.scrollBy({
-      top: y,
-      behavior: 'smooth',
-    });
-  }, scrollY);
-
-  await page.waitForTimeout(1000 + Math.random() * 1000);
-}
-
-/**
- * Wait with random duration to mimic human reading time
- */
-export async function humanWait(
-  page: Page,
-  minMs: number = 1000,
-  maxMs: number = 3000
-): Promise<void> {
-  const delay = Math.random() * (maxMs - minMs) + minMs;
-  await page.waitForTimeout(delay);
-}
-
-/**
- * Test bot detection on common detection sites
- */
-export async function testBotDetection(page: Page): Promise<
-  {
-    site: string;
-    detected: boolean;
-    details?: string;
-  }[]
-> {
-  const results = [];
-
-  try {
-    await page.goto('https://bot.sannysoft.com', { waitUntil: 'networkidle' });
-    await page.waitForTimeout(2000);
-
-    const webdriverDetected = await page.evaluate(() => {
-      return navigator.webdriver === true;
-    });
-
-    results.push({
-      site: 'bot.sannysoft.com',
-      detected: webdriverDetected,
-      details: `navigator.webdriver: ${webdriverDetected}`,
-    });
-  } catch (error: any) {
-    results.push({
-      site: 'bot.sannysoft.com',
-      detected: true,
-      details: `Error: ${error.message}`,
-    });
-  }
-
-  try {
-    await page.goto('https://arh.antoinevastel.com/bots/areyouheadless', {
-      waitUntil: 'networkidle',
-    });
-    await page.waitForTimeout(2000);
-
-    const headlessDetected = await page.textContent('body');
-    const isHeadless = headlessDetected?.includes('You are headless');
-
-    results.push({
-      site: 'arh.antoinevastel.com',
-      detected: isHeadless || false,
-      details: isHeadless ? 'Headless detected' : 'Not detected as headless',
-    });
-  } catch (error: any) {
-    results.push({
-      site: 'arh.antoinevastel.com',
-      detected: true,
-      details: `Error: ${error.message}`,
-    });
-  }
-
-  return results;
 }

@@ -23,8 +23,6 @@
  */
 export const EXTERNAL_RUNTIME_DEPS = ['playwright', 'sharp', 'jimp'] as const;
 
-export type ExternalRuntimeDep = (typeof EXTERNAL_RUNTIME_DEPS)[number];
-
 /**
  * Verify that every external runtime dep is resolvable from the current
  * process. Call this once at startup of any service that executes compiled

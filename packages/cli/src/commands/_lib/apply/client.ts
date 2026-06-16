@@ -57,7 +57,7 @@ export interface RemoteRelationshipType {
   organization_id?: string;
 }
 
-export interface RemoteOrg {
+interface RemoteOrg {
   id: string;
   slug: string;
   name?: string;
@@ -91,7 +91,7 @@ export interface RemoteWatcher {
   // NB: reaction_script is NOT in list_watchers — push always (idempotent).
 }
 
-export interface UpsertPlatformResult {
+interface UpsertPlatformResult {
   /** Server reports `noop: true` when the desired config matches what's stored. */
   noop?: boolean;
   /** When the config materially changed, the live worker is restarted. */
@@ -101,7 +101,7 @@ export interface UpsertPlatformResult {
   platform?: RemotePlatform;
 }
 
-export interface UpsertEntityTypeResult {
+interface UpsertEntityTypeResult {
   created?: boolean;
   updated?: boolean;
   noop?: boolean;
@@ -154,7 +154,7 @@ export interface RemoteFeed {
   config?: Record<string, unknown> | null;
 }
 
-export interface InstallConnectorResult {
+interface InstallConnectorResult {
   connectorKey: string;
   updated: boolean;
   version?: string;
@@ -166,7 +166,7 @@ export interface InstallConnectorResult {
  * operator must open to complete auth; `status` is the state the server
  * reports (`pending_auth` until auth completes).
  */
-export interface EnsureAuthProfileResult {
+interface EnsureAuthProfileResult {
   created: boolean;
   updated: boolean;
   status?: string;
@@ -281,7 +281,7 @@ async function parseResponseBody(
 
 // ── Client ─────────────────────────────────────────────────────────────────
 
-export interface ApplyClientConfig {
+interface ApplyClientConfig {
   apiBaseUrl: string;
   orgSlug: string;
   token: string;
@@ -1326,7 +1326,7 @@ export function isDuplicateError(err: ApiError): boolean {
 
 // ── Top-level resolver ─────────────────────────────────────────────────────
 
-export interface ResolvedClient {
+interface ResolvedClient {
   client: ApplyClient;
   apiBaseUrl: string;
   orgSlug: string;

@@ -35,7 +35,7 @@ import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
 import { requireField, routeAction } from './action-router';
 
-export interface ActionDefinition<S extends TObject = TObject, R = unknown> {
+interface ActionDefinition<S extends TObject = TObject, R = unknown> {
   /** TypeBox variant for this action (must carry the `action` literal). */
   schema: S;
   handler: (args: Static<S>, ctx: ToolContext, env: Env) => Promise<R>;

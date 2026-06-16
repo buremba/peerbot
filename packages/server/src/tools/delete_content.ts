@@ -49,7 +49,7 @@ const DeleteContentSchema = Type.Object({
 
 type DeleteContentArgs = Static<typeof DeleteContentSchema>;
 
-export interface DeleteContentResult {
+interface DeleteContentResult {
   deleted_ids: number[];
   tombstone_ids: number[];
   not_found_ids: number[];

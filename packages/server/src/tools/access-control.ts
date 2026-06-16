@@ -9,7 +9,7 @@
 import { hasRequiredMcpScope, type ToolAccessLevel } from '../auth/tool-access';
 
 /** The minimal slice of ToolContext/AuthContext these predicates need. */
-export interface AccessControlContext {
+interface AccessControlContext {
   isAuthenticated: boolean;
   userId: string | null;
   memberRole: string | null;
@@ -34,7 +34,7 @@ export function isAdminOrOwnerRole(memberRole: string | null | undefined): boole
  * handles missing-membership writes via its public-readability branch instead,
  * so it omits the message and skips that check.
  */
-export interface AccessDenialMessages {
+interface AccessDenialMessages {
   adminRole: string;
   writeRole?: string;
   readScope: string;

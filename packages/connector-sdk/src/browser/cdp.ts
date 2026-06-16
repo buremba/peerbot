@@ -16,7 +16,7 @@ export interface CdpVersionInfo {
   isHeadless?: boolean;
 }
 
-export function normalizeCdpUrl(value: string): string {
+function normalizeCdpUrl(value: string): string {
   let end = value.length;
   while (end > 0 && value.charCodeAt(end - 1) === 47) end--;
   return end === value.length ? value : value.slice(0, end);
@@ -45,78 +45,6 @@ export async function fetchCdpVersionInfo(baseUrl: string): Promise<CdpVersionIn
 }
 
 // ---------------------------------------------------------------------------
-// WebSocket-based discovery (new style: chrome://inspect remote debugging UI)
-// ---------------------------------------------------------------------------
-
-/**
- * Try connecting to a Chrome DevTools endpoint via direct WebSocket.
- * Chrome's DevTools remote debugging UI (chrome://inspect/#remote-debugging)
- * exposes CDP over WebSocket at ws://{host}:{port}/devtools/browser
- * without the HTTP /json/version endpoint.
- */
-export async function tryWebSocketCdp(
-  host: string,
-  port: number,
-  timeoutMs = 3000
-): Promise<CdpVersionInfo | null> {
-  const wsUrl = `ws://${host}:${port}/devtools/browser`;
-
-  return new Promise<CdpVersionInfo | null>((resolve) => {
-    let ws: WebSocket;
-    const closeWs = () => {
-      try {
-        ws?.close();
-      } catch {
-        /* best-effort */
-      }
-    };
-
-    const timer = setTimeout(() => {
-      closeWs();
-      resolve(null);
-    }, timeoutMs);
-
-    try {
-      ws = new WebSocket(wsUrl);
-    } catch {
-      clearTimeout(timer);
-      resolve(null);
-      return;
-    }
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify({ id: 1, method: 'Browser.getVersion' }));
-    };
-
-    ws.onmessage = (event) => {
-      clearTimeout(timer);
-      closeWs();
-      try {
-        const data = JSON.parse(event.data as string);
-        const result = data?.result;
-        if (!result?.product) {
-          resolve(null);
-          return;
-        }
-        const ua = result.userAgent as string | undefined;
-        resolve({
-          Browser: result.product,
-          webSocketDebuggerUrl: wsUrl,
-          isHeadless: ua ? /headless/i.test(ua) : false,
-        });
-      } catch {
-        resolve(null);
-      }
-    };
-
-    ws.onerror = () => {
-      clearTimeout(timer);
-      resolve(null);
-    };
-  });
-}
-
-// ---------------------------------------------------------------------------
 // Port discovery
 // ---------------------------------------------------------------------------
 
@@ -124,7 +52,7 @@ export async function tryWebSocketCdp(
  * Discover Chrome processes listening on TCP ports by parsing `lsof` output.
  * Returns ports for processes named "Google" (Chrome) on macOS/Linux.
  */
-export async function discoverChromeListeningPorts(): Promise<number[]> {
+async function discoverChromeListeningPorts(): Promise<number[]> {
   if (process.platform === 'win32') return [];
 
   try {
@@ -153,7 +81,7 @@ export async function discoverChromeListeningPorts(): Promise<number[]> {
  * Discover Chrome processes launched with --remote-debugging-port flag.
  * Returns http:// URLs for those endpoints.
  */
-export async function discoverChromeProcessCdpUrls(): Promise<string[]> {
+async function discoverChromeProcessCdpUrls(): Promise<string[]> {
   if (process.platform === 'win32') return [];
 
   try {

@@ -33,7 +33,7 @@ const PREVIEW_JOIN_DEFAULTS: Record<string, string> = {
   telegram: 'https://t.me/lobuaibot',
 };
 
-export type SurfaceType = 'dm' | 'channel';
+type SurfaceType = 'dm' | 'channel';
 
 // Slash-command spellings differ by platform: Slack only delivers the
 // natively-registered `/lobu`, so its subcommands are `/lobu try` etc.; other
@@ -209,7 +209,7 @@ export async function createPreviewClaim(c: Context<{ Bindings: Env }>) {
   return c.json({ error: 'Could not allocate a unique preview code' }, 500);
 }
 
-export type ConsumeClaimResult =
+type ConsumeClaimResult =
   | { status: 'bound'; agentId: string; organizationId: string }
   | { status: 'not_found' }
   | { status: 'surface_not_allowed'; surfaceType: SurfaceType };
@@ -317,7 +317,7 @@ export async function consumePreviewClaim(args: {
 // (via `lobu apply` / the agents UI) and they show up here automatically. The
 // connection's own placeholder/concierge agent is excluded from the list.
 
-export interface PreviewAgent {
+interface PreviewAgent {
   agentId: string;
   name: string;
   description: string | null;
@@ -375,7 +375,7 @@ export async function listPreviewAgents(connectionId: string): Promise<PreviewAg
   }
 }
 
-export type BindPreviewAgentResult =
+type BindPreviewAgentResult =
   | { status: 'bound'; agentId: string }
   | { status: 'not_available' }
   | { status: 'no_connection' };
@@ -484,7 +484,7 @@ export async function resolveChatUserIdentity(
   return rows[0]?.lobu_user_id ?? null;
 }
 
-export type BindForOwnerResult =
+type BindForOwnerResult =
   | { status: 'bound' }
   | { status: 'forbidden' };
 

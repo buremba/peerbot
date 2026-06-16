@@ -17,7 +17,7 @@
 
 import logger from '../utils/logger';
 
-export interface DueMaterializeCounts {
+interface DueMaterializeCounts {
   /** Rows returned by `fetchDue` this pass. */
   due: number;
   /** Items whose `createRun` reported 'created'. */
@@ -26,7 +26,7 @@ export interface DueMaterializeCounts {
   skipped: number;
 }
 
-export interface MaterializeDueItemsOptions<T> {
+interface MaterializeDueItemsOptions<T> {
   /** Job label for the default per-item failure log (e.g. 'CheckDueFeeds'). */
   label: string;
   /** Scan for due rows. Throws propagate to the caller untouched. */

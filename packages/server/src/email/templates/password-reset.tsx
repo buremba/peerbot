@@ -1,6 +1,6 @@
 import { BrandedEmail } from './BrandedEmail';
 
-export interface PasswordResetProps {
+interface PasswordResetProps {
   url: string;
 }
 

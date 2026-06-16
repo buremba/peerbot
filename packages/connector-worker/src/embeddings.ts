@@ -17,7 +17,7 @@ const DEFAULT_BATCH_SIZE = 32;
 const DEFAULT_TIMEOUT_MS = 30000;
 
 /** Embeddings plus the model/version stamp that produced them. */
-export interface EmbeddingResult {
+interface EmbeddingResult {
   embeddings: number[][];
   /** Model identifier persisted on each row so different vector spaces never mix. */
   model: string;
@@ -34,7 +34,7 @@ function getExpectedDimensions(): number {
  * the same env var (with the same default), so this is the authoritative
  * expectation the service must match — see {@link resolveServiceModel}.
  */
-export function getExpectedEmbeddingModel(): string {
+function getExpectedEmbeddingModel(): string {
   return getLocalModelName();
 }
 

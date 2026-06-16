@@ -23,7 +23,7 @@ export interface LobuProviderConfig {
  * that retrieval tools (`search_memory`) populate so client code can compute
  * `retrievedContext` without a round-trip back to the server.
  */
-export interface LobuToolCall {
+interface LobuToolCall {
   toolCallId?: string;
   name: string;
   input: unknown;

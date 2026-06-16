@@ -6,7 +6,7 @@
 import type { DbClient } from '../../db/client';
 import logger from '../logger';
 
-export function collectVersionIds(rows: unknown[], mapping: Map<string, number[]>): void {
+function collectVersionIds(rows: unknown[], mapping: Map<string, number[]>): void {
   for (const row of rows as Array<{ slug: string; version_id: number | string }>) {
     const slug = String(row.slug);
     const versionId = typeof row.version_id === 'number' ? row.version_id : Number(row.version_id);

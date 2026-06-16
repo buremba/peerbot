@@ -31,8 +31,8 @@ export const RunSchema = Type.Object({
   ),
 });
 export const QuerySchema = Type.Object(SCRIPT_FIELDS);
-export type RunArgs = Static<typeof RunSchema>;
-export type QueryArgs = Static<typeof QuerySchema>;
+type RunArgs = Static<typeof RunSchema>;
+type QueryArgs = Static<typeof QuerySchema>;
 
 async function runSandbox(
   mode: SDKMode,

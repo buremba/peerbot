@@ -35,9 +35,9 @@ import { isSentryReported, markSentryReported } from "./sentry";
 import logger from "./utils/logger";
 import { initWorkspaceProvider } from "./workspace";
 
-export type ServerMode = "postgres" | "embedded-postgres";
+type ServerMode = "postgres" | "embedded-postgres";
 
-export interface ServerLifecycleConfig {
+interface ServerLifecycleConfig {
 	mode: ServerMode;
 	env: Env;
 	host: string;
@@ -69,7 +69,7 @@ export interface ServerLifecycleConfig {
 	extraTeardown?: Array<() => Promise<void> | void>;
 }
 
-export interface ServerLifecycleHandles {
+interface ServerLifecycleHandles {
 	/** Starts the listener and registers signal handlers. Resolves once listening. */
 	start: () => Promise<void>;
 }

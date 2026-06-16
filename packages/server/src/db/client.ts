@@ -267,7 +267,7 @@ function getRawDb(): Sql {
  * (postgres-js's internal `onclose` re-issues LISTEN automatically); use
  * it to drop any cached state that may have crossed a missed-NOTIFY gap.
  */
-export interface DbListener {
+interface DbListener {
   listen(
     channel: string,
     onNotify: (payload: unknown) => void,

@@ -11,7 +11,7 @@ const logger = createLogger("channel-binding-service");
  * that table are persisted today (`platform`, `channel_id`, `team_id`,
  * `agent_id`, `created_at`).
  */
-export interface ChannelBinding {
+interface ChannelBinding {
   platform: string;
   channelId: string;
   agentId: string;

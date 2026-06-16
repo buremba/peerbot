@@ -22,7 +22,7 @@ export interface ProviderCredentialStore {
   ): Promise<void>;
 }
 
-export interface ProviderOAuthClient {
+interface ProviderOAuthClient {
   generateCodeVerifier(): string;
   buildAuthUrl(state: string, codeVerifier: string): string;
   exchangeCodeForToken(
@@ -65,7 +65,7 @@ const codeExchangeRoute = createRoute({
   },
 });
 
-export interface OAuthRoutesConfig {
+interface OAuthRoutesConfig {
   providerStores?: Record<string, ProviderCredentialStore>;
   oauthClients?: Record<string, ProviderOAuthClient>;
   oauthStateStore?: ProviderOAuthStateStore;

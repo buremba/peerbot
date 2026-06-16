@@ -32,16 +32,3 @@ export function getPlatformDescriptor(
 ): ChatPlatformDescriptor | undefined {
   return PLATFORM_REGISTRY[platform];
 }
-
-export {
-  createChatSdkFileHandler,
-  postFileToChatTarget,
-  streamToBuffer,
-} from "./shared.js";
-export type {
-  ChatPlatformDescriptor,
-  ChatPlatformInstance,
-  PlatformCommand,
-  PlatformRoutingInfo,
-  WebhookSecretDeps,
-} from "./types.js";

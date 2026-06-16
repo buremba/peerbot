@@ -4,7 +4,7 @@
  * buildSearchDocumentExpr, CANDIDATE_VECTOR_LIMIT, CANDIDATE_QUERY_TIMEOUT_MS.
  */
 
-export const STOPWORDS = [
+const STOPWORDS = [
   'what',
   'who',
   'where',
@@ -35,7 +35,7 @@ export const STOPWORDS = [
   'approved',
   'made',
 ];
-export const STOPWORDS_SET = new Set(STOPWORDS);
+const STOPWORDS_SET = new Set(STOPWORDS);
 
 /**
  * Build a `tsquery` *string* (OR of clean lexemes, e.g. `"project | codename"`)
@@ -54,7 +54,7 @@ export function buildTsqueryString(queryText: string): string | null {
   return tokens.length > 0 ? tokens.join(' | ') : null;
 }
 
-export const NORMALIZED_QUERY_SQL = `trim(regexp_replace(regexp_replace(lower($1), '\\m(${STOPWORDS.join('|')})\\M', ' ', 'g'), '[^a-z0-9\\s]+', ' ', 'g'))`;
+const NORMALIZED_QUERY_SQL = `trim(regexp_replace(regexp_replace(lower($1), '\\m(${STOPWORDS.join('|')})\\M', ' ', 'g'), '[^a-z0-9\\s]+', ' ', 'g'))`;
 export const TSQUERY_SQL = `CASE WHEN NULLIF(${NORMALIZED_QUERY_SQL}, '') IS NOT NULL THEN to_tsquery('english', regexp_replace(${NORMALIZED_QUERY_SQL}, '\\s+', ' | ', 'g')) ELSE NULL END`;
 
 export function buildSearchDocumentExpr(alias: string): string {

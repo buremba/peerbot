@@ -1,6 +1,6 @@
 import { BrandedEmail } from './BrandedEmail';
 
-export interface WelcomeProps {
+interface WelcomeProps {
   name?: string | null;
   appUrl: string;
 }

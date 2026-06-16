@@ -27,7 +27,6 @@ const logger = createLogger("platform-response-strategies");
 
 export type {
   PlatformResponseStrategy,
-  ResolveTarget,
   StrategyContext,
   StreamState,
 } from "./types.js";
@@ -165,5 +164,3 @@ export function getResponseStrategy(
       return defaultStrategy;
   }
 }
-
-export { AsyncPushIterator } from "./async-push-iterator.js";

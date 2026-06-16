@@ -21,7 +21,7 @@ export interface DiagnosticRunRow {
   outputTail: string | null;
 }
 
-export interface OpenPacketInput {
+interface OpenPacketInput {
   feedId: number;
   feedDisplayName: string | null;
   connectorKey: string | null;

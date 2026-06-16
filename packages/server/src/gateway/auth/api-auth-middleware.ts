@@ -15,7 +15,7 @@ export const TOKEN_EXPIRATION_MS = 24 * 60 * 60 * 1000;
  * route no-agentId requests to the org's default agent so the cross-pod
  * conversation lock can be acquired (#1068 follow-up).
  */
-export interface ApiAuthContext {
+interface ApiAuthContext {
   userId?: string;
   organizationId?: string;
 }

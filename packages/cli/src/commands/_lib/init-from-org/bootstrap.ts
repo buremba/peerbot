@@ -32,7 +32,7 @@ import type {
 } from "../apply/client.js";
 import { resolveApplyClient } from "../apply/client.js";
 
-export interface InitFromOrgOptions {
+interface InitFromOrgOptions {
   /** Target directory to scaffold into (must be empty / not a Lobu project). */
   targetDir: string;
   /** Org slug to bootstrap from (defaults to active session). */
@@ -989,7 +989,7 @@ interface GeneratedProject {
   warnings: string[];
 }
 
-export function generateProject(
+function generateProject(
   orgSlug: string,
   orgName: string | undefined,
   state: FetchedState

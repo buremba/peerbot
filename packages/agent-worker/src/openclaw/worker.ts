@@ -46,7 +46,6 @@ import { type TerminalStatus, writeSnapshot } from "./transcript-snapshot";
 // barrel.
 export {
   estimatePromptTokenCost,
-  type ResolvedMemoryFlushConfig,
   replaceBasePromptIdentity,
   resolveMemoryFlushConfig,
 } from "./session-runner";

@@ -22,7 +22,7 @@ npx @lobu/cli@latest chat "Hello, what can you do?"
 
 # 4. Run evals to measure quality (uses promptfoo via @lobu/promptfoo-provider)
 bun add -D promptfoo @lobu/promptfoo-provider
-LOBU_TOKEN=$(npx @lobu/cli@latest token) bunx promptfoo eval \
+LOBU_TOKEN=$(npx @lobu/cli@latest token --raw) bunx promptfoo eval \
   -c agents/my-agent/evals/promptfooconfig.yaml
 ```
 

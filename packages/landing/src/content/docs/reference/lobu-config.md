@@ -509,7 +509,7 @@ For dev-time previews, `defineAgent({ preview: { slack: { enabled: true } } })` 
 
 Entity types, relationship types, and watchers are the memory schema. Declare them with `defineEntityType` / `defineRelationshipType` / `defineWatcher` and list them in `defineConfig`. `lobu apply` reconciles them against your org. See [`lobu memory`](/reference/lobu-memory/) and [`lobu apply`](/reference/lobu-apply/).
 
-The org slug comes from `defineConfig({ org })`. `LOBU_MEMORY_URL` is available as an optional base-endpoint override for local or custom Lobu deployments.
+The org slug comes from `defineConfig({ org })`. `MEMORY_URL` is available as an optional base-endpoint override for local or custom Lobu deployments.
 
 ## Validation
 

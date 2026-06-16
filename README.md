@@ -58,7 +58,7 @@ Single-process Node remains the simplest deployment: run it with `node`, `pm2`, 
     -f your-values.yaml
   ```
   See `charts/lobu/values.yaml` for the full set of tunables. At minimum supply an
-  ingress host, a `secretName` Secret containing `DATABASE_URL` + `JWT_SECRET` +
+  ingress host, a `secretName` Secret containing `DATABASE_URL` + `ENCRYPTION_KEY` +
   `BETTER_AUTH_SECRET` + provider API keys, and a `database.existingSecret`.
 
 ## Architecture

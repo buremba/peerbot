@@ -175,7 +175,7 @@ Lobu does not ship its own eval runner. Use [promptfoo](https://www.promptfoo.de
 
 ```bash
 bun add -D promptfoo @lobu/promptfoo-provider
-LOBU_TOKEN=$(npx @lobu/cli@latest token) \
+LOBU_TOKEN=$(npx @lobu/cli@latest token --raw) \
   bunx promptfoo eval -c agents/<agent-id>/evals/promptfooconfig.yaml
 ```
 

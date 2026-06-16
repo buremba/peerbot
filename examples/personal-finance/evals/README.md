@@ -5,7 +5,7 @@ All evals live in [`promptfooconfig.yaml`](./promptfooconfig.yaml) and are run v
 ```bash
 cd examples/personal-finance
 bun install
-export LOBU_TOKEN=$(lobu token)
+export LOBU_TOKEN=$(lobu token --raw)
 bun run evals
 bun run evals:view
 ```

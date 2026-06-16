@@ -1,12 +1,9 @@
 /**
- * Worker-side live token manager — the single source of truth for the current
- * worker token. Worker tokens are rejected 2h after issue (the short TTL is the
- * leak-revocation property); this manager keeps a >2h single turn alive by
- * refreshing against `/worker/token/refresh`, mirroring each new token into
- * `process.env.WORKER_TOKEN` for env-readers. Callers read getToken() or go
- * through fetchWithRefresh(); the proactive/pre-call/reactive refresh triggers
- * are documented on the methods below, and the server-side per-turn liveness
- * gate at the gateway route + its tests.
+ * Worker-side live token manager — the process-wide single source of truth for
+ * the current worker token. Worker tokens expire 2h after issue; this keeps a
+ * >2h turn alive by refreshing against `/worker/token/refresh` and mirroring the
+ * new token into `process.env.WORKER_TOKEN`. Refresh triggers are documented on
+ * the methods below; the server-side per-turn liveness gate at the route.
  */
 
 import { createLogger, ensureBaseUrl, getOptionalEnv } from "@lobu/core";

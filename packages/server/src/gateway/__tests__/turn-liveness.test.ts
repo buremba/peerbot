@@ -214,12 +214,13 @@ describe("turn-liveness", () => {
 });
 
 /**
- * The deployment-liveness gate that authorizes worker-token refresh. A fresh
+ * The per-turn liveness gate that authorizes worker-token refresh. A fresh
  * token is minted ONLY while an in-flight turn-timeout marker exists for the
- * deployment; once the work terminalizes the marker is gone and refresh is
- * denied (the revocation property). These assert the gate tracks the marker
- * across every production terminalization path, against real Postgres so the
- * cross-pod authority (shared `public.runs`) is exercised, not mocked.
+ * token's own turn (deployment + messageId); once that turn terminalizes the
+ * marker is gone and refresh is denied (the revocation property). These assert
+ * the gate tracks the marker across every production terminalization path,
+ * against real Postgres so the cross-pod authority (shared `public.runs`) is
+ * exercised, not mocked.
  */
 describe("hasLiveTurnForMessage (token-refresh liveness gate)", () => {
   test("false when no turn has ever been armed", async () => {

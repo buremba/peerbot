@@ -23,6 +23,7 @@ import {
   buildColumnList,
   type ColumnDef,
   QUERYABLE_TABLE_NAMES,
+  SAFE_COLUMN_DEFS,
   validateTableQuery,
 } from './table-schema';
 
@@ -654,7 +655,18 @@ export function validateDataSourceQuery(name: string, query: string, parse = fal
     try {
       const res = parseSql(stripPlaceholders(trimmed), Dialect.PostgreSQL);
       if (!res.success) throw new Error(res.error ?? 'could not parse query');
-      extractTableRefs(trimmed);
+      // Reject auth/identity tables at save time so a template that would only
+      // be masked at runtime fails fast with a clear error. (Runtime masking via
+      // SAFE_COLUMN_DEFS is the enforcement; this is early, defense-in-depth
+      // feedback.) Column-level allowlisting is intentionally NOT applied here —
+      // data sources legitimately reference entity-type slugs (unknown tables).
+      const refs = extractTableRefs(trimmed);
+      const restricted = refs.filter((t) => ADMIN_ONLY_QUERYABLE_TABLES.has(t));
+      if (restricted.length > 0) {
+        throw new Error(
+          `references admin-only table(s): ${[...new Set(restricted)].join(', ')}`
+        );
+      }
     } catch (err) {
       throw new Error(`Data source '${name}': ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -702,7 +714,30 @@ export async function executeDataSources(
       try {
         validateDataSourceQuery(name, query);
         const tableRefs = extractTableRefs(query);
-        let { sql: scopedQuery, params } = buildScopedQuery(query, tableRefs, context);
+
+        // Auth/identity tables (oauth_tokens, oauth_clients, user) must not be
+        // referenceable from a view-template / watcher data source — these
+        // results surface to public/member readers via resolve_path. Mirror
+        // query_sql's non-admin gate. (Entity-type slugs are never in this set.)
+        const restricted = tableRefs.filter((t) =>
+          ADMIN_ONLY_QUERYABLE_TABLES.has(t)
+        );
+        if (restricted.length > 0) {
+          throw new Error(
+            `Source '${name}': table(s) require admin access: ${[...new Set(restricted)].join(', ')}`
+          );
+        }
+
+        // safeColumns masks each core-table CTE to its allowlisted columns, so
+        // excluded secret columns (connections.credentials, oauth_tokens.
+        // token_hash, oauth_clients.client_secret, user.email/phoneNumber,
+        // events.embedding, feeds.checkpoint) are never emitted even when the
+        // query selects them. Without it the CTE fell back to SELECT *, leaking
+        // every physical column. Entity-type slug CTEs (no allowlist entry) keep
+        // their SELECT * — entity data is the template's intended payload.
+        let { sql: scopedQuery, params } = buildScopedQuery(query, tableRefs, context, {
+          safeColumns: SAFE_COLUMN_DEFS,
+        });
 
         // Validate param count matches placeholders in scoped query
         const placeholderMatches = scopedQuery.match(/\$(\d+)/g);

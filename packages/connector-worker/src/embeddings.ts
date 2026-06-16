@@ -11,6 +11,7 @@ import {
   getLocalModelName,
   validateEmbeddingDimensions,
 } from '@lobu/embeddings';
+import { MAX_EMBEDDING_TEXT_BYTES, truncateToBytes } from './embeddings-text.js';
 import { resolveServiceModel } from './embeddings-model.js';
 
 const DEFAULT_BATCH_SIZE = 32;
@@ -118,11 +119,17 @@ export async function batchGenerateEmbeddings(
     return { embeddings: [], model: getExpectedEmbeddingModel() };
   }
 
+  // Clamp each text to the service's per-text byte budget. The model truncates
+  // to its max sequence length regardless, so this is lossless for the vector
+  // but prevents one oversized item (e.g. a long reddit post body) from 400-ing
+  // — and thereby silently dropping — the entire batch. See embeddings-text.ts.
+  const clamped = texts.map((t) => truncateToBytes(t, MAX_EMBEDDING_TEXT_BYTES));
+
   if (process.env.EMBEDDINGS_SERVICE_URL) {
-    return fetchEmbeddingsFromService(texts);
+    return fetchEmbeddingsFromService(clamped);
   }
 
-  const embeddings = await batchGenerateLocalEmbeddings(texts, batchSize);
+  const embeddings = await batchGenerateLocalEmbeddings(clamped, batchSize);
   for (const embedding of embeddings) {
     validateEmbeddingDimensions(embedding, getExpectedDimensions(), 'Local embeddings');
   }

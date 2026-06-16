@@ -653,6 +653,7 @@ async function executeEmbedBackfillRun(
       .filter((p) => p.text.length > 0);
 
     const results: Array<{ event_id: number; embedding: number[]; embedding_model: string }> = [];
+    let batchError: string | undefined;
     try {
       const { embeddings, model } = await batchGenerateEmbeddings(pending.map((p) => p.text));
       for (let i = 0; i < pending.length; i++) {
@@ -662,15 +663,28 @@ async function executeEmbedBackfillRun(
         }
       }
     } catch (err) {
+      // Do NOT swallow this into a "completed with 0" run. A batch failure here
+      // (e.g. the service rejecting an oversized text, or a transient outage)
+      // must mark the run FAILED so the same events get re-queued and the
+      // failure is visible — otherwise the batch is silently dropped forever.
+      batchError = err instanceof Error ? err.message : String(err);
       console.error(`[executor] Batch embedding failed for run ${run_id}:`, err);
     }
 
-    // Submit embeddings back to the API
+    // Submit embeddings back to the API. When the batch produced nothing because
+    // it errored, forward the error so the run is finalized as `failed`
+    // (completeEmbeddings marks it failed when given an error_message + empty
+    // embeddings) rather than as a no-op success.
     await client.completeEmbeddings({
       run_id,
       worker_id: client.id,
       embeddings: results,
+      ...(results.length === 0 && batchError ? { error_message: batchError } : {}),
     });
+
+    if (results.length === 0 && batchError) {
+      return { itemsCollected: 0, error: batchError };
+    }
 
     console.error(
       `[executor] Embed backfill run ${run_id} completed: ${results.length}/${events.length} embeddings`

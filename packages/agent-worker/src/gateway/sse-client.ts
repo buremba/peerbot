@@ -16,7 +16,10 @@ import {
 import { z } from "zod";
 import type { WorkerConfig, WorkerExecutor } from "../core/types";
 import { createGatewayClient } from "../shared/gateway-client";
-import { getWorkerTokenManager } from "./worker-token-manager";
+import {
+  adoptWorkerToken,
+  getWorkerTokenManager,
+} from "./worker-token-manager";
 import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
 import { OpenClawWorker } from "../openclaw/worker";
 import { invalidateSessionContextCache } from "../openclaw/session-context";
@@ -556,6 +559,13 @@ export class GatewayClient {
       "Executing command in sandbox"
     );
 
+    // Adopt this exec job's own per-run token so its responses authenticate
+    // under THIS run. The token manager is a process-wide singleton that may
+    // still hold a previous turn's token, and seed() (the transport constructor)
+    // deliberately won't override a live token — so an exec job must adopt
+    // explicitly, the same way OpenClawWorker.execute adopts a chat turn's token.
+    if (data.runJobToken) adoptWorkerToken(data.runJobToken);
+
     // Create span for exec execution
     const span = createChildSpan("exec_execution", traceparent, {
       "lobu.exec_id": execId,
@@ -569,10 +579,9 @@ export class GatewayClient {
     // Create transport for sending responses back to gateway
     const transport = new HttpWorkerTransport({
       gatewayUrl: this.dispatcherUrl,
-      // Prefer this exec job's per-run token over the stale boot token so the
-      // manager seeds with the right bearer; seed() no-ops anyway once a live
-      // token is adopted, but this keeps the value correct on a cold first seed.
-      workerToken: data.runJobToken ?? this.workerToken,
+      // Seed fallback only — the exec token was adopted above, so the manager's
+      // live token (this exec's runJobToken) is what the transport actually uses.
+      workerToken: this.workerToken,
       userId: data.userId,
       channelId: data.channelId,
       conversationId,

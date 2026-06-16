@@ -149,6 +149,18 @@ describe("seed() never clobbers a live token (aux-transport rollback guard)", ()
     expect(capturedAuth).not.toContain("Bearer stale-boot-token");
   });
 
+  test("exec job: adopting its own run token overrides a previous turn's token", async () => {
+    stubFetch();
+    // A previous chat turn left its token in the process-wide manager.
+    adoptWorkerToken("previous-turn-token");
+    // handleExecJob adopts THIS exec's run token before building its transport.
+    adoptWorkerToken("exec-run-token");
+    const aux = makeTransport("boot-token");
+    await aux.signalCompletion();
+    expect(capturedAuth.every((a) => a === "Bearer exec-run-token")).toBe(true);
+    expect(capturedAuth).not.toContain("Bearer previous-turn-token");
+  });
+
   test("seed() is a no-op once a token has been adopted", () => {
     const mgr = getWorkerTokenManager();
     mgr.adopt("live-token");

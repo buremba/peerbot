@@ -95,18 +95,23 @@ COPY --from=builder --chown=worker:worker /app/packages/connectors ./packages/co
 COPY --from=builder --chown=worker:worker /app/packages/embeddings ./packages/embeddings
 COPY --from=builder --chown=worker:worker /app/packages/connector-worker ./packages/connector-worker
 
-# Install patchright's Chromium (declared as `playwright` alias in worker package.json).
-# Use bunx from the worker workspace so bun's resolver finds the alias.
-# PLAYWRIGHT_BROWSERS_PATH pins BOTH the install target and the runtime lookup to
-# an absolute, HOME-independent path. Without it patchright defaults to
-# $HOME/.cache/ms-playwright (/home/worker/.cache/ms-playwright), and the connector
-# child spawned via fork() in a different cwd can fail to resolve the binary ->
-# "Executable doesn't exist". /ms-playwright is created + chowned to worker above;
-# subprocess.ts already forwards PLAYWRIGHT_BROWSERS_PATH to the connector child.
+# Install patchright's Chromium for browser-based connectors.
+# The runtime resolves `require('playwright')` to patchright (the
+# `npm:patchright` alias in package.json), so the installed Chromium revision
+# MUST be patchright's, not vanilla playwright's. `bunx --bun playwright install`
+# resolved to the vanilla `playwright` bin (node_modules/.bin/playwright ->
+# playwright-vanilla/cli.js won the bin-name conflict) and installed a DIFFERENT
+# revision (chromium-1223) than runtime patchright expects (chromium-1217) ->
+# `Executable doesn't exist`. Invoke patchright's own cli (node_modules/playwright
+# == patchright) so install revision == runtime revision by construction.
+# PLAYWRIGHT_BROWSERS_PATH pins BOTH install target and runtime lookup to an
+# absolute, HOME-independent path (default $HOME/.cache/ms-playwright differs by
+# USER and breaks the connector child forked in another cwd). /ms-playwright is
+# created + chowned to worker above; subprocess.ts forwards the var to the child.
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 USER 1001
 WORKDIR /app/packages/connector-worker
-RUN bunx --bun playwright install chromium
+RUN node node_modules/playwright/cli.js install chromium
 WORKDIR /app
 
 ENV NODE_ENV=production

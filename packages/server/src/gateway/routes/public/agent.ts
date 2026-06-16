@@ -1360,6 +1360,12 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
         messageText: messageContent,
         platformMetadata: {
           agentId: realAgentId,
+          // Echoed back on every response row (gateway-integration carries
+          // platformMetadata) so the API/SSE output-guardrail scan can attribute
+          // a trip to the right org (the audit `events` row is org-scoped).
+          ...(session.organizationId
+            ? { organizationId: session.organizationId }
+            : {}),
           source: session.intent?.kind === "watcher_run" ? "watcher-run" : "direct-api",
           traceparent: traceparent || undefined,
           dryRun: session.dryRun || false,

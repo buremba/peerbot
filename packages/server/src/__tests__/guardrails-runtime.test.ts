@@ -21,7 +21,9 @@ import type { Guardrail } from '@lobu/core';
 import { generateWorkerToken, GuardrailRegistry } from '@lobu/core';
 import { AgentSettingsStore } from '../gateway/auth/settings/agent-settings-store';
 import { McpProxy } from '../gateway/auth/mcp/proxy';
+import { ApiResponseRenderer } from '../gateway/api/response-renderer';
 import { ChatResponseBridge } from '../gateway/connections/chat-response-bridge';
+import { UnifiedThreadResponseConsumer } from '../gateway/platform/unified-thread-consumer';
 import {
   flushPendingGuardrailAudits,
 } from '../gateway/guardrails/audit';
@@ -832,6 +834,178 @@ describe('McpProxy — wired pre-tool guardrail', () => {
     expect(json.error?.message).toMatch(/Batched tools\/call is not permitted/);
     // The forbidden call never reached an upstream, so no -32603 connect error.
     expect(json.error?.message).not.toMatch(/Failed to connect/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// UnifiedThreadResponseConsumer → ApiResponseRenderer (output stage)
+//
+// Regression: output guardrails were wired ONLY into ChatResponseBridge, so
+// pure API/SSE rows (web SPA + programmatic Agent API) — which route through
+// ApiResponseRenderer — streamed secrets/PII to the client uninspected and
+// never wrote a guardrail-trip event. These tests drive the real consumer +
+// real ApiResponseRenderer over an API row and assert the secret is blocked.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('UnifiedThreadResponseConsumer — wired output guardrail (API path)', () => {
+  let orgId: string;
+  let agentId: string;
+
+  /** Capturing SSE manager: records every broadcast, owns every session. */
+  function createCapturingSse() {
+    const events: Array<{ sessionId: string; event: string; payload: any }> =
+      [];
+    const sse = {
+      broadcast: (sessionId: string, event: string, payload: any) => {
+        events.push({ sessionId, event, payload });
+      },
+      hasActiveConnection: () => true,
+    };
+    return { sse, events };
+  }
+
+  function createConsumer(sse: unknown) {
+    const renderer = new ApiResponseRenderer(sse as any);
+    const queue = {
+      start: async () => {},
+      stop: async () => {},
+      createQueue: async () => {},
+      work: async () => {},
+      send: async () => 'job-id',
+    };
+    const platformRegistry = {
+      get: () => ({ getResponseRenderer: () => renderer }),
+    };
+    const consumer = new UnifiedThreadResponseConsumer(
+      queue as any,
+      platformRegistry as any,
+      sse as any
+    ) as any;
+    const registry = new GuardrailRegistry();
+    registerBuiltinGuardrails(registry);
+    const settingsStore = new AgentSettingsStore(
+      createPostgresAgentConfigStore()
+    );
+    consumer.setOutputGuardrails(registry, settingsStore);
+    return consumer;
+  }
+
+  beforeEach(async () => {
+    await cleanupTestDatabase();
+    const org = await createTestOrganization({ name: 'Guardrails API Org' });
+    orgId = org.id;
+    const agent = await createTestAgent({ organizationId: orgId });
+    agentId = agent.agentId;
+
+    const configStore = createPostgresAgentConfigStore();
+    await orgContext.run({ organizationId: orgId }, async () => {
+      await configStore.saveSettings(agentId, {
+        guardrails: ['secret-scan'],
+        updatedAt: Date.now(),
+      });
+    });
+  });
+
+  afterAll(async () => {
+    const db = getTestDb();
+    await db`TRUNCATE agents CASCADE`;
+  });
+
+  it('blocks a secret in the terminal finalText, broadcasts the block message instead, audits the trip', async () => {
+    const { sse, events } = createCapturingSse();
+    const consumer = createConsumer(sse);
+
+    const payload = {
+      messageId: 'm1',
+      channelId: 'api:conv-1',
+      conversationId: 'conv-1',
+      userId: 'u1',
+      teamId: 'api',
+      platform: 'api',
+      timestamp: 0,
+      processedMessageIds: ['m1'],
+      finalText: 'your key is sk-abcdefghij0123456789AB please',
+      platformMetadata: { agentId, organizationId: orgId },
+    };
+
+    await orgContext.run({ organizationId: orgId }, async () => {
+      await consumer.handleThreadResponse({ id: '1', data: payload });
+    });
+
+    const complete = events.find((e) => e.event === 'complete');
+    expect(complete).toBeDefined();
+    // The SPA repairs its message from finalText on `complete` — it must be the
+    // block notice, NOT the leaked secret.
+    expect(complete!.payload.finalText).toContain(
+      'Message blocked by guardrail'
+    );
+    expect(complete!.payload.finalText).not.toContain(
+      'sk-abcdefghij0123456789AB'
+    );
+
+    await flushPendingGuardrailAudits();
+    const rows = await fetchGuardrailEvents(orgId, 'output');
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.metadata.guardrail).toBe('secret-scan');
+    expect(rows[0]!.metadata.stage).toBe('output');
+    expect(rows[0]!.metadata.agent_id).toBe(agentId);
+  });
+
+  it('suppresses a streaming delta that carries a secret (no output broadcast)', async () => {
+    const { sse, events } = createCapturingSse();
+    const consumer = createConsumer(sse);
+
+    const payload = {
+      messageId: 'm1',
+      channelId: 'api:conv-1',
+      conversationId: 'conv-1',
+      userId: 'u1',
+      teamId: 'api',
+      platform: 'api',
+      timestamp: 0,
+      delta: 'here it is sk-abcdefghij0123456789AB done',
+      platformMetadata: { agentId, organizationId: orgId },
+    };
+
+    await orgContext.run({ organizationId: orgId }, async () => {
+      await consumer.handleThreadResponse({ id: '1', data: payload });
+    });
+
+    // The leaking delta must not reach the client as an `output` event.
+    const outputs = events.filter((e) => e.event === 'output');
+    expect(outputs.length).toBe(0);
+  });
+
+  it('passes a clean finalText through unchanged (no false block)', async () => {
+    const { sse, events } = createCapturingSse();
+    const consumer = createConsumer(sse);
+
+    const payload = {
+      messageId: 'm1',
+      channelId: 'api:conv-1',
+      conversationId: 'conv-1',
+      userId: 'u1',
+      teamId: 'api',
+      platform: 'api',
+      timestamp: 0,
+      processedMessageIds: ['m1'],
+      finalText: 'here is a perfectly normal reply with no secrets',
+      platformMetadata: { agentId, organizationId: orgId },
+    };
+
+    await orgContext.run({ organizationId: orgId }, async () => {
+      await consumer.handleThreadResponse({ id: '1', data: payload });
+    });
+
+    const complete = events.find((e) => e.event === 'complete');
+    expect(complete).toBeDefined();
+    expect(complete!.payload.finalText).toBe(
+      'here is a perfectly normal reply with no secrets'
+    );
+
+    await flushPendingGuardrailAudits();
+    const rows = await fetchGuardrailEvents(orgId, 'output');
+    expect(rows.length).toBe(0);
   });
 });
 

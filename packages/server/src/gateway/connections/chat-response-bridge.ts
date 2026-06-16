@@ -13,17 +13,15 @@
 
 import { unlink } from "node:fs/promises";
 import { resolve } from "node:path";
-import {
-  createLogger,
-  type GuardrailRegistry,
-  runGuardrailInstances,
-} from "@lobu/core";
+import { createLogger, type GuardrailRegistry } from "@lobu/core";
 import { Actions, Card, CardText, LinkButton } from "chat";
 import { getDb } from "../../db/client.js";
 import { getOrganizationSlug } from "../../utils/url-builder.js";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
-import { resolveAgentGuardrails } from "../guardrails/aggregator.js";
-import { recordGuardrailTrip } from "../guardrails/audit.js";
+import {
+  OUTPUT_GUARDRAIL_SCAN_WINDOW as GUARDRAIL_SCAN_WINDOW,
+  runOutputGuardrailScan,
+} from "../guardrails/output-scan.js";
 import type { ThreadResponsePayload } from "../infrastructure/queue/index.js";
 import { extractSettingsLinkButtons } from "../platform/link-buttons.js";
 import type { ResponseRenderer } from "../platform/response-renderer.js";
@@ -103,17 +101,6 @@ interface ResponseContext {
   platform: string;
   strategy: PlatformResponseStrategy;
 }
-
-/**
- * Streaming chunks split arbitrarily across token boundaries; a secret like
- * `sk-abc...` can arrive as `"sk-an"` then `"t-..."` and bypass any per-delta
- * regex. We keep a rolling tail of recent emitted text per stream and scan
- * `tail + delta` so patterns straddling a chunk boundary still match. The
- * scan window is bounded at 2× this value to keep regex cost proportional
- * to the chunk being processed, not the entire stream.
- */
-const OUTPUT_GUARDRAIL_TAIL_CHARS = 256;
-const GUARDRAIL_SCAN_WINDOW = OUTPUT_GUARDRAIL_TAIL_CHARS * 2;
 
 /**
  * ChatResponseBridge implements ResponseRenderer so it can be plugged into
@@ -206,52 +193,20 @@ export class ChatResponseBridge implements ResponseRenderer {
     payload: ThreadResponsePayload,
     ctx: ResponseContext
   ): Promise<{ guardrail: string; reason?: string } | null> {
-    if (!this.guardrailRegistry || !this.agentSettingsStore) return null;
-    if (!scanText) return null;
     const agentId = this.resolveAgentId(payload, ctx);
     if (!agentId) return null;
-
-    try {
-      const settings = await this.agentSettingsStore.getSettings(agentId);
-      const resolved = resolveAgentGuardrails(
-        settings ?? { guardrails: [] },
-        (settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),
-        this.guardrailRegistry
-      );
-      const list = resolved.byStage.output;
-      if (list.length === 0) return null;
-      const outcome = await runGuardrailInstances("output", list, {
+    return runOutputGuardrailScan(
+      this.guardrailRegistry,
+      this.agentSettingsStore,
+      scanText,
+      {
         agentId,
-        userId: payload.userId,
-        text: scanText,
-        platform: ctx.platform,
-        conversationId: payload.conversationId,
-      });
-      if (!outcome.tripped) return null;
-      // Fire-and-forget — the block message must not wait on the audit write.
-      void recordGuardrailTrip({
         organizationId: this.resolveOrganizationId(payload, ctx),
-        agentId,
         userId: payload.userId,
         conversationId: payload.conversationId,
-        stage: "output",
-        guardrail: outcome.tripped.guardrail,
-        reason: outcome.tripped.reason,
-        metadata: outcome.tripped.metadata,
-      });
-      return {
-        guardrail: outcome.tripped.guardrail,
-        reason: outcome.tripped.reason,
-      };
-    } catch (err) {
-      logger.warn(
-        {
-          err: err instanceof Error ? err.message : String(err),
-        },
-        "Output guardrail check failed — proceeding without guardrails"
-      );
-      return null;
-    }
+        platform: ctx.platform,
+      }
+    );
   }
 
   private extractResponseContext(

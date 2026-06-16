@@ -145,6 +145,15 @@ export class Gateway {
       platformRegistry,
       this.coreServices.getSseManager()
     );
+    // Output-stage guardrails for the API/SSE path. ChatResponseBridge runs
+    // output guardrails for chat platforms; pure API/SSE rows (web SPA +
+    // programmatic Agent API) route through ApiResponseRenderer, which has no
+    // guardrail hook — wire them on the consumer so secret-scan/pii-scan
+    // configured via `defineAgent` enforce on the API surface too.
+    this.unifiedConsumer.setOutputGuardrails(
+      this.coreServices.getGuardrailRegistry() ?? undefined,
+      this.coreServices.getAgentSettingsStore() ?? undefined
+    );
     await this.unifiedConsumer.start();
 
     // 6. Start the turn-liveness deadline sweep — the cross-replica backstop

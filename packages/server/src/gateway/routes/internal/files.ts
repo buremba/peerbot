@@ -76,8 +76,15 @@ export function createFileRoutes(
   router.post("/upload", authenticateWorker, async (c) => {
     try {
       const worker = getVerifiedWorker(c);
-      const channelId = c.req.header("x-channel-id");
-      const conversationId = c.req.header("x-conversation-id");
+      // SECURITY: the channel/conversation a worker may upload to is fixed by
+      // its verified token, NOT by request headers. Trusting the X-Channel-Id /
+      // X-Conversation-Id headers let a worker (or anyone holding a worker
+      // token) deliver attachments to ANY channel the connection's bot can
+      // reach — cross-channel/cross-conversation disclosure. Mirror the history
+      // route, which is token-bound for exactly this reason. Only the voice-
+      // message flag stays caller-controlled (it's not a routing decision).
+      const channelId = worker.channelId;
+      const conversationId = worker.conversationId;
       const voiceMessage = c.req.header("x-voice-message") === "true";
 
       if (!channelId || !conversationId) {
@@ -179,8 +186,11 @@ export function createFileRoutes(
   router.post("/upload-batch", authenticateWorker, async (c) => {
     try {
       const worker = getVerifiedWorker(c);
-      const channelId = c.req.header("x-channel-id");
-      const conversationId = c.req.header("x-conversation-id");
+      // SECURITY: token-bound channel/conversation (see /upload above) — never
+      // the X-Channel-Id / X-Conversation-Id headers, which a worker could
+      // override to deliver attachments to an arbitrary channel.
+      const channelId = worker.channelId;
+      const conversationId = worker.conversationId;
 
       if (!channelId || !conversationId) {
         return errorResponse(c, "Missing channel or conversation ID", 400);

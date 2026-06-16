@@ -126,4 +126,54 @@ describe("file routes", () => {
     );
     expect(await downloadResponse.text()).toBe(contents);
   });
+
+  // SECURITY regression: the upload route read the destination channel from the
+  // X-Channel-Id / X-Conversation-Id request headers, never comparing them to
+  // the verified worker token. A worker could override them to deliver
+  // attachments to ANY channel the connection's bot can reach. The route must
+  // use the token-bound channel/conversation and ignore the headers.
+  test("upload routes to the TOKEN-bound channel, not attacker-supplied headers", async () => {
+    let seen: { channelId?: string; threadTs?: string } | undefined;
+    const handler: IFileHandler = {
+      uploadFile: async (_stream, opts) => {
+        seen = { channelId: opts.channelId, threadTs: opts.threadTs };
+        return {
+          fileId: "f1",
+          permalink: "https://example.test/f1",
+          name: opts.filename ?? "f",
+          size: 1,
+          delivery: "platform-upload" as const,
+        };
+      },
+    };
+    const app = buildApp(handler);
+
+    // Token scopes the worker to channel-1 / conv-1.
+    const token = generateWorkerToken("user-1", "conv-1", "worker-1", {
+      channelId: "channel-1",
+      platform: "telegram",
+    });
+    const form = new FormData();
+    form.set("file", new File(["x"], "p.txt", { type: "text/plain" }));
+    form.set("filename", "p.txt");
+
+    // Attacker-supplied headers point at a different channel/conversation.
+    const res = await app.request("/internal/files/upload", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "X-Channel-Id": "victim-channel",
+        "X-Conversation-Id": "victim-conv",
+      },
+      body: form,
+    });
+
+    expect(res.status).toBe(200);
+    // The file handler must have been invoked with the token-bound channel,
+    // NOT the attacker's header values.
+    expect(seen?.channelId).toBe("channel-1");
+    expect(seen?.threadTs).toBe("conv-1");
+    expect(seen?.channelId).not.toBe("victim-channel");
+    expect(seen?.threadTs).not.toBe("victim-conv");
+  });
 });

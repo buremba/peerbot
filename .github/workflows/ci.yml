@@ -394,6 +394,9 @@ jobs:
       - name: Run biome lint check
         run: bun run lint
 
+      - name: Duplication gate (jscpd)
+        run: bun run dupes
+
   typecheck:
     runs-on: ubuntu-latest
     timeout-minutes: 20

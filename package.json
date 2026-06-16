@@ -28,6 +28,7 @@
     "test:packages": "cd packages/core && bun run test && cd ../agent-worker && bun run test",
     "typecheck:packages": "cd packages/core && bun run typecheck && cd ../client && bun run typecheck && cd ../agent-worker && bun run typecheck",
     "knip": "bunx knip --config config/knip.ts",
+    "dupes": "jscpd --silent --reporters console --threshold 1 --pattern 'packages/{core,server,cli,connectors,connector-sdk,connector-worker,client,embeddings,landing}/src/**/*.{ts,tsx}' --ignore '**/__tests__/**,**/*.test.ts,**/*.test.tsx,**/dist/**,**/node_modules/**,**/generated/**' .",
     "slack:manifest:print": "bun run scripts/slack-manifest.ts print",
     "slack:manifest:validate": "bun run scripts/slack-manifest.ts validate",
     "slack:manifest:update": "bun run scripts/slack-manifest.ts update",

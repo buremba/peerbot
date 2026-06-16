@@ -297,10 +297,16 @@ export function filterTransactionsSinceCheckpoint(
     if (seen.has(t.id)) return false;
     seen.add(t.id);
     if (lastId && t.id === lastId) return false;
+    // Strictly-older only (`<`, not `<=`). Revolut timestamps are minute
+    // precision, so dropping the whole boundary minute would silently lose
+    // other transactions that settled in the same minute as the checkpoint.
+    // Re-including the boundary minute is safe: the exact checkpoint row is
+    // dropped by the `lastId` guard above, and any re-seen row carries a stable
+    // origin id the gateway supersedes — so no duplicates are stored.
     if (
       lastTs !== null &&
       Number.isFinite(lastTs) &&
-      t.occurredAt.getTime() <= lastTs
+      t.occurredAt.getTime() < lastTs
     ) {
       return false;
     }
@@ -446,28 +452,17 @@ async function scrapeTransactionRows(
   url: string,
   maxScrolls: number
 ): Promise<RevolutDomRow[]> {
-  // Force the reused persistent window back to the TOP before scraping.
+  // Scrape in a FRESH, dedicated window each run — never reuse a long-lived one.
   //
-  // The extension reuses one long-lived window and its `genericScrape` harvests
-  // from the tab's CURRENT scroll position, only scrolling further DOWN. Revolut
-  // virtualizes off-screen rows, so a window left scrolled deep into history by
-  // the previous run would harvest only OLD rows and walk the sync backwards in
-  // time. The extension only reloads a reused window when the path CHANGES, so
-  // we bounce through a non-transactions route first; the subsequent scrape
-  // navigate then reloads `/transactions` fresh — rendering the newest rows at
-  // the top — regardless of where the prior run left the tab.
-  try {
-    await dispatcher.dispatch("navigate", {
-      persistent: true,
-      focus: true,
-      url: REVOLUT_RESET_URL,
-      allowed_origins: REVOLUT_ALLOWED_ORIGINS,
-    });
-  } catch {
-    // Best-effort: if the reset navigate fails the scrape below still runs;
-    // worst case it harvests from a stale scroll position (the prior behaviour).
-  }
-
+  // The extension's `genericScrape` harvests from the tab's CURRENT scroll
+  // position and only scrolls further DOWN, and Revolut's list virtualizes
+  // off-screen rows. A reused window left scrolled deep into history by the
+  // previous run therefore harvests only OLD rows and walks the sync backwards
+  // in time. A fresh window (persistent:false) always loads `/transactions` at
+  // the top (newest), can't be corrupted by a concurrent run sharing the same
+  // window, and stays signed in via the Chrome profile's Revolut session
+  // cookies. The extension's tab-reaper disposes the window shortly after the
+  // run, so nothing accumulates.
   const result = await extensionDomScrape<RevolutDomRow>({
     dispatcher,
     url,
@@ -477,8 +472,7 @@ async function scrapeTransactionRows(
     },
     parseRows: (raw) => raw.map(rawRowToDomRow),
     allowedOrigins: REVOLUT_ALLOWED_ORIGINS,
-    persistent: true,
-    focus: true,
+    persistent: false,
   });
   if (!result.loggedIn) {
     throw new RevolutAuthWallError(result.landedUrl ?? url);
@@ -495,10 +489,6 @@ async function scrapeTransactionRows(
 // `/transactions?accountType=pocket&walletId=<uuid>&pocketId=<uuid>` — point a
 // second feed's `start_url` there to sync a non-default currency pocket.
 const DEFAULT_START_URL = "https://app.revolut.com/transactions";
-// A non-transactions route used only to force the reused persistent window to
-// reload (the extension reloads a reused window only when the path changes), so
-// the real scrape navigate lands on a freshly-rendered, scrolled-to-top page.
-const REVOLUT_RESET_URL = "https://app.revolut.com/home";
 
 const configSchema = {
   type: "object",
@@ -545,14 +535,15 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     name: "Revolut",
     description:
       "Syncs Revolut account transactions by reading the rendered Revolut web app (no public API) through your paired Owletto Chrome session — no separate login, robust against Revolut's rotating internal API.",
-    version: "3.3.0",
+    version: "3.4.0",
     faviconDomain: "app.revolut.com",
     authSchema: {
       // Auth is implicit via the paired Owletto extension's signed-in Chrome —
-      // no CDP, no cookie capture. The scrape runs in a focused persistent
-      // window; when Revolut's session expires the page redirects to sso.revolut
-      // .com, `loggedOutWhen` flags it, and the sync fails with a "needs sign-in"
-      // message so the user can re-enter their passcode in that window.
+      // no CDP, no cookie capture. Each run scrapes in a fresh, dedicated window
+      // (shared profile cookies keep it signed in); when Revolut's session
+      // expires the page redirects to sso.revolut.com, `loggedOutWhen` flags it,
+      // and the sync fails with a "needs sign-in" message so the user can
+      // re-authenticate Revolut in Chrome before the next run.
       methods: [{ type: "none" }],
     },
     feeds: {
@@ -594,6 +585,17 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     const rows = await scrapeTransactionRows(dispatcher, startUrl, maxScrolls);
     const all = buildTransactionsFromDom(rows);
 
+    // Fail closed. We only reach here logged in (scrapeTransactionRows throws on
+    // an auth wall), so ZERO parsed transactions almost certainly means a DOM /
+    // selector regression or an unrendered list — not a genuinely empty
+    // account. Surfacing it as a failure (instead of a silent empty sync) keeps
+    // it alertable and leaves the checkpoint untouched.
+    if (all.length === 0) {
+      throw new Error(
+        "Revolut scrape returned 0 transactions on a logged-in page — likely a DOM/selector change or an unrendered list; failing rather than reporting an empty sync."
+      );
+    }
+
     let transactions = filterTransactionsSinceCheckpoint(all, checkpoint);
     if (currencyFilter) {
       transactions = transactions.filter((t) => t.currency === currencyFilter);
@@ -603,13 +605,30 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     );
 
     const events: EventEnvelope[] = transactions.map(transactionToEvent);
-    const newest = transactions[0];
-    const newCheckpoint: RevolutCheckpoint = newest
-      ? {
-          last_transaction_id: newest.id,
-          last_timestamp: newest.occurredAt.toISOString(),
-        }
-      : checkpoint;
+
+    // Monotonic high-water mark: advance to the newest transaction we actually
+    // saw, but NEVER move the checkpoint backwards in time. Belt-and-suspenders
+    // on top of the fresh-window scrape (which already loads newest-first): if a
+    // partial/mis-rendered scrape ever surfaces only old rows, the checkpoint
+    // holds instead of rewinding and re-ingesting years of history. `newestSeen`
+    // is the max over the FULL scrape, not just the post-checkpoint slice.
+    const newestSeen = all.reduce<RevolutTransaction | null>(
+      (max, t) =>
+        !max || t.occurredAt.getTime() > max.occurredAt.getTime() ? t : max,
+      null
+    );
+    const prevTs = checkpoint?.last_timestamp
+      ? new Date(checkpoint.last_timestamp).getTime()
+      : Number.NEGATIVE_INFINITY;
+    const newCheckpoint: RevolutCheckpoint =
+      newestSeen &&
+      Number.isFinite(newestSeen.occurredAt.getTime()) &&
+      newestSeen.occurredAt.getTime() > prevTs
+        ? {
+            last_transaction_id: newestSeen.id,
+            last_timestamp: newestSeen.occurredAt.toISOString(),
+          }
+        : checkpoint;
 
     return {
       events,

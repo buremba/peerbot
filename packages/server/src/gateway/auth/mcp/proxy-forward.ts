@@ -78,7 +78,29 @@ async function handleProxyRequestAuthenticated(
 			const bodyText = await clonedReq.text();
 			if (bodyText) {
 				const jsonRpc = JSON.parse(bodyText);
-				if (jsonRpc.method === "tools/call" && jsonRpc.params?.name) {
+
+				// JSON-RPC 2.0 / the MCP streamable-HTTP transport permit BATCH
+				// requests: a top-level ARRAY of request objects. The single-request
+				// gate below keys on `jsonRpc.method`, which is `undefined` for an
+				// array — so a batched `tools/call` would skip BOTH the pre-tool
+				// guardrails and the approval gate and be forwarded verbatim, and a
+				// spec-compliant upstream executes the whole batch. The worker's MCP
+				// client never legitimately batches tool calls, so reject any batch
+				// containing one rather than forward it unguarded. Batches with no
+				// tools/call (e.g. notification batches) still pass through.
+				if (Array.isArray(jsonRpc)) {
+					if (jsonRpc.some((m) => m?.method === "tools/call")) {
+						logger.warn(
+							"Rejecting batched tools/call — guardrails and approval cannot be enforced on a JSON-RPC batch",
+							{ mcpId, agentId },
+						);
+						return sendJsonRpcError(
+							c,
+							-32600,
+							"Batched tools/call is not permitted; send each tool call as a single JSON-RPC request.",
+						);
+					}
+				} else if (jsonRpc.method === "tools/call" && jsonRpc.params?.name) {
 					const toolName = jsonRpc.params.name;
 					const toolArgs = jsonRpc.params.arguments || {};
 

@@ -752,6 +752,87 @@ describe('McpProxy — wired pre-tool guardrail', () => {
     // to the worker — operators need it.
     expect(rows[0]!.metadata.reason).toMatch(/delete_repo/);
   });
+
+  it('rejects a JSON-RPC BATCH wrapping a forbidden tools/call instead of forwarding it unguarded', async () => {
+    // Regression: the pre-tool gate only fired when `jsonRpc.method` was
+    // "tools/call". A top-level JSON-RPC array (batch) has `method` undefined,
+    // so the whole guardrail + approval block was skipped and the raw batch was
+    // forwarded verbatim — a spec-compliant upstream then executes the batched
+    // tool call with zero enforcement. The fix rejects any batch containing a
+    // tools/call at the proxy (-32600) rather than forwarding it.
+    const fakeConfigService = {
+      // Unresolvable upstream: if the batch were ever forwarded (pre-fix) the
+      // fetch would fail with -32603 "Failed to connect", NOT our -32600. So a
+      // -32600 invalid-request response proves the gate rejected it pre-forward.
+      getHttpServer: async () => ({
+        url: 'http://upstream.invalid/mcp',
+        type: 'http' as const,
+      }),
+      getAllHttpServers: async () => new Map(),
+    };
+
+    const defaultSecretStore = new PostgresSecretStore();
+    const secretStore = new SecretStoreRegistry(defaultSecretStore, {
+      secret: defaultSecretStore,
+    });
+    const grantStore = new GrantStore();
+    const settingsStore = new AgentSettingsStore(
+      createPostgresAgentConfigStore()
+    );
+
+    const registry = new GuardrailRegistry();
+    registerBuiltinGuardrails(registry);
+
+    const proxy = new McpProxy(fakeConfigService as any, {
+      secretStore,
+      grantStore,
+      agentSettingsStore: settingsStore,
+      guardrailRegistry: registry,
+    });
+
+    const token = generateWorkerToken('u1', 'conv-1', 'deployment-1', {
+      channelId: 'c1',
+      teamId: 't1',
+      agentId,
+      organizationId: orgId,
+      platform: 'telegram',
+    });
+
+    // Top-level ARRAY (JSON-RPC batch) wrapping the forbidden tool call.
+    const body = JSON.stringify([
+      {
+        jsonrpc: '2.0',
+        id: 7,
+        method: 'tools/call',
+        params: { name: 'delete_repo', arguments: { repo: 'org/x' } },
+      },
+    ]);
+
+    const response = await orgContext.run(
+      { organizationId: orgId },
+      async () => {
+        return proxy.getApp().fetch(
+          new Request('http://localhost/test-mcp', {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${token}`,
+              'content-type': 'application/json',
+            },
+            body,
+          })
+        );
+      }
+    );
+
+    expect(response.status).toBe(200);
+    const json = (await response.json()) as any;
+    expect(json.jsonrpc).toBe('2.0');
+    // Rejected at the proxy with an invalid-request error — NOT forwarded.
+    expect(json.error?.code).toBe(-32600);
+    expect(json.error?.message).toMatch(/Batched tools\/call is not permitted/);
+    // The forbidden call never reached an upstream, so no -32603 connect error.
+    expect(json.error?.message).not.toMatch(/Failed to connect/);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────

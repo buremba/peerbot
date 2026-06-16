@@ -132,7 +132,11 @@ test-integration:
 	@: $${DATABASE_URL?Set DATABASE_URL=postgres://… (with pgvector) before running}
 	@echo "🧪 Integration suite (Postgres at $${DATABASE_URL%%@*}@…)…"
 	@cd packages/server && node ../../node_modules/.bin/vitest run --reporter=default
-	@bun test packages/server/src/gateway/__tests__
+	@# Proxy suites run in their own process — bun:test mock.module is process-global
+	@# and sibling suites mock node:child_process, which leaks and wedges the proxy
+	@# server. A separate process isolates the mocks (see ci.yml for the rationale).
+	@cd packages/server && bun test $$(ls src/gateway/__tests__/*.test.ts | grep -vE 'http-proxy|proxy-hardening|multi-tenant-isolation')
+	@cd packages/server && bun test src/gateway/__tests__/http-proxy.test.ts src/gateway/__tests__/http-proxy-judge.test.ts src/gateway/__tests__/proxy-hardening.test.ts src/gateway/__tests__/multi-tenant-isolation-reproducers.test.ts
 	@bun test packages/server/src/lobu/__tests__ packages/server/src/workspace/__tests__
 	@bun test packages/server/src/scheduled/__tests__
 	@bun test packages/connector-worker/integration-tests

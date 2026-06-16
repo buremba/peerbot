@@ -362,8 +362,22 @@ jobs:
         # src/gateway/__tests__/. These bun:test files are excluded from
         # vitest (see vitest.config.ts) and need a real Postgres, so they run
         # here in the integration job.
+        #
+        # The proxy suites run in their OWN `bun test` process: bun:test
+        # mock.module is process-global, and sibling suites (embedded-deployment,
+        # orchestration-harden) mock node:child_process, which leaks across the
+        # single-process run and wedges the proxy server's request handling.
+        # A separate process gives the proxy tests mock isolation (they share the
+        # CI Postgres service, so there's no extra DB cost).
         working-directory: packages/server
-        run: bun test src/gateway/__tests__
+        run: |
+          bun test $(ls src/gateway/__tests__/*.test.ts \
+            | grep -vE 'http-proxy|proxy-hardening|multi-tenant-isolation')
+          bun test \
+            src/gateway/__tests__/http-proxy.test.ts \
+            src/gateway/__tests__/http-proxy-judge.test.ts \
+            src/gateway/__tests__/proxy-hardening.test.ts \
+            src/gateway/__tests__/multi-tenant-isolation-reproducers.test.ts
 
       - name: server lobu route suite (bun:test, needs Postgres)
         # These bun:test files live outside src/gateway and are also excluded

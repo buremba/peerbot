@@ -784,7 +784,7 @@ export function registerActionHandlers(
               pattern,
               null,
               true,
-							connection.organizationId,
+							pending.organizationId ?? connection.organizationId,
             )
             .catch(() => undefined);
         }
@@ -808,7 +808,7 @@ export function registerActionHandlers(
             pattern,
             expiresAt,
             undefined,
-						connection.organizationId,
+						pending.organizationId ?? connection.organizationId,
           );
           logger.info(
             {

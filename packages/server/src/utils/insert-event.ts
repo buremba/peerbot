@@ -22,6 +22,29 @@ import logger from './logger';
  */
 const AUDIT_EVENT_RETRY = { maxRetries: 1, baseDelay: 500 } as const;
 
+// Namespace for pg_advisory_xact_lock(key1, key2) used to serialize the
+// dedup-on-(connection_id, origin_id) read-then-insert path below. Kept in the
+// signed int32 range required by PostgreSQL's two-key advisory lock overload.
+// "evdd" = events-dedup.
+const EVENT_DEDUP_LOCK_NAMESPACE = 0x65766464;
+
+/**
+ * Stable 32-bit FNV-1a hash of `connection_id:origin_id`, used as the second
+ * key for pg_advisory_xact_lock. Concurrent ingests of the SAME item
+ * (same connection + origin) serialize on this key; different items never
+ * contend. Collisions only cost a little extra serialization, never
+ * correctness.
+ */
+export function eventDedupLockKey(connectionId: number, originId: string): number {
+  let hash = 0x811c9dc5;
+  const s = `${connectionId}:${originId}`;
+  for (let i = 0; i < s.length; i++) {
+    hash ^= s.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash | 0;
+}
+
 // ============================================
 // Types
 // ============================================
@@ -239,45 +262,64 @@ export async function insertEvent(
   }
 
   const entityIdsValue = params.entityIds.length > 0 ? `{${params.entityIds.join(',')}}` : null;
-  let supersedesEventId = params.supersedesEventId ?? null;
 
   const requestedClientId = params.clientId ?? null;
 
-  if (options?.onConflictUpdate) {
-    const existing = await findCurrentEventByOrigin(sql, params);
-    if (existing) {
-      if (isSemanticallyEqual(existing, params)) {
-        // Reread before touching the embedding. If the row got
-        // deleted / tombstoned between findCurrentEventByOrigin and
-        // here, upsertEmbedding would FK-fail instead of letting us
-        // fall through cleanly to a fresh insert (CodeRabbit catch
-        // on PR #780).
-        const existingRows = await sql`
-          SELECT id, entity_ids, origin_id, title, semantic_type, created_at
-          FROM events
-          WHERE id = ${existing.id}
-          LIMIT 1
-        `;
-        const existingRow = existingRows[0] as InsertedEvent | undefined;
-        if (existingRow) {
-          await upsertEmbedding(existingRow.id, params.embedding, params.embeddingModel, sql);
-          return existingRow;
+  // Core find→decide→insert, parameterized on the active SQL handle so it can
+  // run either directly on the singleton pool or inside the dedup transaction
+  // below (which holds an advisory lock for the duration).
+  const runInsert = async (
+    activeSql: ReturnType<typeof getDb>
+  ): Promise<InsertedEvent> => {
+    let supersedesEventId = params.supersedesEventId ?? null;
+
+    if (options?.onConflictUpdate) {
+      const existing = await findCurrentEventByOrigin(activeSql, params);
+      if (existing) {
+        if (isSemanticallyEqual(existing, params)) {
+          // Reread before touching the embedding. If the row got
+          // deleted / tombstoned between findCurrentEventByOrigin and
+          // here, upsertEmbedding would FK-fail instead of letting us
+          // fall through cleanly to a fresh insert (CodeRabbit catch
+          // on PR #780).
+          const existingRows = await activeSql`
+            SELECT id, entity_ids, origin_id, title, semantic_type, created_at
+            FROM events
+            WHERE id = ${existing.id}
+            LIMIT 1
+          `;
+          const existingRow = existingRows[0] as InsertedEvent | undefined;
+          if (existingRow) {
+            await upsertEmbedding(
+              existingRow.id,
+              params.embedding,
+              params.embeddingModel,
+              activeSql
+            );
+            return existingRow;
+          }
+          // Race: the existing row was deleted/tombstoned between the
+          // findCurrentEventByOrigin lookup above and the SELECT here. Fall
+          // through into the INSERT path with `supersedesEventId` unset so we
+          // create a fresh row instead of crashing on `undefined.id`.
+          logger.warn(
+            { existingId: existing.id, originId: params.originId },
+            '[insert-event] existing row vanished between find and reread — proceeding with fresh insert'
+          );
+        } else {
+          supersedesEventId = existing.id;
         }
-        // Race: the existing row was deleted/tombstoned between the
-        // findCurrentEventByOrigin lookup above and the SELECT here. Fall
-        // through into the INSERT path with `supersedesEventId` unset so we
-        // create a fresh row instead of crashing on `undefined.id`.
-        logger.warn(
-          { existingId: existing.id, originId: params.originId },
-          '[insert-event] existing row vanished between find and reread — proceeding with fresh insert'
-        );
-      } else {
-        supersedesEventId = existing.id;
       }
     }
-  }
 
-  const insertWithClientId = (clientId: string | null) => sql`
+    return insertRow(activeSql, supersedesEventId);
+  };
+
+  const insertRow = async (
+    sql: ReturnType<typeof getDb>,
+    supersedesEventId: number | null
+  ): Promise<InsertedEvent> => {
+    const insertWithClientId = (clientId: string | null) => sql`
     INSERT INTO events (
       entity_ids, organization_id, origin_id, title,
       payload_type, payload_text, payload_data, payload_template, attachments, metadata,
@@ -362,8 +404,32 @@ export async function insertEvent(
         `Row was not persisted; check server logs for diagnostic context.`
     );
   }
-  await upsertEmbedding(inserted.id, params.embedding, params.embeddingModel, sql);
-  return inserted;
+    await upsertEmbedding(inserted.id, params.embedding, params.embeddingModel, sql);
+    return inserted;
+  };
+
+  // The dedup path (onConflictUpdate) is a non-atomic read-then-insert: it
+  // looks up the current row for (connection_id, origin_id), then either
+  // supersedes it or inserts fresh. Without serialization, two concurrent
+  // ingests of the SAME item — common under N>1 app replicas and even two
+  // overlapping runs on one replica — can both see "no current row" and both
+  // insert with supersedes_event_id NULL (→ permanent duplicate current rows),
+  // or both target the same row to supersede (→ duplicate-key error on
+  // idx_events_superseded_by, which fails the whole stream batch). Hold a
+  // transaction-scoped advisory lock keyed on (connection_id, origin_id) so
+  // these serialize. Only engage when we own the connection (no caller-supplied
+  // tx, which already runs in its own atomic scope) and have both keys.
+  if (options?.onConflictUpdate && !options.sql && params.connectionId && params.originId) {
+    const lockKey = eventDedupLockKey(params.connectionId, params.originId);
+    return sql.begin(async (tx) => {
+      await tx`
+        SELECT pg_advisory_xact_lock(${EVENT_DEDUP_LOCK_NAMESPACE}, ${lockKey})
+      `;
+      return runInsert(tx as unknown as ReturnType<typeof getDb>);
+    }) as Promise<InsertedEvent>;
+  }
+
+  return runInsert(sql);
 }
 
 // ============================================

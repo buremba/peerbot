@@ -437,6 +437,20 @@ credentialRoutes.post('/exchange-token', async (c) => {
   return handleExchangeToken(c, token, next, true);
 });
 
+// TEMP diagnostic — remove after diagnosing the embedded-iframe sign-in.
+// Unauthenticated; sets a cookie with the SAME attributes as the real
+// partitioned session cookie (mintSessionCookieValue) so we can curl it through
+// Cloudflare and verify whether the `Partitioned` (CHIPS) attribute survives the
+// proxy. The value is a constant; no auth, no real data.
+credentialRoutes.get('/__cf-partition-probe', (c) => {
+  c.header('Cache-Control', 'no-store');
+  c.header(
+    'Set-Cookie',
+    '__Secure-cf_partition_probe=ok; Path=/; HttpOnly; SameSite=None; Secure; Partitioned; Max-Age=60'
+  );
+  return c.json({ ok: true });
+});
+
 /**
  * Bootstrap page for the Owletto extension's side-panel iframe.
  *

@@ -37,6 +37,65 @@ import {
 
 const logger = createLogger("orchestrator");
 
+/**
+ * Mint the per-run worker JWT the worker uses as its PRIMARY gateway auth
+ * (`session-runner`: `runJobToken || WORKER_TOKEN`). Extracted as a pure,
+ * exported function so the claim set is exercised by a regression test that
+ * pins parity with the consumer requirements — the #1274 P0 (this mint
+ * omitted `connectionId`, so every chat `ask_user` 500'd at
+ * `assertRoutableInteraction`) shipped precisely because no test drove the
+ * mint code. Any claim a downstream consumer reads off the verified worker
+ * token (connectionId, source, platform, teamId, agentId, organizationId,
+ * runId, …) MUST be set here; the test asserts that so the next omitted
+ * claim fails red instead of in prod.
+ *
+ * Returns `undefined` when `runId` is absent (legacy direct-enqueue path):
+ * the worker then falls back to the deployment-lifetime WORKER_TOKEN and the
+ * snapshot route declines to write.
+ */
+export function buildRunJobToken(args: {
+  userId: string;
+  conversationId: string;
+  deploymentName: string;
+  channelId: string;
+  teamId?: string;
+  agentId?: string;
+  organizationId?: string;
+  platform?: string;
+  platformMetadata?: Record<string, unknown>;
+  runId?: number;
+}): string | undefined {
+  if (args.runId === undefined) return undefined;
+  return generateWorkerToken(
+    args.userId,
+    args.conversationId,
+    args.deploymentName,
+    {
+      channelId: args.channelId,
+      teamId: args.teamId,
+      agentId: args.agentId,
+      organizationId: args.organizationId,
+      platform: args.platform,
+      // PRIMARY auth → must carry connectionId, or interaction posts
+      // (ask_user / tool approval / link button) hit
+      // `assertRoutableInteraction`, which rejects a chat-platform
+      // interaction with no connectionId, and every ask_user 500s (#1274).
+      connectionId:
+        typeof args.platformMetadata?.connectionId === "string"
+          ? args.platformMetadata.connectionId
+          : undefined,
+      // Headless run origin → interaction cards from this turn are stamped
+      // headless and skip the SSE-owner gate (no browser SSE exists on any
+      // pod for a headless run, so an owner-gated card dead-letters).
+      source:
+        typeof args.platformMetadata?.source === "string"
+          ? args.platformMetadata.source
+          : undefined,
+      runId: args.runId,
+    }
+  );
+}
+
 export class MessageConsumer {
   private queue: IMessageQueue;
   private deploymentManager: BaseDeploymentManager;
@@ -214,38 +273,18 @@ export class MessageConsumer {
       // A on PR #865. Without a parsed runId (legacy direct-enqueue
       // path) we skip the mint; the snapshot path then declines to write
       // (worker-side runId is undefined and writeSnapshot bails).
-      if (data.runId !== undefined) {
-        data.runJobToken = generateWorkerToken(
-          data.userId,
-          effectiveConversationId,
-          deploymentName,
-          {
-            channelId: data.channelId,
-            teamId: data.teamId,
-            agentId: data.agentId,
-            organizationId: data.organizationId,
-            platform: data.platform,
-            // The worker uses this per-run token as its PRIMARY gateway auth
-            // (session-runner: `runJobToken || WORKER_TOKEN`), so it must carry
-            // connectionId — otherwise interaction posts (ask_user / tool
-            // approval / link button) hit `assertRoutableInteraction`, which
-            // rejects a chat-platform interaction with no connectionId, and
-            // every ask_user 500s. Mirrors base-deployment-manager's
-            // deployment-lifetime worker token.
-            connectionId:
-              typeof data.platformMetadata?.connectionId === "string"
-                ? data.platformMetadata.connectionId
-                : undefined,
-            // Carry the headless run origin so interaction cards emitted from
-            // this turn can be stamped headless and skip the SSE-owner gate.
-            source:
-              typeof data.platformMetadata?.source === "string"
-                ? data.platformMetadata.source
-                : undefined,
-            runId: data.runId,
-          }
-        );
-      }
+      data.runJobToken = buildRunJobToken({
+        userId: data.userId,
+        conversationId: effectiveConversationId,
+        deploymentName,
+        channelId: data.channelId,
+        teamId: data.teamId,
+        agentId: data.agentId,
+        organizationId: data.organizationId,
+        platform: data.platform,
+        platformMetadata: data.platformMetadata,
+        runId: data.runId,
+      });
 
       logger.info(
         `Conversation routing - effectiveConversationId: ${effectiveConversationId}, canonicalKey: ${canonicalConversationKey}, deploymentName: ${deploymentName}`

@@ -29,6 +29,55 @@ import { runInBatches } from "./deployment-utils.js";
 const logger = createLogger("orchestrator");
 
 /**
+ * Mint the deployment-lifetime WORKER_TOKEN. This is the FALLBACK gateway auth
+ * the worker uses when no per-run runJobToken was minted (`session-runner`:
+ * `runJobToken || WORKER_TOKEN`). Extracted (mirrors message-consumer's
+ * `buildRunJobToken`) so both primary-auth mints share a tested claim-parity
+ * surface — the #1274 P0 was an omitted-claim divergence between exactly these
+ * two mints. Every claim a downstream consumer reads off the verified worker
+ * token MUST be set on BOTH mints, or a worker that lands on this fallback path
+ * loses it (e.g. headless `source` → owner-gated card dead-letters).
+ */
+export function buildDeploymentWorkerToken(args: {
+  userId: string;
+  conversationId: string;
+  deploymentName: string;
+  channelId: string;
+  teamId?: string;
+  agentId?: string;
+  organizationId?: string;
+  platform?: string;
+  platformMetadata?: Record<string, unknown>;
+  traceId?: string;
+}): string {
+  return generateWorkerToken(
+    args.userId,
+    args.conversationId,
+    args.deploymentName,
+    {
+      channelId: args.channelId,
+      teamId: args.teamId,
+      platform: args.platform,
+      agentId: args.agentId,
+      organizationId: args.organizationId,
+      connectionId:
+        typeof args.platformMetadata?.connectionId === "string"
+          ? args.platformMetadata.connectionId
+          : undefined,
+      // Headless run origin — mirror runJobToken so a worker that falls back
+      // to this deployment-lifetime token still stamps headless interaction
+      // cards instead of dead-lettering them behind the SSE-owner gate. Same
+      // omitted-claim class as the connectionId P0 (#1274).
+      source:
+        typeof args.platformMetadata?.source === "string"
+          ? args.platformMetadata.source
+          : undefined,
+      traceId: args.traceId,
+    }
+  );
+}
+
+/**
  * TTL applied to non-provider secret env var placeholders. Mappings are
  * cascade-deleted on deployment teardown; this only bounds how long an
  * orphaned mapping (pod crash, agent deleted mid-day) survives. 24h default,
@@ -866,23 +915,18 @@ export abstract class BaseDeploymentManager {
       organizationId: validated.organizationId,
     };
 
-    const workerToken = generateWorkerToken(
+    const workerToken = buildDeploymentWorkerToken({
       userId,
       conversationId,
       deploymentName,
-      {
-        channelId,
-        teamId,
-        platform,
-        agentId,
-        organizationId: validated.organizationId,
-        connectionId:
-          typeof platformMetadata?.connectionId === "string"
-            ? platformMetadata.connectionId
-            : undefined,
-        traceId,
-      }
-    );
+      channelId,
+      teamId,
+      platform,
+      agentId,
+      organizationId: validated.organizationId,
+      platformMetadata,
+      traceId,
+    });
 
     const dispatcherHost = this.getDispatcherHost();
     await this.storeDeploymentConfigs(deploymentName, validated);

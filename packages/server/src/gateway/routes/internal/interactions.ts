@@ -81,7 +81,16 @@ export function createInteractionRoutes(
 
         return c.json({ id: posted.id, status: "posted" });
       } catch (error) {
-        logger.error("Failed to post question:", error);
+        // Serialize the message + stack explicitly. The console logger
+        // JSON.stringifies a positional Error arg to `{}` (Error's own
+        // enumerable props are empty), which is exactly what hid the
+        // connectionId 500 in #1274. Use the codebase's `{ error: <message> }`
+        // convention so the real cause (e.g. assertRoutableInteraction's
+        // "connectionId is required") is visible.
+        logger.error("Failed to post question", {
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+        });
         return errorResponse(c, "Failed to post question", 500);
       }
     }
@@ -111,7 +120,10 @@ export function createInteractionRoutes(
 
       return c.json({ success: true });
     } catch (error) {
-      logger.error("Failed to send suggestions:", error);
+      logger.error("Failed to send suggestions", {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
       return errorResponse(c, "Failed to send suggestions", 500);
     }
   });

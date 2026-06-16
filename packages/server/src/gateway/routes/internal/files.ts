@@ -164,7 +164,10 @@ export function createFileRoutes(
         artifactId: result.artifactId,
       });
     } catch (error) {
-      logger.error("Failed to upload file:", error);
+      logger.error("Failed to upload file", {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
       return errorResponse(c, "Failed to upload file", 500);
     }
   });
@@ -251,7 +254,14 @@ export function createFileRoutes(
             ...result.value,
           };
         }
-        logger.error(`Failed to upload file ${index}:`, result.reason);
+        logger.error(`Failed to upload file ${index}`, {
+          error:
+            result.reason instanceof Error
+              ? result.reason.message
+              : String(result.reason),
+          stack:
+            result.reason instanceof Error ? result.reason.stack : undefined,
+        });
         return {
           success: false,
           error: result.reason?.message || "Upload failed",
@@ -260,7 +270,10 @@ export function createFileRoutes(
 
       return c.json({ results });
     } catch (error) {
-      logger.error("Failed to batch upload files:", error);
+      logger.error("Failed to batch upload files", {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
       return errorResponse(c, "Failed to batch upload files", 500);
     }
   });

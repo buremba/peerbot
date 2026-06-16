@@ -88,6 +88,14 @@ function minimalGatewayConfig(): GatewayConfig {
 export interface RealClaudeAuthStack {
   authProfilesManager: AuthProfilesManager;
   oauthStateStore: ProviderOAuthStateStore;
+  /**
+   * Stop the SSE fanout / queue listeners this stack started. Call from the
+   * test's `afterEach` — `initializeClaudeServices()` also registers provider
+   * modules into the process-global `moduleRegistry` bound to THIS stack's
+   * manager, so leaving it running leaks listeners into later tests that share
+   * the Bun process.
+   */
+  shutdown(): Promise<void>;
 }
 
 /**
@@ -140,8 +148,12 @@ export async function buildRealClaudeAuthStack(): Promise<RealClaudeAuthStack> {
       ownsAgent: async () => true,
     } as never,
   });
-  (coreServices as unknown as { queue: unknown }).queue =
-    new MockMessageQueue();
+  // MockMessageQueue has no stop(); coreServices.shutdown() calls queue.stop(),
+  // so give the injected queue a no-op stop to keep teardown clean.
+  (coreServices as unknown as { queue: unknown }).queue = Object.assign(
+    new MockMessageQueue(),
+    { stop: async () => {} }
+  );
 
   await (
     coreServices as unknown as {
@@ -160,5 +172,9 @@ export async function buildRealClaudeAuthStack(): Promise<RealClaudeAuthStack> {
   if (!authProfilesManager || !oauthStateStore) {
     throw new Error('CoreServices did not initialize the Claude auth stack');
   }
-  return { authProfilesManager, oauthStateStore };
+  return {
+    authProfilesManager,
+    oauthStateStore,
+    shutdown: () => coreServices.shutdown(),
+  };
 }

@@ -147,9 +147,12 @@ describe('Claude OAuth redirect_uri must match between authorize and exchange', 
     };
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     globalThis.fetch = realFetch;
     coreServicesStash.services = null;
+    // Stop the SSE fanout / queue listeners the real CoreServices started so
+    // they don't leak into later tests sharing the Bun process.
+    await stack?.shutdown();
   });
 
   test('exchange reuses the authorize redirect_uri (no console.anthropic.com override)', async () => {

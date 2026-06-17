@@ -169,16 +169,19 @@ set +e
 INTEGRATION_EXIT=0
 {
   (cd packages/server && node ../../node_modules/.bin/vitest run --reporter=default); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
-  # Each gateway __tests__ dir runs in its own bun process: co-running the whole
-  # tree in one process cross-contaminates the global ENCRYPTION_KEY (see #1238
-  # and the ci.yml comment). `find` auto-discovers nested dirs; the coverage
-  # gate fails if any gateway test file escapes this loop.
+  # Each gateway __tests__ dir runs in its own bun process: bun has no per-file
+  # isolation and the gateway suites aren't mutually hermetic, so co-running the
+  # whole tree in one process leaks DB/module state across files (see #1238 and
+  # the ci.yml comment). `find` auto-discovers nested dirs; the coverage gate
+  # fails if any gateway test file escapes this loop. Run all, fail at the end.
   ( cd packages/server
     dirs=$(find src/gateway -type d -name __tests__ | sort)
     [ -n "$dirs" ] || { echo "no gateway __tests__ dirs found" >&2; exit 1; }
+    rc=0
     for d in $dirs; do
-      bun test "$d" || exit $?
-    done );                                                                            ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
+      bun test "$d" || rc=1
+    done
+    exit $rc );                                                                        ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
   (cd packages/server && bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
 } > "$INTEGRATION_LOG" 2>&1
 set -e

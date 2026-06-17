@@ -132,12 +132,13 @@ test-integration:
 	@: $${DATABASE_URL?Set DATABASE_URL=postgres://… (with pgvector) before running}
 	@echo "🧪 Integration suite (Postgres at $${DATABASE_URL%%@*}@…)…"
 	@cd packages/server && node ../../node_modules/.bin/vitest run --reporter=default
-	@# Each gateway __tests__ dir in its own process (shared-process co-run
-	@# cross-contaminates the global ENCRYPTION_KEY — see #1238). Fail if find
+	@# Each gateway __tests__ dir in its own process: bun has no per-file
+	@# isolation and the suites aren't mutually hermetic, so a shared-process
+	@# co-run leaks DB/module state across files (see #1238). Fail if find
 	@# matches nothing, so a path typo can't silently run zero tests.
 	@dirs=$$(find packages/server/src/gateway -type d -name __tests__ | sort); \
 		[ -n "$$dirs" ] || { echo "no gateway __tests__ dirs found" >&2; exit 1; }; \
-		for d in $$dirs; do echo ">> bun test $$d"; bun test "$$d" || exit $$?; done
+		rc=0; for d in $$dirs; do echo ">> bun test $$d"; bun test "$$d" || rc=1; done; exit $$rc
 	@bun test packages/server/src/lobu/__tests__ packages/server/src/scheduled packages/server/src/workspace/__tests__
 	@bun test packages/connector-worker/integration-tests
 

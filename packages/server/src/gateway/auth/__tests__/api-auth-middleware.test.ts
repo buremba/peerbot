@@ -25,7 +25,11 @@ import {
   test,
 } from "bun:test";
 import { Hono } from "hono";
-import { generateWorkerToken, encrypt } from "@lobu/core";
+import {
+  generateWorkerToken,
+  encrypt,
+  __resetEncryptionKeyCacheForTests,
+} from "@lobu/core";
 import {
   createApiAuthMiddleware,
   TOKEN_EXPIRATION_MS,
@@ -46,6 +50,10 @@ beforeEach(() => {
   for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
   process.env.ENCRYPTION_KEY = TEST_KEY;
   delete process.env.WORKER_TOKEN_TTL_MS;
+  // encrypt()/decrypt() memoize the key on first use; clear it so this test
+  // reads TEST_KEY fresh regardless of what ran before (the suite no longer
+  // owns the process — see #1238).
+  __resetEncryptionKeyCacheForTests();
 });
 
 afterEach(() => {
@@ -54,6 +62,8 @@ afterEach(() => {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
+  // Don't leak this test's key (or its cleared state) into the next file.
+  __resetEncryptionKeyCacheForTests();
   // Reset injected auth provider between tests
   setAuthProvider(null);
 });
@@ -174,6 +184,8 @@ describe("createApiAuthMiddleware — worker token", () => {
     const token = freshToken();
     process.env.ENCRYPTION_KEY =
       "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+    // The key is memoized; the rotation only takes effect after a cache clear.
+    __resetEncryptionKeyCacheForTests();
 
     const app = makeApp({});
     const res = await fetchApp(app, bearerHeader(token));
@@ -394,6 +406,7 @@ describe("createApiAuthMiddleware — agent-scoped token isolation", () => {
     // Decrypt, swap agentId to B, re-encrypt with a *different* key → tag invalid.
     process.env.ENCRYPTION_KEY =
       "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+    __resetEncryptionKeyCacheForTests();
 
     const app = makeApp({});
     const res = await fetchApp(app, bearerHeader(legitimateTokenA));

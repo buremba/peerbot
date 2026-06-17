@@ -361,26 +361,29 @@ jobs:
         # The gateway bun:test files are excluded from vitest (vitest.config.ts)
         # and need a real Postgres, so they run here. We run EACH __tests__ dir
         # in its own `bun test` process rather than one `bun test src/gateway`:
-        # bun has no per-file isolation, and several DB-backed suites set the
-        # process-global ENCRYPTION_KEY to suite-specific values (e.g. the
-        # key-rotation 401 test). Co-running them in one process cross-decrypts
-        # secrets under the wrong key (34 failures). A process per dir gives each
-        # suite a clean env — the same reason vitest uses singleFork here. `find`
+        # bun has no per-file module isolation (unlike vitest's forks), and the
+        # gateway suites are not mutually hermetic — co-running the whole tree in
+        # one process leaks DB rows and module singletons across files (org rows,
+        # service registries) and fails. A process per dir gives each dir a clean
+        # module registry, matching why vitest uses singleFork here. `find`
         # auto-discovers nested dirs, and check-test-runner-coverage.mjs fails CI
         # if a gateway test file ever escapes this loop. Covers
-        # src/gateway/infrastructure/queue too (#1238).
+        # src/gateway/infrastructure/queue too (#1238). Run all dirs and fail at
+        # the end so one run reports every failing dir, not just the first.
         working-directory: packages/server
         run: |
-          set -euo pipefail
+          set -uo pipefail
           dirs=$(find src/gateway -type d -name __tests__ | sort)
           # Fail loudly if the glob matches nothing (path typo / restructure):
           # an empty loop would otherwise run zero tests and exit green.
           [ -n "$dirs" ] || { echo "no gateway __tests__ dirs found" >&2; exit 1; }
+          rc=0
           for d in $dirs; do
             echo "::group::bun test $d"
-            bun test "$d"
+            bun test "$d" || rc=1
             echo "::endgroup::"
           done
+          exit $rc
 
       - name: server lobu/scheduled/workspace suites (bun:test, needs Postgres)
         # These bun:test files live outside src/gateway and are also excluded

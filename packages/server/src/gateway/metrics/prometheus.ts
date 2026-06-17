@@ -69,6 +69,18 @@ function initializeMetrics() {
     "Runs that reached terminal 'failed' after exhausting retries, by run_type and queue",
     "counter"
   );
+  // Transient DB connection-drop retries (db/with-retry.ts). The prod pooler
+  // (or an intermediary LB) silently closes idle/reloaded sockets; postgres.js
+  // rejects the next query with CONNECTION_ENDED. We retry on a fresh
+  // connection. outcome="retried" counts caught drops; outcome="exhausted"
+  // counts the ones that still failed after retries (those are the 500s we
+  // used to always emit). Alert on
+  // rate(lobu_db_conn_retry_total{outcome="exhausted"}[5m]).
+  registerMetric(
+    "lobu_db_conn_retry_total",
+    "Transient DB connection drops retried, by call-site op and outcome (retried|exhausted)",
+    "counter"
+  );
   registerMetric(
     "lobu_process_start_time_seconds",
     "Start time of the process since unix epoch in seconds",

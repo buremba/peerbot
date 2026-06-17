@@ -8,6 +8,7 @@
 import { authorizeCapabilities } from '@lobu/core';
 import type { Context } from 'hono';
 import { getDb, pgTextArray } from '../db/client';
+import { withDbRetry } from '../db/with-retry';
 import type { Env } from '../index';
 import { materializeDueFeeds } from '../scheduled/check-due-feeds';
 import {
@@ -507,7 +508,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       return rows[0] ?? null;
     });
 
-  let pending = await claimNextPendingRun();
+  let pending = await withDbRetry('worker_poll_claim', claimNextPendingRun);
 
   if (!pending) {
     const now = Date.now();
@@ -526,7 +527,7 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         await materializeDueFeeds(c.env, tx);
       });
 
-      pending = await claimNextPendingRun();
+      pending = await withDbRetry('worker_poll_claim', claimNextPendingRun);
     }
   }
 

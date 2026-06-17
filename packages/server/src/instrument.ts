@@ -26,7 +26,14 @@ if (dsn) {
 
   Sentry.init({
     dsn,
-    environment: process.env.ENVIRONMENT || 'production',
+    // Default to 'development', NOT 'production'. Prod deployments set ENVIRONMENT
+    // explicitly (charts/lobu), so the only stacks that hit this fallback are
+    // local/dev/example ones that happen to carry a SENTRY_DSN. Defaulting to
+    // 'production' made those mislabel as prod and pollute the prod Sentry view
+    // (e.g. a docker-compose stack dialing the dev-default `lobu-postgres` host
+    // surfaced as the #1 "production" error). A non-prod default keeps the prod
+    // environment filter trustworthy.
+    environment: process.env.ENVIRONMENT || 'development',
     release: process.env.SENTRY_RELEASE || process.env.APP_GIT_SHA || undefined,
     // 0.1 produced ~250k spans/day (~7.5M/mo) and exhausted the plan's 5M span
     // quota by day ~20 of the usage period. 0.02 keeps ~50k/day (~1.5M/mo) —

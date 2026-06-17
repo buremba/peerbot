@@ -24,7 +24,10 @@ export default defineConfig({
       // `make test-providers-live`, never as part of the integration gate.
       "src/__tests__/live-providers/**",
       "src/gateway/**/__tests__/**",
-      "src/lobu/**/__tests__/**",
+      // Only src/lobu/__tests__ is bun:test (route suites). Nested dirs like
+      // src/lobu/stores/__tests__ are vitest-style and must stay visible to
+      // vitest — do NOT broaden this back to src/lobu/**/__tests__/**.
+      "src/lobu/__tests__/**",
       "src/scheduled/**/__tests__/**",
       "src/workspace/**/__tests__/**",
       "**/node_modules/**",

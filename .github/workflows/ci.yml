@@ -93,13 +93,13 @@ jobs:
 
       - name: server (bun:test units)
         # The gateway code that used to live in packages/gateway is now under
-        # src/gateway/. Its DB-backed bun:test suite needs Postgres and runs
-        # in the integration job below; here we only run the pure-unit
-        # subdirectories that don't touch Postgres.
+        # src/gateway/. Its bun:test suites run in the integration job below
+        # (the gateway loop covers src/gateway/infrastructure/queue too, so it
+        # is intentionally NOT repeated here — see #1238). Here we only run the
+        # pure-unit subdirectories that don't touch Postgres.
         run: |
           bun test packages/server/src/__tests__/unit
           bun test packages/server/src/auth/__tests__/tool-access.test.ts
-          bun test packages/server/src/gateway/infrastructure/queue
 
       - name: connector-worker (bun:test)
         # openclaw-plugin e2e tests need a live backend and belong in the
@@ -357,19 +357,34 @@ jobs:
           node ../../node_modules/.bin/vitest run --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/vitest-report.json"
           node ../../scripts/assert-vitest-report-clean.mjs "$RUNNER_TEMP/vitest-report.json"
 
-      - name: server gateway suite (bun:test, needs Postgres)
-        # The gateway code that used to live in packages/gateway is now under
-        # src/gateway/__tests__/. These bun:test files are excluded from
-        # vitest (see vitest.config.ts) and need a real Postgres, so they run
-        # here in the integration job.
+      - name: server gateway suites (bun:test, needs Postgres)
+        # The gateway bun:test files are excluded from vitest (vitest.config.ts)
+        # and need a real Postgres, so they run here. We run EACH __tests__ dir
+        # in its own `bun test` process rather than one `bun test src/gateway`:
+        # bun has no per-file isolation, and several DB-backed suites set the
+        # process-global ENCRYPTION_KEY to suite-specific values (e.g. the
+        # key-rotation 401 test). Co-running them in one process cross-decrypts
+        # secrets under the wrong key (34 failures). A process per dir gives each
+        # suite a clean env — the same reason vitest uses singleFork here. `find`
+        # auto-discovers nested dirs, and check-test-runner-coverage.mjs fails CI
+        # if a gateway test file ever escapes this loop. Covers
+        # src/gateway/infrastructure/queue too (#1238).
         working-directory: packages/server
-        run: bun test src/gateway/__tests__
+        run: |
+          for d in $(find src/gateway -type d -name __tests__ | sort); do
+            echo "::group::bun test $d"
+            bun test "$d"
+            echo "::endgroup::"
+          done
 
-      - name: server lobu route suite (bun:test, needs Postgres)
+      - name: server lobu/scheduled/workspace suites (bun:test, needs Postgres)
         # These bun:test files live outside src/gateway and are also excluded
-        # from vitest because they import bun:test directly.
+        # from vitest because they import bun:test directly. They co-run cleanly
+        # in one process (verified). src/lobu also holds vitest-style tests
+        # (src/lobu/stores/__tests__) that vitest owns, so we target
+        # src/lobu/__tests__ specifically rather than the whole src/lobu tree.
         working-directory: packages/server
-        run: bun test src/lobu/__tests__ src/workspace/__tests__
+        run: bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__
 
   format-lint:
     runs-on: ubuntu-latest
@@ -396,6 +411,12 @@ jobs:
 
       - name: Duplication gate (jscpd)
         run: bun run dupes
+
+      - name: Test-runner coverage gate (#1238)
+        # Every packages/server *.test.ts must run in exactly one runner (vitest
+        # or a bun:test job), keyed on its import. Catches files that drift into
+        # running nowhere — a skipped test is indistinguishable from a passing one.
+        run: bun scripts/check-test-runner-coverage.mjs
 
   typecheck:
     runs-on: ubuntu-latest

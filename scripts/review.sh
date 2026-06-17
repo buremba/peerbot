@@ -111,6 +111,12 @@ fi
 # bootstrap role already owns its schema.
 unset DATABASE_URL
 
+# The dev .env also sets PUBLIC_WEB_URL=http://localhost:8787, which makes the
+# public-origin / public-pages-contract tests fail ("expected 'localhost' to be
+# null") — they assert the unconfigured-origin contract. It is the only var the
+# canonical-origin resolution reads (src/utils/public-origin.ts), so clear it.
+unset PUBLIC_WEB_URL
+
 # --- build ------------------------------------------------------------------
 # Tests need workspace packages built. Worktree's `dist/` may be stale or
 # missing — always rebuild before tests. Cheap if up-to-date.
@@ -141,11 +147,16 @@ echo ">> unit tests → $UNIT_LOG"
 set +e
 UNIT_EXIT=0
 {
+  # Guard: every packages/server *.test.ts must run in >=1 runner (vitest or a
+  # bun job). Fails loudly if a file drifts into running nowhere — the
+  # silent-skip class this change fixes.
+  node scripts/check-test-runner-coverage.mjs;                      ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   bun test packages/core packages/cli;                              ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   bun test packages/agent-worker;                                   ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   bun test packages/server/src/__tests__/unit;                      ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   bun test packages/server/src/auth/__tests__/tool-access.test.ts;  ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
-  bun test packages/server/src/gateway/infrastructure/queue;        ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  # NOTE: src/gateway/infrastructure/queue runs in the gateway integration loop
+  # below (not here) — see #1238; running it in both jobs double-executes it.
   bun test packages/connector-worker;                               ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
 } > "$UNIT_LOG" 2>&1
 set -e
@@ -158,8 +169,15 @@ set +e
 INTEGRATION_EXIT=0
 {
   (cd packages/server && node ../../node_modules/.bin/vitest run --reporter=default); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
-  (cd packages/server && bun test src/gateway/__tests__);                              ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
-  (cd packages/server && bun test src/lobu/__tests__ src/workspace/__tests__);         ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
+  # Each gateway __tests__ dir runs in its own bun process: co-running the whole
+  # tree in one process cross-contaminates the global ENCRYPTION_KEY (see #1238
+  # and the ci.yml comment). `find` auto-discovers nested dirs; the coverage
+  # gate fails if any gateway test file escapes this loop.
+  ( cd packages/server
+    for d in $(find src/gateway -type d -name __tests__ | sort); do
+      bun test "$d" || exit $?
+    done );                                                                            ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
+  (cd packages/server && bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
 } > "$INTEGRATION_LOG" 2>&1
 set -e
 

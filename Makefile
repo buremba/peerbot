@@ -117,7 +117,7 @@ test-unit:
 	@bun test packages/agent-worker
 	@bun test packages/server/src/__tests__/unit
 	@bun test packages/server/src/auth/__tests__/tool-access.test.ts
-	@bun test packages/server/src/gateway/infrastructure/queue
+	@# src/gateway/infrastructure/queue runs in the gateway loop in test-integration (#1238)
 	@bun test packages/connector-worker
 	@bun test packages/client packages/promptfoo-provider
 
@@ -132,9 +132,13 @@ test-integration:
 	@: $${DATABASE_URL?Set DATABASE_URL=postgres://… (with pgvector) before running}
 	@echo "🧪 Integration suite (Postgres at $${DATABASE_URL%%@*}@…)…"
 	@cd packages/server && node ../../node_modules/.bin/vitest run --reporter=default
-	@bun test packages/server/src/gateway/__tests__
-	@bun test packages/server/src/lobu/__tests__ packages/server/src/workspace/__tests__
-	@bun test packages/server/src/scheduled/__tests__
+	@# Each gateway __tests__ dir in its own process (shared-process co-run
+	@# cross-contaminates the global ENCRYPTION_KEY — see #1238). Fail if find
+	@# matches nothing, so a path typo can't silently run zero tests.
+	@dirs=$$(find packages/server/src/gateway -type d -name __tests__ | sort); \
+		[ -n "$$dirs" ] || { echo "no gateway __tests__ dirs found" >&2; exit 1; }; \
+		for d in $$dirs; do echo ">> bun test $$d"; bun test "$$d" || exit $$?; done
+	@bun test packages/server/src/lobu/__tests__ packages/server/src/scheduled packages/server/src/workspace/__tests__
 	@bun test packages/connector-worker/integration-tests
 
 # End-to-end — openclaw-plugin tests against a real running dev server.

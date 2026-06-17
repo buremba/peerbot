@@ -174,7 +174,9 @@ INTEGRATION_EXIT=0
   # and the ci.yml comment). `find` auto-discovers nested dirs; the coverage
   # gate fails if any gateway test file escapes this loop.
   ( cd packages/server
-    for d in $(find src/gateway -type d -name __tests__ | sort); do
+    dirs=$(find src/gateway -type d -name __tests__ | sort)
+    [ -n "$dirs" ] || { echo "no gateway __tests__ dirs found" >&2; exit 1; }
+    for d in $dirs; do
       bun test "$d" || exit $?
     done );                                                                            ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
   (cd packages/server && bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec

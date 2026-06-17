@@ -371,7 +371,12 @@ jobs:
         # src/gateway/infrastructure/queue too (#1238).
         working-directory: packages/server
         run: |
-          for d in $(find src/gateway -type d -name __tests__ | sort); do
+          set -euo pipefail
+          dirs=$(find src/gateway -type d -name __tests__ | sort)
+          # Fail loudly if the glob matches nothing (path typo / restructure):
+          # an empty loop would otherwise run zero tests and exit green.
+          [ -n "$dirs" ] || { echo "no gateway __tests__ dirs found" >&2; exit 1; }
+          for d in $dirs; do
             echo "::group::bun test $d"
             bun test "$d"
             echo "::endgroup::"
@@ -413,7 +418,7 @@ jobs:
         run: bun run dupes
 
       - name: Test-runner coverage gate (#1238)
-        # Every packages/server *.test.ts must run in exactly one runner (vitest
+        # Every packages/server *.test.ts must run in at least one runner (vitest
         # or a bun:test job), keyed on its import. Catches files that drift into
         # running nowhere — a skipped test is indistinguishable from a passing one.
         run: bun scripts/check-test-runner-coverage.mjs

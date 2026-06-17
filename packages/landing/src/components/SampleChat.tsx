@@ -195,6 +195,8 @@ interface SampleChatProps {
   /** Custom content for the message area. Overrides useCase messages. */
   children?: preact.ComponentChildren;
   onButtonHover?: (hovering: boolean) => void;
+  /** Extra classes for the outer window (e.g. `h-full` to fill a grid cell). */
+  class?: string;
 }
 
 export function SampleChat({
@@ -205,6 +207,7 @@ export function SampleChat({
   theme = TELEGRAM_THEME,
   children,
   onButtonHover,
+  class: cls = "",
 }: SampleChatProps) {
   const name = botName ?? useCase?.botName ?? "Bot";
   const initial = botInitial ?? useCase?.botInitial ?? "B";
@@ -241,7 +244,7 @@ export function SampleChat({
 
   return (
     <div
-      class="rounded-[14px] overflow-hidden w-full"
+      class={`flex flex-col rounded-[14px] overflow-hidden w-full ${cls}`}
       style={{
         border: `1px solid ${theme.border}`,
         backgroundColor: theme.bg,
@@ -307,7 +310,7 @@ export function SampleChat({
 
       {/* Messages */}
       <div
-        class="flex flex-col px-2 pb-2.5 pt-1"
+        class="flex flex-1 flex-col px-2 pb-2.5 pt-1"
         style={{ backgroundColor: theme.bg }}
       >
         {children ?? (useCase ? renderDefaultMessages(useCase.messages) : null)}

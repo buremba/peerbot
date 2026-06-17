@@ -3,11 +3,15 @@ import connectorsManifest from "../generated/connectors.json";
 import snippetsManifest from "../generated/landing-snippets.json";
 import { GITHUB_CONNECTORS_BLOB_URL, GITHUB_EXAMPLES_URL } from "../lib/urls";
 import { getLobuBaseUrl } from "../use-case-showcases";
-import { ArchitectureDiagram } from "./ArchitectureDiagram";
 import { CodeBlock, type CodeSnippet } from "./CodeBlock";
 import { CTA } from "./CTA";
 import { LatestBlogPosts, type LatestBlogPost } from "./LatestBlogPosts";
-import { ProactiveLoop } from "./ProactiveLoop";
+import {
+  loopForUseCase,
+  MemoryLoop,
+  ProactiveLoop,
+  SALES_LOOP,
+} from "./ProactiveLoop";
 import { ScheduleCallButton, ScheduleCallIcon } from "./ScheduleDialog";
 
 type ExampleEntry = {
@@ -97,7 +101,12 @@ export function LandingPage(props: {
       ) : (
         <>
           <Container className="py-14 sm:py-20">
-            <ArchitectureDiagram slug={activeUseCase} />
+            <MemoryLoop
+              data={{
+                ...(loopForUseCase(activeUseCase) ?? SALES_LOOP),
+                heading: undefined,
+              }}
+            />
           </Container>
           <UseCaseShowcaseSection
             slug={activeUseCase}
@@ -489,12 +498,11 @@ type ShowcaseTab = {
   id: string;
   eyebrow: string;
   blurb: string;
-  primary: { snippet: CodeSnippet; badge: string; maxHeight: string };
+  primary: { snippet: CodeSnippet; badge: string };
   secondary?: {
     snippet: CodeSnippet;
     badge: string;
     intro: string;
-    maxHeight: string;
   };
   docHref: string;
   docLabel: string;
@@ -526,7 +534,6 @@ function UseCaseShowcaseSection({
       primary: {
         snippet: agentConfig,
         badge: "lobu.config.ts",
-        maxHeight: "36rem",
       },
       docHref: "/getting-started/",
       docLabel: "Agents guide",
@@ -538,7 +545,6 @@ function UseCaseShowcaseSection({
       primary: {
         snippet: connector,
         badge: "typescript",
-        maxHeight: "36rem",
       },
       docHref: "/getting-started/connector-sdk/",
       docLabel: "Connector SDK docs",
@@ -551,7 +557,6 @@ function UseCaseShowcaseSection({
       primary: {
         snippet: memorySchema,
         badge: "entities",
-        maxHeight: "36rem",
       },
       docHref: "/getting-started/memory/",
       docLabel: "Memory guide",
@@ -563,14 +568,12 @@ function UseCaseShowcaseSection({
       primary: {
         snippet: watcher,
         badge: "reactive + dreaming",
-        maxHeight: "26rem",
       },
       secondary: reaction
         ? {
             snippet: reaction,
             badge: "optional · typescript",
             intro: "Reactions run code when memory changes:",
-            maxHeight: "26rem",
           }
         : undefined,
       docHref: "/getting-started/memory/",
@@ -582,7 +585,7 @@ function UseCaseShowcaseSection({
       id: "skills",
       eyebrow: "Skills",
       blurb: "Instructions, tools, packages, and network policy in one folder.",
-      primary: { snippet: skill, badge: "skill", maxHeight: "32rem" },
+      primary: { snippet: skill, badge: "skill" },
       docHref: "/getting-started/",
       docLabel: "Skills guide",
     });
@@ -594,13 +597,17 @@ function UseCaseShowcaseSection({
   return (
     <Container className="py-16 sm:py-20">
       <div class="mb-8 text-center">
-        <Eyebrow>What ships</Eyebrow>
-        <SectionHeading className="mx-auto">See what ships.</SectionHeading>
+        <Eyebrow>For engineers</Eyebrow>
+        <SectionHeading className="mx-auto">
+          The whole agent, in code.
+        </SectionHeading>
         <p
-          class="mx-auto mt-3 max-w-[42rem] text-[15px]"
+          class="mx-auto mt-3 max-w-[44rem] text-[15px]"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          Pick a piece to inspect the code. Click again to hide.
+          One project defines it end to end: the agent, its connectors, the
+          memory schema, watchers, and skills. Write it yourself, or let your
+          coding agent generate it. Pick a piece to read the code.
         </p>
       </div>
 
@@ -652,7 +659,6 @@ function UseCaseShowcaseSection({
           <CodeBlock
             badge={active.primary.badge}
             snippet={active.primary.snippet}
-            maxHeight={active.primary.maxHeight}
           />
           {active.secondary ? (
             <>
@@ -665,7 +671,6 @@ function UseCaseShowcaseSection({
               <CodeBlock
                 badge={active.secondary.badge}
                 snippet={active.secondary.snippet}
-                maxHeight={active.secondary.maxHeight}
               />
             </>
           ) : null}
@@ -689,21 +694,28 @@ function RunAnywhereSection() {
     eyebrow: string;
     title: string;
     body: preact.ComponentChildren;
+    links: Array<{ label: string; href: string }>;
   }> = [
     {
       eyebrow: "Local",
       title: "Run on your laptop.",
       body: "Boot the gateway, workers, memory, and embeddings with one command.",
+      links: [{ label: "Quickstart", href: "/getting-started/" }],
     },
     {
       eyebrow: "Self-host",
       title: "Run in your cloud.",
       body: "Deploy with Docker or Helm when data and controls need to stay with you.",
+      links: [
+        { label: "Docker", href: "/deployment/docker/" },
+        { label: "Kubernetes", href: "/deployment/kubernetes/" },
+      ],
     },
     {
       eyebrow: "Lobu Cloud",
       title: "Let Lobu run it.",
       body: "Use the same project with managed isolation, secrets, and upgrades.",
+      links: [{ label: "Lobu Cloud", href: "/deployment/cloud/" }],
     },
   ];
   return (
@@ -737,6 +749,18 @@ function RunAnywhereSection() {
             >
               {card.body}
             </p>
+            <div class="mt-auto flex flex-wrap gap-x-4 gap-y-1 pt-4">
+              {card.links.map((link) => (
+                <a
+                  key={link.href}
+                  href={link.href}
+                  class="inline-flex items-center gap-1 font-mono text-[12px] text-[color:var(--color-page-text-muted)] transition-colors hover:text-[color:var(--color-tg-accent)]"
+                >
+                  {link.label}
+                  <span aria-hidden="true">↗</span>
+                </a>
+              ))}
+            </div>
           </div>
         ))}
       </div>

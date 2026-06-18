@@ -686,34 +686,57 @@ export class ChatInstanceManager {
         `No active chat instance for connection ${connectionId} (could not start it on this pod)`
       );
     }
-    const channel = instance.chat?.channel?.(channelKey);
-    if (!channel?.messages) {
-      return { messages: [] };
-    }
     const collected: Array<{
       timestamp: string;
       user: string;
       text: string;
       isBot: boolean;
     }> = [];
-    // channel.messages iterates newest-first; take N then return oldest-first.
-    for await (const msg of channel.messages as AsyncIterable<any>) {
-      const text = (msg?.text ?? "").trim();
-      if (text) {
-        const sentAt =
-          msg?.metadata?.dateSent instanceof Date
-            ? msg.metadata.dateSent
-            : new Date();
+    const channel = instance.chat?.channel?.(channelKey);
+    if (channel?.messages) {
+      // channel.messages iterates newest-first; take N then return oldest-first.
+      for await (const msg of channel.messages as AsyncIterable<any>) {
+        const text = (msg?.text ?? "").trim();
+        if (text) {
+          const sentAt =
+            msg?.metadata?.dateSent instanceof Date
+              ? msg.metadata.dateSent
+              : new Date();
+          collected.push({
+            timestamp: sentAt.toISOString(),
+            user: msg?.author?.fullName || msg?.author?.userId || "user",
+            text,
+            isBot: !!msg?.author?.isMe,
+          });
+        }
+        if (collected.length >= limit) break;
+      }
+      collected.reverse();
+    }
+
+    // Platforms with NO server-side history API (WhatsApp, Telegram) return
+    // nothing from channel.messages — fall back to THIS connection's local
+    // history cache (still connection-scoped, so no cross-tenant read; just
+    // limited to recently-seen messages).
+    if (collected.length === 0) {
+      const sep = channelKey.indexOf(":");
+      const channelId = sep > 0 ? channelKey.slice(sep + 1) : channelKey;
+      const entries =
+        (await instance.conversationState?.getEntries(
+          connectionId,
+          channelId,
+          channelId
+        )) ?? [];
+      for (const e of entries.slice(-limit)) {
+        if (!e.content) continue;
         collected.push({
-          timestamp: sentAt.toISOString(),
-          user: msg?.author?.fullName || msg?.author?.userId || "user",
-          text,
-          isBot: !!msg?.author?.isMe,
+          timestamp: new Date(e.timestamp).toISOString(),
+          user: e.authorName || (e.role === "assistant" ? "assistant" : "user"),
+          text: e.content,
+          isBot: e.role === "assistant",
         });
       }
-      if (collected.length >= limit) break;
     }
-    collected.reverse();
     return { messages: collected };
   }
 

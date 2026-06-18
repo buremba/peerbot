@@ -1,7 +1,5 @@
-import { createHash } from "node:crypto";
 import { createLogger } from "@lobu/core";
 import { Hono } from "hono";
-import { getDb } from "../../../db/client.js";
 import {
   resolveAddressableTargets,
   resolveAuthorizedTarget,
@@ -16,9 +14,6 @@ import type { WorkerContext } from "./types.js";
 
 const logger = createLogger("conversations-routes");
 
-// Defense-in-depth caps (pi review). A runaway watcher that posts every tick is
-// stopped by policy, not luck. Rate budgets per-agent/day are a phase-2 add.
-const MAX_SENDS_PER_RUN = 20;
 const MAX_CONTENT_LENGTH = 4000;
 // Refuse mass-mentions: both the human-written `@channel` form (anywhere, not
 // just after whitespace) and Slack's actual broadcast tokens `<!channel>` /
@@ -115,7 +110,7 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
     }
   });
 
-  // POST /conversations/send { target, text, reply_to?, idempotency_key? }
+  // POST /conversations/send { target, text }
   router.post("/conversations/send", authenticateWorker, async (c) => {
     try {
       const worker = getVerifiedWorker(c);
@@ -125,7 +120,6 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
       const body = (await c.req.json().catch(() => null)) as {
         target?: string;
         text?: string;
-        idempotency_key?: string;
       } | null;
       const text = body?.text?.trim();
       if (!body?.target || !text) {
@@ -171,105 +165,17 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
         target = resolved;
       }
 
-      const sql = getDb();
-      // Fail closed: the per-run send cap is the runaway-watcher backstop, so a
-      // token without a conversation id (which would skip the cap) is rejected
-      // rather than allowed through uncapped.
-      const runConversationId = worker.conversationId;
-      if (!runConversationId) {
-        return errorResponse(c, "Token missing conversation context", 403);
+      const manager = getChatInstanceManager();
+      if (!manager?.postToConversation) {
+        return errorResponse(c, "Chat instance manager unavailable", 503);
       }
-
-      // Per-run send cap.
-      const countRows = (await sql`
-        SELECT count(*)::int AS n
-        FROM conversation_sends
-        WHERE run_conversation_id = ${runConversationId}
-      `) as Array<{ n: number }>;
-      if ((countRows[0]?.n ?? 0) >= MAX_SENDS_PER_RUN) {
-        return errorResponse(
-          c,
-          `Per-run send limit reached (${MAX_SENDS_PER_RUN})`,
-          429
-        );
-      }
-
-      // Idempotency key: explicit client key, else derived from
-      // (org, agent, run, target, thread, content). Whole-job retries replay the
-      // same tool call → same key → no double post.
-      // Always namespace by (org, agent) — including a client-supplied key —
-      // since the ledger PK is global; otherwise agent B could pass agent A's
-      // key and get back A's message handle.
-      const clientKey = body.idempotency_key?.trim();
-      const keyMaterial = clientKey
-        ? [worker.organizationId, worker.agentId, "client", clientKey]
-        : [
-            worker.organizationId,
-            worker.agentId,
-            runConversationId,
-            target.handle,
-            threadId ?? "",
-            createHash("sha256").update(text).digest("hex").slice(0, 16),
-          ];
-      const idempotencyKey = createHash("sha256")
-        .update(keyMaterial.join("|"))
-        .digest("hex");
-
-      // Claim the send first so a crash mid-post doesn't permanently dedup: on
-      // post failure we release the claim and a retry re-posts.
-      const claimed = (await sql`
-        INSERT INTO conversation_sends (
-          idempotency_key, organization_id, agent_id, run_conversation_id,
-          connection_id, platform, target_handle, channel_id, thread_id
-        ) VALUES (
-          ${idempotencyKey}, ${worker.organizationId}, ${worker.agentId},
-          ${runConversationId}, ${target.connectionId}, ${target.platform},
-          ${target.handle}, ${target.channelId}, ${threadId ?? null}
-        )
-        ON CONFLICT (idempotency_key) DO NOTHING
-        RETURNING idempotency_key
-      `) as Array<{ idempotency_key: string }>;
-
-      if (claimed.length === 0) {
-        // Duplicate — return the prior result without re-posting.
-        const prior = (await sql`
-          SELECT message_id, thread_id FROM conversation_sends
-          WHERE idempotency_key = ${idempotencyKey}
-        `) as Array<{ message_id: string | null; thread_id: string | null }>;
-        const priorMsg = prior[0]?.message_id ?? null;
-        return c.json({
-          deduped: true,
-          messageId: priorMsg,
-          thread: priorMsg
-            ? threadHandleForMessage(target, priorMsg)
-            : undefined,
-        });
-      }
-
-      let sent: { messageId: string; threadId: string };
-      try {
-        const manager = getChatInstanceManager();
-        if (!manager?.postToConversation) {
-          throw new Error("Chat instance manager unavailable");
-        }
-        sent = await manager.postToConversation(target.connectionId, {
-          platform: target.platform,
-          channelKey: target.channelKey,
-          channelId: target.channelId,
-          threadId,
-          content: { markdown: text },
-        });
-      } catch (postErr) {
-        // Release the claim so a job retry can re-post.
-        await sql`DELETE FROM conversation_sends WHERE idempotency_key = ${idempotencyKey}`;
-        throw postErr;
-      }
-
-      await sql`
-        UPDATE conversation_sends
-        SET message_id = ${sent.messageId || null}
-        WHERE idempotency_key = ${idempotencyKey}
-      `;
+      const sent = (await manager.postToConversation(target.connectionId, {
+        platform: target.platform,
+        channelKey: target.channelKey,
+        channelId: target.channelId,
+        threadId,
+        content: { markdown: text },
+      })) as { messageId: string; threadId: string };
 
       logger.info(
         `agent ${worker.agentId} sent to ${target.platform}/${target.channelId}${threadId ? " (thread)" : ""} via ${target.connectionId}`

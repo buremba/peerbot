@@ -1107,7 +1107,6 @@ export async function sendMessage(
     interface SendResult {
       messageId: string | null;
       thread?: string;
-      deduped?: boolean;
     }
     const { data, error } = await gatewayFetch<SendResult>(
       gw,
@@ -1119,14 +1118,10 @@ export async function sendMessage(
       "Failed to send message"
     );
     if (error) return error;
-    const d = data!;
-    const dedupNote = d.deduped
-      ? " (already sent earlier — not duplicated)"
+    const threadNote = data!.thread
+      ? ` To reply in this message's thread later, send to target="${data!.thread}".`
       : "";
-    const threadNote = d.thread
-      ? ` To reply in this message's thread later, send to target="${d.thread}".`
-      : "";
-    return textResult(`Message sent${dedupNote}.${threadNote}`);
+    return textResult(`Message sent.${threadNote}`);
   });
 }
 

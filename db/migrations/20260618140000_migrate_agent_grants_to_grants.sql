@@ -6,25 +6,30 @@
 -- row when both tables had the same pattern (unlikely — agent_grants was
 -- never wired to enforcement).
 
-INSERT INTO public.grants (
-    organization_id,
-    agent_id,
-    kind,
-    pattern,
-    expires_at,
-    granted_at,
-    denied
-)
-SELECT
-    organization_id,
-    agent_id,
-    CASE WHEN pattern LIKE '/%' THEN 'mcp_tool' ELSE 'domain' END,
-    pattern,
-    expires_at,
-    granted_at,
-    COALESCE(denied, false)
-FROM public.agent_grants
-ON CONFLICT (organization_id, agent_id, kind, pattern) DO NOTHING;
+DO $$
+BEGIN
+    IF to_regclass('public.agent_grants') IS NOT NULL THEN
+        INSERT INTO public.grants (
+            organization_id,
+            agent_id,
+            kind,
+            pattern,
+            expires_at,
+            granted_at,
+            denied
+        )
+        SELECT
+            organization_id,
+            agent_id,
+            CASE WHEN pattern LIKE '/%' THEN 'mcp_tool' ELSE 'domain' END,
+            pattern,
+            expires_at,
+            granted_at,
+            COALESCE(denied, false)
+        FROM public.agent_grants
+        ON CONFLICT (organization_id, agent_id, kind, pattern) DO NOTHING;
+    END IF;
+END $$;
 
 -- migrate:down
 

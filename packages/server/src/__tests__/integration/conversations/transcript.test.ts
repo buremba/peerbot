@@ -4,7 +4,7 @@
  * connection-scoped, time-ordered read that backs read_conversation.
  */
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { getTestDb, cleanupTestDatabase } from '../../setup/test-db';
+import { cleanupTestDatabase } from '../../setup/test-db';
 import {
   persistChannelMessage,
   readChannelTranscript,

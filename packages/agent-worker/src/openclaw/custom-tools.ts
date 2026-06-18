@@ -227,13 +227,8 @@ export function createOpenClawCustomTools(params: {
         }),
         limit: Type.Optional(
           Type.Number({
-            description: "Number of messages to fetch (default 50, max 100)",
-          })
-        ),
-        before: Type.Optional(
-          Type.String({
             description:
-              "ISO timestamp cursor — fetch messages before this time",
+              "Number of most-recent messages to fetch (default 50, max 100)",
           })
         ),
       }),

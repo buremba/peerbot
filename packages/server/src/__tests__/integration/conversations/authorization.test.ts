@@ -135,6 +135,31 @@ describe('conversation authorization', () => {
     expect(await resolveAddressableTargets('food-ordering', tenantOrg.id)).toEqual([]);
   });
 
+  it('invariant: a SECOND preview connection per platform is rejected (single hosted bot owns the slot)', async () => {
+    const hostOrg = await createTestOrganization();
+    const tenantOrg = await createTestOrganization();
+    await createTestAgent({ organizationId: hostOrg.id, agentId: 'concierge' });
+    await createTestAgent({ organizationId: tenantOrg.id, agentId: 'sneaky' });
+    await seedSlackConnection({
+      organizationId: hostOrg.id,
+      agentId: 'concierge',
+      connectionId: 'preview-1',
+      settings: { previewMode: true },
+      metadata: {},
+    });
+    // A tenant trying to stand up a competing team-less preview connection (the
+    // cross-org hijack vector) must hit the partial unique index and fail.
+    await expect(
+      seedSlackConnection({
+        organizationId: tenantOrg.id,
+        agentId: 'sneaky',
+        connectionId: 'preview-2',
+        settings: { previewMode: true },
+        metadata: {},
+      })
+    ).rejects.toThrow();
+  });
+
   it('cross-org guardrail: a previewMode connection WITH a teamId is never borrowed', async () => {
     const hostOrg = await createTestOrganization();
     const tenantOrg = await createTestOrganization();

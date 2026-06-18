@@ -20,8 +20,11 @@ const logger = createLogger("conversations-routes");
 // stopped by policy, not luck. Rate budgets per-agent/day are a phase-2 add.
 const MAX_SENDS_PER_RUN = 20;
 const MAX_CONTENT_LENGTH = 4000;
-// Slack broadcast tokens: refuse mass-mentions outright in v1.
-const MASS_MENTION = /(^|\s)@(channel|here|everyone)\b/i;
+// Refuse mass-mentions: both the human-written `@channel` form (anywhere, not
+// just after whitespace) and Slack's actual broadcast tokens `<!channel>` /
+// `<!here>` / `<!everyone>` / `<!subteam^…>`.
+const MASS_MENTION =
+  /@(channel|here|everyone)\b|<!(channel|here|everyone|subteam)\b/i;
 
 /** Public (model-facing) shape of an addressable conversation. */
 function toPublicTarget(t: AddressableTarget): {
@@ -91,21 +94,21 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
         Math.max(parseInt(c.req.query("limit") || "50", 10) || 50, 1),
         100
       );
-      const before = c.req.query("before") || undefined;
 
       const manager = getChatInstanceManager();
-      if (!manager?.getPlatformConversationHistory) {
+      if (!manager?.getLiveConversationHistory) {
         return c.json({ messages: [], nextCursor: null, hasMore: false });
       }
-      // conversationId === channelId collapses history to channel-level.
-      const history = await manager.getPlatformConversationHistory(
-        target.platform,
-        target.channelId,
-        target.channelId,
-        limit,
-        before
+      // SECURITY: read through the AUTHORIZED connection only (target.connectionId),
+      // never a global by-platform re-selection — otherwise an agent could read
+      // another tenant's cached transcript for a colliding channel id. This also
+      // pulls real platform history (not the 10-message cache).
+      const history = await manager.getLiveConversationHistory(
+        target.connectionId,
+        target.channelKey,
+        limit
       );
-      return c.json(history);
+      return c.json({ ...history, nextCursor: null, hasMore: false });
     } catch (error) {
       logger.error(`read conversation failed: ${String(error)}`);
       return errorResponse(c, "Internal server error", 500);
@@ -169,45 +172,48 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
       }
 
       const sql = getDb();
-      const runConversationId = worker.conversationId || null;
+      // Fail closed: the per-run send cap is the runaway-watcher backstop, so a
+      // token without a conversation id (which would skip the cap) is rejected
+      // rather than allowed through uncapped.
+      const runConversationId = worker.conversationId;
+      if (!runConversationId) {
+        return errorResponse(c, "Token missing conversation context", 403);
+      }
 
       // Per-run send cap.
-      if (runConversationId) {
-        const countRows = (await sql`
-          SELECT count(*)::int AS n
-          FROM conversation_sends
-          WHERE run_conversation_id = ${runConversationId}
-        `) as Array<{ n: number }>;
-        if ((countRows[0]?.n ?? 0) >= MAX_SENDS_PER_RUN) {
-          return errorResponse(
-            c,
-            `Per-run send limit reached (${MAX_SENDS_PER_RUN})`,
-            429
-          );
-        }
+      const countRows = (await sql`
+        SELECT count(*)::int AS n
+        FROM conversation_sends
+        WHERE run_conversation_id = ${runConversationId}
+      `) as Array<{ n: number }>;
+      if ((countRows[0]?.n ?? 0) >= MAX_SENDS_PER_RUN) {
+        return errorResponse(
+          c,
+          `Per-run send limit reached (${MAX_SENDS_PER_RUN})`,
+          429
+        );
       }
 
       // Idempotency key: explicit client key, else derived from
       // (org, agent, run, target, thread, content). Whole-job retries replay the
       // same tool call → same key → no double post.
-      const contentHash = createHash("sha256")
-        .update(text)
-        .digest("hex")
-        .slice(0, 16);
-      const idempotencyKey =
-        body.idempotency_key?.trim() ||
-        createHash("sha256")
-          .update(
-            [
-              worker.organizationId,
-              worker.agentId,
-              runConversationId ?? "",
-              target.handle,
-              threadId ?? "",
-              contentHash,
-            ].join("|")
-          )
-          .digest("hex");
+      // Always namespace by (org, agent) — including a client-supplied key —
+      // since the ledger PK is global; otherwise agent B could pass agent A's
+      // key and get back A's message handle.
+      const clientKey = body.idempotency_key?.trim();
+      const keyMaterial = clientKey
+        ? [worker.organizationId, worker.agentId, "client", clientKey]
+        : [
+            worker.organizationId,
+            worker.agentId,
+            runConversationId,
+            target.handle,
+            threadId ?? "",
+            createHash("sha256").update(text).digest("hex").slice(0, 16),
+          ];
+      const idempotencyKey = createHash("sha256")
+        .update(keyMaterial.join("|"))
+        .digest("hex");
 
       // Claim the send first so a crash mid-post doesn't permanently dedup: on
       // post failure we release the claim and a retry re-posts.
@@ -270,8 +276,15 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
       );
 
       // A thread handle lets a later run reply into this message's thread.
-      const threadHandle = sent.messageId
-        ? threadHandleForMessage(target, sent.messageId)
+      // Prefer the adapter's returned thread id (root) when it carries one
+      // (reply-in-existing-thread); fall back to the new message id (the root
+      // of a freshly-opened thread).
+      const threadRoot =
+        typeof sent.threadId === "string" && sent.threadId.split(":")[2]
+          ? sent.threadId.split(":")[2]
+          : sent.messageId;
+      const threadHandle = threadRoot
+        ? threadHandleForMessage(target, threadRoot)
         : undefined;
       return c.json({
         messageId: sent.messageId || null,

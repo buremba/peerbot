@@ -612,9 +612,11 @@ export class ChatInstanceManager {
    * Post to a channel — or a thread within it — and return the platform message
    * id + thread id, so the conversations `send` tool can hand the agent a thread
    * handle to reply into later. `threadId` (a platform thread id like
-   * `slack:{channel}:{ts}`) routes the reply into that thread; resolution falls
-   * back to channel-level if the thread can't be resolved (never silently drops).
-   * Multi-replica safe: hydrates the connection on this pod from its row.
+   * `slack:{channel}:{ts}`) routes the reply into that thread; if the thread
+   * can't be resolved (e.g. a non-forum Telegram chat) resolveChatTarget falls
+   * back to a channel-level post, so the reply lands at channel level rather
+   * than in-thread instead of failing. Multi-replica safe: hydrates the
+   * connection on this pod from its row.
    */
   async postToConversation(
     connectionId: string,
@@ -651,6 +653,68 @@ export class ChatInstanceManager {
       messageId: typeof sent?.id === "string" ? sent.id : "",
       threadId: typeof sent?.threadId === "string" ? sent.threadId : "",
     };
+  }
+
+  /**
+   * Live channel history for a SPECIFIC connection (the conversations
+   * read_conversation tool). Unlike the cached `getPlatformConversationHistory`
+   * (a 10-message sliding cache selected globally by platform — wrong for the
+   * authorized-connection case AND too thin to "catch up" on a channel), this:
+   *  - is scoped to the caller's authorized `connectionId` (no global
+   *    re-selection → no cross-tenant read), and
+   *  - pulls real platform history via `channel.messages` (the SDK's
+   *    `conversations.history`/`fetchChannelMessages`), not the cache.
+   * Returns newest-N in chronological (oldest-first) order. Multi-replica safe:
+   * hydrates the connection on this pod from its row.
+   */
+  async getLiveConversationHistory(
+    connectionId: string,
+    channelKey: string,
+    limit: number
+  ): Promise<{
+    messages: Array<{
+      timestamp: string;
+      user: string;
+      text: string;
+      isBot: boolean;
+    }>;
+  }> {
+    const running = await this.ensureConnectionRunning(connectionId);
+    const instance = running ? this.instances.get(connectionId) : undefined;
+    if (!instance) {
+      throw new Error(
+        `No active chat instance for connection ${connectionId} (could not start it on this pod)`
+      );
+    }
+    const channel = instance.chat?.channel?.(channelKey);
+    if (!channel?.messages) {
+      return { messages: [] };
+    }
+    const collected: Array<{
+      timestamp: string;
+      user: string;
+      text: string;
+      isBot: boolean;
+    }> = [];
+    // channel.messages iterates newest-first; take N then return oldest-first.
+    for await (const msg of channel.messages as AsyncIterable<any>) {
+      const text = (msg?.text ?? "").trim();
+      if (text) {
+        const sentAt =
+          msg?.metadata?.dateSent instanceof Date
+            ? msg.metadata.dateSent
+            : new Date();
+        collected.push({
+          timestamp: sentAt.toISOString(),
+          user: msg?.author?.fullName || msg?.author?.userId || "user",
+          text,
+          isBot: !!msg?.author?.isMe,
+        });
+      }
+      if (collected.length >= limit) break;
+    }
+    collected.reverse();
+    return { messages: collected };
   }
 
   /**

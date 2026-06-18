@@ -1039,7 +1039,7 @@ export async function listConversations(
 
 export async function readConversation(
   gw: GatewayParams,
-  args: { target: string; limit?: number; before?: string }
+  args: { target: string; limit?: number }
 ): Promise<TextResult> {
   return withErrorHandling("read_conversation", async () => {
     if (!args.target) {
@@ -1052,7 +1052,6 @@ export async function readConversation(
       target: args.target,
       limit: String(limit),
     });
-    if (args.before) params.set("before", args.before);
 
     interface HistoryResult {
       messages: Array<{

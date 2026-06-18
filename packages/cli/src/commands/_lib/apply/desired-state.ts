@@ -673,6 +673,51 @@ export function validateConnectionAgainstConnector(
   }
 }
 
+/** Keys the connector treats as feed-scoped (declared in any feed's `configSchema`). */
+export function feedScopedKeys(schemas: ResolvedConnectorSchemas): Set<string> {
+  const keys = new Set<string>();
+  for (const feedSchema of schemas.feedConfigSchemas.values()) {
+    const props = (feedSchema as { properties?: Record<string, unknown> })
+      .properties;
+    if (props) for (const k of Object.keys(props)) keys.add(k);
+  }
+  return keys;
+}
+
+/**
+ * The server stores feed-scoped settings on feeds, not the connection, and
+ * REJECTS a connection whose config carries any feed-scoped key (see
+ * `splitConfigByFeedScope` in packages/server). `lobu apply` mirrors that split
+ * here: any feed-scoped key found in a connection's `config` is demoted to a
+ * per-feed default (an explicit feed value wins) and removed from the
+ * connection config. `managedBy` is Lobu metadata, never a connector option, so
+ * it stays on the connection. Returns the demoted key names so the caller can
+ * warn. Mutates `connection` in place so the normalized shape flows into the
+ * diff + create/update payloads.
+ */
+export function normalizeConnectionConfigScope(
+  connection: DesiredConnection,
+  schemas: ResolvedConnectorSchemas | null
+): string[] {
+  if (!schemas || !connection.config) return [];
+  const scoped = feedScopedKeys(schemas);
+  if (scoped.size === 0) return [];
+  const demoted: Record<string, unknown> = {};
+  const kept: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(connection.config)) {
+    if (k !== "managedBy" && scoped.has(k)) demoted[k] = v;
+    else kept[k] = v;
+  }
+  const demotedKeys = Object.keys(demoted);
+  if (demotedKeys.length === 0) return [];
+  connection.feeds = connection.feeds.map((feed) => ({
+    ...feed,
+    config: { ...demoted, ...(feed.config ?? {}) },
+  }));
+  connection.config = Object.keys(kept).length > 0 ? kept : undefined;
+  return demotedKeys;
+}
+
 function requireAuthProfile(
   connection: DesiredConnection,
   authProfiles: ReadonlyMap<string, DesiredAuthProfile>,

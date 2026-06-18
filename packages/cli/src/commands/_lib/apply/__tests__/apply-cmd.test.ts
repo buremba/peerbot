@@ -8,7 +8,10 @@ import {
 } from "../apply-cmd.js";
 import type { ApplyClient, RemoteConnectorDefinition } from "../client.js";
 import type { DiffPlan, RemoteSnapshot } from "../diff.js";
-import { validateConnectionAgainstConnector } from "../desired-state.js";
+import {
+  normalizeConnectionConfigScope,
+  validateConnectionAgainstConnector,
+} from "../desired-state.js";
 import type {
   DesiredAgent,
   DesiredConnection,
@@ -71,6 +74,98 @@ describe("validateConnectionAgainstConnector — managedBy is not a connector op
     expect(() =>
       validateConnectionAgainstConnector(connection, new Map(), strictSchemas)
     ).toThrow();
+  });
+});
+
+describe("normalizeConnectionConfigScope — feed-scoped keys demote to feeds", () => {
+  // A connector whose `search_query`/`lookback_days` are feed-scoped (declared
+  // on the `stories` feed), with one genuinely connection-scoped key (`region`).
+  const schemas: ResolvedConnectorSchemas = {
+    optionsSchema: {
+      type: "object",
+      properties: { region: { type: "string" } },
+    },
+    feedKeys: new Set<string>(["stories"]),
+    feedConfigSchemas: new Map([
+      [
+        "stories",
+        {
+          type: "object",
+          properties: {
+            search_query: { type: "string" },
+            lookback_days: { type: "integer" },
+          },
+        },
+      ],
+    ]),
+    authKinds: new Set<string>(),
+  };
+
+  test("feed-scoped key on the connection is moved to the feed and removed from the connection", () => {
+    const connection: DesiredConnection = {
+      slug: "hn",
+      connector: "hackernews",
+      config: { search_query: "AI agents", lookback_days: 30 },
+      feeds: [{ feedKey: "stories" }],
+      sourceFile: "lobu.config.ts",
+    };
+    const demoted = normalizeConnectionConfigScope(connection, schemas);
+    expect(demoted.sort()).toEqual(["lookback_days", "search_query"]);
+    expect(connection.config).toBeUndefined();
+    expect(connection.feeds[0]?.config).toEqual({
+      search_query: "AI agents",
+      lookback_days: 30,
+    });
+    // The normalized connection now passes server-mirrored validation.
+    expect(() =>
+      validateConnectionAgainstConnector(connection, new Map(), schemas)
+    ).not.toThrow();
+  });
+
+  test("an explicit feed value wins over the demoted connection default", () => {
+    const connection: DesiredConnection = {
+      slug: "hn",
+      connector: "hackernews",
+      config: { search_query: "connection-level" },
+      feeds: [{ feedKey: "stories", config: { search_query: "feed-level" } }],
+      sourceFile: "lobu.config.ts",
+    };
+    normalizeConnectionConfigScope(connection, schemas);
+    expect(connection.feeds[0]?.config).toEqual({ search_query: "feed-level" });
+  });
+
+  test("connection-scoped keys and managedBy stay on the connection", () => {
+    const connection: DesiredConnection = {
+      slug: "hn",
+      connector: "hackernews",
+      config: {
+        region: "us",
+        search_query: "AI agents",
+        managedBy: { org: "lobu-public" },
+      },
+      feeds: [{ feedKey: "stories" }],
+      sourceFile: "lobu.config.ts",
+    };
+    const demoted = normalizeConnectionConfigScope(connection, schemas);
+    expect(demoted).toEqual(["search_query"]);
+    expect(connection.config).toEqual({
+      region: "us",
+      managedBy: { org: "lobu-public" },
+    });
+    expect(connection.feeds[0]?.config).toEqual({ search_query: "AI agents" });
+  });
+
+  test("a clean connection (no feed-scoped keys) is left untouched", () => {
+    const connection: DesiredConnection = {
+      slug: "hn",
+      connector: "hackernews",
+      feeds: [{ feedKey: "stories", config: { search_query: "AI agents" } }],
+      sourceFile: "lobu.config.ts",
+    };
+    const demoted = normalizeConnectionConfigScope(connection, schemas);
+    expect(demoted).toEqual([]);
+    expect(connection.config).toBeUndefined();
+    expect(connection.feeds[0]?.config).toEqual({ search_query: "AI agents" });
   });
 });
 

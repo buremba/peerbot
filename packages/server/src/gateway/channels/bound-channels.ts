@@ -59,7 +59,16 @@ export async function resolveBoundChannelRows(
 
   return (await sql`
     SELECT id, platform, channel_id, team_id, created_at FROM (
-      -- (A) the org's own connections, scoped to (org, agent, platform)
+      -- (A) the org's own connections, scoped to (org, agent, platform).
+      -- KNOWN LIMITATION: not scoped by workspace/team. An agent with TWO Slack
+      -- connections (two workspaces) cross-joins a channel onto both, so
+      -- list_conversations can surface a duplicate handle and a post may route
+      -- via the wrong workspace. A correct fix needs binding.team_id and
+      -- connection.metadata->>'teamId' to be reliably co-populated, which they
+      -- are NOT today (bindings carry a team id, connections often don't) — so a
+      -- naive team-match join drops legitimate single-workspace bindings. Tracked
+      -- as a follow-up (team_id data-model alignment), not fixed here. Single-
+      -- workspace agents and non-Slack platforms are unaffected.
       SELECT ac.id, ac.platform, b.channel_id, b.team_id, b.created_at
       FROM agent_connections ac
       JOIN agent_channel_bindings b

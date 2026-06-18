@@ -696,10 +696,20 @@ export class ChatInstanceManager {
         (rootRef
           ? `${opts.platform}:${opts.channelId}:${rootRef}`
           : undefined);
-      const chat = instance.chat as { subscribe?: (id: string) => Promise<void> };
-      if (subThreadId && typeof chat.subscribe === "function") {
+      // subscribe() lives on the Chat SDK Thread, NOT on Chat — resolve the
+      // thread first (same as the inbound mention/dm path) and subscribe on it.
+      // A channel-level target (e.g. a threadless Telegram DM) has no
+      // subscribe(), so the guard makes it a no-op there.
+      if (subThreadId) {
         try {
-          await chat.subscribe(subThreadId);
+          const thread = (await resolveChatTarget(instance.chat, opts.platform, {
+            channelId: opts.channelId,
+            conversationId: subThreadId,
+            responseThreadId: subThreadId,
+          })) as { subscribe?: () => Promise<void> } | null;
+          if (thread && typeof thread.subscribe === "function") {
+            await thread.subscribe();
+          }
         } catch (err) {
           logger.debug(
             { connectionId, subThreadId, err: String(err) },

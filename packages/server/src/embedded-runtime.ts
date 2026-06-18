@@ -142,6 +142,14 @@ export async function startEmbeddedRuntime(): Promise<EmbeddedRuntime> {
 		password: "postgres",
 		port: pgPort,
 		persistent: true,
+		// Pin initdb to the always-present C locale with UTF-8 encoding. Otherwise
+		// initdb inherits the host locale (e.g. LANG=en_GB.UTF-8) and aborts on a
+		// minimal box where that locale isn't generated — only C/POSIX exist —
+		// killing `lobu run` on first boot. C never needs generation; the explicit
+		// UTF8 encoding keeps Unicode storage (C alone would default to SQL_ASCII).
+		// Only applied on first cluster init (guarded below), so existing clusters
+		// keep their original locale/encoding.
+		initdbFlags: ["--locale=C", "--encoding=UTF8"],
 	});
 
 	// initdb refuses a non-empty datadir; skip it when the cluster already

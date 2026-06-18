@@ -136,17 +136,6 @@ export async function buildRealClaudeAuthStack(): Promise<RealClaudeAuthStack> {
       listChannelBindings: async () => [],
       deleteAllChannelBindings: async () => 0,
     } as never,
-    accessStore: {
-      grant: async () => {},
-      hasGrant: async () => true,
-      isDenied: async () => false,
-      listGrants: async () => [],
-      revokeGrant: async () => {},
-      addUserAgent: async () => {},
-      removeUserAgent: async () => {},
-      listUserAgents: async () => [],
-      ownsAgent: async () => true,
-    } as never,
   });
   // MockMessageQueue has no stop(); coreServices.shutdown() calls queue.stop(),
   // so give the injected queue a no-op stop to keep teardown clean.

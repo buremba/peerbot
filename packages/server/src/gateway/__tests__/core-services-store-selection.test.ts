@@ -175,17 +175,6 @@ describe("CoreServices store selection", () => {
         listChannelBindings: async () => [],
         deleteAllChannelBindings: async () => 0,
       } as any,
-      accessStore: {
-        grant: async () => {},
-        hasGrant: async () => true,
-        isDenied: async () => false,
-        listGrants: async () => [],
-        revokeGrant: async () => {},
-        addUserAgent: async () => {},
-        removeUserAgent: async () => {},
-        listUserAgents: async () => [],
-        ownsAgent: async () => true,
-      } as any,
     });
     (coreServices as any).queue = new MockMessageQueue();
 

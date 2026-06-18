@@ -743,7 +743,7 @@ describe("agent_transcript_snapshot — schema", () => {
 
     // Deleting the org cascades into both runs and snapshots. (Deleting the
     // organization directly is unrealistic in production but the FK setup
-    // is the same shape as pending_interactions / agent_grants which also
+    // is the same shape as pending_interactions / grants which also
     // cascade.) Pre-delete: 1 snapshot row.
     let count = (await sql`
       SELECT count(*)::int AS n FROM public.agent_transcript_snapshot

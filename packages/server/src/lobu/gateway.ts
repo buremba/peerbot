@@ -6,81 +6,89 @@
  * Lobu's settings auth.
  */
 
-import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
-import type { Hono } from 'hono';
-import { Hono as HonoApp } from 'hono';
-import { createAuth } from '../auth';
-import { authenticatePat, extractPatBearer } from '../auth/pat-auth';
-import { ApiPlatform } from '../gateway/api/platform';
-import { createGatewayApp } from '../gateway/cli/gateway';
-import { ChatInstanceManager } from '../gateway/connections/chat-instance-manager';
-import { ChatResponseBridge } from '../gateway/connections/chat-response-bridge';
-import { buildGatewayConfig } from '../gateway/config/index';
-import { Gateway } from '../gateway/gateway-main';
-import { Orchestrator } from '../gateway/orchestration/index';
-import { startFilteringProxy, stopFilteringProxy } from '../gateway/proxy/proxy-manager';
-import { SecretStoreRegistry } from '../gateway/secrets/index';
-import type { Env } from '../index';
-import logger from '../utils/logger';
-import { getConfiguredPublicOrigin } from '../utils/public-origin';
-import { getDb } from '../db/client';
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import type { Hono } from "hono";
+import { Hono as HonoApp } from "hono";
+import { createAuth } from "../auth";
+import { authenticatePat, extractPatBearer } from "../auth/pat-auth";
+import { getDb } from "../db/client";
+import { ApiPlatform } from "../gateway/api/platform";
+import { createGatewayApp } from "../gateway/cli/gateway";
+import { buildGatewayConfig } from "../gateway/config/index";
+import { ChatInstanceManager } from "../gateway/connections/chat-instance-manager";
+import { ChatResponseBridge } from "../gateway/connections/chat-response-bridge";
+import { Gateway } from "../gateway/gateway-main";
+import { Orchestrator } from "../gateway/orchestration/index";
 import {
-  getCachedMembershipRole,
-  getCachedOrgBySlug,
-} from '../workspace/multi-tenant';
-import { orgContext } from './stores/org-context';
-import { PostgresSecretStore } from './stores/postgres-secret-store';
+	startFilteringProxy,
+	stopFilteringProxy,
+} from "../gateway/proxy/proxy-manager";
+import { SecretStoreRegistry } from "../gateway/secrets/index";
+import type { Env } from "../index";
+import logger from "../utils/logger";
+import { getConfiguredPublicOrigin } from "../utils/public-origin";
 import {
-  createPostgresAgentAccessStore,
-  createPostgresAgentConfigStore,
-  createPostgresAgentConnectionStore,
-} from './stores/postgres-stores';
+	getCachedMembershipRole,
+	getCachedOrgBySlug,
+} from "../workspace/multi-tenant";
+import { orgContext } from "./stores/org-context";
+import { PostgresSecretStore } from "./stores/postgres-secret-store";
+import {
+	createPostgresAgentConfigStore,
+	createPostgresAgentConnectionStore,
+} from "./stores/postgres-stores";
 
 // Cache of (userId → orgId) lookups. Keyed by userId; users only see their
 // own row swap when they leave/join orgs, which doesn't happen often. The
 // 60s TTL is deliberately short — first-load cost is one indexed query.
 const DEFAULT_ORG_TTL_MS = 60_000;
-const defaultOrgCache = new Map<string, { orgId: string | null; expiresAt: number }>();
+const defaultOrgCache = new Map<
+	string,
+	{ orgId: string | null; expiresAt: number }
+>();
 
 async function resolveDefaultOrgId(userId: string): Promise<string | null> {
-  const cached = defaultOrgCache.get(userId);
-  if (cached && cached.expiresAt > Date.now()) return cached.orgId;
+	const cached = defaultOrgCache.get(userId);
+	if (cached && cached.expiresAt > Date.now()) return cached.orgId;
 
-  try {
-    const sql = getDb();
-    const rows = await sql`
+	try {
+		const sql = getDb();
+		const rows = await sql`
       SELECT m."organizationId" AS organization_id
       FROM "member" m
       WHERE m."userId" = ${userId}
       ORDER BY m."createdAt" ASC
       LIMIT 1
     `;
-    const orgId = (rows[0]?.organization_id as string | undefined) ?? null;
-    if (orgId) {
-      defaultOrgCache.set(userId, { orgId, expiresAt: Date.now() + DEFAULT_ORG_TTL_MS });
-    }
-    return orgId;
-  } catch (err) {
-    // The DB may not be reachable yet at request time (e.g. boot races).
-    // Do not cache that transient miss; callers decide how to surface it.
-    logger.warn(
-      { err: err instanceof Error ? err.message : String(err) },
-      '[Lobu] resolveDefaultOrgId: lookup failed'
-    );
-    throw err;
-  }
+		const orgId = (rows[0]?.organization_id as string | undefined) ?? null;
+		if (orgId) {
+			defaultOrgCache.set(userId, {
+				orgId,
+				expiresAt: Date.now() + DEFAULT_ORG_TTL_MS,
+			});
+		}
+		return orgId;
+	} catch (err) {
+		// The DB may not be reachable yet at request time (e.g. boot races).
+		// Do not cache that transient miss; callers decide how to surface it.
+		logger.warn(
+			{ err: err instanceof Error ? err.message : String(err) },
+			"[Lobu] resolveDefaultOrgId: lookup failed",
+		);
+		throw err;
+	}
 }
 
 type EmbeddedSettingsSession = {
-  userId: string;
-  platform: string;
-  exp: number;
-  email?: string;
-  name?: string;
-  settingsMode?: 'admin' | 'user';
-  isAdmin?: boolean;
+	userId: string;
+	platform: string;
+	exp: number;
+	email?: string;
+	name?: string;
+	settingsMode?: "admin" | "user";
+	isAdmin?: boolean;
 };
 
 let gateway: any = null;
@@ -91,31 +99,34 @@ let orchestrator: any = null;
 let filteringProxyStarted = false;
 
 function ensureEmbeddedWorkerLauncher(): void {
-  const shimDir = path.resolve('scripts/runtime-shims');
-  const bunShim = path.join(shimDir, 'bun');
-  if (!fs.existsSync(bunShim)) return;
+	const shimDir = path.resolve("scripts/runtime-shims");
+	const bunShim = path.join(shimDir, "bun");
+	if (!fs.existsSync(bunShim)) return;
 
-  const currentPath = process.env.PATH || '';
-  const pathSegments = currentPath.split(':').filter(Boolean);
-  if (!pathSegments.includes(shimDir)) {
-    process.env.PATH = [shimDir, ...pathSegments].join(':');
-    logger.info({ shimDir }, '[Lobu] Prepended embedded worker launcher shim to PATH');
-  }
+	const currentPath = process.env.PATH || "";
+	const pathSegments = currentPath.split(":").filter(Boolean);
+	if (!pathSegments.includes(shimDir)) {
+		process.env.PATH = [shimDir, ...pathSegments].join(":");
+		logger.info(
+			{ shimDir },
+			"[Lobu] Prepended embedded worker launcher shim to PATH",
+		);
+	}
 }
 
 function ensureEmbeddedGatewaySecrets(): void {
-  if (!process.env.ENCRYPTION_KEY) {
-    if (process.env.LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY === '1') {
-      process.env.ENCRYPTION_KEY = crypto.randomBytes(32).toString('base64url');
-      logger.warn(
-        '[Lobu] Generated ephemeral ENCRYPTION_KEY because LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1'
-      );
-    } else {
-      throw new Error(
-        'ENCRYPTION_KEY is required for the embedded Lobu gateway. Set ENCRYPTION_KEY explicitly or opt into ephemeral local keys with LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1.'
-      );
-    }
-  }
+	if (!process.env.ENCRYPTION_KEY) {
+		if (process.env.LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY === "1") {
+			process.env.ENCRYPTION_KEY = crypto.randomBytes(32).toString("base64url");
+			logger.warn(
+				"[Lobu] Generated ephemeral ENCRYPTION_KEY because LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1",
+			);
+		} else {
+			throw new Error(
+				"ENCRYPTION_KEY is required for the embedded Lobu gateway. Set ENCRYPTION_KEY explicitly or opt into ephemeral local keys with LOBU_ALLOW_EPHEMERAL_ENCRYPTION_KEY=1.",
+			);
+		}
+	}
 }
 
 /**
@@ -139,64 +150,64 @@ function ensureEmbeddedGatewaySecrets(): void {
  * Exported for tests; production wires it via `lobuApp.use('*', …)`.
  */
 export function createLobuAuthBridge() {
-  return async (c: any, next: any) => {
-    c.set('user', null);
-    c.set('session', null);
+	return async (c: any, next: any) => {
+		c.set("user", null);
+		c.set("session", null);
 
-    // 1. PAT path — authoritative when the Authorization header carries
-    //    `Bearer owl_pat_*`. Validate first so an invalid PAT cannot fall
-    //    through to a cooked Better Auth cookie: invalid PAT short-circuits
-    //    here rather than masking the failure with a still-valid session
-    //    cookie. Shared with the connection-token router via `authenticatePat`.
-    const bearerValue = extractPatBearer(c.req.header('Authorization'));
-    if (bearerValue) {
-      const result = await authenticatePat(getDb(), bearerValue);
-      if (!result.ok) {
-        return c.json(
-          { error: result.error, error_description: result.error_description },
-          result.status
-        );
-      }
+		// 1. PAT path — authoritative when the Authorization header carries
+		//    `Bearer owl_pat_*`. Validate first so an invalid PAT cannot fall
+		//    through to a cooked Better Auth cookie: invalid PAT short-circuits
+		//    here rather than masking the failure with a still-valid session
+		//    cookie. Shared with the connection-token router via `authenticatePat`.
+		const bearerValue = extractPatBearer(c.req.header("Authorization"));
+		if (bearerValue) {
+			const result = await authenticatePat(getDb(), bearerValue);
+			if (!result.ok) {
+				return c.json(
+					{ error: result.error, error_description: result.error_description },
+					result.status,
+				);
+			}
 
-      const { user, patInfo, organizationId } = result;
-      const expiresAt =
-        patInfo.expiresAt === Number.MAX_SAFE_INTEGER
-          ? new Date(Date.now() + 86_400_000)
-          : new Date(patInfo.expiresAt * 1000);
-      c.set('user', {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        emailVerified: user.emailVerified,
-      });
-      c.set('session', {
-        id: `pat:${patInfo.clientId}`,
-        userId: user.id,
-        token: bearerValue,
-        expiresAt,
-        activeOrganizationId: organizationId,
-      });
-      c.set('organizationId', organizationId);
+			const { user, patInfo, organizationId } = result;
+			const expiresAt =
+				patInfo.expiresAt === Number.MAX_SAFE_INTEGER
+					? new Date(Date.now() + 86_400_000)
+					: new Date(patInfo.expiresAt * 1000);
+			c.set("user", {
+				id: user.id,
+				name: user.name,
+				email: user.email,
+				emailVerified: user.emailVerified,
+			});
+			c.set("session", {
+				id: `pat:${patInfo.clientId}`,
+				userId: user.id,
+				token: bearerValue,
+				expiresAt,
+				activeOrganizationId: organizationId,
+			});
+			c.set("organizationId", organizationId);
 
-      await next();
-      return;
-    }
+			await next();
+			return;
+		}
 
-    // 2. Better Auth path — cookie or Better-Auth bearer session-token.
-    //    Only runs when the request did NOT present an owl_pat_* bearer.
-    try {
-      const auth = await createAuth(c.env, c.req.raw);
-      const session = await auth.api.getSession({ headers: c.req.raw.headers });
-      if (session?.user && session.session) {
-        c.set('user', session.user);
-        c.set('session', session.session);
-      }
-    } catch {
-      // Lobu auth routes fall back to their own unauthenticated handling.
-    }
+		// 2. Better Auth path — cookie or Better-Auth bearer session-token.
+		//    Only runs when the request did NOT present an owl_pat_* bearer.
+		try {
+			const auth = await createAuth(c.env, c.req.raw);
+			const session = await auth.api.getSession({ headers: c.req.raw.headers });
+			if (session?.user && session.session) {
+				c.set("user", session.user);
+				c.set("session", session.session);
+			}
+		} catch {
+			// Lobu auth routes fall back to their own unauthenticated handling.
+		}
 
-    await next();
-  };
+		await next();
+	};
 }
 
 /**
@@ -225,76 +236,80 @@ export function createLobuAuthBridge() {
  * Exported for tests; production wires it via `lobuApp.use('*', …)`.
  */
 export function createLobuOrgContextMiddleware() {
-  return async (c: any, next: any) => {
-    const user = c.get('user') as { id?: string } | null;
-    if (!user?.id) {
-      await next();
-      return;
-    }
+	return async (c: any, next: any) => {
+		const user = c.get("user") as { id?: string } | null;
+		if (!user?.id) {
+			await next();
+			return;
+		}
 
-    const orgHeader = c.req.header('x-lobu-org')?.trim();
-    if (orgHeader) {
-      let resolvedOrg: { id: string } | null;
-      try {
-        resolvedOrg = await getCachedOrgBySlug(orgHeader);
-      } catch {
-        return c.json({ error: 'Unable to resolve organization' }, 503);
-      }
-      if (!resolvedOrg) {
-        return c.json({ error: `Unknown organization "${orgHeader}"` }, 404);
-      }
+		const orgHeader = c.req.header("x-lobu-org")?.trim();
+		if (orgHeader) {
+			let resolvedOrg: { id: string } | null;
+			try {
+				resolvedOrg = await getCachedOrgBySlug(orgHeader);
+			} catch {
+				return c.json({ error: "Unable to resolve organization" }, 503);
+			}
+			if (!resolvedOrg) {
+				return c.json({ error: `Unknown organization "${orgHeader}"` }, 404);
+			}
 
-      // A PAT stays pinned to the org it was minted for — same rule as the
-      // MCP's query_sql, which rejects org overrides under PAT auth. A header
-      // naming the pinned org is a harmless no-op (the CLI auto-sends the
-      // context's activeOrg), but a different org is rejected even when the
-      // user is a member: minting an org-bound credential is an intentional
-      // scope decision, and a stolen PAT must not widen into every org its
-      // owner belongs to.
-      const session = c.get('session') as { id?: string } | null;
-      const isPat =
-        typeof session?.id === 'string' && session.id.startsWith('pat:');
-      if (isPat && resolvedOrg.id !== c.get('organizationId')) {
-        return c.json(
-          {
-            error:
-              `x-lobu-org "${orgHeader}" is not allowed with PAT auth: the token stays pinned to the organization it was minted for. ` +
-              'Mint a PAT for the target organization, or sign in with `lobu login`.',
-          },
-          403
-        );
-      }
+			// A PAT stays pinned to the org it was minted for — same rule as the
+			// MCP's query_sql, which rejects org overrides under PAT auth. A header
+			// naming the pinned org is a harmless no-op (the CLI auto-sends the
+			// context's activeOrg), but a different org is rejected even when the
+			// user is a member: minting an org-bound credential is an intentional
+			// scope decision, and a stolen PAT must not widen into every org its
+			// owner belongs to.
+			const session = c.get("session") as { id?: string } | null;
+			const isPat =
+				typeof session?.id === "string" && session.id.startsWith("pat:");
+			if (isPat && resolvedOrg.id !== c.get("organizationId")) {
+				return c.json(
+					{
+						error:
+							`x-lobu-org "${orgHeader}" is not allowed with PAT auth: the token stays pinned to the organization it was minted for. ` +
+							"Mint a PAT for the target organization, or sign in with `lobu login`.",
+					},
+					403,
+				);
+			}
 
-      const role = await getCachedMembershipRole(resolvedOrg.id, user.id);
-      if (!role) {
-        return c.json(
-          { error: `Not a member of organization "${orgHeader}"` },
-          403
-        );
-      }
-      c.set('organizationId', resolvedOrg.id);
-      await orgContext.run({ organizationId: resolvedOrg.id }, () => next());
-      return;
-    }
+			const role = await getCachedMembershipRole(resolvedOrg.id, user.id);
+			if (!role) {
+				return c.json(
+					{ error: `Not a member of organization "${orgHeader}"` },
+					403,
+				);
+			}
+			c.set("organizationId", resolvedOrg.id);
+			await orgContext.run({ organizationId: resolvedOrg.id }, () => next());
+			return;
+		}
 
-    // PAT-hydration middleware above sets `organizationId` when the PAT is
-    // bound to one. Honor that pin first so the org-scoped stores see the same
-    // tenant the PAT was minted for; only fall back to the user's default
-    // membership when no pin exists.
-    let orgId: string | null = (c.get('organizationId') as string | null) ?? null;
-    if (!orgId) {
-      try {
-        orgId = await resolveDefaultOrgId(user.id);
-      } catch {
-        return c.json({ error: 'Unable to resolve organization membership' }, 503);
-      }
-      if (!orgId) {
-        return c.json({ error: 'No organization membership found' }, 404);
-      }
-      c.set('organizationId', orgId);
-    }
-    await orgContext.run({ organizationId: orgId }, () => next());
-  };
+		// PAT-hydration middleware above sets `organizationId` when the PAT is
+		// bound to one. Honor that pin first so the org-scoped stores see the same
+		// tenant the PAT was minted for; only fall back to the user's default
+		// membership when no pin exists.
+		let orgId: string | null =
+			(c.get("organizationId") as string | null) ?? null;
+		if (!orgId) {
+			try {
+				orgId = await resolveDefaultOrgId(user.id);
+			} catch {
+				return c.json(
+					{ error: "Unable to resolve organization membership" },
+					503,
+				);
+			}
+			if (!orgId) {
+				return c.json({ error: "No organization membership found" }, 404);
+			}
+			c.set("organizationId", orgId);
+		}
+		await orgContext.run({ organizationId: orgId }, () => next());
+	};
 }
 
 /**
@@ -302,245 +317,260 @@ export function createLobuOrgContextMiddleware() {
  * Returns the Hono app to mount, or null if DATABASE_URL is not configured.
  */
 export async function initLobuGateway(): Promise<Hono | null> {
-  if (!process.env.DATABASE_URL) {
-    logger.info('[Lobu] DATABASE_URL not set — embedded gateway disabled');
-    return null;
-  }
+	if (!process.env.DATABASE_URL) {
+		logger.info("[Lobu] DATABASE_URL not set — embedded gateway disabled");
+		return null;
+	}
 
-  ensureEmbeddedGatewaySecrets();
-  ensureEmbeddedWorkerLauncher();
-  try {
-    const publicWebUrl =
-      getConfiguredPublicOrigin() || `http://localhost:${process.env.PORT || '8787'}`;
-    const publicUrl = new URL('/lobu/', publicWebUrl).toString().replace(/\/$/, '');
-    const env = process.env as unknown as Env;
+	ensureEmbeddedGatewaySecrets();
+	ensureEmbeddedWorkerLauncher();
+	try {
+		const publicWebUrl =
+			getConfiguredPublicOrigin() ||
+			`http://localhost:${process.env.PORT || "8787"}`;
+		const publicUrl = new URL("/lobu/", publicWebUrl)
+			.toString()
+			.replace(/\/$/, "");
+		const env = process.env as unknown as Env;
 
-    // Embedded gateway shares the process with the app's OIDC provider — pass
-    // that issuer explicitly instead of overloading MEMORY_URL. LOBU memory MCP
-    // endpoints are resolved separately per organization/agent.
-    const gatewayConfig = buildGatewayConfig({
-      mcp: { publicGatewayUrl: publicUrl },
-      auth: { issuerUrl: publicWebUrl },
-      lobuMemory: { publicBaseUrl: publicWebUrl },
-    });
+		// Embedded gateway shares the process with the app's OIDC provider — pass
+		// that issuer explicitly instead of overloading MEMORY_URL. LOBU memory MCP
+		// endpoints are resolved separately per organization/agent.
+		const gatewayConfig = buildGatewayConfig({
+			mcp: { publicGatewayUrl: publicUrl },
+			auth: { issuerUrl: publicWebUrl },
+			lobuMemory: { publicBaseUrl: publicWebUrl },
+		});
 
-    await startFilteringProxy();
-    filteringProxyStarted = true;
-    logger.info('[Lobu] Embedded worker egress proxy started');
+		await startFilteringProxy();
+		filteringProxyStarted = true;
+		logger.info("[Lobu] Embedded worker egress proxy started");
 
-    logger.info('[Lobu] Starting embedded orchestrator');
-    orchestrator = new Orchestrator(gatewayConfig.orchestration);
-    await orchestrator.start();
-    logger.info('[Lobu] Embedded orchestrator started');
+		logger.info("[Lobu] Starting embedded orchestrator");
+		orchestrator = new Orchestrator(gatewayConfig.orchestration);
+		await orchestrator.start();
+		logger.info("[Lobu] Embedded orchestrator started");
 
-    // Create PostgreSQL-backed stores
-    const configStore = createPostgresAgentConfigStore();
-    const connectionStore = createPostgresAgentConnectionStore();
-    const accessStore = createPostgresAgentAccessStore();
-    const postgresSecretStore = new PostgresSecretStore();
-    const secretStore = new SecretStoreRegistry(postgresSecretStore, {
-      secret: postgresSecretStore,
-    });
+		// Create PostgreSQL-backed stores
+		const configStore = createPostgresAgentConfigStore();
+		const connectionStore = createPostgresAgentConnectionStore();
+		const postgresSecretStore = new PostgresSecretStore();
+		const secretStore = new SecretStoreRegistry(postgresSecretStore, {
+			secret: postgresSecretStore,
+		});
 
-    gateway = new Gateway(gatewayConfig, {
-      configStore,
-      connectionStore,
-      accessStore,
-      secretStore,
-    });
+		gateway = new Gateway(gatewayConfig, {
+			configStore,
+			connectionStore,
+			secretStore,
+		});
 
-    // Register API platform
-    gateway.registerPlatform(new ApiPlatform());
+		// Register API platform
+		gateway.registerPlatform(new ApiPlatform());
 
-    // Start the gateway (initializes CoreServices, platforms, consumer)
-    await gateway.start();
+		// Start the gateway (initializes CoreServices, platforms, consumer)
+		await gateway.start();
 
-    coreServices = gateway.getCoreServices();
-    await orchestrator.injectCoreServices(
-      coreServices.getSecretStore(),
-      coreServices.getProviderCatalogService(),
-      coreServices.getGrantStore() ?? undefined,
-      coreServices.getPolicyStore() ?? undefined,
-      coreServices.getGuardrailRegistry() ?? undefined,
-      coreServices.getAgentSettingsStore() ?? undefined
-    );
-    logger.info('[Lobu] Embedded orchestrator injected core services');
+		coreServices = gateway.getCoreServices();
+		await orchestrator.injectCoreServices(
+			coreServices.getSecretStore(),
+			coreServices.getProviderCatalogService(),
+			coreServices.getGrantStore() ?? undefined,
+			coreServices.getPolicyStore() ?? undefined,
+			coreServices.getGuardrailRegistry() ?? undefined,
+			coreServices.getAgentSettingsStore() ?? undefined,
+		);
+		logger.info("[Lobu] Embedded orchestrator injected core services");
 
-    // Wire the deployment manager's idle clock into the worker gateway so every
-    // worker-driven HTTP response (delta / status_update / ACK / terminal reply)
-    // refreshes the deployment's lastActivity. Without this the idle reaper can
-    // scale a worker running one long turn to 0 mid-turn (its lastActivity stays
-    // frozen at last dispatch). Both objects exist here; they are built
-    // separately so the wiring lives at the composition root.
-    coreServices
-      .getWorkerGateway()
-      ?.setDeploymentActivityTracker(orchestrator.getDeploymentManager());
+		// Wire the deployment manager's idle clock into the worker gateway so every
+		// worker-driven HTTP response (delta / status_update / ACK / terminal reply)
+		// refreshes the deployment's lastActivity. Without this the idle reaper can
+		// scale a worker running one long turn to 0 mid-turn (its lastActivity stays
+		// frozen at last dispatch). Both objects exist here; they are built
+		// separately so the wiring lives at the composition root.
+		coreServices
+			.getWorkerGateway()
+			?.setDeploymentActivityTracker(orchestrator.getDeploymentManager());
 
-    // Initialize Chat SDK connection manager for platform connections
-    chatInstanceManager = new ChatInstanceManager();
-    try {
-      await chatInstanceManager.initialize(coreServices);
+		// Initialize Chat SDK connection manager for platform connections
+		chatInstanceManager = new ChatInstanceManager();
+		try {
+			await chatInstanceManager.initialize(coreServices);
 
-      for (const adapter of chatInstanceManager.createPlatformAdapters()) {
-        gateway.registerPlatform(adapter);
-      }
+			for (const adapter of chatInstanceManager.createPlatformAdapters()) {
+				gateway.registerPlatform(adapter);
+			}
 
-      // Wire ChatResponseBridge into unified thread consumer
-      const unifiedConsumer = gateway.getUnifiedConsumer();
-      if (unifiedConsumer) {
-        const bridge = new ChatResponseBridge(chatInstanceManager);
-        bridge.setGuardrails(
-          coreServices.getGuardrailRegistry(),
-          coreServices.getAgentSettingsStore()
-        );
-        unifiedConsumer.setChatResponseBridge(bridge);
-        // Cross-pod fan-out for chat-platform interaction cards (ask_user,
-        // tool-approval, link-button, status). The worker posts a card into
-        // its own pod's InteractionService; under N>1 replicas that pod
-        // rarely owns the connection's bridge, so the card must ride the
-        // thread_response queue to the owning pod. The local-warm check skips
-        // the queue when this pod already renders the card in-process.
-        const manager = chatInstanceManager;
-        unifiedConsumer.setInteractionService(
-          coreServices.getInteractionService(),
-          (connectionId: string) => manager.has(connectionId)
-        );
-      }
-    } catch (error) {
-      logger.warn(
-        { error: String(error) },
-        '[Lobu] ChatInstanceManager init failed — connections disabled'
-      );
-    }
+			// Wire ChatResponseBridge into unified thread consumer
+			const unifiedConsumer = gateway.getUnifiedConsumer();
+			if (unifiedConsumer) {
+				const bridge = new ChatResponseBridge(chatInstanceManager);
+				bridge.setGuardrails(
+					coreServices.getGuardrailRegistry(),
+					coreServices.getAgentSettingsStore(),
+				);
+				unifiedConsumer.setChatResponseBridge(bridge);
+				// Cross-pod fan-out for chat-platform interaction cards (ask_user,
+				// tool-approval, link-button, status). The worker posts a card into
+				// its own pod's InteractionService; under N>1 replicas that pod
+				// rarely owns the connection's bridge, so the card must ride the
+				// thread_response queue to the owning pod. The local-warm check skips
+				// the queue when this pod already renders the card in-process.
+				const manager = chatInstanceManager;
+				unifiedConsumer.setInteractionService(
+					coreServices.getInteractionService(),
+					(connectionId: string) => manager.has(connectionId),
+				);
+			}
+		} catch (error) {
+			logger.warn(
+				{ error: String(error) },
+				"[Lobu] ChatInstanceManager init failed — connections disabled",
+			);
+		}
 
-    // Auth bridge: translate Lobu's Better Auth session → Lobu's SettingsTokenPayload
-    const authProvider = (c: any): EmbeddedSettingsSession | null => {
-      const user = c.get('user');
-      const session = c.get('session');
-      if (!user || !session) return null;
-      const adminIds = (env.PLATFORM_ADMIN_USER_IDS || '')
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean);
-      const platformAdmin = adminIds.includes(user.id);
+		// Auth bridge: translate Lobu's Better Auth session → Lobu's SettingsTokenPayload
+		const authProvider = (c: any): EmbeddedSettingsSession | null => {
+			const user = c.get("user");
+			const session = c.get("session");
+			if (!user || !session) return null;
+			const adminIds = (env.PLATFORM_ADMIN_USER_IDS || "")
+				.split(",")
+				.map((s) => s.trim())
+				.filter(Boolean);
+			const platformAdmin = adminIds.includes(user.id);
 
-      return {
-        userId: user.id,
-        platform: 'external',
-        exp:
-          session.expiresAt instanceof Date ? session.expiresAt.getTime() : Date.now() + 86400000,
-        email: user.email,
-        name: user.name,
-        settingsMode: platformAdmin ? 'admin' : 'user',
-        isAdmin: platformAdmin,
-      };
-    };
+			return {
+				userId: user.id,
+				platform: "external",
+				exp:
+					session.expiresAt instanceof Date
+						? session.expiresAt.getTime()
+						: Date.now() + 86400000,
+				email: user.email,
+				name: user.name,
+				settingsMode: platformAdmin ? "admin" : "user",
+				isAdmin: platformAdmin,
+			};
+		};
 
-    const workerGateway = coreServices.getWorkerGateway();
-    logger.info(
-      { hasWorkerGateway: !!workerGateway, hasGetApp: !!workerGateway?.getApp },
-      '[Lobu] Worker gateway check'
-    );
-    const rawLobuApp = createGatewayApp({
-      secretProxy: coreServices.getSecretProxy(),
-      workerGateway,
-      mcpProxy: coreServices.getMcpProxy(),
-      interactionService: coreServices.getInteractionService(),
-      platformRegistry: gateway.getPlatformRegistry(),
-      coreServices,
-      chatInstanceManager,
-      authProvider,
-    });
+		const workerGateway = coreServices.getWorkerGateway();
+		logger.info(
+			{ hasWorkerGateway: !!workerGateway, hasGetApp: !!workerGateway?.getApp },
+			"[Lobu] Worker gateway check",
+		);
+		const rawLobuApp = createGatewayApp({
+			secretProxy: coreServices.getSecretProxy(),
+			workerGateway,
+			mcpProxy: coreServices.getMcpProxy(),
+			interactionService: coreServices.getInteractionService(),
+			platformRegistry: gateway.getPlatformRegistry(),
+			coreServices,
+			chatInstanceManager,
+			authProvider,
+		});
 
-    // Mount worker gateway routes before wrapping in lobuApp (createGatewayApp
-    // doesn't include these — they're only mounted in the standalone CLI gateway)
+		// Mount worker gateway routes before wrapping in lobuApp (createGatewayApp
+		// doesn't include these — they're only mounted in the standalone CLI gateway)
 
-    // Embedded Lobu auth routes need the Lobu Better Auth session, but they are mounted
-    // outside the main app's auth middleware. Hydrate the shared user/session context here.
-    lobuApp = new HonoApp<{ Bindings: Env }>();
-    lobuApp.use('*', createLobuAuthBridge());
+		// Embedded Lobu auth routes need the Lobu Better Auth session, but they are mounted
+		// outside the main app's auth middleware. Hydrate the shared user/session context here.
+		lobuApp = new HonoApp<{ Bindings: Env }>();
+		lobuApp.use("*", createLobuAuthBridge());
 
-    // Resolve the request's org (x-lobu-org override > PAT pin > default
-    // membership) and wrap the rest of the request in orgContext.run(). See
-    // createLobuOrgContextMiddleware for the precedence + membership invariant.
-    lobuApp.use('*', createLobuOrgContextMiddleware());
+		// Resolve the request's org (x-lobu-org override > PAT pin > default
+		// membership) and wrap the rest of the request in orgContext.run(). See
+		// createLobuOrgContextMiddleware for the precedence + membership invariant.
+		lobuApp.use("*", createLobuOrgContextMiddleware());
 
-    // Worker gateway routes must be mounted first (before rawLobuApp's catch-all)
-    if (workerGateway?.getApp) {
-      lobuApp.route('/worker', workerGateway.getApp());
-      logger.info('[Lobu] Worker gateway routes mounted at /lobu/worker/*');
-    }
-    lobuApp.route('/', rawLobuApp);
+		// Worker gateway routes must be mounted first (before rawLobuApp's catch-all)
+		if (workerGateway?.getApp) {
+			lobuApp.route("/worker", workerGateway.getApp());
+			logger.info("[Lobu] Worker gateway routes mounted at /lobu/worker/*");
+		}
+		lobuApp.route("/", rawLobuApp);
 
-    logger.info('[Lobu] Embedded gateway initialized');
-    return lobuApp;
-  } catch (error) {
-    if (orchestrator) {
-      try {
-        await orchestrator.stop();
-      } catch (stopError) {
-        logger.warn({ error: String(stopError) }, '[Lobu] Failed to stop orchestrator after init');
-      }
-      orchestrator = null;
-    }
-    if (filteringProxyStarted) {
-      try {
-        await stopFilteringProxy();
-      } catch (stopError) {
-        logger.warn({ error: String(stopError) }, '[Lobu] Failed to stop proxy after init');
-      }
-      filteringProxyStarted = false;
-    }
-    logger.error({ error: String(error) }, '[Lobu] Failed to initialize embedded gateway');
-    return null;
-  }
+		logger.info("[Lobu] Embedded gateway initialized");
+		return lobuApp;
+	} catch (error) {
+		if (orchestrator) {
+			try {
+				await orchestrator.stop();
+			} catch (stopError) {
+				logger.warn(
+					{ error: String(stopError) },
+					"[Lobu] Failed to stop orchestrator after init",
+				);
+			}
+			orchestrator = null;
+		}
+		if (filteringProxyStarted) {
+			try {
+				await stopFilteringProxy();
+			} catch (stopError) {
+				logger.warn(
+					{ error: String(stopError) },
+					"[Lobu] Failed to stop proxy after init",
+				);
+			}
+			filteringProxyStarted = false;
+		}
+		logger.error(
+			{ error: String(error) },
+			"[Lobu] Failed to initialize embedded gateway",
+		);
+		return null;
+	}
 }
 
 /**
  * Stop the embedded Lobu gateway (for graceful shutdown).
  */
 export async function stopLobuGateway(): Promise<void> {
-  try {
-    if (chatInstanceManager) {
-      await chatInstanceManager.shutdown();
-    }
-    if (gateway) {
-      await gateway.stop();
-    }
-    if (orchestrator) {
-      await orchestrator.stop();
-    }
-    if (filteringProxyStarted) {
-      await stopFilteringProxy();
-      filteringProxyStarted = false;
-    }
-    orchestrator = null;
-    gateway = null;
-    chatInstanceManager = null;
-    lobuApp = null;
-    coreServices = null;
-    logger.info('[Lobu] Embedded gateway stopped');
-  } catch (error) {
-    logger.warn({ error: String(error) }, '[Lobu] Error during gateway shutdown');
-  }
+	try {
+		if (chatInstanceManager) {
+			await chatInstanceManager.shutdown();
+		}
+		if (gateway) {
+			await gateway.stop();
+		}
+		if (orchestrator) {
+			await orchestrator.stop();
+		}
+		if (filteringProxyStarted) {
+			await stopFilteringProxy();
+			filteringProxyStarted = false;
+		}
+		orchestrator = null;
+		gateway = null;
+		chatInstanceManager = null;
+		lobuApp = null;
+		coreServices = null;
+		logger.info("[Lobu] Embedded gateway stopped");
+	} catch (error) {
+		logger.warn(
+			{ error: String(error) },
+			"[Lobu] Error during gateway shutdown",
+		);
+	}
 }
 
 /**
  * Check if the embedded Lobu gateway is running.
  */
 export function isLobuGatewayRunning(): boolean {
-  return gateway !== null && lobuApp !== null;
+	return gateway !== null && lobuApp !== null;
 }
 
 /**
  * Get the ChatInstanceManager (for connection CRUD in API routes).
  */
 export function getChatInstanceManager(): any {
-  return chatInstanceManager;
+	return chatInstanceManager;
 }
 
 export function getLobuCoreServices(): any {
-  return coreServices;
+	return coreServices;
 }
 
 export { ensureEmbeddedGatewaySecrets };

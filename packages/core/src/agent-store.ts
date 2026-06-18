@@ -219,21 +219,10 @@ export interface AgentConnectionStore {
 }
 
 /**
- * Permissions & ownership storage.
- * Grants (skill/domain access) + user-agent associations.
+ * User-agent ownership storage. Domain/MCP grants live in GrantStore
+ * (`public.grants`), not here.
  */
 export interface AgentAccessStore {
-  grant(
-    agentId: string,
-    pattern: string,
-    expiresAt: number | null,
-    denied?: boolean
-  ): Promise<void>;
-  hasGrant(agentId: string, pattern: string): Promise<boolean>;
-  isDenied(agentId: string, pattern: string): Promise<boolean>;
-  listGrants(agentId: string): Promise<Grant[]>;
-  revokeGrant(agentId: string, pattern: string): Promise<void>;
-
   addUserAgent(
     platform: string,
     userId: string,

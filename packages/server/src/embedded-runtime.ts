@@ -10,11 +10,11 @@
  */
 
 import { fork } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, symlinkSync } from "node:fs";
 import http from "node:http";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import {
@@ -130,6 +130,50 @@ export function embeddedPgOptions(databaseDir: string, port: number) {
 }
 
 /**
+ * Ensure the @embedded-postgres platform binary's SONAME symlinks exist.
+ *
+ * Each `@embedded-postgres/<platform>` package ships its shared libs (ICU, libpq)
+ * under `native/lib` as versioned files (`libicuuc.so.60.2`, …) plus a
+ * `pg-symlinks.json` manifest; its `postinstall` (hydrate-symlinks) creates the
+ * SONAME symlinks (`libicuuc.so.60` → `…60.2`) that the binary's
+ * `RUNPATH=$ORIGIN/../lib` resolves. npm/npx run that postinstall, but
+ * `bun install` (no `trustedDependencies`) and some installs skip it — leaving
+ * the binary unable to load on a host without those exact old system libs
+ * (e.g. ICU 60 on modern Linux), so `lobu run` dies at initdb with
+ * "error while loading shared libraries: libicuuc.so.60". Recreate the symlinks
+ * idempotently at boot so embedded Postgres works regardless of installer.
+ */
+export function hydrateEmbeddedPgSymlinks(nativeDir: string): void {
+	const manifest = join(nativeDir, "pg-symlinks.json");
+	if (!existsSync(manifest)) return;
+	let entries: Array<{ source: string; target: string }>;
+	try {
+		entries = JSON.parse(readFileSync(manifest, "utf8"));
+	} catch {
+		return;
+	}
+	const pkgRoot = dirname(nativeDir);
+	let created = 0;
+	for (const { source, target } of entries) {
+		const targetPath = join(pkgRoot, target);
+		if (existsSync(targetPath)) continue; // already hydrated (e.g. by npm postinstall)
+		const rel = relative(dirname(targetPath), join(pkgRoot, source));
+		try {
+			symlinkSync(rel, targetPath);
+			created++;
+		} catch {
+			// best-effort — a race or read-only fs must not crash boot
+		}
+	}
+	if (created > 0) {
+		logger.info(
+			{ nativeDir, created },
+			"Hydrated embedded Postgres library symlinks"
+		);
+	}
+}
+
+/**
  * Spawn an embedded PostgreSQL (injecting pgvector), set process.env.DATABASE_URL
  * to its TCP URL, fork the embeddings child, and return the lifecycle hooks.
  */
@@ -150,11 +194,16 @@ export async function startEmbeddedRuntime(): Promise<EmbeddedRuntime> {
 	const { default: EmbeddedPostgres } = await import("embedded-postgres");
 	const { injectPgvector, resolveEmbeddedNativeDir } =
 		await importPgvectorEmbedded();
+	const nativeDir = resolveEmbeddedNativeDir();
+
+	// The bundled Postgres binary needs its SONAME symlinks in place before it can
+	// load (the postinstall that creates them is skipped by bun / some installers).
+	hydrateEmbeddedPgSymlinks(nativeDir);
 
 	// embedded-postgres bundles pg_trgm but not pgvector — inject the host
 	// platform's prebuilt vector library into the binary tree before boot
 	// (idempotent). cube + earthdistance are already in the stock binary.
-	injectPgvector(resolveEmbeddedNativeDir());
+	injectPgvector(nativeDir);
 
 	const pgPort =
 		parseInt(process.env.LOBU_PG_PORT || "", 10) || (await findFreePort());

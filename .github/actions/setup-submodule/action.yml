@@ -1,8 +1,9 @@
-name: "Set up private submodule"
+name: "Set up submodules"
 description: >
-  Checks out packages/owletto via deploy key when available. For forks and
-  runs without the secret, writes a stub package.json so bun workspaces still
-  resolve (the web assets just won't build).
+  Initializes packages/connectors (public, always) and checks out
+  packages/owletto via deploy key when available. For forks and runs without the
+  owletto secret, writes a stub owletto package.json so bun workspaces still
+  resolve (the web assets just won't build); connectors is always real.
 
 inputs:
   deploy-key:
@@ -18,6 +19,16 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Initialize public connectors submodule
+      shell: bash
+      run: |
+        set -euo pipefail
+        # packages/connectors is the public lobu-ai/lobu-connectors repo and is
+        # REQUIRED for the backend build (the connector catalog). Unlike the
+        # private owletto submodule it needs no deploy key and is never stubbed —
+        # init it unconditionally over HTTPS for keyed runs and forks alike.
+        git submodule update --init packages/connectors
+
     - name: Set up SSH agent for submodule
       if: inputs.deploy-key != ''
       uses: webfactory/ssh-agent@v0.9.0

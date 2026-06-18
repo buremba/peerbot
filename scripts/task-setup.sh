@@ -116,6 +116,8 @@ if [[ $refresh_only -eq 0 ]]; then
 
   echo "→ preparing packages/owletto submodule on $branch (real branch, not detached)"
   (cd "$worktree_dir" && git submodule update --init packages/owletto)
+  echo "→ initializing packages/connectors submodule (public, required for the build)"
+  (cd "$worktree_dir" && git submodule update --init packages/connectors)
   # Branch from the submodule HEAD (the SHA the parent pins), NOT origin/main —
   # the pin and origin/main can differ, and using origin/main here would
   # silently bump the submodule pointer in the new worktree.

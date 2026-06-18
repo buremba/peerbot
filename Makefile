@@ -65,6 +65,15 @@ ensure-submodule:
 		      echo "   If this is unintentional, run: git submodule update packages/owletto" ;; \
 		*) ;; \
 	esac
+	@cstatus=$$(git submodule status packages/connectors 2>/dev/null || true); \
+	case "$$cstatus" in \
+		'-'*) echo ">> connectors submodule not initialized — running git submodule update --init"; \
+		      git submodule update --init packages/connectors ;; \
+		'+'*) echo ">> WARNING: packages/connectors is at a different SHA than the parent pin:"; \
+		      echo "   $$cstatus"; \
+		      echo "   If this is unintentional, run: git submodule update packages/connectors" ;; \
+		*) ;; \
+	esac
 
 # Start the embedded Lobu stack: server + embedded gateway + workers,
 # all in-process. Requires Postgres via DATABASE_URL.

@@ -38,7 +38,7 @@ beforeEach(() => {
   contentFetches = 0;
   globalThis.fetch = (async (input: string | URL | Request) => {
     const url = typeof input === 'string' ? input : input.toString();
-    if (url.includes('hn.algolia.com')) {
+    if (new URL(url).hostname === 'hn.algolia.com') {
       return new Response(JSON.stringify(algoliaPage(20)), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -78,7 +78,7 @@ test('non-HTML/non-OK results do NOT trip the egress short-circuit', async () =>
   let nthContent = 0;
   globalThis.fetch = (async (input: string | URL | Request) => {
     const url = typeof input === 'string' ? input : input.toString();
-    if (url.includes('hn.algolia.com')) {
+    if (new URL(url).hostname === 'hn.algolia.com') {
       return new Response(JSON.stringify(algoliaPage(5)), {
         status: 200,
         headers: { 'content-type': 'application/json' },

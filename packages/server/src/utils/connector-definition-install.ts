@@ -90,6 +90,83 @@ export function connectorSourcePathToUri(sourcePath?: string | null): string | n
   return null;
 }
 
+// Hosts a connector's `source_url` may be fetched from out of the box. Installing
+// from a URL fetches + compiles + runs remote code, so it must be locked down to
+// known-good sources. Extend per-deployment via CONNECTOR_SOURCE_ALLOWLIST.
+const DEFAULT_CONNECTOR_SOURCE_HOSTS = [
+  'raw.githubusercontent.com',
+  'gist.githubusercontent.com',
+  'objects.githubusercontent.com',
+  'github.com',
+];
+
+const MAX_CONNECTOR_SOURCE_BYTES = 5 * 1024 * 1024;
+const CONNECTOR_SOURCE_FETCH_TIMEOUT_MS = 30_000;
+
+/** Block loopback/private/link-local hosts to prevent SSRF (e.g. cloud metadata 169.254.169.254). */
+function isBlockedSourceHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.internal') || h === '0.0.0.0') {
+    return true;
+  }
+  if (h === '::1' || h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd')) return true;
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}$/);
+  if (m) {
+    const a = Number(m[1]);
+    const b = Number(m[2]);
+    if (a === 0 || a === 10 || a === 127) return true;
+    if (a === 169 && b === 254) return true; // link-local incl. cloud metadata
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+  }
+  return false;
+}
+
+function allowedConnectorSourceHosts(): string[] {
+  const extra = (process.env.CONNECTOR_SOURCE_ALLOWLIST ?? '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  return [...DEFAULT_CONNECTOR_SOURCE_HOSTS, ...extra];
+}
+
+/**
+ * Validate a connector `source_url` before fetching: https only, no
+ * private/loopback hosts (SSRF), and host on the allowlist. `CONNECTOR_SOURCE_ALLOWLIST`
+ * adds hosts (`.example.com` matches subdomains); `*` allows any public host.
+ * Note: redirects are followed, so the SSRF guard binds the initial host — keep
+ * `*` for trusted environments only.
+ */
+function assertAllowedConnectorSourceUrl(rawUrl: string): URL {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new Error(`Invalid source_url: ${rawUrl}`);
+  }
+  if (url.protocol !== 'https:') {
+    throw new Error(`source_url must use https (got '${url.protocol || rawUrl}').`);
+  }
+  if (isBlockedSourceHost(url.hostname)) {
+    throw new Error(
+      `source_url host '${url.hostname}' is blocked (private/loopback/link-local address).`
+    );
+  }
+  const allow = allowedConnectorSourceHosts();
+  if (allow.includes('*')) return url;
+  const host = url.hostname.toLowerCase();
+  const ok = allow.some((entry) =>
+    entry.startsWith('.') ? host === entry.slice(1) || host.endsWith(entry) : host === entry
+  );
+  if (!ok) {
+    throw new Error(
+      `source_url host '${host}' is not in the connector source allowlist (${allow.join(', ')}). ` +
+        `Set CONNECTOR_SOURCE_ALLOWLIST to add hosts, or '*' to allow any public host.`
+    );
+  }
+  return url;
+}
+
 export async function resolveConnectorInstallSource(params: {
   sourceUrl?: string;
   sourceUri?: string;
@@ -110,19 +187,30 @@ export async function resolveConnectorInstallSource(params: {
     sourcePath = filePath;
     sourceCode = await readFile(filePath, 'utf-8');
   } else if (params.sourceUrl) {
-    sourcePath = (() => {
-      try {
-        return new URL(params.sourceUrl).pathname.replace(/^\//, '') || null;
-      } catch {
-        return null;
-      }
-    })();
+    const url = assertAllowedConnectorSourceUrl(params.sourceUrl);
+    sourcePath = url.pathname.replace(/^\//, '') || null;
 
-    const sourceResponse = await fetch(params.sourceUrl);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), CONNECTOR_SOURCE_FETCH_TIMEOUT_MS);
+    let sourceResponse: Response;
+    try {
+      sourceResponse = await fetch(url, { signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
     if (!sourceResponse.ok) {
-      throw new Error(`Failed to fetch source from ${params.sourceUrl}: ${sourceResponse.status}`);
+      throw new Error(`Failed to fetch source from ${url.toString()}: ${sourceResponse.status}`);
+    }
+    const declaredLength = Number(sourceResponse.headers.get('content-length') ?? '0');
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_CONNECTOR_SOURCE_BYTES) {
+      throw new Error(
+        `Connector source too large: ${declaredLength} bytes (max ${MAX_CONNECTOR_SOURCE_BYTES}).`
+      );
     }
     sourceCode = await sourceResponse.text();
+    if (Buffer.byteLength(sourceCode) > MAX_CONNECTOR_SOURCE_BYTES) {
+      throw new Error(`Connector source too large (max ${MAX_CONNECTOR_SOURCE_BYTES} bytes).`);
+    }
   } else if (params.sourceCode) {
     sourceCode = params.sourceCode;
   } else {

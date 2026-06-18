@@ -8,6 +8,10 @@ import {
   type AddressableTarget,
 } from "../../conversations/authorization.js";
 import { getChatInstanceManager } from "../../../lobu/gateway.js";
+import {
+  captureChannelMessage,
+  readChannelTranscript,
+} from "../../connections/channel-transcript.js";
 import { errorResponse, getVerifiedWorker } from "../shared/helpers.js";
 import { authenticateWorker } from "./middleware.js";
 import type { WorkerContext } from "./types.js";
@@ -90,20 +94,30 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
         100
       );
 
-      const manager = getChatInstanceManager();
-      if (!manager?.getLiveConversationHistory) {
-        return c.json({ messages: [], nextCursor: null, hasMore: false });
-      }
-      // SECURITY: read through the AUTHORIZED connection only (target.connectionId),
-      // never a global by-platform re-selection — otherwise an agent could read
-      // another tenant's cached transcript for a colliding channel id. This also
-      // pulls real platform history (not the 10-message cache).
-      const history = await manager.getLiveConversationHistory(
+      // Primary: serve the durable transcript from Postgres, scoped to the
+      // AUTHORIZED connection (the tenant fence) — no platform history-API call,
+      // so Slack's throttle doesn't apply.
+      const messages = await readChannelTranscript(
         target.connectionId,
-        target.channelKey,
+        target.channelId,
         limit
       );
-      return c.json({ ...history, nextCursor: null, hasMore: false });
+      if (messages.length > 0) {
+        return c.json({ messages, nextCursor: null, hasMore: false });
+      }
+
+      // Cold start (nothing captured yet for this channel): best-effort one-shot
+      // live fetch to seed the read, subject to the platform's history limit.
+      const manager = getChatInstanceManager();
+      if (manager?.getLiveConversationHistory) {
+        const live = await manager.getLiveConversationHistory(
+          target.connectionId,
+          target.channelKey,
+          limit
+        );
+        return c.json({ ...live, nextCursor: null, hasMore: false });
+      }
+      return c.json({ messages: [], nextCursor: null, hasMore: false });
     } catch (error) {
       logger.error(`read conversation failed: ${String(error)}`);
       return errorResponse(c, "Internal server error", 500);
@@ -180,6 +194,25 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
       logger.info(
         `agent ${worker.agentId} sent to ${target.platform}/${target.channelId}${threadId ? " (thread)" : ""} via ${target.connectionId}`
       );
+
+      // Persist the bot's own post into the transcript (with the real platform
+      // message id) so read_conversation includes it AND the inbound echo of
+      // this message dedups against it.
+      if (sent.messageId) {
+        captureChannelMessage({
+          organizationId: worker.organizationId,
+          connectionId: target.connectionId,
+          platform: target.platform,
+          channelId: target.channelId,
+          threadId: threadId ?? null,
+          platformMessageId: sent.messageId,
+          authorId: worker.agentId,
+          authorName: worker.agentId,
+          isBot: true,
+          text,
+          occurredAt: new Date(),
+        });
+      }
 
       // A thread handle lets a later run reply into this message's thread.
       // Prefer the adapter's returned thread id (root) when it carries one

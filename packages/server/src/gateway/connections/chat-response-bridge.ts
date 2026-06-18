@@ -25,6 +25,7 @@ import {
 import type { ThreadResponsePayload } from "../infrastructure/queue/index.js";
 import { extractSettingsLinkButtons } from "../platform/link-buttons.js";
 import type { ResponseRenderer } from "../platform/response-renderer.js";
+import { captureChannelMessage } from "./channel-transcript.js";
 import type { ChatInstanceManager } from "./chat-instance-manager.js";
 import {
   type PlatformMetadata,
@@ -400,6 +401,29 @@ export class ChatResponseBridge implements ResponseRenderer {
           { connectionId, channelId, error: String(error) },
           "Failed to persist assistant response to history (continuing)"
         );
+      }
+      // Durable transcript: persist the bot's interactive reply too, so
+      // read_conversation shows both sides. No platform message id is surfaced
+      // here, so key on the turn's messageId (stable across a redelivered
+      // completion). Fire-and-forget + idempotent.
+      const replyMd = readPlatformMetadata(payload.platformMetadata);
+      if (replyMd.organizationId) {
+        captureChannelMessage({
+          organizationId: replyMd.organizationId,
+          connectionId,
+          platform: ctx.platform,
+          channelId,
+          threadId:
+            payload.conversationId && payload.conversationId !== channelId
+              ? payload.conversationId
+              : null,
+          platformMessageId: `bot:${payload.messageId}`,
+          authorId: replyMd.agentId,
+          authorName: replyMd.agentId,
+          isBot: true,
+          text: historyText,
+          occurredAt: new Date(),
+        });
       }
     }
 

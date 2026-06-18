@@ -130,6 +130,16 @@ export interface ConnectionSettings {
    * mechanism applies.
    */
   previewMode?: boolean;
+  /**
+   * Whole-channel transcript capture. When true, a *subscribed* (non-mention,
+   * non-DM) channel message is still recorded to `channel_messages` but does
+   * NOT trigger an agent turn — so the bot can mirror a whole channel it's
+   * subscribed to (Slack `message.channels`) without responding to everything.
+   * Mentions and DMs still get a response. Default off: behaviour unchanged, and
+   * actually receiving every channel message also requires the platform app to
+   * be subscribed to channel-message events (an ops/app-config step).
+   */
+  recordChannelMessages?: boolean;
 }
 
 /** Heuristic: field names matching these patterns contain secrets and must be encrypted at rest. */

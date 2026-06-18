@@ -15,6 +15,7 @@ import {
   resolveAgentId,
   resolveAgentOptions,
 } from "../services/platform-helpers.js";
+import { captureChannelMessage } from "./channel-transcript.js";
 import type { ConversationStateStore } from "./conversation-state-store.js";
 import type { ChatInstanceManager } from "./chat-instance-manager.js";
 import type { PlatformConnection } from "./types.js";
@@ -338,6 +339,40 @@ export class MessageHandlerBridge {
     const routingOrgId =
       resolved.organizationId ?? this.connection.organizationId;
 
+    // Durable transcript capture: persist this inbound message so
+    // read_conversation can serve channel history from Postgres instead of the
+    // throttled platform history API. Fire-and-forget + idempotent. thread_id is
+    // the thread the message lives in (null at channel level).
+    if (routingOrgId) {
+      captureChannelMessage({
+        organizationId: routingOrgId,
+        connectionId: connection.id,
+        platform,
+        channelId,
+        threadId: conversationId !== channelId ? conversationId : null,
+        platformMessageId: messageId,
+        authorId: userId,
+        authorName: message.author?.fullName ?? message.author?.userName,
+        isBot: message.author?.isMe === true,
+        text: typeof message.text === "string" ? message.text : "",
+        occurredAt:
+          message.metadata?.dateSent instanceof Date
+            ? message.metadata.dateSent
+            : new Date(),
+      });
+    }
+
+    // Whole-channel capture mode: a subscribed (non-mention) channel message is
+    // now recorded above, but should NOT trigger an agent turn — the bot mirrors
+    // the channel without responding to everything. Mentions/DMs still respond.
+    if (
+      source === "subscribed" &&
+      message.isMention !== true &&
+      connection.settings?.recordChannelMessages === true
+    ) {
+      return;
+    }
+
     // Track first-time-seen user → agent association for visibility in the
     // admin API. Idempotent — agent_users has a (agent_id, platform, user_id)
     // unique constraint.
@@ -540,6 +575,22 @@ export class MessageHandlerBridge {
                 timestamp: sentAt,
               }
             );
+            // Seed the durable transcript from the thread's prior messages too.
+            if (routingOrgId && prior.id) {
+              captureChannelMessage({
+                organizationId: routingOrgId,
+                connectionId: this.connection.id,
+                platform,
+                channelId,
+                threadId: conversationId !== channelId ? conversationId : null,
+                platformMessageId: prior.id,
+                authorId: prior.author?.userId,
+                authorName: prior.author?.fullName,
+                isBot: prior.author?.isMe === true,
+                text,
+                occurredAt: new Date(sentAt),
+              });
+            }
           }
           backfillSucceeded = true;
         } else {

@@ -315,8 +315,12 @@ describe("shouldAutoApplyLocalProject", () => {
 
 describe("autoApplyLocalProject — org is pinned to the local-init slug (#1366)", () => {
   test("passes the local org slug through to applyCommand as opts.org", async () => {
-    const calls: Array<{ cwd: string; yes: boolean; url: string; org?: string }> =
-      [];
+    const calls: Array<{
+      cwd: string;
+      yes: boolean;
+      url: string;
+      org?: string;
+    }> = [];
     await autoApplyLocalProject(
       "/proj",
       "http://localhost:8788",

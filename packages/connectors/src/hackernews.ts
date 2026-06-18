@@ -460,25 +460,31 @@ export default class HackerNewsConnector extends ConnectorRuntime {
 
       if (!event.content && externalUrl && points != null && points >= this.ENGAGEMENT_THRESHOLD) {
         fetches++;
-        const fetched = await this.fetchExternalContent(externalUrl);
-        if (fetched) {
+        const res = await this.fetchExternalContent(externalUrl);
+        if (res.ok) {
           consecutiveFailures = 0;
-          event.content = fetched;
+          event.content = res.content;
           event.metadata = {
             ...event.metadata,
             fetched_content: true,
             original_url: externalUrl,
           };
-        } else {
+        } else if (res.network) {
+          // A run of genuine network/timeout failures means egress is
+          // blocked/unreachable; stop instead of burning ~5s (the fetch
+          // timeout) per remaining story.
           consecutiveFailures++;
-          // A run of failures means egress is blocked/unreachable; stop instead
-          // of burning ~5s (the fetch timeout) per remaining story.
           if (consecutiveFailures >= this.MAX_CONSECUTIVE_FETCH_FAILURES) {
             ctx.log?.(
-              `HN: ${consecutiveFailures} consecutive content fetches failed — skipping enrichment for the rest`
+              `HN: ${consecutiveFailures} consecutive content fetches failed (egress) — skipping enrichment for the rest`
             );
             break;
           }
+        } else {
+          // Non-network skip (non-HTML, non-OK, SSRF-blocked, too short) — the
+          // story just has no usable article content. Don't let it trip the
+          // egress guard, or a few PDFs/images in a row would halt enrichment.
+          consecutiveFailures = 0;
         }
 
         await sleep(this.FETCH_DELAY_MS);
@@ -486,34 +492,46 @@ export default class HackerNewsConnector extends ConnectorRuntime {
     }
   }
 
-  private async fetchExternalContent(url: string): Promise<string | null> {
+  // Returns the article markdown on success. On failure, `network` distinguishes
+  // a genuine egress failure (timeout/abort/connection — the case that stalls a
+  // sync) from a non-network skip (SSRF-blocked, non-OK, non-HTML, too short),
+  // so only real egress failures trip the consecutive-failure short-circuit.
+  private async fetchExternalContent(
+    url: string
+  ): Promise<{ ok: true; content: string } | { ok: false; network: boolean }> {
+    // SSRF guard — `url` is supplied by whoever submitted the HN story and is
+    // therefore attacker-controllable. Refuse private/internal addresses
+    // (loopback, 169.254.169.254 cloud metadata, RFC1918, etc.). Not an egress
+    // failure.
     try {
-      // SSRF guard — `url` is supplied by whoever submitted the HN story and
-      // is therefore attacker-controllable. Refuse to fetch private/internal
-      // addresses (loopback, 169.254.169.254 cloud metadata, RFC1918, etc.).
-      try {
-        validatePublicUrl(url);
-      } catch {
-        return null;
-      }
+      validatePublicUrl(url);
+    } catch {
+      return { ok: false, network: false };
+    }
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), this.CONTENT_FETCH_TIMEOUT);
-
-      const response = await fetch(url, {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.CONTENT_FETCH_TIMEOUT);
+    let response: Response;
+    try {
+      response = await fetch(url, {
         signal: controller.signal,
         headers: {
           'User-Agent': 'Mozilla/5.0 (compatible; HNBot/1.0)',
           Accept: 'text/html,application/xhtml+xml',
         },
       });
-
+    } catch {
+      // Timeout/abort/DNS/connection refused — a genuine egress failure.
+      return { ok: false, network: true };
+    } finally {
       clearTimeout(timeoutId);
+    }
 
-      if (!response.ok) return null;
+    try {
+      if (!response.ok) return { ok: false, network: false };
 
       const contentType = response.headers.get('content-type') ?? '';
-      if (!contentType.includes('text/html')) return null;
+      if (!contentType.includes('text/html')) return { ok: false, network: false };
 
       const html = await response.text();
 
@@ -548,9 +566,13 @@ export default class HackerNewsConnector extends ConnectorRuntime {
       const markdown = this.turndownService.turndown(cleanHtml);
       const trimmed = markdown.trim().substring(0, 2000);
 
-      return trimmed.length >= 100 ? trimmed : null;
+      return trimmed.length >= 100
+        ? { ok: true, content: trimmed }
+        : { ok: false, network: false };
     } catch {
-      return null;
+      // A body-read/parse error after a successful response isn't an egress
+      // outage — treat as a skip, not a network failure.
+      return { ok: false, network: false };
     }
   }
 }

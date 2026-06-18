@@ -380,7 +380,7 @@ export async function devCommand(
   // persists the session as the `local` CLI context so `lobu chat -c local`
   // works without a separate `lobu login`.
   void announceLocalSignIn(gatewayUrl, mode === "embedded").then(
-    (localContextReady) => {
+    ({ ready: localContextReady, localOrgSlug }) => {
       // Once the `local` context is confirmed registered + active, push the
       // project's lobu.config.ts into the embedded DB so the scaffolded agent is
       // usable via `lobu chat -c local …` with no separate `lobu apply`.
@@ -394,7 +394,7 @@ export async function devCommand(
           hasLobuConfig: existsSync(join(cwd, "lobu.config.ts")),
         })
       ) {
-        return autoApplyLocalProject(cwd, gatewayUrl);
+        return autoApplyLocalProject(cwd, gatewayUrl, localOrgSlug);
       }
     }
   );
@@ -454,15 +454,24 @@ export function shouldAutoApplyLocalProject(opts: {
  */
 async function autoApplyLocalProject(
   cwd: string,
-  gatewayUrl: string
+  gatewayUrl: string,
+  localOrgSlug?: string
 ): Promise<void> {
   try {
     const { applyCommand } = await import("./_lib/apply/apply-cmd.js");
     // Pin the apply to the embedded server's URL. `resolveApiTarget` matches
     // the `local` context by URL — and refuses to send any other context's
     // credentials to a different URL — so this can only ever target the local
-    // server, never a cloud/prod org.
-    await applyCommand({ cwd, yes: true, url: gatewayUrl });
+    // server, never a cloud/prod org. Also pin the ORG to the embedded server's
+    // bootstrap org (from /api/local-init) so a `defineConfig({ org })` naming a
+    // cloud org can't redirect this local apply to a slug that doesn't exist
+    // here — that previously 404'd and silently applied nothing.
+    await applyCommand({
+      cwd,
+      yes: true,
+      url: gatewayUrl,
+      ...(localOrgSlug ? { org: localOrgSlug } : {}),
+    });
   } catch (err) {
     console.warn(
       chalk.dim(
@@ -556,23 +565,23 @@ export function resolveBackendBundle(
 async function announceLocalSignIn(
   gatewayUrl: string,
   embedded: boolean
-): Promise<boolean> {
+): Promise<{ ready: boolean; localOrgSlug?: string }> {
   // Poll briefly so the announce lands AFTER the server's own startup
   // banner without racing it.
   const reachable = await waitForServerReachable(gatewayUrl);
-  if (!reachable) return false;
+  if (!reachable) return { ready: false };
 
   // Only the embedded path seeds the bootstrap user → /local-init will refuse
   // on an external-Postgres deployment with real signups. Skip the network
   // call entirely in that case to keep the banner quiet.
-  if (!embedded) return false;
+  if (!embedded) return { ready: false };
 
   try {
     const res = await fetch(`${gatewayUrl}/api/local-init`, {
       method: "POST",
       headers: { "X-Lobu-Client": "lobu-run" },
     });
-    if (!res.ok) return false;
+    if (!res.ok) return { ready: false };
     const body = (await res.json()) as {
       device_token?: string;
       session_token?: string;
@@ -586,7 +595,7 @@ async function announceLocalSignIn(
     // same session token is passed to the browser deep-link URL so the SPA
     // hook reaches /api/exchange-token → Better Auth session cookie.
     const cliToken = body.session_token ?? body.device_token;
-    if (!cliToken) return false;
+    if (!cliToken) return { ready: false };
 
     const contextName = "local";
     await addContext(contextName, gatewayUrl);
@@ -638,11 +647,13 @@ async function announceLocalSignIn(
     );
     console.log();
     // The `local` context is registered, credentialed, and active — safe to
-    // auto-apply the project against it.
-    return true;
+    // auto-apply the project against it. Return the bootstrap org slug so the
+    // auto-apply can target the local org explicitly (a config `org:` for a
+    // cloud org must not redirect the local apply — that 404s silently).
+    return { ready: true, localOrgSlug: orgSlug };
   } catch {
     // Swallow — the banner is best-effort.
-    return false;
+    return { ready: false };
   }
 }
 

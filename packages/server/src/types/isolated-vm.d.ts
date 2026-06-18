@@ -67,3 +67,13 @@ declare module "isolated-vm" {
     copyInto(): T;
   }
 }
+
+/**
+ * Alias for isolated-vm@7 (Node 26+), installed as `isolated-vm-next` via
+ * optionalDependencies. Same API surface as v6 for the bits we use. Declared so
+ * the dynamic `import("isolated-vm-next")` in run-script.ts typechecks on Node
+ * 22–24 hosts where this optional build isn't installed (engine-skipped).
+ */
+declare module "isolated-vm-next" {
+  export * from "isolated-vm";
+}

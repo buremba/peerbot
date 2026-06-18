@@ -167,20 +167,33 @@ function raceAgainstAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<
 
 type IsolatedVmRuntime = typeof import("isolated-vm");
 
+function unwrapIsolatedVm(mod: unknown): IsolatedVmRuntime {
+  const m = mod as IsolatedVmRuntime & {
+    default?: IsolatedVmRuntime;
+    "module.exports"?: IsolatedVmRuntime;
+  };
+  return m.default ?? m["module.exports"] ?? m;
+}
+
 async function loadIsolatedVm(): Promise<IsolatedVmRuntime | null> {
-  // Node 25 imports the native addon but crashes on isolate construction;
-  // fail closed rather than taking down the MCP server.
+  // isolated-vm's native addon is ABI-bound per Node line. We ship two builds via
+  // optionalDependencies: isolated-vm@6 (Node 22–24) and the aliased
+  // `isolated-vm-next` = isolated-vm@7 (Node 26+). Node 25 is an EOL non-LTS line
+  // upstream skipped (issue #553), so it has no build → no sandbox. Pick by Node
+  // major and fail closed if the chosen build can't load (e.g. native build was
+  // skipped on this platform) rather than taking down the MCP server.
   const nodeMajor = Number(process.versions.node?.split(".")[0] ?? 0);
-  if (!Number.isFinite(nodeMajor) || nodeMajor < 22 || nodeMajor >= 25) {
-    return null;
-  }
+  if (!Number.isFinite(nodeMajor)) return null;
 
   try {
-    const mod = (await import("isolated-vm")) as unknown as IsolatedVmRuntime & {
-      default?: IsolatedVmRuntime;
-      "module.exports"?: IsolatedVmRuntime;
-    };
-    return mod.default ?? mod["module.exports"] ?? mod;
+    if (nodeMajor >= 22 && nodeMajor < 25) {
+      return unwrapIsolatedVm(await import("isolated-vm"));
+    }
+    if (nodeMajor >= 26) {
+      // Aliased to isolated-vm@7 in package.json optionalDependencies.
+      return unwrapIsolatedVm(await import("isolated-vm-next"));
+    }
+    return null;
   } catch {
     return null;
   }

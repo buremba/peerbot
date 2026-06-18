@@ -6,7 +6,7 @@
   "type": "module",
   "description": "Lobu memory backend — Hono HTTP server, MCP handler, REST API, in-process Lobu gateway",
   "engines": {
-    "node": ">=22 <25"
+    "node": ">=22 <25 || >=26"
   },
   "scripts": {
     "dev": "tsx watch --ignore=../web/** --ignore=../owletto/** --ignore=../../node_modules/** src/server.ts",
@@ -75,6 +75,7 @@
     "vitest": "^3.2.6"
   },
   "optionalDependencies": {
-    "isolated-vm": "^6.1.2"
+    "isolated-vm": "^6.1.2",
+    "isolated-vm-next": "npm:isolated-vm@^7.0.0"
   }
 }

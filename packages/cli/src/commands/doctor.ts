@@ -38,11 +38,19 @@ function checkBinaryExists(name: string): Check {
 function checkNodeVersion(): Check {
   const version = process.version;
   const major = Number.parseInt(version.slice(1), 10);
-  return {
-    name: "node",
-    status: major >= 22 ? "ok" : "warn",
-    detail: version,
-  };
+  // isolated-vm@6 → 22–24, isolated-vm@7 → 26+. Node 25 boots but has no SDK
+  // sandbox build; anything below 22 is unsupported.
+  if (major < 22) {
+    return { name: "node", status: "warn", detail: `${version} (needs >=22)` };
+  }
+  if (major === 25) {
+    return {
+      name: "node",
+      status: "warn",
+      detail: `${version} (SDK sandbox unavailable; use 24 LTS or 26+)`,
+    };
+  }
+  return { name: "node", status: "ok", detail: version };
 }
 
 async function checkServerReachable(url: string): Promise<Check> {

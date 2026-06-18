@@ -25,8 +25,9 @@ on http://localhost:{{GATEWAY_PORT}}.
 
 ## Prerequisites
 
-Before `lobu run`, the host needs Node 22-24 (25+ is rejected — `isolated-vm` has
-no build) and one LLM provider key in `.env`. Postgres is built in: `lobu run`
+Before `lobu run`, the host needs Node 22-24 or 26+ (only Node 25 is unsupported —
+`isolated-vm` skips that EOL non-LTS line) and one LLM provider key in `.env`.
+Postgres is built in: `lobu run`
 starts an embedded PostgreSQL (with `pgvector`); set `DATABASE_URL` only to use an
 external Postgres instead. If a prerequisite is missing, stop and help the user
 install it — don't work around it.

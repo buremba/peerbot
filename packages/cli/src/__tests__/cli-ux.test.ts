@@ -88,8 +88,10 @@ describe("lobu init --yes", () => {
     cwd = mkdtempSync(join(tmpdir(), "lobu-init-yes-"));
   });
   afterEach(() => {
+    // Cleanup deletes a fully scaffolded project; give it the same budget as the
+    // init body so a loaded machine doesn't trip the default 5s hook timeout.
     rmSync(cwd, { recursive: true, force: true });
-  });
+  }, INIT_TIMEOUT);
 
   test(
     "scaffolds a non-interactive project with defaults",

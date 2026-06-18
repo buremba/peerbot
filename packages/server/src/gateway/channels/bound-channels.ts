@@ -32,7 +32,7 @@
  */
 import type { DbClient } from "../../db/client.js";
 
-export interface BoundChannelRow {
+interface BoundChannelRow {
   /** Connection id that owns the post (preview conn for cross-org). */
   id: string;
   platform: string;

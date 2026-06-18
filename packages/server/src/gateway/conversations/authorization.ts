@@ -77,7 +77,7 @@ interface DecodedHandle {
 }
 
 /** Decode an opaque handle into its coordinates. Returns null if malformed. */
-export function decodeHandle(handle: string): DecodedHandle | null {
+function decodeHandle(handle: string): DecodedHandle | null {
   if (!handle.startsWith(CHANNEL_PREFIX)) return null;
   try {
     const decoded = Buffer.from(
@@ -139,7 +139,7 @@ export async function resolveAuthorizedTarget(
   return targets.find((t) => t.handle === handle) ?? null;
 }
 
-export interface AuthorizedThread {
+interface AuthorizedThread {
   target: AddressableTarget;
   /** Platform-native thread id, e.g. `slack:{channel}:{root_ts}`. */
   threadId: string;

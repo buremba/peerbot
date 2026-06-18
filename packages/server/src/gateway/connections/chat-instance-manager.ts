@@ -626,6 +626,14 @@ export class ChatInstanceManager {
       channelId: string;
       threadId?: string;
       content: AdapterPostableMessage;
+      /**
+       * Subscribe to the thread this message opens/continues, so the bot
+       * RECEIVES (and captures) replies to it. Without this, a thread the bot
+       * opens proactively (e.g. a watcher's lunch thread) is invisible to it —
+       * Slack only delivers thread replies for subscribed threads. Used by
+       * send_message; a one-off notify does NOT subscribe.
+       */
+      subscribe?: boolean;
     }
   ): Promise<{ messageId: string; threadId: string }> {
     const running = await this.ensureConnectionRunning(connectionId);
@@ -649,8 +657,33 @@ export class ChatInstanceManager {
       id?: unknown;
       threadId?: unknown;
     };
+    const messageId = typeof sent?.id === "string" ? sent.id : "";
+
+    // Auto-subscribe so replies to this message flow back to the bot (and get
+    // captured into the transcript). Best-effort: a subscribe failure never
+    // fails the post. Reply to an existing thread → that thread; top-level post
+    // → the thread rooted at the new message.
+    if (opts.subscribe) {
+      const subThreadId =
+        opts.threadId ??
+        (messageId
+          ? `${opts.platform}:${opts.channelId}:${messageId}`
+          : undefined);
+      const chat = instance.chat as { subscribe?: (id: string) => Promise<void> };
+      if (subThreadId && typeof chat.subscribe === "function") {
+        try {
+          await chat.subscribe(subThreadId);
+        } catch (err) {
+          logger.debug(
+            { connectionId, subThreadId, err: String(err) },
+            "thread auto-subscribe failed (non-fatal)"
+          );
+        }
+      }
+    }
+
     return {
-      messageId: typeof sent?.id === "string" ? sent.id : "",
+      messageId,
       threadId: typeof sent?.threadId === "string" ? sent.threadId : "",
     };
   }

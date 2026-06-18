@@ -15,7 +15,7 @@ import { getDb } from "../../db/client.js";
 
 const logger = createLogger("channel-transcript");
 
-export interface PersistChannelMessageParams {
+interface PersistChannelMessageParams {
   /** Tenant org the message belongs to (the binding's org for cross-org preview). */
   organizationId: string;
   connectionId: string;
@@ -71,7 +71,7 @@ export function captureChannelMessage(params: PersistChannelMessageParams): void
   });
 }
 
-export interface TranscriptMessage {
+interface TranscriptMessage {
   timestamp: string;
   user: string;
   text: string;

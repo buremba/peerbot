@@ -189,6 +189,9 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
         channelId: target.channelId,
         threadId,
         content: { markdown: text },
+        // Follow the thread we just posted into so replies (e.g. lunch orders)
+        // come back to us and land in the transcript.
+        subscribe: true,
       })) as { messageId: string; threadId: string };
 
       logger.info(

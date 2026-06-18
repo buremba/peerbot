@@ -505,3 +505,57 @@ describe("validateConnectorState — skip stale schema for locally-declared keys
     ).not.toThrow();
   });
 });
+
+describe("validateConnectorState — feed-scoped key demotion is gated to the pre-diff pass", () => {
+  const catalog: RemoteConnectorDefinition[] = [
+    {
+      key: "hn",
+      installed: true,
+      installable: false,
+      feeds_schema: {
+        stories: {
+          configSchema: {
+            type: "object",
+            properties: { search_query: { type: "string" } },
+          },
+        },
+      },
+    },
+  ];
+  const makeState = () =>
+    stateWith({
+      definitions: [],
+      authProfiles: [],
+      connections: [
+        {
+          slug: "c1",
+          connector: "hn",
+          config: { search_query: "AI" },
+          feeds: [{ feedKey: "stories" }],
+          sourceFile: "lobu.config.ts",
+        },
+      ],
+    });
+
+  test("pre-diff pass demotes the feed-scoped key onto the feed and warns", () => {
+    const state = makeState();
+    const warnings = validateConnectorState(state, catalog);
+    expect(warnings.some((w) => w.includes("search_query"))).toBe(true);
+    const conn = state.connectors.connections[0];
+    expect(conn?.config).toBeUndefined();
+    expect(conn?.feeds[0]?.config).toEqual({ search_query: "AI" });
+  });
+
+  test("post-install pass (requireInstalled) does NOT demote — the plan is already computed", () => {
+    const state = makeState();
+    const warnings = validateConnectorState(state, catalog, {
+      requireInstalled: true,
+    });
+    expect(warnings).toEqual([]);
+    // Left as authored: mutating here wouldn't reach the already-built feed
+    // rows, so we don't — a misauthored key fails loudly at the server instead.
+    expect(state.connectors.connections[0]?.config).toEqual({
+      search_query: "AI",
+    });
+  });
+});

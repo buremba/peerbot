@@ -530,14 +530,24 @@ export function validateConnectorState(
   for (const connection of state.connectors.connections) {
     const schemas = schemasFor(connection.connector);
     // Mirror the server's connection/feed scope split: demote any feed-scoped
-    // key authored on the connection to a per-feed default so the connection
-    // payload the server accepts, instead of failing the create with a generic
+    // key authored on the connection to a per-feed default so the server
+    // accepts the connection, instead of failing the create with a generic
     // "Feed-scoped config belongs on feeds" rejection.
-    const demoted = normalizeConnectionConfigScope(connection, schemas);
-    if (demoted.length > 0) {
-      warnings.push(
-        `connection "${connection.slug}": feed-scoped key(s) [${demoted.join(", ")}] were set on the connection — moved to its feed config(s). Declare connector sync settings on the feed, not the connection.`
-      );
+    //
+    // Only in the pre-diff pass. The post-install pass (requireInstalled) runs
+    // AFTER computeDiff has built the create/update rows from `row.desired`, so
+    // mutating state here would not reach the plan — it would silently drop the
+    // demoted key from the applied feed rows. Locally-declared connectors
+    // (schema-skipped pre-diff, validated only post-install) therefore aren't
+    // demoted; a feed-scoped key left on such a connection still fails loudly
+    // at the server, exactly as before this feature.
+    if (!opts.requireInstalled) {
+      const demoted = normalizeConnectionConfigScope(connection, schemas);
+      if (demoted.length > 0) {
+        warnings.push(
+          `connection "${connection.slug}": feed-scoped key(s) [${demoted.join(", ")}] were set on the connection — moved to its feed config(s). Declare connector sync settings on the feed, not the connection.`
+        );
+      }
     }
     validateConnectionAgainstConnector(connection, authProfilesBySlug, schemas);
   }

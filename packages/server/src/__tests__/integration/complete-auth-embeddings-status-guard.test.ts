@@ -253,7 +253,7 @@ describe('completeEmbeddings status guard (late-completion-after-timeout)', () =
     // The embedding upsert is the handler's real job (idempotent, ownership-gated
     // by authorizeRunForWorker) and runs regardless of the run state — this is the
     // same path headless backfills use with run_id=-1.
-    expect(result().body).toEqual({ success: true, updated: 1 });
+    expect(result().body).toEqual({ success: true, updated: 1, failed: 0 });
 
     // But the run is NOT resurrected — the finalizeRun status guard leaves the
     // reaped run terminal.
@@ -315,7 +315,7 @@ describe('completeEmbeddings status guard (late-completion-after-timeout)', () =
     });
     await completeEmbeddings(ctx);
 
-    expect(result().body).toEqual({ success: true, updated: 1 });
+    expect(result().body).toEqual({ success: true, updated: 1, failed: 0 });
 
     const runAfter = (await sql`
       SELECT status, items_collected FROM runs WHERE id = ${runId}

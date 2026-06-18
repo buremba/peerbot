@@ -18,6 +18,7 @@ import { getDb, pgTextArray } from '../db/client';
 import type { Env } from '../index';
 import { executeClassificationQuery } from '../utils/classification-query';
 import { entityLinkMatchSql } from '../utils/content-search';
+import { configuredEmbeddingModelSqlLiteral } from '../utils/embeddings';
 import logger from '../utils/logger';
 
 const MAX_ENTITIES_PER_RUN = 10; // Process up to 10 entities per cron run
@@ -147,7 +148,9 @@ export async function runClassificationReconciliation(_env: Env): Promise<{
             LEFT JOIN event_classifier_versions ecv ON ec.classifier_version_id = ecv.id
             LEFT JOIN event_classifiers fc ON ecv.classifier_id = fc.id
             WHERE ${sql.unsafe(entityLinkMatchSql(`${Number(entityId)}::bigint`, 'ev'))}
-              AND ev.embedding IS NOT NULL
+              AND EXISTS (SELECT 1 FROM event_embeddings emb
+                WHERE emb.event_id = ev.id AND emb.chunk_index = 0
+                  AND emb.embedding_model = ${sql.unsafe(configuredEmbeddingModelSqlLiteral())})
             GROUP BY ev.id
           ) per_event
           WHERE per_event.classified_count < ${expectedCount}

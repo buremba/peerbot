@@ -179,7 +179,14 @@ export interface EmbedEvent {
 export interface CompleteEmbeddingsRequest {
   run_id: number;
   worker_id: string;
-  embeddings: Array<{ event_id: number; embedding: number[]; embedding_model?: string }>;
+  // One entry per (event, chunk). Expand phase: always chunk_index=0, one per
+  // event; the contract release starts emitting multiple (the tail chunks).
+  embeddings: Array<{
+    event_id: number;
+    chunk_index: number;
+    embedding: number[];
+    embedding_model?: string;
+  }>;
   error_message?: string;
 }
 

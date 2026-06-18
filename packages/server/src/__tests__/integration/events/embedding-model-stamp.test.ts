@@ -88,7 +88,13 @@ describe('event_embeddings model stamp (Finding #3)', () => {
     expect(rows[0]!.embedding_model).toBe('Xenova/bge-base-en-v1.5');
   });
 
-  it('leaves embedding_model NULL when no stamp is supplied (legacy path)', async () => {
+  it('does NOT persist an embedding when no model stamp is supplied', async () => {
+    // Multi-vector: embedding_model is part of the PK (NOT NULL), so an unstamped
+    // vector can no longer be written. An unstamped vector is unusable anyway —
+    // vector search scopes comparison to the configured model — so the inline
+    // path skips it and the embed backfill produces a properly-stamped (and, for
+    // long content, chunked) set instead. This replaces the old "NULL stamp
+    // legacy row" behaviour.
     const inserted = await insertEvent(
       {
         entityIds: [entityId],
@@ -111,7 +117,6 @@ describe('event_embeddings model stamp (Finding #3)', () => {
       SELECT embedding_model FROM event_embeddings WHERE event_id = ${inserted.id}
     `) as Array<{ embedding_model: string | null }>;
 
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.embedding_model).toBeNull();
+    expect(rows).toHaveLength(0);
   });
 });

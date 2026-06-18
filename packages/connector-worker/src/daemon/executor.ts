@@ -661,14 +661,28 @@ async function executeEmbedBackfillRun(
       }))
       .filter((p) => p.text.length > 0);
 
-    const results: Array<{ event_id: number; embedding: number[]; embedding_model: string }> = [];
+    // Expand phase: one vector per event (chunk_index 0). The schema is ready for
+    // multi-vector, but the worker only starts CHUNKING in the contract release —
+    // until the PK moves off (event_id), more than one row per event would
+    // violate it. So this stays the single vectorized batch pass, tagged chunk 0.
+    const results: Array<{
+      event_id: number;
+      chunk_index: number;
+      embedding: number[];
+      embedding_model: string;
+    }> = [];
     let batchError: string | undefined;
     try {
       const { embeddings, model } = await batchGenerateEmbeddings(pending.map((p) => p.text));
       for (let i = 0; i < pending.length; i++) {
         const embedding = embeddings[i];
         if (embedding) {
-          results.push({ event_id: pending[i]!.event_id, embedding, embedding_model: model });
+          results.push({
+            event_id: pending[i]!.event_id,
+            chunk_index: 0,
+            embedding,
+            embedding_model: model,
+          });
         }
       }
     } catch (err) {

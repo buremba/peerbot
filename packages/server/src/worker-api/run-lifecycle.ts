@@ -31,7 +31,7 @@ import {
   materializeInlineAttachments,
   triggerAudioTranscriptions,
 } from '../utils/inline-attachments';
-import { configuredEmbeddingModelSqlLiteral } from '../utils/embeddings';
+import { needsEmbeddingSql } from '../utils/embeddings';
 import { insertEvent, recordLifecycleEvent } from '../utils/insert-event';
 import logger from '../utils/logger';
 import { authorizeRunForWorker } from './shared';
@@ -912,20 +912,18 @@ export async function fetchEventsForEmbedding(c: Context<{ Bindings: Env }>) {
       return c.json({ events: [] });
     }
 
-    // Return events with no embedding OR an embedding whose stamp is not the
-    // configured model — including NULL (legacy row, unknown model). Search
-    // excludes those rows from vector comparison, so they must be restamped.
-    // `IS DISTINCT FROM` makes NULL count as different from the (non-NULL)
-    // configured model. The model is server config, inlined as a validated
-    // literal.
-    const modelLiteral = configuredEmbeddingModelSqlLiteral();
+    // Return events that need (re)embedding under the configured model. The
+    // shared predicate (NOT EXISTS anti-joins on event_embeddings) is identical
+    // to the backfill discovery rule and, being multi-vector aware, also catches
+    // long events that only have a chunk-0 vector. A correlated anti-join (not a
+    // LEFT JOIN) also avoids fanning out one row per chunk now that an event can
+    // have many embedding rows.
     const placeholders = safeIds.map((_, i) => `$${i + 1}`).join(',');
     const rows = await sql.unsafe(
       `SELECT e.id, e.payload_text, e.title
        FROM events e
-       LEFT JOIN event_embeddings emb ON emb.event_id = e.id
        WHERE e.id IN (${placeholders})
-         AND (emb.event_id IS NULL OR emb.embedding_model IS DISTINCT FROM ${modelLiteral})`,
+         AND ${needsEmbeddingSql('e')}`,
       safeIds
     );
 
@@ -952,7 +950,12 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
     const req = await c.req.json<{
       run_id: number;
       worker_id: string;
-      embeddings: Array<{ event_id: number; embedding: number[]; embedding_model?: string }>;
+      embeddings: Array<{
+        event_id: number;
+        chunk_index: number;
+        embedding: number[];
+        embedding_model?: string;
+      }>;
       error_message?: string;
     }>();
 
@@ -988,48 +991,65 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
       return c.json({ success: true, updated: 0 });
     }
 
-    // Guarded terminal transition (best-effort; the status='running' guard inside
-    // finalizeRun prevents resurrecting a reaped run). The embedding upsert below
-    // is the handler's real job and runs regardless — it is idempotent (ON
-    // CONFLICT replaces only stale-model rows) and ownership is already enforced
-    // by authorizeRunForWorker above. Headless backfills submit run_id=-1, for
-    // which the transition is intentionally a harmless no-op.
-    await finalizeRun(sql, {
-      runId: req.run_id,
-      workerId: req.worker_id,
-      status: 'completed',
-    });
-
-    let updated = 0;
+    // Durability first, THEN finalize the run. Each event's vector(s) are
+    // replaced in their OWN transaction (delete the event's rows, then insert):
+    // per-event isolation so one bad event can't drop another's writes. The
+    // delete+insert (rather than ON CONFLICT (event_id)) is what stays valid
+    // after the contract release moves the PK off (event_id) — so a pod running
+    // THIS code keeps writing correctly during that future rolling deploy.
+    // Expand phase deletes the whole event (all models) and writes one chunk-0
+    // row, keeping one row per event under the current PK(event_id); the contract
+    // release narrows the delete to per-(event, model) for multi-vector + model
+    // coexistence. chunk_index defaults to 0 for an older worker mid-deploy.
+    const byEvent = new Map<number, typeof req.embeddings>();
     for (const item of req.embeddings) {
+      if (!item.embedding_model) continue; // unstamped vectors are unusable (search scopes by model)
+      const group = byEvent.get(item.event_id);
+      if (group) group.push(item);
+      else byEvent.set(item.event_id, [item]);
+    }
+    let updated = 0;
+    let failed = 0;
+    for (const [eventId, items] of byEvent) {
+      const model = items[0]!.embedding_model!;
       try {
-        // pgvector expects '[0.1,0.2,...]' format
-        const vectorStr = `[${item.embedding.join(',')}]`;
-        // On conflict, REPLACE a stale-model row (a model swap left its vector in
-        // an incompatible space) with the freshly-embedded vector + stamp. The
-        // WHERE makes a same-model re-submit a no-op (idempotent), so we never
-        // churn rows that are already current.
-        const result = await sql.unsafe(
-          `INSERT INTO event_embeddings (event_id, embedding, embedding_model)
-           VALUES ($1, $2::vector, $3)
-           ON CONFLICT (event_id) DO UPDATE
-             SET embedding = EXCLUDED.embedding,
-                 embedding_model = EXCLUDED.embedding_model,
-                 created_at = now()
-             WHERE event_embeddings.embedding_model IS DISTINCT FROM EXCLUDED.embedding_model`,
-          [item.event_id, vectorStr, item.embedding_model ?? null]
-        );
-        if (result.count > 0) updated++;
+        await sql.begin(async (tx) => {
+          await tx`DELETE FROM event_embeddings WHERE event_id = ${eventId}`;
+          for (const item of items) {
+            const vectorStr = `[${item.embedding.join(',')}]`;
+            await tx.unsafe(
+              `INSERT INTO event_embeddings (event_id, chunk_index, embedding, embedding_model)
+               VALUES ($1, $2, $3::vector, $4)`,
+              [eventId, item.chunk_index ?? 0, vectorStr, model]
+            );
+          }
+        });
+        updated++;
       } catch (err) {
+        failed++;
         logger.error(
-          { event_id: item.event_id, error: err },
-          '[completeEmbeddings] Failed to update event'
+          { event_id: eventId, model, error: err },
+          '[completeEmbeddings] Failed to write embeddings for event (stays stale, will re-queue)'
         );
       }
     }
 
-    // Record the count on the run, guarded by claimant so a leaked/late worker
-    // can't stamp a run it doesn't own (harmless no-op for headless run_id=-1).
+    // Finalize AFTER the writes, and only as completed if nothing failed — a
+    // failed write must not be hidden behind a "completed" run; mark the run
+    // failed so the events get re-queued and the failure is visible. Headless
+    // backfills (run_id=-1) make finalizeRun a harmless no-op either way.
+    await finalizeRun(sql, {
+      runId: req.run_id,
+      workerId: req.worker_id,
+      status: failed > 0 ? 'failed' : 'completed',
+      ...(failed > 0
+        ? {
+            extraSet: sql`,
+              error_message = ${`${failed}/${byEvent.size} event embedding writes failed`}`,
+          }
+        : {}),
+    });
+
     await sql`
       UPDATE runs
       SET items_collected = ${updated}
@@ -1038,11 +1058,11 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
     `;
 
     logger.info(
-      { run_id: req.run_id, total: req.embeddings.length, updated },
+      { run_id: req.run_id, total: req.embeddings.length, updated, failed },
       'Embedding backfill completed'
     );
 
-    return c.json({ success: true, updated });
+    return c.json({ success: failed === 0, updated, failed });
   } catch (err: unknown) {
     logger.error({ error: errorMessage(err) }, '[completeEmbeddings] Error');
     return c.json({ error: errorMessage(err) }, 500);

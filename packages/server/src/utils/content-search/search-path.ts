@@ -184,9 +184,23 @@ export async function searchContentBySingleQuery(
   // config, inlined as a validated literal (`<alias>` substituted per CTE).
   const configuredModelLiteral = configuredEmbeddingModelSqlLiteral();
   const modelScopeFor = (alias: string) => `${alias}.embedding_model = ${configuredModelLiteral}`;
+  // Best-chunk-per-event similarity (multi-vector). current_event_records no
+  // longer carries an embedding (an event has N chunk vectors, not one), so
+  // vector scoring correlates into event_embeddings and takes the closest chunk
+  // — "retrieve on the best-matching slice, score the event by it." Scoped to the
+  // configured model (other-model rows are an incompatible space). NULL when the
+  // event has no comparable chunk, so it never out-ranks a real match. This is
+  // the single place the chunk→event collapse lives; both query paths use it.
+  const bestChunkSimExpr = (alias: string) =>
+    `(SELECT MAX(1 - (emb.embedding <=> ${vecParam})) FROM event_embeddings emb
+      WHERE emb.event_id = ${alias}.id AND emb.embedding_model = ${configuredModelLiteral})`;
   const matchCondition = hasEmbedding
-    ? `(${textMatchExpr} OR (f.embedding IS NOT NULL AND ${modelScopeFor('f')} AND 1 - (f.embedding <=> ${vecParam}) >= ${minSimilarityParam}))`
+    ? `(${textMatchExpr} OR (${bestChunkSimExpr('f')}) >= ${minSimilarityParam})`
     : textMatchExpr;
+  // filtered_ids carries the per-event best-chunk similarity so downstream
+  // scoring is a column read, not a repeated correlated subquery. NULL when the
+  // query has no embedding (text-only search).
+  const bestSimSelect = hasEmbedding ? `${bestChunkSimExpr('f')}` : 'NULL';
 
   const searchWhereSQL = `${matchCondition}
           AND ${standardFiltersSQL}`;
@@ -223,9 +237,11 @@ export async function searchContentBySingleQuery(
     // configured model contributes no vector similarity (NULL → COALESCE falls
     // back to the text-only score), so stale-model rows can never rank via an
     // incompatible <=> comparison.
-    const fiVectorComparable = `fi.embedding IS NOT NULL AND ${modelScopeFor('fi')}`;
-    similarityExpr = `CASE WHEN ${fiVectorComparable} THEN 1 - (fi.embedding <=> ${vecParam}) ELSE NULL END`;
-    combinedScoreExpr = `COALESCE((${textRankExpr}) * ${textWeight} + (CASE WHEN ${fiVectorComparable} THEN 1 - (fi.embedding <=> ${vecParam}) ELSE NULL END) * ${vectorWeight}, ${textRankExpr})`;
+    // filtered_ids precomputes the best-chunk similarity per event as best_sim
+    // (NULL when no comparable chunk), so scoring reads that column instead of a
+    // per-row <=> against a single view embedding that no longer exists.
+    similarityExpr = `fi.best_sim`;
+    combinedScoreExpr = `COALESCE((${textRankExpr}) * ${textWeight} + fi.best_sim * ${vectorWeight}, ${textRankExpr})`;
     searchExtraColumns =
       'rs.text_rank, rs.similarity, rs.combined_score, rs.total_count, rs.cursor_fetched_count';
     orderByExpr = preferChronologicalOrdering
@@ -296,17 +312,26 @@ export async function searchContentBySingleQuery(
             AND ($6::int IS NOT NULL)
             AND iwf.window_id = $6::int`;
     const branches: string[] = [];
-    // ivfflat ANN — the only shape that index serves. Apply the same downstream
-    // filters before the candidate LIMIT so a filtered recall does not discard
-    // all relevant rows after picking 200 unfiltered org-wide ids.
-    branches.push(`SELECT emb.event_id AS id
-          FROM event_embeddings emb
-          JOIN current_event_records f ON f.id = emb.event_id
-          ${candidateFilterJoins}
-          WHERE ${standardFiltersSQL}
-            AND ${modelScopeFor('emb')}
-            AND (1 - (emb.embedding <=> ${vecParam})) >= ${minSimilarityParam}
-          ORDER BY emb.embedding <=> ${vecParam}
+    // ivfflat ANN — the only shape that index serves. Multi-vector: the ANN now
+    // ranks CHUNK rows, so over-fetch chunks then collapse to distinct events by
+    // their best (nearest) chunk, so N chunks of one event can't crowd the
+    // candidate set down to a handful of distinct events. The inner ORDER BY
+    // ... LIMIT is the index-served part; the outer GROUP BY runs over the small
+    // over-fetched set. Downstream filters applied before the LIMIT so a filtered
+    // recall doesn't discard everything after an unfiltered pick.
+    branches.push(`SELECT id FROM (
+            SELECT emb.event_id AS id, (emb.embedding <=> ${vecParam}) AS dist
+            FROM event_embeddings emb
+            JOIN current_event_records f ON f.id = emb.event_id
+            ${candidateFilterJoins}
+            WHERE ${standardFiltersSQL}
+              AND ${modelScopeFor('emb')}
+              AND (1 - (emb.embedding <=> ${vecParam})) >= ${minSimilarityParam}
+            ORDER BY emb.embedding <=> ${vecParam}
+            LIMIT ${CANDIDATE_VECTOR_LIMIT * 3}
+          ) ann
+          GROUP BY id
+          ORDER BY MIN(dist)
           LIMIT ${CANDIDATE_VECTOR_LIMIT}`);
     if (hasTextCandidates) {
       // fulltext GIN — the `@@` is index-served; no `ts_rank` here (that would
@@ -338,7 +363,7 @@ export async function searchContentBySingleQuery(
   }
 
   const nonDateFilteredIdsCteSql = `filtered_ids AS (
-        SELECT f.id, f.score, f.occurred_at, f.title, f.payload_text, f.embedding, f.embedding_model, f.search_tsv
+        SELECT f.id, f.score, f.occurred_at, f.title, f.payload_text, ${bestSimSelect} AS best_sim, f.search_tsv
         FROM current_event_records f
         ${useCandidatePath ? 'JOIN search_candidates sc ON sc.id = f.id' : ''}
         LEFT JOIN connections c ON c.id = f.connection_id
@@ -352,7 +377,7 @@ export async function searchContentBySingleQuery(
   const querySQL = useDateFeed
     ? `
       WITH RECURSIVE filtered_ids AS (
-        SELECT f.id, f.score, f.occurred_at, f.title, f.payload_text, f.embedding, f.embedding_model, f.search_tsv
+        SELECT f.id, f.score, f.occurred_at, f.title, f.payload_text, ${bestSimSelect} AS best_sim, f.search_tsv
         FROM current_event_records f
         LEFT JOIN connections c ON c.id = f.connection_id
         LEFT JOIN watcher_window_events iwf

@@ -205,18 +205,21 @@ async function upsertEmbedding(
   sql: ReturnType<typeof getDb> = getDb()
 ): Promise<void> {
   if (!embedding || embedding.length === 0) return;
+  // An unstamped vector is unusable — search scopes vector comparison to the
+  // configured model — so skip it and let the embed backfill produce a properly
+  // stamped one.
+  if (!embeddingModel) return;
   const vectorLiteral = `[${embedding.join(',')}]`;
-  // On conflict, REPLACE a stale-model row with the freshly-embedded vector +
-  // stamp; the WHERE makes a same-model re-submit a no-op (idempotent), so a
-  // re-ingest of unchanged content under the same model never churns the row.
+  // Replace the event's vector(s) with this single chunk-0 row: delete-then-
+  // insert keeps one row per event under the current PK(event_id) AND stays
+  // valid after the contract release moves the PK off (event_id) — unlike
+  // ON CONFLICT (event_id), which that PK swap would break for any pod still
+  // running this code during the deploy. The contract release narrows the
+  // delete to per-(event, model) once models can coexist.
+  await sql`DELETE FROM event_embeddings WHERE event_id = ${eventId}`;
   await sql`
-    INSERT INTO event_embeddings (event_id, embedding, embedding_model)
-    VALUES (${eventId}, ${vectorLiteral}::vector, ${embeddingModel ?? null})
-    ON CONFLICT (event_id) DO UPDATE
-      SET embedding = EXCLUDED.embedding,
-          embedding_model = EXCLUDED.embedding_model,
-          created_at = now()
-      WHERE event_embeddings.embedding_model IS DISTINCT FROM EXCLUDED.embedding_model
+    INSERT INTO event_embeddings (event_id, chunk_index, embedding, embedding_model)
+    VALUES (${eventId}, 0, ${vectorLiteral}::vector, ${embeddingModel})
   `;
 }
 

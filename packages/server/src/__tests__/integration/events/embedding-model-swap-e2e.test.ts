@@ -21,6 +21,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { searchContentByText } from '../../../utils/content-search';
 import type { Env } from '../../../index';
 import { insertEvent } from '../../../utils/insert-event';
+import { needsEmbeddingSql } from '../../../utils/embeddings';
 import { completeEmbeddings } from '../../../worker-api';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
@@ -186,35 +187,38 @@ describe('embedding model swap E2E (Finding #3)', () => {
     expect(freshRows).toHaveLength(0);
   });
 
-  it('completeEmbeddings replaces a stale-model row in place', async () => {
+  it('a model-B re-embed replaces the model-A row (expand phase: one row per event)', async () => {
     const sql = getTestDb();
-    // Re-embed the model-A row under model B via the same upsert the worker uses.
+    // Re-embed the model-A event under model B via the real handler.
     const newVec = new Array(EMBEDDING_DIM).fill(0);
-    newVec[1] = 1; // distinct vector so we can see the replacement took
-    const vectorStr = `[${newVec.join(',')}]`;
-    await sql.unsafe(
-      `INSERT INTO event_embeddings (event_id, embedding, embedding_model)
-       VALUES ($1, $2::vector, $3)
-       ON CONFLICT (event_id) DO UPDATE
-         SET embedding = EXCLUDED.embedding,
-             embedding_model = EXCLUDED.embedding_model,
-             created_at = now()
-         WHERE event_embeddings.embedding_model IS DISTINCT FROM EXCLUDED.embedding_model`,
-      [eventId, vectorStr, MODEL_B]
-    );
+    newVec[1] = 1;
+    const { ctx } = mockEmbeddingsCtx({
+      run_id: -1,
+      worker_id: 'test-worker',
+      embeddings: [
+        { event_id: eventId, chunk_index: 0, embedding: newVec, embedding_model: MODEL_B },
+      ],
+    });
+    await completeEmbeddings(ctx);
 
+    // Expand phase keeps PK(event_id) → one row per event. The delete-then-insert
+    // replaces the model-A row with model B (no coexistence yet — that arrives in
+    // the contract release when the PK includes the model). The point that holds
+    // now: the write uses no ON CONFLICT (event_id), so the contract PK swap
+    // won't break a pod still running this code.
     const rows = (await sql`
       SELECT embedding_model FROM event_embeddings WHERE event_id = ${eventId}
-    `) as Array<{ embedding_model: string | null }>;
+    `) as Array<{ embedding_model: string }>;
     expect(rows).toHaveLength(1);
     expect(rows[0]!.embedding_model).toBe(MODEL_B);
   });
 
-  it('a NULL-stamp (legacy) row is excluded from vector search and flagged stale', async () => {
+  it('an unstamped embedding is not persisted and the event is flagged stale', async () => {
     process.env.EMBEDDINGS_MODEL = MODEL_A;
     const sql = getTestDb();
 
-    // Legacy row: embedding present but no model stamp (predates stamping).
+    // An embedding with no model stamp can no longer be written (embedding_model
+    // is NOT NULL / part of the PK), so the inline path skips it entirely.
     const legacy = await insertEvent(
       {
         entityIds: [entityId],
@@ -228,12 +232,17 @@ describe('embedding model swap E2E (Finding #3)', () => {
         connectorKey: 'model-swap-connector',
         connectionId,
         embedding: unitVec(),
-        // embeddingModel intentionally omitted → NULL stamp
+        // embeddingModel intentionally omitted → not written
       },
       { onConflictUpdate: true }
     );
 
-    // Excluded from vector search under the configured model (unknown true model).
+    const embRows = (await sql`
+      SELECT 1 FROM event_embeddings WHERE event_id = ${legacy.id}
+    `) as unknown[];
+    expect(embRows).toHaveLength(0);
+
+    // No vector at all → excluded from vector search.
     const res = await searchContentByText('', {
       organization_id: orgId,
       query_embedding: unitVec(),
@@ -242,18 +251,15 @@ describe('embedding model swap E2E (Finding #3)', () => {
     });
     expect(res.content.map((r) => Number(r.id))).not.toContain(legacy.id);
 
-    // Flagged stale by the backfill predicate so it gets restamped.
-    const staleRows = (await sql`
-      SELECT ev.id
-      FROM current_event_records ev
-      LEFT JOIN event_embeddings emb ON emb.event_id = ev.id
-      WHERE ev.id = ${legacy.id}
-        AND (emb.event_id IS NULL OR emb.embedding_model IS DISTINCT FROM ${MODEL_A})
-    `) as Array<{ id: number }>;
+    // Flagged as needing embedding by the shared stale rule, so the backfill
+    // produces a properly-stamped vector for it.
+    const staleRows = (await sql.unsafe(
+      `SELECT e.id FROM events e WHERE e.id = ${Number(legacy.id)} AND ${needsEmbeddingSql('e')}`
+    )) as Array<{ id: number }>;
     expect(staleRows.map((r) => Number(r.id))).toContain(legacy.id);
   });
 
-  it('completeEmbeddings (real handler) replaces a stale-model row and is idempotent on re-submit', async () => {
+  it('completeEmbeddings writes the new-model vector and a same-model re-submit is idempotent', async () => {
     const sql = getTestDb();
 
     // Fresh event stamped MODEL_A, independent of mutations in earlier tests.
@@ -278,28 +284,36 @@ describe('embedding model swap E2E (Finding #3)', () => {
     const newVec = new Array(EMBEDDING_DIM).fill(0);
     newVec[2] = 1; // distinct from unitVec so the replacement is observable
 
-    // Drive the REAL handler: submit a model-B embedding for the model-A row.
+    // Drive the REAL handler: submit a model-B embedding for the model-A event.
     const first = mockEmbeddingsCtx({
       run_id: -1, // no matching run row → the handler's run UPDATE is a harmless no-op
       worker_id: 'test-worker',
-      embeddings: [{ event_id: ev.id, embedding: newVec, embedding_model: MODEL_B }],
+      embeddings: [{ event_id: ev.id, chunk_index: 0, embedding: newVec, embedding_model: MODEL_B }],
     });
     await completeEmbeddings(first.ctx);
-    expect(first.result()).toMatchObject({ body: { success: true, updated: 1 } });
+    expect(first.result()).toMatchObject({ body: { success: true } });
 
-    const afterReplace = (await sql`
-      SELECT embedding_model FROM event_embeddings WHERE event_id = ${ev.id}
-    `) as Array<{ embedding_model: string | null }>;
-    expect(afterReplace).toHaveLength(1);
-    expect(afterReplace[0]!.embedding_model).toBe(MODEL_B); // stale model-A row was replaced
+    // The model-B chunk-0 vector is written (replacing the model-A row).
+    const bRows = (await sql`
+      SELECT 1 FROM event_embeddings
+      WHERE event_id = ${ev.id} AND embedding_model = ${MODEL_B} AND chunk_index = 0
+    `) as unknown[];
+    expect(bRows).toHaveLength(1);
 
-    // Re-submit the SAME model → idempotent no-op (the ON CONFLICT WHERE blocks it).
+    // Re-submit the SAME model → atomic replace of model-B's chunk set; end state
+    // is unchanged (still exactly one model-B chunk-0 row).
     const second = mockEmbeddingsCtx({
       run_id: -1,
       worker_id: 'test-worker',
-      embeddings: [{ event_id: ev.id, embedding: newVec, embedding_model: MODEL_B }],
+      embeddings: [{ event_id: ev.id, chunk_index: 0, embedding: newVec, embedding_model: MODEL_B }],
     });
     await completeEmbeddings(second.ctx);
-    expect(second.result()).toMatchObject({ body: { success: true, updated: 0 } });
+    expect(second.result()).toMatchObject({ body: { success: true } });
+
+    const bRowsAfter = (await sql`
+      SELECT 1 FROM event_embeddings
+      WHERE event_id = ${ev.id} AND embedding_model = ${MODEL_B} AND chunk_index = 0
+    `) as unknown[];
+    expect(bRowsAfter).toHaveLength(1);
   });
 });

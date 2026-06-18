@@ -9,6 +9,7 @@
 
 import { type DbClient, getDb } from '../db/client';
 import { entityLinkMatchSql } from './content-search';
+import { configuredEmbeddingModelSqlLiteral } from './embeddings';
 import logger from './logger';
 
 /**
@@ -152,6 +153,14 @@ async function fetchTargetContent(
     parent_embedding: number[] | null;
   }>;
 
+  // current_event_records no longer carries an embedding (multi-vector). For
+  // classification the representative chunk_index=0 vector (lead content) stands
+  // in for "the event's embedding" — same semantics as the pre-chunking single
+  // vector. Scoped to the configured model so we never compare across spaces.
+  const embModel = configuredEmbeddingModelSqlLiteral();
+  const repEmbeddingJoins = `LEFT JOIN event_embeddings fe ON fe.event_id = f.id AND fe.chunk_index = 0 AND fe.embedding_model = ${embModel}
+       LEFT JOIN event_embeddings pe ON pe.event_id = parent.id AND pe.chunk_index = 0 AND pe.embedding_model = ${embModel}`;
+
   if (mode === 'content_ids') {
     const contentIds = options.content_ids!;
     const contentPlaceholders = contentIds.map((_, i) => `$${i + 1}`).join(', ');
@@ -161,12 +170,13 @@ async function fetchTargetContent(
          f.id,
          f.entity_ids,
          NULL as parent_id,
-         f.embedding,
-         parent.embedding as parent_embedding
+         fe.embedding,
+         pe.embedding as parent_embedding
        FROM current_event_records f
        LEFT JOIN current_event_records parent ON parent.origin_id = f.origin_parent_id
+       ${repEmbeddingJoins}
        WHERE f.id IN (${contentPlaceholders})
-         AND f.embedding IS NOT NULL`,
+         AND fe.embedding IS NOT NULL`,
       contentIds
     );
   } else if (mode === 'entity') {
@@ -192,10 +202,11 @@ async function fetchTargetContent(
          f.id,
          f.entity_ids,
          NULL as parent_id,
-         f.embedding,
-         parent.embedding as parent_embedding
+         fe.embedding,
+         pe.embedding as parent_embedding
        FROM current_event_records f
        LEFT JOIN current_event_records parent ON parent.origin_id = f.origin_parent_id
+       ${repEmbeddingJoins}
        WHERE (
            ${entityLinkMatchSql('$1::bigint')}
            OR (
@@ -205,7 +216,7 @@ async function fetchTargetContent(
              )::bigint[]
            )
          )
-         AND f.embedding IS NOT NULL
+         AND fe.embedding IS NOT NULL
          AND EXISTS (
            SELECT 1 FROM unnest(ARRAY[${versionPlaceholders}]::bigint[]) AS ccv(version_id)
            WHERE NOT EXISTS (

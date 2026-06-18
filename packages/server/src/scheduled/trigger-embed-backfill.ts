@@ -7,7 +7,7 @@
  */
 
 import { getDb } from '../db/client';
-import { configuredEmbeddingModelSqlLiteral } from '../utils/embeddings';
+import { needsEmbeddingSql } from '../utils/embeddings';
 import type { Env } from '../index';
 import logger from '../utils/logger';
 import { isUniqueViolation } from '../utils/pg-errors';
@@ -38,17 +38,14 @@ interface OrgBatch {
   event_count: number;
 }
 
-// A row needs (re)embedding when no embedding row is stamped with the configured
-// model — covering "no embedding at all", a stale model, and a NULL stamp
-// (legacy row written before stamping). `event_embeddings` is UNIQUE(event_id),
-// so this NOT EXISTS is equivalent to the older `emb IS NULL OR embedding_model
-// IS DISTINCT FROM <model>` LEFT-JOIN form, but as a correlated anti-join it lets
-// the planner drive off `events` (and the idx_events_missing_embedding_backfill
-// partial index) instead of hash-joining the whole event_embeddings table. The
-// model is server config, inlined as a validated literal. Correlates on `e`.
+// A row needs (re)embedding when it has no representative (chunk 0) vector for
+// the configured model — covering "no embedding at all", a stale model, and a
+// NULL stamp. The shared predicate (utils/embeddings) keeps this identical to
+// the worker fetch. Correlated anti-join lets the planner drive off `events`
+// (and the partial index) instead of hash-joining the whole event_embeddings
+// table. (The contract release adds the long-content "needs tail chunks" arm.)
 function needsEmbeddingPredicate(): string {
-  const model = configuredEmbeddingModelSqlLiteral();
-  return `NOT EXISTS (SELECT 1 FROM event_embeddings emb WHERE emb.event_id = e.id AND emb.embedding_model = ${model})`;
+  return needsEmbeddingSql('e');
 }
 
 // current_event_records masks superseded rows with this anti-join. We query the

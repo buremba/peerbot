@@ -427,7 +427,10 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       allowSettingsSession: true,
       // The embedded panel opens the SSE stream with EventSource (no
       // Authorization header), authenticating via a short-lived ?token= ticket.
-      allowSettingsQueryToken: true,
+      // Scope that query-token path to the SSE route only; other GETs under the
+      // agent API still require the normal cookie/header auth path.
+      allowSettingsQueryToken: (c) =>
+        /^\/api\/v1\/agents\/[^/]+\/events$/.test(c.req.path),
     })
   );
 

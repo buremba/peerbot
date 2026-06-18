@@ -1,3 +1,6 @@
 [submodule "packages/owletto"]
 	path = packages/owletto
 	url = https://github.com/lobu-ai/owletto.git
+[submodule "packages/connectors"]
+	path = packages/connectors
+	url = https://github.com/lobu-ai/lobu-connectors.git

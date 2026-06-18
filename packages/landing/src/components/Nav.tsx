@@ -282,7 +282,8 @@ export function Nav({ currentPath: _currentPath = "/" }: NavProps) {
       <nav
         class="sticky top-0 z-40 px-4 sm:px-8"
         style={{
-          backgroundColor: "var(--color-page-bg-overlay)",
+          backgroundColor:
+            "color-mix(in oklch, var(--color-page-bg) 68%, transparent)",
           backdropFilter: "blur(12px)",
         }}
       >

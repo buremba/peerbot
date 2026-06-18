@@ -2,7 +2,8 @@
  * `allowSettingsQueryToken` on createApiAuthMiddleware — the embedded panel's
  * agent SSE stream uses EventSource (no Authorization header) and authenticates
  * with an encrypted `?token=` ticket. The gate must accept that ticket, but
- * ONLY for GET, so a leaked URL ticket can't drive headerless mutations.
+ * ONLY for the opted-in GET stream route, so a leaked URL ticket can't drive
+ * headerless mutations or unrelated GET routes.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { encrypt } from "@lobu/core";
@@ -31,14 +32,15 @@ function app() {
     "*",
     createApiAuthMiddleware({
       allowSettingsSession: true,
-      allowSettingsQueryToken: true,
+      allowSettingsQueryToken: (c) => c.req.path === "/r/events",
       allowWorkerToken: false,
     }),
   );
   const handler = (c: { get: (k: string) => { userId?: string } | undefined; json: (o: unknown) => Response }) =>
     c.json({ userId: c.get("authContext")?.userId ?? null });
   a.get("/r", handler as never);
-  a.post("/r", handler as never);
+  a.get("/r/events", handler as never);
+  a.post("/r/events", handler as never);
   return a;
 }
 
@@ -49,28 +51,33 @@ const qTicket = (userId: string, exp?: number) =>
   `?token=${encodeURIComponent(ticket(userId, exp))}`;
 
 describe("createApiAuthMiddleware allowSettingsQueryToken", () => {
-  test("GET with a valid ?token= ticket authenticates (the EventSource path)", async () => {
-    const res = await app().request(`/r${qTicket("user-1")}`, { method: "GET" });
+  test("GET with a valid ?token= ticket authenticates on the opted-in EventSource path", async () => {
+    const res = await app().request(`/r/events${qTicket("user-1")}`, { method: "GET" });
     expect(res.status).toBe(200);
     expect((await res.json()) as { userId: string }).toEqual({ userId: "user-1" });
   });
 
   test("POST with the same valid ticket is rejected — mutations need a header", async () => {
-    const res = await app().request(`/r${qTicket("user-1")}`, { method: "POST" });
+    const res = await app().request(`/r/events${qTicket("user-1")}`, { method: "POST" });
+    expect(res.status).toBe(401);
+  });
+
+  test("GET with the same valid ticket on an unrelated route is rejected", async () => {
+    const res = await app().request(`/r${qTicket("user-1")}`, { method: "GET" });
     expect(res.status).toBe(401);
   });
 
   test("GET with no auth at all → 401", async () => {
-    expect((await app().request("/r", { method: "GET" })).status).toBe(401);
+    expect((await app().request("/r/events", { method: "GET" })).status).toBe(401);
   });
 
   test("GET with a tampered/garbage ticket → 401", async () => {
-    const res = await app().request("/r?token=not-a-real-ticket", { method: "GET" });
+    const res = await app().request("/r/events?token=not-a-real-ticket", { method: "GET" });
     expect(res.status).toBe(401);
   });
 
   test("GET with an expired ticket → 401", async () => {
-    const res = await app().request(`/r${qTicket("user-1", Date.now() - 1000)}`, {
+    const res = await app().request(`/r/events${qTicket("user-1", Date.now() - 1000)}`, {
       method: "GET",
     });
     expect(res.status).toBe(401);

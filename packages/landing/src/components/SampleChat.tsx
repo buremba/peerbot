@@ -244,14 +244,13 @@ export function SampleChat({
 
   return (
     <div
-      class={`flex flex-col rounded-[14px] overflow-hidden w-full ${cls}`}
+      class={`flex flex-col rounded-2xl overflow-hidden w-full ${cls}`}
       style={{
         border: `1px solid ${theme.border}`,
         backgroundColor: theme.bg,
         fontFamily:
           '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
         minWidth: "280px",
-        maxWidth: "460px",
       }}
     >
       {/* Header */}

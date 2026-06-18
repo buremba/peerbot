@@ -108,6 +108,28 @@ function findFreePort(): Promise<number> {
 }
 
 /**
+ * Build the EmbeddedPostgres constructor options.
+ *
+ * `initdbFlags` pins the cluster to the always-present C locale with UTF-8
+ * encoding. Otherwise initdb inherits the host locale (e.g. LANG=en_GB.UTF-8)
+ * and aborts on a minimal box where that locale isn't generated — only C/POSIX
+ * exist — killing `lobu run` on first boot. C never needs generation; the
+ * explicit UTF8 encoding keeps Unicode storage (C alone would default to
+ * SQL_ASCII). initdb only runs on first cluster init (guarded by the caller), so
+ * existing clusters keep their original locale/encoding.
+ */
+export function embeddedPgOptions(databaseDir: string, port: number) {
+	return {
+		databaseDir,
+		user: "postgres",
+		password: "postgres",
+		port,
+		persistent: true,
+		initdbFlags: ["--locale=C", "--encoding=UTF8"],
+	};
+}
+
+/**
  * Spawn an embedded PostgreSQL (injecting pgvector), set process.env.DATABASE_URL
  * to its TCP URL, fork the embeddings child, and return the lifecycle hooks.
  */
@@ -136,21 +158,7 @@ export async function startEmbeddedRuntime(): Promise<EmbeddedRuntime> {
 
 	const pgPort =
 		parseInt(process.env.LOBU_PG_PORT || "", 10) || (await findFreePort());
-	const pg = new EmbeddedPostgres({
-		databaseDir: pgDataDir,
-		user: "postgres",
-		password: "postgres",
-		port: pgPort,
-		persistent: true,
-		// Pin initdb to the always-present C locale with UTF-8 encoding. Otherwise
-		// initdb inherits the host locale (e.g. LANG=en_GB.UTF-8) and aborts on a
-		// minimal box where that locale isn't generated — only C/POSIX exist —
-		// killing `lobu run` on first boot. C never needs generation; the explicit
-		// UTF8 encoding keeps Unicode storage (C alone would default to SQL_ASCII).
-		// Only applied on first cluster init (guarded below), so existing clusters
-		// keep their original locale/encoding.
-		initdbFlags: ["--locale=C", "--encoding=UTF8"],
-	});
+	const pg = new EmbeddedPostgres(embeddedPgOptions(pgDataDir, pgPort));
 
 	// initdb refuses a non-empty datadir; skip it when the cluster already
 	// exists so restarts reuse the same data instead of erroring.

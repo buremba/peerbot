@@ -452,13 +452,21 @@ export function shouldAutoApplyLocalProject(opts: {
  * `lobu run`'s module-load path — see the dynamic-import allow-list in
  * AGENTS.md.
  */
-async function autoApplyLocalProject(
+export async function autoApplyLocalProject(
   cwd: string,
   gatewayUrl: string,
-  localOrgSlug?: string
+  localOrgSlug?: string,
+  // Test seam — defaults to the lazily-imported applyCommand.
+  applyImpl?: (opts: {
+    cwd: string;
+    yes: boolean;
+    url: string;
+    org?: string;
+  }) => Promise<unknown>
 ): Promise<void> {
   try {
-    const { applyCommand } = await import("./_lib/apply/apply-cmd.js");
+    const applyCommand =
+      applyImpl ?? (await import("./_lib/apply/apply-cmd.js")).applyCommand;
     // Pin the apply to the embedded server's URL. `resolveApiTarget` matches
     // the `local` context by URL — and refuses to send any other context's
     // credentials to a different URL — so this can only ever target the local

@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  autoApplyLocalProject,
   findEnclosingMonorepoRoot,
   isSharedDatabaseUrl,
   resolveBackendBundle,
@@ -309,5 +310,49 @@ describe("shouldAutoApplyLocalProject", () => {
         hasLobuConfig: false,
       })
     ).toBe(false);
+  });
+});
+
+describe("autoApplyLocalProject — org is pinned to the local-init slug (#1366)", () => {
+  test("passes the local org slug through to applyCommand as opts.org", async () => {
+    const calls: Array<{ cwd: string; yes: boolean; url: string; org?: string }> =
+      [];
+    await autoApplyLocalProject(
+      "/proj",
+      "http://localhost:8788",
+      "local-install",
+      async (opts) => {
+        calls.push(opts);
+      }
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      cwd: "/proj",
+      yes: true,
+      url: "http://localhost:8788",
+      org: "local-install",
+    });
+  });
+
+  test("omits org when /api/local-init returned no slug (falls back to config)", async () => {
+    const calls: Array<{ org?: string }> = [];
+    await autoApplyLocalProject(
+      "/proj",
+      "http://localhost:8788",
+      undefined,
+      async (opts) => {
+        calls.push(opts);
+      }
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.org).toBeUndefined();
+  });
+
+  test("swallows apply failures so a bad apply never crashes the running server", async () => {
+    await expect(
+      autoApplyLocalProject("/proj", "http://localhost:8788", "x", async () => {
+        throw new Error("boom");
+      })
+    ).resolves.toBeUndefined();
   });
 });

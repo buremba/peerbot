@@ -187,7 +187,7 @@ describe('embedding model swap E2E (Finding #3)', () => {
     expect(freshRows).toHaveLength(0);
   });
 
-  it('a model-B re-embed replaces the model-A row (expand phase: one row per event)', async () => {
+  it('a model-B re-embed coexists with the model-A row (contract: PK includes model)', async () => {
     const sql = getTestDb();
     // Re-embed the model-A event under model B via the real handler.
     const newVec = new Array(EMBEDDING_DIM).fill(0);
@@ -201,16 +201,32 @@ describe('embedding model swap E2E (Finding #3)', () => {
     });
     await completeEmbeddings(ctx);
 
-    // Expand phase keeps PK(event_id) → one row per event. The delete-then-insert
-    // replaces the model-A row with model B (no coexistence yet — that arrives in
-    // the contract release when the PK includes the model). The point that holds
-    // now: the write uses no ON CONFLICT (event_id), so the contract PK swap
-    // won't break a pod still running this code.
+    // Per-(event, model) delete: model B is written without clobbering model A.
     const rows = (await sql`
-      SELECT embedding_model FROM event_embeddings WHERE event_id = ${eventId}
+      SELECT embedding_model FROM event_embeddings
+      WHERE event_id = ${eventId}
+      ORDER BY embedding_model
     `) as Array<{ embedding_model: string }>;
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.embedding_model).toBe(MODEL_B);
+    expect(rows.map((r) => r.embedding_model)).toEqual([MODEL_A, MODEL_B]);
+
+    // Under model B the event is now searchable; under model A it still is.
+    process.env.EMBEDDINGS_MODEL = MODEL_B;
+    const underB = await searchContentByText('', {
+      organization_id: orgId,
+      query_embedding: newVec,
+      min_similarity: 0.5,
+      limit: 10,
+    });
+    expect(underB.content.map((r) => Number(r.id))).toContain(eventId);
+
+    process.env.EMBEDDINGS_MODEL = MODEL_A;
+    const underA = await searchContentByText('', {
+      organization_id: orgId,
+      query_embedding: unitVec(),
+      min_similarity: 0.5,
+      limit: 10,
+    });
+    expect(underA.content.map((r) => Number(r.id))).toContain(eventId);
   });
 
   it('an unstamped embedding is not persisted and the event is flagged stale', async () => {
@@ -293,15 +309,20 @@ describe('embedding model swap E2E (Finding #3)', () => {
     await completeEmbeddings(first.ctx);
     expect(first.result()).toMatchObject({ body: { success: true } });
 
-    // The model-B chunk-0 vector is written (replacing the model-A row).
+    // The model-B chunk-0 vector is written alongside the existing model-A row.
     const bRows = (await sql`
       SELECT 1 FROM event_embeddings
       WHERE event_id = ${ev.id} AND embedding_model = ${MODEL_B} AND chunk_index = 0
     `) as unknown[];
     expect(bRows).toHaveLength(1);
+    const aRows = (await sql`
+      SELECT 1 FROM event_embeddings
+      WHERE event_id = ${ev.id} AND embedding_model = ${MODEL_A} AND chunk_index = 0
+    `) as unknown[];
+    expect(aRows).toHaveLength(1);
 
-    // Re-submit the SAME model → atomic replace of model-B's chunk set; end state
-    // is unchanged (still exactly one model-B chunk-0 row).
+    // Re-submit the SAME model → atomic replace of model-B's chunk set; model-A
+    // is untouched and end state is still exactly one model-B chunk-0 row.
     const second = mockEmbeddingsCtx({
       run_id: -1,
       worker_id: 'test-worker',

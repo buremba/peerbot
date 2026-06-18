@@ -991,30 +991,27 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
       return c.json({ success: true, updated: 0 });
     }
 
-    // Durability first, THEN finalize the run. Each event's vector(s) are
-    // replaced in their OWN transaction (delete the event's rows, then insert):
-    // per-event isolation so one bad event can't drop another's writes. The
-    // delete+insert (rather than ON CONFLICT (event_id)) is what stays valid
-    // after the contract release moves the PK off (event_id) — so a pod running
-    // THIS code keeps writing correctly during that future rolling deploy.
-    // Expand phase deletes the whole event (all models) and writes one chunk-0
-    // row, keeping one row per event under the current PK(event_id); the contract
-    // release narrows the delete to per-(event, model) for multi-vector + model
-    // coexistence. chunk_index defaults to 0 for an older worker mid-deploy.
-    const byEvent = new Map<number, typeof req.embeddings>();
+    // Durability first, THEN finalize the run. Each (event, model)'s chunk set is
+    // replaced in its OWN transaction (delete that model's rows, then insert):
+    // per-(event, model) isolation so one bad write can't drop another's and so
+    // old/new models can coexist during a zero-downtime swap. chunk_index
+    // defaults to 0 for an older worker mid-deploy.
+    const byEventModel = new Map<string, typeof req.embeddings>();
     for (const item of req.embeddings) {
       if (!item.embedding_model) continue; // unstamped vectors are unusable (search scopes by model)
-      const group = byEvent.get(item.event_id);
+      const key = `${item.event_id}\0${item.embedding_model}`;
+      const group = byEventModel.get(key);
       if (group) group.push(item);
-      else byEvent.set(item.event_id, [item]);
+      else byEventModel.set(key, [item]);
     }
     let updated = 0;
     let failed = 0;
-    for (const [eventId, items] of byEvent) {
+    for (const [, items] of byEventModel) {
+      const eventId = items[0]!.event_id;
       const model = items[0]!.embedding_model!;
       try {
         await sql.begin(async (tx) => {
-          await tx`DELETE FROM event_embeddings WHERE event_id = ${eventId}`;
+          await tx`DELETE FROM event_embeddings WHERE event_id = ${eventId} AND embedding_model = ${model}`;
           for (const item of items) {
             const vectorStr = `[${item.embedding.join(',')}]`;
             await tx.unsafe(
@@ -1045,7 +1042,7 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
       ...(failed > 0
         ? {
             extraSet: sql`,
-              error_message = ${`${failed}/${byEvent.size} event embedding writes failed`}`,
+              error_message = ${`${failed}/${byEventModel.size} event embedding writes failed`}`,
           }
         : {}),
     });

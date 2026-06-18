@@ -61,15 +61,47 @@ describe('migration invariants', () => {
       expect(rows).toHaveLength(0);
     });
 
-    it('event_embeddings carries the embedding_model stamp column (#1069/#1080)', async () => {
+    it('event_embeddings carries a NOT NULL embedding_model stamp (#1069/#1080, contract #1372)', async () => {
       const sql = getTestDb();
-      const rows = await sql`
-        SELECT 1 FROM information_schema.columns
+      const rows = await sql<{ is_nullable: string }[]>`
+        SELECT is_nullable FROM information_schema.columns
         WHERE table_schema = 'public'
           AND table_name = 'event_embeddings'
           AND column_name = 'embedding_model'
       `;
       expect(rows).toHaveLength(1);
+      expect(rows[0]?.is_nullable).toBe('NO');
+    });
+
+    it('event_embeddings PK is (event_id, embedding_model, chunk_index) (#1372 contract)', async () => {
+      const sql = getTestDb();
+      const rows = await sql<{ attname: string }[]>`
+        SELECT a.attname
+        FROM pg_index i
+        JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+        JOIN pg_class c ON c.oid = i.indrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relname = 'event_embeddings'
+          AND i.indisprimary
+        ORDER BY array_position(i.indkey, a.attnum)
+      `;
+      expect(rows.map((r) => r.attname)).toEqual([
+        'event_id',
+        'embedding_model',
+        'chunk_index',
+      ]);
+    });
+
+    it('current_event_records is supersession-only — no embedding columns (#1372 contract)', async () => {
+      const sql = getTestDb();
+      const rows = await sql<{ column_name: string }[]>`
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'current_event_records'
+          AND column_name IN ('embedding', 'embedding_model')
+      `;
+      expect(rows).toHaveLength(0);
     });
 
     it('stale orphan tables entity_read_grant + mcp_proxy_sessions are dropped (2026-06-16 audit)', async () => {
@@ -125,7 +157,8 @@ describe('migration invariants', () => {
 
     it('redundant/dead indexes are dropped while their covering indexes remain (2026-06-16 audit round 2)', async () => {
       const sql = getTestDb();
-      // Dropped: idx_events_source_embedding (dup of event_embeddings_pkey),
+      // Dropped: idx_events_source_embedding (redundant btree(event_id) before
+      // the contract PK became composite),
       // idx_connect_tokens_token (dup of the UNIQUE connect_tokens_token_key),
       // geo_places_location_idx (postgis index superseded by geo_places_earth_idx).
       const dropped = await sql<{ indexname: string }[]>`

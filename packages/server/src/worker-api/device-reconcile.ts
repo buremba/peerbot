@@ -26,6 +26,9 @@ import logger from '../utils/logger';
 /** A device worker counts toward "serves capability X" only if seen this recently. */
 const DEVICE_WORKER_FRESH_INTERVAL = '7 days';
 
+/** Pin validity window — must match dispatch-chrome-action's online gate. */
+const DEVICE_ONLINE_WINDOW_MINUTES = 20;
+
 /**
  * Install + wire a bundled device connector into the user's personal org:
  * connector definition (idempotent), a no-auth connection, the first feed, and
@@ -39,27 +42,29 @@ const DEVICE_WORKER_FRESH_INTERVAL = '7 days';
  * Best-effort: failures are logged but never surface to the poll response.
  *
  * Device pin (`connections.device_worker_id`): when exactly one of the user's
- * fresh devices advertises the capability, the connection is auto-pinned to it
+ * online devices advertises the capability, the connection is auto-pinned to it
  * (a deterministic 1:1 binding the Devices page can show); when several qualify
- * it's left unpinned ("any of my fresh devices that advertise the capability").
- * A pin to a device that's still in the fresh set is treated as deliberate and
- * never overridden; a pin to a device that has dropped out is repaired (to the
- * sole remaining fresh device, or NULL) so the connection keeps running.
+ * it's left unpinned ("any of my online devices that advertise the capability").
+ * A pin to a device that's still online is treated as deliberate and never
+ * overridden; a pin to an offline device is repaired (to the sole remaining
+ * online device, or NULL) so dispatch can find a claimable worker.
  */
 async function ensureDeviceConnectorWired(
   userId: string,
   organizationId: string,
   connectorKey: string,
   declaredFeedKeys: string[],
-  matchingDeviceIds: string[]
+  onlineMatchingDeviceIds: string[]
 ): Promise<void> {
   const sql = getDb();
 
-  // Self-heal the device pin against the user's current fleet. Cheap, idempotent
-  // (the WHERE matches nothing when the pin is already a valid fresh device), and
-  // runs even on the fast path so a stale pin doesn't silently strand the feeds.
+  // Self-heal the device pin against devices that are actually online. Cheap,
+  // idempotent (the WHERE matches nothing when the pin already points at an
+  // online device), and runs even on the fast path so a stale pin doesn't
+  // silently strand dispatch (which uses the same online window).
   const reconcilePin = async (db: typeof sql, connectionId: number) => {
-    const target = matchingDeviceIds.length === 1 ? matchingDeviceIds[0] : null;
+    const target =
+      onlineMatchingDeviceIds.length === 1 ? onlineMatchingDeviceIds[0] : null;
     // Compare via text on both sides — passing a `pgTextArray(...)` literal
     // through a `::uuid[]` cast trips a postgres "malformed array literal"
     // failure under the extended-protocol path postgres.js uses (the bound
@@ -72,7 +77,12 @@ async function ensureDeviceConnectorWired(
       SET device_worker_id = ${target}::uuid, updated_at = NOW()
       WHERE id = ${connectionId}
         AND device_worker_id IS DISTINCT FROM ${target}::uuid
-        AND (device_worker_id IS NULL OR NOT (device_worker_id::text = ANY(${pgTextArray(matchingDeviceIds)}::text[])))
+        AND (
+          device_worker_id IS NULL
+          OR NOT (
+            device_worker_id::text = ANY(${pgTextArray(onlineMatchingDeviceIds)}::text[])
+          )
+        )
     `;
   };
 
@@ -337,20 +347,38 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
   }
   if (deviceConnectors.length === 0) return;
 
-  // deviceId → { capabilities it advertises, org it's attached to } (fresh
-  // devices only). A device connector is wired into the device's org; a user
-  // with devices in two orgs auto-wires the connector into each.
-  const deviceCaps = new Map<string, { caps: Set<string>; orgId: string | null }>();
+  // deviceId → { capabilities, org, last_seen_at } (fresh devices only).
+  // A device connector is wired into the device's org; a user with devices in
+  // two orgs auto-wires the connector into each.
+  const deviceCaps = new Map<
+    string,
+    { caps: Set<string>; orgId: string | null; lastSeenAt: Date | string }
+  >();
+  const onlineCutoffMs = Date.now() - DEVICE_ONLINE_WINDOW_MINUTES * 60 * 1000;
+  const isDeviceOnline = (lastSeenAt: Date | string): boolean => {
+    const ms =
+      lastSeenAt instanceof Date ? lastSeenAt.getTime() : new Date(lastSeenAt).getTime();
+    return ms >= onlineCutoffMs;
+  };
   try {
     const rows = (await sql`
-      SELECT id, capabilities, organization_id
+      SELECT id, capabilities, organization_id, last_seen_at
       FROM device_workers
       WHERE user_id = ${userId}
         AND last_seen_at > now() - ${DEVICE_WORKER_FRESH_INTERVAL}::interval
-    `) as unknown as Array<{ id: string; capabilities: unknown; organization_id: string | null }>;
+    `) as unknown as Array<{
+      id: string;
+      capabilities: unknown;
+      organization_id: string | null;
+      last_seen_at: Date | string;
+    }>;
     for (const r of rows) {
       const caps = Array.isArray(r.capabilities) ? (r.capabilities as string[]) : [];
-      deviceCaps.set(r.id, { caps: new Set(caps), orgId: r.organization_id });
+      deviceCaps.set(r.id, {
+        caps: new Set(caps),
+        orgId: r.organization_id,
+        lastSeenAt: r.last_seen_at,
+      });
     }
   } catch (err) {
     logger.warn(
@@ -370,13 +398,30 @@ export async function reconcileDeviceCapabilities(userId: string): Promise<void>
     [...deviceCaps.entries()]
       .filter(([, d]) => d.orgId === orgId && d.caps.has(capability))
       .map(([id]) => id);
+  const onlineDevicesWithCapabilityInOrg = (capability: string, orgId: string): string[] =>
+    [...deviceCaps.entries()]
+      .filter(
+        ([, d]) =>
+          d.orgId === orgId && d.caps.has(capability) && isDeviceOnline(d.lastSeenAt)
+      )
+      .map(([id]) => id);
 
   await Promise.allSettled(
     deviceConnectors.flatMap((dc) =>
       orgsWithDevices.map((orgId) => {
         const matchingDeviceIds = devicesWithCapabilityInOrg(dc.requiredCapability, orgId);
+        const onlineMatchingDeviceIds = onlineDevicesWithCapabilityInOrg(
+          dc.requiredCapability,
+          orgId
+        );
         return matchingDeviceIds.length > 0
-          ? ensureDeviceConnectorWired(userId, orgId, dc.key, dc.feedKeys, matchingDeviceIds)
+          ? ensureDeviceConnectorWired(
+              userId,
+              orgId,
+              dc.key,
+              dc.feedKeys,
+              onlineMatchingDeviceIds
+            )
           : pauseStaleDeviceFeeds(userId, orgId, dc.key);
       })
     )

@@ -221,11 +221,18 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
       // A thread handle lets a later run reply into this message's thread.
       // Prefer the adapter's returned thread id (root) when it carries one
       // (reply-in-existing-thread); fall back to the new message id (the root
-      // of a freshly-opened thread).
-      const threadRoot =
+      // of a freshly-opened thread). Telegram's message id is `${chatId}:${n}`,
+      // so strip the redundant channel prefix — else the thread handle encodes a
+      // 4-segment `platform:channel:chatId:n` that its own 3-part decode rejects
+      // (and createThread can't resolve). No-op for ids that aren't prefixed
+      // (e.g. a Slack `ts`).
+      const rawRoot =
         typeof sent.threadId === "string" && sent.threadId.split(":")[2]
           ? sent.threadId.split(":")[2]
           : sent.messageId;
+      const threadRoot = rawRoot.startsWith(`${target.channelId}:`)
+        ? rawRoot.slice(target.channelId.length + 1)
+        : rawRoot;
       const threadHandle = threadRoot
         ? threadHandleForMessage(target, threadRoot)
         : undefined;

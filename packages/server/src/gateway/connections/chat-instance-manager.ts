@@ -653,10 +653,31 @@ export class ChatInstanceManager {
         `Could not resolve target ${opts.channelKey}${opts.threadId ? ` (thread ${opts.threadId})` : ""} for connection ${connectionId}`
       );
     }
-    const sent = (await target.post(opts.content)) as {
-      id?: unknown;
-      threadId?: unknown;
-    };
+    let sent: { id?: unknown; threadId?: unknown };
+    try {
+      sent = (await target.post(opts.content)) as {
+        id?: unknown;
+        threadId?: unknown;
+      };
+    } catch (err) {
+      // A thread the platform can't honor (e.g. replying into a Telegram DM,
+      // which has no message threads) must not fail the whole send — fall back
+      // to a channel-level post so the message still lands. Only retry when we
+      // actually targeted a thread; a plain channel-post failure is real.
+      if (!opts.threadId) throw err;
+      logger.debug(
+        { connectionId, threadId: opts.threadId, err: String(err) },
+        "threaded post failed; retrying at channel level"
+      );
+      const channelTarget = await resolveChatTarget(instance.chat, opts.platform, {
+        channelId: opts.channelId,
+      });
+      if (!channelTarget) throw err;
+      sent = (await channelTarget.post(opts.content)) as {
+        id?: unknown;
+        threadId?: unknown;
+      };
+    }
     const messageId = typeof sent?.id === "string" ? sent.id : "";
 
     // Auto-subscribe so replies to this message flow back to the bot (and get
@@ -664,10 +685,16 @@ export class ChatInstanceManager {
     // fails the post. Reply to an existing thread → that thread; top-level post
     // → the thread rooted at the new message.
     if (opts.subscribe) {
+      // Telegram's message id is `${chatId}:${n}`; strip the redundant channel
+      // prefix so the synthesized thread id is a clean `platform:channel:ref`.
+      const rootRef =
+        messageId && messageId.startsWith(`${opts.channelId}:`)
+          ? messageId.slice(opts.channelId.length + 1)
+          : messageId;
       const subThreadId =
         opts.threadId ??
-        (messageId
-          ? `${opts.platform}:${opts.channelId}:${messageId}`
+        (rootRef
+          ? `${opts.platform}:${opts.channelId}:${rootRef}`
           : undefined);
       const chat = instance.chat as { subscribe?: (id: string) => Promise<void> };
       if (subThreadId && typeof chat.subscribe === "function") {

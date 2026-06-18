@@ -79,12 +79,16 @@ interface TranscriptMessage {
 }
 
 /**
- * The most-recent `limit` messages in a channel, oldest-first. Scoped to the
- * authorized `connectionId` (the read_conversation tenant fence) — never a
- * global by-platform lookup. Serves from Postgres, so no platform history-API
- * call (which Slack throttles hard).
+ * The most-recent `limit` messages in a channel, oldest-first. Fenced to BOTH
+ * the authorized `organizationId` AND `connectionId` (the read_conversation
+ * tenant fence) — never a global by-platform lookup. The org scope matters for
+ * the shared hosted-preview connection: two orgs could bind the SAME physical
+ * channel through it, and capture tags each row with the binding's routing org,
+ * so without the org predicate one org's read could surface another's rows.
+ * Serves from Postgres, so no platform history-API call (Slack throttles hard).
  */
 export async function readChannelTranscript(
+  organizationId: string,
   connectionId: string,
   channelId: string,
   limit: number
@@ -93,7 +97,9 @@ export async function readChannelTranscript(
   const rows = (await sql`
     SELECT author_name, author_id, is_bot, text, occurred_at
     FROM channel_messages
-    WHERE connection_id = ${connectionId} AND channel_id = ${channelId}
+    WHERE organization_id = ${organizationId}
+      AND connection_id = ${connectionId}
+      AND channel_id = ${channelId}
     ORDER BY occurred_at DESC
     LIMIT ${limit}
   `) as Array<{

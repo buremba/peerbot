@@ -98,6 +98,7 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
       // AUTHORIZED connection (the tenant fence) — no platform history-API call,
       // so Slack's throttle doesn't apply.
       const messages = await readChannelTranscript(
+        worker.organizationId,
         target.connectionId,
         target.channelId,
         limit

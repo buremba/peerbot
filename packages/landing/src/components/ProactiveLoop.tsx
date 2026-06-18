@@ -617,7 +617,8 @@ export function MemoryLoop({ data }: { data: LoopData }) {
             />
           }
         >
-          Pick the systems it can read. Lobu turns those updates into live customer memory.
+          Pick the systems it can read. Lobu turns those updates into live
+          customer memory.
         </TimelineStep>
 
         <TimelineStep
@@ -631,9 +632,16 @@ export function MemoryLoop({ data }: { data: LoopData }) {
         <TimelineStep
           number={3}
           title="Your agent works autonomously"
-          visual={<MemoryCard memory={data.memory} docsHref={data.docs.memory} scanning />}
+          visual={
+            <MemoryCard
+              memory={data.memory}
+              docsHref={data.docs.memory}
+              scanning
+            />
+          }
         >
-          It scans memory on schedule, spots the account at risk, and keeps the evidence attached.
+          It scans memory on schedule, spots the account at risk, and keeps the
+          evidence attached.
         </TimelineStep>
 
         <TimelineStep
@@ -641,7 +649,10 @@ export function MemoryLoop({ data }: { data: LoopData }) {
           title="You review and approve"
           last
           visual={
-            <div class="flex w-full flex-col gap-3" style={{ minWidth: "280px" }}>
+            <div
+              class="flex w-full flex-col gap-3"
+              style={{ minWidth: "280px" }}
+            >
               <SampleChat useCase={data.chat} theme={SLACK_THEME} />
               <ChatChannels />
             </div>
@@ -650,7 +661,9 @@ export function MemoryLoop({ data }: { data: LoopData }) {
           You can edit the draft, send it, or leave it.
         </TimelineStep>
       </div>
-      {!data.heading && data.sourceHref ? <SourceLink href={data.sourceHref} /> : null}
+      {!data.heading && data.sourceHref ? (
+        <SourceLink href={data.sourceHref} />
+      ) : null}
       <style>{`
         @keyframes lobu-memory-scan {
           0%, 12% { transform: translateY(-120%); opacity: 0; }
@@ -744,9 +757,7 @@ export const SALES_LOOP: LoopData = {
         { age: "9d", summary: "Renewal date set to Jun 30", source: "CRM" },
       ],
     },
-    others: [
-      { name: "Globex Inc", status: { label: "healthy", tone: "ok" } },
-    ],
+    others: [{ name: "Globex Inc", status: { label: "healthy", tone: "ok" } }],
     moreLabel: "+ 17 more customers",
   },
   goal: {

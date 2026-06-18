@@ -1135,7 +1135,7 @@ function generateProject(
 
   const header = [
     "// lobu.config.ts — bootstrapped by `lobu init --from-org`",
-    "// Docs: https://lobu.ai/docs/getting-started",
+    "// Docs: https://lobu.ai/getting-started/",
     "//",
     "// Secrets are write-only on the server, so provider keys, auth-profile",
     '// credentials, and MCP client secrets are emitted as secret("ENV_VAR")',

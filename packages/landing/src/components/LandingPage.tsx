@@ -47,6 +47,8 @@ const SETUP_PROMPT = `I want to build a Lobu agent with you. Lobu helps create i
 
 1. Interview me, one question at a time. Wait for my answer before the next. Don't batch them, don't guess, and don't fake any credentials:
    - What is the agent for? (one sentence)
+   - What should we call it? (a short name — used for both the project and the agent)
+   - How should it behave, and what may it do on its own? (tone/persona, plus which actions it can take unattended vs. which need my approval)
    - Who uses it: just me, my team, or each of my customers (multi-tenant)?
    - What should it remember? (we'll model this as 1-3 entity types)
    - Where does its data come from? Lobu has built-in connectors for Gmail, GitHub, Google Calendar, Outlook, websites, RSS, Reddit, X, LinkedIn, YouTube, Hacker News, Product Hunt, WhatsApp, Spotify, and more, or you can write a custom connector for any other source (an API, a webhook, a CSV). Tell me the source and I'll map it to a built-in connector or plan a custom one. Pick one to start.
@@ -54,13 +56,15 @@ const SETUP_PROMPT = `I want to build a Lobu agent with you. Lobu helps create i
    - Anything on a schedule? (optional: one watcher, e.g. a daily summary)
    - Which LLM provider key do I have: Anthropic (ANTHROPIC_API_KEY), OpenAI, Gemini, Groq, DeepSeek, Mistral, Z.ai, or another (16 providers supported)?
 
-2. Scaffold it: check my Node is 22-24 (Lobu rejects 25+; help me switch if not), then run npx @lobu/cli@latest init with the name and the provider from above. Postgres is built in, so lobu run starts an embedded one. Don't ask me for a database unless I want an external Postgres (then I set DATABASE_URL). Read the AGENTS.md it writes (your guide to the config API: the define* helpers, connectors, auth, watchers, memory), and read examples/lobu-crm/lobu.config.ts before writing any connection, watcher, or reaction so you match the real field names instead of guessing. Then, before writing config, explain to me in plain terms how Lobu will work for my case: how the connector collects my data incrementally (feeds run on a schedule and only pull what's new since the last run, no re-ingesting), how each item becomes an event that memory turns into the entities above, and how both the watcher and the chat read that memory. Keep it short.
+   When you have my answers, play them back as a short numbered recap and wait for me to confirm or fix them before you scaffold anything.
+
+2. Scaffold it: check my Node is 22-24 or 26+ (only Node 25 is unsupported; help me switch if not), then run npx @lobu/cli@latest init with the name and the provider from above. Postgres is built in, so lobu run starts an embedded one. Don't ask me for a database unless I want an external Postgres (then I set DATABASE_URL). Read the AGENTS.md it writes (your guide to the config API: the define* helpers, connectors, auth, watchers, memory), and read examples/lobu-crm/lobu.config.ts before writing any connection, watcher, or reaction so you match the real field names instead of guessing. Then, before writing config, explain to me in plain terms how Lobu will work for my case: how the connector collects my data incrementally (feeds run on a schedule and only pull what's new since the last run, no re-ingesting), how each item becomes an event that memory turns into the entities above, and how both the watcher and the chat read that memory. Keep it short.
 
 3. Build it from my answers: edit lobu.config.ts plus any connector, reaction, and skill files it needs. Then tell me in one go every secret you'll need (API keys, OAuth client id/secret, bot tokens) and we'll add them to .env together as secret(...) placeholders. Never invent one, and for OAuth sources authorize the account in the admin UI rather than hand-crafting a token.
 
-4. Run and verify: run npx @lobu/cli@latest validate and fix any errors, then boot with npx @lobu/cli@latest run. Send a test message on the channel I chose, trigger the data source manually (don't wait on a poll or cron), and show me the memory event that was written plus the admin UI at http://localhost:8787.
+4. Run and verify: run npx @lobu/cli@latest validate and fix any errors, then boot with npx @lobu/cli@latest run. Send a test message on the channel I chose, trigger the data source manually (don't wait on a poll or cron), and show me the memory event that was written plus the admin UI at http://localhost:8787. If I set up a watcher or an action, exercise that too: run the watcher once, and confirm any action triggers in approval mode rather than firing for real.
 
-Repo: https://github.com/lobu-ai/lobu. Docs: https://lobu.ai/docs/`;
+Repo: https://github.com/lobu-ai/lobu. Docs: https://lobu.ai/getting-started/`;
 
 // The canonical "test it" command, kept in sync with InstallSection.
 const QUICKSTART_CMD = "npx @lobu/cli@latest init my-agent";

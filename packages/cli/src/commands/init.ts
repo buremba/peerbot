@@ -1035,7 +1035,7 @@ async function generateLobuConfig(
 
   const lines = [
     "// lobu.config.ts — Lobu project configuration",
-    "// Docs: https://lobu.ai/docs/getting-started",
+    "// Docs: https://lobu.ai/getting-started/",
     "//",
     "// `dir` points to a folder with IDENTITY.md, SOUL.md, USER.md, and an",
     "// optional skills/ directory. Shared skills in the root skills/ directory",

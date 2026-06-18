@@ -235,6 +235,17 @@ export default class HackerNewsConnector extends ConnectorRuntime {
   private readonly MAX_PAGES = 50;
   private readonly PAGE_DELAY_MS = 1000;
   private readonly FETCH_DELAY_MS = 2000;
+  // Hard wall-clock budget for a single sync. A broad query (up to 50 pages ×
+  // 1s) plus per-article content enrichment (5s timeout each) could otherwise
+  // run for many minutes — or effectively never finish on a box with blocked
+  // egress where every content fetch times out. On hitting the budget we return
+  // what we have; the next scheduled run continues (the window is re-queried,
+  // the connector isn't incremental).
+  private readonly SYNC_BUDGET_MS = 4 * 60_000;
+  // Cap external content enrichment so a large result set can't burn minutes on
+  // per-article fetches, and bail once egress is clearly down.
+  private readonly MAX_CONTENT_FETCHES = 25;
+  private readonly MAX_CONSECUTIVE_FETCH_FAILURES = 3;
   private turndownService: TurndownService;
 
   constructor() {
@@ -269,8 +280,9 @@ export default class HackerNewsConnector extends ConnectorRuntime {
     const events: EventEnvelope[] = [];
     let page = 0;
     let hasMore = true;
+    const deadline = Date.now() + this.SYNC_BUDGET_MS;
 
-    while (hasMore && page < this.MAX_PAGES) {
+    while (hasMore && page < this.MAX_PAGES && Date.now() < deadline) {
       const url = isFrontPage
         ? `${this.BASE_URL}/search?tags=front_page&hitsPerPage=100&page=${page}` +
           (minScore > 0 ? `&numericFilters=${encodeURIComponent(`points>=${minScore}`)}` : '')
@@ -323,15 +335,23 @@ export default class HackerNewsConnector extends ConnectorRuntime {
 
       hasMore = data.page < data.nbPages - 1 && data.hits.length > 0;
       page++;
+      ctx.log?.(`HN: fetched page ${page} (${events.length} items so far)`);
 
       if (hasMore) {
         await sleep(this.PAGE_DELAY_MS);
       }
     }
 
-    // Enrich high-engagement stories with external content
+    if (hasMore && Date.now() >= deadline) {
+      ctx.log?.(
+        `HN: hit the ${Math.round(this.SYNC_BUDGET_MS / 1000)}s sync budget after ${page} page(s); returning ${events.length} items (next run continues)`
+      );
+    }
+
+    // Enrich high-engagement stories with external content (bounded by the
+    // remaining time budget + a fetch cap; skipped entirely if it's exhausted).
     if (contentType !== 'comment') {
-      await this.enrichStoriesWithExternalContent(events);
+      await this.enrichStoriesWithExternalContent(events, deadline, ctx);
     }
 
     return {
@@ -421,20 +441,44 @@ export default class HackerNewsConnector extends ConnectorRuntime {
   // External content enrichment
   // -------------------------------------------------------------------------
 
-  private async enrichStoriesWithExternalContent(events: EventEnvelope[]): Promise<void> {
+  private async enrichStoriesWithExternalContent(
+    events: EventEnvelope[],
+    deadline: number,
+    ctx: SyncContext
+  ): Promise<void> {
+    let fetches = 0;
+    let consecutiveFailures = 0;
     for (const event of events) {
+      if (fetches >= this.MAX_CONTENT_FETCHES) break;
+      if (Date.now() >= deadline) {
+        ctx.log?.(`HN: content-enrichment time budget reached after ${fetches} fetch(es)`);
+        break;
+      }
+
       const externalUrl = event.metadata?.external_url as string | undefined;
       const points = event.metadata?.score as number | undefined;
 
       if (!event.content && externalUrl && points != null && points >= this.ENGAGEMENT_THRESHOLD) {
+        fetches++;
         const fetched = await this.fetchExternalContent(externalUrl);
         if (fetched) {
+          consecutiveFailures = 0;
           event.content = fetched;
           event.metadata = {
             ...event.metadata,
             fetched_content: true,
             original_url: externalUrl,
           };
+        } else {
+          consecutiveFailures++;
+          // A run of failures means egress is blocked/unreachable; stop instead
+          // of burning ~5s (the fetch timeout) per remaining story.
+          if (consecutiveFailures >= this.MAX_CONSECUTIVE_FETCH_FAILURES) {
+            ctx.log?.(
+              `HN: ${consecutiveFailures} consecutive content fetches failed — skipping enrichment for the rest`
+            );
+            break;
+          }
         }
 
         await sleep(this.FETCH_DELAY_MS);

@@ -13,12 +13,13 @@
 -- is orphan data from a restore or a pre-stamp edge case — drop it.
 DELETE FROM public.event_embeddings WHERE embedding_model IS NULL;
 
-ALTER TABLE public.event_embeddings
-    ALTER COLUMN embedding_model SET NOT NULL;
+-- NULL rows are gone (above); the scan+lock is acceptable in the deploy hook.
+-- squawk-ignore prefer-robust-stmts,adding-not-nullable-field
+ALTER TABLE public.event_embeddings ALTER COLUMN embedding_model SET NOT NULL;
 
 -- Brief catalog lock during the PK swap is acceptable in the deploy hook (the
 -- expand-phase CONCURRENTLY-built unique index is already in place).
-ALTER TABLE public.event_embeddings DROP CONSTRAINT event_embeddings_pkey;
+ALTER TABLE public.event_embeddings DROP CONSTRAINT IF EXISTS event_embeddings_pkey;
 ALTER TABLE public.event_embeddings
     ADD CONSTRAINT event_embeddings_pkey
     PRIMARY KEY USING INDEX event_embeddings_event_model_chunk_uniq;
@@ -72,57 +73,6 @@ CREATE VIEW public.current_event_records AS
 
 -- migrate:down
 
--- Re-attach embedding columns to the view (pre-contract shape). Only safe when
--- at most one event_embeddings row exists per event_id.
-DROP VIEW IF EXISTS public.current_event_records;
-CREATE VIEW public.current_event_records AS
- SELECT e.id,
-    e.organization_id,
-    e.entity_ids,
-    e.origin_id,
-    e.title,
-    e.payload_type,
-    e.payload_text,
-    e.payload_data,
-    e.payload_template,
-    e.attachments,
-    e.metadata,
-    e.score,
-    emb.embedding,
-    e.author_name,
-    e.source_url,
-    e.occurred_at,
-    e.created_at,
-    e.origin_parent_id,
-    COALESCE(length(e.payload_text), 0) AS content_length,
-    e.search_tsv,
-    e.origin_type,
-    e.connector_key,
-    e.connection_id,
-    e.feed_key,
-    e.feed_id,
-    e.run_id,
-    e.semantic_type,
-    e.client_id,
-    e.created_by,
-    e.interaction_type,
-    e.interaction_status,
-    e.interaction_input_schema,
-    e.interaction_input,
-    e.interaction_output,
-    e.interaction_error,
-    e.supersedes_event_id,
-    emb.embedding_model
-   FROM (public.events e
-     LEFT JOIN public.event_embeddings emb ON ((emb.event_id = e.id)))
-  WHERE (NOT (EXISTS ( SELECT 1
-           FROM public.events newer
-          WHERE (newer.supersedes_event_id = e.id))));
-
-ALTER TABLE public.event_embeddings DROP CONSTRAINT event_embeddings_pkey;
-ALTER TABLE public.event_embeddings
-    ADD CONSTRAINT event_embeddings_pkey PRIMARY KEY (event_id);
-CREATE UNIQUE INDEX event_embeddings_event_model_chunk_uniq
-    ON public.event_embeddings (event_id, embedding_model, chunk_index);
-ALTER TABLE public.event_embeddings
-    ALTER COLUMN embedding_model DROP NOT NULL;
+-- Intentionally a no-op: reversing the PK swap or re-coupling the view is
+-- unsafe once multi-vector / multi-model rows exist. PITR is the rollback path.
+SELECT 1;

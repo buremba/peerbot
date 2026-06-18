@@ -55,6 +55,7 @@ button {
 }
 
 html {
+  overflow-x: hidden;
   background-color: var(--color-page-bg);
   color: var(--color-page-text);
   font-family: "Manrope", ui-sans-serif, system-ui, -apple-system, sans-serif;
@@ -72,6 +73,47 @@ h3,
 .font-display {
   font-family: "Manrope", ui-sans-serif, system-ui, -apple-system, sans-serif;
   letter-spacing: -0.02em;
+}
+
+/* Subtle homepage depth: a neutral top wash plus a signal grid that fades out. */
+.landing-backdrop {
+  background-image: linear-gradient(
+    to bottom,
+    color-mix(in oklch, var(--color-page-bg-elevated) 72%, var(--color-page-bg)),
+    var(--color-page-bg) 34rem
+  );
+  background-position: center top;
+  position: relative;
+}
+
+.landing-backdrop::after {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 48rem;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(var(--color-page-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--color-page-grid) 1px, transparent 1px);
+  background-size: 76px 76px;
+  background-position: center top;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.6) 0,
+    rgba(0, 0, 0, 0.32) 14rem,
+    rgba(0, 0, 0, 0.1) 30rem,
+    transparent 46rem
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.6) 0,
+    rgba(0, 0, 0, 0.32) 14rem,
+    rgba(0, 0, 0, 0.1) 30rem,
+    transparent 46rem
+  );
 }
 
 /* Vercel-style edge lines */

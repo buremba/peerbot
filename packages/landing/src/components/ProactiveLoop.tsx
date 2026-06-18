@@ -29,6 +29,7 @@ import {
   siStripe,
   siZendesk,
 } from "simple-icons";
+import { GITHUB_EXAMPLES_URL } from "../lib/urls";
 import type { UseCase } from "../types";
 import { messagingChannels } from "./platforms";
 import { SampleChat, SLACK_THEME } from "./SampleChat";
@@ -55,9 +56,9 @@ export interface LoopData {
     items: LoopConnector[];
     moreLabel?: string;
     caption: string;
-    /** The differentiator line (rendered after a `</>` glyph). */
+    /** Optional differentiator line (rendered after a `</>` glyph). */
     codeLine: string;
-    /** e.g. "1,204 events" */
+    /** e.g. "Watching changes across every source" */
     countLabel: string;
   };
   buildsLabel: string;
@@ -85,6 +86,7 @@ export interface LoopData {
   };
   firesLabel: string;
   chat: UseCase;
+  sourceHref?: string;
   docs: { connectors: string; memory: string; watchers: string };
 }
 
@@ -126,8 +128,8 @@ export function toConnector(label: string): LoopConnector {
 function Eyebrow({ children }: { children: preact.ComponentChildren }) {
   return (
     <span
-      class="font-mono text-[10.5px] uppercase tracking-[0.16em]"
-      style={{ color: "var(--color-page-text-muted)" }}
+      class="text-[11px] font-bold uppercase tracking-[0.08em]"
+      style={{ color: "var(--color-page-text)" }}
     >
       {children}
     </span>
@@ -143,10 +145,13 @@ function Card({
 }) {
   return (
     <div
-      class={`flex w-full flex-col gap-2.5 rounded-[14px] border p-4 ${cls}`}
+      class={`flex w-full flex-col gap-2.5 rounded-2xl border p-5 ${cls}`}
       style={{
         borderColor: "var(--color-page-border)",
-        backgroundColor: "var(--color-page-bg)",
+        backgroundImage:
+          "linear-gradient(to bottom, var(--color-page-bg-elevated), var(--color-page-bg))",
+        boxShadow:
+          "0 1px 2px rgb(0 0 0 / 0.04), 0 14px 34px -18px rgb(0 0 0 / 0.14)",
       }}
     >
       {children}
@@ -175,6 +180,81 @@ function DocLink({ href, children }: { href: string; children: string }) {
       {children}
       <span aria-hidden="true">↗</span>
     </a>
+  );
+}
+
+function SourceLink({ href }: { href: string }) {
+  return (
+    <a
+      class="mt-3 inline-flex items-center gap-1 text-[12px] font-semibold transition-colors hover:text-[color:var(--color-tg-accent)]"
+      href={href}
+      rel="noopener noreferrer"
+      style={{ color: "var(--color-page-text-muted)" }}
+      target="_blank"
+    >
+      See source <span aria-hidden="true">↗</span>
+    </a>
+  );
+}
+
+function StepText({
+  title,
+  children,
+}: {
+  title: string;
+  children: preact.ComponentChildren;
+}) {
+  return (
+    <div class="max-w-[360px] px-1 md:px-0">
+      <h3
+        class="text-[1.2rem] font-bold leading-tight tracking-tight"
+        style={{ color: "var(--color-page-text)" }}
+      >
+        {title}
+      </h3>
+      <p
+        class="mt-2 text-[13.5px] leading-relaxed"
+        style={{ color: "var(--color-page-text-muted)" }}
+      >
+        {children}
+      </p>
+    </div>
+  );
+}
+
+function TimelineStep({
+  number,
+  title,
+  children,
+  visual,
+}: {
+  number: number;
+  title: string;
+  children: preact.ComponentChildren;
+  visual: preact.ComponentChildren;
+  last?: boolean;
+}) {
+  return (
+    <div class="relative z-10 grid w-full grid-cols-[34px_minmax(0,1fr)] items-start gap-x-4 md:grid-cols-[40px_minmax(250px,300px)_minmax(0,460px)] md:items-center md:gap-x-6 md:justify-center">
+      <div class="relative col-start-1 row-span-2 self-stretch md:row-span-1 md:row-start-1">
+        <span
+          class="absolute left-1/2 top-1 flex h-7 w-7 -translate-x-1/2 items-center justify-center rounded-full border text-[12px] font-bold md:top-1/2 md:-translate-y-1/2"
+          style={{
+            borderColor: ACCENT,
+            color: ACCENT,
+            backgroundColor: "var(--color-page-bg)",
+          }}
+        >
+          {number}
+        </span>
+      </div>
+      <div class="col-start-2 md:row-start-1">
+        <StepText title={title}>{children}</StepText>
+      </div>
+      <div class="col-start-2 mt-3 min-w-0 md:col-start-3 md:row-start-1 md:mt-0">
+        {visual}
+      </div>
+    </div>
   );
 }
 
@@ -243,69 +323,6 @@ function ChatChannels({ class: cls = "" }: { class?: string }) {
   );
 }
 
-// Vertical "this becomes that" connector (SOURCES->MEMORY, GOAL->CHAT).
-function DownArrow({
-  label,
-  class: cls = "",
-}: {
-  label: string;
-  class?: string;
-}) {
-  return (
-    <div class={`flex flex-col items-center gap-1 ${cls}`}>
-      <svg width="12" height="18" viewBox="0 0 12 18" aria-hidden="true">
-        <title>{label}</title>
-        <path
-          d="M6 0 V13 M2.5 9.5 L6 13 L9.5 9.5"
-          stroke={ACCENT}
-          stroke-width="1.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          fill="none"
-        />
-      </svg>
-      <span
-        class="text-center font-mono text-[10px] uppercase tracking-[0.12em]"
-        style={{ color: "var(--color-page-text-muted)" }}
-      >
-        {label}
-      </span>
-    </div>
-  );
-}
-
-// Horizontal "the goal watches the memory" connector. Rotates to vertical on
-// mobile so the four blocks stack into a single readable column.
-function WatchesArrow({ class: cls = "" }: { class?: string }) {
-  return (
-    <div class={`flex flex-col items-center justify-center gap-1.5 ${cls}`}>
-      <span
-        class="font-mono text-[10.5px] uppercase tracking-[0.12em]"
-        style={{ color: "var(--color-page-text-muted)" }}
-      >
-        watches
-      </span>
-      <svg
-        class="rotate-90 md:rotate-0"
-        width="40"
-        height="12"
-        viewBox="0 0 40 12"
-        aria-hidden="true"
-      >
-        <title>watches</title>
-        <path
-          d="M0 6 H32 M28 2.5 L33 6 L28 9.5"
-          stroke={ACCENT}
-          stroke-width="1.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          fill="none"
-        />
-      </svg>
-    </div>
-  );
-}
-
 // --- Blocks ------------------------------------------------------------------
 
 function SourcesCardImpl({
@@ -319,20 +336,6 @@ function SourcesCardImpl({
 }) {
   return (
     <Card class={cls}>
-      <div class="flex items-center justify-between">
-        <Eyebrow>Connectors</Eyebrow>
-        <span
-          class="inline-flex items-center gap-1.5 font-mono text-[10.5px]"
-          style={{ color: OK }}
-        >
-          <span
-            class="inline-block h-1.5 w-1.5 rounded-full"
-            style={{ backgroundColor: OK }}
-          />
-          live
-        </span>
-      </div>
-
       <div class="flex flex-wrap items-center gap-x-4 gap-y-2.5">
         {connectors.items.map((c) =>
           c.icon ? (
@@ -353,21 +356,23 @@ function SourcesCardImpl({
         {connectors.caption}
       </div>
 
-      <div class="flex items-center gap-2">
-        <span
-          class="font-mono text-[12px]"
-          style={{ color: ACCENT }}
-          aria-hidden="true"
-        >
-          &lt;/&gt;
-        </span>
-        <span
-          class="text-[12px] leading-snug"
-          style={{ color: "var(--color-page-text)" }}
-        >
-          {connectors.codeLine}
-        </span>
-      </div>
+      {connectors.codeLine ? (
+        <div class="flex items-center gap-2">
+          <span
+            class="font-mono text-[12px]"
+            style={{ color: ACCENT }}
+            aria-hidden="true"
+          >
+            &lt;/&gt;
+          </span>
+          <span
+            class="text-[12px] leading-snug"
+            style={{ color: "var(--color-page-text)" }}
+          >
+            {connectors.codeLine}
+          </span>
+        </div>
+      ) : null}
 
       <div
         class="mt-auto flex items-center justify-between gap-3 border-t pt-2"
@@ -377,7 +382,6 @@ function SourcesCardImpl({
           class="text-[11.5px]"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          One event stream ·{" "}
           <span style={{ color: "var(--color-page-text)" }}>
             {connectors.countLabel}
           </span>
@@ -392,27 +396,33 @@ function MemoryCard({
   memory,
   docsHref,
   class: cls = "",
+  scanning = false,
 }: {
   memory: LoopData["memory"];
   docsHref: string;
   class?: string;
+  scanning?: boolean;
 }) {
   const { primary } = memory;
   return (
     <Card class={cls}>
-      <div class="flex items-center justify-between">
-        <Eyebrow>{memory.label}</Eyebrow>
-        <span
-          class="rounded-md border px-2 py-0.5 font-mono text-[10.5px]"
-          style={{ borderColor: "var(--color-page-border)", color: ACCENT }}
-        >
-          {memory.typeChip}
-        </span>
-      </div>
+      {memory.label || memory.typeChip ? (
+        <div class="flex items-center justify-between">
+          {memory.label ? <Eyebrow>{memory.label}</Eyebrow> : <span />}
+          {memory.typeChip ? (
+            <span
+              class="rounded-md border px-2 py-0.5 font-mono text-[10.5px]"
+              style={{ borderColor: "var(--color-page-border)", color: ACCENT }}
+            >
+              {memory.typeChip}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* Expanded: the record that drifted */}
       <div
-        class="rounded-[10px] border"
+        class={`rounded-[10px] border ${scanning ? "memory-scan-shell" : ""}`}
         style={{
           borderColor: `${statusColor(primary.status.tone)}55`,
           backgroundColor: "var(--color-page-surface)",
@@ -545,33 +555,6 @@ function GoalCard({
 }) {
   return (
     <Card class={cls}>
-      <div class="flex items-center justify-between">
-        <Eyebrow>{goal.label}</Eyebrow>
-        <span
-          class="inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 font-mono text-[10.5px]"
-          style={{ borderColor: "var(--color-page-border)", color: ACCENT }}
-        >
-          <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
-            <title>schedule</title>
-            <circle
-              cx="6"
-              cy="6"
-              r="5"
-              fill="none"
-              stroke={ACCENT}
-              stroke-width="1.3"
-            />
-            <path
-              d="M6 3.2 V6 L8 7.2"
-              fill="none"
-              stroke={ACCENT}
-              stroke-width="1.3"
-              stroke-linecap="round"
-            />
-          </svg>
-          {goal.schedule}
-        </span>
-      </div>
       <p
         class="text-[12.5px] leading-relaxed"
         style={{ color: "var(--color-page-text)" }}
@@ -586,7 +569,7 @@ function GoalCard({
           class="text-[11.5px]"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          {goal.footer}
+          {goal.footer || `Runs ${goal.schedule}`}
         </span>
         <DocLink href={docsHref}>Watchers</DocLink>
       </div>
@@ -619,51 +602,90 @@ export function MemoryLoop({ data }: { data: LoopData }) {
           >
             {data.heading.subtitle}
           </p>
+          {data.sourceHref ? <SourceLink href={data.sourceHref} /> : null}
         </div>
       ) : null}
 
-      {/*
-        Explicit grid placement (md:col-start / md:row-start) decouples DOM order
-        from desktop layout: the DOM order below reads top-to-bottom on mobile
-        (sources -> memory -> goal -> chat), while on desktop the cards snap into
-        a 2x2 with arrows between. Row stretch keeps each row's two cards equal
-        height, so the columns stay level.
-      */}
-      <div class="grid w-full grid-cols-1 justify-items-center gap-y-2 md:grid-cols-[minmax(0,460px)_auto_minmax(0,460px)] md:justify-center md:gap-x-5">
-        <SourcesCardImpl
-          connectors={data.connectors}
-          docsHref={data.docs.connectors}
-          class="md:col-start-1 md:row-start-1"
-        />
-        <DownArrow
-          label={data.buildsLabel}
-          class="md:col-start-1 md:row-start-2 md:self-center"
-        />
-        <MemoryCard
-          memory={data.memory}
-          docsHref={data.docs.memory}
-          class="md:col-start-1 md:row-start-3"
-        />
-
-        <WatchesArrow class="md:col-start-2 md:row-start-1 md:self-center" />
-
-        <GoalCard
-          goal={data.goal}
-          docsHref={data.docs.watchers}
-          class="md:col-start-3 md:row-start-1"
-        />
-        <DownArrow
-          label={data.firesLabel}
-          class="md:col-start-3 md:row-start-2 md:self-center"
-        />
-        <div
-          class="flex w-full flex-col gap-3 md:col-start-3 md:row-start-3"
-          style={{ minWidth: "280px", maxWidth: "460px" }}
+      <div class="relative flex w-full max-w-[1040px] flex-col gap-10 md:gap-14">
+        <TimelineStep
+          number={1}
+          title="Connect your data"
+          visual={
+            <SourcesCardImpl
+              connectors={data.connectors}
+              docsHref={data.docs.connectors}
+            />
+          }
         >
-          <SampleChat useCase={data.chat} theme={SLACK_THEME} class="flex-1" />
-          <ChatChannels />
-        </div>
+          Pick the systems it can read. Lobu turns those updates into live customer memory.
+        </TimelineStep>
+
+        <TimelineStep
+          number={2}
+          title="Define the goal"
+          visual={<GoalCard goal={data.goal} docsHref={data.docs.watchers} />}
+        >
+          Tell it what to watch for and when to ask before acting.
+        </TimelineStep>
+
+        <TimelineStep
+          number={3}
+          title="Your agent works autonomously"
+          visual={<MemoryCard memory={data.memory} docsHref={data.docs.memory} scanning />}
+        >
+          It scans memory on schedule, spots the account at risk, and keeps the evidence attached.
+        </TimelineStep>
+
+        <TimelineStep
+          number={4}
+          title="You review and approve"
+          last
+          visual={
+            <div class="flex w-full flex-col gap-3" style={{ minWidth: "280px" }}>
+              <SampleChat useCase={data.chat} theme={SLACK_THEME} />
+              <ChatChannels />
+            </div>
+          }
+        >
+          You can edit the draft, send it, or leave it.
+        </TimelineStep>
       </div>
+      {!data.heading && data.sourceHref ? <SourceLink href={data.sourceHref} /> : null}
+      <style>{`
+        @keyframes lobu-memory-scan {
+          0%, 12% { transform: translateY(-120%); opacity: 0; }
+          22% { opacity: 1; }
+          72% { opacity: 1; }
+          88%, 100% { transform: translateY(245%); opacity: 0; }
+        }
+        .memory-scan-shell {
+          position: relative;
+          overflow: hidden;
+        }
+        .memory-scan-shell::after {
+          content: "";
+          position: absolute;
+          inset: 0;
+          height: 44%;
+          pointer-events: none;
+          background: linear-gradient(
+            to bottom,
+            rgba(54, 197, 171, 0),
+            rgba(54, 197, 171, 0.08),
+            rgba(249, 115, 22, 0.16),
+            rgba(54, 197, 171, 0)
+          );
+          border-top: 1px solid rgba(249, 115, 22, 0.45);
+          animation: lobu-memory-scan 4.8s ease-in-out infinite;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .memory-scan-shell::after {
+            animation: none;
+            opacity: 0.35;
+            transform: translateY(95%);
+          }
+        }
+      `}</style>
     </div>
   );
 }
@@ -675,27 +697,30 @@ export const SALES_LOOP: LoopData = {
     eyebrow: "Why Lobu",
     title: "Catch what you'd miss.",
     subtitle:
-      "Lobu turns every source into one typed record, watches all of them against your goals, and drafts the next step the moment something drifts.",
+      "Connect your data. Set a goal. Lobu watches for changes and prepares the next step.",
   },
   connectors: {
     items: [
       { label: "HubSpot", icon: siHubspot },
       { label: "Stripe", icon: siStripe },
       { label: "Zendesk", icon: siZendesk },
+      { label: "Gmail", icon: siGmail },
+      { label: "Drive", icon: siGoogledrive },
+      { label: "GitHub", icon: siGithub },
       { label: "Notion", icon: siNotion },
       { label: "Snowflake", icon: siSnowflake },
       { label: "Postgres", icon: siPostgresql },
     ],
     moreLabel: "50+ more",
     caption:
-      "Reuse a prebuilt connector, or point Lobu at any database you use.",
-    codeLine: "Your agent writes code to bring in live data.",
-    countLabel: "1,204 events",
+      "Use existing connectors, or let your agent write code to connect any data.",
+    codeLine: "",
+    countLabel: "Watching changes across every source",
   },
-  buildsLabel: "builds profiles",
+  buildsLabel: "builds customer memory",
   memory: {
-    label: "Live company memory · 19 accounts",
-    typeChip: "account",
+    label: "",
+    typeChip: "",
     primary: {
       name: "Acme Corp",
       contact: "Jordan Lee, VP Eng",
@@ -717,23 +742,22 @@ export const SALES_LOOP: LoopData = {
           source: "Product",
         },
         { age: "9d", summary: "Renewal date set to Jun 30", source: "CRM" },
-        { age: "12d", summary: '"Champion left the company"', source: "Slack" },
       ],
     },
     others: [
       { name: "Globex Inc", status: { label: "healthy", tone: "ok" } },
-      { name: "Initech", status: { label: "healthy", tone: "ok" } },
     ],
-    moreLabel: "+ 16 more accounts",
+    moreLabel: "+ 17 more customers",
   },
   goal: {
-    label: "Standing goal · all 19 accounts",
+    label: "Define goal",
     schedule: "every weekday · 9:00",
     prompt:
-      "Watch every account for churn risk. When health turns at-risk within 30 days of renewal, draft a CSM check-in and ask me to approve.",
-    footer: "Runs unattended · asks before it sends.",
+      "Watch every account for churn risk. If renewal is within 30 days and health drops, draft a CSM check-in for approval.",
+    footer: "",
   },
-  firesLabel: "fired on Acme Corp",
+  firesLabel: "posts in Slack",
+  sourceHref: `${GITHUB_EXAMPLES_URL}/sales`,
   chat: {
     id: "proactive-renewal",
     tabLabel: "Renewal risk",

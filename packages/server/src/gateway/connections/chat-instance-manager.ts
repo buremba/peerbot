@@ -37,6 +37,7 @@ import {
   registerMessageHandlers,
 } from "./message-handler-bridge.js";
 import { getPlatformDescriptor, PLATFORM_REGISTRY } from "./platforms/index.js";
+import { resolveChatTarget } from "./platforms/shared.js";
 import {
   handleWebhookIngest,
   prepareWebhookIngestConfig,
@@ -594,6 +595,37 @@ export class ChatInstanceManager {
     channelKey: string,
     content: AdapterPostableMessage
   ): Promise<void> {
+    // Channel-level post is a thread-less postToConversation; the colon splits
+    // `${platform}:${channelId}`. One post path, no duplicated resolution.
+    const sep = channelKey.indexOf(":");
+    const platform = sep > 0 ? channelKey.slice(0, sep) : channelKey;
+    const channelId = sep > 0 ? channelKey.slice(sep + 1) : channelKey;
+    await this.postToConversation(connectionId, {
+      platform,
+      channelKey,
+      channelId,
+      content,
+    });
+  }
+
+  /**
+   * Post to a channel — or a thread within it — and return the platform message
+   * id + thread id, so the conversations `send` tool can hand the agent a thread
+   * handle to reply into later. `threadId` (a platform thread id like
+   * `slack:{channel}:{ts}`) routes the reply into that thread; resolution falls
+   * back to channel-level if the thread can't be resolved (never silently drops).
+   * Multi-replica safe: hydrates the connection on this pod from its row.
+   */
+  async postToConversation(
+    connectionId: string,
+    opts: {
+      platform: string;
+      channelKey: string;
+      channelId: string;
+      threadId?: string;
+      content: AdapterPostableMessage;
+    }
+  ): Promise<{ messageId: string; threadId: string }> {
     const running = await this.ensureConnectionRunning(connectionId);
     const instance = running ? this.instances.get(connectionId) : undefined;
     if (!instance) {
@@ -601,13 +633,24 @@ export class ChatInstanceManager {
         `No active chat instance for connection ${connectionId} (could not start it on this pod)`
       );
     }
-    const channel = instance.chat?.channel?.(channelKey);
-    if (!channel) {
+    const target = await resolveChatTarget(instance.chat, opts.platform, {
+      channelId: opts.channelId,
+      conversationId: opts.threadId,
+      responseThreadId: opts.threadId,
+    });
+    if (!target) {
       throw new Error(
-        `Could not resolve channel ${channelKey} for connection ${connectionId}`
+        `Could not resolve target ${opts.channelKey}${opts.threadId ? ` (thread ${opts.threadId})` : ""} for connection ${connectionId}`
       );
     }
-    await channel.post(content);
+    const sent = (await target.post(opts.content)) as {
+      id?: unknown;
+      threadId?: unknown;
+    };
+    return {
+      messageId: typeof sent?.id === "string" ? sent.id : "",
+      threadId: typeof sent?.threadId === "string" ? sent.threadId : "",
+    };
   }
 
   /**

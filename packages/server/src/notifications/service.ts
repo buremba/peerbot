@@ -1,5 +1,6 @@
 import type { CardElement } from 'chat';
 import { getDb, pgTextArray } from '../db/client';
+import { resolveBoundChannelRows } from '../gateway/channels/bound-channels';
 import { getChatInstanceManager, isLobuGatewayRunning } from '../lobu/gateway';
 import logger from '../utils/logger';
 
@@ -83,60 +84,13 @@ export async function resolveBotDeliveryTargets(
   organizationId: string,
   connectionId?: string | null
 ): Promise<BotDeliveryTarget[]> {
-  const sql = getDb();
-  const connFilterA = connectionId ? sql`AND ac.id = ${connectionId}` : sql``;
-  const connFilterB = connectionId ? sql`AND pc.id = ${connectionId}` : sql``;
-  const rows = (await sql`
-    SELECT id, platform, channel_id, created_at FROM (
-      -- (A) the org's own connections, scoped to (org, agent)
-      SELECT ac.id, ac.platform, b.channel_id, b.created_at
-      FROM agent_connections ac
-      JOIN agent_channel_bindings b
-        ON b.organization_id = ac.organization_id
-       AND b.agent_id = ac.agent_id
-       AND b.platform = ac.platform
-      WHERE ac.organization_id = ${organizationId}
-        AND ac.status = 'active'
-        ${connFilterA}
-
-      UNION
-
-      -- (B) hosted-preview cross-org: this org's bindings via the shared preview
-      -- connection. NO agent_id join (preview conn's agent != the binding's);
-      -- gated to previewMode + no metadata.teamId so a normal bot is never used.
-      SELECT pc.id, pc.platform, b.channel_id, b.created_at
-      FROM agent_channel_bindings b
-      JOIN agent_connections pc
-        ON pc.platform = b.platform
-       AND pc.status = 'active'
-       AND pc.settings->'previewMode' = 'true'::jsonb
-       AND (pc.metadata->>'teamId') IS NULL
-      WHERE b.organization_id = ${organizationId}
-        ${connFilterB}
-        -- Skip if the org already owns an active connection on this channel
-        -- (branch A covers it) so we don't double-post.
-        AND NOT EXISTS (
-          SELECT 1
-          FROM agent_connections own
-          JOIN agent_channel_bindings ob
-            ON ob.organization_id = own.organization_id
-           AND ob.agent_id = own.agent_id
-           AND ob.platform = own.platform
-          WHERE own.organization_id = ${organizationId}
-            AND own.status = 'active'
-            AND ob.platform = b.platform
-            AND ob.channel_id = b.channel_id
-        )
-    ) targets
-    -- Deliver in binding-creation order so earlier bindings (the primary
-    -- channel) are attempted first when an agent is bound to several.
-    ORDER BY created_at ASC
-  `) as Array<{
-    id: string;
-    platform: string;
-    channel_id: string;
-    created_at: Date;
-  }>;
+  // Org-wide (no agentId): every channel any of the org's agents is bound to,
+  // resolved through the right connection. Shared resolver = one home for the
+  // cross-org preview invariant (see bound-channels.ts).
+  const rows = await resolveBoundChannelRows(getDb(), {
+    organizationId,
+    connectionId,
+  });
 
   return rows.map((row) => ({
     connectionId: row.id,

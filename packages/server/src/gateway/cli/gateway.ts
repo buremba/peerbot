@@ -15,6 +15,7 @@ import { getModelProviderModules } from "../modules/module-system.js";
 import { createAudioRoutes } from "../routes/internal/audio.js";
 import { createDeviceAuthRoutes } from "../routes/internal/device-auth.js";
 import { createFileRoutes } from "../routes/internal/files.js";
+import { createConversationsRoutes } from "../routes/internal/conversations.js";
 import { createHistoryRoutes } from "../routes/internal/history.js";
 import { createImageRoutes } from "../routes/internal/images.js";
 import { createInteractionRoutes } from "../routes/internal/interactions.js";
@@ -206,6 +207,14 @@ export function createGatewayApp(
     const historyRouter = createHistoryRoutes();
     app.route("/internal", historyRouter);
     logger.debug("History routes enabled at :8080/internal/history");
+  }
+
+  {
+    const conversationsRouter = createConversationsRoutes();
+    app.route("/internal", conversationsRouter);
+    logger.debug(
+      "Conversation routes enabled at :8080/internal/conversations/*"
+    );
   }
 
   if (coreServices) {

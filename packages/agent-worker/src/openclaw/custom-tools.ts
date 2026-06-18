@@ -11,7 +11,10 @@ import {
   generateAudio,
   generateImage,
   getChannelHistory,
+  listConversations,
   logoutMcp,
+  readConversation,
+  sendMessage,
   startMcpLogin,
   uploadUserFile,
 } from "../shared/tool-implementations";
@@ -207,6 +210,48 @@ export function createOpenClawCustomTools(params: {
         ),
       }),
       run: (args) => getChannelHistory(gw, args),
+    }),
+
+    createGatewayTool({
+      name: "list_conversations",
+      parameters: Type.Object({}),
+      run: () => listConversations(gw),
+    }),
+
+    createGatewayTool({
+      name: "read_conversation",
+      parameters: Type.Object({
+        target: Type.String({
+          description:
+            "Conversation handle from list_conversations (the channel to read)",
+        }),
+        limit: Type.Optional(
+          Type.Number({
+            description: "Number of messages to fetch (default 50, max 100)",
+          })
+        ),
+        before: Type.Optional(
+          Type.String({
+            description:
+              "ISO timestamp cursor — fetch messages before this time",
+          })
+        ),
+      }),
+      run: (args) => readConversation(gw, args),
+    }),
+
+    createGatewayTool({
+      name: "send_message",
+      parameters: Type.Object({
+        target: Type.String({
+          description:
+            "Where to post: a conversation handle from list_conversations (posts to that channel), OR a thread handle returned by a previous send_message (replies in that thread)",
+        }),
+        text: Type.String({
+          description: "The message text to post (markdown)",
+        }),
+      }),
+      run: (args) => sendMessage(gw, args),
     }),
 
     createGatewayTool({

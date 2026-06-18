@@ -103,6 +103,23 @@ describe('channel transcript', () => {
     ]);
   });
 
+  it('normalizes the platform-prefixed channel id so a native-id read matches', async () => {
+    // Inbound capture passes the prefixed form (`telegram:123`); the conversation
+    // tools read with the stripped native id (`123`). persist must normalize so
+    // the two ends agree — else read_conversation silently returns nothing.
+    await persistChannelMessage(
+      msg({ platform: 'telegram', channelId: 'telegram:6570514069' })
+    );
+    const out = await readChannelTranscript(
+      'org-1',
+      'conn-1',
+      '6570514069',
+      50
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0]!.text).toBe('I want a burrito');
+  });
+
   it('skips empty/whitespace text', async () => {
     await persistChannelMessage(msg({ text: '   ' }));
     expect(await readChannelTranscript('org-1', 'conn-1', 'C0LUNCH', 50)).toEqual([]);

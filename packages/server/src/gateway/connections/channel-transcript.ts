@@ -12,6 +12,7 @@
  */
 import { createLogger } from "@lobu/core";
 import { getDb } from "../../db/client.js";
+import { stripPlatformPrefix } from "../channels/bound-channels.js";
 
 const logger = createLogger("channel-transcript");
 
@@ -46,6 +47,11 @@ export async function persistChannelMessage(
   ) {
     return;
   }
+  // Store the native (unprefixed) channel id. Inbound callers pass the
+  // platform-prefixed form (`telegram:123`) while the conversation tools
+  // resolve to the stripped native id — normalize here so capture and read
+  // agree on one key (else read_conversation silently returns nothing).
+  const channelId = stripPlatformPrefix(params.platform, params.channelId);
   const sql = getDb();
   await sql`
     INSERT INTO channel_messages (
@@ -53,7 +59,7 @@ export async function persistChannelMessage(
       platform_message_id, author_id, author_name, is_bot, text, occurred_at
     ) VALUES (
       ${params.organizationId}, ${params.connectionId}, ${params.platform},
-      ${params.channelId}, ${params.threadId ?? null}, ${params.platformMessageId},
+      ${channelId}, ${params.threadId ?? null}, ${params.platformMessageId},
       ${params.authorId ?? null}, ${params.authorName ?? null}, ${params.isBot},
       ${text}, ${params.occurredAt}
     )

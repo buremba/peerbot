@@ -99,7 +99,6 @@ export default class GoogleMapsConnector extends ConnectorRuntime {
         },
       },
     },
-    optionsSchema: configSchema,
   };
 
   async sync(ctx: SyncContext): Promise<SyncResult> {

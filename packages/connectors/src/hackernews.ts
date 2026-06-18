@@ -227,24 +227,6 @@ export default class HackerNewsConnector extends ConnectorRuntime {
         },
       },
     },
-    optionsSchema: {
-      type: 'object',
-      required: ['search_query'],
-      properties: {
-        search_query: {
-          type: 'string',
-          minLength: 1,
-          description: 'Search term',
-        },
-        lookback_days: {
-          type: 'integer',
-          minimum: 1,
-          maximum: 730,
-          default: 365,
-          description: 'Lookback window in days',
-        },
-      },
-    },
   };
 
   private readonly BASE_URL = 'https://hn.algolia.com/api/v1';

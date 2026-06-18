@@ -497,7 +497,6 @@ export default class XConnector extends ConnectorRuntime {
         },
       },
     },
-    optionsSchema: configSchema,
   };
 
   async sync(ctx: SyncContext): Promise<SyncResult> {

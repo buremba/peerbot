@@ -83,37 +83,6 @@ export default class CapterraConnector extends ConnectorRuntime {
         },
       },
     },
-    optionsSchema: {
-      type: 'object',
-      required: ['product_id'],
-      properties: {
-        product_id: {
-          type: 'string',
-          description: 'Capterra product ID (e.g., "12345")',
-          minLength: 1,
-        },
-        product_name: {
-          type: 'string',
-          description:
-            'Product name slug for URL (e.g., "spotify"). Optional - Capterra will redirect without it.',
-          minLength: 1,
-        },
-        vendor_name: {
-          type: 'string',
-          description:
-            'Vendor/company name (e.g., "Spotify AB"). Optional but recommended for disambiguation.',
-          minLength: 1,
-        },
-        lookback_days: {
-          type: 'integer',
-          description:
-            'Number of days to look back for historical data. Default: 365 (1 year). Maximum: 730 (2 years).',
-          minimum: 1,
-          maximum: 730,
-          default: 365,
-        },
-      },
-    },
   };
 
   async sync(ctx: SyncContext): Promise<SyncResult> {

@@ -565,11 +565,6 @@ export default class GitHubConnector extends ConnectorRuntime {
         },
       },
     },
-    optionsSchema: {
-      type: 'object',
-      required: ['repo_owner', 'repo_name'],
-      properties: { ...REPO_PROPS, ...LABELS_PROP, ...LOOKBACK_PROP },
-    },
   };
 
   async sync(ctx: SyncContext): Promise<SyncResult> {

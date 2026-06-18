@@ -94,25 +94,6 @@ export default class RSSConnector extends ConnectorRuntime {
         },
       },
     },
-    optionsSchema: {
-      type: 'object',
-      required: ['feed_urls'],
-      properties: {
-        feed_urls: {
-          type: 'array',
-          items: { type: 'string', format: 'uri' },
-          minItems: 1,
-          description: 'One or more RSS/Atom feed URLs.',
-        },
-        max_items_per_feed: {
-          type: 'integer',
-          minimum: 1,
-          maximum: 1000,
-          default: 100,
-          description: 'Maximum items to collect per feed per sync.',
-        },
-      },
-    },
   };
 
   private readonly MAX_DEDUP_IDS = 500;

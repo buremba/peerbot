@@ -241,31 +241,6 @@ export default class GooglePlayConnector extends ConnectorRuntime {
         },
       },
     },
-    optionsSchema: {
-      type: 'object',
-      required: ['app_id'],
-      properties: {
-        app_id: {
-          type: 'string',
-          minLength: 1,
-          description: 'Google Play package name (e.g., "com.spotify.music")',
-        },
-        country: {
-          type: 'string',
-          minLength: 2,
-          maxLength: 2,
-          default: 'us',
-          description: 'ISO country code',
-        },
-        lang: {
-          type: 'string',
-          minLength: 2,
-          maxLength: 5,
-          default: 'en',
-          description: 'Language code',
-        },
-      },
-    },
   };
 
   async sync(ctx: SyncContext): Promise<SyncResult> {

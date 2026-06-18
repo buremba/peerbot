@@ -223,31 +223,6 @@ export default class ProductHuntConnector extends ConnectorRuntime {
         },
       },
     },
-    optionsSchema: {
-      type: 'object',
-      required: ['search_query'],
-      properties: {
-        search_query: {
-          type: 'string',
-          minLength: 1,
-          description: 'Search term to find posts on Product Hunt.',
-        },
-        lookback_days: {
-          type: 'integer',
-          minimum: 1,
-          maximum: 730,
-          default: 365,
-          description: 'Number of days to look back for historical data.',
-        },
-        max_pages: {
-          type: 'integer',
-          minimum: 1,
-          maximum: 50,
-          default: 10,
-          description: 'Maximum number of pages to fetch.',
-        },
-      },
-    },
   };
 
   private readonly API_URL = 'https://api.producthunt.com/v2/api/graphql';

@@ -96,7 +96,6 @@ export default class IOSAppStoreConnector extends ConnectorRuntime {
         },
       },
     },
-    optionsSchema: FEED_CONFIG_SCHEMA,
   };
 
   async sync(ctx: SyncContext): Promise<SyncResult> {

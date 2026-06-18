@@ -80,7 +80,6 @@ export default class G2Connector extends ConnectorRuntime {
         },
       },
     },
-    optionsSchema: configSchema,
   };
 
   async sync(ctx: SyncContext): Promise<SyncResult> {

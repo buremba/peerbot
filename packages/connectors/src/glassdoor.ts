@@ -109,29 +109,6 @@ export default class GlassdoorConnector extends ConnectorRuntime {
         },
       },
     },
-    optionsSchema: {
-      type: 'object',
-      required: ['company_name'],
-      properties: {
-        company_name: {
-          type: 'string',
-          minLength: 1,
-          description: 'Company name for search-based lookup',
-        },
-        company_id: {
-          type: 'string',
-          description: 'Glassdoor company ID if known',
-        },
-        lookback_days: {
-          type: 'integer',
-          minimum: 1,
-          maximum: 730,
-          default: 365,
-          description:
-            'Number of days to look back for historical data. Default: 365 (1 year). Maximum: 730 (2 years).',
-        },
-      },
-    },
   };
 
   async sync(ctx: SyncContext): Promise<SyncResult> {

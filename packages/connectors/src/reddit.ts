@@ -235,26 +235,6 @@ export default class RedditConnector extends ConnectorRuntime {
         },
       },
     },
-    optionsSchema: {
-      type: 'object',
-      properties: {
-        subreddit: {
-          type: 'string',
-          description: 'Subreddit name without r/ prefix (e.g., "programming").',
-        },
-        search_terms: {
-          type: 'string',
-          description: 'Search terms to query across Reddit.',
-        },
-        lookback_days: {
-          type: 'integer',
-          minimum: 1,
-          maximum: 730,
-          default: 365,
-          description: 'Number of days to look back for historical data.',
-        },
-      },
-    },
   };
 
   private readonly MAX_PAGES = 10;

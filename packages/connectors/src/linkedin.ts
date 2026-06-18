@@ -477,7 +477,6 @@ export default class LinkedInConnector extends ConnectorRuntime {
         },
       },
     },
-    optionsSchema: companyUpdatesConfigSchema,
   };
 
   async sync(ctx: SyncContext): Promise<SyncResult> {

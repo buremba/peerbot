@@ -210,34 +210,6 @@ export default class YouTubeConnector extends ConnectorRuntime {
         },
       },
     },
-    optionsSchema: {
-      type: 'object',
-      required: ['search_query'],
-      properties: {
-        search_query: {
-          type: 'string',
-          minLength: 1,
-          description: 'Search term to query YouTube.',
-        },
-        max_results: {
-          type: 'integer',
-          minimum: 1,
-          maximum: 200,
-          default: 50,
-          description: 'Total videos to fetch per sync (max 200).',
-        },
-        include_transcripts: {
-          type: 'boolean',
-          default: true,
-          description: 'Whether to fetch video transcripts.',
-        },
-        include_comments: {
-          type: 'boolean',
-          default: true,
-          description: 'Whether to fetch video comments.',
-        },
-      },
-    },
   };
 
   private readonly BASE_URL = 'https://www.googleapis.com/youtube/v3';

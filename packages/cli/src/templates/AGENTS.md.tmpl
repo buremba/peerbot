@@ -119,7 +119,10 @@ const gh = defineConnection({
   connector: "github",
   name: "GitHub",
   authProfile: ghAuth, // declare the profile as a const, then list it in defineConfig({ authProfiles })
-  config: { repo_owner: "you", repo_name: "repo" },
+  // Connector sync settings (what to fetch) go on the FEED's `config`, not the
+  // connection's — the server stores them on feeds and rejects feed-scoped keys
+  // on the connection. The connection's own `config` is only for the rare
+  // connection-scoped option a connector declares.
   feeds: [{ feed: "issues", name: "Issues", schedule: "0 */6 * * *", config: { repo_owner: "you", repo_name: "repo" } }],
 });
 ```

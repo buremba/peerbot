@@ -290,14 +290,8 @@ const competitor_changelogsConn = defineConnection({
   slug: "competitor-changelogs",
   connector: "website",
   name: "Competitor changelogs",
-  config: {
-    urls: [
-      "https://lobu.ai/changelog",
-      "https://docs.dust.tt/changelog",
-      "https://www.glean.com/release-notes",
-    ],
-    max_pages: 10,
-  },
+  // Connector sync settings live on the feed, not the connection — the server
+  // stores feed-scoped config on feeds and rejects it on the connection.
   feeds: [
     {
       feed: "pages",
@@ -322,7 +316,6 @@ const github_lobuConn = defineConnection({
   name: "GitHub — lobu-ai/lobu",
   authProfile: github_accountAuth,
   appAuthProfile: github_appAuth,
-  config: { repo_owner: "lobu-ai", repo_name: "lobu" },
   feeds: [
     {
       feed: "stargazers",
@@ -355,7 +348,6 @@ const hn_lobuConn = defineConnection({
   slug: "hn-lobu",
   connector: "hackernews",
   name: "Hacker News — lobu",
-  config: { search_query: "lobu", lookback_days: 180 },
   feeds: [
     {
       feed: "stories",
@@ -371,11 +363,6 @@ const x_mentionsConn = defineConnection({
   connector: "x",
   name: "X — @lobu mentions & replies",
   authProfile: x_accountAuth,
-  config: {
-    search_query: "@lobu OR lobu.ai",
-    search_filter: "live",
-    max_scrolls: 10,
-  },
   feeds: [
     {
       feed: "tweets",

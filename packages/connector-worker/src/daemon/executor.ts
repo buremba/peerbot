@@ -6,7 +6,9 @@
  */
 
 import type { Env, EventEnvelope } from '@lobu/connector-sdk';
+import { isEmbeddingChunkingEnabled } from '@lobu/core';
 import { compileConnectorFromFile, findBundledConnectorFile } from '../compile-connector.js';
+import { chunkForEmbedding } from '../embeddings-text.js';
 import { batchGenerateEmbeddings } from '../embeddings.js';
 import { executeCompiledConnector } from '../executor/runtime.js';
 import { SubprocessExecutor } from '../executor/subprocess.js';
@@ -661,10 +663,6 @@ async function executeEmbedBackfillRun(
       }))
       .filter((p) => p.text.length > 0);
 
-    // Expand phase: one vector per event (chunk_index 0). The schema is ready for
-    // multi-vector, but the worker only starts CHUNKING in the contract release —
-    // until the PK moves off (event_id), more than one row per event would
-    // violate it. So this stays the single vectorized batch pass, tagged chunk 0.
     const results: Array<{
       event_id: number;
       chunk_index: number;
@@ -673,13 +671,23 @@ async function executeEmbedBackfillRun(
     }> = [];
     let batchError: string | undefined;
     try {
-      const { embeddings, model } = await batchGenerateEmbeddings(pending.map((p) => p.text));
-      for (let i = 0; i < pending.length; i++) {
+      const chunkingEnabled = isEmbeddingChunkingEnabled();
+      const flat: Array<{ event_id: number; chunk_index: number }> = [];
+      const flatTexts: string[] = [];
+      for (const p of pending) {
+        const chunks = chunkingEnabled ? chunkForEmbedding(p.text) : [p.text];
+        chunks.forEach((chunk, chunkIndex) => {
+          flat.push({ event_id: p.event_id, chunk_index: chunkIndex });
+          flatTexts.push(chunk);
+        });
+      }
+      const { embeddings, model } = await batchGenerateEmbeddings(flatTexts);
+      for (let i = 0; i < flat.length; i++) {
         const embedding = embeddings[i];
         if (embedding) {
           results.push({
-            event_id: pending[i]!.event_id,
-            chunk_index: 0,
+            event_id: flat[i]!.event_id,
+            chunk_index: flat[i]!.chunk_index,
             embedding,
             embedding_model: model,
           });

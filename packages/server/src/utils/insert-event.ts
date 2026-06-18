@@ -210,16 +210,15 @@ async function upsertEmbedding(
   // stamped one.
   if (!embeddingModel) return;
   const vectorLiteral = `[${embedding.join(',')}]`;
-  // Replace the event's vector(s) with this single chunk-0 row: delete-then-
-  // insert keeps one row per event under the current PK(event_id) AND stays
-  // valid after the contract release moves the PK off (event_id) — unlike
-  // ON CONFLICT (event_id), which that PK swap would break for any pod still
-  // running this code during the deploy. The contract release narrows the
-  // delete to per-(event, model) once models can coexist.
-  await sql`DELETE FROM event_embeddings WHERE event_id = ${eventId}`;
+  // Inline single-vector write at chunk 0. Long content gets tail chunks from
+  // the embed backfill when LOBU_EMBEDDING_CHUNKING is on. ON CONFLICT on the
+  // full PK refreshes chunk 0 without touching other models or tail chunks.
   await sql`
     INSERT INTO event_embeddings (event_id, chunk_index, embedding, embedding_model)
     VALUES (${eventId}, 0, ${vectorLiteral}::vector, ${embeddingModel})
+    ON CONFLICT (event_id, embedding_model, chunk_index) DO UPDATE
+      SET embedding = EXCLUDED.embedding,
+          created_at = now()
   `;
 }
 

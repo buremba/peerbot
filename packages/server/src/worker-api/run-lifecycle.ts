@@ -991,16 +991,11 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
       return c.json({ success: true, updated: 0 });
     }
 
-    // Durability first, THEN finalize the run. Each event's vector(s) are
-    // replaced in their OWN transaction (delete the event's rows, then insert):
-    // per-event isolation so one bad event can't drop another's writes. The
-    // delete+insert (rather than ON CONFLICT (event_id)) is what stays valid
-    // after the contract release moves the PK off (event_id) — so a pod running
-    // THIS code keeps writing correctly during that future rolling deploy.
-    // Expand phase deletes the whole event (all models) and writes one chunk-0
-    // row, keeping one row per event under the current PK(event_id); the contract
-    // release narrows the delete to per-(event, model) for multi-vector + model
-    // coexistence. chunk_index defaults to 0 for an older worker mid-deploy.
+    // Multi-vector write — durability first, THEN finalize the run. Each event's
+    // chunk set is replaced per (event, model) in its OWN transaction so one
+    // bad event can't drop another's writes and orphan tail chunks are cleared
+    // when a re-embed yields fewer chunks. Other models' rows stay intact for
+    // zero-downtime model swaps. chunk_index defaults to 0 for an older worker.
     const byEvent = new Map<number, typeof req.embeddings>();
     for (const item of req.embeddings) {
       if (!item.embedding_model) continue; // unstamped vectors are unusable (search scopes by model)
@@ -1014,7 +1009,8 @@ export async function completeEmbeddings(c: Context<{ Bindings: Env }>) {
       const model = items[0]!.embedding_model!;
       try {
         await sql.begin(async (tx) => {
-          await tx`DELETE FROM event_embeddings WHERE event_id = ${eventId}`;
+          await tx`DELETE FROM event_embeddings
+                   WHERE event_id = ${eventId} AND embedding_model = ${model}`;
           for (const item of items) {
             const vectorStr = `[${item.embedding.join(',')}]`;
             await tx.unsafe(

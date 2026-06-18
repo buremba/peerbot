@@ -187,9 +187,8 @@ describe('embedding model swap E2E (Finding #3)', () => {
     expect(freshRows).toHaveLength(0);
   });
 
-  it('a model-B re-embed replaces the model-A row (expand phase: one row per event)', async () => {
+  it('a model-B re-embed coexists with the model-A row (zero-downtime swap)', async () => {
     const sql = getTestDb();
-    // Re-embed the model-A event under model B via the real handler.
     const newVec = new Array(EMBEDDING_DIM).fill(0);
     newVec[1] = 1;
     const { ctx } = mockEmbeddingsCtx({
@@ -201,16 +200,12 @@ describe('embedding model swap E2E (Finding #3)', () => {
     });
     await completeEmbeddings(ctx);
 
-    // Expand phase keeps PK(event_id) → one row per event. The delete-then-insert
-    // replaces the model-A row with model B (no coexistence yet — that arrives in
-    // the contract release when the PK includes the model). The point that holds
-    // now: the write uses no ON CONFLICT (event_id), so the contract PK swap
-    // won't break a pod still running this code.
     const rows = (await sql`
       SELECT embedding_model FROM event_embeddings WHERE event_id = ${eventId}
     `) as Array<{ embedding_model: string }>;
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.embedding_model).toBe(MODEL_B);
+    const models = rows.map((r) => r.embedding_model);
+    expect(models).toContain(MODEL_A);
+    expect(models).toContain(MODEL_B);
   });
 
   it('an unstamped embedding is not persisted and the event is flagged stale', async () => {
@@ -293,7 +288,7 @@ describe('embedding model swap E2E (Finding #3)', () => {
     await completeEmbeddings(first.ctx);
     expect(first.result()).toMatchObject({ body: { success: true } });
 
-    // The model-B chunk-0 vector is written (replacing the model-A row).
+    // The model-B chunk-0 vector is written (the model-A row coexists).
     const bRows = (await sql`
       SELECT 1 FROM event_embeddings
       WHERE event_id = ${ev.id} AND embedding_model = ${MODEL_B} AND chunk_index = 0

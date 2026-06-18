@@ -72,6 +72,40 @@ describe('migration invariants', () => {
       expect(rows).toHaveLength(1);
     });
 
+    it('event_embeddings is multi-vector: chunk_index + 3-col PK (#1370/#1372)', async () => {
+      const sql = getTestDb();
+      const chunkCol = await sql`
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'event_embeddings'
+          AND column_name = 'chunk_index'
+      `;
+      expect(chunkCol).toHaveLength(1);
+
+      const pkCols = await sql<{ column_name: string }[]>`
+        SELECT a.attname AS column_name
+        FROM pg_index i
+        JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+        JOIN pg_class c ON c.oid = i.indrelid
+        WHERE c.relname = 'event_embeddings'
+          AND i.indisprimary
+        ORDER BY a.attnum
+      `;
+      expect(pkCols.map((r) => r.column_name)).toEqual([
+        'event_id',
+        'embedding_model',
+        'chunk_index',
+      ]);
+
+      const notNull = await sql`
+        SELECT is_nullable FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'event_embeddings'
+          AND column_name = 'embedding_model'
+      `;
+      expect(notNull[0]?.is_nullable).toBe('NO');
+    });
+
     it('stale orphan tables entity_read_grant + mcp_proxy_sessions are dropped (2026-06-16 audit)', async () => {
       const sql = getTestDb();
       const rows = await sql<{ table_name: string }[]>`

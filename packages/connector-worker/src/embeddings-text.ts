@@ -21,6 +21,13 @@
  * the vector while keeping the service path from tripping the size guard. Kept
  * a hair under 32 KiB to leave headroom for the server-side `.trim()`.
  */
+import {
+  EMBEDDING_CHUNK_CHARS,
+  EMBEDDING_CHUNK_OVERLAP_CHARS,
+  EMBEDDING_MAX_CHUNKS_PER_EVENT,
+  EMBEDDING_MODEL_WINDOW_CHARS,
+} from '@lobu/core';
+
 export const MAX_EMBEDDING_TEXT_BYTES = 32 * 1024 - 256;
 
 /**
@@ -33,5 +40,28 @@ export function truncateToBytes(text: string, maxBytes: number): string {
   const buf = Buffer.from(text, 'utf8').subarray(0, maxBytes);
   // toString('utf8') replaces a trailing partial code point with U+FFFD;
   // strip it so we never emit a replacement char.
-  return buf.toString('utf8').replace(/�+$/, '');
+  return buf.toString('utf8').replace(/\uFFFD+$/, '');
+}
+
+/**
+ * Split text into overlapping windows for multi-vector embedding. Returns a
+ * single chunk (the whole text) when it fits the model window.
+ */
+export function chunkForEmbedding(text: string): string[] {
+  if (text.length <= EMBEDDING_MODEL_WINDOW_CHARS) return [text];
+  const chunks: string[] = [];
+  let start = 0;
+  while (start < text.length) {
+    const atCap = chunks.length === EMBEDDING_MAX_CHUNKS_PER_EVENT - 1;
+    let end = atCap ? text.length : Math.min(start + EMBEDDING_CHUNK_CHARS, text.length);
+    if (end < text.length) {
+      const ws = text.lastIndexOf(' ', end);
+      if (ws > start + EMBEDDING_CHUNK_CHARS / 2) end = ws;
+    }
+    const piece = text.slice(start, end).trim();
+    if (piece.length > 0) chunks.push(piece);
+    if (end >= text.length) break;
+    start = Math.max(end - EMBEDDING_CHUNK_OVERLAP_CHARS, start + 1);
+  }
+  return chunks;
 }

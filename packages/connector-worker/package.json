@@ -46,6 +46,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@lobu/core": "workspace:*",
     "@lobu/connector-sdk": "workspace:*",
     "@lobu/embeddings": "workspace:*",
     "@lobu/worker": "workspace:*",

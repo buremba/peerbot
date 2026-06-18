@@ -10,46 +10,14 @@
 // See packages/server/src/tools/admin/helpers/feed-helpers.ts and
 // packages/cli/src/commands/_lib/apply/desired-state.ts.
 
-import { mock, test } from 'bun:test';
+import { test } from 'bun:test';
 import { readdirSync } from 'node:fs';
 
-// Superset stub covering every symbol any connector imports from the SDK, so
-// each connector module imports without the browser/runtime stack. We only read
-// the static `.definition`, never run sync/auth.
-mock.module('@lobu/connector-sdk', () => {
-  const fn = () =>
-    new Proxy(function stub() {}, { apply: () => ({}), construct: () => ({}) });
-  return {
-    ConnectorRuntime: class {},
-    BridgeOnlyConnector: class {},
-    HttpStatusError: class extends Error {},
-    IDENTITY: {},
-    calculateEngagementScore: () => 0,
-    acquireBrowser: fn(),
-    browserNetworkSync: fn(),
-    captureErrorArtifacts: fn(),
-    createHttpClient: fn(),
-    extensionDomScrape: fn(),
-    extensionNetworkSync: fn(),
-    launchBrowser: fn(),
-    paginateByCursor: fn(),
-    paginateByOffset: fn(),
-    requireBearerClient: fn(),
-    ActionContext: {},
-    ActionResult: {},
-    AuthContext: {},
-    AuthResult: {},
-    CdpPage: {},
-    ChromeActionDispatcher: {},
-    ConnectorDefinition: {},
-    EventEnvelope: {},
-    HttpClient: {},
-    QueryContext: {},
-    QueryResult: {},
-    SyncContext: {},
-    SyncResult: {},
-  };
-});
+// NOTE: deliberately does NOT call `mock.module('@lobu/connector-sdk', …)`.
+// Bun's mock.module is process-global, so a partial stub here leaks into every
+// other test file sharing the run and breaks imports that need omitted exports.
+// We import the real (built) SDK and only read each connector's static
+// `.definition`, never running sync/auth, so the browser stack is never touched.
 
 test('no connector optionsSchema key is also feed-scoped', async () => {
   const dir = new URL('..', import.meta.url).pathname;

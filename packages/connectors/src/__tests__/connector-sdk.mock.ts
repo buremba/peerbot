@@ -34,6 +34,7 @@ export function connectorSdkMock() {
     captureErrorArtifacts: notUsed('captureErrorArtifacts'),
     extensionNetworkSync: notUsed('extensionNetworkSync'),
     createHttpClient: notUsed('createHttpClient'),
+    requireBearerClient: notUsed('requireBearerClient'),
     paginateByCursor: notUsed('paginateByCursor'),
     paginateByOffset: notUsed('paginateByOffset'),
     ConnectorRuntime: class {},

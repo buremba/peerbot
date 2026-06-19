@@ -83,7 +83,12 @@ export class SlackConnectionCoordinator {
     const connections = await this.deps.listSlackConnections();
     return (
       connections.find(
-        (connection) => connection.metadata?.teamId === teamId
+        (connection) =>
+          connection.metadata?.teamId === teamId &&
+          // A stopped BYO connection must not preempt routing — otherwise it
+          // shadows an active OAuth `slack_installations` row for the same team
+          // (matched first → 503, never falling through to the install).
+          connection.status !== "stopped"
       ) || null
     );
   }

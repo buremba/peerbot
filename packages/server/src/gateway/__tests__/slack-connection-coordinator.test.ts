@@ -170,6 +170,48 @@ describe("SlackConnectionCoordinator", () => {
     expect(forwarded).toEqual(["slackinst-T777"]);
   });
 
+  test("a stopped BYO connection does not preempt an active OAuth installation", async () => {
+    const body = JSON.stringify({ team_id: "T888", type: "event_callback" });
+    const forwarded: string[] = [];
+    const coordinator = new SlackConnectionCoordinator(
+      makeDeps({
+        // A stopped BYO connection exists for this team...
+        listSlackConnections: async () => [
+          { ...createSlackConnection("conn-stopped", { teamId: "T888" }), status: "stopped" },
+        ],
+        // ...and an active OAuth installation. Routing must reach the install,
+        // not 503 on the stopped row.
+        getInstallationStore: () =>
+          makeInstallationStore({
+            getByTeamId: mock(async () => ({
+              id: "slackinst-T888",
+              organizationId: "org-acme",
+              teamId: "T888",
+              config: { platform: "slack", botToken: "secret://ref" },
+              status: "active" as const,
+              createdAt: 0,
+              updatedAt: 0,
+            })),
+          }),
+        forwardWebhook: mock(async (connectionId: string) => {
+          forwarded.push(connectionId);
+          return new Response("ok");
+        }),
+      })
+    );
+
+    const response = await coordinator.handleAppWebhook(
+      new Request("https://gateway.example.com/slack/events", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(forwarded).toEqual(["slackinst-T888"]);
+  });
+
   test("resolveAdapterConfig sources app creds from env (requireOAuth)", async () => {
     process.env.SLACK_SIGNING_SECRET = "env-signing";
     process.env.SLACK_CLIENT_ID = "env-client-id";

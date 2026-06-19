@@ -16,6 +16,7 @@ import {
   extractConnectorMetadata,
   validateConnectorMetadata,
 } from './connector-compiler';
+import { isInternalUrl } from '../gateway/proxy/ssrf-guard';
 
 type SqlClient = ReturnType<typeof getDb>;
 
@@ -102,25 +103,7 @@ const DEFAULT_CONNECTOR_SOURCE_HOSTS = [
 
 const MAX_CONNECTOR_SOURCE_BYTES = 5 * 1024 * 1024;
 const CONNECTOR_SOURCE_FETCH_TIMEOUT_MS = 30_000;
-
-/** Block loopback/private/link-local hosts to prevent SSRF (e.g. cloud metadata 169.254.169.254). */
-function isBlockedSourceHost(hostname: string): boolean {
-  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.internal') || h === '0.0.0.0') {
-    return true;
-  }
-  if (h === '::1' || h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd')) return true;
-  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.\d{1,3}$/);
-  if (m) {
-    const a = Number(m[1]);
-    const b = Number(m[2]);
-    if (a === 0 || a === 10 || a === 127) return true;
-    if (a === 169 && b === 254) return true; // link-local incl. cloud metadata
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-  }
-  return false;
-}
+const MAX_CONNECTOR_SOURCE_REDIRECTS = 5;
 
 function allowedConnectorSourceHosts(): string[] {
   const extra = (process.env.CONNECTOR_SOURCE_ALLOWLIST ?? '')
@@ -131,13 +114,13 @@ function allowedConnectorSourceHosts(): string[] {
 }
 
 /**
- * Validate a connector `source_url` before fetching: https only, no
- * private/loopback hosts (SSRF), and host on the allowlist. `CONNECTOR_SOURCE_ALLOWLIST`
- * adds hosts (`.example.com` matches subdomains); `*` allows any public host.
- * Note: redirects are followed, so the SSRF guard binds the initial host — keep
- * `*` for trusted environments only.
+ * Validate a connector `source_url` before fetching: https only, host on the
+ * allowlist, and not resolving to a private/loopback/reserved address (SSRF).
+ * `CONNECTOR_SOURCE_ALLOWLIST` adds hosts (`.example.com` matches subdomains);
+ * `*` allows any public host (the SSRF/DNS check still applies). Async because
+ * the SSRF guard resolves DNS. Re-run on every redirect hop by the fetcher.
  */
-function assertAllowedConnectorSourceUrl(rawUrl: string): URL {
+async function assertAllowedConnectorSourceUrl(rawUrl: string): Promise<URL> {
   let url: URL;
   try {
     url = new URL(rawUrl);
@@ -147,24 +130,84 @@ function assertAllowedConnectorSourceUrl(rawUrl: string): URL {
   if (url.protocol !== 'https:') {
     throw new Error(`source_url must use https (got '${url.protocol || rawUrl}').`);
   }
-  if (isBlockedSourceHost(url.hostname)) {
-    throw new Error(
-      `source_url host '${url.hostname}' is blocked (private/loopback/link-local address).`
-    );
-  }
   const allow = allowedConnectorSourceHosts();
-  if (allow.includes('*')) return url;
-  const host = url.hostname.toLowerCase();
-  const ok = allow.some((entry) =>
-    entry.startsWith('.') ? host === entry.slice(1) || host.endsWith(entry) : host === entry
-  );
-  if (!ok) {
+  if (!allow.includes('*')) {
+    const host = url.hostname.toLowerCase();
+    const ok = allow.some((entry) =>
+      entry.startsWith('.') ? host === entry.slice(1) || host.endsWith(entry) : host === entry
+    );
+    if (!ok) {
+      throw new Error(
+        `source_url host '${host}' is not in the connector source allowlist (${allow.join(', ')}). ` +
+          `Set CONNECTOR_SOURCE_ALLOWLIST to add hosts, or '*' to allow any public host.`
+      );
+    }
+  }
+  // DNS-resolving check: catches IP literals (incl. IPv4-mapped IPv6) AND
+  // hostnames that resolve to reserved/private ranges (DNS-rebinding).
+  if (await isInternalUrl(url.toString())) {
     throw new Error(
-      `source_url host '${host}' is not in the connector source allowlist (${allow.join(', ')}). ` +
-        `Set CONNECTOR_SOURCE_ALLOWLIST to add hosts, or '*' to allow any public host.`
+      `source_url host '${url.hostname}' is blocked (resolves to a private/loopback/reserved address).`
     );
   }
   return url;
+}
+
+/** Read a response body, aborting as soon as it exceeds the byte cap (content-length can lie / be absent). */
+async function readBodyWithCap(res: Response, maxBytes: number): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return '';
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new Error(`Connector source too large (max ${maxBytes} bytes).`);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf-8');
+}
+
+/**
+ * Fetch connector source with a single timeout covering the whole exchange
+ * (headers + body), manual redirect following that re-validates EVERY hop with
+ * the same scheme/allowlist/SSRF checks, and a streaming byte cap.
+ */
+async function fetchConnectorSource(initialUrl: URL): Promise<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), CONNECTOR_SOURCE_FETCH_TIMEOUT_MS);
+  try {
+    let url = initialUrl;
+    for (let hop = 0; hop <= MAX_CONNECTOR_SOURCE_REDIRECTS; hop++) {
+      const res = await fetch(url, { signal: controller.signal, redirect: 'manual' });
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get('location');
+        if (!location) throw new Error(`Redirect from ${url.toString()} had no Location header.`);
+        url = await assertAllowedConnectorSourceUrl(new URL(location, url).toString());
+        continue;
+      }
+      if (!res.ok) {
+        throw new Error(`Failed to fetch source from ${url.toString()}: ${res.status}`);
+      }
+      const declaredLength = Number(res.headers.get('content-length') ?? '0');
+      if (Number.isFinite(declaredLength) && declaredLength > MAX_CONNECTOR_SOURCE_BYTES) {
+        throw new Error(
+          `Connector source too large: ${declaredLength} bytes (max ${MAX_CONNECTOR_SOURCE_BYTES}).`
+        );
+      }
+      return await readBodyWithCap(res, MAX_CONNECTOR_SOURCE_BYTES);
+    }
+    throw new Error(
+      `Too many redirects fetching connector source (max ${MAX_CONNECTOR_SOURCE_REDIRECTS}).`
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function resolveConnectorInstallSource(params: {
@@ -187,30 +230,9 @@ export async function resolveConnectorInstallSource(params: {
     sourcePath = filePath;
     sourceCode = await readFile(filePath, 'utf-8');
   } else if (params.sourceUrl) {
-    const url = assertAllowedConnectorSourceUrl(params.sourceUrl);
+    const url = await assertAllowedConnectorSourceUrl(params.sourceUrl);
     sourcePath = url.pathname.replace(/^\//, '') || null;
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), CONNECTOR_SOURCE_FETCH_TIMEOUT_MS);
-    let sourceResponse: Response;
-    try {
-      sourceResponse = await fetch(url, { signal: controller.signal });
-    } finally {
-      clearTimeout(timeout);
-    }
-    if (!sourceResponse.ok) {
-      throw new Error(`Failed to fetch source from ${url.toString()}: ${sourceResponse.status}`);
-    }
-    const declaredLength = Number(sourceResponse.headers.get('content-length') ?? '0');
-    if (Number.isFinite(declaredLength) && declaredLength > MAX_CONNECTOR_SOURCE_BYTES) {
-      throw new Error(
-        `Connector source too large: ${declaredLength} bytes (max ${MAX_CONNECTOR_SOURCE_BYTES}).`
-      );
-    }
-    sourceCode = await sourceResponse.text();
-    if (Buffer.byteLength(sourceCode) > MAX_CONNECTOR_SOURCE_BYTES) {
-      throw new Error(`Connector source too large (max ${MAX_CONNECTOR_SOURCE_BYTES} bytes).`);
-    }
+    sourceCode = await fetchConnectorSource(url);
   } else if (params.sourceCode) {
     sourceCode = params.sourceCode;
   } else {

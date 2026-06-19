@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { resolveConnectorInstallSource } from '../connector-definition-install';
 
-// These cases all reject BEFORE any network fetch (scheme/SSRF/allowlist checks),
-// so they need no mocking and make no outbound request.
+// These cases all reject BEFORE any network fetch (scheme/allowlist/SSRF on IP
+// literals), so they need no mocking and make no outbound request. SSRF cases use
+// CONNECTOR_SOURCE_ALLOWLIST='*' to pass the allowlist and reach the SSRF check,
+// and IP literals (not hostnames) so the reserved-IP check is deterministic.
 describe('connector source_url install guard', () => {
   const prev = process.env.CONNECTOR_SOURCE_ALLOWLIST;
   beforeEach(() => {
@@ -19,32 +21,40 @@ describe('connector source_url install guard', () => {
     ).rejects.toThrow(/must use https/i);
   });
 
-  it('blocks cloud-metadata / link-local addresses (SSRF)', async () => {
-    await expect(
-      resolveConnectorInstallSource({ sourceUrl: 'https://169.254.169.254/latest/meta-data/' })
-    ).rejects.toThrow(/blocked/i);
-  });
-
-  it('blocks loopback and private hosts (SSRF)', async () => {
-    await expect(
-      resolveConnectorInstallSource({ sourceUrl: 'https://localhost/x.ts' })
-    ).rejects.toThrow(/blocked/i);
-    await expect(
-      resolveConnectorInstallSource({ sourceUrl: 'https://10.0.0.5/x.ts' })
-    ).rejects.toThrow(/blocked/i);
-  });
-
   it('rejects hosts not on the allowlist', async () => {
     await expect(
       resolveConnectorInstallSource({ sourceUrl: 'https://evil.example.com/x.ts' })
     ).rejects.toThrow(/allowlist/i);
   });
 
-  it('allows hosts added via CONNECTOR_SOURCE_ALLOWLIST past the guard', async () => {
-    process.env.CONNECTOR_SOURCE_ALLOWLIST = 'evil.example.com';
-    // Passes the guard, then fails at the (unmocked) fetch — proving the guard let it through.
+  it('blocks cloud-metadata / link-local addresses (SSRF) even with wildcard', async () => {
+    process.env.CONNECTOR_SOURCE_ALLOWLIST = '*';
     await expect(
-      resolveConnectorInstallSource({ sourceUrl: 'https://evil.example.com/does-not-exist.ts' })
+      resolveConnectorInstallSource({ sourceUrl: 'https://169.254.169.254/latest/meta-data/' })
+    ).rejects.toThrow(/blocked/i);
+  });
+
+  it('blocks loopback and private IP literals (SSRF) even with wildcard', async () => {
+    process.env.CONNECTOR_SOURCE_ALLOWLIST = '*';
+    await expect(
+      resolveConnectorInstallSource({ sourceUrl: 'https://127.0.0.1/x.ts' })
+    ).rejects.toThrow(/blocked/i);
+    await expect(
+      resolveConnectorInstallSource({ sourceUrl: 'https://10.0.0.5/x.ts' })
+    ).rejects.toThrow(/blocked/i);
+  });
+
+  it('blocks IPv4-mapped IPv6 loopback even with wildcard (regression for SSRF bypass)', async () => {
+    process.env.CONNECTOR_SOURCE_ALLOWLIST = '*';
+    await expect(
+      resolveConnectorInstallSource({ sourceUrl: 'https://[::ffff:127.0.0.1]/x.ts' })
+    ).rejects.toThrow(/blocked/i);
+  });
+
+  it('lets an allowlisted public host past the guard (fails later at fetch, not the guard)', async () => {
+    process.env.CONNECTOR_SOURCE_ALLOWLIST = 'connectors.example.com';
+    await expect(
+      resolveConnectorInstallSource({ sourceUrl: 'https://connectors.example.com/nope.ts' })
     ).rejects.not.toThrow(/allowlist|must use https|blocked/i);
   });
 });

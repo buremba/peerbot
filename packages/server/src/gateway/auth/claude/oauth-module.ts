@@ -264,12 +264,21 @@ export class ClaudeOAuthModule extends BaseProviderModule {
       this.providerId
     );
 
-    const oauthToken =
-      profile?.authType === "oauth" ? profile.credential : undefined;
-    const apiKey =
-      profile?.authType !== "oauth"
-        ? profile?.credential
-        : process.env.ANTHROPIC_AUTH_TOKEN || process.env.ANTHROPIC_API_KEY;
+    // A per-agent profile wins entirely; only when none exists do we fall back
+    // to the system env key. Without that env fallback, an env-configured key
+    // (no auth profile) produced no credential here, so getDefaultModel
+    // returned undefined and an auto-mode agent got "No model configured".
+    // ANTHROPIC_AUTH_TOKEN is a Bearer token (preferred, matches the secret
+    // proxy); ANTHROPIC_API_KEY is presented as x-api-key.
+    let oauthToken: string | undefined;
+    let apiKey: string | undefined;
+    if (profile?.credential) {
+      if (profile.authType === "oauth") oauthToken = profile.credential;
+      else apiKey = profile.credential;
+    } else {
+      oauthToken = resolveEnv("ANTHROPIC_AUTH_TOKEN");
+      if (!oauthToken) apiKey = resolveEnv("ANTHROPIC_API_KEY");
+    }
 
     const headers: Record<string, string> = {
       Accept: "application/json",

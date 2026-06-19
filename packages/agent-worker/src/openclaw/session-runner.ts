@@ -605,6 +605,30 @@ export async function runAISession(
         modelId,
         providerBaseUrl,
       });
+    } else if (provider === "anthropic") {
+      // The newest Claude models (resolved live from the provider for auto-mode
+      // agents) lag pi-ai's static registry. Clone a known Claude model's shape
+      // and override the id so the agent still runs — Anthropic / the
+      // claude-code CLI validates the id upstream. Without this, an auto-mode
+      // agent on the newest model crashes with "not found in the model registry".
+      const template = [
+        "claude-sonnet-4-5",
+        "claude-sonnet-4-20250514",
+        "claude-haiku-4-5-20251001",
+        "claude-3-5-sonnet-20241022",
+      ]
+        .map((id) => getModel("anthropic" as any, id as any))
+        .find(Boolean);
+      if (template) {
+        logger.info(
+          `Creating dynamic Claude model entry for ${modelId} (not in static registry)`
+        );
+        baseModel = { ...(template as any), id: modelId, name: modelId };
+      } else {
+        throw new Error(
+          `Model "${modelId}" not found for provider "${provider}". Check that the model ID is valid and registered in the model registry.`
+        );
+      }
     } else {
       throw new Error(
         `Model "${modelId}" not found for provider "${provider}". Check that the model ID is valid and registered in the model registry.`

@@ -1264,7 +1264,7 @@ export class ChatInstanceManager {
       forwardWebhook: this.handleWebhook.bind(this),
       getRunningChat: (connectionId) => this.getInstance(connectionId)?.chat,
       listSlackConnections: () => this.listConnections({ platform: "slack" }),
-      installationStore: this.services.getSlackInstallationStore(),
+      getInstallationStore: () => this.services.getSlackInstallationStore(),
     });
   }
 

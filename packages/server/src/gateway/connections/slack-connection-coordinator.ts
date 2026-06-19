@@ -66,8 +66,12 @@ interface SlackConnectionCoordinatorDeps {
   forwardWebhook(connectionId: string, request: Request): Promise<Response>;
   getRunningChat(connectionId: string): any | undefined;
   listSlackConnections(): Promise<PlatformConnection[]>;
-  /** Per-workspace OAuth installs (token + tenant data), keyed on (org, team). */
-  installationStore: SlackInstallationStore;
+  /**
+   * Per-workspace OAuth installs (token + tenant data), keyed on (org, team).
+   * Resolved lazily so building the coordinator never forces the store to
+   * exist — only the install/webhook paths actually need it.
+   */
+  getInstallationStore(): SlackInstallationStore;
 }
 
 export class SlackConnectionCoordinator {
@@ -128,7 +132,7 @@ export class SlackConnectionCoordinator {
     teamId: string,
     installation: SlackInstallation
   ): Promise<{ installationId: string }> {
-    const row = await this.deps.installationStore.upsertByTeam(
+    const row = await this.deps.getInstallationStore().upsertByTeam(
       organizationId,
       teamId,
       {
@@ -228,7 +232,7 @@ export class SlackConnectionCoordinator {
       //    `ensureConnectionRunning`/`forwardWebhook` resolve it from the
       //    installation store). Per-message routing is via `/lobu link` bindings.
       const installation =
-        await this.deps.installationStore.getByTeamId(teamId);
+        await this.deps.getInstallationStore().getByTeamId(teamId);
       if (installation && installation.status !== "stopped") {
         if (!(await this.deps.ensureConnectionRunning(installation.id))) {
           return new Response("Slack connection unavailable", { status: 503 });

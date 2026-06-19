@@ -90,15 +90,31 @@ export function createPostgresSlackInstallationStore(
       // land in the same tenant bucket regardless of ambient context.
       return orgContext.run({ organizationId }, async () => {
         const sql = getDb();
-        const existing = await sql`
-          SELECT id FROM slack_installations
-          WHERE organization_id = ${organizationId} AND team_id = ${teamId}
-          LIMIT 1
-        `;
-        const id =
-          (existing[0]?.id as string | undefined) ??
-          `${SLACK_INSTALLATION_ID_PREFIX}${randomUUID().replace(/-/g, "")}`;
+        const candidateId = `${SLACK_INSTALLATION_ID_PREFIX}${randomUUID().replace(/-/g, "")}`;
+        const now = new Date();
 
+        // Step 1: claim the (org, team) row and learn its CANONICAL id. Under a
+        // concurrent first-install, the loser's INSERT conflicts and DO UPDATE
+        // returns the winner's id — so we never persist a token under an id the
+        // surviving row doesn't reference. config is left untouched here.
+        const claimed = await sql`
+          INSERT INTO slack_installations
+            (id, organization_id, team_id, team_name, bot_user_id, config, status, created_at, updated_at)
+          VALUES (
+            ${candidateId}, ${organizationId}, ${teamId}, ${data.teamName ?? null},
+            ${data.botUserId ?? null}, '{}'::jsonb, 'active', ${now}, ${now}
+          )
+          ON CONFLICT (organization_id, team_id) DO UPDATE SET
+            team_name = EXCLUDED.team_name,
+            bot_user_id = EXCLUDED.bot_user_id,
+            status = 'active',
+            updated_at = ${now}
+          RETURNING id
+        `;
+        const id = claimed[0]!.id as string;
+
+        // Step 2: persist the token under the canonical id, then point the row's
+        // config at the ref.
         const tokenRef = await persistSecretValue(
           secretStore,
           `installations/${id}/botToken`,
@@ -108,20 +124,10 @@ export function createPostgresSlackInstallationStore(
           platform: "slack",
           ...(tokenRef ? { botToken: tokenRef } : {}),
         };
-        const now = new Date();
         const rows = await sql`
-          INSERT INTO slack_installations
-            (id, organization_id, team_id, team_name, bot_user_id, config, status, created_at, updated_at)
-          VALUES (
-            ${id}, ${organizationId}, ${teamId}, ${data.teamName ?? null},
-            ${data.botUserId ?? null}, ${sql.json(config)}, 'active', ${now}, ${now}
-          )
-          ON CONFLICT (organization_id, team_id) DO UPDATE SET
-            team_name = EXCLUDED.team_name,
-            bot_user_id = EXCLUDED.bot_user_id,
-            config = EXCLUDED.config,
-            status = 'active',
-            updated_at = ${now}
+          UPDATE slack_installations
+          SET config = ${sql.json(config)}, updated_at = ${new Date()}
+          WHERE id = ${id}
           RETURNING *
         `;
         return rowToInstallation(rows[0]);

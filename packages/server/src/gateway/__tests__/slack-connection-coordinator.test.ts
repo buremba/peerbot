@@ -31,8 +31,8 @@ type Deps = ConstructorParameters<typeof SlackConnectionCoordinator>[0];
 
 /** Installation-store stub; override per test. */
 function makeInstallationStore(
-  overrides: Partial<Deps["installationStore"]> = {}
-): Deps["installationStore"] {
+  overrides: Partial<ReturnType<Deps["getInstallationStore"]>> = {}
+): ReturnType<Deps["getInstallationStore"]> {
   return {
     upsertByTeam: mock(async (organizationId: string, teamId: string) => ({
       id: `slackinst-${teamId}`,
@@ -60,7 +60,7 @@ function makeDeps(overrides: Partial<Deps> = {}): Deps {
     forwardWebhook: mock(async () => new Response("ok")),
     getRunningChat: () => undefined,
     listSlackConnections: async () => [],
-    installationStore: makeInstallationStore(),
+    getInstallationStore: () => makeInstallationStore(),
     ...overrides,
   };
 }
@@ -110,7 +110,7 @@ describe("SlackConnectionCoordinator", () => {
       })
     );
     const coordinator = new SlackConnectionCoordinator(
-      makeDeps({ installationStore: makeInstallationStore({ upsertByTeam }) })
+      makeDeps({ getInstallationStore: () => makeInstallationStore({ upsertByTeam }) })
     );
 
     const result = await coordinator.ensureWorkspaceInstallation(
@@ -140,7 +140,7 @@ describe("SlackConnectionCoordinator", () => {
         // No agent-owned (BYO) slack connection for this team...
         listSlackConnections: async () => [],
         // ...but an OAuth installation exists.
-        installationStore: makeInstallationStore({
+        getInstallationStore: () => makeInstallationStore({
           getByTeamId: mock(async () => ({
             id: "slackinst-T777",
             organizationId: "org-acme",

@@ -250,6 +250,112 @@ describe("SecretProxy user-scoped provider routing", () => {
   });
 });
 
+describe("SecretProxy API-key header scheme (Anthropic x-api-key vs Bearer)", () => {
+  // Forward one request through the URL-scoped provider path and report which
+  // auth header the proxy attached. The profile supplies the resolved
+  // credential + its authType, mirroring a per-agent auth profile (or, for an
+  // api-key, an env/org system key — same header decision).
+  async function forwardWithProfile(opts: {
+    slug: string;
+    apiKeyHeader?: "authorization" | "x-api-key";
+    authType: "api-key" | "oauth";
+    credential: string;
+  }): Promise<{
+    status: number;
+    authorization: string | null;
+    xApiKey: string | null;
+  }> {
+    const proxy = new SecretProxy(
+      { defaultUpstreamUrl: "https://default.example.com" },
+      { get: async () => null } satisfies SecretStore
+    );
+    proxy.registerUpstream(
+      {
+        slug: opts.slug,
+        upstreamBaseUrl: `https://api.${opts.slug}.example.com`,
+        apiKeyHeader: opts.apiKeyHeader,
+      },
+      opts.slug
+    );
+    proxy.setAuthProfilesManager({
+      getBestProfile: async (agentId: string, provider: string) => ({
+        id: "runtime",
+        provider,
+        credential: opts.credential,
+        authType: opts.authType,
+        label: "runtime",
+        createdAt: Date.now(),
+      }),
+      ensureFreshCredential: async (profile: { credential?: string }) =>
+        profile.credential,
+    } as any);
+
+    const originalFetch = globalThis.fetch;
+    let authorization: string | null = null;
+    let xApiKey: string | null = null;
+    globalThis.fetch = async (_input, init) => {
+      const h = (init?.headers as Record<string, string>) ?? {};
+      authorization = h.authorization ?? null;
+      xApiKey = h["x-api-key"] ?? null;
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    try {
+      const res = await proxy
+        .getApp()
+        .request(`/api/proxy/${opts.slug}/a/agent-1/v1/messages`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer worker-token-test",
+          },
+          body: JSON.stringify({ prompt: "hi" }),
+        });
+      return { status: res.status, authorization, xApiKey };
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+
+  test("Anthropic API key is sent as x-api-key, never Bearer (regression: 401 invalid bearer token)", async () => {
+    const r = await forwardWithProfile({
+      slug: "anthropic",
+      apiKeyHeader: "x-api-key",
+      authType: "api-key",
+      credential: "sk-ant-api03-realkey",
+    });
+    expect(r.status).toBe(200);
+    expect(r.xApiKey).toBe("sk-ant-api03-realkey");
+    expect(r.authorization).toBeNull();
+  });
+
+  test("OpenAI-compatible API key stays Authorization: Bearer", async () => {
+    const r = await forwardWithProfile({
+      slug: "openai",
+      apiKeyHeader: undefined,
+      authType: "api-key",
+      credential: "sk-openai-key",
+    });
+    expect(r.status).toBe(200);
+    expect(r.authorization).toBe("Bearer sk-openai-key");
+    expect(r.xApiKey).toBeNull();
+  });
+
+  test("Anthropic OAuth token still uses Authorization: Bearer (not x-api-key)", async () => {
+    const r = await forwardWithProfile({
+      slug: "anthropic",
+      apiKeyHeader: "x-api-key",
+      authType: "oauth",
+      credential: "sk-ant-oat01-oauthtoken",
+    });
+    expect(r.status).toBe(200);
+    expect(r.authorization).toBe("Bearer sk-ant-oat01-oauthtoken");
+    expect(r.xApiKey).toBeNull();
+  });
+});
+
 describe("resolveProviderCredential (egress resolution chain)", () => {
   const neverDb = async (): Promise<string | null> => {
     throw new Error("DB lookup must not run for this tier");
@@ -265,7 +371,19 @@ describe("resolveProviderCredential (egress resolution chain)", () => {
         throw new Error("system tier must not run");
       },
     });
-    expect(credential).toBe("profile-key");
+    expect(credential).toEqual({ value: "profile-key", kind: "api-key" });
+  });
+
+  test("tier 1: an OAuth profile is classified as kind 'oauth' (Bearer)", async () => {
+    const credential = await resolveProviderCredential({
+      profileCredential: "oauth-token",
+      profileAuthType: "oauth",
+      providerId: "anthropic",
+      organizationId: "org-a",
+      readOrgSharedKey: neverDb,
+      systemKeyResolver: undefined,
+    });
+    expect(credential).toEqual({ value: "oauth-token", kind: "oauth" });
   });
 
   test("tier 2: org-shared apply-provisioned key resolves when no profile exists (LOBU-BACKEND-W regression)", async () => {
@@ -282,7 +400,7 @@ describe("resolveProviderCredential (egress resolution chain)", () => {
         throw new Error("system tier must not run when org key exists");
       },
     });
-    expect(credential).toBe("org-shared-key");
+    expect(credential).toEqual({ value: "org-shared-key", kind: "api-key" });
     expect(calls).toEqual([["openai", "org-a"]]);
   });
 
@@ -292,20 +410,20 @@ describe("resolveProviderCredential (egress resolution chain)", () => {
       providerId: "openai",
       organizationId: undefined,
       readOrgSharedKey: neverDb,
-      systemKeyResolver: () => "system-key",
+      systemKeyResolver: () => ({ value: "system-key", kind: "api-key" }),
     });
-    expect(credential).toBe("system-key");
+    expect(credential).toEqual({ value: "system-key", kind: "api-key" });
   });
 
-  test("tier 3: system key resolves when profile and org tiers miss", async () => {
+  test("tier 3: system key resolves (with kind) when profile and org tiers miss", async () => {
     const credential = await resolveProviderCredential({
       profileCredential: null,
-      providerId: "openai",
+      providerId: "anthropic",
       organizationId: "org-a",
       readOrgSharedKey: async () => null,
-      systemKeyResolver: () => "system-key",
+      systemKeyResolver: () => ({ value: "oauth-system", kind: "oauth" }),
     });
-    expect(credential).toBe("system-key");
+    expect(credential).toEqual({ value: "oauth-system", kind: "oauth" });
   });
 
   test("null when every tier misses (handler 401s with no_credentials)", async () => {

@@ -13,6 +13,14 @@ interface OrchestratorModule extends ModuleInterface {
 export interface ProviderUpstreamConfig {
   slug: string;
   upstreamBaseUrl: string;
+  /**
+   * Header used to present an API-KEY credential to this upstream. Anthropic
+   * requires `x-api-key` and 401s ("invalid bearer token") when an `sk-ant`
+   * key is sent as `Authorization: Bearer` — which is the OpenAI-compatible
+   * default every other provider uses. OAuth credentials always use
+   * `Authorization: Bearer` regardless of this setting. Omit for Bearer.
+   */
+  apiKeyHeader?: "authorization" | "x-api-key";
 }
 
 export interface ModelProviderModule extends OrchestratorModule {
@@ -27,6 +35,13 @@ export interface ModelProviderModule extends OrchestratorModule {
   catalogVisible?: boolean;
   getSecretEnvVarNames(): string[];
   getCredentialEnvVarName(): string;
+  /**
+   * Subset of `getSecretEnvVarNames()` whose values are Bearer/OAuth-style
+   * tokens (e.g. `CLAUDE_CODE_OAUTH_TOKEN`) rather than API keys. Lets the
+   * system-key resolver classify a resolved env credential as `"oauth"` so the
+   * secret proxy presents it as `Authorization: Bearer`. Default: none.
+   */
+  getBearerCredentialEnvVarNames?(): string[];
   getUpstreamConfig?(): ProviderUpstreamConfig | null;
   hasCredentials(
     agentId: string,

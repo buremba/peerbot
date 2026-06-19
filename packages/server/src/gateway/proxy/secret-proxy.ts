@@ -270,23 +270,53 @@ function parseBearer(authHeader: string | undefined): string | null {
  * Exported for tests; dependencies are injected so the tier ORDER is testable
  * without a database or upstream.
  */
+/**
+ * How a resolved credential must be presented to the upstream. `"oauth"`
+ * credentials always use `Authorization: Bearer`; `"api-key"` credentials honor
+ * the provider's declared `apiKeyHeader` (Bearer for OpenAI-compatible APIs,
+ * `x-api-key` for Anthropic). Determined at resolution time — never inferred
+ * from the credential string.
+ */
+export type CredentialKind = "oauth" | "api-key";
+
+/** A system (env) key plus its kind, returned by the system-key resolver. */
+export interface SystemKeyResult {
+  value: string;
+  kind: CredentialKind;
+}
+
+export interface ResolvedProviderCredential {
+  value: string;
+  kind: CredentialKind;
+}
+
 export async function resolveProviderCredential(params: {
   profileCredential: string | null;
+  /** Auth profile's type, used to classify a profile-sourced credential. */
+  profileAuthType?: string;
   providerId: string;
   organizationId: string | undefined;
   readOrgSharedKey: (
     providerId: string,
     organizationId: string
   ) => Promise<string | null>;
-  systemKeyResolver?: (providerId: string) => string | undefined;
-}): Promise<string | null> {
-  if (params.profileCredential) return params.profileCredential;
+  systemKeyResolver?: (providerId: string) => SystemKeyResult | undefined;
+}): Promise<ResolvedProviderCredential | null> {
+  if (params.profileCredential) {
+    return {
+      value: params.profileCredential,
+      // Only an explicit OAuth profile yields a Bearer-only credential; every
+      // other profile type (api-key, device-code) is presented as an API key.
+      kind: params.profileAuthType === "oauth" ? "oauth" : "api-key",
+    };
+  }
   if (params.organizationId) {
     const orgKey = await params.readOrgSharedKey(
       params.providerId,
       params.organizationId
     );
-    if (orgKey) return orgKey;
+    // Org-shared keys are written by `lobu apply` as API keys.
+    if (orgKey) return { value: orgKey, kind: "api-key" };
   }
   return params.systemKeyResolver?.(params.providerId) ?? null;
 }
@@ -327,9 +357,18 @@ export class SecretProxy {
   private config: SecretProxyConfig;
   private slugMap: Map<string, string>;
   private slugToProviderId: Map<string, string> = new Map();
+  /**
+   * Per-provider header scheme for presenting an API-KEY credential upstream.
+   * Defaults to Bearer; Anthropic registers `"x-api-key"`. See
+   * `applyCredentialHeader`.
+   */
+  private slugToApiKeyHeader: Map<string, "authorization" | "x-api-key"> =
+    new Map();
   private authProfilesManager?: AuthProfilesManager;
   private readonly secretStore: SecretStore;
-  private systemKeyResolver?: (providerId: string) => string | undefined;
+  private systemKeyResolver?: (
+    providerId: string
+  ) => SystemKeyResult | undefined;
   private agentOrgResolver?: AgentOrgResolver;
 
   constructor(config: SecretProxyConfig, secretStore: SecretStore) {
@@ -351,11 +390,12 @@ export class SecretProxy {
   }
 
   /**
-   * Set a callback that resolves system-level API keys for a provider.
-   * Used as fallback when no per-agent auth profile exists.
+   * Set a callback that resolves system-level keys for a provider, with the
+   * credential's kind so the proxy can pick the right auth header. Used as
+   * fallback when no per-agent auth profile exists.
    */
   setSystemKeyResolver(
-    resolver: (providerId: string) => string | undefined
+    resolver: (providerId: string) => SystemKeyResult | undefined
   ): void {
     this.systemKeyResolver = resolver;
   }
@@ -382,6 +422,9 @@ export class SecretProxy {
     if (providerId) {
       this.slugToProviderId.set(upstream.slug, providerId);
     }
+    if (upstream.apiKeyHeader) {
+      this.slugToApiKeyHeader.set(upstream.slug, upstream.apiKeyHeader);
+    }
     logger.debug(
       `Registered provider upstream: ${upstream.slug} -> ${upstream.upstreamBaseUrl}${providerId ? ` (providerId: ${providerId})` : ""}`
     );
@@ -389,6 +432,33 @@ export class SecretProxy {
 
   getApp(): Hono {
     return this.app;
+  }
+
+  /**
+   * Attach a resolved provider credential to the outgoing headers using the
+   * correct scheme. Most providers are OpenAI-compatible and take the key as
+   * `Authorization: Bearer`. Anthropic is the exception: it registers
+   * `apiKeyHeader: "x-api-key"` and returns 401 ("invalid bearer token") when an
+   * `sk-ant` API key arrives as a Bearer token. OAuth credentials always use
+   * Bearer regardless — so the x-api-key scheme applies only to `api-key`
+   * credentials. The `kind` is determined at resolution time (auth-profile type,
+   * org-shared key, or the system-key resolver), never sniffed from the
+   * credential string. Exactly one of the two headers is set so the upstream
+   * never sees a conflicting pair.
+   */
+  private applyCredentialHeader(
+    headers: Record<string, string>,
+    slug: string,
+    credential: string,
+    kind: CredentialKind
+  ): void {
+    if (this.slugToApiKeyHeader.get(slug) === "x-api-key" && kind !== "oauth") {
+      delete headers.authorization;
+      headers["x-api-key"] = credential;
+    } else {
+      delete headers["x-api-key"];
+      headers.authorization = `Bearer ${credential}`;
+    }
   }
 
   private setupRoutes(): void {
@@ -813,13 +883,19 @@ export class SecretProxy {
           : profile?.credential;
         const resolvedCredential = await resolveProviderCredential({
           profileCredential: credential ?? null,
+          profileAuthType: profile?.authType,
           providerId,
           organizationId: expectedOrganizationId,
           readOrgSharedKey: readOrgSharedProviderApiKey,
           systemKeyResolver: this.systemKeyResolver,
         });
         if (resolvedCredential) {
-          headers.authorization = `Bearer ${resolvedCredential}`;
+          this.applyCredentialHeader(
+            headers,
+            resolvedSlug,
+            resolvedCredential.value,
+            resolvedCredential.kind
+          );
         } else {
           logger.warn(
             `No auth profile, org-shared key, or system key for agent ${urlAgentId}, provider ${providerId}`

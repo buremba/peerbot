@@ -10,6 +10,7 @@ import {
 	type ProviderRegistryEntry,
 } from "@lobu/core";
 import { getDb } from "../../db/client.js";
+import { resolveEnv } from "../auth/mcp/string-substitution.js";
 import { PostgresSecretStore } from "../../lobu/stores/postgres-secret-store.js";
 import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { ApiKeyProviderModule } from "../auth/api-key-provider-module.js";
@@ -688,10 +689,25 @@ export class CoreServices {
 				// so check all secret env var names.
 				const testEnv: Record<string, string> = {};
 				mod.injectSystemKeyFallback(testEnv);
-				for (const varName of mod.getSecretEnvVarNames()) {
-					if (testEnv[varName]) return testEnv[varName];
-				}
-				return testEnv[mod.getCredentialEnvVarName()] || undefined;
+				const value =
+					mod
+						.getSecretEnvVarNames()
+						.map((v) => testEnv[v])
+						.find(Boolean) ?? testEnv[mod.getCredentialEnvVarName()];
+				if (!value) return undefined;
+				// Classify by the SOURCE env var, not the destination: a module's
+				// injectSystemKeyFallback may re-home a Bearer/OAuth token into an
+				// api-key var (e.g. Claude copies ANTHROPIC_AUTH_TOKEN into
+				// ANTHROPIC_API_KEY). Match the resolved value back to a declared
+				// bearer var so a Bearer token is still presented as Bearer, not
+				// x-api-key.
+				const isBearer = (mod.getBearerCredentialEnvVarNames?.() ?? []).some(
+					(v) => {
+						const raw = resolveEnv(v);
+						return !!raw && raw === value;
+					},
+				);
+				return { value, kind: isBearer ? "oauth" : "api-key" };
 			});
 			logger.debug("Provider upstreams registered with secret proxy");
 		}

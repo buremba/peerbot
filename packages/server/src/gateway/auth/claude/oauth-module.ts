@@ -33,9 +33,21 @@ export class ClaudeOAuthModule extends BaseProviderModule {
           "ANTHROPIC_AUTH_TOKEN",
           "CLAUDE_CODE_OAUTH_TOKEN",
         ],
+        // Bearer/OAuth tokens — presented as `Authorization: Bearer`, not
+        // `x-api-key`. ANTHROPIC_API_KEY (the sk-ant key) is the only x-api-key
+        // credential and is intentionally absent here.
+        bearerCredentialEnvVarNames: [
+          "ANTHROPIC_AUTH_TOKEN",
+          "CLAUDE_CODE_OAUTH_TOKEN",
+        ],
         slug: "anthropic",
         upstreamBaseUrl: "https://api.anthropic.com",
         baseUrlEnvVarName: "ANTHROPIC_BASE_URL",
+        // Anthropic rejects API keys sent as `Authorization: Bearer` (401
+        // "invalid bearer token") — they must ride in the `x-api-key` header.
+        // OAuth tokens still use Bearer (the secret proxy checks credential
+        // type before applying this scheme).
+        apiKeyHeader: "x-api-key",
         authType: "oauth",
         supportedAuthTypes: ["oauth", "api-key"],
         apiKeyInstructions:
@@ -53,9 +65,16 @@ export class ClaudeOAuthModule extends BaseProviderModule {
   // ---- Overrides for multi-env-var logic ----
 
   override hasSystemKey(): boolean {
+    // Recognize all three credential env vars: a plain ANTHROPIC_API_KEY (the
+    // standard var most users set) is a valid system key, same as every other
+    // provider's API key. Without it, an env-configured Anthropic key was
+    // silently treated as "not connected" — the agent reported "No model
+    // configured" even though injectSystemKeyFallback would have used the key.
+    // The proxy presents it via x-api-key (see ProviderUpstreamConfig.apiKeyHeader).
     return !!(
       resolveEnv("ANTHROPIC_AUTH_TOKEN") ||
-      resolveEnv("CLAUDE_CODE_OAUTH_TOKEN")
+      resolveEnv("CLAUDE_CODE_OAUTH_TOKEN") ||
+      resolveEnv("ANTHROPIC_API_KEY")
     );
   }
 

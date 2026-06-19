@@ -43,6 +43,11 @@ interface BaseProviderConfig {
   credentialEnvVarName: string;
   /** All env vars this provider considers secrets */
   secretEnvVarNames: string[];
+  /**
+   * Subset of `secretEnvVarNames` holding Bearer/OAuth-style tokens (not API
+   * keys). Used to classify a system-key credential's kind. Default: none.
+   */
+  bearerCredentialEnvVarNames?: string[];
   /** Env var to check for system key (defaults to credentialEnvVarName) */
   systemEnvVarName?: string;
   /** Provider slug for proxy path routing (e.g. "anthropic") */
@@ -51,6 +56,11 @@ interface BaseProviderConfig {
   upstreamBaseUrl?: string;
   /** Explicit base URL env var name (defaults to slug-derived name) */
   baseUrlEnvVarName?: string;
+  /**
+   * Header used to present an API-KEY credential to the upstream proxy.
+   * `"x-api-key"` for Anthropic; omitted (Bearer) for OpenAI-compatible APIs.
+   */
+  apiKeyHeader?: "authorization" | "x-api-key";
   authType: "oauth" | "device-code" | "api-key";
   supportedAuthTypes?: ("oauth" | "device-code" | "api-key")[];
   apiKeyInstructions?: string;
@@ -121,18 +131,23 @@ export abstract class BaseProviderModule
     return this.providerConfig.secretEnvVarNames;
   }
 
+  getBearerCredentialEnvVarNames(): string[] {
+    return this.providerConfig.bearerCredentialEnvVarNames ?? [];
+  }
+
   getCredentialEnvVarName(): string {
     return this.providerConfig.credentialEnvVarName;
   }
 
   getUpstreamConfig(): ProviderUpstreamConfig | null {
-    const { slug, upstreamBaseUrl, baseUrlEnvVarName } = this.providerConfig;
+    const { slug, upstreamBaseUrl, baseUrlEnvVarName, apiKeyHeader } =
+      this.providerConfig;
     if (!slug || !upstreamBaseUrl) return null;
     // Check env for base URL override (e.g., ANTHROPIC_BASE_URL=https://api.z.ai)
     const envOverride = baseUrlEnvVarName
       ? resolveEnv(baseUrlEnvVarName)
       : undefined;
-    return { slug, upstreamBaseUrl: envOverride || upstreamBaseUrl };
+    return { slug, upstreamBaseUrl: envOverride || upstreamBaseUrl, apiKeyHeader };
   }
 
   async hasCredentials(

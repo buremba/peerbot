@@ -1,6 +1,6 @@
 import { createLogger } from "@lobu/core";
 import { Chat } from "chat";
-import { isUniqueViolation } from "../../utils/pg-errors.js";
+import type { SlackInstallationStore } from "../../lobu/stores/slack-installation-store.js";
 import type { PlatformAdapterConfig, PlatformConnection } from "./types.js";
 import {
   parseSlackTeamJoinEvent,
@@ -9,7 +9,6 @@ import {
 } from "./slack-platform-bridge.js";
 
 const logger = createLogger("slack-connection-coordinator");
-const SLACK_SYSTEM_AGENT_PREFIX = "system:connection:slack";
 
 type SlackInstallation = {
   botToken: string;
@@ -62,24 +61,13 @@ function readSlackAppEnvConfig(): SlackRuntimeConfig {
 }
 
 interface SlackConnectionCoordinatorDeps {
-  addConnection(
-    platform: string,
-    agentId: string | undefined,
-    config: PlatformAdapterConfig,
-    settings?: { allowGroups?: boolean },
-    metadata?: Record<string, unknown>
-  ): Promise<PlatformConnection>;
   createStateAdapter(): Promise<any>;
   ensureConnectionRunning(connectionId: string): Promise<boolean>;
   forwardWebhook(connectionId: string, request: Request): Promise<Response>;
   getRunningChat(connectionId: string): any | undefined;
-  hasConnection(connectionId: string): boolean;
   listSlackConnections(): Promise<PlatformConnection[]>;
-  restartConnection(connectionId: string): Promise<void>;
-  updateConnection(
-    connectionId: string,
-    updates: Partial<PlatformConnection>
-  ): Promise<PlatformConnection>;
+  /** Per-workspace OAuth installs (token + tenant data), keyed on (org, team). */
+  installationStore: SlackInstallationStore;
 }
 
 export class SlackConnectionCoordinator {
@@ -125,85 +113,41 @@ export class SlackConnectionCoordinator {
     );
   }
 
-  async ensureWorkspaceConnection(
+  /**
+   * Persist a per-workspace OAuth install: the workspace's bot token + tenant
+   * metadata, keyed on (org, team), in the `slack_installations` store. This is
+   * NOT an `agent_connections` row — an installed workspace has no owning agent;
+   * it routes to many agents via `/lobu link` channel bindings. The token goes
+   * to the secret store (the store handles that); app-level creds
+   * (signingSecret/clientId/clientSecret) stay env-sourced at runtime. Idempotent
+   * per (org, team) — a re-install refreshes the token on the same row id, so the
+   * instance memo, secret prefix, and any existing bindings are unaffected.
+   */
+  async ensureWorkspaceInstallation(
+    organizationId: string,
     teamId: string,
     installation: SlackInstallation
-  ): Promise<PlatformConnection> {
-    // Persist only per-workspace (tenant) data. App-level secrets
-    // (signingSecret/clientId/clientSecret) are read from env by the Slack
-    // adapter at runtime, so they never get duplicated into per-tenant rows and
-    // rotating them does not require reinstalling each workspace. The OAuth
-    // handshake that produced `installation` already validated the env config
-    // (via createOAuthChat → resolveAdapterConfig), so there's nothing to
-    // re-check here.
-    const config: PlatformAdapterConfig = {
-      platform: "slack",
-      botToken: installation.botToken,
-      ...(installation.botUserId ? { botUserId: installation.botUserId } : {}),
-    };
-    const agentId = `${SLACK_SYSTEM_AGENT_PREFIX}:${teamId}`;
-    const metadata = {
+  ): Promise<{ installationId: string }> {
+    const row = await this.deps.installationStore.upsertByTeam(
+      organizationId,
       teamId,
-      teamName: installation.teamName,
-      botUserId: installation.botUserId,
-    };
-
-    const adoptExisting = async (
-      existing: PlatformConnection
-    ): Promise<PlatformConnection> => {
-      const updated = await this.deps.updateConnection(existing.id, {
-        agentId,
-        config,
-        metadata,
-      });
-      if (!this.deps.hasConnection(existing.id)) {
-        await this.deps.restartConnection(existing.id);
+      {
+        teamName: installation.teamName,
+        botUserId: installation.botUserId,
+        botToken: installation.botToken,
       }
-      return updated;
-    };
-
-    const existing = await this.findConnectionByTeamId(teamId);
-    if (existing) {
-      return adoptExisting(existing);
-    }
-
-    try {
-      return await this.deps.addConnection(
-        "slack",
-        agentId,
-        config,
-        { allowGroups: true },
-        metadata
-      );
-    } catch (error) {
-      // Two concurrent installs for the same workspace both pass the
-      // find-by-teamId check; the unique index
-      // `idx_agent_connections_slack_workspace` makes the second insert fail
-      // instead of creating a duplicate row. Converge on the winner. (The
-      // loser's pre-persisted secret refs under its discarded connection id
-      // are an acknowledged tiny leak, logged for operator hygiene.)
-      if (!isUniqueViolation(error, "idx_agent_connections_slack_workspace")) {
-        throw error;
-      }
-      logger.warn(
-        { teamId },
-        "Concurrent Slack install detected; adopting the winning connection"
-      );
-      const winner = await this.findConnectionByTeamId(teamId);
-      if (!winner) {
-        throw error;
-      }
-      return adoptExisting(winner);
-    }
+    );
+    return { installationId: row.id };
   }
 
   async completeOAuthInstall(
     request: Request,
-    redirectUri?: string
+    redirectUri: string | undefined,
+    organizationId: string
   ): Promise<{
     teamId: string;
     teamName?: string;
-    connectionId: string;
+    installationId: string;
   }> {
     const { chat, adapter } = await this.createOAuthChat({
       requireOAuth: true,
@@ -222,14 +166,18 @@ export class SlackConnectionCoordinator {
 
       const { teamId, installation } =
         await adapter.handleOAuthCallback(callbackRequest);
-      let connection: PlatformConnection;
+      let installationId: string;
       try {
-        connection = await this.ensureWorkspaceConnection(teamId, installation);
+        ({ installationId } = await this.ensureWorkspaceInstallation(
+          organizationId,
+          teamId,
+          installation
+        ));
       } catch (error) {
         await adapter.deleteInstallation(teamId).catch((err) => {
           logger.warn(
             { teamId, error: String(err) },
-            "Failed to delete Slack installation after connection error"
+            "Failed to delete Slack installation after persistence error"
           );
         });
         throw error;
@@ -238,7 +186,7 @@ export class SlackConnectionCoordinator {
       return {
         teamId,
         teamName: installation.teamName,
-        connectionId: connection.id,
+        installationId,
       };
     } finally {
       await chat.shutdown().catch((err: unknown) => {
@@ -257,6 +205,8 @@ export class SlackConnectionCoordinator {
     const teamId = this.extractTeamId(body, contentType);
 
     if (teamId) {
+      // 1) A BYO agent-owned Slack connection for this workspace (created via
+      //    the UI with its own bot token) — unchanged legacy path.
       const connection = await this.findConnectionByTeamId(teamId);
       if (connection) {
         if (!(await this.deps.ensureConnectionRunning(connection.id))) {
@@ -268,6 +218,27 @@ export class SlackConnectionCoordinator {
         );
         if (response.ok && teamJoinEvent) {
           await this.handleTeamJoinWelcome(connection.id, teamJoinEvent);
+        }
+        return response;
+      }
+
+      // 2) An OAuth-installed workspace (the "Add to Slack" path). The install
+      //    lives in `slack_installations`, not `agent_connections`; the manager
+      //    hydrates an agentless Slack instance from it (id is namespaced, so
+      //    `ensureConnectionRunning`/`forwardWebhook` resolve it from the
+      //    installation store). Per-message routing is via `/lobu link` bindings.
+      const installation =
+        await this.deps.installationStore.getByTeamId(teamId);
+      if (installation && installation.status !== "stopped") {
+        if (!(await this.deps.ensureConnectionRunning(installation.id))) {
+          return new Response("Slack connection unavailable", { status: 503 });
+        }
+        const response = await this.deps.forwardWebhook(
+          installation.id,
+          this.cloneRequestWithBody(request, body)
+        );
+        if (response.ok && teamJoinEvent) {
+          await this.handleTeamJoinWelcome(installation.id, teamJoinEvent);
         }
         return response;
       }

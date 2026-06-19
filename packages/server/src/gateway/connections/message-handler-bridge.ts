@@ -5,7 +5,10 @@
  */
 
 import { createLogger, createRootSpan, generateTraceId } from "@lobu/core";
-import { previewUnlinkedNotice } from "../../preview/slack.js";
+import {
+  previewUnlinkedNotice,
+  workspaceUnlinkedNotice,
+} from "../../preview/slack.js";
 import type { CommandDispatcher } from "../commands/command-dispatcher.js";
 import { createChatReply } from "../commands/command-reply-adapters.js";
 import type { ArtifactStore } from "../files/artifact-store.js";
@@ -328,6 +331,27 @@ export class MessageHandlerBridge {
       crossOrg: isPreview,
     });
     if (!resolved) {
+      // A tenant's OAuth-installed Slack workspace bot has no owning agent —
+      // routing is via `/lobu link` bindings. Before the tenant links a
+      // channel, a non-command message resolves to nothing. Reply with a
+      // one-line "link your agent" notice instead of silently dropping so the
+      // install never dead-ends. (Slash commands like `/lobu link` take the
+      // `onSlashCommand` path and never reach here.)
+      if (
+        !isPreview &&
+        platform === "slack" &&
+        this.connection.metadata?.teamId
+      ) {
+        const notice = workspaceUnlinkedNotice(platform);
+        if (notice) {
+          logger.info(
+            { platform, channelId, teamId, connectionId: this.connection.id },
+            "Slack workspace connection: unlinked channel — replying with link notice"
+          );
+          await thread.post(notice);
+          return;
+        }
+      }
       logger.warn(
         { platform, channelId, teamId, connectionId: this.connection.id },
         "No channel binding and connection has no owning agent — dropping message"

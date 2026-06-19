@@ -27,6 +27,7 @@ import type { SecretProxy } from "./proxy/secret-proxy.js";
 import type { WritableSecretStore } from "./secrets/index.js";
 import type { DeclaredAgentRegistry } from "./services/declared-agent-registry.js";
 import type { InstructionService } from "./services/instruction-service.js";
+import type { SlackInstallationStore } from "../lobu/stores/slack-installation-store.js";
 import type { SseManager } from "./services/sse-manager.js";
 import type { TranscriptionService } from "./services/transcription-service.js";
 import type { ISessionManager } from "./session.js";
@@ -64,6 +65,7 @@ export interface CoreServices {
   getGrantStore(): GrantStore | undefined;
   getDeclaredAgentRegistry(): DeclaredAgentRegistry | undefined;
   getConnectionStore(): AgentConnectionStore | undefined;
+  getSlackInstallationStore(): SlackInstallationStore;
 }
 
 // ============================================================================

@@ -18,6 +18,7 @@ import { createLogger, isSecretRef } from "@lobu/core";
 import { type AdapterPostableMessage, Chat } from "chat";
 import { getDb } from "../../db/client.js";
 import { orgContext, tryGetOrgId } from "../../lobu/stores/org-context.js";
+import { SLACK_INSTALLATION_ID_PREFIX } from "../../lobu/stores/slack-installation-store.js";
 import { CommandDispatcher } from "../commands/command-dispatcher.js";
 import type { IFileHandler } from "../platform/file-handler.js";
 import type { CoreServices, PlatformAdapter } from "../platform.js";
@@ -934,29 +935,20 @@ export class ChatInstanceManager {
     return this.slackCoordinator.getDefaultConnection();
   }
 
-  async ensureSlackWorkspaceConnection(
-    teamId: string,
-    installation: {
-      botToken: string;
-      botUserId?: string;
-      teamName?: string;
-    }
-  ): Promise<PlatformConnection> {
-    return this.slackCoordinator.ensureWorkspaceConnection(
-      teamId,
-      installation
-    );
-  }
-
   async completeSlackOAuthInstall(
     request: Request,
-    redirectUri?: string
+    redirectUri: string | undefined,
+    organizationId: string
   ): Promise<{
     teamId: string;
     teamName?: string;
-    connectionId: string;
+    installationId: string;
   }> {
-    return this.slackCoordinator.completeOAuthInstall(request, redirectUri);
+    return this.slackCoordinator.completeOAuthInstall(
+      request,
+      redirectUri,
+      organizationId
+    );
   }
 
   async handleSlackAppWebhook(request: Request): Promise<Response> {
@@ -1267,16 +1259,46 @@ export class ChatInstanceManager {
 
   private buildSlackCoordinator(): SlackConnectionCoordinator {
     return new SlackConnectionCoordinator({
-      addConnection: this.addConnection.bind(this),
       createStateAdapter: this.createStateAdapter.bind(this),
       ensureConnectionRunning: this.ensureConnectionRunning.bind(this),
       forwardWebhook: this.handleWebhook.bind(this),
       getRunningChat: (connectionId) => this.getInstance(connectionId)?.chat,
-      hasConnection: this.has.bind(this),
       listSlackConnections: () => this.listConnections({ platform: "slack" }),
-      restartConnection: this.restartConnection.bind(this),
-      updateConnection: this.updateConnection.bind(this),
+      installationStore: this.services.getSlackInstallationStore(),
     });
+  }
+
+  /**
+   * Resolve the `StoredConnection` for `id` from the right source. Most ids are
+   * `agent_connections` rows; ids in the Slack-installation namespace
+   * (`slackinst_…`) are OAuth workspace installs from `slack_installations`,
+   * surfaced as agentless connection-shaped rows so the existing hydration /
+   * instance-memo / webhook machinery runs them unchanged (the runtime never
+   * needs an owning agent — routing is per-message via bindings).
+   */
+  private async resolveStored(id: string): Promise<StoredConnection | null> {
+    if (id.startsWith(SLACK_INSTALLATION_ID_PREFIX)) {
+      const inst = await this.services.getSlackInstallationStore().getById(id);
+      if (!inst) return null;
+      return {
+        id: inst.id,
+        platform: "slack",
+        agentId: undefined,
+        organizationId: inst.organizationId,
+        config: inst.config as Record<string, any>,
+        settings: { allowGroups: true },
+        metadata: {
+          teamId: inst.teamId,
+          ...(inst.teamName ? { teamName: inst.teamName } : {}),
+          ...(inst.botUserId ? { botUserId: inst.botUserId } : {}),
+        },
+        status: inst.status,
+        createdAt: inst.createdAt,
+        updatedAt: inst.updatedAt,
+      };
+    }
+    if (!this.connectionStore) return null;
+    return this.connectionStore.getConnection(id);
   }
 
   /**
@@ -1289,9 +1311,7 @@ export class ChatInstanceManager {
    * restart fan-out.
    */
   private async ensureConnectionRunning(id: string): Promise<boolean> {
-    if (!this.connectionStore) return false;
-
-    const stored = await this.connectionStore.getConnection(id);
+    const stored = await this.resolveStored(id);
     if (!stored || stored.status === "stopped") {
       if (this.instances.has(id)) {
         await this.stopInstance(id);
@@ -1371,11 +1391,11 @@ export class ChatInstanceManager {
     // persisted value, not the pre-start snapshot — otherwise the next
     // ensureConnectionRunning sees a version mismatch and needlessly tears the
     // instance down and re-hydrates (re-running setWebhook/setMyCommands).
-    const afterStart = await this.connectionStore.getConnection(stored.id);
+    const afterStart = await this.resolveStored(stored.id);
     instance.rowVersion = afterStart?.updatedAt ?? stored.updatedAt;
     if (stored.status === "error") {
       await this.writeConnectionStatus(stored, "active", undefined);
-      const reread = await this.connectionStore.getConnection(stored.id);
+      const reread = await this.resolveStored(stored.id);
       if (reread) instance.rowVersion = reread.updatedAt;
       logger.info({ id: stored.id }, "Recovered previously-errored connection");
     }
@@ -1400,6 +1420,16 @@ export class ChatInstanceManager {
       row.status === status &&
       (row.errorMessage ?? undefined) === errorMessage
     ) {
+      return;
+    }
+    // OAuth workspace installs live in `slack_installations`, not
+    // `agent_connections`; their status isn't tracked there (token-health is a
+    // deferred concern). Log and skip — the hydration error is already logged.
+    if (row.id.startsWith(SLACK_INSTALLATION_ID_PREFIX)) {
+      logger.warn(
+        { id: row.id, status, errorMessage },
+        "Skipping status write for Slack installation-backed instance"
+      );
       return;
     }
     const write = () =>

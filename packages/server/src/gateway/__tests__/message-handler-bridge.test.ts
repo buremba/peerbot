@@ -466,6 +466,8 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
   function makePreviewHarness(opts: {
     binding?: { agentId: string; organizationId?: string } | null;
     previewMode?: boolean;
+    agentId?: string | undefined;
+    metadata?: Record<string, unknown>;
     commandDispatcher?: {
       tryHandleSlashText?: (...args: any[]) => Promise<boolean>;
       tryHandle?: (...args: any[]) => Promise<boolean>;
@@ -476,13 +478,15 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
     const connection: PlatformConnection = {
       id: CONN_ID,
       platform: "slack",
-      agentId: TEMPLATE_AGENT_ID,
+      // Default to the template agent; tests for an OAuth-installed workspace
+      // connection (no owning agent) pass `agentId: undefined` explicitly.
+      agentId: "agentId" in opts ? opts.agentId : TEMPLATE_AGENT_ID,
       // The hosted preview connection lives in its OWN org; bound agents may
       // live in OTHER orgs (see the cross-org test below).
       organizationId: "org-connection",
       config: { platform: "slack" } as any,
       settings: { allowGroups: true, previewMode: opts.previewMode ?? true },
-      metadata: { botUsername: "testbot", botUserId: "U_BOT" },
+      metadata: opts.metadata ?? { botUsername: "testbot", botUserId: "U_BOT" },
       status: "active",
       createdAt: 1,
       updatedAt: 1,
@@ -545,6 +549,26 @@ describe("MessageHandlerBridge.handleMessage — Slack Preview unlinked chat", (
         (c: unknown[]) => !String(c[0]).includes("/lobu link")
       )
     ).toBe(true);
+  });
+
+  test("OAuth workspace connection (no agent, not preview): unlinked → link notice, no agent run", async () => {
+    // A tenant's OAuth-installed bot has no owning agent and metadata.teamId.
+    // An unbound non-command message must get a one-line "link your agent"
+    // notice instead of being silently dropped (the install dead-end we reverted
+    // for), and must NOT enqueue a worker turn against a non-existent agent.
+    const { bridge, enqueueMessage } = makePreviewHarness({
+      binding: null,
+      previewMode: false,
+      agentId: undefined,
+      metadata: { teamId: "T_WS", botUserId: "U_BOT" },
+    });
+    const thread = makeThread(undefined);
+
+    await bridge.handleMessage(thread, makeMessage(), "mention");
+
+    expect(thread.post).toHaveBeenCalledTimes(1);
+    expect(String(thread.post.mock.calls[0]?.[0])).toContain("/lobu link");
+    expect(enqueueMessage).not.toHaveBeenCalled();
   });
 
   test("cross-org: routes the worker turn under the BOUND agent's org, not the connection's", async () => {

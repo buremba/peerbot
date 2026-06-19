@@ -1,9 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { SlackConnectionCoordinator } from "../connections/slack-connection-coordinator.js";
-import type {
-  PlatformAdapterConfig,
-  PlatformConnection,
-} from "../connections/types.js";
+import type { PlatformConnection } from "../connections/types.js";
 
 function createSlackConnection(
   id: string,
@@ -30,22 +27,40 @@ function createSlackConnection(
   };
 }
 
-/** Deps stub with sensible no-op defaults; override per test. */
-function makeDeps(
-  overrides: Partial<
-    ConstructorParameters<typeof SlackConnectionCoordinator>[0]
-  > = {}
-): ConstructorParameters<typeof SlackConnectionCoordinator>[0] {
+type Deps = ConstructorParameters<typeof SlackConnectionCoordinator>[0];
+
+/** Installation-store stub; override per test. */
+function makeInstallationStore(
+  overrides: Partial<Deps["installationStore"]> = {}
+): Deps["installationStore"] {
   return {
-    addConnection: mock(async () => createSlackConnection("unused")),
+    upsertByTeam: mock(async (organizationId: string, teamId: string) => ({
+      id: `slackinst-${teamId}`,
+      organizationId,
+      teamId,
+      config: { platform: "slack", botToken: "secret://ref" },
+      status: "active" as const,
+      createdAt: 0,
+      updatedAt: 0,
+    })),
+    getById: mock(async () => null),
+    getByTeamId: mock(async () => null),
+    list: mock(async () => []),
+    markStopped: mock(async () => undefined),
+    delete: mock(async () => undefined),
+    ...overrides,
+  };
+}
+
+/** Deps stub with sensible no-op defaults; override per test. */
+function makeDeps(overrides: Partial<Deps> = {}): Deps {
+  return {
     createStateAdapter: mock(async () => ({})),
     ensureConnectionRunning: mock(async () => true),
     forwardWebhook: mock(async () => new Response("ok")),
     getRunningChat: () => undefined,
-    hasConnection: () => true,
     listSlackConnections: async () => [],
-    restartConnection: mock(async () => undefined),
-    updateConnection: mock(async () => createSlackConnection("unused")),
+    installationStore: makeInstallationStore(),
     ...overrides,
   };
 }
@@ -77,98 +92,82 @@ describe("SlackConnectionCoordinator", () => {
     }
   });
 
-  test("ensureWorkspaceConnection is idempotent per team", async () => {
-    const connections: PlatformConnection[] = [];
-    const addConnection = mock(
-      async (
-        _platform: string,
-        agentId: string | undefined,
-        config: any,
-        settings?: { allowGroups?: boolean },
-        metadata?: Record<string, unknown>
-      ) => {
-        const connection = createSlackConnection("conn-1", metadata, config);
-        connection.agentId = agentId;
-        connection.settings = settings || { allowGroups: true };
-        connections.push(connection);
-        return connection;
-      }
-    );
-    const updateConnection = mock(
-      async (connectionId: string, updates: Partial<PlatformConnection>) => {
-        const connection = connections.find(
-          (item) => item.id === connectionId
-        )!;
-        Object.assign(connection, updates);
-        return connection;
-      }
-    );
-    const restartConnection = mock(async () => undefined);
-
-    const coordinator = new SlackConnectionCoordinator(
-      makeDeps({
-        addConnection,
-        hasConnection: () => false,
-        listSlackConnections: async () => connections,
-        restartConnection,
-        updateConnection,
+  test("ensureWorkspaceInstallation upserts only tenant data to the installation store", async () => {
+    // The OAuth install is an org/workspace-installation resource, not an
+    // agent connection — it goes to slack_installations keyed on (org, team),
+    // never agent_connections. Only tenant data (bot token + teamName/botUserId)
+    // is passed; app-level creds stay env-sourced (the store/secret layer owns
+    // token persistence).
+    const upsertByTeam = mock(
+      async (organizationId: string, teamId: string) => ({
+        id: "slackinst-xyz",
+        organizationId,
+        teamId,
+        config: { platform: "slack", botToken: "secret://ref" },
+        status: "active" as const,
+        createdAt: 0,
+        updatedAt: 0,
       })
     );
+    const coordinator = new SlackConnectionCoordinator(
+      makeDeps({ installationStore: makeInstallationStore({ upsertByTeam }) })
+    );
 
-    const first = await coordinator.ensureWorkspaceConnection("T123", {
-      botToken: "xoxb-first-token",
+    const result = await coordinator.ensureWorkspaceInstallation(
+      "org-acme",
+      "T123",
+      { botToken: "xoxb-tenant-token", botUserId: "U123", teamName: "Acme" }
+    );
+
+    expect(result).toEqual({ installationId: "slackinst-xyz" });
+    expect(upsertByTeam).toHaveBeenCalledWith("org-acme", "T123", {
+      botToken: "xoxb-tenant-token",
       botUserId: "U123",
       teamName: "Acme",
     });
-    const second = await coordinator.ensureWorkspaceConnection("T123", {
-      botToken: "xoxb-second-token",
-      botUserId: "U456",
-      teamName: "Acme Updated",
-    });
-
-    expect(first.id).toBe("conn-1");
-    expect(second.id).toBe("conn-1");
-    expect(addConnection).toHaveBeenCalledTimes(1);
-    expect(updateConnection).toHaveBeenCalledTimes(1);
-    expect(restartConnection).toHaveBeenCalledTimes(1);
-    expect(connections).toHaveLength(1);
-    expect(connections[0]?.metadata).toEqual({
-      teamId: "T123",
-      teamName: "Acme Updated",
-      botUserId: "U456",
-    });
-    expect((connections[0]?.config as any).botToken).toBe("xoxb-second-token");
+    // No app secrets in the payload — only tenant data.
+    const payload = upsertByTeam.mock.calls[0]?.[2] as Record<string, unknown>;
+    expect(payload.signingSecret).toBeUndefined();
+    expect(payload.clientId).toBeUndefined();
+    expect(payload.clientSecret).toBeUndefined();
   });
 
-  test("ensureWorkspaceConnection persists only tenant data, not app secrets", async () => {
-    // The Slack adapter reads signingSecret/clientId/clientSecret from env at
-    // runtime, so a per-workspace connection must NOT bake them into its stored
-    // config (that would duplicate the secret per tenant and block rotation).
-    let storedConfig: PlatformAdapterConfig | undefined;
+  test("handleAppWebhook routes a matched team to its OAuth installation", async () => {
+    const body = JSON.stringify({ team_id: "T777", type: "event_callback" });
+    const forwarded: string[] = [];
     const coordinator = new SlackConnectionCoordinator(
       makeDeps({
-        addConnection: mock(async (_platform, _agentId, config) => {
-          storedConfig = config;
-          return createSlackConnection("conn-new", {}, {});
-        }),
-        hasConnection: () => false,
+        // No agent-owned (BYO) slack connection for this team...
         listSlackConnections: async () => [],
+        // ...but an OAuth installation exists.
+        installationStore: makeInstallationStore({
+          getByTeamId: mock(async () => ({
+            id: "slackinst-T777",
+            organizationId: "org-acme",
+            teamId: "T777",
+            config: { platform: "slack", botToken: "secret://ref" },
+            status: "active" as const,
+            createdAt: 0,
+            updatedAt: 0,
+          })),
+        }),
+        forwardWebhook: mock(async (connectionId: string) => {
+          forwarded.push(connectionId);
+          return new Response("ok");
+        }),
       })
     );
 
-    await coordinator.ensureWorkspaceConnection("T999", {
-      botToken: "xoxb-tenant-token",
-      botUserId: "U999",
-      teamName: "Tenant",
-    });
+    const response = await coordinator.handleAppWebhook(
+      new Request("https://gateway.example.com/slack/events", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      })
+    );
 
-    const cfg = storedConfig as any;
-    expect(cfg.platform).toBe("slack");
-    expect(cfg.botToken).toBe("xoxb-tenant-token");
-    expect(cfg.botUserId).toBe("U999");
-    expect(cfg.signingSecret).toBeUndefined();
-    expect(cfg.clientId).toBeUndefined();
-    expect(cfg.clientSecret).toBeUndefined();
+    expect(response.status).toBe(200);
+    expect(forwarded).toEqual(["slackinst-T777"]);
   });
 
   test("resolveAdapterConfig sources app creds from env (requireOAuth)", async () => {

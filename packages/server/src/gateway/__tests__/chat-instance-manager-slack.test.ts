@@ -27,28 +27,6 @@ async function loadChatInstanceManager() {
 }
 
 describe("ChatInstanceManager Slack marketplace support", () => {
-  test("ensureSlackWorkspaceConnection delegates to the Slack coordinator", async () => {
-    const ChatInstanceManager = await loadChatInstanceManager();
-    const manager = new ChatInstanceManager() as any;
-    const ensureWorkspaceConnection = mock(async () => ({ id: "conn-team" }));
-    manager.slackCoordinator = {
-      ensureWorkspaceConnection,
-    };
-
-    const result = await manager.ensureSlackWorkspaceConnection("T123", {
-      botToken: "xoxb-token",
-      botUserId: "U123",
-      teamName: "Acme",
-    });
-
-    expect(result).toEqual({ id: "conn-team" });
-    expect(ensureWorkspaceConnection).toHaveBeenCalledWith("T123", {
-      botToken: "xoxb-token",
-      botUserId: "U123",
-      teamName: "Acme",
-    });
-  });
-
   test("handleSlackAppWebhook delegates to the Slack coordinator", async () => {
     const ChatInstanceManager = await loadChatInstanceManager();
     const manager = new ChatInstanceManager() as any;
@@ -170,7 +148,7 @@ describe("ChatInstanceManager Slack marketplace support", () => {
     const completeOAuthInstall = mock(async () => ({
       teamId: "T123",
       teamName: "Acme",
-      connectionId: "conn-team",
+      installationId: "slackinst-abc",
     }));
     manager.slackCoordinator = {
       completeOAuthInstall,
@@ -178,17 +156,19 @@ describe("ChatInstanceManager Slack marketplace support", () => {
 
     const result = await manager.completeSlackOAuthInstall(
       request,
-      "https://gateway.example.com/slack/oauth_callback"
+      "https://gateway.example.com/slack/oauth_callback",
+      "org-1"
     );
 
     expect(result).toEqual({
       teamId: "T123",
       teamName: "Acme",
-      connectionId: "conn-team",
+      installationId: "slackinst-abc",
     });
     expect(completeOAuthInstall).toHaveBeenCalledWith(
       request,
-      "https://gateway.example.com/slack/oauth_callback"
+      "https://gateway.example.com/slack/oauth_callback",
+      "org-1"
     );
   });
 });

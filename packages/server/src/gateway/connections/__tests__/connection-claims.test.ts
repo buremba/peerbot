@@ -505,3 +505,71 @@ describe("idx_agent_connections_slack_workspace (install race)", () => {
     });
   });
 });
+
+describe("installation-backed instances (OAuth workspace, no owning agent)", () => {
+  test("a slackinst- id hydrates from the installation store as an agentless slack connection", async () => {
+    const { ChatInstanceManager } = await import(
+      "../chat-instance-manager.js"
+    );
+
+    // Stub the installation store; capture what the manager tries to hydrate.
+    const installation = {
+      id: "slackinst-abc123",
+      organizationId: "org-ws",
+      teamId: "TWS1",
+      teamName: "Acme",
+      botUserId: "UBOT",
+      config: { platform: "slack", botToken: "secret://ref" },
+      status: "active" as const,
+      createdAt: 1,
+      updatedAt: 42,
+    };
+    const services = {
+      getPublicGatewayUrl: () => "",
+      getSlackInstallationStore: () => ({
+        getById: async (id: string) => (id === installation.id ? installation : null),
+      }),
+    } as any;
+
+    const manager = new ChatInstanceManager() as any;
+    manager.services = services;
+    manager.publicGatewayUrl = "";
+    // No connectionStore — installs must resolve without one.
+
+    let hydrated: any = null;
+    manager.hydrateFromRow = async (stored: any) => {
+      hydrated = stored;
+      manager.instances.set(stored.id, {
+        connection: { id: stored.id, platform: stored.platform },
+        chat: {},
+        rowVersion: stored.updatedAt,
+      });
+    };
+
+    const ok = await manager.warmConnection("slackinst-abc123");
+    expect(ok).toBe(true);
+    expect(hydrated).not.toBeNull();
+    expect(hydrated.platform).toBe("slack");
+    expect(hydrated.agentId).toBeUndefined();
+    expect(hydrated.organizationId).toBe("org-ws");
+    expect(hydrated.config.botToken).toBe("secret://ref");
+    expect(hydrated.metadata.teamId).toBe("TWS1");
+    expect(hydrated.metadata.botUserId).toBe("UBOT");
+    // Row-version memo carries the installation's updated_at.
+    expect(manager.instances.get("slackinst-abc123").rowVersion).toBe(42);
+  });
+
+  test("an unknown slackinst- id does not start anything", async () => {
+    const { ChatInstanceManager } = await import(
+      "../chat-instance-manager.js"
+    );
+    const manager = new ChatInstanceManager() as any;
+    manager.services = {
+      getSlackInstallationStore: () => ({ getById: async () => null }),
+    };
+    manager.hydrateFromRow = async () => {
+      throw new Error("should not hydrate an unknown installation");
+    };
+    expect(await manager.warmConnection("slackinst-missing")).toBe(false);
+  });
+});

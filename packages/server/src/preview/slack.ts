@@ -452,6 +452,23 @@ export async function previewUnlinkedNotice(
   ].join('\n');
 }
 
+/**
+ * Reply for a tenant's own OAuth-installed workspace bot (a connection with a
+ * `metadata.teamId` but no owning agent) when a non-command message arrives in
+ * a channel that isn't bound to one of the tenant's agents yet. Unlike a
+ * preview connection there are no demo agents to offer — the tenant links their
+ * own agents with `/lobu link <code>`. Returns null for non-Slack platforms
+ * (OAuth install is Slack-only today).
+ */
+export function workspaceUnlinkedNotice(platform: string): string | null {
+  if (platform !== 'slack') return null;
+  return [
+    "👋 Thanks for adding Lobu! This channel isn't linked to one of your agents yet.",
+    '',
+    `Run \`${linkCommand(platform)} <code>\` here with a link code from your Lobu dashboard (or \`lobu run\`) to connect an agent.`,
+  ].join('\n');
+}
+
 /** The Lobu user id a chat-platform user has linked to, or null. */
 export async function resolveChatUserIdentity(
   platform: string,

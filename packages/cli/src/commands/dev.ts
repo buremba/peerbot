@@ -788,6 +788,16 @@ async function printPreviewInstructions(cwd: string): Promise<void> {
           )
         );
       }
+      // Slack alone supports installing the hosted bot into the user's OWN
+      // workspace (one-time OAuth); after that, `/lobu link` works in a channel
+      // there. Telegram has no install step.
+      if (platform === "slack") {
+        console.log(
+          chalk.dim(
+            `  Or add it to your own Slack workspace: ${chalk.underline(`${clientInfo.apiBaseUrl}/lobu/slack/install`)} (then ${chalk.bold(claim.command)} in a channel there).`
+          )
+        );
+      }
     } catch (error) {
       console.log(
         chalk.yellow(

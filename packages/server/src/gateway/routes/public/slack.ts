@@ -296,13 +296,15 @@ export function createSlackRoutes(manager: ChatInstanceManager): Hono {
     try {
       const result = await manager.completeSlackOAuthInstall(
         c.req.raw,
-        consumed.redirectUri
+        consumed.redirectUri,
+        oauthState.organizationId
       );
       return c.html(
         renderOAuthSuccessPage(result.teamName || result.teamId, undefined, {
           title: "Slack installed",
-          description: "Workspace connected to Lobu:",
-          details: `Connection ID: ${result.connectionId}`,
+          description:
+            "Workspace connected to Lobu. In a channel, run /lobu link <code> to wire an agent:",
+          details: "Get a code from an agent's Deploy tab in your Lobu dashboard.",
         })
       );
     } catch (error) {

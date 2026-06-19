@@ -65,7 +65,7 @@ describe("slack routes", () => {
     completeSlackOAuthInstall = mock(async () => ({
       teamId: "T123",
       teamName: "Acme",
-      connectionId: "conn-1",
+      installationId: "slackinst-1",
     }));
     handleSlackAppWebhook = mock(async (request: Request) => {
       const body = await request.text();
@@ -181,12 +181,16 @@ describe("slack routes", () => {
 
     expect(response.status).toBe(200);
     expect(body).toContain("Slack installed");
-    expect(body).toContain("Workspace connected to Lobu:");
-    expect(body).toContain("Connection ID: conn-1");
+    // New install-store flow: the success page points users at /lobu link
+    // instead of surfacing an agent_connections id.
+    expect(body).toContain("/lobu link");
+    expect(body).toContain("Deploy tab");
     expect(completeSlackOAuthInstall).toHaveBeenCalledTimes(1);
     expect(completeSlackOAuthInstall.mock.calls[0]?.[1]).toBe(
       "https://gateway.example.com/slack/oauth_callback"
     );
+    // The validated install-state org is threaded as the 3rd arg.
+    expect(completeSlackOAuthInstall.mock.calls[0]?.[2]).toBe("org-default");
     const remaining = await sql`
       SELECT 1 FROM oauth_states WHERE id = 'test-state'
     `;

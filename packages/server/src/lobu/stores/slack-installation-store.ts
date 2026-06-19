@@ -130,6 +130,18 @@ export function createPostgresSlackInstallationStore(
           WHERE id = ${id}
           RETURNING *
         `;
+
+        // One active install per Slack workspace. team_id is global and the
+        // public /slack/events route has no org context, so a fresh install
+        // from another org must supersede prior ones (Slack itself rotates the
+        // old org's bot token on re-install — latest wins). Stopping the others
+        // keeps getByTeamId unambiguous instead of relying on recency ordering.
+        await sql`
+          UPDATE slack_installations
+          SET status = 'stopped', updated_at = now()
+          WHERE team_id = ${teamId} AND id <> ${id} AND status <> 'stopped'
+        `;
+
         return rowToInstallation(rows[0]);
       });
     },

@@ -100,6 +100,22 @@ describe("SlackInstallationStore", () => {
     expect(found?.organizationId).toBe("org-a");
   });
 
+  test("a fresh install from another org supersedes the prior one (one active per team)", async () => {
+    await seedAgentRow("ta", { organizationId: "org-a2" });
+    await seedAgentRow("tb", { organizationId: "org-b2" });
+    const { store } = await buildStore();
+
+    const a = await store.upsertByTeam("org-a2", "T600", { botToken: "xoxb-a" });
+    const b = await store.upsertByTeam("org-b2", "T600", { botToken: "xoxb-b" });
+
+    // org-a's row is demoted; org-b is the single active install.
+    expect((await store.getById(a.id))?.status).toBe("stopped");
+    expect((await store.getById(b.id))?.status).toBe("active");
+    const found = await store.getByTeamId("T600");
+    expect(found?.id).toBe(b.id);
+    expect(found?.organizationId).toBe("org-b2");
+  });
+
   test("delete removes the row and its secret", async () => {
     const { orgContext } = await import("../../../lobu/stores/org-context.js");
     const { resolveSecretValue } = await import("../../secrets/index.js");

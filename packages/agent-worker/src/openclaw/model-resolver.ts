@@ -5,11 +5,7 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import {
-  type ConfigProviderMeta,
-  createLogger,
-  DEFAULT_AGENT_MODEL,
-} from "@lobu/core";
+import { type ConfigProviderMeta, createLogger } from "@lobu/core";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 
 const logger = createLogger("model-resolver");
@@ -27,9 +23,15 @@ export const DEFAULT_PROVIDER_BASE_URL_ENV: Record<string, string> = {
   "z-ai": "Z_AI_API_BASE_URL",
 };
 
-/** Default model IDs per provider, used when no explicit model is configured. */
+/**
+ * Default model IDs per provider, used when no explicit model is configured.
+ * `anthropic` is intentionally absent: its default is resolved live by the
+ * gateway (newest model from the API) and delivered via session context, so it
+ * never rots to a retired snapshot. The remaining entries are last-ditch
+ * fallbacks for providers not present in providers.json (config-driven
+ * providers overlay their own defaultModel via registerDynamicProvider()).
+ */
 export const DEFAULT_PROVIDER_MODELS: Record<string, string> = {
-  anthropic: DEFAULT_AGENT_MODEL,
   openai: "gpt-4.1",
   "openai-codex": "gpt-5.1-codex-max",
   // Keyed by gateway slug ("gemini", not "google"). Overridden at runtime by

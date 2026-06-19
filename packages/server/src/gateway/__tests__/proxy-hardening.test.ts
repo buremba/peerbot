@@ -30,6 +30,7 @@ import { generateWorkerToken } from "@lobu/core";
 import { PolicyStore } from "../permissions/policy-store.js";
 import { CircuitBreaker } from "../proxy/egress-judge/circuit-breaker.js";
 import { EgressJudge } from "../proxy/egress-judge/judge.js";
+import { DEFAULT_JUDGE_MODEL } from "../proxy/egress-judge/judge-utils.js";
 import type { ResolvedJudgeRule } from "../permissions/policy-store.js";
 import type { JudgeClient, JudgeVerdict } from "../proxy/egress-judge/types.js";
 import { VerdictCache } from "../proxy/egress-judge/cache.js";
@@ -938,7 +939,7 @@ describe("EgressJudge — additional behavioral coverage", () => {
       { agentId: "a", organizationId: "org-1", hostname: "example.com" },
       rule({ policyHash: "unique-model-1" })
     );
-    expect(capturedModel).toBe("claude-haiku-4-5-20251001");
+    expect(capturedModel).toBe(DEFAULT_JUDGE_MODEL);
   });
 
   test("per-rule judgeModel overrides the default model", async () => {

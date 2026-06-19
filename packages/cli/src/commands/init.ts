@@ -10,7 +10,7 @@ import {
 } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { confirm, input, password, select } from "@inquirer/prompts";
-import { DEFAULT_AGENT_MODEL, slugify } from "@lobu/core";
+import { slugify } from "@lobu/core";
 import chalk from "chalk";
 import ora from "ora";
 import { promptPlatformConfig } from "../commands/platforms/platform-prompts.js";
@@ -96,7 +96,8 @@ const SYNTHETIC_CLAUDE_PROVIDER: RegistryProvider = {
       displayName: "Claude (Anthropic)",
       envVarName: "ANTHROPIC_API_KEY",
       upstreamBaseUrl: "https://api.anthropic.com",
-      defaultModel: DEFAULT_AGENT_MODEL,
+      // No hardcoded default model — left unset so the agent runs in auto mode
+      // and the gateway resolves the provider's current model at runtime.
       apiKeyInstructions:
         "Get your API key from https://console.anthropic.com/settings/keys",
     },

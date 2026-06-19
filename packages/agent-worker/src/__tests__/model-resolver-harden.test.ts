@@ -50,9 +50,11 @@ describe("resolveModelRef — edge cases", () => {
     expect(result.modelId).toBe("auto");
   });
 
-  test("auto model for anthropic resolves to non-empty string", () => {
-    const result = resolveModelRef("anthropic/auto");
-    expect(result.provider).toBe("anthropic");
+  test("auto model for a provider with a default resolves to a real model", () => {
+    // openai has a worker-side default; anthropic does not (gateway-resolved),
+    // so this asserts the resolution for a provider that still carries one.
+    const result = resolveModelRef("openai/auto");
+    expect(result.provider).toBe("openai");
     expect(result.modelId).toBeTruthy();
     expect(result.modelId).not.toBe("auto");
   });
@@ -126,9 +128,17 @@ describe("resolveModelRef — configured provider wins over slug split", () => {
   });
 
   test("configured provider + 'auto' for a known provider resolves the default", () => {
+    const result = resolveModelRef("auto", { defaultProvider: "openai" });
+    expect(result.provider).toBe("openai");
+    expect(result.modelId).toBe(DEFAULT_PROVIDER_MODELS.openai);
+  });
+
+  test("anthropic 'auto' stays as-is — the gateway supplies its default", () => {
+    // anthropic has no worker-side default (gateway-resolved); like openrouter
+    // above, "auto" passes through unchanged when no default is supplied.
     const result = resolveModelRef("auto", { defaultProvider: "anthropic" });
     expect(result.provider).toBe("anthropic");
-    expect(result.modelId).toBe(DEFAULT_PROVIDER_MODELS.anthropic);
+    expect(result.modelId).toBe("auto");
   });
 
   test("auto-mode (no provider) still derives provider from slug", () => {
@@ -200,8 +210,10 @@ describe("registerDynamicProvider — idempotency and precedence", () => {
 });
 
 describe("DEFAULT_PROVIDER_MODELS completeness", () => {
-  const EXPECTED_PROVIDERS = [
-    "anthropic",
+  // anthropic is intentionally excluded from the default-model set — its
+  // default is resolved live by the gateway, not hardcoded. It still needs a
+  // base-URL mapping, so it stays in PROVIDERS_WITH_BASE_URL below.
+  const PROVIDERS_WITH_DEFAULT_MODEL = [
     "openai",
     "openai-codex",
     // Keyed by the gateway provider slug "gemini" (the providers.json id),
@@ -210,12 +222,18 @@ describe("DEFAULT_PROVIDER_MODELS completeness", () => {
     "nvidia",
     "z-ai",
   ];
+  const PROVIDERS_WITH_BASE_URL = [
+    "anthropic",
+    ...PROVIDERS_WITH_DEFAULT_MODEL,
+  ];
 
-  for (const provider of EXPECTED_PROVIDERS) {
+  for (const provider of PROVIDERS_WITH_DEFAULT_MODEL) {
     test(`provider "${provider}" has a non-empty default model`, () => {
       expect(DEFAULT_PROVIDER_MODELS[provider]).toBeTruthy();
     });
+  }
 
+  for (const provider of PROVIDERS_WITH_BASE_URL) {
     test(`provider "${provider}" has a base URL env var mapping`, () => {
       expect(DEFAULT_PROVIDER_BASE_URL_ENV[provider]).toBeTruthy();
     });

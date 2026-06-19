@@ -6,14 +6,18 @@
  * duplication and keeps the two classes in sync when these values change.
  */
 
-import { EGRESS_JUDGE_MODEL } from "@lobu/core";
-
 /**
- * Default Haiku model for all judge calls. Fast + cheap; invoked only when
- * a rule with `action: "judge"` matches. Sourced from the centralized model
- * ID constants in @lobu/core.
+ * Default model for all judge calls — operator-configurable via the
+ * `EGRESS_JUDGE_MODEL` env var (same pattern as `EGRESS_JUDGE_TIMEOUT_MS`).
+ * The judge needs a fast, cheap tier (it runs fail-closed on every risky-domain
+ * egress decision), so "the provider's newest model" would be the wrong choice
+ * here — hence an explicit setting rather than live resolution. The fallback is
+ * a version *alias* (not a dated snapshot) so it rolls forward to the current
+ * Haiku release instead of rotting to a retired one. A per-rule
+ * `egressConfig.judgeModel` still overrides this.
  */
-export const DEFAULT_JUDGE_MODEL = EGRESS_JUDGE_MODEL;
+export const DEFAULT_JUDGE_MODEL =
+  process.env.EGRESS_JUDGE_MODEL?.trim() || "claude-haiku-4-5";
 
 /**
  * Hard ceiling on a single judge call. On expiry the call is abandoned, the

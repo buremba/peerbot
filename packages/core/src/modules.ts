@@ -63,9 +63,9 @@ export class ModuleRegistry implements IModuleRegistry {
 
   async initAll(): Promise<void> {
     for (const module of this.modules.values()) {
-      logger.debug(`Initializing module: ${module.name}`);
+      logger.debug("Initializing module");
       await module.init();
-      logger.debug(`Module ${module.name} initialized`);
+      logger.debug("Module initialized");
     }
   }
 

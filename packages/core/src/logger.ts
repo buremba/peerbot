@@ -13,6 +13,40 @@ export interface Logger {
   debug: (message: any, ...args: any[]) => void;
 }
 
+const SENSITIVE_LOG_KEY_PATTERN =
+  /(?:credential|secret|token|password|api(?:_|-)?key|authorization)/i;
+
+function createRedactingReplacer() {
+  const seen = new WeakSet<object>();
+
+  return (key: string, value: unknown) => {
+    if (SENSITIVE_LOG_KEY_PATTERN.test(key)) return "[REDACTED]";
+
+    if (value instanceof Error) {
+      return {
+        name: value.name,
+        message: value.message,
+        stack: value.stack?.split("\n")[0],
+      };
+    }
+
+    if (typeof value === "object" && value !== null) {
+      if (seen.has(value)) return "[Circular Reference]";
+      seen.add(value);
+    }
+
+    return value;
+  };
+}
+
+function safeStringify(value: unknown, space?: number): string {
+  try {
+    return JSON.stringify(value, createRedactingReplacer(), space);
+  } catch {
+    return "[unserializable]";
+  }
+}
+
 // Simple console logger fallback for environments where Winston doesn't work (Bun + Alpine)
 // Supports both formats: logger.info("message", data) AND pino-style logger.info({ data }, "message")
 function createConsoleLogger(serviceName: string): Logger {
@@ -44,11 +78,7 @@ function createConsoleLogger(serviceName: string): Logger {
         args = args.slice(1);
       } else {
         // Just an object, stringify it
-        try {
-          msgStr = JSON.stringify(message);
-        } catch {
-          msgStr = "[object]";
-        }
+        msgStr = safeStringify(message);
       }
     } else {
       msgStr = String(message);
@@ -56,20 +86,12 @@ function createConsoleLogger(serviceName: string): Logger {
 
     // Append remaining args
     if (args.length > 0) {
-      try {
-        msgStr += ` ${JSON.stringify(args.length === 1 ? args[0] : args)}`;
-      } catch {
-        msgStr += " [unserializable]";
-      }
+      msgStr += ` ${safeStringify(args.length === 1 ? args[0] : args)}`;
     }
 
     // Append metadata object
     if (meta) {
-      try {
-        msgStr += ` ${JSON.stringify(meta)}`;
-      } catch {
-        msgStr += " [meta unserializable]";
-      }
+      msgStr += ` ${safeStringify(meta)}`;
     }
 
     return `[${timestamp}] [${lvl}] [${serviceName}] ${msgStr}`;
@@ -90,6 +112,7 @@ function createConsoleLogger(serviceName: string): Logger {
     },
     debug: (message: any, ...args: any[]) => {
       if (currentLevel >= 3)
+        // codeql[js/clear-text-logging]: formatMessage redacts sensitive object keys before writing debug logs.
         console.log(formatMessage("debug", message, ...args));
     },
   };
@@ -123,34 +146,7 @@ export function createLogger(serviceName: string): Logger {
     winston.format.printf(({ timestamp, level, message, service, ...meta }) => {
       let metaStr = "";
       if (Object.keys(meta).length) {
-        try {
-          metaStr = ` ${JSON.stringify(meta, null, 0)}`;
-        } catch (_err) {
-          // Handle circular structures with a safer approach
-          try {
-            const seen = new WeakSet();
-            metaStr = ` ${JSON.stringify(meta, (_key, value) => {
-              if (typeof value === "object" && value !== null) {
-                if (seen.has(value)) {
-                  return "[Circular Reference]";
-                }
-                seen.add(value);
-
-                if (value instanceof Error) {
-                  return {
-                    name: value.name,
-                    message: value.message,
-                    stack: value.stack?.split("\n")[0], // Only first line of stack
-                  };
-                }
-              }
-              return value;
-            })}`;
-          } catch (_err2) {
-            // Final fallback if even the circular handler fails
-            metaStr = " [Object too complex to serialize]";
-          }
-        }
+        metaStr = ` ${safeStringify(meta, 0)}`;
       }
       return `[${timestamp}] [${level}] [${service}] ${message}${metaStr}`;
     })

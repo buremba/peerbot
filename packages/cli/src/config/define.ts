@@ -428,20 +428,26 @@ export interface Platform {
   /**
    * Platform config (e.g. `{ botToken: secret("TELEGRAM_BOT_TOKEN") }`). Values
    * are `secret(...)` refs or literal `$VAR` strings; `lobu apply` keeps the
-   * `$VAR` placeholder in the stored config and resolves it at egress. Optional —
-   * the `rest` (HTTP API) platform needs no config.
+   * `$VAR` placeholder in the stored config and resolves it at egress.
+   *
+   * Omit `config` entirely on `slack`/`telegram` to use the **hosted Lobu bot**
+   * — no bot token needed: `lobu run` prints a `/lobu link <code>` you redeem by
+   * DMing the hosted bot (or in a channel after a one-time "Add to Slack"). The
+   * `rest` (HTTP API) platform needs no config either.
    */
   config?: Record<string, string | SecretRef>;
   /** Declarative channel bindings (`"<teamId>/<channelId>"`); Slack only. */
   channels?: string[];
-}
-
-/** Hosted "Lobu Developer" preview-bot config for one chat platform. */
-export interface PreviewConfig {
-  enabled?: boolean;
-  /** Surfaces a preview code can bind: a DM with the bot, or a channel. */
+  /**
+   * Hosted-bot only (a `slack`/`telegram` entry with no `config`): which
+   * surfaces a `/lobu link` code may bind — a DM with the bot, or a channel.
+   * Defaults to `["dm"]`. Ignored for self-hosted (config-bearing) entries.
+   */
   surfaces?: Array<"dm" | "channel">;
-  /** Short-lived claim-code TTL (capped by the hosted preview API). */
+  /**
+   * Hosted-bot only: short-lived claim-code TTL in minutes (capped by the
+   * hosted API). Defaults to 15. Ignored for self-hosted entries.
+   */
   codeTtlMinutes?: number;
 }
 
@@ -472,13 +478,13 @@ export interface Agent {
   nixPackages?: string[];
   /** Custom MCP servers, keyed by id. */
   mcpServers?: Record<string, McpServer>;
-  /** Chat-platform bindings (`lobu apply` upserts each by a stable id). */
-  platforms?: Platform[];
   /**
-   * Hosted preview-bot config, keyed by chat platform (`slack`/`telegram`).
-   * Consumed by `lobu run` (dev-time only) — not part of cloud apply.
+   * Chat-platform bindings (`lobu apply` upserts each by a stable id). A
+   * `slack`/`telegram` entry with no `config` is the hosted Lobu bot: it is
+   * read by `lobu run` to mint a `/lobu link` code and is NOT persisted as a
+   * connection (see {@link isHostedChatEntry}).
    */
-  preview?: Record<string, PreviewConfig>;
+  platforms?: Platform[];
   // NOTE: the memory schema (entity/relationship types) and connections are
   // declared at the PROJECT level (`defineConfig({ entities, relationships,
   // connections })`), matching the apply model. Chat platforms, however, ARE

@@ -6,6 +6,7 @@ import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isHostedChatEntry } from "@lobu/core";
 import chalk from "chalk";
 import ora from "ora";
 import { loadProjectConfig } from "./_lib/apply/desired-state.js";
@@ -711,16 +712,22 @@ async function printPreviewInstructions(cwd: string): Promise<void> {
     return;
   }
 
-  // `agent.preview` is a record keyed by chat platform (`slack`, `telegram`, …).
+  // Hosted-bot platform entries (slack/telegram with no `config`) are reached
+  // via the hosted Lobu bot; `lobu run` mints a `/lobu link <code>` for each.
   const enabled: Array<{
     agentId: string;
     platform: string;
     cfg: { surfaces?: Array<"dm" | "channel">; codeTtlMinutes?: number };
   }> = [];
   for (const agent of agents) {
-    for (const [platform, cfg] of Object.entries(agent.preview ?? {})) {
-      if (cfg?.enabled === true)
-        enabled.push({ agentId: agent.id, platform, cfg });
+    for (const p of agent.platforms ?? []) {
+      if (isHostedChatEntry(p)) {
+        enabled.push({
+          agentId: agent.id,
+          platform: p.type,
+          cfg: { surfaces: p.surfaces, codeTtlMinutes: p.codeTtlMinutes },
+        });
+      }
     }
   }
   if (enabled.length === 0) return;

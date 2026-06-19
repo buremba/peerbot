@@ -9,7 +9,7 @@
  */
 
 import { validateEntityMetrics } from "@lobu/connector-sdk";
-import type { AgentSettings } from "@lobu/core";
+import { type AgentSettings, isHostedChatEntry } from "@lobu/core";
 import { CronExpressionParser } from "cron-parser";
 import type {
   Agent,
@@ -449,24 +449,30 @@ function mapAgent(
     });
   }
 
-  const platforms: DesiredPlatform[] = (agent.platforms ?? []).map((p) => ({
-    stableId: platformStableId(agent.id, p.type, p.name),
-    type: p.type,
-    ...(p.name ? { name: p.name } : {}),
-    // Resolve `secret()`/`$VAR` to the REAL value — the platform-write path
-    // stores the incoming plaintext as the secret (server-side
-    // `normalizeConfigForStorage` swaps it for a `secret://` ref + encrypts it),
-    // so sending the `$VAR` placeholder would persist a broken token. Mirrors
-    // provider keys + auth-profile credentials. The config row never holds
-    // cleartext at rest; the secret name is collected for the secrets gate.
-    config: Object.fromEntries(
-      Object.entries(p.config ?? {}).map(([k, v]) => [
-        k,
-        resolveCredentialValue(v, required, env),
-      ])
-    ),
-    ...(p.channels?.length ? { channels: p.channels } : {}),
-  }));
+  const platforms: DesiredPlatform[] = (agent.platforms ?? [])
+    // A hosted-bot entry (slack/telegram with no `config`) is reached via the
+    // hosted Lobu bot + a `/lobu link` claim, NOT a self-hosted connection. It
+    // must never become a credential-less `agent_connections` row — `lobu run`
+    // reads it straight from the authored config to mint the link code.
+    .filter((p) => !isHostedChatEntry(p))
+    .map((p) => ({
+      stableId: platformStableId(agent.id, p.type, p.name),
+      type: p.type,
+      ...(p.name ? { name: p.name } : {}),
+      // Resolve `secret()`/`$VAR` to the REAL value — the platform-write path
+      // stores the incoming plaintext as the secret (server-side
+      // `normalizeConfigForStorage` swaps it for a `secret://` ref + encrypts it),
+      // so sending the `$VAR` placeholder would persist a broken token. Mirrors
+      // provider keys + auth-profile credentials. The config row never holds
+      // cleartext at rest; the secret name is collected for the secrets gate.
+      config: Object.fromEntries(
+        Object.entries(p.config ?? {}).map(([k, v]) => [
+          k,
+          resolveCredentialValue(v, required, env),
+        ])
+      ),
+      ...(p.channels?.length ? { channels: p.channels } : {}),
+    }));
   // Distinct platforms must not collapse to the same stable id (e.g. names that
   // slugify equal), or apply would clobber one with the other.
   const seenStableIds = new Set<string>();

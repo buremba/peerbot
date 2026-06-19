@@ -562,7 +562,7 @@ export async function initCommand(
     prompt: () =>
       confirm({
         message:
-          "Enable Slack Preview with the public Lobu Developer Slack bot?",
+          "Use the hosted Lobu Slack bot? (no bot token needed — link with a code)",
         default: false,
       }),
   });
@@ -850,7 +850,7 @@ export async function initCommand(
       );
       console.log(
         chalk.dim(
-          "       Then `lobu run` will print a short-lived Slack Preview link code."
+          "       Then `lobu run` prints a short-lived `/lobu link <code>` for the hosted Slack bot."
         )
       );
     }
@@ -990,6 +990,7 @@ async function generateLobuConfig(
     "  },"
   );
 
+  const platformEntries: string[] = [];
   if (options.platformType && options.platformConfig) {
     const configLines = Object.entries(options.platformConfig).map(([k, v]) => {
       const m = /^\$([A-Za-z_][A-Za-z0-9_]*)$/.exec(v);
@@ -997,26 +998,28 @@ async function generateLobuConfig(
         ? `      ${k}: secret(${JSON.stringify(m[1])}),`
         : `      ${k}: ${JSON.stringify(v)},`;
     });
-    agentFields.push(
-      "  platforms: [",
+    platformEntries.push(
       "    {",
       `      type: ${JSON.stringify(options.platformType)},`,
       "      config: {",
       ...configLines,
       "      },",
-      "    },",
-      "  ],"
+      "    },"
     );
   }
 
-  if (options.enableSlackPreview) {
-    agentFields.push(
-      "  // Hosted preview — `lobu run` prints a `/lobu link <code>` you redeem",
-      "  // by DMing the hosted Lobu Slack bot.",
-      "  preview: {",
-      '    slack: { enabled: true, surfaces: ["dm"], codeTtlMinutes: 15 },',
-      "  }"
+  // Hosted Lobu Slack bot — no bot token needed. Skipped when the user already
+  // configured their own Slack app above (an agent gets one slack entry).
+  if (options.enableSlackPreview && options.platformType !== "slack") {
+    platformEntries.push(
+      "    // Hosted Lobu Slack bot — no bot token needed. `lobu run` prints a",
+      "    // `/lobu link <code>` you redeem by DMing the hosted bot.",
+      '    { type: "slack" },'
     );
+  }
+
+  if (platformEntries.length > 0) {
+    agentFields.push("  platforms: [", ...platformEntries, "  ],");
   }
 
   const configFields: string[] = [];

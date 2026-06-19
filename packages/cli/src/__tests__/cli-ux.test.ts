@@ -162,17 +162,18 @@ describe("lobu init --yes", () => {
   );
 
   test(
-    "--slack-preview writes agent preview config",
+    "--slack-preview writes a hosted (no-token) slack platform entry",
     async () => {
       await initCommand(cwd, "preview-on", { yes: true, slackPreview: true });
       const config = readFileSync(
         join(cwd, "preview-on", "lobu.config.ts"),
         "utf-8"
       );
-      expect(config).toContain("preview:");
-      expect(config).toContain("slack:");
-      expect(config).toContain("enabled: true");
-      expect(config).toContain('surfaces: ["dm"]');
+      expect(config).toContain("platforms:");
+      expect(config).toContain('{ type: "slack" }');
+      // The hosted bot needs no bot token — no preview block, no botToken.
+      expect(config).not.toContain("preview:");
+      expect(config).not.toContain("botToken");
     },
     INIT_TIMEOUT
   );

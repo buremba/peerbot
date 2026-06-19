@@ -206,7 +206,7 @@ Connections, the memory schema, and watchers are declared at the project level (
 | `guardrails` | `string[]` | no | Guardrails enabled for this agent. Each name must match a guardrail registered in the gateway's `GuardrailRegistry` at startup |
 | `nixPackages` | `string[]` | no | Nix packages to install in the worker environment |
 | `mcpServers` | `Record<string, McpServer>` | no | Custom MCP servers, keyed by id |
-| `preview` | `Record<string, PreviewConfig>` | no | Hosted "Lobu Developer" preview-bot config, keyed by chat platform (`slack` / `telegram`). Consumed by `lobu run` (dev-time only); not part of cloud apply |
+| `platforms` | `Platform[]` | no | Chat-platform bindings. A `slack` / `telegram` entry with no `config` uses the hosted Lobu bot (no token; `lobu run` prints a `/lobu link <code>`); provide `config` to run your own app |
 
 #### `ProviderConfig`
 
@@ -302,20 +302,25 @@ OAuth configuration for MCP servers that require authenticated access.
 | `scopes` | `string[]` | no | Requested scopes |
 | `tokenEndpointAuthMethod` | string | no | Auth method: `none`, `client_secret_post`, `client_secret_basic` |
 
-#### `PreviewConfig`
+#### `Platform`
 
-Hosted "Lobu Developer" preview-bot config for one chat platform. Consumed by `lobu run` (dev-time only).
+A chat-platform binding. Omit `config` on `slack` / `telegram` to use the hosted Lobu bot (no token needed).
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `enabled` | boolean | no | Enable the hosted preview bot for this platform |
-| `surfaces` | `Array<"dm" \| "channel">` | no | Surfaces a preview code can bind: a DM with the bot, or a channel |
-| `codeTtlMinutes` | number | no | Short-lived claim-code TTL (capped by the hosted preview API) |
+| `type` | string | yes | `slack`, `telegram`, `discord`, `whatsapp`, `teams`, `google_chat`, `rest`, … |
+| `name` | string | no | Display name; also disambiguates multiple entries of the same type |
+| `config` | `Record<string, string \| SecretRef>` | no | Adapter credentials (e.g. `{ botToken: secret("SLACK_BOT_TOKEN") }`). **Omit on `slack`/`telegram` to use the hosted Lobu bot.** `rest` takes `{}` |
+| `channels` | `string[]` | no | Declarative channel bindings (`"<teamId>/<channelId>"`); Slack only |
+| `surfaces` | `Array<"dm" \| "channel">` | no | Hosted-bot only: surfaces a `/lobu link` code may bind. Default `["dm"]` |
+| `codeTtlMinutes` | number | no | Hosted-bot only: claim-code TTL in minutes. Default 15 |
 
 ```ts
-preview: {
-  slack: { enabled: true, surfaces: ["dm"], codeTtlMinutes: 15 },
-}
+platforms: [
+  { type: "slack" }, // hosted Lobu bot, no token; `lobu run` prints a /lobu link code
+  // your own app instead: { type: "slack", config: { botToken: secret("SLACK_BOT_TOKEN") } }
+  { type: "rest", config: {} },
+]
 ```
 
 ### Guardrails
@@ -501,9 +506,9 @@ Re-exported TypeBox `Type` for authoring extraction schemas and feed/action conf
 
 ## Chat platforms
 
-Chat platforms (Slack, Telegram, Discord, WhatsApp, Teams, Google Chat) are not authored in `lobu.config.ts`. Connect them through the `/agents` admin UI or the CRUD API; their bot tokens and secrets live in `.env`. See [Slack](/platforms/slack/) for the per-platform setup.
+Chat platforms (Slack, Telegram, Discord, WhatsApp, Teams, Google Chat) are declared on the agent via `platforms`, or connected through the `/agents` admin UI / CRUD API. Bot tokens and secrets live in `.env` as `secret(...)` refs. See [Slack](/platforms/slack/) for the per-platform setup.
 
-For dev-time previews, `defineAgent({ preview: { slack: { enabled: true } } })` enables the hosted Lobu Developer bot so `lobu run` prints a short-lived `/lobu link <code>` you redeem by DMing the bot.
+To skip the bot-token setup, omit `config` on a `slack` / `telegram` entry to use the hosted Lobu bot: `lobu run` prints a short-lived `/lobu link <code>` you redeem by DMing the hosted bot (Slack also supports a one-time "Add to Slack" to use it in your own workspace).
 
 ## Lobu memory
 

@@ -105,8 +105,8 @@ describe("mapProjectToDesiredState", () => {
     const bot = defineAgent({
       id: "bot",
       platforms: [
-        { type: "slack", name: "ops", config: {} },
-        { type: "slack", name: "ops!", config: {} },
+        { type: "slack", name: "ops", config: { botToken: secret("T") } },
+        { type: "slack", name: "ops!", config: { botToken: secret("T") } },
       ],
     });
     expect(() =>
@@ -668,17 +668,55 @@ describe("mapProjectToDesiredState", () => {
     });
   });
 
-  test("preview is authoring-only and not mapped into agent settings", () => {
+  test("hosted chat entry (slack, no config) is not mapped into a connection", () => {
     const agent = defineAgent({
       id: "a",
-      preview: { slack: { enabled: true, surfaces: ["dm", "channel"] } },
+      platforms: [{ type: "slack", surfaces: ["dm", "channel"] }],
     });
-    const settings = mapProjectToDesiredState(
+    const mapped = mapProjectToDesiredState(
       defineConfig({ agents: [agent] }),
       env
-    ).agents[0]?.settings;
-    // preview drives `lobu run` only — it must not leak into cloud settings.
-    expect(settings).not.toHaveProperty("preview");
+    ).agents[0];
+    // The hosted bot is reached via a `/lobu link` claim, not a self-hosted
+    // connection — it must NOT become a credential-less platform row.
+    expect(mapped?.platforms).toEqual([]);
+  });
+
+  test("hosted telegram entry (no config) is not mapped into a connection", () => {
+    const agent = defineAgent({ id: "a", platforms: [{ type: "telegram" }] });
+    const mapped = mapProjectToDesiredState(
+      defineConfig({ agents: [agent] }),
+      env
+    ).agents[0];
+    expect(mapped?.platforms).toEqual([]);
+  });
+
+  test("self-hosted chat entry (slack with botToken) IS mapped into a connection", () => {
+    const agent = defineAgent({
+      id: "a",
+      platforms: [
+        { type: "slack", config: { botToken: secret("SLACK_BOT_TOKEN") } },
+      ],
+    });
+    const mapped = mapProjectToDesiredState(
+      defineConfig({ agents: [agent] }),
+      env
+    ).agents[0];
+    expect(mapped?.platforms).toHaveLength(1);
+    expect(mapped?.platforms?.[0]?.type).toBe("slack");
+  });
+
+  test("rest platform (empty config, not hosted) IS mapped into a connection", () => {
+    const agent = defineAgent({
+      id: "a",
+      platforms: [{ type: "rest", config: {} }],
+    });
+    const mapped = mapProjectToDesiredState(
+      defineConfig({ agents: [agent] }),
+      env
+    ).agents[0];
+    expect(mapped?.platforms).toHaveLength(1);
+    expect(mapped?.platforms?.[0]?.type).toBe("rest");
   });
 
   test("dedups judged domains by domain (last wins), matching buildAgentSettings", () => {

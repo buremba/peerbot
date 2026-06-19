@@ -78,16 +78,23 @@ const agent = defineAgent({
 Where people message the agent is declared on the agent via `platforms`, NOT as a
 `defineConnection` (connections are data sources). Chat-platform `config` values are
 `secret(...)` refs resolved from `.env`. The `rest` platform exposes the HTTP Agent
-API (POST to `/lobu/api/v1/agents/<id>/messages`) and takes an empty `config: {}`:
+API (POST to `/lobu/api/v1/agents/<id>/messages`) and takes an empty `config: {}`.
+
+For `slack` and `telegram` you do NOT need a bot token to start: omit `config`
+entirely to use the **hosted Lobu bot**. `lobu run` then prints a short-lived
+`/lobu link <code>` you redeem by DMing the hosted bot (Slack also supports a
+one-time "Add to Slack" to use it in your own workspace). Provide `config` only
+when you want to run your own Slack/Telegram app:
 
 ```ts
 const agent = defineAgent({
   id: "{{PROJECT_NAME}}",
   // ...providers...
   platforms: [
-    { type: "slack", config: { botToken: secret("SLACK_BOT_TOKEN") } },
+    { type: "slack" }, // hosted Lobu bot — no token; `lobu run` prints a /lobu link code
+    // bring your own app instead: { type: "slack", config: { botToken: secret("SLACK_BOT_TOKEN") } }
     { type: "rest", config: {} }, // HTTP API — no secret needed; always config: {}
-    // other chat types: telegram | discord | whatsapp | teams | google_chat
+    // other chat types: telegram (also hosted) | discord | whatsapp | teams | google_chat
     // Slack only: optional channels: ["<teamId>/<channelId>"]
   ],
 });

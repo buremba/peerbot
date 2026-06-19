@@ -26,9 +26,10 @@ const foodOrdering = defineAgent({
       key: secret("Z_AI_API_KEY"),
     },
   ],
-  preview: {
-    slack: { enabled: true, surfaces: ["dm", "channel"], codeTtlMinutes: 15 },
-  },
+  // Hosted Lobu Slack bot — no bot token needed (`/lobu link <code>`).
+  platforms: [
+    { type: "slack", surfaces: ["dm", "channel"], codeTtlMinutes: 15 },
+  ],
   network: {
     // Deliveroo is a flat allow rather than LLM-judged: the egress judge needs
     // an ANTHROPIC_API_KEY (OAuth tokens are rejected for direct API use), and

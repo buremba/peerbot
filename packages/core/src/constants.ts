@@ -27,6 +27,43 @@ export const TIME = {
  */
 export const MCP_PROTOCOL_VERSION = "2025-03-26";
 
+/**
+ * Chat platforms Lobu operates a hosted bot for. A platform entry of one of
+ * these types declared with NO credential `config` resolves to the hosted Lobu
+ * bot (reachable by redeeming a `/lobu link <code>` claim) instead of a
+ * self-hosted connection — the user never supplies a bot token.
+ */
+export const HOSTED_CHAT_PLATFORMS = ["slack", "telegram"] as const;
+export type HostedChatPlatform = (typeof HOSTED_CHAT_PLATFORMS)[number];
+
+export function isHostedChatPlatform(type: string): type is HostedChatPlatform {
+  return (HOSTED_CHAT_PLATFORMS as readonly string[]).includes(type);
+}
+
+/**
+ * Whether a declared chat-platform entry resolves to the hosted Lobu bot: a
+ * hosted-eligible type (`slack`/`telegram`) with `config` OMITTED and no
+ * declarative `channels`. Either a present `config` (even `{}`, which means
+ * "resolve the token from the env fallback") or `channels` signals self-hosted
+ * intent, so the entry is NOT hosted — that path must fail loud on an
+ * unresolved token (via the secrets gate) rather than silently demote a
+ * self-hosted app to the hosted bot. The hosted entry must never become a
+ * credential-less connection row; `lobu run` reads it straight from the
+ * authored config to mint a link code (`surfaces` / `codeTtlMinutes` tune that
+ * code and stay hosted).
+ */
+export function isHostedChatEntry(entry: {
+  type: string;
+  config?: Record<string, unknown> | undefined;
+  channels?: readonly string[] | undefined;
+}): boolean {
+  return (
+    isHostedChatPlatform(entry.type) &&
+    entry.config === undefined &&
+    (entry.channels?.length ?? 0) === 0
+  );
+}
+
 // Default configuration values
 export const DEFAULTS = {
   /** Default session TTL in milliseconds */

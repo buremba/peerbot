@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveConnectorInstallSource } from '../connector-definition-install';
 
 // These cases all reject BEFORE any network fetch (scheme/allowlist/SSRF on IP
@@ -56,5 +56,66 @@ describe('connector source_url install guard', () => {
     await expect(
       resolveConnectorInstallSource({ sourceUrl: 'https://connectors.example.com/nope.ts' })
     ).rejects.not.toThrow(/allowlist|must use https|blocked/i);
+  });
+});
+
+// Redirect re-validation + body cap need a mocked fetch. `.invalid` hosts are
+// RFC-2606 guaranteed-NXDOMAIN, so the initial SSRF/DNS check passes fast and
+// deterministically without real network, then our mock drives the behavior.
+describe('connector source_url fetch: redirect validation + body cap', () => {
+  const prev = process.env.CONNECTOR_SOURCE_ALLOWLIST;
+  beforeEach(() => {
+    process.env.CONNECTOR_SOURCE_ALLOWLIST = 'host.invalid';
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (prev === undefined) delete process.env.CONNECTOR_SOURCE_ALLOWLIST;
+    else process.env.CONNECTOR_SOURCE_ALLOWLIST = prev;
+  });
+
+  it('re-validates redirect hops: a redirect to http:// is rejected', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(null, { status: 302, headers: { location: 'http://host.invalid/y.ts' } })
+    );
+    await expect(
+      resolveConnectorInstallSource({ sourceUrl: 'https://host.invalid/x.ts' })
+    ).rejects.toThrow(/must use https/i);
+  });
+
+  it('re-validates redirect hops: a redirect to an off-allowlist host is rejected', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(null, { status: 302, headers: { location: 'https://elsewhere.invalid/y.ts' } })
+    );
+    await expect(
+      resolveConnectorInstallSource({ sourceUrl: 'https://host.invalid/x.ts' })
+    ).rejects.toThrow(/allowlist/i);
+  });
+
+  it('rejects an oversized declared Content-Length', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response('x', { status: 200, headers: { 'content-length': String(6 * 1024 * 1024) } })
+    );
+    await expect(
+      resolveConnectorInstallSource({ sourceUrl: 'https://host.invalid/x.ts' })
+    ).rejects.toThrow(/too large/i);
+  });
+
+  it('aborts a streamed body that exceeds the cap (no/lying Content-Length)', async () => {
+    const chunk = new Uint8Array(2 * 1024 * 1024); // 2 MiB per chunk; 3rd pushes past 5 MiB
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent >= 4) {
+          controller.close();
+          return;
+        }
+        sent += 1;
+        controller.enqueue(chunk);
+      },
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(stream, { status: 200 }));
+    await expect(
+      resolveConnectorInstallSource({ sourceUrl: 'https://host.invalid/x.ts' })
+    ).rejects.toThrow(/too large/i);
   });
 });

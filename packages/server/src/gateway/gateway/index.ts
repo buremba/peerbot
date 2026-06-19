@@ -973,27 +973,12 @@ export class WorkerGateway {
       result.defaultProvider = upstream?.slug || primaryProvider.providerId;
     }
 
+    // Only an explicitly configured model is used — Lobu no longer silently
+    // resolves a provider default (the worker errors with an actionable
+    // "select a model" message when none is set). A concrete model is chosen at
+    // config time via the model picker (getModelOptions).
     if (agentModel) {
       result.defaultModel = agentModel;
-    } else if (primaryProvider) {
-      // No pinned/preferred model (auto mode): ask the provider for its current
-      // default (e.g. its newest live model) so the worker never falls back to a
-      // hardcoded snapshot that can silently go stale. Providers without a model
-      // list simply don't supply one and the worker resolves via its own config.
-      const withDefault = primaryProvider as {
-        getDefaultModel?: (agentId: string) => Promise<string | undefined>;
-      };
-      if (typeof withDefault.getDefaultModel === "function") {
-        try {
-          const resolved = await withDefault.getDefaultModel(agentId);
-          if (resolved) result.defaultModel = resolved;
-        } catch (error) {
-          logger.warn(
-            { agentId, error: (error as Error)?.message },
-            "resolveProviderConfig: getDefaultModel failed; leaving model unset"
-          );
-        }
-      }
     }
 
     if (Object.keys(providerBaseUrlMappings).length > 0) {

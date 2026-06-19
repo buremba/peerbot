@@ -177,17 +177,6 @@ export class ClaudeOAuthModule extends BaseProviderModule {
     return options;
   }
 
-  /**
-   * The provider's current default model — the newest model the live API
-   * exposes. Returned to the gateway so an auto-mode (no pinned model) agent
-   * resolves to a current model instead of a hardcoded snapshot. Undefined when
-   * the provider has no credentials yet (the model list can't be fetched).
-   */
-  async getDefaultModel(agentId: string): Promise<string | undefined> {
-    const models = await this.fetchClaudeModels(agentId);
-    return models[0]?.id;
-  }
-
   async setCredentials(
     agentId: string,
     userId: string,

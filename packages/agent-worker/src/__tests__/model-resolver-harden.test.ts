@@ -91,7 +91,7 @@ describe("resolveModelRef — edge cases", () => {
   });
 
   test("throws when everything is empty and no defaults", () => {
-    expect(() => resolveModelRef("")).toThrow("No model configured");
+    expect(() => resolveModelRef("")).toThrow("No model selected");
   });
 });
 
@@ -198,12 +198,18 @@ describe("registerDynamicProvider — idempotency and precedence", () => {
     expect(PROVIDER_REGISTRY_ALIASES[id]).toBeUndefined();
   });
 
-  test("registered dynamic provider is resolvable via resolveModelRef", () => {
+  test("registered dynamic provider's default is reachable via the explicit 'auto' keyword", () => {
+    // A no-model agent now requires an explicit selection (no silent default),
+    // but a config-driven provider's declared defaultModel still resolves when
+    // the operator explicitly asks for "auto".
     registerDynamicProvider(id, {
       baseUrlEnvVar: "MY_BASE_URL",
       defaultModel: "dynamic-default",
     });
-    const result = resolveModelRef("", { defaultProvider: id });
+    expect(() => resolveModelRef("", { defaultProvider: id })).toThrow(
+      "No model selected"
+    );
+    const result = resolveModelRef("auto", { defaultProvider: id });
     expect(result.provider).toBe(id);
     expect(result.modelId).toBe("dynamic-default");
   });

@@ -47,6 +47,7 @@ export function classifyError(error: unknown): string | undefined {
   if (message === SESSION_TIMEOUT_MESSAGE) return "SESSION_TIMEOUT";
   if (
     message.includes("No model configured") ||
+    message.includes("No model selected") ||
     message.includes("No provider specified")
   )
     return "NO_MODEL_CONFIGURED";

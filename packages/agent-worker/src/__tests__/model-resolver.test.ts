@@ -27,11 +27,10 @@ describe("resolveModelRef", () => {
     expect(result.modelId).toBe(DEFAULT_PROVIDER_MODELS.openai);
   });
 
-  test("anthropic 'auto' is left as-is — the gateway supplies the default", () => {
-    // anthropic intentionally has no worker-side default: its current model is
-    // resolved live by the gateway and delivered as `defaultModel`. With no
-    // default supplied here, "auto" passes through unchanged (the gateway's
-    // resolved model takes effect in production).
+  test("anthropic 'auto' is left as-is (no worker-side default to resolve)", () => {
+    // anthropic has no worker-side default model, so the explicit "auto"
+    // keyword passes through unchanged. In production a concrete Anthropic
+    // model must be selected (no silent default).
     const result = resolveModelRef("anthropic/auto");
     expect(result.provider).toBe("anthropic");
     expect(result.modelId).toBe("auto");
@@ -51,14 +50,16 @@ describe("resolveModelRef", () => {
     expect(result.modelId).toBe("claude-sonnet-4-20250514");
   });
 
-  test("falls back to provider default when no model or override", () => {
-    const result = resolveModelRef("", { defaultProvider: "gemini" });
-    expect(result.provider).toBe("gemini");
-    expect(result.modelId).toBe(DEFAULT_PROVIDER_MODELS.gemini);
+  test("no silent default: empty model with a provider now requires explicit selection", () => {
+    // Lobu no longer silently substitutes the provider's default model — a
+    // concrete model must be configured (chosen via the model picker).
+    expect(() => resolveModelRef("", { defaultProvider: "gemini" })).toThrow(
+      "No model selected"
+    );
   });
 
   test("throws when no model can be determined", () => {
-    expect(() => resolveModelRef("")).toThrow("No model configured");
+    expect(() => resolveModelRef("")).toThrow("No model selected");
   });
 
   test("throws when bare model ID and no default provider", () => {

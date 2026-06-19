@@ -162,23 +162,15 @@ export function resolveModelRef(
   const defaultProvider = overrides?.defaultProvider || "";
 
   const normalizedRaw = rawModelRef?.trim();
-  let modelRef = normalizedRaw || defaultModelRef;
+  const modelRef = normalizedRaw || defaultModelRef;
 
-  // When no model is configured but a provider is known, use the provider's
-  // default model so auto-mode provider selection works end-to-end.
-  if (!modelRef && defaultProvider) {
-    const fallbackModel = DEFAULT_PROVIDER_MODELS[defaultProvider];
-    if (fallbackModel) {
-      logger.info(
-        `No model configured, using default for ${defaultProvider}: ${fallbackModel}`
-      );
-      modelRef = fallbackModel;
-    }
-  }
-
+  // A model must be explicitly configured — Lobu no longer silently picks a
+  // provider default, because "newest available" is unreliable (e.g. the
+  // Anthropic API lists preview models an account can't actually use). Surface
+  // an actionable error so the operator selects a concrete model.
   if (!modelRef) {
     throw new Error(
-      "No model configured. Ask an admin to connect a provider for the base agent."
+      "No model selected for this agent. Choose a model in the agent's Providers settings."
     );
   }
 

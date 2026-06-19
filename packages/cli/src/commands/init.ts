@@ -842,7 +842,10 @@ export async function initCommand(
         chalk.cyan(`  ${n++}. Wire memory clients: lobu memory init`)
       );
     }
-    if (enableHostedSlack) {
+    // Mirror the scaffold's emission condition: a `--platform slack` already
+    // owns the agent's single Slack entry, so the hosted bot is skipped and
+    // there is no link code to print.
+    if (enableHostedSlack && platformType !== "slack") {
       console.log(
         chalk.cyan(
           `  ${n++}. Link the project to Lobu Cloud and register it: lobu login && lobu org set <slug> && lobu apply`

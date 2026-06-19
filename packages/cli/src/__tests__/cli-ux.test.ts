@@ -178,6 +178,27 @@ describe("lobu init --yes", () => {
     INIT_TIMEOUT
   );
 
+  test(
+    "--platform slack --hosted-slack emits only the own slack entry (no duplicate)",
+    async () => {
+      await initCommand(cwd, "slack-both", {
+        yes: true,
+        platform: "slack",
+        hostedSlack: true,
+      });
+      const config = readFileSync(
+        join(cwd, "slack-both", "lobu.config.ts"),
+        "utf-8"
+      );
+      // An explicit --platform slack owns the agent's single slack entry, so the
+      // hosted bot is skipped — one slack entry, with a token, no bare hosted one.
+      expect(config).toContain("botToken");
+      expect(config).not.toContain('{ type: "slack" },');
+      expect(config.match(/type: "slack"/g)?.length ?? 0).toBe(1);
+    },
+    INIT_TIMEOUT
+  );
+
   test("--provider with bad id throws before writing files", async () => {
     await expect(
       initCommand(cwd, "bad-provider", {

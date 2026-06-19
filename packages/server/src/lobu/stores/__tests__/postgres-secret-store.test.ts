@@ -150,6 +150,17 @@ describe('PostgresSecretStore', () => {
       expect(entries).toEqual([]);
     });
 
+    it('matches a prefix that literally contains an underscore', async () => {
+      // Regression: the escape char must be a real backslash. A prior bug had
+      // `ESCAPE '\'` collapse to an empty escape string in the template
+      // literal, so the `\_` that escaping inserts became a literal-backslash
+      // requirement and matched nothing — silently breaking deleteSecretsByPrefix
+      // for any prefix containing `_`/`%` (e.g. `installations/slackinst-…/`).
+      await store.put('grp_a/token', 'v');
+      const entries = await store.list('grp_a/');
+      expect(entries.map((e) => e.name)).toEqual(['grp_a/token']);
+    });
+
     it('filters out expired entries', async () => {
       await store.put('ephemeral/secret', 'gone-soon', { ttlSeconds: 60 });
       const db = getTestDb();

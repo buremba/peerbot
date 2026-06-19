@@ -183,7 +183,7 @@ export class PostgresSecretStore implements WritableSecretStore {
           SELECT name, updated_at
           FROM agent_secrets
           WHERE organization_id = ${targetOrgId}
-            AND name LIKE ${escapeLikePrefix(prefix) + '%'} ESCAPE '\'
+            AND name LIKE ${escapeLikePrefix(prefix) + '%'} ESCAPE '\\'
             AND (expires_at IS NULL OR expires_at > now())
           ORDER BY name ASC
         `

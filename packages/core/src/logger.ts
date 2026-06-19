@@ -62,7 +62,6 @@ function createConsoleLogger(serviceName: string): Logger {
   const formatMessage = (lvl: string, message: any, ...args: any[]): string => {
     const timestamp = new Date().toISOString().replace("T", " ").slice(0, 19);
     let msgStr: string;
-    let meta: any = null;
 
     // Handle pino-style format: logger.info({ key: value }, "message")
     if (
@@ -74,7 +73,6 @@ function createConsoleLogger(serviceName: string): Logger {
       if (args.length > 0 && typeof args[0] === "string") {
         // First arg is metadata object, second arg is the actual message
         msgStr = args[0];
-        meta = message;
         args = args.slice(1);
       } else {
         // Just an object, stringify it
@@ -87,13 +85,6 @@ function createConsoleLogger(serviceName: string): Logger {
     // Append remaining args
     if (args.length > 0) {
       msgStr += ` ${safeStringify(args.length === 1 ? args[0] : args)}`;
-    }
-
-    // Metadata values can include provider credentials/tokens. The Winston path
-    // redacts structured metadata; the console fallback keeps only a marker so
-    // it cannot accidentally serialize secrets in minimal runtimes.
-    if (meta) {
-      msgStr += " [metadata omitted]";
     }
 
     return `[${timestamp}] [${lvl}] [${serviceName}] ${msgStr}`;

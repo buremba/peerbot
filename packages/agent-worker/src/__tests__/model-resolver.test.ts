@@ -22,9 +22,19 @@ describe("resolveModelRef", () => {
   });
 
   test("resolves 'auto' to provider default model", () => {
+    const result = resolveModelRef("openai/auto");
+    expect(result.provider).toBe("openai");
+    expect(result.modelId).toBe(DEFAULT_PROVIDER_MODELS.openai);
+  });
+
+  test("anthropic 'auto' is left as-is — the gateway supplies the default", () => {
+    // anthropic intentionally has no worker-side default: its current model is
+    // resolved live by the gateway and delivered as `defaultModel`. With no
+    // default supplied here, "auto" passes through unchanged (the gateway's
+    // resolved model takes effect in production).
     const result = resolveModelRef("anthropic/auto");
     expect(result.provider).toBe("anthropic");
-    expect(result.modelId).toBe(DEFAULT_PROVIDER_MODELS.anthropic);
+    expect(result.modelId).toBe("auto");
   });
 
   test("uses overrides.defaultProvider for bare model ID", () => {
@@ -102,9 +112,9 @@ describe("resolveModelRef", () => {
   });
 
   test("configured provider + 'auto' resolves to that provider's default model", () => {
-    const result = resolveModelRef("auto", { defaultProvider: "anthropic" });
-    expect(result.provider).toBe("anthropic");
-    expect(result.modelId).toBe(DEFAULT_PROVIDER_MODELS.anthropic);
+    const result = resolveModelRef("auto", { defaultProvider: "openai" });
+    expect(result.provider).toBe("openai");
+    expect(result.modelId).toBe(DEFAULT_PROVIDER_MODELS.openai);
   });
 
   test("auto-mode (no configured provider) still derives provider from slug", () => {
@@ -175,7 +185,9 @@ describe("registerDynamicProvider", () => {
 
 describe("DEFAULT_PROVIDER_MODELS", () => {
   test("contains expected providers", () => {
-    expect(DEFAULT_PROVIDER_MODELS.anthropic).toBeDefined();
+    // anthropic is intentionally absent — its default is resolved live by the
+    // gateway (newest model), never hardcoded here.
+    expect(DEFAULT_PROVIDER_MODELS.anthropic).toBeUndefined();
     expect(DEFAULT_PROVIDER_MODELS.openai).toBeDefined();
     // Keyed by gateway slug "gemini" (the config provider id), not "google".
     expect(DEFAULT_PROVIDER_MODELS.gemini).toBeDefined();

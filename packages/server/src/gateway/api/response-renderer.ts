@@ -169,10 +169,14 @@ export class ApiResponseRenderer implements ResponseRenderer {
       return;
     }
 
-    // Broadcast status to SSE clients
+    // Broadcast status to SSE clients. `statusUpdate` is an object
+    // ({ elapsedSeconds, state }); the SPA's SSE consumer expects `status` to be
+    // a plain string and renders it verbatim (italicized). Sending the object
+    // here makes the client coerce it via String(...) → "[object Object]".
+    // Send the human-readable `state` ("is running", "is scheduling", …).
     this.sseManager.broadcast(sessionId, "status", {
       type: "status",
-      status: payload.statusUpdate,
+      status: payload.statusUpdate?.state ?? "Working",
       messageId: payload.messageId,
       timestamp: payload.timestamp || Date.now(),
     });

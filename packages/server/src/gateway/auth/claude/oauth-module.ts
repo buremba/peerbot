@@ -1,11 +1,4 @@
-import {
-  CLAUDE_HAIKU_3_5_MODEL_ID,
-  CLAUDE_OPUS_4_MODEL_ID,
-  CLAUDE_SONNET_4_MODEL_ID,
-  createLogger,
-  DEFAULT_AGENT_MODEL,
-  type ModelOption,
-} from "@lobu/core";
+import { createLogger, type ModelOption } from "@lobu/core";
 import { BaseProviderModule } from "../base-provider-module.js";
 import { resolveEnv } from "../mcp/string-substitution.js";
 import type { OAuthCredentials } from "../oauth/credentials.js";
@@ -136,8 +129,14 @@ export class ClaudeOAuthModule extends BaseProviderModule {
       userId,
       preferredModel,
     });
+    // No hardcoded default model: when nothing is pinned, default to the
+    // provider's newest live model (Anthropic's /v1/models is newest-first).
+    // This keeps the default current automatically instead of rotting to a
+    // retired snapshot.
     const defaultModel =
-      preferredModel || process.env.AGENT_DEFAULT_MODEL || DEFAULT_AGENT_MODEL;
+      preferredModel ||
+      process.env.AGENT_DEFAULT_MODEL ||
+      availableModels[0]?.id;
     const options: ModelOption[] = [];
     const seen = new Set<string>();
 
@@ -148,7 +147,7 @@ export class ClaudeOAuthModule extends BaseProviderModule {
     };
 
     const defaultEntry = availableModels.find((m) => m.id === defaultModel);
-    if (defaultEntry) {
+    if (defaultEntry && defaultModel) {
       addOption(defaultModel, defaultEntry.display_name || defaultModel);
     }
 
@@ -157,6 +156,17 @@ export class ClaudeOAuthModule extends BaseProviderModule {
     }
 
     return options;
+  }
+
+  /**
+   * The provider's current default model — the newest model the live API
+   * exposes. Returned to the gateway so an auto-mode (no pinned model) agent
+   * resolves to a current model instead of a hardcoded snapshot. Undefined when
+   * the provider has no credentials yet (the model list can't be fetched).
+   */
+  async getDefaultModel(agentId: string): Promise<string | undefined> {
+    const models = await this.fetchClaudeModels(agentId);
+    return models[0]?.id;
   }
 
   async setCredentials(
@@ -202,31 +212,34 @@ export class ClaudeOAuthModule extends BaseProviderModule {
     });
   }
 
-  private static readonly FALLBACK_MODELS: Array<{
-    id: string;
-    display_name: string;
-    type: string;
-  }> = [
+  private static readonly MODELS_CACHE_TTL_MS = 5 * 60 * 1000;
+  private readonly modelsCache = new Map<
+    string,
     {
-      id: CLAUDE_SONNET_4_MODEL_ID,
-      display_name: "Claude Sonnet 4",
-      type: "model",
-    },
-    {
-      id: CLAUDE_OPUS_4_MODEL_ID,
-      display_name: "Claude Opus 4",
-      type: "model",
-    },
-    {
-      id: CLAUDE_HAIKU_3_5_MODEL_ID,
-      display_name: "Claude Haiku 3.5",
-      type: "model",
-    },
-  ];
+      at: number;
+      models: Array<{ id: string; display_name: string; type: string }>;
+    }
+  >();
 
+  /**
+   * Fetch the live Claude model list (newest-first) for the agent's
+   * credentials. Returns `[]` when the provider has no credentials yet or the
+   * API call fails — callers treat empty as "no catalog / no default" rather
+   * than substituting a hardcoded snapshot that can silently go stale.
+   * Successful results are cached per agent for a few minutes so resolving the
+   * default model doesn't hit the API on every turn.
+   */
   private async fetchClaudeModels(
     agentId: string
   ): Promise<Array<{ id: string; display_name: string; type: string }>> {
+    const cached = this.modelsCache.get(agentId);
+    if (
+      cached &&
+      Date.now() - cached.at < ClaudeOAuthModule.MODELS_CACHE_TTL_MS
+    ) {
+      return cached.models;
+    }
+
     const profile = await this.authProfilesManager.getBestProfile(
       agentId,
       this.providerId
@@ -248,7 +261,10 @@ export class ClaudeOAuthModule extends BaseProviderModule {
     } else if (apiKey) {
       headers["x-api-key"] = apiKey;
     } else {
-      return ClaudeOAuthModule.FALLBACK_MODELS;
+      // No credentials → can't enumerate models. Surface empty so the model
+      // picker / default resolution shows "connect a provider" instead of a
+      // stale hardcoded list.
+      return [];
     }
 
     const response = await fetch("https://api.anthropic.com/v1/models", {
@@ -269,9 +285,9 @@ export class ClaudeOAuthModule extends BaseProviderModule {
           hasOauth: !!oauthToken,
           hasApiKey: !!apiKey,
         },
-        "fetchClaudeModels: non-ok response, using fallback models"
+        "fetchClaudeModels: non-ok response"
       );
-      return ClaudeOAuthModule.FALLBACK_MODELS;
+      return [];
     }
 
     const payload = (await response.json().catch(() => ({}))) as {
@@ -293,6 +309,9 @@ export class ClaudeOAuthModule extends BaseProviderModule {
           Boolean(item)
       );
 
-    return models.length > 0 ? models : ClaudeOAuthModule.FALLBACK_MODELS;
+    if (models.length > 0) {
+      this.modelsCache.set(agentId, { at: Date.now(), models });
+    }
+    return models;
   }
 }

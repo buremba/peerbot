@@ -165,12 +165,19 @@ else
   proxy=$((highest_proxy + 1))
 fi
 
+# PUBLIC_GATEWAY_URL / PUBLIC_WEB_URL must match this worktree's PORT. The
+# copied .env pins them to the default port (8787); without overriding them the
+# server hands the SPA absolute sse/messages URLs on the wrong port, so the chat
+# silently fails ("Failed to fetch") in every non-default-port worktree. .env.local
+# is sourced after .env, so these win.
 cat > "$worktree_dir/.env.local" <<EOF
 PORT=$port
 WORKER_PROXY_PORT=$proxy
+PUBLIC_GATEWAY_URL=http://127.0.0.1:$port
+PUBLIC_WEB_URL=http://127.0.0.1:$port
 LOBU_TASK_NAME=$name
 EOF
-echo "→ .env.local: PORT=$port WORKER_PROXY_PORT=$proxy"
+echo "→ .env.local: PORT=$port WORKER_PROXY_PORT=$proxy PUBLIC_*_URL=http://127.0.0.1:$port"
 
 echo "$name" > "$worktree_dir/.task"
 

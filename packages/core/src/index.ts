@@ -56,8 +56,6 @@ export {
   renderSkillMemorySection,
 } from "./lobu-guidance";
 export * from "./logger";
-// Centralized Claude model ID constants
-export * from "./model-ids";
 // Module system
 export * from "./modules";
 export type { OtelConfig, Span, Tracer } from "./otel";

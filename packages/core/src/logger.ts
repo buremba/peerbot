@@ -90,8 +90,9 @@ function createConsoleLogger(serviceName: string): Logger {
     }
 
     // Append metadata object
-    // codeql[js/clear-text-logging]: safeStringify redacts sensitive metadata keys before appending.
     if (meta) {
+      // lgtm[js/clear-text-logging]
+      // safeStringify redacts sensitive metadata keys before appending.
       msgStr += ` ${safeStringify(meta)}`;
     }
 

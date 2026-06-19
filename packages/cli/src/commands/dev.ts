@@ -794,7 +794,7 @@ async function printPreviewInstructions(cwd: string): Promise<void> {
       if (platform === "slack") {
         console.log(
           chalk.dim(
-            `  Or add it to your own Slack workspace: ${chalk.underline(`${clientInfo.apiBaseUrl}/slack/install`)} (then ${chalk.bold(claim.command)} in a channel there).`
+            `  Or add it to your own Slack workspace: ${chalk.underline(`${clientInfo.apiBaseUrl}/lobu/slack/install`)} (then ${chalk.bold(claim.command)} in a channel there).`
           )
         );
       }

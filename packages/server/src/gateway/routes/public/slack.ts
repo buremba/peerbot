@@ -9,7 +9,6 @@ import {
   renderOAuthSuccessPage,
 } from "../../auth/oauth-templates.js";
 import type { ChatInstanceManager } from "../../connections/chat-instance-manager.js";
-import { resolvePublicUrl } from "../../utils/public-url.js";
 
 const logger = createLogger("slack-routes");
 
@@ -148,6 +147,34 @@ async function loadSlackBotScopes(): Promise<string[]> {
   return DEFAULT_SLACK_BOT_SCOPES;
 }
 
+/**
+ * Build the Slack OAuth `redirect_uri`. The gateway — and these Slack routes —
+ * are served under the public `/lobu` prefix, so the callback lives at
+ * `<gateway-base>/slack/oauth_callback` (e.g.
+ * `https://app.lobu.ai/lobu/slack/oauth_callback`). `getPublicGatewayUrl()`
+ * already encodes that prefix, so append the callback path to it directly.
+ *
+ * We must NOT route this through `resolvePublicUrl("/slack/oauth_callback")`:
+ * an absolute `/slack/...` path resolves against the origin and drops `/lobu`,
+ * producing a `redirect_uri` that matches neither the real callback route nor
+ * the Slack app's configured redirect-URI allowlist (Slack then rejects the
+ * install with "redirect_uri did not match any configured URIs").
+ *
+ * Falls back to deriving the mount prefix from the request path
+ * (`…/slack/install` → `…`) when no public gateway URL is configured.
+ */
+export function slackOAuthCallbackUrl(
+  gatewayBaseUrl: string | undefined,
+  requestUrl: string
+): string {
+  if (gatewayBaseUrl) {
+    return `${gatewayBaseUrl.replace(/\/+$/, "")}/slack/oauth_callback`;
+  }
+  const url = new URL(requestUrl);
+  const prefix = url.pathname.replace(/\/slack\/install\/?$/, "");
+  return `${url.origin}${prefix}/slack/oauth_callback`;
+}
+
 export function createSlackRoutes(manager: ChatInstanceManager): Hono {
   const router = new Hono();
 
@@ -180,10 +207,10 @@ export function createSlackRoutes(manager: ChatInstanceManager): Hono {
     }
 
     const stateStore = createSlackInstallStateStore();
-    const redirectUri = resolvePublicUrl("/slack/oauth_callback", {
-      configuredUrl: manager.getServices().getPublicGatewayUrl?.(),
-      requestUrl: c.req.url,
-    });
+    const redirectUri = slackOAuthCallbackUrl(
+      manager.getServices().getPublicGatewayUrl?.(),
+      c.req.url
+    );
     const scopes = await loadSlackBotScopes();
     const state = await stateStore.create({
       redirectUri,

@@ -157,10 +157,7 @@ export class TokenRefreshJob {
       } catch (error) {
         logger.error(
           `Failed to refresh ${providerId} token for user ${userId} agent ${agentId}`,
-          {
-            error,
-            profileId: oauthProfile.id,
-          }
+          { error }
         );
       }
     }
@@ -205,14 +202,14 @@ export class TokenRefreshJob {
       const expiresAt = oauthProfile.metadata.expiresAt || 0;
       if (expiresAt > Date.now() + EXPIRY_BUFFER_MS) {
         logger.debug(
-          `Skipping ${providerId} refresh for profile ${profileId} — already rotated by another worker`,
+          `Skipping ${providerId} refresh because another worker already rotated it`,
           { expiresAt: new Date(expiresAt).toISOString() }
         );
         return;
       }
 
       logger.info(
-        `Refreshing ${providerId} token for user ${userId} agent ${agentId} profile ${profileId}`,
+        `Refreshing ${providerId} token for user ${userId} agent ${agentId}`,
         { expiresAt: new Date(expiresAt).toISOString() }
       );
 

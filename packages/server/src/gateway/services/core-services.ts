@@ -265,7 +265,7 @@ export class CoreServices {
 	 *  make this a hygiene task — running ~5 minutes apart is plenty. */
 	async sweepEphemeralTables(): Promise<void> {
 		try {
-			const [oauthStates, rate, grants, completedRuns, pendingIds] =
+			const [expiredOAuthStateCount, rate, grants, completedRuns, pendingIds] =
 				await Promise.all([
 					sweepExpiredOAuthStates(),
 					sweepExpiredRateLimits(),
@@ -275,13 +275,14 @@ export class CoreServices {
 				]);
 			const pendingInteractions = pendingIds.length;
 			if (
-				oauthStates + rate + grants + completedRuns + pendingInteractions >
+				expiredOAuthStateCount +
+					rate +
+					grants +
+					completedRuns +
+					pendingInteractions >
 				0
 			) {
-				logger.debug(
-					{ oauthStates, rate, grants, completedRuns, pendingInteractions },
-					"Ephemeral table sweeper deleted expired rows",
-				);
+				logger.debug("Ephemeral table sweeper deleted expired rows");
 			}
 		} catch (error) {
 			logger.warn(
@@ -556,16 +557,12 @@ export class CoreServices {
 			this.modelPreferenceStore,
 		);
 		moduleRegistry.register(claudeOAuthModule);
-		logger.debug(
-			`Claude OAuth module registered (system token: ${claudeOAuthModule.hasSystemKey() ? "available" : "not available"})`,
-		);
+		logger.debug("Claude OAuth module registered");
 
 		// Register ChatGPT OAuth module
 		const chatgptOAuthModule = new ChatGPTOAuthModule(this.authProfilesManager);
 		moduleRegistry.register(chatgptOAuthModule);
-		logger.debug(
-			`ChatGPT OAuth module registered (system token: ${chatgptOAuthModule.hasSystemKey() ? "available" : "not available"})`,
-		);
+		logger.debug("ChatGPT OAuth module registered");
 
 		// Register Gemini CLI module — exposes Google's gemini CLI as a sub-agent
 		// shell-out via acpx. Not a primary-model path; credentials live in the

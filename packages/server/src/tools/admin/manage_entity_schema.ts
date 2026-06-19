@@ -371,15 +371,11 @@ function validateEntityMetadataSchemaDisplayConfig(
     return;
   }
 
-  let tableColumnCount = 0;
-
   for (const [field, prop] of Object.entries(properties)) {
     if (!prop || typeof prop !== 'object' || Array.isArray(prop)) continue;
 
     const tableColumn = (prop as Record<string, unknown>)['x-table-column'];
-    if (tableColumn === true) {
-      tableColumnCount += 1;
-    } else if (tableColumn !== undefined && typeof tableColumn !== 'boolean') {
+    if (tableColumn !== undefined && typeof tableColumn !== 'boolean') {
       throw invalidSchema(`metadata_schema.properties.${field}.x-table-column must be a boolean`);
     }
 
@@ -387,10 +383,6 @@ function validateEntityMetadataSchemaDisplayConfig(
     if (tableLabel !== undefined && typeof tableLabel !== 'string') {
       throw invalidSchema(`metadata_schema.properties.${field}.x-table-label must be a string`);
     }
-  }
-
-  if (tableColumnCount > 4) {
-    throw invalidSchema('At most 4 metadata fields can have x-table-column=true.');
   }
 }
 

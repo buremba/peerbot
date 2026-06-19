@@ -344,7 +344,7 @@ describe("isDuplicateError", () => {
     expect(
       isDuplicateError(
         new ApiError(
-          "POST /x failed: [invalid_schema] At most 4 metadata fields can have x-table-column=true.",
+          "POST /x failed: [invalid_schema] metadata_schema.properties.a.x-table-column must be a boolean",
           422
         )
       )
@@ -402,7 +402,7 @@ describe("ApplyClient — upsert create/update flow", () => {
         return new Response(
           JSON.stringify({
             error:
-              "[invalid_schema] At most 4 metadata fields can have x-table-column=true.",
+              "[invalid_schema] metadata_schema.properties.a.x-table-column must be a boolean",
           }),
           { status: 422 }
         );
@@ -411,7 +411,9 @@ describe("ApplyClient — upsert create/update flow", () => {
 
     await expect(
       client.upsertEntityType({ slug: "task", name: "Task" })
-    ).rejects.toThrow(/At most 4 metadata fields can have x-table-column=true/);
+    ).rejects.toThrow(
+      /metadata_schema.properties.a.x-table-column must be a boolean/
+    );
     // The doomed `update` retry (which produced the misleading
     // "Entity type 'task' not found") must not happen.
     expect(calls).toHaveLength(1);

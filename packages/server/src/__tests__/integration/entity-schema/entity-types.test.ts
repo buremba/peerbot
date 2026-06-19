@@ -75,30 +75,30 @@ describe('entity schema CRUD', () => {
       await owner.entity_schema.deleteType('dup-asset');
     });
 
-    it('rejects >4 x-table-column fields with a 422 carrying the real message (issue #1177)', async () => {
-      // Five flagged columns; before the fix this surfaced through `lobu apply`
-      // as a misleading "Entity type 'task' not found" instead of the message.
-      const properties = Object.fromEntries(
-        ['a', 'b', 'c', 'd', 'e'].map((f) => [
-          f,
-          { type: 'string', 'x-table-column': true },
-        ])
-      );
+    it('surfaces a 422 schema-validation error with the real message (issue #1177)', async () => {
+      // A non-boolean x-table-column trips [invalid_schema]; before the fix
+      // this surfaced through `lobu apply` as a misleading "Entity type 'task'
+      // not found" instead of the real message. Any 422 schema fault exercises
+      // the same path — the cap on x-table-column count was removed, so we use
+      // the surviving per-field type check here.
       const err = await owner.entity_schema
         .createType({
-          slug: 'too-many-columns',
-          name: 'Too Many',
-          metadata_schema: { type: 'object', properties },
+          slug: 'bad-schema',
+          name: 'Bad Schema',
+          metadata_schema: {
+            type: 'object',
+            properties: { a: { type: 'string', 'x-table-column': 'yes' } },
+          },
         })
         .then(() => null)
         .catch((e: unknown) => e as Error & { httpStatus?: number });
       expect(err).not.toBeNull();
       expect(err?.message).toContain('[invalid_schema]');
-      expect(err?.message).toContain('At most 4 metadata fields can have x-table-column=true.');
+      expect(err?.message).toContain('metadata_schema.properties.a.x-table-column must be a boolean');
       expect(err?.httpStatus).toBe(422);
       // Validation rejected the create entirely — nothing persisted, so a
       // follow-up create-after-fix is a clean create (not an update).
-      const got = (await owner.entity_schema.getType('too-many-columns')) as {
+      const got = (await owner.entity_schema.getType('bad-schema')) as {
         entity_type: unknown;
       };
       expect(got.entity_type).toBeNull();

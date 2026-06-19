@@ -127,7 +127,11 @@ function registerMaintenanceTasks(
         logger.info({ ...result }, '[task] trigger-embed-backfill enqueued runs');
       }
     },
-    { cron: '*/5 * * * *' },
+    // Cadence is tunable: multi-vector chunking produces an event's tail chunks
+    // here, so on `lobu run` / embedded a long memory's tail is unsearchable
+    // until the next tick. Lower EMBED_BACKFILL_CRON for snappier local search;
+    // prod keeps the 5-minute default to bound backfill load.
+    { cron: process.env.EMBED_BACKFILL_CRON?.trim() || '*/5 * * * *' },
   );
 
   // Connection health — keeps agent_connections.status honest now that boot

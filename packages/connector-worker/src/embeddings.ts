@@ -44,13 +44,36 @@ function getTimeoutMs(): number {
   return Number.isFinite(parsed) ? parsed : DEFAULT_TIMEOUT_MS;
 }
 
+// The embeddings service rejects a request carrying more than this many texts
+// (MAX_TEXTS_PER_REQUEST in @lobu/embeddings server). One backfill batch fans
+// out to N chunk texts per event under multi-vector chunking, easily exceeding
+// it, so service requests are split into slices of at most this size.
+const SERVICE_MAX_TEXTS_PER_REQUEST = 256;
+
 async function fetchEmbeddingsFromService(texts: string[]): Promise<EmbeddingResult> {
   const baseUrl = process.env.EMBEDDINGS_SERVICE_URL;
   if (!baseUrl) {
     throw new Error('EMBEDDINGS_SERVICE_URL is required for service backend');
   }
-
   const url = baseUrl.replace(/\/+$/, '');
+
+  // Split into service-sized slices and concatenate in order, so embeddings[i]
+  // still corresponds to texts[i]. The common path (≤256 texts) stays one
+  // round-trip.
+  if (texts.length > SERVICE_MAX_TEXTS_PER_REQUEST) {
+    const embeddings: number[][] = [];
+    let model = getExpectedEmbeddingModel();
+    for (let i = 0; i < texts.length; i += SERVICE_MAX_TEXTS_PER_REQUEST) {
+      const res = await postEmbeddingsSlice(url, texts.slice(i, i + SERVICE_MAX_TEXTS_PER_REQUEST));
+      embeddings.push(...res.embeddings);
+      model = res.model;
+    }
+    return { embeddings, model };
+  }
+  return postEmbeddingsSlice(url, texts);
+}
+
+async function postEmbeddingsSlice(url: string, texts: string[]): Promise<EmbeddingResult> {
   const timeoutMs = getTimeoutMs();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);

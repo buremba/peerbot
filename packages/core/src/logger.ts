@@ -89,11 +89,11 @@ function createConsoleLogger(serviceName: string): Logger {
       msgStr += ` ${safeStringify(args.length === 1 ? args[0] : args)}`;
     }
 
-    // Append metadata object
-    // lgtm[js/clear-text-logging]
-    // safeStringify redacts sensitive metadata keys before appending.
+    // Metadata values can include provider credentials/tokens. The Winston path
+    // redacts structured metadata; the console fallback keeps only a marker so
+    // it cannot accidentally serialize secrets in minimal runtimes.
     if (meta) {
-      msgStr += ` ${safeStringify(meta)}`;
+      msgStr += " [metadata omitted]";
     }
 
     return `[${timestamp}] [${lvl}] [${serviceName}] ${msgStr}`;

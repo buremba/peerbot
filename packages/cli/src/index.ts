@@ -162,10 +162,10 @@ Memory:
     .option("--sentry", "Enable Sentry error reporting")
     .option("--no-sentry", "Disable Sentry without prompting")
     .option(
-      "--slack-preview",
-      "Enable public Lobu Developer Slack Preview in lobu.config.ts"
+      "--hosted-slack",
+      "Use the hosted Lobu Slack bot (no bot token) in lobu.config.ts"
     )
-    .option("--no-slack-preview", "Disable Slack Preview without prompting")
+    .option("--no-hosted-slack", "Skip the hosted Slack bot without prompting")
     .option(
       "--list-providers",
       "Print available provider ids from config/providers.json and exit"

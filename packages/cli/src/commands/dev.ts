@@ -742,7 +742,7 @@ async function printPreviewInstructions(cwd: string): Promise<void> {
   } catch {
     console.log(
       chalk.yellow(
-        "\n  Preview is enabled, but no Lobu Cloud session is available."
+        "\n  A hosted chat platform is configured, but no Lobu Cloud session is available."
       )
     );
     console.log(
@@ -753,7 +753,7 @@ async function printPreviewInstructions(cwd: string): Promise<void> {
     return;
   }
 
-  console.log(chalk.cyan("\n  Preview"));
+  console.log(chalk.cyan("\n  Hosted chat"));
   for (const { agentId, platform, cfg } of enabled) {
     try {
       const claim = await clientInfo.client.post<{
@@ -785,6 +785,16 @@ async function printPreviewInstructions(cwd: string): Promise<void> {
         console.log(
           chalk.dim(
             `  In the hosted Lobu ${platform} workspace, DM @Lobu: ${chalk.bold(claim.command)}`
+          )
+        );
+      }
+      // Slack alone supports installing the hosted bot into the user's OWN
+      // workspace (one-time OAuth); after that, `/lobu link` works in a channel
+      // there. Telegram has no install step.
+      if (platform === "slack") {
+        console.log(
+          chalk.dim(
+            `  Or add it to your own Slack workspace: ${chalk.underline(`${clientInfo.apiBaseUrl}/slack/install`)} (then ${chalk.bold(claim.command)} in a channel there).`
           )
         );
       }

@@ -162,9 +162,9 @@ describe("lobu init --yes", () => {
   );
 
   test(
-    "--slack-preview writes a hosted (no-token) slack platform entry",
+    "--hosted-slack writes a hosted (no-token) slack platform entry",
     async () => {
-      await initCommand(cwd, "preview-on", { yes: true, slackPreview: true });
+      await initCommand(cwd, "preview-on", { yes: true, hostedSlack: true });
       const config = readFileSync(
         join(cwd, "preview-on", "lobu.config.ts"),
         "utf-8"

@@ -132,7 +132,7 @@ describe("CoreServices store selection", () => {
     (coreServices as any).queue = new MockMessageQueue();
 
     // There is no default sub-store; if the host doesn't provide
-    // config/connection/access stores AND no lobu.config.ts is present,
+    // config/connection stores AND no lobu.config.ts is present,
     // initializeSessionServices throws.
     await expect(
       (coreServices as any).initializeSessionServices()

@@ -38,12 +38,12 @@ interface OrgBatch {
   event_count: number;
 }
 
-// A row needs (re)embedding when it has no representative (chunk 0) vector for
-// the configured model — covering "no embedding at all", a stale model, and a
-// NULL stamp. The shared predicate (utils/embeddings) keeps this identical to
-// the worker fetch. Correlated anti-join lets the planner drive off `events`
-// (and the partial index) instead of hash-joining the whole event_embeddings
-// table. (The contract release adds the long-content "needs tail chunks" arm.)
+// A row needs (re)embedding when it has no chunk-0 vector for the configured
+// model (no embedding, stale model, or NULL stamp), or it is long content
+// missing its tail chunks (multi-vector). The shared predicate (utils/embeddings)
+// keeps this identical to the worker fetch. Correlated anti-join lets the planner
+// drive off `events` (and the partial index) instead of hash-joining the whole
+// event_embeddings table.
 function needsEmbeddingPredicate(): string {
   return needsEmbeddingSql('e');
 }

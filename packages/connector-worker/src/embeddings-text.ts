@@ -6,6 +6,12 @@
  * and bun's `mock.module` is process-global, so this logic would otherwise be
  * unreachable in those test runs.
  */
+import {
+  EMBEDDING_CHUNK_CHARS,
+  EMBEDDING_CHUNK_OVERLAP_CHARS,
+  EMBEDDING_MAX_CHUNKS_PER_EVENT,
+  EMBEDDING_MODEL_WINDOW_CHARS,
+} from '@lobu/core';
 
 /**
  * The embeddings service rejects any single text larger than 32 KiB
@@ -34,4 +40,30 @@ export function truncateToBytes(text: string, maxBytes: number): string {
   // toString('utf8') replaces a trailing partial code point with U+FFFD;
   // strip it so we never emit a replacement char.
   return buf.toString('utf8').replace(/�+$/, '');
+}
+
+/**
+ * Split text into overlapping windows for multi-vector embedding. Returns a
+ * single chunk (the whole text) when it fits the model window. The last allowed
+ * chunk absorbs any remaining tail so content past the cap is folded in rather
+ * than dropped. Splits on a whitespace boundary when one is available in the
+ * back half of the window.
+ */
+export function chunkForEmbedding(text: string): string[] {
+  if (text.length <= EMBEDDING_MODEL_WINDOW_CHARS) return [text];
+  const chunks: string[] = [];
+  let start = 0;
+  while (start < text.length) {
+    const atCap = chunks.length === EMBEDDING_MAX_CHUNKS_PER_EVENT - 1;
+    let end = atCap ? text.length : Math.min(start + EMBEDDING_CHUNK_CHARS, text.length);
+    if (end < text.length) {
+      const ws = text.lastIndexOf(' ', end);
+      if (ws > start + EMBEDDING_CHUNK_CHARS / 2) end = ws;
+    }
+    const piece = text.slice(start, end).trim();
+    if (piece.length > 0) chunks.push(piece);
+    if (end >= text.length) break;
+    start = Math.max(end - EMBEDDING_CHUNK_OVERLAP_CHARS, start + 1);
+  }
+  return chunks;
 }

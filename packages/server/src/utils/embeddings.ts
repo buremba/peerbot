@@ -8,6 +8,7 @@
  * embeddings from the service when needed (e.g., classifier values).
  */
 
+import { EMBEDDING_MODEL_WINDOW_CHARS } from '@lobu/core';
 import type { Env } from '../index';
 import logger from '../utils/logger';
 
@@ -54,16 +55,24 @@ export function configuredEmbeddingModelSqlLiteral(): string {
  * so the backfill discovery and the worker fetch can never disagree on what
  * "stale" means. Correlates on `eventAlias`.
  *
- * Expand phase: chunking is not enabled yet (one row per event), so this is the
- * chunk-0 existence check only. The CONTRACT release adds the "long content but
- * no tail chunks" arm once the worker actually produces tail chunks — adding it
- * now would re-queue long events forever (they'd never get a chunk >= 1).
+ * Multi-vector: also flags long content (title + payload over the model window)
+ * that only has a chunk-0 vector — i.e. content embedded before chunking or by
+ * the inline single-vector write path — so the backfill re-chunks it. The arm is
+ * self-terminating: once a tail chunk (index >= 1) exists, it stops matching.
  */
 export function needsEmbeddingSql(eventAlias: string): string {
   const model = configuredEmbeddingModelSqlLiteral();
   const e = eventAlias;
-  return `NOT EXISTS (SELECT 1 FROM event_embeddings emb
+  const missingChunk0 = `NOT EXISTS (SELECT 1 FROM event_embeddings emb
     WHERE emb.event_id = ${e}.id AND emb.embedding_model = ${model} AND emb.chunk_index = 0)`;
+  return `(
+    ${missingChunk0}
+    OR (
+      length(trim(both ' ' from concat_ws(' ', ${e}.title, ${e}.payload_text))) > ${EMBEDDING_MODEL_WINDOW_CHARS}
+      AND NOT EXISTS (SELECT 1 FROM event_embeddings emb
+        WHERE emb.event_id = ${e}.id AND emb.embedding_model = ${model} AND emb.chunk_index >= 1)
+    )
+  )`;
 }
 
 const DEFAULT_TIMEOUT_MS = 30000;

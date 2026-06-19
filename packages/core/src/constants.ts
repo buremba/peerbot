@@ -42,3 +42,22 @@ export const DEFAULTS = {
   /** Default session timeout in minutes */
   SESSION_TIMEOUT_MINUTES: 5,
 } as const;
+
+/**
+ * Embedding chunking thresholds (multi-vector embeddings).
+ *
+ * The embedder (e.g. Xenova/bge-base-en-v1.5) only encodes ~512 tokens, so a
+ * memory longer than roughly the window has its tail dropped from a single
+ * vector and is invisible to vector search. Content over the window is split
+ * into overlapping chunks and embedded separately. Chars are a deterministic
+ * ~4-chars/token proxy (well under 512 tokens/chunk for tokenizer headroom).
+ *
+ * Shared by the worker chunker (`connector-worker/embeddings-text`) and the
+ * server's "needs (re)embedding" stale rule (`server/utils/embeddings`) so the
+ * split threshold and the detection threshold can never drift apart.
+ */
+export const EMBEDDING_MODEL_WINDOW_CHARS = 2000;
+export const EMBEDDING_CHUNK_CHARS = 1600;
+export const EMBEDDING_CHUNK_OVERLAP_CHARS = 160;
+/** Hard cap on chunks per memory (~100KB folded into the last chunk at 64). */
+export const EMBEDDING_MAX_CHUNKS_PER_EVENT = 64;

@@ -142,8 +142,10 @@ export * from "./utils/sanitize";
 export { slugify } from "./utils/slug";
 // Shared OpenClaw session.jsonl parser (gateway + worker).
 export {
+  aggregateUsageByModel,
   computeSessionStats,
   entryToMessage,
+  type ModelUsageAggregate,
   type ParsedMessage,
   parseSessionEntries,
   type SessionEntry,

@@ -235,3 +235,57 @@ export function computeSessionStats(entries: SessionEntry[]): SessionStats {
   }
   return stats;
 }
+
+/** One model's summed usage within a session — the unit cost is priced on.
+ * Only assistant messages carry usage. */
+export interface ModelUsageAggregate {
+  provider?: string;
+  model?: string;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  /** pi's flat on-disk cost summed across this model's messages (reference). */
+  piCostUsd: number;
+}
+
+/**
+ * Group assistant-message usage by (provider, model). A transcript holds a
+ * single provider (a provider switch resets session.jsonl), but the model can
+ * change within a provider, so cost is summed per distinct model rather than
+ * pricing the whole run at the last model — which would mis-price a run that
+ * swapped between a cheap and an expensive same-provider model mid-session.
+ */
+export function aggregateUsageByModel(
+  entries: SessionEntry[]
+): ModelUsageAggregate[] {
+  const byModel = new Map<string, ModelUsageAggregate>();
+  for (const entry of entries) {
+    if (entry.type !== "message" || entry.message?.role !== "assistant") {
+      continue;
+    }
+    const u = entry.message.usage;
+    if (!u) continue;
+    const { provider, model } = entry.message;
+    const key = `${provider ?? ""} ${model ?? ""}`;
+    let agg = byModel.get(key);
+    if (!agg) {
+      agg = {
+        provider,
+        model,
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        piCostUsd: 0,
+      };
+      byModel.set(key, agg);
+    }
+    agg.input += u.input ?? 0;
+    agg.output += u.output ?? 0;
+    agg.cacheRead += u.cacheRead ?? 0;
+    agg.cacheWrite += u.cacheWrite ?? 0;
+    agg.piCostUsd += u.cost?.total ?? 0;
+  }
+  return [...byModel.values()];
+}

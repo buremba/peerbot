@@ -338,6 +338,33 @@ export const QUERYABLE_SCHEMA = {
         'runtime'
       ),
     },
+    // run_usage — per-run cost/usage ledger (admin-only; see below)
+    {
+      name: 'run_usage',
+      columns: cols(
+        'id',
+        'organization_id',
+        'agent_id',
+        'conversation_id',
+        'run_id',
+        'user_id',
+        'watcher_id',
+        'source',
+        'provider',
+        'model',
+        'input_tokens',
+        'output_tokens',
+        'cache_read_tokens',
+        'cache_write_tokens',
+        'usd',
+        'unpriced',
+        'pi_cost_usd',
+        'model_breakdown',
+        'terminal_status',
+        'occurred_at',
+        'created_at'
+      ),
+    },
   ],
 };
 
@@ -355,6 +382,9 @@ export const ADMIN_ONLY_QUERYABLE_TABLES: ReadonlySet<string> = new Set([
   'oauth_tokens',
   'oauth_clients',
   'user',
+  // Spend is sensitive in a multi-tenant workforce backend: members can chart
+  // operational data, but per-agent/user/watcher cost stays owner/admin-only.
+  'run_usage',
 ]);
 
 /** table name → column definitions for use in CTE SELECT.

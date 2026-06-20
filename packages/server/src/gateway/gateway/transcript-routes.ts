@@ -25,6 +25,7 @@ import type { WorkerTokenData } from "@lobu/core";
 import { createLogger, verifyWorkerToken } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { recordRunUsage } from "../../cost/run-usage.js";
 import { getDb } from "../../db/client.js";
 
 const logger = createLogger("worker-transcript");
@@ -249,6 +250,24 @@ export function createTranscriptRoutes(): Hono {
       logger.info(
         `Wrote snapshot id=${inserted[0]!.id} run_id=${runId} byte_size=${byteSize} status=${terminalStatus}`
       );
+      // Best-effort cost ledger: parse + price this run's usage into run_usage.
+      // We won the snapshot insert (inserted.length > 0), so this is the single
+      // exactly-once site per run. Never fail the snapshot write on an
+      // accounting/pricing error — the snapshot is already durably stored.
+      try {
+        await recordRunUsage({
+          organizationId,
+          agentId,
+          conversationId,
+          runId,
+          terminalStatus,
+          snapshotJsonl,
+        });
+      } catch (usageErr) {
+        logger.warn(
+          `run_usage write failed for run ${runId}: ${usageErr instanceof Error ? usageErr.message : String(usageErr)}`
+        );
+      }
       return c.json({ id: inserted[0]!.id });
     } catch (err) {
       logger.error(

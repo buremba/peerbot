@@ -26,6 +26,21 @@ const MAX_FINALIZE_NUDGES: number = (() => {
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 1;
 })();
 
+/**
+ * Finalize-nudge budget for a run: the watcher's per-watcher override
+ * (execution_config.finalize_nudges, 0-5) when set, else the global default.
+ * Clamped defensively in case a raw DB value sits outside the schema's range.
+ */
+function resolveFinalizeNudgeBudget(
+  executionConfig: Record<string, unknown> | null | undefined
+): number {
+  const override = executionConfig?.finalize_nudges;
+  if (typeof override === 'number' && Number.isFinite(override)) {
+    return Math.min(5, Math.max(0, Math.floor(override)));
+  }
+  return MAX_FINALIZE_NUDGES;
+}
+
 export async function findWindowIdForRun(sql: DbClient, runId: number): Promise<number | null> {
   const rows = await sql`
     SELECT id
@@ -109,11 +124,12 @@ export async function resolveWatcherRunsByMessageIds(
 
   const sql = db ?? getDb();
   const rows = await sql`
-    SELECT id, approved_input
-    FROM runs
-    WHERE run_type = 'watcher'
-      AND dispatched_message_id = ANY(${pgTextArray(ids)}::text[])
-      AND status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
+    SELECT r.id, r.approved_input, w.execution_config
+    FROM runs r
+    LEFT JOIN watchers w ON w.id = r.watcher_id
+    WHERE r.run_type = 'watcher'
+      AND r.dispatched_message_id = ANY(${pgTextArray(ids)}::text[])
+      AND r.status = ANY(${runStatusLiteral(ACTIVE_RUN_STATUSES)}::text[])
   `;
 
   let resolved = 0;
@@ -121,6 +137,7 @@ export async function resolveWatcherRunsByMessageIds(
     const typedRow = row as {
       id: unknown;
       approved_input: Record<string, unknown> | null;
+      execution_config: Record<string, unknown> | null;
     };
     const runId = Number(typedRow.id);
     if (!Number.isFinite(runId)) continue;
@@ -135,12 +152,14 @@ export async function resolveWatcherRunsByMessageIds(
     if (windowId === null) {
       // The agent replied but never called complete_window — a soft, usually
       // non-deterministic miss. Re-dispatch for one more turn (bounded by
-      // finalize_nudge_count) before giving up.
+      // finalize_nudge_count) before giving up. The budget is per-watcher
+      // (execution_config.finalize_nudges) with a global fallback.
+      const budget = resolveFinalizeNudgeBudget(typedRow.execution_config);
       const nudgeCount = Number(typedRow.approved_input?.finalize_nudge_count ?? 0);
-      if (Number.isFinite(nudgeCount) && nudgeCount < MAX_FINALIZE_NUDGES) {
+      if (Number.isFinite(nudgeCount) && nudgeCount < budget) {
         await requeueWatcherRunForFinalizeNudge(sql, runId, nudgeCount + 1);
         logger.info(
-          { run_id: runId, attempt: nudgeCount + 1, max: MAX_FINALIZE_NUDGES },
+          { run_id: runId, attempt: nudgeCount + 1, max: budget },
           '[watchers] Agent finished without complete_window — re-dispatching for finalize nudge'
         );
         resolved++;
@@ -151,7 +170,7 @@ export async function resolveWatcherRunsByMessageIds(
         sql,
         runId,
         'Agent reply finished without calling manage_watchers(action="complete_window")' +
-          (MAX_FINALIZE_NUDGES > 0 ? ` after ${MAX_FINALIZE_NUDGES + 1} attempt(s)` : '') +
+          (budget > 0 ? ` after ${budget + 1} attempt(s)` : '') +
           '. Check that the assigned agent has the lobu-memory MCP attached and that read_knowledge / ' +
           'manage_watchers tools are approved for it.'
       );

@@ -1130,6 +1130,30 @@ describe('watcher automation contract', () => {
       expect(String(run.error_message)).toContain('complete_window');
     });
 
+    it('respects a per-watcher finalize_nudges=0 override (fails immediately, no re-dispatch)', async () => {
+      // The per-watcher budget (execution_config.finalize_nudges) overrides the
+      // global default. 0 = no nudge → the first miss fails immediately, the
+      // opposite of the default behavior, proving the override is read.
+      const messageId = randomUUID();
+      const { sql, runId, watcherId } = await makeRunningWatcherRun(messageId);
+      await sql`
+        UPDATE watchers
+        SET execution_config = '{"finalize_nudges": 0}'::jsonb
+        WHERE id = ${watcherId}
+      `;
+
+      await makeHeadlessConsumer().handleThreadResponse({
+        id: 'job-headless-nudge0',
+        data: terminalPayload(messageId, runId),
+      } as never);
+
+      const [run] = await sql`
+        SELECT status, error_message FROM runs WHERE id = ${runId}
+      `;
+      expect(String(run.status)).toBe('failed');
+      expect(String(run.error_message)).toContain('complete_window');
+    });
+
     it('completes the run immediately when a window exists', async () => {
       const messageId = randomUUID();
       const { sql, runId, watcherId, windowStart, windowEnd } =

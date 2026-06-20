@@ -24,6 +24,7 @@ import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { resolveDeviceClaimableOrgs } from '../utils/device-claimable-orgs';
 import { errorMessage } from '../utils/errors';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
+import { stripServerOnlyExecutionConfig } from '../tools/admin/watcher-execution-config';
 import logger from '../utils/logger';
 import { recordLifecycleEvent } from '../utils/insert-event';
 import { isCloudMode } from '../utils/cloud-mode';
@@ -605,7 +606,11 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           agent_kind: agentKindFromPayload ?? row.watcher_agent_kind ?? null,
           notification_channel: row.watcher_notification_channel ?? 'canvas',
           notification_priority: row.watcher_notification_priority ?? 'normal',
-          execution_config: row.watcher_execution_config ?? null,
+          // Strip server-only keys (e.g. finalize_nudges) so the device-worker's
+          // strict payload decode never sees a field it doesn't know.
+          execution_config: stripServerOnlyExecutionConfig(
+            row.watcher_execution_config
+          ),
           // The prompt of the version this run was pinned to at creation
           // (run's snapshotted approved_input.version_id, else the watcher's
           // current_version_id) — same source complete_window validates

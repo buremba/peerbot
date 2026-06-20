@@ -827,10 +827,9 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
       }
 
       // Wrap in a hardened systemd-run scope when available, spawn the worker,
-      // and wire its lifecycle handlers. Throws (re-queueable) if the host
-      // cannot sandbox AND this is a cloud deployment without an explicit
-      // opt-in. On success, ownership of `convLock` transfers into the child's
-      // exit handler.
+      // and wire its lifecycle handlers. Throws (re-queueable) only if the host
+      // cannot sandbox AND LOBU_REQUIRE_WORKER_SANDBOX=1. On success, ownership
+      // of `convLock` transfers into the child's exit handler.
       this.spawnWorkerChild({
         deploymentName,
         workspaceDir,

@@ -75,6 +75,7 @@
         "@opentelemetry/sdk-trace-node": "^1.30.0",
         "@opentelemetry/semantic-conventions": "^1.28.0",
         "@polyglot-sql/sdk": "^0.1.13",
+        "@pydantic/genai-prices": "0.0.66",
         "@react-email/components": "^1.0.12",
         "@react-email/render": "^2.0.7",
         "@scalar/hono-api-reference": "^0.9.39",

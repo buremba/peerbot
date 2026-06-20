@@ -1043,5 +1043,24 @@ describe('MCP Authentication', () => {
       `) as Array<{ organization_id: string | null }>;
       expect(rows[0]?.organization_id).toBe(org.id);
     });
+
+    // The Owletto extension's service-worker poll unavoidably carries the
+    // gateway's Better Auth session cookie — Chrome attaches it to
+    // host-permission fetches regardless of `credentials: "omit"`. When the
+    // extension's OAuth access token expires, the Bearer fails and auth falls
+    // back to that cookie: a real user session, but with no worker scopes.
+    // Worker endpoints must reject it with 401 (which the poller recovers from
+    // via tryRefreshToken), NOT the 403 it used to return and could not act on.
+    // Contrast: the device-token poll above (a scoped Bearer) returns 200.
+    it('rejects a browser session cookie on worker endpoints with 401', async () => {
+      const response = await post('/api/workers/poll', {
+        body: { worker_id: `sess-${Date.now()}`, capabilities: {} },
+        cookie: sessionCookie,
+      });
+
+      expect(response.status).toBe(401);
+      const body = await response.json();
+      expect(body.error).toBe('invalid_token');
+    });
   });
 });

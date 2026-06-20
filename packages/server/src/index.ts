@@ -715,6 +715,29 @@ app.use('/api/workers/*', async (c, next) => {
 
   return mcpAuth(c, async () => {
     if (c.var.mcpIsAuthenticated && c.var.user?.id) {
+      // A browser session is never a worker credential. The Owletto extension's
+      // service-worker poll runs from a page Chrome treats as having host
+      // permission, so Chrome attaches the gateway's Better Auth session cookie
+      // to the request regardless of `credentials: "omit"` (verified: omit does
+      // NOT suppress it for host-permission fetches). When the extension's
+      // OAuth access token expires, the Bearer fails and mcpAuth falls back to
+      // that cookie — authenticating the user but with no worker scopes. That
+      // used to return 403 below, which the poller can't recover from (only 401
+      // triggers tryRefreshToken). Returning 401 for any session-sourced auth
+      // makes the expired token surface as the refreshable 401 it actually is.
+      // Safe: real workers authenticate with a scoped PAT/OAuth token
+      // (authSource 'pat'/'oauth') or the trusted WORKER_API_TOKEN (handled
+      // above, never reaches here); a session has no worker scopes and would
+      // have been rejected anyway — this only changes 403 → 401 for it.
+      if (c.var.authSource === 'session') {
+        return c.json(
+          {
+            error: 'invalid_token',
+            error_description: 'Worker endpoints require a worker token, not a browser session',
+          },
+          401
+        );
+      }
       // User-scoped workers can only hit the endpoints needed to run a job
       // end-to-end. Auth-artifact / embeddings / repair-thread endpoints are
       // for server-side fleets and would leak across orgs without per-handler

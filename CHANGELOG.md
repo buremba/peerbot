@@ -1,5 +1,31 @@
 # Changelog
 
+## [12.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v12.0.0...lobu-v12.1.0) (2026-06-20)
+
+
+### Features
+
+* **cli:** hosted Lobu bot via tokenless slack/telegram platform entry ([#1387](https://github.com/lobu-ai/lobu/issues/1387)) ([d8476e7](https://github.com/lobu-ai/lobu/commit/d8476e77ef253e6d6b3d6596968d93f09f2244d3))
+* **connectors:** harden install_connector source_url fetch (SSRF + allowlist) ([#1382](https://github.com/lobu-ai/lobu/issues/1382)) ([02cc93f](https://github.com/lobu-ai/lobu/commit/02cc93fdd6ed4da9473d7f295f88c82e3caa5f81))
+* **memory:** multi-vector embeddings — contract phase (PK swap + decouple view) ([#1380](https://github.com/lobu-ai/lobu/issues/1380)) ([6c8e7e4](https://github.com/lobu-ai/lobu/commit/6c8e7e4b8a5cd2fb96f17e09575084fd32ca0766))
+* **model:** require an explicit model — stop silently picking a provider default ([#1396](https://github.com/lobu-ai/lobu/issues/1396)) ([c6bb8a2](https://github.com/lobu-ai/lobu/commit/c6bb8a283283c3fe3de483338e6ab023fb0e48b1))
+* **server:** drop the 4-field cap on x-table-column metadata fields ([#1386](https://github.com/lobu-ai/lobu/issues/1386)) ([6164657](https://github.com/lobu-ai/lobu/commit/61646574309cb013b4e08d718b07a895d544fcae))
+* **slack:** one-click multi-agent workspace installs (slack_installations store) ([#1394](https://github.com/lobu-ai/lobu/issues/1394)) ([26e24f8](https://github.com/lobu-ai/lobu/commit/26e24f8c03cb836bff4f53d05a226766301e8622))
+* support Node 22-24 and 26+ via dual isolated-vm builds ([#1378](https://github.com/lobu-ai/lobu/issues/1378)) ([252991e](https://github.com/lobu-ai/lobu/commit/252991e6eab65ef3b0ce67f8b5427eed24d27a42))
+
+
+### Bug Fixes
+
+* **anthropic:** resolve auto-mode model from env key + run newest live models ([#1395](https://github.com/lobu-ai/lobu/issues/1395)) ([3584b38](https://github.com/lobu-ai/lobu/commit/3584b38e522ff0737b90d6d39e99064b7a5c7333))
+* **gateway:** provider-driven model defaults + clean SSE status render ([#1390](https://github.com/lobu-ai/lobu/issues/1390)) ([d97acb3](https://github.com/lobu-ai/lobu/commit/d97acb386447eada1a7b9c1d1011ee56501d4655))
+* **server:** make env-configured Anthropic API keys work (x-api-key + recognition) ([#1393](https://github.com/lobu-ai/lobu/issues/1393)) ([4dbec06](https://github.com/lobu-ai/lobu/commit/4dbec0664404d643c0add073aa680c1cc78c67fe))
+* **server:** Slack OAuth redirect_uri must carry the /lobu gateway prefix ([#1389](https://github.com/lobu-ai/lobu/issues/1389)) ([feb8d03](https://github.com/lobu-ai/lobu/commit/feb8d03488145353a7c5a1f3537b59c7f2a8e50e))
+
+
+### Reverts
+
+* hide Add to Slack surfacing until the OAuth install is completed ([#1392](https://github.com/lobu-ai/lobu/issues/1392)) ([830cd53](https://github.com/lobu-ai/lobu/commit/830cd53a7de3c402edaf29d74ad408b329a5ab8a))
+
 ## [12.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v11.3.0...lobu-v12.0.0) (2026-06-18)
 
 

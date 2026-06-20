@@ -16,7 +16,7 @@
     },
     "packages/agent-worker": {
       "name": "@lobu/worker",
-      "version": "12.0.0",
+      "version": "12.1.0",
       "bin": {
         "lobu-worker": "./dist/index.js",
       },
@@ -43,7 +43,7 @@
     },
     "packages/cli": {
       "name": "@lobu/cli",
-      "version": "12.0.0",
+      "version": "12.1.0",
       "bin": {
         "lobu": "bin/lobu.js",
       },
@@ -128,7 +128,7 @@
     },
     "packages/client": {
       "name": "@lobu/client",
-      "version": "12.0.0",
+      "version": "12.1.0",
       "devDependencies": {
         "@hey-api/client-fetch": "^0.13.1",
         "@hey-api/openapi-ts": "^0.86.5",
@@ -137,7 +137,7 @@
     },
     "packages/connector-sdk": {
       "name": "@lobu/connector-sdk",
-      "version": "12.0.0",
+      "version": "12.1.0",
       "dependencies": {
         "@lobu/core": "workspace:*",
         "@sinclair/typebox": "^0.34.41",
@@ -161,7 +161,7 @@
     },
     "packages/connector-worker": {
       "name": "@lobu/connector-worker",
-      "version": "12.0.0",
+      "version": "12.1.0",
       "bin": {
         "connector-worker": "./dist/bin.js",
       },
@@ -199,7 +199,7 @@
     },
     "packages/core": {
       "name": "@lobu/core",
-      "version": "12.0.0",
+      "version": "12.1.0",
       "dependencies": {
         "@opentelemetry/api": "^1.9.0",
         "@opentelemetry/exporter-trace-otlp-grpc": "^0.57.0",
@@ -217,7 +217,7 @@
     },
     "packages/embeddings": {
       "name": "@lobu/embeddings",
-      "version": "12.0.0",
+      "version": "12.1.0",
       "dependencies": {
         "@hono/node-server": "^1.13.7",
         "@xenova/transformers": "^2.17.2",
@@ -249,7 +249,7 @@
     },
     "packages/openclaw-plugin": {
       "name": "@lobu/openclaw-plugin",
-      "version": "12.0.0",
+      "version": "12.1.0",
       "dependencies": {
         "@lobu/core": "workspace:*",
       },
@@ -333,7 +333,7 @@
     },
     "packages/pgvector-embedded": {
       "name": "@lobu/pgvector-embedded",
-      "version": "12.0.0",
+      "version": "12.1.0",
       "devDependencies": {
         "@types/node": "20.19.9",
         "typescript": "^5.7.2",
@@ -341,7 +341,7 @@
     },
     "packages/promptfoo-provider": {
       "name": "@lobu/promptfoo-provider",
-      "version": "12.0.0",
+      "version": "12.1.0",
       "devDependencies": {
         "@types/node": "^20.10.0",
         "typescript": "^5.3.3",
@@ -369,6 +369,7 @@
         "@mariozechner/pi-ai": "^0.51.6",
         "@modelcontextprotocol/sdk": "^1.27.1",
         "@polyglot-sql/sdk": "^0.1.13",
+        "@pydantic/genai-prices": "0.0.66",
         "@react-email/components": "^1.0.12",
         "@react-email/render": "^2.0.7",
         "@scalar/hono-api-reference": "^0.9.39",
@@ -1427,6 +1428,8 @@
     "@protobufjs/pool": ["@protobufjs/pool@1.1.0", "", {}, "sha512-0kELaGSIDBKvcgS4zkjz1PeddatrjYcmMWOlAuAPwAeccUrPHdUqo/J6LiymHHEiJT5NrF1UVwxY14f+fy4WQw=="],
 
     "@protobufjs/utf8": ["@protobufjs/utf8@1.1.1", "", {}, "sha512-oOAWABowe8EAbMyWKM0tYDKi8Yaox52D+HWZhAIJqQXbqe0xI/GV7FhLWqlEKreMkfDjshR5FKgi3mnle0h6Eg=="],
+
+    "@pydantic/genai-prices": ["@pydantic/genai-prices@0.0.66", "", { "dependencies": { "yargs": "^17.7.2" }, "bin": { "genai-prices": "dist/cli.js" } }, "sha512-jwa+NLyVxPrBYvl0cPO3XyU/8BRvpCg2ZpBAzzC5ivr36sIc8Duf5rDjKypBxUcVT5JJgDcjGRV7KTNO2ZkX6g=="],
 
     "@radix-ui/number": ["@radix-ui/number@1.1.1", "", {}, "sha512-MkKCwxlXTgz6CFoJx3pCwn07GKp36+aZyu/u2Ln2VrA5DcdyCZkASEDBTd8x5whTQQL5CiYf4prXKLcgQdv29g=="],
 

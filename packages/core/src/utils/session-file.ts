@@ -267,7 +267,7 @@ export function aggregateUsageByModel(
     const u = entry.message.usage;
     if (!u) continue;
     const { provider, model } = entry.message;
-    const key = `${provider ?? ""} ${model ?? ""}`;
+    const key = JSON.stringify([provider ?? null, model ?? null]);
     let agg = byModel.get(key);
     if (!agg) {
       agg = {

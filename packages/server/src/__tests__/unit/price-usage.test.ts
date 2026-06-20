@@ -40,17 +40,6 @@ describe('priceUsage', () => {
     expect(r.usd as number).toBeGreaterThan(0);
   });
 
-  it('applies an org override and reports source=override', () => {
-    const r = priceUsage({
-      usage: { input: 1_000_000, output: 1_000_000, cacheRead: 0, cacheWrite: 0 },
-      provider: 'selfhosted',
-      model: 'my-local-llm',
-      override: { inputMtok: 2, outputMtok: 4, cacheReadMtok: 0.5, cacheWriteMtok: 1 },
-    });
-    expect(r.source).toBe('override');
-    expect(r.usd).toBeCloseTo(6, 6); // 1M*2/1M + 1M*4/1M
-  });
-
   it('returns unpriced (null, never $0) for an unknown model', () => {
     const r = priceUsage({
       usage: { ...noUsage, input: 1000, output: 100 },
@@ -62,10 +51,13 @@ describe('priceUsage', () => {
     expect(r.source).toBe('unpriced');
   });
 
-  it('aliases z-ai -> zai so it prices identically to the canonical id', () => {
-    const usage = { ...noUsage, input: 8809, output: 140 };
-    const aliased = priceUsage({ usage, provider: 'z-ai', model: 'glm-4.6' });
-    const canonical = priceUsage({ usage, provider: 'zai', model: 'glm-4.6' });
-    expect(aliased).toEqual(canonical);
+  it('aliases zai/z-ai -> zhipuai so GLM models price from the catalog', () => {
+    const usage = { ...noUsage, input: 10_000, output: 200 };
+    for (const provider of ['zai', 'z-ai']) {
+      const r = priceUsage({ usage, provider, model: 'glm-4.7' });
+      expect(r.source).toBe('catalog');
+      expect(r.unpriced).toBe(false);
+      expect(r.usd as number).toBeGreaterThan(0);
+    }
   });
 });

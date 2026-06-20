@@ -8,8 +8,9 @@
 -- Why a dedicated table (not events, not runs): the append-only events store
 -- reads through current_event_records (an embedding join we don't want on a
 -- cost hot path), and the runs queue is pruned on retention so it can't be
--- history. Dimensions are denormalized so every rollup is a plain GROUP BY; a
--- sibling events row is emitted separately for the metric_series sparklines.
+-- history. Dimensions are denormalized so every rollup is a plain GROUP BY. (A
+-- sibling append-only events row for the metric_series sparklines is a planned
+-- follow-up with the showback UI; it is NOT wired in this PR.)
 --
 -- usd is NULL + unpriced=true when no model in the price catalog (and no org
 -- override) can price the run — never a fake $0. The token buckets are always
@@ -22,7 +23,7 @@ CREATE TABLE IF NOT EXISTS public.run_usage (
     conversation_id text NOT NULL,
     run_id bigint NOT NULL,
     user_id text,
-    watcher_id integer,
+    watcher_id bigint,
     source text,
     provider text,
     model text,

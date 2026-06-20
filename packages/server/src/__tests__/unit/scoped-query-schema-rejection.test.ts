@@ -121,6 +121,16 @@ describe('validateAndScopeQuery — member table restriction (auth/identity admi
     const out = scope('SELECT * FROM oauth_tokens');
     expect(out.sql).toContain('organization_id');
   });
+
+  it('scopes run_usage by org for an admin (regression: was falling through to entity-slug)', () => {
+    const out = scope('SELECT run_id, usd FROM run_usage');
+    // Must emit a run_usage CTE filtered by organization_id — NOT the
+    // entity_types slug-join the fall-through else would have produced.
+    expect(out.sql).toMatch(
+      /"run_usage"\s+AS\s+\(SELECT[\s\S]*FROM public\.run_usage WHERE organization_id/i
+    );
+    expect(out.params[0]).toBe('org_test');
+  });
 });
 
 /**

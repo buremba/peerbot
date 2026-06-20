@@ -96,6 +96,8 @@ const config: KnipConfig = {
         "src/**/__tests__/**/*.ts",
         // esbuild bundler invoked as `node scripts/build-server-bundle.mjs`.
         "scripts/**/*.mjs",
+        // Manually-run ops script: `bun scripts/backfill-run-usage.ts`.
+        "scripts/backfill-run-usage.ts",
       ],
       ignoreDependencies: [
         // Activated by `vitest --coverage`.

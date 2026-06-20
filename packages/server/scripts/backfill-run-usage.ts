@@ -3,8 +3,11 @@
  *
  * The cost ledger only starts collecting at deploy time, but every past run's
  * full transcript is already stored in agent_transcript_snapshot — so we can
- * reconstruct historical cost without any data loss. Idempotent (ON CONFLICT),
- * so it's safe to re-run.
+ * reconstruct historical COST (tokens + usd) from it with no loss. The
+ * per-watcher/user/source DIMENSIONS are best-effort: they're read from the
+ * runs row, which retention may already have pruned for old runs — those rows
+ * land with null dims (cost still correct). Idempotent (ON CONFLICT), safe to
+ * re-run.
  *
  *   DATABASE_URL=... bun packages/server/scripts/backfill-run-usage.ts
  */

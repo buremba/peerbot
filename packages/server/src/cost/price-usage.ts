@@ -3,10 +3,11 @@
  *
  * Prices via `@pydantic/genai-prices`, which models context-tier (>200k) and
  * cache-read/cache-write pricing that pi-ai's flat per-token formula misses
- * (a >200k Anthropic run is otherwise undercharged ~43%). Org price overrides
- * win, since they are the only correct price for BYO / self-hosted / catalog-
- * absent models that would otherwise resolve to $0. Unknown models return
- * `usd: null, unpriced: true` — never a fake $0 that hides the gap.
+ * (a >200k Anthropic run is otherwise undercharged ~43%). Unknown models —
+ * including BYO / self-hosted / catalog-absent ones — return
+ * `usd: null, unpriced: true`, never a fake $0 that hides the gap. (Per-org
+ * price overrides for those models land with the price-override table in a
+ * follow-up PR.)
  */
 
 import { calcPrice, type Usage as GenaiUsage } from "@pydantic/genai-prices";
@@ -23,41 +24,26 @@ export interface TokenUsage {
   cacheWrite: number;
 }
 
-/** Per-1M-token USD rates an org sets for a model the catalog can't price. */
-export interface PriceOverride {
-  inputMtok: number;
-  outputMtok: number;
-  cacheReadMtok: number;
-  cacheWriteMtok: number;
-}
-
 export interface PricedUsage {
-  /** Total USD, or null when neither an override nor the catalog can price it. */
+  /** Total USD, or null when the catalog can't price the model. */
   usd: number | null;
   /** True when `usd` is null because the model is unknown/unpriced. */
   unpriced: boolean;
   /** Where the price came from — for auditing the ledger row. */
-  source: "catalog" | "override" | "unpriced";
+  source: "catalog" | "unpriced";
 }
 
-/** Stored-provider -> genai-prices `providerId` aliases (mirror of the worker's
- * model-resolver aliasing; without this, z.ai falls through to the $0 path). */
+/** Stored-provider -> genai-prices `providerId` aliases. genai-prices hosts the
+ * GLM/Zhipu models under `zhipuai`; our transcripts stamp `zai` (and the CRUD
+ * layer accepts `z-ai`), so without this they fall through to the unpriced
+ * path. */
 const PROVIDER_ALIASES: Record<string, string> = {
-  "z-ai": "zai",
+  zai: "zhipuai",
+  "z-ai": "zhipuai",
 };
 
 function toCatalogProvider(provider: string): string {
   return PROVIDER_ALIASES[provider] ?? provider;
-}
-
-function priceWithOverride(usage: TokenUsage, o: PriceOverride): number {
-  return (
-    (usage.input * o.inputMtok +
-      usage.output * o.outputMtok +
-      usage.cacheRead * o.cacheReadMtok +
-      usage.cacheWrite * o.cacheWriteMtok) /
-    1_000_000
-  );
 }
 
 /**
@@ -77,18 +63,9 @@ export function priceUsage(args: {
   usage: TokenUsage;
   provider: string;
   model: string;
-  override?: PriceOverride | null;
   at?: Date;
 }): PricedUsage {
-  const { usage, provider, model, override, at } = args;
-
-  if (override) {
-    return {
-      usd: priceWithOverride(usage, override),
-      unpriced: false,
-      source: "override",
-    };
-  }
+  const { usage, provider, model, at } = args;
 
   const genaiUsage: GenaiUsage = {
     input_tokens: usage.input + usage.cacheRead + usage.cacheWrite,

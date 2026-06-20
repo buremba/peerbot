@@ -555,6 +555,10 @@ function buildScopedQuery(
       ctes.push(
         `"${safeName}" AS (SELECT ${sel(table)} FROM public.entity_relationship_types WHERE organization_id = ${orgP})`
       );
+    } else if (table === 'run_usage') {
+      ctes.push(
+        `"${safeName}" AS (SELECT ${sel(table)} FROM public.run_usage WHERE organization_id = ${orgP})`
+      );
     } else {
       // Treat as entity_type slug — uses entities columns
       idx++;

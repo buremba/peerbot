@@ -243,31 +243,38 @@ export function createTranscriptRoutes(): Hono {
           DO NOTHING
         RETURNING id
       `;
+      // Best-effort cost ledger: parse + price this run's usage into run_usage.
+      // Idempotent (ON CONFLICT(run_id)) and fail-open — a pricing/parse error
+      // must never fail the snapshot write. Run on BOTH the win AND the 409
+      // path: if the pod that won the snapshot insert crashed before writing
+      // usage, a later retry hits 409 and self-heals the missing row here, so
+      // the live path is effectively exactly-once without waiting for backfill.
+      const ledgerCatchUp = async () => {
+        try {
+          await recordRunUsage({
+            organizationId,
+            agentId,
+            conversationId,
+            runId,
+            terminalStatus,
+            snapshotJsonl,
+          });
+        } catch (usageErr) {
+          logger.warn(
+            `run_usage write failed for run ${runId}: ${usageErr instanceof Error ? usageErr.message : String(usageErr)}`
+          );
+        }
+      };
+
       if (inserted.length === 0) {
         // ON CONFLICT DO NOTHING returned no row → snapshot already exists.
+        await ledgerCatchUp();
         return c.json({ error: "Snapshot already exists for run" }, 409);
       }
       logger.info(
         `Wrote snapshot id=${inserted[0]!.id} run_id=${runId} byte_size=${byteSize} status=${terminalStatus}`
       );
-      // Best-effort cost ledger: parse + price this run's usage into run_usage.
-      // We won the snapshot insert (inserted.length > 0), so this is the single
-      // exactly-once site per run. Never fail the snapshot write on an
-      // accounting/pricing error — the snapshot is already durably stored.
-      try {
-        await recordRunUsage({
-          organizationId,
-          agentId,
-          conversationId,
-          runId,
-          terminalStatus,
-          snapshotJsonl,
-        });
-      } catch (usageErr) {
-        logger.warn(
-          `run_usage write failed for run ${runId}: ${usageErr instanceof Error ? usageErr.message : String(usageErr)}`
-        );
-      }
+      await ledgerCatchUp();
       return c.json({ id: inserted[0]!.id });
     } catch (err) {
       logger.error(

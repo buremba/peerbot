@@ -494,4 +494,48 @@ describe("EmbeddedDeploymentManager", () => {
       expect(list[0].isVeryOld).toBe(false);
     });
   });
+
+  // =========================================================================
+  // Worker sandbox fallback + opt-in fail-closed gate
+  // =========================================================================
+  // beforeEach sets LOBU_DISABLE_SYSTEMD_RUN=1, so locateSystemdRun() returns
+  // null and the worker would run UNWRAPPED. These assert the posture: by
+  // default the worker still runs (matching the prod container, which has no
+  // systemd-run); only LOBU_REQUIRE_WORKER_SANDBOX=1 makes it fail closed.
+  describe("worker sandbox fallback (systemd unavailable)", () => {
+    const saved = { require: process.env.LOBU_REQUIRE_WORKER_SANDBOX };
+    afterEach(() => {
+      if (saved.require === undefined)
+        delete process.env.LOBU_REQUIRE_WORKER_SANDBOX;
+      else process.env.LOBU_REQUIRE_WORKER_SANDBOX = saved.require;
+    });
+
+    test("default (no requirement) spawns the worker unwrapped", async () => {
+      delete process.env.LOBU_REQUIRE_WORKER_SANDBOX;
+      await manager.ensureDeployment(
+        "worker-1",
+        "user-1",
+        "user-1",
+        createTestMessagePayload()
+      );
+      expect(mockChildProcesses).toHaveLength(1);
+      // Unwrapped → the worker binary itself, not a systemd-run wrapper.
+      expect(mockSpawn.mock.calls.at(-1)?.[0]).toBe(process.execPath);
+    });
+
+    test("LOBU_REQUIRE_WORKER_SANDBOX=1 without systemd refuses to spawn (fail closed)", async () => {
+      process.env.LOBU_REQUIRE_WORKER_SANDBOX = "1";
+      await expect(
+        manager.ensureDeployment(
+          "worker-1",
+          "user-1",
+          "user-1",
+          createTestMessagePayload()
+        )
+      ).rejects.toThrow(OrchestratorError);
+      // No un-sandboxed worker ever ran.
+      expect(mockChildProcesses).toHaveLength(0);
+      expect(await manager.listDeployments()).toHaveLength(0);
+    });
+  });
 });

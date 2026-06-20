@@ -81,7 +81,10 @@ mock.module("node:child_process", () => ({
 // ── Import classes after mock ────────────────────────────────────────────────
 
 import type { MessagePayload } from "@lobu/core";
-import { EmbeddedDeploymentManager } from "../orchestration/impl/embedded-deployment.js";
+import {
+  EmbeddedDeploymentManager,
+  __resetCapabilityProbesForTests,
+} from "../orchestration/impl/embedded-deployment.js";
 import {
   buildCanonicalConversationKey,
   generateDeploymentName,
@@ -262,6 +265,108 @@ describe("spawn failure handling", () => {
       mkdirSpy.mockRestore();
     }
   });
+});
+
+// ============================================================================
+// 2b. SYSTEMD WORKER SANDBOX — wrap + self-heal (Linux only)
+// ============================================================================
+// The systemd wrap only engages on Linux (locateSystemdRun() short-circuits on
+// other platforms), and here execFileSync is mocked to succeed so the probe
+// passes. Guarded to Linux so the assertions are deterministic on CI while the
+// suite still runs cross-platform.
+
+describe("systemd worker sandbox — wrap + self-heal", () => {
+  const onLinux = process.platform === "linux";
+
+  afterEach(() => {
+    // Demote the probe cache so a forced "systemd available" state never bleeds
+    // into other suites (which expect the LOBU_DISABLE_SYSTEMD_RUN=1 default).
+    __resetCapabilityProbesForTests();
+  });
+
+  test.skipIf(!onLinux)(
+    "available systemd wraps the worker in a scope with only scope-compatible props + forwards the bus env",
+    async () => {
+      __resetCapabilityProbesForTests();
+      delete process.env.LOBU_DISABLE_SYSTEMD_RUN; // let the probe run (mock succeeds)
+      const savedXdg = process.env.XDG_RUNTIME_DIR;
+      process.env.XDG_RUNTIME_DIR = "/run/user/test-xdg";
+      const mgr = makeManager();
+      const mkdirSpy = spyOn(fs, "mkdirSync").mockReturnValue(undefined);
+      try {
+        await mgr.ensureDeployment(
+          "worker-1",
+          "user-1",
+          "user-1",
+          makePayload()
+        );
+        const call = mockSpawn.mock.calls.at(-1) as [
+          string,
+          string[],
+          { env?: Record<string, string> },
+        ];
+        expect(call[0]).toBe("systemd-run");
+        expect(call[1]).toContain("--scope");
+        // cgroup + network props that a scope actually honors.
+        expect(call[1]).toContain("IPAddressDeny=any");
+        expect(call[1].some((a) => a.startsWith("MemoryMax="))).toBe(true);
+        // Exec-context props a --scope rejects ("Unknown assignment") must be
+        // gone, or the whole scope fails and the worker dies.
+        expect(call[1]).not.toContain("NoNewPrivileges=yes");
+        expect(call[1].some((a) => a.startsWith("ReadWritePaths="))).toBe(
+          false
+        );
+        expect(
+          call[1].some((a) => a.startsWith("RestrictAddressFamilies="))
+        ).toBe(false);
+        // The bus coordinates are forwarded so `systemd-run --user` can reach
+        // the user manager from the otherwise-sanitized worker env.
+        expect(call[2]?.env?.XDG_RUNTIME_DIR).toBe("/run/user/test-xdg");
+      } finally {
+        mkdirSpy.mockRestore();
+        if (savedXdg === undefined) delete process.env.XDG_RUNTIME_DIR;
+        else process.env.XDG_RUNTIME_DIR = savedXdg;
+      }
+    }
+  );
+
+  test.skipIf(!onLinux)(
+    "a --scope that dies instantly with a bus error self-heals to an unwrapped respawn",
+    async () => {
+      __resetCapabilityProbesForTests();
+      delete process.env.LOBU_DISABLE_SYSTEMD_RUN;
+      const mgr = makeManager();
+      const mkdirSpy = spyOn(fs, "mkdirSync").mockReturnValue(undefined);
+      try {
+        await mgr.ensureDeployment(
+          "worker-1",
+          "user-1",
+          "user-1",
+          makePayload()
+        );
+        // First spawn is the systemd-run wrapper.
+        expect(mockSpawn.mock.calls.at(-1)?.[0]).toBe("systemd-run");
+        const wrapper = mockChildProcesses.at(-1) as MockChildProcess;
+
+        // The scope can't reach the user bus and dies code 1 immediately —
+        // before the worker payload ever runs.
+        wrapper.stderr.emit(
+          "data",
+          Buffer.from("Failed to connect to bus: No medium found\n")
+        );
+        wrapper.emit("exit", 1, null);
+        await new Promise((r) => setTimeout(r, 0));
+
+        // Self-healed: a second, UNWRAPPED spawn replaced the dead wrapper,
+        // and the worker is live in the map rather than failed out.
+        expect(mockSpawn.mock.calls).toHaveLength(2);
+        expect(mockSpawn.mock.calls.at(-1)?.[0]).toBe(process.execPath);
+        expect(await mgr.listDeployments()).toHaveLength(1);
+      } finally {
+        mkdirSpy.mockRestore();
+      }
+    }
+  );
 });
 
 // ============================================================================

@@ -21,6 +21,29 @@
 import { safeJsonParse } from "./json";
 
 /**
+ * Token usage stamped on each assistant message, mirroring pi-ai's `Usage`
+ * shape exactly as written to disk. The four token buckets are kept distinct
+ * on purpose — cache-read is ~10x cheaper than uncached input, so collapsing
+ * them into a single number throws away the dominant accuracy lever for cost.
+ * `cost` is pi's own flat-priced estimate written at message time; cost
+ * accounting recomputes USD from the token buckets but keeps this for display.
+ */
+export interface SessionUsage {
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  totalTokens?: number;
+  cost?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+  };
+}
+
+/**
  * Raw entry shape as written to `session.jsonl` by the worker.
  *
  * `tokensBefore` / `firstKeptEntryId` (worker memory-flush bookkeeping)
@@ -35,7 +58,13 @@ export interface SessionEntry {
   message?: {
     role: string;
     content: unknown;
-    usage?: { inputTokens?: number; outputTokens?: number };
+    /** Provider API flavor written by the worker, e.g. "openai-completions". */
+    api?: string;
+    /** Provider id stamped on each assistant message, e.g. "zai", "anthropic". */
+    provider?: string;
+    /** Model id stamped on each assistant message, e.g. "glm-4.6". */
+    model?: string;
+    usage?: SessionUsage;
   };
   summary?: string;
   provider?: string;
@@ -54,7 +83,7 @@ export interface ParsedMessage {
   model?: string;
   timestamp: string;
   isVerbose?: boolean;
-  usage?: { inputTokens?: number; outputTokens?: number };
+  usage?: SessionUsage;
 }
 
 /**
@@ -98,11 +127,13 @@ export function parseSessionEntries(content: string): {
  */
 export function entryToMessage(entry: SessionEntry): ParsedMessage | null {
   if (entry.type === "message" && entry.message) {
+    const { provider, model } = entry.message;
     return {
       id: entry.id,
       type: "message",
       role: entry.message.role,
       content: entry.message.content,
+      model: model ? (provider ? `${provider}/${model}` : model) : undefined,
       timestamp: entry.timestamp,
       isVerbose: entry.message.role === "toolResult",
       usage: entry.message.usage,
@@ -138,4 +169,69 @@ export function entryToMessage(entry: SessionEntry): ParsedMessage | null {
     };
   }
   return null;
+}
+
+/** Aggregate token/cost stats over a parsed session, shared by both
+ * `/session/stats` surfaces (worker + gateway) so they can't drift. */
+export interface SessionStats {
+  messageCount: number;
+  userMessages: number;
+  assistantMessages: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheReadTokens: number;
+  totalCacheWriteTokens: number;
+  /** pi's flat-priced per-message cost summed across the session (display
+   * only; authoritative cost accounting recomputes from the token buckets). */
+  totalCostUsd: number;
+  /** Last model actually used — taken from the per-message `model` stamp and
+   * any `model_change` markers, in chronological order. */
+  currentModel?: string;
+}
+
+/**
+ * Fold a parsed session into {@link SessionStats}.
+ *
+ * Reads pi-ai's real on-disk field names (`input`/`output`/`cacheRead`/
+ * `cacheWrite`), not the legacy `inputTokens`/`outputTokens` that never
+ * actually existed on disk. `currentModel` now tracks the per-message model
+ * stamp too, so a session with no mid-run `model_change` still reports the
+ * model it ran on (the old code left it undefined until a switch happened).
+ */
+export function computeSessionStats(entries: SessionEntry[]): SessionStats {
+  const stats: SessionStats = {
+    messageCount: 0,
+    userMessages: 0,
+    assistantMessages: 0,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    totalCacheReadTokens: 0,
+    totalCacheWriteTokens: 0,
+    totalCostUsd: 0,
+  };
+  for (const entry of entries) {
+    if (entry.type === "message" && entry.message) {
+      stats.messageCount++;
+      if (entry.message.role === "user") stats.userMessages++;
+      if (entry.message.role === "assistant") {
+        stats.assistantMessages++;
+        const { provider, model } = entry.message;
+        if (model) {
+          stats.currentModel = provider ? `${provider}/${model}` : model;
+        }
+      }
+      const u = entry.message.usage;
+      if (u) {
+        stats.totalInputTokens += u.input ?? 0;
+        stats.totalOutputTokens += u.output ?? 0;
+        stats.totalCacheReadTokens += u.cacheRead ?? 0;
+        stats.totalCacheWriteTokens += u.cacheWrite ?? 0;
+        stats.totalCostUsd += u.cost?.total ?? 0;
+      }
+    }
+    if (entry.type === "model_change") {
+      stats.currentModel = `${entry.provider}/${entry.modelId}`;
+    }
+  }
+  return stats;
 }

@@ -8,6 +8,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { AgentConfigStore, ParsedMessage } from "@lobu/core";
 import {
+  computeSessionStats,
   createLogger,
   entryToMessage,
   parseSessionEntries,
@@ -186,51 +187,12 @@ async function readSessionStats(
   if (content === null) {
     const sessionPath = await findSessionFile(agentId);
     if (!sessionPath) {
-      return {
-        sessionId: "none",
-        messageCount: 0,
-        userMessages: 0,
-        assistantMessages: 0,
-        totalInputTokens: 0,
-        totalOutputTokens: 0,
-      };
+      return { sessionId: "none", ...computeSessionStats([]) };
     }
     content = await readFile(sessionPath, "utf-8");
   }
   const { entries, sessionId } = parseSessionEntries(content);
-
-  let messageCount = 0;
-  let userMessages = 0;
-  let assistantMessages = 0;
-  let totalInputTokens = 0;
-  let totalOutputTokens = 0;
-  let currentModel: string | undefined;
-
-  for (const entry of entries) {
-    if (entry.type === "message" && entry.message) {
-      messageCount++;
-      if (entry.message.role === "user") userMessages++;
-      if (entry.message.role === "assistant") assistantMessages++;
-      if (entry.message.usage) {
-        const u = entry.message.usage as any;
-        totalInputTokens += u.inputTokens || u.input || 0;
-        totalOutputTokens += u.outputTokens || u.output || 0;
-      }
-    }
-    if (entry.type === "model_change") {
-      currentModel = `${entry.provider}/${entry.modelId}`;
-    }
-  }
-
-  return {
-    sessionId: sessionId || "unknown",
-    messageCount,
-    userMessages,
-    assistantMessages,
-    totalInputTokens,
-    totalOutputTokens,
-    currentModel,
-  };
+  return { sessionId: sessionId || "unknown", ...computeSessionStats(entries) };
 }
 
 // ─── Routes ─────────────────────────────────────────────────────────────────

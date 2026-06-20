@@ -1,6 +1,6 @@
 # Lobu
 
-> Build AI teammates that watch and act. Lobu connects your tools, keeps shared memory current, and gives agents safe ways to act.
+> Open-source infrastructure for multi-tenant AI agents: sandboxed execution, shared memory, and an SDK that pulls live company data and acts on your high-level goals.
 
 ## What Lobu does
 

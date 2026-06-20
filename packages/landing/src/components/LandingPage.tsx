@@ -219,8 +219,9 @@ function Hero() {
           class="hero-rise hero-rise-2 mx-auto mt-5 max-w-[44rem] text-[17px] leading-[1.55]"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          Lobu connects your tools, keeps shared memory current, and gives
-          agents safe ways to act across chat, APIs, CLI, and MCP.
+          Open-source infrastructure for multi-tenant AI agents: sandboxed
+          execution, shared memory, and an SDK that pulls live company data and
+          acts on your high-level goals.
         </p>
         <div class="hero-rise hero-rise-3 mt-8 flex flex-wrap items-center justify-center gap-3">
           <button

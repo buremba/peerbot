@@ -175,7 +175,6 @@ export async function createTestAgent(options: {
       description,
       owner_platform,
       owner_user_id,
-      is_workspace_agent,
       created_at,
       updated_at
     ) VALUES (
@@ -185,7 +184,6 @@ export async function createTestAgent(options: {
       ${options.description ?? null},
       'lobu',
       ${ownerUserId},
-      false,
       NOW(),
       NOW()
     )

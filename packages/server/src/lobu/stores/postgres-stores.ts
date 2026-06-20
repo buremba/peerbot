@@ -79,8 +79,6 @@ function rowToMetadata(row: Record<string, any>): AgentMetadata {
 			platform: row.owner_platform ?? "lobu",
 			userId: row.owner_user_id ?? "",
 		},
-		isWorkspaceAgent: row.is_workspace_agent ?? undefined,
-		workspaceId: row.workspace_id ?? undefined,
 		organizationId: row.organization_id ?? undefined,
 		createdAt:
 			row.created_at instanceof Date
@@ -233,14 +231,12 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			const rows = orgId
 				? await sql`
             SELECT id, organization_id, name, description, owner_platform, owner_user_id,
-                   is_workspace_agent, workspace_id,
                    created_at, last_used_at
             FROM agents
             WHERE id = ${agentId} AND organization_id = ${orgId}
           `
 				: await sql`
             SELECT id, organization_id, name, description, owner_platform, owner_user_id,
-                   is_workspace_agent, workspace_id,
                    created_at, last_used_at
             FROM agents
             WHERE id = ${agentId}
@@ -259,11 +255,10 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			// a CONFLICT UPDATE so we can emit the right lifecycle event.
 			const rows = await sql`
         INSERT INTO agents (id, organization_id, name, description, owner_platform, owner_user_id,
-                            is_workspace_agent, workspace_id, created_at)
+                            created_at)
         VALUES (
           ${agentId}, ${orgId}, ${metadata.name}, ${metadata.description ?? null},
           ${metadata.owner.platform}, ${metadata.owner.userId},
-          ${metadata.isWorkspaceAgent ?? false}, ${metadata.workspaceId ?? null},
           ${metadata.createdAt ? new Date(metadata.createdAt) : now}
         )
         ON CONFLICT (organization_id, id) DO UPDATE SET
@@ -271,8 +266,6 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           description = EXCLUDED.description,
           owner_platform = EXCLUDED.owner_platform,
           owner_user_id = EXCLUDED.owner_user_id,
-          is_workspace_agent = EXCLUDED.is_workspace_agent,
-          workspace_id = EXCLUDED.workspace_id,
           last_used_at = ${metadata.lastUsedAt ? new Date(metadata.lastUsedAt) : null},
           updated_at = ${now}
         RETURNING (xmax = 0) AS inserted
@@ -324,7 +317,6 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			const orgId = getOrgId();
 			const rows = await sql`
         SELECT id, organization_id, name, description, owner_platform, owner_user_id,
-               is_workspace_agent, workspace_id,
                created_at, last_used_at
         FROM agents
         WHERE organization_id = ${orgId}

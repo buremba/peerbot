@@ -184,7 +184,6 @@ export function createAgentRoutes(config: AgentRoutesConfig): Hono {
             agentId,
             name: metadata.name,
             description: metadata.description,
-            isWorkspaceAgent: metadata.isWorkspaceAgent,
             createdAt: metadata.createdAt,
             lastUsedAt: metadata.lastUsedAt,
             channelCount: bindings.length,

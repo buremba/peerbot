@@ -285,12 +285,12 @@ export async function ensureDefaultAgent(
     await client`
       INSERT INTO agents (
         id, organization_id, name, identity_md,
-        owner_platform, owner_user_id, is_workspace_agent,
+        owner_platform, owner_user_id,
         installed_providers,
         created_at, updated_at
       ) VALUES (
         ${DEFAULT_AGENT_ID}, ${organizationId}, ${DEFAULT_AGENT_NAME}, ${DEFAULT_AGENT_IDENTITY},
-        'external', ${ownerUserId}, false,
+        'external', ${ownerUserId},
         ${client.json(systemProviders)},
         NOW(), NOW()
       )

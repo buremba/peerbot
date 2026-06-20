@@ -29,6 +29,17 @@ export interface ConnectorDefinition {
   feeds?: Record<string, FeedDefinition>;
   /** Available action definitions (keyed by action_key) */
   actions?: Record<string, ActionDefinition>;
+  /**
+   * Declarative inbound-webhook config. Presence means this connector receives
+   * real-time provider deliveries at `POST /api/v1/webhooks/:connectionId`,
+   * which are landed RAW into `events` (extract-load — the agent/downstream
+   * stages interpret them; no transform on the ingest hot path). The gateway
+   * verifies the signature IN-PROCESS using this schema + the secret stored on
+   * the connection, so the hot path never loads connector code. Pair with
+   * {@link ConnectorRuntime.registerWebhook}, which subscribes with the provider
+   * at connect time and stamps the signing secret onto the connection.
+   */
+  webhook?: ConnectorWebhookSchema;
   /** Global connector options schema (JSON Schema) */
   optionsSchema?: Record<string, unknown>;
   /** Domain for favicon lookup (e.g. 'x.com') */
@@ -79,6 +90,35 @@ export interface ConnectorRuntimeInfo {
    * that can't (e.g. edge workers) reject a connector that declares them.
    */
   nix?: { packages: string[] };
+}
+
+/**
+ * Declarative scheme the gateway uses to verify an inbound provider webhook in
+ * the request hot path — no connector code runs before the 202 ack. The shared
+ * secret is NOT here: it is minted by {@link ConnectorRuntime.registerWebhook}
+ * at connect time and stored on the connection.
+ */
+export interface ConnectorWebhookSchema {
+  /**
+   * Request header carrying the provider's HMAC signature over the raw body,
+   * e.g. `x-hub-signature-256` (GitHub), `linear-signature`. Omit for providers
+   * that don't sign — verification is then skipped (relies on the unguessable
+   * per-connection URL + token), so prefer signing whenever the provider offers it.
+   */
+  signatureHeader?: string;
+  /** HMAC digest algorithm used to compute the signature. Default `sha256`. */
+  algorithm?: 'sha256' | 'sha1';
+  /**
+   * Prefix the provider prepends to the hex digest in the signature header,
+   * e.g. `sha256=`. Stripped before the constant-time compare. Default none.
+   */
+  signaturePrefix?: string;
+  /**
+   * Request header carrying the provider's unique delivery id, used for
+   * idempotent dedupe (e.g. `x-github-delivery`, `linear-delivery`). Falls back
+   * to a body hash when unset.
+   */
+  dedupeHeader?: string;
 }
 
 // =============================================================================
@@ -535,6 +575,42 @@ export interface SyncResult<C = Record<string, unknown>> {
     items_skipped?: number;
     [key: string]: unknown;
   };
+}
+
+// =============================================================================
+// Webhooks (inbound real-time push)
+// =============================================================================
+
+/**
+ * Context passed to {@link ConnectorRuntime.registerWebhook} /
+ * `unregisterWebhook` at connect/disconnect time.
+ */
+export interface WebhookRegistrationContext<F = Record<string, unknown>> {
+  /** Feed/connector configuration (typed via F). */
+  config: F;
+  /** OAuth credentials used to authorize the subscription call. */
+  credentials: SyncCredentials | null;
+  /** Connection session state (browser cookies, tokens, etc.). */
+  sessionState?: Record<string, unknown> | null;
+  /**
+   * Public URL the provider must POST deliveries to — the gateway builds this
+   * from `PUBLIC_*_URL` + the connection id. The connector registers it verbatim.
+   */
+  callbackUrl: string;
+  /** Provider-side subscription id to tear down (unregister only). */
+  externalId?: string;
+}
+
+/** Result from {@link ConnectorRuntime.registerWebhook}. */
+export interface WebhookRegistration {
+  /** Provider-side id of the created subscription, for later teardown. */
+  externalId: string;
+  /**
+   * Shared secret the provider will sign deliveries with. Persisted on the
+   * connection so the gateway can verify deliveries per {@link ConnectorWebhookSchema}.
+   */
+  secret?: string;
+  metadata?: Record<string, unknown>;
 }
 
 // =============================================================================

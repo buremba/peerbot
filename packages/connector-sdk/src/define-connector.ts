@@ -42,6 +42,8 @@ import type {
   ReflectResult,
   SyncContext,
   SyncResult,
+  WebhookRegistration,
+  WebhookRegistrationContext,
 } from "./connector-types.js";
 
 /** A feed's metadata (minus the record-derived `key`) plus its `sync` handler. */
@@ -85,6 +87,18 @@ export interface ConnectorSpec
    * source's native governed metrics. Omitted ⇒ no contributions.
    */
   reflectMetrics?(ctx: ReflectContext): Promise<ReflectResult>;
+  /**
+   * Optional webhook-subscription handler. When provided, lowers to
+   * `ConnectorRuntime.registerWebhook` — subscribes with the provider at connect
+   * time and returns the secret to persist. Omitted ⇒ registration unsupported.
+   */
+  registerWebhook?(ctx: WebhookRegistrationContext): Promise<WebhookRegistration>;
+  /**
+   * Optional webhook-teardown handler. When provided, lowers to
+   * `ConnectorRuntime.unregisterWebhook` — deletes the provider subscription on
+   * disconnect. Omitted ⇒ teardown is a no-op.
+   */
+  unregisterWebhook?(ctx: WebhookRegistrationContext): Promise<void>;
 }
 
 /** Constructor shape the connector-worker's `child-runner` detects and instantiates. */
@@ -104,6 +118,7 @@ function buildDefinition(spec: ConnectorSpec): ConnectorDefinition {
     openapiConfig: spec.openapiConfig,
     requiredCapability: spec.requiredCapability,
     runtime: spec.runtime,
+    webhook: spec.webhook,
   };
 
   if (spec.feeds) {
@@ -196,6 +211,20 @@ export function defineConnector(spec: ConnectorSpec): ConnectorClass {
         return super.reflectMetrics(ctx);
       }
       return spec.reflectMetrics(ctx);
+    }
+
+    async registerWebhook(ctx: WebhookRegistrationContext): Promise<WebhookRegistration> {
+      if (!spec.registerWebhook) {
+        return super.registerWebhook(ctx);
+      }
+      return spec.registerWebhook(ctx);
+    }
+
+    async unregisterWebhook(ctx: WebhookRegistrationContext): Promise<void> {
+      if (!spec.unregisterWebhook) {
+        return super.unregisterWebhook(ctx);
+      }
+      return spec.unregisterWebhook(ctx);
     }
   };
 }

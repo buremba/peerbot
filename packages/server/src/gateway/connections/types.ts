@@ -9,6 +9,7 @@ import type { createSlackAdapter } from "@chat-adapter/slack";
 import type { createTeamsAdapter } from "@chat-adapter/teams";
 import type { createTelegramAdapter } from "@chat-adapter/telegram";
 import type { createWhatsAppAdapter } from "@chat-adapter/whatsapp";
+import type { ConnectorWebhookSchema } from "@lobu/connector-sdk";
 
 // Derive config types from what the adapter factories actually accept
 export type TelegramAdapterConfig = NonNullable<
@@ -51,8 +52,17 @@ export type WebhookIngestPlatformConfig = {
   token?: string;
   /** Opt-in `?token=` auth for header-less senders. Default false. */
   allowQueryAuth?: boolean | string;
-  /** Header carrying the delivery id; else sha256(raw body). */
-  dedupeHeader?: string;
+  /**
+   * Shared signing secret (a `secret://` ref), minted by a connector's
+   * `registerWebhook`. When set, a delivery is rejected (401) unless its HMAC
+   * signature verifies per the scheme below — this is how connector-owned
+   * webhooks (GitHub/Linear/Jira) authenticate, in addition to (or instead of)
+   * the bearer token. The scheme fields themselves (`signatureHeader`,
+   * `algorithm`, `signaturePrefix`, `dedupeHeader`) come from the single
+   * source of truth, the connector's {@link ConnectorWebhookSchema}, which
+   * `registerWebhook` stamps onto the connection alongside this secret.
+   */
+  signatureSecret?: string;
   /** `events.semantic_type` for ingested rows; default "content". */
   semanticType?: string;
   /** JSON pointer extracted into `events.title`. */
@@ -64,7 +74,7 @@ export type WebhookIngestPlatformConfig = {
    * with high-volume/low-value webhook traffic.
    */
   searchable?: boolean | string;
-};
+} & ConnectorWebhookSchema;
 
 export type PlatformAdapterConfig =
   | TelegramAdapterConfig

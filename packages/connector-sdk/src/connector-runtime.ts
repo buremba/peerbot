@@ -17,6 +17,8 @@ import type {
   ReflectResult,
   SyncContext,
   SyncResult,
+  WebhookRegistration,
+  WebhookRegistrationContext,
 } from './connector-types.js';
 
 /**
@@ -94,6 +96,27 @@ export abstract class ConnectorRuntime<C = Record<string, unknown>, F = Record<s
   // biome-ignore lint/correctness/noUnusedFunctionParameters: contract signature — subclasses receive the full QueryContext
   async query(ctx: QueryContext<F>): Promise<QueryResult> {
     throw new Error(`${this.definition.key} does not support live queries`);
+  }
+
+  /**
+   * Subscribe to provider webhooks at connect time (or re-auth), using the
+   * connection's OAuth credentials, so deliveries flow to `ctx.callbackUrl`
+   * (`/api/v1/webhooks/:connectionId`). Returns the provider subscription id and
+   * the signing secret to persist on the connection for in-gateway verification.
+   * Default throws — connectors that declare a `webhook` block MUST override.
+   */
+  async registerWebhook(_ctx: WebhookRegistrationContext<F>): Promise<WebhookRegistration> {
+    throw new Error(`${this.definition.key} does not support webhook registration`);
+  }
+
+  /**
+   * Tear down the provider subscription created by {@link registerWebhook} when
+   * the connection is removed. Default is a no-op — override to call the
+   * provider's delete-subscription endpoint with `ctx.externalId`.
+   */
+  // biome-ignore lint/correctness/noUnusedFunctionParameters: contract signature — subclasses receive the full WebhookRegistrationContext
+  async unregisterWebhook(ctx: WebhookRegistrationContext<F>): Promise<void> {
+    // no-op by default
   }
 
   /**

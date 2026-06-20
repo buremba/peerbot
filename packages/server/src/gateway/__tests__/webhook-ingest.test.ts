@@ -16,6 +16,7 @@
  *     a delivery through the real org-scoped secret store.
  */
 
+import { createHmac } from "node:crypto";
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import {
 	ensureDbForGatewayTests,
@@ -27,6 +28,27 @@ import {
 const ORG = "org-webhook";
 const AGENT = "agent-webhook";
 const TOKEN = "whk-test-token-0123456789abcdef";
+const SIG_SECRET = "whk-sig-secret-0123456789abcdef";
+
+/** Compute a provider HMAC signature header value over the exact raw bytes. */
+function sign(
+	rawBody: string,
+	{
+		secret = SIG_SECRET,
+		algorithm = "sha256",
+		prefix = "",
+	}: { secret?: string; algorithm?: "sha256" | "sha1"; prefix?: string } = {},
+): string {
+	return prefix + createHmac(algorithm, secret).update(rawBody).digest("hex");
+}
+
+/** GitHub-style signature config: prefixed sha256 in x-hub-signature-256. */
+const githubSigConfig = {
+	signatureHeader: "x-hub-signature-256",
+	algorithm: "sha256",
+	signaturePrefix: "sha256=",
+	signatureSecret: SIG_SECRET,
+};
 
 beforeAll(async () => {
 	await ensureDbForGatewayTests();
@@ -184,6 +206,175 @@ describe("handleWebhookIngest auth", () => {
 			delivery({ a: 1 }, { headers: bearer }),
 		);
 		expect(res.status).toBe(500);
+	});
+});
+
+describe("handleWebhookIngest signature auth (connector webhooks)", () => {
+	/** A signature-only connection — GitHub/Linear/Jira sign, no bearer token. */
+	function sigRow(
+		config: Record<string, unknown>,
+		overrides: Partial<Record<string, unknown>> = {},
+	) {
+		const row = storedRow(overrides, config);
+		delete row.config.token; // provider authenticates by signature, not bearer
+		return row;
+	}
+
+	test("GitHub-style: a valid x-hub-signature-256 lands the raw event", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const raw = JSON.stringify({
+			action: "opened",
+			issue: { number: 7, title: "Bug" },
+		});
+		const res = await ingest(
+			sigRow(githubSigConfig),
+			delivery(null, {
+				raw,
+				headers: {
+					"x-github-event": "issues",
+					"x-hub-signature-256": sign(raw, { prefix: "sha256=" }),
+				},
+			}),
+		);
+		expect(res.status).toBe(202);
+		const rows = await eventRows();
+		expect(rows.length).toBe(1);
+		// EL: the raw payload lands verbatim — no transform on ingest.
+		expect(rows[0].payload_data).toEqual({
+			action: "opened",
+			issue: { number: 7, title: "Bug" },
+		});
+	});
+
+	test("Linear-style: a valid prefix-less linear-signature lands the event", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const raw = JSON.stringify({ type: "Issue", action: "create" });
+		const res = await ingest(
+			sigRow({
+				signatureHeader: "linear-signature",
+				algorithm: "sha256",
+				signatureSecret: SIG_SECRET,
+			}),
+			delivery(null, { raw, headers: { "linear-signature": sign(raw) } }),
+		);
+		expect(res.status).toBe(202);
+		expect((await eventRows()).length).toBe(1);
+	});
+
+	test("rejects an invalid signature and persists nothing", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const raw = JSON.stringify({ issue: 1 });
+		const res = await ingest(
+			sigRow(githubSigConfig),
+			delivery(null, {
+				raw,
+				headers: { "x-hub-signature-256": "sha256=deadbeef" },
+			}),
+		);
+		expect(res.status).toBe(401);
+		expect((await eventRows()).length).toBe(0);
+	});
+
+	test("rejects a tampered body (signature over different bytes)", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const signedOver = JSON.stringify({ issue: 1 });
+		const tampered = JSON.stringify({ issue: 999 });
+		const res = await ingest(
+			sigRow(githubSigConfig),
+			delivery(null, {
+				raw: tampered,
+				headers: { "x-hub-signature-256": sign(signedOver, { prefix: "sha256=" }) },
+			}),
+		);
+		expect(res.status).toBe(401);
+		expect((await eventRows()).length).toBe(0);
+	});
+
+	test("rejects a missing signature header", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const res = await ingest(
+			sigRow(githubSigConfig),
+			delivery({ issue: 1 }),
+		);
+		expect(res.status).toBe(401);
+	});
+
+	test("rejects a wrong secret", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const raw = JSON.stringify({ issue: 1 });
+		const res = await ingest(
+			sigRow(githubSigConfig),
+			delivery(null, {
+				raw,
+				headers: {
+					"x-hub-signature-256": sign(raw, {
+						secret: "the-wrong-secret",
+						prefix: "sha256=",
+					}),
+				},
+			}),
+		);
+		expect(res.status).toBe(401);
+	});
+
+	test("rejects a right-length non-hex signature with a clean 401 (no throw)", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const raw = JSON.stringify({ issue: 1 });
+		// 64 chars = sha256 hex length, but non-hex → Buffer.from(hex) truncates;
+		// must still be a clean 401, not a 500 from timingSafeEqual length mismatch.
+		const res = await ingest(
+			sigRow(githubSigConfig),
+			delivery(null, {
+				raw,
+				headers: { "x-hub-signature-256": `sha256=${"z".repeat(64)}` },
+			}),
+		);
+		expect(res.status).toBe(401);
+		expect((await eventRows()).length).toBe(0);
+	});
+
+	test("token still authenticates when both token and signature are configured", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		// Connection carries a bearer token AND signature config; a valid bearer
+		// with no signature header must still pass (token short-circuits pre-body).
+		const res = await ingest(
+			storedRow({}, githubSigConfig),
+			delivery({ a: 1 }, { headers: bearer }),
+		);
+		expect(res.status).toBe(202);
+		expect((await eventRows()).length).toBe(1);
+	});
+
+	test("redelivery dedupes on x-github-delivery under signature auth", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const config = { ...githubSigConfig, dedupeHeader: "x-github-delivery" };
+		const raw1 = JSON.stringify({ run: 1 });
+		const first = await ingest(
+			sigRow(config),
+			delivery(null, {
+				raw: raw1,
+				headers: {
+					"x-github-delivery": "gh-d-1",
+					"x-hub-signature-256": sign(raw1, { prefix: "sha256=" }),
+				},
+			}),
+		);
+		const raw2 = JSON.stringify({ run: 2 });
+		const dup = await ingest(
+			sigRow(config),
+			delivery(null, {
+				raw: raw2,
+				headers: {
+					"x-github-delivery": "gh-d-1",
+					"x-hub-signature-256": sign(raw2, { prefix: "sha256=" }),
+				},
+			}),
+		);
+		expect(first.status).toBe(202);
+		expect((await dup.json()).duplicate).toBe(true);
+		const rows = await eventRows();
+		expect(rows.length).toBe(1);
+		expect(rows[0].origin_id).toBe("gh-d-1");
 	});
 });
 
@@ -647,5 +838,103 @@ describe("ChatInstanceManager webhook wiring", () => {
 			}),
 		);
 		expect(wrongPlatform.status).toBe(404);
+	});
+
+	// Full wired path: the REAL Hono route → ChatInstanceManager →
+	// handleWebhookIngest → real Postgres. This is what an actual provider
+	// delivery exercises (vs. the unit tests above that call the handler
+	// directly). We hold the signing secret, so we compute a real GitHub-style
+	// HMAC — the only thing not covered is the live-OAuth `registerWebhook` call
+	// and the provider's own POST, which need real credentials + a public URL.
+	async function registeredGithubConnection(connectionStore: any): Promise<string> {
+		const { orgContext } = await import("../../lobu/stores/org-context.js");
+		const id = "whk-gh-e2e";
+		// Simulate a connection AFTER registration stamped the scheme + secret.
+		await orgContext.run({ organizationId: ORG }, () =>
+			connectionStore.saveConnection({
+				id,
+				platform: "webhook",
+				agentId: AGENT,
+				organizationId: ORG,
+				config: {
+					platform: "webhook",
+					...githubSigConfig,
+					dedupeHeader: "x-github-delivery",
+					semanticType: "issue",
+				},
+				settings: { allowGroups: true },
+				metadata: {},
+				status: "active",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			}),
+		);
+		return id;
+	}
+
+	test("e2e: a signed GitHub delivery routes through the real endpoint and lands", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const { manager, connectionStore } = await buildManager();
+		const { createConnectionWebhookRoutes } = await import(
+			"../routes/public/connections.js"
+		);
+		const id = await registeredGithubConnection(connectionStore);
+		const app = createConnectionWebhookRoutes(manager);
+
+		const raw = JSON.stringify({
+			action: "opened",
+			issue: { number: 11, title: "Prod is down" },
+			repository: { full_name: "acme/api" },
+		});
+		const res = await app.fetch(
+			new Request(`http://gateway.test/api/v1/webhooks/${id}`, {
+				method: "POST",
+				body: raw,
+				headers: {
+					"content-type": "application/json",
+					"x-github-event": "issues",
+					"x-github-delivery": "gh-e2e-1",
+					"x-hub-signature-256": sign(raw, { prefix: "sha256=" }),
+				},
+			}),
+		);
+		expect(res.status).toBe(202);
+
+		const rows = await eventRows(id);
+		expect(rows.length).toBe(1);
+		// EL: the raw GitHub payload is what landed — untransformed.
+		expect(rows[0].payload_data).toEqual({
+			action: "opened",
+			issue: { number: 11, title: "Prod is down" },
+			repository: { full_name: "acme/api" },
+		});
+		expect(rows[0].origin_id).toBe("gh-e2e-1");
+		expect(rows[0].semantic_type).toBe("issue");
+		expect(rows[0].organization_id).toBe(ORG);
+	});
+
+	test("e2e: the real endpoint rejects a forged signature with 401", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const { manager, connectionStore } = await buildManager();
+		const { createConnectionWebhookRoutes } = await import(
+			"../routes/public/connections.js"
+		);
+		const id = await registeredGithubConnection(connectionStore);
+		const app = createConnectionWebhookRoutes(manager);
+
+		const raw = JSON.stringify({ action: "opened", issue: { number: 12 } });
+		const res = await app.fetch(
+			new Request(`http://gateway.test/api/v1/webhooks/${id}`, {
+				method: "POST",
+				body: raw,
+				headers: {
+					"content-type": "application/json",
+					"x-github-event": "issues",
+					"x-hub-signature-256": "sha256=forged",
+				},
+			}),
+		);
+		expect(res.status).toBe(401);
+		expect((await eventRows(id)).length).toBe(0);
 	});
 });

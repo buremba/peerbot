@@ -31,7 +31,7 @@
  * row and writes Postgres; nothing is memoized per pod.
  */
 
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type { StoredConnection } from "@lobu/core";
 import { getDb } from "../../db/client.js";
 import { insertEvent } from "../../utils/insert-event.js";
@@ -103,6 +103,35 @@ function tokensMatch(presented: string, configured: string): boolean {
 	const a = createHash("sha256").update(presented).digest();
 	const b = createHash("sha256").update(configured).digest();
 	return timingSafeEqual(a, b);
+}
+
+/**
+ * Verify a provider's HMAC signature over the raw request body — the auth
+ * scheme for connector-owned webhooks (GitHub `x-hub-signature-256`, Linear
+ * `linear-signature`, Jira `x-hub-signature`). The provider signs the exact
+ * bytes it sent, so we HMAC `rawBody` (never the re-serialized JSON) with the
+ * shared secret and constant-time compare against the header digest. Returns
+ * false on any miss (no header, malformed hex) — the caller fails closed.
+ */
+function verifyWebhookSignature(
+	rawBody: Uint8Array,
+	headerValue: string | null,
+	secret: string,
+	algorithm: "sha256" | "sha1",
+	prefix: string | undefined,
+): boolean {
+	if (!headerValue) return false;
+	const presented = prefix && headerValue.startsWith(prefix)
+		? headerValue.slice(prefix.length)
+		: headerValue;
+	const expected = createHmac(algorithm, secret).update(rawBody).digest();
+	// Buffer.from(hex) silently TRUNCATES on invalid hex, so a right-length but
+	// non-hex header would slip past a hex-string length check and then make
+	// timingSafeEqual throw. Compare the DECODED byte lengths instead — a
+	// malformed signature decodes short → length mismatch → false (clean 401).
+	const presentedBuf = Buffer.from(presented, "hex");
+	if (presentedBuf.length !== expected.length) return false;
+	return timingSafeEqual(presentedBuf, expected);
 }
 
 function isQueryTokenAllowed(config: WebhookIngestConfig): boolean {
@@ -329,21 +358,40 @@ export async function handleWebhookIngest(
 		});
 	}
 
-	// 3. Auth. Fail closed when no token is configured/resolvable — an ingest
-	//    endpoint must never be open just because its secret went missing.
-	const configuredToken = await resolveSecretValue(
-		secretStore,
-		typeof config.token === "string" ? config.token : undefined,
-	);
-	if (!configuredToken) {
+	// 3. Auth. A delivery authenticates by EITHER a matching bearer token OR a
+	//    verified provider HMAC signature (connector webhooks: GitHub/Linear/Jira
+	//    sign, they don't send a bearer). Fail closed when neither method is
+	//    configured — an ingest endpoint must never be open just because its
+	//    secret went missing.
+	// Resolve both candidate secrets concurrently — either (or both) may gate
+	// this delivery, so we need them before deciding auth.
+	const [configuredToken, signatureSecret] = await Promise.all([
+		resolveSecretValue(
+			secretStore,
+			typeof config.token === "string" ? config.token : undefined,
+		),
+		resolveSecretValue(
+			secretStore,
+			typeof config.signatureSecret === "string" ? config.signatureSecret : undefined,
+		),
+	]);
+	if (!configuredToken && !signatureSecret) {
 		logger.warn(
 			{ connectionId: stored.id },
-			"[webhook-ingest] no resolvable token configured — rejecting delivery",
+			"[webhook-ingest] no resolvable token or signature secret — rejecting delivery",
 		);
 		return json(401, { error: "Unauthorized" });
 	}
+	// Token check is decisive pre-body when no signature is configured (preserves
+	// the fast-reject path for plain ingest connections). When a signature IS
+	// configured, a token miss isn't fatal yet — the signature is verified after
+	// the body is read below (HMAC needs the raw bytes).
 	const presentedToken = extractPresentedToken(request, config);
-	if (!presentedToken || !tokensMatch(presentedToken, configuredToken)) {
+	let authenticated =
+		!!configuredToken &&
+		!!presentedToken &&
+		tokensMatch(presentedToken, configuredToken);
+	if (!authenticated && !signatureSecret) {
 		return json(401, { error: "Unauthorized" });
 	}
 
@@ -366,6 +414,27 @@ export async function handleWebhookIngest(
 	const rawBody = await readBodyWithCap(request, WEBHOOK_INGEST_MAX_BODY_BYTES);
 	if (rawBody === null) {
 		return json(413, { error: "Payload too large" });
+	}
+
+	// Complete auth: when the token didn't already authenticate and a signature
+	// secret is configured, the provider's HMAC over the raw body must verify.
+	if (!authenticated && signatureSecret) {
+		const ok =
+			typeof config.signatureHeader === "string" &&
+			!!config.signatureHeader &&
+			verifyWebhookSignature(
+				rawBody,
+				request.headers.get(config.signatureHeader),
+				signatureSecret,
+				config.algorithm === "sha1" ? "sha1" : "sha256",
+				typeof config.signaturePrefix === "string"
+					? config.signaturePrefix
+					: undefined,
+			);
+		if (!ok) {
+			return json(401, { error: "Unauthorized" });
+		}
+		authenticated = true;
 	}
 
 	let parsed: unknown;

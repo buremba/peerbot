@@ -1,4 +1,9 @@
-import type { AuthResult, EventEnvelope, SyncCredentials } from '@lobu/connector-sdk';
+import type {
+  AuthResult,
+  EventEnvelope,
+  SyncCredentials,
+  WebhookRegistration,
+} from '@lobu/connector-sdk';
 
 /**
  * Executor mode discriminator. The executor speaks the same V1 SDK shapes
@@ -44,6 +49,28 @@ export type ExecutorJob =
       limit?: number;
       offset?: number;
       sort?: { column: string; order: 'asc' | 'desc' };
+    }
+  | {
+      // Subscribe with the provider at connect time so deliveries flow to
+      // `callbackUrl` (`/api/v1/webhooks/:connectionId`). Runs once per
+      // connection, not per delivery. Returns the provider subscription id +
+      // signing secret to persist on the connection.
+      mode: 'webhook_register';
+      config: Record<string, unknown>;
+      credentials: SyncCredentials | null;
+      sessionState: Record<string, unknown> | null;
+      callbackUrl: string;
+      env: Record<string, string | undefined>;
+    }
+  | {
+      // Tear down the provider subscription created by `webhook_register` when
+      // the connection is removed.
+      mode: 'webhook_unregister';
+      config: Record<string, unknown>;
+      credentials: SyncCredentials | null;
+      sessionState: Record<string, unknown> | null;
+      externalId: string;
+      env: Record<string, string | undefined>;
     };
 
 /**
@@ -73,6 +100,13 @@ export type ExecutorResult =
       rows: Record<string, unknown>[];
       columns?: { name: string; type: string }[];
       total?: number;
+    }
+  | {
+      mode: 'webhook_register';
+      registration: WebhookRegistration;
+    }
+  | {
+      mode: 'webhook_unregister';
     };
 
 export interface ExecutionHooks {

@@ -1,9 +1,13 @@
 /**
  * GitHub Connector (V1 runtime)
  *
- * Syncs GitHub repository content and executes write actions.
+ * Syncs GitHub repository content and executes write actions. Also subscribes
+ * to real-time issue/PR/comment deliveries via inbound webhooks (registered at
+ * connect time); the raw deliveries are landed downstream (extract-load), so
+ * this connector only owns the subscription lifecycle here.
  */
 
+import { randomBytes } from 'node:crypto';
 import {
   type ActionContext,
   type ActionResult,
@@ -15,6 +19,8 @@ import {
   paginateByOffset,
   type SyncContext,
   type SyncResult,
+  type WebhookRegistration,
+  type WebhookRegistrationContext,
 } from '@lobu/connector-sdk';
 
 type GitHubContentType =
@@ -29,6 +35,15 @@ type GitHubContentType =
 interface GitHubConfig {
   repo_owner?: string;
   repo_name?: string;
+  /**
+   * Org login for org-wide ingestion. When set, webhook registration creates a
+   * single ORGANIZATION webhook (`POST /orgs/{org}/hooks`, scope
+   * `admin:org_hook`) that delivers events from every repo in the org — instead
+   * of a per-repo hook (`admin:repo_hook`). Takes precedence over repo_owner/name.
+   */
+  org?: string;
+  /** Webhook event subscription; defaults to `['*']` (every event type). */
+  webhook_events?: string[];
   content_type?: GitHubContentType;
   lookback_days?: number;
   labels_filter?: string[];
@@ -211,13 +226,22 @@ export default class GitHubConnector extends ConnectorRuntime {
     description: 'Collects GitHub issues/discussions and executes repo actions.',
     version: '1.2.0',
     faviconDomain: 'github.com',
+    webhook: {
+      signatureHeader: 'x-hub-signature-256',
+      algorithm: 'sha256',
+      signaturePrefix: 'sha256=',
+      dedupeHeader: 'x-github-delivery',
+    },
     authSchema: {
       methods: [
         {
           type: 'oauth',
           provider: 'github',
           requiredScopes: ['read:user'],
-          optionalScopes: ['repo'],
+          // Webhook scopes are OPTIONAL and requested incrementally — only when
+          // the user enables a live feed (repo) or org-wide ingestion (org), not
+          // at first connect. `repo` covers reads of private repos.
+          optionalScopes: ['repo', 'admin:repo_hook', 'admin:org_hook'],
           loginScopes: ['read:user', 'user:email'],
           clientIdKey: 'GITHUB_CLIENT_ID',
           clientSecretKey: 'GITHUB_CLIENT_SECRET',
@@ -640,6 +664,87 @@ export default class GitHubConnector extends ConnectorRuntime {
         error: error instanceof Error ? error.message : String(error),
       };
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Webhooks (subscription lifecycle — raw deliveries land downstream)
+  // -------------------------------------------------------------------------
+
+  /**
+   * GitHub hooks collection URL for this config: an ORGANIZATION webhook
+   * (`/orgs/{org}/hooks`, covers every repo, scope admin:org_hook) when `org`
+   * is set, else a per-repo hook (`/repos/{owner}/{name}/hooks`, scope
+   * admin:repo_hook). Null when neither target is configured.
+   */
+  private hooksApiUrl(config: GitHubConfig): string | null {
+    if (config.org) return `https://api.github.com/orgs/${config.org}/hooks`;
+    if (config.repo_owner && config.repo_name) {
+      return `https://api.github.com/repos/${config.repo_owner}/${config.repo_name}/hooks`;
+    }
+    return null;
+  }
+
+  async registerWebhook(
+    ctx: WebhookRegistrationContext<GitHubConfig>
+  ): Promise<WebhookRegistration> {
+    const token = this.resolveToken(ctx.credentials?.accessToken, ctx.config);
+    if (!token) {
+      throw new Error('GitHub webhook registration requires OAuth or GITHUB_TOKEN.');
+    }
+
+    const hooksUrl = this.hooksApiUrl(ctx.config);
+    if (!hooksUrl) {
+      throw new Error(
+        'GitHub webhook registration requires `org` (org-wide) or repo_owner/repo_name (single repo) in config.',
+      );
+    }
+
+    const secret = randomBytes(32).toString('hex');
+
+    const hook = await this.requestJson<{ id: number }>({
+      method: 'POST',
+      url: hooksUrl,
+      token,
+      body: {
+        name: 'web',
+        active: true,
+        // Subscribe to EVERY event type (extract-load: land it all raw, filter
+        // downstream). Org-wide this captures pushes, PRs, issues, comments,
+        // releases, CI runs, stars, membership changes, etc. across all repos.
+        // Override with config.webhook_events for a narrower subscription.
+        events: ctx.config.webhook_events ?? ['*'],
+        config: {
+          url: ctx.callbackUrl,
+          content_type: 'json',
+          secret,
+        },
+      },
+    });
+
+    return { externalId: String(hook.id), secret, metadata: { scope: ctx.config.org ? 'org' : 'repo' } };
+  }
+
+  async unregisterWebhook(ctx: WebhookRegistrationContext<GitHubConfig>): Promise<void> {
+    const externalId = ctx.externalId;
+    if (!externalId) return;
+
+    const token = this.resolveToken(ctx.credentials?.accessToken, ctx.config);
+    if (!token) return;
+
+    const base = this.hooksApiUrl(ctx.config);
+    if (!base) return;
+    const hookUrl = `${base}/${externalId}`;
+
+    // DELETE returns 204 No Content — use request() (no JSON parse) so an empty
+    // body doesn't throw.
+    await this.http.request(hookUrl, {
+      method: 'DELETE',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        Authorization: `Bearer ${token}`,
+      },
+    });
   }
 
   private resolveRepo(config: GitHubConfig, input: Record<string, unknown>): RepoRef {

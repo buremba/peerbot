@@ -206,6 +206,29 @@ async function executeConnectorRuntime(
     return { mode: 'action', output: actionResult.output ?? {} };
   }
 
+  if (job.mode === 'webhook_register') {
+    const registration = await instance.registerWebhook({
+      config: { ...job.env, ...job.config },
+      credentials: job.credentials,
+      sessionState: job.sessionState,
+      callbackUrl: job.callbackUrl,
+    });
+    if (!registration?.externalId) {
+      throw new Error('registerWebhook() returned no externalId');
+    }
+    return { mode: 'webhook_register', registration };
+  }
+
+  if (job.mode === 'webhook_unregister') {
+    await instance.unregisterWebhook({
+      config: { ...job.env, ...job.config },
+      credentials: job.credentials,
+      sessionState: job.sessionState,
+      externalId: job.externalId,
+    });
+    return { mode: 'webhook_unregister' };
+  }
+
   if (job.mode === 'query') {
     // Live read: returns rows to the caller, persists nothing (like an action).
     const queryResult = await instance.query({

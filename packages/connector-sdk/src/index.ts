@@ -49,6 +49,7 @@ export type {
   ConnectorAuthSchema,
   ConnectorDefinition,
   ConnectorRuntimeInfo,
+  ConnectorWebhookSchema,
   ContentItem,
   EntityIdentitySpec,
   EntityLinkOverride,
@@ -71,6 +72,8 @@ export type {
   SyncContext,
   SyncCredentials,
   SyncResult,
+  WebhookRegistration,
+  WebhookRegistrationContext,
 } from './connector-types.js';
 export { IDENTITY } from './connector-types.js';
 // Identity-engine SDK contracts. Each schema export is both a TypeBox

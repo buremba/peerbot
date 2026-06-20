@@ -23,6 +23,7 @@
  */
 
 import postgres from "postgres";
+import { ensureBuilderAgent } from "./auth/builder-provisioning";
 import { ensureDefaultAgent } from "./auth/default-provisioning";
 import { ensureInstallOperator } from "./auth/install-operator";
 import logger from "./utils/logger";
@@ -58,7 +59,10 @@ export function buildLocalBootstrapHooks(databaseUrl: string): PreListenHook[] {
             ORDER BY "createdAt" ASC LIMIT 1
           `) as unknown as Array<{ id: string }>;
 					const orgId = orgs[0]?.id ?? null;
-					if (orgId) await ensureDefaultAgent(orgId);
+					if (orgId) {
+						await ensureDefaultAgent(orgId);
+						await ensureBuilderAgent(orgId);
+					}
 				} finally {
 					await rows.end({ timeout: 1 });
 				}

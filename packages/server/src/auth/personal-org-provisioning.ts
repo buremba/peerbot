@@ -10,6 +10,7 @@
 import { slugify as slugifyBase } from "@lobu/core";
 import { getDb } from "../db/client";
 import { RESERVED_PATHS_SET } from "../utils/reserved";
+import { ensureBuilderAgent } from "./builder-provisioning";
 import { generateSecureToken } from "./oauth/utils";
 import { provisionMemberAndCoreIdentities } from "./subject-identities";
 
@@ -209,6 +210,20 @@ export async function ensurePersonalOrganization(
 				},
 			);
 		}
+	}
+
+	// Provision the org's builder (system) agent and point
+	// organization.system_agent_id at it. Idempotent (sentinel-guarded) so it's
+	// safe to run for both newly created and pre-existing personal orgs;
+	// best-effort so a failure can't roll back / break the org creation.
+	try {
+		await ensureBuilderAgent(finalResult.organizationId);
+	} catch (error) {
+		console.error("[Auth] Failed to provision builder agent for personal org:", {
+			orgId: finalResult.organizationId,
+			userId: user.id,
+			error: String(error),
+		});
 	}
 
 	return finalResult;

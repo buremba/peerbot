@@ -300,7 +300,15 @@ export class MultiTenantProvider implements WorkspaceProvider {
           403
         );
       }
-      const directAuthUserId = (agentRows[0]?.owner_user_id as string | undefined) ?? tokenData.userId;
+      // For a builder admin turn (per-run token carries `adminTools`), attribute
+      // the call to the verified per-turn admin (`tokenData.userId`, bound to the
+      // authenticated owner/admin at session create) rather than the agent's
+      // provisioning owner — so the role check and audit reflect the actual
+      // actor. Non-builder worker direct-auth keeps the agent-owner attribution.
+      const isBuilderAdminTurn = !!tokenData.adminTools?.length;
+      const directAuthUserId = isBuilderAdminTurn
+        ? tokenData.userId
+        : (agentRows[0]?.owner_user_id as string | undefined) ?? tokenData.userId;
       const roleRows = await sql`
         SELECT role
         FROM "member"
@@ -323,6 +331,10 @@ export class MultiTenantProvider implements WorkspaceProvider {
           scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
           expiresAt: Math.floor((tokenData.timestamp + 2 * 60 * 60 * 1000) / 1000),
           tokenType: 'pat',
+          // Builder admin-tool grant rides the per-run worker token (set only
+          // for the system agent on an owner/admin turn). Carried through so the
+          // execute gate lets the builder call its allowlisted internal tools.
+          adminTools: tokenData.adminTools ?? null,
         },
         mcpIsAuthenticated: true,
         organizationId: requestedOrgId,

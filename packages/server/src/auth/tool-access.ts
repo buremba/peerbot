@@ -89,6 +89,14 @@ const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
     'submit_feedback',
     'create_from_version',
   ]),
+  manage_agents: new Set([
+    'list',
+    'get',
+    'create',
+    'update',
+    'delete',
+    'set_system_agent',
+  ]),
   manage_classifiers: new Set([
     'create',
     'create_version',

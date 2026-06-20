@@ -810,6 +810,9 @@ export class WorkerGateway {
         traceId: tokenData.traceId,
         runId: tokenData.runId,
         messageId: tokenData.messageId,
+        // Preserve the builder admin-tool allowlist across refresh — otherwise a
+        // long system-agent turn loses its admin grant when the token rotates.
+        adminTools: tokenData.adminTools,
       }
     );
 

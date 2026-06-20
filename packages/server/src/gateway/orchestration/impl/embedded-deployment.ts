@@ -107,10 +107,11 @@ export function signalWorkerGroup(
 }
 
 /**
- * Detect once whether `systemd-run --user` is available. On Linux production
- * hosts this lets us spawn each worker as a transient systemd unit with
- * cgroup limits + IPAddressDeny + capability drops. macOS dev hosts and
- * Linux hosts without user systemd fall back to plain `child_process.spawn`.
+ * Detect once whether `systemd-run --user` is available. On Linux hosts with
+ * a usable user manager this lets us spawn each worker as a transient scope
+ * with cgroup limits + IPAddressDeny (a `--scope` cannot apply exec-context
+ * hardening — see buildSystemdRunArgs). macOS dev hosts and Linux hosts
+ * without a user systemd fall back to plain `child_process.spawn`.
  */
 let cachedSystemdRun: string | null | undefined;
 function locateSystemdRun(): string | null {
@@ -852,22 +853,21 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
   }
 
   /**
-   * Wrap the worker command in a hardened `systemd-run --user --scope` (cgroup
-   * limits + IPAddressDeny=any + capability drops) when available, spawn it,
-   * and wire stdout/stderr/error/exit handlers + the worker-map entry.
+   * Wrap the worker command in a `systemd-run --user --scope` (cgroup limits +
+   * IPAddressDeny — the only properties a scope honors) when available, spawn
+   * it, and wire stdout/stderr/error/exit handlers + the worker-map entry.
    *
    * Graceful degradation: on a host with no usable systemd user manager the
-   * worker runs unwrapped (self-host / dev) — UNLESS LOBU_CLOUD_MODE is set
-   * without LOBU_ALLOW_UNSANDBOXED_WORKERS=1, where it throws a re-queueable
-   * error rather than silently drop the kernel sandbox (the egress proxy alone
-   * is not a kernel boundary).
+   * worker runs unwrapped (self-host / dev / the prod container, which ships no
+   * systemd-run) — UNLESS LOBU_REQUIRE_WORKER_SANDBOX=1, where it throws a
+   * re-queueable error rather than silently run unwrapped.
    *
    * Self-heal: locateSystemdRun() is a point-in-time probe. If the user bus /
    * manager disappears after boot, the `--scope` wrapper exits ~instantly with
    * a bus/setup error BEFORE the worker runs. We detect that exact signature,
    * demote the process-wide systemd cache, and transparently re-spawn the
-   * worker unwrapped (re-applying the cloud gate) — reusing the still-held
-   * conversation lock so no sibling pod can claim the turn mid-swap.
+   * worker unwrapped (re-applying the sandbox-required gate) — reusing the
+   * still-held conversation lock so no sibling pod can claim the turn mid-swap.
    */
   private spawnWorkerChild(params: {
     deploymentName: string;

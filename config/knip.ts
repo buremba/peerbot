@@ -162,6 +162,7 @@ const config: KnipConfig = {
         "@opentelemetry/sdk-trace-node",
         "@opentelemetry/semantic-conventions",
         "@polyglot-sql/sdk",
+        "@pydantic/genai-prices",
         "@react-email/components",
         "@react-email/render",
         "@scalar/hono-api-reference",

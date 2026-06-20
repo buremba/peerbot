@@ -67,9 +67,9 @@ interface JiraIssue {
 
 interface JiraSearchResponse {
   issues?: JiraIssue[];
-  startAt?: number;
-  maxResults?: number;
-  total?: number;
+  /** Token-based pagination cursor for the /search/jql endpoint (absent on the last page). */
+  nextPageToken?: string;
+  isLast?: boolean;
 }
 
 function asString(value: unknown): string | undefined {
@@ -210,17 +210,20 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
     const jql = ctx.config.jql ?? `updated >= -${lookbackDays}d order by updated DESC`;
 
     const events: EventEnvelope[] = [];
-    let startAt = 0;
+    let nextPageToken: string | undefined;
     let pages = 0;
 
     while (pages < this.MAX_PAGES) {
+      // `/rest/api/3/search` was removed by Atlassian (CHANGE-2046); the
+      // replacement `/search/jql` paginates with an opaque nextPageToken and
+      // returns no total — iterate until the token is absent.
       const params = new URLSearchParams({
         jql,
-        startAt: String(startAt),
         maxResults: String(this.PAGE_SIZE),
         fields: 'summary,description,status,assignee,reporter,created,updated',
       });
-      const data = await http.json<JiraSearchResponse>(`${base}/search?${params.toString()}`, {
+      if (nextPageToken) params.set('nextPageToken', nextPageToken);
+      const data = await http.json<JiraSearchResponse>(`${base}/search/jql?${params.toString()}`, {
         method: 'GET',
         headers: { Accept: 'application/json' },
       });
@@ -232,9 +235,8 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
       }
 
       pages += 1;
-      const total = data.total ?? 0;
-      startAt += issues.length;
-      if (issues.length === 0 || startAt >= total) break;
+      nextPageToken = data.nextPageToken;
+      if (!nextPageToken || issues.length === 0) break;
     }
 
     return {

@@ -16,8 +16,10 @@ type WatcherTerminalResult = { ok: true } | { ok: false; error: string };
  * NOTE: this is a re-dispatch (a fresh session via the existing dispatch loop),
  * not a warm in-session nudge — the agent-worker is platform-agnostic and has
  * no notion of watchers/complete_window, so a worker-side self-nudge would
- * break that isolation. A per-watcher policy (defineWatcher → execution_config)
- * is the planned product-feature follow-up; this is the global default.
+ * break that isolation. This constant is the GLOBAL default; a watcher can
+ * override it via execution_config.finalize_nudges (see
+ * resolveFinalizeNudgeBudget). A declarative defineWatcher surface for it is
+ * the remaining follow-up (the CLI doesn't expose execution_config yet).
  */
 const MAX_FINALIZE_NUDGES: number = (() => {
   const raw = process.env.LOBU_WATCHER_FINALIZE_NUDGES;

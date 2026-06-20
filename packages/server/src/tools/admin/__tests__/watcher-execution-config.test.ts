@@ -14,9 +14,11 @@ describe('stripServerOnlyExecutionConfig', () => {
     expect(out).not.toHaveProperty('finalize_nudges');
   });
 
-  it('returns null for an absent config and an empty object when there are no server-only keys', () => {
+  it('returns null for an absent config or one left empty after stripping', () => {
     expect(stripServerOnlyExecutionConfig(null)).toBeNull();
     expect(stripServerOnlyExecutionConfig(undefined)).toBeNull();
+    // Only server-only keys → empty after strip → null ("use defaults"), not {}.
+    expect(stripServerOnlyExecutionConfig({ finalize_nudges: 2 })).toBeNull();
     expect(stripServerOnlyExecutionConfig({ model: 'claude' })).toEqual({
       model: 'claude',
     });

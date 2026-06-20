@@ -77,7 +77,9 @@ export const SERVER_ONLY_EXECUTION_CONFIG_KEYS = ['finalize_nudges'] as const;
 
 /**
  * Remove SERVER_ONLY_EXECUTION_CONFIG_KEYS from an execution_config before it
- * is handed to a device-worker. Returns null for an empty/absent config.
+ * is handed to a device-worker. Returns null for an absent config, or one that
+ * is left empty after stripping (so a watcher configured with ONLY server-only
+ * keys sends the device `null`, i.e. "use defaults", rather than `{}`).
  */
 export function stripServerOnlyExecutionConfig(
   config: Record<string, unknown> | null | undefined
@@ -88,7 +90,7 @@ export function stripServerOnlyExecutionConfig(
   for (const [key, value] of Object.entries(config)) {
     if (!serverOnly.includes(key)) out[key] = value;
   }
-  return out;
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 // Permission modes that let the spawned agent act unattended without prompting.

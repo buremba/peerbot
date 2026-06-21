@@ -354,6 +354,21 @@ function hasFreshCredential(profiles: AuthProfile[]): boolean {
   );
 }
 
+// ── Resolve the org's builder/system agent ───────────────────────────────────
+// Server-controlled pointer (organization.system_agent_id). The web console
+// mounts the builder chat against this id; null when none is provisioned.
+// Registered before any `/:agentId` route so the literal path wins.
+routes.get('/system-agent', async (c) => {
+  const orgId = c.get('organizationId')!;
+  const sql = getDb();
+  const rows = await sql`
+    SELECT system_agent_id FROM organization WHERE id = ${orgId} LIMIT 1
+  `;
+  return c.json({
+    systemAgentId: (rows[0]?.system_agent_id as string | null) ?? null,
+  });
+});
+
 // ── List agents ──────────────────────────────────────────────────────────────
 
 routes.get('/', async (c) => {

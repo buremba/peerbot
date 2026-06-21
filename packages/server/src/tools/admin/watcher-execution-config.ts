@@ -47,13 +47,51 @@ export const WatcherExecutionConfigSchema = Type.Object(
         description: 'Reasoning effort (claude only: --effort).',
       })
     ),
+    finalize_nudges: Type.Optional(
+      Type.Integer({
+        minimum: 0,
+        // Each nudge is a full re-dispatched agent turn ($), so keep the ceiling
+        // low. SERVER-ONLY (see SERVER_ONLY_EXECUTION_CONFIG_KEYS) — stripped
+        // before the device payload so an older device-worker's strict decode
+        // never sees it.
+        maximum: 5,
+        description:
+          'How many extra times to re-dispatch a server-side watcher run that finished WITHOUT calling complete_window (a soft, non-deterministic finalize miss) before failing it. 0 disables; omitted = global default (LOBU_WATCHER_FINALIZE_NUDGES, default 1).',
+      })
+    ),
   },
   {
     additionalProperties: false,
     description:
-      '[create/update] Per-watcher device-worker CLI execution settings. Omitted fields fall back to dispatcher/CLI defaults; pass null to clear.',
+      '[create/update] Per-watcher execution settings: device-worker CLI flags plus the server-side finalize-nudge budget. Omitted fields fall back to dispatcher/CLI/global defaults; pass null to clear.',
   }
 );
+
+/**
+ * execution_config keys that are SERVER-ONLY and must never reach a
+ * device-worker — its strict payload decode (`additionalProperties: false`)
+ * would reject an unknown field and brick every run of that watcher. Stripped
+ * at the device boundary (worker-api/poll.ts) via stripServerOnlyExecutionConfig.
+ */
+export const SERVER_ONLY_EXECUTION_CONFIG_KEYS = ['finalize_nudges'] as const;
+
+/**
+ * Remove SERVER_ONLY_EXECUTION_CONFIG_KEYS from an execution_config before it
+ * is handed to a device-worker. Returns null for an absent config, or one that
+ * is left empty after stripping (so a watcher configured with ONLY server-only
+ * keys sends the device `null`, i.e. "use defaults", rather than `{}`).
+ */
+export function stripServerOnlyExecutionConfig(
+  config: Record<string, unknown> | null | undefined
+): Record<string, unknown> | null {
+  if (!config) return null;
+  const serverOnly = SERVER_ONLY_EXECUTION_CONFIG_KEYS as readonly string[];
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(config)) {
+    if (!serverOnly.includes(key)) out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
 
 // Permission modes that let the spawned agent act unattended without prompting.
 // Restricted to org owner/admin: a member-write actor can pin a watcher to

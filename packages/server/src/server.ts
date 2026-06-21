@@ -45,6 +45,7 @@ import {
 } from "./embedded-runtime";
 import { externalDbBootstrapHooks } from "./local-bootstrap";
 import { getEnvFromProcess } from "./utils/env";
+import { deriveJwtSecret } from "./utils/jwt";
 import logger from "./utils/logger";
 import { assertSchemaUpToDate } from "./utils/schema-version-check";
 
@@ -93,7 +94,15 @@ async function main(): Promise<void> {
 			);
 		}
 		if (!process.env.JWT_SECRET) {
-			process.env.JWT_SECRET = randomBytes(32).toString("base64");
+			// Derive a STABLE secret from ENCRYPTION_KEY so window_tokens survive a
+			// restart and verify across replicas — a random per-boot secret broke
+			// both (a token signed before a restart or on a sibling replica failed
+			// verification, so watcher complete_window silently failed). Fall back
+			// to random only when ENCRYPTION_KEY is unset (the ephemeral-key opt-in,
+			// which is itself per-boot and non-persistent by design).
+			process.env.JWT_SECRET = process.env.ENCRYPTION_KEY
+				? deriveJwtSecret(process.env.ENCRYPTION_KEY)
+				: randomBytes(32).toString("base64");
 		}
 		if (!process.env.PUBLIC_WEB_URL) {
 			process.env.PUBLIC_WEB_URL = `http://localhost:${port}`;

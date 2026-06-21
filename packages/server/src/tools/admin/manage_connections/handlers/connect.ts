@@ -17,6 +17,7 @@ import logger from '../../../../utils/logger';
 import { ensureConnectorInstalled } from '../../../../utils/ensure-connector-installed';
 import {
   buildOAuthConnectConfig,
+  ensureEnvBackedOAuthAppProfile,
   getConnectBaseUrl,
   resolveConnectionAuthSelection,
   resolveConnectionDisplayName,
@@ -28,6 +29,7 @@ import { getScopedConnectorDefinition } from '../../connector-definition-helpers
 import { buildConnectionsUrl } from '../../../../utils/url-builder';
 import { getOrgUrlContext } from '../../../view-urls';
 import { createConnectToken } from '../../../../utils/connect-tokens';
+import { registerConnectorWebhook } from '../../../../connect/webhook-registration';
 import { resolveUsernames } from '../../../../utils/resolve-usernames';
 import type { ToolContext } from '../../../registry';
 import type { ManageConnectionsResult, ConnectionsArgs } from '../schemas';
@@ -367,6 +369,10 @@ export async function handleConnect(
 
   // If active immediately, return simple result
   if (!needsConnectFlow && !needsBrowserAuth) {
+    // Active now with resolvable credentials (env/PAT path) — if the connector
+    // declares a webhook block and a feed target is configured, subscribe with
+    // the provider once. Best-effort; failures are logged, not fatal.
+    await registerConnectorWebhook({ organizationId, connectionId: connection.id });
     return {
       action: 'connect',
       connection_id: connection.id,
@@ -413,6 +419,18 @@ export async function handleConnect(
       connectorKey: args.connector_key,
       profileKind: 'oauth_app',
       provider: oauthMethod.provider,
+    })) ??
+    // Auto-provision an env-backed app profile from deployment env vars
+    // (GITHUB_CLIENT_ID/GITHUB_CLIENT_SECRET etc.) — the same client GitHub
+    // LOGIN already uses — so connecting a connector whose OAuth app creds are
+    // env-configured needs zero manual secret entry. No-op (null) when those
+    // env vars are absent, falling through to the original guidance below.
+    (await ensureEnvBackedOAuthAppProfile({
+      organizationId,
+      connectorKey: args.connector_key,
+      connectorName: connector.name,
+      method: oauthMethod,
+      createdBy: userId,
     }));
 
   if (!appAuthProfile || appAuthProfile.status !== 'active') {

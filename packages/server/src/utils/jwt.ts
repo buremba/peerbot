@@ -5,8 +5,22 @@
  * the watcher worker. complete_window links those IDs deterministically.
  */
 
-import { timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { Env } from '../index';
+
+/**
+ * Derive a STABLE window-token signing secret from the install's
+ * ENCRYPTION_KEY. Used as the JWT_SECRET default for local installs (server.ts)
+ * so window_tokens survive a gateway restart AND verify across replicas — a
+ * random per-boot secret broke both (a token signed before a restart, or on a
+ * sibling replica, failed verification). ENCRYPTION_KEY is the install's root
+ * secret and is identical across replicas, so the derived value is too.
+ */
+export function deriveJwtSecret(encryptionKey: string): string {
+  return createHmac('sha256', encryptionKey)
+    .update('lobu:jwt-secret:v1')
+    .digest('base64');
+}
 
 interface WindowTokenPayload {
   watcher_id: number;
@@ -75,7 +89,10 @@ async function verifySignature(data: string, signature: string, secret: string):
  * Get JWT secret from environment
  */
 function getJwtSecret(env: Env): string {
-  // Use JWT_SECRET if available, otherwise fall back to a derived secret
+  // JWT_SECRET is set for every embedded/local install by server.ts (derived
+  // from ENCRYPTION_KEY via deriveJwtSecret) and explicitly in prod; legacy
+  // installs may still use INSIGHTS_API_KEY. Throw only if truly absent (a
+  // misconfigured external deployment) — never sign/verify with an empty key.
   const secret = (env as any).JWT_SECRET || (env as any).INSIGHTS_API_KEY;
   if (!secret) {
     throw new Error('JWT_SECRET or INSIGHTS_API_KEY environment variable is required');

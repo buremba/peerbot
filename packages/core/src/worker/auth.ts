@@ -61,6 +61,15 @@ export interface WorkerTokenData {
    * tokens do NOT carry it.
    */
   messageId?: string;
+  /**
+   * Per-turn allowlist of internal admin tool NAMES this token may call.
+   * Set ONLY for the org's builder/system agent (id === organization.
+   * system_agent_id) when the human driving the turn is an org owner/admin
+   * (see `resolveBuilderAdminTools`). Enforced exact-name at the execute gate
+   * (`tools/execute.ts`); absent for every normal agent/turn, so a forged or
+   * normal token grants no admin access.
+   */
+  adminTools?: string[];
 }
 
 export function generateWorkerToken(
@@ -92,6 +101,10 @@ export function generateWorkerToken(
      * WorkerTokenData.messageId.
      */
     messageId?: string;
+    /**
+     * Builder admin-tool allowlist for this turn. See WorkerTokenData.adminTools.
+     */
+    adminTools?: string[];
   }
 ): string {
   if (!options.channelId) {
@@ -115,6 +128,7 @@ export function generateWorkerToken(
     jti: randomUUID(),
     runId: options.runId,
     messageId: options.messageId,
+    adminTools: options.adminTools,
   };
 
   return encrypt(JSON.stringify(payload));
@@ -174,6 +188,18 @@ export function verifyWorkerToken(token: string): WorkerTokenData | null {
         data.runId <= 0
       ) {
         logger.error("Worker token rejected: runId must be a positive integer");
+        return null;
+      }
+    }
+    // `adminTools` is optional but must be a string[] when present — a forged
+    // token with a non-array (or non-string elements) must be rejected, not
+    // coerced, before the execute gate trusts it to allow internal tools.
+    if (data.adminTools !== undefined) {
+      if (
+        !Array.isArray(data.adminTools) ||
+        !data.adminTools.every((t) => typeof t === "string")
+      ) {
+        logger.error("Worker token rejected: adminTools must be a string[]");
         return null;
       }
     }

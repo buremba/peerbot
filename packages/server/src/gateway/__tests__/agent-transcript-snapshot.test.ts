@@ -951,15 +951,17 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
 
     // Pre-fix: `const commonEnvVars = await this.generateEnvironmentVariables`
     // (declared inline as a const) followed by the spawn() in the same
-    // top-level block with no try wrap. Post-fix: `let child: ChildProcess`
-    // declared outside a try, then assigned inside try, then catch that
-    // releases convLock and re-throws.
-    expect(spawnBody).toMatch(/let child: ChildProcess;/);
+    // top-level block with no try wrap. Post-refactor: spawn-prep (env build +
+    // nix decision) runs inside a try; the spawn + handler wiring is delegated
+    // to `spawnWorkerChild`. The lock is released via the idempotent
+    // `releaseLockOnce` closure, defined BEFORE the try so both the catch and
+    // the child handlers share one release.
     expect(spawnBody).toMatch(/let commonEnvVars: Record<string, string>;/);
+    expect(spawnBody).toMatch(/const releaseLockOnce = async/);
 
-    // The catch block must release the lock and re-throw.
+    // The catch block must release the lock (idempotent closure) and re-throw.
     expect(spawnBody).toMatch(
-      /catch \(err\) \{[\s\S]*?convLock\.release\(\);[\s\S]*?throw err;/
+      /catch \(err\) \{[\s\S]*?releaseLockOnce\(\);[\s\S]*?throw err;/
     );
   });
 

@@ -240,8 +240,14 @@ export async function ensureDefaultAgent(
       return { created: false, reason: 'sentinel' };
     }
 
+    // Ignore the auto-provisioned builder/system agent ('lobu-builder', see
+    // builder-provisioning.ts BUILDER_AGENT_ID) — it's provisioned on the same
+    // org-creation paths, so counting it here would wrongly trip the
+    // "org already has agents" guard and skip the default personal agent.
     const existingAgents = (await client`
-      SELECT 1 FROM agents WHERE organization_id = ${organizationId} LIMIT 1
+      SELECT 1 FROM agents
+      WHERE organization_id = ${organizationId} AND id <> 'lobu-builder'
+      LIMIT 1
     `) as unknown as Array<unknown>;
     if (existingAgents.length > 0) {
       // Still write the sentinel so we don't re-check on every boot.
@@ -285,12 +291,12 @@ export async function ensureDefaultAgent(
     await client`
       INSERT INTO agents (
         id, organization_id, name, identity_md,
-        owner_platform, owner_user_id, is_workspace_agent,
+        owner_platform, owner_user_id,
         installed_providers,
         created_at, updated_at
       ) VALUES (
         ${DEFAULT_AGENT_ID}, ${organizationId}, ${DEFAULT_AGENT_NAME}, ${DEFAULT_AGENT_IDENTITY},
-        'external', ${ownerUserId}, false,
+        'external', ${ownerUserId},
         ${client.json(systemProviders)},
         NOW(), NOW()
       )

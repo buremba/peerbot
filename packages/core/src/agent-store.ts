@@ -89,8 +89,6 @@ export interface AgentMetadata {
   name: string;
   description?: string;
   owner: { platform: string; userId: string };
-  isWorkspaceAgent?: boolean;
-  workspaceId?: string;
   /**
    * Owning organization id. Optional in the type for back-compat with
    * in-memory stores that predate per-tenant scoping; populated by the

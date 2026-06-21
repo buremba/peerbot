@@ -35,6 +35,7 @@ import {
   type OrchestratorConfig,
 } from "./base-deployment-manager.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
+import { getDb } from "../../db/client.js";
 
 const logger = createLogger("orchestrator");
 
@@ -54,6 +55,59 @@ const logger = createLogger("orchestrator");
  * the worker then falls back to the deployment-lifetime WORKER_TOKEN and the
  * snapshot route declines to write.
  */
+/**
+ * Internal admin tools the org's builder agent may call from its worker. The
+ * grant rides the per-run worker token (set in `resolveBuilderAdminTools` only
+ * for the system agent on an owner/admin-initiated turn) and is enforced
+ * tool-by-tool at the execute gate. Keep this in lockstep with the gate's
+ * exact-name check in `tools/execute.ts`.
+ */
+export const BUILDER_ADMIN_TOOLS = [
+  "manage_agents",
+  "manage_connections",
+  "manage_feeds",
+  "manage_watchers",
+  "manage_schedules",
+  "manage_entity",
+] as const;
+
+/**
+ * Decide whether THIS turn's worker token should carry the builder admin-tool
+ * grant. Returns the allowlist only when the target agent is the org's system
+ * agent (`organization.system_agent_id`) AND the human sending the message is an
+ * org owner/admin. Fails closed (returns undefined) on any lookup error — a
+ * missing grant just means the model can't see/call the admin tools, never an
+ * over-grant. One indexed query (org PK + member join); runs per turn.
+ */
+export async function resolveBuilderAdminTools(args: {
+  agentId?: string;
+  organizationId?: string;
+  userId?: string;
+}): Promise<string[] | undefined> {
+  if (!args.agentId || !args.organizationId || !args.userId) return undefined;
+  try {
+    const sql = getDb();
+    const rows = (await sql`
+      SELECT o.system_agent_id, m.role
+      FROM organization o
+      LEFT JOIN "member" m
+        ON m."organizationId" = o.id AND m."userId" = ${args.userId}
+      WHERE o.id = ${args.organizationId}
+      LIMIT 1
+    `) as unknown as Array<{ system_agent_id: string | null; role: string | null }>;
+    const row = rows[0];
+    if (!row || row.system_agent_id !== args.agentId) return undefined;
+    if (row.role !== "owner" && row.role !== "admin") return undefined;
+    return [...BUILDER_ADMIN_TOOLS];
+  } catch (err) {
+    logger.warn(
+      { err, organizationId: args.organizationId, agentId: args.agentId },
+      "resolveBuilderAdminTools failed; minting without admin grant"
+    );
+    return undefined;
+  }
+}
+
 export function buildRunJobToken(args: {
   userId: string;
   conversationId: string;
@@ -71,6 +125,12 @@ export function buildRunJobToken(args: {
    * turn (deploymentName:messageId), not merely any live turn on the deployment.
    */
   messageId?: string;
+  /**
+   * Builder admin-tool allowlist for this turn (system agent + owner/admin
+   * initiator only). Carried in the encrypted token and enforced at the
+   * execute gate; undefined for every normal agent/turn.
+   */
+  adminTools?: string[];
 }): string | undefined {
   if (args.runId === undefined) return undefined;
   return generateWorkerToken(
@@ -78,6 +138,7 @@ export function buildRunJobToken(args: {
     args.conversationId,
     args.deploymentName,
     {
+      adminTools: args.adminTools,
       // PRIMARY auth → shared routing claims (channelId, teamId, platform,
       // agentId, organizationId, connectionId, source) are minted via
       // `buildWorkerTokenClaims`, kept in lockstep with the deployment-token
@@ -268,6 +329,14 @@ export class MessageConsumer {
       // A on PR #865. Without a parsed runId (legacy direct-enqueue
       // path) we skip the mint; the snapshot path then declines to write
       // (worker-side runId is undefined and writeSnapshot bails).
+      // Builder admin-tool grant: only the org's system agent, only when the
+      // human driving this turn is an owner/admin. Fails closed.
+      const adminTools = await resolveBuilderAdminTools({
+        agentId: data.agentId,
+        organizationId: data.organizationId,
+        userId: data.userId,
+      });
+
       data.runJobToken = buildRunJobToken({
         userId: data.userId,
         conversationId: effectiveConversationId,
@@ -284,6 +353,7 @@ export class MessageConsumer {
         // marker for THIS turn (deploymentName:messageId) rather than any live
         // turn on the deployment.
         messageId: data.messageId,
+        adminTools,
       });
 
       logger.info(

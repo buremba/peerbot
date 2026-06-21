@@ -121,7 +121,14 @@ function createServerForContext(env: Env, authCtx: SessionAuthContext): Server {
   // tools/list — return our TypeBox JSON Schemas
   // Read auth state dynamically so the list updates after auth upgrades.
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    const includeInternalTools = authCtx.allowInternalTools === true;
+    // System-agent (builder) runs carry a per-turn internal-tool allowlist.
+    // Surface exactly those internal tools (and no other), so the model
+    // discovers only what the execute gate will actually permit — not every
+    // internal tool the direct-auth path would otherwise expose.
+    const adminAllowlist = authCtx.adminTools ?? null;
+    const hasAdminAllowlist = !!adminAllowlist && adminAllowlist.length > 0;
+    const includeInternalTools =
+      authCtx.allowInternalTools === true || hasAdminAllowlist;
     const publicOnly = !!authCtx.organizationId && !authCtx.memberRole;
     const roleAccessLevel = !authCtx.memberRole
       ? 'read'
@@ -146,7 +153,26 @@ function createServerForContext(env: Env, authCtx: SessionAuthContext): Server {
       publicOnly,
       maxAccessLevel,
     });
-    const allTools = staticTools.map((t) => ({
+    // On a system-agent run, drop any internal tool outside the allowlist so the
+    // listing matches the execute gate (no "Tool not found" surprises). The
+    // returned shape omits `internal`, so derive the non-internal set from a
+    // second pass with internal tools excluded; a tool is visible if it's
+    // non-internal OR explicitly allowlisted.
+    let visibleTools = staticTools;
+    if (hasAdminAllowlist) {
+      const allowed = new Set(adminAllowlist);
+      const nonInternal = new Set(
+        getAllTools({
+          includeInternalTools: false,
+          publicOnly,
+          maxAccessLevel,
+        }).map((t) => t.name)
+      );
+      visibleTools = staticTools.filter(
+        (t) => nonInternal.has(t.name) || allowed.has(t.name)
+      );
+    }
+    const allTools = visibleTools.map((t) => ({
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,

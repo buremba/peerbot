@@ -163,6 +163,11 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 				coverage: "reachable",
 				note: "lists connections for the org",
 			},
+			manage_agents: {
+				args: { action: "list" },
+				coverage: "reachable",
+				note: "lists agents for the org",
+			},
 			manage_feeds: {
 				args: { action: "list_feeds" },
 				coverage: "reachable",

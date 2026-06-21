@@ -16,6 +16,7 @@ import { hostname } from 'node:os';
 import { hashPassword } from 'better-auth/crypto';
 import { assertEncryptionKey } from '@lobu/core';
 import { getDb } from '../db/client';
+import { ensureBuilderAgent } from './builder-provisioning';
 import { generateSecureToken } from './oauth/utils';
 import { ensurePersonalOrganization } from './personal-org-provisioning';
 
@@ -118,12 +119,15 @@ export async function ensureInstallOperator(): Promise<{
   // closes the gap where a transient failure on first boot used to
   // leave the operator without a personal org forever.
   try {
-    await ensurePersonalOrganization({
+    const personalOrg = await ensurePersonalOrganization({
       id: userId,
       email: installOperatorEmail(),
       name: 'Local Install',
       username: null,
     });
+    // Builder (system) agent for the operator's personal org. Idempotent
+    // (sentinel-guarded) and best-effort — never break the boot path.
+    await ensureBuilderAgent(personalOrg.organizationId);
   } catch (err) {
     console.error(
       '[install-operator] Personal-org provisioning failed; will retry on next boot:',

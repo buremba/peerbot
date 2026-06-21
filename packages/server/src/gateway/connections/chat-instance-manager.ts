@@ -43,6 +43,7 @@ import {
   handleWebhookIngest,
   prepareWebhookIngestConfig,
 } from "./webhook-ingest.js";
+import { resolveConnectionWebhookConfig } from "../../connect/webhook-registration.js";
 import { SlackConnectionCoordinator } from "./slack-connection-coordinator.js";
 import {
   registerSlackAppHome,
@@ -846,6 +847,22 @@ export class ChatInstanceManager {
     // fail, and a stray error row should not silently drop deliveries.
     const stored = await this.connectionStore.getConnection(connectionId);
     if (!stored || stored.platform !== "webhook" || stored.status === "stopped") {
+      // Two-table bridge: an `agent_connections` miss may still be a CONNECTOR
+      // connection (`connections` table) that registered a provider webhook at
+      // connect time. Resolve that row, build a synthetic webhook config from
+      // its stored scheme + secret, and run the SAME ingest handler — so HMAC
+      // verification, size cap, rate limits, and dedupe all apply unchanged.
+      const bridged = await this.resolveConnectorWebhookConnection(connectionId);
+      if (bridged) {
+        return orgContext.run({ organizationId: bridged.organizationId! }, () =>
+          handleWebhookIngest(
+            bridged,
+            request,
+            this.services.getSecretStore(),
+            peerAddress
+          )
+        );
+      }
       return new Response(JSON.stringify({ error: "Connection not found" }), {
         status: 404,
         headers: { "content-type": "application/json" },
@@ -868,6 +885,62 @@ export class ChatInstanceManager {
         peerAddress
       )
     );
+  }
+
+  /**
+   * Two-table bridge for connector-owned webhooks. The ingest URL
+   * `/api/v1/webhooks/:connectionId` carries a CONNECTOR connection id
+   * (`connections` table) when the connector registered a provider webhook at
+   * connect time — but that table is distinct from `agent_connections` (the
+   * chat/webhook-ingest rows). When the `agent_connections` lookup misses, this
+   * resolves the connector row, validates it actually registered a webhook
+   * (scheme + secret stamped onto its config), and returns a synthetic
+   * `StoredConnection` shaped for `handleWebhookIngest`. The id is preserved so
+   * the landed event's `connector_key = webhook:<connId>` still hits the
+   * existing `events_webhook_ingest_dedupe` partial unique index (no migration).
+   * Returns null when there is no such connection or it never registered a
+   * webhook — the caller then 404s rather than accepting an unsigned delivery.
+   */
+  private async resolveConnectorWebhookConnection(
+    connectionId: string
+  ): Promise<StoredConnection | null> {
+    // Connector connection ids are bigints; a non-numeric id can't match.
+    if (!/^\d+$/.test(connectionId)) return null;
+    const rows = await getDb()`
+      SELECT id, organization_id, config, status
+      FROM connections
+      WHERE id = ${connectionId}
+        AND deleted_at IS NULL
+      LIMIT 1
+    `;
+    const row = rows[0] as
+      | {
+          id: number;
+          organization_id: string;
+          config: Record<string, unknown> | null;
+          status: string;
+        }
+      | undefined;
+    if (!row || !row.organization_id) return null;
+    // A revoked/paused connector connection is deliberately off; refuse like a
+    // stopped webhook connection. Pending/error stay accepting (a delivery may
+    // race activation, and a stray error shouldn't silently drop deliveries).
+    if (row.status === "paused" || row.status === "revoked") return null;
+
+    const webhookConfig = await resolveConnectionWebhookConfig(row.config);
+    if (!webhookConfig) return null;
+
+    return {
+      id: String(row.id),
+      platform: "webhook",
+      organizationId: row.organization_id,
+      config: webhookConfig,
+      settings: {},
+      metadata: {},
+      status: "active",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
   }
 
   async handleWebhook(

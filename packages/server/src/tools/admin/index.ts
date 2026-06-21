@@ -15,6 +15,7 @@ import type { Env } from '../../index';
 import { GetContentSchema, getContent } from '../get_content';
 import { GetWatcherSchema, getWatcher } from '../get_watchers';
 import type { ToolAnnotations, ToolContext, ToolDefinition } from '../registry';
+import { ManageAgentsSchema, manageAgents } from './manage_agents';
 import { ManageAuthProfilesSchema, manageAuthProfiles } from './manage_auth_profiles';
 import { ManageClassifiersSchema, manageClassifiers } from './manage_classifiers';
 import { ManageConnectionsSchema, manageConnections } from './manage_connections';
@@ -67,6 +68,12 @@ const ENTRIES: InternalToolEntry[] = [
     description: 'Connection management. SDK alternative: client.connections.',
     schema: ManageConnectionsSchema,
     handler: manageConnections,
+  },
+  {
+    name: 'manage_agents',
+    description: 'Agent management (incl. the org system agent pointer).',
+    schema: ManageAgentsSchema,
+    handler: manageAgents,
   },
   {
     name: 'manage_feeds',

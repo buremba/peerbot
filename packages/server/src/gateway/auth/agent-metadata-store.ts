@@ -32,8 +32,6 @@ export class AgentMetadataStore {
     userId: string,
     options?: {
       description?: string;
-      isWorkspaceAgent?: boolean;
-      workspaceId?: string;
     }
   ): Promise<AgentMetadata> {
     const metadata: AgentMetadata = {
@@ -41,8 +39,6 @@ export class AgentMetadataStore {
       name,
       description: options?.description,
       owner: { platform, userId },
-      isWorkspaceAgent: options?.isWorkspaceAgent,
-      workspaceId: options?.workspaceId,
       createdAt: Date.now(),
     };
     await this.configStore.saveMetadata(agentId, metadata);

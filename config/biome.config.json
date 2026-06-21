@@ -23,6 +23,7 @@
       "!**/node_modules/**",
       "!**/.astro/**",
       "!**/tmp/**",
+      "!**/og-assets/**",
       "!**/.connector-child-*.mjs",
       "!**/*.css",
       "!**/packages/server/**",

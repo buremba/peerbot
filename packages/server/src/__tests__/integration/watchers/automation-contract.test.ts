@@ -1080,7 +1080,10 @@ describe('watcher automation contract', () => {
       };
     }
 
-    it('fails the run immediately when the reply produced no window (fail-closed guard)', async () => {
+    it('re-dispatches for a finalize nudge when the reply produced no window (first miss)', async () => {
+      // Soft miss: the agent replied but skipped complete_window. Instead of
+      // failing closed on the first miss, the run is re-dispatched (pending)
+      // for one more bounded attempt — finalize_nudge_count records it.
       const messageId = randomUUID();
       const { sql, runId } = await makeRunningWatcherRun(messageId);
 
@@ -1089,7 +1092,64 @@ describe('watcher automation contract', () => {
         data: terminalPayload(messageId, runId),
       } as never);
 
+      const [run] = await sql`
+        SELECT status, error_message, approved_input FROM runs WHERE id = ${runId}
+      `;
+      expect(String(run.status)).toBe('pending');
+      expect(run.error_message).toBeNull();
+      expect(
+        Number(
+          (run.approved_input as { finalize_nudge_count?: unknown })
+            .finalize_nudge_count
+        )
+      ).toBe(1);
+    });
+
+    it('fails the run when the finalize-nudge budget is exhausted (fail-closed guard)', async () => {
+      const messageId = randomUUID();
+      const { sql, runId } = await makeRunningWatcherRun(messageId);
+      // Pre-exhaust the budget so the miss is terminal regardless of the
+      // configured nudge count.
+      await sql`
+        UPDATE runs
+        SET approved_input = jsonb_set(
+          COALESCE(approved_input, '{}'::jsonb),
+          '{finalize_nudge_count}',
+          '999'::jsonb
+        )
+        WHERE id = ${runId}
+      `;
+
+      await makeHeadlessConsumer().handleThreadResponse({
+        id: 'job-headless-1b',
+        data: terminalPayload(messageId, runId),
+      } as never);
+
       const [run] = await sql`SELECT status, error_message FROM runs WHERE id = ${runId}`;
+      expect(String(run.status)).toBe('failed');
+      expect(String(run.error_message)).toContain('complete_window');
+    });
+
+    it('respects a per-watcher finalize_nudges=0 override (fails immediately, no re-dispatch)', async () => {
+      // The per-watcher budget (execution_config.finalize_nudges) overrides the
+      // global default. 0 = no nudge → the first miss fails immediately, the
+      // opposite of the default behavior, proving the override is read.
+      const messageId = randomUUID();
+      const { sql, runId, watcherId } = await makeRunningWatcherRun(messageId);
+      await sql`
+        UPDATE watchers
+        SET execution_config = '{"finalize_nudges": 0}'::jsonb
+        WHERE id = ${watcherId}
+      `;
+
+      await makeHeadlessConsumer().handleThreadResponse({
+        id: 'job-headless-nudge0',
+        data: terminalPayload(messageId, runId),
+      } as never);
+
+      const [run] = await sql`
+        SELECT status, error_message FROM runs WHERE id = ${runId}
+      `;
       expect(String(run.status)).toBe('failed');
       expect(String(run.error_message)).toContain('complete_window');
     });

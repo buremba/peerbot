@@ -44,6 +44,12 @@ export interface AuthContext {
   allowCrossOrg: boolean;
   instructions?: string;
   allowInternalTools?: boolean;
+  /**
+   * Per-turn allowlist of internal admin tool names this request may call even
+   * on the worker (/mcp) path. Carried on the builder/system agent's per-run
+   * worker token (see WorkerTokenData.adminTools); empty/null for everyone else.
+   */
+  adminTools?: string[] | null;
 }
 
 export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
@@ -83,6 +89,10 @@ export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
     allowCrossOrg: tokenType === 'oauth' && !scopedToOrg,
     allowInternalTools:
       !pathname.startsWith('/mcp') || c.req.header('x-lobu-memory-direct-auth') === '1',
+    // Builder admin-tool grant: carried from the verified worker token through
+    // mcpAuthInfo (see multi-tenant worker direct-auth). Lets the system agent
+    // call its allowlisted internal tools even on the /mcp path.
+    adminTools: mcpAuthInfo?.adminTools ?? null,
   };
 }
 
@@ -117,8 +127,21 @@ export function checkToolAccess(toolName: string, args: unknown, authCtx: AuthCo
   if (!tool) {
     throw new ToolNotRegisteredError(toolName);
   }
-  if (tool.internal && !authCtx.allowInternalTools) {
-    throw new Error(`Tool not found: ${toolName}`);
+  if (tool.internal) {
+    const adminAllowlist = authCtx.adminTools;
+    if (adminAllowlist && adminAllowlist.length > 0) {
+      // System-agent (builder) run: the per-turn allowlist is the LIMIT, not an
+      // addition. It OVERRIDES the blanket `allowInternalTools` so the builder
+      // can only reach its designated admin tools (manage_agents, …) — never
+      // every internal tool — even though its worker traverses the direct-auth
+      // path that would otherwise enable all of them. Other callers (no
+      // allowlist) keep the existing `allowInternalTools` behavior unchanged.
+      if (!adminAllowlist.includes(toolName)) {
+        throw new Error(`Tool not found: ${toolName}`);
+      }
+    } else if (!authCtx.allowInternalTools) {
+      throw new Error(`Tool not found: ${toolName}`);
+    }
   }
 
   const isReadOnly = tool.annotations?.readOnlyHint === true;

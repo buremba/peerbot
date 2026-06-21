@@ -938,3 +938,248 @@ describe("ChatInstanceManager webhook wiring", () => {
 		expect((await eventRows(id)).length).toBe(0);
 	});
 });
+
+/**
+ * Two-table bridge: a CONNECTOR webhook (rows in the `connections` table, NOT
+ * `agent_connections`). A connector registers a provider webhook at connect
+ * time and stamps the verification scheme + a `secret://` signing-secret ref
+ * onto its `connections.config`. Deliveries arrive at the SAME public route
+ * (`/api/v1/webhooks/:connectionId`), miss the `agent_connections` lookup, and
+ * are bridged to `handleWebhookIngest` so all the existing protections (HMAC
+ * verify, size cap, rate limit, dedupe, connector_key=webhook:<id> index)
+ * apply unchanged.
+ */
+describe("connector-connection webhook bridge (connections table)", () => {
+	async function buildManager() {
+		const { ChatInstanceManager } = await import(
+			"../connections/chat-instance-manager.js"
+		);
+		const { createPostgresAgentConnectionStore } = await import(
+			"../../lobu/stores/postgres-stores.js"
+		);
+		const { PostgresSecretStore } = await import(
+			"../../lobu/stores/postgres-secret-store.js"
+		);
+		const { SecretStoreRegistry } = await import("../secrets/index.js");
+
+		const connectionStore = createPostgresAgentConnectionStore();
+		const postgresSecretStore = new PostgresSecretStore();
+		const secretStore = new SecretStoreRegistry(postgresSecretStore, {
+			secret: postgresSecretStore,
+		});
+		const manager = new ChatInstanceManager() as any;
+		manager.services = {
+			getPublicGatewayUrl: () => "",
+			getSecretStore: () => secretStore,
+			getConnectionStore: () => connectionStore,
+			getChannelBindingService: () => ({ getBinding: async () => null }),
+			getCommandRegistry: () => undefined,
+		};
+		manager.publicGatewayUrl = "";
+		manager.connectionStore = connectionStore;
+		return { manager, secretStore };
+	}
+
+	/**
+	 * Seed a connector `connections` row that has "registered" a GitHub webhook:
+	 * the signing secret is persisted as a real `secret://` ref (under org
+	 * context, the same way registerConnectorWebhook does), and the scheme +
+	 * ref are stamped onto config under the `webhook_*` keys the bridge reads.
+	 * Returns the generated connection id (a bigint, as a string).
+	 */
+	async function seedRegisteredConnectorConnection(
+		secretStore: any,
+		overrides: { status?: string; secret?: string | null } = {},
+	): Promise<string> {
+		const { getDb } = await import("../../db/client.js");
+		const { orgContext } = await import("../../lobu/stores/org-context.js");
+		const { persistSecretValue } = await import("../secrets/index.js");
+
+		const secretValue =
+			overrides.secret === null ? null : (overrides.secret ?? SIG_SECRET);
+		// Insert first to get the generated id, then persist the secret + stamp.
+		const inserted = (await getDb()`
+			INSERT INTO connections (organization_id, connector_key, slug, status, config)
+			VALUES (${ORG}, ${"github"}, ${`github-${Date.now()}-${Math.random()}`},
+				${overrides.status ?? "active"}, ${getDb().json({})})
+			RETURNING id
+		`) as Array<{ id: number }>;
+		const id = String(inserted[0].id);
+
+		const secretRef = secretValue
+			? await orgContext.run({ organizationId: ORG }, () =>
+					persistSecretValue(
+						secretStore,
+						`webhook/${id}/signature-secret`,
+						secretValue,
+					),
+				)
+			: undefined;
+
+		const config: Record<string, unknown> = {
+			webhook_external_id: "gh-hook-123",
+			webhook_signature_header: "x-hub-signature-256",
+			webhook_algorithm: "sha256",
+			webhook_signature_prefix: "sha256=",
+			webhook_dedupe_header: "x-github-delivery",
+			semanticType: "issue",
+			...(secretRef ? { webhook_signature_secret: secretRef } : {}),
+		};
+		await getDb()`
+			UPDATE connections SET config = ${getDb().json(config)} WHERE id = ${id}
+		`;
+		return id;
+	}
+
+	test("a signed GitHub delivery to a connector connection lands via the bridge", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const { manager, secretStore } = await buildManager();
+		const { createConnectionWebhookRoutes } = await import(
+			"../routes/public/connections.js"
+		);
+		const id = await seedRegisteredConnectorConnection(secretStore);
+		const app = createConnectionWebhookRoutes(manager);
+
+		const raw = JSON.stringify({
+			action: "opened",
+			issue: { number: 7, title: "Bridge works" },
+		});
+		const res = await app.fetch(
+			new Request(`http://gateway.test/api/v1/webhooks/${id}`, {
+				method: "POST",
+				body: raw,
+				headers: {
+					"content-type": "application/json",
+					"x-github-event": "issues",
+					"x-github-delivery": "gh-bridge-1",
+					"x-hub-signature-256": sign(raw, { prefix: "sha256=" }),
+				},
+			}),
+		);
+		expect(res.status).toBe(202);
+
+		const rows = await eventRows(id);
+		expect(rows.length).toBe(1);
+		// connector_key = webhook:<connId> so the existing dedupe index applies.
+		expect(rows[0].connector_key).toBe(`webhook:${id}`);
+		expect(rows[0].origin_id).toBe("gh-bridge-1");
+		expect(rows[0].semantic_type).toBe("issue");
+		expect(rows[0].organization_id).toBe(ORG);
+		expect(rows[0].payload_data).toEqual({
+			action: "opened",
+			issue: { number: 7, title: "Bridge works" },
+		});
+	});
+
+	test("a forged signature to a connector connection is rejected with 401", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const { manager, secretStore } = await buildManager();
+		const { createConnectionWebhookRoutes } = await import(
+			"../routes/public/connections.js"
+		);
+		const id = await seedRegisteredConnectorConnection(secretStore);
+		const app = createConnectionWebhookRoutes(manager);
+
+		const raw = JSON.stringify({ action: "opened", issue: { number: 8 } });
+		const res = await app.fetch(
+			new Request(`http://gateway.test/api/v1/webhooks/${id}`, {
+				method: "POST",
+				body: raw,
+				headers: {
+					"content-type": "application/json",
+					"x-hub-signature-256": "sha256=deadbeef",
+				},
+			}),
+		);
+		expect(res.status).toBe(401);
+		expect((await eventRows(id)).length).toBe(0);
+	});
+
+	test("a redelivery (same delivery id) dedupes to one event", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const { manager, secretStore } = await buildManager();
+		const { createConnectionWebhookRoutes } = await import(
+			"../routes/public/connections.js"
+		);
+		const id = await seedRegisteredConnectorConnection(secretStore);
+		const app = createConnectionWebhookRoutes(manager);
+
+		const raw = JSON.stringify({ action: "edited", issue: { number: 9 } });
+		const headers = {
+			"content-type": "application/json",
+			"x-github-delivery": "gh-dupe-1",
+			"x-hub-signature-256": sign(raw, { prefix: "sha256=" }),
+		};
+		const first = await app.fetch(
+			new Request(`http://gateway.test/api/v1/webhooks/${id}`, {
+				method: "POST",
+				body: raw,
+				headers,
+			}),
+		);
+		const second = await app.fetch(
+			new Request(`http://gateway.test/api/v1/webhooks/${id}`, {
+				method: "POST",
+				body: raw,
+				headers,
+			}),
+		);
+		expect(first.status).toBe(202);
+		expect(second.status).toBe(202);
+		expect((await eventRows(id)).length).toBe(1);
+	});
+
+	test("a connector connection with no registered webhook 404s (no blind accept)", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const { manager } = await buildManager();
+		const { getDb } = await import("../../db/client.js");
+		const { createConnectionWebhookRoutes } = await import(
+			"../routes/public/connections.js"
+		);
+		// A connector connection that NEVER registered a webhook (no webhook_* keys).
+		const inserted = (await getDb()`
+			INSERT INTO connections (organization_id, connector_key, slug, status, config)
+			VALUES (${ORG}, ${"github"}, ${`github-nohook-${Date.now()}`}, ${"active"},
+				${getDb().json({ repo_owner: "acme", repo_name: "api" })})
+			RETURNING id
+		`) as Array<{ id: number }>;
+		const id = String(inserted[0].id);
+		const app = createConnectionWebhookRoutes(manager);
+
+		const res = await app.fetch(
+			new Request(`http://gateway.test/api/v1/webhooks/${id}`, {
+				method: "POST",
+				body: JSON.stringify({ action: "opened" }),
+				headers: { "content-type": "application/json" },
+			}),
+		);
+		expect(res.status).toBe(404);
+		expect((await eventRows(id)).length).toBe(0);
+	});
+
+	test("a paused connector connection refuses deliveries with 404", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const { manager, secretStore } = await buildManager();
+		const { createConnectionWebhookRoutes } = await import(
+			"../routes/public/connections.js"
+		);
+		const id = await seedRegisteredConnectorConnection(secretStore, {
+			status: "paused",
+		});
+		const app = createConnectionWebhookRoutes(manager);
+
+		const raw = JSON.stringify({ action: "opened" });
+		const res = await app.fetch(
+			new Request(`http://gateway.test/api/v1/webhooks/${id}`, {
+				method: "POST",
+				body: raw,
+				headers: {
+					"content-type": "application/json",
+					"x-hub-signature-256": sign(raw, { prefix: "sha256=" }),
+				},
+			}),
+		);
+		expect(res.status).toBe(404);
+		expect((await eventRows(id)).length).toBe(0);
+	});
+});

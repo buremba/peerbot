@@ -33,6 +33,7 @@
 import type { ProviderConfigEntry } from '@lobu/core';
 import { getDb } from '../db/client';
 import type { DbClient } from '../db/client';
+import { collectProviderModelOptions } from '../gateway/auth/provider-model-options';
 import { resolveEnv } from '../gateway/auth/mcp/string-substitution';
 import { getModelProviderModules } from '../gateway/modules/module-system';
 import {
@@ -183,8 +184,30 @@ async function resolveBuilderProviders(): Promise<ResolvedBuilderProviders> {
       if (model) break;
     }
   }
-  // Last resort: Claude has no providers.json default, so pin a current snapshot
-  // when it's the only system key available (e.g. an Anthropic-only deploy).
+  // Module-only providers that aren't in providers.json (e.g. Bedrock) declare
+  // their model only via the live registry. This is reached only when no
+  // config-declared provider resolved a model — i.e. a module-only deployment,
+  // where the registry is populated by definition (those providers came from
+  // it). Best-effort; covers any such provider generically.
+  if (!model && installed.size > 0) {
+    try {
+      const optionsByProvider = await collectProviderModelOptions('', '');
+      for (const { providerId } of installed.values()) {
+        const first = optionsByProvider[providerId]?.[0]?.value?.trim();
+        if (first) {
+          model = first.startsWith(`${providerId}/`)
+            ? first
+            : `${providerId}/${first}`;
+          break;
+        }
+      }
+    } catch {
+      // Registry/model fetch unavailable — fall through to the Claude floor.
+    }
+  }
+  // Registry-independent floor: Claude has no providers.json default, so pin a
+  // current snapshot when it's the only system key available and nothing above
+  // resolved (e.g. an Anthropic-only deploy with an empty registry).
   if (!model && hasClaudeSystemKey()) {
     model = CLAUDE_FALLBACK_MODEL;
   }

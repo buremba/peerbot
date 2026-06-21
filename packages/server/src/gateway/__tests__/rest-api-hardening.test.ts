@@ -1085,6 +1085,15 @@ describe("connection webhook routes: connectionId handling", () => {
     const app = createConnectionWebhookRoutes({
       getConnection: async (id: string) => null, // no connections known
       handleWebhook: async () => new Response("ok"),
+      // The route now delegates a getConnection miss to handleIngestWebhook,
+      // which resolves the connector-webhook bridge and 404s for a truly
+      // unknown id (covered by the real-Postgres bridge tests in
+      // webhook-ingest.test.ts). The double mirrors that 404.
+      handleIngestWebhook: async () =>
+        new Response(JSON.stringify({ error: "Connection not found" }), {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        }),
     } as any);
 
     const response = await app.request("/api/v1/webhooks/nonexistent-conn", {

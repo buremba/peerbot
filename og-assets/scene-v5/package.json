@@ -1,0 +1,11 @@
+{
+  "name": "scene-a",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npx --yes hyperframes@0.6.115 preview",
+    "check": "npx --yes hyperframes@0.6.115 lint && npx --yes hyperframes@0.6.115 validate && npx --yes hyperframes@0.6.115 inspect",
+    "render": "npx --yes hyperframes@0.6.115 render",
+    "publish": "npx --yes hyperframes@0.6.115 publish"
+  }
+}

@@ -20,7 +20,10 @@ import {
 	ensureBuilderAgent,
 } from "../../../auth/builder-provisioning";
 import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
-import { createTestOrganization } from "../../setup/test-fixtures";
+import {
+	createTestOrganization,
+	createTestUser,
+} from "../../setup/test-fixtures";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // packages/server/src/__tests__/integration/auth → repo root (6 levels up).
@@ -170,6 +173,39 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 				else process.env[k] = v;
 			}
 		}
+	});
+
+	it("reconciles a legacy healthy builder: sets pointer + agent_users + sentinel", async () => {
+		// A healthy builder row that a partial/legacy create left without a
+		// pointer, ownership mapping, or sentinel. The backfill must heal all three.
+		const owner = await createTestUser();
+		const org = await createTestOrganization({ name: "builder legacy" });
+		await sql`
+      UPDATE "organization"
+      SET metadata = ${JSON.stringify({ personal_org_for_user_id: owner.id })}
+      WHERE id = ${org.id}
+    `;
+		await sql`
+      INSERT INTO agents (id, organization_id, name, owner_platform, installed_providers, model, created_at, updated_at)
+      VALUES (${BUILDER_AGENT_ID}, ${org.id}, 'Builder', 'external',
+        '[{"providerId":"openai","installedAt":1}]'::jsonb, 'openai/gpt-4o', now(), now())
+    `;
+
+		await ensureBuilderAgent(org.id, sql);
+
+		expect(await readPointer(org.id)).toBe(BUILDER_AGENT_ID);
+		const md = (await sql`
+      SELECT metadata FROM "organization" WHERE id = ${org.id} LIMIT 1
+    `) as unknown as Array<{ metadata: string | null }>;
+		expect(
+			JSON.parse(md[0]?.metadata ?? "{}")[BUILDER_AGENT_SENTINEL],
+		).toBeTruthy();
+		const au = (await sql`
+      SELECT 1 FROM agent_users
+      WHERE organization_id = ${org.id} AND agent_id = ${BUILDER_AGENT_ID}
+        AND user_id = ${owner.id}
+    `) as unknown as Array<unknown>;
+		expect(au.length).toBe(1);
 	});
 
 	it("does NOT recreate a builder an admin deleted (sentinel set, row absent)", async () => {

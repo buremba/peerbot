@@ -309,73 +309,74 @@ export async function ensureBuilderAgent(
         existing.installed_providers.length === 0;
       const modelEmpty = !existing.model || String(existing.model).trim() === '';
 
-      // Healthy — fast path: skip the provider-config resolution, but still
-      // ensure the org pointer is set. A builder row can exist with a NULL
-      // organization.system_agent_id if a prior run crashed between the INSERT
-      // and the pointer write; this idempotent (no-op when already set) UPDATE
-      // heals that on the next console load.
-      if (!providersEmpty && !modelEmpty) {
-        await client`
-          UPDATE "organization"
-          SET system_agent_id = ${BUILDER_AGENT_ID}
-          WHERE id = ${organizationId}
-            AND system_agent_id IS NULL
-        `;
-        return { created: false };
-      }
-
-      // Heal: fill the empty fields while keeping providers + model CONSISTENT —
-      // the pinned model's provider must always be among installed_providers, so
-      // we never leave a dangling ref (e.g. model=openai/... with providers=[claude]).
-      const resolved = await resolveBuilderProviders();
-      const existingProviders: InstalledProvider[] = Array.isArray(
-        existing.installed_providers
-      )
-        ? existing.installed_providers
-        : [];
-      // Keep an existing model if present, otherwise take the resolved pick.
-      const newModel = modelEmpty ? resolved.model : existing.model;
-      // Providers = existing ∪ resolved, plus the (new) model's own provider.
-      const providerMap = new Map<string, InstalledProvider>();
-      for (const p of existingProviders) providerMap.set(p.providerId, p);
-      for (const p of resolved.providers) {
-        if (!providerMap.has(p.providerId)) providerMap.set(p.providerId, p);
-      }
-      if (newModel) {
-        const slash = newModel.indexOf('/');
-        const modelProviderId = slash > 0 ? newModel.slice(0, slash) : '';
-        if (modelProviderId && !providerMap.has(modelProviderId)) {
-          providerMap.set(modelProviderId, {
-            providerId: modelProviderId,
-            installedAt: Date.now(),
-          });
+      // Heal providers/model only when broken, keeping providers + model
+      // CONSISTENT — the pinned model's provider must always be installed, so we
+      // never leave a dangling ref (e.g. model=openai/... with providers=[claude]).
+      // The healthy path skips this provider-config read entirely.
+      if (providersEmpty || modelEmpty) {
+        const resolved = await resolveBuilderProviders();
+        const existingProviders: InstalledProvider[] = Array.isArray(
+          existing.installed_providers
+        )
+          ? existing.installed_providers
+          : [];
+        // Keep an existing model if present, otherwise take the resolved pick.
+        const newModel = modelEmpty ? resolved.model : existing.model;
+        // Providers = existing ∪ resolved, plus the (new) model's own provider.
+        const providerMap = new Map<string, InstalledProvider>();
+        for (const p of existingProviders) providerMap.set(p.providerId, p);
+        for (const p of resolved.providers) {
+          if (!providerMap.has(p.providerId)) providerMap.set(p.providerId, p);
+        }
+        if (newModel) {
+          const slash = newModel.indexOf('/');
+          const modelProviderId = slash > 0 ? newModel.slice(0, slash) : '';
+          if (modelProviderId && !providerMap.has(modelProviderId)) {
+            providerMap.set(modelProviderId, {
+              providerId: modelProviderId,
+              installedAt: Date.now(),
+            });
+          }
+        }
+        const mergedProviders = [...providerMap.values()];
+        // Union only ever grows, so a length change means we added a provider.
+        const writeProviders =
+          mergedProviders.length !== existingProviders.length;
+        const writeModel = modelEmpty && !!newModel;
+        if (writeProviders || writeModel) {
+          await client`
+            UPDATE agents SET
+              installed_providers = CASE WHEN ${writeProviders}
+                THEN ${client.json(mergedProviders)} ELSE installed_providers END,
+              model = CASE WHEN ${writeModel}
+                THEN ${newModel} ELSE model END,
+              updated_at = now()
+            WHERE organization_id = ${organizationId} AND id = ${BUILDER_AGENT_ID}
+          `;
+          logger.info(
+            { organizationId, writeProviders, writeModel, model: newModel },
+            '[builder-provisioning] Repaired builder providers/model'
+          );
         }
       }
-      const mergedProviders = [...providerMap.values()];
-      // `mergedProviders` only ever grows (union), so a length change means we
-      // added at least one provider.
-      const writeProviders = mergedProviders.length !== existingProviders.length;
-      const writeModel = modelEmpty && !!newModel;
-      if (writeProviders || writeModel) {
-        await client`
-          UPDATE agents SET
-            installed_providers = CASE WHEN ${writeProviders}
-              THEN ${client.json(mergedProviders)} ELSE installed_providers END,
-            model = CASE WHEN ${writeModel}
-              THEN ${newModel} ELSE model END,
-            updated_at = now()
-          WHERE organization_id = ${organizationId} AND id = ${BUILDER_AGENT_ID}
-        `;
-        logger.info(
-          { organizationId, writeProviders, writeModel, model: newModel },
-          '[builder-provisioning] Repaired builder providers/model'
+
+      // Reconcile ownership + pointer + sentinel on every call — cheap idempotent
+      // writes that heal a builder whose create crashed between the INSERT and
+      // the follow-up writes (NULL system_agent_id, missing agent_users row, or
+      // missing deletion sentinel). Metadata is read once.
+      const md = await readOrgMetadata(client, organizationId);
+      const ownerRaw = md['personal_org_for_user_id'];
+      const ownerUserId =
+        typeof ownerRaw === 'string' && ownerRaw.length > 0 ? ownerRaw : null;
+      await linkOwnerAndPointer(client, organizationId, ownerUserId);
+      if (!md[BUILDER_AGENT_SENTINEL]) {
+        await writeOrgSentinel(
+          client,
+          organizationId,
+          BUILDER_AGENT_SENTINEL,
+          new Date().toISOString()
         );
       }
-      await linkOwnerAndPointer(
-        client,
-        organizationId,
-        await resolveOwnerUserId(client, organizationId)
-      );
       return { created: false };
     }
 

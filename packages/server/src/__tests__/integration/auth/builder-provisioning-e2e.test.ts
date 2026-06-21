@@ -108,6 +108,26 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 		expect(b?.model).toBe("openai/gpt-4o");
 	});
 
+	it("keeps providers + pinned model consistent when repairing a model-only gap", async () => {
+		// Legacy builder: a provider installed but no model. The repair must not
+		// pin a model whose provider isn't installed (no dangling ref).
+		const org = await createTestOrganization({ name: "builder model-gap" });
+		await sql`
+      INSERT INTO agents (id, organization_id, name, owner_platform, installed_providers, model, created_at, updated_at)
+      VALUES (${BUILDER_AGENT_ID}, ${org.id}, 'Builder', 'external',
+        '[{"providerId":"claude","installedAt":1}]'::jsonb, NULL, now(), now())
+    `;
+
+		const res = await ensureBuilderAgent(org.id, sql);
+
+		expect(res.created).toBe(false);
+		const b = await readBuilder(org.id);
+		expect(b?.model).toBeTruthy();
+		// Invariant: the pinned model's provider is always installed.
+		const pid = b?.model?.slice(0, b.model.indexOf("/")) ?? "";
+		expect(b?.installed_providers?.some((p) => p.providerId === pid)).toBe(true);
+	});
+
 	it("provisions a usable builder when ONLY an Anthropic system key is present (not in providers.json)", async () => {
 		// Anthropic/Claude is the canonical platform key but isn't in
 		// providers.json, so this exercises the env-var fallback with an empty

@@ -324,22 +324,50 @@ export async function ensureBuilderAgent(
         return { created: false };
       }
 
-      // Heal: fill only the empty fields, and only with something non-empty.
+      // Heal: fill the empty fields while keeping providers + model CONSISTENT —
+      // the pinned model's provider must always be among installed_providers, so
+      // we never leave a dangling ref (e.g. model=openai/... with providers=[claude]).
       const resolved = await resolveBuilderProviders();
-      const needProviders = providersEmpty && resolved.providers.length > 0;
-      const needModel = modelEmpty && !!resolved.model;
-      if (needProviders || needModel) {
+      const existingProviders: InstalledProvider[] = Array.isArray(
+        existing.installed_providers
+      )
+        ? existing.installed_providers
+        : [];
+      // Keep an existing model if present, otherwise take the resolved pick.
+      const newModel = modelEmpty ? resolved.model : existing.model;
+      // Providers = existing ∪ resolved, plus the (new) model's own provider.
+      const providerMap = new Map<string, InstalledProvider>();
+      for (const p of existingProviders) providerMap.set(p.providerId, p);
+      for (const p of resolved.providers) {
+        if (!providerMap.has(p.providerId)) providerMap.set(p.providerId, p);
+      }
+      if (newModel) {
+        const slash = newModel.indexOf('/');
+        const modelProviderId = slash > 0 ? newModel.slice(0, slash) : '';
+        if (modelProviderId && !providerMap.has(modelProviderId)) {
+          providerMap.set(modelProviderId, {
+            providerId: modelProviderId,
+            installedAt: Date.now(),
+          });
+        }
+      }
+      const mergedProviders = [...providerMap.values()];
+      // `mergedProviders` only ever grows (union), so a length change means we
+      // added at least one provider.
+      const writeProviders = mergedProviders.length !== existingProviders.length;
+      const writeModel = modelEmpty && !!newModel;
+      if (writeProviders || writeModel) {
         await client`
           UPDATE agents SET
-            installed_providers = CASE WHEN ${needProviders}
-              THEN ${client.json(resolved.providers)} ELSE installed_providers END,
-            model = CASE WHEN ${needModel}
-              THEN ${resolved.model} ELSE model END,
+            installed_providers = CASE WHEN ${writeProviders}
+              THEN ${client.json(mergedProviders)} ELSE installed_providers END,
+            model = CASE WHEN ${writeModel}
+              THEN ${newModel} ELSE model END,
             updated_at = now()
           WHERE organization_id = ${organizationId} AND id = ${BUILDER_AGENT_ID}
         `;
         logger.info(
-          { organizationId, needProviders, needModel, model: resolved.model },
+          { organizationId, writeProviders, writeModel, model: newModel },
           '[builder-provisioning] Repaired builder providers/model'
         );
       }

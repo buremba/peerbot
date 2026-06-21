@@ -33,6 +33,7 @@ import {
 import { type ConnectTokenRow, resolveConnectToken } from '../utils/connect-tokens';
 import logger from '../utils/logger';
 import { syncOAuthConnectionsForAuthProfile } from '../utils/oauth-connection-state';
+import { resolveOAuthAppClientCredentials } from '../tools/admin/helpers/connection-helpers';
 import { registerConnectorWebhook } from './webhook-registration';
 import { mergeOAuthScopeAuthData, normalizeScopeList } from '../auth/oauth/scopes';
 import { createSyncRun } from '../runs/queue-service';
@@ -952,9 +953,14 @@ async function fetchAppAuthProfileId(
 }
 
 /**
- * Resolve OAuth client ID/secret from:
+ * Resolve OAuth client ID/secret from, in order:
  * 1. Selected OAuth app auth profile
  * 2. Primary org-level OAuth app auth profile for the connector/provider
+ * 3. Deployment env vars (`${PROVIDER}_CLIENT_ID/_SECRET`) — the SAME fallback
+ *    global login uses (`auth/config.ts resolveLoginProviderCredentials`), so an
+ *    org can connect a connector whose app creds are env-configured with no
+ *    hand-created `oauth_app` profile. APP-level only; the per-user account
+ *    token (oauth_account) is resolved/required separately by the caller.
  */
 async function resolveOAuthClientCredentials(
   provider: string,
@@ -964,10 +970,6 @@ async function resolveOAuthClientCredentials(
   clientIdKey?: string,
   clientSecretKey?: string
 ): Promise<{ clientId: string | null; clientSecret: string | null }> {
-  const providerUpper = provider.toUpperCase();
-  const resolvedClientIdKey = clientIdKey || `${providerUpper}_CLIENT_ID`;
-  const resolvedClientSecretKey = clientSecretKey || `${providerUpper}_CLIENT_SECRET`;
-
   const appProfile =
     (appAuthProfileId ? await getAuthProfileById(organizationId, appAuthProfileId) : null) ??
     (await getPrimaryAuthProfileForKind({
@@ -977,11 +979,12 @@ async function resolveOAuthClientCredentials(
       provider,
     }));
 
-  const authValues = normalizeAuthValues(appProfile?.auth_data ?? {});
-  const clientId = authValues[resolvedClientIdKey] ?? null;
-  const clientSecret = authValues[resolvedClientSecretKey] ?? null;
-
-  return { clientId, clientSecret };
+  return resolveOAuthAppClientCredentials({
+    appProfileAuthData: appProfile?.auth_data,
+    provider,
+    clientIdKey,
+    clientSecretKey,
+  });
 }
 
 export { connectRoutes };

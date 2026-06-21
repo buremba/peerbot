@@ -141,6 +141,44 @@ export function getOAuthCredentialKeys(method: OAuthAuthMethod): {
 }
 
 /**
+ * Resolve the OAuth **app** (client) credentials for a connector, mirroring the
+ * exact fallback GLOBAL LOGIN uses (`auth/config.ts`
+ * `resolveLoginProviderCredentials`): an explicit `oauth_app` auth profile's
+ * `auth_data` wins, otherwise fall back to `process.env[clientIdKey]` /
+ * `process.env[clientSecretKey]` (keys default to `${PROVIDER}_CLIENT_ID/_SECRET`
+ * via {@link getOAuthCredentialKeys}).
+ *
+ * This is the single source of truth for "does this connector have OAuth APP
+ * credentials" across the connect-create gate (manage_connections) and the
+ * `/connect/:token/oauth/start` redirect (connect/routes.ts) — neither has to
+ * re-derive keys or duplicate the env fallback. It resolves ONLY the
+ * application-level client id/secret; the per-user ACCOUNT token (oauth_account
+ * profile, obtained via the real Authorize redirect) is unaffected and still
+ * required by callers.
+ */
+export function resolveOAuthAppClientCredentials(params: {
+  appProfileAuthData: unknown;
+  provider: string;
+  clientIdKey?: string;
+  clientSecretKey?: string;
+}): { clientId: string | null; clientSecret: string | null } {
+  const providerUpper = params.provider.toUpperCase();
+  const clientIdKey =
+    typeof params.clientIdKey === 'string' && params.clientIdKey.trim().length > 0
+      ? params.clientIdKey
+      : `${providerUpper}_CLIENT_ID`;
+  const clientSecretKey =
+    typeof params.clientSecretKey === 'string' && params.clientSecretKey.trim().length > 0
+      ? params.clientSecretKey
+      : `${providerUpper}_CLIENT_SECRET`;
+
+  const authValues = normalizeAuthValues(params.appProfileAuthData ?? {});
+  const clientId = authValues[clientIdKey] || process.env[clientIdKey] || null;
+  const clientSecret = authValues[clientSecretKey] || process.env[clientSecretKey] || null;
+  return { clientId, clientSecret };
+}
+
+/**
  * Auto-provision an env-backed `oauth_app` profile from deployment env vars,
  * mirroring how GLOBAL LOGIN resolves its client (auth/config.ts
  * `resolveLoginProviderCredentials`: `process.env[clientIdKey]` fallback). The

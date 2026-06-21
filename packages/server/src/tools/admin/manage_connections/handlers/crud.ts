@@ -32,6 +32,7 @@ import { resolveUsernames } from '../../../../utils/resolve-usernames';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../../../../utils/run-statuses';
 import {
   buildViewUrl,
+  ensureEnvBackedOAuthAppProfile,
   enrichWithAuthProfiles,
   getInteractiveMethods,
   mapConnectionStatusToFeedStatus,
@@ -534,6 +535,21 @@ export async function handleCreate(
   }
 
   if (authSelection?.selectedKind === 'oauth_account') {
+    // The ACCOUNT token (oauth_account profile) is required and already
+    // resolved (it's the precondition of this branch). The APP credentials
+    // (client id/secret) may instead come from deployment env vars — the same
+    // fallback global login uses — so auto-provision an env-backed `oauth_app`
+    // profile when none was hand-created. No-op when the env vars are absent,
+    // falling through to the original "create an OAuth app profile" guidance.
+    if (!authSelection.appAuthProfile && authSelection.oauthMethod) {
+      authSelection.appAuthProfile = await ensureEnvBackedOAuthAppProfile({
+        organizationId,
+        connectorKey: args.connector_key,
+        connectorName: connector.name,
+        method: authSelection.oauthMethod,
+        createdBy: effectiveCreatedBy,
+      });
+    }
     if (!authSelection.appAuthProfile) {
       return {
         error: callerIsAdmin

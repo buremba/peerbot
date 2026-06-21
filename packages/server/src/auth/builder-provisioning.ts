@@ -309,8 +309,18 @@ export async function ensureBuilderAgent(
         existing.installed_providers.length === 0;
       const modelEmpty = !existing.model || String(existing.model).trim() === '';
 
-      // Healthy — fast path (one SELECT), no provider-config read.
+      // Healthy — fast path: skip the provider-config resolution, but still
+      // ensure the org pointer is set. A builder row can exist with a NULL
+      // organization.system_agent_id if a prior run crashed between the INSERT
+      // and the pointer write; this idempotent (no-op when already set) UPDATE
+      // heals that on the next console load.
       if (!providersEmpty && !modelEmpty) {
+        await client`
+          UPDATE "organization"
+          SET system_agent_id = ${BUILDER_AGENT_ID}
+          WHERE id = ${organizationId}
+            AND system_agent_id IS NULL
+        `;
         return { created: false };
       }
 

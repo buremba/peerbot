@@ -168,6 +168,18 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 		expect(await readPointer(org.id)).toBeNull();
 	});
 
+	it("heals a healthy builder whose org pointer is NULL (crash between insert and pointer write)", async () => {
+		const org = await createTestOrganization({ name: "builder pointerless" });
+		await ensureBuilderAgent(org.id, sql); // healthy builder + pointer
+		// Simulate a crash that left the row but never wrote the pointer.
+		await sql`UPDATE "organization" SET system_agent_id = NULL WHERE id = ${org.id}`;
+		expect(await readPointer(org.id)).toBeNull();
+
+		await ensureBuilderAgent(org.id, sql); // fast path must re-set the pointer
+
+		expect(await readPointer(org.id)).toBe(BUILDER_AGENT_ID);
+	});
+
 	it("does not clobber a working builder, and never overwrites the model/providers (idempotent fast path)", async () => {
 		const org = await createTestOrganization({ name: "builder idempotent" });
 		await ensureBuilderAgent(org.id, sql);

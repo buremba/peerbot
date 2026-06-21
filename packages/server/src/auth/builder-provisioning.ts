@@ -5,9 +5,9 @@
  * that manages agents, connections, watchers, and workflows on the user's
  * behalf. `organization.system_agent_id` points at it.
  *
- * Mirrors `default-provisioning.ts` exactly:
- *   - installs system-key model providers up front (so the agent can chat the
- *     moment it's created, instead of "No model configured"),
+ *   - installs system-key model providers + pins a default model up front (so
+ *     the agent can chat the moment it's created, instead of "No model
+ *     configured"),
  *   - attributes ownership to the personal-org owner via the
  *     `personal_org_for_user_id` org-metadata marker,
  *   - writes a sentinel into `organization.metadata` so a deleted builder agent
@@ -15,16 +15,30 @@
  *   - is best-effort / non-throwing: a failure here must never break the boot
  *     or signup path that called us.
  *
+ * Reliability: provider/model resolution reads `config/providers.json`
+ * directly (via `ProviderRegistryService`) rather than depending on the live
+ * `moduleRegistry` being populated. The registry is only fully wired during
+ * gateway boot, so a provisioning call that ran against an empty registry used
+ * to silently create a builder with `installed_providers = []` and no model —
+ * and the sentinel then made that broken state permanent. Reading the config
+ * file is deterministic regardless of where/when provisioning runs, and the
+ * repair path below heals any builder that was created in the broken state.
+ *
  * The agents PK is composite `(organization_id, id)`, so the same
  * `BUILDER_AGENT_ID` string per org is fine. The `system_agent_id` pointer is
  * only set when currently NULL — we never clobber an admin's explicit choice
  * (set via `manage_agents.set_system_agent`).
  */
 
+import type { ProviderConfigEntry } from '@lobu/core';
 import { getDb } from '../db/client';
 import type { DbClient } from '../db/client';
+import { resolveEnv } from '../gateway/auth/mcp/string-substitution';
 import { getModelProviderModules } from '../gateway/modules/module-system';
-import { collectProviderModelOptions } from '../gateway/auth/provider-model-options';
+import {
+  ProviderRegistryService,
+  resolveProviderRegistryPath,
+} from '../gateway/services/provider-registry-service';
 import logger from '../utils/logger';
 import { hasOrgSentinel } from './default-provisioning';
 
@@ -40,6 +54,101 @@ const BUILDER_AGENT_IDENTITY =
   'Be concrete and action-oriented; prefer making the change over describing it. ' +
   "If you don't yet have access to something the user wants to manage, say so " +
   'clearly and suggest what they could connect or grant next.';
+
+/**
+ * Capability/reliability preference for the builder's *pinned* model. We pin
+ * the first provider here that (a) has a system key in this environment and
+ * (b) declares a `defaultModel` in providers.json. Providers not listed are
+ * still installed; they just aren't preferred for the initial pin.
+ */
+const BUILDER_MODEL_PROVIDER_PREFERENCE = [
+  'anthropic',
+  'openai',
+  'gemini',
+  'z-ai',
+  'groq',
+  'mistral',
+  'deepseek',
+];
+
+interface InstalledProvider {
+  providerId: string;
+  installedAt: number;
+}
+
+interface ResolvedBuilderProviders {
+  providers: InstalledProvider[];
+  model: string | null;
+}
+
+/**
+ * Resolve the system-key providers + a default model to install on the builder.
+ *
+ * Primary source is `config/providers.json` (read directly — independent of the
+ * runtime module registry), so this returns the same result regardless of
+ * whether the gateway's `moduleRegistry` has been initialized in this process.
+ * We additionally union in any system-key providers the live registry knows
+ * about (e.g. anthropic / OAuth backends that aren't in providers.json) when it
+ * happens to be available — purely additive, never required.
+ */
+async function resolveBuilderProviders(): Promise<ResolvedBuilderProviders> {
+  const now = Date.now();
+  const installed = new Map<string, InstalledProvider>();
+
+  // (1) Deterministic floor: providers declared in config/providers.json whose
+  // env var is present in this process.
+  let configs: Record<string, ProviderConfigEntry> = {};
+  try {
+    const registry = new ProviderRegistryService(resolveProviderRegistryPath());
+    configs = await registry.getProviderConfigs();
+  } catch (err) {
+    logger.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      '[builder-provisioning] providers.json read failed; relying on module registry'
+    );
+  }
+  for (const [providerId, cfg] of Object.entries(configs)) {
+    if (cfg.envVarName && resolveEnv(cfg.envVarName)) {
+      installed.set(providerId, { providerId, installedAt: now });
+    }
+  }
+
+  // (2) Best-effort union with the live module registry (additive).
+  try {
+    for (const m of getModelProviderModules()) {
+      if (m.hasSystemKey() && !installed.has(m.providerId)) {
+        installed.set(m.providerId, { providerId: m.providerId, installedAt: now });
+      }
+    }
+  } catch {
+    // Registry not available — the providers.json floor already applies.
+  }
+
+  // Pin a model deterministically from providers.json `defaultModel`, preferring
+  // the capability order above, then any other env-matched provider that
+  // declares a default.
+  const pickModel = (providerId: string): string | null => {
+    const cfg = configs[providerId];
+    const dm = cfg?.defaultModel?.trim();
+    if (cfg?.envVarName && resolveEnv(cfg.envVarName) && dm) {
+      return dm.includes('/') ? dm : `${providerId}/${dm}`;
+    }
+    return null;
+  };
+  let model: string | null = null;
+  for (const providerId of BUILDER_MODEL_PROVIDER_PREFERENCE) {
+    model = pickModel(providerId);
+    if (model) break;
+  }
+  if (!model) {
+    for (const providerId of Object.keys(configs)) {
+      model = pickModel(providerId);
+      if (model) break;
+    }
+  }
+
+  return { providers: [...installed.values()], model };
+}
 
 /**
  * Read the JSON-decoded `organization.metadata` for the given org. Returns an
@@ -85,21 +194,56 @@ async function writeOrgSentinel(
   `;
 }
 
+/** Resolve the org's canonical owner from the personal-org metadata marker. */
+async function resolveOwnerUserId(
+  sql: DbClient,
+  organizationId: string
+): Promise<string | null> {
+  const md = await readOrgMetadata(sql, organizationId);
+  const raw = md['personal_org_for_user_id'];
+  return typeof raw === 'string' && raw.length > 0 ? raw : null;
+}
+
+/**
+ * Idempotently mirror ownership into agent_users and point the org at the
+ * builder. The pointer is only written when currently NULL so an admin's
+ * explicit `set_system_agent` choice is never clobbered.
+ */
+async function linkOwnerAndPointer(
+  sql: DbClient,
+  organizationId: string,
+  ownerUserId: string | null
+): Promise<void> {
+  if (ownerUserId) {
+    await sql`
+      INSERT INTO agent_users (organization_id, agent_id, platform, user_id, created_at)
+      VALUES (${organizationId}, ${BUILDER_AGENT_ID}, 'external', ${ownerUserId}, now())
+      ON CONFLICT (organization_id, agent_id, platform, user_id) DO NOTHING
+    `;
+  }
+  await sql`
+    UPDATE "organization"
+    SET system_agent_id = ${BUILDER_AGENT_ID}
+    WHERE id = ${organizationId}
+      AND system_agent_id IS NULL
+  `;
+}
+
 /**
  * Provision the org's builder agent and point `organization.system_agent_id`
- * at it, exactly once.
+ * at it — creating it if missing, or healing it if a prior run left it with no
+ * providers / no model.
  *
- * Guards on the create path:
- *   1. Sentinel in `organization.metadata` (deletion stickiness — a deleted
- *      builder agent is NOT auto-recreated).
- *   2. ON CONFLICT (organization_id, id) DO NOTHING on the agents PK (guards a
- *      parallel boot / concurrent signup).
+ * Behaviour:
+ *   - Builder row present + has providers and a model → no-op (fast path).
+ *   - Builder row present but missing providers/model → repair (fill the empty
+ *     fields; never removes a working config).
+ *   - Builder row absent + sentinel set → respect deletion (do NOT recreate).
+ *   - Builder row absent + no sentinel → create.
  *
- * The `system_agent_id` pointer is only written when it's currently NULL, so an
- * admin who later repoints it via `manage_agents.set_system_agent` is never
- * clobbered on a subsequent boot.
- *
- * Best-effort: a thrown error is logged and swallowed.
+ * Idempotent and safe under concurrent replicas (ON CONFLICT / NULL-guarded
+ * pointer / conditional repair). Best-effort: a thrown error is logged and
+ * swallowed.
  */
 export async function ensureBuilderAgent(
   organizationId: string,
@@ -107,6 +251,56 @@ export async function ensureBuilderAgent(
 ): Promise<{ created: boolean }> {
   const client = sql ?? getDb();
   try {
+    const rows = (await client`
+      SELECT installed_providers, model FROM agents
+      WHERE organization_id = ${organizationId} AND id = ${BUILDER_AGENT_ID}
+      LIMIT 1
+    `) as unknown as Array<{
+      installed_providers: InstalledProvider[] | null;
+      model: string | null;
+    }>;
+    const existing = rows[0];
+
+    if (existing) {
+      const providersEmpty =
+        !Array.isArray(existing.installed_providers) ||
+        existing.installed_providers.length === 0;
+      const modelEmpty = !existing.model || String(existing.model).trim() === '';
+
+      // Healthy — fast path (one SELECT), no provider-config read.
+      if (!providersEmpty && !modelEmpty) {
+        return { created: false };
+      }
+
+      // Heal: fill only the empty fields, and only with something non-empty.
+      const resolved = await resolveBuilderProviders();
+      const needProviders = providersEmpty && resolved.providers.length > 0;
+      const needModel = modelEmpty && !!resolved.model;
+      if (needProviders || needModel) {
+        await client`
+          UPDATE agents SET
+            installed_providers = CASE WHEN ${needProviders}
+              THEN ${client.json(resolved.providers)} ELSE installed_providers END,
+            model = CASE WHEN ${needModel}
+              THEN ${resolved.model} ELSE model END,
+            updated_at = now()
+          WHERE organization_id = ${organizationId} AND id = ${BUILDER_AGENT_ID}
+        `;
+        logger.info(
+          { organizationId, needProviders, needModel, model: resolved.model },
+          '[builder-provisioning] Repaired builder providers/model'
+        );
+      }
+      await linkOwnerAndPointer(
+        client,
+        organizationId,
+        await resolveOwnerUserId(client, organizationId)
+      );
+      return { created: false };
+    }
+
+    // Builder row absent. Respect deletion stickiness: a set sentinel means an
+    // admin deleted the builder — do not recreate it.
     const provisioned = await hasOrgSentinel(
       organizationId,
       BUILDER_AGENT_SENTINEL,
@@ -116,51 +310,8 @@ export async function ensureBuilderAgent(
       return { created: false };
     }
 
-    // Resolve the set of model providers that have a system-level credential
-    // available at this boot and install them onto the builder agent up front.
-    // Without this, the row exists but `installed_providers = '[]'` and chatting
-    // with the builder agent would immediately hit "No model configured" — even
-    // though the env keys are sitting right there in the same process.
-    const systemProviders = getModelProviderModules()
-      .filter((m) => m.hasSystemKey())
-      .map((m) => ({
-        providerId: m.providerId,
-        installedAt: Date.now(),
-      }));
-
-    // Pin an explicit model so the builder can chat the moment it's created.
-    // Auto-mode no longer silently picks a provider default (an explicit model
-    // is required), so without this the first turn hits "No model selected".
-    // Pick the first installed system provider that exposes a model list and
-    // pin its first option as `provider/model` (the format resolveEffectiveModelRef
-    // expects). Best-effort: if nothing resolves, leave the model unset — the
-    // owner then picks one in the agent's Providers settings, same as any agent.
-    let pinnedModel: string | null = null;
-    try {
-      const optionsByProvider = await collectProviderModelOptions('', '');
-      for (const p of systemProviders) {
-        const first = optionsByProvider[p.providerId]?.[0]?.value?.trim();
-        if (first) {
-          pinnedModel = first.includes('/') ? first : `${p.providerId}/${first}`;
-          break;
-        }
-      }
-    } catch (err) {
-      logger.warn(
-        { organizationId, err: err instanceof Error ? err.message : String(err) },
-        '[builder-provisioning] Default-model resolution failed; leaving model unset'
-      );
-    }
-
-    // Resolve the owning user from the canonical personal-org marker, so the
-    // per-user ownership check in `verifyOwnedAgentAccess` recognizes the owner
-    // as the builder agent's owner.
-    const orgMetadata = await readOrgMetadata(client, organizationId);
-    const ownerForInsertRaw = orgMetadata['personal_org_for_user_id'];
-    const ownerUserId =
-      typeof ownerForInsertRaw === 'string' && ownerForInsertRaw.length > 0
-        ? ownerForInsertRaw
-        : null;
+    const resolved = await resolveBuilderProviders();
+    const ownerUserId = await resolveOwnerUserId(client, organizationId);
 
     await client`
       INSERT INTO agents (
@@ -171,31 +322,13 @@ export async function ensureBuilderAgent(
       ) VALUES (
         ${BUILDER_AGENT_ID}, ${organizationId}, ${BUILDER_AGENT_NAME}, ${BUILDER_AGENT_IDENTITY},
         'external', ${ownerUserId},
-        ${client.json(systemProviders)}, ${pinnedModel},
+        ${client.json(resolved.providers)}, ${resolved.model},
         NOW(), NOW()
       )
       ON CONFLICT (organization_id, id) DO NOTHING
     `;
 
-    // Mirror the ownership into agent_users so the per-user ownership path
-    // (cookie/PAT session) recognizes the owner as the builder agent's owner.
-    if (ownerUserId) {
-      await client`
-        INSERT INTO agent_users (organization_id, agent_id, platform, user_id, created_at)
-        VALUES (${organizationId}, ${BUILDER_AGENT_ID}, 'external', ${ownerUserId}, now())
-        ON CONFLICT (organization_id, agent_id, platform, user_id) DO NOTHING
-      `;
-    }
-
-    // Point the org at the builder agent — but only if no pointer is set yet.
-    // An admin who repointed `system_agent_id` (via manage_agents) must not be
-    // clobbered.
-    await client`
-      UPDATE "organization"
-      SET system_agent_id = ${BUILDER_AGENT_ID}
-      WHERE id = ${organizationId}
-        AND system_agent_id IS NULL
-    `;
+    await linkOwnerAndPointer(client, organizationId, ownerUserId);
 
     await writeOrgSentinel(
       client,
@@ -205,7 +338,13 @@ export async function ensureBuilderAgent(
     );
 
     logger.info(
-      { organizationId, agentId: BUILDER_AGENT_ID, ownerUserId },
+      {
+        organizationId,
+        agentId: BUILDER_AGENT_ID,
+        ownerUserId,
+        providers: resolved.providers.length,
+        model: resolved.model,
+      },
       '[builder-provisioning] Provisioned builder agent'
     );
     return { created: true };

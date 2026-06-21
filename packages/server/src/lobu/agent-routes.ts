@@ -9,6 +9,7 @@ import { resolve } from 'node:path';
 import { encrypt, type AuthProfile } from '@lobu/core';
 import { Hono } from 'hono';
 import { mcpAuth } from '../auth/middleware';
+import { ensureBuilderAgent } from '../auth/builder-provisioning';
 import { getDb } from '../db/client';
 import { providerOrgSecretName } from './stores/provider-secrets';
 import { OAuthClient } from '../gateway/auth/oauth/client';
@@ -361,6 +362,12 @@ function hasFreshCredential(profiles: AuthProfile[]): boolean {
 routes.get('/system-agent', async (c) => {
   const orgId = c.get('organizationId')!;
   const sql = getDb();
+  // Backfill / heal the org's builder on demand. Orgs created before the
+  // builder feature have no system agent yet, and an org whose builder was
+  // provisioned before its providers resolved needs its providers/model filled
+  // in. ensureBuilderAgent is idempotent + one SELECT on the healthy path, and
+  // best-effort (never throws), so it can't break console load.
+  await ensureBuilderAgent(orgId, sql);
   const rows = await sql`
     SELECT system_agent_id FROM organization WHERE id = ${orgId} LIMIT 1
   `;

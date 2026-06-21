@@ -75,7 +75,7 @@ export function Tweet({
             fallbackRef.current.style.display = "none";
           }
         })
-        .catch(() => {});
+        .catch(() => {/* widget blocked or rate-limited: the static fallback stays */});
     };
 
     const w = window as unknown as { twttr?: Twttr };

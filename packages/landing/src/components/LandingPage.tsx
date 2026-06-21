@@ -98,11 +98,9 @@ export function LandingPage(props: {
     <>
       <Hero />
       {isHome ? (
-        <>
-          <Container className="pt-10 pb-4 sm:pt-14">
-            <ProactiveLoop />
-          </Container>
-        </>
+        <Container className="pt-10 pb-4 sm:pt-14">
+          <ProactiveLoop />
+        </Container>
       ) : (
         <>
           <Container className="py-14 sm:py-20">

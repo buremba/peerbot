@@ -47,6 +47,7 @@ import type { ManageConnectionsResult, ConnectionsArgs } from '../schemas';
 import { resolveDeviceBinding, isManagedPublicOrgConnect } from './device-binding';
 import { assertConnectorAllowedInCloud } from '../../../../utils/connector-cloud-gate';
 import { ensureConnectorInstalled } from '../../../../utils/ensure-connector-installed';
+import { unregisterConnectorWebhook } from '../../../../connect/webhook-registration';
 
 // ============================================
 // handleList
@@ -1180,6 +1181,15 @@ export async function handleDelete(
 ): Promise<ManageConnectionsResult> {
   const sql = getDb();
   const { organizationId } = ctx;
+
+  // Tear down any provider webhook subscription BEFORE the soft-delete, while
+  // the connection row (with its stored externalId + credentials) is still
+  // readable. Best-effort: the helper logs + swallows failures so a provider
+  // hiccup never blocks the delete.
+  await unregisterConnectorWebhook({
+    organizationId,
+    connectionId: args.connection_id,
+  });
 
   const deleted = await sql`
     UPDATE connections

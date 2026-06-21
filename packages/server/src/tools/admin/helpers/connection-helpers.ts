@@ -140,6 +140,77 @@ export function getOAuthCredentialKeys(method: OAuthAuthMethod): {
   };
 }
 
+/**
+ * Auto-provision an env-backed `oauth_app` profile from deployment env vars,
+ * mirroring how GLOBAL LOGIN resolves its client (auth/config.ts
+ * `resolveLoginProviderCredentials`: `process.env[clientIdKey]` fallback). The
+ * connector OAuth-CONNECT path previously required a hand-created app profile
+ * even when `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET` were configured (the same
+ * vars login already uses), failing with "Select or create an … app profile
+ * first". This closes that gap: when the connector's `clientIdKey` /
+ * `clientSecretKey` (defaulting to `${PROVIDER}_CLIENT_ID/_SECRET`) are present
+ * in the environment AND no `oauth_app` profile exists for this connector, we
+ * persist one so the existing connect + callback flow resolves the client with
+ * zero manual entry.
+ *
+ * Idempotent + multi-replica safe: the profile is a Postgres row (upserted by
+ * slug); a concurrent racer just upserts the same values. Returns the profile
+ * when it resolved/created one, else null (env vars absent → caller falls back
+ * to the original "create an app profile" message).
+ */
+export async function ensureEnvBackedOAuthAppProfile(params: {
+  organizationId: string;
+  connectorKey: string;
+  connectorName: string;
+  method: OAuthAuthMethod;
+  createdBy?: string | null;
+}): Promise<AuthProfileRow | null> {
+  const { organizationId, connectorKey, method } = params;
+  const provider = method.provider;
+
+  // Already have an active app profile? Honor it (manual entry wins).
+  const existingActive = await getPrimaryAuthProfileForKind({
+    organizationId,
+    connectorKey,
+    profileKind: 'oauth_app',
+    provider,
+  });
+  if (existingActive?.status === 'active') return existingActive;
+
+  const { clientIdKey, clientSecretKey } = getOAuthCredentialKeys(method);
+  const clientId = process.env[clientIdKey];
+  const clientSecret = process.env[clientSecretKey];
+  if (!clientId || !clientSecret) return null;
+
+  const credentials = { [clientIdKey]: clientId, [clientSecretKey]: clientSecret };
+  const slug = normalizeAuthProfileSlug(`${connectorKey}-${provider}-app`);
+  const displayName = `${params.connectorName} ${provider[0]?.toUpperCase() ?? ''}${provider.slice(1)} App`;
+
+  const existing = await getAuthProfileBySlug(organizationId, slug);
+  if (existing) {
+    await updateAuthProfile({
+      organizationId,
+      slug,
+      displayName,
+      authData: credentials,
+      status: 'active',
+      provider,
+    });
+    return getAuthProfileBySlug(organizationId, slug);
+  }
+
+  return createAuthProfile({
+    organizationId,
+    connectorKey,
+    displayName,
+    slug,
+    profileKind: 'oauth_app',
+    authData: credentials,
+    provider,
+    createdBy: params.createdBy ?? 'env',
+  });
+}
+
 export function resolveRequestedOAuthScopes(
   method: OAuthAuthMethod,
   requestedScopes?: string[] | null

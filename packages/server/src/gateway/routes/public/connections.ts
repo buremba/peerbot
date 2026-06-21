@@ -174,29 +174,30 @@ export function createConnectionWebhookRoutes(
       return c.json({ error: "Missing connectionId" }, 400);
     }
 
-    // Verify connection exists before processing
+    // Resolve the `agent_connections` row (chat platforms + ingest-only webhook
+    // connections). A miss is NOT necessarily a 404: the id may name a CONNECTOR
+    // connection (`connections` table) that registered a provider webhook at
+    // connect time — `handleIngestWebhook` bridges to that row. So fall through
+    // to the ingest handler on a miss and let it decide (404 only when neither
+    // table has a webhook-bearing row).
     const connection = await manager.getConnection(connectionId);
-    if (!connection) {
-      logger.warn({ connectionId }, "Webhook received for unknown connection");
-      return c.json({ error: "Connection not found" }, 404);
-    }
 
     // Info-level so platform webhook traffic (Slack interactivity, Telegram
     // updates, etc.) is visible in production logs without flipping LOG_LEVEL.
     // Never log the request URL/query on this route — webhook ingest
     // connections may carry their auth token in `?token=`.
     logger.info(
-      { connectionId, platform: connection.platform },
+      { connectionId, platform: connection?.platform ?? "connector-webhook" },
       "Inbound platform webhook"
     );
 
     try {
-      // Ingest-only webhook connections (#1235) have no Chat SDK instance to
-      // warm — branch before handleWebhook's lazy hydration path. Pass the
-      // socket peer address so the per-source pre-auth rate limit keys on the
-      // real client even without TRUSTED_PROXY (getClientIP only trusts
-      // X-Forwarded-For behind a trusted proxy).
-      if (connection.platform === "webhook") {
+      // Ingest-only webhook connections (#1235) and connector-owned webhooks
+      // both have no Chat SDK instance to warm — branch before handleWebhook's
+      // lazy hydration path. Pass the socket peer address so the per-source
+      // pre-auth rate limit keys on the real client even without TRUSTED_PROXY
+      // (getClientIP only trusts X-Forwarded-For behind a trusted proxy).
+      if (!connection || connection.platform === "webhook") {
         return await manager.handleIngestWebhook(
           connectionId,
           c.req.raw,

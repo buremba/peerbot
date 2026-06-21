@@ -33,6 +33,7 @@ import {
 import { type ConnectTokenRow, resolveConnectToken } from '../utils/connect-tokens';
 import logger from '../utils/logger';
 import { syncOAuthConnectionsForAuthProfile } from '../utils/oauth-connection-state';
+import { registerConnectorWebhook } from './webhook-registration';
 import { mergeOAuthScopeAuthData, normalizeScopeList } from '../auth/oauth/scopes';
 import { createSyncRun } from '../runs/queue-service';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
@@ -892,6 +893,19 @@ async function handleOAuthCallback(
     },
     'Auth profile activated via OAuth connect flow'
   );
+
+  // The connection is now active with resolvable credentials. If its connector
+  // declares a webhook block and a live feed is configured, subscribe with the
+  // provider once and stamp the verification scheme + secret onto the
+  // connection. Best-effort (the helper swallows + logs failures) so a webhook
+  // hiccup never breaks the OAuth completion redirect.
+  if (tokenRow.connection_id) {
+    await registerConnectorWebhook({
+      organizationId: tokenRow.organization_id,
+      connectionId: tokenRow.connection_id,
+      request: c.req.raw,
+    });
+  }
 
   const ownerSlug = await getOrganizationSlug(tokenRow.organization_id);
   if (ownerSlug && tokenRow.connector_key) {

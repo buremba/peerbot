@@ -1,5 +1,6 @@
 import type {
   AuthResult,
+  ConnectorWebhookSchema,
   EventEnvelope,
   SyncCredentials,
   WebhookRegistration,
@@ -104,6 +105,15 @@ export type ExecutorResult =
   | {
       mode: 'webhook_register';
       registration: WebhookRegistration;
+      /**
+       * The connector's declarative `definition.webhook` scheme. The verifier
+       * (gateway ingest hot path) needs `signatureHeader`/`algorithm`/etc. to
+       * check provider HMACs, but those fields are NOT persisted to the
+       * `connector_definitions` catalog. Returning the scheme here lets the
+       * server stamp it onto the connection in the same round-trip as the
+       * minted secret + externalId — no extra catalog column / migration.
+       */
+      webhookScheme: ConnectorWebhookSchema | null;
     }
   | {
       mode: 'webhook_unregister';

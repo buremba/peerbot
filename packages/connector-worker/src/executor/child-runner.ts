@@ -216,7 +216,11 @@ async function executeConnectorRuntime(
     if (!registration?.externalId) {
       throw new Error('registerWebhook() returned no externalId');
     }
-    return { mode: 'webhook_register', registration };
+    // Return the connector's declarative verification scheme alongside the
+    // minted secret so the gateway can stamp both onto the connection and
+    // verify deliveries in the request hot path (no connector code runs there).
+    const webhookScheme = instance.definition?.webhook ?? null;
+    return { mode: 'webhook_register', registration, webhookScheme };
   }
 
   if (job.mode === 'webhook_unregister') {

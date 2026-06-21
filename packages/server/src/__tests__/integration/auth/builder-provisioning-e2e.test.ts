@@ -12,7 +12,7 @@
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
 	BUILDER_AGENT_ID,
@@ -112,18 +112,21 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 		// Anthropic/Claude is the canonical platform key but isn't in
 		// providers.json, so this exercises the env-var fallback with an empty
 		// registry — the case that would otherwise yield 0 providers / no model.
+		// Hermetic: clear EVERY providers.json env var (read from the file so the
+		// list can't drift) plus the Claude env vars, then set only Anthropic.
+		const raw = JSON.parse(await readFile(PROVIDERS_JSON, "utf-8")) as {
+			providers: Array<{ providers?: Array<{ envVarName?: string }> }>;
+		};
+		const configEnvVars = raw.providers.flatMap((e) =>
+			(e.providers ?? []).map((p) => p.envVarName).filter(Boolean),
+		) as string[];
 		const cleared = [
-			"OPENAI_API_KEY",
-			"GEMINI_API_KEY",
-			"Z_AI_API_KEY",
-			"GROQ_API_KEY",
-			"MISTRAL_API_KEY",
-			"DEEPSEEK_API_KEY",
-			"COHERE_API_KEY",
-			"XAI_API_KEY",
-			"ANTHROPIC_API_KEY",
-			"ANTHROPIC_AUTH_TOKEN",
-			"CLAUDE_CODE_OAUTH_TOKEN",
+			...new Set([
+				...configEnvVars,
+				"ANTHROPIC_API_KEY",
+				"ANTHROPIC_AUTH_TOKEN",
+				"CLAUDE_CODE_OAUTH_TOKEN",
+			]),
 		];
 		const saved: Record<string, string | undefined> = {};
 		for (const v of cleared) {

@@ -164,7 +164,11 @@ async function resolveBuilderProviders(): Promise<ResolvedBuilderProviders> {
     const cfg = configs[providerId];
     const dm = cfg?.defaultModel?.trim();
     if (cfg?.envVarName && resolveEnv(cfg.envVarName) && dm) {
-      return dm.includes('/') ? dm : `${providerId}/${dm}`;
+      // A model ref is parsed as `providerId/<rest>` (split on the FIRST slash),
+      // and a model id can itself contain slashes (e.g. openrouter's
+      // `anthropic/claude-sonnet-4`, together-ai's `meta-llama/...`). Always
+      // prefix the providerId so the ref resolves to the right provider.
+      return `${providerId}/${dm}`;
     }
     return null;
   };

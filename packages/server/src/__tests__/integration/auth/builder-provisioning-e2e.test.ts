@@ -108,6 +108,47 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 		expect(b?.model).toBe("openai/gpt-4o");
 	});
 
+	it("provisions a usable builder when ONLY an Anthropic system key is present (not in providers.json)", async () => {
+		// Anthropic/Claude is the canonical platform key but isn't in
+		// providers.json, so this exercises the env-var fallback with an empty
+		// registry — the case that would otherwise yield 0 providers / no model.
+		const cleared = [
+			"OPENAI_API_KEY",
+			"GEMINI_API_KEY",
+			"Z_AI_API_KEY",
+			"GROQ_API_KEY",
+			"MISTRAL_API_KEY",
+			"DEEPSEEK_API_KEY",
+			"COHERE_API_KEY",
+			"XAI_API_KEY",
+			"ANTHROPIC_API_KEY",
+			"ANTHROPIC_AUTH_TOKEN",
+			"CLAUDE_CODE_OAUTH_TOKEN",
+		];
+		const saved: Record<string, string | undefined> = {};
+		for (const v of cleared) {
+			saved[v] = process.env[v];
+			delete process.env[v];
+		}
+		process.env.ANTHROPIC_API_KEY = "sk-ant-test-builder";
+		try {
+			const org = await createTestOrganization({ name: "builder anthropic" });
+			const res = await ensureBuilderAgent(org.id, sql);
+
+			expect(res.created).toBe(true);
+			const b = await readBuilder(org.id);
+			expect(
+				b?.installed_providers?.some((p) => p.providerId === "claude"),
+			).toBe(true);
+			expect(b?.model).toBe("claude/claude-sonnet-4-6");
+		} finally {
+			for (const [k, v] of Object.entries(saved)) {
+				if (v === undefined) delete process.env[k];
+				else process.env[k] = v;
+			}
+		}
+	});
+
 	it("does NOT recreate a builder an admin deleted (sentinel set, row absent)", async () => {
 		const org = await createTestOrganization({ name: "builder deleted" });
 		// Sentinel set + no builder row = admin deleted it; must stay deleted.

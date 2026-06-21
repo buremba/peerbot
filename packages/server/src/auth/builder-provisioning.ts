@@ -56,20 +56,42 @@ const BUILDER_AGENT_IDENTITY =
   'clearly and suggest what they could connect or grant next.';
 
 /**
- * Capability/reliability preference for the builder's *pinned* model. We pin
- * the first provider here that (a) has a system key in this environment and
- * (b) declares a `defaultModel` in providers.json. Providers not listed are
- * still installed; they just aren't preferred for the initial pin.
+ * Preference for the builder's *pinned* model among providers declared in
+ * config/providers.json. We pin the first provider here that (a) has a system
+ * key in this environment and (b) declares a `defaultModel`. These ids are
+ * config-maintained, so they stay current without a code change. Providers not
+ * listed are still installed; they just aren't preferred for the initial pin.
  */
 const BUILDER_MODEL_PROVIDER_PREFERENCE = [
-  'anthropic',
   'openai',
   'gemini',
-  'z-ai',
   'groq',
   'mistral',
   'deepseek',
+  'cohere',
+  'xai',
 ];
+
+/**
+ * Anthropic/Claude is the canonical platform provider but is intentionally NOT
+ * in config/providers.json (its model list is fetched live from the provider).
+ * Resolve it directly from its env vars so an Anthropic-only deployment still
+ * gets a working builder even when the live module registry is empty. The
+ * fallback model is a last resort, used only when no config-declared provider
+ * model is available — prod also carries openai/gemini keys, so it pins one of
+ * those instead and this snapshot is rarely reached.
+ */
+const CLAUDE_PROVIDER_ID = 'claude';
+const CLAUDE_SYSTEM_ENV_VARS = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+];
+const CLAUDE_FALLBACK_MODEL = 'claude/claude-sonnet-4-6';
+
+function hasClaudeSystemKey(): boolean {
+  return CLAUDE_SYSTEM_ENV_VARS.some((v) => !!resolveEnv(v));
+}
 
 interface InstalledProvider {
   providerId: string;
@@ -113,7 +135,18 @@ async function resolveBuilderProviders(): Promise<ResolvedBuilderProviders> {
     }
   }
 
-  // (2) Best-effort union with the live module registry (additive).
+  // (2) Anthropic/Claude — the canonical platform provider, not in
+  // providers.json. Resolve it from its env vars directly so an Anthropic-only
+  // deployment still gets a provider, registry or not.
+  if (hasClaudeSystemKey()) {
+    installed.set(CLAUDE_PROVIDER_ID, {
+      providerId: CLAUDE_PROVIDER_ID,
+      installedAt: now,
+    });
+  }
+
+  // (3) Best-effort union with the live module registry (additive — picks up
+  // any further providers it knows about when it happens to be initialized).
   try {
     for (const m of getModelProviderModules()) {
       if (m.hasSystemKey() && !installed.has(m.providerId)) {
@@ -121,7 +154,7 @@ async function resolveBuilderProviders(): Promise<ResolvedBuilderProviders> {
       }
     }
   } catch {
-    // Registry not available — the providers.json floor already applies.
+    // Registry not available — the providers.json + Claude floor already applies.
   }
 
   // Pin a model deterministically from providers.json `defaultModel`, preferring
@@ -145,6 +178,11 @@ async function resolveBuilderProviders(): Promise<ResolvedBuilderProviders> {
       model = pickModel(providerId);
       if (model) break;
     }
+  }
+  // Last resort: Claude has no providers.json default, so pin a current snapshot
+  // when it's the only system key available (e.g. an Anthropic-only deploy).
+  if (!model && hasClaudeSystemKey()) {
+    model = CLAUDE_FALLBACK_MODEL;
   }
 
   return { providers: [...installed.values()], model };

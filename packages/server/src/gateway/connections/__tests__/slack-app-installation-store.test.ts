@@ -14,8 +14,12 @@
  *   - a legacy-only row (no mirror) still resolves via the fallback.
  */
 
-import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { getDb } from "../../../db/client.js";
+import { createPostgresSlackInstallationStore } from "../../../lobu/stores/slack-installation-store.js";
+import { createSlackAppInstallationStore } from "../../../lobu/stores/slack-app-installation-store.js";
+import { PostgresSecretStore } from "../../../lobu/stores/postgres-secret-store.js";
+import { SecretStoreRegistry } from "../../secrets/index.js";
 import {
   ensureDbForGatewayTests,
   ensureEncryptionKey,
@@ -32,17 +36,7 @@ beforeEach(async () => {
   await resetTestDatabase();
 }, 30_000);
 
-async function buildStore() {
-  const { createSlackAppInstallationStore } = await import(
-    "../../../lobu/stores/slack-app-installation-store.js"
-  );
-  const { createPostgresSlackInstallationStore } = await import(
-    "../../../lobu/stores/slack-installation-store.js"
-  );
-  const { PostgresSecretStore } = await import(
-    "../../../lobu/stores/postgres-secret-store.js"
-  );
-  const { SecretStoreRegistry } = await import("../../secrets/index.js");
+function buildStore() {
   const postgresSecretStore = new PostgresSecretStore();
   const secretStore = new SecretStoreRegistry(postgresSecretStore, {
     secret: postgresSecretStore,
@@ -255,5 +249,133 @@ describe("createSlackAppInstallationStore (Slack consolidation)", () => {
     // list() also falls back when there is no mirror for the org.
     const listed = await store.list("org-legacy");
     expect(listed.map((r) => r.id)).toContain(legacyRow.id);
+  });
+
+  describe("degrade when slack_installations is dropped (contract deploy window)", () => {
+    // The contract release drops slack_installations via a pre-upgrade hook
+    // while these (expand) pods may still serve installs. Every legacy read AND
+    // write must tolerate the missing table and degrade to app_installations.
+    async function dropLegacyTable() {
+      const sql = getDb();
+      await sql`DROP TABLE IF EXISTS slack_installations`;
+    }
+
+    // The outer beforeEach only TRUNCATEs (it doesn't re-run migrations), so a
+    // DROP in one test would leave the table gone for the next test AND for other
+    // test files in the same process. Recreate it after the outer reset (each
+    // test starts table-present) and once more in afterAll (so the last test's
+    // DROP never leaks beyond this file).
+    async function recreateLegacyTable() {
+      const sql = getDb();
+      await sql`
+        CREATE TABLE IF NOT EXISTS public.slack_installations (
+          id text NOT NULL,
+          organization_id text NOT NULL,
+          team_id text NOT NULL,
+          team_name text,
+          bot_user_id text,
+          config jsonb DEFAULT '{}'::jsonb NOT NULL,
+          status text DEFAULT 'active'::text NOT NULL,
+          created_at timestamp with time zone DEFAULT now() NOT NULL,
+          updated_at timestamp with time zone DEFAULT now() NOT NULL,
+          CONSTRAINT slack_installations_pkey PRIMARY KEY (id),
+          CONSTRAINT slack_installations_status_check
+            CHECK ((status = ANY (ARRAY['active'::text, 'stopped'::text, 'error'::text]))),
+          CONSTRAINT slack_installations_org_fkey
+            FOREIGN KEY (organization_id) REFERENCES public.organization(id) ON DELETE CASCADE,
+          CONSTRAINT slack_installations_org_team_uniq UNIQUE (organization_id, team_id)
+        )
+      `;
+    }
+
+    beforeEach(recreateLegacyTable);
+    afterAll(recreateLegacyTable);
+
+    test("upsertByTeam installs via app_installations only (no throw)", async () => {
+      const { orgContext } = await import("../../../lobu/stores/org-context.js");
+      const { resolveSecretValue } = await import("../../secrets/index.js");
+      await seedAgentRow("throwaway", { organizationId: "org-drop" });
+      const { store, secretStore } = await buildStore();
+      await dropLegacyTable();
+
+      const row = await store.upsertByTeam("org-drop", "TDROP", {
+        teamName: "Dropped Co",
+        botUserId: "UDROP",
+        botToken: "xoxb-after-drop",
+      });
+
+      // Stable slackinst- id minted by the degraded path; token by ref.
+      expect(row.id.startsWith("slackinst-")).toBe(true);
+      expect(row.status).toBe("active");
+      expect(row.config.botToken).not.toBe("xoxb-after-drop");
+      expect(await countAppRowsForInstall(row.id)).toBe(1);
+      const resolved = await orgContext.run({ organizationId: "org-drop" }, () =>
+        resolveSecretValue(secretStore, row.config.botToken)
+      );
+      expect(resolved).toBe("xoxb-after-drop");
+
+      // Reads resolve from app_installations even with the table gone.
+      expect((await store.getById(row.id))?.teamName).toBe("Dropped Co");
+      expect((await store.getByTeamId("TDROP"))?.id).toBe(row.id);
+    });
+
+    test("a reinstall after the drop reuses the same external id (stable secret prefix)", async () => {
+      await seedAgentRow("throwaway", { organizationId: "org-drop2" });
+      const { store } = await buildStore();
+      // First install while the table still exists (dual-write).
+      const first = await store.upsertByTeam("org-drop2", "TD2", {
+        botToken: "xoxb-1",
+      });
+      await dropLegacyTable();
+      // Reinstall after the drop must reuse the same app_installations row + id.
+      const second = await store.upsertByTeam("org-drop2", "TD2", {
+        teamName: "Renamed",
+        botToken: "xoxb-2",
+      });
+
+      expect(second.id).toBe(first.id);
+      expect(await countAppRowsForInstall(first.id)).toBe(1);
+      expect((await store.getById(first.id))?.teamName).toBe("Renamed");
+    });
+
+    test("getById / getByTeamId / list degrade to app_installations (no throw)", async () => {
+      await seedAgentRow("throwaway", { organizationId: "org-drop3" });
+      const { store } = await buildStore();
+      const row = await store.upsertByTeam("org-drop3", "TD3", {
+        botToken: "xoxb-x",
+      });
+      await dropLegacyTable();
+
+      // app_installations-backed reads still work...
+      expect((await store.getById(row.id))?.id).toBe(row.id);
+      expect((await store.getByTeamId("TD3"))?.id).toBe(row.id);
+      expect((await store.list("org-drop3")).map((r) => r.id)).toContain(row.id);
+      // ...and a miss returns null/[] (degraded legacy fallback), not a throw.
+      expect(await store.getById("slackinst-nope")).toBeNull();
+      expect(await store.getByTeamId("T-nope")).toBeNull();
+      expect(await store.list("org-empty")).toEqual([]);
+    });
+
+    test("markStopped + delete degrade (no throw); delete purges the secret", async () => {
+      const { orgContext } = await import("../../../lobu/stores/org-context.js");
+      const { resolveSecretValue } = await import("../../secrets/index.js");
+      await seedAgentRow("throwaway", { organizationId: "org-drop4" });
+      const { store, secretStore } = await buildStore();
+      const row = await store.upsertByTeam("org-drop4", "TD4", {
+        botToken: "xoxb-doomed",
+      });
+      await dropLegacyTable();
+
+      await store.markStopped(row.id);
+      expect((await store.getById(row.id))?.status).toBe("stopped");
+
+      await store.delete(row.id);
+      expect(await store.getById(row.id)).toBeNull();
+      expect(await countAppRowsForInstall(row.id)).toBe(0);
+      const resolved = await orgContext.run({ organizationId: "org-drop4" }, () =>
+        resolveSecretValue(secretStore, row.config.botToken)
+      );
+      expect(resolved).toBeUndefined();
+    });
   });
 });

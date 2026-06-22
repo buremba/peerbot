@@ -1,13 +1,20 @@
+import { randomUUID } from "node:crypto";
 import { createLogger } from "@lobu/core";
 import { getDb } from "../../db/client.js";
-import type { WritableSecretStore } from "../../gateway/secrets/index.js";
+import {
+  deleteSecretsByPrefix,
+  persistSecretValue,
+  type WritableSecretStore,
+} from "../../gateway/secrets/index.js";
 import type {
   AppInstallationStatus,
   AppInstallationStore,
 } from "./app-installation-store.js";
 import { createPostgresAppInstallationStore } from "./app-installation-store.js";
+import { orgContext } from "./org-context.js";
 import {
   createPostgresSlackInstallationStore,
+  SLACK_INSTALLATION_ID_PREFIX,
   type SlackInstallationRow,
   type SlackInstallationStore,
 } from "./slack-installation-store.js";
@@ -31,6 +38,17 @@ import {
  *  - DUAL-READ: reads prefer `app_installations` and fall back to
  *    `slack_installations`, so a row that predates the backfill (or a replica
  *    mid-deploy) still resolves.
+ *
+ * DEPLOY-WINDOW SAFETY (degrade when the legacy table is gone): the contract
+ * release drops `slack_installations` via a pre-upgrade migration hook that runs
+ * while THESE (expand) pods may still be serving installs. So every legacy
+ * `slack_installations` read AND write is wrapped to tolerate the table being
+ * absent: on `undefined_table` (42P01) it logs a warn and DEGRADES to
+ * app_installations-only — minting the `slackinst-<uuid>` id + persisting the bot
+ * token itself, which is safe because app_installations is already the source of
+ * truth and fully backfilled. Only the missing-table case is swallowed; any other
+ * DB error still surfaces. This shim is transient — the contract PR deletes this
+ * whole file — so it is not permanent debt.
  *
  * Mapping onto the generic tuple (kept identical to the backfill migration so
  * reads converge no matter which path wrote the row):
@@ -57,6 +75,14 @@ import {
  */
 
 const logger = createLogger("slack-app-installation-store");
+
+/** Postgres error code: undefined_table (the legacy table was dropped). */
+const PG_UNDEFINED_TABLE = "42P01";
+
+/** True iff `error` is Postgres "relation does not exist" (table dropped). */
+function isMissingTableError(error: unknown): boolean {
+  return (error as { code?: string } | null)?.code === PG_UNDEFINED_TABLE;
+}
 
 const SLACK_PROVIDER = "slack";
 const SLACK_PROVIDER_INSTANCE = "cloud";
@@ -180,12 +206,100 @@ export function createSlackAppInstallationStore(
     `;
   }
 
+  /**
+   * DEGRADED install path used only when `slack_installations` is gone (the
+   * contract drop hook ran). Does what the legacy store did — mint/reuse the
+   * `slackinst-<uuid>` id, persist the bot token to the secret store, write the
+   * row — but ONLY into app_installations. Reusing the existing app row's
+   * `external_id` keeps the id (and its secret prefix) stable across reinstalls;
+   * the generic `upsert` serializes one-active-per-team on its advisory lock.
+   */
+  async function upsertAppOnly(
+    organizationId: string,
+    teamId: string,
+    data: { teamName?: string; botUserId?: string; botToken: string }
+  ): Promise<SlackInstallationRow> {
+    return orgContext.run({ organizationId }, async () => {
+      const existing = await appRowByTeam(organizationId, teamId);
+      const externalId =
+        (existing?.metadata?.external_id as string | undefined) ??
+        `${SLACK_INSTALLATION_ID_PREFIX}${randomUUID().replace(/-/g, "")}`;
+      const tokenRef = await persistSecretValue(
+        secretStore,
+        `installations/${externalId}/botToken`,
+        data.botToken
+      );
+      const config = {
+        platform: SLACK_PROVIDER,
+        ...(tokenRef ? { botToken: tokenRef } : {}),
+      };
+      const metadata: Record<string, any> = { external_id: externalId, config };
+      if (data.teamName) metadata.team_name = data.teamName;
+      if (data.botUserId) metadata.bot_user_id = data.botUserId;
+      if (process.env.SLACK_CLIENT_ID) {
+        metadata.slack_client_id = process.env.SLACK_CLIENT_ID;
+      }
+      const row = await appStore.upsert({
+        organizationId,
+        provider: SLACK_PROVIDER,
+        providerInstance: SLACK_PROVIDER_INSTANCE,
+        providerAppId: SLACK_PROVIDER_APP_ID,
+        externalTenantId: teamId,
+        authProfileId: null,
+        status: "active",
+        metadata,
+      });
+      const mapped = appRowToSlackRow({
+        id: row.id,
+        organization_id: row.organizationId,
+        external_tenant_id: row.externalTenantId,
+        status: row.status,
+        metadata: row.metadata,
+        created_at: row.createdAt,
+        updated_at: row.updatedAt,
+      });
+      if (!mapped) throw new Error("Slack install upsert lost its external id");
+      return mapped;
+    });
+  }
+
+  /** The app_installations Slack row for an (org, team), if any. */
+  async function appRowByTeam(
+    organizationId: string,
+    teamId: string
+  ): Promise<Record<string, any> | null> {
+    const sql = getDb();
+    const rows = await sql`
+      SELECT * FROM app_installations
+      WHERE provider = ${SLACK_PROVIDER}
+        AND organization_id = ${organizationId}
+        AND external_tenant_id = ${teamId}
+      ORDER BY (status = 'active') DESC, updated_at DESC
+      LIMIT 1
+    `;
+    return rows.length ? rows[0] : null;
+  }
+
   return {
     async upsertByTeam(organizationId, teamId, data) {
       // Legacy first: it claims the canonical slackinst-<uuid> id, persists the
       // bot token to the secret store, and returns the row with the secret ref
       // in config — that ref is what we mirror (never the plaintext token).
-      const row = await legacy.upsertByTeam(organizationId, teamId, data);
+      let row: SlackInstallationRow;
+      try {
+        row = await legacy.upsertByTeam(organizationId, teamId, data);
+      } catch (error) {
+        if (!isMissingTableError(error)) throw error;
+        // The contract drop removed slack_installations while this pod is still
+        // serving. Degrade to app_installations-only — it is the source of truth
+        // and fully backfilled, so this is safe (not a band-aid: it's exactly
+        // the contract behavior, just reached one release early).
+        logger.warn(
+          { teamId, organizationId },
+          "slack_installations is gone (contract drop) — installing via app_installations only"
+        );
+        return upsertAppOnly(organizationId, teamId, data);
+      }
       try {
         await mirrorToApp(row);
       } catch (error) {
@@ -205,7 +319,14 @@ export function createSlackAppInstallationStore(
       const mapped = appRow ? appRowToSlackRow(appRow) : null;
       if (mapped) return mapped;
       // Fallback: a row not yet backfilled / mirrored still resolves from legacy.
-      return legacy.getById(id);
+      // Tolerate the table being gone (contract drop) — degrade to the
+      // app_installations miss above (return null).
+      try {
+        return await legacy.getById(id);
+      } catch (error) {
+        if (isMissingTableError(error)) return null;
+        throw error;
+      }
     },
 
     async getByTeamId(teamId) {
@@ -219,7 +340,12 @@ export function createSlackAppInstallationStore(
       `;
       const mapped = rows.length ? appRowToSlackRow(rows[0]) : null;
       if (mapped) return mapped;
-      return legacy.getByTeamId(teamId);
+      try {
+        return await legacy.getByTeamId(teamId);
+      } catch (error) {
+        if (isMissingTableError(error)) return null;
+        throw error;
+      }
     },
 
     async list(organizationId) {
@@ -235,17 +361,33 @@ export function createSlackAppInstallationStore(
         .filter((r): r is SlackInstallationRow => r !== null);
       if (mapped.length > 0) return mapped;
       // No mirror rows yet (pre-backfill) — fall back to the legacy listing.
-      return legacy.list(organizationId);
+      try {
+        return await legacy.list(organizationId);
+      } catch (error) {
+        if (isMissingTableError(error)) return [];
+        throw error;
+      }
     },
 
     async markStopped(id) {
-      await legacy.markStopped(id);
+      try {
+        await legacy.markStopped(id);
+      } catch (error) {
+        if (!isMissingTableError(error)) throw error;
+      }
       await setAppStatusByInstallId(id, "suspended");
     },
 
     async delete(id) {
       // Legacy delete also purges the secret-store token under installations/<id>/.
-      await legacy.delete(id);
+      try {
+        await legacy.delete(id);
+      } catch (error) {
+        if (!isMissingTableError(error)) throw error;
+        // Table gone — purge the secret ourselves so it isn't orphaned, then
+        // drop the app_installations row below.
+        await deleteSlackInstallSecret(id);
+      }
       const sql = getDb();
       await sql`
         DELETE FROM app_installations
@@ -254,4 +396,17 @@ export function createSlackAppInstallationStore(
       `;
     },
   };
+
+  /** Purge the bot-token secret under the install org's bucket (degraded delete). */
+  async function deleteSlackInstallSecret(id: string): Promise<void> {
+    const appRow = await appRowByInstallId(id);
+    const orgId = appRow?.organization_id as string | undefined;
+    const purge = () =>
+      deleteSecretsByPrefix(secretStore, `installations/${id}/`);
+    if (orgId) {
+      await orgContext.run({ organizationId: orgId }, purge);
+    } else {
+      await purge();
+    }
+  }
 }

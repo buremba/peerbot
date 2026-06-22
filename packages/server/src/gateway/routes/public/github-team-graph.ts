@@ -174,7 +174,12 @@ async function ensureOrgCompany(params: {
 					autoCreate: true,
 					titlePath: "metadata.org_login",
 					identities: [
-						{ namespace: IDENTITY.GITHUB_USER_ID, eventPath: "metadata.org_id" },
+						// PRIMARY: the org's immutable numeric id is authoritative (rename-safe).
+						{
+							namespace: IDENTITY.GITHUB_USER_ID,
+							eventPath: "metadata.org_id",
+							primary: true,
+						},
 						{ namespace: IDENTITY.GITHUB_LOGIN, eventPath: "metadata.org_login" },
 					],
 					traits: {
@@ -266,7 +271,12 @@ export async function buildGithubTeamGraph(params: {
 					autoCreate: true,
 					titlePath: "metadata.author_login",
 					identities: [
-						{ namespace: IDENTITY.GITHUB_USER_ID, eventPath: "metadata.author_id" },
+						// PRIMARY: immutable id governs resolution when present (rename-safe).
+						{
+							namespace: IDENTITY.GITHUB_USER_ID,
+							eventPath: "metadata.author_id",
+							primary: true,
+						},
 						{ namespace: IDENTITY.GITHUB_LOGIN, eventPath: "metadata.author_login" },
 					],
 					traits: {

@@ -115,22 +115,51 @@ fi
 echo "→ removing worktree $worktree_dir"
 git -C "$repo" worktree remove "$worktree_dir" --force
 
-# Delete the branch the worktree was on AND the feat/<name> default (they can
-# differ). De-dup so we don't try the same branch twice.
-delete_branch() { # <gitdir> <label>
-  local gitdir="$1" label="$2" seen=""
-  for b in "$branch" "$default_branch"; do
-    [[ -n "$b" ]] || continue
-    case " $seen " in *" $b "*) continue ;; esac
-    seen="$seen $b"
-    if git -C "$gitdir" show-ref --verify --quiet "refs/heads/$b"; then
-      echo "→ deleting $label branch $b"
-      git -C "$gitdir" branch -D "$b"
-    fi
-  done
+# Returns 0 if branch <b> in <gitdir> carries no local-only commits (its tip is
+# reachable from origin/main, or equals its pushed remote ref). Used to protect
+# the feat/<name> default below — we never auto-delete unpushed work.
+branch_is_pushed() { # <gitdir> <b>
+  local gitdir="$1" b="$2" tip
+  tip="$(git -C "$gitdir" rev-parse "$b" 2>/dev/null)" || return 0
+  git -C "$gitdir" merge-base --is-ancestor "$tip" origin/main 2>/dev/null && return 0
+  git -C "$gitdir" rev-parse --verify "origin/$b" >/dev/null 2>&1 \
+    && [[ "$tip" == "$(git -C "$gitdir" rev-parse "origin/$b")" ]] && return 0
+  return 1
 }
-delete_branch "$repo" lobu
-[[ -d "$repo/packages/owletto" ]] && delete_branch "$repo/packages/owletto" owletto
+
+# Delete the branch the worktree was actually on. Safety for THIS branch is
+# enforced upstream — the force=0 ahead-of-origin guard above, or clean-merged's
+# merged-head gate — so by the time we get here, deleting it is sanctioned.
+delete_actual() { # <gitdir> <label>
+  local gitdir="$1" label="$2"
+  if git -C "$gitdir" show-ref --verify --quiet "refs/heads/$branch"; then
+    echo "→ deleting $label branch $branch"
+    git -C "$gitdir" branch -D "$branch"
+  fi
+}
+
+# Also clean up the feat/<name> default when the worktree had been moved onto a
+# different branch — but ONLY if it has no unpushed commits. The upstream guard
+# never inspected this branch, so deleting it blind could discard work the user
+# didn't target (exactly the failure mode that lost an unpushed fix earlier).
+delete_default_if_pushed() { # <gitdir> <label>
+  local gitdir="$1" label="$2"
+  [[ "$default_branch" != "$branch" ]] || return 0
+  git -C "$gitdir" show-ref --verify --quiet "refs/heads/$default_branch" || return 0
+  if branch_is_pushed "$gitdir" "$default_branch"; then
+    echo "→ deleting $label branch $default_branch (feat default, fully pushed)"
+    git -C "$gitdir" branch -D "$default_branch"
+  else
+    echo "→ keeping $label branch $default_branch (has unpushed commits; delete manually if intended)" >&2
+  fi
+}
+
+for spec in "$repo:lobu" "$repo/packages/owletto:owletto"; do
+  gitdir="${spec%:*}"; label="${spec##*:}"
+  [[ "$label" == "lobu" || -d "$gitdir" ]] || continue
+  delete_actual "$gitdir" "$label"
+  delete_default_if_pushed "$gitdir" "$label"
+done
 
 # Drop the per-branch dev database created by `make dev-db`. The name depends on
 # how dev-db was invoked: `make dev-db` inside the worktree keys off the branch
@@ -146,11 +175,11 @@ for raw in "$name" "$branch" "$default_branch"; do
   db="$(lobu_db_name "$raw")"
   case " $dropped_dbs " in *" $db "*) continue ;; esac
   dropped_dbs="$dropped_dbs $db"
-  # Never drop a shared database. The only realistic collision is a task named
-  # "test" → lobu_test (the shared integration-test DB).
-  case "$db" in
-    *_test) echo "→ skipping protected database '$db'"; continue ;;
-  esac
+  # Never drop the shared integration-test DB. Match it EXACTLY — a `*_test`
+  # glob would wrongly skip legitimate per-task DBs like lobu_feature_test.
+  if [[ "$db" == "lobu_test" ]]; then
+    echo "→ skipping protected database '$db'"; continue
+  fi
   exists="$(psql -tAc "select 1 from pg_database where datname='$db'" postgres 2>/dev/null || true)"
   [[ "$exists" == "1" ]] || continue
   # --force evicts a still-connected dev server; --if-exists guards the race.

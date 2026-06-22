@@ -32,7 +32,12 @@ import {
   type ContentSearchResult,
 } from './types';
 import { buildConnectionVisibilityClause, buildExcludeWatcherClause, buildOrgScopeWhere } from './visibility';
-import { buildStandardParams, buildStandardWhereSql, WINDOW_JOIN_SQL } from './params';
+import {
+  buildStandardParams,
+  buildStandardWhereSql,
+  windowJoinSql,
+  windowMembershipViaEventEdges,
+} from './params';
 
 /**
  * Shared count + query-pair execution for both `listContentInternal` branches.
@@ -293,7 +298,9 @@ export async function listContentInternal(
     if (options.window_id != null) {
       baseParams.push(options.window_id);
       baseConditions.push(
-        `EXISTS (SELECT 1 FROM watcher_window_events iwf WHERE iwf.event_id = f.id AND iwf.window_id = $${baseParams.length})`
+        windowMembershipViaEventEdges()
+          ? `EXISTS (SELECT 1 FROM event_edges iwf WHERE iwf.child_event_id = f.id AND iwf.parent_event_id = $${baseParams.length} AND iwf.edge_type = 'membership')`
+          : `EXISTS (SELECT 1 FROM watcher_window_events iwf WHERE iwf.event_id = f.id AND iwf.window_id = $${baseParams.length})`
       );
     }
     if (options.engagement_min != null) {
@@ -423,7 +430,7 @@ export async function listContentInternal(
 
   return executeListQuery({
     sql,
-    joinSql: WINDOW_JOIN_SQL,
+    joinSql: windowJoinSql(),
     whereExpr: `${standardWhereSql}
           AND ${connectionCondition}
           AND ${feedCondition}

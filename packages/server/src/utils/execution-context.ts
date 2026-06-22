@@ -344,9 +344,15 @@ const NOT_APP_INSTALLATION: AppInstallationCredentialResult = {
  * connector-worker HTTP path is the documented seam (the connector worker does
  * not yet route outbound HTTP through the secret-proxy); see the PR notes.
  *
- * Lifecycle: a missing/inactive install or a mint failure resolves to
+ * Lifecycle: a missing/inactive install, a cross-tenant or wrong-provider
+ * install reference, or a mint failure all resolve to
  * `{ handled: true, credentials: null }` — the connection runs without a
  * credential and the connector's own auth check fails cleanly, never a crash.
+ *
+ * Tenancy: the loaded install row MUST belong to the connection's org and match
+ * the connector method's declared provider/providerInstance; a mismatch returns
+ * null creds WITHOUT minting (a cross-tenant `installation_ref` must never yield
+ * another org's token).
  */
 async function resolveAppInstallationCredential(
   organizationId: string,
@@ -396,6 +402,49 @@ async function resolveAppInstallationCredential(
     logger.warn(
       { ...logContext, connection_id: connectionId, install_id: installId },
       'App-installation connection references a missing install row'
+    );
+    return { handled: true, credentials: null };
+  }
+
+  // Tenancy guard: the install MUST belong to the connection's org. Without this,
+  // a connection in org A could set `config.installation_ref` to org B's install
+  // id and receive org B's minted token (cross-tenant credential leak). Reject
+  // the mismatch — return null creds, never mint — and log it as a tenancy
+  // violation signal.
+  if (install.organizationId !== organizationId) {
+    logger.warn(
+      {
+        ...logContext,
+        connection_id: connectionId,
+        install_id: installId,
+        connection_org: organizationId,
+        install_org: install.organizationId,
+      },
+      'Cross-tenant app-installation reference rejected: install org does not match connection org'
+    );
+    return { handled: true, credentials: null };
+  }
+
+  // Connector-shape guard: the install MUST match the connector method's declared
+  // app_installation provider (and providerInstance when the method pins it).
+  // Otherwise a connection could point at an unrelated install of a different
+  // provider/instance in the same org and mint a token it shouldn't read.
+  if (
+    install.provider !== method.provider ||
+    (method.providerInstance != null &&
+      install.providerInstance !== method.providerInstance)
+  ) {
+    logger.warn(
+      {
+        ...logContext,
+        connection_id: connectionId,
+        install_id: installId,
+        install_provider: install.provider,
+        method_provider: method.provider,
+        install_provider_instance: install.providerInstance,
+        method_provider_instance: method.providerInstance,
+      },
+      'App-installation reference rejected: install provider/instance does not match connector method'
     );
     return { handled: true, credentials: null };
   }

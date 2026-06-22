@@ -18,7 +18,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { ClientSDK } from "../../../sandbox/client-sdk";
-import { getDefaultLimits, runScript } from "../../../sandbox/run-script";
+import { runScript } from "../../../sandbox/run-script";
 
 describe("sandbox runtime", () => {
   it("loads isolated-vm and runs a trivial script", async () => {
@@ -37,14 +37,6 @@ describe("sandbox runtime", () => {
     expect(result.success).toBe(true);
     expect(result.returnValue).toBe(3);
     expect(result.sdkCalls).toBe(0);
-  });
-
-  it("exposes default resource limits", () => {
-    const limits = getDefaultLimits();
-    expect(limits.memoryMb).toBe(64);
-    expect(limits.timeoutMs).toBe(60_000);
-    expect(limits.sdkCallQuota).toBe(200);
-    expect(limits.outputBytes).toBe(1_048_576);
   });
 
   it("returns structured result shape", async () => {

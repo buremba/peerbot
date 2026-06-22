@@ -12,10 +12,8 @@ import {
 import { getDb } from "../../db/client.js";
 import { resolveEnv } from "../auth/mcp/string-substitution.js";
 import { PostgresSecretStore } from "../../lobu/stores/postgres-secret-store.js";
-import {
-	createPostgresSlackInstallationStore,
-	type SlackInstallationStore,
-} from "../../lobu/stores/slack-installation-store.js";
+import type { SlackInstallationStore } from "../../lobu/stores/slack-installation-store.js";
+import { createSlackAppInstallationStore } from "../../lobu/stores/slack-app-installation-store.js";
 import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { ApiKeyProviderModule } from "../auth/api-key-provider-module.js";
 import { BedrockProviderModule } from "../auth/bedrock/provider-module.js";
@@ -384,11 +382,15 @@ export class CoreServices {
 			);
 		logger.debug("Secret store initialized");
 
-		// Slack workspace installs (the "Add to Slack" OAuth path) live in their
-		// own Postgres table keyed on (org, team) — not as agent connections —
-		// with the bot token in the secret store. Always Postgres-backed; only
-		// exercised on the OAuth/webhook path, which requires a DB.
-		this.slackInstallationStore = createPostgresSlackInstallationStore(
+		// Slack workspace installs (the "Add to Slack" OAuth path) are being
+		// consolidated onto the generic `app_installations` primitive. The adapter
+		// keeps the SlackInstallationStore interface (so call sites and the
+		// `slackinst-` id semantics are unchanged) while dual-writing both
+		// `slack_installations` (legacy, kept for rollback + read fallback) and
+		// `app_installations`, and dual-reading (app_installations preferred,
+		// legacy fallback). The bot token still rides the secret store by ref.
+		// Always Postgres-backed; only exercised on the OAuth/webhook path.
+		this.slackInstallationStore = createSlackAppInstallationStore(
 			this.secretStore,
 		);
 

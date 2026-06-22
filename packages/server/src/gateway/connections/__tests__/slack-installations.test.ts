@@ -172,6 +172,54 @@ describe("slack-installations projection over app_installations", () => {
     expect(found?.id).toBe(b.id);
   });
 
+  test("A->B->A transfer reuses org A's row — no duplicate external_id, list returns one id", async () => {
+    // Regression: a return transfer must REACTIVATE org A's existing row, keeping
+    // its stable external id, not insert a second org-A row. Otherwise
+    // list('org-a')/resolveByExternalId would see duplicate ids.
+    await seedAgentRow("ta", { organizationId: "org-aba-a" });
+    await seedAgentRow("tb", { organizationId: "org-aba-b" });
+    const { store, secretStore, slack } = await build();
+    const sql = getDb();
+
+    const a1 = await slack.upsertSlackInstallByTeam(
+      store,
+      secretStore,
+      "org-aba-a",
+      "TABA",
+      { botToken: "x1" }
+    );
+    await slack.upsertSlackInstallByTeam(store, secretStore, "org-aba-b", "TABA", {
+      botToken: "x2",
+    });
+    const a2 = await slack.upsertSlackInstallByTeam(
+      store,
+      secretStore,
+      "org-aba-a",
+      "TABA",
+      { botToken: "x3" }
+    );
+
+    // org A's row reactivated in place — same id, now active.
+    expect(a2.id).toBe(a1.id);
+    expect(a2.status).toBe("active");
+
+    // Exactly one app_installations row for (org A, team) — no duplicate.
+    const orgARows = await sql`
+      SELECT id, metadata ->> 'external_id' AS ext FROM app_installations
+      WHERE provider = 'slack' AND external_tenant_id = 'TABA'
+        AND organization_id = 'org-aba-a'
+    `;
+    expect(orgARows).toHaveLength(1);
+    expect(orgARows[0].ext).toBe(a1.id);
+
+    // list + resolveByExternalId return the single id.
+    expect((await slack.listSlackInstalls(store, "org-aba-a")).map((r) => r.id)).toEqual([
+      a1.id,
+    ]);
+    expect((await slack.getSlackInstallById(store, a1.id))?.id).toBe(a1.id);
+    expect((await slack.getSlackInstallByTeamId(store, "TABA"))?.id).toBe(a1.id);
+  });
+
   test("markStopped drops the install out of active team routing", async () => {
     await seedAgentRow("throwaway", { organizationId: "org-inst" });
     const { store, secretStore, slack } = await build();

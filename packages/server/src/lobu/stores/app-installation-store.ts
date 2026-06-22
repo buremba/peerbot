@@ -162,44 +162,56 @@ export function createPostgresAppInstallationStore(): AppInstallationStore {
           activeTenantLockTag(install),
         ]);
 
-        // Re-read under the lock: a concurrent activation may have already
-        // claimed the active slot for this tuple while we waited.
-        const activeRows = await tx`
-          SELECT * FROM app_installations
+        // Demote any active row for this tuple owned by a DIFFERENT org — a
+        // transfer takes the single active slot from the prior owner. (A same-org
+        // active row is left as-is; it becomes the row we refresh below.) This is
+        // a no-op when no different-org active row exists.
+        await tx`
+          UPDATE app_installations
+          SET status = 'suspended', updated_at = now()
           WHERE provider = ${install.provider}
             AND provider_instance = ${install.providerInstance}
             AND provider_app_id = ${install.providerAppId}
             AND external_tenant_id = ${install.externalTenantId}
             AND status = 'active'
+            AND organization_id <> ${install.organizationId}
         `;
-        const currentActive = activeRows[0];
 
-        if (
-          currentActive &&
-          currentActive.organization_id === install.organizationId
-        ) {
-          // Same-org reinstall: refresh the active row in place.
+        // Find an EXISTING row for the TARGET (org, tuple) — active or demoted —
+        // so an install/reinstall/return-transfer REACTIVATES that single row in
+        // place instead of inserting a duplicate. This is the invariant: at most
+        // ONE row per (provider, tuple, org). Without it, an A->B->A transfer
+        // would leave org A with two rows (the original demoted one + a fresh
+        // active one), and listByOrg/list would return duplicate ids.
+        const existingRows = await tx`
+          SELECT * FROM app_installations
+          WHERE provider = ${install.provider}
+            AND provider_instance = ${install.providerInstance}
+            AND provider_app_id = ${install.providerAppId}
+            AND external_tenant_id = ${install.externalTenantId}
+            AND organization_id = ${install.organizationId}
+          ORDER BY (status = 'active') DESC, updated_at DESC, id DESC
+          LIMIT 1
+        `;
+        const existing = existingRows[0];
+
+        if (existing) {
+          // Reactivate-and-refresh the target org's existing row in place (covers
+          // same-org reinstall AND a return transfer A->B->A: org A's demoted row
+          // is reused, not duplicated).
           const rows = await tx`
             UPDATE app_installations
-            SET auth_profile_id = ${authProfileId},
+            SET status = 'active',
+                auth_profile_id = ${authProfileId},
                 metadata = ${sql.json(metadata)},
                 updated_at = now()
-            WHERE id = ${currentActive.id}
+            WHERE id = ${existing.id}
             RETURNING *
           `;
           return rowToInstallation(rows[0]);
         }
 
-        if (currentActive) {
-          // Different-org install: TRANSFER — demote the prior active owner so
-          // the new row can claim the single active slot for this tuple.
-          await tx`
-            UPDATE app_installations
-            SET status = 'suspended', updated_at = now()
-            WHERE id = ${currentActive.id}
-          `;
-        }
-
+        // First install for this (org, tuple): insert the active row.
         const rows = await tx`
           INSERT INTO app_installations (
             organization_id, provider, provider_instance, provider_app_id,

@@ -184,6 +184,47 @@ describe("createSlackAppInstallationStore (Slack consolidation)", () => {
     expect(Number(active[0].n)).toBe(1);
   });
 
+  test("A->B->A transfer: org A keeps ONE mirror row, no duplicate external_id, list returns one id", async () => {
+    // Regression: an org-A install transferred to B and back to A must not leave
+    // org A with two app_installations rows sharing the same external_id (which
+    // would make list('org-a') return duplicate ids).
+    await seedAgentRow("ta", { organizationId: "org-aba-a" });
+    await seedAgentRow("tb", { organizationId: "org-aba-b" });
+    const { store } = await buildStore();
+    const sql = getDb();
+
+    const a1 = await store.upsertByTeam("org-aba-a", "TABA", { botToken: "x1" });
+    await store.upsertByTeam("org-aba-b", "TABA", { botToken: "x2" });
+    const a2 = await store.upsertByTeam("org-aba-a", "TABA", { botToken: "x3" });
+
+    // The legacy store reuses org A's slackinst- id on the return; the mirror
+    // must reactivate org A's single row, not create a second one with that id.
+    expect(a2.id).toBe(a1.id);
+    expect(a2.status).toBe("active");
+
+    // No duplicate (org, external_id) rows for org A.
+    const orgARows = await sql`
+      SELECT id, metadata ->> 'external_id' AS ext FROM app_installations
+      WHERE provider = 'slack' AND external_tenant_id = 'TABA'
+        AND organization_id = 'org-aba-a'
+    `;
+    expect(orgARows).toHaveLength(1);
+    expect(orgARows[0].ext).toBe(a1.id);
+
+    // list('org-aba-a') returns a single id (no duplicates).
+    const listed = await store.list("org-aba-a");
+    expect(listed.map((r) => r.id)).toEqual([a1.id]);
+
+    // Exactly one active row for the team, owned by A.
+    const active = await sql`
+      SELECT organization_id FROM app_installations
+      WHERE provider = 'slack' AND external_tenant_id = 'TABA' AND status = 'active'
+    `;
+    expect(active).toHaveLength(1);
+    expect(active[0].organization_id).toBe("org-aba-a");
+    expect((await store.getByTeamId("TABA"))?.id).toBe(a1.id);
+  });
+
   test("markStopped flips both tables; getByTeamId routing skips stopped", async () => {
     await seedAgentRow("throwaway", { organizationId: "org-inst" });
     const { store } = await buildStore();

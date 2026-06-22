@@ -14,7 +14,7 @@ import {
 import {
   buildClassificationExistsClauses,
   buildSourceOnlyExistsClause,
-  resolveClassifierVersionIds,
+  resolveClassifierIds,
 } from './content-search/classification';
 import type { DbClient } from '../db/client';
 import logger from './logger';
@@ -207,10 +207,10 @@ async function buildFilterConditionsAndJoins(
     classificationFilters.length > 0 ? groupClassificationFilters(classificationFilters) : null;
 
   if (filtersBySlug && filtersBySlug.size > 0) {
-    const classifierVersionIds = await resolveClassifierVersionIds(sql, filtersBySlug, entityId);
+    const classifierIds = await resolveClassifierIds(sql, filtersBySlug, entityId);
     const classificationExists = buildClassificationExistsClauses(
       filtersBySlug,
-      classifierVersionIds,
+      classifierIds,
       filters?.classification_source,
       paramIndex
     );

@@ -1,26 +1,27 @@
 /**
  * Classification filter helpers:
- * collectVersionIds, resolveClassifierVersionIds, buildClassificationExistsClauses.
+ * collectClassifierIds, resolveClassifierIds, buildClassificationExistsClauses.
  */
 
 import type { DbClient } from '../../db/client';
 import logger from '../logger';
 
-function collectVersionIds(rows: unknown[], mapping: Map<string, number[]>): void {
-  for (const row of rows as Array<{ slug: string; version_id: number | string }>) {
+function collectClassifierIds(rows: unknown[], mapping: Map<string, number[]>): void {
+  for (const row of rows as Array<{ slug: string; classifier_id: number | string }>) {
     const slug = String(row.slug);
-    const versionId = typeof row.version_id === 'number' ? row.version_id : Number(row.version_id);
-    if (Number.isNaN(versionId)) continue;
+    const classifierId =
+      typeof row.classifier_id === 'number' ? row.classifier_id : Number(row.classifier_id);
+    if (Number.isNaN(classifierId)) continue;
     const existing = mapping.get(slug);
     if (existing) {
-      existing.push(versionId);
+      existing.push(classifierId);
     } else {
-      mapping.set(slug, [versionId]);
+      mapping.set(slug, [classifierId]);
     }
   }
 }
 
-export async function resolveClassifierVersionIds(
+export async function resolveClassifierIds(
   sql: DbClient,
   filtersBySlug: Map<string, string[]>,
   entityId: number | undefined
@@ -37,17 +38,15 @@ export async function resolveClassifierVersionIds(
   if (entityId) {
     const entityRows = await sql.unsafe(
       `
-      SELECT ccl.slug, ccv.id as version_id
+      SELECT ccl.slug, ccl.id as classifier_id
       FROM event_classifiers ccl
-      JOIN event_classifier_versions ccv ON ccv.classifier_id = ccl.id
       JOIN watchers i ON i.id = ccl.watcher_id
-      WHERE ccv.is_current = true
-        AND ccl.slug IN (${placeholders})
+      WHERE ccl.slug IN (${placeholders})
         AND $${slugs.length + 1} = ANY(i.entity_ids)
     `,
       [...slugs, entityId]
     );
-    collectVersionIds(entityRows, mapping);
+    collectClassifierIds(entityRows, mapping);
   }
 
   const missingSlugs = slugs.filter((slug) => !mapping.has(slug));
@@ -55,16 +54,14 @@ export async function resolveClassifierVersionIds(
     const globalPlaceholders = missingSlugs.map((_, index) => `$${index + 1}`).join(', ');
     const globalRows = await sql.unsafe(
       `
-      SELECT ccl.slug, ccv.id as version_id
+      SELECT ccl.slug, ccl.id as classifier_id
       FROM event_classifiers ccl
-      JOIN event_classifier_versions ccv ON ccv.classifier_id = ccl.id
-      WHERE ccv.is_current = true
-        AND ccl.slug IN (${globalPlaceholders})
+      WHERE ccl.slug IN (${globalPlaceholders})
         AND ccl.watcher_id IS NULL
     `,
       missingSlugs
     );
-    collectVersionIds(globalRows, mapping);
+    collectClassifierIds(globalRows, mapping);
   }
 
   return mapping;
@@ -99,7 +96,7 @@ export function buildSourceOnlyExistsClause(
 
 export function buildClassificationExistsClauses(
   filtersBySlug: Map<string, string[]>,
-  classifierVersionIds: Map<string, number[]>,
+  classifierIdsBySlug: Map<string, number[]>,
   classificationSource: 'user' | 'embedding' | 'llm' | undefined,
   baseParamIndex: number
 ): { clauses: string[]; params: any[] } | null {
@@ -123,11 +120,11 @@ export function buildClassificationExistsClauses(
       continue;
     }
 
-    const versionIds = (classifierVersionIds.get(slugStr) || []).filter(
+    const classifierIds = (classifierIdsBySlug.get(slugStr) || []).filter(
       (value) => typeof value === 'number' && Number.isInteger(value)
     );
-    if (versionIds.length === 0) {
-      logger.warn({ slug: slugStr }, 'Skipping classification filter without current version');
+    if (classifierIds.length === 0) {
+      logger.warn({ slug: slugStr }, 'Skipping classification filter without classifier');
       return null;
     }
 
@@ -136,9 +133,9 @@ export function buildClassificationExistsClauses(
     const valuesParamSQL = `$${paramIndex}::text[]`;
     paramIndex++;
 
-    // Parameterize version IDs
-    params.push(versionIds);
-    const versionFilterSql = `cc.classifier_version_id = ANY($${paramIndex}::int[])`;
+    // Parameterize classifier IDs (stable classifier_id, any version's classifications)
+    params.push(classifierIds);
+    const classifierFilterSql = `cc.classifier_id = ANY($${paramIndex}::bigint[])`;
     paramIndex++;
 
     clauses.push(
@@ -146,7 +143,7 @@ export function buildClassificationExistsClauses(
       EXISTS (
         SELECT 1 FROM event_classifications cc
         WHERE cc.event_id = f.id
-          AND ${versionFilterSql}
+          AND ${classifierFilterSql}
           AND cc."values" && ${valuesParamSQL}
           ${sourceCondition}
       )

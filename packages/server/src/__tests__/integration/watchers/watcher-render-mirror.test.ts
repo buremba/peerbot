@@ -1,9 +1,10 @@
 /**
- * Watcher-render consolidation phase 1: watcher_versions.json_template is mirrored
- * into the unified view_template_versions store by a DB trigger, keyed by the watcher
- * GROUP (resource_type='watcher', resource_id=watcher group-root id, org from the root
- * watcher). Versions with no json_template (AutoRenderer) are skipped. No is_current —
- * the watcher display reads a specific selected version. Reads flip in phase 2.
+ * Watcher render lives in the unified view_template_versions store, keyed by the watcher
+ * GROUP (resource_type='watcher', resource_id=group-root id, org from the root watcher).
+ * As of phase 3b the WRITE path (handleCreate + create_version) populates it directly
+ * (the phase-1 mirror trigger is retired); versions with no template (AutoRenderer) are
+ * skipped. The re-parent re-key now lives in the app (entity deletion) — see the
+ * entity-deletion test below.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -122,39 +123,58 @@ describe('watcher render mirrors into view_template_versions (phase 1)', () => {
     expect(rows[1].json_template).toEqual(v2);
   });
 
-  it('clears the mirror when a version json_template is updated to NULL', async () => {
-    const ws = await TestWorkspace.create({ name: 'ClearTmpl Org' });
-    const wid = await makeWatcher(ws, 'clear', { version: 1, root: { type: 'text', content: 'x' } });
-    expect(await mirrored(wid)).toHaveLength(1);
-    // A templated -> NULL transition must drop the mirror row (not leave it stale),
-    // so a reader off the mirror matches a reader off watcher_versions (now NULL).
-    await sql`UPDATE watcher_versions SET json_template = NULL WHERE watcher_id = ${wid}`;
-    expect(await mirrored(wid)).toHaveLength(0);
-  });
-
-  it('re-keys the mirror when a version chain is re-parented to a new root', async () => {
+  it('re-parenting (group-root entity force-delete) re-keys the render to the surviving sibling', async () => {
     const ws = await TestWorkspace.create({ name: 'Reparent Org' });
-    const wid = await makeWatcher(ws, 'rp', { version: 1, root: { type: 'text', content: 'x' } });
-    expect(await mirrored(wid)).toHaveLength(1);
-
-    // A bare new-root watcher in the same org (no versions of its own), then
-    // re-parent the chain — entity-management does this on group-root deletion
-    // with surviving siblings (UPDATE watcher_versions SET watcher_id = new_root).
+    const entityA = await createTestEntity({
+      name: 'A',
+      organization_id: ws.org.id,
+      created_by: ws.users.owner.id,
+    });
+    const entityB = await createTestEntity({
+      name: 'B',
+      organization_id: ws.org.id,
+      created_by: ws.users.owner.id,
+    });
     const agent = await createTestAgent({
       organizationId: ws.org.id,
       ownerUserId: ws.users.owner.id,
     });
-    const newRoot = wid + 7_000_000;
-    await sql`
-      INSERT INTO watchers (id, name, slug, organization_id, agent_id, created_by, watcher_group_id)
-      VALUES (${newRoot}, 'new-root', ${`nr-${newRoot}`}, ${ws.org.id}, ${agent.agentId}, ${ws.users.owner.id}, ${newRoot})
-    `;
-    await sql`UPDATE watcher_versions SET watcher_id = ${newRoot} WHERE watcher_id = ${wid}`;
+    const tmpl = { version: 1, root: { type: 'text', content: 'rp' } };
+    const root = (await ws.owner.watchers.create({
+      entity_id: entityA.id,
+      slug: 'rp-root',
+      name: 'RP',
+      prompt: 'p',
+      extraction_schema: { type: 'object', properties: { s: { type: 'string' } }, required: ['s'] },
+      schedule: '0 9 * * *',
+      agent_id: agent.agentId,
+      json_template: tmpl,
+    })) as { watcher_id: string };
+    const rootId = Number(root.watcher_id);
 
-    expect(await mirrored(wid)).toHaveLength(0); // stale old key cleared
-    const moved = await mirrored(newRoot);
-    expect(moved).toHaveLength(1); // re-keyed under the new root
-    expect(Number(moved[0].version)).toBe(1);
-    expect(moved[0].organization_id).toBe(ws.org.id);
+    // Assign the version chain to entity B (create_from_version → shares the group).
+    const cur = (await sql`
+      SELECT current_version_id FROM watchers WHERE id = ${rootId}
+    `) as Array<{ current_version_id: number }>;
+    const assign = (await manageWatchers(
+      {
+        action: 'create_from_version',
+        version_id: String(cur[0].current_version_id),
+        entity_ids: [entityB.id],
+      } as never,
+      {} as Env,
+      ownerCtx(ws)
+    )) as { created: Array<{ watcher_id: string }> };
+    const assignId = Number(assign.created[0].watcher_id);
+    expect(await mirrored(rootId)).toHaveLength(1);
+
+    // Force-delete entity A (the root watcher's entity): entity-management re-parents the
+    // shared chain to the surviving B assignment, and the app re-keys the render with it.
+    await ws.owner.entities.delete(entityA.id, { force_delete_tree: true });
+
+    expect(await mirrored(rootId)).toHaveLength(0); // old root key cleared
+    const moved = await mirrored(assignId);
+    expect(moved).toHaveLength(1); // re-keyed to the surviving sibling (new group root)
+    expect(moved[0].json_template).toEqual(tmpl);
   });
 });

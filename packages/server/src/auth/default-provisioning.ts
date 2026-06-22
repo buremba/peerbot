@@ -482,13 +482,13 @@ export async function ensureDefaultWatcher(params: {
         INSERT INTO watcher_versions (
           id, watcher_id, version, name, description,
           prompt, extraction_schema, version_sources,
-          json_template, keying_config, classifiers,
+          keying_config, classifiers,
           condensation_prompt, condensation_window_count,
           reactions_guidance, change_notes, created_by, created_at
         ) VALUES (
           ${versionId}, ${watcherId}, 1, ${DEFAULT_WATCHER_NAME}, NULL,
           ${DEFAULT_WATCHER_PROMPT}, ${tx.json(extractionSchema)}, ${tx.json(sources)},
-          NULL, NULL, NULL,
+          NULL, NULL,
           NULL, NULL,
           NULL, 'Initial version', ${createdBy}, NOW()
         )

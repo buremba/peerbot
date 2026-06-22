@@ -584,6 +584,48 @@ export async function deleteEntity(
       // of the shared watcher_versions chain to a sibling so the upcoming
       // ON DELETE CASCADE doesn't wipe out the version row that the rest
       // of the group still depends on.
+      //
+      // Serialize against create_version (which takes this same per-group advisory
+      // lock): otherwise a concurrent create_version could insert a watcher_versions row
+      // + its render at old_root AFTER the re-key but BEFORE the chain move, orphaning a
+      // render row at the deleted root. Lock every group root being deleted, in id order
+      // to avoid deadlock. (The retired trigger was implicitly serialized by the move.)
+      await tx`
+        SELECT pg_advisory_xact_lock(hashtext('watcher_create_version'), w.id)
+        FROM watchers w
+        WHERE w.id = w.watcher_group_id
+          AND COALESCE(w.entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
+        ORDER BY w.id
+      `;
+      // Watcher-render fold phase 3b: the mirror trigger used to re-key the render on
+      // this re-parent; with the trigger retired, do it in the app. Re-key the render
+      // rows (resource_id = group root) BEFORE the watcher_versions move below — the
+      // mapping's NOT EXISTS guard (new_root has no versions) only holds pre-move. No key
+      // conflict: renders are ONLY ever keyed by the group root (resource_id = groupId in
+      // writeWatcherRender), and new_root is a non-root sibling, so it has no render rows.
+      await tx`
+        UPDATE view_template_versions vtv
+        SET resource_id = s.new_root::text
+        FROM (
+          SELECT r.old_root, MIN(s.id) AS new_root
+          FROM (
+            SELECT w.id AS old_root
+            FROM watchers w
+            WHERE w.id = w.watcher_group_id
+              AND COALESCE(w.entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
+          ) r
+          JOIN watchers s
+            ON s.watcher_group_id = r.old_root
+           AND s.id <> r.old_root
+           AND NOT (COALESCE(s.entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[])
+           AND NOT EXISTS (
+             SELECT 1 FROM watcher_versions vv WHERE vv.watcher_id = s.id
+           )
+          GROUP BY r.old_root
+        ) s
+        WHERE vtv.resource_type = 'watcher' AND vtv.resource_id = s.old_root::text
+          AND vtv.tab_name IS NULL
+      `;
       await tx`
         UPDATE watcher_versions wv
         SET watcher_id = s.new_root

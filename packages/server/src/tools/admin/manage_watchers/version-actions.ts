@@ -61,12 +61,20 @@ export async function handleCreateVersion(
   // the caller didn't specify.
   const prevRows = await sql`
     SELECT
-      name, description, prompt, extraction_schema, version_sources,
-      json_template, keying_config, classifiers,
-      reactions_guidance, condensation_prompt, condensation_window_count
-    FROM watcher_versions
-    WHERE watcher_id = ${groupId}
-    ORDER BY version DESC LIMIT 1
+      wv.name, wv.description, wv.prompt, wv.extraction_schema, wv.version_sources,
+      -- Watcher-render fold phase 3b: the render lives in view_template_versions; read
+      -- the prev version's render from there so the carry-forward survives the column
+      -- no longer being written to watcher_versions.
+      vtv.json_template,
+      wv.keying_config, wv.classifiers,
+      wv.reactions_guidance, wv.condensation_prompt, wv.condensation_window_count
+    FROM watcher_versions wv
+    LEFT JOIN view_template_versions vtv
+      ON vtv.resource_type = 'watcher' AND vtv.resource_id = wv.watcher_id::text
+     AND vtv.organization_id = ${ctx.organizationId} AND vtv.version = wv.version
+     AND vtv.tab_name IS NULL
+    WHERE wv.watcher_id = ${groupId}
+    ORDER BY wv.version DESC LIMIT 1
   `;
   if (prevRows.length === 0) {
     throw new Error(
@@ -143,7 +151,7 @@ export async function handleCreateVersion(
       INSERT INTO watcher_versions (
         id, watcher_id, version, name, description,
         prompt, extraction_schema, version_sources,
-        json_template, keying_config, classifiers,
+        keying_config, classifiers,
         condensation_prompt, condensation_window_count,
         reactions_guidance, change_notes, created_by, created_at
       ) VALUES (
@@ -151,7 +159,7 @@ export async function handleCreateVersion(
         ${args.name ?? (prev.name as string) ?? 'Watcher'},
         ${args.description !== undefined ? (args.description ?? null) : ((prev.description as string) ?? null)},
         ${prompt}, ${toJsonParam(tx, extractionSchema)}, NULL,
-        ${toJsonParam(tx, jsonTemplate)}, ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
+        ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
         ${args.condensation_prompt ?? (prev.condensation_prompt as string) ?? null},
         ${args.condensation_window_count ?? (prev.condensation_window_count as number) ?? null},
         ${args.reactions_guidance ?? (prev.reactions_guidance as string) ?? null},

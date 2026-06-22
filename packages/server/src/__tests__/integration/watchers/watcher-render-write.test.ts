@@ -75,30 +75,43 @@ describe('watcher render direct write (phase 3a)', () => {
     await cleanupTestDatabase();
   });
 
-  it('app writes the render to view_template_versions standalone (trigger DISABLED — proves 3b)', async () => {
-    try {
-      await sql`ALTER TABLE watcher_versions DISABLE TRIGGER trg_mirror_watcher_render`;
-      const ws = await TestWorkspace.create({ name: 'Direct Org' });
-      const tmpl = { version: 1, root: { type: 'text', content: 'direct' } };
-      const wid = await makeWatcher(ws, 'direct', tmpl);
+  it('app is the sole writer of the render into view_template_versions (trigger retired)', async () => {
+    // Phase 3b: the mirror trigger is dropped and json_template is no longer written to
+    // watcher_versions, so writeWatcherRender (handleCreate + create_version) is the only
+    // thing that can populate view_template_versions.
+    const ws = await TestWorkspace.create({ name: 'Direct Org' });
+    const tmpl = { version: 1, root: { type: 'text', content: 'direct' } };
+    const wid = await makeWatcher(ws, 'direct', tmpl);
 
-      // Trigger off → only the app's writeWatcherRender populated the store (handleCreate).
-      const r1 = await rendered(wid);
-      expect(r1).toHaveLength(1);
-      expect(r1[0].json_template).toEqual(tmpl);
+    const r1 = await rendered(wid);
+    expect(r1).toHaveLength(1);
+    expect(r1[0].json_template).toEqual(tmpl);
+    // And the column is no longer written on watcher_versions.
+    const src = (await sql`
+      SELECT json_template FROM watcher_versions WHERE watcher_id = ${wid}
+    `) as Array<{ json_template: unknown }>;
+    expect(src[0].json_template).toBeNull();
 
-      // create_version also direct-writes its render.
-      const v2 = { version: 1, root: { type: 'text', content: 'direct-v2' } };
-      await manageWatchers(
-        { action: 'create_version', watcher_id: String(wid), json_template: v2 } as never,
-        {} as Env,
-        ownerCtx(ws)
-      );
-      const r2 = await rendered(wid);
-      expect(r2.map((r) => Number(r.version))).toEqual([1, 2]);
-      expect(r2[1].json_template).toEqual(v2);
-    } finally {
-      await sql`ALTER TABLE watcher_versions ENABLE TRIGGER trg_mirror_watcher_render`;
-    }
+    // create_version direct-writes its render, and carries the prev render forward.
+    const v2 = { version: 1, root: { type: 'text', content: 'direct-v2' } };
+    await manageWatchers(
+      { action: 'create_version', watcher_id: String(wid), json_template: v2 } as never,
+      {} as Env,
+      ownerCtx(ws)
+    );
+    const r2 = await rendered(wid);
+    expect(r2.map((r) => Number(r.version))).toEqual([1, 2]);
+    expect(r2[1].json_template).toEqual(v2);
+
+    // Carry-forward: a create_version with NO json_template inherits the prev render
+    // from view_template_versions (not from watcher_versions, which is now NULL).
+    await manageWatchers(
+      { action: 'create_version', watcher_id: String(wid), prompt: 'changed' } as never,
+      {} as Env,
+      ownerCtx(ws)
+    );
+    const r3 = await rendered(wid);
+    expect(r3.map((r) => Number(r.version))).toEqual([1, 2, 3]);
+    expect(r3[2].json_template).toEqual(v2);
   });
 });

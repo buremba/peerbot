@@ -20,6 +20,9 @@ import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import {
 	createAppWebhookRoutes,
 	createGithubAppWebhookProvider,
+	createJiraAppWebhookProvider,
+	createLinearAppWebhookProvider,
+	createSchemaDrivenAppWebhookProvider,
 } from "../routes/public/app-webhooks.js";
 import { createPostgresAppInstallationStore } from "../../lobu/stores/app-installation-store.js";
 import {
@@ -370,5 +373,240 @@ describe("app-webhook router (GitHub)", () => {
 		const res = await app.fetch(ghDelivery(raw));
 		expect(res.status).toBe(401);
 		expect((await eventRows(`webhook:app_install:${installId}`)).length).toBe(0);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Jira — schema-driven verify (`x-hub-signature: sha256=<hex>`), site-host tenant
+// ---------------------------------------------------------------------------
+
+const JIRA_APP_ID = "jira-client-id";
+const JIRA_SECRET = "jira-webhook-secret-0123456789abcdef";
+const JIRA_SITE = "acme.atlassian.net";
+
+/** Jira signs the raw body with the webhook secret → `sha256=<hex>`. */
+function jiraSign(rawBody: string, secret = JIRA_SECRET): string {
+	return `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`;
+}
+
+function buildJiraApp() {
+	return createAppWebhookRoutes({
+		installationStore: createPostgresAppInstallationStore(),
+		secretStore: fakeSecretStore,
+		providers: [createJiraAppWebhookProvider({ appId: JIRA_APP_ID })],
+		resolveAppWebhookSecret: async () => JIRA_SECRET,
+	});
+}
+
+async function seedJiraInstall(): Promise<number> {
+	const store = createPostgresAppInstallationStore();
+	const row = await store.upsert({
+		organizationId: ORG,
+		provider: "jira",
+		providerInstance: "cloud",
+		providerAppId: JIRA_APP_ID,
+		externalTenantId: JIRA_SITE,
+		status: "active",
+	});
+	return row.id;
+}
+
+function jiraDelivery(
+	rawBody: string,
+	{ signature = jiraSign(rawBody) }: { signature?: string } = {},
+): Request {
+	return new Request("http://gateway.test/api/v1/app-webhooks/jira", {
+		method: "POST",
+		body: rawBody,
+		headers: {
+			"content-type": "application/json",
+			"x-hub-signature": signature,
+		},
+	});
+}
+
+describe("app-webhook router (Jira)", () => {
+	test("a signed issue delivery routes to the owning org via its site host", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const installId = await seedJiraInstall();
+		const app = buildJiraApp();
+
+		const raw = JSON.stringify({
+			webhookEvent: "jira:issue_updated",
+			issue: {
+				id: "10000",
+				key: "ACME-1",
+				self: `https://${JIRA_SITE}/rest/api/2/issue/10000`,
+			},
+		});
+		const res = await app.fetch(jiraDelivery(raw));
+		expect(res.status).toBe(202);
+
+		const rows = await eventRows(`webhook:app_install:${installId}`);
+		expect(rows.length).toBe(1);
+		expect(rows[0].organization_id).toBe(ORG);
+		// No delivery-id header → dedupe falls back to a body hash origin_id.
+		expect(typeof rows[0].origin_id).toBe("string");
+	});
+
+	test("a forged signature is rejected with 401 and lands nothing", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const installId = await seedJiraInstall();
+		const app = buildJiraApp();
+
+		const raw = JSON.stringify({
+			webhookEvent: "jira:issue_updated",
+			issue: { self: `https://${JIRA_SITE}/rest/api/2/issue/1` },
+		});
+		const res = await app.fetch(jiraDelivery(raw, { signature: "sha256=forged" }));
+		expect(res.status).toBe(401);
+		expect((await eventRows(`webhook:app_install:${installId}`)).length).toBe(0);
+	});
+
+	test("a delivery with no self URL has no tenant → 200 ack, nothing landed", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		await seedJiraInstall();
+		const app = buildJiraApp();
+
+		const raw = JSON.stringify({ webhookEvent: "jira:test", timestamp: 1 });
+		const res = await app.fetch(jiraDelivery(raw));
+		expect(res.status).toBe(200);
+		expect((await res.json()).landed).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Linear — schema-driven verify (`linear-signature: <hex>`, no prefix),
+// organizationId tenant
+// ---------------------------------------------------------------------------
+
+const LINEAR_APP_ID = "linear-client-id";
+const LINEAR_SECRET = "linear-webhook-secret-0123456789abcdef";
+const LINEAR_ORG_ID = "11111111-2222-3333-4444-555555555555";
+
+/** Linear signs the raw body and sends a BARE hex digest (no prefix). */
+function linearSign(rawBody: string, secret = LINEAR_SECRET): string {
+	return createHmac("sha256", secret).update(rawBody).digest("hex");
+}
+
+function buildLinearApp() {
+	return createAppWebhookRoutes({
+		installationStore: createPostgresAppInstallationStore(),
+		secretStore: fakeSecretStore,
+		providers: [createLinearAppWebhookProvider({ appId: LINEAR_APP_ID })],
+		resolveAppWebhookSecret: async () => LINEAR_SECRET,
+	});
+}
+
+async function seedLinearInstall(): Promise<number> {
+	const store = createPostgresAppInstallationStore();
+	const row = await store.upsert({
+		organizationId: ORG,
+		provider: "linear",
+		providerInstance: "cloud",
+		providerAppId: LINEAR_APP_ID,
+		externalTenantId: LINEAR_ORG_ID,
+		status: "active",
+	});
+	return row.id;
+}
+
+function linearDelivery(
+	rawBody: string,
+	{ signature = linearSign(rawBody) }: { signature?: string } = {},
+): Request {
+	return new Request("http://gateway.test/api/v1/app-webhooks/linear", {
+		method: "POST",
+		body: rawBody,
+		headers: {
+			"content-type": "application/json",
+			"linear-signature": signature,
+		},
+	});
+}
+
+describe("app-webhook router (Linear)", () => {
+	test("a signed issue delivery routes to the owning org via organizationId", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const installId = await seedLinearInstall();
+		const app = buildLinearApp();
+
+		const raw = JSON.stringify({
+			action: "create",
+			type: "Issue",
+			organizationId: LINEAR_ORG_ID,
+			data: { id: "abc", title: "Ship it" },
+		});
+		const res = await app.fetch(linearDelivery(raw));
+		expect(res.status).toBe(202);
+
+		const rows = await eventRows(`webhook:app_install:${installId}`);
+		expect(rows.length).toBe(1);
+		expect(rows[0].organization_id).toBe(ORG);
+	});
+
+	test("a bare-hex signature with a `sha256=` prefix is rejected (no prefix expected)", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const installId = await seedLinearInstall();
+		const app = buildLinearApp();
+
+		const raw = JSON.stringify({ organizationId: LINEAR_ORG_ID, action: "create" });
+		// Linear sends NO prefix; a `sha256=`-prefixed value must fail.
+		const res = await app.fetch(
+			linearDelivery(raw, { signature: `sha256=${linearSign(raw)}` }),
+		);
+		expect(res.status).toBe(401);
+		expect((await eventRows(`webhook:app_install:${installId}`)).length).toBe(0);
+	});
+
+	test("a delivery with no organizationId has no tenant → 200 ack", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		await seedLinearInstall();
+		const app = buildLinearApp();
+
+		const raw = JSON.stringify({ action: "create", type: "Issue" });
+		const res = await app.fetch(linearDelivery(raw));
+		expect(res.status).toBe(200);
+		expect((await res.json()).landed).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Schema-driven verify factory — provider-agnostic HMAC derivation
+// ---------------------------------------------------------------------------
+
+describe("createSchemaDrivenAppWebhookProvider", () => {
+	test("derives verify from the schema header/algorithm/prefix", () => {
+		const provider = createSchemaDrivenAppWebhookProvider({
+			provider: "demo",
+			webhookSchema: {
+				signatureHeader: "x-demo-sig",
+				algorithm: "sha256",
+				signaturePrefix: "sha256=",
+			},
+			extractTenant: () => null,
+		});
+		const raw = new TextEncoder().encode("hello");
+		const secret = "s3cret";
+		const digest = createHmac("sha256", secret).update(raw).digest("hex");
+
+		const good = new Headers({ "x-demo-sig": `sha256=${digest}` });
+		expect(provider.verify(raw, good, secret)).toBe(true);
+
+		const wrongHeader = new Headers({ "x-other": `sha256=${digest}` });
+		expect(provider.verify(raw, wrongHeader, secret)).toBe(false);
+
+		const forged = new Headers({ "x-demo-sig": "sha256=deadbeef" });
+		expect(provider.verify(raw, forged, secret)).toBe(false);
+	});
+
+	test("throws when the schema declares no signatureHeader (must fail closed)", () => {
+		expect(() =>
+			createSchemaDrivenAppWebhookProvider({
+				provider: "unsigned",
+				webhookSchema: { algorithm: "sha256" },
+				extractTenant: () => null,
+			}),
+		).toThrow(/signatureHeader/);
 	});
 });

@@ -16,9 +16,13 @@
  *      per-connection ingest (`connector_key='webhook:<id>'`, reusing the
  *      dedupe index, size cap, and rate limit).
  *
- * Verification is per-PROVIDER (HMAC scheme differs), not schema-driven —
- * `ConnectorWebhookSchema` is HMAC-only and can't express Slack's
- * `v0:{ts}:{body}` or Jira's per-app-type rules. Hence the plugin registry.
+ * Verification is per-PROVIDER (HMAC scheme differs). For pure raw-body HMAC
+ * providers (GitHub, Jira, Linear) the `verify` is DERIVED from the connector's
+ * `ConnectorWebhookSchema` (signatureHeader / algorithm / signaturePrefix) by
+ * {@link createSchemaDrivenAppWebhookProvider} — those plugins supply only the
+ * tenant extractor, never a hand-written verify. Slack stays a custom plugin:
+ * its `v0:{ts}:{rawBody}` + timestamp-freshness scheme can't be expressed by the
+ * HMAC-only schema. Hence the plugin registry.
  *
  * Delivery before the install callback: a provider may deliver before the
  * OAuth/install callback has written the `app_installations` row. That is NOT
@@ -33,6 +37,7 @@
 import { Hono } from "hono";
 import { createLogger } from "@lobu/core";
 import type { StoredConnection } from "@lobu/core";
+import type { ConnectorWebhookSchema } from "@lobu/connector-sdk";
 import {
 	handleWebhookIngest,
 	readBodyWithCap,
@@ -65,11 +70,26 @@ export interface AppWebhookContent {
 }
 
 /**
- * Per-provider verifier + tenant extractor. New providers (Slack, Jira) add a
- * plugin without touching the router — only GitHub ships in this PR.
+ * Per-provider verifier + tenant extractor. New providers add a plugin without
+ * touching the router. Pure-HMAC providers (GitHub, Jira, Linear) are built by
+ * {@link createSchemaDrivenAppWebhookProvider}; Slack ships its own custom
+ * verify (timestamped signing base, not expressible by the HMAC schema).
  */
 export interface AppWebhookProvider {
 	provider: string;
+	/**
+	 * The provider's raw-body HMAC scheme, used by the router to synthesize the
+	 * ingest connection config so `handleWebhookIngest` re-verifies against the
+	 * SAME header/algorithm/prefix the provider just verified — not a hardcoded
+	 * GitHub scheme. `dedupeHeader` is the provider's per-delivery id header
+	 * (when one exists); absent → ingest dedupes on a body hash.
+	 */
+	webhookScheme: {
+		signatureHeader: string;
+		algorithm: "sha256" | "sha1";
+		signaturePrefix?: string;
+		dedupeHeader?: string;
+	};
 	/**
 	 * Verify the delivery against the APP-LEVEL webhook secret. Pure over
 	 * (rawBody, headers, secret) — no I/O — so it's trivially multi-replica
@@ -146,12 +166,73 @@ export function extractGithubWebhookContent(rawBody: Uint8Array): AppWebhookCont
 }
 
 /**
+ * Build an {@link AppWebhookProvider} whose `verify` is DERIVED from a
+ * connector's {@link ConnectorWebhookSchema} — the single source of truth for
+ * the provider's raw-body HMAC scheme. The caller supplies ONLY the
+ * provider-specific tenant extractor (and optionally a content projector); the
+ * verify is identical machinery across every pure-HMAC provider, so it never
+ * gets hand-written again (GitHub, Jira, Linear all flow through here).
+ *
+ * The schema's `signatureHeader` is REQUIRED here: an app-webhook endpoint must
+ * fail closed, so a provider that signs nothing has no schema-driven verify to
+ * derive — it would have to ship a custom plugin (Slack). We throw at
+ * construction rather than silently accepting unverifiable deliveries.
+ *
+ * `algorithm` defaults to `sha256` and `signaturePrefix` to none, matching
+ * {@link ConnectorWebhookSchema} defaults.
+ */
+export function createSchemaDrivenAppWebhookProvider(options: {
+	/** The `:provider` path segment + `app_installations.provider` value. */
+	provider: string;
+	/** The connector's declared HMAC scheme; `verify` is derived from it. */
+	webhookSchema: ConnectorWebhookSchema;
+	/** Pull the tenant tuple from the delivery (the only per-provider verify-free part). */
+	extractTenant(rawBody: Uint8Array, headers: Headers): AppWebhookTenant | null;
+	/** Optional title/source_url projector for the landed row. */
+	extractContent?(rawBody: Uint8Array, headers: Headers): AppWebhookContent;
+}): AppWebhookProvider {
+	const { provider, webhookSchema, extractTenant, extractContent } = options;
+	const signatureHeader = webhookSchema.signatureHeader;
+	if (!signatureHeader) {
+		throw new Error(
+			`Schema-driven app-webhook provider "${provider}" requires a webhook ` +
+				`signatureHeader (a non-signing provider must ship a custom verify plugin).`,
+		);
+	}
+	const algorithm = webhookSchema.algorithm ?? "sha256";
+	const signaturePrefix = webhookSchema.signaturePrefix;
+	return {
+		provider,
+		webhookScheme: {
+			signatureHeader,
+			algorithm,
+			...(signaturePrefix ? { signaturePrefix } : {}),
+			...(webhookSchema.dedupeHeader
+				? { dedupeHeader: webhookSchema.dedupeHeader }
+				: {}),
+		},
+		verify(rawBody, headers, appWebhookSecret) {
+			return verifyWebhookSignature(
+				rawBody,
+				headers.get(signatureHeader),
+				appWebhookSecret,
+				algorithm,
+				signaturePrefix,
+			);
+		},
+		extractTenant,
+		...(extractContent ? { extractContent } : {}),
+	};
+}
+
+/**
  * GitHub App webhook plugin.
  *
- * Verify: GitHub signs the raw request body with the App's webhook secret and
- * sends `x-hub-signature-256: sha256=<hex>`. We reuse the connection-ingest
- * HMAC verifier (constant-time, decoded-length compare — a non-hex right-length
- * header can't slip through or throw).
+ * Verify: schema-driven (GitHub signs the raw body and sends
+ * `x-hub-signature-256: sha256=<hex>`; the scheme is the github connector's
+ * {@link ConnectorWebhookSchema}). The shared HMAC verifier is constant-time
+ * with a decoded-length compare — a non-hex right-length header can't slip
+ * through or throw.
  *
  * Extract: the tenant is the `installation.id` in the JSON body; the Lobu App
  * is the receiving GitHub App (`GITHUB_APP_ID`), and the instance is 'cloud'
@@ -166,16 +247,15 @@ export function createGithubAppWebhookProvider(options: {
 	/** Receiving GitHub App id, stamped as `provider_app_id`. */
 	appId: string;
 }): AppWebhookProvider {
-	return {
+	return createSchemaDrivenAppWebhookProvider({
 		provider: "github",
-		verify(rawBody, headers, appWebhookSecret) {
-			return verifyWebhookSignature(
-				rawBody,
-				headers.get("x-hub-signature-256"),
-				appWebhookSecret,
-				"sha256",
-				"sha256=",
-			);
+		// GitHub raw-body HMAC: `x-hub-signature-256: sha256=<hex>` (sha256).
+		// `x-github-delivery` is the per-delivery UUID used for redelivery dedupe.
+		webhookSchema: {
+			signatureHeader: "x-hub-signature-256",
+			algorithm: "sha256",
+			signaturePrefix: "sha256=",
+			dedupeHeader: "x-github-delivery",
 		},
 		extractTenant(rawBody) {
 			const body = parseJson(rawBody);
@@ -196,7 +276,106 @@ export function createGithubAppWebhookProvider(options: {
 		extractContent(rawBody) {
 			return extractGithubWebhookContent(rawBody);
 		},
-	};
+	});
+}
+
+/** First non-empty `*.self` URL found by a shallow scan of the delivery body. */
+function firstSelfUrl(body: unknown): string | undefined {
+	if (body === null || typeof body !== "object") return undefined;
+	const root = body as Record<string, unknown>;
+	const direct = strField(root, "self");
+	if (direct) return direct;
+	// Jira nests the entity (issue/comment/user/project) one level down; each
+	// entity carries its own REST `self` URL on the same Atlassian site.
+	for (const value of Object.values(root)) {
+		const nested = strField(value, "self");
+		if (nested) return nested;
+	}
+	return undefined;
+}
+
+/**
+ * Jira (Cloud) app webhook plugin.
+ *
+ * Verify: schema-driven from the jira connector's {@link ConnectorWebhookSchema}
+ * — Jira dynamic webhooks HMAC-sign the raw body with the registration secret
+ * and send `x-hub-signature: sha256=<hex>`.
+ *
+ * Extract: the tenant is the Atlassian SITE the delivery came from. Jira webhook
+ * bodies don't carry the cloudId directly, but every entity exposes a REST
+ * `self` URL on its site host (e.g.
+ * `https://acme.atlassian.net/rest/api/2/issue/10000`). We use the site host as
+ * `external_tenant_id` (one install row per site); `provider_app_id` is the Lobu
+ * OAuth/Connect app id. A delivery with no resolvable `self` URL (e.g. a test
+ * ping) has no tenant → null.
+ */
+export function createJiraAppWebhookProvider(options: {
+	/** Lobu Jira app id (`JIRA_CLIENT_ID`), stamped as `provider_app_id`. */
+	appId: string;
+}): AppWebhookProvider {
+	return createSchemaDrivenAppWebhookProvider({
+		provider: "jira",
+		// Jira raw-body HMAC: `x-hub-signature: sha256=<hex>` (sha256).
+		webhookSchema: {
+			signatureHeader: "x-hub-signature",
+			algorithm: "sha256",
+			signaturePrefix: "sha256=",
+		},
+		extractTenant(rawBody) {
+			const body = parseJson(rawBody);
+			const selfUrl = firstSelfUrl(body);
+			if (!selfUrl) return null;
+			let host: string;
+			try {
+				host = new URL(selfUrl).host;
+			} catch {
+				return null;
+			}
+			if (!host) return null;
+			return {
+				providerInstance: "cloud",
+				providerAppId: options.appId,
+				externalTenantId: host,
+			};
+		},
+	});
+}
+
+/**
+ * Linear app webhook plugin.
+ *
+ * Verify: schema-driven from the linear connector's {@link ConnectorWebhookSchema}
+ * — Linear HMAC-signs the raw body and sends a BARE hex digest in
+ * `linear-signature` (no `sha256=` prefix).
+ *
+ * Extract: every Linear webhook delivery carries the top-level `organizationId`
+ * of the workspace it belongs to — that's the tenant (one install row per Linear
+ * workspace). `provider_app_id` is the Lobu Linear OAuth app id. A delivery with
+ * no `organizationId` has no tenant → null.
+ */
+export function createLinearAppWebhookProvider(options: {
+	/** Lobu Linear app id (`LINEAR_CLIENT_ID`), stamped as `provider_app_id`. */
+	appId: string;
+}): AppWebhookProvider {
+	return createSchemaDrivenAppWebhookProvider({
+		provider: "linear",
+		// Linear raw-body HMAC: `linear-signature: <hex>` (sha256, no prefix).
+		webhookSchema: {
+			signatureHeader: "linear-signature",
+			algorithm: "sha256",
+		},
+		extractTenant(rawBody) {
+			const body = parseJson(rawBody);
+			if (body === null || typeof body !== "object") return null;
+			const organizationId = strField(body, "organizationId");
+			if (!organizationId) return null;
+			return {
+				providerInstance: "cloud",
+				providerAppId: options.appId,
+				externalTenantId: organizationId,
+			};
+		},
+	});
 }
 
 /** Dependencies the router needs, injected at registration (testable). */
@@ -316,27 +495,31 @@ export function createAppWebhookRoutes(deps: AppWebhookRouterDeps): Hono {
 
 		// 4. Land the RAW delivery through the same event-log path as connection
 		//    ingest. We synthesize a StoredConnection scoped to the install's org
-		//    and keyed on the install id, replaying the GitHub signature scheme
-		//    with the app secret as a plaintext config value so handleWebhookIngest
+		//    and keyed on the install id, replaying the PROVIDER's signature scheme
+		//    (from `provider.webhookScheme`, not a hardcoded GitHub one) with the
+		//    app secret as a plaintext config value so handleWebhookIngest
 		//    re-verifies and lands under connector_key='webhook:app_install:<id>'
 		//    (matches the `webhook:%` dedupe index + size cap + rate limit). A
 		//    fresh Request carries the same raw bytes + headers; the original body
 		//    stream was already consumed above.
+		const scheme = provider.webhookScheme;
 		const synthesized: StoredConnection = {
 			id: `app_install:${install.id}`,
 			platform: "webhook",
 			organizationId: install.organizationId,
 			config: {
 				platform: "webhook",
-				// Replay the GitHub HMAC scheme so the ingest handler's own verify
+				// Replay the provider's HMAC scheme so the ingest handler's own verify
 				// passes against the app secret (plaintext passes resolveSecretValue
-				// through untouched).
-				signatureHeader: "x-hub-signature-256",
-				algorithm: "sha256",
-				signaturePrefix: "sha256=",
+				// through untouched). Providers without a per-delivery id header
+				// (Jira/Linear) omit dedupeHeader → ingest dedupes on a body hash.
+				signatureHeader: scheme.signatureHeader,
+				algorithm: scheme.algorithm,
+				...(scheme.signaturePrefix
+					? { signaturePrefix: scheme.signaturePrefix }
+					: {}),
 				signatureSecret: appSecret,
-				// GitHub stamps a per-delivery UUID; dedupe redeliveries on it.
-				dedupeHeader: "x-github-delivery",
+				...(scheme.dedupeHeader ? { dedupeHeader: scheme.dedupeHeader } : {}),
 				semanticType: "content",
 			},
 			settings: {},

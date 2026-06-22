@@ -33,6 +33,17 @@ ALTER TABLE classify_facet DROP COLUMN IF EXISTS current_version_id;
 
 -- 5. Repoint the output FK off event_classifiers onto classify_facet (same id values, so every row
 --    validates). NOT VALID + VALIDATE avoids the ACCESS EXCLUSIVE scan-lock.
+--
+-- PRE-CLEAN (deploy-safety, flagged in review): VALIDATE aborts the whole migration if even ONE
+-- classification references a classifier_id absent from classify_facet (a historical mirror gap).
+-- The 5d cascade keeps these synced so this is ~0 rows in practice, but the migration must not abort
+-- on a stray orphan. The anti-join is fast (small classify_facet + idx on classifier_id). Run the
+-- count on a prod replica first: SELECT count(*) FROM event_classifications ec
+--   WHERE NOT EXISTS (SELECT 1 FROM classify_facet cf WHERE cf.id = ec.classifier_id);
+-- squawk-ignore prefer-robust-stmts -- dbmate wraps in a transaction
+DELETE FROM event_classifications ec
+  WHERE NOT EXISTS (SELECT 1 FROM classify_facet cf WHERE cf.id = ec.classifier_id);
+
 ALTER TABLE event_classifications DROP CONSTRAINT IF EXISTS event_classifications_classifier_id_fkey;
 ALTER TABLE event_classifications
   ADD CONSTRAINT event_classifications_classifier_id_fkey

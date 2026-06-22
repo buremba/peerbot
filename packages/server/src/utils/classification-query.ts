@@ -198,8 +198,7 @@ async function fetchTargetContent(
        FROM classify_facet cf
        WHERE cf.slug IN (${classifierPlaceholders})
          AND cf.status = 'active'
-         AND cf.watcher_id IS NULL
-         AND cf.status = 'active'`,
+         AND cf.watcher_id IS NULL`,
       enabledClassifiers
     );
     const classifierIds = classifierRows.map((r) => r.classifier_id);
@@ -291,8 +290,7 @@ async function fetchClassifierTemplates(
      FROM classify_facet cf
      WHERE cf.slug IN (${classifierPlaceholders})
        AND cf.status = 'active'
-       AND cf.watcher_id IS NULL
-       AND cf.status = 'active'`,
+       AND cf.watcher_id IS NULL`,
     enabledClassifiers
   );
 
@@ -451,7 +449,7 @@ async function fetchAllClassifierVersions(sql: DbClient): Promise<ClassifierVers
   return sql.unsafe<ClassifierVersionLookup>(
     `SELECT cf.slug, cf.id as version_id, cf.id as classifier_id
      FROM classify_facet cf
-     WHERE cf.status = 'active' AND cf.watcher_id IS NULL AND cf.status = 'active'`,
+     WHERE cf.status = 'active' AND cf.watcher_id IS NULL`,
     []
   );
 }

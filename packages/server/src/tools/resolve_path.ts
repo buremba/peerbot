@@ -1155,19 +1155,23 @@ async function fetchTabs(
   resourceId: string,
   organizationId: string
 ): Promise<ViewTemplateTab[]> {
+  // Render-store consolidation phase 2: named tabs read from is_current on
+  // view_template_versions (the trigger keeps it in lockstep with the legacy
+  // view_template_active_tabs pointer across all replicas).
   const rows = await sql`
     SELECT
-      vtat.tab_name,
-      vtat.tab_order,
+      vtv.tab_name,
+      vtv.tab_order,
       vtv.json_template,
       vtv.version,
       vtv.id as version_id
-    FROM view_template_active_tabs vtat
-    JOIN view_template_versions vtv ON vtv.id = vtat.current_version_id
-    WHERE vtat.resource_type = ${resourceType}
-      AND vtat.resource_id = ${resourceId}
-      AND vtat.organization_id = ${organizationId}
-    ORDER BY vtat.tab_order ASC, vtat.tab_name ASC
+    FROM view_template_versions vtv
+    WHERE vtv.resource_type = ${resourceType}
+      AND vtv.resource_id = ${resourceId}
+      AND vtv.organization_id = ${organizationId}
+      AND vtv.tab_name IS NOT NULL
+      AND vtv.is_current = true
+    ORDER BY vtv.tab_order ASC, vtv.tab_name ASC
   `;
 
   return rows.map((row) => ({

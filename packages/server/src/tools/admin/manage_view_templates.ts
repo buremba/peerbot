@@ -330,18 +330,20 @@ async function handleGet(
     'created_by'
   );
 
-  // Named tabs
+  // Named tabs — render-store consolidation phase 2: read from is_current on
+  // view_template_versions (trigger-synced with the legacy active_tabs pointer).
   const tabRows = await sql`
     SELECT
-      vtat.tab_name, vtat.tab_order,
+      vtv.tab_name, vtv.tab_order,
       vtv.version as current_version, vtv.id as current_version_id,
       vtv.json_template
-    FROM view_template_active_tabs vtat
-    JOIN view_template_versions vtv ON vtv.id = vtat.current_version_id
-    WHERE vtat.resource_type = ${args.resource_type}
-      AND vtat.resource_id = ${resourceId}
-      AND vtat.organization_id = ${ctx.organizationId}
-    ORDER BY vtat.tab_order ASC, vtat.tab_name ASC
+    FROM view_template_versions vtv
+    WHERE vtv.resource_type = ${args.resource_type}
+      AND vtv.resource_id = ${resourceId}
+      AND vtv.organization_id = ${ctx.organizationId}
+      AND vtv.tab_name IS NOT NULL
+      AND vtv.is_current = true
+    ORDER BY vtv.tab_order ASC, vtv.tab_name ASC
   `;
 
   return {

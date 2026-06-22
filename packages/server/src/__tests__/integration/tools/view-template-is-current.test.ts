@@ -84,6 +84,55 @@ describe('view_template is_current via trigger (expand phase)', () => {
     expect(cur[0]).toBe(await activeTabId('analytics'));
   });
 
+  it('get() reads the named tab via is_current (phase-2 read-flip)', async () => {
+    // handleGet now reads named tabs from is_current, not active_tabs.
+    const res = (await owner.view_templates.get({
+      resource_type: 'entity_type',
+      resource_id: 'company',
+    })) as { tabs: Array<{ tab_name: string; current_version_id: number }> };
+    const analytics = res.tabs.find((t) => t.tab_name === 'analytics');
+    expect(analytics).toBeDefined();
+    expect(analytics!.current_version_id).toBe(await activeTabId('analytics'));
+  });
+
+  it('tab_order stays in sync with the active pointer after rollback (phase-2 order)', async () => {
+    // v1 at order 1, v2 at order 9; the active pointer keeps order 9.
+    await owner.view_templates.set({
+      resource_type: 'entity_type',
+      resource_id: 'company',
+      tab_name: 'metrics',
+      tab_order: 1,
+      json_template: tmpl(1),
+    });
+    await owner.view_templates.set({
+      resource_type: 'entity_type',
+      resource_id: 'company',
+      tab_name: 'metrics',
+      tab_order: 9,
+      json_template: tmpl(2),
+    });
+    // Rollback to v1 (historical order 1) — the active pointer's order stays 9,
+    // and the trigger must sync that onto the now-current v1 so the phase-2 read
+    // (ORDER BY view_template_versions.tab_order) matches the legacy order.
+    await owner.view_templates.rollback({
+      resource_type: 'entity_type',
+      resource_id: 'company',
+      tab_name: 'metrics',
+      version: 1,
+    });
+    const active = (await sql`
+      SELECT tab_order FROM view_template_active_tabs
+      WHERE resource_type='entity_type' AND resource_id='company' AND tab_name='metrics'
+    `) as Array<{ tab_order: number }>;
+    const current = (await sql`
+      SELECT tab_order FROM view_template_versions
+      WHERE resource_type='entity_type' AND resource_id='company' AND tab_name='metrics'
+        AND is_current = true
+    `) as Array<{ tab_order: number }>;
+    expect(Number(current[0].tab_order)).toBe(Number(active[0].tab_order));
+    expect(Number(current[0].tab_order)).toBe(9);
+  });
+
   it('re-pointing to the already-current version is a no-op (still exactly one current)', async () => {
     // After the rollback above, v1 is current. Roll back to v1 again — the
     // trigger fires with current_version_id unchanged and must not error or

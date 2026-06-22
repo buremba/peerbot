@@ -55,7 +55,7 @@ while IFS=$'\t' read -r path ref; do
   branch="${ref#refs/heads/}"
   name="$(basename "$path")"
   [[ "$path" == "$wt_root/$name" ]] || continue   # managed worktrees only
-  [[ "$branch" == "main" ]] && continue
+  [[ "$branch" == "main" || "$branch" == "master" ]] && continue
 
   tag=""; is_active "$path" && { tag=" [ACTIVE]"; }
 

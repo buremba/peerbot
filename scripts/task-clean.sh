@@ -185,11 +185,14 @@ for raw in "$name" "$branch" "$default_branch"; do
   db="$(lobu_db_name "$raw")"
   case " $dropped_dbs " in *" $db "*) continue ;; esac
   dropped_dbs="$dropped_dbs $db"
-  # Never drop the shared integration-test DB. Match it EXACTLY — a `*_test`
-  # glob would wrongly skip legitimate per-task DBs like lobu_feature_test.
-  if [[ "$db" == "lobu_test" ]]; then
-    echo "→ skipping protected database '$db'"; continue
-  fi
+  # Never drop a shared/long-lived DB: the integration-test DB, or the
+  # main/master dev DBs (`make dev-db` on main creates lobu_main). Match EXACTLY —
+  # a `*_test` glob would wrongly skip legitimate per-task DBs like
+  # lobu_feature_test, and only these exact names are off-limits.
+  case "$db" in
+    lobu_test | lobu_main | lobu_master)
+      echo "→ skipping protected database '$db'"; continue ;;
+  esac
   exists="$(psql -tAc "select 1 from pg_database where datname='$db'" postgres 2>/dev/null || true)"
   [[ "$exists" == "1" ]] || continue
   # --force evicts a still-connected dev server; --if-exists guards the race.

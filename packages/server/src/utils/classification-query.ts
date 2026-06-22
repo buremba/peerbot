@@ -93,7 +93,6 @@ interface TargetContent {
 
 interface ClassifierTemplate {
   classifier_id: number;
-  version_id: number;
   min_similarity: number;
   fallback_value: string | null;
   attribute_value: string;
@@ -106,7 +105,6 @@ interface Similarity {
   classifier_id: number;
   attribute_value: string;
   parent_mapping: Record<string, string> | null;
-  version_id: number;
   min_similarity: number;
   fallback_value: string | null;
   confidence: number;
@@ -121,7 +119,6 @@ interface BestMatch {
   met_threshold: boolean;
   threshold: number;
   best_match_attribute: string;
-  version_id: number;
   fallback_value: string | null;
   confidences_map: Record<string, number>;
 }
@@ -129,7 +126,6 @@ interface BestMatch {
 interface AllClassification {
   content_id: number;
   classifier_id: number;
-  version_id: number;
   value: string;
   confidences_map: Record<string, number>;
   met_threshold: boolean;
@@ -140,7 +136,6 @@ interface AllClassification {
 
 interface ClassifierVersionLookup {
   slug: string;
-  version_id: number;
   classifier_id: number;
 }
 
@@ -274,7 +269,6 @@ async function fetchClassifierTemplates(
   // Fetch classifier versions with their attribute_values JSON
   const rows = await sql.unsafe<{
     classifier_id: number;
-    version_id: number;
     min_similarity: number;
     fallback_value: string | null;
     attribute_values: string | Record<string, unknown>;
@@ -282,7 +276,6 @@ async function fetchClassifierTemplates(
   }>(
     `SELECT DISTINCT
        cf.id as classifier_id,
-       cf.id as version_id,
        cf.min_similarity,
        cf.fallback_value,
        cf.attribute_values,
@@ -321,7 +314,6 @@ async function fetchClassifierTemplates(
 
       templates.push({
         classifier_id: row.classifier_id,
-        version_id: row.version_id,
         min_similarity: row.min_similarity,
         fallback_value: row.fallback_value,
         attribute_value: key,
@@ -350,7 +342,6 @@ function computeSimilarities(
         classifier_id: ct.classifier_id,
         attribute_value: ct.attribute_value,
         parent_mapping: ct.parent_mapping,
-        version_id: ct.version_id,
         min_similarity: ct.min_similarity,
         fallback_value: ct.fallback_value,
         confidence,
@@ -402,7 +393,6 @@ function determineBestMatches(similarities: Similarity[]): BestMatch[] {
       met_threshold: metThreshold,
       threshold: best.min_similarity,
       best_match_attribute: best.attribute_value,
-      version_id: best.version_id,
       fallback_value: best.fallback_value,
       confidences_map: confidencesMap,
     });
@@ -429,7 +419,6 @@ function generateParentClassifications(
       parentClassifications.push({
         content_id: bm.content_id,
         classifier_id: parentLookup.classifier_id,
-        version_id: parentLookup.version_id,
         value: parentValue,
         confidences_map: {},
         met_threshold: true,
@@ -447,7 +436,7 @@ function generateParentClassifications(
 
 async function fetchAllClassifierVersions(sql: DbClient): Promise<ClassifierVersionLookup[]> {
   return sql.unsafe<ClassifierVersionLookup>(
-    `SELECT cf.slug, cf.id as version_id, cf.id as classifier_id
+    `SELECT cf.slug, cf.id as classifier_id
      FROM classify_facet cf
      WHERE cf.status = 'active' AND cf.watcher_id IS NULL`,
     []
@@ -614,7 +603,6 @@ export async function executeClassificationQuery(
       .map((bm) => ({
         content_id: bm.content_id,
         classifier_id: bm.classifier_id,
-        version_id: bm.version_id,
         value: bm.value!,
         confidences_map: bm.confidences_map,
         met_threshold: bm.met_threshold,

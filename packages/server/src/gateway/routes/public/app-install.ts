@@ -48,6 +48,7 @@ import {
 	normalizeConnectorAuthSchema,
 } from "../../../utils/connector-auth.js";
 import type { AppInstallationStore } from "../../../lobu/stores/app-installation-store.js";
+import { exchangeCodeForTokens } from "../../../connect/oauth-providers.js";
 import { createGithubInstallStateStore } from "../../auth/oauth/state-store.js";
 import {
 	renderOAuthErrorPage,
@@ -74,6 +75,92 @@ export function githubAppInstallUrl(appSlug: string, state: string): string {
 	);
 	url.searchParams.set("state", state);
 	return url.toString();
+}
+
+/**
+ * Exchange the OAuth `code` GitHub returns on the install redirect for a USER
+ * token, then list the installations that user can administer and confirm the
+ * callback's `installation_id` is among them. This is the ownership proof that
+ * closes the cross-tenant token-theft hole: installation_ids are enumerable
+ * integers, so without it an attacker (with their OWN valid state/org) could
+ * supply a VICTIM's installation_id and bind the victim's GitHub installation —
+ * and the minted tokens for its repos — into the attacker's org.
+ *
+ * Uses the GitHub *App's* OAuth credentials (GITHUB_APP_CLIENT_ID /
+ * GITHUB_APP_CLIENT_SECRET) — NOT the separate "Lobu" login OAuth app
+ * (GITHUB_CLIENT_ID/SECRET). Requires the App setting "Request user
+ * authorization (OAuth) during installation" ON so `code` is present.
+ *
+ * Returns a discriminated result so the caller maps each failure to a precise
+ * HTTP status WITHOUT mutating any DB state.
+ */
+export type InstallOwnershipResult =
+	| { ok: true }
+	| { ok: false; status: 400 | 403 | 503; code: string; message: string };
+
+/** Default GitHub user-token OAuth exchange (the App's install-time OAuth). */
+async function defaultExchangeInstallOAuthCode(params: {
+	code: string;
+	clientId: string;
+	clientSecret: string;
+	redirectUri: string;
+}): Promise<string | null> {
+	const tokens = await exchangeCodeForTokens({
+		provider: "github",
+		code: params.code,
+		clientId: params.clientId,
+		clientSecret: params.clientSecret,
+		redirectUri: params.redirectUri,
+	});
+	return tokens?.accessToken ?? null;
+}
+
+/**
+ * List the installation ids the authenticated user can administer
+ * (`GET /user/installations`). Paginated (per_page=100) — keeps fetching while
+ * the collected count is below `total_count` and a page is non-empty, so a user
+ * with >100 installations is still verified correctly. Returns null on any HTTP
+ * failure (treated by the caller as "cannot verify" → reject, no mutation).
+ */
+async function defaultFetchUserInstallationIds(
+	userToken: string,
+): Promise<Set<number> | null> {
+	const ids = new Set<number>();
+	const perPage = 100;
+	let page = 1;
+	let total = Number.POSITIVE_INFINITY;
+	// Hard page cap so a hostile/looping total_count can't spin forever.
+	const MAX_PAGES = 100;
+	while (ids.size < total && page <= MAX_PAGES) {
+		const url = `https://api.github.com/user/installations?per_page=${perPage}&page=${page}`;
+		const res = await fetch(url, {
+			headers: {
+				Authorization: `Bearer ${userToken}`,
+				Accept: "application/vnd.github+json",
+				"User-Agent": "lobu",
+				"X-GitHub-Api-Version": "2022-11-28",
+			},
+		});
+		if (!res.ok) {
+			logger.warn(
+				{ status: res.status, page },
+				"GitHub /user/installations returned non-OK while verifying install ownership",
+			);
+			return null;
+		}
+		const body = (await res.json()) as {
+			total_count?: number;
+			installations?: Array<{ id?: number }>;
+		};
+		total = typeof body.total_count === "number" ? body.total_count : ids.size;
+		const installs = Array.isArray(body.installations) ? body.installations : [];
+		if (installs.length === 0) break;
+		for (const inst of installs) {
+			if (typeof inst.id === "number") ids.add(inst.id);
+		}
+		page += 1;
+	}
+	return ids;
 }
 
 export type GithubSetupAction = "install" | "update" | "request";
@@ -221,6 +308,100 @@ export interface AppInstallRouterDeps {
 	installationStore: AppInstallationStore;
 	/** Resolve the active org for the request (session-bound + single-tenant). */
 	resolveInstallOrgId(c: import("hono").Context): Promise<string | null>;
+	/**
+	 * Exchange the install-redirect OAuth `code` for a GitHub USER token.
+	 * Injected so tests can mock the exchange (never hits real GitHub). Returns
+	 * null on a failed exchange. Defaults to the App's install-time OAuth.
+	 */
+	exchangeInstallOAuthCode?(params: {
+		code: string;
+		clientId: string;
+		clientSecret: string;
+		redirectUri: string;
+	}): Promise<string | null>;
+	/**
+	 * List the installation ids the user (identified by `userToken`) can
+	 * administer. Injected so tests can mock `/user/installations`. Returns null
+	 * when GitHub can't be reached (caller treats as "cannot verify" → reject).
+	 */
+	fetchUserInstallationIds?(userToken: string): Promise<Set<number> | null>;
+}
+
+/**
+ * Verify the installer actually owns the supplied installation_id (ownership
+ * proof). Performs the OAuth code exchange + `/user/installations` membership
+ * check. Pure of HTTP routing and of any DB mutation — the caller only proceeds
+ * to bind the install when this returns `{ ok: true }`.
+ */
+async function verifyInstallationOwnership(params: {
+	code: string | undefined;
+	installationId: number;
+	redirectUri: string;
+	exchange: NonNullable<AppInstallRouterDeps["exchangeInstallOAuthCode"]>;
+	fetchIds: NonNullable<AppInstallRouterDeps["fetchUserInstallationIds"]>;
+}): Promise<InstallOwnershipResult> {
+	// The App's OAuth creds (NOT the Lobu login OAuth app). Fail safe if unset.
+	const clientId = process.env.GITHUB_APP_CLIENT_ID;
+	const clientSecret = process.env.GITHUB_APP_CLIENT_SECRET;
+	if (!clientId || !clientSecret) {
+		return {
+			ok: false,
+			status: 503,
+			code: "github_app_oauth_not_configured",
+			message:
+				"GitHub App user-authorization is not configured on this gateway (set GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET, and enable 'Request user authorization (OAuth) during installation' on the App).",
+		};
+	}
+
+	// No code → we cannot prove the caller owns the installation. Reject.
+	if (!params.code || !params.code.trim()) {
+		return {
+			ok: false,
+			status: 400,
+			code: "missing_oauth_code",
+			message:
+				"This GitHub install callback is missing the OAuth code needed to verify you own the installation. Enable 'Request user authorization (OAuth) during installation' on the App and try again.",
+		};
+	}
+
+	const userToken = await params.exchange({
+		code: params.code.trim(),
+		clientId,
+		clientSecret,
+		redirectUri: params.redirectUri,
+	});
+	if (!userToken) {
+		return {
+			ok: false,
+			status: 403,
+			code: "oauth_exchange_failed",
+			message:
+				"We couldn't verify your GitHub identity for this install. Start the install again from your Lobu dashboard.",
+		};
+	}
+
+	const ownedIds = await params.fetchIds(userToken);
+	if (!ownedIds) {
+		return {
+			ok: false,
+			status: 403,
+			code: "ownership_check_unavailable",
+			message:
+				"We couldn't confirm you own this GitHub installation. Try again in a moment.",
+		};
+	}
+
+	if (!ownedIds.has(params.installationId)) {
+		return {
+			ok: false,
+			status: 403,
+			code: "installation_not_owned",
+			message:
+				"This GitHub installation does not belong to your GitHub account. Install the Lobu App on an organization you administer.",
+		};
+	}
+
+	return { ok: true };
 }
 
 /**
@@ -338,6 +519,53 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		}
 		// Bind to the org encoded in the verified state — never the callback session.
 		const orgId = installState.organizationId;
+
+		// Ownership proof. The signed state proves WHICH org initiated, but NOT that
+		// the caller actually owns the supplied installation_id (an enumerable
+		// integer). Without this, an attacker with their own valid state could pass
+		// a victim's installation_id and bind/transfer the victim's GitHub
+		// installation — and its minted repo tokens — into the attacker's org. Prove
+		// ownership via OAuth-during-install: exchange the `code` for a user token,
+		// then confirm the installation is one the user can administer. ALL of this
+		// runs BEFORE any DB write — every failure returns 4xx/503 with zero mutation.
+		const installationId = Number(installationIdRaw.trim());
+		if (!Number.isInteger(installationId) || installationId <= 0) {
+			return c.html(
+				renderOAuthErrorPage(
+					"invalid_request",
+					"The GitHub install callback carried an invalid installation_id.",
+				),
+				400,
+			);
+		}
+		// The redirect_uri must match the URL GitHub redirected to — derive it from
+		// this request (query stripped) so it matches the App's Callback URL exactly.
+		const callbackUrl = (() => {
+			const u = new URL(c.req.url);
+			u.search = "";
+			return u.toString();
+		})();
+		const ownership = await verifyInstallationOwnership({
+			code: c.req.query("code"),
+			installationId,
+			redirectUri: callbackUrl,
+			exchange: deps.exchangeInstallOAuthCode ?? defaultExchangeInstallOAuthCode,
+			fetchIds: deps.fetchUserInstallationIds ?? defaultFetchUserInstallationIds,
+		});
+		if (!ownership.ok) {
+			logger.warn(
+				{
+					organization_id: orgId,
+					installation_id: installationIdRaw,
+					reason: ownership.code,
+				},
+				"Rejecting GitHub install callback: installation ownership not verified",
+			);
+			return c.html(
+				renderOAuthErrorPage(ownership.code, ownership.message),
+				ownership.status,
+			);
+		}
 
 		// Guard: the org must actually have the github connector definition with an
 		// app_installation auth method, otherwise there's nothing to link the

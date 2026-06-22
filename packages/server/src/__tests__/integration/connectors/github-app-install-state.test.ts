@@ -54,11 +54,31 @@ async function seedGithubConnector(organizationId: string): Promise<void> {
 	});
 }
 
-/** Build the install router; `resolveInstallOrgId` is fixed for the start route. */
-function buildRouter(installOrgId: string | null) {
+/**
+ * Build the install router. The two GitHub HTTP calls (OAuth code exchange +
+ * `/user/installations`) are mocked via DI so tests NEVER hit real GitHub.
+ *  - `ownedInstallationIds`: the set the (mocked) `/user/installations` returns.
+ *    Pass `null` to simulate a GitHub fetch failure.
+ *  - `exchangeReturns`: the user token the (mocked) code exchange yields; `null`
+ *    simulates a failed exchange. Defaults to a fake token.
+ */
+function buildRouter(
+	installOrgId: string | null,
+	opts: {
+		ownedInstallationIds?: number[] | null;
+		exchangeReturns?: string | null;
+	} = {},
+) {
+	const exchangeReturns =
+		opts.exchangeReturns === undefined ? "fake-user-token" : opts.exchangeReturns;
+	const owned =
+		opts.ownedInstallationIds === undefined ? [] : opts.ownedInstallationIds;
 	const deps: AppInstallRouterDeps = {
 		installationStore: createPostgresAppInstallationStore(),
 		resolveInstallOrgId: async () => installOrgId,
+		exchangeInstallOAuthCode: async () => exchangeReturns,
+		fetchUserInstallationIds: async () =>
+			owned === null ? null : new Set(owned),
 	};
 	return createAppInstallRoutes(deps);
 }
@@ -84,8 +104,22 @@ async function installCount(organizationId: string): Promise<number> {
 	return rows[0].n;
 }
 
-const ORIGINAL_APP_ID = process.env.GITHUB_APP_ID;
-const ORIGINAL_APP_SLUG = process.env.GITHUB_APP_SLUG;
+const ENV_KEYS = [
+	"GITHUB_APP_ID",
+	"GITHUB_APP_SLUG",
+	"GITHUB_APP_CLIENT_ID",
+	"GITHUB_APP_CLIENT_SECRET",
+] as const;
+const ORIGINAL_ENV: Record<string, string | undefined> = {};
+for (const k of ENV_KEYS) ORIGINAL_ENV[k] = process.env[k];
+
+async function cleanTables(): Promise<void> {
+	const sql = getTestDb();
+	await sql`DELETE FROM connections WHERE connector_key = ${CONNECTOR_KEY}`;
+	await sql`DELETE FROM connector_definitions WHERE key = ${CONNECTOR_KEY}`;
+	await sql`DELETE FROM app_installations WHERE provider_app_id = ${PROVIDER_APP_ID}`;
+	await sql`DELETE FROM oauth_states WHERE scope = 'github:app_install:state'`;
+}
 
 beforeAll(async () => {
 	await initWorkspaceProvider();
@@ -94,23 +128,19 @@ beforeAll(async () => {
 beforeEach(async () => {
 	process.env.GITHUB_APP_ID = PROVIDER_APP_ID;
 	process.env.GITHUB_APP_SLUG = APP_SLUG;
-	const sql = getTestDb();
-	await sql`DELETE FROM connections WHERE connector_key = ${CONNECTOR_KEY}`;
-	await sql`DELETE FROM connector_definitions WHERE key = ${CONNECTOR_KEY}`;
-	await sql`DELETE FROM app_installations WHERE provider_app_id = ${PROVIDER_APP_ID}`;
-	await sql`DELETE FROM oauth_states WHERE scope = 'github:app_install:state'`;
+	// App OAuth creds present by default so ownership verification can run; the
+	// "unset" test deletes them explicitly.
+	process.env.GITHUB_APP_CLIENT_ID = "Iv-test-app-client-id";
+	process.env.GITHUB_APP_CLIENT_SECRET = "test-app-client-secret";
+	await cleanTables();
 });
 
 afterEach(async () => {
-	if (ORIGINAL_APP_ID === undefined) delete process.env.GITHUB_APP_ID;
-	else process.env.GITHUB_APP_ID = ORIGINAL_APP_ID;
-	if (ORIGINAL_APP_SLUG === undefined) delete process.env.GITHUB_APP_SLUG;
-	else process.env.GITHUB_APP_SLUG = ORIGINAL_APP_SLUG;
-	const sql = getTestDb();
-	await sql`DELETE FROM connections WHERE connector_key = ${CONNECTOR_KEY}`;
-	await sql`DELETE FROM connector_definitions WHERE key = ${CONNECTOR_KEY}`;
-	await sql`DELETE FROM app_installations WHERE provider_app_id = ${PROVIDER_APP_ID}`;
-	await sql`DELETE FROM oauth_states WHERE scope = 'github:app_install:state'`;
+	for (const k of ENV_KEYS) {
+		if (ORIGINAL_ENV[k] === undefined) delete process.env[k];
+		else process.env[k] = ORIGINAL_ENV[k];
+	}
+	await cleanTables();
 });
 
 describe("GitHub App install callback — signed-state CSRF guard", () => {
@@ -149,7 +179,7 @@ describe("GitHub App install callback — signed-state CSRF guard", () => {
 		expect(await connectionCount(org.id)).toBe(0);
 	});
 
-	it("accepts a callback carrying a valid signed state and binds to the STATE's org", async () => {
+	it("accepts a callback with valid state + code + owned installation, binds to the STATE's org", async () => {
 		const stateOrg = await createTestOrganization({ name: "Initiator Org" });
 		const ambientOrg = await createTestOrganization({ name: "Ambient Other Org" });
 		await seedGithubConnector(stateOrg.id);
@@ -160,11 +190,12 @@ describe("GitHub App install callback — signed-state CSRF guard", () => {
 		const state = await stateStore.create({ organizationId: stateOrg.id });
 
 		// The callback session resolves to a DIFFERENT (ambient) org — the install
-		// must STILL land in the state's org, never the ambient one.
-		const router = buildRouter(ambientOrg.id);
+		// must STILL land in the state's org, never the ambient one. The (mocked)
+		// /user/installations returns the supplied id, so ownership passes.
+		const router = buildRouter(ambientOrg.id, { ownedInstallationIds: [7003] });
 		const res = await router.fetch(
 			new Request(
-				`http://gw.test/github/app/install/callback?installation_id=7003&setup_action=install&state=${state}`,
+				`http://gw.test/github/app/install/callback?installation_id=7003&setup_action=install&state=${state}&code=valid-oauth-code`,
 			),
 		);
 
@@ -182,11 +213,11 @@ describe("GitHub App install callback — signed-state CSRF guard", () => {
 		await seedGithubConnector(org.id);
 		const stateStore = createGithubInstallStateStore();
 		const state = await stateStore.create({ organizationId: org.id });
-		const router = buildRouter(org.id);
+		const router = buildRouter(org.id, { ownedInstallationIds: [7004] });
 
 		const first = await router.fetch(
 			new Request(
-				`http://gw.test/github/app/install/callback?installation_id=7004&setup_action=install&state=${state}`,
+				`http://gw.test/github/app/install/callback?installation_id=7004&setup_action=install&state=${state}&code=valid-oauth-code`,
 			),
 		);
 		expect(first.status).toBe(200);
@@ -196,7 +227,7 @@ describe("GitHub App install callback — signed-state CSRF guard", () => {
 		// Replay the SAME state — it was consumed, so this is rejected.
 		const replay = await router.fetch(
 			new Request(
-				`http://gw.test/github/app/install/callback?installation_id=7004&setup_action=install&state=${state}`,
+				`http://gw.test/github/app/install/callback?installation_id=7004&setup_action=install&state=${state}&code=valid-oauth-code`,
 			),
 		);
 		expect(replay.status).toBe(400);
@@ -222,5 +253,124 @@ describe("GitHub App install callback — signed-state CSRF guard", () => {
 		// The minted state resolves to the org server-side (Postgres-backed nonce).
 		const peeked = await createGithubInstallStateStore().peek(minted as string);
 		expect(peeked?.organizationId).toBe(org.id);
+	});
+});
+
+describe("GitHub App install callback — installation ownership guard", () => {
+	it("ATTACKER: valid state + code, but installation_id NOT in /user/installations → 403, zero mutation", async () => {
+		// Attacker has their own valid state (their own org A) and a code that
+		// exchanges fine — but supplies a VICTIM's installation_id that the
+		// attacker's GitHub account does not administer.
+		const attackerOrg = await createTestOrganization({ name: "Attacker Org" });
+		await seedGithubConnector(attackerOrg.id);
+		const state = await createGithubInstallStateStore().create({
+			organizationId: attackerOrg.id,
+		});
+		// /user/installations returns only the attacker's OWN installs (e.g. 555),
+		// NOT the victim id 8888 they're trying to steal.
+		const router = buildRouter(attackerOrg.id, { ownedInstallationIds: [555] });
+
+		const res = await router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?installation_id=8888&setup_action=install&state=${state}&code=valid-oauth-code`,
+			),
+		);
+
+		expect(res.status).toBe(403);
+		// CRITICAL: no install/connection written for the foreign installation_id.
+		expect(await installCount(attackerOrg.id)).toBe(0);
+		expect(await connectionCount(attackerOrg.id)).toBe(0);
+	});
+
+	it("LEGIT: valid state + code + installation_id IS owned → 200, binds install + connection", async () => {
+		const org = await createTestOrganization({ name: "Legit Owner Org" });
+		await seedGithubConnector(org.id);
+		const state = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+		});
+		const router = buildRouter(org.id, { ownedInstallationIds: [4242, 999] });
+
+		const res = await router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?installation_id=4242&setup_action=install&state=${state}&code=valid-oauth-code`,
+			),
+		);
+
+		expect(res.status).toBe(200);
+		expect(await installCount(org.id)).toBe(1);
+		expect(await connectionCount(org.id)).toBe(1);
+		// The bound install carries the owned installation id (mint path reads this).
+		const sql = getDb();
+		const rows = (await sql`
+			SELECT external_tenant_id FROM app_installations
+			WHERE organization_id = ${org.id} AND provider_app_id = ${PROVIDER_APP_ID}
+			LIMIT 1
+		`) as unknown as Array<{ external_tenant_id: string }>;
+		expect(rows[0].external_tenant_id).toBe("4242");
+	});
+
+	it("MISSING code → 400, zero mutation (ownership cannot be verified without it)", async () => {
+		const org = await createTestOrganization({ name: "NoCode Org" });
+		await seedGithubConnector(org.id);
+		const state = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+		});
+		// Even though the (mocked) ownership set WOULD contain the id, the absence
+		// of `code` must reject before any exchange/lookup.
+		const router = buildRouter(org.id, { ownedInstallationIds: [7777] });
+
+		const res = await router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?installation_id=7777&setup_action=install&state=${state}`,
+			),
+		);
+
+		expect(res.status).toBe(400);
+		expect(await installCount(org.id)).toBe(0);
+		expect(await connectionCount(org.id)).toBe(0);
+	});
+
+	it("GITHUB_APP_CLIENT_ID/SECRET unset → 503, zero mutation (fail safe)", async () => {
+		delete process.env.GITHUB_APP_CLIENT_ID;
+		delete process.env.GITHUB_APP_CLIENT_SECRET;
+		const org = await createTestOrganization({ name: "NoOAuthCreds Org" });
+		await seedGithubConnector(org.id);
+		const state = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+		});
+		const router = buildRouter(org.id, { ownedInstallationIds: [6001] });
+
+		const res = await router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?installation_id=6001&setup_action=install&state=${state}&code=valid-oauth-code`,
+			),
+		);
+
+		expect(res.status).toBe(503);
+		expect(await installCount(org.id)).toBe(0);
+		expect(await connectionCount(org.id)).toBe(0);
+	});
+
+	it("a failed OAuth code exchange → 403, zero mutation", async () => {
+		const org = await createTestOrganization({ name: "BadCode Org" });
+		await seedGithubConnector(org.id);
+		const state = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+		});
+		// Exchange returns null (bad_verification_code) → cannot prove identity.
+		const router = buildRouter(org.id, {
+			ownedInstallationIds: [5005],
+			exchangeReturns: null,
+		});
+
+		const res = await router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?installation_id=5005&setup_action=install&state=${state}&code=stale-or-forged-code`,
+			),
+		);
+
+		expect(res.status).toBe(403);
+		expect(await installCount(org.id)).toBe(0);
+		expect(await connectionCount(org.id)).toBe(0);
 	});
 });

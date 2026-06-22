@@ -58,6 +58,19 @@ export interface AppInstallationUpsert extends AppInstallationTenantKey {
   /** Defaults to 'active'. */
   status?: AppInstallationStatus;
   metadata?: Record<string, any>;
+  /**
+   * Metadata keys whose value on an EXISTING active row (same provider tuple +
+   * org) must be PRESERVED on an in-place update — the existing value wins over
+   * the one in `metadata`. This is the race-safe id-claim primitive: a caller
+   * that mints a durable id (e.g. Slack's `external_id`) outside the upsert and
+   * loses the insert race reads back the WINNER's id instead of overwriting it,
+   * so concurrent callers for the same tuple converge on ONE id (and one
+   * downstream secret) rather than minting duplicates. Applied INSIDE the
+   * advisory-locked transaction, so the preserve-or-mint decision is atomic per
+   * tuple across replicas. Keys absent on the existing row fall through to the
+   * provided `metadata` value (the first writer's mint is kept).
+   */
+  preserveMetadataKeysOnUpdate?: string[];
 }
 
 export interface AppInstallationStore {

@@ -102,9 +102,14 @@ function toSlackRow(row: AppInstallationRow): SlackInstallationRow | null {
  * metadata. A fresh install from another org TRANSFERS ownership (the generic
  * store demotes the prior active row), so `getByTeam` stays unambiguous.
  *
- * One active install per Slack workspace is enforced by the generic store's
- * active-tenant unique index + advisory lock — converges across replicas with
- * no in-memory coordination.
+ * One active install per Slack workspace AND one stable external id per (org,
+ * team) are both enforced by the generic store's active-tenant advisory lock.
+ * The external id is claimed ATOMICALLY inside that lock (step 1 below) before
+ * any secret is written, so two concurrent installs of the same workspace
+ * converge on a SINGLE external id + a single bot-token secret — no duplicate
+ * id, no orphaned secret. Converges across replicas with no in-memory
+ * coordination: both racers re-read the winner's external id under the lock
+ * (the generic upsert preserves `external_id` on its in-place update path).
  */
 export async function upsertSlackInstallByTeam(
   store: AppInstallationStore,
@@ -116,16 +121,39 @@ export async function upsertSlackInstallByTeam(
   // Bind the org for the secret-store put + the row write so they land in the
   // same tenant bucket regardless of ambient context.
   return orgContext.run({ organizationId }, async () => {
-    // Reuse the existing external id for this (org, team) so a reinstall keeps
-    // the stable secret prefix + routing key; otherwise mint a fresh one. The
-    // generic upsert below serializes activation on the tenant tuple, so a
-    // same-org reinstall updates that row in place under the lock.
-    const existing = await findSlackInstallRow(store, organizationId, teamId);
-    const externalId =
-      existing?.metadata.external_id ??
-      `${SLACK_INSTALLATION_ID_PREFIX}${randomUUID().replace(/-/g, "")}`;
+    const candidateId = `${SLACK_INSTALLATION_ID_PREFIX}${randomUUID().replace(
+      /-/g,
+      ""
+    )}`;
 
-    // Persist the token under the canonical external id, then reference it.
+    // Step 1 — CLAIM the canonical external id atomically. We pass our minted
+    // candidate but ask the store to PRESERVE an existing row's external_id on an
+    // in-place update, so a racer that lost the insert reads back the winner's id
+    // here instead of clobbering it. Tenant metadata is written now; the token
+    // ref is added in step 3 once the canonical id (hence secret name) is known.
+    const claimMetadata: Record<string, any> = { external_id: candidateId };
+    if (data.teamName) claimMetadata.team_name = data.teamName;
+    if (data.botUserId) claimMetadata.bot_user_id = data.botUserId;
+    if (process.env.SLACK_CLIENT_ID) {
+      claimMetadata.slack_client_id = process.env.SLACK_CLIENT_ID;
+    }
+    const claimed = await store.upsert({
+      organizationId,
+      provider: SLACK_PROVIDER,
+      providerInstance: SLACK_PROVIDER_INSTANCE,
+      providerAppId: SLACK_PROVIDER_APP_ID,
+      externalTenantId: teamId,
+      authProfileId: null,
+      status: "active",
+      metadata: claimMetadata,
+      preserveMetadataKeysOnUpdate: ["external_id"],
+    });
+    const externalId = claimed.metadata.external_id as string;
+
+    // Step 2 — persist the bot token under the CANONICAL external id. Both racers
+    // resolve the same id in step 1, so both write the same secret name (idempotent
+    // last-writer-wins for the same workspace); the loser's candidate id is never
+    // used for a secret, so nothing is orphaned.
     const tokenRef = await persistSecretValue(
       secretStore,
       `installations/${externalId}/botToken`,
@@ -135,16 +163,15 @@ export async function upsertSlackInstallByTeam(
       platform: SLACK_PROVIDER,
       ...(tokenRef ? { botToken: tokenRef } : {}),
     };
-    const metadata: Record<string, any> = {
-      external_id: externalId,
-      config,
-    };
+
+    // Step 3 — write the token ref + tenant metadata onto the canonical row
+    // (same-org in-place under the lock; external_id preserved so it stays stable).
+    const metadata: Record<string, any> = { external_id: externalId, config };
     if (data.teamName) metadata.team_name = data.teamName;
     if (data.botUserId) metadata.bot_user_id = data.botUserId;
     if (process.env.SLACK_CLIENT_ID) {
       metadata.slack_client_id = process.env.SLACK_CLIENT_ID;
     }
-
     const row = await store.upsert({
       organizationId,
       provider: SLACK_PROVIDER,
@@ -154,6 +181,7 @@ export async function upsertSlackInstallByTeam(
       authProfileId: null,
       status: "active",
       metadata,
+      preserveMetadataKeysOnUpdate: ["external_id"],
     });
 
     const slackRow = toSlackRow(row);
@@ -167,16 +195,6 @@ export async function upsertSlackInstallByTeam(
     }
     return slackRow;
   });
-}
-
-/** The Slack `app_installations` row for an (org, team), if any. */
-async function findSlackInstallRow(
-  store: AppInstallationStore,
-  organizationId: string,
-  teamId: string
-): Promise<AppInstallationRow | null> {
-  const rows = await store.listByProviderAndOrg(SLACK_PROVIDER, organizationId);
-  return rows.find((r) => r.externalTenantId === teamId) ?? null;
 }
 
 /** Resolve a Slack install by its stable `slackinst-<uuid>` external id. */

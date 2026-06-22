@@ -222,4 +222,59 @@ describe("slack-installations projection over app_installations", () => {
     );
     expect(resolved).toBeUndefined();
   });
+
+  test("concurrent same-(org,team) installs converge to ONE external id + one secret", async () => {
+    // Two parallel installs of the same workspace must not mint duplicate ids:
+    // the external id is claimed atomically inside the upsert advisory lock, so
+    // both callers resolve the SAME slackinst- id, one app_installations row, and
+    // one bot-token secret — no orphaned secret under a losing id.
+    const { orgContext } = await import("../../../lobu/stores/org-context.js");
+    await seedAgentRow("throwaway", { organizationId: "org-race" });
+    const { store, secretStore, slack } = await build();
+
+    const [a, b] = await Promise.all([
+      slack.upsertSlackInstallByTeam(store, secretStore, "org-race", "TRACE", {
+        botToken: "xoxb-a",
+      }),
+      slack.upsertSlackInstallByTeam(store, secretStore, "org-race", "TRACE", {
+        botToken: "xoxb-b",
+      }),
+    ]);
+
+    // Both callers get the same external id.
+    expect(a.id).toBe(b.id);
+
+    const sql = getDb();
+    // Exactly one app_installations row for the team (no duplicate).
+    const teamRows = await sql`
+      SELECT id, metadata ->> 'external_id' AS external_id, status
+      FROM app_installations
+      WHERE provider = 'slack' AND external_tenant_id = 'TRACE'
+    `;
+    expect(teamRows).toHaveLength(1);
+    expect(teamRows[0].external_id).toBe(a.id);
+    expect(teamRows[0].status).toBe("active");
+
+    // Exactly one distinct external id was ever written for the team.
+    const distinctIds = await sql`
+      SELECT DISTINCT metadata ->> 'external_id' AS external_id
+      FROM app_installations
+      WHERE provider = 'slack' AND external_tenant_id = 'TRACE'
+    `;
+    expect(distinctIds).toHaveLength(1);
+
+    // Exactly one bot-token secret exists (under the canonical id) — no orphan.
+    const secrets = await orgContext.run({ organizationId: "org-race" }, () =>
+      secretStore.list("installations/")
+    );
+    const slackinstSecrets = secrets.filter((s) =>
+      s.name.startsWith("installations/slackinst-")
+    );
+    expect(slackinstSecrets).toHaveLength(1);
+    expect(slackinstSecrets[0].name).toBe(`installations/${a.id}/botToken`);
+
+    // The canonical install resolves and its token is readable.
+    const resolved = await slack.getSlackInstallById(store, a.id);
+    expect(resolved?.id).toBe(a.id);
+  });
 });

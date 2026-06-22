@@ -54,7 +54,15 @@ function makeAppInstallationStore(): AppStore {
           (r) => tupleEq(r, u) && r.status === "active"
         );
         if (active && active.organizationId === u.organizationId) {
-          active.metadata = u.metadata ?? {};
+          // In-place update: preserve requested metadata keys from the existing
+          // row (matches the real store's race-safe external_id claim).
+          const merged = { ...(u.metadata ?? {}) };
+          for (const key of u.preserveMetadataKeysOnUpdate ?? []) {
+            if (active.metadata?.[key] !== undefined) {
+              merged[key] = active.metadata[key];
+            }
+          }
+          active.metadata = merged;
           active.authProfileId = u.authProfileId ?? null;
           active.updatedAt = Date.now();
           return active;
@@ -197,26 +205,35 @@ describe("SlackConnectionCoordinator", () => {
 
     expect(result.installationId.startsWith("slackinst-")).toBe(true);
 
-    // One generic upsert, shaped as the Slack tenant tuple.
-    expect(upsert).toHaveBeenCalledTimes(1);
-    const arg = upsert.mock.calls[0]?.[0] as Record<string, any>;
-    expect(arg.provider).toBe("slack");
-    expect(arg.providerInstance).toBe("cloud");
-    expect(arg.providerAppId).toBe("cloud");
-    expect(arg.externalTenantId).toBe("T123");
-    expect(arg.organizationId).toBe("org-acme");
-    expect(arg.status).toBe("active");
-    expect(arg.authProfileId).toBeNull();
-    // Tenant data in metadata; bot token is a secret ref, never plaintext.
-    expect(arg.metadata.external_id).toBe(result.installationId);
-    expect(arg.metadata.team_name).toBe("Acme");
-    expect(arg.metadata.bot_user_id).toBe("U123");
-    expect(arg.metadata.config.platform).toBe("slack");
-    expect(typeof arg.metadata.config.botToken).toBe("string");
-    expect(arg.metadata.config.botToken).not.toBe("xoxb-tenant-token");
-    // No app secrets anywhere in the recorded row.
-    expect(JSON.stringify(arg)).not.toContain("signingSecret");
-    expect(JSON.stringify(arg)).not.toContain("clientSecret");
+    // Two generic upserts — the race-safe two-step: (1) atomically CLAIM the
+    // external id (preserving an existing one under the lock), (2) write the
+    // token ref + tenant metadata onto the canonical row. Both target the Slack
+    // tenant tuple and preserve external_id on in-place update.
+    expect(upsert).toHaveBeenCalledTimes(2);
+    for (const call of upsert.mock.calls) {
+      const a = call[0] as Record<string, any>;
+      expect(a.provider).toBe("slack");
+      expect(a.providerInstance).toBe("cloud");
+      expect(a.providerAppId).toBe("cloud");
+      expect(a.externalTenantId).toBe("T123");
+      expect(a.organizationId).toBe("org-acme");
+      expect(a.status).toBe("active");
+      expect(a.authProfileId).toBeNull();
+      expect(a.metadata.external_id).toBe(result.installationId);
+      expect(a.preserveMetadataKeysOnUpdate).toEqual(["external_id"]);
+    }
+
+    // The FINAL write carries the tenant data + the bot token as a secret ref
+    // (never plaintext).
+    const finalArg = upsert.mock.calls[1]?.[0] as Record<string, any>;
+    expect(finalArg.metadata.team_name).toBe("Acme");
+    expect(finalArg.metadata.bot_user_id).toBe("U123");
+    expect(finalArg.metadata.config.platform).toBe("slack");
+    expect(typeof finalArg.metadata.config.botToken).toBe("string");
+    expect(finalArg.metadata.config.botToken).not.toBe("xoxb-tenant-token");
+    // No app secrets anywhere in either recorded row.
+    expect(JSON.stringify(upsert.mock.calls)).not.toContain("signingSecret");
+    expect(JSON.stringify(upsert.mock.calls)).not.toContain("clientSecret");
   });
 
   test("handleAppWebhook routes a matched team to its OAuth installation", async () => {

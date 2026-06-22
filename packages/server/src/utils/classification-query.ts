@@ -7,7 +7,7 @@
  * Vector operations (cosine similarity) are computed in TypeScript.
  */
 
-import { type DbClient, getDb } from '../db/client';
+import { type DbClient, getDb, pgTextArray } from '../db/client';
 import { entityLinkMatchSql } from './content-search';
 import { configuredEmbeddingModelSqlLiteral } from './embeddings';
 import logger from './logger';
@@ -123,7 +123,7 @@ interface BestMatch {
   confidences_map: Record<string, number>;
 }
 
-interface AllClassification {
+export interface AllClassification {
   content_id: number;
   classifier_id: number;
   value: string;
@@ -445,7 +445,7 @@ async function fetchAllClassifierVersions(sql: DbClient): Promise<ClassifierVers
 
 // ── Step 7: Upsert classifications via DELETE + INSERT ─────────────────
 
-async function upsertClassifications(
+export async function upsertClassifications(
   sql: DbClient,
   classifications: AllClassification[]
 ): Promise<{ content_id: number }[]> {
@@ -518,14 +518,17 @@ async function upsertClassifications(
     const valuePlaceholders = batch
       .map((_, j) => {
         const base = j * 8;
-        return `($${base + 1}, $${base + 2}, NULL, NULL, $${base + 3}, $${base + 4}::JSON, 'embedding', false, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8})`;
+        // $base+3 is the values text[]: under fetch_types:false (prod config) a raw JS array param
+        // serializes to a malformed literal, so it MUST be a pgTextArray() pg-literal string cast
+        // ::text[] (same pattern every other text[] insert in the codebase uses).
+        return `($${base + 1}, $${base + 2}, NULL, NULL, $${base + 3}::text[], $${base + 4}::JSON, 'embedding', false, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8})`;
       })
       .join(', ');
 
     const params = batch.flatMap((c) => [
       c.content_id,
       c.classifier_id,
-      c.merged_values,
+      pgTextArray(c.merged_values),
       JSON.stringify(c.confidences_map),
       c.met_threshold,
       c.threshold,

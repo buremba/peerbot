@@ -64,8 +64,8 @@ function hasManagedByOrg(config: Record<string, unknown>): boolean {
  * @param authSchema          the connector definition's `auth_schema` (raw jsonb/string)
  * @param config              the connection `config` being created
  * @param connectorKey        for the (connector-agnostic) error message + slug scope
- * @param authProfileSlug     an explicitly selected auth profile (oauth/env/browser)
- * @param appAuthProfileSlug  an explicitly selected OAuth app profile
+ * @param authProfileSlug     an explicitly selected credential profile (env/oauth_account/browser/interactive — NOT oauth_app)
+ * @param appAuthProfileSlug  an explicitly selected OAuth app profile (oauth_app only)
  */
 export async function rejectUnboundAppInstallationCreate(params: {
   organizationId: string;
@@ -86,23 +86,33 @@ export async function rejectUnboundAppInstallationCreate(params: {
 
   // A deliberate non-app_installation auth selection → the connection will use
   // THAT method, not app_installation. Skip the guard — but only when the slug
-  // RESOLVES to a real profile for this org/connector. An asserted-but-bogus
-  // slug must NOT satisfy the guard (it would create a dead, unbound
-  // app_installation connection), so resolve it the same way the create/connect
-  // flow does before trusting it as an alternate auth selection.
+  // RESOLVES to a real profile OF THE RIGHT KIND for this org/connector. An
+  // asserted-but-bogus slug, OR one that resolves to the wrong kind for its
+  // param, must NOT satisfy the guard (it would create a dead, unbound
+  // app_installation connection), so resolve + kind-check it the same way the
+  // create/connect flow does before trusting it as an alternate auth selection.
+  //
+  // `auth_profile_slug` is the connection's CREDENTIAL profile — any kind that
+  // actually provides connection auth (env / oauth_account / browser_session /
+  // interactive). An `oauth_app` carries only the app's client_id/secret, not
+  // the connection's credentials, so it does NOT satisfy auth_profile_slug.
   if (params.authProfileSlug?.trim()) {
     const resolved = await resolveAuthProfileSlugToId({
       organizationId: params.organizationId,
       slug: params.authProfileSlug,
       connectorKey: params.connectorKey,
     });
-    if (resolved) return null;
+    if (resolved && resolved.profile_kind !== 'oauth_app') return null;
   }
+  // `app_auth_profile_slug` selects the OAuth app (local client credentials);
+  // only an `oauth_app` profile is a valid target. resolveAuthProfileSlugToId's
+  // expectedKind enforces that — a wrong-kind slug resolves to null here.
   if (params.appAuthProfileSlug?.trim()) {
     const resolvedApp = await resolveAuthProfileSlugToId({
       organizationId: params.organizationId,
       slug: params.appAuthProfileSlug,
       connectorKey: params.connectorKey,
+      expectedKind: 'oauth_app',
     });
     if (resolvedApp) return null;
   }

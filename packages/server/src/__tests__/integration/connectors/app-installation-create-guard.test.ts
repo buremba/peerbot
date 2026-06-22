@@ -362,6 +362,75 @@ describe("manage_connections — app_installation guard is SELECTION-AWARE (regr
 		expect(await connectionCount(org.id)).toBe(0);
 	});
 
+	it("create WITH auth_profile_slug pointing at an oauth_app (WRONG KIND) + no installation_ref is REJECTED", async () => {
+		// auth_profile_slug must resolve to a CREDENTIAL profile (env / account /
+		// browser / interactive). An oauth_app carries only the app's
+		// client_id/secret — it does NOT provide the connection's auth, so pointing
+		// auth_profile_slug at one is the wrong kind and must NOT satisfy the guard.
+		const org = await createTestOrganization({ name: "Wrong Kind Account Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		await seedAppInstallConnector(org.id);
+		const ctx = ctxFor(org.id, user.id);
+		// Seed a REAL, resolvable oauth_app profile, then mis-target it.
+		const appSlug = await createRealAuthProfile(ctx, {
+			profileKind: "oauth_app",
+			slug: "wrong-kind-app-profile",
+			credentials: {
+				DEMO_CLIENT_ID: "client-id",
+				DEMO_CLIENT_SECRET: "client-secret",
+			},
+		});
+
+		const res = await manageConnections(
+			{
+				action: "create",
+				connector_key: CONNECTOR_KEY,
+				slug: "wrong-kind-account-create",
+				display_name: "Wrong Kind Account Create",
+				device_worker_id: null,
+				// Resolvable, but it's an oauth_app — wrong kind for auth_profile_slug.
+				auth_profile_slug: appSlug,
+			},
+			TEST_ENV,
+			ctx,
+		);
+		expectGuardRejected(res);
+		expect(await connectionCount(org.id)).toBe(0);
+	});
+
+	it("create WITH app_auth_profile_slug pointing at a non-oauth_app profile (WRONG KIND) + no installation_ref is REJECTED", async () => {
+		// app_auth_profile_slug must resolve to an oauth_app. Pointing it at a real
+		// env (credential) profile is the wrong kind and must NOT satisfy the guard.
+		const org = await createTestOrganization({ name: "Wrong Kind App Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		await seedAppInstallConnector(org.id);
+		const ctx = ctxFor(org.id, user.id);
+		// Seed a REAL, resolvable env profile, then mis-target it as the app profile.
+		const envSlug = await createRealAuthProfile(ctx, {
+			profileKind: "env",
+			slug: "wrong-kind-env-profile",
+			credentials: { DEMO_TOKEN: "ghp_real_token" },
+		});
+
+		const res = await manageConnections(
+			{
+				action: "create",
+				connector_key: CONNECTOR_KEY,
+				slug: "wrong-kind-app-create",
+				display_name: "Wrong Kind App Create",
+				device_worker_id: null,
+				// Resolvable, but it's an env profile — wrong kind for app_auth_profile_slug.
+				app_auth_profile_slug: envSlug,
+			},
+			TEST_ENV,
+			ctx,
+		);
+		expectGuardRejected(res);
+		expect(await connectionCount(org.id)).toBe(0);
+	});
+
 	it("create WITH env/PAT creds in config is ALLOWED past the guard", async () => {
 		const org = await createTestOrganization({ name: "PAT Create Org" });
 		const user = await createTestUser();

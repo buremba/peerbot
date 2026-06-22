@@ -83,9 +83,13 @@ export const CreateAction = Type.Object({
     })
   ),
   device_worker_id: Type.Optional(
-    Type.String({
+    // Nullable: serverless connections (no device) send `null`, not just omit.
+    // The UI/serverless callers pass `device_worker_id: null` explicitly, which
+    // a bare `Type.String` rejected ("Expected string"); `resolveDeviceBinding`
+    // normalizes null/empty to serverless.
+    Type.Union([Type.String(), Type.Null()], {
       description:
-        "Run this connection's syncs/actions on a specific device worker (its device_workers.id) instead of the Lobu server (runs serverless). Required for connectors that declare a required_capability; optional otherwise. The device must belong to you or be granted to this org.",
+        "Run this connection's syncs/actions on a specific device worker (its device_workers.id) instead of the Lobu server (runs serverless). Null/omit runs serverless. Required for connectors that declare a required_capability. The device must belong to you or be granted to this org.",
     })
   ),
   entity_ids: Type.Optional(
@@ -201,9 +205,10 @@ export const ConnectAction = Type.Object({
     Type.Record(Type.String(), Type.Any(), { description: 'Connection config' })
   ),
   device_worker_id: Type.Optional(
-    Type.String({
+    // Nullable for serverless connections — see CreateAction note.
+    Type.Union([Type.String(), Type.Null()], {
       description:
-        "Run this connection's syncs/actions on a specific device worker (its device_workers.id) instead of the Lobu server (runs serverless). Required for connectors that declare a required_capability; optional otherwise. The device must belong to you or be granted to this org.",
+        "Run this connection's syncs/actions on a specific device worker (its device_workers.id) instead of the Lobu server (runs serverless). Null/omit runs serverless. Required for connectors that declare a required_capability. The device must belong to you or be granted to this org.",
     })
   ),
   entity_ids: Type.Optional(

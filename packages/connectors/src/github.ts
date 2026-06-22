@@ -231,9 +231,38 @@ export default class GitHubConnector extends ConnectorRuntime {
       algorithm: 'sha256',
       signaturePrefix: 'sha256=',
       dedupeHeader: 'x-github-delivery',
+      // App-installation delivery: one App-level webhook is configured ONCE on
+      // the GitHub App (not per connection), and inbound deliveries route via
+      // the shared `/api/v1/app-webhooks/github` endpoint keyed on
+      // `installation.id`. In this mode registerWebhook/unregisterWebhook are
+      // no-ops (see those methods); per-connection hook creation is the
+      // OAuth/PAT fallback path's concern, gated by a configured repo/org target.
+      delivery: 'app_installation',
+      routingKeyPath: 'installation.id',
     },
     authSchema: {
+      // Precedence (design §4.5): app_installation (primary, org-scoped GitHub
+      // App) → oauth (user-scoped) → env_keys (deployment GITHUB_TOKEN fallback).
+      // The per-org oauth_app-profile requirement no longer applies to GitHub
+      // connect because app_installation is available — orgs install the App
+      // instead of hand-creating an OAuth app profile.
       methods: [
+        {
+          type: 'app_installation',
+          provider: 'github',
+          providerInstance: 'cloud',
+          appIdKey: 'GITHUB_APP_ID',
+          privateKeyKey: 'GITHUB_APP_PRIVATE_KEY',
+          // Install URL for the Lobu GitHub App. `{{app_slug}}` is substituted
+          // by the install UI from the configured App slug; the user picks the
+          // org/repos to grant during GitHub's install flow.
+          installUrlTemplate: 'https://github.com/apps/{{app_slug}}/installations/new',
+          permissions: ['issues', 'pull_requests', 'contents', 'metadata', 'discussions'],
+          events: ['issues', 'pull_request', 'issue_comment', 'discussion', 'discussion_comment'],
+          required: false,
+          description:
+            'Install the Lobu GitHub App on your org to grant tenant-scoped access (no per-connection token). Repo/issue/PR reads and write actions flow through the App installation.',
+        },
         {
           type: 'oauth',
           provider: 'github',
@@ -687,6 +716,13 @@ export default class GitHubConnector extends ConnectorRuntime {
   async registerWebhook(
     ctx: WebhookRegistrationContext<GitHubConfig>
   ): Promise<WebhookRegistration> {
+    // App-installation delivery: the App-level webhook is provisioned once at
+    // install time, not per connection — so register is a no-op. The provider
+    // subscription already exists; there is no per-connection hook to create.
+    if (this.definition.webhook?.delivery === 'app_installation') {
+      return { externalId: '', metadata: { delivery: 'app_installation', noop: true } };
+    }
+
     const token = this.resolveToken(ctx.credentials?.accessToken, ctx.config);
     if (!token) {
       throw new Error('GitHub webhook registration requires OAuth or GITHUB_TOKEN.');
@@ -725,6 +761,10 @@ export default class GitHubConnector extends ConnectorRuntime {
   }
 
   async unregisterWebhook(ctx: WebhookRegistrationContext<GitHubConfig>): Promise<void> {
+    // App-installation delivery: nothing to tear down per connection — the
+    // App-level webhook is removed when the org uninstalls the App, not here.
+    if (this.definition.webhook?.delivery === 'app_installation') return;
+
     const externalId = ctx.externalId;
     if (!externalId) return;
 

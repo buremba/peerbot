@@ -78,7 +78,7 @@ async function resolveSingleTenantOrgId(): Promise<string | null> {
  * then the self-host single-tenant fallback. Returns `null` only when
  * neither path yields a definite org — at which point the route must reject.
  */
-async function resolveInstallOrgId(c: Context): Promise<string | null> {
+export async function resolveInstallOrgId(c: Context): Promise<string | null> {
   const sessionOrgId = readSessionOrgId(c);
   if (sessionOrgId) return sessionOrgId;
   return resolveSingleTenantOrgId();

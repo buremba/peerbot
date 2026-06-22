@@ -16,6 +16,7 @@ import {
 import { getInstallationTokenRegistry } from '../gateway/installation/registry';
 import { parseJsonObject } from '@lobu/core';
 import { errorMessage } from './errors';
+import { insertEvent } from './insert-event';
 import logger from './logger';
 
 interface ExecutionOAuthCredentials {
@@ -322,6 +323,56 @@ const NOT_APP_INSTALLATION: AppInstallationCredentialResult = {
 };
 
 /**
+ * Best-effort security audit for a rejected app-installation reference. A
+ * connection trying to resolve an install it doesn't own (cross-tenant) or one
+ * whose provider/instance doesn't match its connector method is a tenancy
+ * signal worth surfacing beyond the log line — operators can review these the
+ * same way they review `guardrail-trip` rows.
+ *
+ * Mirrors the guardrail-trip audit shape (`semantic_type='guardrail-trip'`,
+ * `guardrail` discriminator in metadata) so existing audit tooling/queries pick
+ * it up. Append-only: one `events` row per rejection.
+ *
+ * Fire-and-forget and never throws — resolution must NOT crash because the
+ * audit write failed; a dropped row is logged so the gap is still visible.
+ */
+function recordAppInstallationTenancyTrip(params: {
+  organizationId: string;
+  connectionId: number;
+  installId: number;
+  reason: 'cross_tenant_org' | 'provider_instance_mismatch';
+  details: Record<string, unknown>;
+}): void {
+  const originId = `app_installation_tenancy_trip_${params.reason}_${params.connectionId}_${params.installId}_${Date.now()}`;
+  void insertEvent({
+    entityIds: [],
+    organizationId: params.organizationId,
+    originId,
+    title: `App-installation reference rejected (${params.reason})`,
+    semanticType: 'guardrail-trip',
+    originType: 'guardrail-app-installation',
+    metadata: {
+      guardrail: 'app-installation-tenancy',
+      stage: 'pre-tool',
+      reason: params.reason,
+      connection_id: params.connectionId,
+      install_id: params.installId,
+      ...params.details,
+    },
+  }).catch((err) => {
+    logger.warn(
+      {
+        err: err instanceof Error ? err.message : String(err),
+        connection_id: params.connectionId,
+        install_id: params.installId,
+        reason: params.reason,
+      },
+      'Failed to record app-installation tenancy audit event (security log gap)'
+    );
+  });
+}
+
+/**
  * Resolve a tenant-scoped credential for an App-installation-backed connection.
  *
  * Wiring contract:
@@ -422,6 +473,13 @@ async function resolveAppInstallationCredential(
       },
       'Cross-tenant app-installation reference rejected: install org does not match connection org'
     );
+    recordAppInstallationTenancyTrip({
+      organizationId,
+      connectionId,
+      installId,
+      reason: 'cross_tenant_org',
+      details: { connection_org: organizationId, install_org: install.organizationId },
+    });
     return { handled: true, credentials: null };
   }
 
@@ -446,6 +504,18 @@ async function resolveAppInstallationCredential(
       },
       'App-installation reference rejected: install provider/instance does not match connector method'
     );
+    recordAppInstallationTenancyTrip({
+      organizationId,
+      connectionId,
+      installId,
+      reason: 'provider_instance_mismatch',
+      details: {
+        install_provider: install.provider,
+        method_provider: method.provider,
+        install_provider_instance: install.providerInstance,
+        method_provider_instance: method.providerInstance ?? 'cloud',
+      },
+    });
     return { handled: true, credentials: null };
   }
 

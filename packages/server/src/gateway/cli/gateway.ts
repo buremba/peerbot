@@ -27,6 +27,8 @@ import {
   createDefaultAppWebhookSecretResolver,
   createGithubAppWebhookProvider,
 } from "../routes/public/app-webhooks.js";
+import { createAppInstallRoutes } from "../routes/public/app-install.js";
+import { resolveInstallOrgId } from "../routes/public/slack.js";
 import { createAgentConfigRoutes } from "../routes/public/agent-config.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
 import { createAgentRoutes } from "../routes/public/agents.js";
@@ -716,6 +718,17 @@ export function createGatewayApp(
           : [],
         resolveAppWebhookSecret:
           createDefaultAppWebhookSecretResolver(appWebhookSecretStore),
+      }),
+    );
+
+    // GitHub App post-install callback (app-installation design §4.4): records
+    // the installation + links the org's github connection to it. Session-bound
+    // org resolution shares the Slack install flow's resolver.
+    app.route(
+      "",
+      createAppInstallRoutes({
+        installationStore: createPostgresAppInstallationStore(),
+        resolveInstallOrgId,
       }),
     );
     app.route(

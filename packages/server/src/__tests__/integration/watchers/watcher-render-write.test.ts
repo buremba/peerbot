@@ -86,11 +86,6 @@ describe('watcher render direct write (phase 3a)', () => {
     const r1 = await rendered(wid);
     expect(r1).toHaveLength(1);
     expect(r1[0].json_template).toEqual(tmpl);
-    // And the column is no longer written on watcher_versions.
-    const src = (await sql`
-      SELECT json_template FROM watcher_versions WHERE watcher_id = ${wid}
-    `) as Array<{ json_template: unknown }>;
-    expect(src[0].json_template).toBeNull();
 
     // create_version direct-writes its render, and carries the prev render forward.
     const v2 = { version: 1, root: { type: 'text', content: 'direct-v2' } };

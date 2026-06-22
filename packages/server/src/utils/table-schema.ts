@@ -188,7 +188,10 @@ export const QUERYABLE_SCHEMA = {
         'prompt',
         'extraction_schema',
         'sources',
-        'json_template',
+        // json_template removed: the watcher render moved to view_template_versions
+        // (watcher-render fold). This allowlist removal (phase 4a) must ship a release
+        // before the DROP COLUMN (4b) — buildScopedQuery emits these columns in query_sql
+        // CTEs, so dropping while still listed would break user data_sources SQL.
         'keying_config',
         'classifiers',
         'condensation_prompt',

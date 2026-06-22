@@ -127,11 +127,20 @@ branch_is_pushed() { # <gitdir> <b>
   return 1
 }
 
+# Never delete a long-lived integration branch, even if a worktree was somehow
+# moved onto it (removing the worktree first would free the ref, so `branch -D`
+# would otherwise succeed and nuke main/master).
+is_protected_branch() { case "$1" in main|master) return 0 ;; *) return 1 ;; esac; }
+
 # Delete the branch the worktree was actually on. Safety for THIS branch is
 # enforced upstream — the force=0 ahead-of-origin guard above, or clean-merged's
 # merged-head gate — so by the time we get here, deleting it is sanctioned.
 delete_actual() { # <gitdir> <label>
   local gitdir="$1" label="$2"
+  if is_protected_branch "$branch"; then
+    echo "→ refusing to delete protected $label branch '$branch'" >&2
+    return 0
+  fi
   if git -C "$gitdir" show-ref --verify --quiet "refs/heads/$branch"; then
     echo "→ deleting $label branch $branch"
     git -C "$gitdir" branch -D "$branch"
@@ -145,6 +154,7 @@ delete_actual() { # <gitdir> <label>
 delete_default_if_pushed() { # <gitdir> <label>
   local gitdir="$1" label="$2"
   [[ "$default_branch" != "$branch" ]] || return 0
+  is_protected_branch "$default_branch" && return 0
   git -C "$gitdir" show-ref --verify --quiet "refs/heads/$default_branch" || return 0
   if branch_is_pushed "$gitdir" "$default_branch"; then
     echo "→ deleting $label branch $default_branch (feat default, fully pushed)"

@@ -136,6 +136,7 @@ interface BestMatch {
 
 interface AllClassification {
   content_id: number;
+  classifier_id: number;
   version_id: number;
   value: string;
   confidences_map: Record<string, number>;
@@ -148,6 +149,7 @@ interface AllClassification {
 interface ClassifierVersionLookup {
   slug: string;
   version_id: number;
+  classifier_id: number;
 }
 
 // ── Step 1: Fetch target content with embeddings ───────────────────────
@@ -198,16 +200,16 @@ async function fetchTargetContent(
   } else if (mode === 'entity') {
     const entityId = options.entity_id!;
 
-    // Get current classifier version IDs
-    const versionRows = await sql.unsafe<{ version_id: number }>(
+    // Get the stable classifier IDs whose embedding classifications we maintain
+    const classifierRows = await sql.unsafe<{ classifier_id: number }>(
       classifyViaFacet()
-        ? `SELECT cf.current_version_id as version_id
+        ? `SELECT cf.id as classifier_id
            FROM classify_facet cf
            WHERE cf.slug IN (${classifierPlaceholders})
              AND cf.status = 'active'
              AND cf.watcher_id IS NULL
              AND cf.current_version_id IS NOT NULL`
-        : `SELECT fcv.id as version_id
+        : `SELECT fc.id as classifier_id
            FROM event_classifiers fc
            JOIN event_classifier_versions fcv ON fc.id = fcv.classifier_id AND fcv.is_current = true
            WHERE fc.slug IN (${classifierPlaceholders})
@@ -215,11 +217,11 @@ async function fetchTargetContent(
              AND fc.watcher_id IS NULL`,
       enabledClassifiers
     );
-    const versionIds = versionRows.map((r) => r.version_id);
+    const classifierIds = classifierRows.map((r) => r.classifier_id);
 
-    if (versionIds.length === 0) return [];
+    if (classifierIds.length === 0) return [];
 
-    const versionPlaceholders = versionIds.map((_, i) => `$${i + 2}`).join(', ');
+    const classifierIdPlaceholders = classifierIds.map((_, i) => `$${i + 2}`).join(', ');
     targetRows = await sql.unsafe(
       `SELECT DISTINCT
          f.id,
@@ -241,15 +243,15 @@ async function fetchTargetContent(
          )
          AND fe.embedding IS NOT NULL
          AND EXISTS (
-           SELECT 1 FROM unnest(ARRAY[${versionPlaceholders}]::bigint[]) AS ccv(version_id)
+           SELECT 1 FROM unnest(ARRAY[${classifierIdPlaceholders}]::bigint[]) AS ccc(classifier_id)
            WHERE NOT EXISTS (
              SELECT 1 FROM event_classifications cc
              WHERE cc.event_id = f.id
-               AND cc.classifier_version_id = ccv.version_id
+               AND cc.classifier_id = ccc.classifier_id
                AND cc.source = 'embedding'
            )
          )`,
-      [entityId, ...versionIds]
+      [entityId, ...classifierIds]
     );
   } else {
     throw new Error(`Invalid mode: ${mode}`);
@@ -444,7 +446,7 @@ function determineBestMatches(similarities: Similarity[]): BestMatch[] {
 
 function generateParentClassifications(
   bestMatches: BestMatch[],
-  classifierVersionLookup: Map<string, number>
+  classifierVersionLookup: Map<string, ClassifierVersionLookup>
 ): AllClassification[] {
   const parentClassifications: AllClassification[] = [];
 
@@ -452,12 +454,13 @@ function generateParentClassifications(
     if (bm.value == null || bm.parent_mapping == null) continue;
 
     for (const [parentSlug, parentValue] of Object.entries(bm.parent_mapping)) {
-      const parentVersionId = classifierVersionLookup.get(parentSlug);
-      if (parentVersionId == null) continue;
+      const parentLookup = classifierVersionLookup.get(parentSlug);
+      if (parentLookup == null) continue;
 
       parentClassifications.push({
         content_id: bm.content_id,
-        version_id: parentVersionId,
+        classifier_id: parentLookup.classifier_id,
+        version_id: parentLookup.version_id,
         value: parentValue,
         confidences_map: {},
         met_threshold: true,
@@ -475,7 +478,7 @@ function generateParentClassifications(
 
 async function fetchAllClassifierVersions(sql: DbClient): Promise<ClassifierVersionLookup[]> {
   return sql.unsafe<ClassifierVersionLookup>(
-    `SELECT fc.slug, fcv.id as version_id
+    `SELECT fc.slug, fcv.id as version_id, fc.id as classifier_id
      FROM event_classifiers fc
      JOIN event_classifier_versions fcv ON fc.id = fcv.classifier_id AND fcv.is_current = true
      WHERE fc.status = 'active' AND fc.watcher_id IS NULL`,
@@ -491,11 +494,11 @@ async function upsertClassifications(
 ): Promise<{ content_id: number }[]> {
   if (classifications.length === 0) return [];
 
-  // Deduplicate: for each (content_id, version_id), keep the one with highest confidence
+  // Deduplicate: for each (content_id, classifier_id), keep the one with highest confidence
   // and merge values/confidences (matches the old ON CONFLICT behavior)
   const deduped = new Map<string, AllClassification & { merged_values: string[] }>();
   for (const c of classifications) {
-    const key = `${c.content_id}:${c.version_id}`;
+    const key = `${c.content_id}:${c.classifier_id}`;
     const existing = deduped.get(key);
     if (existing) {
       // Merge values (distinct)
@@ -518,13 +521,13 @@ async function upsertClassifications(
 
   const allClassifications = [...deduped.values()];
 
-  // Build the conflict keys for DELETE
+  // Build the conflict keys for DELETE (stable classifier_id — the post-collapse uniqueness key)
   const deleteConditions = allClassifications.map((c) => ({
     event_id: c.content_id,
-    version_id: c.version_id,
+    classifier_id: c.classifier_id,
   }));
 
-  // Delete existing non-manual embedding classifications for these (event_id, version_id) pairs
+  // Delete existing non-manual embedding classifications for these (event_id, classifier_id) pairs
   // Process in batches to avoid overly long SQL
   const BATCH_SIZE = 500;
   for (let i = 0; i < deleteConditions.length; i += BATCH_SIZE) {
@@ -532,10 +535,10 @@ async function upsertClassifications(
     const whereClauses = batch
       .map(
         (_, j) =>
-          `(event_id = $${j * 2 + 1} AND classifier_version_id = $${j * 2 + 2} AND source = 'embedding' AND COALESCE(watcher_id, 0) = 0)`
+          `(event_id = $${j * 2 + 1} AND classifier_id = $${j * 2 + 2} AND source = 'embedding' AND COALESCE(watcher_id, 0) = 0)`
       )
       .join(' OR ');
-    const params = batch.flatMap((d) => [d.event_id, d.version_id]);
+    const params = batch.flatMap((d) => [d.event_id, d.classifier_id]);
 
     await sql.unsafe(
       `DELETE FROM event_classifications
@@ -630,7 +633,7 @@ export async function executeClassificationQuery(
     // Step 5: Build parent classifications from parent_mapping
     const classifierVersionRows = await fetchAllClassifierVersions(sql);
     const classifierVersionLookup = new Map(
-      classifierVersionRows.map((r) => [r.slug, r.version_id])
+      classifierVersionRows.map((r) => [r.slug, r])
     );
     const parentClassifications = generateParentClassifications(
       bestMatches,
@@ -642,6 +645,7 @@ export async function executeClassificationQuery(
       .filter((bm) => bm.value != null)
       .map((bm) => ({
         content_id: bm.content_id,
+        classifier_id: bm.classifier_id,
         version_id: bm.version_id,
         value: bm.value!,
         confidences_map: bm.confidences_map,

@@ -680,6 +680,20 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 			);
 		}
 
+		// setup_action must be one of install|update|request (request handled above).
+		// A missing/unrecognized value must NOT be treated like install/update —
+		// reject (400) before any state validation or mutation. parseSetupAction
+		// returns null for both missing and garbage.
+		if (setupAction === null) {
+			return c.html(
+				renderOAuthErrorPage(
+					"invalid_request",
+					"The GitHub install callback has a missing or invalid setup_action (expected install, update, or request).",
+				),
+				400,
+			);
+		}
+
 		if (!installationIdRaw || !installationIdRaw.trim()) {
 			return c.html(
 				renderOAuthErrorPage(

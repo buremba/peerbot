@@ -233,6 +233,46 @@ describe("GitHub App install callback — signed-state CSRF guard", () => {
 		expect(await connectionCount(org.id)).toBe(0);
 	});
 
+	it("rejects a callback with a MISSING setup_action → 400, zero mutation", async () => {
+		const org = await createTestOrganization({ name: "Org NoSetupAction" });
+		await seedGithubConnector(org.id);
+		// A valid state exists, but setup_action is absent — must 400 before any
+		// state validation or mutation (not be treated like install/update).
+		const state = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+		});
+		const { router } = buildRouter(org.id, { ownedInstallationIds: [7011] });
+
+		const res = await router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?installation_id=7011&state=${state}&code=valid-oauth-code`,
+			),
+		);
+
+		expect(res.status).toBe(400);
+		expect(await installCount(org.id)).toBe(0);
+		expect(await connectionCount(org.id)).toBe(0);
+	});
+
+	it("rejects a callback with a GARBAGE setup_action → 400, zero mutation", async () => {
+		const org = await createTestOrganization({ name: "Org GarbageSetupAction" });
+		await seedGithubConnector(org.id);
+		const state = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+		});
+		const { router } = buildRouter(org.id, { ownedInstallationIds: [7012] });
+
+		const res = await router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?installation_id=7012&setup_action=delete-everything&state=${state}&code=valid-oauth-code`,
+			),
+		);
+
+		expect(res.status).toBe(400);
+		expect(await installCount(org.id)).toBe(0);
+		expect(await connectionCount(org.id)).toBe(0);
+	});
+
 	it("FIXATION: completing session org ≠ state org → 403 org_mismatch, zero mutation, nonce NOT consumed", async () => {
 		// Confused-deputy: attacker (stateOrg) mints the link and sends it to a
 		// victim, whose browser/session resolves to a DIFFERENT (ambient) org. Even

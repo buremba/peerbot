@@ -200,6 +200,13 @@ function getEnvAuthMethods(authSchema: ConnectorAuthSchema): ConnectorAuthEnvKey
   );
 }
 
+/** Every env-key field key the connector declares (across all env_keys methods). */
+export function getEnvAuthFieldKeys(authSchema: ConnectorAuthSchema): string[] {
+  return getEnvAuthMethods(authSchema).flatMap((method) =>
+    method.fields.map((field) => field.key)
+  );
+}
+
 export function getOAuthAuthMethods(authSchema: ConnectorAuthSchema): ConnectorAuthOAuthMethod[] {
   return authSchema.methods.filter(
     (method): method is ConnectorAuthOAuthMethod => method.type === 'oauth'

@@ -524,12 +524,26 @@ jobs:
         #      `[squash-baseline]` may delete the forward-delta migration
         #      files that were collapsed into the baseline. This is a
         #      one-time-per-squash exception and code review is the gate.
+        #   3. PRs whose commit message contains the explicit sentinel
+        #      `[dup-version-rename]` may rename a migration file. This exists
+        #      for the one legitimate case the path-based check cannot tell
+        #      apart from a forbidden edit: two migrations landed at the SAME
+        #      version (a merge race), so `dbmate up` halts on a duplicate
+        #      schema_migrations PK and the second-keyed file's body was never
+        #      applied where the first already recorded that version. The fix
+        #      is to rename one of the colliding files to a free version so it
+        #      applies. Code review is the gate — confirm the renamed file is a
+        #      true duplicate-version collision and its body is idempotent.
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           if git log "$BASE_SHA"..HEAD --format=%B | grep -qF '[squash-baseline]'; then
             echo "[squash-baseline] sentinel present; immutability check is skipped for this PR."
+            exit 0
+          fi
+          if git log "$BASE_SHA"..HEAD --format=%B | grep -qF '[dup-version-rename]'; then
+            echo "[dup-version-rename] sentinel present; immutability check is skipped for this PR."
             exit 0
           fi
           edited=$(git diff --name-only --diff-filter=MRD "$BASE_SHA"...HEAD -- db/migrations/ \

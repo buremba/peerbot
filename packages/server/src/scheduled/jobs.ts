@@ -15,6 +15,7 @@ import { runWatcherAutomationTick } from '../watchers/automation';
 import { checkStalledExecutions } from './check-stalled-executions';
 import { runConnectorHealthCheck } from '../connectors/connector-health';
 import { runClassificationReconciliation } from './classification-reconciliation';
+import { refreshConnectorDefinitions } from './refresh-connector-definitions';
 import { registerScheduledJobsTicker } from './scheduled-jobs-service';
 import { TaskScheduler } from './task-scheduler';
 import { triggerEmbedBackfill } from './trigger-embed-backfill';
@@ -180,6 +181,24 @@ function registerMaintenanceTasks(
       logger.info({ ...result }, '[task] classification-reconciliation completed');
     },
     { cron: '*/5 * * * *' },
+  );
+
+  // Connector-definition refresh — re-syncs every org's existing built-in
+  // connector definition from the on-disk registry, so code-side schema changes
+  // (e.g. github gaining the app_installation auth method) reach orgs that
+  // installed the connector before the change. Idempotent; preserves org config
+  // (login_enabled / default_connection_config). Single-claimant per tick. The
+  // first tick after a deploy converges the fleet without an operator step;
+  // hourly thereafter is plenty since it only matters across releases.
+  scheduler.register(
+    'refresh-connector-definitions',
+    async () => {
+      const result = await refreshConnectorDefinitions();
+      if (result.refreshed > 0 || result.errored > 0) {
+        logger.info({ ...result }, '[task] refresh-connector-definitions completed');
+      }
+    },
+    { cron: '0 * * * *' },
   );
 
   // Watcher automation: reconcile in-flight runs, materialize newly-due runs,

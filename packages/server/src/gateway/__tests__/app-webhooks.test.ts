@@ -119,7 +119,11 @@ describe("app-webhook router (GitHub)", () => {
 		const raw = JSON.stringify({
 			action: "opened",
 			installation: { id: Number(INSTALLATION_ID) },
-			issue: { number: 11, title: "Prod is down" },
+			issue: {
+				number: 11,
+				title: "Prod is down",
+				html_url: "https://github.com/acme/api/issues/11",
+			},
 			repository: { full_name: "acme/api" },
 		});
 		const res = await app.fetch(ghDelivery(raw));
@@ -131,12 +135,79 @@ describe("app-webhook router (GitHub)", () => {
 		expect(rows[0].payload_data).toEqual({
 			action: "opened",
 			installation: { id: Number(INSTALLATION_ID) },
-			issue: { number: 11, title: "Prod is down" },
+			issue: {
+				number: 11,
+				title: "Prod is down",
+				html_url: "https://github.com/acme/api/issues/11",
+			},
 			repository: { full_name: "acme/api" },
 		});
 		// Routed into the install's owning org, deduped on the delivery id.
 		expect(rows[0].organization_id).toBe(ORG);
 		expect(rows[0].origin_id).toBe("gh-app-1");
+		// Title + source_url projected from the issue (not left empty).
+		expect(rows[0].title).toBe("Prod is down");
+		expect(rows[0].source_url).toBe("https://github.com/acme/api/issues/11");
+	});
+
+	test("an issue_comment delivery lands the parent issue title + comment url", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const installId = await seedActiveInstall();
+		const app = buildApp();
+
+		const raw = JSON.stringify({
+			action: "created",
+			installation: { id: Number(INSTALLATION_ID) },
+			issue: {
+				number: 11,
+				title: "Prod is down",
+				html_url: "https://github.com/acme/api/issues/11",
+			},
+			comment: {
+				id: 555,
+				body: "Looking into it",
+				html_url: "https://github.com/acme/api/issues/11#issuecomment-555",
+			},
+			repository: { full_name: "acme/api" },
+		});
+		const res = await app.fetch(
+			ghDelivery(raw, { deliveryId: "gh-comment-1", event: "issue_comment" }),
+		);
+		expect(res.status).toBe(202);
+
+		const rows = await eventRows(`webhook:app_install:${installId}`);
+		expect(rows.length).toBe(1);
+		// Title is the PARENT issue's; url deep-links the comment itself.
+		expect(rows[0].title).toBe("Prod is down");
+		expect(rows[0].source_url).toBe(
+			"https://github.com/acme/api/issues/11#issuecomment-555",
+		);
+	});
+
+	test("a pull_request delivery lands the PR title + html_url", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const installId = await seedActiveInstall();
+		const app = buildApp();
+
+		const raw = JSON.stringify({
+			action: "opened",
+			installation: { id: Number(INSTALLATION_ID) },
+			pull_request: {
+				number: 42,
+				title: "Add app_installation auth method",
+				html_url: "https://github.com/acme/api/pull/42",
+			},
+			repository: { full_name: "acme/api" },
+		});
+		const res = await app.fetch(
+			ghDelivery(raw, { deliveryId: "gh-pr-1", event: "pull_request" }),
+		);
+		expect(res.status).toBe(202);
+
+		const rows = await eventRows(`webhook:app_install:${installId}`);
+		expect(rows.length).toBe(1);
+		expect(rows[0].title).toBe("Add app_installation auth method");
+		expect(rows[0].source_url).toBe("https://github.com/acme/api/pull/42");
 	});
 
 	test("a forged signature is rejected with 401 and lands nothing", async () => {

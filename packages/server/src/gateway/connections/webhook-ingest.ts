@@ -309,6 +309,21 @@ async function findExistingDeliveryId(
 }
 
 /**
+ * Caller-supplied projections for `events.title` / `events.source_url`.
+ *
+ * Connection ingest reads `events.title` from a static `config.titlePath` JSON
+ * pointer and never sets a source url. App-webhook deliveries (GitHub App) carry
+ * provider-specific shapes a single pointer can't express — a comment's title
+ * lives on its parent issue, the url is `html_url` on a different object per
+ * event type. The app-webhook router therefore extracts these per provider and
+ * passes them here; when set they take precedence over `config.titlePath`.
+ */
+export interface WebhookIngestOverrides {
+	title?: string | null;
+	sourceUrl?: string | null;
+}
+
+/**
  * Handle one inbound delivery for a `platform: "webhook"` connection.
  *
  * The caller passes the RAW stored row (config still holding `secret://`
@@ -321,6 +336,7 @@ export async function handleWebhookIngest(
 	request: Request,
 	secretStore: SecretStore,
 	peerAddress?: string | null,
+	overrides?: WebhookIngestOverrides,
 ): Promise<Response> {
 	const organizationId = stored.organizationId;
 	if (!organizationId) {
@@ -501,7 +517,13 @@ export async function handleWebhookIngest(
 			// store-only (watcher SQL) and out of semantic memory. The full
 			// payload always stays in payload_data; this is lossy-by-cap.
 			content: isSearchableEnabled(config) ? renderPayloadText(parsed) : null,
-			title: extractTitle(parsed, config.titlePath),
+			// Caller-supplied title/url (app-webhook provider extractor) win over the
+			// static config.titlePath pointer; both fall through to undefined/null.
+			title:
+				overrides?.title != null && overrides.title.length > 0
+					? overrides.title.slice(0, 500)
+					: extractTitle(parsed, config.titlePath),
+			sourceUrl: overrides?.sourceUrl ?? null,
 			occurredAt: new Date(),
 			metadata: {
 				webhook_connection_id: stored.id,

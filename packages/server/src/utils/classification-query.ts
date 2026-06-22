@@ -553,7 +553,7 @@ async function upsertClassifications(
   for (let i = 0; i < allClassifications.length; i += BATCH_SIZE) {
     const batch = allClassifications.slice(i, i + BATCH_SIZE);
 
-    // Each row needs 10 params: event_id, classifier_version_id, values, confidences,
+    // Each row needs 10 params: event_id, classifier_id, values, confidences,
     // source, is_manual, met_threshold, threshold, best_match_attribute, embedding_confidence
     const valuePlaceholders = batch
       .map((_, j) => {
@@ -564,7 +564,7 @@ async function upsertClassifications(
 
     const params = batch.flatMap((c) => [
       c.content_id,
-      c.version_id,
+      c.classifier_id,
       c.merged_values,
       JSON.stringify(c.confidences_map),
       c.met_threshold,
@@ -575,7 +575,7 @@ async function upsertClassifications(
 
     await sql.unsafe(
       `INSERT INTO event_classifications (
-         event_id, classifier_version_id, watcher_id, window_id,
+         event_id, classifier_id, watcher_id, window_id,
          "values", confidences, source, is_manual,
          met_threshold, threshold, best_match_attribute, embedding_confidence
        )

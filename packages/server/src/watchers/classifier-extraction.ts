@@ -971,12 +971,12 @@ async function processExtractedClassifications(
 
 					await sql`
             INSERT INTO event_classifications (
-              event_id, classifier_version_id, watcher_id, window_id,
+              event_id, classifier_id, watcher_id, window_id,
               values, excerpts, confidences, source, is_manual
             )
             VALUES (
               ${citation.content_id},
-              ${classifier.version_id},
+              ${classifier.id},
               ${watcherId},
               ${windowId},
               ARRAY[${value}]::text[],
@@ -985,7 +985,7 @@ async function processExtractedClassifications(
               'llm',
               false
             )
-            ON CONFLICT (event_id, classifier_version_id, source, COALESCE(watcher_id, 0))
+            ON CONFLICT (event_id, classifier_id, source, COALESCE(watcher_id, 0))
             DO UPDATE SET
               values = ARRAY(SELECT DISTINCT unnest(event_classifications.values || EXCLUDED.values)),
               excerpts = event_classifications.excerpts || EXCLUDED.excerpts,
@@ -1021,12 +1021,12 @@ async function processExtractedClassifications(
 							if (parentClassifier) {
 								await sql`
                   INSERT INTO event_classifications (
-                    event_id, classifier_version_id, watcher_id, window_id,
+                    event_id, classifier_id, watcher_id, window_id,
                     values, excerpts, confidences, source, is_manual
                   )
                   VALUES (
                     ${citation.content_id},
-                    ${parentClassifier.version_id},
+                    ${parentClassifier.id},
                     ${watcherId},
                     ${windowId},
                     ARRAY[${parentValue}]::text[],
@@ -1035,7 +1035,7 @@ async function processExtractedClassifications(
                     'llm',
                     false
                   )
-                  ON CONFLICT (event_id, classifier_version_id, source, COALESCE(watcher_id, 0))
+                  ON CONFLICT (event_id, classifier_id, source, COALESCE(watcher_id, 0))
                   DO UPDATE SET
                     values = ARRAY(SELECT DISTINCT unnest(event_classifications.values || EXCLUDED.values)),
                     window_id = EXCLUDED.window_id

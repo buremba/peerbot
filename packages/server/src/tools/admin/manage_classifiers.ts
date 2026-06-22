@@ -452,9 +452,7 @@ async function handleCreateVersion(
     try {
       const deleteResults = await sql`
         DELETE FROM event_classifications
-        WHERE classifier_version_id IN (
-          SELECT id FROM event_classifier_versions WHERE classifier_id = ${args.classifier_id}
-        )
+        WHERE classifier_id = ${args.classifier_id}
         RETURNING id
       `;
       logger.info(
@@ -645,9 +643,7 @@ async function handleSetCurrentVersion(
     const deleteResults =
       await sql`
         DELETE FROM event_classifications
-        WHERE classifier_version_id IN (
-          SELECT id FROM event_classifier_versions WHERE classifier_id = ${args.classifier_id}
-        )
+        WHERE classifier_id = ${args.classifier_id}
         RETURNING id
       `;
     logger.info(
@@ -925,7 +921,7 @@ async function updateSingleClassification(
 
   const existingClassification = await sql`
     SELECT confidences FROM event_classifications
-    WHERE event_id = ${contentId} AND classifier_version_id = ${classifier.version_id} AND source = 'embedding'
+    WHERE event_id = ${contentId} AND classifier_id = ${classifier.classifier_id} AND source = 'embedding'
   `;
 
   let confidences: Record<string, number> = {};
@@ -941,11 +937,11 @@ async function updateSingleClassification(
   await sql.begin(async (tx) => {
     await tx`
       DELETE FROM event_classifications
-      WHERE event_id = ${contentId} AND classifier_version_id = ${classifier.version_id} AND source = ${source} AND watcher_id IS NULL
+      WHERE event_id = ${contentId} AND classifier_id = ${classifier.classifier_id} AND source = ${source} AND watcher_id IS NULL
     `;
     await tx`
-      INSERT INTO event_classifications (event_id, classifier_version_id, watcher_id, window_id, "values", confidences, source, is_manual, reasoning)
-      VALUES (${contentId}, ${classifier.version_id}, NULL, NULL, ${valuesLiteral}::text[], ${sql.json(confidences)}, ${source}, true, ${reasoning || null})
+      INSERT INTO event_classifications (event_id, classifier_id, watcher_id, window_id, "values", confidences, source, is_manual, reasoning)
+      VALUES (${contentId}, ${classifier.classifier_id}, NULL, NULL, ${valuesLiteral}::text[], ${sql.json(confidences)}, ${source}, true, ${reasoning || null})
     `;
   });
 

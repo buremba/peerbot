@@ -3,7 +3,17 @@ import { resolveCloudCredential } from '../connect/cloud-credential';
 import { getBuiltinProviderConfig } from '../connect/oauth-providers';
 import { type DbClient, getDb } from '../db/client';
 import { getAuthProfileById, normalizeAuthValues } from './auth-profiles';
-import { getOAuthAuthMethods, normalizeConnectorAuthSchema } from './connector-auth';
+import {
+  getAppInstallationAuthMethods,
+  getOAuthAuthMethods,
+  normalizeConnectorAuthSchema,
+} from './connector-auth';
+import { createPostgresAppInstallationStore } from '../lobu/stores/app-installation-store';
+import {
+  InstallationTokenError,
+  type MintedInstallationToken,
+} from '../gateway/installation/installation-token-provider';
+import { getInstallationTokenRegistry } from '../gateway/installation/registry';
 import { parseJsonObject } from '@lobu/core';
 import { errorMessage } from './errors';
 import logger from './logger';
@@ -70,6 +80,26 @@ export async function resolveExecutionAuth(
     }
     return {
       credentials,
+      connectionCredentials: {},
+      sessionState: null,
+      browserUserDataDir: null,
+    };
+  }
+
+  // App-installation branch (precedence over oauth_account per design §4.5):
+  // a connection backed by an `app_installation` auth method resolves a
+  // tenant-scoped token by minting it gateway-side. The private key + JWT +
+  // provider exchange stay here; the worker only ever receives the minted token
+  // (same seam OAuth tokens flow through). Returns null credentials (no crash)
+  // on any failure so the connection surfaces a credential error, not a 500.
+  const installCredential = await resolveAppInstallationCredential(
+    params.organizationId,
+    params.connectionId,
+    params.logContext
+  );
+  if (installCredential.handled) {
+    return {
+      credentials: installCredential.credentials,
       connectionCredentials: {},
       sessionState: null,
       browserUserDataDir: null,
@@ -272,6 +302,146 @@ async function fetchManagedConnectionToken(
     );
     return null;
   }
+}
+
+/**
+ * Result of the app-installation credential branch. `handled: true` means this
+ * connection is App-backed and resolution is authoritative (success OR a
+ * surfaced failure) — the caller returns immediately and does NOT fall through
+ * to the OAuth/env paths. `handled: false` means the connection is not
+ * App-backed; the caller continues with the unchanged credential resolution.
+ */
+interface AppInstallationCredentialResult {
+  handled: boolean;
+  credentials: ExecutionOAuthCredentials | null;
+}
+
+const NOT_APP_INSTALLATION: AppInstallationCredentialResult = {
+  handled: false,
+  credentials: null,
+};
+
+/**
+ * Resolve a tenant-scoped credential for an App-installation-backed connection.
+ *
+ * Wiring contract:
+ *  - The connection's connector must declare an `app_installation` auth method
+ *    (provider + appIdKey/privateKeyKey), and the connection `config` must carry
+ *    `installation_ref` = the `app_installations.id` it was bound to (written by
+ *    the install/connect flow — PR5). Absent either, this is not an App-backed
+ *    connection and we hand back to the normal resolver.
+ *  - The active install row is loaded by id; the connector method's
+ *    `appIdKey`/`privateKeyKey` are stamped into the row metadata so the GitHub
+ *    provider reads the right gateway env vars. The token is minted via the
+ *    per-pod {@link getInstallationTokenRegistry} (App JWT + provider exchange,
+ *    gateway-side only).
+ *
+ * Worker-creds invariant: the minted token is returned as `credentials`
+ * (provider/accessToken/expiresAt), the existing channel a connector reads its
+ * token from — identical to OAuth. The App private key, the signed App JWT, and
+ * the GitHub `/access_tokens` exchange never leave the gateway. The end-state
+ * `lobu_secret_<uuid>` placeholder + secret-proxy egress swap for the
+ * connector-worker HTTP path is the documented seam (the connector worker does
+ * not yet route outbound HTTP through the secret-proxy); see the PR notes.
+ *
+ * Lifecycle: a missing/inactive install or a mint failure resolves to
+ * `{ handled: true, credentials: null }` — the connection runs without a
+ * credential and the connector's own auth check fails cleanly, never a crash.
+ */
+async function resolveAppInstallationCredential(
+  organizationId: string,
+  connectionId: number,
+  logContext?: Record<string, unknown>
+): Promise<AppInstallationCredentialResult> {
+  const sql = getDb();
+  const rows = (await sql`
+    SELECT c.connector_key, c.config, cd.auth_schema
+    FROM connections c
+    JOIN connector_definitions cd
+      ON cd.key = c.connector_key
+     AND cd.organization_id = c.organization_id
+     AND cd.status = 'active'
+    WHERE c.id = ${connectionId}
+      AND c.organization_id = ${organizationId}
+      AND c.deleted_at IS NULL
+    LIMIT 1
+  `) as unknown as Array<{
+    connector_key: string;
+    config: Record<string, unknown> | null;
+    auth_schema: unknown;
+  }>;
+  if (rows.length === 0) return NOT_APP_INSTALLATION;
+
+  const authSchema = normalizeConnectorAuthSchema(rows[0].auth_schema);
+  const method = getAppInstallationAuthMethods(authSchema)[0];
+  if (!method) return NOT_APP_INSTALLATION;
+
+  const config = parseJsonObject(rows[0].config);
+  const installRef = config.installation_ref;
+  const installId =
+    typeof installRef === 'number'
+      ? installRef
+      : typeof installRef === 'string' && installRef.trim()
+        ? Number(installRef)
+        : null;
+  if (installId == null || !Number.isFinite(installId)) {
+    // Connector supports App installs, but this connection isn't bound to one —
+    // fall through to the configured fallback method (PAT/env) per §4.5.
+    return NOT_APP_INSTALLATION;
+  }
+
+  const store = createPostgresAppInstallationStore();
+  const install = await store.getById(installId);
+  if (!install) {
+    logger.warn(
+      { ...logContext, connection_id: connectionId, install_id: installId },
+      'App-installation connection references a missing install row'
+    );
+    return { handled: true, credentials: null };
+  }
+
+  // Stamp the connector method's env-var names onto the row metadata so the
+  // provider reads the correct gateway env vars (the row itself never holds the
+  // App id or private key — only their env-var NAMES, resolved gateway-side).
+  const installWithKeys = {
+    ...install,
+    metadata: {
+      ...install.metadata,
+      ...(method.appIdKey ? { appIdKey: method.appIdKey } : {}),
+      ...(method.privateKeyKey ? { privateKeyKey: method.privateKeyKey } : {}),
+    },
+  };
+
+  let minted: MintedInstallationToken;
+  try {
+    minted = await getInstallationTokenRegistry().mintFor(installWithKeys);
+  } catch (error) {
+    const reason =
+      error instanceof InstallationTokenError ? error.reason : 'unknown';
+    logger.warn(
+      {
+        ...logContext,
+        connection_id: connectionId,
+        install_id: installId,
+        provider: install.provider,
+        reason,
+        error: errorMessage(error),
+      },
+      'Failed to mint app-installation token'
+    );
+    return { handled: true, credentials: null };
+  }
+
+  return {
+    handled: true,
+    credentials: {
+      provider: install.provider,
+      accessToken: minted.token,
+      refreshToken: null,
+      expiresAt: minted.expiresAt,
+      scope: null,
+    },
+  };
 }
 
 async function resolveExecutionOAuthConfig(

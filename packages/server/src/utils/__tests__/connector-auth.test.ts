@@ -3,7 +3,9 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import type { ConnectorAuthAppInstallation } from '@lobu/connector-sdk';
 import {
+  getAppInstallationAuthMethods,
   getOAuthAuthMethods,
   getRequiredEnvAuthFields,
   normalizeConnectorAuthSchema,
@@ -173,5 +175,56 @@ describe('getRequiredEnvAuthFields', () => {
     });
     const fields = getRequiredEnvAuthFields(schema);
     expect(fields.length).toBe(0);
+  });
+});
+
+describe('app_installation auth method', () => {
+  it('preserves provider + appIdKey/privateKeyKey through normalization', () => {
+    const schema = normalizeConnectorAuthSchema({
+      methods: [
+        {
+          type: 'app_installation',
+          provider: 'github',
+          providerInstance: 'cloud',
+          appIdKey: 'GITHUB_APP_ID',
+          privateKeyKey: 'GITHUB_APP_PRIVATE_KEY',
+          installUrlTemplate: 'https://github.com/apps/lobu/installations/new',
+          permissions: ['issues:read'],
+          events: ['issues'],
+        },
+      ],
+    });
+    const methods = getAppInstallationAuthMethods(schema);
+    expect(methods.length).toBe(1);
+    const m = methods[0] as ConnectorAuthAppInstallation;
+    expect(m.provider).toBe('github');
+    expect(m.providerInstance).toBe('cloud');
+    expect(m.appIdKey).toBe('GITHUB_APP_ID');
+    expect(m.privateKeyKey).toBe('GITHUB_APP_PRIVATE_KEY');
+    expect(m.installUrlTemplate).toContain('installations/new');
+    expect(m.permissions).toEqual(['issues:read']);
+    expect(m.events).toEqual(['issues']);
+  });
+
+  it('drops an app_installation method with no provider', () => {
+    const schema = normalizeConnectorAuthSchema({
+      methods: [{ type: 'app_installation' }],
+    });
+    expect(getAppInstallationAuthMethods(schema).length).toBe(0);
+    // No valid methods left → default 'none'.
+    expect(schema.methods).toEqual([{ type: 'none' }]);
+  });
+
+  it('coexists with oauth + env_keys fallbacks on one connector', () => {
+    const schema = normalizeConnectorAuthSchema({
+      methods: [
+        { type: 'app_installation', provider: 'github' },
+        { type: 'oauth', provider: 'github', clientIdKey: 'GITHUB_CLIENT_ID' },
+        { type: 'env_keys', fields: [{ key: 'GITHUB_TOKEN', secret: true }] },
+      ],
+    });
+    expect(getAppInstallationAuthMethods(schema).length).toBe(1);
+    expect(getOAuthAuthMethods(schema).length).toBe(1);
+    expect(schema.methods.length).toBe(3);
   });
 });

@@ -1,4 +1,5 @@
 import type {
+  ConnectorAuthAppInstallation,
   ConnectorAuthEnvField,
   ConnectorAuthEnvKeys,
   ConnectorAuthMethod,
@@ -101,6 +102,35 @@ export function normalizeConnectorAuthSchema(value: unknown): ConnectorAuthSchem
       continue;
     }
 
+    if (type === 'app_installation') {
+      const provider = typeof method.provider === 'string' ? method.provider.trim() : '';
+      if (!provider) continue;
+
+      const stringArray = (raw: unknown): string[] | undefined =>
+        Array.isArray(raw)
+          ? raw.filter((v): v is string => typeof v === 'string')
+          : undefined;
+      const permissions = stringArray(method.permissions);
+      const events = stringArray(method.events);
+
+      methods.push({
+        type: 'app_installation',
+        provider,
+        providerInstance:
+          typeof method.providerInstance === 'string' ? method.providerInstance : undefined,
+        appIdKey: typeof method.appIdKey === 'string' ? method.appIdKey : undefined,
+        privateKeyKey:
+          typeof method.privateKeyKey === 'string' ? method.privateKeyKey : undefined,
+        installUrlTemplate:
+          typeof method.installUrlTemplate === 'string' ? method.installUrlTemplate : undefined,
+        ...(permissions && permissions.length > 0 ? { permissions } : {}),
+        ...(events && events.length > 0 ? { events } : {}),
+        required: typeof method.required === 'boolean' ? method.required : undefined,
+        description: typeof method.description === 'string' ? method.description : undefined,
+      });
+      continue;
+    }
+
     if (type === 'oauth') {
       const provider = typeof method.provider === 'string' ? method.provider.trim() : '';
       if (!provider) continue;
@@ -173,6 +203,14 @@ function getEnvAuthMethods(authSchema: ConnectorAuthSchema): ConnectorAuthEnvKey
 export function getOAuthAuthMethods(authSchema: ConnectorAuthSchema): ConnectorAuthOAuthMethod[] {
   return authSchema.methods.filter(
     (method): method is ConnectorAuthOAuthMethod => method.type === 'oauth'
+  );
+}
+
+export function getAppInstallationAuthMethods(
+  authSchema: ConnectorAuthSchema
+): ConnectorAuthAppInstallation[] {
+  return authSchema.methods.filter(
+    (method): method is ConnectorAuthAppInstallation => method.type === 'app_installation'
   );
 }
 

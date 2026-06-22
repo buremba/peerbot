@@ -174,12 +174,24 @@ export function buildWindowsSelectClause(): string {
       iw.execution_time_ms,
       iw.created_at,
       iw.version_id,
-      COALESCE(window_v.json_template, watcher_v.json_template) as json_template,
+      -- Watcher-render fold phase 2: render now lives in view_template_versions
+      -- (mirrored by trigger), keyed by watcher group + version. window_vr = the
+      -- window's snapshotted version render; watcher_vr = the watcher's current
+      -- version render (the original version-vs-version COALESCE, both from the mirror).
+      COALESCE(window_vr.json_template, watcher_vr.json_template) as json_template,
       CAST(COUNT(*) OVER () AS INTEGER) as total_count
     FROM watcher_windows iw
     JOIN watchers i ON iw.watcher_id = i.id
     LEFT JOIN watcher_versions watcher_v ON i.current_version_id = watcher_v.id
     LEFT JOIN watcher_versions window_v ON iw.version_id = window_v.id
+    LEFT JOIN view_template_versions watcher_vr
+      ON watcher_vr.resource_type = 'watcher' AND watcher_vr.resource_id = watcher_v.watcher_id::text
+     AND watcher_vr.organization_id = i.organization_id AND watcher_vr.version = watcher_v.version
+     AND watcher_vr.tab_name IS NULL
+    LEFT JOIN view_template_versions window_vr
+      ON window_vr.resource_type = 'watcher' AND window_vr.resource_id = window_v.watcher_id::text
+     AND window_vr.organization_id = i.organization_id AND window_vr.version = window_v.version
+     AND window_vr.tab_name IS NULL
   `.trim();
 }
 

@@ -615,7 +615,10 @@ async function getWatcherImpl(
         sv.extraction_schema as sel_version_extraction_schema,
         sv.version_sources as sel_version_version_sources,
         sv.classifiers as sel_version_classifiers,
-        sv.json_template as sel_version_json_template,
+        -- Watcher-render fold phase 2: the render now lives in view_template_versions
+        -- (mirrored from watcher_versions by trigger), keyed by the watcher group +
+        -- version. NULL when the version has no template (AutoRenderer).
+        svr.json_template as sel_version_json_template,
         -- Latest window end for the unprocessedCount bound
         (SELECT MAX(window_end) FROM watcher_windows WHERE watcher_id = i.id) as latest_window_end,
         -- Entities + parent info for entityInfoForUrl / entitiesForTemplate
@@ -659,6 +662,12 @@ async function getWatcherImpl(
                 LIMIT 1)
            )
        AND sv.watcher_id = i.watcher_group_id
+      LEFT JOIN view_template_versions svr
+        ON svr.resource_type = 'watcher'
+       AND svr.resource_id = sv.watcher_id::text
+       AND svr.organization_id = i.organization_id
+       AND svr.version = sv.version
+       AND svr.tab_name IS NULL
       ${buildLatestWatcherRunJoinSql('i', 'wr')}
       WHERE i.id = $1
     `,

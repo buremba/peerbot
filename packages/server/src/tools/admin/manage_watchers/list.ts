@@ -91,7 +91,7 @@ export async function handleList(
       cv.prompt,
       cv.extraction_schema,
       cv.classifiers,
-      cv.json_template,
+      cvr.json_template,
       cv.keying_config,
       cv.condensation_prompt,
       cv.condensation_window_count,
@@ -106,6 +106,10 @@ export async function handleList(
     LEFT JOIN entities parent ON e.parent_id = parent.id
     LEFT JOIN entity_types pet ON pet.id = parent.entity_type_id
     LEFT JOIN watcher_versions cv ON i.current_version_id = cv.id
+    LEFT JOIN view_template_versions cvr
+      ON cvr.resource_type = 'watcher' AND cvr.resource_id = cv.watcher_id::text
+     AND cvr.organization_id = i.organization_id AND cvr.version = cv.version
+     AND cvr.tab_name IS NULL
     ${buildLatestWatcherRunJoinSql('i', 'wr')}
   `;
 

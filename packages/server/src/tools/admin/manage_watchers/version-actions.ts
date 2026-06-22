@@ -348,25 +348,36 @@ export async function handleGetVersionDetails(
   if (args.version !== undefined) {
     rows = await sql`
       SELECT
-        id, version, name, description, prompt,
-        extraction_schema, version_sources, json_template,
-        keying_config, classifiers,
-        condensation_prompt, condensation_window_count,
-        reactions_guidance
-      FROM watcher_versions
-      WHERE watcher_id = ${args.watcher_id} AND version = ${args.version}
+        wv.id, wv.version, wv.name, wv.description, wv.prompt,
+        wv.extraction_schema, wv.version_sources, vtv.json_template,
+        wv.keying_config, wv.classifiers,
+        wv.condensation_prompt, wv.condensation_window_count,
+        wv.reactions_guidance
+      FROM watcher_versions wv
+      -- Watcher-render fold phase 2: render lives in view_template_versions (mirror).
+      LEFT JOIN watchers root ON root.id = wv.watcher_id
+      LEFT JOIN view_template_versions vtv
+        ON vtv.resource_type = 'watcher' AND vtv.resource_id = wv.watcher_id::text
+       AND vtv.organization_id = root.organization_id AND vtv.version = wv.version
+       AND vtv.tab_name IS NULL
+      WHERE wv.watcher_id = ${args.watcher_id} AND wv.version = ${args.version}
       LIMIT 1
     `;
   } else {
     rows = await sql`
       SELECT
         v.id, v.version, v.name, v.description, v.prompt,
-        v.extraction_schema, v.version_sources, v.json_template,
+        v.extraction_schema, v.version_sources, vtv.json_template,
         v.keying_config, v.classifiers,
         v.condensation_prompt, v.condensation_window_count,
         v.reactions_guidance
       FROM watcher_versions v
       JOIN watchers w ON v.id = w.current_version_id
+      -- Watcher-render fold phase 2: render lives in view_template_versions (mirror).
+      LEFT JOIN view_template_versions vtv
+        ON vtv.resource_type = 'watcher' AND vtv.resource_id = v.watcher_id::text
+       AND vtv.organization_id = w.organization_id AND vtv.version = v.version
+       AND vtv.tab_name IS NULL
       WHERE w.id = ${args.watcher_id}
       LIMIT 1
     `;

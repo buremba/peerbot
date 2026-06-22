@@ -59,6 +59,13 @@ import {
 } from "../../auth/oauth-templates.js";
 import { getInstallationTokenRegistry } from "../../installation/registry.js";
 import { createSyncRun } from "../../../runs/queue-service.js";
+import {
+	buildGithubTeamGraph,
+	defaultFetchOrgMembers,
+	type GithubOrgAccount,
+	type GithubOrgMember,
+	type TeamGraphResult,
+} from "./github-team-graph.js";
 
 const logger = createLogger("app-install-routes");
 
@@ -152,7 +159,7 @@ export function githubInstallCallbackUrl(
  * HTTP status WITHOUT mutating any DB state.
  */
 export type InstallOwnershipResult =
-	| { ok: true; installationId: number }
+	| { ok: true; installationId: number; account: InstallationAccount }
 	| { ok: false; status: 400 | 403 | 503; code: string; message: string };
 
 /** A user-administerable installation's owning account, as GitHub reports it. */
@@ -160,6 +167,8 @@ export interface InstallationAccount {
 	login: string;
 	/** GitHub account type: a personal account or an organization. */
 	type: "User" | "Organization" | string;
+	/** The account's numeric GitHub id (orgs and users share the id space). */
+	id?: number;
 }
 
 /** Default GitHub user-token OAuth exchange (the App's install-time OAuth). */
@@ -235,7 +244,11 @@ async function defaultFetchInstallationAccount(
 		for (const inst of installs) {
 			seen += 1;
 			if (inst.id === installationId && inst.account?.login) {
-				return { login: inst.account.login, type: inst.account.type };
+				return {
+					login: inst.account.login,
+					type: inst.account.type,
+					id: inst.account.id,
+				};
 			}
 		}
 		page += 1;
@@ -297,7 +310,11 @@ async function defaultFetchSoleAccessibleInstallation(
 			if (typeof inst.id === "number" && inst.account?.login) {
 				found.push({
 					installationId: inst.id,
-					account: { login: inst.account.login, type: inst.account.type },
+					account: {
+						login: inst.account.login,
+						type: inst.account.type,
+						id: inst.account.id,
+					},
 				});
 				// More than one → ambiguous; we can't safely pick which to recover.
 				if (found.length > 1) return "ambiguous";
@@ -773,6 +790,76 @@ export async function autoProvisionGithubIssueFeeds(params: {
 	return result;
 }
 
+/**
+ * After a successful org install, build the team graph: enumerate the org's
+ * members with the install's OWN scoped token (Members:read) and persist the
+ * org `company` + each member `person` + a `member_of` edge. Tenant-safe (the
+ * install token only sees its own org) and idempotent. Best-effort: the bind
+ * already committed; any failure is logged and surfaced, never thrown. User
+ * installs (no org) and mint/enumeration failures yield an empty result.
+ */
+export async function provisionGithubTeamGraph(params: {
+	organizationId: string;
+	installId: number;
+	account: GithubOrgAccount;
+	store: AppInstallationStore;
+	/** Override member enumeration (tests mock GitHub here). */
+	fetchOrgMembers?(
+		installationToken: string,
+		org: string,
+	): Promise<GithubOrgMember[]>;
+}): Promise<TeamGraphResult> {
+	const empty: TeamGraphResult = {
+		companyEntityId: null,
+		memberEntityIds: [],
+		createdEdges: 0,
+	};
+	// Only orgs have members.
+	if (params.account.type !== "Organization") return empty;
+
+	const install = await params.store.getById(params.installId);
+	if (!install || install.status !== "active") {
+		logger.warn(
+			{ install_id: params.installId, organization_id: params.organizationId },
+			"Team-graph skipped: install missing or not active",
+		);
+		return empty;
+	}
+	const installWithKeys = {
+		...install,
+		metadata: {
+			...install.metadata,
+			appIdKey: install.metadata?.appIdKey ?? "GITHUB_APP_ID",
+			privateKeyKey: install.metadata?.privateKeyKey ?? "GITHUB_APP_PRIVATE_KEY",
+		},
+	};
+
+	let token: string;
+	try {
+		const minted = await getInstallationTokenRegistry().mintFor(installWithKeys);
+		token = minted.token;
+	} catch (error) {
+		logger.warn(
+			{
+				install_id: params.installId,
+				organization_id: params.organizationId,
+				error: error instanceof Error ? error.message : String(error),
+			},
+			"Team-graph skipped: could not mint installation token",
+		);
+		return empty;
+	}
+
+	const fetchMembers = params.fetchOrgMembers ?? defaultFetchOrgMembers;
+	const members = await fetchMembers(token, params.account.login);
+
+	return buildGithubTeamGraph({
+		organizationId: params.organizationId,
+		account: params.account,
+		members,
+	});
+}
+
 /** Dependencies the install routes need (injected for testability). */
 export interface AppInstallRouterDeps {
 	installationStore: AppInstallationStore;
@@ -852,6 +939,16 @@ export interface AppInstallRouterDeps {
 	 * Injected so tests assert it fired; defaults to the real `createSyncRun`.
 	 */
 	enqueueSyncRun?(feedId: number): Promise<number | null>;
+	/**
+	 * Enumerate the org's members with the installation's OWN scoped token
+	 * (`GET /orgs/{org}/members`, Members:read). Injected so tests mock GitHub;
+	 * defaults to the real paginated call. The team-graph build mints the token
+	 * itself, so this receives it.
+	 */
+	fetchOrgMembers?(
+		installationToken: string,
+		org: string,
+	): Promise<GithubOrgMember[]>;
 }
 
 /**
@@ -1036,7 +1133,7 @@ async function verifyInstallationOwnership(params: {
 					"You must be an admin of this GitHub organization to connect its installation to Lobu.",
 			};
 		}
-		return { ok: true, installationId };
+		return { ok: true, installationId, account };
 	}
 
 	// Personal-account install: the OAuth'd user must BE the account owner.
@@ -1049,7 +1146,7 @@ async function verifyInstallationOwnership(params: {
 				"This GitHub installation belongs to a different account. Install the Lobu App from the account that owns it.",
 		};
 	}
-	return { ok: true, installationId };
+	return { ok: true, installationId, account };
 }
 
 /**
@@ -1350,6 +1447,9 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		}
 		// The verified installation id (supplied for install, derived for recovery).
 		const installationId = ownership.installationId;
+		// The ownership-verified owning account (org/user login, type, numeric id)
+		// — the team-graph build (org members) and install-row metadata read it.
+		const ownerAccount = ownership.account;
 
 		// Guard: the org must actually have the github connector definition with an
 		// app_installation auth method, otherwise there's nothing to link the
@@ -1400,7 +1500,17 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 				installationId: String(installationId),
 				store: deps.installationStore,
 				providerAppId: appId,
-				metadata: buildInstallMetadata(c),
+				// Record the ownership-verified account (GitHub omits it from the
+				// redirect query) so the install row carries the org login/type/id the
+				// team-graph build and UI rely on, falling back to any query value.
+				metadata: {
+					...buildInstallMetadata(c),
+					account_login: ownerAccount.login,
+					account_type: ownerAccount.type,
+					...(typeof ownerAccount.id === "number"
+						? { account_id: ownerAccount.id }
+						: {}),
+				},
 			});
 			logger.info(
 				{
@@ -1439,6 +1549,28 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 						error: getErrorMessage(error),
 					},
 					"GitHub App install bound, but auto-provision failed (feeds can be added manually)",
+				);
+			}
+
+			// Team graph: enumerate the org's members (Members:read) and persist the
+			// org company + member persons + member_of edges. Org installs only;
+			// best-effort and idempotent — never turns a successful bind into an error.
+			try {
+				await provisionGithubTeamGraph({
+					organizationId: orgId,
+					installId: result.installId,
+					account: ownerAccount,
+					store: deps.installationStore,
+					fetchOrgMembers: deps.fetchOrgMembers,
+				});
+			} catch (error) {
+				logger.warn(
+					{
+						organization_id: orgId,
+						install_id: result.installId,
+						error: error instanceof Error ? error.message : String(error),
+					},
+					"GitHub App install bound, but team-graph build failed (members can be backfilled later)",
 				);
 			}
 

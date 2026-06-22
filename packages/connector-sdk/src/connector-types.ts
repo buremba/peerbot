@@ -119,6 +119,29 @@ export interface ConnectorWebhookSchema {
    * to a body hash when unset.
    */
   dedupeHeader?: string;
+  /**
+   * How the gateway routes inbound deliveries to a connection.
+   * - `'registered'` (default — back-compat): per-connection webhook URL
+   *   (`/api/v1/webhooks/:connectionId`) created by
+   *   {@link ConnectorRuntime.registerWebhook}; the connection id is in the path.
+   * - `'app_installation'`: shared provider endpoint
+   *   (`/api/v1/app-webhooks/:provider`) for an org/workspace-scoped App install.
+   *   In this mode {@link ConnectorRuntime.registerWebhook} /
+   *   `unregisterWebhook` are NO-OPS (the App subscription is provisioned at
+   *   install time, not per connection), and delivery routing + signature
+   *   verification are performed by a server-side provider plugin (verifier +
+   *   tenant extractor) — NOT by `routingKeyPath` or this schema's HMAC fields
+   *   alone, which are insufficient for provider-specific signing (GitHub
+   *   raw-body HMAC, Slack `v0:{ts}:{rawBody}` with timestamp freshness, etc.).
+   */
+  delivery?: 'registered' | 'app_installation';
+  /**
+   * `app_installation` mode only: JSON path to the external tenant id within the
+   * delivery body, e.g. `'installation.id'`. Informational/UI hint; the actual
+   * tenant extraction + verification is owned by the provider plugin (§4.3),
+   * which may read headers/site-URL that this single path cannot express.
+   */
+  routingKeyPath?: string;
 }
 
 // =============================================================================
@@ -134,7 +157,8 @@ export type ConnectorAuthMethod =
   | ConnectorAuthEnvKeys
   | ConnectorAuthOAuth
   | ConnectorAuthBrowser
-  | ConnectorAuthInteractive;
+  | ConnectorAuthInteractive
+  | ConnectorAuthAppInstallation;
 
 export interface ConnectorAuthNone {
   type: 'none';
@@ -218,6 +242,61 @@ export interface ConnectorAuthBrowser {
   requiredDomains?: string[];
   /** Default CDP URL for 'cdp' capture (default: http://127.0.0.1:9222) */
   defaultCdpUrl?: string;
+}
+
+/**
+ * Org/workspace-scoped App install (GitHub App, Slack app, Jira site, …).
+ * Install once per external tenant → a tenant-scoped token + webhook events
+ * flow. Distinct from {@link ConnectorAuthOAuth}, which is user-scoped; a single
+ * connector may declare both (resolver precedence is defined server-side).
+ *
+ * The credential is minted/refreshed gateway-side and never handed to the
+ * worker as a raw token — the worker receives a `lobu_secret_<uuid>` placeholder
+ * that the secret-proxy swaps at egress (same invariant as all other creds).
+ */
+export interface ConnectorAuthAppInstallation {
+  type: 'app_installation';
+  /** Provider key, e.g. `'github' | 'slack' | 'jira'`. */
+  provider: string;
+  /**
+   * Provider instance: `'cloud'` (default) for the public SaaS, a GitHub
+   * Enterprise Server host, or an Atlassian site class. Lets one connector serve
+   * multiple deployments of the same provider.
+   */
+  providerInstance?: string;
+  /** Env var holding the Lobu App's id (e.g. `GITHUB_APP_ID`). Gateway-side. */
+  appIdKey?: string;
+  /** Env var holding the App private key used to mint tokens (GitHub). Gateway-side. */
+  privateKeyKey?: string;
+  /** Template URL the UI sends the user to in order to install the App. */
+  installUrlTemplate?: string;
+  /** Declared App permissions (informational; surfaced in the install UI). */
+  permissions?: string[];
+  /** Webhook event types the App subscribes to (informational; install UI). */
+  events?: string[];
+  required?: boolean;
+  description?: string;
+}
+
+/**
+ * Resolved app-installation context for the run, attached to every execution and
+ * webhook-registration context a connector method receives. Carries the external
+ * tenant identity + routing keys, never the raw credential (see
+ * {@link ConnectorAuthAppInstallation}).
+ */
+export interface ConnectorInstallationContext {
+  /** `app_installations.id` — the Lobu install row id. */
+  id: string;
+  /** Provider key, e.g. `'github'`. */
+  provider: string;
+  /** Provider instance, e.g. `'cloud'`. */
+  providerInstance: string;
+  /** Which Lobu App minted this install (supports >1 App per provider). */
+  providerAppId?: string;
+  /** External tenant id: installation_id / team_id / cloudId. */
+  externalTenantId: string;
+  /** Provider-specific install metadata (bot_user_id, account login, …). */
+  metadata?: Record<string, unknown>;
 }
 
 // =============================================================================
@@ -543,6 +622,8 @@ export interface SyncContext<C = Record<string, unknown>, F = Record<string, unk
   entityIds: number[];
   /** Connection session state (browser cookies, tokens, etc.) */
   sessionState?: Record<string, unknown> | null;
+  /** App-installation context when this connection is backed by an App install. */
+  installation?: ConnectorInstallationContext;
   /** Optional hook for streaming event chunks while sync is in progress */
   emitEvents?: (events: EventEnvelope[]) => Promise<void>;
   /** Optional hook for persisting progress checkpoints during long syncs */
@@ -599,6 +680,12 @@ export interface WebhookRegistrationContext<F = Record<string, unknown>> {
   callbackUrl: string;
   /** Provider-side subscription id to tear down (unregister only). */
   externalId?: string;
+  /**
+   * App-installation context when the webhook is backed by an App install. In
+   * `app_installation` delivery mode register/unregister are no-ops, so this is
+   * informational; subscriptions are provisioned at install time.
+   */
+  installation?: ConnectorInstallationContext;
 }
 
 /** Result from {@link ConnectorRuntime.registerWebhook}. */
@@ -635,6 +722,8 @@ export interface QueryContext<F = Record<string, unknown>> {
   credentials: SyncCredentials | null;
   /** Connection session state (browser cookies, tokens, etc.). */
   sessionState?: Record<string, unknown> | null;
+  /** App-installation context when this connection is backed by an App install. */
+  installation?: ConnectorInstallationContext;
   /** Pagination + sort the platform wants applied; the connector pushes these down. */
   limit?: number;
   offset?: number;
@@ -675,6 +764,8 @@ export interface ReflectContext<F = Record<string, unknown>> {
   credentials: SyncCredentials | null;
   /** Connection session state (browser cookies, tokens, etc.). */
   sessionState?: Record<string, unknown> | null;
+  /** App-installation context when this connection is backed by an App install. */
+  installation?: ConnectorInstallationContext;
 }
 
 /** Result from ConnectorRuntime.reflectMetrics() — federated entity types. */
@@ -798,6 +889,8 @@ export interface ActionContext {
    * Null when no session/dispatcher applies.
    */
   sessionState?: Record<string, unknown> | null;
+  /** App-installation context when this connection is backed by an App install. */
+  installation?: ConnectorInstallationContext;
 }
 
 /**

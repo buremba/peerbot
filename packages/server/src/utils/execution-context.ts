@@ -340,7 +340,7 @@ function recordAppInstallationTenancyTrip(params: {
   organizationId: string;
   connectionId: number;
   installId: number;
-  reason: 'cross_tenant_org' | 'provider_instance_mismatch';
+  reason: 'cross_tenant_org' | 'provider_instance_mismatch' | 'install_not_active';
   details: Record<string, unknown>;
 }): void {
   const originId = `app_installation_tenancy_trip_${params.reason}_${params.connectionId}_${params.installId}_${Date.now()}`;
@@ -515,6 +515,32 @@ async function resolveAppInstallationCredential(
         install_provider_instance: install.providerInstance,
         method_provider_instance: method.providerInstance ?? 'cloud',
       },
+    });
+    return { handled: true, credentials: null };
+  }
+
+  // Status guard: only an ACTIVE install may mint. After a cross-org TRANSFER the
+  // store demotes the losing org's row to 'suspended' (and a 'revoked' row is a
+  // hard uninstall), but the losing org's connection still points its
+  // installation_ref at that row. Without this check a suspended/revoked install
+  // would keep minting GitHub tokens for the new owner's repos — a cross-tenant
+  // leak. Reject any non-active status: null creds, never mint.
+  if (install.status !== 'active') {
+    logger.warn(
+      {
+        ...logContext,
+        connection_id: connectionId,
+        install_id: installId,
+        install_status: install.status,
+      },
+      'App-installation reference rejected: install is not active (transferred/suspended/revoked)'
+    );
+    recordAppInstallationTenancyTrip({
+      organizationId,
+      connectionId,
+      installId,
+      reason: 'install_not_active',
+      details: { install_status: install.status },
     });
     return { handled: true, credentials: null };
   }

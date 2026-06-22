@@ -266,7 +266,13 @@ export default class GitHubConnector extends ConnectorRuntime {
           // by the install UI from the configured App slug; the user picks the
           // org/repos to grant during GitHub's install flow.
           installUrlTemplate: 'https://github.com/apps/{{app_slug}}/installations/new',
-          permissions: ['issues', 'pull_requests', 'contents', 'metadata', 'discussions'],
+          // NOTE: this permissions array is METADATA ONLY (declares what the App
+          // needs; it does not grant anything). 'members' (Organization → Members:
+          // read) is required by the install-callback org-admin check
+          // (GET /user/memberships/orgs/{org}). The LIVE GitHub App must ALSO be
+          // granted Organization → Members → Read in its settings (out-of-band,
+          // user action) or every real org admin's membership lookup 403s.
+          permissions: ['issues', 'pull_requests', 'contents', 'metadata', 'discussions', 'members'],
           events: ['issues', 'pull_request', 'issue_comment', 'discussion', 'discussion_comment'],
           required: false,
           description:

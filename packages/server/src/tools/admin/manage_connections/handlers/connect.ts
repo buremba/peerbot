@@ -24,6 +24,7 @@ import {
   resolveConnectionVisibility,
 } from '../../helpers/connection-helpers';
 import { assertEntityIdsInOrg } from '../../helpers/db-helpers';
+import { rejectUnboundAppInstallationCreate } from '../../helpers/app-installation-guard';
 import { type FeedDefinition, splitConfigByFeedScope } from '../../helpers/feed-helpers';
 import { getScopedConnectorDefinition } from '../../connector-definition-helpers';
 import { buildConnectionsUrl } from '../../../../utils/url-builder';
@@ -68,6 +69,14 @@ export async function handleConnect(
       setup_url: buildSetupUrl({ install: args.connector_key }),
     };
   }
+
+  // Reject a direct connect of an unbound app_installation connection — those are
+  // created only by the App install callback (which sets installation_ref).
+  const appInstallGuard = rejectUnboundAppInstallationCreate({
+    authSchema: connector.auth_schema,
+    config: args.config,
+  });
+  if (appInstallGuard) return appInstallGuard;
 
   const deviceBinding = await resolveDeviceBinding({
     organizationId,

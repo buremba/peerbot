@@ -214,6 +214,22 @@ export function getAppInstallationAuthMethods(
   );
 }
 
+/**
+ * Whether the connector's PRIMARY (highest-precedence) auth method is
+ * `app_installation` — i.e. the first declared method that actually carries
+ * credentials (`none` is a no-op and skipped). When true, a connection for this
+ * connector is meant to be created ONLY by the App install callback (which sets
+ * `config.installation_ref`); a direct create with no `installation_ref` would be
+ * a dead, unbound connection. Connector-agnostic (keys on the method type, not
+ * on `github`) so it covers any future app_installation connector.
+ */
+export function isPrimaryAuthMethodAppInstallation(
+  authSchema: ConnectorAuthSchema
+): boolean {
+  const primary = authSchema.methods.find((method) => method.type !== 'none');
+  return primary?.type === 'app_installation';
+}
+
 function dedupeAuthFields(fields: ConnectorAuthEnvField[]): ConnectorAuthEnvField[] {
   const seen = new Set<string>();
   const deduped: ConnectorAuthEnvField[] = [];

@@ -354,6 +354,62 @@ describe("app-installation credential — tenancy + shape guards", () => {
 		expect(event?.metadata?.method_provider).toBe("github");
 	});
 
+	it("SECURITY: after a cross-org TRANSFER the losing org's suspended install NEVER mints", async () => {
+		const orgA = await createTestOrganization({ name: "Losing Org A" });
+		const orgB = await createTestOrganization({ name: "Winning Org B" });
+		const store = createPostgresAppInstallationStore();
+
+		// Org A installs first (active) for tenant T.
+		const aInstall = await store.upsert({
+			organizationId: orgA.id,
+			provider: PROVIDER,
+			providerInstance: PROVIDER_INSTANCE,
+			providerAppId: "demo-app",
+			externalTenantId: "transfer-tenant",
+			status: "active",
+		});
+		// Org A's connection points at A's install row.
+		const { connectionId } = await seedAppInstallConnection({
+			organizationId: orgA.id,
+			installationRef: aInstall.id,
+		});
+
+		// Sanity: while A's install is active, A mints fine.
+		const before = await resolveExecutionAuth({
+			organizationId: orgA.id,
+			connectionId,
+			credentialDb: getDb(),
+		});
+		expect(before.credentials).not.toBeNull();
+		expect(spy.mintCalls).toHaveLength(1);
+
+		// Org B re-installs the SAME tenant → transfer: A's row is demoted to
+		// 'suspended', B gets a new active row. A's connection still points at A's
+		// now-suspended row.
+		const bInstall = await store.upsert({
+			organizationId: orgB.id,
+			provider: PROVIDER,
+			providerInstance: PROVIDER_INSTANCE,
+			providerAppId: "demo-app",
+			externalTenantId: "transfer-tenant",
+			status: "active",
+		});
+		expect(bInstall.id).not.toBe(aInstall.id);
+		const aAfter = await store.getById(aInstall.id);
+		expect(aAfter?.status).toBe("suspended");
+
+		// Now the losing org A resolves its connection → the install is suspended →
+		// NULL credentials and the provider is NEVER asked to mint again.
+		spy.mintCalls = [];
+		const after = await resolveExecutionAuth({
+			organizationId: orgA.id,
+			connectionId,
+			credentialDb: getDb(),
+		});
+		expect(after.credentials).toBeNull();
+		expect(spy.mintCalls).toHaveLength(0);
+	});
+
 	it("method that omits providerInstance defaults to 'cloud' and rejects a non-cloud install", async () => {
 		const org = await createTestOrganization({ name: "Omit Instance Org" });
 		// Install lives on a self-hosted (non-cloud) instance...

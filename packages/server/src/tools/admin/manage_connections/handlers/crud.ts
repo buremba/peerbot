@@ -41,6 +41,7 @@ import {
   resolveConnectionVisibility,
 } from '../../helpers/connection-helpers';
 import { assertEntityIdsInOrg, callerIsAdmin as resolveCallerIsAdmin } from '../../helpers/db-helpers';
+import { rejectUnboundAppInstallationCreate } from '../../helpers/app-installation-guard';
 import { type FeedDefinition, splitConfigByFeedScope } from '../../helpers/feed-helpers';
 import { getScopedConnectorDefinition } from '../../connector-definition-helpers';
 import type { ToolContext } from '../../../registry';
@@ -357,6 +358,15 @@ export async function handleCreate(
   if (!connector) {
     return { error: `Connector '${args.connector_key}' not found or not active` };
   }
+
+  // Reject a direct create of an unbound app_installation connection — those are
+  // created only by the App install callback (which sets installation_ref). The
+  // user must start the install flow instead.
+  const appInstallGuard = rejectUnboundAppInstallationCreate({
+    authSchema: connector.auth_schema,
+    config: args.config,
+  });
+  if (appInstallGuard) return appInstallGuard;
 
   const deviceBinding = await resolveDeviceBinding({
     organizationId,

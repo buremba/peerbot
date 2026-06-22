@@ -101,25 +101,25 @@ describe("OpenClawProgressProcessor", () => {
     expect(p.processEvent(event)).toBe(false);
   });
 
-  test("auto_compaction_start appends message", () => {
+  test("compaction_start appends message", () => {
     const p = new OpenClawProgressProcessor();
-    expect(p.processEvent(makeEvent("auto_compaction_start"))).toBe(true);
+    expect(p.processEvent(makeEvent("compaction_start"))).toBe(true);
     expect(p.getDelta()).toContain("Compacting context");
   });
 
-  test("auto_compaction_end with aborted", () => {
+  test("compaction_end with aborted", () => {
     const p = new OpenClawProgressProcessor();
-    expect(
-      p.processEvent(makeEvent("auto_compaction_end", { aborted: true }))
-    ).toBe(true);
+    expect(p.processEvent(makeEvent("compaction_end", { aborted: true }))).toBe(
+      true
+    );
     expect(p.getDelta()).toContain("Compaction aborted");
   });
 
-  test("auto_compaction_end with result", () => {
+  test("compaction_end with result", () => {
     const p = new OpenClawProgressProcessor();
-    expect(
-      p.processEvent(makeEvent("auto_compaction_end", { result: {} }))
-    ).toBe(true);
+    expect(p.processEvent(makeEvent("compaction_end", { result: {} }))).toBe(
+      true
+    );
     expect(p.getDelta()).toContain("Context compacted");
   });
 

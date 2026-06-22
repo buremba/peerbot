@@ -136,12 +136,12 @@ export class OpenClawProgressProcessor {
         return false;
       }
 
-      case "auto_compaction_start": {
+      case "compaction_start": {
         this.chronologicalOutput += "🗜️ *Compacting context...*\n";
         return true;
       }
 
-      case "auto_compaction_end": {
+      case "compaction_end": {
         if (event.aborted) {
           this.chronologicalOutput += "🗜️ *Compaction aborted*\n";
         } else if (event.result) {

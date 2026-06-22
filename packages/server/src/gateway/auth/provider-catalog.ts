@@ -174,6 +174,22 @@ export class ProviderCatalogService {
         return provider;
       }
     }
+    // Fallback: a "<providerId>/<model>" ref names its provider directly, so
+    // match by the leading segment even when the provider's option list didn't
+    // contain an exact value. This is essential for providers whose models are
+    // fetched live and may be empty in this resolution context (e.g. Claude,
+    // whose `getModelOptions` lists BARE ids like "claude-opus-4-8" while the
+    // stored model is prefixed "claude/claude-opus-4-8"). Without it, a
+    // claude/… model fails to match and falls through to the first credentialed
+    // provider, mis-routing the request to the wrong upstream.
+    const slashIndex = model.indexOf("/");
+    if (slashIndex > 0) {
+      const prefix = model.slice(0, slashIndex);
+      const byProviderId = candidates.find((p) => p.providerId === prefix);
+      if (byProviderId) {
+        return byProviderId;
+      }
+    }
     return undefined;
   }
 

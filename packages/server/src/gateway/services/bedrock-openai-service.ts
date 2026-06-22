@@ -1,6 +1,10 @@
-import { getModel } from "@mariozechner/pi-ai";
-import { streamBedrock } from "@mariozechner/pi-ai/dist/providers/amazon-bedrock.js";
-import type { Model } from "@mariozechner/pi-ai/dist/types.js";
+import { getModel, type Model } from "@mariozechner/pi-ai";
+// pi-ai 0.73 tightened its `exports` map: the bedrock provider is no longer
+// reachable at the deep `dist/providers/amazon-bedrock.js` path and is exposed
+// as `bedrockProviderModule` from the `./bedrock-provider` subpath instead.
+import { bedrockProviderModule } from "@mariozechner/pi-ai/bedrock-provider";
+
+const streamBedrock = bedrockProviderModule.streamBedrock;
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { createLogger } from "@lobu/core";

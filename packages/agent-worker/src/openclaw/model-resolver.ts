@@ -6,9 +6,31 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { type ConfigProviderMeta, createLogger } from "@lobu/core";
+import { getModel, type Model } from "@mariozechner/pi-ai";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 
 const logger = createLogger("model-resolver");
+
+/**
+ * Look up a pi-ai registry model by RUNTIME-resolved provider + model strings.
+ *
+ * pi-ai's `getModel` is generically typed over its static `MODELS` registry
+ * (`TProvider extends KnownProvider`, `TModelId extends keyof MODELS[TProvider]`),
+ * so it cannot be called with the dynamic strings Lobu resolves at runtime
+ * without a cast. Centralize that one unavoidable cast here — behind a typed
+ * `(string, string) => Model<any> | undefined` boundary — so call sites stay
+ * clean and the dynamic edge is explicit in exactly one place. Returns
+ * `undefined` when the registry has no such entry (callers then build a dynamic
+ * or cloned model).
+ */
+export function getModelDynamic(
+  provider: string,
+  modelId: string
+): Model<any> | undefined {
+  return getModel(provider as never, modelId as never) as
+    | Model<any>
+    | undefined;
+}
 
 /** Hardcoded fallback map for provider base URL env vars. */
 export const DEFAULT_PROVIDER_BASE_URL_ENV: Record<string, string> = {
@@ -95,7 +117,8 @@ interface DynamicOpenAIModel {
   provider: string;
   baseUrl: string;
   reasoning: boolean;
-  input: string[];
+  // Matches pi-ai's `Model.input` so a dynamic entry is assignable to Model<any>.
+  input: ("text" | "image")[];
   cost: {
     input: number;
     output: number;
@@ -153,13 +176,22 @@ export function buildDynamicOpenAIModel(args: {
 
 export function resolveModelRef(
   rawModelRef: string,
-  overrides?: { defaultModel?: string; defaultProvider?: string }
+  overrides?: {
+    defaultModel?: string;
+    defaultProvider?: string;
+    defaultProviderSlug?: string;
+  }
 ): {
   provider: string;
   modelId: string;
 } {
   const defaultModelRef = overrides?.defaultModel || "";
   const defaultProvider = overrides?.defaultProvider || "";
+  // The provider's LOBU id (e.g. "claude"), present only when it differs from
+  // `defaultProvider` (the upstream slug, e.g. "anthropic"). Lobu stores models
+  // prefixed with the Lobu id, so it must be stripped too — otherwise a
+  // "claude/…" model reaches the upstream API verbatim and 404s.
+  const defaultProviderSlug = overrides?.defaultProviderSlug || "";
 
   const normalizedRaw = rawModelRef?.trim();
   const modelRef = normalizedRaw || defaultModelRef;
@@ -198,8 +230,19 @@ export function resolveModelRef(
     // Model". Only the configured provider's OWN id is stripped, so a foreign
     // namespace slug (OpenRouter's "anthropic/claude-sonnet-4") stays intact.
     // Runs after the auto-resolution above so a prefixed default is covered too.
+    //
+    // `defaultProvider` is the UPSTREAM slug ("anthropic"); strip that AND the
+    // LOBU slug ("claude") when they differ, since the stored model is prefixed
+    // with the Lobu id. Without the second strip, "claude/claude-opus-4-8"
+    // reaches the Anthropic API verbatim and 404s.
     if (modelId.startsWith(`${defaultProvider}/`)) {
       modelId = modelId.slice(defaultProvider.length + 1);
+    } else if (
+      defaultProviderSlug &&
+      defaultProviderSlug !== defaultProvider &&
+      modelId.startsWith(`${defaultProviderSlug}/`)
+    ) {
+      modelId = modelId.slice(defaultProviderSlug.length + 1);
     }
     return { provider: defaultProvider, modelId };
   }

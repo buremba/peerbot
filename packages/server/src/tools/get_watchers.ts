@@ -26,7 +26,6 @@ import {
   buildEntityLinkUnion,
   STANDARD_IDENTITY_NAMESPACES,
   type EntityIdentityScope,
-  windowMembershipViaEventEdges,
 } from '../utils/content-search';
 import { formatDateISO, parseDateAlias } from '../utils/date-aliases';
 import { parseJsonObject } from '@lobu/core';
@@ -674,14 +673,13 @@ async function getWatcherImpl(
   if (windowIds.length > 0 && includeClassificationSummary) {
     try {
       logger.info({ windowCount: windowIds.length }, '[get_watcher] Fetching classification stats');
-      // P6 window-membership read: flip iwc from watcher_window_events to the event_edges mirror
+      // P6 window-membership read: iwc reads from the event_edges mirror
       // (the classifier JOINs are P4's concern, untouched). The window-id column is aliased back
       // to `window_id` so the result shape is unchanged.
-      const viaEdges = windowMembershipViaEventEdges();
-      const iwcFrom = viaEdges ? 'event_edges iwc' : 'watcher_window_events iwc';
-      const iwcContentCol = viaEdges ? 'iwc.child_event_id' : 'iwc.event_id';
-      const iwcWindowCol = viaEdges ? 'iwc.parent_event_id' : 'iwc.window_id';
-      const iwcEdgeFilter = viaEdges ? `AND iwc.edge_type = 'membership'` : '';
+      const iwcFrom = 'event_edges iwc';
+      const iwcContentCol = 'iwc.child_event_id';
+      const iwcWindowCol = 'iwc.parent_event_id';
+      const iwcEdgeFilter = `AND iwc.edge_type = 'membership'`;
       const statsResult = await sql.unsafe(
         `
         SELECT
@@ -904,7 +902,7 @@ async function getWatcherImpl(
   // ============================================
   // Step 6.5: Compute pending analysis info
   // ============================================
-  // Count content NOT in any window for this watcher (using watcher_window_events)
+  // Count content NOT in any window for this watcher (using event_edges)
   // Calculate next window bounds based on schedule
   // Generate processing instructions for client-driven watcher generation
 
@@ -965,16 +963,10 @@ async function getWatcherImpl(
     const noWatcherParams = [...entityLinkOnlyParams, effectiveBound];
 
     // P6 watcher-membership read: "content NOT in any window of this watcher" via the event_edges
-    // mirror (watcher_id_hint replaces the watcher_windows JOIN) when flagged.
-    const notInWindowClause = windowMembershipViaEventEdges()
-      ? `NOT EXISTS (
+    // mirror (watcher_id_hint replaces the watcher_windows JOIN).
+    const notInWindowClause = `NOT EXISTS (
         SELECT 1 FROM event_edges iwc
         WHERE iwc.child_event_id = f.id AND iwc.watcher_id_hint = $1 AND iwc.edge_type = 'membership'
-      )`
-      : `NOT EXISTS (
-        SELECT 1 FROM watcher_window_events iwc
-        JOIN watcher_windows iw ON iw.id = iwc.window_id
-        WHERE iwc.event_id = f.id AND iw.watcher_id = $1
       )`;
 
     // unprocessed_count drives the badge ("N pending analysis"). Cap the
@@ -1003,12 +995,8 @@ async function getWatcherImpl(
     );
 
     // P6 watcher-membership read: the "linked per month" histogram via the event_edges mirror.
-    const histViaEdges = windowMembershipViaEventEdges();
-    const histLinkedJoin = histViaEdges
-      ? `JOIN event_edges iwc ON f.id = iwc.child_event_id AND iwc.edge_type = 'membership'`
-      : `JOIN watcher_window_events iwc ON f.id = iwc.event_id
-              JOIN watcher_windows iw ON iwc.window_id = iw.id`;
-    const histWatcherCol = histViaEdges ? 'iwc.watcher_id_hint' : 'iw.watcher_id';
+    const histLinkedJoin = `JOIN event_edges iwc ON f.id = iwc.child_event_id AND iwc.edge_type = 'membership'`;
+    const histWatcherCol = 'iwc.watcher_id_hint';
     const histogramPromise = args.include_pending_ranges
       ? Promise.all([
           sql.unsafe(

@@ -14,7 +14,6 @@ import type { UnprocessedRange, WatcherSource } from '../../types/watchers';
 import { parseDateAlias, toEndOfDay } from '../../utils/date-aliases';
 import { type DataSourceContext, executeDataSources } from '../../utils/execute-data-sources';
 import logger from '../../utils/logger';
-import { windowMembershipViaEventEdges } from '../../utils/content-search';
 import { getRecentFeedbackSummary } from '../../utils/watcher-feedback';
 import { getAvailableOperations, getPastReactionsSummary } from '../../utils/watcher-reactions';
 import {
@@ -417,13 +416,9 @@ export async function handleWatcherMode(
   let unprocessedRanges: UnprocessedRange[] | undefined;
   if (!args.since && !args.until) {
     // Query content and linked counts by month in parallel. P6 watcher-membership read: the
-    // linked histogram reads the event_edges mirror (watcher_id_hint) when flagged.
-    const wmViaEdges = windowMembershipViaEventEdges();
-    const wmLinkedJoin = wmViaEdges
-      ? `JOIN event_edges iwc ON c.id = iwc.child_event_id AND iwc.edge_type = 'membership'`
-      : `JOIN watcher_window_events iwc ON c.id = iwc.event_id
-        JOIN watcher_windows iw ON iwc.window_id = iw.id`;
-    const wmWatcherCol = wmViaEdges ? 'iwc.watcher_id_hint' : 'iw.watcher_id';
+    // linked histogram reads the event_edges mirror (watcher_id_hint).
+    const wmLinkedJoin = `JOIN event_edges iwc ON c.id = iwc.child_event_id AND iwc.edge_type = 'membership'`;
+    const wmWatcherCol = 'iwc.watcher_id_hint';
     const [monthlyContent, monthlyLinked] = await Promise.all([
       sql.unsafe(
         `

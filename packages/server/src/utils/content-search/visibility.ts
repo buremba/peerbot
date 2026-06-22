@@ -23,33 +23,18 @@ import { validateNumericId } from '../sql-validation';
  * inline paths in content-scoring.ts / get_content/query.ts) so the flag governs every
  * read_knowledge() path and phase 3 has ONE place to retire the JOIN.
  *
- * Windows-as-events (P6) phase 2: read membership from the event_edges mirror — a single-table
- * NOT EXISTS via the (child_event_id, watcher_id_hint) partial index — instead of the
- * watcher_window_events -> watcher_windows JOIN. event_edges is an accurate mirror (the trigger
- * syncs INSERT+DELETE; historic rows are backfilled), so the two are equivalent. FLAG-GATED for
- * a staged, A/B-validated cutover of this hot read. DEPLOY GATE: run
- * scripts/backfill-event-edges.sh to completion BEFORE setting the flag, else event_edges
- * misses historic links and wrongly includes them.
+ * Windows-as-events (P6): exclude content already in any window of a watcher via the event_edges
+ * mirror — a single-table NOT EXISTS on the (child_event_id, watcher_id_hint) partial index.
  *
  * @param contentIdExpr - SQL expression for the content event id (e.g. `f.id`, `e.id`)
  * @param paramN - the 1-based `$N` index already bound to the (validated) watcher id
  */
 export function excludeWatcherNotExists(contentIdExpr: string, paramN: number): string {
-  if (
-    process.env.WATCHER_EXCLUDE_VIA_EVENT_EDGES === '1' ||
-    process.env.WATCHER_EXCLUDE_VIA_EVENT_EDGES === 'true'
-  ) {
-    return `NOT EXISTS (
+  return `NOT EXISTS (
     SELECT 1 FROM event_edges exc_ee
     WHERE exc_ee.child_event_id = ${contentIdExpr}
       AND exc_ee.watcher_id_hint = $${paramN}::bigint
       AND exc_ee.edge_type = 'membership'
-  )`;
-  }
-  return `NOT EXISTS (
-    SELECT 1 FROM watcher_window_events exc_iwe
-    JOIN watcher_windows exc_iw ON exc_iw.id = exc_iwe.window_id
-    WHERE exc_iwe.event_id = ${contentIdExpr} AND exc_iw.watcher_id = $${paramN}::bigint
   )`;
 }
 

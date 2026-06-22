@@ -23,11 +23,6 @@ export {
   excludeWatcherNotExists,
 } from './content-search/visibility';
 
-export {
-  windowMembershipViaEventEdges,
-  windowMembershipWriteViaEventEdges,
-} from './content-search/params';
-
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { listContentInternal } from './content-search/list-path';

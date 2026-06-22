@@ -307,7 +307,7 @@ export async function requireWatcherAccess(
 // Batch content counting
 // ============================================
 
-import { entityLinkMatchSql, windowMembershipViaEventEdges } from '../../../utils/content-search';
+import { entityLinkMatchSql } from '../../../utils/content-search';
 
 /**
  * Batch count unanalyzed content for multiple watchers in a single query.
@@ -334,12 +334,9 @@ export async function batchCountUnanalyzedContent(
   // semantics above the cap; the only consumer is a list-row badge that
   // doesn't need exact counts above a threshold.
   const TOTAL_CAP = 1000;
-  // P6 window-membership read: count analyzed events via the event_edges mirror when flagged.
-  const iwcViaEdges = windowMembershipViaEventEdges();
-  const iwcContentCol = iwcViaEdges ? 'iwc.child_event_id' : 'iwc.event_id';
-  const iwcWindowJoin = iwcViaEdges
-    ? `LEFT JOIN event_edges iwc ON iwc.parent_event_id = iw.id AND iwc.edge_type = 'membership'`
-    : `LEFT JOIN watcher_window_events iwc ON iwc.window_id = iw.id`;
+  // P6 window-membership read: count analyzed events via the event_edges mirror.
+  const iwcContentCol = 'iwc.child_event_id';
+  const iwcWindowJoin = `LEFT JOIN event_edges iwc ON iwc.parent_event_id = iw.id AND iwc.edge_type = 'membership'`;
   const result = await sql.unsafe(
     `
     WITH watcher_entities AS (

@@ -344,10 +344,10 @@ describe('watcher automation contract', () => {
     })) as { action: string; window_id: number; content_linked: number };
 
     const links = await sql`
-      SELECT event_id
-      FROM watcher_window_events
-      WHERE window_id = ${completion.window_id}
-      ORDER BY event_id
+      SELECT child_event_id AS event_id
+      FROM event_edges
+      WHERE parent_event_id = ${completion.window_id} AND edge_type = 'membership'
+      ORDER BY child_event_id
     `;
 
     expect(completion.action).toBe('complete_window');
@@ -393,9 +393,9 @@ describe('watcher automation contract', () => {
       WHERE id = ${completion.window_id}
     `;
     const links = await sql`
-      SELECT event_id
-      FROM watcher_window_events
-      WHERE window_id = ${completion.window_id}
+      SELECT child_event_id AS event_id
+      FROM event_edges
+      WHERE parent_event_id = ${completion.window_id} AND edge_type = 'membership'
     `;
 
     expect(completion.action).toBe('complete_window');

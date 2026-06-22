@@ -30,25 +30,18 @@ import {
   type ContentSearchResponse,
   type ContentSearchResult,
 } from './types';
-import { windowMembershipViaEventEdges } from './params';
 
 /**
  * Windows-as-events (P6) phase 3: the search-path window-membership LEFT JOIN ($6 = window id),
- * reading event_edges (parent_event_id = window id, edge_type='membership') when
- * WATCHER_WINDOWS_VIA_EVENT_EDGES is set, else watcher_window_events. The `iwf` alias is shared
- * with the standardFiltersSQL WHERE, so the window-id column flips in lockstep.
+ * reading event_edges (parent_event_id = window id, edge_type='membership'). The `iwf` alias is
+ * shared with the standardFiltersSQL WHERE.
  */
 function searchWindowMembershipJoin(): string {
-  return windowMembershipViaEventEdges()
-    ? `LEFT JOIN event_edges iwf
+  return `LEFT JOIN event_edges iwf
           ON iwf.child_event_id = f.id
           AND ($6::int IS NOT NULL)
           AND iwf.parent_event_id = $6::int
-          AND iwf.edge_type = 'membership'`
-    : `LEFT JOIN watcher_window_events iwf
-          ON iwf.event_id = f.id
-          AND ($6::int IS NOT NULL)
-          AND iwf.window_id = $6::int`;
+          AND iwf.edge_type = 'membership'`;
 }
 import { buildConnectionVisibilityClause, buildExcludeWatcherClause, buildOrgScopeWhere } from './visibility';
 
@@ -170,7 +163,7 @@ export async function searchContentBySingleQuery(
   // present) so a hostile float can't break out of the comparison expression.
   const minSimilarityParamIdx = baseParamIdx + (hasEmbedding ? 1 : 0);
 
-  const win6Col = windowMembershipViaEventEdges() ? 'iwf.parent_event_id' : 'iwf.window_id';
+  const win6Col = 'iwf.parent_event_id';
   const standardFiltersSQL = `($2::bigint IS NULL OR ${searchEntityLinkSql})
           AND ${connectionCondition}
           AND ${feedCondition}

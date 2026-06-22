@@ -36,7 +36,6 @@ import {
   buildStandardParams,
   buildStandardWhereSql,
   windowJoinSql,
-  windowMembershipViaEventEdges,
 } from './params';
 
 /**
@@ -44,7 +43,7 @@ import {
  *
  * The two branches differ only in how they assemble `whereExpr` (the full
  * WHERE body, excluding the date cursor clause) and whether they need the
- * `watcher_window_events` join (`joinSql`). Everything past the count — the
+ * `event_edges` membership join (`joinSql`). Everything past the count — the
  * empty-result short-circuit, the `candidate_set/result_set` vs `result_set`
  * CTE pair, param indexing, dedup, and the response shape — is identical, so
  * it lives here. The generated SQL and parameter binding are unchanged.
@@ -298,9 +297,7 @@ export async function listContentInternal(
     if (options.window_id != null) {
       baseParams.push(options.window_id);
       baseConditions.push(
-        windowMembershipViaEventEdges()
-          ? `EXISTS (SELECT 1 FROM event_edges iwf WHERE iwf.child_event_id = f.id AND iwf.parent_event_id = $${baseParams.length} AND iwf.edge_type = 'membership')`
-          : `EXISTS (SELECT 1 FROM watcher_window_events iwf WHERE iwf.event_id = f.id AND iwf.window_id = $${baseParams.length})`
+        `EXISTS (SELECT 1 FROM event_edges iwf WHERE iwf.child_event_id = f.id AND iwf.parent_event_id = $${baseParams.length} AND iwf.edge_type = 'membership')`
       );
     }
     if (options.engagement_min != null) {

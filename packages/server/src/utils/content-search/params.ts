@@ -1,6 +1,6 @@
 /**
  * Standard parameter-building helpers for the listing path:
- * buildStandardParams, buildStandardWhereSql, windowJoinSql, windowMembershipViaEventEdges.
+ * buildStandardParams, buildStandardWhereSql, windowJoinSql.
  */
 
 import { pgTextArray } from '../../db/client';
@@ -47,46 +47,14 @@ export function buildStandardParams(
  * passing it in avoids re-emitting (and re-planning) the 7-branch generic
  * UNION for every query.
  */
-/**
- * Windows-as-events (P6) phase 3: read window MEMBERSHIP from the event_edges mirror
- * (parent_event_id = window id, child_event_id = content event id, edge_type='membership')
- * instead of the watcher_window_events table, when WATCHER_WINDOWS_VIA_EVENT_EDGES is set.
- * event_edges is an accurate mirror (the phase-1 trigger syncs INSERT+DELETE + the backfill), so
- * the window-membership JOIN + its filter are equivalent. FLAG-GATED for a staged cutover (default
- * OFF = the table). The `iwf` alias is shared by `windowJoinSql()` and `buildStandardWhereSql`, so
- * both flip together: the window-id column is `window_id` on the table, `parent_event_id` on the
- * mirror. DEPLOY GATE: run scripts/backfill-event-edges.sh before enabling.
- */
-export function windowMembershipViaEventEdges(): boolean {
-  return (
-    process.env.WATCHER_WINDOWS_VIA_EVENT_EDGES === '1' ||
-    process.env.WATCHER_WINDOWS_VIA_EVENT_EDGES === 'true'
-  );
-}
-
-/**
- * P6 WRITE flip: when set, window membership is written DIRECTLY to event_edges
- * (complete-window INSERT/DELETE, entity-management DELETE cascades) and watcher_window_events is
- * no longer written — the precondition for dropping that table. MUST be enabled only AFTER the
- * READ flag (WATCHER_WINDOWS_VIA_EVENT_EDGES) is universal in prod, else flag-off readers reading
- * watcher_window_events would miss these direct edges. During the write-flip rollout, old pods
- * write the table (-> phase-1 trigger -> edge) and new pods write the edge directly; the
- * event_edges_unique (parent,child,edge_type) constraint dedups, so no double edge.
- */
-export function windowMembershipWriteViaEventEdges(): boolean {
-  return (
-    process.env.WATCHER_WINDOWS_WRITE_VIA_EVENT_EDGES === '1' ||
-    process.env.WATCHER_WINDOWS_WRITE_VIA_EVENT_EDGES === 'true'
-  );
-}
-
 export function buildStandardWhereSql(entityLinkSql: string): string {
-  const windowCol = windowMembershipViaEventEdges() ? 'iwf.parent_event_id' : 'iwf.window_id';
+  // Windows-as-events (P6): window membership lives in event_edges (parent_event_id = window id,
+  // edge_type='membership'); the `iwf` alias is the event_edges JOIN from windowJoinSql().
   return `($1::bigint IS NULL OR ${entityLinkSql})
           AND ($2::text IS NULL OR f.connector_key = $2::text)
           AND ($3::timestamptz IS NULL OR f.occurred_at >= $3::timestamptz)
           AND ($4::timestamptz IS NULL OR f.occurred_at <= $4::timestamptz)
-          AND ($5::int IS NULL OR ${windowCol} = $5::int)
+          AND ($5::int IS NULL OR iwf.parent_event_id = $5::int)
           AND ($6::numeric IS NULL OR f.score >= $6::numeric)
           AND ($7::numeric IS NULL OR f.score <= $7::numeric)
           AND ($8::text IS NULL OR EXISTS (
@@ -100,15 +68,9 @@ export function buildStandardWhereSql(entityLinkSql: string): string {
 }
 
 export function windowJoinSql(): string {
-  if (windowMembershipViaEventEdges()) {
-    return `LEFT JOIN event_edges iwf
+  return `LEFT JOIN event_edges iwf
           ON iwf.child_event_id = f.id
           AND ($5::int IS NOT NULL)
           AND iwf.parent_event_id = $5::int
           AND iwf.edge_type = 'membership'`;
-  }
-  return `LEFT JOIN watcher_window_events iwf
-          ON iwf.event_id = f.id
-          AND ($5::int IS NOT NULL)
-          AND iwf.window_id = $5::int`;
 }

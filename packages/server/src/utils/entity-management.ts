@@ -16,7 +16,6 @@ import {
 } from '../db/client';
 import type { Env } from '../index';
 import { querySqlImpl } from '../tools/admin/query_sql';
-import { windowMembershipWriteViaEventEdges } from './content-search';
 import type { ToolContext } from '../tools/registry';
 import { entityLinkMatchSql } from './content-search';
 import { type EntityHookContext, getEntityHooks } from './entity-hooks';
@@ -563,29 +562,16 @@ export async function deleteEntity(
            OR to_entity_id = ANY(${entityTreeIdsLiteral}::bigint[])
       `;
 
-      // P6 WRITE flip: remove membership edges directly (the watcher_windows DELETE below still
-      // cascades old-pod watcher_window_events rows -> trigger, a no-op on edges already removed).
-      if (windowMembershipWriteViaEventEdges()) {
-        await tx`
-          DELETE FROM event_edges
-          WHERE edge_type = 'membership' AND parent_event_id IN (
-            SELECT ww.id
-            FROM watcher_windows ww
-            JOIN watchers w ON ww.watcher_id = w.id
-            WHERE COALESCE(w.entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
-          )
-        `;
-      } else {
-        await tx`
-          DELETE FROM watcher_window_events
-          WHERE window_id IN (
-            SELECT ww.id
-            FROM watcher_windows ww
-            JOIN watchers w ON ww.watcher_id = w.id
-            WHERE COALESCE(w.entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
-          )
-        `;
-      }
+      // P6: remove membership edges directly.
+      await tx`
+        DELETE FROM event_edges
+        WHERE edge_type = 'membership' AND parent_event_id IN (
+          SELECT ww.id
+          FROM watcher_windows ww
+          JOIN watchers w ON ww.watcher_id = w.id
+          WHERE COALESCE(w.entity_ids, '{}'::bigint[]) <@ ${entityTreeIdsLiteral}::bigint[]
+        )
+      `;
       await tx`
         DELETE FROM watcher_windows
         WHERE watcher_id IN (
@@ -657,28 +643,16 @@ export async function deleteEntity(
         )
         WHERE entity_ids && ${entityTreeIdsLiteral}::bigint[]
       `;
-      // P6 WRITE flip (orphaned-watcher cleanup): same as above.
-      if (windowMembershipWriteViaEventEdges()) {
-        await tx`
-          DELETE FROM event_edges
-          WHERE edge_type = 'membership' AND parent_event_id IN (
-            SELECT ww.id
-            FROM watcher_windows ww
-            JOIN watchers w ON ww.watcher_id = w.id
-            WHERE cardinality(COALESCE(w.entity_ids, '{}'::bigint[])) = 0
-          )
-        `;
-      } else {
-        await tx`
-          DELETE FROM watcher_window_events
-          WHERE window_id IN (
-            SELECT ww.id
-            FROM watcher_windows ww
-            JOIN watchers w ON ww.watcher_id = w.id
-            WHERE cardinality(COALESCE(w.entity_ids, '{}'::bigint[])) = 0
-          )
-        `;
-      }
+      // P6 (orphaned-watcher cleanup): remove membership edges directly.
+      await tx`
+        DELETE FROM event_edges
+        WHERE edge_type = 'membership' AND parent_event_id IN (
+          SELECT ww.id
+          FROM watcher_windows ww
+          JOIN watchers w ON ww.watcher_id = w.id
+          WHERE cardinality(COALESCE(w.entity_ids, '{}'::bigint[])) = 0
+        )
+      `;
       await tx`
         DELETE FROM watcher_windows
         WHERE watcher_id IN (

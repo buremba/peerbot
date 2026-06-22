@@ -1,12 +1,13 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test clean dev build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean e2e-browser bump review
+.PHONY: help setup build test clean dev dev-db build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean e2e-browser bump review
 
 # Default target
 help:
 	@echo "Available commands:"
 	@echo "  make setup                                 - Setup development environment (run once)"
 	@echo "  make dev                                   - Start the embedded Lobu stack (Postgres via DATABASE_URL, Vite HMR)"
+	@echo "  make dev-db [NAME=<x>] [FROM=<db>]          - Local dev against the brew Postgres, one database per worktree/branch (NAME defaults to the branch; FROM=<db> forks a dataset)"
 	@echo "  make build-packages                        - Build all TypeScript packages"
 	@echo "  make test                                  - Run test bot"
 	@echo "  make test-unit                             - Run the CI unit suite (no Postgres needed)"
@@ -70,6 +71,15 @@ ensure-submodule:
 # all in-process. Requires Postgres via DATABASE_URL.
 dev: ensure-submodule
 	@./scripts/dev-native.sh
+
+# Local dev against the local (brew) Postgres — one database per worktree/branch,
+# no embedded cluster. NAME defaults to the current branch; FROM=<db> forks an
+# existing dataset for a disposable preview. Embedded `make dev` is unchanged.
+#   make dev-db NAME=sidebar
+#   make dev-db NAME=preview FROM=owletto_local
+#   make dev-db NAME=sidebar PORT=8931 WORKER_PROXY_PORT=8131
+dev-db: ensure-submodule
+	@NAME="$(NAME)" FROM="$(FROM)" PORT="$(PORT)" WORKER_PROXY_PORT="$(WORKER_PROXY_PORT)" PGHOST="$(PGHOST)" PGPORT="$(PGPORT)" PGUSER="$(PGUSER)" ./scripts/dev-db.sh
 
 # Setup development environment (run once)
 setup:

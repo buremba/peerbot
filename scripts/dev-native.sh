@@ -129,26 +129,63 @@ mkdir -p "$LOBU_WORKSPACE_ROOT"
 
 # --- Run -------------------------------------------------------------------
 
-if [ -z "${DATABASE_URL:-}" ]; then
-  # No external Postgres → boot the embedded Postgres backend (src/server.ts).
-  # DATABASE_URL=file://<dir> is the single backend selector; the cluster lives
-  # at <dir>/.lobu/pgdata. First run mints a web login (dev@lobu.local /
-  # lobudev123, org "dev"). Vite HMR still runs in-process.
-  DEV_DATA_ROOT="$REPO_ROOT/.lobu-dev"
-  export DATABASE_URL="file://${DEV_DATA_ROOT}"
-  export PGSSLMODE=disable
+# Backend is selected by the DATABASE_URL *scheme*, not its mere presence: only
+# a postgres:// URL takes the external path. An unset URL or a file:// path runs
+# embedded Postgres. This lets `DATABASE_URL=file://<dir>` point at an alternate
+# data dir (another worktree's, a snapshot) without being mis-routed to the
+# external branch and its sslmode=require default — the trap that made "run it
+# against existing data" fall over.
+case "${DATABASE_URL:-}" in
+  postgres://* | postgresql://*) _LOBU_EMBEDDED=0 ;;
+  *)                             _LOBU_EMBEDDED=1 ;;
+esac
+
+if [ "$_LOBU_EMBEDDED" = 1 ]; then
+  # Default the data root when none was given. Override with LOBU_DEV_DATA_ROOT
+  # (or pass DATABASE_URL=file://<dir>) to run multiple isolated instances from
+  # ONE repo root — each gets its own cluster + lock. Pair with PORT /
+  # WORKER_PROXY_PORT overrides so the rails don't collide:
+  #   LOBU_DEV_DATA_ROOT=/tmp/lobu-a PORT=8930 WORKER_PROXY_PORT=8130 make dev
+  #   LOBU_DEV_DATA_ROOT=/tmp/lobu-b PORT=8931 WORKER_PROXY_PORT=8131 make dev
+  # The embedded PG port is auto-picked free per instance, so it never clashes.
+  if [ -z "${DATABASE_URL:-}" ]; then
+    DEV_DATA_ROOT="${LOBU_DEV_DATA_ROOT:-$REPO_ROOT/.lobu-dev}"
+    export DATABASE_URL="file://${DEV_DATA_ROOT}"
+  else
+    DEV_DATA_ROOT="${DATABASE_URL#file://}"
+  fi
+  export PGSSLMODE="${PGSSLMODE:-disable}"
   mkdir -p "$DEV_DATA_ROOT"
-  echo "→ no DATABASE_URL set — booting embedded Postgres"
+  echo "→ embedded Postgres   cluster: $DEV_DATA_ROOT/.lobu/pgdata"
   echo "→ server on http://${HOST}:${PORT}   (Vite HMR in-process)"
-  echo "→ data dir: $DEV_DATA_ROOT/.lobu/pgdata"
   echo "→ first run seeds a web login: dev@lobu.local / lobudev123   (org 'dev')"
   echo "→ then run \`lobu apply\` from a project dir to sync its lobu.config.ts"
   echo ""
   exec bun run --filter '@lobu/server' dev:local
 fi
 
-export PGSSLMODE="${PGSSLMODE:-require}"
+# External Postgres (postgres:// URL). Point this at a running instance's
+# embedded cluster to SHARE its data with a second app (no extra lock): pin the
+# primary's PG port, then attach —
+#   LOBU_PG_PORT=5544 make dev                                  # primary
+#   DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5544/postgres \
+#     PORT=8931 WORKER_PROXY_PORT=8131 make dev                 # shares its data
+# Default sslmode by host: a local Postgres (brew, a container) speaks no TLS,
+# so localhost defaults to `disable`; anything remote defaults to `require`.
+# This is the local-dev launcher only — prod/cloud paths are untouched. An
+# explicit PGSSLMODE always wins.
+# Host from postgres://[user[:pass]@]host[:port][/db][?params], incl. [IPv6].
+_lobu_db_rest="${DATABASE_URL#*://}"; _lobu_db_rest="${_lobu_db_rest##*@}"
+case "$_lobu_db_rest" in
+  '['*) _lobu_db_host="${_lobu_db_rest#\[}"; _lobu_db_host="${_lobu_db_host%%]*}" ;;
+  *)    _lobu_db_host="${_lobu_db_rest%%[:/?]*}" ;;
+esac
+case "$_lobu_db_host" in
+  localhost | 127.0.0.1 | ::1) export PGSSLMODE="${PGSSLMODE:-disable}" ;;
+  *)                           export PGSSLMODE="${PGSSLMODE:-require}" ;;
+esac
 
+echo "→ external Postgres (sslmode=${PGSSLMODE})"
 echo "→ server on http://${HOST}:${PORT}"
 echo "→ embedded gateway proxy on :${WORKER_PROXY_PORT}"
 echo "→ Vite HMR in-process (same port)"

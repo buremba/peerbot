@@ -52,6 +52,9 @@ export const MAC_DEVICE_CAPABILITIES = [
   "healthkit",
   "photos",
   "whatsapp_local",
+  "calendar",
+  "reminders",
+  "system_audio",
 ] as const;
 
 const PLATFORM_ALLOWLIST: Record<string, readonly string[]> = {

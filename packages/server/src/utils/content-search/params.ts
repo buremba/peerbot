@@ -64,6 +64,22 @@ export function windowMembershipViaEventEdges(): boolean {
   );
 }
 
+/**
+ * P6 WRITE flip: when set, window membership is written DIRECTLY to event_edges
+ * (complete-window INSERT/DELETE, entity-management DELETE cascades) and watcher_window_events is
+ * no longer written — the precondition for dropping that table. MUST be enabled only AFTER the
+ * READ flag (WATCHER_WINDOWS_VIA_EVENT_EDGES) is universal in prod, else flag-off readers reading
+ * watcher_window_events would miss these direct edges. During the write-flip rollout, old pods
+ * write the table (-> phase-1 trigger -> edge) and new pods write the edge directly; the
+ * event_edges_unique (parent,child,edge_type) constraint dedups, so no double edge.
+ */
+export function windowMembershipWriteViaEventEdges(): boolean {
+  return (
+    process.env.WATCHER_WINDOWS_WRITE_VIA_EVENT_EDGES === '1' ||
+    process.env.WATCHER_WINDOWS_WRITE_VIA_EVENT_EDGES === 'true'
+  );
+}
+
 export function buildStandardWhereSql(entityLinkSql: string): string {
   const windowCol = windowMembershipViaEventEdges() ? 'iwf.parent_event_id' : 'iwf.window_id';
   return `($1::bigint IS NULL OR ${entityLinkSql})

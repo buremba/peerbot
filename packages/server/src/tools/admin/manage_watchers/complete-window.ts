@@ -8,6 +8,7 @@
 import Ajv from 'ajv';
 import { createDbClientFromEnv, getDb, pgBigintArray } from '../../../db/client';
 import type { Env } from '../../../index';
+import { windowMembershipWriteViaEventEdges } from '../../../utils/content-search';
 import { ToolUserError } from '../../../utils/errors';
 import { verifyWindowToken } from '../../../utils/jwt';
 import logger from '../../../utils/logger';
@@ -454,7 +455,14 @@ export async function handleCompleteWindow(
         if (args.replace_existing) {
           // Delete existing window and its content links
           windowId = existingWindow[0].id as number;
-          await tx`DELETE FROM watcher_window_events WHERE window_id = ${windowId}`;
+          // P6 WRITE flip: remove the membership edges directly. (The watcher_windows DELETE below
+          // still cascades to any old-pod watcher_window_events rows -> trigger, a no-op on edges
+          // already removed here; needed explicitly for the post-drop world.)
+          if (windowMembershipWriteViaEventEdges()) {
+            await tx`DELETE FROM event_edges WHERE parent_event_id = ${windowId} AND edge_type = 'membership'`;
+          } else {
+            await tx`DELETE FROM watcher_window_events WHERE window_id = ${windowId}`;
+          }
           await tx`DELETE FROM watcher_windows WHERE id = ${windowId}`;
           logger.info(
             `[complete_window] Deleted existing window ${windowId} (replace_existing=true)`
@@ -535,23 +543,45 @@ export async function handleCompleteWindow(
     // Build VALUES clause for bulk insert
     // ============================================
     if (batchContentIds.length > 0) {
-      let nextWindowEventId = await getNextNumericId(tx, 'watcher_window_events');
-      const valuePlaceholders: string[] = [];
-      const insertParams: unknown[] = [];
-      let pIdx = 1;
-      for (const contentId of batchContentIds) {
-        valuePlaceholders.push(`($${pIdx}, $${pIdx + 1}, $${pIdx + 2}, NOW())`);
-        insertParams.push(nextWindowEventId, windowId, contentId);
-        nextWindowEventId += 1;
-        pIdx += 3;
-      }
+      if (windowMembershipWriteViaEventEdges()) {
+        // P6 WRITE flip: write the membership edges directly to event_edges (org + watcher_id_hint
+        // resolved from this window's watcher), skipping watcher_window_events so the table can be
+        // dropped. event_edges.id is GENERATED; the unique (parent,child,edge_type) dedups vs any
+        // old-pod trigger writes.
+        const organizationId = watcherRows[0].organization_id as string;
+        const edgeValues: string[] = [];
+        const edgeParams: unknown[] = [];
+        let ep = 1;
+        for (const contentId of batchContentIds) {
+          edgeValues.push(`($${ep}, $${ep + 1}, $${ep + 2}, 'membership', $${ep + 3}, NOW())`);
+          edgeParams.push(organizationId, windowId, contentId, watcherId);
+          ep += 4;
+        }
+        await tx.unsafe(
+          `INSERT INTO event_edges (organization_id, parent_event_id, child_event_id, edge_type, watcher_id_hint, created_at)
+           VALUES ${edgeValues.join(', ')}
+           ON CONFLICT (parent_event_id, child_event_id, edge_type) DO NOTHING`,
+          edgeParams
+        );
+      } else {
+        let nextWindowEventId = await getNextNumericId(tx, 'watcher_window_events');
+        const valuePlaceholders: string[] = [];
+        const insertParams: unknown[] = [];
+        let pIdx = 1;
+        for (const contentId of batchContentIds) {
+          valuePlaceholders.push(`($${pIdx}, $${pIdx + 1}, $${pIdx + 2}, NOW())`);
+          insertParams.push(nextWindowEventId, windowId, contentId);
+          nextWindowEventId += 1;
+          pIdx += 3;
+        }
 
-      await tx.unsafe(
-        `INSERT INTO watcher_window_events (id, window_id, event_id, created_at)
-         VALUES ${valuePlaceholders.join(', ')}
-         ON CONFLICT DO NOTHING`,
-        insertParams
-      );
+        await tx.unsafe(
+          `INSERT INTO watcher_window_events (id, window_id, event_id, created_at)
+           VALUES ${valuePlaceholders.join(', ')}
+           ON CONFLICT DO NOTHING`,
+          insertParams
+        );
+      }
     }
 
     // ============================================

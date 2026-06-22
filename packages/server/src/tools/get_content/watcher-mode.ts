@@ -311,7 +311,7 @@ export async function handleWatcherMode(
       cc.attribute_values
     FROM classify_facet cc
     WHERE cc.watcher_id = ${watcherId}
-      AND cc.current_version_id IS NOT NULL
+      AND cc.status = 'active'
     ORDER BY cc.slug
   `;
 

@@ -300,34 +300,27 @@ async function handleCreate(
   // string. Anonymous public reads can't reach this code path (the route is
   // admin-gated), so ctx.userId is non-null here.
   const createdBy = args.created_by ?? ctx.userId;
-  const classifierResult = await sql`
-    INSERT INTO event_classifiers (
-      organization_id, slug, name, description, attribute_key, status, created_by,
-      entity_id, entity_ids, watcher_id
-    ) VALUES (
-      ${ctx.organizationId},
-      ${args.slug}, ${args.name}, ${args.description || null}, ${args.attribute_key},
-      'active', ${createdBy}, ${entityId},
-      CASE WHEN ${entityId}::bigint IS NULL THEN ARRAY[]::bigint[] ELSE ARRAY[${entityId}]::bigint[] END,
-      ${args.watcher_id}
-    )
-    RETURNING id, slug, name, attribute_key, entity_id, entity_ids, watcher_id
-  `;
-
-  const classifier = classifierResult[0];
+  // Config lives on the single classify_facet row now (no version table) — hydrate embeddings first,
+  // then one insert carrying identity + config.
   const { attributeValues: withEmbeddings, generatedCount } = await hydrateAttributeEmbeddings(
     args.attribute_values,
     env
   );
 
-  await sql`
-    INSERT INTO event_classifier_versions (
-      classifier_id, version, is_current, attribute_values, min_similarity, fallback_value, change_notes, created_by
+  const classifierResult = await sql`
+    INSERT INTO classify_facet (
+      organization_id, slug, name, description, attribute_key, status, created_by,
+      entity_id, entity_ids, watcher_id, attribute_values, min_similarity, fallback_value
     ) VALUES (
-      ${classifier.id}, 1, true, ${sql.json(withEmbeddings)},
-      ${args.min_similarity ?? 0.7}, ${args.fallback_value ?? null}, 'Initial version', ${createdBy}
+      ${ctx.organizationId},
+      ${args.slug}, ${args.name}, ${args.description || null}, ${args.attribute_key},
+      'active', ${createdBy}, ${entityId},
+      CASE WHEN ${entityId}::bigint IS NULL THEN ARRAY[]::bigint[] ELSE ARRAY[${entityId}]::bigint[] END,
+      ${args.watcher_id}, ${sql.json(withEmbeddings)}, ${args.min_similarity ?? 0.7}, ${args.fallback_value ?? null}
     )
+    RETURNING id, slug, name, attribute_key, entity_id, entity_ids, watcher_id
   `;
+  const classifier = classifierResult[0];
 
   return {
     success: true,
@@ -416,17 +409,17 @@ async function handleGenerateEmbeddings(
   }
 
   const facet = await sql`
-    SELECT cf.current_version_id, cf.attribute_values
+    SELECT cf.attribute_values
     FROM classify_facet cf
     WHERE cf.id = ${args.classifier_id}
-      AND cf.current_version_id IS NOT NULL
+      AND cf.status = 'active'
       AND cf.organization_id = ${ctx.organizationId}
   `;
   if (facet.length === 0) {
     return {
       success: false,
       action: 'generate_embeddings',
-      message: `No current version found for classifier ${args.classifier_id}`,
+      message: `No active classifier found for ${args.classifier_id}`,
     };
   }
 
@@ -438,10 +431,9 @@ async function handleGenerateEmbeddings(
     { forceRegenerate: args.force_regenerate }
   );
 
-  // Read config from classify_facet; the embedding column still lives on the
-  // current version row, so the write-back targets event_classifier_versions.
+  // Config + embeddings live on the single classify_facet row now.
   if (generatedCount > 0 || args.force_regenerate) {
-    await sql`UPDATE event_classifier_versions SET attribute_values = ${sql.json(updatedValues)} WHERE id = ${current.current_version_id}`;
+    await sql`UPDATE classify_facet SET attribute_values = ${sql.json(updatedValues)}, updated_at = now() WHERE id = ${args.classifier_id}`;
   }
 
   return {
@@ -469,7 +461,7 @@ async function handleDelete(
   }
 
   const result = await sql`
-    UPDATE event_classifiers
+    UPDATE classify_facet
     SET status = 'deprecated', updated_at = current_timestamp
     WHERE id = ${args.classifier_id} AND organization_id = ${ctx.organizationId}
     RETURNING id

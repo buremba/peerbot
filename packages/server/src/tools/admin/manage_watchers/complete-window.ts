@@ -229,11 +229,11 @@ export async function handleCompleteWindow(
     SELECT
       cc.id,
       cc.slug,
-      cc.current_version_id as version_id,
+      cc.id as version_id,
       cc.extraction_config
     FROM classify_facet cc
     WHERE cc.watcher_id = ${watcherId}
-      AND cc.current_version_id IS NOT NULL
+      AND cc.status = 'active'
       AND cc.extraction_config IS NOT NULL
   `;
 

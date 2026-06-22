@@ -199,7 +199,7 @@ async function fetchTargetContent(
        WHERE cf.slug IN (${classifierPlaceholders})
          AND cf.status = 'active'
          AND cf.watcher_id IS NULL
-         AND cf.current_version_id IS NOT NULL`,
+         AND cf.status = 'active'`,
       enabledClassifiers
     );
     const classifierIds = classifierRows.map((r) => r.classifier_id);
@@ -283,7 +283,7 @@ async function fetchClassifierTemplates(
   }>(
     `SELECT DISTINCT
        cf.id as classifier_id,
-       cf.current_version_id as version_id,
+       cf.id as version_id,
        cf.min_similarity,
        cf.fallback_value,
        cf.attribute_values,
@@ -292,7 +292,7 @@ async function fetchClassifierTemplates(
      WHERE cf.slug IN (${classifierPlaceholders})
        AND cf.status = 'active'
        AND cf.watcher_id IS NULL
-       AND cf.current_version_id IS NOT NULL`,
+       AND cf.status = 'active'`,
     enabledClassifiers
   );
 
@@ -449,9 +449,9 @@ function generateParentClassifications(
 
 async function fetchAllClassifierVersions(sql: DbClient): Promise<ClassifierVersionLookup[]> {
   return sql.unsafe<ClassifierVersionLookup>(
-    `SELECT cf.slug, cf.current_version_id as version_id, cf.id as classifier_id
+    `SELECT cf.slug, cf.id as version_id, cf.id as classifier_id
      FROM classify_facet cf
-     WHERE cf.status = 'active' AND cf.watcher_id IS NULL AND cf.current_version_id IS NOT NULL`,
+     WHERE cf.status = 'active' AND cf.watcher_id IS NULL AND cf.status = 'active'`,
     []
   );
 }

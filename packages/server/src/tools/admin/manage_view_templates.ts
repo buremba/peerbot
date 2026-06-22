@@ -268,6 +268,17 @@ async function handleSet(
         ON CONFLICT (resource_type, resource_id, organization_id, tab_name)
         DO UPDATE SET current_version_id = ${vid}, tab_order = ${tabOrder}
       `;
+      // Phase 3a: also maintain is_current + tab_order directly on the version
+      // rows (transition off the trigger — kept until phase 3b drops it; both
+      // produce the same result). Clear-then-set keeps the partial unique index
+      // safe. tab_order is the requested display order for a set.
+      await tx`
+        UPDATE view_template_versions SET is_current = false
+        WHERE resource_type = ${args.resource_type} AND resource_id = ${resourceId}
+          AND organization_id = ${ctx.organizationId} AND tab_name = ${tabName}
+          AND is_current = true AND id <> ${vid}
+      `;
+      await tx`UPDATE view_template_versions SET is_current = true, tab_order = ${tabOrder} WHERE id = ${vid}`;
     }
 
     return row;
@@ -411,6 +422,28 @@ async function handleRollback(
       if (updated.length === 0) {
         throw new Error(`Tab '${tabName}' has no active entry to rollback`);
       }
+      // Phase 3a: maintain is_current + tab_order directly, preserving the tab's
+      // display order across the rollback (order is a tab-level property; rollback
+      // changes only which version is current). The order read below resolves to
+      // the unchanged pointer order in BOTH trigger states: trigger-ON it reads the
+      // just-re-pointed current version (the trigger already stamped the pointer
+      // order onto it); trigger-OFF (phase 3b) it reads the still-current outgoing
+      // version, which carries the same tab-level order. Either way the rolled-back
+      // version inherits the preserved order.
+      const curOrderRows = await tx`
+        SELECT tab_order FROM view_template_versions
+        WHERE resource_type = ${args.resource_type} AND resource_id = ${resourceId}
+          AND organization_id = ${ctx.organizationId} AND tab_name = ${tabName}
+          AND is_current = true LIMIT 1
+      `;
+      const curOrder = curOrderRows.length > 0 ? Number(curOrderRows[0].tab_order) : 0;
+      await tx`
+        UPDATE view_template_versions SET is_current = false
+        WHERE resource_type = ${args.resource_type} AND resource_id = ${resourceId}
+          AND organization_id = ${ctx.organizationId} AND tab_name = ${tabName}
+          AND is_current = true AND id <> ${versionId}
+      `;
+      await tx`UPDATE view_template_versions SET is_current = true, tab_order = ${curOrder} WHERE id = ${versionId}`;
     }
 
     return row;
@@ -442,18 +475,27 @@ async function handleRemoveTab(
   await verifyAccess(sql, args, ctx, true);
   const resourceId = rid(args);
 
-  const deleted = await sql`
-    DELETE FROM view_template_active_tabs
-    WHERE resource_type = ${args.resource_type}
-      AND resource_id = ${resourceId}
-      AND organization_id = ${ctx.organizationId}
-      AND tab_name = ${args.tab_name}
-    RETURNING id
-  `;
-
-  if (deleted.length === 0) {
-    throw new Error(`Tab '${args.tab_name}' not found`);
-  }
+  // Phase 3a: delete the active pointer and clear is_current atomically (reads
+  // are now on is_current, so a partial remove would leave a phantom tab).
+  await sql.begin(async (tx) => {
+    const del = await tx`
+      DELETE FROM view_template_active_tabs
+      WHERE resource_type = ${args.resource_type}
+        AND resource_id = ${resourceId}
+        AND organization_id = ${ctx.organizationId}
+        AND tab_name = ${args.tab_name}
+      RETURNING id
+    `;
+    if (del.length === 0) {
+      throw new Error(`Tab '${args.tab_name}' not found`);
+    }
+    await tx`
+      UPDATE view_template_versions SET is_current = false
+      WHERE resource_type = ${args.resource_type} AND resource_id = ${resourceId}
+        AND organization_id = ${ctx.organizationId} AND tab_name = ${args.tab_name}
+        AND is_current = true
+    `;
+  });
 
   emit(ctx.organizationId, {
     keys: ['resolve-path', 'entity-types', 'view-template-history'],

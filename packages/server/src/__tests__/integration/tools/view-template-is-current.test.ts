@@ -159,4 +159,54 @@ describe('view_template is_current via trigger (expand phase)', () => {
     expect(await currentIds('analytics')).toHaveLength(0);
     expect(await activeTabId('analytics')).toBeNull();
   });
+
+  it('app maintains is_current standalone with the trigger DISABLED (proves phase-3b trigger-drop is safe)', async () => {
+    await sql`ALTER TABLE view_template_active_tabs DISABLE TRIGGER trg_sync_view_template_is_current`;
+    try {
+      await owner.view_templates.set({
+        resource_type: 'entity_type',
+        resource_id: 'company',
+        tab_name: 'standalone',
+        tab_order: 3,
+        json_template: tmpl(1),
+      });
+      let cur = await currentIds('standalone');
+      expect(cur).toHaveLength(1);
+      expect(cur[0]).toBe(await activeTabId('standalone'));
+
+      await owner.view_templates.set({
+        resource_type: 'entity_type',
+        resource_id: 'company',
+        tab_name: 'standalone',
+        tab_order: 7,
+        json_template: tmpl(2),
+      });
+      await owner.view_templates.rollback({
+        resource_type: 'entity_type',
+        resource_id: 'company',
+        tab_name: 'standalone',
+        version: 1,
+      });
+      cur = await currentIds('standalone');
+      expect(cur).toHaveLength(1);
+      expect(cur[0]).toBe(await activeTabId('standalone'));
+      // trigger-OFF rollback: the app reads the outgoing current version's order
+      // (v2 @ 7) and applies it to the rolled-back v1 — preserved display order.
+      const order = (await sql`
+        SELECT tab_order FROM view_template_versions
+        WHERE resource_type='entity_type' AND resource_id='company'
+          AND tab_name='standalone' AND is_current = true
+      `) as Array<{ tab_order: number }>;
+      expect(Number(order[0].tab_order)).toBe(7);
+
+      await owner.view_templates.removeTab({
+        resource_type: 'entity_type',
+        resource_id: 'company',
+        tab_name: 'standalone',
+      });
+      expect(await currentIds('standalone')).toHaveLength(0);
+    } finally {
+      await sql`ALTER TABLE view_template_active_tabs ENABLE TRIGGER trg_sync_view_template_is_current`;
+    }
+  });
 });

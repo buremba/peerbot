@@ -138,6 +138,19 @@ export interface AppInstallationStore {
 
   /** Delete the install carrying `(provider, metadata.external_id)`. */
   deleteByExternalId(provider: string, externalId: string): Promise<void>;
+
+  /**
+   * Read-only resolve of the single install row for a given tenant tuple owned
+   * by `organizationId` (active or demoted), preferring the active row then the
+   * most recent. No side effects — callers use it to learn an existing row's
+   * durable `external_id` BEFORE doing side-effecting work (e.g. persisting a
+   * token under that id), so a later failure can't leave a half-activated row.
+   * Null when this org has no row for the tuple.
+   */
+  getByTenantAndOrg(
+    key: AppInstallationTenantKey,
+    organizationId: string
+  ): Promise<AppInstallationRow | null>;
 }
 
 function rowToInstallation(row: Record<string, any>): AppInstallationRow {
@@ -367,6 +380,21 @@ export function createPostgresAppInstallationStore(): AppInstallationStore {
         WHERE provider = ${provider}
           AND metadata ->> 'external_id' = ${externalId}
       `;
+    },
+
+    async getByTenantAndOrg(key, organizationId) {
+      const sql = getDb();
+      const rows = await sql`
+        SELECT * FROM app_installations
+        WHERE provider = ${key.provider}
+          AND provider_instance = ${key.providerInstance}
+          AND provider_app_id = ${key.providerAppId}
+          AND external_tenant_id = ${key.externalTenantId}
+          AND organization_id = ${organizationId}
+        ORDER BY (status = 'active') DESC, updated_at DESC, id DESC
+        LIMIT 1
+      `;
+      return rows.length ? rowToInstallation(rows[0]) : null;
     },
   };
 }

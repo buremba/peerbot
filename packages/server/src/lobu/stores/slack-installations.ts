@@ -126,52 +126,55 @@ export async function upsertSlackInstallByTeam(
       ""
     )}`;
 
-    // Step 1 — CLAIM the canonical external id atomically. We pass our minted
-    // candidate but ask the store to PRESERVE an existing row's external_id on an
-    // in-place update, so a racer that lost the insert reads back the winner's id
-    // here instead of clobbering it. Tenant metadata is written now; the token
-    // ref is added in step 3 once the canonical id (hence secret name) is known.
-    const claimMetadata: Record<string, any> = { external_id: candidateId };
-    if (data.teamName) claimMetadata.team_name = data.teamName;
-    if (data.botUserId) claimMetadata.bot_user_id = data.botUserId;
-    if (process.env.SLACK_CLIENT_ID) {
-      claimMetadata.slack_client_id = process.env.SLACK_CLIENT_ID;
-    }
-    const claimed = await store.upsert({
-      organizationId,
-      provider: SLACK_PROVIDER,
-      providerInstance: SLACK_PROVIDER_INSTANCE,
-      providerAppId: SLACK_PROVIDER_APP_ID,
-      externalTenantId: teamId,
-      authProfileId: null,
-      status: "active",
-      metadata: claimMetadata,
-      preserveMetadataKeysOnUpdate: ["external_id"],
-    });
-    const externalId = claimed.metadata.external_id as string;
+    // Determine the CANONICAL external id WITHOUT mutating any row yet: reuse the
+    // (org, team) row's id if one exists (reinstall keeps the stable secret prefix
+    // + routing key), else mint the candidate. This read carries no side effect,
+    // so a token-persist failure below cannot leave a half-activated row. (Two
+    // concurrent FIRST installs of the same workspace may each mint a candidate;
+    // the activation upsert's `preserveMetadataKeysOnUpdate: ['external_id']` makes
+    // them converge on one id under the lock, and the token is persisted under the
+    // RETURNED canonical id afterwards — see below — so no secret is orphaned.)
+    const existing = await store.getByTenantAndOrg(
+      {
+        provider: SLACK_PROVIDER,
+        providerInstance: SLACK_PROVIDER_INSTANCE,
+        providerAppId: SLACK_PROVIDER_APP_ID,
+        externalTenantId: teamId,
+      },
+      organizationId
+    );
+    const plannedId =
+      (existing?.metadata.external_id as string | undefined) ?? candidateId;
 
-    // Step 2 — persist the bot token under the CANONICAL external id. Both racers
-    // resolve the same id in step 1, so both write the same secret name (idempotent
-    // last-writer-wins for the same workspace); the loser's candidate id is never
-    // used for a secret, so nothing is orphaned.
-    const tokenRef = await persistSecretValue(
+    // TOKEN FIRST — persist the bot token BEFORE any row is created/activated, so
+    // the invariant "no active Slack install without a resolvable botToken" holds
+    // even if this throws: on failure we simply never wrote/flipped a row. A
+    // transfer's prior active owner is also untouched until we're committed to
+    // activating (the demote happens inside the activation upsert below).
+    let tokenRef = await persistSecretValue(
       secretStore,
-      `installations/${externalId}/botToken`,
+      `installations/${plannedId}/botToken`,
       data.botToken
     );
-    const config = {
-      platform: SLACK_PROVIDER,
-      ...(tokenRef ? { botToken: tokenRef } : {}),
+
+    // Activate — create/reactivate the (org, team) row with the token ref already
+    // in config, demoting any different-org prior owner, all inside the store's
+    // advisory-locked transaction. `preserveMetadataKeysOnUpdate: ['external_id']`
+    // converges concurrent first-installs on a single id.
+    const buildMetadata = (extId: string): Record<string, any> => {
+      const config = {
+        platform: SLACK_PROVIDER,
+        ...(tokenRef ? { botToken: tokenRef } : {}),
+      };
+      const metadata: Record<string, any> = { external_id: extId, config };
+      if (data.teamName) metadata.team_name = data.teamName;
+      if (data.botUserId) metadata.bot_user_id = data.botUserId;
+      if (process.env.SLACK_CLIENT_ID) {
+        metadata.slack_client_id = process.env.SLACK_CLIENT_ID;
+      }
+      return metadata;
     };
 
-    // Step 3 — write the token ref + tenant metadata onto the canonical row
-    // (same-org in-place under the lock; external_id preserved so it stays stable).
-    const metadata: Record<string, any> = { external_id: externalId, config };
-    if (data.teamName) metadata.team_name = data.teamName;
-    if (data.botUserId) metadata.bot_user_id = data.botUserId;
-    if (process.env.SLACK_CLIENT_ID) {
-      metadata.slack_client_id = process.env.SLACK_CLIENT_ID;
-    }
     const row = await store.upsert({
       organizationId,
       provider: SLACK_PROVIDER,
@@ -180,11 +183,50 @@ export async function upsertSlackInstallByTeam(
       externalTenantId: teamId,
       authProfileId: null,
       status: "active",
-      metadata,
+      metadata: buildMetadata(plannedId),
       preserveMetadataKeysOnUpdate: ["external_id"],
     });
+    const canonicalId = row.metadata.external_id as string;
 
-    const slackRow = toSlackRow(row);
+    // Concurrency reconciliation: if a racing first-install won the id (the store
+    // preserved a DIFFERENT external_id than the one we planned), our token sits
+    // under the wrong prefix and config.botToken points at it. Re-persist the
+    // token under the canonical id and rewrite config so the row's botToken
+    // resolves and the secret prefix matches external_id (delete/cleanup keys on
+    // it). Then drop our orphaned candidate secret. This only runs on the rare
+    // concurrent-first-install race; the common path skips it.
+    let finalRow = row;
+    if (canonicalId !== plannedId) {
+      tokenRef = await persistSecretValue(
+        secretStore,
+        `installations/${canonicalId}/botToken`,
+        data.botToken
+      );
+      finalRow = await store.upsert({
+        organizationId,
+        provider: SLACK_PROVIDER,
+        providerInstance: SLACK_PROVIDER_INSTANCE,
+        providerAppId: SLACK_PROVIDER_APP_ID,
+        externalTenantId: teamId,
+        authProfileId: null,
+        status: "active",
+        metadata: buildMetadata(canonicalId),
+        preserveMetadataKeysOnUpdate: ["external_id"],
+      });
+      await deleteSecretsByPrefix(
+        secretStore,
+        `installations/${plannedId}/`
+      ).catch((error) => {
+        // Best-effort cleanup of the losing candidate's secret; a leftover is
+        // harmless (no row references it) and the next reinstall is unaffected.
+        logger.warn(
+          { plannedId, canonicalId, teamId, error: String(error) },
+          "Failed to purge orphaned Slack token secret after id reconciliation"
+        );
+      });
+    }
+
+    const slackRow = toSlackRow(finalRow);
     if (!slackRow) {
       // Should never happen — we just wrote external_id. Defensive log.
       logger.error(

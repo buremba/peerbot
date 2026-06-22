@@ -43,6 +43,26 @@ function build() {
   return { store: createPostgresAppInstallationStore(), secretStore, slack };
 }
 
+/**
+ * A WritableSecretStore that delegates reads/list/delete to `real` but throws on
+ * `put` — simulates a persistSecretValue (token persist) failure. Delegates via
+ * bound methods (not object spread) so the class instance's prototype methods are
+ * preserved.
+ */
+function makeFailingSecretStore(
+  real: SecretStoreRegistry,
+  message: string
+): SecretStoreRegistry {
+  return {
+    get: (ref: any) => real.get(ref),
+    list: (prefix?: string) => real.list(prefix),
+    delete: (nameOrRef: string) => real.delete(nameOrRef),
+    put: async () => {
+      throw new Error(message);
+    },
+  } as unknown as SecretStoreRegistry;
+}
+
 describe("slack-installations projection over app_installations", () => {
   test("upsert persists an app_installations row; token by ref, never plaintext", async () => {
     const { orgContext } = await import("../../../lobu/stores/org-context.js");
@@ -320,5 +340,93 @@ describe("slack-installations projection over app_installations", () => {
     // The canonical install resolves and its token is readable.
     const resolved = await slack.getSlackInstallById(store, a.id);
     expect(resolved?.id).toBe(a.id);
+  });
+
+  test("a failed token persist on a FRESH install leaves NO active row (token-first)", async () => {
+    await seedAgentRow("throwaway", { organizationId: "org-fail" });
+    const { store, secretStore, slack } = await build();
+    // Secret store whose put() throws — simulates persistSecretValue failure.
+    const failingSecretStore = makeFailingSecretStore(
+      secretStore,
+      "simulated secret store failure"
+    );
+
+    await expect(
+      slack.upsertSlackInstallByTeam(
+        store,
+        failingSecretStore,
+        "org-fail",
+        "TFAIL",
+        { botToken: "xoxb-fail" }
+      )
+    ).rejects.toThrow(/simulated secret store failure/);
+
+    // INVARIANT: no Slack install row exists for the team at all (the token is
+    // persisted BEFORE any row is created/activated, so a persist failure writes
+    // nothing) — and certainly no ACTIVE row without a token.
+    const sql = getDb();
+    const rows = await sql`
+      SELECT id, status FROM app_installations
+      WHERE provider = 'slack' AND external_tenant_id = 'TFAIL'
+    `;
+    expect(rows).toHaveLength(0);
+    expect(await slack.getSlackInstallByTeamId(store, "TFAIL")).toBeNull();
+  });
+
+  test("a failed token persist during A->B transfer does NOT demote A or leave a tokenless active row", async () => {
+    await seedAgentRow("ta", { organizationId: "org-tx-a" });
+    await seedAgentRow("tb", { organizationId: "org-tx-b" });
+    const { store, secretStore, slack } = await build();
+
+    // A installs cleanly (active, with a token).
+    const a = await slack.upsertSlackInstallByTeam(
+      store,
+      secretStore,
+      "org-tx-a",
+      "TTX",
+      { botToken: "xoxb-a" }
+    );
+    expect((await slack.getSlackInstallByTeamId(store, "TTX"))?.id).toBe(a.id);
+
+    // Transfer to B, but the token persist fails. Because the token is persisted
+    // BEFORE the activation upsert (which is what demotes A), the failure happens
+    // before A is touched: A must stay active and B must not exist.
+    const failingSecretStore = makeFailingSecretStore(
+      secretStore,
+      "simulated secret store failure (transfer)"
+    );
+    await expect(
+      slack.upsertSlackInstallByTeam(store, failingSecretStore, "org-tx-b", "TTX", {
+        botToken: "xoxb-b",
+      })
+    ).rejects.toThrow(/simulated secret store failure \(transfer\)/);
+
+    // A's row is untouched — still the single active install, token resolves.
+    const sql = getDb();
+    const active = await sql`
+      SELECT organization_id, metadata ->> 'external_id' AS ext
+      FROM app_installations
+      WHERE provider = 'slack' AND external_tenant_id = 'TTX' AND status = 'active'
+    `;
+    expect(active).toHaveLength(1);
+    expect(active[0].organization_id).toBe("org-tx-a");
+    expect(active[0].ext).toBe(a.id);
+    // No org-B row was created.
+    const orgB = await sql`
+      SELECT id FROM app_installations
+      WHERE provider = 'slack' AND external_tenant_id = 'TTX'
+        AND organization_id = 'org-tx-b'
+    `;
+    expect(orgB).toHaveLength(0);
+
+    // INVARIANT: every active Slack row has a resolvable botToken.
+    const { orgContext } = await import("../../../lobu/stores/org-context.js");
+    const { resolveSecretValue } = await import("../../secrets/index.js");
+    const stillA = await slack.getSlackInstallById(store, a.id);
+    expect(stillA?.status).toBe("active");
+    const token = await orgContext.run({ organizationId: "org-tx-a" }, () =>
+      resolveSecretValue(secretStore, stillA?.config.botToken)
+    );
+    expect(token).toBe("xoxb-a");
   });
 });

@@ -107,6 +107,10 @@ export type ManageAgentsResult =
       approval_url?: string;
       status: 'pending_approval';
       message: string;
+      // The proposed change + current agent row, so the worker can forward an
+      // approval card (run_id + diff) into the chat without a second fetch.
+      proposal: ManageAgentsProposal;
+      current: Record<string, unknown> | null;
     };
 
 /** Proposed mutation held in `runs.action_input` for a builder-gate run. */
@@ -486,6 +490,8 @@ async function queueWriteForApproval(
     approval_url: approvalUrl,
     status: 'pending_approval',
     message: `${label} requires approval. Approve or reject the card to apply it.`,
+    proposal,
+    current,
   };
 }
 

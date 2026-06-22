@@ -67,6 +67,27 @@ export function createInteractionRoutes(
           return c.json({ id: posted.id, status: "posted" });
         }
 
+        // Durable approval card (runs/events-backed; today the builder agent's
+        // manage_agents write gate). Routed to the API platform's
+        // tool:durable-approval-card subscription, which enqueues it onto the
+        // SAME owner-gated thread_response queue the other cards use.
+        if (interactionType === "tool_approval") {
+          const posted = await interactionService.postDurableApprovalCard(
+            userId,
+            conversationId,
+            channelId,
+            teamId,
+            connectionId,
+            platform || "unknown",
+            Number(body.runId),
+            typeof body.action === "string" ? body.action : "change",
+            (body.proposal ?? null) as Record<string, unknown> | null,
+            (body.current ?? null) as Record<string, unknown> | null,
+            source
+          );
+          return c.json({ id: posted.id, status: "posted" });
+        }
+
         const posted = await interactionService.postQuestion(
           userId,
           conversationId,

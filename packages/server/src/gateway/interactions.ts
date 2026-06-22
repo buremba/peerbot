@@ -103,6 +103,31 @@ export interface PostedToolApproval extends BaseMessage {
 }
 
 /**
+ * Payload emitted on "tool:durable-approval-card" — a durable, runs/events-backed
+ * approval (today: the builder agent's manage_agents create/update/delete gate).
+ *
+ * Distinct from `tool:approval-needed` (the pre-tool MCP grant): this card does
+ * NOT block a worker tool call. The write is already a pending `runs` row;
+ * Approve/Reject ride the durable runs/events primitive (manage_operations
+ * approve/reject). Only the API platform renders it — the chat-platform bridge
+ * intentionally does not subscribe (it would mis-handle this as an MCP grant).
+ */
+export interface PostedDurableApproval extends BaseMessage {
+  userId: string;
+  platform: string;
+  /** Pending run id; the SPA card's Approve/Reject target. */
+  runId: number;
+  /** create | update | delete. */
+  cardAction: string;
+  /** Proposed field values + the agent id. */
+  proposal: Record<string, unknown> | null;
+  /** Current agent row (null for create), for the proposed-vs-current diff. */
+  current: Record<string, unknown> | null;
+  /** Headless-origin marker (parity with PostedQuestion/PostedToolApproval). */
+  source?: string;
+}
+
+/**
  * Payload emitted on "status-message:created" — platform renderers listen for this.
  */
 export interface PostedStatusMessage extends BaseMessage {
@@ -230,6 +255,54 @@ export class InteractionService extends EventEmitter {
     );
 
     this.emit("tool:approval-needed", posted);
+    return posted;
+  }
+
+  /**
+   * Post a durable approval card (runs/events-backed; today: the builder
+   * agent's manage_agents write gate). Fire-and-forget, like postQuestion.
+   * Emits "tool:durable-approval-card" — only the API platform renders it,
+   * so the chat-platform bridge never mistakes it for a pre-tool MCP grant.
+   * Delivery is the SAME owner-gated thread_response path the other cards use.
+   */
+  async postDurableApprovalCard(
+    userId: string,
+    conversationId: string,
+    channelId: string,
+    teamId: string | undefined,
+    connectionId: string | undefined,
+    platform: string,
+    runId: number,
+    cardAction: string,
+    proposal: Record<string, unknown> | null,
+    current: Record<string, unknown> | null,
+    source?: string
+  ): Promise<PostedDurableApproval> {
+    assertRoutableInteraction(connectionId, platform, "approval card");
+    if (this.beforeCreateHook) {
+      await this.beforeCreateHook(userId, conversationId);
+    }
+
+    const posted: PostedDurableApproval = {
+      id: `appr_${randomUUID()}`,
+      userId,
+      conversationId,
+      channelId,
+      teamId,
+      connectionId,
+      platform,
+      runId,
+      cardAction,
+      proposal,
+      current,
+      source,
+    };
+
+    logger.info(
+      `Posted durable approval card ${posted.id} for run ${runId} (${cardAction})`
+    );
+
+    this.emit("tool:durable-approval-card", posted);
     return posted;
   }
 

@@ -64,6 +64,19 @@ export async function handleSubmitFeedback(
   }
   const organizationId = windowCheck[0].organization_id as string;
 
+  // Correction-events (P1) phase 3 — the WRITE flip. When FEEDBACK_WRITE_VIA_CORRECTIONS is set,
+  // emit the correction event DIRECTLY (the same shape the phase-1 trigger produces) and skip the
+  // watcher_window_field_feedback INSERT, so the table can be dropped (phase 4). The id is still
+  // allocated from the table's own sequence (watcher_window_field_feedback_id_seq) so origin_id
+  // stays 'wwff_<id>' and the phase-2 read's substring id-recovery + ids remain stable.
+  // MULTI-REPLICA: gated on the READ flag (FEEDBACK_VIA_CORRECTIONS) already being universal —
+  // else flag-off readers reading the table would miss these direct-emitted events. During the
+  // write-flip rollout, old pods INSERT the table (-> trigger -> event) and new pods emit directly;
+  // no double event because each pod takes exactly one path.
+  const writeViaCorrections =
+    process.env.FEEDBACK_WRITE_VIA_CORRECTIONS === '1' ||
+    process.env.FEEDBACK_WRITE_VIA_CORRECTIONS === 'true';
+
   // Insert in one transaction so a partial failure never leaks half-applied
   // corrections — submit_feedback is naturally a batch operation from the UI.
   const feedbackIds = await sql.begin(async (tx) => {
@@ -72,6 +85,32 @@ export async function handleSubmitFeedback(
       const mutation = c.mutation ?? 'set';
       const correctedValueJson =
         mutation === 'remove' || c.value === undefined ? null : tx.json(c.value);
+      if (writeViaCorrections) {
+        const [row] = await tx`
+          WITH seq AS (SELECT nextval('watcher_window_field_feedback_id_seq') AS id)
+          INSERT INTO events (
+            organization_id, semantic_type, entity_ids, origin_id, metadata,
+            created_by, occurred_at, created_at
+          )
+          SELECT
+            ${organizationId}, 'correction', '{}'::bigint[], 'wwff_' || seq.id::text,
+            jsonb_build_object(
+              'window_id', ${args.window_id}::bigint,
+              'watcher_id', ${watcherId}::bigint,
+              'field_path', ${c.field_path}::text,
+              'mutation', ${mutation}::text,
+              -- ::jsonb so a 'remove' correction (NULL corrected_value) has an inferable param type
+              'corrected_value', ${correctedValueJson}::jsonb,
+              'note', ${c.note ?? null}::text
+            ),
+            (SELECT u.id FROM "user" u WHERE u.id = ${ctx.userId}),
+            NOW(), NOW()
+          FROM seq
+          RETURNING (substring(origin_id from 6))::bigint AS id
+        `;
+        ids.push(Number(row.id));
+        continue;
+      }
       const result = await tx`
         INSERT INTO watcher_window_field_feedback (
           window_id, watcher_id, organization_id,

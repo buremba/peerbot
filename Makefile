@@ -102,6 +102,13 @@ task-clean:
 	@: $${NAME?Usage: make task-clean NAME=<name> [FORCE=1]}
 	@./scripts/task-clean.sh "$(NAME)" $$( [ "$(FORCE)" = "1" ] && echo --force )
 
+# Reap task worktrees whose PR is already merged (worktree + branches + dev DB
+# + Lobu context). Dry-run by default — prints what it would remove; pass
+# APPLY=1 to actually run task-clean on each. Squash-merge-safe: gates on the
+# GitHub PR state, not git ancestry.
+clean-merged:
+	@./scripts/clean-merged.sh $$( [ "$(APPLY)" = "1" ] && echo --apply )
+
 # Stable Owletto Chrome harness for e2e: one persistent profile, paired once,
 # reused from any agent session (mirrors the installed Mac app). Loads the
 # extension from the current worktree; RESTART=1 forces a fresh launch.

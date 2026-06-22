@@ -14,18 +14,14 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# shellcheck source=scripts/lib/db-name.sh
+. "$REPO_ROOT/scripts/lib/db-name.sh"
+
 # Name defaults to the current git branch (the worktree's branch) so the
-# database tracks the worktree. Sanitize to a legal lowercase PG identifier —
-# `feat/sidebar` → `lobu_feat_sidebar`.
+# database tracks the worktree. `lobu_db_name` derives `lobu_feat_sidebar` from
+# `feat/sidebar` — and `task-clean.sh` uses the same helper to drop it.
 RAW_NAME="${NAME:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo dev)}"
-SLUG="$(printf '%s' "$RAW_NAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/_/g; s/^_+|_+$//g')"
-DB="lobu_${SLUG:-dev}"
-# Postgres silently truncates identifiers past 63 bytes, which would collide two
-# long branch names into one database and break db_exists. Cap with a short hash
-# of the full name so distinct long branches stay distinct.
-if [ "${#DB}" -gt 63 ]; then
-  DB="${DB:0:52}_$(printf '%s' "$DB" | cksum | cut -d' ' -f1)"
-fi
+DB="$(lobu_db_name "$RAW_NAME")"
 
 PGHOST="${PGHOST:-localhost}"
 PGPORT="${PGPORT:-5432}"

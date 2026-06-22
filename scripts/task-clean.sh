@@ -44,6 +44,9 @@ repo="$(dirname "$(git -C "$script_dir" rev-parse --path-format=absolute --git-c
 worktree_dir="$repo/.claude/worktrees/$name"
 branch="feat/$name"
 
+# shellcheck source=scripts/lib/db-name.sh
+. "$script_dir/lib/db-name.sh"
+
 if [[ ! -d "$worktree_dir" ]]; then
   echo "error: no worktree at $worktree_dir" >&2
   exit 1
@@ -115,6 +118,30 @@ if [[ -d "$repo/packages/owletto" ]] \
   echo "→ deleting owletto branch $branch"
   git -C "$repo/packages/owletto" branch -D "$branch"
 fi
+
+# Drop the per-branch dev database created by `make dev-db`. The name depends on
+# how dev-db was invoked: `make dev-db` inside the worktree keys off the branch
+# (lobu_feat_<name>), while `make dev-db NAME=<name>` keys off the bare name
+# (lobu_<name>). Drop both candidates via the shared `lobu_db_name` helper so the
+# name can't drift from what dev-db created. Non-fatal: a missing DB or an
+# unreachable Postgres just skips (cleanup must still finish).
+export PGHOST="${PGHOST:-localhost}" PGPORT="${PGPORT:-5432}" PGUSER="${PGUSER:-$USER}"
+for raw in "$name" "$branch"; do
+  db="$(lobu_db_name "$raw")"
+  # Never drop a shared database. The only realistic collision is a task named
+  # "test" → lobu_test (the shared integration-test DB).
+  case "$db" in
+    *_test) echo "→ skipping protected database '$db'"; continue ;;
+  esac
+  exists="$(psql -tAc "select 1 from pg_database where datname='$db'" postgres 2>/dev/null || true)"
+  [[ "$exists" == "1" ]] || continue
+  # --force evicts a still-connected dev server; --if-exists guards the race.
+  if dropdb --if-exists --force "$db" 2>/dev/null; then
+    echo "→ dropped dev database '$db'"
+  else
+    echo "warning: failed to drop '$db' — drop it manually: dropdb --force $db" >&2
+  fi
+done
 
 if command -v lobu >/dev/null 2>&1; then
   if lobu context rm "$name" >/dev/null 2>&1; then

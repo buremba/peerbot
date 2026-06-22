@@ -72,30 +72,13 @@ function buildContentQuery(opts: {
       ${a}.interaction_error,
       ${a}.supersedes_event_id,
       oc.client_name,
-      COALESCE(
-        cls.classifications,
-        '{}'::jsonb
-      ) as classifications
+      -- classifications was sourced from latest_event_classifications, a denormalized cache that was
+      -- never populated (no writer) — so this field has always been '{}'. Kept empty for response-shape
+      -- stability now that the dead table is dropped.
+      '{}'::jsonb as classifications
     FROM ${table} ${a}
     LEFT JOIN connections c ON c.id = ${a}.connection_id
     LEFT JOIN oauth_clients oc ON oc.id = ${a}.client_id
-    LEFT JOIN (
-      SELECT
-        lc.event_id,
-        jsonb_object_agg(
-          fcl.attribute_key,
-          jsonb_build_object(
-            'values', lc."values",
-            'confidences', lc.confidences,
-            'source', lc.source,
-            'is_manual', lc.is_manual
-          )
-        ) as classifications
-      FROM latest_event_classifications lc
-      JOIN classify_facet fcl ON lc.classifier_id = fcl.id
-      WHERE lc."values" IS NOT NULL
-      GROUP BY lc.event_id
-    ) cls ON cls.event_id = ${a}.id
     WHERE ${where}
     ORDER BY ${orderBy}
     LIMIT ${limit}

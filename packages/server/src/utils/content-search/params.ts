@@ -56,7 +56,7 @@ export function buildStandardWhereSql(entityLinkSql: string): string {
           AND ($6::numeric IS NULL OR f.score >= $6::numeric)
           AND ($7::numeric IS NULL OR f.score <= $7::numeric)
           AND ($8::text IS NULL OR EXISTS (
-            SELECT 1 FROM latest_event_classifications lc_source
+            SELECT 1 FROM event_classifications lc_source
             WHERE lc_source.event_id = f.id
               AND lc_source.source = $8::text
           ))

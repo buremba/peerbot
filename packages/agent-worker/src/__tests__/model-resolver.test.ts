@@ -42,6 +42,38 @@ describe("resolveModelRef", () => {
     expect(result.modelId).toBe("gpt-4.1");
   });
 
+  test("strips the LOBU slug prefix when it differs from the upstream defaultProvider", () => {
+    // The builder bug: model stored as "claude/…" but the worker is told the
+    // upstream slug "anthropic". Without defaultProviderSlug the "claude/"
+    // prefix survived and 404'd at the Anthropic API.
+    const result = resolveModelRef("claude/claude-opus-4-8", {
+      defaultProvider: "anthropic",
+      defaultProviderSlug: "claude",
+    });
+    expect(result.provider).toBe("anthropic");
+    expect(result.modelId).toBe("claude-opus-4-8");
+  });
+
+  test("still strips the upstream-slug prefix when the model uses it directly", () => {
+    const result = resolveModelRef("anthropic/claude-opus-4-8", {
+      defaultProvider: "anthropic",
+      defaultProviderSlug: "claude",
+    });
+    expect(result.provider).toBe("anthropic");
+    expect(result.modelId).toBe("claude-opus-4-8");
+  });
+
+  test("leaves a foreign-namespace model intact (does not strip a non-matching slug)", () => {
+    // OpenRouter's "anthropic/claude-sonnet-4" is the provider's own model id,
+    // not a Lobu prefix — it must pass through unchanged.
+    const result = resolveModelRef("anthropic/claude-sonnet-4", {
+      defaultProvider: "openrouter",
+      defaultProviderSlug: "openrouter",
+    });
+    expect(result.provider).toBe("openrouter");
+    expect(result.modelId).toBe("anthropic/claude-sonnet-4");
+  });
+
   test("falls back to overrides.defaultModel when rawModelRef is empty", () => {
     const result = resolveModelRef("", {
       defaultModel: "anthropic/claude-sonnet-4-20250514",

@@ -862,6 +862,7 @@ export class WorkerGateway {
   ): Promise<{
     credentialEnvVarName?: string;
     defaultProvider?: string;
+    defaultProviderSlug?: string;
     defaultModel?: string;
     cliBackends?: Array<{
       providerId: string;
@@ -963,6 +964,7 @@ export class WorkerGateway {
     const result: {
       credentialEnvVarName?: string;
       defaultProvider?: string;
+      defaultProviderSlug?: string;
       defaultModel?: string;
       cliBackends?: typeof cliBackends;
       providerBaseUrlMappings?: Record<string, string>;
@@ -974,6 +976,16 @@ export class WorkerGateway {
       result.credentialEnvVarName = primaryProvider.getCredentialEnvVarName();
       const upstream = primaryProvider.getUpstreamConfig?.();
       result.defaultProvider = upstream?.slug || primaryProvider.providerId;
+      // The worker is told `defaultProvider` is the UPSTREAM slug (e.g.
+      // "anthropic") and only strips a `<defaultProvider>/` model prefix. But
+      // Lobu stores models under the provider's LOBU id (e.g.
+      // "claude/claude-opus-4-8"), so for a provider whose Lobu id differs from
+      // its upstream slug the prefix is never stripped and reaches the provider
+      // API verbatim → 404. Hand the worker the Lobu slug too so it can strip
+      // that prefix as well (see resolveModelRef). Omitted when the slugs match.
+      if (upstream?.slug && upstream.slug !== primaryProvider.providerId) {
+        result.defaultProviderSlug = primaryProvider.providerId;
+      }
     }
 
     // Only an explicitly configured model is used — Lobu no longer silently

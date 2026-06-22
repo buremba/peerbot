@@ -82,10 +82,10 @@ describe("OpenClawProgressProcessor — malformed events don't throw", () => {
     ).not.toThrow();
   });
 
-  test("auto_compaction_end with neither aborted nor result returns true", () => {
+  test("compaction_end with neither aborted nor result returns true", () => {
     const p = new OpenClawProgressProcessor();
     // No aborted, no result — the current implementation still returns true
-    const result = p.processEvent({ type: "auto_compaction_end" } as any);
+    const result = p.processEvent({ type: "compaction_end" } as any);
     expect(result).toBe(true);
   });
 

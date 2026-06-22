@@ -48,9 +48,9 @@
   "dependencies": {
     "@hono/node-server": "^1.19.9",
     "@lobu/core": "workspace:*",
-    "@mariozechner/pi-agent-core": "^0.51.6",
-    "@mariozechner/pi-ai": "^0.51.6",
-    "@mariozechner/pi-coding-agent": "^0.51.6",
+    "@mariozechner/pi-agent-core": "^0.73.1",
+    "@mariozechner/pi-ai": "^0.73.1",
+    "@mariozechner/pi-coding-agent": "^0.73.1",
     "@sentry/node": "^10.6.0",
     "@sinclair/typebox": "^0.34.33",
     "form-data": "^4.0.4",

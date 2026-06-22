@@ -78,7 +78,8 @@ describe("worker agent bash secret leak (E2E, Finding #1)", () => {
     const tools = createOpenClawTools(tempDir);
     const { session } = await buildAgentSession({
       cwd: tempDir,
-      tools,
+      tools: tools.map((t) => t.name),
+      builtinOverrides: tools,
       customTools: [],
     });
 

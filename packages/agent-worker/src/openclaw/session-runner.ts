@@ -106,16 +106,28 @@ const OVERRIDABLE_BUILTIN_NAMES = new Set([
  * preserving every other aspect of `createAgentSession` (model resolution,
  * session restore, image blocking, extension/custom-tool wiring).
  */
-export async function buildAgentSession(
-  options: CreateAgentSessionOptions
-): Promise<CreateAgentSessionResult> {
+type BuildAgentSessionOptions = CreateAgentSessionOptions & {
+  /**
+   * Lobu's hardened built-in tool instances (read/bash/edit/write/…). pi's
+   * `createAgentSession` only takes built-in NAMES via `options.tools` and
+   * rebuilds the instances internally (unhardened bash via getShellEnv()), so
+   * we swap those rebuilt instances for these by name after construction. Pass
+   * the same names in `options.tools` so they're active in the first place.
+   */
+  builtinOverrides?: AgentTool<any>[];
+};
+
+export async function buildAgentSession({
+  builtinOverrides,
+  ...options
+}: BuildAgentSessionOptions): Promise<CreateAgentSessionResult> {
   const result = await createAgentSession(options);
   const { session } = result;
 
   const lobuBuiltins = new Map<string, AgentTool<any>>();
-  for (const tool of options.tools ?? []) {
+  for (const tool of builtinOverrides ?? []) {
     if (OVERRIDABLE_BUILTIN_NAMES.has(tool.name)) {
-      lobuBuiltins.set(tool.name, tool as AgentTool<any>);
+      lobuBuiltins.set(tool.name, tool);
     }
   }
   if (lobuBuiltins.size === 0) {
@@ -126,7 +138,7 @@ export async function buildAgentSession(
   const patched = activeTools.map(
     (tool) => lobuBuiltins.get(tool.name) ?? tool
   );
-  session.agent.setTools(patched);
+  session.agent.state.tools = patched;
 
   return result;
 }
@@ -550,6 +562,7 @@ export async function runAISession(
   const { provider: rawProvider, modelId } = resolveModelRef(modelRef, {
     defaultModel: pc.defaultModel,
     defaultProvider: pc.defaultProvider,
+    defaultProviderSlug: pc.defaultProviderSlug,
   });
   // Map gateway slug to model-registry provider name (e.g. "z-ai" → "zai")
   const provider = PROVIDER_REGISTRY_ALIASES[rawProvider] || rawProvider;
@@ -862,7 +875,10 @@ export async function runAISession(
 
   // Credential injection — resolve API key from the in-memory credential store,
   // falling back to process.env only for values that were present at startup.
-  const authStorage = new AuthStorage();
+  // In-memory only — the worker injects runtime API keys below and never reads
+  // or writes an on-disk auth.json (pi-ai 0.73 made the AuthStorage ctor private
+  // in favour of these factories).
+  const authStorage = AuthStorage.inMemory();
   const credEnvVar = credentialStore.get("CREDENTIAL_ENV_VAR_NAME") || null;
   const credValue = credEnvVar
     ? credentialStore.get(credEnvVar) || process.env[credEnvVar]
@@ -1011,7 +1027,7 @@ Use it when the user references past discussions or you need context.`);
   }
 
   // Apply plugin provider registrations to ModelRegistry
-  const modelRegistry = new ModelRegistry(authStorage);
+  const modelRegistry = ModelRegistry.create(authStorage);
   const allProviders = loadedPlugins.flatMap((p) => p.providers);
   for (const reg of allProviders) {
     try {
@@ -1081,15 +1097,18 @@ Use it when the user references past discussions or you need context.`);
       // names and rebuilds the base tools internally (bash via getShellEnv()
       // = {...process.env}, no env strip, no embedded BashOperations).
       // buildAgentSession() swaps those rebuilt built-ins back to these
-      // Lobu instances after construction so the agent's bash actually runs
-      // with the spawnHook that strips WORKER_TOKEN/DISPATCHER_URL and with
-      // the embedded BashOperations + tool policy wired in above.
+      // Lobu instances (via `builtinOverrides`) after construction so the
+      // agent's bash actually runs with the spawnHook that strips
+      // WORKER_TOKEN/DISPATCHER_URL and with the embedded BashOperations + tool
+      // policy wired in above. `tools` (names) activates exactly this set;
+      // `builtinOverrides` supplies the instances the swap installs.
       // Wrap built-ins with the synchronous runaway guard so the per-turn
       // tool-call cap and identical-call guard bound bash/read/edit/write
       // too. The guard runs inside execute (before the tool body), so the
       // bound is tight — unlike the agent's async tool_execution_start event,
       // which lags several turns behind real execution.
-      tools: wrapToolsWithTurnGuard(tools, turnController),
+      tools: tools.map((tool) => tool.name),
+      builtinOverrides: wrapToolsWithTurnGuard(tools, turnController),
       // Wrap custom tools (plugin + MCP) so plugin before_tool_call/
       // after_tool_call hooks fire around in-process execution — these never
       // hit the gateway proxy, so this is the only place the hooks can run.
@@ -1138,7 +1157,7 @@ Use it when the user references past discussions or you need context.`);
       : [basePrompt, finalInstructionsUpdated]
           .filter(Boolean)
           .join("\n\n---\n\n");
-    session.agent.setSystemPrompt(finalSystemPrompt);
+    session.agent.state.systemPrompt = finalSystemPrompt;
 
     let resolveTurnDone: (() => void) | null = null;
     let turnNonce = 0;

@@ -153,13 +153,22 @@ export function buildDynamicOpenAIModel(args: {
 
 export function resolveModelRef(
   rawModelRef: string,
-  overrides?: { defaultModel?: string; defaultProvider?: string }
+  overrides?: {
+    defaultModel?: string;
+    defaultProvider?: string;
+    defaultProviderSlug?: string;
+  }
 ): {
   provider: string;
   modelId: string;
 } {
   const defaultModelRef = overrides?.defaultModel || "";
   const defaultProvider = overrides?.defaultProvider || "";
+  // The provider's LOBU id (e.g. "claude"), present only when it differs from
+  // `defaultProvider` (the upstream slug, e.g. "anthropic"). Lobu stores models
+  // prefixed with the Lobu id, so it must be stripped too — otherwise a
+  // "claude/…" model reaches the upstream API verbatim and 404s.
+  const defaultProviderSlug = overrides?.defaultProviderSlug || "";
 
   const normalizedRaw = rawModelRef?.trim();
   const modelRef = normalizedRaw || defaultModelRef;
@@ -198,8 +207,19 @@ export function resolveModelRef(
     // Model". Only the configured provider's OWN id is stripped, so a foreign
     // namespace slug (OpenRouter's "anthropic/claude-sonnet-4") stays intact.
     // Runs after the auto-resolution above so a prefixed default is covered too.
+    //
+    // `defaultProvider` is the UPSTREAM slug ("anthropic"); strip that AND the
+    // LOBU slug ("claude") when they differ, since the stored model is prefixed
+    // with the Lobu id. Without the second strip, "claude/claude-opus-4-8"
+    // reaches the Anthropic API verbatim and 404s.
     if (modelId.startsWith(`${defaultProvider}/`)) {
       modelId = modelId.slice(defaultProvider.length + 1);
+    } else if (
+      defaultProviderSlug &&
+      defaultProviderSlug !== defaultProvider &&
+      modelId.startsWith(`${defaultProviderSlug}/`)
+    ) {
+      modelId = modelId.slice(defaultProviderSlug.length + 1);
     }
     return { provider: defaultProvider, modelId };
   }

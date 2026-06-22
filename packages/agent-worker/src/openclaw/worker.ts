@@ -499,7 +499,12 @@ export class OpenClawWorker implements WorkerExecutor {
       contextUsage.contextWindow -
       reserveTokens -
       memoryFlushConfig.softThresholdTokens;
-    const projectedContextTokens = contextUsage.tokens + incomingPromptTokens;
+    // `tokens` is null until the first assistant turn reports usage (pi-ai
+    // 0.73 widened it to number | null); treat "no usage yet" as 0 so the
+    // projection is just the incoming prompt and the flush stays below
+    // threshold on turn one.
+    const projectedContextTokens =
+      (contextUsage.tokens ?? 0) + incomingPromptTokens;
 
     if (projectedContextTokens < thresholdTokens) {
       return;

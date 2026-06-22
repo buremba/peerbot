@@ -238,8 +238,9 @@ function wireGuardedTools(
       return t.execute(...args);
     },
   }));
-  agent.setTools(
-    wrapToolsWithTurnGuard(instrumented as AgentTool[], controller)
+  agent.state.tools = wrapToolsWithTurnGuard(
+    instrumented as AgentTool[],
+    controller
   );
   return { bodyRuns };
 }
@@ -279,7 +280,7 @@ describe("turn force-terminate via TurnController + real Agent loop", () => {
         ) as never;
       }) as never,
     });
-    agent.setModel(MODEL as never);
+    agent.state.model = MODEL as never;
     wireGuardedTools(agent, controller, [askUser]);
 
     await agent.prompt("help me");
@@ -342,7 +343,7 @@ describe("turn force-terminate via TurnController + real Agent loop", () => {
         ) as never;
       }) as never,
     });
-    agent.setModel(MODEL as never);
+    agent.state.model = MODEL as never;
     wireGuardedTools(agent, controller, [askUser, sibling]);
 
     await agent.prompt("help me");
@@ -382,7 +383,7 @@ describe("turn force-terminate via TurnController + real Agent loop", () => {
         ) as never;
       }) as never,
     });
-    agent.setModel(MODEL as never);
+    agent.state.model = MODEL as never;
     const { bodyRuns } = wireGuardedTools(agent, controller, [spam]);
 
     await agent.prompt("go");
@@ -423,7 +424,7 @@ describe("turn force-terminate via TurnController + real Agent loop", () => {
     const noop = makeRecordingTool("noop", () => {
       // benign tool: no side-effect
     });
-    agent.setModel(MODEL as never);
+    agent.state.model = MODEL as never;
     const { bodyRuns } = wireGuardedTools(agent, controller, [noop]);
 
     await agent.prompt("do one thing");

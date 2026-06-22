@@ -54,9 +54,11 @@ function getBashTool(tools: { name: string }[]) {
 
 describe("agent session bash inherits Lobu-built bash (Findings #1, #10)", () => {
   test("session bash strips SENSITIVE_WORKER_ENV_KEYS from the spawned env", async () => {
+    const builtins = createOpenClawTools(tempDir);
     const { session } = await buildAgentSession({
       cwd: tempDir,
-      tools: createOpenClawTools(tempDir),
+      tools: builtins.map((t) => t.name),
+      builtinOverrides: builtins,
       customTools: [],
     });
 
@@ -91,9 +93,13 @@ describe("agent session bash inherits Lobu-built bash (Findings #1, #10)", () =>
       },
     };
 
+    const builtins = createOpenClawTools(tempDir, {
+      bashOperations: mockBashOps,
+    });
     const { session } = await buildAgentSession({
       cwd: tempDir,
-      tools: createOpenClawTools(tempDir, { bashOperations: mockBashOps }),
+      tools: builtins.map((t) => t.name),
+      builtinOverrides: builtins,
       customTools: [],
     });
 
@@ -121,7 +127,8 @@ describe("agent session bash inherits Lobu-built bash (Findings #1, #10)", () =>
 
     const { session } = await buildAgentSession({
       cwd: tempDir,
-      tools: lobuTools,
+      tools: lobuTools.map((t) => t.name),
+      builtinOverrides: lobuTools,
       customTools: [],
     });
 

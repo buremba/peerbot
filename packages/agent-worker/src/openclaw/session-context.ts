@@ -11,6 +11,14 @@ const logger = createLogger("openclaw-session-context");
 interface ProviderConfig {
   credentialEnvVarName?: string;
   defaultProvider?: string;
+  /**
+   * The primary provider's LOBU id (e.g. "claude"), sent only when it differs
+   * from `defaultProvider` (the upstream slug, e.g. "anthropic"). Lobu stores
+   * models prefixed with the Lobu id; the resolver strips this prefix in
+   * addition to `<defaultProvider>/` so a stored "claude/…" model doesn't reach
+   * the provider API verbatim and 404. See resolveModelRef.
+   */
+  defaultProviderSlug?: string;
   defaultModel?: string;
   cliBackends?: Array<{
     providerId: string;

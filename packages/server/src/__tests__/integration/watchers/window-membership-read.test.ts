@@ -78,4 +78,56 @@ describe('window-membership read flip equivalence (P6 phase 3)', () => {
     expect(off).toEqual([inWin]); // the table path returns only the in-window event
     expect(on).toEqual(off); // the event_edges path returns the identical set
   });
+
+  it('the search path (text query + window_id) returns the same content from table and event_edges', async () => {
+    const org = await createTestOrganization({ name: 'Win Search Org' });
+    const user = await createTestUser({ email: 'winsearch@test.com' });
+    const entity = await createTestEntity({
+      organization_id: org.id,
+      created_by: user.id,
+      name: 'WinSearchEntity',
+    });
+    const agent = await createTestAgent({ organizationId: org.id, ownerUserId: user.id });
+
+    const mkEvent = async (slug: string, text: string) => {
+      const [e] = (await sql`
+        INSERT INTO events (organization_id, semantic_type, entity_ids, origin_id, payload_text, occurred_at, created_at)
+        VALUES (${org.id}, 'content', ARRAY[${Number(entity.id)}]::bigint[], ${slug}, ${text}, NOW(), NOW())
+        RETURNING id
+      `) as Array<{ id: number }>;
+      return Number(e.id);
+    };
+    const inWin = await mkEvent('ws_in', 'galaxander widget report');
+    await mkEvent('ws_out', 'galaxander widget summary'); // matches the query but NOT in the window
+
+    const watcherId = 960100;
+    await sql`
+      INSERT INTO watchers (id, name, slug, created_by, organization_id, agent_id, watcher_group_id)
+      VALUES (${watcherId}, 'w', 'w-winsearch', ${user.id}, ${org.id}, ${agent.agentId}, ${watcherId})
+    `;
+    const windowId = 960101;
+    await sql`
+      INSERT INTO watcher_windows (id, watcher_id, granularity, window_start, window_end, content_analyzed, extracted_data)
+      VALUES (${windowId}, ${watcherId}, 'daily', NOW(), NOW(), 0, '{}'::jsonb)
+    `;
+    await sql`INSERT INTO watcher_window_events (window_id, event_id) VALUES (${windowId}, ${inWin})`;
+
+    const runSearch = async () => {
+      const res = await searchContentByText('galaxander', {
+        organization_id: org.id,
+        entity_id: Number(entity.id),
+        window_id: windowId,
+        limit: 50,
+      });
+      return res.content.map((c) => Number(c.id)).sort((a, b) => a - b);
+    };
+
+    delete process.env.WATCHER_WINDOWS_VIA_EVENT_EDGES;
+    const off = await runSearch();
+    process.env.WATCHER_WINDOWS_VIA_EVENT_EDGES = '1';
+    const on = await runSearch();
+
+    expect(off).toEqual([inWin]); // the search path filtered to the in-window match
+    expect(on).toEqual(off); // event_edges path identical
+  });
 });

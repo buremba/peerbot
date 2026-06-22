@@ -11,6 +11,7 @@ import {
   excludeWatcherNotExists,
   fetchEntityIdentityScopes,
 } from '../../utils/content-search';
+import { windowMembershipViaEventEdges } from '../../utils/content-search/params';
 import logger from '../../utils/logger';
 import { validateNumericId } from '../../utils/sql-validation';
 import type { GetContentArgs } from './schema';
@@ -291,7 +292,9 @@ export async function fetchIncludeSuperseded(opts: {
   }
   if (args.window_id !== undefined) {
     conditions.push(
-      `EXISTS (SELECT 1 FROM watcher_window_events iwf WHERE iwf.event_id = e.id AND iwf.window_id = $${paramIndex})`
+      windowMembershipViaEventEdges()
+        ? `EXISTS (SELECT 1 FROM event_edges iwf WHERE iwf.child_event_id = e.id AND iwf.parent_event_id = $${paramIndex} AND iwf.edge_type = 'membership')`
+        : `EXISTS (SELECT 1 FROM watcher_window_events iwf WHERE iwf.event_id = e.id AND iwf.window_id = $${paramIndex})`
     );
     queryParams.push(args.window_id);
     paramIndex += 1;
@@ -454,7 +457,9 @@ export async function fetchClassificationStats(opts: {
   }
   let windowJoinSql = '';
   if (args.window_id) {
-    windowJoinSql = `JOIN watcher_window_events iwf ON iwf.event_id = f.id AND iwf.window_id = $${paramIndex}`;
+    windowJoinSql = windowMembershipViaEventEdges()
+      ? `JOIN event_edges iwf ON iwf.child_event_id = f.id AND iwf.parent_event_id = $${paramIndex} AND iwf.edge_type = 'membership'`
+      : `JOIN watcher_window_events iwf ON iwf.event_id = f.id AND iwf.window_id = $${paramIndex}`;
     params.push(args.window_id);
     paramIndex++;
   }

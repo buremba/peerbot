@@ -30,6 +30,26 @@ import {
   type ContentSearchResponse,
   type ContentSearchResult,
 } from './types';
+import { windowMembershipViaEventEdges } from './params';
+
+/**
+ * Windows-as-events (P6) phase 3: the search-path window-membership LEFT JOIN ($6 = window id),
+ * reading event_edges (parent_event_id = window id, edge_type='membership') when
+ * WATCHER_WINDOWS_VIA_EVENT_EDGES is set, else watcher_window_events. The `iwf` alias is shared
+ * with the standardFiltersSQL WHERE, so the window-id column flips in lockstep.
+ */
+function searchWindowMembershipJoin(): string {
+  return windowMembershipViaEventEdges()
+    ? `LEFT JOIN event_edges iwf
+          ON iwf.child_event_id = f.id
+          AND ($6::int IS NOT NULL)
+          AND iwf.parent_event_id = $6::int
+          AND iwf.edge_type = 'membership'`
+    : `LEFT JOIN watcher_window_events iwf
+          ON iwf.event_id = f.id
+          AND ($6::int IS NOT NULL)
+          AND iwf.window_id = $6::int`;
+}
 import { buildConnectionVisibilityClause, buildExcludeWatcherClause, buildOrgScopeWhere } from './visibility';
 
 export async function searchContentBySingleQuery(
@@ -150,6 +170,7 @@ export async function searchContentBySingleQuery(
   // present) so a hostile float can't break out of the comparison expression.
   const minSimilarityParamIdx = baseParamIdx + (hasEmbedding ? 1 : 0);
 
+  const win6Col = windowMembershipViaEventEdges() ? 'iwf.parent_event_id' : 'iwf.window_id';
   const standardFiltersSQL = `($2::bigint IS NULL OR ${searchEntityLinkSql})
           AND ${connectionCondition}
           AND ${feedCondition}
@@ -157,7 +178,7 @@ export async function searchContentBySingleQuery(
           AND ($3::text IS NULL OR f.connector_key = $3::text)
           AND ($4::timestamptz IS NULL OR f.occurred_at >= $4::timestamptz)
           AND ($5::timestamptz IS NULL OR f.occurred_at <= $5::timestamptz)
-          AND ($6::int IS NULL OR iwf.window_id = $6::int)
+          AND ($6::int IS NULL OR ${win6Col} = $6::int)
           AND ($7::numeric IS NULL OR f.score >= $7::numeric)
           AND ($8::numeric IS NULL OR f.score <= $8::numeric)
           AND ($9::text[] IS NULL OR f.semantic_type = ANY($9::text[]))
@@ -307,10 +328,7 @@ export async function searchContentBySingleQuery(
     // (useDateFeed is false here, so there is no cursor block before it).
     const tsqueryParamIdx = offsetParamIdx + 1;
     const candidateFilterJoins = `LEFT JOIN connections c ON c.id = f.connection_id
-          LEFT JOIN watcher_window_events iwf
-            ON iwf.event_id = f.id
-            AND ($6::int IS NOT NULL)
-            AND iwf.window_id = $6::int`;
+          ${searchWindowMembershipJoin()}`;
     const branches: string[] = [];
     // ivfflat ANN — the only shape that index serves. Multi-vector: the ANN now
     // ranks CHUNK rows, so over-fetch chunks then collapse to distinct events by
@@ -367,10 +385,7 @@ export async function searchContentBySingleQuery(
         FROM current_event_records f
         ${useCandidatePath ? 'JOIN search_candidates sc ON sc.id = f.id' : ''}
         LEFT JOIN connections c ON c.id = f.connection_id
-        LEFT JOIN watcher_window_events iwf
-          ON iwf.event_id = f.id
-          AND ($6::int IS NOT NULL)
-          AND iwf.window_id = $6::int
+        ${searchWindowMembershipJoin()}
         WHERE ${useCandidatePath ? standardFiltersSQL : searchWhereSQL}
       )`;
 
@@ -380,10 +395,7 @@ export async function searchContentBySingleQuery(
         SELECT f.id, f.score, f.occurred_at, f.title, f.payload_text, ${bestSimSelect} AS best_sim, f.search_tsv
         FROM current_event_records f
         LEFT JOIN connections c ON c.id = f.connection_id
-        LEFT JOIN watcher_window_events iwf
-          ON iwf.event_id = f.id
-          AND ($6::int IS NOT NULL)
-          AND iwf.window_id = $6::int
+        ${searchWindowMembershipJoin()}
         WHERE ${searchWhereSQL}
       ),
       full_count AS (

@@ -512,22 +512,34 @@ describe("installation-backed instances (OAuth workspace, no owning agent)", () 
       "../chat-instance-manager.js"
     );
 
-    // Stub the installation store; capture what the manager tries to hydrate.
-    const installation = {
-      id: "slackinst-abc123",
+    // Stub the generic app-installation store; capture what the manager tries to
+    // hydrate. Slack installs are app_installations rows (provider=slack) — the
+    // stable `slackinst-` id lives in metadata.external_id, the bot token ref +
+    // tenant data in metadata.config / metadata.*.
+    const externalId = "slackinst-abc123";
+    const installRow = {
+      id: 7,
       organizationId: "org-ws",
-      teamId: "TWS1",
-      teamName: "Acme",
-      botUserId: "UBOT",
-      config: { platform: "slack", botToken: "secret://ref" },
+      provider: "slack",
+      providerInstance: "cloud",
+      providerAppId: "cloud",
+      externalTenantId: "TWS1",
+      authProfileId: null,
       status: "active" as const,
+      metadata: {
+        external_id: externalId,
+        team_name: "Acme",
+        bot_user_id: "UBOT",
+        config: { platform: "slack", botToken: "secret://ref" },
+      },
       createdAt: 1,
       updatedAt: 42,
     };
     const services = {
       getPublicGatewayUrl: () => "",
-      getSlackInstallationStore: () => ({
-        getById: async (id: string) => (id === installation.id ? installation : null),
+      getAppInstallationStore: () => ({
+        resolveByExternalId: async (provider: string, id: string) =>
+          provider === "slack" && id === externalId ? installRow : null,
       }),
     } as any;
 
@@ -565,7 +577,9 @@ describe("installation-backed instances (OAuth workspace, no owning agent)", () 
     );
     const manager = new ChatInstanceManager() as any;
     manager.services = {
-      getSlackInstallationStore: () => ({ getById: async () => null }),
+      getAppInstallationStore: () => ({
+        resolveByExternalId: async () => null,
+      }),
     };
     manager.hydrateFromRow = async () => {
       throw new Error("should not hydrate an unknown installation");

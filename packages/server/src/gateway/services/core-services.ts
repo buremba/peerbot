@@ -12,8 +12,10 @@ import {
 import { getDb } from "../../db/client.js";
 import { resolveEnv } from "../auth/mcp/string-substitution.js";
 import { PostgresSecretStore } from "../../lobu/stores/postgres-secret-store.js";
-import type { SlackInstallationStore } from "../../lobu/stores/slack-installation-store.js";
-import { createSlackAppInstallationStore } from "../../lobu/stores/slack-app-installation-store.js";
+import {
+	type AppInstallationStore,
+	createPostgresAppInstallationStore,
+} from "../../lobu/stores/app-installation-store.js";
 import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { ApiKeyProviderModule } from "../auth/api-key-provider-module.js";
 import { BedrockProviderModule } from "../auth/bedrock/provider-module.js";
@@ -177,7 +179,7 @@ export class CoreServices {
 	// ============================================================================
 	private configStore?: AgentConfigStore;
 	private connectionStore?: AgentConnectionStore;
-	private slackInstallationStore?: SlackInstallationStore;
+	private appInstallationStore?: AppInstallationStore;
 
 	// SDK-embedded agents (passed via `GatewayConfig.agents`). lobu.config.ts
 	// file-declared agents have been moved out of the gateway boot path —
@@ -219,11 +221,11 @@ export class CoreServices {
 		return this.connectionStore;
 	}
 
-	getSlackInstallationStore(): SlackInstallationStore {
-		if (!this.slackInstallationStore) {
-			throw new Error("Slack installation store not initialized");
+	getAppInstallationStore(): AppInstallationStore {
+		if (!this.appInstallationStore) {
+			throw new Error("App installation store not initialized");
 		}
-		return this.slackInstallationStore;
+		return this.appInstallationStore;
 	}
 
 	/**
@@ -382,17 +384,13 @@ export class CoreServices {
 			);
 		logger.debug("Secret store initialized");
 
-		// Slack workspace installs (the "Add to Slack" OAuth path) are being
-		// consolidated onto the generic `app_installations` primitive. The adapter
-		// keeps the SlackInstallationStore interface (so call sites and the
-		// `slackinst-` id semantics are unchanged) while dual-writing both
-		// `slack_installations` (legacy, kept for rollback + read fallback) and
-		// `app_installations`, and dual-reading (app_installations preferred,
-		// legacy fallback). The bot token still rides the secret store by ref.
+		// The generic app-installation primitive: the multi-tenant record of "Lobu
+		// App <X> is installed into external tenant <Y>", shared by every provider
+		// (GitHub App installs, Slack OAuth workspace installs, Jira sites, …).
+		// Slack installs are a thin projection over this (see
+		// `lobu/stores/slack-installations.ts`) with NO bespoke table or store.
 		// Always Postgres-backed; only exercised on the OAuth/webhook path.
-		this.slackInstallationStore = createSlackAppInstallationStore(
-			this.secretStore,
-		);
+		this.appInstallationStore = createPostgresAppInstallationStore();
 
 		this.channelBindingService = new ChannelBindingService();
 		this.userAgentsStore = new UserAgentsStore();

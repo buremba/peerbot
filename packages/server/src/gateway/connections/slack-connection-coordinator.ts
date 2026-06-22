@@ -1,6 +1,11 @@
 import { createLogger } from "@lobu/core";
 import { Chat } from "chat";
-import type { SlackInstallationStore } from "../../lobu/stores/slack-installation-store.js";
+import type { AppInstallationStore } from "../../lobu/stores/app-installation-store.js";
+import {
+  getSlackInstallByTeamId,
+  upsertSlackInstallByTeam,
+} from "../../lobu/stores/slack-installations.js";
+import type { WritableSecretStore } from "../secrets/index.js";
 import type { PlatformAdapterConfig, PlatformConnection } from "./types.js";
 import {
   parseSlackTeamJoinEvent,
@@ -67,11 +72,14 @@ interface SlackConnectionCoordinatorDeps {
   getRunningChat(connectionId: string): any | undefined;
   listSlackConnections(): Promise<PlatformConnection[]>;
   /**
-   * Per-workspace OAuth installs (token + tenant data), keyed on (org, team).
-   * Resolved lazily so building the coordinator never forces the store to
-   * exist — only the install/webhook paths actually need it.
+   * The generic app-installation store. Slack OAuth workspace installs are a
+   * thin projection over it (`lobu/stores/slack-installations.ts`) — no bespoke
+   * table or store. Resolved lazily so building the coordinator never forces the
+   * store to exist; only the install/webhook paths actually need it.
    */
-  getInstallationStore(): SlackInstallationStore;
+  getAppInstallationStore(): AppInstallationStore;
+  /** Secret store for persisting/purging the per-workspace bot token. */
+  getSecretStore(): WritableSecretStore;
 }
 
 export class SlackConnectionCoordinator {
@@ -86,7 +94,7 @@ export class SlackConnectionCoordinator {
         (connection) =>
           connection.metadata?.teamId === teamId &&
           // A stopped BYO connection must not preempt routing — otherwise it
-          // shadows an active OAuth `slack_installations` row for the same team
+          // shadows an active OAuth install (an `app_installations` row) for the team
           // (matched first → 503, never falling through to the install).
           connection.status !== "stopped"
       ) || null
@@ -124,8 +132,8 @@ export class SlackConnectionCoordinator {
 
   /**
    * Persist a per-workspace OAuth install: the workspace's bot token + tenant
-   * metadata, keyed on (org, team), in the `slack_installations` store. This is
-   * NOT an `agent_connections` row — an installed workspace has no owning agent;
+   * metadata, keyed on (org, team), as an `app_installations` row (provider=slack).
+   * This is NOT an `agent_connections` row — an installed workspace has no owning agent;
    * it routes to many agents via `/lobu link` channel bindings. The token goes
    * to the secret store (the store handles that); app-level creds
    * (signingSecret/clientId/clientSecret) stay env-sourced at runtime. Idempotent
@@ -137,7 +145,9 @@ export class SlackConnectionCoordinator {
     teamId: string,
     installation: SlackInstallation
   ): Promise<{ installationId: string }> {
-    const row = await this.deps.getInstallationStore().upsertByTeam(
+    const row = await upsertSlackInstallByTeam(
+      this.deps.getAppInstallationStore(),
+      this.deps.getSecretStore(),
       organizationId,
       teamId,
       {
@@ -232,12 +242,15 @@ export class SlackConnectionCoordinator {
       }
 
       // 2) An OAuth-installed workspace (the "Add to Slack" path). The install
-      //    lives in `slack_installations`, not `agent_connections`; the manager
-      //    hydrates an agentless Slack instance from it (id is namespaced, so
-      //    `ensureConnectionRunning`/`forwardWebhook` resolve it from the
-      //    installation store). Per-message routing is via `/lobu link` bindings.
-      const installation =
-        await this.deps.getInstallationStore().getByTeamId(teamId);
+      //    is an `app_installations` row (provider=slack), not `agent_connections`;
+      //    the manager hydrates an agentless Slack instance from it (the
+      //    `slackinst-` id is namespaced, so `ensureConnectionRunning`/
+      //    `forwardWebhook` resolve it via the Slack install projection). Per-message
+      //    routing is via `/lobu link` bindings.
+      const installation = await getSlackInstallByTeamId(
+        this.deps.getAppInstallationStore(),
+        teamId
+      );
       if (installation && installation.status !== "stopped") {
         if (!(await this.deps.ensureConnectionRunning(installation.id))) {
           return new Response("Slack connection unavailable", { status: 503 });

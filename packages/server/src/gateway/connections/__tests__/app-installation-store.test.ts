@@ -332,4 +332,45 @@ describe("AppInstallationStore", () => {
     const listed = await store.listByOrg("org-list");
     expect(listed.map((r) => r.id).sort()).toEqual([one.id, two.id].sort());
   });
+
+  test("external-id helpers resolve/list/set-status/delete by metadata.external_id", async () => {
+    await seedAgentRow("org-ext-agent", { organizationId: "org-ext" });
+    const store = await buildStore();
+
+    const created = await store.upsert({
+      organizationId: "org-ext",
+      provider: "slack",
+      providerInstance: "cloud",
+      providerAppId: "cloud",
+      externalTenantId: "T-ext",
+      metadata: { external_id: "slackinst-ext1", team_name: "Ext Co" },
+    });
+    // A different provider with the same external_id must NOT collide.
+    await store.upsert({
+      organizationId: "org-ext",
+      provider: "github",
+      providerInstance: "cloud",
+      providerAppId: "lobu-app-1",
+      externalTenantId: "inst-ext",
+      metadata: { external_id: "slackinst-ext1" },
+    });
+
+    const resolved = await store.resolveByExternalId("slack", "slackinst-ext1");
+    expect(resolved?.id).toBe(created.id);
+    expect(resolved?.metadata.team_name).toBe("Ext Co");
+    expect(await store.resolveByExternalId("slack", "nope")).toBeNull();
+
+    const listed = await store.listByProviderAndOrg("slack", "org-ext");
+    expect(listed.map((r) => r.id)).toEqual([created.id]);
+
+    await store.setStatusByExternalId("slack", "slackinst-ext1", "suspended");
+    expect((await store.getById(created.id))?.status).toBe("suspended");
+
+    await store.deleteByExternalId("slack", "slackinst-ext1");
+    expect(await store.resolveByExternalId("slack", "slackinst-ext1")).toBeNull();
+    // The github row with the same external_id is untouched.
+    expect(
+      await store.resolveByExternalId("github", "slackinst-ext1")
+    ).not.toBeNull();
+  });
 });

@@ -95,6 +95,36 @@ export interface AppInstallationStore {
   setStatus(id: number, status: AppInstallationStatus): Promise<void>;
   /** Convenience for `setStatus(id, "revoked")`. */
   revoke(id: number): Promise<void>;
+
+  /**
+   * Resolve an install by a provider-stable EXTERNAL id stamped in
+   * `metadata.external_id`, scoped to `provider`. Some providers route by a
+   * durable string id distinct from the bigint PK — e.g. Slack keeps a stable
+   * `slackinst-<uuid>` id (it is the secret-store name prefix
+   * `installations/<id>/botToken` AND the chat-instance-manager memo / webhook
+   * routing key, so it must survive reinstalls and the bigint PK can't serve as
+   * it). Prefers the active row, then most-recent. Null when none match.
+   */
+  resolveByExternalId(
+    provider: string,
+    externalId: string
+  ): Promise<AppInstallationRow | null>;
+
+  /** All installs for a provider within an org, newest first. */
+  listByProviderAndOrg(
+    provider: string,
+    organizationId: string
+  ): Promise<AppInstallationRow[]>;
+
+  /** Set status on the install carrying `(provider, metadata.external_id)`. */
+  setStatusByExternalId(
+    provider: string,
+    externalId: string,
+    status: AppInstallationStatus
+  ): Promise<void>;
+
+  /** Delete the install carrying `(provider, metadata.external_id)`. */
+  deleteByExternalId(provider: string, externalId: string): Promise<void>;
 }
 
 function rowToInstallation(row: Record<string, any>): AppInstallationRow {
@@ -198,12 +228,23 @@ export function createPostgresAppInstallationStore(): AppInstallationStore {
         if (existing) {
           // Reactivate-and-refresh the target org's existing row in place (covers
           // same-org reinstall AND a return transfer A->B->A: org A's demoted row
-          // is reused, not duplicated).
+          // is reused, not duplicated). Merge any preserve-requested metadata keys
+          // from the existing row (their value wins over the incoming one) — the
+          // race-safe durable-id claim: a caller that minted its own id but lost
+          // the insert race reads back the winner's id instead of clobbering it.
+          const mergedMetadata = { ...metadata };
+          const existingMetadata =
+            (existing.metadata as Record<string, any> | null) ?? {};
+          for (const key of install.preserveMetadataKeysOnUpdate ?? []) {
+            if (existingMetadata[key] !== undefined) {
+              mergedMetadata[key] = existingMetadata[key];
+            }
+          }
           const rows = await tx`
             UPDATE app_installations
             SET status = 'active',
                 auth_profile_id = ${authProfileId},
-                metadata = ${sql.json(metadata)},
+                metadata = ${sql.json(mergedMetadata)},
                 updated_at = now()
             WHERE id = ${existing.id}
             RETURNING *
@@ -271,6 +312,48 @@ export function createPostgresAppInstallationStore(): AppInstallationStore {
 
     async revoke(id) {
       await this.setStatus(id, "revoked");
+    },
+
+    async resolveByExternalId(provider, externalId) {
+      const sql = getDb();
+      const rows = await sql`
+        SELECT * FROM app_installations
+        WHERE provider = ${provider}
+          AND metadata ->> 'external_id' = ${externalId}
+        ORDER BY (status = 'active') DESC, updated_at DESC, id DESC
+        LIMIT 1
+      `;
+      return rows.length ? rowToInstallation(rows[0]) : null;
+    },
+
+    async listByProviderAndOrg(provider, organizationId) {
+      const sql = getDb();
+      const rows = await sql`
+        SELECT * FROM app_installations
+        WHERE provider = ${provider}
+          AND organization_id = ${organizationId}
+        ORDER BY created_at DESC, id DESC
+      `;
+      return rows.map(rowToInstallation);
+    },
+
+    async setStatusByExternalId(provider, externalId, status) {
+      const sql = getDb();
+      await sql`
+        UPDATE app_installations
+        SET status = ${status}, updated_at = now()
+        WHERE provider = ${provider}
+          AND metadata ->> 'external_id' = ${externalId}
+      `;
+    },
+
+    async deleteByExternalId(provider, externalId) {
+      const sql = getDb();
+      await sql`
+        DELETE FROM app_installations
+        WHERE provider = ${provider}
+          AND metadata ->> 'external_id' = ${externalId}
+      `;
     },
   };
 }

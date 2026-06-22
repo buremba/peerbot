@@ -54,6 +54,8 @@ import {
 	renderOAuthErrorPage,
 	renderOAuthSuccessPage,
 } from "../../auth/oauth-templates.js";
+import { getInstallationTokenRegistry } from "../../installation/registry.js";
+import { createSyncRun } from "../../../runs/queue-service.js";
 
 const logger = createLogger("app-install-routes");
 
@@ -74,6 +76,30 @@ export function githubAppInstallUrl(appSlug: string, state: string): string {
 		`https://github.com/apps/${encodeURIComponent(appSlug)}/installations/new`,
 	);
 	url.searchParams.set("state", state);
+	return url.toString();
+}
+
+/**
+ * Build the GitHub *user-authorization* URL (recovery path). When the App is
+ * already installed but Lobu's binding is stuck/expired, re-hitting the install
+ * page redirects to GitHub's App-settings page with NO callback, so the binding
+ * can never be retried without uninstalling. Instead we send the user through
+ * GitHub's OAuth user-authorization endpoint, which DOES round-trip back to our
+ * registered callback with a `code` (and `state`) — just no `installation_id`.
+ * The callback derives the installation from `GET /user/installations`.
+ *
+ * Uses the App's OAuth client id (GITHUB_APP_CLIENT_ID) and the SAME registered
+ * callback URL, so the existing redirect_uri/ownership guards are unchanged.
+ */
+export function githubUserAuthorizeUrl(params: {
+	clientId: string;
+	redirectUri: string;
+	state: string;
+}): string {
+	const url = new URL("https://github.com/login/oauth/authorize");
+	url.searchParams.set("client_id", params.clientId);
+	url.searchParams.set("redirect_uri", params.redirectUri);
+	url.searchParams.set("state", params.state);
 	return url.toString();
 }
 
@@ -123,7 +149,7 @@ export function githubInstallCallbackUrl(
  * HTTP status WITHOUT mutating any DB state.
  */
 export type InstallOwnershipResult =
-	| { ok: true }
+	| { ok: true; installationId: number }
 	| { ok: false; status: 400 | 403 | 503; code: string; message: string };
 
 /** A user-administerable installation's owning account, as GitHub reports it. */
@@ -212,6 +238,67 @@ async function defaultFetchInstallationAccount(
 		page += 1;
 	}
 	return null;
+}
+
+/**
+ * Recovery: resolve the SOLE installation of this App the user administers,
+ * from `GET /user/installations` (the App's user token scopes the response to
+ * this App). Returns `{installationId, account}` for exactly one, `null` for
+ * none, `"ambiguous"` for more than one (can't pick — caller falls back to the
+ * install page), or `undefined` on an HTTP failure. The returned installation is
+ * still subjected to the FULL ownership check in the callback — this only
+ * supplies the id GitHub's user-auth redirect omits, it never bypasses a guard.
+ */
+async function defaultFetchSoleAdministerableInstallation(
+	userToken: string,
+): Promise<
+	| { installationId: number; account: InstallationAccount }
+	| null
+	| "ambiguous"
+	| undefined
+> {
+	const perPage = 100;
+	let page = 1;
+	let total = Number.POSITIVE_INFINITY;
+	let seen = 0;
+	const MAX_PAGES = 100;
+	const found: Array<{ installationId: number; account: InstallationAccount }> =
+		[];
+	while (seen < total && page <= MAX_PAGES) {
+		const result = await githubUserGet<{
+			total_count?: number;
+			installations?: Array<{ id?: number; account?: InstallationAccount }>;
+		}>(
+			`https://api.github.com/user/installations?per_page=${perPage}&page=${page}`,
+			userToken,
+		);
+		if (!result.ok) {
+			logger.warn(
+				{ status: result.status, page },
+				"GitHub /user/installations returned non-OK while recovering installation id",
+			);
+			return undefined;
+		}
+		const body = result.data;
+		total = typeof body.total_count === "number" ? body.total_count : seen;
+		const installs = Array.isArray(body.installations) ? body.installations : [];
+		if (installs.length === 0) break;
+		for (const inst of installs) {
+			seen += 1;
+			if (typeof inst.id === "number" && inst.account?.login) {
+				found.push({
+					installationId: inst.id,
+					account: { login: inst.account.login, type: inst.account.type },
+				});
+				// More than one → ambiguous; we can't safely pick which to recover.
+				if (found.length > 1) return "ambiguous";
+			}
+		}
+		page += 1;
+	}
+	if (found.length === 0) return null;
+	if (found.length > 1) return "ambiguous";
+	return found[0];
 }
 
 /** The authenticated user's GitHub login (`GET /user`), or undefined on failure. */
@@ -432,6 +519,242 @@ export async function linkGithubAppInstallation(params: {
 	});
 }
 
+/** A repository the installation can access, as GitHub reports it. */
+export interface InstallationRepository {
+	owner: string;
+	name: string;
+}
+
+/** Default sync schedule for auto-provisioned feeds (every 6 hours). */
+const AUTO_FEED_SCHEDULE = "0 */6 * * *";
+
+/**
+ * Enumerate the repositories an installation can access, using the
+ * installation's OWN scoped token (`GET /installation/repositories`, paginated).
+ * Tenant-safe by construction: the token only ever sees that installation's
+ * repos, so a hostile installation_ref can never enumerate another tenant's
+ * repos. Returns `[]` on any HTTP/parse failure (auto-provision is best-effort —
+ * the bind itself already succeeded; the orchestrator can backfill later).
+ */
+async function defaultFetchInstallationRepositories(
+	installationToken: string,
+): Promise<InstallationRepository[]> {
+	const perPage = 100;
+	const MAX_PAGES = 100;
+	const repos: InstallationRepository[] = [];
+	let page = 1;
+	let total = Number.POSITIVE_INFINITY;
+	while (repos.length < total && page <= MAX_PAGES) {
+		let res: Response;
+		try {
+			res = await fetch(
+				`https://api.github.com/installation/repositories?per_page=${perPage}&page=${page}`,
+				{
+					headers: {
+						Authorization: `Bearer ${installationToken}`,
+						Accept: "application/vnd.github+json",
+						"User-Agent": "lobu",
+						"X-GitHub-Api-Version": "2022-11-28",
+					},
+				},
+			);
+		} catch (error) {
+			logger.warn(
+				{ error: error instanceof Error ? error.message : String(error), page },
+				"GitHub /installation/repositories request failed during auto-provision",
+			);
+			return repos;
+		}
+		if (!res.ok) {
+			logger.warn(
+				{ status: res.status, page },
+				"GitHub /installation/repositories returned non-OK during auto-provision",
+			);
+			return repos;
+		}
+		const body = (await res.json()) as {
+			total_count?: number;
+			repositories?: Array<{
+				name?: string;
+				owner?: { login?: string };
+			}>;
+		};
+		total = typeof body.total_count === "number" ? body.total_count : repos.length;
+		const page_repos = Array.isArray(body.repositories) ? body.repositories : [];
+		if (page_repos.length === 0) break;
+		for (const r of page_repos) {
+			const owner = r.owner?.login;
+			const name = r.name;
+			if (owner && name) repos.push({ owner, name });
+		}
+		page += 1;
+	}
+	return repos;
+}
+
+/** Result of {@link autoProvisionGithubIssueFeeds}. */
+export interface AutoProvisionResult {
+	/** Feed ids that exist after provisioning (created OR pre-existing). */
+	feedIds: number[];
+	/** How many NEW feeds were created (vs reused on a re-bind). */
+	createdFeeds: number;
+	/** Sync run ids enqueued for the (new) feeds. */
+	enqueuedRunIds: number[];
+}
+
+/**
+ * After a successful install bind, create one `issues` feed per repo the
+ * installation can access, and enqueue an initial backfill sync for each NEW
+ * feed (next_run_at=now so the orchestrator picks it up promptly). This is what
+ * makes "install → history + real-time both flow" automatic — no operator SQL.
+ *
+ * Tenant-safe by construction: repos are enumerated with the install's OWN
+ * minted token via {@link getInstallationTokenRegistry}, so this can only ever
+ * touch the bound installation's repos. The token is minted gateway-side (App
+ * JWT + provider exchange) and never leaves it.
+ *
+ * Idempotent: a feed is keyed on (connection_id, feed_key='issues',
+ * config.repo_owner, config.repo_name); a re-bind reuses the existing feed and
+ * does NOT enqueue a duplicate backfill. Best-effort — any failure is logged and
+ * surfaced in the result, never thrown (the bind already committed).
+ */
+export async function autoProvisionGithubIssueFeeds(params: {
+	organizationId: string;
+	connectionId: number;
+	installId: number;
+	store: AppInstallationStore;
+	/** Override repo enumeration (tests mock GitHub here). */
+	fetchInstallationRepositories?(
+		installationToken: string,
+	): Promise<InstallationRepository[]>;
+	/** Override the sync-run enqueue (tests assert it was called). */
+	enqueueSyncRun?(feedId: number): Promise<number | null>;
+}): Promise<AutoProvisionResult> {
+	const result: AutoProvisionResult = {
+		feedIds: [],
+		createdFeeds: 0,
+		enqueuedRunIds: [],
+	};
+
+	// Mint the installation's OWN scoped token. The connector method's env-var
+	// names are stamped onto the row so the provider reads the right gateway env
+	// vars (same path as resolveAppInstallationCredential). A mint failure means
+	// no repos can be safely enumerated — bail (the bind still stands).
+	const install = await params.store.getById(params.installId);
+	if (!install || install.status !== "active") {
+		logger.warn(
+			{ install_id: params.installId, connection_id: params.connectionId },
+			"Auto-provision skipped: install missing or not active",
+		);
+		return result;
+	}
+	const installWithKeys = {
+		...install,
+		metadata: {
+			...install.metadata,
+			appIdKey: install.metadata?.appIdKey ?? "GITHUB_APP_ID",
+			privateKeyKey: install.metadata?.privateKeyKey ?? "GITHUB_APP_PRIVATE_KEY",
+		},
+	};
+
+	let token: string;
+	try {
+		const minted = await getInstallationTokenRegistry().mintFor(installWithKeys);
+		token = minted.token;
+	} catch (error) {
+		logger.warn(
+			{
+				install_id: params.installId,
+				connection_id: params.connectionId,
+				error: error instanceof Error ? error.message : String(error),
+			},
+			"Auto-provision skipped: could not mint installation token",
+		);
+		return result;
+	}
+
+	const fetchRepos =
+		params.fetchInstallationRepositories ?? defaultFetchInstallationRepositories;
+	const repos = await fetchRepos(token);
+	if (repos.length === 0) {
+		logger.info(
+			{ install_id: params.installId, connection_id: params.connectionId },
+			"Auto-provision: installation has no accessible repos (nothing to provision)",
+		);
+		return result;
+	}
+
+	const sql = getDb();
+	const enqueue =
+		params.enqueueSyncRun ??
+		((feedId: number) => createSyncRun(feedId, {} as never, sql));
+
+	for (const repo of repos) {
+		// Find-or-create the issues feed for this repo on the install's connection.
+		// Idempotent on (connection, feed_key, repo_owner, repo_name) so a re-bind
+		// reuses the existing feed and never double-provisions / double-backfills.
+		const existing = (await sql`
+			SELECT id FROM feeds
+			WHERE organization_id = ${params.organizationId}
+				AND connection_id = ${params.connectionId}
+				AND feed_key = 'issues'
+				AND deleted_at IS NULL
+				AND config ->> 'repo_owner' = ${repo.owner}
+				AND config ->> 'repo_name' = ${repo.name}
+			LIMIT 1
+		`) as unknown as Array<{ id: number }>;
+
+		if (existing.length > 0) {
+			result.feedIds.push(Number(existing[0].id));
+			continue;
+		}
+
+		const displayName = `${repo.owner}/${repo.name} issues`;
+		const inserted = (await sql`
+			INSERT INTO feeds (
+				organization_id, connection_id, feed_key, display_name, status,
+				config, schedule, next_run_at
+			) VALUES (
+				${params.organizationId}, ${params.connectionId}, 'issues', ${displayName}, 'active',
+				${sql.json({ repo_owner: repo.owner, repo_name: repo.name })},
+				${AUTO_FEED_SCHEDULE}, NOW()
+			)
+			RETURNING id
+		`) as unknown as Array<{ id: number }>;
+		const feedId = Number(inserted[0].id);
+		result.feedIds.push(feedId);
+		result.createdFeeds += 1;
+
+		// Enqueue the initial backfill. Best-effort: a failed enqueue still leaves a
+		// due feed (next_run_at=NOW), which the orchestrator's CheckDueFeeds picks up.
+		try {
+			const runId = await enqueue(feedId);
+			if (runId != null) result.enqueuedRunIds.push(runId);
+		} catch (error) {
+			logger.warn(
+				{
+					feed_id: feedId,
+					connection_id: params.connectionId,
+					error: error instanceof Error ? error.message : String(error),
+				},
+				"Auto-provision: failed to enqueue initial backfill (feed is due, orchestrator will pick it up)",
+			);
+		}
+	}
+
+	logger.info(
+		{
+			install_id: params.installId,
+			connection_id: params.connectionId,
+			repos: repos.length,
+			created_feeds: result.createdFeeds,
+			enqueued_runs: result.enqueuedRunIds.length,
+		},
+		"Auto-provisioned GitHub issue feeds",
+	);
+	return result;
+}
+
 /** Dependencies the install routes need (injected for testability). */
 export interface AppInstallRouterDeps {
 	installationStore: AppInstallationStore;
@@ -476,6 +799,37 @@ export interface AppInstallRouterDeps {
 		userToken: string,
 		org: string,
 	): Promise<{ state: string; role: string } | undefined>;
+	/**
+	 * Recovery path: the user's administerable installations for THIS App, as the
+	 * single installation the recovery callback should bind when `installation_id`
+	 * is absent (GitHub's user-authorization redirect carries no installation_id).
+	 * Returns the unique installation id + owning account, `null` when the user
+	 * administers none (nothing to recover), `"ambiguous"` when they administer
+	 * more than one (we can't pick — fall back to the install page), or `undefined`
+	 * on an HTTP failure ("cannot verify"). Injected so tests mock GitHub.
+	 */
+	fetchSoleAdministerableInstallation?(
+		userToken: string,
+	): Promise<
+		| { installationId: number; account: InstallationAccount }
+		| null
+		| "ambiguous"
+		| undefined
+	>;
+	/**
+	 * Enumerate the repositories an installation can access, using the
+	 * installation's OWN scoped token (`GET /installation/repositories`). Injected
+	 * so tests mock GitHub; defaults to the real paginated call. The auto-provision
+	 * mints the token itself, so this receives it.
+	 */
+	fetchInstallationRepositories?(
+		installationToken: string,
+	): Promise<InstallationRepository[]>;
+	/**
+	 * Enqueue the initial backfill sync run for a freshly auto-provisioned feed.
+	 * Injected so tests assert it fired; defaults to the real `createSyncRun`.
+	 */
+	enqueueSyncRun?(feedId: number): Promise<number | null>;
 }
 
 /**
@@ -488,12 +842,23 @@ export interface AppInstallRouterDeps {
  */
 async function verifyInstallationOwnership(params: {
 	code: string | undefined;
-	installationId: number;
+	/**
+	 * The installation_id GitHub passed on the install redirect. `undefined` only
+	 * in the recovery flow (GitHub's user-auth redirect omits it); then it is
+	 * DERIVED from the user's sole administerable installation via
+	 * `fetchSoleInstallation` and re-subjected to the full ownership check.
+	 */
+	installationId: number | undefined;
+	/** True when this is the recovery (user-authorization) flow. */
+	recovery: boolean;
 	redirectUri: string;
 	exchange: NonNullable<AppInstallRouterDeps["exchangeInstallOAuthCode"]>;
 	fetchAccount: NonNullable<AppInstallRouterDeps["fetchInstallationAccount"]>;
 	fetchLogin: NonNullable<AppInstallRouterDeps["fetchAuthedUserLogin"]>;
 	fetchMembership: NonNullable<AppInstallRouterDeps["fetchOrgMembershipRole"]>;
+	fetchSoleInstallation: NonNullable<
+		AppInstallRouterDeps["fetchSoleAdministerableInstallation"]
+	>;
 }): Promise<InstallOwnershipResult> {
 	// The App's OAuth creds (NOT the Lobu login OAuth app). Fail safe if unset.
 	const clientId = process.env.GITHUB_APP_CLIENT_ID;
@@ -535,10 +900,64 @@ async function verifyInstallationOwnership(params: {
 		};
 	}
 
+	// Recovery: GitHub's user-auth redirect carries no installation_id, so derive
+	// it from the user's administerable installations for this App. The derived id
+	// is then run through the IDENTICAL ownership check below — recovery never
+	// relaxes a guard, it only supplies the id GitHub omitted. Ambiguous (>1
+	// installation) and none are both rejected rather than guessing.
+	let installationId = params.installationId;
+	let account: InstallationAccount | null | undefined;
+	if (params.recovery) {
+		const sole = await params.fetchSoleInstallation(userToken);
+		if (sole === undefined) {
+			return {
+				ok: false,
+				status: 403,
+				code: "ownership_check_unavailable",
+				message:
+					"We couldn't confirm your GitHub installations. Try again in a moment.",
+			};
+		}
+		if (sole === null) {
+			return {
+				ok: false,
+				status: 403,
+				code: "installation_not_owned",
+				message:
+					"You don't administer any Lobu GitHub App installation. Install the App first, then try again.",
+			};
+		}
+		if (sole === "ambiguous") {
+			return {
+				ok: false,
+				status: 400,
+				code: "installation_ambiguous",
+				message:
+					"You administer more than one Lobu GitHub App installation, so we can't tell which to reconnect. Start the install from your Lobu dashboard and pick the org/repos again.",
+			};
+		}
+		installationId = sole.installationId;
+		account = sole.account;
+	}
+
+	if (installationId === undefined) {
+		// Defensive: a non-recovery flow reached here without an id (the route
+		// guards this). Reject rather than mint for an unknown installation.
+		return {
+			ok: false,
+			status: 400,
+			code: "invalid_request",
+			message: "The GitHub install callback is missing installation_id.",
+		};
+	}
+
 	// 1. Resolve the installation's owning account among the user's
 	//    administerable installations. undefined = cannot verify; null = the user
-	//    has no access to this installation at all → not owned.
-	const account = await params.fetchAccount(userToken, params.installationId);
+	//    has no access to this installation at all → not owned. In recovery we
+	//    already have the account from the sole-installation lookup, but we STILL
+	//    re-fetch it by id (defense in depth: prove the id is genuinely in the
+	//    user's administerable set before the ownership decision).
+	account = await params.fetchAccount(userToken, installationId);
 	if (account === undefined) {
 		return {
 			ok: false,
@@ -593,7 +1012,7 @@ async function verifyInstallationOwnership(params: {
 					"You must be an admin of this GitHub organization to connect its installation to Lobu.",
 			};
 		}
-		return { ok: true };
+		return { ok: true, installationId };
 	}
 
 	// Personal-account install: the OAuth'd user must BE the account owner.
@@ -606,7 +1025,29 @@ async function verifyInstallationOwnership(params: {
 				"This GitHub installation belongs to a different account. Install the Lobu App from the account that owns it.",
 		};
 	}
-	return { ok: true };
+	return { ok: true, installationId };
+}
+
+/**
+ * True when the org already has an `app_installations` row for this App
+ * (provider=github, instance=cloud, this app id), regardless of status. Signals
+ * a prior bind exists, so the fresh install page would dead-end — route the user
+ * through recovery (user-authorization OAuth) instead.
+ */
+async function orgHasGithubInstallRow(
+	organizationId: string,
+	providerAppId: string,
+): Promise<boolean> {
+	const sql = getDb();
+	const rows = (await sql`
+		SELECT 1 FROM app_installations
+		WHERE organization_id = ${organizationId}
+			AND provider = ${GITHUB_PROVIDER}
+			AND provider_instance = ${GITHUB_PROVIDER_INSTANCE}
+			AND provider_app_id = ${providerAppId}
+		LIMIT 1
+	`) as unknown as Array<unknown>;
+	return rows.length > 0;
 }
 
 /**
@@ -622,9 +1063,19 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 	// initiating session's org and redirects to GitHub's install page. The
 	// callback verifies that state before mutating anything — this is the CSRF /
 	// cross-tenant guard (the callback is otherwise a public, unauthenticated GET).
+	//
+	// Recovery: once the App is installed on GitHub, re-hitting the install page
+	// just redirects to the App-settings page with NO callback, so a stuck/expired
+	// first attempt can never be retried without uninstalling. When the org already
+	// has an app_installations row for this App (any status), OR the caller passes
+	// `?recovery=1`, we instead route through GitHub's user-authorization OAuth
+	// flow, which DOES round-trip back to the callback (with `code`+`state`, no
+	// `installation_id`). The callback derives the installation from
+	// /user/installations and runs the SAME ownership + session-org guards.
 	router.get("/github/app/install", async (c) => {
 		const appSlug = process.env.GITHUB_APP_SLUG;
-		if (!process.env.GITHUB_APP_ID || !appSlug) {
+		const appId = process.env.GITHUB_APP_ID;
+		if (!appId || !appSlug) {
 			return c.html(
 				renderOAuthErrorPage(
 					"github_app_not_configured",
@@ -648,7 +1099,31 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 			);
 		}
 
+		// Decide recovery vs fresh install. Explicit `?recovery=1`, or this org
+		// already has an app_installations row for this App (a prior bind exists, so
+		// the install page would dead-end). Recovery needs the App's OAuth client id
+		// to send the user through user-authorization.
+		const explicitRecovery = c.req.query("recovery") === "1";
+		const clientId = process.env.GITHUB_APP_CLIENT_ID;
+		const alreadyHasInstallRow = await orgHasGithubInstallRow(orgId, appId);
+		const useRecovery = (explicitRecovery || alreadyHasInstallRow) && !!clientId;
+
 		const stateStore = createGithubInstallStateStore();
+		if (useRecovery && clientId) {
+			const state = await stateStore.create({
+				organizationId: orgId,
+				recovery: true,
+			});
+			const callbackUrl = githubInstallCallbackUrl(
+				deps.getPublicGatewayUrl?.(),
+				c.req.url,
+			);
+			return c.redirect(
+				githubUserAuthorizeUrl({ clientId, redirectUri: callbackUrl, state }),
+				302,
+			);
+		}
+
 		const state = await stateStore.create({ organizationId: orgId });
 		return c.redirect(githubAppInstallUrl(appSlug, state), 302);
 	});
@@ -680,30 +1155,6 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 			);
 		}
 
-		// setup_action must be one of install|update|request (request handled above).
-		// A missing/unrecognized value must NOT be treated like install/update —
-		// reject (400) before any state validation or mutation. parseSetupAction
-		// returns null for both missing and garbage.
-		if (setupAction === null) {
-			return c.html(
-				renderOAuthErrorPage(
-					"invalid_request",
-					"The GitHub install callback has a missing or invalid setup_action (expected install, update, or request).",
-				),
-				400,
-			);
-		}
-
-		if (!installationIdRaw || !installationIdRaw.trim()) {
-			return c.html(
-				renderOAuthErrorPage(
-					"invalid_request",
-					"The GitHub install callback is missing installation_id.",
-				),
-				400,
-			);
-		}
-
 		// CSRF / cross-tenant guard. The callback is a public, unauthenticated GET,
 		// so the org MUST come from the signed `state` minted by GET
 		// /github/app/install — NOT the ambient callback session. A missing/invalid/
@@ -714,6 +1165,12 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		// match, ownership), and only CONSUME the single-use nonce right before the
 		// write — mirroring slack.ts. That way a benign mismatch or a transient
 		// ownership-check failure doesn't burn a still-valid install link.
+		//
+		// Peeked BEFORE the setup_action / installation_id checks because the
+		// recovery path (GitHub user-authorization redirect) carries NEITHER a
+		// setup_action NOR an installation_id — the state's `recovery` flag tells us
+		// to derive the installation from /user/installations instead. A non-recovery
+		// callback still requires both, enforced just below.
 		const stateParam = c.req.query("state");
 		if (!stateParam) {
 			return c.html(
@@ -738,6 +1195,35 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 				),
 				400,
 			);
+		}
+
+		const isRecovery = installState.recovery === true;
+
+		// Non-recovery (GitHub's install redirect): setup_action must be install or
+		// update (request handled above) and installation_id must be present. A
+		// missing/garbage setup_action or missing installation_id rejects (400) with
+		// zero mutation — never treated like a valid install. The recovery path skips
+		// these because GitHub's user-auth redirect omits both; it derives the
+		// installation id below from the user's administerable installations.
+		if (!isRecovery) {
+			if (setupAction === null) {
+				return c.html(
+					renderOAuthErrorPage(
+						"invalid_request",
+						"The GitHub install callback has a missing or invalid setup_action (expected install, update, or request).",
+					),
+					400,
+				);
+			}
+			if (!installationIdRaw || !installationIdRaw.trim()) {
+				return c.html(
+					renderOAuthErrorPage(
+						"invalid_request",
+						"The GitHub install callback is missing installation_id.",
+					),
+					400,
+				);
+			}
 		}
 
 		// Confused-deputy / installation-fixation guard. The signed state proves
@@ -778,15 +1264,25 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		// require account OWNERSHIP (personal-account owner, or active org admin).
 		// Prove it via OAuth-during-install — ALL of this runs BEFORE any DB write,
 		// so every failure returns 4xx/503 with zero mutation.
-		const installationId = Number(installationIdRaw.trim());
-		if (!Number.isInteger(installationId) || installationId <= 0) {
-			return c.html(
-				renderOAuthErrorPage(
-					"invalid_request",
-					"The GitHub install callback carried an invalid installation_id.",
-				),
-				400,
-			);
+		//
+		// Non-recovery: validate the installation_id GitHub passed. Recovery: it is
+		// absent (passed as undefined) and verifyInstallationOwnership derives it
+		// from /user/installations, then runs the identical ownership check.
+		let suppliedInstallationId: number | undefined;
+		if (!isRecovery) {
+			suppliedInstallationId = Number((installationIdRaw ?? "").trim());
+			if (
+				!Number.isInteger(suppliedInstallationId) ||
+				suppliedInstallationId <= 0
+			) {
+				return c.html(
+					renderOAuthErrorPage(
+						"invalid_request",
+						"The GitHub install callback carried an invalid installation_id.",
+					),
+					400,
+				);
+			}
 		}
 		// The redirect_uri must EXACTLY equal the App's registered Callback URL.
 		// Derive it from the public gateway base — NOT c.req.url, which behind the
@@ -799,7 +1295,8 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		);
 		const ownership = await verifyInstallationOwnership({
 			code: c.req.query("code"),
-			installationId,
+			installationId: suppliedInstallationId,
+			recovery: isRecovery,
 			redirectUri: callbackUrl,
 			exchange: deps.exchangeInstallOAuthCode ?? defaultExchangeInstallOAuthCode,
 			fetchAccount:
@@ -807,12 +1304,16 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 			fetchLogin: deps.fetchAuthedUserLogin ?? defaultFetchAuthedUserLogin,
 			fetchMembership:
 				deps.fetchOrgMembershipRole ?? defaultFetchOrgMembershipRole,
+			fetchSoleInstallation:
+				deps.fetchSoleAdministerableInstallation ??
+				defaultFetchSoleAdministerableInstallation,
 		});
 		if (!ownership.ok) {
 			logger.warn(
 				{
 					organization_id: orgId,
-					installation_id: installationIdRaw,
+					installation_id: installationIdRaw ?? null,
+					recovery: isRecovery,
 					reason: ownership.code,
 				},
 				"Rejecting GitHub install callback: installation ownership not verified",
@@ -822,6 +1323,8 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 				ownership.status,
 			);
 		}
+		// The verified installation id (supplied for install, derived for recovery).
+		const installationId = ownership.installationId;
 
 		// Guard: the org must actually have the github connector definition with an
 		// app_installation auth method, otherwise there's nothing to link the
@@ -864,9 +1367,12 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		}
 
 		try {
+			// Bind with the VERIFIED installation id (supplied for install, derived
+			// for recovery) — never the raw query param, so a recovery flow binds the
+			// ownership-checked id, not an attacker-suppliable one.
 			const result = await linkGithubAppInstallation({
 				organizationId: orgId,
-				installationId: installationIdRaw.trim(),
+				installationId: String(installationId),
 				store: deps.installationStore,
 				providerAppId: appId,
 				metadata: buildInstallMetadata(c),
@@ -878,21 +1384,54 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 					connection_id: result.connectionId,
 					created_connection: result.createdConnection,
 					setup_action: setupAction,
+					recovery: isRecovery,
 				},
 				"GitHub App install linked",
 			);
+
+			// Auto-provision: enumerate the installation's repos (with its OWN scoped
+			// token) and create one `issues` feed per repo, due now so the orchestrator
+			// backfills promptly. Tenant-safe by construction (the install's token can
+			// only read its own repos) and idempotent (re-bind reuses feeds, never
+			// double-provisions). Best-effort — the bind already committed; a
+			// provisioning hiccup must NOT turn a successful install into an error page.
+			let provision: AutoProvisionResult | null = null;
+			try {
+				provision = await autoProvisionGithubIssueFeeds({
+					organizationId: orgId,
+					connectionId: result.connectionId,
+					installId: result.installId,
+					store: deps.installationStore,
+					fetchInstallationRepositories: deps.fetchInstallationRepositories,
+					enqueueSyncRun: deps.enqueueSyncRun,
+				});
+			} catch (error) {
+				logger.warn(
+					{
+						organization_id: orgId,
+						install_id: result.installId,
+						connection_id: result.connectionId,
+						error: error instanceof Error ? error.message : String(error),
+					},
+					"GitHub App install bound, but auto-provision failed (feeds can be added manually)",
+				);
+			}
+
+			const description =
+				provision && provision.feedIds.length > 0
+					? `Your GitHub organization is connected to Lobu. We're syncing ${provision.feedIds.length} ${provision.feedIds.length === 1 ? "repository" : "repositories"} — issues, PRs, and discussions will flow, and agents can act on them.`
+					: "Your GitHub organization is connected to Lobu. Issues, PRs, and discussions will sync, and agents can act on them.";
 			return c.html(
 				renderOAuthSuccessPage(result.accountLogin ?? "GitHub", undefined, {
 					title: "GitHub App installed",
-					description:
-						"Your GitHub organization is connected to Lobu. Issues, PRs, and discussions will sync, and agents can act on them.",
+					description,
 				}),
 			);
 		} catch (error) {
 			logger.error(
 				{
 					organization_id: orgId,
-					installation_id: installationIdRaw,
+					installation_id: installationId,
 					error: error instanceof Error ? error.message : String(error),
 				},
 				"GitHub App install callback failed",

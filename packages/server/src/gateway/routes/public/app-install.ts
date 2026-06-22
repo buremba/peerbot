@@ -79,12 +79,16 @@ export function githubAppInstallUrl(appSlug: string, state: string): string {
 
 /**
  * Exchange the OAuth `code` GitHub returns on the install redirect for a USER
- * token, then list the installations that user can administer and confirm the
- * callback's `installation_id` is among them. This is the ownership proof that
- * closes the cross-tenant token-theft hole: installation_ids are enumerable
- * integers, so without it an attacker (with their OWN valid state/org) could
- * supply a VICTIM's installation_id and bind the victim's GitHub installation —
- * and the minted tokens for its repos — into the attacker's org.
+ * token, then prove the OAuth'd user is the OWNER of the installation's account:
+ *   - the personal-account owner for a User install, or
+ *   - an active admin/owner of the org for an Organization install.
+ *
+ * This closes the cross-tenant token-theft hole AND the subtler membership-≠-
+ * admin hole: `GET /user/installations` returns installations the user merely
+ * has ACCESS to (org membership / repo collaborator), not ones they administer,
+ * so a non-admin member of a victim org could otherwise bind that org's
+ * installation into their OWN Lobu org and mint tokens for its repos. We require
+ * account ownership, not access.
  *
  * Uses the GitHub *App's* OAuth credentials (GITHUB_APP_CLIENT_ID /
  * GITHUB_APP_CLIENT_SECRET) — NOT the separate "Lobu" login OAuth app
@@ -97,6 +101,13 @@ export function githubAppInstallUrl(appSlug: string, state: string): string {
 export type InstallOwnershipResult =
 	| { ok: true }
 	| { ok: false; status: 400 | 403 | 503; code: string; message: string };
+
+/** A user-administerable installation's owning account, as GitHub reports it. */
+export interface InstallationAccount {
+	login: string;
+	/** GitHub account type: a personal account or an organization. */
+	type: "User" | "Organization" | string;
+}
 
 /** Default GitHub user-token OAuth exchange (the App's install-time OAuth). */
 async function defaultExchangeInstallOAuthCode(params: {
@@ -115,52 +126,126 @@ async function defaultExchangeInstallOAuthCode(params: {
 	return tokens?.accessToken ?? null;
 }
 
-/**
- * List the installation ids the authenticated user can administer
- * (`GET /user/installations`). Paginated (per_page=100) — keeps fetching while
- * the collected count is below `total_count` and a page is non-empty, so a user
- * with >100 installations is still verified correctly. Returns null on any HTTP
- * failure (treated by the caller as "cannot verify" → reject, no mutation).
- */
-async function defaultFetchUserInstallationIds(
+/** Authenticated GitHub GET → parsed JSON, or null on any HTTP/parse failure. */
+async function githubUserGet<T>(
+	url: string,
 	userToken: string,
-): Promise<Set<number> | null> {
-	const ids = new Set<number>();
+): Promise<{ ok: true; data: T } | { ok: false; status: number }> {
+	const res = await fetch(url, {
+		headers: {
+			Authorization: `Bearer ${userToken}`,
+			Accept: "application/vnd.github+json",
+			"User-Agent": "lobu",
+			"X-GitHub-Api-Version": "2022-11-28",
+		},
+	});
+	if (!res.ok) return { ok: false, status: res.status };
+	const data = (await res.json()) as T;
+	return { ok: true, data };
+}
+
+/**
+ * Find the account that owns the installation the user is trying to link, among
+ * the installations the user can administer (`GET /user/installations`,
+ * paginated). Returns the account `{login, type}` for the matching id, `null`
+ * when the id is not in the user's set ("not owned"), or `undefined` on an HTTP
+ * failure (the caller treats that as "cannot verify" → reject, no mutation).
+ */
+async function defaultFetchInstallationAccount(
+	userToken: string,
+	installationId: number,
+): Promise<InstallationAccount | null | undefined> {
 	const perPage = 100;
 	let page = 1;
 	let total = Number.POSITIVE_INFINITY;
-	// Hard page cap so a hostile/looping total_count can't spin forever.
-	const MAX_PAGES = 100;
-	while (ids.size < total && page <= MAX_PAGES) {
-		const url = `https://api.github.com/user/installations?per_page=${perPage}&page=${page}`;
-		const res = await fetch(url, {
+	let seen = 0;
+	const MAX_PAGES = 100; // page cap so a hostile total_count can't loop forever
+	while (seen < total && page <= MAX_PAGES) {
+		const result = await githubUserGet<{
+			total_count?: number;
+			installations?: Array<{ id?: number; account?: InstallationAccount }>;
+		}>(
+			`https://api.github.com/user/installations?per_page=${perPage}&page=${page}`,
+			userToken,
+		);
+		if (!result.ok) {
+			logger.warn(
+				{ status: result.status, page },
+				"GitHub /user/installations returned non-OK while verifying install ownership",
+			);
+			return undefined;
+		}
+		const body = result.data;
+		total = typeof body.total_count === "number" ? body.total_count : seen;
+		const installs = Array.isArray(body.installations) ? body.installations : [];
+		if (installs.length === 0) break;
+		for (const inst of installs) {
+			seen += 1;
+			if (inst.id === installationId && inst.account?.login) {
+				return { login: inst.account.login, type: inst.account.type };
+			}
+		}
+		page += 1;
+	}
+	return null;
+}
+
+/** The authenticated user's GitHub login (`GET /user`), or undefined on failure. */
+async function defaultFetchAuthedUserLogin(
+	userToken: string,
+): Promise<string | undefined> {
+	const result = await githubUserGet<{ login?: string }>(
+		"https://api.github.com/user",
+		userToken,
+	);
+	if (!result.ok || typeof result.data.login !== "string") {
+		if (!result.ok) {
+			logger.warn(
+				{ status: result.status },
+				"GitHub /user returned non-OK while verifying install ownership",
+			);
+		}
+		return undefined;
+	}
+	return result.data.login;
+}
+
+/**
+ * The authenticated user's membership role in `org`
+ * (`GET /user/memberships/orgs/{org}` — returns the CALLER's own membership, so
+ * the user token suffices). Returns `{ state, role }`, or undefined on failure
+ * (treated as "cannot verify"). A 404/403 (not a member) is surfaced as a
+ * defined value with empty fields so the caller maps it to "not admin", not
+ * "cannot verify".
+ */
+async function defaultFetchOrgMembershipRole(
+	userToken: string,
+	org: string,
+): Promise<{ state: string; role: string } | undefined> {
+	const res = await fetch(
+		`https://api.github.com/user/memberships/orgs/${encodeURIComponent(org)}`,
+		{
 			headers: {
 				Authorization: `Bearer ${userToken}`,
 				Accept: "application/vnd.github+json",
 				"User-Agent": "lobu",
 				"X-GitHub-Api-Version": "2022-11-28",
 			},
-		});
-		if (!res.ok) {
-			logger.warn(
-				{ status: res.status, page },
-				"GitHub /user/installations returned non-OK while verifying install ownership",
-			);
-			return null;
-		}
-		const body = (await res.json()) as {
-			total_count?: number;
-			installations?: Array<{ id?: number }>;
-		};
-		total = typeof body.total_count === "number" ? body.total_count : ids.size;
-		const installs = Array.isArray(body.installations) ? body.installations : [];
-		if (installs.length === 0) break;
-		for (const inst of installs) {
-			if (typeof inst.id === "number") ids.add(inst.id);
-		}
-		page += 1;
+		},
+	);
+	// 403/404 = the user is not a member of that org → definitively "not admin".
+	if (res.status === 403 || res.status === 404) {
+		return { state: "none", role: "none" };
 	}
-	return ids;
+	if (!res.ok) {
+		logger.warn(
+			{ status: res.status, org },
+			"GitHub /user/memberships/orgs returned non-OK while verifying install admin",
+		);
+		return undefined;
+	}
+	const body = (await res.json()) as { state?: string; role?: string };
+	return { state: body.state ?? "", role: body.role ?? "" };
 }
 
 export type GithubSetupAction = "install" | "update" | "request";
@@ -217,90 +302,110 @@ export async function linkGithubAppInstallation(params: {
 		metadata: params.metadata ?? {},
 	});
 
-	// 2. Find an existing connection in this org for the github connector already
-	//    bound to this install (idempotent re-install / callback retry). The
-	//    install id is the stable key; match on config.installation_ref.
-	const existing = (await sql`
-		SELECT id, config
-		FROM connections
-		WHERE organization_id = ${params.organizationId}
-			AND connector_key = ${GITHUB_CONNECTOR_KEY}
-			AND deleted_at IS NULL
-			AND (
-				config ->> 'installation_ref' = ${String(install.id)}
-				OR config ->> 'installation_ref' = ${String(params.installationId)}
-			)
-		ORDER BY id ASC
-		LIMIT 1
-	`) as unknown as Array<{ id: number; config: Record<string, unknown> | null }>;
+	// 2 + 3. Find-or-create the connection bound to this install, serialized by a
+	//    transaction-scoped advisory lock keyed on (org, install.id). Without it,
+	//    two concurrent callbacks for the same install both SELECT-miss and both
+	//    INSERT → duplicate connections. The lock lives in Postgres (not memory),
+	//    so it serializes across replicas; mirrors the app-installation store's
+	//    pg_advisory_xact_lock convergence pattern. The install row upsert (step 1)
+	//    has its own lock in the store, so it stays outside this transaction.
+	const connectionLockTag = `github_app_install_connection:${params.organizationId}:${install.id}`;
+	return sql.begin(async (tx) => {
+		await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
+			connectionLockTag,
+		]);
 
-	if (existing.length > 0) {
-		const connectionId = Number(existing[0].id);
-		const mergedConfig = {
-			...(existing[0].config ?? {}),
-			installation_ref: install.id,
-		};
-		await sql`
-			UPDATE connections
-			SET config = ${sql.json(mergedConfig)},
-				status = 'active',
-				updated_at = NOW()
-			WHERE id = ${connectionId}
-				AND organization_id = ${params.organizationId}
-		`;
+		// Find an existing connection already bound to this install (idempotent
+		// re-install / callback retry). The install id is the stable key; match on
+		// config.installation_ref. Read under the lock so a racing callback that
+		// already created the row is seen here instead of double-inserted.
+		const existing = (await tx`
+			SELECT id, config
+			FROM connections
+			WHERE organization_id = ${params.organizationId}
+				AND connector_key = ${GITHUB_CONNECTOR_KEY}
+				AND deleted_at IS NULL
+				AND (
+					config ->> 'installation_ref' = ${String(install.id)}
+					OR config ->> 'installation_ref' = ${String(params.installationId)}
+				)
+			ORDER BY id ASC
+			LIMIT 1
+		`) as unknown as Array<{
+			id: number;
+			config: Record<string, unknown> | null;
+		}>;
+
+		if (existing.length > 0) {
+			const connectionId = Number(existing[0].id);
+			const mergedConfig = {
+				...(existing[0].config ?? {}),
+				installation_ref: install.id,
+			};
+			await tx`
+				UPDATE connections
+				SET config = ${tx.json(mergedConfig)},
+					status = 'active',
+					updated_at = NOW()
+				WHERE id = ${connectionId}
+					AND organization_id = ${params.organizationId}
+			`;
+			return {
+				installId: install.id,
+				connectionId,
+				createdConnection: false,
+				accountLogin,
+			};
+		}
+
+		// No existing linked connection — create one bound to the install. The
+		// config carries ONLY installation_ref (no repo/org target), so the
+		// connect-flow webhook gate (connectionWantsWebhook) never fires: inbound
+		// deliveries route through the shared /app-webhooks/github endpoint, and
+		// resolveExecutionAuth mints a tenant-scoped token from the install.
+		const displayName = accountLogin
+			? `GitHub (${accountLogin})`
+			: "GitHub App";
+		const slugResult = await resolveNewConnectionSlug({
+			organizationId: params.organizationId,
+			connectorKey: GITHUB_CONNECTOR_KEY,
+			displayName,
+			db: tx,
+		});
+		if ("error" in slugResult) {
+			throw new Error(slugResult.error);
+		}
+
+		const inserted = await insertConnectionWithSlug<
+			Array<{ id: number; slug: string }>
+		>({
+			organizationId: params.organizationId,
+			connectorKey: GITHUB_CONNECTOR_KEY,
+			displayName,
+			initialSlug: slugResult.slug,
+			explicit: false,
+			db: tx,
+			doInsert: (slug) => tx`
+				INSERT INTO connections (
+					organization_id, connector_key, slug, display_name, status, config, created_by
+				) VALUES (
+					${params.organizationId}, ${GITHUB_CONNECTOR_KEY}, ${slug}, ${displayName},
+					'active', ${tx.json({ installation_ref: install.id })}, ${params.createdBy ?? null}
+				)
+				RETURNING id, slug
+			`,
+		}).catch((err) => {
+			if (err instanceof ConnectionSlugConflictError) throw new Error(err.message);
+			throw err;
+		});
+
 		return {
 			installId: install.id,
-			connectionId,
-			createdConnection: false,
+			connectionId: Number(inserted[0].id),
+			createdConnection: true,
 			accountLogin,
 		};
-	}
-
-	// 3. No existing linked connection — create one bound to the install. The
-	//    config carries ONLY installation_ref (no repo/org target), so the
-	//    connect-flow webhook gate (connectionWantsWebhook) never fires: inbound
-	//    deliveries route through the shared /app-webhooks/github endpoint, and
-	//    resolveExecutionAuth mints a tenant-scoped token from the install.
-	const displayName = accountLogin
-		? `GitHub (${accountLogin})`
-		: "GitHub App";
-	const slugResult = await resolveNewConnectionSlug({
-		organizationId: params.organizationId,
-		connectorKey: GITHUB_CONNECTOR_KEY,
-		displayName,
 	});
-	if ("error" in slugResult) {
-		throw new Error(slugResult.error);
-	}
-
-	const inserted = await insertConnectionWithSlug<
-		Array<{ id: number; slug: string }>
-	>({
-		organizationId: params.organizationId,
-		connectorKey: GITHUB_CONNECTOR_KEY,
-		displayName,
-		initialSlug: slugResult.slug,
-		explicit: false,
-		doInsert: (slug) => sql`
-			INSERT INTO connections (
-				organization_id, connector_key, slug, display_name, status, config, created_by
-			) VALUES (
-				${params.organizationId}, ${GITHUB_CONNECTOR_KEY}, ${slug}, ${displayName},
-				'active', ${sql.json({ installation_ref: install.id })}, ${params.createdBy ?? null}
-			)
-			RETURNING id, slug
-		`,
-	}).catch((err) => {
-		if (err instanceof ConnectionSlugConflictError) throw new Error(err.message);
-		throw err;
-	});
-
-	return {
-		installId: install.id,
-		connectionId: Number(inserted[0].id),
-		createdConnection: true,
-		accountLogin,
-	};
 }
 
 /** Dependencies the install routes need (injected for testability). */
@@ -320,25 +425,45 @@ export interface AppInstallRouterDeps {
 		redirectUri: string;
 	}): Promise<string | null>;
 	/**
-	 * List the installation ids the user (identified by `userToken`) can
-	 * administer. Injected so tests can mock `/user/installations`. Returns null
-	 * when GitHub can't be reached (caller treats as "cannot verify" → reject).
+	 * Resolve the owning account of the installation the user is linking, among
+	 * the installations the user can administer (`GET /user/installations`).
+	 * `{login,type}` when found, `null` when the id is not in the user's set,
+	 * `undefined` on an HTTP failure ("cannot verify" → reject). Injected so
+	 * tests can mock GitHub.
 	 */
-	fetchUserInstallationIds?(userToken: string): Promise<Set<number> | null>;
+	fetchInstallationAccount?(
+		userToken: string,
+		installationId: number,
+	): Promise<InstallationAccount | null | undefined>;
+	/** The authed user's GitHub login (`GET /user`); undefined on failure. */
+	fetchAuthedUserLogin?(userToken: string): Promise<string | undefined>;
+	/**
+	 * The authed user's membership in `org` (`GET /user/memberships/orgs/{org}`);
+	 * undefined on failure. A non-member is reported as a defined value with
+	 * non-admin fields, not undefined.
+	 */
+	fetchOrgMembershipRole?(
+		userToken: string,
+		org: string,
+	): Promise<{ state: string; role: string } | undefined>;
 }
 
 /**
- * Verify the installer actually owns the supplied installation_id (ownership
- * proof). Performs the OAuth code exchange + `/user/installations` membership
- * check. Pure of HTTP routing and of any DB mutation — the caller only proceeds
- * to bind the install when this returns `{ ok: true }`.
+ * Verify the OAuth'd user is the OWNER of the installation's account (ownership,
+ * not mere access). Performs: code exchange → resolve the installation's owning
+ * account from the user's administerable installations → authorize by account
+ * type (personal-account login match, or active org admin/owner). Pure of HTTP
+ * routing and of any DB mutation — the caller only binds when this returns
+ * `{ ok: true }`.
  */
 async function verifyInstallationOwnership(params: {
 	code: string | undefined;
 	installationId: number;
 	redirectUri: string;
 	exchange: NonNullable<AppInstallRouterDeps["exchangeInstallOAuthCode"]>;
-	fetchIds: NonNullable<AppInstallRouterDeps["fetchUserInstallationIds"]>;
+	fetchAccount: NonNullable<AppInstallRouterDeps["fetchInstallationAccount"]>;
+	fetchLogin: NonNullable<AppInstallRouterDeps["fetchAuthedUserLogin"]>;
+	fetchMembership: NonNullable<AppInstallRouterDeps["fetchOrgMembershipRole"]>;
 }): Promise<InstallOwnershipResult> {
 	// The App's OAuth creds (NOT the Lobu login OAuth app). Fail safe if unset.
 	const clientId = process.env.GITHUB_APP_CLIENT_ID;
@@ -380,8 +505,11 @@ async function verifyInstallationOwnership(params: {
 		};
 	}
 
-	const ownedIds = await params.fetchIds(userToken);
-	if (!ownedIds) {
+	// 1. Resolve the installation's owning account among the user's
+	//    administerable installations. undefined = cannot verify; null = the user
+	//    has no access to this installation at all → not owned.
+	const account = await params.fetchAccount(userToken, params.installationId);
+	if (account === undefined) {
 		return {
 			ok: false,
 			status: 403,
@@ -390,8 +518,7 @@ async function verifyInstallationOwnership(params: {
 				"We couldn't confirm you own this GitHub installation. Try again in a moment.",
 		};
 	}
-
-	if (!ownedIds.has(params.installationId)) {
+	if (account === null) {
 		return {
 			ok: false,
 			status: 403,
@@ -401,6 +528,54 @@ async function verifyInstallationOwnership(params: {
 		};
 	}
 
+	// 2. The authed user's login (needed for the personal-account match).
+	const authedLogin = await params.fetchLogin(userToken);
+	if (!authedLogin) {
+		return {
+			ok: false,
+			status: 403,
+			code: "ownership_check_unavailable",
+			message:
+				"We couldn't confirm your GitHub identity for this install. Try again in a moment.",
+		};
+	}
+
+	// 3. Authorize by account type. Access ≠ ownership: a non-admin org member
+	//    appears in /user/installations but must NOT be able to bind the org's
+	//    installation. Require the personal-account owner, or an active org admin.
+	if (account.type === "Organization") {
+		const membership = await params.fetchMembership(userToken, account.login);
+		if (membership === undefined) {
+			return {
+				ok: false,
+				status: 403,
+				code: "ownership_check_unavailable",
+				message:
+					"We couldn't confirm your role in this GitHub organization. Try again in a moment.",
+			};
+		}
+		if (membership.state !== "active" || membership.role !== "admin") {
+			return {
+				ok: false,
+				status: 403,
+				code: "installation_not_admin",
+				message:
+					"You must be an admin of this GitHub organization to connect its installation to Lobu.",
+			};
+		}
+		return { ok: true };
+	}
+
+	// Personal-account install: the OAuth'd user must BE the account owner.
+	if (authedLogin.toLowerCase() !== account.login.toLowerCase()) {
+		return {
+			ok: false,
+			status: 403,
+			code: "installation_not_owned",
+			message:
+				"This GitHub installation belongs to a different account. Install the Lobu App from the account that owns it.",
+		};
+	}
 	return { ok: true };
 }
 
@@ -521,13 +696,14 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		const orgId = installState.organizationId;
 
 		// Ownership proof. The signed state proves WHICH org initiated, but NOT that
-		// the caller actually owns the supplied installation_id (an enumerable
-		// integer). Without this, an attacker with their own valid state could pass
-		// a victim's installation_id and bind/transfer the victim's GitHub
-		// installation — and its minted repo tokens — into the attacker's org. Prove
-		// ownership via OAuth-during-install: exchange the `code` for a user token,
-		// then confirm the installation is one the user can administer. ALL of this
-		// runs BEFORE any DB write — every failure returns 4xx/503 with zero mutation.
+		// the caller OWNS the supplied installation_id (an enumerable integer).
+		// Without this, an attacker with their own valid state could pass a victim's
+		// installation_id and bind/transfer the victim's GitHub installation — and
+		// its minted repo tokens — into the attacker's org. And mere membership is
+		// not enough: a non-admin org member can SEE the org's installation, so we
+		// require account OWNERSHIP (personal-account owner, or active org admin).
+		// Prove it via OAuth-during-install — ALL of this runs BEFORE any DB write,
+		// so every failure returns 4xx/503 with zero mutation.
 		const installationId = Number(installationIdRaw.trim());
 		if (!Number.isInteger(installationId) || installationId <= 0) {
 			return c.html(
@@ -550,7 +726,11 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 			installationId,
 			redirectUri: callbackUrl,
 			exchange: deps.exchangeInstallOAuthCode ?? defaultExchangeInstallOAuthCode,
-			fetchIds: deps.fetchUserInstallationIds ?? defaultFetchUserInstallationIds,
+			fetchAccount:
+				deps.fetchInstallationAccount ?? defaultFetchInstallationAccount,
+			fetchLogin: deps.fetchAuthedUserLogin ?? defaultFetchAuthedUserLogin,
+			fetchMembership:
+				deps.fetchOrgMembershipRole ?? defaultFetchOrgMembershipRole,
 		});
 		if (!ownership.ok) {
 			logger.warn(

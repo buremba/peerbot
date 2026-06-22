@@ -54,31 +54,65 @@ async function seedGithubConnector(organizationId: string): Promise<void> {
 	});
 }
 
+/** A mocked GitHub account that owns an installation the authed user can see. */
+type MockAccount = { login: string; type: "User" | "Organization" };
+
 /**
- * Build the install router. The two GitHub HTTP calls (OAuth code exchange +
- * `/user/installations`) are mocked via DI so tests NEVER hit real GitHub.
- *  - `ownedInstallationIds`: the set the (mocked) `/user/installations` returns.
- *    Pass `null` to simulate a GitHub fetch failure.
- *  - `exchangeReturns`: the user token the (mocked) code exchange yields; `null`
- *    simulates a failed exchange. Defaults to a fake token.
+ * Build the install router. ALL GitHub HTTP calls (OAuth code exchange,
+ * `/user/installations`, `/user`, `/user/memberships/orgs/{org}`) are mocked via
+ * DI so tests NEVER hit real GitHub. Options:
+ *  - `installations`: map of installation_id → owning account the (mocked)
+ *    `/user/installations` reports. Pass `null` to simulate an HTTP failure
+ *    (returns undefined → "cannot verify").
+ *  - `authedLogin`: the login `/user` returns (defaults to "installer-user").
+ *  - `orgRoles`: map of org-login → membership `{state, role}` returned by
+ *    `/user/memberships/orgs/{org}`. Missing org → non-member (state:none).
+ *    Pass `null` to simulate an HTTP failure for the membership call.
+ *  - `exchangeReturns`: user token the (mocked) exchange yields; `null` =
+ *    failed exchange. Defaults to a fake token.
+ *  - `ownedInstallationIds` (shorthand): personal-account installs owned by
+ *    `authedLogin` — convenience for the simpler cases.
  */
 function buildRouter(
 	installOrgId: string | null,
 	opts: {
-		ownedInstallationIds?: number[] | null;
+		installations?: Record<number, MockAccount> | null;
+		ownedInstallationIds?: number[];
+		authedLogin?: string;
+		orgRoles?: Record<string, { state: string; role: string }> | null;
 		exchangeReturns?: string | null;
 	} = {},
 ) {
 	const exchangeReturns =
 		opts.exchangeReturns === undefined ? "fake-user-token" : opts.exchangeReturns;
-	const owned =
-		opts.ownedInstallationIds === undefined ? [] : opts.ownedInstallationIds;
+	const authedLogin = opts.authedLogin ?? "installer-user";
+
+	// Resolve the installations map: explicit `installations`, else the
+	// `ownedInstallationIds` shorthand (personal installs owned by authedLogin).
+	const installations: Record<number, MockAccount> | null =
+		opts.installations !== undefined
+			? opts.installations
+			: Object.fromEntries(
+					(opts.ownedInstallationIds ?? []).map((id) => [
+						id,
+						{ login: authedLogin, type: "User" as const },
+					]),
+				);
+
 	const deps: AppInstallRouterDeps = {
 		installationStore: createPostgresAppInstallationStore(),
 		resolveInstallOrgId: async () => installOrgId,
 		exchangeInstallOAuthCode: async () => exchangeReturns,
-		fetchUserInstallationIds: async () =>
-			owned === null ? null : new Set(owned),
+		fetchInstallationAccount: async (_token, installationId) => {
+			if (installations === null) return undefined; // HTTP failure
+			const acct = installations[installationId];
+			return acct ? acct : null; // null = not in the user's set
+		},
+		fetchAuthedUserLogin: async () => authedLogin,
+		fetchOrgMembershipRole: async (_token, org) => {
+			if (opts.orgRoles === null) return undefined; // HTTP failure
+			return opts.orgRoles?.[org] ?? { state: "none", role: "none" };
+		},
 	};
 	return createAppInstallRoutes(deps);
 }
@@ -372,5 +406,168 @@ describe("GitHub App install callback — installation ownership guard", () => {
 		expect(res.status).toBe(403);
 		expect(await installCount(org.id)).toBe(0);
 		expect(await connectionCount(org.id)).toBe(0);
+	});
+});
+
+describe("GitHub App install callback — account-ownership (admin vs member)", () => {
+	// Helper: drive a callback for an org-account installation with a given
+	// membership role for the authed user.
+	async function runOrgInstall(opts: {
+		installationId: number;
+		orgLogin: string;
+		role: { state: string; role: string } | null; // null → membership HTTP fail
+	}) {
+		const org = await createTestOrganization({ name: "Org Install Tenant" });
+		await seedGithubConnector(org.id);
+		const state = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+		});
+		const router = buildRouter(org.id, {
+			installations: {
+				[opts.installationId]: { login: opts.orgLogin, type: "Organization" },
+			},
+			orgRoles:
+				opts.role === null ? null : { [opts.orgLogin]: opts.role },
+		});
+		const res = await router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?installation_id=${opts.installationId}&setup_action=install&state=${state}&code=valid-oauth-code`,
+			),
+		);
+		return { org, res };
+	}
+
+	it("ORG install + user role 'admin' (active) → 200, binds", async () => {
+		const { org, res } = await runOrgInstall({
+			installationId: 3001,
+			orgLogin: "acme-org",
+			role: { state: "active", role: "admin" },
+		});
+		expect(res.status).toBe(200);
+		expect(await installCount(org.id)).toBe(1);
+		expect(await connectionCount(org.id)).toBe(1);
+	});
+
+	it("ORG install + user role 'member' (active) → 403, zero mutation (the blocker case)", async () => {
+		// A non-admin member can SEE the org's installation via /user/installations
+		// but MUST NOT be able to bind it. This is the membership-≠-admin hole.
+		const { org, res } = await runOrgInstall({
+			installationId: 3002,
+			orgLogin: "victim-org",
+			role: { state: "active", role: "member" },
+		});
+		expect(res.status).toBe(403);
+		expect(await installCount(org.id)).toBe(0);
+		expect(await connectionCount(org.id)).toBe(0);
+	});
+
+	it("ORG install + membership state not active (pending admin) → 403, zero mutation", async () => {
+		const { org, res } = await runOrgInstall({
+			installationId: 3003,
+			orgLogin: "pending-org",
+			role: { state: "pending", role: "admin" },
+		});
+		expect(res.status).toBe(403);
+		expect(await installCount(org.id)).toBe(0);
+		expect(await connectionCount(org.id)).toBe(0);
+	});
+
+	it("ORG install + membership lookup fails → 403, zero mutation (cannot verify)", async () => {
+		const { org, res } = await runOrgInstall({
+			installationId: 3004,
+			orgLogin: "unreachable-org",
+			role: null,
+		});
+		expect(res.status).toBe(403);
+		expect(await installCount(org.id)).toBe(0);
+		expect(await connectionCount(org.id)).toBe(0);
+	});
+
+	it("USER (personal) install + authedLogin === account.login → 200, binds", async () => {
+		const org = await createTestOrganization({ name: "Personal Owner Org" });
+		await seedGithubConnector(org.id);
+		const state = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+		});
+		const router = buildRouter(org.id, {
+			authedLogin: "Octocat",
+			installations: {
+				4100: { login: "octocat", type: "User" }, // case-insensitive match
+			},
+		});
+		const res = await router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?installation_id=4100&setup_action=install&state=${state}&code=valid-oauth-code`,
+			),
+		);
+		expect(res.status).toBe(200);
+		expect(await installCount(org.id)).toBe(1);
+		expect(await connectionCount(org.id)).toBe(1);
+	});
+
+	it("USER install + authedLogin !== account.login → 403, zero mutation", async () => {
+		const org = await createTestOrganization({ name: "Wrong Personal Org" });
+		await seedGithubConnector(org.id);
+		const state = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+		});
+		// The user can SEE this personal install (collaborator) but does not OWN it.
+		const router = buildRouter(org.id, {
+			authedLogin: "attacker",
+			installations: {
+				4200: { login: "victim", type: "User" },
+			},
+		});
+		const res = await router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?installation_id=4200&setup_action=install&state=${state}&code=valid-oauth-code`,
+			),
+		);
+		expect(res.status).toBe(403);
+		expect(await installCount(org.id)).toBe(0);
+		expect(await connectionCount(org.id)).toBe(0);
+	});
+});
+
+describe("GitHub App install callback — connection creation is race-safe", () => {
+	it("two parallel callbacks for the same install create exactly one connection", async () => {
+		const org = await createTestOrganization({ name: "Concurrency Org" });
+		await seedGithubConnector(org.id);
+		const installationId = 5150;
+
+		// Two independent routers (two pods), each with its own valid single-use
+		// state, racing the SAME installation. The advisory-lock-wrapped
+		// find-or-create must converge to one connection.
+		const stateA = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+		});
+		const stateB = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+		});
+		const routerA = buildRouter(org.id, {
+			ownedInstallationIds: [installationId],
+		});
+		const routerB = buildRouter(org.id, {
+			ownedInstallationIds: [installationId],
+		});
+
+		const [resA, resB] = await Promise.all([
+			routerA.fetch(
+				new Request(
+					`http://gw.test/github/app/install/callback?installation_id=${installationId}&setup_action=install&state=${stateA}&code=valid-oauth-code`,
+				),
+			),
+			routerB.fetch(
+				new Request(
+					`http://gw.test/github/app/install/callback?installation_id=${installationId}&setup_action=install&state=${stateB}&code=valid-oauth-code`,
+				),
+			),
+		]);
+
+		expect(resA.status).toBe(200);
+		expect(resB.status).toBe(200);
+		// Exactly one connection and one active install despite the race.
+		expect(await connectionCount(org.id)).toBe(1);
+		expect(await installCount(org.id)).toBe(1);
 	});
 });

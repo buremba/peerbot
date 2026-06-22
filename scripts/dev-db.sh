@@ -69,6 +69,12 @@ export WORKER_PROXY_PORT
 # current version; runMigrations is idempotent) and seed the first user/org so
 # /api/local-init works. Same flag `lobu run` uses; prod never sets it.
 export LOBU_RUN_OWNS_DB=1
+# Single-user mode: makes /api/auth-config report singleUserMode=true, so the SPA
+# signs you in automatically via the loopback /api/local-init handshake instead
+# of showing the cloud login form. The embedded runtime defaults this on; the
+# external-Postgres path (this script) doesn't, so set it here for the walk-in
+# local UX. Override with LOBU_SINGLE_USER=0 to test the multi-user login form.
+export LOBU_SINGLE_USER="${LOBU_SINGLE_USER:-1}"
 echo "→ DATABASE_URL=$DATABASE_URL"
 echo "→ server on :$PORT   (worker proxy :$WORKER_PROXY_PORT)"
 echo ""

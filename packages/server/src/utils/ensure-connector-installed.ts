@@ -42,6 +42,48 @@ export async function resolveConnectorCode(
   throw new Error(`No compiled code for '${connectorKey}' and source not found on disk.`);
 }
 
+/**
+ * Compile the bundled connector for `connectorKey` and upsert its definition for
+ * one org from the on-disk registry: the single code→`connector_definitions`
+ * write path. `ensureConnectorInstalled` calls it on first install;
+ * `refreshConnectorDefinitions` calls it to re-sync an org's existing definition
+ * across deploys. Both share THIS body — there is no second writer.
+ *
+ * Stores `source_path` (not `compiled_code`) so the runtime recompiles from
+ * source on demand (`resolveConnectorCode`); the shared upsert preserves
+ * org-specific config (`login_enabled`, `default_connection_config`).
+ *
+ * Returns false when the key has no bundled source on disk (a genuinely
+ * user-uploaded connector — nothing to sync from). Throws on
+ * compile/extract/validate/write failure; callers decide how to handle it.
+ */
+export async function upsertBundledConnectorForOrg(params: {
+  organizationId: string;
+  connectorKey: string;
+}): Promise<boolean> {
+  const filePath = findBundledConnectorFile(params.connectorKey);
+  if (!filePath) return false;
+
+  // Compile to extract metadata (key, name, feeds, auth schema, etc.).
+  const compiledCode = await compileConnectorFromFile(filePath);
+  const metadata = await extractConnectorMetadata(compiledCode);
+  validateConnectorMetadata(metadata);
+
+  const sourcePath = bundledConnectorSourcePath(filePath);
+  await upsertConnectorDefinitionRecords({
+    sql: getDb(),
+    organizationId: params.organizationId,
+    metadata,
+    versionRecord: {
+      compiledCode: null,
+      compiledCodeHash: null,
+      sourceCode: null,
+      sourcePath,
+    },
+  });
+  return true;
+}
+
 export async function ensureConnectorInstalled(params: {
   organizationId: string;
   connectorKey: string;
@@ -56,33 +98,13 @@ export async function ensureConnectorInstalled(params: {
   `;
   if (existing.length > 0) return true;
 
-  const filePath = findBundledConnectorFile(params.connectorKey);
-  if (!filePath) return false;
-
   try {
-    // Compile temporarily to extract metadata (key, name, feeds, etc.)
-    const compiledCode = await compileConnectorFromFile(filePath);
-    const metadata = await extractConnectorMetadata(compiledCode);
-    validateConnectorMetadata(metadata);
-
-    const sourcePath = bundledConnectorSourcePath(filePath);
-    await upsertConnectorDefinitionRecords({
-      sql,
-      organizationId: params.organizationId,
-      metadata,
-      versionRecord: {
-        compiledCode: null,
-        compiledCodeHash: null,
-        sourceCode: null,
-        sourcePath,
-      },
-    });
-
+    const installed = await upsertBundledConnectorForOrg(params);
+    if (!installed) return false;
     logger.info(
       {
         connector_key: params.connectorKey,
         organization_id: params.organizationId,
-        source_path: sourcePath,
       },
       'Auto-installed bundled connector for org (source_path only, no compiled_code)'
     );

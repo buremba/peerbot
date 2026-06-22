@@ -10,7 +10,7 @@ import { getDb } from '../db/client';
 import { needsEmbeddingSql } from '../utils/embeddings';
 import type { Env } from '../index';
 import logger from '../utils/logger';
-import { isUniqueViolation } from '../utils/pg-errors';
+import { isQueryCanceled, isUniqueViolation } from '../utils/pg-errors';
 import { ACTIVE_RUN_STATUSES, runStatusLiteral } from '../utils/run-statuses';
 import { materializeDueItems } from './due-materializer';
 
@@ -26,6 +26,19 @@ const BATCH_LIMIT = 100;
 // reclaimed once an org's recent backlog clears (then it IS the newest
 // unembedded row — see the DESC scan in createBackfillRun).
 const RECENT_SCAN_LIMIT = 5000;
+
+// Hard ceiling on the org-discovery scan below. The query is *designed* to be
+// ~30ms (newest-N partial-index scan — see RECENT_SCAN_LIMIT), but its three
+// correlated NOT EXISTS anti-joins degrade badly when the recent window fills
+// with unembedded rows — e.g. the embeddings service is OOM-looping and not
+// draining the backlog. On the shared single-instance DB node a scan that heavy
+// spikes CPU enough to starve the Postgres liveness probe, which CNPG answers
+// by RESTARTING the primary — a full prod outage with no replica to fail over
+// to (incident 2026-06-22: this scan hit 14.5s and took prod down). Bounding it
+// makes a degraded scan abort cheaply instead of melting the node; a skipped
+// cycle is harmless — the next */5 tick retries, and createBackfillRun
+// re-collects the exact ids per org regardless. Overridable for ops/tests.
+const DISCOVERY_SCAN_TIMEOUT = process.env.EMBED_BACKFILL_SCAN_TIMEOUT || '8s';
 
 interface BackfillResult {
   organizations: number;
@@ -54,21 +67,19 @@ function needsEmbeddingPredicate(): string {
 const NOT_SUPERSEDED_PREDICATE =
   'NOT EXISTS (SELECT 1 FROM events newer WHERE newer.supersedes_event_id = e.id)';
 
-export async function triggerEmbedBackfill(_env: Env): Promise<BackfillResult> {
+// Org-discovery scan, bounded by statement_timeout and run READ ONLY. Returns
+// the per-org recent-window backlog counts (top 10). If the scan exceeds
+// DISCOVERY_SCAN_TIMEOUT it is aborted by Postgres (SQLSTATE 57014) and we skip
+// this cycle rather than error — see DISCOVERY_SCAN_TIMEOUT for why a heavy
+// scan is dangerous. The timeout is set via tx.unsafe (SET rejects bind
+// params; the value is a server-controlled constant, not user input).
+async function discoverBacklogOrgs(needsEmbedding: string): Promise<readonly OrgBatch[]> {
   const sql = getDb();
-  const needsEmbedding = needsEmbeddingPredicate();
-
   try {
-    let totalEvents = 0;
-
-    const counts = await materializeDueItems<OrgBatch>({
-      label: 'EmbedBackfill',
-      // Find organizations with events missing/stale embeddings, grouped for
-      // batch runs. Scoped to the most-recent RECENT_SCAN_LIMIT unembedded
-      // events (the genuine backlog is recent — see RECENT_SCAN_LIMIT), then
-      // grouped by org. event_count is the recent-window count, used only to
-      // rank/log; createBackfillRun re-collects the exact ids per org.
-      fetchDue: () => sql<OrgBatch>`
+    return await sql.begin(async (tx) => {
+      await tx`SET TRANSACTION READ ONLY`;
+      await tx.unsafe(`SET LOCAL statement_timeout = '${DISCOVERY_SCAN_TIMEOUT}'`);
+      return await tx<OrgBatch>`
         SELECT organization_id, COUNT(*)::int AS event_count
         FROM (
           SELECT e.organization_id
@@ -76,8 +87,8 @@ export async function triggerEmbedBackfill(_env: Env): Promise<BackfillResult> {
           WHERE e.payload_text IS NOT NULL
             AND e.payload_text != ''
             AND e.organization_id IS NOT NULL
-            AND ${sql.unsafe(needsEmbedding)}
-            AND ${sql.unsafe(NOT_SUPERSEDED_PREDICATE)}
+            AND ${tx.unsafe(needsEmbedding)}
+            AND ${tx.unsafe(NOT_SUPERSEDED_PREDICATE)}
             AND NOT EXISTS (
               SELECT 1
               FROM runs r
@@ -91,7 +102,35 @@ export async function triggerEmbedBackfill(_env: Env): Promise<BackfillResult> {
         GROUP BY organization_id
         ORDER BY event_count DESC
         LIMIT 10
-      `,
+      `;
+    });
+  } catch (error) {
+    if (isQueryCanceled(error)) {
+      logger.warn(
+        { timeout: DISCOVERY_SCAN_TIMEOUT },
+        '[EmbedBackfill] Org-discovery scan exceeded statement_timeout — skipping this cycle. The recent-events window is likely saturated with unembedded rows (embeddings service behind?); the scan was aborted to protect DB CPU.'
+      );
+      return [];
+    }
+    throw error;
+  }
+}
+
+export async function triggerEmbedBackfill(_env: Env): Promise<BackfillResult> {
+  const needsEmbedding = needsEmbeddingPredicate();
+
+  try {
+    let totalEvents = 0;
+
+    const counts = await materializeDueItems<OrgBatch>({
+      label: 'EmbedBackfill',
+      // Find organizations with events missing/stale embeddings, grouped for
+      // batch runs. Scoped to the most-recent RECENT_SCAN_LIMIT unembedded
+      // events (the genuine backlog is recent — see RECENT_SCAN_LIMIT), then
+      // grouped by org. event_count is the recent-window count, used only to
+      // rank/log; createBackfillRun re-collects the exact ids per org. Bounded
+      // by DISCOVERY_SCAN_TIMEOUT so a degraded scan can't spike DB CPU.
+      fetchDue: () => discoverBacklogOrgs(needsEmbedding),
       createRun: async (batch) => {
         const created = await createBackfillRun(batch.organization_id);
         if (!created) return 'skipped';

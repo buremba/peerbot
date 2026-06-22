@@ -13,3 +13,13 @@ export function isUniqueViolation(error: unknown, constraintName: string): boole
   const constraint = pg.constraint ?? pg.constraint_name;
   return pg.code === '23505' && constraint === constraintName;
 }
+
+/**
+ * Check whether a caught error is a PG query-canceled (57014) — raised when a
+ * statement exceeds `statement_timeout`. Callers that bound a scan with a
+ * timeout use this to skip gracefully instead of erroring the whole tick.
+ */
+export function isQueryCanceled(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  return (error as { code?: string }).code === '57014';
+}

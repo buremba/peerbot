@@ -426,13 +426,13 @@ async function resolveAppInstallationCredential(
   }
 
   // Connector-shape guard: the install MUST match the connector method's declared
-  // app_installation provider (and providerInstance when the method pins it).
-  // Otherwise a connection could point at an unrelated install of a different
-  // provider/instance in the same org and mint a token it shouldn't read.
+  // app_installation provider and providerInstance. An omitted method
+  // providerInstance defaults to 'cloud' (NOT a wildcard) — otherwise a method
+  // that doesn't pin an instance would accept an install from any instance
+  // (e.g. a self-hosted GHES host), which is a tenancy/scope hole.
   if (
     install.provider !== method.provider ||
-    (method.providerInstance != null &&
-      install.providerInstance !== method.providerInstance)
+    install.providerInstance !== (method.providerInstance ?? "cloud")
   ) {
     logger.warn(
       {

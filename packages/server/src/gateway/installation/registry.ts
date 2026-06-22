@@ -16,8 +16,6 @@ let registry: InstallationTokenRegistry | null = null;
 
 /**
  * The per-pod registry, built lazily with the default providers registered.
- * GitHub is the only minting provider today; Slack resolves a stored ref (no
- * minting) and is added by the Slack-retrofit PR.
  */
 export function getInstallationTokenRegistry(): InstallationTokenRegistry {
   if (!registry) {

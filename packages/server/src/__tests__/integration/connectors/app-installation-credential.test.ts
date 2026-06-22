@@ -74,23 +74,23 @@ async function seedAppInstallConnection(opts: {
 	organizationId: string;
 	installationRef: number;
 	provider?: string;
-	providerInstance?: string;
+	/** `null` = the method omits providerInstance entirely (must default to 'cloud'). */
+	providerInstance?: string | null;
 }): Promise<{ connectionId: number }> {
+	const method: Record<string, unknown> = {
+		type: "app_installation",
+		provider: opts.provider ?? PROVIDER,
+		appIdKey: "DEMO_APP_ID",
+		privateKeyKey: "DEMO_APP_PRIVATE_KEY",
+	};
+	if (opts.providerInstance !== null) {
+		method.providerInstance = opts.providerInstance ?? PROVIDER_INSTANCE;
+	}
 	await createTestConnectorDefinition({
 		key: CONNECTOR_KEY,
 		name: "Demo App Install",
 		organization_id: opts.organizationId,
-		auth_schema: {
-			methods: [
-				{
-					type: "app_installation",
-					provider: opts.provider ?? PROVIDER,
-					providerInstance: opts.providerInstance ?? PROVIDER_INSTANCE,
-					appIdKey: "DEMO_APP_ID",
-					privateKeyKey: "DEMO_APP_PRIVATE_KEY",
-				},
-			],
-		},
+		auth_schema: { methods: [method] },
 	});
 
 	const conn = await createTestConnection({
@@ -242,6 +242,34 @@ describe("app-installation credential — tenancy + shape guards", () => {
 			installationRef: install.id,
 			provider: PROVIDER,
 			providerInstance: "cloud",
+		});
+
+		const resolved = await resolveExecutionAuth({
+			organizationId: org.id,
+			connectionId,
+			credentialDb: getDb(),
+		});
+
+		expect(resolved.credentials).toBeNull();
+		expect(spy.mintCalls).toHaveLength(0);
+	});
+
+	it("method that omits providerInstance defaults to 'cloud' and rejects a non-cloud install", async () => {
+		const org = await createTestOrganization({ name: "Omit Instance Org" });
+		// Install lives on a self-hosted (non-cloud) instance...
+		const install = await seedInstall({
+			organizationId: org.id,
+			provider: PROVIDER,
+			providerInstance: "ghes.example.com",
+			externalTenantId: "ghes-omit-tenant",
+		});
+		// ...and the connector method does NOT pin an instance. Omitted must mean
+		// 'cloud' (NOT wildcard), so this non-cloud install is rejected, no mint.
+		const { connectionId } = await seedAppInstallConnection({
+			organizationId: org.id,
+			installationRef: install.id,
+			provider: PROVIDER,
+			providerInstance: null,
 		});
 
 		const resolved = await resolveExecutionAuth({

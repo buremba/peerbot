@@ -1,4 +1,4 @@
-import { getDb } from "../../db/client.js";
+import { getDb, tsTime } from "../../db/client.js";
 
 /** Advisory-lock tag that serializes activation for one tenant tuple. */
 function activeTenantLockTag(key: AppInstallationTenantKey): string {
@@ -170,13 +170,9 @@ function rowToInstallation(row: Record<string, any>): AppInstallationRow {
     status: row.status,
     metadata: row.metadata ?? {},
     createdAt:
-      row.created_at instanceof Date
-        ? row.created_at.getTime()
-        : (row.created_at ?? Date.now()),
+      tsTime(row.created_at),
     updatedAt:
-      row.updated_at instanceof Date
-        ? row.updated_at.getTime()
-        : (row.updated_at ?? Date.now()),
+      tsTime(row.updated_at),
   };
 }
 

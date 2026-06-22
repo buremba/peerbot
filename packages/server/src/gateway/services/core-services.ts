@@ -5,6 +5,7 @@ import {
 	type AgentConnectionStore,
 	CommandRegistry,
 	createLogger,
+	getErrorMessage,
 	GuardrailRegistry,
 	moduleRegistry,
 	type ProviderRegistryEntry,
@@ -299,7 +300,7 @@ export class CoreServices {
 			}
 		} catch (error) {
 			logger.warn(
-				{ error: error instanceof Error ? error.message : String(error) },
+				{ error: getErrorMessage(error) },
 				"Ephemeral table sweeper failed",
 			);
 		}

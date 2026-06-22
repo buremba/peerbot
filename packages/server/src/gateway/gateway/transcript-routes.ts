@@ -22,7 +22,11 @@
  */
 
 import type { WorkerTokenData } from "@lobu/core";
-import { createLogger, verifyWorkerToken } from "@lobu/core";
+import {
+	createLogger,
+	getErrorMessage,
+	verifyWorkerToken,
+} from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { getDb } from "../../db/client.js";
@@ -252,7 +256,7 @@ export function createTranscriptRoutes(): Hono {
       return c.json({ id: inserted[0]!.id });
     } catch (err) {
       logger.error(
-        `Snapshot INSERT failed: ${err instanceof Error ? err.message : String(err)}`
+        `Snapshot INSERT failed: ${getErrorMessage(err)}`
       );
       return c.json({ error: "Internal error" }, 500);
     }
@@ -294,7 +298,7 @@ export function createTranscriptRoutes(): Hono {
       return c.json({ deleted: deleted.length });
     } catch (err) {
       logger.error(
-        `Snapshot DELETE failed: ${err instanceof Error ? err.message : String(err)}`
+        `Snapshot DELETE failed: ${getErrorMessage(err)}`
       );
       return c.json({ error: "Internal error" }, 500);
     }

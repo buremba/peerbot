@@ -72,7 +72,7 @@ function coerceJson(
       if (opts.onError === 'keep') return value;
       if (opts.onError === 'throw') {
         throw new Error(
-          `${opts.label} must be valid JSON: ${error instanceof Error ? error.message : String(error)}`
+          `${opts.label} must be valid JSON: ${getErrorMessage(error)}`
         );
       }
       if (opts.onError) return opts.onError.fallback;
@@ -308,6 +308,7 @@ export async function requireWatcherAccess(
 // ============================================
 
 import { entityLinkMatchSql } from '../../../utils/content-search';
+import { getErrorMessage } from "@lobu/core";
 
 /**
  * Batch count unanalyzed content for multiple watchers in a single query.

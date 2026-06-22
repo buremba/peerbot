@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { JudgeClient, JudgeVerdict } from "./types.js";
+import { getErrorMessage } from "@lobu/core";
 
 /**
  * Anthropic-backed judge transport. Calls the Messages API and parses the
@@ -71,7 +72,7 @@ export function parseVerdict(raw: string): JudgeVerdict {
     }
   }
   throw new Error(
-    `Judge response was not valid verdict JSON: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`
+    `Judge response was not valid verdict JSON: ${getErrorMessage(lastErr)}`
   );
 }
 

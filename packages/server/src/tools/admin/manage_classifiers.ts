@@ -29,6 +29,7 @@ import { resolveUsernames } from '../../utils/resolve-usernames';
 import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
 import { defineFlatActionTool, flatAction } from './action-tool';
+import { getErrorMessage } from "@lobu/core";
 
 // ============================================
 // Typebox Schema
@@ -480,7 +481,7 @@ async function handleCreateVersion(
         },
       };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = getErrorMessage(error);
       logger.error(
         { error, classifier_slug: classifier[0].slug },
         'Version upgrade: failed to delete old classifications'
@@ -665,7 +666,7 @@ async function handleSetCurrentVersion(
       },
     };
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = getErrorMessage(error);
     logger.error({ error, classifierSlug }, 'Version change: failed to delete old classifications');
     return {
       success: true,

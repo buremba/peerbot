@@ -6,7 +6,11 @@ import {
   type GrantKind,
 } from "@lobu/core";
 import { getDb, pgTextArray } from "../../db/client.js";
-import { tryGetOrgId } from "../../lobu/stores/org-context.js";
+import {
+  orgScope,
+  requireOrgId,
+  resolveOrgId,
+} from "../../lobu/stores/org-context.js";
 
 const logger = createLogger("grant-store");
 
@@ -57,17 +61,6 @@ function buildGrantCandidates(pattern: string, kind: GrantKind): string[] {
   return candidates;
 }
 
-/**
- * Optional `organization_id` filter as a composable SQL fragment, so the
- * org-scoped and legacy (org-less) query variants share a single statement.
- */
-function orgScope(
-  sql: ReturnType<typeof getDb>,
-  orgId: string | null | undefined
-) {
-  return orgId ? sql`AND organization_id = ${orgId}` : sql``;
-}
-
 interface GrantRow {
   pattern: string;
   kind: GrantKind;
@@ -104,12 +97,7 @@ export class GrantStore {
     pattern = normalizeDomainPattern(pattern);
     const kind = inferGrantKind(pattern);
     const expiresAtTs = expiresAt === null ? null : new Date(expiresAt);
-    const orgId = organizationId ?? tryGetOrgId();
-    if (!orgId) {
-      throw new Error(
-        "GrantStore.grant requires organizationId (explicit or via orgContext)"
-      );
-    }
+    const orgId = requireOrgId(organizationId, "GrantStore.grant");
 
     const sql = getDb();
     await sql`
@@ -135,7 +123,7 @@ export class GrantStore {
   ): Promise<boolean> {
     pattern = normalizeDomainPattern(pattern);
     const kind = inferGrantKind(pattern);
-    const orgId = organizationId ?? tryGetOrgId();
+    const orgId = resolveOrgId(organizationId);
 
     // Build the candidate pattern set (exact + wildcards) and look them
     // up in a single query.
@@ -183,7 +171,7 @@ export class GrantStore {
     pattern = normalizeDomainPattern(pattern);
     const kind = inferGrantKind(pattern);
     const candidates = buildGrantCandidates(pattern, kind);
-    const orgId = organizationId ?? tryGetOrgId();
+    const orgId = resolveOrgId(organizationId);
 
     const sql = getDb();
     try {
@@ -214,7 +202,7 @@ export class GrantStore {
    */
   async listGrants(agentId: string, organizationId?: string): Promise<Grant[]> {
     const sql = getDb();
-    const orgId = organizationId ?? tryGetOrgId();
+    const orgId = resolveOrgId(organizationId);
     try {
       const rows = await sql<GrantRow>`
         SELECT pattern, kind, granted_at, expires_at, denied
@@ -248,7 +236,7 @@ export class GrantStore {
   ): Promise<void> {
     const candidates = getDomainGrantCandidates(pattern);
     const kind = inferGrantKind(pattern);
-    const orgId = organizationId ?? tryGetOrgId();
+    const orgId = resolveOrgId(organizationId);
     const sql = getDb();
     await sql`
       DELETE FROM grants

@@ -13,7 +13,10 @@
 
 import { createHash } from "node:crypto";
 import dns from "node:dns/promises";
-import { createLogger } from "@lobu/core";
+import {
+	createLogger,
+	getErrorMessage,
+} from "@lobu/core";
 import type { WritableSecretStore } from "../../secrets/index.js";
 import { isReservedIp } from "../../proxy/ssrf-guard.js";
 
@@ -166,13 +169,13 @@ async function fetchAuthorizationServerMetadata(
       lastError = error;
       logger.debug("Authorization server metadata probe failed", {
         url: candidate,
-        error: error instanceof Error ? error.message : String(error),
+        error: getErrorMessage(error),
       });
     }
   }
   throw new Error(
     `Unable to fetch authorization server metadata from ${issuer}: ${
-      lastError instanceof Error ? lastError.message : String(lastError)
+      getErrorMessage(lastError)
     }`
   );
 }

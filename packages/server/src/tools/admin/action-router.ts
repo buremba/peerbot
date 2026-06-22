@@ -3,6 +3,7 @@ import { ToolUserError } from '../../utils/errors';
 import logger from '../../utils/logger';
 import { enforceRoleScopeAccess, isSystemContext } from '../access-control';
 import type { ToolContext } from '../registry';
+import { getErrorMessage } from "@lobu/core";
 
 /**
  * Routes admin tool actions to handler functions with standardized error wrapping.
@@ -66,7 +67,7 @@ export async function routeAction<TResult>(
     logger[errorLogLevel(error)](
       {
         error,
-        error_message: error instanceof Error ? error.message : String(error),
+        error_message: getErrorMessage(error),
         error_stack: error instanceof Error ? error.stack : undefined,
       },
       `${toolName} error:`

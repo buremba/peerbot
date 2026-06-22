@@ -1,4 +1,9 @@
-import { createLogger, type McpOAuthConfig, type SecretRef } from "@lobu/core";
+import {
+	createLogger,
+	getErrorMessage,
+	type McpOAuthConfig,
+	type SecretRef,
+} from "@lobu/core";
 import { Hono } from "hono";
 import { DEFAULT_MCP_DEVICE_SCOPE } from "../../../auth/oauth/scopes.js";
 import {
@@ -95,7 +100,7 @@ async function getSecretJson<T>(
     logger.warn("Failed to parse JSON payload from secret store", {
       name,
       ...context,
-      error: error instanceof Error ? error.message : String(error),
+      error: getErrorMessage(error),
     });
     return null;
   }
@@ -446,7 +451,7 @@ export async function tryCompletePendingDeviceAuth(
   } catch (error) {
     logger.warn("Auto-complete device auth failed", {
       mcpId,
-      error: error instanceof Error ? error.message : String(error),
+      error: getErrorMessage(error),
     });
     return null;
   }
@@ -660,7 +665,7 @@ export function createDeviceAuthRoutes(
     } catch (error) {
       logger.error("Failed to start device auth", {
         mcpId,
-        error: error instanceof Error ? error.message : String(error),
+        error: getErrorMessage(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
       return errorResponse(c, "Failed to start device authentication", 500);

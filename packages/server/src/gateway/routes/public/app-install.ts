@@ -36,7 +36,10 @@
  */
 
 import { Hono } from "hono";
-import { createLogger } from "@lobu/core";
+import {
+	createLogger,
+	getErrorMessage,
+} from "@lobu/core";
 import { getDb } from "../../../db/client.js";
 import {
 	ConnectionSlugConflictError,
@@ -566,7 +569,7 @@ async function defaultFetchInstallationRepositories(
 			);
 		} catch (error) {
 			logger.warn(
-				{ error: error instanceof Error ? error.message : String(error), page },
+				{ error: getErrorMessage(error), page },
 				"GitHub /installation/repositories request failed during auto-provision",
 			);
 			return repos;
@@ -672,7 +675,7 @@ export async function autoProvisionGithubIssueFeeds(params: {
 			{
 				install_id: params.installId,
 				connection_id: params.connectionId,
-				error: error instanceof Error ? error.message : String(error),
+				error: getErrorMessage(error),
 			},
 			"Auto-provision skipped: could not mint installation token",
 		);
@@ -750,7 +753,7 @@ export async function autoProvisionGithubIssueFeeds(params: {
 				{
 					feed_id: feedId,
 					connection_id: params.connectionId,
-					error: error instanceof Error ? error.message : String(error),
+					error: getErrorMessage(error),
 				},
 				"Auto-provision: failed to enqueue initial backfill (feed is due, orchestrator will pick it up)",
 			);
@@ -1433,7 +1436,7 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 						organization_id: orgId,
 						install_id: result.installId,
 						connection_id: result.connectionId,
-						error: error instanceof Error ? error.message : String(error),
+						error: getErrorMessage(error),
 					},
 					"GitHub App install bound, but auto-provision failed (feeds can be added manually)",
 				);
@@ -1454,7 +1457,7 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 				{
 					organization_id: orgId,
 					installation_id: installationId,
-					error: error instanceof Error ? error.message : String(error),
+					error: getErrorMessage(error),
 				},
 				"GitHub App install callback failed",
 			);

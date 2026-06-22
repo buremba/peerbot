@@ -12,7 +12,10 @@
  */
 
 import type { ProviderConfigEntry } from "@lobu/core";
-import { createLogger } from "@lobu/core";
+import {
+	createLogger,
+	getErrorMessage,
+} from "@lobu/core";
 import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager.js";
 
 const logger = createLogger("transcription-service");
@@ -160,7 +163,7 @@ export class TranscriptionService {
         return { text, provider: config.provider };
       } catch (error) {
         const errorMessage =
-          error instanceof Error ? error.message : String(error);
+          getErrorMessage(error);
         logger.error("Transcription failed", {
           agentId,
           provider: config.provider,
@@ -246,7 +249,7 @@ export class TranscriptionService {
       providerConfigs = await this.providerConfigSource();
     } catch (error) {
       logger.warn("Failed to load provider configs for STT", {
-        error: error instanceof Error ? error.message : String(error),
+        error: getErrorMessage(error),
       });
       return [];
     }
@@ -337,7 +340,7 @@ export class TranscriptionService {
       return { ...result, provider: config.provider };
     } catch (error) {
       const errorMessage =
-        error instanceof Error ? error.message : String(error);
+        getErrorMessage(error);
       logger.error("Synthesis failed", {
         agentId,
         provider: config.provider,

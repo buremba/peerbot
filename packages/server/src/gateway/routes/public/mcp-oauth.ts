@@ -7,7 +7,10 @@
  * stored PKCE verifier, and render a simple "you can close this tab" page.
  */
 
-import { createLogger } from "@lobu/core";
+import {
+	createLogger,
+	getErrorMessage,
+} from "@lobu/core";
 import { Hono } from "hono";
 import { completeAuthCodeFlow } from "../../auth/mcp/oauth-flow.js";
 import { postOAuthCompletionPrompt } from "../../auth/mcp/resume-after-oauth.js";
@@ -152,7 +155,7 @@ export function createMcpOAuthRoutes(config: McpOAuthRoutesConfig): Hono {
           logger.warn("Failed to enqueue OAuth resume prompt", {
             mcpId: result.mcpId,
             agentId: result.agentId,
-            error: err instanceof Error ? err.message : String(err),
+            error: getErrorMessage(err),
           });
         }
       }
@@ -171,7 +174,7 @@ export function createMcpOAuthRoutes(config: McpOAuthRoutesConfig): Hono {
       );
     } catch (err) {
       logger.error("Failed to complete MCP OAuth flow", {
-        error: err instanceof Error ? err.message : String(err),
+        error: getErrorMessage(err),
       });
       const safeMessage = escapeHtml(
         err instanceof Error ? err.message : "Unknown error"

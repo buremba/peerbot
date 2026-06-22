@@ -47,6 +47,40 @@ export function pgBigintArray(values: number[]): string {
 }
 
 /**
+ * Coerce a Postgres timestamp column value to epoch milliseconds, defaulting to
+ * `Date.now()` when the row carried no value.
+ *
+ * postgres.js may hand a `Date` (typed timestamp) or a raw string/number
+ * (untyped / `fetch_types: false`), so row mappers all wrote the same
+ * `x instanceof Date ? x.getTime() : (x ?? Date.now())` triad. Use this instead.
+ */
+export function tsTime(value: unknown): number {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') {
+    const ms = new Date(value).getTime();
+    if (!Number.isNaN(ms)) return ms;
+  }
+  return Date.now();
+}
+
+/**
+ * Like {@link tsTime}, but returns `undefined` (not "now") when the row carried
+ * no value — for optional timestamps such as `last_used_at` where absence is
+ * meaningful and must not be coerced to the current time.
+ */
+export function tsTimeOrNull(value: unknown): number | undefined {
+  if (value == null) return undefined;
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') {
+    const ms = new Date(value).getTime();
+    if (!Number.isNaN(ms)) return ms;
+  }
+  return undefined;
+}
+
+/**
  * Parse a value that may be a JS array or a PostgreSQL array literal
  * (`{a,b,"c d"}`) into a string array. Quoted elements are unquoted and
  * `\"` / `\\` escapes are resolved.

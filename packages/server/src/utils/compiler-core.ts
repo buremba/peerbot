@@ -21,6 +21,7 @@ import { basename, dirname, join } from 'node:path';
 import { EXTERNAL_RUNTIME_DEPS } from '@lobu/connector-worker/compile';
 import { type BuildOptions, build } from 'esbuild';
 import logger from './logger';
+import { getErrorMessage } from "@lobu/core";
 
 const require = createRequire(import.meta.url);
 const SDK_ENTRY = require.resolve('@lobu/connector-sdk');
@@ -133,7 +134,7 @@ export async function compileSource(
       try {
         await build(buildOptions);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = getErrorMessage(error);
         if (message.includes('The service is no longer running')) {
           logger.warn(`[${config.label}] esbuild service stopped unexpectedly; retrying once...`);
           await build(buildOptions);

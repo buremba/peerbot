@@ -1,18 +1,19 @@
 import {
-  ConversationOwnedElsewhereError,
-  createChildSpan,
-  createLogger,
-  ErrorCode,
-  extractTraceId,
-  generateTraceId,
-  generateWorkerToken,
-  getTraceparent,
-  type GuardrailRegistry,
-  type MessagePayload,
-  OrchestratorError,
-  retryWithBackoff,
-  runGuardrailInstances,
-  SpanStatusCode,
+	ConversationOwnedElsewhereError,
+	createChildSpan,
+	createLogger,
+	ErrorCode,
+	extractTraceId,
+	generateTraceId,
+	generateWorkerToken,
+	getErrorMessage,
+	getTraceparent,
+	type GuardrailRegistry,
+	type MessagePayload,
+	OrchestratorError,
+	retryWithBackoff,
+	runGuardrailInstances,
+	SpanStatusCode,
 } from "@lobu/core";
 import { resolveAgentGuardrails } from "../guardrails/aggregator.js";
 import * as Sentry from "@sentry/node";
@@ -227,7 +228,7 @@ export class MessageConsumer {
     } catch (error) {
       throw new OrchestratorError(
         ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
-        `Failed to start queue consumer: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to start queue consumer: ${getErrorMessage(error)}`,
         { error },
         true
       );
@@ -440,7 +441,7 @@ export class MessageConsumer {
           logger.warn(
             {
               agentId: data.agentId,
-              err: err instanceof Error ? err.message : String(err),
+              err: getErrorMessage(err),
             },
             "Input guardrail check failed — proceeding without guardrails"
           );
@@ -566,7 +567,7 @@ export class MessageConsumer {
         logger.error(
           {
             traceId,
-            error: bgError instanceof Error ? bgError.message : String(bgError),
+            error: getErrorMessage(bgError),
             stack: bgError instanceof Error ? bgError.stack : undefined,
             deploymentName,
             userId: data.userId,
@@ -590,7 +591,7 @@ export class MessageConsumer {
     } catch (error) {
       queueSpan?.setStatus({
         code: SpanStatusCode.ERROR,
-        message: error instanceof Error ? error.message : String(error),
+        message: getErrorMessage(error),
       });
       queueSpan?.end();
       Sentry.captureException(error);
@@ -599,7 +600,7 @@ export class MessageConsumer {
       // Re-throw for queue retry handling
       throw new OrchestratorError(
         ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
-        `Failed to process message job: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to process message job: ${getErrorMessage(error)}`,
         { jobId, data, error },
         true
       );
@@ -644,7 +645,7 @@ export class MessageConsumer {
       logger.error(`❌ [ERROR] sendToWorkerQueue failed:`, error);
       throw new OrchestratorError(
         ErrorCode.QUEUE_JOB_PROCESSING_FAILED,
-        `Failed to send message to thread queue: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to send message to thread queue: ${getErrorMessage(error)}`,
         { deploymentName, data, error },
         true
       );
@@ -844,7 +845,7 @@ export class MessageConsumer {
           deploymentName,
           userId: data.userId,
           conversationId: data.conversationId,
-          error: error instanceof Error ? error.message : String(error),
+          error: getErrorMessage(error),
           stack: error instanceof Error ? error.stack : undefined,
           queueName: `thread_message_${deploymentName}`,
         },
@@ -891,7 +892,7 @@ export class MessageConsumer {
       logger.error("Failed to get queue stats:", error);
       return {
         isRunning: this.isRunning,
-        error: error instanceof Error ? error.message : String(error),
+        error: getErrorMessage(error),
       };
     }
   }

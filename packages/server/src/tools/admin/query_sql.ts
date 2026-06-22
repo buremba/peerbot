@@ -18,6 +18,7 @@ import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
 import { SortOrderField } from './schemas/common-fields';
 import { isAdminOrOwnerRole } from '../access-control';
+import { getErrorMessage } from "@lobu/core";
 
 export const QuerySqlSchema = Type.Object({
   sql: Type.String({
@@ -256,7 +257,7 @@ export async function querySqlImpl(
         execution_time_ms: Date.now() - startTime,
       };
     } catch (err) {
-      return errorResult(err instanceof Error ? err.message : String(err), startTime);
+      return errorResult(getErrorMessage(err), startTime);
     }
   }
 
@@ -271,7 +272,7 @@ export async function querySqlImpl(
     scopedSql = scoped.sql;
     params = scoped.params;
   } catch (err) {
-    return errorResult(err instanceof Error ? err.message : String(err), startTime);
+    return errorResult(getErrorMessage(err), startTime);
   }
 
   // Build search WHERE clause
@@ -332,7 +333,7 @@ export async function querySqlImpl(
       execution_time_ms: Date.now() - startTime,
     };
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
+    const msg = getErrorMessage(error);
     logger.error({ error }, 'query_sql error');
 
     if (msg.includes('timeout') || msg.includes('statement timeout')) {

@@ -483,21 +483,20 @@ export async function fetchClassificationStats(opts: {
       WHERE ${conditions.join(' AND ')}
     ),
     ranked_classifications AS (
+      -- P4: dedup per (event, stable classifier_id) directly; version ordering is redundant.
       SELECT
         cc.event_id,
-        ccv.classifier_id,
+        cc.classifier_id,
         cc."values",
         ROW_NUMBER() OVER (
-          PARTITION BY cc.event_id, ccv.classifier_id
+          PARTITION BY cc.event_id, cc.classifier_id
           ORDER BY
             CASE cc.source WHEN 'user' THEN 1 WHEN 'llm' THEN 2 ELSE 3 END,
-            ccv.version DESC,
             cc.created_at DESC
         ) as rn
       FROM event_classifications cc
       JOIN matching_content mc ON mc.id = cc.event_id
-      JOIN event_classifier_versions ccv ON cc.classifier_version_id = ccv.id
-      WHERE ccv.is_current = true
+      WHERE cc.classifier_id IS NOT NULL
     ),
     latest_classifications AS (
       SELECT event_id, classifier_id, "values"

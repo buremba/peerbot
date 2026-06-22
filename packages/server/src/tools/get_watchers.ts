@@ -964,7 +964,14 @@ async function getWatcherImpl(
     const watcherScopedParams = [args.watcher_id, ...entityLinkParams, effectiveBound];
     const noWatcherParams = [...entityLinkOnlyParams, effectiveBound];
 
-    const notInWindowClause = `NOT EXISTS (
+    // P6 watcher-membership read: "content NOT in any window of this watcher" via the event_edges
+    // mirror (watcher_id_hint replaces the watcher_windows JOIN) when flagged.
+    const notInWindowClause = windowMembershipViaEventEdges()
+      ? `NOT EXISTS (
+        SELECT 1 FROM event_edges iwc
+        WHERE iwc.child_event_id = f.id AND iwc.watcher_id_hint = $1 AND iwc.edge_type = 'membership'
+      )`
+      : `NOT EXISTS (
         SELECT 1 FROM watcher_window_events iwc
         JOIN watcher_windows iw ON iw.id = iwc.window_id
         WHERE iwc.event_id = f.id AND iw.watcher_id = $1
@@ -995,6 +1002,13 @@ async function getWatcherImpl(
       watcherScopedParams
     );
 
+    // P6 watcher-membership read: the "linked per month" histogram via the event_edges mirror.
+    const histViaEdges = windowMembershipViaEventEdges();
+    const histLinkedJoin = histViaEdges
+      ? `JOIN event_edges iwc ON f.id = iwc.child_event_id AND iwc.edge_type = 'membership'`
+      : `JOIN watcher_window_events iwc ON f.id = iwc.event_id
+              JOIN watcher_windows iw ON iwc.window_id = iw.id`;
+    const histWatcherCol = histViaEdges ? 'iwc.watcher_id_hint' : 'iw.watcher_id';
     const histogramPromise = args.include_pending_ranges
       ? Promise.all([
           sql.unsafe(
@@ -1009,11 +1023,10 @@ async function getWatcherImpl(
           sql.unsafe(
             `SELECT DATE_TRUNC('month', f.occurred_at) as month, COUNT(DISTINCT f.id) as linked
               FROM current_event_records f
-              JOIN watcher_window_events iwc ON f.id = iwc.event_id
-              JOIN watcher_windows iw ON iwc.window_id = iw.id
+              ${histLinkedJoin}
               WHERE ${entityScopeCondition}
                 ${occurredAtBound ? `AND ${occurredAtBound}` : ''}
-                AND iw.watcher_id = $1
+                AND ${histWatcherCol} = $1
               GROUP BY DATE_TRUNC('month', f.occurred_at)`,
             watcherScopedParams
           ),

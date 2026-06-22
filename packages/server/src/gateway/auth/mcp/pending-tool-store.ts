@@ -46,9 +46,16 @@ export async function storePendingTool(
  * on load and replays open approvals as approval cards; resolution stays
  * claim-and-delete via `takePendingTool`, so a row surfaced here disappears the
  * moment the user approves/denies and never replays.
+ *
+ * `organizationId` is REQUIRED — it MUST be the caller's AUTHORIZED org
+ * (resolved by the route's authorizeAgentAccess) and always scopes the read so a
+ * row can never cross tenants, defense-in-depth on top of the conversationId
+ * key. The route returns 403 when no org resolves rather than ever issuing an
+ * unscoped read.
  */
 export async function listPendingToolsForConversation(
 	conversationId: string,
+	organizationId: string,
 ): Promise<Array<PendingToolInvocation & { requestId: string }>> {
 	const sql = getDb();
 	const rows = await sql`
@@ -57,6 +64,7 @@ export async function listPendingToolsForConversation(
     WHERE scope = ${SCOPE}
       AND expires_at > now()
       AND payload->>'conversationId' = ${conversationId}
+      AND payload->>'organizationId' = ${organizationId}
     ORDER BY expires_at ASC
   `;
 	return rows.map((r) => {

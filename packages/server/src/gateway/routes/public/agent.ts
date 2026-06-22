@@ -1575,7 +1575,25 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
   // which is what pending tools are keyed by.
   app.get("/api/v1/agents/:agentId/pending-approvals", async (c) => {
     const conversationId = c.req.param("agentId");
-    const pending = await listPendingToolsForConversation(conversationId);
+    // The path param is the conversationId (sessionKey). Resolve the session to
+    // the real agentId + org and AUTHORIZE the caller BEFORE returning anything:
+    // these rows carry tool requestIds + arguments, so an
+    // unauthorized-for-this-conversation read is an IDOR. Mirror the messages
+    // route's pre-gate exactly.
+    const preSession = await sessMgr.getSession(conversationId);
+    const resolvedAgentId = preSession?.agentId || conversationId;
+    const access = await authorizeAgentAccess(c, resolvedAgentId, preSession);
+    if (access instanceof Response) return access;
+    // The read MUST be org-scoped. authorizeAgentAccess resolves the org for
+    // every legitimate caller; refuse rather than issue an unscoped read if it
+    // somehow didn't.
+    if (!access.organizationId) {
+      return c.json({ success: false, error: "Forbidden" }, 403);
+    }
+    const pending = await listPendingToolsForConversation(
+      conversationId,
+      access.organizationId
+    );
     return c.json({
       approvals: pending.map((p) => ({
         requestId: p.requestId,

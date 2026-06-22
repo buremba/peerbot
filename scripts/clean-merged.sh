@@ -7,11 +7,16 @@
 #
 # Dry-run by default. A worktree is reaped only when ALL hold:
 #   - it lives under .claude/worktrees/<name>  (a managed task worktree)
-#   - its branch is exactly feat/<name>        (the task-setup convention)
-#   - its PR is MERGED on GitHub               (the real gate — squash-safe,
-#     unlike `git merge-base --is-ancestor`, which a squash merge defeats)
-#   - the working tree is clean                (no uncommitted local work)
-# Anything else is KEPT with a printed reason, so this never surprises you.
+#   - its branch's PR is MERGED on GitHub      (squash-safe: gates on PR state,
+#     not `git merge-base --is-ancestor`, which a squash merge defeats)
+#   - the local branch tip is CONTAINED in the merged PR head — i.e. there are
+#     NO local commits beyond what was merged. This is the load-bearing guard:
+#     a branch can be merged AND carry unpushed local work on top, and reaping
+#     that would destroy the work. (Earlier a naive "working tree clean" check
+#     did exactly that to a branch with an unpushed fix.)
+#   - the working tree is clean                (no uncommitted local changes)
+#   - the worktree is NOT active               (no running dev server / bound port)
+# Anything else is KEPT with a printed reason. Active worktrees are tagged.
 
 set -euo pipefail
 
@@ -25,41 +30,65 @@ repo="$(dirname "$(git -C "$script_dir" rev-parse --path-format=absolute --git-c
 wt_root="$repo/.claude/worktrees"
 
 echo "→ fetching merged PRs from GitHub…"
-merged="$(gh pr list --state merged --limit 1000 --json headRefName -q '.[].headRefName' 2>/dev/null || true)"
-[[ -n "$merged" ]] || { echo "error: could not list merged PRs (gh auth / network?)" >&2; exit 1; }
-is_merged() { grep -qxF "$1" <<<"$merged"; }
+# Map of head branch → the commit SHA that was on the PR head when it merged.
+merged_map="$(gh pr list --state merged --limit 1000 --json headRefName,headRefOid \
+  -q '.[] | .headRefName + "\t" + .headRefOid' 2>/dev/null || true)"
+[[ -n "$merged_map" ]] || { echo "error: could not list merged PRs (gh auth / network?)" >&2; exit 1; }
+# First match wins — gh lists most-recent first, so a reused branch name resolves
+# to its latest merged PR head.
+merged_head_oid() { awk -F'\t' -v b="$1" '$1==b{print $2; exit}' <<<"$merged_map"; }
+
+# A worktree is "active" if a process is running from inside it, or its dev-server
+# port (from .env.local) is being listened on.
+is_active() {
+  local path="$1" port
+  pgrep -f "$path" >/dev/null 2>&1 && return 0
+  port="$(awk -F= '/^PORT=/{print $2; exit}' "$path/.env.local" 2>/dev/null | tr -d '[:space:]')"
+  [[ "$port" =~ ^[0-9]+$ ]] && lsof -nP -iTCP:"$port" -sTCP:LISTEN -t >/dev/null 2>&1 && return 0
+  return 1
+}
 
 reap=()
+active_kept=0
 
-# Parse `git worktree list --porcelain` into "<path>\t<branch>" for attached
-# worktrees (detached HEADs print no branch line and are skipped).
 while IFS=$'\t' read -r path ref; do
   branch="${ref#refs/heads/}"
-  [[ "$branch" == "main" ]] && continue
   name="$(basename "$path")"
-  # Only manage worktrees that live directly under .claude/worktrees/<name>.
-  [[ "$path" == "$wt_root/$name" ]] || continue
+  [[ "$path" == "$wt_root/$name" ]] || continue   # managed worktrees only
+  [[ "$branch" == "main" ]] && continue
 
-  if [[ "$branch" != "feat/$name" ]]; then
-    printf "  keep   %-32s non-standard branch (%s)\n" "$name" "$branch"
-    continue
+  tag=""; is_active "$path" && { tag=" [ACTIVE]"; }
+
+  if [[ -z "$branch" || "$ref" != refs/heads/* ]]; then
+    printf "  keep   %-32s detached HEAD%s\n" "$name" "$tag"; continue
   fi
-  if ! is_merged "$branch"; then
-    printf "  keep   %-32s PR not merged (open/none)\n" "$name"
-    continue
+  head_oid="$(merged_head_oid "$branch")"
+  if [[ -z "$head_oid" ]]; then
+    printf "  keep   %-32s PR not merged (open/none)%s\n" "$name" "$tag"; continue
+  fi
+  local_tip="$(git -C "$path" rev-parse HEAD 2>/dev/null || echo none)"
+  if ! git -C "$path" merge-base --is-ancestor "$local_tip" "$head_oid" 2>/dev/null; then
+    printf "  keep   %-32s has local commits beyond merged PR (unpushed)%s\n" "$name" "$tag"; continue
   fi
   if [[ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]]; then
-    printf "  keep   %-32s merged but has uncommitted changes\n" "$name"
-    continue
+    printf "  keep   %-32s merged but has uncommitted changes%s\n" "$name" "$tag"; continue
   fi
-  printf "  REAP   %-32s merged + clean\n" "$name"
+  if [[ -n "$tag" ]]; then
+    printf "  keep   %-32s merged + clean but ACTIVE (server running)\n" "$name"
+    active_kept=$((active_kept + 1)); continue
+  fi
+  printf "  REAP   %-32s merged + clean + fully pushed\n" "$name"
   reap+=("$name")
 done < <(git -C "$repo" worktree list --porcelain | awk '
-  /^worktree /{wt=$2}
-  /^branch /{print wt"\t"$2}
+  /^worktree /{wt=$2; br=""}
+  /^branch /{br=$2}
+  /^detached/{br="detached"}
+  /^$/{if(wt!=""){print wt"\t"br; wt=""}}
+  END{if(wt!=""){print wt"\t"br}}
 ')
 
 echo ""
+[[ $active_kept -gt 0 ]] && echo "($active_kept merged worktree(s) kept because they are ACTIVE — stop the server to reap them.)"
 if [[ ${#reap[@]} -eq 0 ]]; then
   echo "Nothing to reap."
   exit 0
@@ -73,8 +102,9 @@ fi
 echo "Reaping ${#reap[@]} worktree(s)…"
 for name in "${reap[@]}"; do
   echo "── $name ──"
-  # --force is safe here: the merged-PR gate already proved the work is landed,
-  # and we only reach this for a clean working tree.
+  # --force is safe here: we proved the local tip is contained in the merged PR
+  # head (nothing unpushed) and the tree is clean. task-clean reads the
+  # worktree's real branch, so a non-standard branch is cleaned correctly.
   "$script_dir/task-clean.sh" "$name" --force || echo "warning: task-clean failed for '$name'" >&2
 done
 echo "✓ done"

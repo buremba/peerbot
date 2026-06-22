@@ -42,7 +42,8 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # `make task-clean` from inside a worktree targets the right paths.
 repo="$(dirname "$(git -C "$script_dir" rev-parse --path-format=absolute --git-common-dir)")"
 worktree_dir="$repo/.claude/worktrees/$name"
-branch="feat/$name"
+default_branch="feat/$name"
+branch="$default_branch"
 
 # shellcheck source=scripts/lib/db-name.sh
 . "$script_dir/lib/db-name.sh"
@@ -51,6 +52,12 @@ if [[ ! -d "$worktree_dir" ]]; then
   echo "error: no worktree at $worktree_dir" >&2
   exit 1
 fi
+
+# task-setup creates feat/<name>, but a worktree may sit on any branch. Clean up
+# the branch it's ACTUALLY on (so a non-standard branch — revert/…, chore/… — is
+# deleted, not silently left behind), keeping feat/<name> as the fallback.
+actual_branch="$(git -C "$worktree_dir" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+[[ -n "$actual_branch" ]] && branch="$actual_branch"
 
 # Count commits on $branch that aren't reachable from $upstream. Echoes 0 when
 # $upstream is missing (treats "no upstream" as "no proven publish"; caller
@@ -108,26 +115,37 @@ fi
 echo "→ removing worktree $worktree_dir"
 git -C "$repo" worktree remove "$worktree_dir" --force
 
-if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
-  echo "→ deleting lobu branch $branch"
-  git -C "$repo" branch -D "$branch"
-fi
-
-if [[ -d "$repo/packages/owletto" ]] \
-   && git -C "$repo/packages/owletto" show-ref --verify --quiet "refs/heads/$branch"; then
-  echo "→ deleting owletto branch $branch"
-  git -C "$repo/packages/owletto" branch -D "$branch"
-fi
+# Delete the branch the worktree was on AND the feat/<name> default (they can
+# differ). De-dup so we don't try the same branch twice.
+delete_branch() { # <gitdir> <label>
+  local gitdir="$1" label="$2" seen=""
+  for b in "$branch" "$default_branch"; do
+    [[ -n "$b" ]] || continue
+    case " $seen " in *" $b "*) continue ;; esac
+    seen="$seen $b"
+    if git -C "$gitdir" show-ref --verify --quiet "refs/heads/$b"; then
+      echo "→ deleting $label branch $b"
+      git -C "$gitdir" branch -D "$b"
+    fi
+  done
+}
+delete_branch "$repo" lobu
+[[ -d "$repo/packages/owletto" ]] && delete_branch "$repo/packages/owletto" owletto
 
 # Drop the per-branch dev database created by `make dev-db`. The name depends on
 # how dev-db was invoked: `make dev-db` inside the worktree keys off the branch
 # (lobu_feat_<name>), while `make dev-db NAME=<name>` keys off the bare name
-# (lobu_<name>). Drop both candidates via the shared `lobu_db_name` helper so the
-# name can't drift from what dev-db created. Non-fatal: a missing DB or an
-# unreachable Postgres just skips (cleanup must still finish).
+# (lobu_<name>). Try every candidate — the bare name, the actual branch, and the
+# feat/<name> default — via the shared `lobu_db_name` helper so the name can't
+# drift from what dev-db created. Non-fatal: a missing DB or an unreachable
+# Postgres just skips (cleanup must still finish).
 export PGHOST="${PGHOST:-localhost}" PGPORT="${PGPORT:-5432}" PGUSER="${PGUSER:-$USER}"
-for raw in "$name" "$branch"; do
+dropped_dbs=""
+for raw in "$name" "$branch" "$default_branch"; do
+  [[ -n "$raw" ]] || continue
   db="$(lobu_db_name "$raw")"
+  case " $dropped_dbs " in *" $db "*) continue ;; esac
+  dropped_dbs="$dropped_dbs $db"
   # Never drop a shared database. The only realistic collision is a task named
   # "test" → lobu_test (the shared integration-test DB).
   case "$db" in

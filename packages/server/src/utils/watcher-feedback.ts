@@ -8,6 +8,21 @@
 import { getDb } from '../db/client';
 
 /**
+ * Correction-events (P1) phase 2: read window-field corrections from the events spine
+ * (semantic_type='correction', mirrored from watcher_window_field_feedback by the phase-1
+ * trigger) instead of the watcher_window_field_feedback table, when FEEDBACK_VIA_CORRECTIONS is
+ * set. The correction events are an accurate mirror (the table is append-only; the trigger fires
+ * on every INSERT; historic rows are backfilled), so the reads are EQUIVALENT. FLAG-GATED for a
+ * staged cutover (default OFF = the table). DEPLOY GATE: run
+ * scripts/backfill-feedback-corrections.sh before enabling the flag. Phase 3 drops the table.
+ */
+export function feedbackViaCorrections(): boolean {
+  return (
+    process.env.FEEDBACK_VIA_CORRECTIONS === '1' || process.env.FEEDBACK_VIA_CORRECTIONS === 'true'
+  );
+}
+
+/**
  * Build a human-readable summary of past user corrections for a watcher.
  *
  * Returns only the most-recent correction per (field_path) — earlier
@@ -19,7 +34,23 @@ export async function getRecentFeedbackSummary(
   limit = 20
 ): Promise<string | undefined> {
   const sql = getDb();
-  const feedback = await sql`
+  const feedback = feedbackViaCorrections()
+    ? await sql`
+        SELECT DISTINCT ON (e.metadata->>'field_path')
+               e.metadata->>'field_path' AS field_path,
+               e.metadata->>'mutation' AS mutation,
+               e.metadata->'corrected_value' AS corrected_value,
+               e.metadata->>'note' AS note,
+               e.created_at,
+               w.window_start, w.window_end
+        FROM events e
+        JOIN watcher_windows w ON (e.metadata->>'window_id')::bigint = w.id
+        WHERE e.semantic_type = 'correction'
+          AND (e.metadata->>'watcher_id')::bigint = ${watcherId}
+        ORDER BY e.metadata->>'field_path', e.created_at DESC
+        LIMIT ${limit}
+      `
+    : await sql`
     SELECT DISTINCT ON (f.field_path)
            f.field_path, f.mutation, f.corrected_value, f.note, f.created_at,
            w.window_start, w.window_end

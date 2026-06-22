@@ -4,6 +4,7 @@
  */
 
 import { getDb } from '../../../db/client';
+import { feedbackViaCorrections } from '../../../utils/watcher-feedback';
 import type { ToolContext } from '../../registry';
 import type { ManageWatchersArgs, ManageWatchersResult } from '../manage_watchers';
 
@@ -111,9 +112,46 @@ export async function handleGetFeedback(
   const limit = args.limit ?? 50;
 
   // Scope to the caller's current org so a member of org A can't enumerate
-  // feedback for a watcher in org B by passing its watcher_id.
-  const feedback = args.window_id
-    ? await sql`
+  // feedback for a watcher in org B by passing its watcher_id. Correction-events (P1) phase 2:
+  // read from the events mirror behind FEEDBACK_VIA_CORRECTIONS (the feedback id is recovered
+  // from origin_id 'wwff_<id>' so the response is equivalent; org-scoping stays identical).
+  // created_by is equivalent on the happy path; it only differs AFTER the author user is deleted
+  // (the table keeps the dangling id, the event shows NULL via events.created_by's FK SET NULL —
+  // the event is arguably more correct). Accepted: the mirror can't store a non-user id without
+  // breaking the feedback submit on events_created_by_fkey (the reason for the phase-1 resolve).
+  const feedback = feedbackViaCorrections()
+    ? args.window_id
+      ? await sql`
+          SELECT (substring(e.origin_id from 6))::bigint AS id,
+                 (e.metadata->>'window_id')::bigint AS window_id,
+                 e.metadata->>'field_path' AS field_path, e.metadata->>'mutation' AS mutation,
+                 e.metadata->'corrected_value' AS corrected_value, e.metadata->>'note' AS note,
+                 e.created_by, e.created_at, w.window_start, w.window_end
+          FROM events e
+          JOIN watcher_windows w ON (e.metadata->>'window_id')::bigint = w.id
+          WHERE e.semantic_type = 'correction'
+            AND (e.metadata->>'watcher_id')::bigint = ${watcherId}
+            AND (e.metadata->>'window_id')::bigint = ${args.window_id}
+            AND e.organization_id = ${ctx.organizationId}
+          ORDER BY e.created_at DESC
+          LIMIT ${limit}
+        `
+      : await sql`
+          SELECT (substring(e.origin_id from 6))::bigint AS id,
+                 (e.metadata->>'window_id')::bigint AS window_id,
+                 e.metadata->>'field_path' AS field_path, e.metadata->>'mutation' AS mutation,
+                 e.metadata->'corrected_value' AS corrected_value, e.metadata->>'note' AS note,
+                 e.created_by, e.created_at, w.window_start, w.window_end
+          FROM events e
+          JOIN watcher_windows w ON (e.metadata->>'window_id')::bigint = w.id
+          WHERE e.semantic_type = 'correction'
+            AND (e.metadata->>'watcher_id')::bigint = ${watcherId}
+            AND e.organization_id = ${ctx.organizationId}
+          ORDER BY e.created_at DESC
+          LIMIT ${limit}
+        `
+    : args.window_id
+      ? await sql`
         SELECT f.id, f.window_id, f.field_path, f.mutation, f.corrected_value,
                f.note, f.created_by, f.created_at,
                w.window_start, w.window_end
@@ -125,7 +163,7 @@ export async function handleGetFeedback(
         ORDER BY f.created_at DESC
         LIMIT ${limit}
       `
-    : await sql`
+      : await sql`
         SELECT f.id, f.window_id, f.field_path, f.mutation, f.corrected_value,
                f.note, f.created_by, f.created_at,
                w.window_start, w.window_end

@@ -292,6 +292,62 @@ describe("createSlackAppInstallationStore (Slack consolidation)", () => {
     expect(listed.map((r) => r.id)).toContain(legacyRow.id);
   });
 
+  test("a FAILED mirror write is NOT swallowed — install errors instead of routing stale", async () => {
+    // Reads PREFER app_installations. If the mirror write fails during an A->B
+    // transfer, app_installations stays on org A while legacy moves to org B —
+    // getByTeamId (preferring app_installations) would then route to the STALE
+    // old org. The mirror failure must therefore be rethrown so the caller
+    // errors/retries, never silently succeeding on a stale mirror.
+    const { createPostgresAppInstallationStore } = await import(
+      "../../../lobu/stores/app-installation-store.js"
+    );
+    await seedAgentRow("ta", { organizationId: "org-stale-a" });
+    await seedAgentRow("tb", { organizationId: "org-stale-b" });
+
+    const postgresSecretStore = new PostgresSecretStore();
+    const secretStore = new SecretStoreRegistry(postgresSecretStore, {
+      secret: postgresSecretStore,
+    });
+    // A generic store whose upsert fails ONLY for org-stale-b (the transfer
+    // target) — org A's first install mirrors fine, the B transfer mirror throws.
+    const realAppStore = createPostgresAppInstallationStore();
+    const failingAppStore = {
+      ...realAppStore,
+      upsert: async (install: Parameters<typeof realAppStore.upsert>[0]) => {
+        if (install.organizationId === "org-stale-b") {
+          throw new Error("simulated mirror write failure");
+        }
+        return realAppStore.upsert(install);
+      },
+    };
+    const store = createSlackAppInstallationStore(secretStore, {
+      appInstallationStore: failingAppStore,
+    });
+
+    // A installs cleanly (both tables on org A).
+    const a = await store.upsertByTeam("org-stale-a", "TSTALE", {
+      botToken: "xoxb-a",
+    });
+    expect((await store.getByTeamId("TSTALE"))?.organizationId).toBe(
+      "org-stale-a"
+    );
+
+    // Transfer to B: the legacy write succeeds but the mirror throws. The whole
+    // upsert must reject — the caller (OAuth install) sees the failure and retries
+    // rather than believing the transfer landed.
+    await expect(
+      store.upsertByTeam("org-stale-b", "TSTALE", { botToken: "xoxb-b" })
+    ).rejects.toThrow(/simulated mirror write failure/);
+
+    // app_installations was never updated to B (its mirror write threw), so it
+    // still reflects org A — proving the failure was surfaced, not swallowed into
+    // a half-applied transfer the reads would trust. (The id is A's, not a new B
+    // row that getByTeamId would route to.)
+    const stillA = await store.getById(a.id);
+    expect(stillA?.organizationId).toBe("org-stale-a");
+    expect(stillA?.status).toBe("active");
+  });
+
   describe("degrade when slack_installations is dropped (contract deploy window)", () => {
     // The contract release drops slack_installations via a pre-upgrade hook
     // while these (expand) pods may still serve installs. Every legacy read AND

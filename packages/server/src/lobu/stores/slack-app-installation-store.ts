@@ -300,16 +300,22 @@ export function createSlackAppInstallationStore(
         );
         return upsertAppOnly(organizationId, teamId, data);
       }
+      // The mirror write must NOT be swallowed: reads PREFER app_installations,
+      // so a failed mirror would leave it stale (e.g. still on the old org after
+      // a transfer) while getByTeamId keeps returning that stale row. Asymmetric
+      // tolerance: only the legacy `slack_installations` missing-table case (42P01,
+      // handled above) is the phase-out path we degrade through — a failure on the
+      // preferred-read MIRROR is a hard error. Rethrow after logging so the caller
+      // errors/retries (OAuth install retries) rather than routing stale. The
+      // legacy row is already written, so a retry is idempotent per (org, team).
       try {
         await mirrorToApp(row);
       } catch (error) {
-        // Dual-write must not break the live install path: the legacy row is the
-        // source of truth this PR still reads through as a fallback. Log and
-        // continue; the backfill migration + next reinstall reconcile the mirror.
-        logger.warn(
+        logger.error(
           { id: row.id, teamId, error: String(error) },
-          "Failed to mirror Slack install into app_installations (dual-write)"
+          "Failed to mirror Slack install into app_installations — refusing to route on a stale mirror"
         );
+        throw error;
       }
       return row;
     },

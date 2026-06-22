@@ -26,6 +26,11 @@ import { trackWatcherReaction } from '../../utils/watcher-reactions';
 import type { ToolContext } from '../registry';
 import { getOrgUrlContext } from '../view-urls';
 import { action, defineActionTool } from './action-tool';
+import {
+  MANAGE_AGENTS_ACTION_KEY,
+  type ManageAgentsProposal,
+  applyManageAgentsProposal,
+} from './manage_agents';
 import { PaginationFields } from './schemas/common-fields';
 
 const BackendLiteral = Type.Union([
@@ -1031,6 +1036,132 @@ export async function supersedeActionEvent(
   return Number(nextEvent.id);
 }
 
+/**
+ * Claim a pending builder-gate run (manage_agents create/update/delete) for the
+ * given action. Returns the claimed run row (with the held proposal +
+ * requester) or null when this run_id isn't a pending manage_agents run — in
+ * which case the caller falls through to the connector-operation path.
+ */
+async function claimManageAgentsRun(
+  runId: number,
+  organizationId: string,
+  decision: 'approved' | 'rejected',
+  rejectReason?: string
+): Promise<
+  | { proposal: ManageAgentsProposal; requesterUserId: string | null }
+  | null
+> {
+  const sql = getDb();
+  const rows =
+    decision === 'approved'
+      ? await sql`
+          UPDATE runs
+          SET approval_status = 'approved', status = 'running'
+          WHERE id = ${runId}
+            AND organization_id = ${organizationId}
+            AND approval_status = 'pending'
+            AND run_type = 'internal'
+            AND action_key = ${MANAGE_AGENTS_ACTION_KEY}
+          RETURNING action_input, created_by_user_id
+        `
+      : await sql`
+          UPDATE runs
+          SET approval_status = 'rejected', status = 'cancelled',
+              error_message = ${rejectReason ?? 'Rejected by user'}, completed_at = NOW()
+          WHERE id = ${runId}
+            AND organization_id = ${organizationId}
+            AND approval_status = 'pending'
+            AND run_type = 'internal'
+            AND action_key = ${MANAGE_AGENTS_ACTION_KEY}
+          RETURNING action_input, created_by_user_id
+        `;
+  if (rows.length === 0) return null;
+  const row = rows[0] as {
+    action_input: ManageAgentsProposal | null;
+    created_by_user_id: string | null;
+  };
+  if (!row.action_input) return null;
+  return { proposal: row.action_input, requesterUserId: row.created_by_user_id };
+}
+
+/**
+ * Approve + apply a builder-gate manage_agents run. Returns a result when the
+ * run was a pending manage_agents run; null to fall through to the
+ * connector-operation approval path.
+ */
+async function tryApproveManageAgentsRun(
+  args: Static<typeof ApproveAction>,
+  ctx: ToolContext,
+  env: Env
+): Promise<ManageOperationsResult | null> {
+  const claimed = await claimManageAgentsRun(
+    args.run_id,
+    ctx.organizationId,
+    'approved'
+  );
+  if (!claimed) return null;
+
+  const { proposal, requesterUserId } = claimed;
+  await supersedeActionEvent(
+    args.run_id,
+    ctx.organizationId,
+    'confirmed',
+    `manage_agents.${proposal.action} — executing`,
+    `Builder action confirmed: ${proposal.action} ${proposal.agent_id}`,
+    {}
+  );
+
+  try {
+    const output = await applyManageAgentsProposal(
+      proposal,
+      ctx,
+      env,
+      requesterUserId
+    );
+    await getDb()`
+      UPDATE runs SET status = 'completed', completed_at = NOW(),
+        action_output = ${getDb().json(output as unknown as Record<string, unknown>)}
+      WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
+    `;
+    const eventId = await supersedeActionEvent(
+      args.run_id,
+      ctx.organizationId,
+      'completed',
+      `manage_agents.${proposal.action} — completed`,
+      `Builder action completed: ${proposal.action} ${proposal.agent_id}`,
+      { output: output as unknown as Record<string, unknown> }
+    );
+    return {
+      action: 'approve',
+      approved: true,
+      run_id: args.run_id,
+      event_id: eventId,
+      message: `Agent ${proposal.action} approved and applied.`,
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await getDb()`
+      UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMessage}
+      WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
+    `;
+    const eventId = await supersedeActionEvent(
+      args.run_id,
+      ctx.organizationId,
+      'failed',
+      `manage_agents.${proposal.action} — failed`,
+      `Builder action failed: ${proposal.action} ${proposal.agent_id} — ${errorMessage}`,
+      { error_message: errorMessage }
+    );
+    return {
+      action: 'approve',
+      approved: true,
+      run_id: args.run_id,
+      event_id: eventId,
+      message: `Agent ${proposal.action} approved but failed: ${errorMessage}`,
+    };
+  }
+}
+
 async function handleApprove(
   args: Static<typeof ApproveAction>,
   ctx: ToolContext,
@@ -1044,6 +1175,14 @@ async function handleApprove(
   }
 
   const sql = getDb();
+
+  // Builder-gate runs (manage_agents create/update/delete) reuse this same
+  // durable approval path but have run_type='internal' + no connection. Apply
+  // them via the manage_agents handlers rather than the connector-operation
+  // executor.
+  const builderResult = await tryApproveManageAgentsRun(args, ctx, env);
+  if (builderResult) return builderResult;
+
   const runRows = await sql`
     UPDATE runs
     SET approval_status = 'approved',
@@ -1149,6 +1288,26 @@ async function handleReject(
 
   const sql = getDb();
   const reason = args.reason ?? 'Rejected by user';
+
+  // Builder-gate run? Cancel it without touching the agents table.
+  const claimedBuilder = await claimManageAgentsRun(
+    args.run_id,
+    ctx.organizationId,
+    'rejected',
+    reason
+  );
+  if (claimedBuilder) {
+    const eventId = await supersedeActionEvent(
+      args.run_id,
+      ctx.organizationId,
+      'rejected',
+      `manage_agents.${claimedBuilder.proposal.action} — rejected`,
+      `Builder action rejected: ${claimedBuilder.proposal.action} ${claimedBuilder.proposal.agent_id}${args.reason ? ` — ${args.reason}` : ''}`,
+      { reason }
+    );
+    return { action: 'reject', rejected: true, run_id: args.run_id, event_id: eventId };
+  }
+
   const updated = await sql`
     UPDATE runs
     SET approval_status = 'rejected', status = 'cancelled', error_message = ${reason}, completed_at = NOW()

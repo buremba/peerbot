@@ -113,7 +113,7 @@ function tokensMatch(presented: string, configured: string): boolean {
  * shared secret and constant-time compare against the header digest. Returns
  * false on any miss (no header, malformed hex) — the caller fails closed.
  */
-function verifyWebhookSignature(
+export function verifyWebhookSignature(
 	rawBody: Uint8Array,
 	headerValue: string | null,
 	secret: string,
@@ -176,7 +176,7 @@ function extractPresentedToken(
  * Content-Length lie (or chunked encoding) must not buffer an unbounded
  * body into memory. Returns null when over the cap.
  */
-async function readBodyWithCap(
+export async function readBodyWithCap(
 	request: Request,
 	maxBytes: number,
 ): Promise<Uint8Array | null> {

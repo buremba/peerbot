@@ -10,6 +10,7 @@ import { takePendingTool } from "../auth/mcp/pending-tool-store.js";
 import { setEnvResolver } from "../auth/mcp/string-substitution.js";
 import { createAuthProfileLabel } from "../auth/settings/auth-profiles-manager.js";
 import { SystemEnvStore } from "../auth/system-env-store.js";
+import { createPostgresAppInstallationStore } from "../../lobu/stores/app-installation-store.js";
 import { getMetricsText } from "../metrics/prometheus.js";
 import { getModelProviderModules } from "../modules/module-system.js";
 import { createAudioRoutes } from "../routes/internal/audio.js";
@@ -21,6 +22,11 @@ import { createImageRoutes } from "../routes/internal/images.js";
 import { createInteractionRoutes } from "../routes/internal/interactions.js";
 import { registerAutoOpenApiRoutes } from "../routes/openapi-auto.js";
 import { createAgentApi } from "../routes/public/agent.js";
+import {
+  createAppWebhookRoutes,
+  createDefaultAppWebhookSecretResolver,
+  createGithubAppWebhookProvider,
+} from "../routes/public/app-webhooks.js";
 import { createAgentConfigRoutes } from "../routes/public/agent-config.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
 import { createAgentRoutes } from "../routes/public/agents.js";
@@ -692,6 +698,26 @@ export function createGatewayApp(
   if (chatInstanceManager) {
     app.route("", createSlackRoutes(chatInstanceManager));
     app.route("", createConnectionWebhookRoutes(chatInstanceManager));
+
+    // Shared multi-tenant app-webhook router (app-installation design §4.3): one
+    // public endpoint per provider for an installed Lobu App. Only the GitHub
+    // plugin ships today, and only when the receiving GitHub App is configured
+    // (GITHUB_APP_ID) — otherwise the route is present but reports the provider
+    // unknown (404), since a missing app id can't match any installation.
+    const appWebhookSecretStore = coreServices.getSecretStore();
+    const githubAppId = process.env.GITHUB_APP_ID;
+    app.route(
+      "",
+      createAppWebhookRoutes({
+        installationStore: createPostgresAppInstallationStore(),
+        secretStore: appWebhookSecretStore,
+        providers: githubAppId
+          ? [createGithubAppWebhookProvider({ appId: githubAppId })]
+          : [],
+        resolveAppWebhookSecret:
+          createDefaultAppWebhookSecretResolver(appWebhookSecretStore),
+      }),
+    );
     app.route(
       "",
       createConnectionCrudRoutes(chatInstanceManager, {

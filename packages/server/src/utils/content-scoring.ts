@@ -11,6 +11,7 @@ import {
   entityLinkMatchSql,
   excludeWatcherNotExists,
   fetchEntityIdentityScopes,
+  windowMembershipViaEventEdges,
 } from './content-search';
 import {
   buildClassificationExistsClauses,
@@ -171,9 +172,17 @@ async function buildFilterConditionsAndJoins(
 
   if (filters?.window_id !== undefined) {
     const validatedWindowId = validateNumericId(filters.window_id, 'window_id');
-    additionalJoins.push('JOIN watcher_window_events iwc ON iwc.event_id = f.id');
     params.push(validatedWindowId);
-    filterConditions.push(`iwc.window_id = $${paramIndex++}`);
+    // P6 window-membership read: the score-sort path joins the same cutover as the date path.
+    if (windowMembershipViaEventEdges()) {
+      additionalJoins.push(
+        "JOIN event_edges iwc ON iwc.child_event_id = f.id AND iwc.edge_type = 'membership'"
+      );
+      filterConditions.push(`iwc.parent_event_id = $${paramIndex++}`);
+    } else {
+      additionalJoins.push('JOIN watcher_window_events iwc ON iwc.event_id = f.id');
+      filterConditions.push(`iwc.window_id = $${paramIndex++}`);
+    }
   }
 
   if (filters?.exclude_watcher_id !== undefined) {

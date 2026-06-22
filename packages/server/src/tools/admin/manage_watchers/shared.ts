@@ -307,7 +307,7 @@ export async function requireWatcherAccess(
 // Batch content counting
 // ============================================
 
-import { entityLinkMatchSql } from '../../../utils/content-search';
+import { entityLinkMatchSql, windowMembershipViaEventEdges } from '../../../utils/content-search';
 
 /**
  * Batch count unanalyzed content for multiple watchers in a single query.
@@ -334,6 +334,12 @@ export async function batchCountUnanalyzedContent(
   // semantics above the cap; the only consumer is a list-row badge that
   // doesn't need exact counts above a threshold.
   const TOTAL_CAP = 1000;
+  // P6 window-membership read: count analyzed events via the event_edges mirror when flagged.
+  const iwcViaEdges = windowMembershipViaEventEdges();
+  const iwcContentCol = iwcViaEdges ? 'iwc.child_event_id' : 'iwc.event_id';
+  const iwcWindowJoin = iwcViaEdges
+    ? `LEFT JOIN event_edges iwc ON iwc.parent_event_id = iw.id AND iwc.edge_type = 'membership'`
+    : `LEFT JOIN watcher_window_events iwc ON iwc.window_id = iw.id`;
   const result = await sql.unsafe(
     `
     WITH watcher_entities AS (
@@ -345,10 +351,10 @@ export async function batchCountUnanalyzedContent(
     analyzed_counts AS (
       SELECT
         ie.watcher_id,
-        COUNT(DISTINCT iwc.event_id) as analyzed_count
+        COUNT(DISTINCT ${iwcContentCol}) as analyzed_count
       FROM (SELECT DISTINCT watcher_id FROM watcher_entities) ie
       LEFT JOIN watcher_windows iw ON iw.watcher_id = ie.watcher_id
-      LEFT JOIN watcher_window_events iwc ON iwc.window_id = iw.id
+      ${iwcWindowJoin}
       GROUP BY ie.watcher_id
     ),
     total_counts AS (

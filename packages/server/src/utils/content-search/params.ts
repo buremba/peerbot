@@ -1,6 +1,6 @@
 /**
  * Standard parameter-building helpers for the listing path:
- * buildStandardParams, buildStandardWhereSql, WINDOW_JOIN_SQL.
+ * buildStandardParams, buildStandardWhereSql, windowJoinSql, windowMembershipViaEventEdges.
  */
 
 import { pgTextArray } from '../../db/client';

@@ -26,6 +26,7 @@ import {
   buildEntityLinkUnion,
   STANDARD_IDENTITY_NAMESPACES,
   type EntityIdentityScope,
+  windowMembershipViaEventEdges,
 } from '../utils/content-search';
 import { formatDateISO, parseDateAlias } from '../utils/date-aliases';
 import { parseJsonObject } from '@lobu/core';
@@ -673,21 +674,29 @@ async function getWatcherImpl(
   if (windowIds.length > 0 && includeClassificationSummary) {
     try {
       logger.info({ windowCount: windowIds.length }, '[get_watcher] Fetching classification stats');
+      // P6 window-membership read: flip iwc from watcher_window_events to the event_edges mirror
+      // (the classifier JOINs are P4's concern, untouched). The window-id column is aliased back
+      // to `window_id` so the result shape is unchanged.
+      const viaEdges = windowMembershipViaEventEdges();
+      const iwcFrom = viaEdges ? 'event_edges iwc' : 'watcher_window_events iwc';
+      const iwcContentCol = viaEdges ? 'iwc.child_event_id' : 'iwc.event_id';
+      const iwcWindowCol = viaEdges ? 'iwc.parent_event_id' : 'iwc.window_id';
+      const iwcEdgeFilter = viaEdges ? `AND iwc.edge_type = 'membership'` : '';
       const statsResult = await sql.unsafe(
         `
         SELECT
-          iwc.window_id,
+          ${iwcWindowCol} AS window_id,
           cc.slug as classifier_slug,
           value as value,
           CAST(COUNT(*) AS INTEGER) as count
-        FROM watcher_window_events iwc
-        JOIN event_classifications cls ON iwc.event_id = cls.event_id
+        FROM ${iwcFrom}
+        JOIN event_classifications cls ON ${iwcContentCol} = cls.event_id
         JOIN event_classifier_versions ccv ON cls.classifier_version_id = ccv.id
         JOIN event_classifiers cc ON ccv.classifier_id = cc.id
         CROSS JOIN unnest(cls."values") AS t(value)
-        WHERE iwc.window_id IN (${windowIds.map((_: unknown, i: number) => `$${i + 1}`).join(', ')})
-        GROUP BY iwc.window_id, cc.slug, value
-        ORDER BY iwc.window_id, cc.slug, count DESC
+        WHERE ${iwcWindowCol} IN (${windowIds.map((_: unknown, i: number) => `$${i + 1}`).join(', ')}) ${iwcEdgeFilter}
+        GROUP BY ${iwcWindowCol}, cc.slug, value
+        ORDER BY ${iwcWindowCol}, cc.slug, count DESC
       `,
         windowIds
       );

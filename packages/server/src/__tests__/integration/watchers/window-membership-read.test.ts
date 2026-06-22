@@ -130,4 +130,57 @@ describe('window-membership read flip equivalence (P6 phase 3)', () => {
     expect(off).toEqual([inWin]); // the search path filtered to the in-window match
     expect(on).toEqual(off); // event_edges path identical
   });
+
+  it('the score-sort path (sort_by=score + window_id) returns the same content from table and event_edges', async () => {
+    const org = await createTestOrganization({ name: 'Win Score Org' });
+    const user = await createTestUser({ email: 'winscore@test.com' });
+    const entity = await createTestEntity({
+      organization_id: org.id,
+      created_by: user.id,
+      name: 'WinScoreEntity',
+    });
+    const agent = await createTestAgent({ organizationId: org.id, ownerUserId: user.id });
+
+    const mkEvent = async (slug: string) => {
+      const [e] = (await sql`
+        INSERT INTO events (organization_id, semantic_type, entity_ids, origin_id, payload_text, score, occurred_at, created_at)
+        VALUES (${org.id}, 'content', ARRAY[${Number(entity.id)}]::bigint[], ${slug}, 'scored', 5, NOW(), NOW())
+        RETURNING id
+      `) as Array<{ id: number }>;
+      return Number(e.id);
+    };
+    const inWin = await mkEvent('sc_in');
+    await mkEvent('sc_out'); // entity-linked, not in the window
+
+    const watcherId = 962000;
+    await sql`
+      INSERT INTO watchers (id, name, slug, created_by, organization_id, agent_id, watcher_group_id)
+      VALUES (${watcherId}, 'w', 'w-winscore', ${user.id}, ${org.id}, ${agent.agentId}, ${watcherId})
+    `;
+    const windowId = 962001;
+    await sql`
+      INSERT INTO watcher_windows (id, watcher_id, granularity, window_start, window_end, content_analyzed, extracted_data)
+      VALUES (${windowId}, ${watcherId}, 'daily', NOW(), NOW(), 0, '{}'::jsonb)
+    `;
+    await sql`INSERT INTO watcher_window_events (window_id, event_id) VALUES (${windowId}, ${inWin})`;
+
+    const runScore = async () => {
+      const res = await searchContentByText(null, {
+        organization_id: org.id,
+        entity_id: Number(entity.id),
+        window_id: windowId,
+        sort_by: 'score',
+        limit: 50,
+      });
+      return res.content.map((c) => Number(c.id)).sort((a, b) => a - b);
+    };
+
+    delete process.env.WATCHER_WINDOWS_VIA_EVENT_EDGES;
+    const off = await runScore();
+    process.env.WATCHER_WINDOWS_VIA_EVENT_EDGES = '1';
+    const on = await runScore();
+
+    expect(off).toEqual([inWin]); // the score path filtered to the in-window content
+    expect(on).toEqual(off); // event_edges path identical
+  });
 });

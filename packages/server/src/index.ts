@@ -67,7 +67,7 @@ import {
   restToolProxy,
   restUpdateContentClassification,
 } from './rest-api';
-import { entityLinkMatchSql } from './utils/content-search';
+import { entityLinkMatchSql, windowMembershipViaEventEdges } from './utils/content-search';
 import { isValidFrameAncestor } from './utils/csp';
 import { errorMessage } from './utils/errors';
 import logger from './utils/logger';
@@ -985,8 +985,15 @@ app.get('/api/:orgSlug/watchers/windows/:windowId', mcpAuth, async (c) => {
   const organizationId = c.var.organizationId;
 
   try {
-    // Get window details with watcher info
-    const windowResult = await sql`
+    // Get window details with watcher info. P6 window-membership read: count window content via
+    // the event_edges mirror when flagged (sql.unsafe so the iwf column/join can flip).
+    const iwfViaEdges = windowMembershipViaEventEdges();
+    const iwfContentCol = iwfViaEdges ? 'iwf.child_event_id' : 'iwf.event_id';
+    const iwfJoin = iwfViaEdges
+      ? `LEFT JOIN event_edges iwf ON iwf.parent_event_id = iw.id AND iwf.edge_type = 'membership'`
+      : `LEFT JOIN watcher_window_events iwf ON iwf.window_id = iw.id`;
+    const windowResult = await sql.unsafe(
+      `
       SELECT
         iw.*,
         i.entity_ids,
@@ -995,18 +1002,20 @@ app.get('/api/:orgSlug/watchers/windows/:windowId', mcpAuth, async (c) => {
         e.name as entity_name,
         et.slug AS entity_type,
         parent.name as parent_name,
-        CAST(COUNT(iwf.event_id) AS INTEGER) as content_count
+        CAST(COUNT(${iwfContentCol}) AS INTEGER) as content_count
       FROM watcher_windows iw
       JOIN watchers i ON iw.watcher_id = i.id
       JOIN entities e ON e.id = ANY(i.entity_ids)
       JOIN entity_types et ON et.id = e.entity_type_id
       LEFT JOIN entities parent ON e.parent_id = parent.id
-      LEFT JOIN watcher_window_events iwf ON iwf.window_id = iw.id
-      WHERE iw.id = ${windowId}
-        AND e.organization_id = ${organizationId}
+      ${iwfJoin}
+      WHERE iw.id = $1
+        AND e.organization_id = $2
         AND i.status = 'active'
       GROUP BY iw.id, i.entity_ids, i.slug, i.name, e.name, et.slug, parent.name
-    `;
+    `,
+      [windowId, organizationId]
+    );
 
     if (windowResult.length === 0) {
       return c.json({ error: 'Window not found' }, 404);

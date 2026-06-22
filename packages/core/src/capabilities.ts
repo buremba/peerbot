@@ -12,12 +12,6 @@
 // WORKER_API_TOKEN and the `c.var.workerAuthMode !== 'user'` branch) bypasses
 // authorization entirely; we trust them by definition.
 
-export type DevicePlatform =
-  | "macos"
-  | "ios"
-  | "chrome-extension"
-  | (string & {});
-
 // Capability strings — keep namespaced (`browser.*`, `os.*`, `ios.*`) so the
 // registry stays readable as new device kinds land.
 export const BROWSER_CAPABILITIES = [

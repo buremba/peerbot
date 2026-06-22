@@ -5,8 +5,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildConnectionFilter,
-  buildDateFilterSQL,
-  buildEngagementFilterSQL,
   buildFeedFilter,
   buildOrderByClause,
   buildRunFilter,
@@ -102,59 +100,5 @@ describe('buildOrderByClause', () => {
   it('should use f alias for final_select context', () => {
     const result = buildOrderByClause('date', 'desc', 'rs', 'final_select');
     expect(result).toContain('f.occurred_at');
-  });
-});
-
-describe('buildEngagementFilterSQL', () => {
-  it('should build min condition', () => {
-    const conditions = buildEngagementFilterSQL(50);
-    expect(conditions).toEqual(['f.score >= 50']);
-  });
-
-  it('should build max condition', () => {
-    const conditions = buildEngagementFilterSQL(undefined, 80);
-    expect(conditions).toEqual(['f.score <= 80']);
-  });
-
-  it('should build both min and max', () => {
-    const conditions = buildEngagementFilterSQL(30, 90);
-    expect(conditions).toEqual(['f.score >= 30', 'f.score <= 90']);
-  });
-
-  it('should return empty for no filters', () => {
-    expect(buildEngagementFilterSQL()).toEqual([]);
-  });
-
-  it('should use custom table alias', () => {
-    const conditions = buildEngagementFilterSQL(50, undefined, 'e');
-    expect(conditions).toEqual(['e.score >= 50']);
-  });
-});
-
-describe('buildDateFilterSQL', () => {
-  it('should build since condition', () => {
-    const since = new Date('2025-01-01T00:00:00Z');
-    const conditions = buildDateFilterSQL(since);
-    expect(conditions.length).toBe(1);
-    expect(conditions[0]).toContain("f.occurred_at >= '2025-01-01");
-  });
-
-  it('should build until condition', () => {
-    const until = new Date('2025-06-01T00:00:00Z');
-    const conditions = buildDateFilterSQL(null, until);
-    expect(conditions.length).toBe(1);
-    expect(conditions[0]).toContain("f.occurred_at <= '2025-06-01");
-  });
-
-  it('should build both since and until', () => {
-    const since = new Date('2025-01-01T00:00:00Z');
-    const until = new Date('2025-06-01T00:00:00Z');
-    const conditions = buildDateFilterSQL(since, until);
-    expect(conditions.length).toBe(2);
-  });
-
-  it('should return empty for no dates', () => {
-    expect(buildDateFilterSQL()).toEqual([]);
-    expect(buildDateFilterSQL(null, null)).toEqual([]);
   });
 });

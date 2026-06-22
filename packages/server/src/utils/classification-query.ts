@@ -510,11 +510,14 @@ async function upsertClassifications(
   for (let i = 0; i < allClassifications.length; i += BATCH_SIZE) {
     const batch = allClassifications.slice(i, i + BATCH_SIZE);
 
-    // Each row needs 10 params: event_id, classifier_id, values, confidences,
-    // source, is_manual, met_threshold, threshold, best_match_attribute, embedding_confidence
+    // Each row BINDS 8 params (event_id, classifier_id, values, confidences, met_threshold,
+    // threshold, best_match_attribute, embedding_confidence); watcher_id/window_id are NULL and
+    // source/is_manual are literals. The stride MUST be 8 — the old `j * 10` overran by 2 per row,
+    // so any batch with >1 classification mis-mapped params (row 2 read $11.. while its params sat
+    // at $9..) and Postgres rejected it. Single-classification batches were unaffected (j=0).
     const valuePlaceholders = batch
       .map((_, j) => {
-        const base = j * 10;
+        const base = j * 8;
         return `($${base + 1}, $${base + 2}, NULL, NULL, $${base + 3}, $${base + 4}::JSON, 'embedding', false, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8})`;
       })
       .join(', ');

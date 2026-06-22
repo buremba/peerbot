@@ -729,6 +729,7 @@ export function createGatewayApp(
       createAppInstallRoutes({
         installationStore: createPostgresAppInstallationStore(),
         resolveInstallOrgId,
+        getPublicGatewayUrl: () => coreServices.getPublicGatewayUrl(),
       }),
     );
     app.route(

@@ -78,6 +78,30 @@ export function githubAppInstallUrl(appSlug: string, state: string): string {
 }
 
 /**
+ * Build the GitHub App install callback URL — the OAuth `redirect_uri` passed to
+ * the token exchange. It MUST exactly equal the App's registered Callback URL
+ * (`<public-gateway-base>/github/app/install/callback`), or GitHub returns
+ * `redirect_uri_mismatch` and the exchange yields no token.
+ *
+ * Prefer the configured public gateway base (mirrors slack.ts's
+ * `slackOAuthCallbackUrl`): behind a TLS-terminating ingress `c.req.url` is the
+ * INTERNAL pod URL (`http://<pod-host>/…`), which never matches the registered
+ * https URL. Fall back to deriving it from the request only when no public base
+ * is configured (self-host single-origin), stripping the query.
+ */
+export function githubInstallCallbackUrl(
+	gatewayBaseUrl: string | undefined,
+	requestUrl: string,
+): string {
+	if (gatewayBaseUrl) {
+		return `${gatewayBaseUrl.replace(/\/+$/, "")}/github/app/install/callback`;
+	}
+	const url = new URL(requestUrl);
+	url.search = "";
+	return url.toString();
+}
+
+/**
  * Exchange the OAuth `code` GitHub returns on the install redirect for a USER
  * token, then prove the OAuth'd user is the OWNER of the installation's account:
  *   - the personal-account owner for a User install, or
@@ -414,6 +438,12 @@ export interface AppInstallRouterDeps {
 	/** Resolve the active org for the request (session-bound + single-tenant). */
 	resolveInstallOrgId(c: import("hono").Context): Promise<string | null>;
 	/**
+	 * The public gateway base URL (e.g. `https://app.lobu.ai`) used to build the
+	 * OAuth `redirect_uri`, which must equal the App's registered Callback URL.
+	 * Undefined falls back to the request origin (self-host single-origin).
+	 */
+	getPublicGatewayUrl?(): string | undefined;
+	/**
 	 * Exchange the install-redirect OAuth `code` for a GitHub USER token.
 	 * Injected so tests can mock the exchange (never hits real GitHub). Returns
 	 * null on a failed exchange. Defaults to the App's install-time OAuth.
@@ -662,11 +692,14 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 
 		// CSRF / cross-tenant guard. The callback is a public, unauthenticated GET,
 		// so the org MUST come from the signed `state` minted by GET
-		// /github/app/install — NOT the ambient callback session. Verify + consume
-		// the state BEFORE any DB write: a missing/invalid/expired state rejects
-		// (4xx) with zero mutation, so a forged GET can't plant a connection into a
-		// victim's org. `consume` is an atomic DELETE … RETURNING (single-use,
-		// replay-safe across replicas).
+		// /github/app/install — NOT the ambient callback session. A missing/invalid/
+		// expired state rejects (4xx) with zero mutation, so a forged GET can't plant
+		// a connection into a victim's org.
+		//
+		// We PEEK (non-destructive) first, run the side-channel checks (session-org
+		// match, ownership), and only CONSUME the single-use nonce right before the
+		// write — mirroring slack.ts. That way a benign mismatch or a transient
+		// ownership-check failure doesn't burn a still-valid install link.
 		const stateParam = c.req.query("state");
 		if (!stateParam) {
 			return c.html(
@@ -678,7 +711,7 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 			);
 		}
 		const stateStore = createGithubInstallStateStore();
-		const installState = await stateStore.consume(stateParam);
+		const installState = await stateStore.peek(stateParam);
 		if (!installState) {
 			logger.warn(
 				{ installation_id: installationIdRaw },
@@ -692,7 +725,34 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 				400,
 			);
 		}
-		// Bind to the org encoded in the verified state — never the callback session.
+
+		// Confused-deputy / installation-fixation guard. The signed state proves
+		// WHICH org MINTED the link, but not that the BROWSER completing the callback
+		// belongs to that org. Without this, an attacker (org A) could mint a link,
+		// send the genuine github.com/apps/<slug>/installations/new?state=S to a
+		// victim, the victim installs the App on THEIR org V and passes the ownership
+		// check (they own V) — and V's installation lands in the attacker's org A.
+		// Require the completing session's org to equal the state's org (mirrors
+		// slack.ts). The legit admin completes in the same session (A === A).
+		const callbackOrgId = await deps.resolveInstallOrgId(c);
+		if (!callbackOrgId || callbackOrgId !== installState.organizationId) {
+			logger.warn(
+				{
+					state_org: installState.organizationId,
+					callback_org: callbackOrgId ?? null,
+					installation_id: installationIdRaw,
+				},
+				"Rejecting GitHub install callback: completing session org does not match install state",
+			);
+			return c.html(
+				renderOAuthErrorPage(
+					"org_mismatch",
+					"This GitHub install link was started in a different organization. Sign in to that organization and try again.",
+				),
+				403,
+			);
+		}
+		// Bind to the org encoded in the verified state (== callbackOrgId).
 		const orgId = installState.organizationId;
 
 		// Ownership proof. The signed state proves WHICH org initiated, but NOT that
@@ -714,13 +774,15 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 				400,
 			);
 		}
-		// The redirect_uri must match the URL GitHub redirected to — derive it from
-		// this request (query stripped) so it matches the App's Callback URL exactly.
-		const callbackUrl = (() => {
-			const u = new URL(c.req.url);
-			u.search = "";
-			return u.toString();
-		})();
+		// The redirect_uri must EXACTLY equal the App's registered Callback URL.
+		// Derive it from the public gateway base — NOT c.req.url, which behind the
+		// prod TLS-terminating ingress is the internal pod URL and would trigger
+		// GitHub `redirect_uri_mismatch` on every legit install. Falls back to the
+		// request origin only on self-host (no public base configured).
+		const callbackUrl = githubInstallCallbackUrl(
+			deps.getPublicGatewayUrl?.(),
+			c.req.url,
+		);
 		const ownership = await verifyInstallationOwnership({
 			code: c.req.query("code"),
 			installationId,
@@ -767,6 +829,21 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 				renderOAuthErrorPage(
 					"github_connector_missing",
 					"The GitHub connector is not installed for this organization, or it does not support App installs. Add the GitHub connector and try again.",
+				),
+				400,
+			);
+		}
+
+		// All side-channel checks passed — atomically consume the single-use nonce
+		// now (right before the write) so the link can't be replayed. If the row is
+		// gone between peek and consume (a racing tab/redelivery already consumed
+		// it), fall through to the same invalid_state response — no double-bind.
+		const consumed = await stateStore.consume(stateParam);
+		if (!consumed) {
+			return c.html(
+				renderOAuthErrorPage(
+					"invalid_state",
+					"This GitHub install link is invalid or has expired. Start the install again from your Lobu dashboard.",
 				),
 				400,
 			);

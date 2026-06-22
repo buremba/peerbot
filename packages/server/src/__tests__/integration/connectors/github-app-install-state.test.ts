@@ -73,6 +73,14 @@ type MockAccount = { login: string; type: "User" | "Organization" };
  *  - `ownedInstallationIds` (shorthand): personal-account installs owned by
  *    `authedLogin` — convenience for the simpler cases.
  */
+/** Captures what the mocked OAuth exchange was called with (for assertions). */
+interface RouterCapture {
+	exchangeRedirectUri?: string;
+	exchangeCalls: number;
+}
+
+const PUBLIC_GATEWAY_URL = "https://app.lobu.ai";
+
 function buildRouter(
 	installOrgId: string | null,
 	opts: {
@@ -81,8 +89,10 @@ function buildRouter(
 		authedLogin?: string;
 		orgRoles?: Record<string, { state: string; role: string }> | null;
 		exchangeReturns?: string | null;
+		/** Public gateway base for redirect_uri; defaults to PUBLIC_GATEWAY_URL. */
+		publicGatewayUrl?: string | undefined;
 	} = {},
-) {
+): { router: ReturnType<typeof createAppInstallRoutes>; captured: RouterCapture } {
 	const exchangeReturns =
 		opts.exchangeReturns === undefined ? "fake-user-token" : opts.exchangeReturns;
 	const authedLogin = opts.authedLogin ?? "installer-user";
@@ -99,10 +109,20 @@ function buildRouter(
 					]),
 				);
 
+	const captured: RouterCapture = { exchangeCalls: 0 };
+
 	const deps: AppInstallRouterDeps = {
 		installationStore: createPostgresAppInstallationStore(),
 		resolveInstallOrgId: async () => installOrgId,
-		exchangeInstallOAuthCode: async () => exchangeReturns,
+		getPublicGatewayUrl: () =>
+			opts.publicGatewayUrl === undefined
+				? PUBLIC_GATEWAY_URL
+				: opts.publicGatewayUrl,
+		exchangeInstallOAuthCode: async (p) => {
+			captured.exchangeCalls += 1;
+			captured.exchangeRedirectUri = p.redirectUri;
+			return exchangeReturns;
+		},
 		fetchInstallationAccount: async (_token, installationId) => {
 			if (installations === null) return undefined; // HTTP failure
 			const acct = installations[installationId];
@@ -114,7 +134,7 @@ function buildRouter(
 			return opts.orgRoles?.[org] ?? { state: "none", role: "none" };
 		},
 	};
-	return createAppInstallRoutes(deps);
+	return { router: createAppInstallRoutes(deps), captured };
 }
 
 async function connectionCount(organizationId: string): Promise<number> {
@@ -183,7 +203,7 @@ describe("GitHub App install callback — signed-state CSRF guard", () => {
 		await seedGithubConnector(org.id);
 		// The attacker's ambient session resolves to the victim org — proving the
 		// reject is driven by the missing state, not org resolution.
-		const router = buildRouter(org.id);
+		const { router } = buildRouter(org.id);
 
 		const res = await router.fetch(
 			new Request(
@@ -200,7 +220,7 @@ describe("GitHub App install callback — signed-state CSRF guard", () => {
 	it("rejects a callback with an INVALID/forged state and writes nothing", async () => {
 		const org = await createTestOrganization({ name: "Victim Org BadState" });
 		await seedGithubConnector(org.id);
-		const router = buildRouter(org.id);
+		const { router } = buildRouter(org.id);
 
 		const res = await router.fetch(
 			new Request(
@@ -213,20 +233,52 @@ describe("GitHub App install callback — signed-state CSRF guard", () => {
 		expect(await connectionCount(org.id)).toBe(0);
 	});
 
-	it("accepts a callback with valid state + code + owned installation, binds to the STATE's org", async () => {
-		const stateOrg = await createTestOrganization({ name: "Initiator Org" });
-		const ambientOrg = await createTestOrganization({ name: "Ambient Other Org" });
+	it("FIXATION: completing session org ≠ state org → 403 org_mismatch, zero mutation, nonce NOT consumed", async () => {
+		// Confused-deputy: attacker (stateOrg) mints the link and sends it to a
+		// victim, whose browser/session resolves to a DIFFERENT (ambient) org. Even
+		// though the ownership check would pass (victim owns the installation), the
+		// completing session's org must match the state's org or we reject — else the
+		// victim's installation would land in the attacker's org. (This previously
+		// asserted SUCCESS, codifying the vulnerability; flipped to assert the fix.)
+		const stateOrg = await createTestOrganization({ name: "Attacker Initiator Org" });
+		const ambientOrg = await createTestOrganization({ name: "Victim Session Org" });
 		await seedGithubConnector(stateOrg.id);
 		await seedGithubConnector(ambientOrg.id);
 
-		// Mint a state bound to stateOrg (as GET /github/app/install would).
 		const stateStore = createGithubInstallStateStore();
 		const state = await stateStore.create({ organizationId: stateOrg.id });
 
-		// The callback session resolves to a DIFFERENT (ambient) org — the install
-		// must STILL land in the state's org, never the ambient one. The (mocked)
-		// /user/installations returns the supplied id, so ownership passes.
-		const router = buildRouter(ambientOrg.id, { ownedInstallationIds: [7003] });
+		// resolveInstallOrgId resolves to the ambient (victim-session) org, NOT the
+		// state's org → mismatch.
+		const { router } = buildRouter(ambientOrg.id, { ownedInstallationIds: [7003] });
+		const res = await router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?installation_id=7003&setup_action=install&state=${state}&code=valid-oauth-code`,
+			),
+		);
+
+		expect(res.status).toBe(403);
+		// Zero mutation in BOTH orgs.
+		expect(await installCount(stateOrg.id)).toBe(0);
+		expect(await connectionCount(stateOrg.id)).toBe(0);
+		expect(await installCount(ambientOrg.id)).toBe(0);
+		expect(await connectionCount(ambientOrg.id)).toBe(0);
+		// The org check ran on a PEEK — the still-valid nonce was NOT burned, so the
+		// legitimate org can still complete it.
+		const stillThere = await stateStore.peek(state);
+		expect(stillThere?.organizationId).toBe(stateOrg.id);
+	});
+
+	it("happy path: completing session org === state org → 200, binds to that org", async () => {
+		const org = await createTestOrganization({ name: "Same Session Org" });
+		await seedGithubConnector(org.id);
+		const state = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+		});
+
+		// resolveInstallOrgId === the state's org (the admin completes in the same
+		// session they started in).
+		const { router } = buildRouter(org.id, { ownedInstallationIds: [7003] });
 		const res = await router.fetch(
 			new Request(
 				`http://gw.test/github/app/install/callback?installation_id=7003&setup_action=install&state=${state}&code=valid-oauth-code`,
@@ -234,12 +286,37 @@ describe("GitHub App install callback — signed-state CSRF guard", () => {
 		);
 
 		expect(res.status).toBe(200);
-		// Install + connection landed in the STATE's org.
-		expect(await installCount(stateOrg.id)).toBe(1);
-		expect(await connectionCount(stateOrg.id)).toBe(1);
-		// Nothing landed in the ambient org.
-		expect(await installCount(ambientOrg.id)).toBe(0);
-		expect(await connectionCount(ambientOrg.id)).toBe(0);
+		expect(await installCount(org.id)).toBe(1);
+		expect(await connectionCount(org.id)).toBe(1);
+		// The legit flow DID consume the nonce (single-use).
+		const consumed = await createGithubInstallStateStore().peek(state);
+		expect(consumed).toBeNull();
+	});
+
+	it("redirect_uri passed to the OAuth exchange is the public registered callback URL", async () => {
+		const org = await createTestOrganization({ name: "Redirect URI Org" });
+		await seedGithubConnector(org.id);
+		const state = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+		});
+		const { router, captured } = buildRouter(org.id, {
+			ownedInstallationIds: [7050],
+		});
+
+		const res = await router.fetch(
+			new Request(
+				// The request URL is the INTERNAL pod URL (http, pod host) — the
+				// redirect_uri must NOT be derived from it.
+				`http://internal-pod-host:8080/github/app/install/callback?installation_id=7050&setup_action=install&state=${state}&code=valid-oauth-code`,
+			),
+		);
+
+		expect(res.status).toBe(200);
+		expect(captured.exchangeCalls).toBe(1);
+		// Exactly the App's registered public Callback URL — not the pod URL.
+		expect(captured.exchangeRedirectUri).toBe(
+			`${PUBLIC_GATEWAY_URL}/github/app/install/callback`,
+		);
 	});
 
 	it("treats a consumed state as single-use: a replay is rejected with no extra row", async () => {
@@ -247,7 +324,7 @@ describe("GitHub App install callback — signed-state CSRF guard", () => {
 		await seedGithubConnector(org.id);
 		const stateStore = createGithubInstallStateStore();
 		const state = await stateStore.create({ organizationId: org.id });
-		const router = buildRouter(org.id, { ownedInstallationIds: [7004] });
+		const { router } = buildRouter(org.id, { ownedInstallationIds: [7004] });
 
 		const first = await router.fetch(
 			new Request(
@@ -273,7 +350,7 @@ describe("GitHub App install callback — signed-state CSRF guard", () => {
 	it("the start route redirects to GitHub with a signed state bound to the org", async () => {
 		const org = await createTestOrganization({ name: "Start Org" });
 		await seedGithubConnector(org.id);
-		const router = buildRouter(org.id);
+		const { router } = buildRouter(org.id);
 
 		const res = await router.fetch(
 			new Request("http://gw.test/github/app/install"),
@@ -302,7 +379,7 @@ describe("GitHub App install callback — installation ownership guard", () => {
 		});
 		// /user/installations returns only the attacker's OWN installs (e.g. 555),
 		// NOT the victim id 8888 they're trying to steal.
-		const router = buildRouter(attackerOrg.id, { ownedInstallationIds: [555] });
+		const { router } = buildRouter(attackerOrg.id, { ownedInstallationIds: [555] });
 
 		const res = await router.fetch(
 			new Request(
@@ -322,7 +399,7 @@ describe("GitHub App install callback — installation ownership guard", () => {
 		const state = await createGithubInstallStateStore().create({
 			organizationId: org.id,
 		});
-		const router = buildRouter(org.id, { ownedInstallationIds: [4242, 999] });
+		const { router } = buildRouter(org.id, { ownedInstallationIds: [4242, 999] });
 
 		const res = await router.fetch(
 			new Request(
@@ -351,7 +428,7 @@ describe("GitHub App install callback — installation ownership guard", () => {
 		});
 		// Even though the (mocked) ownership set WOULD contain the id, the absence
 		// of `code` must reject before any exchange/lookup.
-		const router = buildRouter(org.id, { ownedInstallationIds: [7777] });
+		const { router } = buildRouter(org.id, { ownedInstallationIds: [7777] });
 
 		const res = await router.fetch(
 			new Request(
@@ -372,7 +449,7 @@ describe("GitHub App install callback — installation ownership guard", () => {
 		const state = await createGithubInstallStateStore().create({
 			organizationId: org.id,
 		});
-		const router = buildRouter(org.id, { ownedInstallationIds: [6001] });
+		const { router } = buildRouter(org.id, { ownedInstallationIds: [6001] });
 
 		const res = await router.fetch(
 			new Request(
@@ -392,7 +469,7 @@ describe("GitHub App install callback — installation ownership guard", () => {
 			organizationId: org.id,
 		});
 		// Exchange returns null (bad_verification_code) → cannot prove identity.
-		const router = buildRouter(org.id, {
+		const { router } = buildRouter(org.id, {
 			ownedInstallationIds: [5005],
 			exchangeReturns: null,
 		});
@@ -422,7 +499,7 @@ describe("GitHub App install callback — account-ownership (admin vs member)", 
 		const state = await createGithubInstallStateStore().create({
 			organizationId: org.id,
 		});
-		const router = buildRouter(org.id, {
+		const { router } = buildRouter(org.id, {
 			installations: {
 				[opts.installationId]: { login: opts.orgLogin, type: "Organization" },
 			},
@@ -489,7 +566,7 @@ describe("GitHub App install callback — account-ownership (admin vs member)", 
 		const state = await createGithubInstallStateStore().create({
 			organizationId: org.id,
 		});
-		const router = buildRouter(org.id, {
+		const { router } = buildRouter(org.id, {
 			authedLogin: "Octocat",
 			installations: {
 				4100: { login: "octocat", type: "User" }, // case-insensitive match
@@ -512,7 +589,7 @@ describe("GitHub App install callback — account-ownership (admin vs member)", 
 			organizationId: org.id,
 		});
 		// The user can SEE this personal install (collaborator) but does not OWN it.
-		const router = buildRouter(org.id, {
+		const { router } = buildRouter(org.id, {
 			authedLogin: "attacker",
 			installations: {
 				4200: { login: "victim", type: "User" },
@@ -544,10 +621,10 @@ describe("GitHub App install callback — connection creation is race-safe", () 
 		const stateB = await createGithubInstallStateStore().create({
 			organizationId: org.id,
 		});
-		const routerA = buildRouter(org.id, {
+		const { router: routerA } = buildRouter(org.id, {
 			ownedInstallationIds: [installationId],
 		});
-		const routerB = buildRouter(org.id, {
+		const { router: routerB } = buildRouter(org.id, {
 			ownedInstallationIds: [installationId],
 		});
 

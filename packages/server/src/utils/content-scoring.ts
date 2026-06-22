@@ -9,6 +9,7 @@ import {
   buildEntityLinkUnion,
   type EntityIdentityScope,
   entityLinkMatchSql,
+  excludeWatcherNotExists,
   fetchEntityIdentityScopes,
 } from './content-search';
 import {
@@ -178,11 +179,8 @@ async function buildFilterConditionsAndJoins(
   if (filters?.exclude_watcher_id !== undefined) {
     const validatedWatcherId = validateNumericId(filters.exclude_watcher_id, 'exclude_watcher_id');
     params.push(validatedWatcherId);
-    filterConditions.push(`NOT EXISTS (
-      SELECT 1 FROM watcher_window_events exc_iwc
-      JOIN watcher_windows exc_iw ON exc_iw.id = exc_iwc.window_id
-      WHERE exc_iwc.event_id = f.id AND exc_iw.watcher_id = $${paramIndex++}
-    )`);
+    // Shared flag-gated clause (P6 phase 2 reads event_edges when enabled).
+    filterConditions.push(excludeWatcherNotExists('f.id', paramIndex++));
   }
 
   if (filters?.semantic_type) {

@@ -8,6 +8,7 @@ import { type DbClient, pgTextArray } from '../../db/client';
 import {
   buildConnectionVisibilityClause,
   buildEntityLinkUnion,
+  excludeWatcherNotExists,
   fetchEntityIdentityScopes,
 } from '../../utils/content-search';
 import logger from '../../utils/logger';
@@ -296,9 +297,8 @@ export async function fetchIncludeSuperseded(opts: {
     paramIndex += 1;
   }
   if (args.exclude_watcher_id !== undefined) {
-    conditions.push(
-      `NOT EXISTS (SELECT 1 FROM watcher_window_events exc_iwe JOIN watcher_windows exc_iw ON exc_iw.id = exc_iwe.window_id WHERE exc_iwe.event_id = e.id AND exc_iw.watcher_id = $${paramIndex})`
-    );
+    // Shared flag-gated clause (P6 phase 2 reads event_edges when enabled).
+    conditions.push(excludeWatcherNotExists('e.id', paramIndex));
     queryParams.push(args.exclude_watcher_id);
     paramIndex += 1;
   }

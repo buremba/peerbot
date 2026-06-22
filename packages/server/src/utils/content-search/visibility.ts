@@ -16,6 +16,43 @@ import { validateNumericId } from '../sql-validation';
  * @param tableAlias - Alias for the content table (default: 'f')
  * @returns `{ sql, params }` — empty strings/arrays when no filter is applied
  */
+/**
+ * The flag-gated `exclude_watcher_id` membership NOT EXISTS, returned WITHOUT a leading `AND`
+ * so it can be pushed into a conditions array OR spliced after `AND`. The single source of
+ * truth for ALL exclude_watcher_id reads (the search/list helper below + the score/superseded
+ * inline paths in content-scoring.ts / get_content/query.ts) so the flag governs every
+ * read_knowledge() path and phase 3 has ONE place to retire the JOIN.
+ *
+ * Windows-as-events (P6) phase 2: read membership from the event_edges mirror — a single-table
+ * NOT EXISTS via the (child_event_id, watcher_id_hint) partial index — instead of the
+ * watcher_window_events -> watcher_windows JOIN. event_edges is an accurate mirror (the trigger
+ * syncs INSERT+DELETE; historic rows are backfilled), so the two are equivalent. FLAG-GATED for
+ * a staged, A/B-validated cutover of this hot read. DEPLOY GATE: run
+ * scripts/backfill-event-edges.sh to completion BEFORE setting the flag, else event_edges
+ * misses historic links and wrongly includes them.
+ *
+ * @param contentIdExpr - SQL expression for the content event id (e.g. `f.id`, `e.id`)
+ * @param paramN - the 1-based `$N` index already bound to the (validated) watcher id
+ */
+export function excludeWatcherNotExists(contentIdExpr: string, paramN: number): string {
+  if (
+    process.env.WATCHER_EXCLUDE_VIA_EVENT_EDGES === '1' ||
+    process.env.WATCHER_EXCLUDE_VIA_EVENT_EDGES === 'true'
+  ) {
+    return `NOT EXISTS (
+    SELECT 1 FROM event_edges exc_ee
+    WHERE exc_ee.child_event_id = ${contentIdExpr}
+      AND exc_ee.watcher_id_hint = $${paramN}::bigint
+      AND exc_ee.edge_type = 'membership'
+  )`;
+  }
+  return `NOT EXISTS (
+    SELECT 1 FROM watcher_window_events exc_iwe
+    JOIN watcher_windows exc_iw ON exc_iw.id = exc_iwe.window_id
+    WHERE exc_iwe.event_id = ${contentIdExpr} AND exc_iw.watcher_id = $${paramN}::bigint
+  )`;
+}
+
 export function buildExcludeWatcherClause(
   excludeWatcherId: number | undefined,
   baseParamIndex: number,
@@ -24,11 +61,7 @@ export function buildExcludeWatcherClause(
   if (excludeWatcherId === undefined) return { sql: '', params: [] };
   const validated = validateNumericId(excludeWatcherId, 'exclude_watcher_id');
   return {
-    sql: ` AND NOT EXISTS (
-    SELECT 1 FROM watcher_window_events exc_iwe
-    JOIN watcher_windows exc_iw ON exc_iw.id = exc_iwe.window_id
-    WHERE exc_iwe.event_id = ${tableAlias}.id AND exc_iw.watcher_id = $${baseParamIndex}::bigint
-  )`,
+    sql: ` AND ${excludeWatcherNotExists(`${tableAlias}.id`, baseParamIndex)}`,
     params: [validated],
   };
 }

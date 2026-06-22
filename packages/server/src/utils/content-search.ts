@@ -17,7 +17,11 @@ export {
   STANDARD_IDENTITY_NAMESPACES,
 } from './content-search/entity-link';
 
-export { buildConnectionVisibilityClause, buildOrgScopeWhere } from './content-search/visibility';
+export {
+  buildConnectionVisibilityClause,
+  buildOrgScopeWhere,
+  excludeWatcherNotExists,
+} from './content-search/visibility';
 
 import { getDb } from '../db/client';
 import type { Env } from '../index';

@@ -45,14 +45,26 @@ ALTER TABLE public.event_classifications DROP COLUMN IF EXISTS classifier_versio
 -- squawk-ignore prefer-robust-stmts,adding-not-nullable-field -- backfill precondition removes NULLs; scan-lock acceptable in deploy hook
 ALTER TABLE public.event_classifications ALTER COLUMN classifier_id SET NOT NULL;
 
--- Re-point the classifier FK at the STABLE classifier. ON DELETE CASCADE: event_classifier_versions
--- already CASCADEs off event_classifiers, so a hard classifier delete tears down its versions; the
--- classifications it produced are equally meaningless orphans once their classifier is gone, so they
--- cascade too. (The old version FK used ON DELETE RESTRICT, which combined with the version-cascade
--- would have BLOCKED a classifier delete — that awkwardness disappears with the stable-key model.
--- App-level "delete" is a soft status='deprecated' UPDATE, so CASCADE only fires on true hard deletes
--- in admin/test/cleanup paths.) Added NOT VALID + VALIDATE so the existing-row check doesn't take an
--- ACCESS EXCLUSIVE lock for the full scan.
+-- Re-point the classifier FK at the STABLE classifier. ON DELETE CASCADE: a classification is output
+-- PRODUCED BY a classifier — once the classifier is gone the label is a meaningless orphan, so it
+-- cascades with it.
+--
+-- ⚠️ DELIBERATE BEHAVIOR CHANGE (acknowledged — flagged in adversarial review): the OLD FK was
+-- classifier_VERSION_id -> event_classifier_versions ON DELETE RESTRICT. That RESTRICT, sitting under
+-- the event_classifier_versions -> event_classifiers CASCADE, BLOCKED any hard delete that reached a
+-- classifier-with-classifications via the transitive cascades INTO event_classifiers:
+--   organization (CASCADE) -> event_classifiers
+--   watchers     (CASCADE) -> event_classifiers
+--   entities     (fk_event_classifiers_entity CASCADE) -> event_classifiers   [force_delete_tree]
+-- i.e. force-deleting an org / watcher / entity-tree that owned such a classifier used to ERROR and
+-- roll back. With the stable-key CASCADE it now SUCCEEDS and tears the classifications down too. This
+-- is the correct force-delete semantics (force means force; orphaned labels shouldn't block a
+-- teardown), but it IS a widening from "blocked" to "destroys", so it is called out explicitly. The
+-- COMMON path is unaffected: app-level classifier delete is a soft status='deprecated' UPDATE, and
+-- ordinary entity delete is gated by the events-count guard; only explicit force_delete_tree /
+-- org-deletion / hard test-cleanup reach the cascade.
+--
+-- NOT VALID + VALIDATE so the existing-row check doesn't take an ACCESS EXCLUSIVE lock for the scan.
 -- squawk-ignore prefer-bigint-over-int -- bigint FK column; not an int add
 ALTER TABLE public.event_classifications
   ADD CONSTRAINT event_classifications_classifier_id_fkey

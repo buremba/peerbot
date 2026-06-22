@@ -1,10 +1,11 @@
 /**
- * Render-store consolidation, expand phase: view_template_versions.is_current is
- * maintained by a DB trigger on view_template_active_tabs (the app still writes
- * only active_tabs). Asserts is_current stays in lockstep with active_tabs across
- * set / rollback / re-point / remove_tab, and that at most one version per
- * (resource, tab) is current (the partial unique index invariant). Reads still
- * use active_tabs this phase; the flip + table drop are later releases.
+ * Render-store consolidation phase 3b: manage_view_templates maintains
+ * view_template_versions.is_current + tab_order DIRECTLY (the
+ * view_template_active_tabs pointer table and its sync trigger are retired; reads
+ * already use is_current). Asserts is_current is correct on its own across
+ * set / re-set / rollback / re-point / remove_tab, with exactly one current
+ * version per named tab (the partial unique index invariant), and that get()
+ * surfaces named tabs from is_current.
  */
 
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -21,25 +22,17 @@ let owner: TestApiClient;
 
 const tmpl = (n: number) => ({ version: 1, root: { type: 'text', content: `v${n}` } });
 
-async function currentIds(tabName: string): Promise<number[]> {
+async function current(tabName: string): Promise<Array<{ id: number; order: number }>> {
   const rows = (await sql`
-    SELECT id FROM view_template_versions
+    SELECT id, tab_order FROM view_template_versions
     WHERE resource_type = 'entity_type' AND resource_id = 'company'
       AND tab_name = ${tabName} AND is_current = true
     ORDER BY id
-  `) as Array<{ id: string }>;
-  return rows.map((r) => Number(r.id));
+  `) as Array<{ id: string; tab_order: number }>;
+  return rows.map((r) => ({ id: Number(r.id), order: Number(r.tab_order) }));
 }
 
-async function activeTabId(tabName: string): Promise<number | null> {
-  const rows = (await sql`
-    SELECT current_version_id FROM view_template_active_tabs
-    WHERE resource_type = 'entity_type' AND resource_id = 'company' AND tab_name = ${tabName}
-  `) as Array<{ current_version_id: string }>;
-  return rows.length ? Number(rows[0].current_version_id) : null;
-}
-
-describe('view_template is_current via trigger (expand phase)', () => {
+describe('view_template is_current direct (phase 3b — active_tabs + trigger retired)', () => {
   beforeAll(async () => {
     await cleanupTestDatabase();
     const org = await createTestOrganization({ name: 'VT Org' });
@@ -49,164 +42,110 @@ describe('view_template is_current via trigger (expand phase)', () => {
     await owner.entity_schema.createType({ slug: 'company', name: 'Company' });
   });
 
-  it('set marks exactly one is_current, matching active_tabs, and advances on re-set', async () => {
+  it('set marks exactly one current and advances on re-set', async () => {
     await owner.view_templates.set({
       resource_type: 'entity_type',
       resource_id: 'company',
       tab_name: 'analytics',
+      tab_order: 2,
       json_template: tmpl(1),
     });
-    const cur1 = await currentIds('analytics');
-    expect(cur1).toHaveLength(1);
-    expect(cur1[0]).toBe(await activeTabId('analytics'));
+    const c1 = await current('analytics');
+    expect(c1).toHaveLength(1);
+    expect(c1[0].order).toBe(2);
 
     await owner.view_templates.set({
       resource_type: 'entity_type',
       resource_id: 'company',
       tab_name: 'analytics',
+      tab_order: 5,
       json_template: tmpl(2),
     });
-    const cur2 = await currentIds('analytics');
-    expect(cur2).toHaveLength(1); // still exactly one current (unique invariant)
-    expect(cur2[0]).toBe(await activeTabId('analytics'));
-    expect(cur2[0]).toBeGreaterThan(cur1[0]); // advanced to the new version
+    const c2 = await current('analytics');
+    expect(c2).toHaveLength(1);
+    expect(c2[0].id).toBeGreaterThan(c1[0].id);
+    expect(c2[0].order).toBe(5);
   });
 
-  it('rollback moves is_current back, in sync with active_tabs', async () => {
+  it('rollback re-points and preserves the tab display order', async () => {
+    // current is v2 @ order 5; rollback to v1 must keep order 5.
     await owner.view_templates.rollback({
       resource_type: 'entity_type',
       resource_id: 'company',
       tab_name: 'analytics',
       version: 1,
     });
-    const cur = await currentIds('analytics');
-    expect(cur).toHaveLength(1);
-    expect(cur[0]).toBe(await activeTabId('analytics'));
+    const c = await current('analytics');
+    expect(c).toHaveLength(1);
+    expect(c[0].order).toBe(5);
   });
 
-  it('get() reads the named tab via is_current (phase-2 read-flip)', async () => {
-    // handleGet now reads named tabs from is_current, not active_tabs.
+  it('re-pointing to the already-current version is a no-op', async () => {
+    const before = await current('analytics');
+    await owner.view_templates.rollback({
+      resource_type: 'entity_type',
+      resource_id: 'company',
+      tab_name: 'analytics',
+      version: 1,
+    });
+    expect(await current('analytics')).toEqual(before);
+  });
+
+  it('get() surfaces the named tab from is_current', async () => {
     const res = (await owner.view_templates.get({
       resource_type: 'entity_type',
       resource_id: 'company',
     })) as { tabs: Array<{ tab_name: string; current_version_id: number }> };
     const analytics = res.tabs.find((t) => t.tab_name === 'analytics');
     expect(analytics).toBeDefined();
-    expect(analytics!.current_version_id).toBe(await activeTabId('analytics'));
+    expect(analytics!.current_version_id).toBe((await current('analytics'))[0].id);
   });
 
-  it('tab_order stays in sync with the active pointer after rollback (phase-2 order)', async () => {
-    // v1 at order 1, v2 at order 9; the active pointer keeps order 9.
-    await owner.view_templates.set({
-      resource_type: 'entity_type',
-      resource_id: 'company',
-      tab_name: 'metrics',
-      tab_order: 1,
-      json_template: tmpl(1),
-    });
-    await owner.view_templates.set({
-      resource_type: 'entity_type',
-      resource_id: 'company',
-      tab_name: 'metrics',
-      tab_order: 9,
-      json_template: tmpl(2),
-    });
-    // Rollback to v1 (historical order 1) — the active pointer's order stays 9,
-    // and the trigger must sync that onto the now-current v1 so the phase-2 read
-    // (ORDER BY view_template_versions.tab_order) matches the legacy order.
-    await owner.view_templates.rollback({
-      resource_type: 'entity_type',
-      resource_id: 'company',
-      tab_name: 'metrics',
-      version: 1,
-    });
-    const active = (await sql`
-      SELECT tab_order FROM view_template_active_tabs
-      WHERE resource_type='entity_type' AND resource_id='company' AND tab_name='metrics'
-    `) as Array<{ tab_order: number }>;
-    const current = (await sql`
-      SELECT tab_order FROM view_template_versions
-      WHERE resource_type='entity_type' AND resource_id='company' AND tab_name='metrics'
-        AND is_current = true
-    `) as Array<{ tab_order: number }>;
-    expect(Number(current[0].tab_order)).toBe(Number(active[0].tab_order));
-    expect(Number(current[0].tab_order)).toBe(9);
+  it('concurrent same-tab sets serialize on the advisory lock (no unique-violation 500)', async () => {
+    // Without the per-tab advisory lock these would race on clear-then-set and one
+    // could 500 on the partial unique index. They must all succeed, leaving exactly
+    // one current version.
+    await Promise.all([
+      owner.view_templates.set({
+        resource_type: 'entity_type',
+        resource_id: 'company',
+        tab_name: 'race',
+        tab_order: 1,
+        json_template: tmpl(1),
+      }),
+      owner.view_templates.set({
+        resource_type: 'entity_type',
+        resource_id: 'company',
+        tab_name: 'race',
+        tab_order: 1,
+        json_template: tmpl(2),
+      }),
+      owner.view_templates.set({
+        resource_type: 'entity_type',
+        resource_id: 'company',
+        tab_name: 'race',
+        tab_order: 1,
+        json_template: tmpl(3),
+      }),
+    ]);
+    expect(await current('race')).toHaveLength(1);
   });
 
-  it('re-pointing to the already-current version is a no-op (still exactly one current)', async () => {
-    // After the rollback above, v1 is current. Roll back to v1 again — the
-    // trigger fires with current_version_id unchanged and must not error or
-    // produce zero/two current rows.
-    const before = await currentIds('analytics');
-    expect(before).toHaveLength(1);
-    await owner.view_templates.rollback({
-      resource_type: 'entity_type',
-      resource_id: 'company',
-      tab_name: 'analytics',
-      version: 1,
-    });
-    const after = await currentIds('analytics');
-    expect(after).toEqual(before); // same single current id, no change
-    expect(after[0]).toBe(await activeTabId('analytics'));
-  });
-
-  it('remove_tab clears is_current (matching the active_tabs delete)', async () => {
+  it('remove_tab clears is_current; rollback on a missing tab errors', async () => {
     await owner.view_templates.removeTab({
       resource_type: 'entity_type',
       resource_id: 'company',
       tab_name: 'analytics',
     });
-    expect(await currentIds('analytics')).toHaveLength(0);
-    expect(await activeTabId('analytics')).toBeNull();
-  });
+    expect(await current('analytics')).toHaveLength(0);
 
-  it('app maintains is_current standalone with the trigger DISABLED (proves phase-3b trigger-drop is safe)', async () => {
-    await sql`ALTER TABLE view_template_active_tabs DISABLE TRIGGER trg_sync_view_template_is_current`;
-    try {
-      await owner.view_templates.set({
+    await expect(
+      owner.view_templates.rollback({
         resource_type: 'entity_type',
         resource_id: 'company',
-        tab_name: 'standalone',
-        tab_order: 3,
-        json_template: tmpl(1),
-      });
-      let cur = await currentIds('standalone');
-      expect(cur).toHaveLength(1);
-      expect(cur[0]).toBe(await activeTabId('standalone'));
-
-      await owner.view_templates.set({
-        resource_type: 'entity_type',
-        resource_id: 'company',
-        tab_name: 'standalone',
-        tab_order: 7,
-        json_template: tmpl(2),
-      });
-      await owner.view_templates.rollback({
-        resource_type: 'entity_type',
-        resource_id: 'company',
-        tab_name: 'standalone',
+        tab_name: 'analytics',
         version: 1,
-      });
-      cur = await currentIds('standalone');
-      expect(cur).toHaveLength(1);
-      expect(cur[0]).toBe(await activeTabId('standalone'));
-      // trigger-OFF rollback: the app reads the outgoing current version's order
-      // (v2 @ 7) and applies it to the rolled-back v1 — preserved display order.
-      const order = (await sql`
-        SELECT tab_order FROM view_template_versions
-        WHERE resource_type='entity_type' AND resource_id='company'
-          AND tab_name='standalone' AND is_current = true
-      `) as Array<{ tab_order: number }>;
-      expect(Number(order[0].tab_order)).toBe(7);
-
-      await owner.view_templates.removeTab({
-        resource_type: 'entity_type',
-        resource_id: 'company',
-        tab_name: 'standalone',
-      });
-      expect(await currentIds('standalone')).toHaveLength(0);
-    } finally {
-      await sql`ALTER TABLE view_template_active_tabs ENABLE TRIGGER trg_sync_view_template_is_current`;
-    }
+      })
+    ).rejects.toThrow(/no active entry/i);
   });
 });

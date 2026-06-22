@@ -1155,9 +1155,9 @@ async function fetchTabs(
   resourceId: string,
   organizationId: string
 ): Promise<ViewTemplateTab[]> {
-  // Render-store consolidation phase 2: named tabs read from is_current on
-  // view_template_versions (the trigger keeps it in lockstep with the legacy
-  // view_template_active_tabs pointer across all replicas).
+  // Render-store consolidation: named tabs read from is_current on
+  // view_template_versions (maintained directly by manage_view_templates;
+  // the legacy view_template_active_tabs pointer table is retired).
   const rows = await sql`
     SELECT
       vtv.tab_name,

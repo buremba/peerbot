@@ -228,6 +228,11 @@ async function handleSet(
   const tabOrder = args.tab_order ?? 0;
 
   const versionRow = await sql.begin(async (tx: typeof sql) => {
+    // Per-(resource, tab) advisory lock FIRST: serializes concurrent same-tab
+    // writes across both the version-number computation (MAX(version)+1 below) and
+    // the is_current flip, so neither races (the active_tabs unique row used to
+    // provide this serialization before phase 3b).
+    await tx`SELECT pg_advisory_xact_lock(hashtext(${`vt:${args.resource_type}:${resourceId}:${ctx.organizationId}:${tabName ?? ''}`})::bigint)`;
     const inserted = await tx`
       INSERT INTO view_template_versions (
         resource_type, resource_id, organization_id, version, tab_name, tab_order,
@@ -258,20 +263,9 @@ async function handleSet(
         [vid, rowId]
       );
     } else {
-      await tx`
-        INSERT INTO view_template_active_tabs (
-          resource_type, resource_id, organization_id, tab_name, tab_order, current_version_id
-        ) VALUES (
-          ${args.resource_type}, ${resourceId}, ${ctx.organizationId},
-          ${tabName}, ${tabOrder}, ${vid}
-        )
-        ON CONFLICT (resource_type, resource_id, organization_id, tab_name)
-        DO UPDATE SET current_version_id = ${vid}, tab_order = ${tabOrder}
-      `;
-      // Phase 3a: also maintain is_current + tab_order directly on the version
-      // rows (transition off the trigger — kept until phase 3b drops it; both
-      // produce the same result). Clear-then-set keeps the partial unique index
-      // safe. tab_order is the requested display order for a set.
+      // Phase 3b: maintain is_current + tab_order directly (active_tabs writes
+      // removed; the now-dormant trigger is dropped in 3c). Serialized by the
+      // per-tab advisory lock taken at the top of this transaction.
       await tx`
         UPDATE view_template_versions SET is_current = false
         WHERE resource_type = ${args.resource_type} AND resource_id = ${resourceId}
@@ -341,8 +335,8 @@ async function handleGet(
     'created_by'
   );
 
-  // Named tabs — render-store consolidation phase 2: read from is_current on
-  // view_template_versions (trigger-synced with the legacy active_tabs pointer).
+  // Named tabs read from is_current on view_template_versions (maintained directly
+  // by the write handlers; the legacy active_tabs pointer table is retired).
   const tabRows = await sql`
     SELECT
       vtv.tab_name, vtv.tab_order,
@@ -410,33 +404,22 @@ async function handleRollback(
         [versionId, rowId]
       );
     } else {
-      const updated = await tx`
-        UPDATE view_template_active_tabs
-        SET current_version_id = ${versionId}
-        WHERE resource_type = ${args.resource_type}
-          AND resource_id = ${resourceId}
-          AND organization_id = ${ctx.organizationId}
-          AND tab_name = ${tabName}
-        RETURNING id
-      `;
-      if (updated.length === 0) {
-        throw new Error(`Tab '${tabName}' has no active entry to rollback`);
-      }
-      // Phase 3a: maintain is_current + tab_order directly, preserving the tab's
-      // display order across the rollback (order is a tab-level property; rollback
-      // changes only which version is current). The order read below resolves to
-      // the unchanged pointer order in BOTH trigger states: trigger-ON it reads the
-      // just-re-pointed current version (the trigger already stamped the pointer
-      // order onto it); trigger-OFF (phase 3b) it reads the still-current outgoing
-      // version, which carries the same tab-level order. Either way the rolled-back
-      // version inherits the preserved order.
+      // Per-tab advisory lock (serializes with concurrent set/rollback/remove).
+      // Phase 3b: re-point is_current directly (active_tabs writes removed; trigger
+      // dropped in 3c). The current version's tab_order is the tab's display order;
+      // preserve it across the rollback. Its presence is also the "tab exists"
+      // guard (matches the old active_tabs "no active entry to rollback" behavior).
+      await tx`SELECT pg_advisory_xact_lock(hashtext(${`vt:${args.resource_type}:${resourceId}:${ctx.organizationId}:${tabName}`})::bigint)`;
       const curOrderRows = await tx`
         SELECT tab_order FROM view_template_versions
         WHERE resource_type = ${args.resource_type} AND resource_id = ${resourceId}
           AND organization_id = ${ctx.organizationId} AND tab_name = ${tabName}
           AND is_current = true LIMIT 1
       `;
-      const curOrder = curOrderRows.length > 0 ? Number(curOrderRows[0].tab_order) : 0;
+      if (curOrderRows.length === 0) {
+        throw new Error(`Tab '${tabName}' has no active entry to rollback`);
+      }
+      const curOrder = Number(curOrderRows[0].tab_order);
       await tx`
         UPDATE view_template_versions SET is_current = false
         WHERE resource_type = ${args.resource_type} AND resource_id = ${resourceId}
@@ -475,27 +458,21 @@ async function handleRemoveTab(
   await verifyAccess(sql, args, ctx, true);
   const resourceId = rid(args);
 
-  // Phase 3a: delete the active pointer and clear is_current atomically (reads
-  // are now on is_current, so a partial remove would leave a phantom tab).
-  await sql.begin(async (tx) => {
-    const del = await tx`
-      DELETE FROM view_template_active_tabs
-      WHERE resource_type = ${args.resource_type}
-        AND resource_id = ${resourceId}
-        AND organization_id = ${ctx.organizationId}
-        AND tab_name = ${args.tab_name}
-      RETURNING id
-    `;
-    if (del.length === 0) {
-      throw new Error(`Tab '${args.tab_name}' not found`);
-    }
-    await tx`
+  // Per-tab advisory lock + clear is_current directly (active_tabs writes removed;
+  // trigger dropped in 3c). RETURNING drives the not-found guard.
+  const cleared = await sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtext(${`vt:${args.resource_type}:${resourceId}:${ctx.organizationId}:${args.tab_name}`})::bigint)`;
+    return tx`
       UPDATE view_template_versions SET is_current = false
       WHERE resource_type = ${args.resource_type} AND resource_id = ${resourceId}
         AND organization_id = ${ctx.organizationId} AND tab_name = ${args.tab_name}
         AND is_current = true
+      RETURNING id
     `;
   });
+  if (cleared.length === 0) {
+    throw new Error(`Tab '${args.tab_name}' not found`);
+  }
 
   emit(ctx.organizationId, {
     keys: ['resolve-path', 'entity-types', 'view-template-history'],

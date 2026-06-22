@@ -1,13 +1,13 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test clean dev dev-db build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean e2e-browser bump review
+.PHONY: help setup build test clean dev dev-db dev-embedded build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean e2e-browser bump review
 
 # Default target
 help:
 	@echo "Available commands:"
 	@echo "  make setup                                 - Setup development environment (run once)"
-	@echo "  make dev                                   - Start the embedded Lobu stack (Postgres via DATABASE_URL, Vite HMR)"
-	@echo "  make dev-db [NAME=<x>] [FROM=<db>]          - Local dev against the brew Postgres, one database per worktree/branch (NAME defaults to the branch; FROM=<db> forks a dataset)"
+	@echo "  make dev [NAME=<x>] [FROM=<db>]            - Local dev against the shared brew Postgres@18, one database per branch (NAME defaults to the branch; FROM=<db> forks a dataset)"
+	@echo "  make dev-embedded                          - Dev against the zero-dependency embedded per-worktree Postgres (the lobu run / CI runtime); == LOBU_EMBEDDED=1 make dev"
 	@echo "  make build-packages                        - Build all TypeScript packages"
 	@echo "  make test                                  - Run test bot"
 	@echo "  make test-unit                             - Run the CI unit suite (no Postgres needed)"
@@ -67,14 +67,25 @@ ensure-submodule:
 		*) ;; \
 	esac
 
-# Start the embedded Lobu stack: server + embedded gateway + workers,
-# all in-process. Requires Postgres via DATABASE_URL.
+# Local dev against the shared brew Postgres@18 (via dev-db.sh: one database per
+# branch). This is the default because a single long-lived postmaster avoids the
+# embedded per-worktree clusters whose kill-9 churn leaks SysV shm anchors into
+# macOS's shmmni=32 cap. `LOBU_EMBEDDED=1 make dev` (or `make dev-embedded`) runs
+# the zero-dependency embedded cluster instead — the `lobu run` / CI runtime.
 dev: ensure-submodule
+	@if [ -n "$$LOBU_EMBEDDED" ] && [ "$$LOBU_EMBEDDED" != "0" ]; then \
+		./scripts/dev-native.sh; \
+	else \
+		NAME="$(NAME)" FROM="$(FROM)" PORT="$(PORT)" WORKER_PROXY_PORT="$(WORKER_PROXY_PORT)" PGHOST="$(PGHOST)" PGPORT="$(PGPORT)" PGUSER="$(PGUSER)" ./scripts/dev-db.sh; \
+	fi
+
+# Zero-dependency embedded per-worktree Postgres (the lobu run / CI runtime).
+dev-embedded: ensure-submodule
 	@./scripts/dev-native.sh
 
-# Local dev against the local (brew) Postgres — one database per worktree/branch,
-# no embedded cluster. NAME defaults to the current branch; FROM=<db> forks an
-# existing dataset for a disposable preview. Embedded `make dev` is unchanged.
+# Explicit alias for the default `make dev` backend (shared brew Postgres@18, one
+# database per branch). NAME defaults to the current branch; FROM=<db> forks an
+# existing dataset for a disposable preview.
 #   make dev-db NAME=sidebar
 #   make dev-db NAME=preview FROM=owletto_local
 #   make dev-db NAME=sidebar PORT=8931 WORKER_PROXY_PORT=8131

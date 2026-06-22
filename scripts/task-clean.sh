@@ -178,7 +178,7 @@ done
 # feat/<name> default — via the shared `lobu_db_name` helper so the name can't
 # drift from what dev-db created. Non-fatal: a missing DB or an unreachable
 # Postgres just skips (cleanup must still finish).
-export PGHOST="${PGHOST:-localhost}" PGPORT="${PGPORT:-5432}" PGUSER="${PGUSER:-$USER}"
+export PGHOST="${PGHOST:-localhost}" PGPORT="${PGPORT:-5418}" PGUSER="${PGUSER:-$USER}"
 dropped_dbs=""
 for raw in "$name" "$branch" "$default_branch"; do
   [[ -n "$raw" ]] || continue

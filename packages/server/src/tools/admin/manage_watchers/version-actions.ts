@@ -15,6 +15,7 @@ import {
   parseJson,
   normalizeStoredJsonField,
   toJsonParam,
+  writeWatcherRender,
 } from './shared';
 
 // ============================================
@@ -157,6 +158,16 @@ export async function handleCreateVersion(
         ${args.change_notes ?? null}, ${createdBy}, NOW()
       )
     `;
+
+    // Watcher-render fold phase 3a: also write the render directly into the unified
+    // view_template_versions store (transition off the mirror trigger; retired in 3b/4).
+    await writeWatcherRender(tx, {
+      groupId,
+      organizationId: ctx.organizationId,
+      version: lockedNextVersion,
+      jsonTemplate,
+      createdBy,
+    });
 
     // Update watcher to new version if set_as_current (default: true).
     // Group-shared fields (current_version_id, version, name) cascade to

@@ -24,6 +24,7 @@ import {
   assertWatcherVersionConfigValid,
   parseJsonInput,
   toJsonParam,
+  writeWatcherRender,
   toTextArrayParam,
   summarizeResults,
   type WatcherOperationResult,
@@ -210,6 +211,18 @@ export async function handleCreate(
         ${args.reactions_guidance ?? null}, ${'Initial version'}, ${createdBy}, NOW()
       )
     `;
+
+    // Watcher-render fold phase 3a: also write the render directly into the unified
+    // view_template_versions store (transition off the mirror trigger; retired in 3b/4).
+    await writeWatcherRender(tx, {
+      groupId: watcherId,
+      // Non-null here: the watchers INSERT above used organizationId (a NOT NULL column),
+      // so a null would already have thrown before reaching this line.
+      organizationId: organizationId as string,
+      version: 1,
+      jsonTemplate,
+      createdBy,
+    });
 
     // 3. Point watcher to the newly created current version
     await tx`

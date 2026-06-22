@@ -136,6 +136,36 @@ export function toJsonParam(sql: DbClient, value: unknown): unknown {
   return sql.json(value);
 }
 
+/**
+ * Watcher-render fold phase 3a: write the watcher render DIRECTLY into
+ * view_template_versions, keyed by the watcher GROUP + version (same key the mirror
+ * trigger uses). This establishes the app as a direct writer so the mirror trigger +
+ * watcher_versions.json_template can be retired in phase 3b/4. Runs inside the caller's
+ * version-write tx, AFTER the watcher_versions INSERT (idempotent ON CONFLICT — in 3a it
+ * overwrites the row the trigger just wrote with the same value; in 3b the trigger is
+ * gone and this is the sole writer). Skips NULL templates (AutoRenderer).
+ */
+export async function writeWatcherRender(
+  tx: DbClient,
+  params: {
+    groupId: number;
+    organizationId: string;
+    version: number;
+    jsonTemplate: unknown;
+    createdBy: string;
+  }
+): Promise<void> {
+  if (params.jsonTemplate === undefined || params.jsonTemplate === null) return;
+  await tx`
+    INSERT INTO view_template_versions
+      (resource_type, resource_id, organization_id, version, tab_name, json_template, created_by)
+    VALUES ('watcher', ${String(params.groupId)}, ${params.organizationId}, ${params.version},
+            NULL, ${toJsonParam(tx, params.jsonTemplate)}, ${params.createdBy})
+    ON CONFLICT (resource_type, resource_id, organization_id, tab_name, version)
+      DO UPDATE SET json_template = EXCLUDED.json_template
+  `;
+}
+
 export function toTextArrayParam(values: string[]): string {
   const arr = normalizeStringArray(values);
   if (arr.length === 0) return '{}';

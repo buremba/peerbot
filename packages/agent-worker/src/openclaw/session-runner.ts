@@ -16,7 +16,7 @@ import {
   type ToolsConfig,
 } from "@lobu/core";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { getModel, type ImageContent } from "@mariozechner/pi-ai";
+import type { ImageContent, Model } from "@mariozechner/pi-ai";
 import {
   AuthStorage,
   type CreateAgentSessionOptions,
@@ -40,6 +40,7 @@ import {
 import {
   buildDynamicOpenAIModel,
   DEFAULT_PROVIDER_BASE_URL_ENV,
+  getModelDynamic,
   openOrCreateSessionManager,
   PROVIDER_REGISTRY_ALIASES,
   registerDynamicProvider,
@@ -600,7 +601,7 @@ export async function runAISession(
     }
   }
 
-  let baseModel = getModel(provider as any, modelId as any) as any;
+  let baseModel: Model<any> | undefined = getModelDynamic(provider, modelId);
   if (!baseModel) {
     // For OpenAI-compatible providers (e.g. nvidia, together-ai), create a
     // dynamic model entry since these models aren't in the static registry.
@@ -630,13 +631,13 @@ export async function runAISession(
         "claude-haiku-4-5-20251001",
         "claude-3-5-sonnet-20241022",
       ]
-        .map((id) => getModel("anthropic" as any, id as any))
+        .map((id) => getModelDynamic("anthropic", id))
         .find(Boolean);
       if (template) {
         logger.info(
           `Creating dynamic Claude model entry for ${modelId} (not in static registry)`
         );
-        baseModel = { ...(template as any), id: modelId, name: modelId };
+        baseModel = { ...template, id: modelId, name: modelId };
       } else {
         throw new Error(
           `Model "${modelId}" not found for provider "${provider}". Check that the model ID is valid and registered in the model registry.`
@@ -647,6 +648,12 @@ export async function runAISession(
         `Model "${modelId}" not found for provider "${provider}". Check that the model ID is valid and registered in the model registry.`
       );
     }
+  }
+  // Every path above either assigns `baseModel` or throws, so it's defined here;
+  // this guard makes that invariant explicit for the type checker (and is a
+  // defensive backstop).
+  if (!baseModel) {
+    throw new Error(`Could not resolve a model for "${provider}/${modelId}".`);
   }
   const resolvedModel = providerBaseUrl
     ? { ...baseModel, baseUrl: providerBaseUrl }

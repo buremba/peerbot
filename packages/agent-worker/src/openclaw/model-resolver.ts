@@ -6,9 +6,31 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { type ConfigProviderMeta, createLogger } from "@lobu/core";
+import { getModel, type Model } from "@mariozechner/pi-ai";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 
 const logger = createLogger("model-resolver");
+
+/**
+ * Look up a pi-ai registry model by RUNTIME-resolved provider + model strings.
+ *
+ * pi-ai's `getModel` is generically typed over its static `MODELS` registry
+ * (`TProvider extends KnownProvider`, `TModelId extends keyof MODELS[TProvider]`),
+ * so it cannot be called with the dynamic strings Lobu resolves at runtime
+ * without a cast. Centralize that one unavoidable cast here — behind a typed
+ * `(string, string) => Model<any> | undefined` boundary — so call sites stay
+ * clean and the dynamic edge is explicit in exactly one place. Returns
+ * `undefined` when the registry has no such entry (callers then build a dynamic
+ * or cloned model).
+ */
+export function getModelDynamic(
+  provider: string,
+  modelId: string
+): Model<any> | undefined {
+  return getModel(provider as never, modelId as never) as
+    | Model<any>
+    | undefined;
+}
 
 /** Hardcoded fallback map for provider base URL env vars. */
 export const DEFAULT_PROVIDER_BASE_URL_ENV: Record<string, string> = {
@@ -95,7 +117,8 @@ interface DynamicOpenAIModel {
   provider: string;
   baseUrl: string;
   reasoning: boolean;
-  input: string[];
+  // Matches pi-ai's `Model.input` so a dynamic entry is assignable to Model<any>.
+  input: ("text" | "image")[];
   cost: {
     input: number;
     output: number;

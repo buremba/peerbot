@@ -15,6 +15,10 @@
 
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { getDb } from "../../../db/client.js";
+import { createPostgresAppInstallationStore } from "../../../lobu/stores/app-installation-store.js";
+import { PostgresSecretStore } from "../../../lobu/stores/postgres-secret-store.js";
+import * as slack from "../../../lobu/stores/slack-installations.js";
+import { SecretStoreRegistry } from "../../secrets/index.js";
 import {
   ensureDbForGatewayTests,
   ensureEncryptionKey,
@@ -31,19 +35,11 @@ beforeEach(async () => {
   await resetTestDatabase();
 }, 30_000);
 
-async function build() {
-  const { createPostgresAppInstallationStore } = await import(
-    "../../../lobu/stores/app-installation-store.js"
-  );
-  const { PostgresSecretStore } = await import(
-    "../../../lobu/stores/postgres-secret-store.js"
-  );
-  const { SecretStoreRegistry } = await import("../../secrets/index.js");
+function build() {
   const postgresSecretStore = new PostgresSecretStore();
   const secretStore = new SecretStoreRegistry(postgresSecretStore, {
     secret: postgresSecretStore,
   });
-  const slack = await import("../../../lobu/stores/slack-installations.js");
   return { store: createPostgresAppInstallationStore(), secretStore, slack };
 }
 

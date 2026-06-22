@@ -27,7 +27,13 @@ export class ChatGPTOAuthModule extends BaseProviderModule {
         secretEnvVarNames: ["OPENAI_API_KEY"],
         slug: "openai-codex",
         upstreamBaseUrl: "https://chatgpt.com/backend-api",
-        baseUrlEnvVarName: "OPENAI_BASE_URL",
+        // Dedicated key — must NOT be "OPENAI_BASE_URL". The config-driven
+        // `openai` provider (sdkCompat "openai", api.openai.com) also emits
+        // OPENAI_BASE_URL; sharing the key let an unguarded merge clobber it so
+        // an `openai/<model>` request egressed to chatgpt.com/backend-api (403
+        // without a ChatGPT session). Keep this provider's base URL under its
+        // own key so the two never collide.
+        baseUrlEnvVarName: "OPENAI_CODEX_BASE_URL",
         authType: "device-code",
         supportedAuthTypes: ["device-code", "api-key"],
         apiKeyInstructions:

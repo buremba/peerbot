@@ -36,7 +36,10 @@ export function getModelDynamic(
 export const DEFAULT_PROVIDER_BASE_URL_ENV: Record<string, string> = {
   anthropic: "ANTHROPIC_BASE_URL",
   openai: "OPENAI_BASE_URL",
-  "openai-codex": "OPENAI_BASE_URL",
+  // Dedicated key (mirrors chatgpt-oauth-module's baseUrlEnvVarName). Must stay
+  // distinct from "openai" so the gateway's per-provider base URLs never
+  // collide on OPENAI_BASE_URL — see chatgpt-oauth-module.ts.
+  "openai-codex": "OPENAI_CODEX_BASE_URL",
   // Keyed by the gateway provider slug (config id), e.g. "gemini" — NOT
   // "google". registerDynamicProvider() overlays the live config values at
   // runtime; these stay as fallbacks for providers not in providers.json.

@@ -157,6 +157,23 @@ describe("resolveModelRef", () => {
   });
 });
 
+describe("DEFAULT_PROVIDER_BASE_URL_ENV — no shared base-URL key", () => {
+  // Worker-side half of the codex collision fix. The OpenAI SDK base URL for
+  // `openai` is read from OPENAI_BASE_URL; the Codex (openai-codex) backend MUST
+  // read its own key, else a clobbered OPENAI_BASE_URL routes openai/<model> to
+  // chatgpt.com/backend-api (the original 403). Pin the exact key + disjointness
+  // so a regression back to OPENAI_BASE_URL fails here, not just at runtime.
+  test("openai-codex uses OPENAI_CODEX_BASE_URL, distinct from openai", () => {
+    expect(DEFAULT_PROVIDER_BASE_URL_ENV["openai-codex"]).toBe(
+      "OPENAI_CODEX_BASE_URL"
+    );
+    expect(DEFAULT_PROVIDER_BASE_URL_ENV.openai).toBe("OPENAI_BASE_URL");
+    expect(DEFAULT_PROVIDER_BASE_URL_ENV["openai-codex"]).not.toBe(
+      DEFAULT_PROVIDER_BASE_URL_ENV.openai
+    );
+  });
+});
+
 describe("registerDynamicProvider", () => {
   const testProviderId = `test-provider-${Date.now()}`;
 

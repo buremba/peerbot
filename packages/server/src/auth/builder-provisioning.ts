@@ -77,10 +77,10 @@ const BUILDER_MODEL_PROVIDER_PREFERENCE = [
  * Anthropic/Claude is the canonical platform provider but is intentionally NOT
  * in config/providers.json (its model list is fetched live from the provider).
  * Resolve it directly from its env vars so an Anthropic-only deployment still
- * gets a working builder even when the live module registry is empty. The
- * fallback model is a last resort, used only when no config-declared provider
- * model is available — prod also carries openai/gemini keys, so it pins one of
- * those instead and this snapshot is rarely reached.
+ * gets a working builder even when the live module registry is empty. When a
+ * Claude system key is present it is the PREFERRED pin (it is always a real API
+ * key, never an OAuth/Codex backend), so the builder gets a reliable default;
+ * the config-declared providers below are only pinned when Claude is absent.
  */
 const CLAUDE_PROVIDER_ID = 'claude';
 const CLAUDE_SYSTEM_ENV_VARS = [
@@ -173,10 +173,17 @@ async function resolveBuilderProviders(): Promise<ResolvedBuilderProviders> {
     }
     return null;
   };
-  let model: string | null = null;
+  // Prefer Claude (Anthropic) whenever its system key is present. It is the
+  // canonical always-API-key provider — it never routes to an OAuth/Codex
+  // backend, unlike an OPENAI_API_KEY that may actually be a ChatGPT/Codex
+  // token (which 403s against api.openai.com). For the critical system agent we
+  // pin the most reliable provider; the others are only pinned when Claude has
+  // no system key. Claude has no providers.json entry, so it's pinned from
+  // CLAUDE_FALLBACK_MODEL.
+  let model: string | null = hasClaudeSystemKey() ? CLAUDE_FALLBACK_MODEL : null;
   for (const providerId of BUILDER_MODEL_PROVIDER_PREFERENCE) {
-    model = pickModel(providerId);
     if (model) break;
+    model = pickModel(providerId);
   }
   if (!model) {
     for (const providerId of Object.keys(configs)) {
@@ -205,13 +212,6 @@ async function resolveBuilderProviders(): Promise<ResolvedBuilderProviders> {
       // Registry/model fetch unavailable — fall through to the Claude floor.
     }
   }
-  // Registry-independent floor: Claude has no providers.json default, so pin a
-  // current snapshot when it's the only system key available and nothing above
-  // resolved (e.g. an Anthropic-only deploy with an empty registry).
-  if (!model && hasClaudeSystemKey()) {
-    model = CLAUDE_FALLBACK_MODEL;
-  }
-
   return { providers: [...installed.values()], model };
 }
 

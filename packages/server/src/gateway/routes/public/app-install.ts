@@ -22,13 +22,17 @@
  * Multi-replica: stateless. Org resolution + the two upserts read/write Postgres
  * only; the store upsert serializes ownership on a Postgres advisory lock +
  * partial unique index, so concurrent callbacks across pods converge to one
- * active owner. No per-pod memo.
+ * active owner. The signed `state` is a Postgres-backed nonce (oauth_states),
+ * readable/consumable from any replica. No per-pod memo.
  *
- * Cross-org safety: the install is bound to the CALLBACK session's active org.
- * The owletto "Install on GitHub" UI (separate PR) will additionally carry a
- * signed `state` so a phished install link can't plant a connection into the
- * wrong tenant; until then the session org is the authority (an unauthenticated
- * hit with no single-tenant fallback is rejected, never silently tenanted).
+ * Cross-org safety (CSRF / cross-tenant): the install URL the UI sends the user
+ * to is minted by `GET /github/app/install`, which binds a signed `state` nonce
+ * to the INITIATING session's org. GitHub passes `state` through to the callback
+ * Setup URL. The callback verifies + consumes that state BEFORE any DB write and
+ * binds the install to the org encoded in the state — NOT the ambient callback
+ * session. A callback with a missing/invalid/expired `state` is rejected (4xx)
+ * with zero mutation, so a phished/forged GET can never plant a connection into
+ * a victim's org.
  */
 
 import { Hono } from "hono";
@@ -44,6 +48,7 @@ import {
 	normalizeConnectorAuthSchema,
 } from "../../../utils/connector-auth.js";
 import type { AppInstallationStore } from "../../../lobu/stores/app-installation-store.js";
+import { createGithubInstallStateStore } from "../../auth/oauth/state-store.js";
 import {
 	renderOAuthErrorPage,
 	renderOAuthSuccessPage,
@@ -55,6 +60,21 @@ const logger = createLogger("app-install-routes");
 const GITHUB_CONNECTOR_KEY = "github";
 const GITHUB_PROVIDER = "github";
 const GITHUB_PROVIDER_INSTANCE = "cloud";
+
+/**
+ * Build the GitHub App install URL the user is redirected to. `app_slug` is the
+ * Lobu GitHub App's slug (the `github.com/apps/<slug>` segment); `state` is the
+ * signed nonce the callback verifies. GitHub passes `state` through verbatim to
+ * the App's configured Setup URL (our callback), which is how we round-trip the
+ * initiating org without trusting the callback session.
+ */
+export function githubAppInstallUrl(appSlug: string, state: string): string {
+	const url = new URL(
+		`https://github.com/apps/${encodeURIComponent(appSlug)}/installations/new`,
+	);
+	url.searchParams.set("state", state);
+	return url.toString();
+}
 
 export type GithubSetupAction = "install" | "update" | "request";
 
@@ -212,6 +232,41 @@ export interface AppInstallRouterDeps {
 export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 	const router = new Hono();
 
+	// Start of the GitHub App install flow. Binds a signed `state` nonce to the
+	// initiating session's org and redirects to GitHub's install page. The
+	// callback verifies that state before mutating anything — this is the CSRF /
+	// cross-tenant guard (the callback is otherwise a public, unauthenticated GET).
+	router.get("/github/app/install", async (c) => {
+		const appSlug = process.env.GITHUB_APP_SLUG;
+		if (!process.env.GITHUB_APP_ID || !appSlug) {
+			return c.html(
+				renderOAuthErrorPage(
+					"github_app_not_configured",
+					"The Lobu GitHub App is not configured on this gateway (set GITHUB_APP_ID and GITHUB_APP_SLUG).",
+				),
+				503,
+			);
+		}
+
+		// Bind the install to the initiating session's active org (single-tenant
+		// fallback for self-host). Without this the resulting state would carry no
+		// authoritative org and the callback couldn't tell which tenant initiated.
+		const orgId = await deps.resolveInstallOrgId(c);
+		if (!orgId) {
+			return c.html(
+				renderOAuthErrorPage(
+					"unauthorized",
+					"Sign in to your organization before installing the GitHub App.",
+				),
+				401,
+			);
+		}
+
+		const stateStore = createGithubInstallStateStore();
+		const state = await stateStore.create({ organizationId: orgId });
+		return c.redirect(githubAppInstallUrl(appSlug, state), 302);
+	});
+
 	router.get("/github/app/install/callback", async (c) => {
 		const appId = process.env.GITHUB_APP_ID;
 		if (!appId) {
@@ -249,16 +304,40 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 			);
 		}
 
-		const orgId = await deps.resolveInstallOrgId(c);
-		if (!orgId) {
+		// CSRF / cross-tenant guard. The callback is a public, unauthenticated GET,
+		// so the org MUST come from the signed `state` minted by GET
+		// /github/app/install — NOT the ambient callback session. Verify + consume
+		// the state BEFORE any DB write: a missing/invalid/expired state rejects
+		// (4xx) with zero mutation, so a forged GET can't plant a connection into a
+		// victim's org. `consume` is an atomic DELETE … RETURNING (single-use,
+		// replay-safe across replicas).
+		const stateParam = c.req.query("state");
+		if (!stateParam) {
 			return c.html(
 				renderOAuthErrorPage(
-					"unauthorized",
-					"Sign in to your organization before installing the GitHub App.",
+					"invalid_state",
+					"This GitHub install callback is missing its security token. Start the install from your Lobu dashboard.",
 				),
-				401,
+				400,
 			);
 		}
+		const stateStore = createGithubInstallStateStore();
+		const installState = await stateStore.consume(stateParam);
+		if (!installState) {
+			logger.warn(
+				{ installation_id: installationIdRaw },
+				"Rejecting GitHub install callback: missing/invalid/expired state",
+			);
+			return c.html(
+				renderOAuthErrorPage(
+					"invalid_state",
+					"This GitHub install link is invalid or has expired. Start the install again from your Lobu dashboard.",
+				),
+				400,
+			);
+		}
+		// Bind to the org encoded in the verified state — never the callback session.
+		const orgId = installState.organizationId;
 
 		// Guard: the org must actually have the github connector definition with an
 		// app_installation auth method, otherwise there's nothing to link the

@@ -171,6 +171,21 @@ export function createSlackInstallStateStore(): OAuthStateStore<SlackInstallStat
   return new OAuthStateStore("slack:oauth:state", "slack-install-state");
 }
 
+interface GithubInstallStateData {
+  /**
+   * Active org of the session that initiated the GitHub App install. The
+   * install callback verifies a valid, unexpired state row exists and binds
+   * the resulting `app_installations` row + connection to THIS org — never the
+   * ambient callback-session org. Without it, a public GET to the callback
+   * could plant a connection into a victim's org (CSRF / cross-tenant).
+   */
+  organizationId: string;
+}
+
+export function createGithubInstallStateStore(): OAuthStateStore<GithubInstallStateData> {
+  return new OAuthStateStore("github:app_install:state", "github-install-state");
+}
+
 export type ProviderOAuthStateStore = OAuthStateStore<ProviderOAuthStateData>;
 
 /**

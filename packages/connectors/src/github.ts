@@ -48,6 +48,15 @@ interface GitHubConfig {
   lookback_days?: number;
   labels_filter?: string[];
   env_overrides?: Record<string, unknown>;
+  /**
+   * `app_installations.id` when this connection is backed by the Lobu GitHub
+   * App (written by the install callback). Its presence — NOT the connector's
+   * static `webhook.delivery` — is what marks a connection as app-installation
+   * auth: webhook deliveries for those arrive on the shared App-level endpoint,
+   * so per-connection registerWebhook/unregisterWebhook are no-ops. OAuth/PAT
+   * connections carry no `installation_ref` and DO register per connection.
+   */
+  installation_ref?: number | string;
 }
 
 interface GitHubCheckpoint {
@@ -713,13 +722,35 @@ export default class GitHubConnector extends ConnectorRuntime {
     return null;
   }
 
+  /**
+   * Whether THIS connection resolves to GitHub App-installation auth — i.e. it
+   * was bound to an install row (`config.installation_ref`) or the gateway
+   * stamped an installation context onto the registration call. Gating the
+   * webhook no-op on this (not the connector's static `webhook.delivery`) is
+   * what keeps per-connection webhook registration working for the OAuth/PAT
+   * connections, which carry no installation_ref. App-backed connections get
+   * deliveries on the shared App-level endpoint instead, so there's no
+   * per-connection hook to create or tear down.
+   */
+  private isAppInstallationConnection(
+    ctx: WebhookRegistrationContext<GitHubConfig>
+  ): boolean {
+    if (ctx.installation) return true;
+    const ref = ctx.config?.installation_ref;
+    if (typeof ref === 'number') return Number.isFinite(ref);
+    if (typeof ref === 'string') return ref.trim().length > 0;
+    return false;
+  }
+
   async registerWebhook(
     ctx: WebhookRegistrationContext<GitHubConfig>
   ): Promise<WebhookRegistration> {
-    // App-installation delivery: the App-level webhook is provisioned once at
-    // install time, not per connection — so register is a no-op. The provider
-    // subscription already exists; there is no per-connection hook to create.
-    if (this.definition.webhook?.delivery === 'app_installation') {
+    // App-installation auth: the App-level webhook is provisioned once at install
+    // time, not per connection — so register is a no-op FOR THIS CONNECTION. Gate
+    // on the connection's resolved auth (installation_ref / installation ctx), NOT
+    // the connector's static webhook.delivery, so OAuth/PAT connections still
+    // register their own per-connection hook below.
+    if (this.isAppInstallationConnection(ctx)) {
       return { externalId: '', metadata: { delivery: 'app_installation', noop: true } };
     }
 
@@ -761,9 +792,11 @@ export default class GitHubConnector extends ConnectorRuntime {
   }
 
   async unregisterWebhook(ctx: WebhookRegistrationContext<GitHubConfig>): Promise<void> {
-    // App-installation delivery: nothing to tear down per connection — the
-    // App-level webhook is removed when the org uninstalls the App, not here.
-    if (this.definition.webhook?.delivery === 'app_installation') return;
+    // App-installation auth: nothing to tear down per connection — the App-level
+    // webhook is removed when the org uninstalls the App, not here. Gate on this
+    // connection's resolved auth, NOT the static webhook.delivery, so OAuth/PAT
+    // connections still tear down their own per-connection hook below.
+    if (this.isAppInstallationConnection(ctx)) return;
 
     const externalId = ctx.externalId;
     if (!externalId) return;

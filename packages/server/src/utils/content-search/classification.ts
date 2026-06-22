@@ -3,7 +3,7 @@
  * collectClassifierIds, resolveClassifierIds, buildClassificationExistsClauses.
  */
 
-import type { DbClient } from '../../db/client';
+import { type DbClient, pgBigintArray, pgTextArray } from '../../db/client';
 import logger from '../logger';
 
 function collectClassifierIds(rows: unknown[], mapping: Map<string, number[]>): void {
@@ -127,13 +127,16 @@ export function buildClassificationExistsClauses(
       return null;
     }
 
-    // Parameterize values array
-    params.push(valuesArr);
+    // Parameterize values array. Under the prod client (fetch_types:false) a raw
+    // JS array bound to a $N param serializes to a malformed array literal, so it
+    // MUST be a pgTextArray() pg-literal string cast ::text[].
+    params.push(pgTextArray(valuesArr));
     const valuesParamSQL = `$${paramIndex}::text[]`;
     paramIndex++;
 
-    // Parameterize classifier IDs (stable classifier_id, any version's classifications)
-    params.push(classifierIds);
+    // Parameterize classifier IDs (stable classifier_id, any version's classifications).
+    // Same fetch_types:false rule — bind a pgBigintArray() literal, not a raw JS array.
+    params.push(pgBigintArray(classifierIds));
     const classifierFilterSql = `cc.classifier_id = ANY($${paramIndex}::bigint[])`;
     paramIndex++;
 

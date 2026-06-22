@@ -29,8 +29,10 @@ describe('buildClassificationExistsClauses', () => {
     expect(result?.clauses[0]).toContain('cc.classifier_id = ANY($2::bigint[])');
     expect(result?.clauses[0]).not.toContain('ccl.slug');
     expect(result?.clauses[0]).toContain('cc.event_id = f.id');
-    // params: [values[], classifierIds[]]
-    expect(result?.params).toEqual([['positive'], [42]]);
+    // params: [values text[] literal, classifierIds bigint[] literal]. Under the
+    // prod client (fetch_types:false) raw JS arrays serialize to malformed array
+    // literals, so the builder binds pgTextArray()/pgBigintArray() pg-literals.
+    expect(result?.params).toEqual(['{"positive"}', '{42}']);
   });
 
   it('returns null (drop-all) when a requested classifier resolves to nothing', () => {
@@ -52,9 +54,10 @@ describe('buildClassificationExistsClauses', () => {
 
     const result = buildClassificationExistsClauses(filtersBySlug, classifierIds, 'user', 1);
     expect(result).not.toBeNull();
-    // source is the first param ($1), then values ($2), then classifier ids ($3)
+    // source is the first param ($1), then values ($2), then classifier ids ($3).
+    // values/ids are pg-literal strings (see note above), not raw JS arrays.
     expect(result?.clauses[0]).toContain('cc.source = $1');
-    expect(result?.params).toEqual(['user', ['positive'], [7]]);
+    expect(result?.params).toEqual(['user', '{"positive"}', '{7}']);
   });
 });
 

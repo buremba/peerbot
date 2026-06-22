@@ -1065,7 +1065,7 @@ export async function batchLoadRelationships(
     WHERE r.organization_id = ${organizationId}
       AND r.deleted_at IS NULL
       AND rt.slug = ANY(${typeSlugs}::text[])
-      AND (r.from_entity_id = ANY(${idArray}) OR r.to_entity_id = ANY(${idArray}))
+      AND (r.from_entity_id = ANY(${idArray}::bigint[]) OR r.to_entity_id = ANY(${idArray}::bigint[]))
   `;
 
   // Build a direction lookup per spec

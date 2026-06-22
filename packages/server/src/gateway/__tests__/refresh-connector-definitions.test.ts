@@ -1,21 +1,6 @@
 /**
- * Connector-definition refresh (#14, Goal A).
- *
- * `connector_definitions` rows are per-org point-in-time snapshots of a
- * connector's code-defined schema, written once at first install and never
- * re-synced. So an org that added github before the connector gained the
- * `app_installation` auth method keeps a stale `auth_schema` ([oauth,env_keys]),
- * and the GitHub App install callback rejects it (`github_connector_missing`).
- *
- * `refreshConnectorDefinitions()` re-syncs every org's EXISTING built-in
- * definition from the on-disk registry. This drives the real path against real
- * Postgres + the real bundled github connector source.
- *
- * Under test:
- *  1. An org with a STALE github def (no app_installation method) gets the
- *     app_installation method after refresh, with login_enabled preserved.
- *  2. The refresh is idempotent (a second run changes nothing observable).
- *  3. It does NOT install a connector into an org that didn't already have it.
+ * Connector-definition refresh (#14). Drives refreshConnectorDefinitions()
+ * against real Postgres + the real bundled github connector source.
  */
 
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";

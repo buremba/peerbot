@@ -1,33 +1,9 @@
 /**
- * Scheduled Job: Refresh built-in connector definitions.
- *
- * `connector_definitions` rows are per-org point-in-time SNAPSHOTS of a
- * connector's code-defined schema, written once when the org first adds the
- * connector (`ensureConnectorInstalled`, which inserts only when no active row
- * exists and never re-syncs an existing one). So when a bundled connector's code
- * gains a capability — e.g. github gaining the `app_installation` auth method —
- * orgs that installed it earlier keep the STALE schema. The GitHub App install
- * callback then rejects with `github_connector_missing` because the org's
- * `auth_schema` still lists only `[oauth, env_keys]` (see
- * `gateway/routes/public/app-install.ts` hasAppInstallMethod).
- *
- * This task re-syncs every org's EXISTING built-in definition through the SAME
- * code→`connector_definitions` write path the install flow uses
- * (`upsertBundledConnectorForOrg` — there is no second writer): for each
- * `(organization_id, key)` that already has an active definition, recompile the
- * bundled source and upsert by `(organization_id, key)`. It is purely a refresh
- * — it never installs a connector into an org that didn't already have it (the
- * shared writer is only invoked for keys an org already holds).
- *
- * Idempotent: a no-op once every row already matches code (the UPDATE just
- * rewrites identical JSON). Org-specific config is preserved by the shared
- * upsert (`login_enabled` re-read and written back; `default_connection_config`
- * never touched).
- *
- * Multi-replica: runs as a single-claimant cron row in the runs queue (one pod
- * per tick), reads/writes Postgres only, no per-pod state. Fires on the first
- * scheduler tick after a deploy, so a schema-changing release converges without
- * an operator step.
+ * `connector_definitions` are per-org snapshots written once at install and
+ * never re-synced, so a connector gaining a capability in code (e.g. github's
+ * `app_installation` auth method) leaves earlier installers on a stale schema.
+ * This single-claimant cron re-syncs every org's EXISTING built-in definition
+ * through the install write path so a deploy converges without an operator step.
  */
 
 import { getDb } from '../db/client';

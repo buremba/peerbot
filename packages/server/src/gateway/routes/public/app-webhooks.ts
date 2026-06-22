@@ -55,17 +55,12 @@ export interface AppWebhookTenant {
 }
 
 /**
- * Human-facing projections a plugin pulls off a delivery for the `events` row.
- * Without these the landed row has an empty `title`/`source_url` and the content
- * is only reachable by digging into `payload_data` (a watcher SQL slog and a
- * useless card). The provider knows where the title/url live per event type
- * (issue/PR/discussion vs. a comment, whose title is its parent's) — a single
- * config JSON pointer can't express that, so the extraction is per provider.
+ * `events.title` / `events.source_url` for the landed row. Extracted per
+ * provider, not via a config JSON pointer: a comment's title lives on its parent
+ * subject, so where the title/url live varies by event type.
  */
 export interface AppWebhookContent {
-	/** `events.title` — the issue/PR/discussion title (comment → its parent's). */
 	title?: string;
-	/** `events.source_url` — the `html_url` of the subject (or its parent). */
 	sourceUrl?: string;
 }
 
@@ -91,12 +86,7 @@ export interface AppWebhookProvider {
 	 * installation), in which case the router acks 200 without landing.
 	 */
 	extractTenant(rawBody: Uint8Array, headers: Headers): AppWebhookTenant | null;
-	/**
-	 * Pull the human-facing title + source url off the delivery for the landed
-	 * `events` row. Optional — a provider without a meaningful subject (or before
-	 * the extractor exists) simply omits it and the row keeps an empty
-	 * title/source_url. Pure over (rawBody, headers): multi-replica safe.
-	 */
+	/** Optional title/source_url for the landed row; omitted → empty fields. */
 	extractContent?(rawBody: Uint8Array, headers: Headers): AppWebhookContent;
 }
 

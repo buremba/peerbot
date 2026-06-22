@@ -18,6 +18,7 @@ import { DEFAULT_AGENT_ID } from "../../../auth/default-provisioning.js";
 import { getDb } from "../../../db/client.js";
 import { getCachedOrgBySlug } from "../../../workspace/multi-tenant.js";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store.js";
+import { listPendingToolsForConversation } from "../../auth/mcp/pending-tool-store.js";
 import { getRevokedTokenStore } from "../../auth/revoked-token-store.js";
 import {
   createApiAuthMiddleware,
@@ -1566,6 +1567,24 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       return c.json({ success: true });
     });
   }
+
+  // GET /api/v1/agents/{agentId}/pending-approvals - Replay open tool approvals
+  // for a conversation so the web SPA can re-render approval cards on reload
+  // (the live `tool-approval` SSE card is one-shot). The path param IS the
+  // conversationId (messagesUrl is /api/v1/agents/{conversationId}/messages),
+  // which is what pending tools are keyed by.
+  app.get("/api/v1/agents/:agentId/pending-approvals", async (c) => {
+    const conversationId = c.req.param("agentId");
+    const pending = await listPendingToolsForConversation(conversationId);
+    return c.json({
+      approvals: pending.map((p) => ({
+        requestId: p.requestId,
+        mcpId: p.mcpId,
+        toolName: p.toolName,
+        args: p.args,
+      })),
+    });
+  });
 
   logger.debug("Hono Agent API routes registered");
 

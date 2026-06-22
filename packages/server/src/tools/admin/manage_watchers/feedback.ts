@@ -4,7 +4,6 @@
  */
 
 import { getDb } from '../../../db/client';
-import { feedbackViaCorrections } from '../../../utils/watcher-feedback';
 import type { ToolContext } from '../../registry';
 import type { ManageWatchersArgs, ManageWatchersResult } from '../manage_watchers';
 
@@ -64,66 +63,39 @@ export async function handleSubmitFeedback(
   }
   const organizationId = windowCheck[0].organization_id as string;
 
-  // Correction-events (P1) phase 3 — the WRITE flip. When FEEDBACK_WRITE_VIA_CORRECTIONS is set,
-  // emit the correction event DIRECTLY (the same shape the phase-1 trigger produces) and skip the
-  // watcher_window_field_feedback INSERT, so the table can be dropped (phase 4). The id is still
-  // allocated from the table's own sequence (watcher_window_field_feedback_id_seq) so origin_id
-  // stays 'wwff_<id>' and the phase-2 read's substring id-recovery + ids remain stable.
-  // MULTI-REPLICA: gated on the READ flag (FEEDBACK_VIA_CORRECTIONS) already being universal —
-  // else flag-off readers reading the table would miss these direct-emitted events. During the
-  // write-flip rollout, old pods INSERT the table (-> trigger -> event) and new pods emit directly;
-  // no double event because each pod takes exactly one path.
-  const writeViaCorrections =
-    process.env.FEEDBACK_WRITE_VIA_CORRECTIONS === '1' ||
-    process.env.FEEDBACK_WRITE_VIA_CORRECTIONS === 'true';
-
-  // Insert in one transaction so a partial failure never leaks half-applied
-  // corrections — submit_feedback is naturally a batch operation from the UI.
+  // Correction-events (P1): every submit emits a correction event directly to the events spine
+  // (semantic_type='correction'). The id is allocated from the retired table's sequence
+  // (watcher_window_field_feedback_id_seq, kept alive via ALTER SEQUENCE OWNED BY NONE) so
+  // origin_id stays 'wwff_<id>' and the reader's substring id-recovery + ids remain stable.
+  // One transaction so a partial failure never leaks half-applied corrections.
   const feedbackIds = await sql.begin(async (tx) => {
     const ids: number[] = [];
     for (const c of corrections) {
       const mutation = c.mutation ?? 'set';
       const correctedValueJson =
         mutation === 'remove' || c.value === undefined ? null : tx.json(c.value);
-      if (writeViaCorrections) {
-        const [row] = await tx`
-          WITH seq AS (SELECT nextval('watcher_window_field_feedback_id_seq') AS id)
-          INSERT INTO events (
-            organization_id, semantic_type, entity_ids, origin_id, metadata,
-            created_by, occurred_at, created_at
-          )
-          SELECT
-            ${organizationId}, 'correction', '{}'::bigint[], 'wwff_' || seq.id::text,
-            jsonb_build_object(
-              'window_id', ${args.window_id}::bigint,
-              'watcher_id', ${watcherId}::bigint,
-              'field_path', ${c.field_path}::text,
-              'mutation', ${mutation}::text,
-              -- ::jsonb so a 'remove' correction (NULL corrected_value) has an inferable param type
-              'corrected_value', ${correctedValueJson}::jsonb,
-              'note', ${c.note ?? null}::text
-            ),
-            (SELECT u.id FROM "user" u WHERE u.id = ${ctx.userId}),
-            NOW(), NOW()
-          FROM seq
-          RETURNING (substring(origin_id from 6))::bigint AS id
-        `;
-        ids.push(Number(row.id));
-        continue;
-      }
-      const result = await tx`
-        INSERT INTO watcher_window_field_feedback (
-          window_id, watcher_id, organization_id,
-          field_path, mutation, corrected_value, note, created_by
+      const [row] = await tx`
+        WITH seq AS (SELECT nextval('watcher_window_field_feedback_id_seq') AS id)
+        INSERT INTO events (
+          organization_id, semantic_type, entity_ids, origin_id, metadata,
+          created_by, occurred_at, created_at
         )
-        VALUES (
-          ${args.window_id}, ${watcherId}, ${organizationId},
-          ${c.field_path}, ${mutation}, ${correctedValueJson},
-          ${c.note ?? null}, ${ctx.userId}
-        )
-        RETURNING id
+        SELECT
+          ${organizationId}, 'correction', '{}'::bigint[], 'wwff_' || seq.id::text,
+          jsonb_build_object(
+            'window_id', ${args.window_id}::bigint,
+            'watcher_id', ${watcherId}::bigint,
+            'field_path', ${c.field_path}::text,
+            'mutation', ${mutation}::text,
+            'corrected_value', ${correctedValueJson}::jsonb,
+            'note', ${c.note ?? null}::text
+          ),
+          (SELECT u.id FROM "user" u WHERE u.id = ${ctx.userId}),
+          NOW(), NOW()
+        FROM seq
+        RETURNING (substring(origin_id from 6))::bigint AS id
       `;
-      ids.push(Number(result[0].id));
+      ids.push(Number(row.id));
     }
     return ids;
   });
@@ -150,67 +122,39 @@ export async function handleGetFeedback(
   const watcherId = Number(args.watcher_id);
   const limit = args.limit ?? 50;
 
-  // Scope to the caller's current org so a member of org A can't enumerate
-  // feedback for a watcher in org B by passing its watcher_id. Correction-events (P1) phase 2:
-  // read from the events mirror behind FEEDBACK_VIA_CORRECTIONS (the feedback id is recovered
-  // from origin_id 'wwff_<id>' so the response is equivalent; org-scoping stays identical).
-  // created_by is equivalent on the happy path; it only differs AFTER the author user is deleted
-  // (the table keeps the dangling id, the event shows NULL via events.created_by's FK SET NULL —
-  // the event is arguably more correct). Accepted: the mirror can't store a non-user id without
-  // breaking the feedback submit on events_created_by_fkey (the reason for the phase-1 resolve).
-  const feedback = feedbackViaCorrections()
-    ? args.window_id
-      ? await sql`
-          SELECT (substring(e.origin_id from 6))::bigint AS id,
-                 (e.metadata->>'window_id')::bigint AS window_id,
-                 e.metadata->>'field_path' AS field_path, e.metadata->>'mutation' AS mutation,
-                 e.metadata->'corrected_value' AS corrected_value, e.metadata->>'note' AS note,
-                 e.created_by, e.created_at, w.window_start, w.window_end
-          FROM events e
-          JOIN watcher_windows w ON (e.metadata->>'window_id')::bigint = w.id
-          WHERE e.semantic_type = 'correction'
-            AND (e.metadata->>'watcher_id')::bigint = ${watcherId}
-            AND (e.metadata->>'window_id')::bigint = ${args.window_id}
-            AND e.organization_id = ${ctx.organizationId}
-          ORDER BY e.created_at DESC
-          LIMIT ${limit}
-        `
-      : await sql`
-          SELECT (substring(e.origin_id from 6))::bigint AS id,
-                 (e.metadata->>'window_id')::bigint AS window_id,
-                 e.metadata->>'field_path' AS field_path, e.metadata->>'mutation' AS mutation,
-                 e.metadata->'corrected_value' AS corrected_value, e.metadata->>'note' AS note,
-                 e.created_by, e.created_at, w.window_start, w.window_end
-          FROM events e
-          JOIN watcher_windows w ON (e.metadata->>'window_id')::bigint = w.id
-          WHERE e.semantic_type = 'correction'
-            AND (e.metadata->>'watcher_id')::bigint = ${watcherId}
-            AND e.organization_id = ${ctx.organizationId}
-          ORDER BY e.created_at DESC
-          LIMIT ${limit}
-        `
-    : args.window_id
-      ? await sql`
-        SELECT f.id, f.window_id, f.field_path, f.mutation, f.corrected_value,
-               f.note, f.created_by, f.created_at,
-               w.window_start, w.window_end
-        FROM watcher_window_field_feedback f
-        JOIN watcher_windows w ON f.window_id = w.id
-        WHERE f.watcher_id = ${watcherId}
-          AND f.window_id = ${args.window_id}
-          AND f.organization_id = ${ctx.organizationId}
-        ORDER BY f.created_at DESC
+  // Scope to the caller's current org so a member of org A can't enumerate feedback for a watcher
+  // in org B by passing its watcher_id. Correction-events (P1): read from the events spine
+  // (semantic_type='correction'); the feedback id is recovered from origin_id 'wwff_<id>'.
+  // created_by is the author user id, or NULL once that user is deleted (events.created_by FK
+  // SET NULL) — the dangling-id behavior the retired table had is intentionally not reproduced.
+  const feedback = args.window_id
+    ? await sql`
+        SELECT (substring(e.origin_id from 6))::bigint AS id,
+               (e.metadata->>'window_id')::bigint AS window_id,
+               e.metadata->>'field_path' AS field_path, e.metadata->>'mutation' AS mutation,
+               e.metadata->'corrected_value' AS corrected_value, e.metadata->>'note' AS note,
+               e.created_by, e.created_at, w.window_start, w.window_end
+        FROM events e
+        JOIN watcher_windows w ON (e.metadata->>'window_id')::bigint = w.id
+        WHERE e.semantic_type = 'correction'
+          AND (e.metadata->>'watcher_id')::bigint = ${watcherId}
+          AND (e.metadata->>'window_id')::bigint = ${args.window_id}
+          AND e.organization_id = ${ctx.organizationId}
+        ORDER BY e.created_at DESC
         LIMIT ${limit}
       `
-      : await sql`
-        SELECT f.id, f.window_id, f.field_path, f.mutation, f.corrected_value,
-               f.note, f.created_by, f.created_at,
-               w.window_start, w.window_end
-        FROM watcher_window_field_feedback f
-        JOIN watcher_windows w ON f.window_id = w.id
-        WHERE f.watcher_id = ${watcherId}
-          AND f.organization_id = ${ctx.organizationId}
-        ORDER BY f.created_at DESC
+    : await sql`
+        SELECT (substring(e.origin_id from 6))::bigint AS id,
+               (e.metadata->>'window_id')::bigint AS window_id,
+               e.metadata->>'field_path' AS field_path, e.metadata->>'mutation' AS mutation,
+               e.metadata->'corrected_value' AS corrected_value, e.metadata->>'note' AS note,
+               e.created_by, e.created_at, w.window_start, w.window_end
+        FROM events e
+        JOIN watcher_windows w ON (e.metadata->>'window_id')::bigint = w.id
+        WHERE e.semantic_type = 'correction'
+          AND (e.metadata->>'watcher_id')::bigint = ${watcherId}
+          AND e.organization_id = ${ctx.organizationId}
+        ORDER BY e.created_at DESC
         LIMIT ${limit}
       `;
 

@@ -23,18 +23,6 @@ export interface ClassifierCreateInput {
   created_by?: string;
 }
 
-export interface ClassifierCreateVersionInput {
-  classifier_id: number;
-  name?: string;
-  description?: string;
-  attribute_values?: Record<string, unknown>;
-  min_similarity?: number;
-  fallback_value?: unknown;
-  change_notes?: string;
-  set_as_current?: boolean;
-  created_by?: string;
-}
-
 export interface ClassifierClassifyInput {
   classifier_slug: string;
   /** Single-mode update. */
@@ -54,12 +42,6 @@ export interface ClassifiersNamespace {
   manage(input: Record<string, unknown>): Promise<unknown>;
   list(input?: { entity_id?: number; status?: string }): Promise<unknown>;
   create(input: ClassifierCreateInput): Promise<unknown>;
-  createVersion(input: ClassifierCreateVersionInput): Promise<unknown>;
-  getVersions(classifier_id: number): Promise<unknown>;
-  setCurrentVersion(input: {
-    classifier_id: number;
-    version: number;
-  }): Promise<unknown>;
   generateEmbeddings(input: {
     classifier_id: number;
     force_regenerate?: boolean;
@@ -78,10 +60,6 @@ export function buildClassifiersNamespace(
     manage,
     list: (input) => action("list", input),
     create: (input) => action("create", input),
-    createVersion: (input) => action("create_version", input),
-    getVersions: (classifier_id) =>
-      action("get_versions", { classifier_id }),
-    setCurrentVersion: (input) => action("set_current_version", input),
     generateEmbeddings: (input) => action("generate_embeddings", input),
     delete: (classifier_id) => action("delete", { classifier_id }),
     classify: (input) => action("classify", input),

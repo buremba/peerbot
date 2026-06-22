@@ -444,10 +444,11 @@ export async function createClassifiersForWatcher(
 		const classifierId = result[0].id;
 		classifierIds.push(classifierId);
 
-		// Check if version exists
+		// Check if a current version exists (classify_facet.current_version_id is
+		// NULL until a version becomes current; the trigger keeps it in sync).
 		const existingVersion = await sql`
-      SELECT id FROM event_classifier_versions
-      WHERE classifier_id = ${classifierId} AND is_current = true
+      SELECT current_version_id FROM classify_facet
+      WHERE id = ${classifierId} AND current_version_id IS NOT NULL
     `;
 
 		if (existingVersion.length === 0) {
@@ -498,17 +499,19 @@ async function updateClassifierValues(
 	extractedData: any,
 	env: Env,
 ): Promise<void> {
-	// Get classifiers for this watcher with extraction config
+	// Get classifiers for this watcher with extraction config. version_id is the
+	// current version's id (classify_facet.current_version_id), used by
+	// persistAttributeValues to write learned values back to the version row.
 	const classifiers = await sql`
     SELECT
       cc.id,
       cc.slug,
-      ccv.id as version_id,
-      ccv.extraction_config,
-      ccv.attribute_values
-    FROM event_classifiers cc
-    JOIN event_classifier_versions ccv ON cc.id = ccv.classifier_id AND ccv.is_current = true
+      cc.current_version_id as version_id,
+      cc.extraction_config,
+      cc.attribute_values
+    FROM classify_facet cc
     WHERE cc.watcher_id = ${watcherId}
+      AND cc.current_version_id IS NOT NULL
   `;
 
 	// Build a map of classifiers by slug for parent lookups

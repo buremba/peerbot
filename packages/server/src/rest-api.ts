@@ -726,7 +726,7 @@ export async function restUpdateContentClassification(c: Context<{ Bindings: Env
         cc.source,
         cc.is_manual
       FROM event_classifications cc
-      JOIN event_classifiers fc ON cc.classifier_id = fc.id
+      JOIN classify_facet fc ON cc.classifier_id = fc.id
       WHERE cc.event_id = ${contentId}
         AND fc.slug = ${classifierSlug}
       ORDER BY

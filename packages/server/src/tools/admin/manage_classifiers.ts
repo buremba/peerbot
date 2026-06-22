@@ -5,10 +5,7 @@
  *
  * Template actions:
  * - create: Create new classifier (v1)
- * - create_version: Add new version to existing classifier
  * - list: List all classifiers (optionally filter by slug/status)
- * - get_versions: Get version history for a classifier
- * - set_current_version: Change the active version
  * - generate_embeddings: Generate embeddings for attribute values
  * - delete: Archive classifier (soft delete)
  *
@@ -25,7 +22,6 @@ import {
   isValidEmbedding,
 } from '../../utils/embeddings';
 import logger from '../../utils/logger';
-import { resolveUsernames } from '../../utils/resolve-usernames';
 import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
 import { defineFlatActionTool, flatAction } from './action-tool';
@@ -39,10 +35,7 @@ export const ManageClassifiersSchema = Type.Object({
     [
       // Template CRUD
       Type.Literal('create'),
-      Type.Literal('create_version'),
       Type.Literal('list'),
-      Type.Literal('get_versions'),
-      Type.Literal('set_current_version'),
       Type.Literal('generate_embeddings'),
       Type.Literal('delete'),
       // Manual classification
@@ -64,8 +57,7 @@ export const ManageClassifiersSchema = Type.Object({
   ),
   classifier_id: Type.Optional(
     Type.Number({
-      description:
-        '[create_version/set_current_version/get_versions/generate_embeddings/delete] Classifier ID',
+      description: '[generate_embeddings/delete] Classifier ID',
     })
   ),
   slug: Type.Optional(
@@ -73,10 +65,8 @@ export const ManageClassifiersSchema = Type.Object({
       description: '[create] Unique identifier (e.g., "sentiment", "quality")',
     })
   ),
-  name: Type.Optional(Type.String({ description: '[create/create_version] Display name' })),
-  description: Type.Optional(
-    Type.String({ description: '[create/create_version] Classifier description' })
-  ),
+  name: Type.Optional(Type.String({ description: '[create] Display name' })),
+  description: Type.Optional(Type.String({ description: '[create] Classifier description' })),
   attribute_key: Type.Optional(
     Type.String({
       description: '[create] Key in content classifications (e.g., "sentiment")',
@@ -85,35 +75,20 @@ export const ManageClassifiersSchema = Type.Object({
   attribute_values: Type.Optional(
     Type.Any({
       description:
-        '[create/create_version] Attribute values with descriptions, examples, and optional embeddings.',
+        '[create] Attribute values with descriptions, examples, and optional embeddings.',
     })
   ),
   min_similarity: Type.Optional(
     Type.Number({
-      description: '[create/create_version] Minimum similarity threshold (default: 0.7)',
+      description: '[create] Minimum similarity threshold (default: 0.7)',
     })
   ),
   fallback_value: Type.Optional(
     Type.Any({
-      description: '[create/create_version] Fallback value if no match (default: null)',
+      description: '[create] Fallback value if no match (default: null)',
     })
   ),
-  change_notes: Type.Optional(
-    Type.String({ description: '[create_version] What changed in this version' })
-  ),
-  created_by: Type.Optional(
-    Type.String({ description: '[create/create_version] Creator identifier' })
-  ),
-  set_as_current: Type.Optional(
-    Type.Boolean({
-      description: '[create_version] Set as current version (default: true)',
-    })
-  ),
-  version: Type.Optional(
-    Type.Number({
-      description: '[set_current_version] Version number to set as current',
-    })
-  ),
+  created_by: Type.Optional(Type.String({ description: '[create] Creator identifier' })),
   status: Type.Optional(
     Type.String({ description: '[list] Filter by status (active or deprecated)' })
   ),
@@ -246,10 +221,7 @@ export const manageClassifiers = withValidatedArgs(
   ManageClassifiersSchema,
   defineFlatActionTool<ManageClassifiersArgs, ManageClassifiersResult>('manage_classifiers', {
     create: flatAction((args, ctx, env) => handleCreate(args, env, ctx)),
-    create_version: flatAction((args, ctx, env) => handleCreateVersion(args, env, ctx)),
     list: flatAction(handleList),
-    get_versions: flatAction(handleGetVersions),
-    set_current_version: flatAction(handleSetCurrentVersion),
     generate_embeddings: flatAction((args, ctx, env) => handleGenerateEmbeddings(args, env, ctx)),
     delete: flatAction(handleDelete),
     classify: flatAction(handleClassify),
@@ -312,14 +284,14 @@ async function handleCreate(
   }
 
   const existing = await sql`
-    SELECT id, slug FROM event_classifiers
+    SELECT id, slug FROM classify_facet
     WHERE slug = ${args.slug} AND organization_id = ${ctx.organizationId}
   `;
   if (existing.length > 0) {
     return {
       success: false,
       action: 'create',
-      message: `Classifier with slug '${args.slug}' already exists. Use create_version to add a new version.`,
+      message: `Classifier with slug '${args.slug}' already exists.`,
       data: { classifier_id: existing[0].id },
     };
   }
@@ -368,141 +340,6 @@ async function handleCreate(
   };
 }
 
-async function handleCreateVersion(
-  args: ManageClassifiersArgs,
-  env: Env,
-  ctx: ToolContext
-): Promise<ManageClassifiersResult> {
-  const sql = getDb();
-
-  if (!args.classifier_id) {
-    return {
-      success: false,
-      action: 'create_version',
-      message: 'Missing required field: classifier_id',
-    };
-  }
-
-  const classifier = await sql`
-    SELECT id, slug FROM event_classifiers
-    WHERE id = ${args.classifier_id} AND organization_id = ${ctx.organizationId}
-  `;
-  if (classifier.length === 0) {
-    return {
-      success: false,
-      action: 'create_version',
-      message: `Classifier not found: ${args.classifier_id}`,
-    };
-  }
-
-  const versionResult = await sql`
-    SELECT MAX(version) as max_version FROM event_classifier_versions WHERE classifier_id = ${args.classifier_id}
-  `;
-  const nextVersion = (Number(versionResult[0]?.max_version) || 0) + 1;
-  const setAsCurrent = args.set_as_current !== false;
-
-  let attributeValues = args.attribute_values;
-  if (!attributeValues) {
-    const currentVersion = await sql`
-      SELECT attribute_values, min_similarity, fallback_value
-      FROM event_classifier_versions
-      WHERE classifier_id = ${args.classifier_id} AND is_current = true LIMIT 1
-    `;
-    if (currentVersion.length === 0) {
-      return {
-        success: false,
-        action: 'create_version',
-        message: "attribute_values is required when current version doesn't exist",
-      };
-    }
-    attributeValues = currentVersion[0].attribute_values as typeof attributeValues;
-    if (args.min_similarity === undefined)
-      args.min_similarity = currentVersion[0].min_similarity as number;
-    if (args.fallback_value === undefined)
-      args.fallback_value = currentVersion[0].fallback_value as string | null;
-  }
-
-  if (typeof attributeValues === 'string') attributeValues = JSON.parse(attributeValues);
-  if (!attributeValues) {
-    return { success: false, action: 'create_version', message: 'attribute_values is required' };
-  }
-
-  const { attributeValues: withEmbeddings, generatedCount } = await hydrateAttributeEmbeddings(
-    attributeValues,
-    env
-  );
-
-  if (setAsCurrent) {
-    await sql`
-      UPDATE event_classifier_versions SET is_current = false
-      WHERE classifier_id = ${args.classifier_id} AND is_current = true
-    `;
-  }
-
-  await sql`
-    INSERT INTO event_classifier_versions (
-      classifier_id, version, is_current, attribute_values, min_similarity, fallback_value, change_notes, created_by
-    ) VALUES (
-      ${args.classifier_id}, ${nextVersion}, ${setAsCurrent}, ${sql.json(withEmbeddings)},
-      ${args.min_similarity ?? 0.7}, ${args.fallback_value ?? null}, ${args.change_notes ?? 'New version'}, ${args.created_by ?? ctx.userId}
-    )
-  `;
-
-  if (setAsCurrent) {
-    try {
-      const deleteResults = await sql`
-        DELETE FROM event_classifications
-        WHERE classifier_id = ${args.classifier_id}
-        RETURNING id
-      `;
-      logger.info(
-        {
-          deletedCount: deleteResults.length,
-          classifierSlug: classifier[0].slug,
-          version: nextVersion,
-        },
-        'Version upgrade: deleted old classifications. Reconciliation will reclassify within 5 minutes.'
-      );
-      return {
-        success: true,
-        action: 'create_version',
-        message:
-          generatedCount > 0
-            ? `Version ${nextVersion} created and set as current (generated ${generatedCount} embeddings). Deleted ${deleteResults.length} old classifications.`
-            : `Version ${nextVersion} created and set as current. Deleted ${deleteResults.length} old classifications.`,
-        data: {
-          classifier_id: args.classifier_id,
-          version: nextVersion,
-          is_current: setAsCurrent,
-          deleted_classifications: deleteResults.length,
-        },
-      };
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      logger.error(
-        { error, classifier_slug: classifier[0].slug },
-        'Version upgrade: failed to delete old classifications'
-      );
-      return {
-        success: true,
-        action: 'create_version',
-        message: `Version ${nextVersion} created, but cleanup failed: ${errorMessage}.`,
-        data: { classifier_id: args.classifier_id, version: nextVersion, is_current: setAsCurrent },
-      };
-    }
-  }
-
-  return {
-    success: true,
-    action: 'create_version',
-    message:
-      generatedCount > 0
-        ? `Version ${nextVersion} created (generated ${generatedCount} embeddings)`
-        : `Version ${nextVersion} created for classifier '${classifier[0].slug}'`,
-    data: { classifier_id: args.classifier_id, version: nextVersion, is_current: setAsCurrent },
-  };
-}
-
 async function handleList(
   args: ManageClassifiersArgs,
   ctx: ToolContext
@@ -531,7 +368,7 @@ async function handleList(
     `SELECT
       fc.id, fc.slug, fc.name, fc.description, fc.attribute_key, fc.entity_ids,
       et.slug AS entity_type, fc.status, fc.created_at, fc.updated_at,
-      fcv.version as current_version, fcv.min_similarity, fcv.fallback_value, fcv.attribute_values,
+      fc.min_similarity, fc.fallback_value, fc.attribute_values,
       fc.watcher_id,
       w.name as watcher_name,
       CASE
@@ -539,8 +376,7 @@ async function handleList(
         WHEN e.parent_id IS NULL THEN 'root'
         ELSE 'child'
       END as scope
-    FROM event_classifiers fc
-    LEFT JOIN event_classifier_versions fcv ON fc.id = fcv.classifier_id AND fcv.is_current = true
+    FROM classify_facet fc
     LEFT JOIN entities e ON e.id = ANY(fc.entity_ids)
     LEFT JOIN entity_types et ON et.id = e.entity_type_id
     LEFT JOIN watchers w ON fc.watcher_id = w.id
@@ -565,113 +401,6 @@ async function handleList(
   };
 }
 
-async function handleGetVersions(
-  args: ManageClassifiersArgs,
-  ctx: ToolContext
-): Promise<ManageClassifiersResult> {
-  const sql = getDb();
-  if (!args.classifier_id) {
-    return {
-      success: false,
-      action: 'get_versions',
-      message: 'Missing required field: classifier_id',
-    };
-  }
-
-  const versions = await sql`
-    SELECT fcv.id, fcv.version, fcv.is_current, fcv.attribute_values, fcv.min_similarity,
-           fcv.fallback_value, fcv.change_notes, fcv.created_at, fcv.created_by
-    FROM event_classifier_versions fcv
-    JOIN event_classifiers fc ON fc.id = fcv.classifier_id
-    WHERE fcv.classifier_id = ${args.classifier_id}
-      AND fc.organization_id = ${ctx.organizationId}
-    ORDER BY fcv.version DESC
-  `;
-
-  const resolved = await resolveUsernames(
-    versions as unknown as Record<string, unknown>[],
-    'created_by'
-  );
-
-  const result = resolved.map((row) => ({
-    ...row,
-    attribute_values: stripEmbeddingsFromAttributeValues(row.attribute_values),
-  }));
-
-  return {
-    success: true,
-    action: 'get_versions',
-    message: `Found ${result.length} versions`,
-    data: { versions: result },
-  };
-}
-
-async function handleSetCurrentVersion(
-  args: ManageClassifiersArgs,
-  ctx: ToolContext
-): Promise<ManageClassifiersResult> {
-  const sql = getDb();
-  if (!args.classifier_id || !args.version) {
-    return {
-      success: false,
-      action: 'set_current_version',
-      message: 'Missing required fields: classifier_id, version',
-    };
-  }
-
-  const versionCheck = await sql`
-    SELECT fcv.id, fc.slug FROM event_classifier_versions fcv
-    JOIN event_classifiers fc ON fc.id = fcv.classifier_id
-    WHERE fcv.classifier_id = ${args.classifier_id}
-      AND fcv.version = ${args.version}
-      AND fc.organization_id = ${ctx.organizationId}
-  `;
-  if (versionCheck.length === 0) {
-    return {
-      success: false,
-      action: 'set_current_version',
-      message: `Version ${args.version} not found for classifier ${args.classifier_id}`,
-    };
-  }
-
-  const classifierSlug = versionCheck[0].slug;
-
-  await sql`UPDATE event_classifier_versions SET is_current = false WHERE classifier_id = ${args.classifier_id} AND is_current = true`;
-  await sql`UPDATE event_classifier_versions SET is_current = true WHERE classifier_id = ${args.classifier_id} AND version = ${args.version}`;
-
-  try {
-    const deleteResults =
-      await sql`
-        DELETE FROM event_classifications
-        WHERE classifier_id = ${args.classifier_id}
-        RETURNING id
-      `;
-    logger.info(
-      { deletedCount: deleteResults.length, classifierSlug, version: args.version },
-      'Version change: deleted old classifications.'
-    );
-    return {
-      success: true,
-      action: 'set_current_version',
-      message: `Version ${args.version} set as current. Deleted ${deleteResults.length} old classifications.`,
-      data: {
-        classifier_id: args.classifier_id,
-        version: args.version,
-        deleted_classifications: deleteResults.length,
-      },
-    };
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    logger.error({ error, classifierSlug }, 'Version change: failed to delete old classifications');
-    return {
-      success: true,
-      action: 'set_current_version',
-      message: `Version ${args.version} set as current, but cleanup failed: ${errorMessage}.`,
-      data: { classifier_id: args.classifier_id, version: args.version },
-    };
-  }
-}
-
 async function handleGenerateEmbeddings(
   args: ManageClassifiersArgs,
   env: Env,
@@ -686,15 +415,14 @@ async function handleGenerateEmbeddings(
     };
   }
 
-  const version = await sql`
-    SELECT fcv.id, fcv.version, fcv.attribute_values
-    FROM event_classifier_versions fcv
-    JOIN event_classifiers fc ON fc.id = fcv.classifier_id
-    WHERE fcv.classifier_id = ${args.classifier_id}
-      AND fcv.is_current = true
-      AND fc.organization_id = ${ctx.organizationId}
+  const facet = await sql`
+    SELECT cf.current_version_id, cf.attribute_values
+    FROM classify_facet cf
+    WHERE cf.id = ${args.classifier_id}
+      AND cf.current_version_id IS NOT NULL
+      AND cf.organization_id = ${ctx.organizationId}
   `;
-  if (version.length === 0) {
+  if (facet.length === 0) {
     return {
       success: false,
       action: 'generate_embeddings',
@@ -702,16 +430,18 @@ async function handleGenerateEmbeddings(
     };
   }
 
-  const currentVersion = version[0];
-  const attributeValues = currentVersion.attribute_values as Record<string, any>;
+  const current = facet[0];
+  const attributeValues = current.attribute_values as Record<string, any>;
   const { attributeValues: updatedValues, generatedCount } = await hydrateAttributeEmbeddings(
     attributeValues,
     env,
     { forceRegenerate: args.force_regenerate }
   );
 
+  // Read config from classify_facet; the embedding column still lives on the
+  // current version row, so the write-back targets event_classifier_versions.
   if (generatedCount > 0 || args.force_regenerate) {
-    await sql`UPDATE event_classifier_versions SET attribute_values = ${sql.json(updatedValues)} WHERE id = ${currentVersion.id}`;
+    await sql`UPDATE event_classifier_versions SET attribute_values = ${sql.json(updatedValues)} WHERE id = ${current.current_version_id}`;
   }
 
   return {
@@ -719,11 +449,10 @@ async function handleGenerateEmbeddings(
     action: 'generate_embeddings',
     message:
       generatedCount > 0
-        ? `Generated ${generatedCount} embeddings for version ${currentVersion.version}`
-        : `All attribute values already have embeddings for version ${currentVersion.version}`,
+        ? `Generated ${generatedCount} embeddings`
+        : 'All attribute values already have embeddings',
     data: {
       classifier_id: args.classifier_id,
-      version: currentVersion.version,
       generated_embeddings: generatedCount,
       attribute_count: Object.keys(updatedValues).length,
     },
@@ -789,13 +518,12 @@ async function handleClassify(
     }
 
     const classifierResult = (await sql`
-      SELECT fc.id as classifier_id, fc.attribute_key, fcv.id as version_id
-      FROM event_classifiers fc
-      LEFT JOIN event_classifier_versions fcv ON fc.id = fcv.classifier_id AND fcv.is_current = true
-      WHERE fc.slug = ${args.classifier_slug}
-        AND fc.status = 'active'
-        AND fc.organization_id = ${ctx.organizationId}
-    `) as unknown as Array<{ classifier_id: number; attribute_key: string; version_id: number }>;
+      SELECT cf.id as classifier_id, cf.attribute_key
+      FROM classify_facet cf
+      WHERE cf.slug = ${args.classifier_slug}
+        AND cf.status = 'active'
+        AND cf.organization_id = ${ctx.organizationId}
+    `) as unknown as Array<{ classifier_id: number; attribute_key: string }>;
 
     if (classifierResult.length === 0) {
       return {
@@ -906,7 +634,7 @@ async function updateSingleClassification(
   sql: DbClient,
   organizationId: string,
   contentId: number,
-  classifier: { classifier_id: number; attribute_key: string; version_id: number },
+  classifier: { classifier_id: number; attribute_key: string },
   value: string | null,
   source: 'llm' | 'user',
   reasoning?: string

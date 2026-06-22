@@ -452,7 +452,7 @@ export async function getNormalizedScoreContent(
           )
         ) as classifications
       FROM latest_event_classifications lc
-      JOIN event_classifiers fcl ON lc.classifier_id = fcl.id
+      JOIN classify_facet fcl ON lc.classifier_id = fcl.id
       WHERE lc."values" IS NOT NULL
       GROUP BY lc.event_id
     ) cls ON cls.event_id = sc.id

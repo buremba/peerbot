@@ -32,7 +32,7 @@ export async function fetchClassificationExcerpts(
         cc.event_id,
         cc.excerpts::jsonb->>$1 as excerpt
       FROM event_classifications cc
-      JOIN event_classifiers cl ON cc.classifier_id = cl.id
+      JOIN classify_facet cl ON cc.classifier_id = cl.id
       WHERE cc.event_id IN (${contentIdPlaceholders})
         AND cl.slug = $2
         AND $1 = ANY(cc."values")

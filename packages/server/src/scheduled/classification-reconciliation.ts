@@ -87,7 +87,7 @@ export async function runClassificationReconciliation(_env: Env): Promise<{
             )
             AND EXISTS (
               SELECT 1
-              FROM event_classifiers fc
+              FROM classify_facet fc
               WHERE fc.organization_id = ent.organization_id
                 AND fc.status = 'active'
                 AND fc.watcher_id IS NULL
@@ -143,7 +143,7 @@ export async function runClassificationReconciliation(_env: Env): Promise<{
               END) AS classified_count
             FROM current_event_records ev
             LEFT JOIN event_classifications ec ON ec.event_id = ev.id
-            LEFT JOIN event_classifiers fc ON ec.classifier_id = fc.id
+            LEFT JOIN classify_facet fc ON ec.classifier_id = fc.id
             WHERE ${sql.unsafe(entityLinkMatchSql(`${Number(entityId)}::bigint`, 'ev'))}
               AND EXISTS (SELECT 1 FROM event_embeddings emb
                 WHERE emb.event_id = ev.id AND emb.chunk_index = 0

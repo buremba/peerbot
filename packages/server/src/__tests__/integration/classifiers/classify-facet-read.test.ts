@@ -1,9 +1,9 @@
 /**
- * Classifier consolidation (P4) phase 4: the hot classification runtime (classification-query.ts)
- * reads the classifier config from classify_facet (flag CLASSIFY_VIA_FACET) instead of the
+ * Classifier consolidation (P4): the hot classification runtime (classification-query.ts) reads the
+ * classifier config from classify_facet instead of the legacy
  * event_classifiers -> event_classifier_versions(is_current) JOIN. This proves the two reads are
- * EQUIVALENT (same classifier_id / version_id / config). Flag-gated so the hot read can be
- * A/B-latency-validated in staging before cutover.
+ * EQUIVALENT (same classifier_id / version_id / config) — the invariant the unconditional cutover
+ * relies on. The legacy JOIN is exercised here as the reference until the source tables drop.
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';

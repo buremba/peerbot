@@ -490,18 +490,6 @@ export default async (_ctx, client) => {
     summary: "Create a classifier template.",
     access: "write",
   },
-  "classifiers.createVersion": {
-    summary: "Create a new version of an existing classifier.",
-    access: "write",
-  },
-  "classifiers.getVersions": {
-    summary: "List versions of a classifier.",
-    access: "read",
-  },
-  "classifiers.setCurrentVersion": {
-    summary: "Promote a version to current.",
-    access: "write",
-  },
   "classifiers.generateEmbeddings": {
     summary: "Generate embeddings for attribute values (cost-heavy).",
     access: "write",

@@ -100,13 +100,6 @@ describe('classifier org isolation', () => {
     expect(listB.data?.classifiers?.some((c) => c.id === orgA.classifierId)).toBe(false);
   });
 
-  it('getVersions() does not expose another workspace classifier', async () => {
-    const versions = (await orgA.workspace.owner.classifiers.getVersions(orgB.classifierId)) as {
-      data?: { versions?: unknown[] };
-    };
-    expect(versions.data?.versions ?? []).toHaveLength(0);
-  });
-
   it('delete() cannot archive another workspace classifier', async () => {
     const result = (await orgA.workspace.owner.classifiers.delete(orgB.classifierId)) as {
       success: boolean;

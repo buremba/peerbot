@@ -92,7 +92,7 @@ function buildContentQuery(opts: {
           )
         ) as classifications
       FROM latest_event_classifications lc
-      JOIN event_classifiers fcl ON lc.classifier_id = fcl.id
+      JOIN classify_facet fcl ON lc.classifier_id = fcl.id
       WHERE lc."values" IS NOT NULL
       GROUP BY lc.event_id
     ) cls ON cls.event_id = ${a}.id
@@ -509,7 +509,7 @@ export async function fetchClassificationStats(opts: {
       value::text as value,
       COUNT(*) as count
     FROM latest_classifications lc
-    JOIN event_classifiers fcl ON lc.classifier_id = fcl.id
+    JOIN classify_facet fcl ON lc.classifier_id = fcl.id
     CROSS JOIN unnest(lc."values") AS t(value)
     GROUP BY fcl.slug, fcl.attribute_key, value
     ORDER BY fcl.slug, count DESC

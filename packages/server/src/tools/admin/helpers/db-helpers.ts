@@ -37,7 +37,7 @@ const VALID_TABLES = [
   'entities',
   'connections',
   'feeds',
-  'event_classifiers',
+  'classify_facet',
   'entity_types',
   'entity_relationship_types',
   'runs',

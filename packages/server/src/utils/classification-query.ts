@@ -13,6 +13,22 @@ import { configuredEmbeddingModelSqlLiteral } from './embeddings';
 import logger from './logger';
 
 /**
+ * Classifier consolidation (P4) phase 4: read the classifier config from classify_facet (the
+ * config-home that mirrors event_classifiers identity + the CURRENT version's config) instead
+ * of the event_classifiers -> event_classifier_versions(is_current) JOIN. classify_facet is an
+ * accurate mirror (triggers sync identity + config incl. in-place edits), so the reads are
+ * equivalent. FLAG-GATED for a staged, A/B-validated cutover of this HOT classification runtime.
+ * Default off = the JOIN. DEPLOY GATE: classify_facet must be populated (phases 2-3 migrations
+ * backfill it inline — config-scale — so no separate backfill is required, unlike events-scaled
+ * tables).
+ */
+function classifyViaFacet(): boolean {
+  return (
+    process.env.CLASSIFY_VIA_FACET === '1' || process.env.CLASSIFY_VIA_FACET === 'true'
+  );
+}
+
+/**
  * Default weights for combining child and parent embeddings.
  * Child weight: 0.7 (70%) - emphasizes direct content
  * Parent weight: 0.3 (30%) - incorporates context
@@ -184,12 +200,19 @@ async function fetchTargetContent(
 
     // Get current classifier version IDs
     const versionRows = await sql.unsafe<{ version_id: number }>(
-      `SELECT fcv.id as version_id
-       FROM event_classifiers fc
-       JOIN event_classifier_versions fcv ON fc.id = fcv.classifier_id AND fcv.is_current = true
-       WHERE fc.slug IN (${classifierPlaceholders})
-         AND fc.status = 'active'
-         AND fc.watcher_id IS NULL`,
+      classifyViaFacet()
+        ? `SELECT cf.current_version_id as version_id
+           FROM classify_facet cf
+           WHERE cf.slug IN (${classifierPlaceholders})
+             AND cf.status = 'active'
+             AND cf.watcher_id IS NULL
+             AND cf.current_version_id IS NOT NULL`
+        : `SELECT fcv.id as version_id
+           FROM event_classifiers fc
+           JOIN event_classifier_versions fcv ON fc.id = fcv.classifier_id AND fcv.is_current = true
+           WHERE fc.slug IN (${classifierPlaceholders})
+             AND fc.status = 'active'
+             AND fc.watcher_id IS NULL`,
       enabledClassifiers
     );
     const versionIds = versionRows.map((r) => r.version_id);
@@ -271,19 +294,32 @@ async function fetchClassifierTemplates(
     attribute_values: string | Record<string, unknown>;
     entity_ids: number[] | null;
   }>(
-    `SELECT DISTINCT
-       fc.id as classifier_id,
-       fcv.id as version_id,
-       fcv.min_similarity,
-       fcv.fallback_value,
-       fcv.attribute_values,
-       fc.entity_ids
-     FROM event_classifiers fc
-     JOIN event_classifier_versions fcv
-       ON fc.id = fcv.classifier_id AND fcv.is_current = true
-     WHERE fc.slug IN (${classifierPlaceholders})
-       AND fc.status = 'active'
-       AND fc.watcher_id IS NULL`,
+    classifyViaFacet()
+      ? `SELECT DISTINCT
+           cf.id as classifier_id,
+           cf.current_version_id as version_id,
+           cf.min_similarity,
+           cf.fallback_value,
+           cf.attribute_values,
+           cf.entity_ids
+         FROM classify_facet cf
+         WHERE cf.slug IN (${classifierPlaceholders})
+           AND cf.status = 'active'
+           AND cf.watcher_id IS NULL
+           AND cf.current_version_id IS NOT NULL`
+      : `SELECT DISTINCT
+           fc.id as classifier_id,
+           fcv.id as version_id,
+           fcv.min_similarity,
+           fcv.fallback_value,
+           fcv.attribute_values,
+           fc.entity_ids
+         FROM event_classifiers fc
+         JOIN event_classifier_versions fcv
+           ON fc.id = fcv.classifier_id AND fcv.is_current = true
+         WHERE fc.slug IN (${classifierPlaceholders})
+           AND fc.status = 'active'
+           AND fc.watcher_id IS NULL`,
     enabledClassifiers
   );
 

@@ -19,6 +19,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { getDb } from "../../../db/client";
 import {
 	type AppInstallRouterDeps,
+	autoProvisionGithubIssueFeeds,
 	createAppInstallRoutes,
 } from "../../../gateway/routes/public/app-install";
 import { createGithubInstallStateStore } from "../../../gateway/auth/oauth/state-store";
@@ -100,11 +101,11 @@ function buildRouter(
 		/** Public gateway base for redirect_uri; defaults to PUBLIC_GATEWAY_URL. */
 		publicGatewayUrl?: string | undefined;
 		/**
-		 * Recovery: the sole administerable installation the (mocked)
-		 * /user/installations recovery lookup returns. `null`/`"ambiguous"`/
-		 * `undefined` map to the respective recovery outcomes. When omitted, the
-		 * recovery lookup derives from `installations`/`ownedInstallationIds` (sole
-		 * entry → that install; >1 → ambiguous; 0 → null).
+		 * Recovery: the sole ACCESSIBLE installation the (mocked) /user/installations
+		 * recovery lookup returns. `null`/`"ambiguous"`/`undefined` map to the
+		 * respective recovery outcomes. When omitted, the recovery lookup derives
+		 * from `installations`/`ownedInstallationIds` (sole entry → that install;
+		 * >1 → ambiguous; 0 → null).
 		 */
 		soleInstallation?:
 			| { installationId: number; account: MockAccount }
@@ -173,7 +174,7 @@ function buildRouter(
 			if (opts.orgRoles === null) return undefined; // HTTP failure
 			return opts.orgRoles?.[org] ?? { state: "none", role: "none" };
 		},
-		fetchSoleAdministerableInstallation: async () => soleInstallation,
+		fetchSoleAccessibleInstallation: async () => soleInstallation,
 		fetchInstallationRepositories: async (token) => {
 			captured.repoFetchTokens.push(token);
 			return opts.installationRepos ?? [];
@@ -900,6 +901,63 @@ describe("GitHub App install callback — auto-provision feeds", () => {
 		expect(await connectionCount(org.id)).toBe(1);
 		expect(await issueFeeds(org.id)).toHaveLength(0);
 		expect(captured.enqueuedFeedIds).toHaveLength(0);
+	});
+
+	it("CONCURRENCY: two parallel auto-provisions for the same (connection,repo) create exactly ONE feed (DB-enforced)", async () => {
+		const org = await createTestOrganization({ name: "AutoProvision Race Org" });
+		await seedGithubConnector(org.id);
+		// Seed an active install + a connection bound to it — the shape auto-provision
+		// operates on (mirrors what the callback produces).
+		const store = createPostgresAppInstallationStore();
+		const install = await store.upsert({
+			organizationId: org.id,
+			provider: "github",
+			providerInstance: "cloud",
+			providerAppId: PROVIDER_APP_ID,
+			externalTenantId: "6900",
+			status: "active",
+			metadata: { appIdKey: "GITHUB_APP_ID", privateKeyKey: "GITHUB_APP_PRIVATE_KEY" },
+		});
+		const sql = getDb();
+		const connRows = (await sql`
+			INSERT INTO connections (organization_id, connector_key, slug, display_name, status, config)
+			VALUES (${org.id}, ${CONNECTOR_KEY}, 'race-conn', 'Race Conn', 'active',
+				${sql.json({ installation_ref: install.id })})
+			RETURNING id
+		`) as unknown as Array<{ id: number }>;
+		const connectionId = Number(connRows[0].id);
+
+		// Two concurrent provisions for the SAME repo, simulating a double-click /
+		// two-tab race that completes AFTER the link advisory lock has released.
+		// Both call createSyncRun for whatever feed they create.
+		const provision = () =>
+			autoProvisionGithubIssueFeeds({
+				organizationId: org.id,
+				connectionId,
+				installId: install.id,
+				store,
+				fetchInstallationRepositories: async () => [
+					{ owner: "acme", name: "api" },
+				],
+				enqueueSyncRun: async (feedId) => feedId,
+			});
+
+		const [a, b] = await Promise.all([provision(), provision()]);
+
+		// DB-enforced: exactly ONE active issues feed for (connection, repo) despite
+		// the race. The partial unique index serialized the two INSERTs.
+		const feeds = await issueFeeds(org.id);
+		expect(feeds).toHaveLength(1);
+		// Exactly one of the two callers reports having CREATED the feed; the other
+		// reuses it (createdFeeds 0). Both still resolve the same feed id.
+		const totalCreated = a.createdFeeds + b.createdFeeds;
+		expect(totalCreated).toBe(1);
+		expect(a.feedIds).toEqual([feeds[0].id]);
+		expect(b.feedIds).toEqual([feeds[0].id]);
+		// Only the winner enqueued a backfill (no double-backfill).
+		const totalEnqueued =
+			a.enqueuedRunIds.length + b.enqueuedRunIds.length;
+		expect(totalEnqueued).toBe(1);
 	});
 });
 

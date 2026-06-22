@@ -241,15 +241,21 @@ async function defaultFetchInstallationAccount(
 }
 
 /**
- * Recovery: resolve the SOLE installation of this App the user administers,
- * from `GET /user/installations` (the App's user token scopes the response to
- * this App). Returns `{installationId, account}` for exactly one, `null` for
- * none, `"ambiguous"` for more than one (can't pick — caller falls back to the
- * install page), or `undefined` on an HTTP failure. The returned installation is
- * still subjected to the FULL ownership check in the callback — this only
- * supplies the id GitHub's user-auth redirect omits, it never bypasses a guard.
+ * Recovery: resolve the SOLE installation of this App the user can ACCESS, from
+ * `GET /user/installations` (the App's user token scopes the response to this
+ * App). Returns `{installationId, account}` for exactly one, `null` for none,
+ * `"ambiguous"` for more than one (can't pick — caller falls back to the install
+ * page), or `undefined` on an HTTP failure.
+ *
+ * ⚠️ ACCESS, NOT ADMIN. `/user/installations` lists installations the user
+ * merely has access to (org membership / repo collaborator), not ones they
+ * administer. Do NOT trust this result for authorization on its own. It only
+ * supplies the installation id GitHub's user-auth redirect omits; the recovery
+ * callback STILL runs the full ownership check (verifyInstallationOwnership →
+ * personal-account owner, or active org admin via /user/memberships/orgs) on the
+ * returned id before any bind. A sole-but-non-admin org member is rejected there.
  */
-async function defaultFetchSoleAdministerableInstallation(
+async function defaultFetchSoleAccessibleInstallation(
 	userToken: string,
 ): Promise<
 	| { installationId: number; account: InstallationAccount }
@@ -690,25 +696,14 @@ export async function autoProvisionGithubIssueFeeds(params: {
 		((feedId: number) => createSyncRun(feedId, {} as never, sql));
 
 	for (const repo of repos) {
-		// Find-or-create the issues feed for this repo on the install's connection.
-		// Idempotent on (connection, feed_key, repo_owner, repo_name) so a re-bind
-		// reuses the existing feed and never double-provisions / double-backfills.
-		const existing = (await sql`
-			SELECT id FROM feeds
-			WHERE organization_id = ${params.organizationId}
-				AND connection_id = ${params.connectionId}
-				AND feed_key = 'issues'
-				AND deleted_at IS NULL
-				AND config ->> 'repo_owner' = ${repo.owner}
-				AND config ->> 'repo_name' = ${repo.name}
-			LIMIT 1
-		`) as unknown as Array<{ id: number }>;
-
-		if (existing.length > 0) {
-			result.feedIds.push(Number(existing[0].id));
-			continue;
-		}
-
+		// Create the issues feed for this repo, DB-enforced idempotent on
+		// (connection, repo) via the partial unique index
+		// `feeds_app_install_issues_uniq`. ON CONFLICT DO NOTHING converges two
+		// concurrent install completions (distinct nonces, after the link advisory
+		// lock released) to ONE feed: the loser's INSERT is a no-op and RETURNING
+		// yields no row. A SELECT-then-INSERT would let both callers miss + insert —
+		// the race this index closes. RETURNING distinguishes "I created it" (enqueue
+		// the backfill) from "it already existed" (reuse, do NOT re-backfill).
 		const displayName = `${repo.owner}/${repo.name} issues`;
 		const inserted = (await sql`
 			INSERT INTO feeds (
@@ -719,8 +714,28 @@ export async function autoProvisionGithubIssueFeeds(params: {
 				${sql.json({ repo_owner: repo.owner, repo_name: repo.name })},
 				${AUTO_FEED_SCHEDULE}, NOW()
 			)
+			ON CONFLICT (connection_id, ((config ->> 'repo_owner')), ((config ->> 'repo_name')))
+				WHERE feed_key = 'issues' AND deleted_at IS NULL
+			DO NOTHING
 			RETURNING id
 		`) as unknown as Array<{ id: number }>;
+
+		if (inserted.length === 0) {
+			// Lost the race / re-bind: the feed already exists. Reuse its id and skip
+			// the backfill enqueue (the existing feed already has — or had — its run).
+			const existing = (await sql`
+				SELECT id FROM feeds
+				WHERE connection_id = ${params.connectionId}
+					AND feed_key = 'issues'
+					AND deleted_at IS NULL
+					AND config ->> 'repo_owner' = ${repo.owner}
+					AND config ->> 'repo_name' = ${repo.name}
+				LIMIT 1
+			`) as unknown as Array<{ id: number }>;
+			if (existing.length > 0) result.feedIds.push(Number(existing[0].id));
+			continue;
+		}
+
 		const feedId = Number(inserted[0].id);
 		result.feedIds.push(feedId);
 		result.createdFeeds += 1;
@@ -800,15 +815,19 @@ export interface AppInstallRouterDeps {
 		org: string,
 	): Promise<{ state: string; role: string } | undefined>;
 	/**
-	 * Recovery path: the user's administerable installations for THIS App, as the
-	 * single installation the recovery callback should bind when `installation_id`
-	 * is absent (GitHub's user-authorization redirect carries no installation_id).
-	 * Returns the unique installation id + owning account, `null` when the user
-	 * administers none (nothing to recover), `"ambiguous"` when they administer
-	 * more than one (we can't pick — fall back to the install page), or `undefined`
-	 * on an HTTP failure ("cannot verify"). Injected so tests mock GitHub.
+	 * Recovery path: the user's sole ACCESSIBLE installation for THIS App, used to
+	 * supply the `installation_id` the recovery callback is missing (GitHub's
+	 * user-authorization redirect carries none). Returns the unique installation id
+	 * + owning account, `null` when the user accesses none (nothing to recover),
+	 * `"ambiguous"` when they access more than one (can't pick — fall back to the
+	 * install page), or `undefined` on an HTTP failure ("cannot verify"). Injected
+	 * so tests mock GitHub.
+	 *
+	 * ⚠️ ACCESS, NOT ADMIN — see `defaultFetchSoleAccessibleInstallation`. The
+	 * recovery callback re-runs the full ownership check on the returned id; this
+	 * field is never an authorization source on its own.
 	 */
-	fetchSoleAdministerableInstallation?(
+	fetchSoleAccessibleInstallation?(
 		userToken: string,
 	): Promise<
 		| { installationId: number; account: InstallationAccount }
@@ -845,8 +864,9 @@ async function verifyInstallationOwnership(params: {
 	/**
 	 * The installation_id GitHub passed on the install redirect. `undefined` only
 	 * in the recovery flow (GitHub's user-auth redirect omits it); then it is
-	 * DERIVED from the user's sole administerable installation via
-	 * `fetchSoleInstallation` and re-subjected to the full ownership check.
+	 * DERIVED from the user's sole ACCESSIBLE installation via
+	 * `fetchSoleInstallation` and re-subjected to the full ownership check (so the
+	 * derived id is admin-verified, not merely access-verified).
 	 */
 	installationId: number | undefined;
 	/** True when this is the recovery (user-authorization) flow. */
@@ -857,7 +877,7 @@ async function verifyInstallationOwnership(params: {
 	fetchLogin: NonNullable<AppInstallRouterDeps["fetchAuthedUserLogin"]>;
 	fetchMembership: NonNullable<AppInstallRouterDeps["fetchOrgMembershipRole"]>;
 	fetchSoleInstallation: NonNullable<
-		AppInstallRouterDeps["fetchSoleAdministerableInstallation"]
+		AppInstallRouterDeps["fetchSoleAccessibleInstallation"]
 	>;
 }): Promise<InstallOwnershipResult> {
 	// The App's OAuth creds (NOT the Lobu login OAuth app). Fail safe if unset.
@@ -901,10 +921,11 @@ async function verifyInstallationOwnership(params: {
 	}
 
 	// Recovery: GitHub's user-auth redirect carries no installation_id, so derive
-	// it from the user's administerable installations for this App. The derived id
-	// is then run through the IDENTICAL ownership check below — recovery never
-	// relaxes a guard, it only supplies the id GitHub omitted. Ambiguous (>1
-	// installation) and none are both rejected rather than guessing.
+	// it from the user's sole ACCESSIBLE installation for this App. ACCESS is not
+	// admin — the derived id is then run through the IDENTICAL ownership check
+	// below (personal-owner or active org admin), so recovery never relaxes a
+	// guard; it only supplies the id GitHub omitted. Ambiguous (>1 installation)
+	// and none are both rejected rather than guessing.
 	let installationId = params.installationId;
 	let account: InstallationAccount | null | undefined;
 	if (params.recovery) {
@@ -1204,7 +1225,8 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		// missing/garbage setup_action or missing installation_id rejects (400) with
 		// zero mutation — never treated like a valid install. The recovery path skips
 		// these because GitHub's user-auth redirect omits both; it derives the
-		// installation id below from the user's administerable installations.
+		// installation id below from the user's sole accessible installation (then
+		// ownership-checks it).
 		if (!isRecovery) {
 			if (setupAction === null) {
 				return c.html(
@@ -1305,8 +1327,8 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 			fetchMembership:
 				deps.fetchOrgMembershipRole ?? defaultFetchOrgMembershipRole,
 			fetchSoleInstallation:
-				deps.fetchSoleAdministerableInstallation ??
-				defaultFetchSoleAdministerableInstallation,
+				deps.fetchSoleAccessibleInstallation ??
+				defaultFetchSoleAccessibleInstallation,
 		});
 		if (!ownership.ok) {
 			logger.warn(

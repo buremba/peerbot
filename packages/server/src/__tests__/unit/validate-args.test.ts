@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { Type } from "@sinclair/typebox";
 import { getAllTools, getTool } from "../../tools/registry";
-import { validatedToolName, validateToolArgs, withValidatedArgs } from "../../tools/validate-args";
+import { validateToolArgs, withValidatedArgs } from "../../tools/validate-args";
 import { ToolUserError } from "../../utils/errors";
 
 describe("validateToolArgs coercion", () => {
@@ -145,14 +145,15 @@ describe("withValidatedArgs", () => {
     );
     await expect(fn({ id: "9" } as never, "env")).resolves.toBe("9:number:env");
   });
-
-  it("brands the wrapped handler with the tool name", () => {
-    const fn = withValidatedArgs("my_tool", Type.Object({}), async () => null);
-    expect(validatedToolName(fn)).toBe("my_tool");
-  });
 });
 
 describe("registry completeness", () => {
+  // `withValidatedArgs` stamps the wrapped handler with this globally-registered
+  // brand symbol carrying the tool name it was wrapped for.
+  const VALIDATED_BRAND = Symbol.for("lobu.validated-tool-handler");
+  const brandedName = (handler: unknown): string | undefined =>
+    (handler as Record<symbol, string | undefined>)?.[VALIDATED_BRAND];
+
   it("every registered tool handler is wrapped with withValidatedArgs", () => {
     // `list_organizations` is a throw-stub in the registry: executeTool
     // special-cases it and calls the (wrapped) listOrganizations directly.
@@ -160,7 +161,7 @@ describe("registry completeness", () => {
     const unwrapped = getAllTools({ includeInternalTools: true })
       .map((t) => t.name)
       .filter((name) => !exempt.has(name))
-      .filter((name) => validatedToolName(getTool(name)?.handler) !== name);
+      .filter((name) => brandedName(getTool(name)?.handler) !== name);
     expect(unwrapped).toEqual([]);
   });
 });

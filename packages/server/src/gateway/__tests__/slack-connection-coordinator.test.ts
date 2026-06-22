@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { upsertSlackInstallByTeam } from "../../lobu/stores/slack-installations.js";
 import { SlackConnectionCoordinator } from "../connections/slack-connection-coordinator.js";
 import type { PlatformConnection } from "../connections/types.js";
 
@@ -28,28 +29,131 @@ function createSlackConnection(
 }
 
 type Deps = ConstructorParameters<typeof SlackConnectionCoordinator>[0];
+type AppStore = ReturnType<Deps["getAppInstallationStore"]>;
+type AppRow = Awaited<ReturnType<AppStore["upsert"]>>;
 
-/** Installation-store stub; override per test. */
-function makeInstallationStore(
-  overrides: Partial<ReturnType<Deps["getInstallationStore"]>> = {}
-): ReturnType<Deps["getInstallationStore"]> {
+/**
+ * In-memory AppInstallationStore so the Slack install projection
+ * (upsertSlackInstallByTeam / getSlackInstallByTeamId) runs end-to-end in this
+ * unit test — no Postgres. Implements just the methods the projection uses;
+ * `upsert` enforces one-active-per-team (the real store's invariant).
+ */
+function makeAppInstallationStore(): AppStore {
+  let nextId = 1;
+  const rows: AppRow[] = [];
+  const tupleEq = (r: AppRow, u: any) =>
+    r.provider === u.provider &&
+    r.providerInstance === u.providerInstance &&
+    r.providerAppId === u.providerAppId &&
+    r.externalTenantId === u.externalTenantId;
   return {
-    upsertByTeam: mock(async (organizationId: string, teamId: string) => ({
-      id: `slackinst-${teamId}`,
-      organizationId,
-      teamId,
-      config: { platform: "slack", botToken: "secret://ref" },
-      status: "active" as const,
-      createdAt: 0,
-      updatedAt: 0,
-    })),
-    getById: mock(async () => null),
-    getByTeamId: mock(async () => null),
-    list: mock(async () => []),
-    markStopped: mock(async () => undefined),
+    upsert: mock(async (u: any) => {
+      const status = u.status ?? "active";
+      if (status === "active") {
+        const active = rows.find(
+          (r) => tupleEq(r, u) && r.status === "active"
+        );
+        if (active && active.organizationId === u.organizationId) {
+          // In-place update: preserve requested metadata keys from the existing
+          // row (matches the real store's race-safe external_id claim).
+          const merged = { ...(u.metadata ?? {}) };
+          for (const key of u.preserveMetadataKeysOnUpdate ?? []) {
+            if (active.metadata?.[key] !== undefined) {
+              merged[key] = active.metadata[key];
+            }
+          }
+          active.metadata = merged;
+          active.authProfileId = u.authProfileId ?? null;
+          active.updatedAt = Date.now();
+          return active;
+        }
+        if (active) active.status = "suspended";
+      }
+      const row: AppRow = {
+        id: nextId++,
+        organizationId: u.organizationId,
+        provider: u.provider,
+        providerInstance: u.providerInstance,
+        providerAppId: u.providerAppId,
+        externalTenantId: u.externalTenantId,
+        authProfileId: u.authProfileId ?? null,
+        status,
+        metadata: u.metadata ?? {},
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      rows.push(row);
+      return row;
+    }),
+    resolveActiveByTenant: mock(async (key: any) => {
+      return (
+        rows.find((r) => tupleEq(r, key) && r.status === "active") ?? null
+      );
+    }),
+    getByTenantAndOrg: mock(async (key: any, org: string) => {
+      const matches = rows.filter(
+        (r) => tupleEq(r, key) && r.organizationId === org
+      );
+      matches.sort(
+        (a, b) =>
+          Number(b.status === "active") - Number(a.status === "active") ||
+          b.updatedAt - a.updatedAt
+      );
+      return matches[0] ?? null;
+    }),
+    resolveByExternalId: mock(async (provider: string, externalId: string) => {
+      const matches = rows.filter(
+        (r) => r.provider === provider && r.metadata.external_id === externalId
+      );
+      matches.sort(
+        (a, b) =>
+          Number(b.status === "active") - Number(a.status === "active") ||
+          b.updatedAt - a.updatedAt
+      );
+      return matches[0] ?? null;
+    }),
+    listByProviderAndOrg: mock(async (provider: string, org: string) =>
+      rows
+        .filter((r) => r.provider === provider && r.organizationId === org)
+        .sort((a, b) => b.createdAt - a.createdAt)
+    ),
+    getById: mock(async (id: number) => rows.find((r) => r.id === id) ?? null),
+    listByOrg: mock(async (org: string) =>
+      rows.filter((r) => r.organizationId === org)
+    ),
+    setStatus: mock(async (id: number, status: any) => {
+      const r = rows.find((x) => x.id === id);
+      if (r) r.status = status;
+    }),
+    revoke: mock(async () => undefined),
+    setStatusByExternalId: mock(
+      async (provider: string, externalId: string, status: any) => {
+        for (const r of rows) {
+          if (r.provider === provider && r.metadata.external_id === externalId) {
+            r.status = status;
+          }
+        }
+      }
+    ),
+    deleteByExternalId: mock(async (provider: string, externalId: string) => {
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const r = rows[i];
+        if (r.provider === provider && r.metadata.external_id === externalId) {
+          rows.splice(i, 1);
+        }
+      }
+    }),
+  } as unknown as AppStore;
+}
+
+/** No-op secret store: returns a deterministic ref so token persistence works. */
+function makeSecretStore(): ReturnType<Deps["getSecretStore"]> {
+  return {
+    get: mock(async () => null),
+    put: mock(async (name: string) => `secret://${encodeURIComponent(name)}`),
     delete: mock(async () => undefined),
-    ...overrides,
-  };
+    list: mock(async () => []),
+  } as unknown as ReturnType<Deps["getSecretStore"]>;
 }
 
 /** Deps stub with sensible no-op defaults; override per test. */
@@ -60,7 +164,8 @@ function makeDeps(overrides: Partial<Deps> = {}): Deps {
     forwardWebhook: mock(async () => new Response("ok")),
     getRunningChat: () => undefined,
     listSlackConnections: async () => [],
-    getInstallationStore: () => makeInstallationStore(),
+    getAppInstallationStore: () => makeAppInstallationStore(),
+    getSecretStore: () => makeSecretStore(),
     ...overrides,
   };
 }
@@ -92,25 +197,20 @@ describe("SlackConnectionCoordinator", () => {
     }
   });
 
-  test("ensureWorkspaceInstallation upserts only tenant data to the installation store", async () => {
-    // The OAuth install is an org/workspace-installation resource, not an
-    // agent connection — it goes to slack_installations keyed on (org, team),
-    // never agent_connections. Only tenant data (bot token + teamName/botUserId)
-    // is passed; app-level creds stay env-sourced (the store/secret layer owns
-    // token persistence).
-    const upsertByTeam = mock(
-      async (organizationId: string, teamId: string) => ({
-        id: "slackinst-xyz",
-        organizationId,
-        teamId,
-        config: { platform: "slack", botToken: "secret://ref" },
-        status: "active" as const,
-        createdAt: 0,
-        updatedAt: 0,
-      })
-    );
+  test("ensureWorkspaceInstallation persists an app_installations row with only tenant data", async () => {
+    // The OAuth install is an org/workspace-installation resource, not an agent
+    // connection — it's an app_installations row (provider=slack) keyed on the
+    // team tuple, never agent_connections. Only tenant data (bot token by ref +
+    // teamName/botUserId) is recorded; app-level creds stay env-sourced.
+    const appStore = makeAppInstallationStore();
+    const upsert = appStore.upsert as ReturnType<typeof mock>;
+    const secretStore = makeSecretStore();
+    const put = secretStore.put as ReturnType<typeof mock>;
     const coordinator = new SlackConnectionCoordinator(
-      makeDeps({ getInstallationStore: () => makeInstallationStore({ upsertByTeam }) })
+      makeDeps({
+        getAppInstallationStore: () => appStore,
+        getSecretStore: () => secretStore,
+      })
     );
 
     const result = await coordinator.ensureWorkspaceInstallation(
@@ -119,38 +219,57 @@ describe("SlackConnectionCoordinator", () => {
       { botToken: "xoxb-tenant-token", botUserId: "U123", teamName: "Acme" }
     );
 
-    expect(result).toEqual({ installationId: "slackinst-xyz" });
-    expect(upsertByTeam).toHaveBeenCalledWith("org-acme", "T123", {
-      botToken: "xoxb-tenant-token",
-      botUserId: "U123",
-      teamName: "Acme",
-    });
-    // No app secrets in the payload — only tenant data.
-    const payload = upsertByTeam.mock.calls[0]?.[2] as Record<string, unknown>;
-    expect(payload.signingSecret).toBeUndefined();
-    expect(payload.clientId).toBeUndefined();
-    expect(payload.clientSecret).toBeUndefined();
+    expect(result.installationId.startsWith("slackinst-")).toBe(true);
+
+    // Token-first: the bot token is persisted to the secret store BEFORE the row
+    // is activated, so a persist failure can never leave an active row without a
+    // token. The happy path is a SINGLE activation upsert that already carries the
+    // token ref in config (no separate claim/write round-trip).
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(put.mock.calls[0]?.[0]).toBe(
+      `installations/${result.installationId}/botToken`
+    );
+    expect(upsert).toHaveBeenCalledTimes(1);
+    const a = upsert.mock.calls[0]?.[0] as Record<string, any>;
+    expect(a.provider).toBe("slack");
+    expect(a.providerInstance).toBe("cloud");
+    expect(a.providerAppId).toBe("cloud");
+    expect(a.externalTenantId).toBe("T123");
+    expect(a.organizationId).toBe("org-acme");
+    expect(a.status).toBe("active");
+    expect(a.authProfileId).toBeNull();
+    expect(a.metadata.external_id).toBe(result.installationId);
+    expect(a.preserveMetadataKeysOnUpdate).toEqual(["external_id"]);
+    // The single write carries the tenant data + the bot token as a secret ref
+    // (never plaintext).
+    expect(a.metadata.team_name).toBe("Acme");
+    expect(a.metadata.bot_user_id).toBe("U123");
+    expect(a.metadata.config.platform).toBe("slack");
+    expect(typeof a.metadata.config.botToken).toBe("string");
+    expect(a.metadata.config.botToken).not.toBe("xoxb-tenant-token");
+    // No app secrets anywhere in the recorded row.
+    expect(JSON.stringify(upsert.mock.calls)).not.toContain("signingSecret");
+    expect(JSON.stringify(upsert.mock.calls)).not.toContain("clientSecret");
   });
 
   test("handleAppWebhook routes a matched team to its OAuth installation", async () => {
     const body = JSON.stringify({ team_id: "T777", type: "event_callback" });
     const forwarded: string[] = [];
+    const appStore = makeAppInstallationStore();
+    const secretStore = makeSecretStore();
+    // Seed an OAuth install for the team (no BYO connection exists).
+    const seeded = await upsertSlackInstallByTeam(
+      appStore,
+      secretStore,
+      "org-acme",
+      "T777",
+      { botToken: "xoxb-T777" }
+    );
     const coordinator = new SlackConnectionCoordinator(
       makeDeps({
-        // No agent-owned (BYO) slack connection for this team...
         listSlackConnections: async () => [],
-        // ...but an OAuth installation exists.
-        getInstallationStore: () => makeInstallationStore({
-          getByTeamId: mock(async () => ({
-            id: "slackinst-T777",
-            organizationId: "org-acme",
-            teamId: "T777",
-            config: { platform: "slack", botToken: "secret://ref" },
-            status: "active" as const,
-            createdAt: 0,
-            updatedAt: 0,
-          })),
-        }),
+        getAppInstallationStore: () => appStore,
+        getSecretStore: () => secretStore,
         forwardWebhook: mock(async (connectionId: string) => {
           forwarded.push(connectionId);
           return new Response("ok");
@@ -167,32 +286,31 @@ describe("SlackConnectionCoordinator", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(forwarded).toEqual(["slackinst-T777"]);
+    expect(forwarded).toEqual([seeded.id]);
   });
 
   test("a stopped BYO connection does not preempt an active OAuth installation", async () => {
     const body = JSON.stringify({ team_id: "T888", type: "event_callback" });
     const forwarded: string[] = [];
+    const appStore = makeAppInstallationStore();
+    const secretStore = makeSecretStore();
+    // An active OAuth install exists for the team.
+    const seeded = await upsertSlackInstallByTeam(
+      appStore,
+      secretStore,
+      "org-acme",
+      "T888",
+      { botToken: "xoxb-T888" }
+    );
     const coordinator = new SlackConnectionCoordinator(
       makeDeps({
-        // A stopped BYO connection exists for this team...
+        // ...alongside a STOPPED BYO connection for the same team. Routing must
+        // reach the install, not 503 on the stopped row.
         listSlackConnections: async () => [
           { ...createSlackConnection("conn-stopped", { teamId: "T888" }), status: "stopped" },
         ],
-        // ...and an active OAuth installation. Routing must reach the install,
-        // not 503 on the stopped row.
-        getInstallationStore: () =>
-          makeInstallationStore({
-            getByTeamId: mock(async () => ({
-              id: "slackinst-T888",
-              organizationId: "org-acme",
-              teamId: "T888",
-              config: { platform: "slack", botToken: "secret://ref" },
-              status: "active" as const,
-              createdAt: 0,
-              updatedAt: 0,
-            })),
-          }),
+        getAppInstallationStore: () => appStore,
+        getSecretStore: () => secretStore,
         forwardWebhook: mock(async (connectionId: string) => {
           forwarded.push(connectionId);
           return new Response("ok");
@@ -209,7 +327,7 @@ describe("SlackConnectionCoordinator", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(forwarded).toEqual(["slackinst-T888"]);
+    expect(forwarded).toEqual([seeded.id]);
   });
 
   test("resolveAdapterConfig sources app creds from env (requireOAuth)", async () => {

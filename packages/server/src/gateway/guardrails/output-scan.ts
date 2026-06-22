@@ -27,12 +27,9 @@ const logger = createLogger("output-guardrail");
  * Streaming chunks split arbitrarily across token boundaries; a secret like
  * `sk-abc…` can arrive as `"sk-an"` then `"t-…"` and bypass any per-delta
  * regex. Callers keep a rolling tail of recent emitted text and scan
- * `tail + delta` so patterns straddling a chunk boundary still match. The scan
- * window is bounded at 2× the tail to keep regex cost proportional to the
- * chunk being processed, not the entire stream.
+ * `tail + delta` so patterns straddling a chunk boundary still match.
  */
 export const OUTPUT_GUARDRAIL_TAIL_CHARS = 256;
-export const OUTPUT_GUARDRAIL_SCAN_WINDOW = OUTPUT_GUARDRAIL_TAIL_CHARS * 2;
 
 export interface OutputScanContext {
   agentId: string;

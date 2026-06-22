@@ -364,7 +364,8 @@ export async function handleCreate(
   // App install callback. Selection-aware: a create that supplies an auth profile
   // / app profile / env creds / managedBy resolves to a different method and is
   // allowed through.
-  const appInstallGuard = rejectUnboundAppInstallationCreate({
+  const appInstallGuard = await rejectUnboundAppInstallationCreate({
+    organizationId,
     authSchema: connector.auth_schema,
     config: args.config,
     connectorKey: args.connector_key,

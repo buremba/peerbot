@@ -120,8 +120,7 @@ function splitScopes(scopes: string): string[] {
 }
 
 async function loadSlackBotScopes(): Promise<string[]> {
-  const envScopes =
-    process.env.SLACK_OAUTH_SCOPES || process.env.SLACK_BOT_SCOPES;
+  const envScopes = process.env.SLACK_OAUTH_SCOPES;
   if (envScopes) {
     return splitScopes(envScopes);
   }

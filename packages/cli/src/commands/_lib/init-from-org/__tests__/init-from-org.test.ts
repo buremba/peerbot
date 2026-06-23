@@ -444,7 +444,7 @@ describe("lobu init --from-org", () => {
             return { installed: { connectors: { items: [stripe] } } };
           }
           throw new Error(
-            `unexpected manage_catalog action: ${String(body.action)}`,
+            `unexpected manage_catalog action: ${String(body.action)}`
           );
         },
       }),
@@ -684,7 +684,7 @@ describe("lobu init --from-org", () => {
             return { installed: { connectors: { items: [slack] } } };
           }
           throw new Error(
-            `unexpected manage_catalog action: ${String(body.action)}`,
+            `unexpected manage_catalog action: ${String(body.action)}`
           );
         },
       }),

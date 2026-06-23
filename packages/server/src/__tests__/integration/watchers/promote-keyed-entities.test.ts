@@ -303,4 +303,50 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     `;
     expect(Number(childCount[0].c)).toBe(2);
   });
+
+  it('dedups a concurrent re-insert of the same observation via ON CONFLICT (N>1 race guard)', async () => {
+    // The sequential replay above is caught by the check-then-insert SELECT; this
+    // exercises the ON CONFLICT path that backs TRUE concurrency — two replicas
+    // completing the same window where neither's SELECT sees the other's uncommitted
+    // insert. The partial unique index must make the second a no-op, not a duplicate.
+    const ctx = await setupKeyedWatcher();
+    const { sql, workspace, parentEntityId } = ctx;
+
+    await createTestEvent({
+      entity_id: parentEntityId,
+      organization_id: workspace.org.id,
+      content: 'Users report the app crashing and loading slowly.',
+      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+    });
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+    await completeWithToken(ctx, token, runId);
+
+    const [obs] = (await sql`
+      SELECT origin_id, entity_ids, created_by, metadata FROM events
+      WHERE organization_id = ${workspace.org.id} AND semantic_type = 'observation'
+      ORDER BY metadata->>'stable_key' LIMIT 1
+    `) as Array<{
+      origin_id: string;
+      entity_ids: string;
+      created_by: string;
+      metadata: Record<string, unknown>;
+    }>;
+
+    // The racer: same (org, origin_id), the exact ON CONFLICT clause the producer uses.
+    const racer = await sql`
+      INSERT INTO events (entity_ids, organization_id, origin_id, semantic_type, metadata, created_by, created_at)
+      VALUES (${String(obs.entity_ids)}::bigint[], ${workspace.org.id}, ${String(obs.origin_id)}, 'observation', ${sql.json(obs.metadata)}, ${obs.created_by}, NOW())
+      ON CONFLICT (organization_id, origin_id)
+        WHERE semantic_type = 'observation' AND metadata ->> 'category' = 'watcher_promotion'
+        DO NOTHING
+      RETURNING id
+    `;
+    expect(racer).toHaveLength(0); // deduped by idx_events_watcher_promotion_observation_unique
+
+    const dupes = (await sql`
+      SELECT COUNT(*)::int AS n FROM events WHERE origin_id = ${String(obs.origin_id)}
+    `) as Array<{ n: number }>;
+    expect(dupes[0].n).toBe(1); // still exactly one — no duplicate observation
+  });
 });

@@ -292,7 +292,11 @@ async function insertObservationEvent(params: {
     watcher_id: watcherId,
   };
 
-  await tx`
+  // ON CONFLICT against idx_events_watcher_promotion_observation_unique makes the
+  // emit race-safe: if a concurrent completion of the same (window, key) already
+  // inserted, ours is a no-op (no row returned) — not a duplicate. The SELECT above
+  // is the sequential fast path; this is the N>1 guard the check-then-insert lacked.
+  const insertedRows = await tx<{ id: number }>`
     INSERT INTO events (
       entity_ids, organization_id, origin_id, semantic_type, metadata,
       created_by, created_at
@@ -300,8 +304,12 @@ async function insertObservationEvent(params: {
       ${`{${entityId}}`}::bigint[], ${organizationId}, ${originId}, 'observation',
       ${tx.json(metadata)}, ${params.createdBy}, NOW()
     )
+    ON CONFLICT (organization_id, origin_id)
+      WHERE semantic_type = 'observation' AND metadata ->> 'category' = 'watcher_promotion'
+      DO NOTHING
+    RETURNING id
   `;
-  return true;
+  return insertedRows.length > 0;
 }
 
 /**

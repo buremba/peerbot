@@ -64,9 +64,10 @@ describe('buildClassificationExistsClauses', () => {
 describe('buildSourceOnlyExistsClause', () => {
   it('matches the inline $8 predicate used by the date-sort standard WHERE', () => {
     const { clause, params } = buildSourceOnlyExistsClause('embedding', 8, 'f');
-    // Must use the dedup'd, current-version-aware view keyed on f.id, so the
-    // score-sort source-only filter returns the same rows as the date-sort one.
-    expect(clause).toContain('FROM latest_event_classifications lc_source');
+    // Reads event_classifications (the source-of-truth output table) keyed on f.id,
+    // so the score-sort source-only filter returns the same rows as the date-sort one.
+    // (was the dead latest_event_classifications cache, dropped in the P4 collapse.)
+    expect(clause).toContain('FROM event_classifications lc_source');
     expect(clause).toContain('lc_source.event_id = f.id');
     expect(clause).toContain('lc_source.source = $8::text');
     expect(params).toEqual(['embedding']);

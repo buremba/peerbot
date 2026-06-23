@@ -156,6 +156,7 @@ export function summarizeResults(results: WatcherOperationResult[]) {
 function validateWatcherConfig(input: {
   prompt?: string;
   extraction_schema?: unknown;
+  entityTyped?: boolean;
   classifiers?: unknown[];
   sources?: Array<{ name: string; query: string }>;
 }): string | null {
@@ -168,13 +169,16 @@ function validateWatcherConfig(input: {
     return `prompt: ${templateValidation}`;
   }
 
-  if (!input.extraction_schema || typeof input.extraction_schema !== 'object') {
+  // extraction_schema is required UNLESS the watcher is entity-typed — it then
+  // derives its schema from the target entity type's metadata_schema (schema
+  // lives on the type). If an inline schema IS supplied either way, validate it.
+  if (input.extraction_schema && typeof input.extraction_schema === 'object') {
+    const schemaValidation = validateExtractionSchema(input.extraction_schema);
+    if (schemaValidation) {
+      return `extraction_schema: ${schemaValidation}`;
+    }
+  } else if (!input.entityTyped) {
     return 'extraction_schema is required and must be an object';
-  }
-
-  const schemaValidation = validateExtractionSchema(input.extraction_schema);
-  if (schemaValidation) {
-    return `extraction_schema: ${schemaValidation}`;
   }
 
   if (input.classifiers !== undefined) {
@@ -212,12 +216,14 @@ function validateWatcherConfig(input: {
 export function assertWatcherVersionConfigValid(parsed: {
   prompt?: string;
   extractionSchema?: unknown;
+  entityTyped?: boolean;
   classifiers?: unknown[];
   sources?: Array<{ name: string; query: string }>;
 }): void {
   const validation = validateWatcherConfig({
     prompt: parsed.prompt,
     extraction_schema: parsed.extractionSchema,
+    entityTyped: parsed.entityTyped,
     classifiers: parsed.classifiers,
     sources: parsed.sources,
   });

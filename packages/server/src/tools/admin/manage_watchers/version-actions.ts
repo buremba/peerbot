@@ -99,8 +99,11 @@ export async function handleCreateVersion(
     parseJsonInput<unknown[]>(args.classifiers, 'classifiers') ??
     normalizeStoredJsonField(prev.classifiers, undefined as unknown[] | undefined);
 
-  // Validate
-  assertWatcherVersionConfigValid({ prompt, extractionSchema, classifiers, sources });
+  // Validate. An entity-typed watcher (keying_config.entity_type) derives its
+  // schema from the entity type, so an inline extraction_schema isn't required.
+  const keyingEntityType = (keyingConfig as { entity_type?: unknown } | undefined)?.entity_type;
+  const entityTyped = typeof keyingEntityType === 'string' && keyingEntityType.trim().length > 0;
+  assertWatcherVersionConfigValid({ prompt, extractionSchema, entityTyped, classifiers, sources });
 
   if (args.schedule) {
     const scheduleError = validateSchedule(args.schedule);

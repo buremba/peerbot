@@ -48,15 +48,25 @@ export async function handleCreate(
 }> {
   const sql = getDb();
 
-  // Require slug + prompt + extraction_schema for create
+  // Require slug + prompt for create. extraction_schema is required too, UNLESS
+  // the watcher is entity-typed: a watcher that names keying_config.entity_type
+  // derives its output schema from that entity type's metadata_schema (schema
+  // lives on the type), so it needs no inline one.
   if (!args.slug) {
     throw new ToolUserError('slug is required for create action');
   }
   if (!args.prompt) {
     throw new ToolUserError('prompt is required for create action');
   }
-  if (!args.extraction_schema) {
-    throw new ToolUserError('extraction_schema is required for create action');
+  const keyingEntityType =
+    args.keying_config && typeof args.keying_config === 'object'
+      ? (args.keying_config as { entity_type?: unknown }).entity_type
+      : undefined;
+  const isEntityTyped = typeof keyingEntityType === 'string' && keyingEntityType.trim().length > 0;
+  if (!args.extraction_schema && !isEntityTyped) {
+    throw new ToolUserError(
+      'extraction_schema is required for create action (unless keying_config.entity_type is set)'
+    );
   }
   assertValidExecutionConfig(args.execution_config, ctx);
   // A device pin runs the watcher's agent CLI on the device owner's machine —
@@ -86,6 +96,7 @@ export async function handleCreate(
   assertWatcherVersionConfigValid({
     prompt: args.prompt,
     extractionSchema,
+    entityTyped: isEntityTyped,
     classifiers,
     sources,
   });

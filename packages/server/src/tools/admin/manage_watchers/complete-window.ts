@@ -13,6 +13,7 @@ import { verifyWindowToken } from '../../../utils/jwt';
 import logger from '../../../utils/logger';
 import { promoteKeyedEntities } from '../../../utils/promote-keyed-entities';
 import { computeStableKeys } from '../../../utils/stable-keys';
+import { deriveWatcherExtractionSchema } from '../../../utils/watcher-extraction-schema';
 import { trackWatcherReaction } from '../../../utils/watcher-reactions';
 import {
   getFieldsToStrip,
@@ -272,10 +273,17 @@ export async function handleCompleteWindow(
   const parentEntityId = boundEntityIds.length > 0 ? boundEntityIds[0] : null;
 
   // ============================================
-  // STEP 2.5: Validate extracted_data against template's extraction_schema
+  // STEP 2.5: Validate extracted_data against the extraction schema.
+  // The schema is the watcher's inline extraction_schema, OR — when the watcher
+  // is entity-typed (keying_config.entity_type) and gave no inline schema —
+  // derived from that entity type's metadata_schema (consolidation: "schema lives
+  // on the entity type"). Same helper the worker payload uses, so the contract the
+  // device extracts against and the contract we validate against never drift.
   // ============================================
-  if (templateData?.extraction_schema) {
-    const extractionSchema = templateData.extraction_schema;
+  const extractionSchema: Record<string, any> | null =
+    templateData?.extraction_schema ??
+    (await deriveWatcherExtractionSchema(getDb(), watcherOrgId, keyingConfig));
+  if (extractionSchema) {
     const validate = ajv.compile(extractionSchema);
     // Validate a deep copy since removeAdditional:true mutates the data
     // This allows workers to include internal fields like 'embedding' that aren't in the schema

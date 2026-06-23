@@ -97,14 +97,7 @@ const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
     'delete',
     'set_system_agent',
   ]),
-  manage_classifiers: new Set([
-    'create',
-    'create_version',
-    'set_current_version',
-    'generate_embeddings',
-    'delete',
-    'classify',
-  ]),
+  manage_classifiers: new Set(['create', 'generate_embeddings', 'delete', 'classify']),
   manage_view_templates: new Set(['set', 'rollback', 'remove_tab']),
 };
 
@@ -130,7 +123,7 @@ const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
     'get_component_reference',
     'get_feedback',
   ]),
-  manage_classifiers: new Set(['list', 'get_versions']),
+  manage_classifiers: new Set(['list']),
   manage_view_templates: new Set(['get']),
 };
 

@@ -682,8 +682,7 @@ async function getWatcherImpl(
           CAST(COUNT(*) AS INTEGER) as count
         FROM watcher_window_events iwc
         JOIN event_classifications cls ON iwc.event_id = cls.event_id
-        JOIN event_classifier_versions ccv ON cls.classifier_version_id = ccv.id
-        JOIN event_classifiers cc ON ccv.classifier_id = cc.id
+        JOIN classify_facet cc ON cls.classifier_id = cc.id
         CROSS JOIN unnest(cls."values") AS t(value)
         WHERE iwc.window_id IN (${windowIds.map((_: unknown, i: number) => `$${i + 1}`).join(', ')})
         GROUP BY iwc.window_id, cc.slug, value

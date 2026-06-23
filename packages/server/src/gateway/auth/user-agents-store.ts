@@ -1,6 +1,6 @@
 import { createLogger } from "@lobu/core";
 import { getDb } from "../../db/client.js";
-import { tryGetOrgId } from "../../lobu/stores/org-context.js";
+import { requireOrgId, resolveOrgId } from "../../lobu/stores/org-context.js";
 
 const logger = createLogger("user-agents-store");
 
@@ -21,12 +21,7 @@ export class UserAgentsStore {
     agentId: string,
     organizationId?: string
   ): Promise<void> {
-    const orgId = organizationId ?? tryGetOrgId();
-    if (!orgId) {
-      throw new Error(
-        "UserAgentsStore.addAgent requires organizationId (explicit or via orgContext)"
-      );
-    }
+    const orgId = requireOrgId(organizationId, "UserAgentsStore.addAgent");
     const sql = getDb();
     await sql`
       INSERT INTO agent_users (organization_id, agent_id, platform, user_id, created_at)
@@ -43,7 +38,7 @@ export class UserAgentsStore {
     organizationId?: string
   ): Promise<void> {
     const sql = getDb();
-    const orgId = organizationId ?? tryGetOrgId();
+    const orgId = resolveOrgId(organizationId);
     if (orgId) {
       await sql`
         DELETE FROM agent_users
@@ -65,7 +60,7 @@ export class UserAgentsStore {
     organizationId?: string
   ): Promise<string[]> {
     const sql = getDb();
-    const orgId = organizationId ?? tryGetOrgId();
+    const orgId = resolveOrgId(organizationId);
     const rows = orgId
       ? await sql`
           SELECT agent_id

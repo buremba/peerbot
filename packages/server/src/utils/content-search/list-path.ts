@@ -14,7 +14,7 @@ import { parseDateAlias, toEndOfDay } from '../date-aliases';
 import { validateNumericId } from '../sql-validation';
 import {
   buildClassificationExistsClauses,
-  resolveClassifierVersionIds,
+  resolveClassifierIds,
 } from './classification';
 import { buildLatestClassificationsCteSql, buildThreadMetaCteSql } from './ctes';
 import { buildEntityLinkUnion, entityLinkMatchSql, fetchEntityIdentityScopes } from './entity-link';
@@ -229,7 +229,7 @@ export async function listContentInternal(
     });
 
   if (hasClassificationFilters && filtersBySlug) {
-    const classifierVersionIds = await resolveClassifierVersionIds(sql, filtersBySlug, entityId);
+    const classifierIds = await resolveClassifierIds(sql, filtersBySlug, entityId);
     const connectionFilterClause = buildConnectionFilter(connectionIdsArray);
     const feedFilterClause = buildFeedFilter(feedIdsArray);
     const runFilterClause = buildRunFilter(runIdsArray);
@@ -324,7 +324,7 @@ export async function listContentInternal(
 
     const classificationExists = buildClassificationExistsClauses(
       filtersBySlug,
-      classifierVersionIds,
+      classifierIds,
       options.classification_source,
       baseParams.length + 1
     );

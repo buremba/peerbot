@@ -160,7 +160,7 @@ export const QUERYABLE_SCHEMA = {
       columns: cols(
         'id',
         'event_id',
-        'classifier_version_id',
+        'classifier_id',
         'watcher_id',
         'window_id',
         'values',

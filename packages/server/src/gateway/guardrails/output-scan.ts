@@ -13,9 +13,10 @@
  */
 
 import {
-  createLogger,
-  type GuardrailRegistry,
-  runGuardrailInstances,
+	createLogger,
+	getErrorMessage,
+	type GuardrailRegistry,
+	runGuardrailInstances,
 } from "@lobu/core";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import { resolveAgentGuardrails } from "./aggregator.js";
@@ -97,7 +98,7 @@ export async function runOutputGuardrailScan(
     };
   } catch (err) {
     logger.warn(
-      { err: err instanceof Error ? err.message : String(err) },
+      { err: getErrorMessage(err) },
       "Output guardrail check failed — proceeding without guardrails"
     );
     return null;

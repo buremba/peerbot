@@ -6,10 +6,11 @@ import type {
   WorkerTokenData,
 } from "@lobu/core";
 import {
-  createLogger,
-  encrypt,
-  generateWorkerToken,
-  verifyWorkerToken,
+	createLogger,
+	generateWorkerToken,
+	getErrorMessage,
+	encrypt,
+	verifyWorkerToken,
 } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
@@ -204,7 +205,7 @@ export class WorkerGateway {
             mcpId: mcp.id,
             agentId,
             userId,
-            error: error instanceof Error ? error.message : String(error),
+            error: getErrorMessage(error),
           });
         }
 

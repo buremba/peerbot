@@ -24,6 +24,7 @@ import { getNextNumericId } from '../helpers/db-helpers';
 import type { ToolContext } from '../../registry';
 import type { ManageWatchersArgs } from '../manage_watchers';
 import { normalizeExtractedData, parseJson, requireWatcherAccess } from './shared';
+import { getErrorMessage } from "@lobu/core";
 
 // Initialize AJV for JSON Schema validation
 // removeAdditional: true strips fields like 'embedding' that workers add but aren't in the schema
@@ -103,7 +104,7 @@ export async function handleCompleteWindow(
       windowTokens.map((token) => verifyWindowToken(token, env))
     )) as VerifiedWindowToken[];
   } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : String(error);
+    const errorMsg = getErrorMessage(error);
     // Agent-recoverable validation (the message says how) — ToolUserError so
     // it returns 400 and stays out of the Sentry feed (was LOBU-BACKEND-D).
     throw new ToolUserError(
@@ -229,12 +230,12 @@ export async function handleCompleteWindow(
     SELECT
       cc.id,
       cc.slug,
-      ccv.id as version_id,
-      ccv.extraction_config
-    FROM event_classifiers cc
-    JOIN event_classifier_versions ccv ON cc.id = ccv.classifier_id AND ccv.is_current = true
+      cc.id as version_id,
+      cc.extraction_config
+    FROM classify_facet cc
     WHERE cc.watcher_id = ${watcherId}
-      AND ccv.extraction_config IS NOT NULL
+      AND cc.status = 'active'
+      AND cc.extraction_config IS NOT NULL
   `;
 
   const timeGranularity = granularity || 'weekly';
@@ -734,7 +735,7 @@ export async function handleCompleteWindow(
     }
   } catch (err) {
     reactionStatus = 'failed';
-    reactionError = err instanceof Error ? err.message : String(err);
+    reactionError = getErrorMessage(err);
     logger.warn({ err }, '[manage_watchers] Failed to execute reaction script');
   }
 

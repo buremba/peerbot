@@ -14,7 +14,11 @@
 
 import { randomUUID } from "node:crypto";
 import type { AgentConnectionStore, StoredConnection } from "@lobu/core";
-import { createLogger, isSecretRef } from "@lobu/core";
+import {
+	createLogger,
+	getErrorMessage,
+	isSecretRef,
+} from "@lobu/core";
 import { type AdapterPostableMessage, Chat } from "chat";
 import { getDb } from "../../db/client.js";
 import { orgContext, tryGetOrgId } from "../../lobu/stores/org-context.js";
@@ -402,7 +406,7 @@ export class ChatInstanceManager {
       await this.writeConnectionStatus(
         stored,
         "error",
-        `Startup failed: ${error instanceof Error ? error.message : String(error)}`
+        `Startup failed: ${getErrorMessage(error)}`
       );
       throw error;
     }
@@ -539,7 +543,7 @@ export class ChatInstanceManager {
           await this.writeConnectionStatus(
             reread,
             "error",
-            `Startup failed: ${error instanceof Error ? error.message : String(error)}`
+            `Startup failed: ${getErrorMessage(error)}`
           );
           throw error;
         }
@@ -1427,7 +1431,7 @@ export class ChatInstanceManager {
       await this.writeConnectionStatus(
         stored,
         "error",
-        `Startup failed: ${error instanceof Error ? error.message : String(error)}`
+        `Startup failed: ${getErrorMessage(error)}`
       );
       return false;
     }
@@ -1672,7 +1676,7 @@ export class ChatInstanceManager {
           await this.writeConnectionStatus(
             s,
             "error",
-            `Startup failed: ${error instanceof Error ? error.message : String(error)}`
+            `Startup failed: ${getErrorMessage(error)}`
           );
         }
         // Schedule a bounded, exponentially-backed-off retry. The first-failure
@@ -1832,7 +1836,7 @@ export class ChatInstanceManager {
           await this.writeConnectionStatus(
             s,
             "error",
-            `Health check failed: ${error instanceof Error ? error.message : String(error)}`
+            `Health check failed: ${getErrorMessage(error)}`
           );
           result.errored += 1;
         }

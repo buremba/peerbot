@@ -289,7 +289,7 @@ export async function createEntity(
         organization_id, entity_type_id, name, slug, parent_id, metadata, enabled_classifiers, created_by, content, embedding, content_hash, created_at, updated_at
       ) VALUES (
         ${data.organization_id}, ${entityTypeId}, ${data.name.trim()}, ${slug}, ${data.parent_id || null},
-        ${sql.json(metadata)}, ${data.enabled_classifiers || null}, ${createdBy},
+        ${sql.json(metadata)}, ${data.enabled_classifiers ? pgTextArray(data.enabled_classifiers) : null}::text[], ${createdBy},
         ${contentValue}, ${embeddingLiteral}::vector, ${contentHash}, current_timestamp, current_timestamp
       )
       RETURNING id, name, slug, parent_id, metadata, created_at
@@ -392,7 +392,7 @@ export async function updateEntity(
       slug = COALESCE(${newSlug}, slug),
       parent_id = CASE WHEN ${data.parent_id !== undefined} THEN ${data.parent_id ?? null}::bigint ELSE parent_id END,
       metadata = CASE WHEN ${hasMetadataUpdates} THEN ${mergedMetadata ? sql.json(mergedMetadata) : null} ELSE metadata END,
-      enabled_classifiers = CASE WHEN ${data.enabled_classifiers !== undefined} THEN ${data.enabled_classifiers ?? null}::text[] ELSE enabled_classifiers END,
+      enabled_classifiers = CASE WHEN ${data.enabled_classifiers !== undefined} THEN ${data.enabled_classifiers ? pgTextArray(data.enabled_classifiers) : null}::text[] ELSE enabled_classifiers END,
       content = CASE WHEN ${hasContent} THEN ${contentValue} ELSE content END,
       embedding = CASE WHEN ${hasEmbedding} THEN ${embeddingLiteral}::vector ELSE embedding END,
       updated_at = current_timestamp
@@ -1065,7 +1065,7 @@ export async function batchLoadRelationships(
     WHERE r.organization_id = ${organizationId}
       AND r.deleted_at IS NULL
       AND rt.slug = ANY(${typeSlugs}::text[])
-      AND (r.from_entity_id = ANY(${idArray}) OR r.to_entity_id = ANY(${idArray}))
+      AND (r.from_entity_id = ANY(${idArray}::bigint[]) OR r.to_entity_id = ANY(${idArray}::bigint[]))
   `;
 
   // Build a direction lookup per spec

@@ -362,6 +362,18 @@ export interface EntityIdentitySpec {
    * not persisted on create or accrete. Defaults to false.
    */
   matchOnly?: boolean;
+  /**
+   * Marks an IMMUTABLE, authoritative identifier (e.g. a numeric provider user
+   * id that survives renames). When a primary identity is PRESENT on an event:
+   *   - if it matches an existing entity → that entity is used;
+   *   - if it is present but matches nothing → resolution does NOT fall through
+   *     to a non-primary match (a fresh primary id means a distinct account; a
+   *     stale, since-reused secondary identifier like a renamed login must not
+   *     conflate the two). A new entity is created keyed on the primary id.
+   * Defaults to false: non-primary identities match equal-weight (a person is
+   * matched by ANY of them — the cross-channel behavior whatsapp/email rely on).
+   */
+  primary?: boolean;
 }
 
 /**

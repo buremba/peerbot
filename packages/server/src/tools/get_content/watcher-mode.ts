@@ -307,11 +307,11 @@ export async function handleWatcherMode(
   const classifiersResult = await sql`
     SELECT
       cc.slug,
-      ccv.extraction_config,
-      ccv.attribute_values
-    FROM event_classifiers cc
-    JOIN event_classifier_versions ccv ON cc.id = ccv.classifier_id AND ccv.is_current = true
+      cc.extraction_config,
+      cc.attribute_values
+    FROM classify_facet cc
     WHERE cc.watcher_id = ${watcherId}
+      AND cc.status = 'active'
     ORDER BY cc.slug
   `;
 

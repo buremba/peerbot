@@ -7,10 +7,18 @@
  * Vector operations (cosine similarity) are computed in TypeScript.
  */
 
-import { type DbClient, getDb } from '../db/client';
+import { type DbClient, getDb, pgTextArray } from '../db/client';
 import { entityLinkMatchSql } from './content-search';
 import { configuredEmbeddingModelSqlLiteral } from './embeddings';
 import logger from './logger';
+
+/**
+ * Classifier consolidation (P4) phase 6c: the classifier config is read from classify_facet (the
+ * config-home that mirrors event_classifiers identity + the CURRENT version's config) instead of
+ * the legacy event_classifiers -> event_classifier_versions(is_current) JOIN. classify_facet is an
+ * accurate mirror (triggers sync identity + config incl. in-place edits), so the reads are
+ * equivalent. The cutover is unconditional; the legacy JOIN and its env flag are gone.
+ */
 
 /**
  * Default weights for combining child and parent embeddings.
@@ -51,6 +59,27 @@ function roundTo4(n: number): number {
   return Math.round(n * 10000) / 10000;
 }
 
+/**
+ * Parse a pgvector column value into a number[].
+ *
+ * The prod client runs `fetch_types:false` and registers NO pgvector type
+ * parser (db/client.ts only parses bigint + JSON/JSONB), so postgres.js returns
+ * a `vector` column as its TEXT representation `"[1,2,3]"` — NOT a JS array.
+ * Every other embedding consumer computes cosine in SQL via the `<=>` operator;
+ * this classification path is the ONLY one that materializes the raw vector in
+ * JS, so it MUST parse the text form. Treating the string as a number[] (the old
+ * `as number[]` cast) made cosineSimilarity iterate over characters → NaN, so the
+ * embedding path silently produced no real similarities (its only caller, the
+ * reconciliation cron, swallows the result). The Array.isArray branch is
+ * defensive in case a future parser pre-materializes the value.
+ */
+function parsePgVector(value: number[] | string | null | undefined): number[] | null {
+  if (value == null) return null;
+  if (Array.isArray(value)) return value;
+  const inner = value.slice(1, -1); // strip the surrounding "[ ]"
+  return inner.length === 0 ? [] : inner.split(',').map(Number);
+}
+
 interface ClassificationQueryOptions {
   /**
    * Target selection mode
@@ -85,7 +114,6 @@ interface TargetContent {
 
 interface ClassifierTemplate {
   classifier_id: number;
-  version_id: number;
   min_similarity: number;
   fallback_value: string | null;
   attribute_value: string;
@@ -98,7 +126,6 @@ interface Similarity {
   classifier_id: number;
   attribute_value: string;
   parent_mapping: Record<string, string> | null;
-  version_id: number;
   min_similarity: number;
   fallback_value: string | null;
   confidence: number;
@@ -113,14 +140,13 @@ interface BestMatch {
   met_threshold: boolean;
   threshold: number;
   best_match_attribute: string;
-  version_id: number;
   fallback_value: string | null;
   confidences_map: Record<string, number>;
 }
 
-interface AllClassification {
+export interface AllClassification {
   content_id: number;
-  version_id: number;
+  classifier_id: number;
   value: string;
   confidences_map: Record<string, number>;
   met_threshold: boolean;
@@ -131,7 +157,7 @@ interface AllClassification {
 
 interface ClassifierVersionLookup {
   slug: string;
-  version_id: number;
+  classifier_id: number;
 }
 
 // ── Step 1: Fetch target content with embeddings ───────────────────────
@@ -149,8 +175,10 @@ async function fetchTargetContent(
     id: number;
     entity_ids: number[];
     parent_id: number | null;
-    embedding: number[] | null;
-    parent_embedding: number[] | null;
+    // pgvector columns come back as the TEXT form "[1,2,3]" under fetch_types:false
+    // (no registered parser) — parsePgVector() materializes them.
+    embedding: string | number[] | null;
+    parent_embedding: string | number[] | null;
   }>;
 
   // current_event_records no longer carries an embedding (multi-vector). For
@@ -182,21 +210,20 @@ async function fetchTargetContent(
   } else if (mode === 'entity') {
     const entityId = options.entity_id!;
 
-    // Get current classifier version IDs
-    const versionRows = await sql.unsafe<{ version_id: number }>(
-      `SELECT fcv.id as version_id
-       FROM event_classifiers fc
-       JOIN event_classifier_versions fcv ON fc.id = fcv.classifier_id AND fcv.is_current = true
-       WHERE fc.slug IN (${classifierPlaceholders})
-         AND fc.status = 'active'
-         AND fc.watcher_id IS NULL`,
+    // Get the stable classifier IDs whose embedding classifications we maintain
+    const classifierRows = await sql.unsafe<{ classifier_id: number }>(
+      `SELECT cf.id as classifier_id
+       FROM classify_facet cf
+       WHERE cf.slug IN (${classifierPlaceholders})
+         AND cf.status = 'active'
+         AND cf.watcher_id IS NULL`,
       enabledClassifiers
     );
-    const versionIds = versionRows.map((r) => r.version_id);
+    const classifierIds = classifierRows.map((r) => r.classifier_id);
 
-    if (versionIds.length === 0) return [];
+    if (classifierIds.length === 0) return [];
 
-    const versionPlaceholders = versionIds.map((_, i) => `$${i + 2}`).join(', ');
+    const classifierIdPlaceholders = classifierIds.map((_, i) => `$${i + 2}`).join(', ');
     targetRows = await sql.unsafe(
       `SELECT DISTINCT
          f.id,
@@ -218,37 +245,41 @@ async function fetchTargetContent(
          )
          AND fe.embedding IS NOT NULL
          AND EXISTS (
-           SELECT 1 FROM unnest(ARRAY[${versionPlaceholders}]::bigint[]) AS ccv(version_id)
+           SELECT 1 FROM unnest(ARRAY[${classifierIdPlaceholders}]::bigint[]) AS ccc(classifier_id)
            WHERE NOT EXISTS (
              SELECT 1 FROM event_classifications cc
              WHERE cc.event_id = f.id
-               AND cc.classifier_version_id = ccv.version_id
+               AND cc.classifier_id = ccc.classifier_id
                AND cc.source = 'embedding'
            )
          )`,
-      [entityId, ...versionIds]
+      [entityId, ...classifierIds]
     );
   } else {
     throw new Error(`Invalid mode: ${mode}`);
   }
 
-  // Compute combined embeddings in TypeScript
-  return targetRows.map((row) => {
-    const childEmb = row.embedding as number[];
-    const parentEmb = row.parent_embedding as number[] | null;
+  // Compute combined embeddings in TypeScript (parsing the pgvector text form).
+  return targetRows
+    .map((row) => {
+      const childEmb = parsePgVector(row.embedding);
+      // WHERE fe.embedding IS NOT NULL guarantees a vector, but stay defensive.
+      if (childEmb == null) return null;
+      const parentEmb = parsePgVector(row.parent_embedding);
 
-    const combined =
-      parentEmb != null
-        ? combineEmbeddings(childEmb, parentEmb, CHILD_EMBEDDING_WEIGHT, PARENT_EMBEDDING_WEIGHT)
-        : childEmb;
+      const combined =
+        parentEmb != null
+          ? combineEmbeddings(childEmb, parentEmb, CHILD_EMBEDDING_WEIGHT, PARENT_EMBEDDING_WEIGHT)
+          : childEmb;
 
-    return {
-      id: row.id,
-      entity_ids: row.entity_ids,
-      parent_id: row.parent_id,
-      combined_embedding: combined,
-    };
-  });
+      return {
+        id: row.id,
+        entity_ids: row.entity_ids,
+        parent_id: row.parent_id,
+        combined_embedding: combined,
+      };
+    })
+    .filter((tc): tc is TargetContent => tc !== null);
 }
 
 // ── Step 2: Fetch classifier templates ─────────────────────────────────
@@ -265,25 +296,21 @@ async function fetchClassifierTemplates(
   // Fetch classifier versions with their attribute_values JSON
   const rows = await sql.unsafe<{
     classifier_id: number;
-    version_id: number;
     min_similarity: number;
     fallback_value: string | null;
     attribute_values: string | Record<string, unknown>;
     entity_ids: number[] | null;
   }>(
     `SELECT DISTINCT
-       fc.id as classifier_id,
-       fcv.id as version_id,
-       fcv.min_similarity,
-       fcv.fallback_value,
-       fcv.attribute_values,
-       fc.entity_ids
-     FROM event_classifiers fc
-     JOIN event_classifier_versions fcv
-       ON fc.id = fcv.classifier_id AND fcv.is_current = true
-     WHERE fc.slug IN (${classifierPlaceholders})
-       AND fc.status = 'active'
-       AND fc.watcher_id IS NULL`,
+       cf.id as classifier_id,
+       cf.min_similarity,
+       cf.fallback_value,
+       cf.attribute_values,
+       cf.entity_ids
+     FROM classify_facet cf
+     WHERE cf.slug IN (${classifierPlaceholders})
+       AND cf.status = 'active'
+       AND cf.watcher_id IS NULL`,
     enabledClassifiers
   );
 
@@ -314,7 +341,6 @@ async function fetchClassifierTemplates(
 
       templates.push({
         classifier_id: row.classifier_id,
-        version_id: row.version_id,
         min_similarity: row.min_similarity,
         fallback_value: row.fallback_value,
         attribute_value: key,
@@ -343,7 +369,6 @@ function computeSimilarities(
         classifier_id: ct.classifier_id,
         attribute_value: ct.attribute_value,
         parent_mapping: ct.parent_mapping,
-        version_id: ct.version_id,
         min_similarity: ct.min_similarity,
         fallback_value: ct.fallback_value,
         confidence,
@@ -395,7 +420,6 @@ function determineBestMatches(similarities: Similarity[]): BestMatch[] {
       met_threshold: metThreshold,
       threshold: best.min_similarity,
       best_match_attribute: best.attribute_value,
-      version_id: best.version_id,
       fallback_value: best.fallback_value,
       confidences_map: confidencesMap,
     });
@@ -408,7 +432,7 @@ function determineBestMatches(similarities: Similarity[]): BestMatch[] {
 
 function generateParentClassifications(
   bestMatches: BestMatch[],
-  classifierVersionLookup: Map<string, number>
+  classifierVersionLookup: Map<string, ClassifierVersionLookup>
 ): AllClassification[] {
   const parentClassifications: AllClassification[] = [];
 
@@ -416,12 +440,12 @@ function generateParentClassifications(
     if (bm.value == null || bm.parent_mapping == null) continue;
 
     for (const [parentSlug, parentValue] of Object.entries(bm.parent_mapping)) {
-      const parentVersionId = classifierVersionLookup.get(parentSlug);
-      if (parentVersionId == null) continue;
+      const parentLookup = classifierVersionLookup.get(parentSlug);
+      if (parentLookup == null) continue;
 
       parentClassifications.push({
         content_id: bm.content_id,
-        version_id: parentVersionId,
+        classifier_id: parentLookup.classifier_id,
         value: parentValue,
         confidences_map: {},
         met_threshold: true,
@@ -439,27 +463,26 @@ function generateParentClassifications(
 
 async function fetchAllClassifierVersions(sql: DbClient): Promise<ClassifierVersionLookup[]> {
   return sql.unsafe<ClassifierVersionLookup>(
-    `SELECT fc.slug, fcv.id as version_id
-     FROM event_classifiers fc
-     JOIN event_classifier_versions fcv ON fc.id = fcv.classifier_id AND fcv.is_current = true
-     WHERE fc.status = 'active' AND fc.watcher_id IS NULL`,
+    `SELECT cf.slug, cf.id as classifier_id
+     FROM classify_facet cf
+     WHERE cf.status = 'active' AND cf.watcher_id IS NULL`,
     []
   );
 }
 
 // ── Step 7: Upsert classifications via DELETE + INSERT ─────────────────
 
-async function upsertClassifications(
+export async function upsertClassifications(
   sql: DbClient,
   classifications: AllClassification[]
 ): Promise<{ content_id: number }[]> {
   if (classifications.length === 0) return [];
 
-  // Deduplicate: for each (content_id, version_id), keep the one with highest confidence
+  // Deduplicate: for each (content_id, classifier_id), keep the one with highest confidence
   // and merge values/confidences (matches the old ON CONFLICT behavior)
   const deduped = new Map<string, AllClassification & { merged_values: string[] }>();
   for (const c of classifications) {
-    const key = `${c.content_id}:${c.version_id}`;
+    const key = `${c.content_id}:${c.classifier_id}`;
     const existing = deduped.get(key);
     if (existing) {
       // Merge values (distinct)
@@ -482,13 +505,13 @@ async function upsertClassifications(
 
   const allClassifications = [...deduped.values()];
 
-  // Build the conflict keys for DELETE
+  // Build the conflict keys for DELETE (stable classifier_id — the post-collapse uniqueness key)
   const deleteConditions = allClassifications.map((c) => ({
     event_id: c.content_id,
-    version_id: c.version_id,
+    classifier_id: c.classifier_id,
   }));
 
-  // Delete existing non-manual embedding classifications for these (event_id, version_id) pairs
+  // Delete existing non-manual embedding classifications for these (event_id, classifier_id) pairs
   // Process in batches to avoid overly long SQL
   const BATCH_SIZE = 500;
   for (let i = 0; i < deleteConditions.length; i += BATCH_SIZE) {
@@ -496,10 +519,10 @@ async function upsertClassifications(
     const whereClauses = batch
       .map(
         (_, j) =>
-          `(event_id = $${j * 2 + 1} AND classifier_version_id = $${j * 2 + 2} AND source = 'embedding' AND COALESCE(watcher_id, 0) = 0)`
+          `(event_id = $${j * 2 + 1} AND classifier_id = $${j * 2 + 2} AND source = 'embedding' AND COALESCE(watcher_id, 0) = 0)`
       )
       .join(' OR ');
-    const params = batch.flatMap((d) => [d.event_id, d.version_id]);
+    const params = batch.flatMap((d) => [d.event_id, d.classifier_id]);
 
     await sql.unsafe(
       `DELETE FROM event_classifications
@@ -514,19 +537,25 @@ async function upsertClassifications(
   for (let i = 0; i < allClassifications.length; i += BATCH_SIZE) {
     const batch = allClassifications.slice(i, i + BATCH_SIZE);
 
-    // Each row needs 10 params: event_id, classifier_version_id, values, confidences,
-    // source, is_manual, met_threshold, threshold, best_match_attribute, embedding_confidence
+    // Each row BINDS 8 params (event_id, classifier_id, values, confidences, met_threshold,
+    // threshold, best_match_attribute, embedding_confidence); watcher_id/window_id are NULL and
+    // source/is_manual are literals. The stride MUST be 8 — the old `j * 10` overran by 2 per row,
+    // so any batch with >1 classification mis-mapped params (row 2 read $11.. while its params sat
+    // at $9..) and Postgres rejected it. Single-classification batches were unaffected (j=0).
     const valuePlaceholders = batch
       .map((_, j) => {
-        const base = j * 10;
-        return `($${base + 1}, $${base + 2}, NULL, NULL, $${base + 3}, $${base + 4}::JSON, 'embedding', false, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8})`;
+        const base = j * 8;
+        // $base+3 is the values text[]: under fetch_types:false (prod config) a raw JS array param
+        // serializes to a malformed literal, so it MUST be a pgTextArray() pg-literal string cast
+        // ::text[] (same pattern every other text[] insert in the codebase uses).
+        return `($${base + 1}, $${base + 2}, NULL, NULL, $${base + 3}::text[], $${base + 4}::JSON, 'embedding', false, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8})`;
       })
       .join(', ');
 
     const params = batch.flatMap((c) => [
       c.content_id,
-      c.version_id,
-      c.merged_values,
+      c.classifier_id,
+      pgTextArray(c.merged_values),
       JSON.stringify(c.confidences_map),
       c.met_threshold,
       c.threshold,
@@ -536,7 +565,7 @@ async function upsertClassifications(
 
     await sql.unsafe(
       `INSERT INTO event_classifications (
-         event_id, classifier_version_id, watcher_id, window_id,
+         event_id, classifier_id, watcher_id, window_id,
          "values", confidences, source, is_manual,
          met_threshold, threshold, best_match_attribute, embedding_confidence
        )
@@ -594,7 +623,7 @@ export async function executeClassificationQuery(
     // Step 5: Build parent classifications from parent_mapping
     const classifierVersionRows = await fetchAllClassifierVersions(sql);
     const classifierVersionLookup = new Map(
-      classifierVersionRows.map((r) => [r.slug, r.version_id])
+      classifierVersionRows.map((r) => [r.slug, r])
     );
     const parentClassifications = generateParentClassifications(
       bestMatches,
@@ -606,7 +635,7 @@ export async function executeClassificationQuery(
       .filter((bm) => bm.value != null)
       .map((bm) => ({
         content_id: bm.content_id,
-        version_id: bm.version_id,
+        classifier_id: bm.classifier_id,
         value: bm.value!,
         confidences_map: bm.confidences_map,
         met_threshold: bm.met_threshold,

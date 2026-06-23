@@ -20,6 +20,7 @@ import { buildEntityUrl, getPublicWebUrl } from '../utils/url-builder';
 import { getWorkspaceProvider } from '../workspace';
 import type { ToolContext } from './registry';
 import { withValidatedArgs } from './validate-args';
+import { getErrorMessage } from "@lobu/core";
 
 // ============================================
 // Typebox Schema
@@ -350,7 +351,7 @@ async function searchImpl(
           agentIdScope
         ).catch((err) => {
           logger.warn(
-            `[search] content search failed: ${err instanceof Error ? err.message : String(err)}`
+            `[search] content search failed: ${getErrorMessage(err)}`
           );
           return [] as ContentSnippet[];
         })

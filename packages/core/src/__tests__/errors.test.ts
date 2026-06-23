@@ -3,10 +3,27 @@ import {
   BaseError,
   ConfigError,
   ErrorCode,
+  getErrorMessage,
   OrchestratorError,
   WorkerError,
   WorkspaceError,
 } from "../errors";
+
+describe("getErrorMessage", () => {
+  test("returns .message for Error and subclasses", () => {
+    expect(getErrorMessage(new Error("boom"))).toBe("boom");
+    expect(getErrorMessage(new TypeError("bad type"))).toBe("bad type");
+    expect(getErrorMessage(new ConfigError("bad config"))).toBe("bad config");
+  });
+
+  test("stringifies non-Error throws", () => {
+    expect(getErrorMessage("plain string")).toBe("plain string");
+    expect(getErrorMessage(42)).toBe("42");
+    expect(getErrorMessage(null)).toBe("null");
+    expect(getErrorMessage(undefined)).toBe("undefined");
+    expect(getErrorMessage({ code: "X" })).toBe("[object Object]");
+  });
+});
 
 describe("BaseError (via WorkerError)", () => {
   test("sets name, message, and prototype chain", () => {

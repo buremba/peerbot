@@ -726,13 +726,11 @@ export async function restUpdateContentClassification(c: Context<{ Bindings: Env
         cc.source,
         cc.is_manual
       FROM event_classifications cc
-      JOIN event_classifier_versions ccv ON cc.classifier_version_id = ccv.id
-      JOIN event_classifiers fc ON ccv.classifier_id = fc.id
+      JOIN classify_facet fc ON cc.classifier_id = fc.id
       WHERE cc.event_id = ${contentId}
         AND fc.slug = ${classifierSlug}
       ORDER BY
         CASE cc.source WHEN 'user' THEN 1 WHEN 'llm' THEN 2 ELSE 3 END,
-        ccv.is_current DESC,
         cc.created_at DESC
       LIMIT 1
     `;

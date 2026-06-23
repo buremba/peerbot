@@ -14,7 +14,7 @@ import {
 import {
   buildClassificationExistsClauses,
   buildSourceOnlyExistsClause,
-  resolveClassifierVersionIds,
+  resolveClassifierIds,
 } from './content-search/classification';
 import type { DbClient } from '../db/client';
 import logger from './logger';
@@ -207,10 +207,10 @@ async function buildFilterConditionsAndJoins(
     classificationFilters.length > 0 ? groupClassificationFilters(classificationFilters) : null;
 
   if (filtersBySlug && filtersBySlug.size > 0) {
-    const classifierVersionIds = await resolveClassifierVersionIds(sql, filtersBySlug, entityId);
+    const classifierIds = await resolveClassifierIds(sql, filtersBySlug, entityId);
     const classificationExists = buildClassificationExistsClauses(
       filtersBySlug,
-      classifierVersionIds,
+      classifierIds,
       filters?.classification_source,
       paramIndex
     );
@@ -433,29 +433,10 @@ export async function getNormalizedScoreContent(
         'content_length', sc.content_length,
         'calculated_score', ROUND(CAST(sc.calculated_score AS DECIMAL), 2)
       ) as score_breakdown,
-      -- Aggregate classifications keyed by attribute_key
-      COALESCE(
-        cls.classifications,
-        '{}'::jsonb
-      ) as classifications
+      -- classifications came from latest_event_classifications, a never-populated cache (dropped) —
+      -- always '{}'. Kept empty for response-shape parity with the date-sort path.
+      '{}'::jsonb as classifications
     FROM scored_content sc
-    LEFT JOIN (
-      SELECT
-        lc.event_id,
-        jsonb_object_agg(
-          fcl.attribute_key,
-          jsonb_build_object(
-            'values', lc."values",
-            'confidences', lc.confidences,
-            'source', lc.source,
-            'is_manual', lc.is_manual
-          )
-        ) as classifications
-      FROM latest_event_classifications lc
-      JOIN event_classifiers fcl ON lc.classifier_id = fcl.id
-      WHERE lc."values" IS NOT NULL
-      GROUP BY lc.event_id
-    ) cls ON cls.event_id = sc.id
     ORDER BY sc.calculated_score DESC, sc.occurred_at DESC, sc.id DESC
     LIMIT ${limit} OFFSET ${offset}
   `;

@@ -9,6 +9,7 @@ import type { Env } from '../index';
 import { manageConnections } from '../tools/admin/manage_connections';
 import logger from './logger';
 import { getConfiguredPublicOrigin } from './public-origin';
+import { getErrorMessage } from "@lobu/core";
 
 interface CreateProvisionedConnectionParams {
   organizationId: string;
@@ -68,6 +69,6 @@ export async function createProvisionedConnection(
     return { connectionId, error: null };
   } catch (err) {
     logger.error({ err, connectorKey: params.connectorKey }, 'createProvisionedConnection failed');
-    return { connectionId: null, error: err instanceof Error ? err.message : String(err) };
+    return { connectionId: null, error: getErrorMessage(err) };
   }
 }

@@ -38,7 +38,7 @@ const FINAL_JOINS_SQL = `
 
 const FINAL_JOINS_WITH_CLASSIFICATIONS_SQL = `${FINAL_JOINS_SQL}
       LEFT JOIN latest_classifications lc_all ON lc_all.event_id = f.id
-      LEFT JOIN event_classifiers fcl_all ON lc_all.classifier_id = fcl_all.id`;
+      LEFT JOIN classify_facet fcl_all ON lc_all.classifier_id = fcl_all.id`;
 
 const PARENT_ROOT_JOINS_SQL = `
       LEFT JOIN LATERAL (

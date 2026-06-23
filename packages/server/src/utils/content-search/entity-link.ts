@@ -26,6 +26,10 @@ export const STANDARD_IDENTITY_NAMESPACES = [
   'wa_jid',
   'slack_user_id',
   'github_login',
+  // Immutable id — read-time github attribution rides this so a reused login
+  // (freed by a rename, reclaimed by another account) can't JOIN to the old
+  // person. Backed by idx_events_metadata_github_user_id.
+  'github_user_id',
   'auth_user_id',
   'google_contact_id',
 ] as const;

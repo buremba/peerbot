@@ -31,6 +31,7 @@ import {
   type ContentSearchResult,
 } from './types';
 import { buildConnectionVisibilityClause, buildExcludeWatcherClause, buildOrgScopeWhere } from './visibility';
+import { getErrorMessage } from "@lobu/core";
 
 export async function searchContentBySingleQuery(
   sql: DbClient,
@@ -56,7 +57,7 @@ export async function searchContentBySingleQuery(
       queryEmbedding = embeddings[0] ?? null;
     } catch (err) {
       logger.warn(
-        { err: err instanceof Error ? err.message : String(err) },
+        { err: getErrorMessage(err) },
         '[content-search] Embedding generation failed, falling back to text-only search'
       );
     }
@@ -481,7 +482,7 @@ export async function searchContentBySingleQuery(
       })) as any[];
     } catch (err) {
       logger.warn(
-        { err: err instanceof Error ? err.message : String(err) },
+        { err: getErrorMessage(err) },
         '[content-search] candidate query failed; returning empty content'
       );
       rawRows = [];

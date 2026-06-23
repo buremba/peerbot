@@ -1,3 +1,14 @@
+/**
+ * Extract a human-readable message from an unknown thrown value.
+ *
+ * Replaces the ubiquitous `error instanceof Error ? error.message : String(error)`
+ * idiom: `Error` (and subclasses) yield `.message`; anything else
+ * (`throw "boom"`, `throw null`, a rejected non-Error) is stringified.
+ */
+export function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /** Base error class for all lobu errors. */
 export abstract class BaseError extends Error {
   abstract readonly name: string;

@@ -4,6 +4,7 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createOpenClawCustomTools } from "../openclaw/custom-tools";
+import { maybePostApprovalCard } from "../shared/tool-implementations";
 
 const originalFetch = globalThis.fetch;
 
@@ -122,5 +123,112 @@ describe("createOpenClawCustomTools", () => {
 
     expect(posted).toBe(1);
     expect(result.content[0]?.text).toContain("Question posted with buttons");
+  });
+});
+
+// Builder gate: when a manage_agents write returns a `pending_approval` result,
+// the worker forwards it as a `tool_approval` interaction card so the SPA chat
+// renders the interactive Approve/Reject diff. Same /internal/interactions/create
+// emission point ask_user uses → owner-gated thread_response delivery.
+describe("maybePostApprovalCard (builder gate)", () => {
+  const gw = {
+    gatewayUrl: "http://gateway",
+    workerToken: "worker-token",
+    channelId: "channel-1",
+    conversationId: "conversation-1",
+    platform: "api",
+    workspaceDir: "/tmp/test-workspace",
+  };
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    mock.restore();
+  });
+
+  test("posts a tool_approval card for a manage_agents pending_approval result", async () => {
+    const posts: Array<{ url: string; body: any }> = [];
+    globalThis.fetch = mock(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        posts.push({
+          url,
+          body: init?.body ? JSON.parse(String(init.body)) : null,
+        });
+        return Response.json({ id: "appr-1" });
+      }
+    ) as unknown as typeof fetch;
+
+    const resultText = JSON.stringify({
+      action: "update",
+      run_id: 99,
+      status: "pending_approval",
+      message: "needs approval",
+      proposal: { action: "update", agent_id: "support-bot", name: "v2" },
+      current: { id: "support-bot", name: "v1" },
+    });
+
+    const posted = await maybePostApprovalCard(gw, "manage_agents", resultText);
+
+    expect(posted).toBe(true);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.url).toEndWith("/internal/interactions/create");
+    expect(posts[0]!.body).toMatchObject({
+      interactionType: "tool_approval",
+      runId: 99,
+      action: "update",
+      proposal: { agent_id: "support-bot", name: "v2" },
+      current: { id: "support-bot", name: "v1" },
+    });
+  });
+
+  test("does nothing for a non-pending manage_agents result", async () => {
+    const posts: string[] = [];
+    globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+      posts.push(String(input));
+      return Response.json({});
+    }) as unknown as typeof fetch;
+
+    const posted = await maybePostApprovalCard(
+      gw,
+      "manage_agents",
+      JSON.stringify({ action: "list", agents: [] })
+    );
+
+    expect(posted).toBe(false);
+    expect(posts).toHaveLength(0);
+  });
+
+  test("does nothing for a different tool", async () => {
+    const posts: string[] = [];
+    globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+      posts.push(String(input));
+      return Response.json({});
+    }) as unknown as typeof fetch;
+
+    const posted = await maybePostApprovalCard(
+      gw,
+      "manage_operations",
+      JSON.stringify({ status: "pending_approval", run_id: 5 })
+    );
+
+    expect(posted).toBe(false);
+    expect(posts).toHaveLength(0);
+  });
+
+  test("does nothing for non-JSON (markdown) result text", async () => {
+    const posts: string[] = [];
+    globalThis.fetch = mock(async (input: RequestInfo | URL) => {
+      posts.push(String(input));
+      return Response.json({});
+    }) as unknown as typeof fetch;
+
+    const posted = await maybePostApprovalCard(
+      gw,
+      "manage_agents",
+      "**Agent created** — support-bot"
+    );
+
+    expect(posted).toBe(false);
+    expect(posts).toHaveLength(0);
   });
 });

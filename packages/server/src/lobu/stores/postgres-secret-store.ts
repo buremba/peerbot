@@ -22,10 +22,11 @@ import {
   parseSecretRef,
   type SecretRef,
 } from '@lobu/core';
-import { getDb } from '../../db/client';
+import { getDb, tsTime } from '../../db/client';
 import type { WritableSecretStore } from '../../gateway/secrets/index';
 import logger from '../../utils/logger';
 import { tryGetOrgId } from './org-context';
+import { getErrorMessage } from "@lobu/core";
 
 const GLOBAL_ORG_ID = '';
 
@@ -115,7 +116,7 @@ export class PostgresSecretStore implements WritableSecretStore {
       return decrypt(ciphertext);
     } catch (error) {
       logger.warn(
-        { ref, error: error instanceof Error ? error.message : String(error) },
+        { ref, error: getErrorMessage(error) },
         '[secret-store] Failed to decrypt stored secret'
       );
       return null;
@@ -199,7 +200,7 @@ export class PostgresSecretStore implements WritableSecretStore {
       ref: createBuiltinSecretRef(encodeURIComponent(row.name)),
       backend: BACKEND_NAME,
       name: row.name,
-      updatedAt: row.updated_at instanceof Date ? row.updated_at.getTime() : Date.now(),
+      updatedAt: tsTime(row.updated_at),
     }));
   }
 }

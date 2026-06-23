@@ -4,12 +4,13 @@ import {
   SecretsManagerClient,
 } from "@aws-sdk/client-secrets-manager";
 import {
-  createBuiltinSecretRef,
-  createLogger,
-  isSecretRef,
-  parseSecretRef,
-  type SecretRef,
-  safeJsonParse,
+	parseSecretRef,
+	createBuiltinSecretRef,
+	createLogger,
+	getErrorMessage,
+	isSecretRef,
+	safeJsonParse,
+	type SecretRef,
 } from "@lobu/core";
 import { tryGetOrgId } from "../../lobu/stores/org-context.js";
 
@@ -97,7 +98,7 @@ export class AwsSecretsManagerSecretStore implements SecretStore {
       logger.warn(
         {
           ref,
-          error: error instanceof Error ? error.message : String(error),
+          error: getErrorMessage(error),
         },
         "AWS Secrets Manager get failed"
       );
@@ -333,7 +334,7 @@ export class SecretStoreRegistry implements WritableSecretStore {
         logger.warn(
           {
             scheme,
-            error: error instanceof Error ? error.message : String(error),
+            error: getErrorMessage(error),
           },
           "list() failed for writable backend"
         );

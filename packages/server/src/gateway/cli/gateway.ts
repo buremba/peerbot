@@ -23,9 +23,12 @@ import { createInteractionRoutes } from "../routes/internal/interactions.js";
 import { registerAutoOpenApiRoutes } from "../routes/openapi-auto.js";
 import { createAgentApi } from "../routes/public/agent.js";
 import {
+  type AppWebhookProvider,
   createAppWebhookRoutes,
   createDefaultAppWebhookSecretResolver,
   createGithubAppWebhookProvider,
+  createJiraAppWebhookProvider,
+  createLinearAppWebhookProvider,
 } from "../routes/public/app-webhooks.js";
 import { createAppInstallRoutes } from "../routes/public/app-install.js";
 import { resolveInstallOrgId } from "../routes/public/slack.js";
@@ -702,20 +705,32 @@ export function createGatewayApp(
     app.route("", createConnectionWebhookRoutes(chatInstanceManager));
 
     // Shared multi-tenant app-webhook router (app-installation design §4.3): one
-    // public endpoint per provider for an installed Lobu App. Only the GitHub
-    // plugin ships today, and only when the receiving GitHub App is configured
-    // (GITHUB_APP_ID) — otherwise the route is present but reports the provider
-    // unknown (404), since a missing app id can't match any installation.
+    // public endpoint per provider for an installed Lobu App. A provider plugin
+    // is registered only when its Lobu app id is configured (GitHub App id, or
+    // the provider's OAuth client id) — otherwise the route is present but
+    // reports the provider unknown (404), since a missing app id can't match any
+    // installation. GitHub/Jira/Linear share one schema-driven HMAC verify;
+    // Slack stays a custom plugin (timestamped signing base).
     const appWebhookSecretStore = coreServices.getSecretStore();
+    const appWebhookProviders: AppWebhookProvider[] = [];
     const githubAppId = process.env.GITHUB_APP_ID;
+    if (githubAppId) {
+      appWebhookProviders.push(createGithubAppWebhookProvider({ appId: githubAppId }));
+    }
+    const jiraAppId = process.env.JIRA_CLIENT_ID;
+    if (jiraAppId) {
+      appWebhookProviders.push(createJiraAppWebhookProvider({ appId: jiraAppId }));
+    }
+    const linearAppId = process.env.LINEAR_CLIENT_ID;
+    if (linearAppId) {
+      appWebhookProviders.push(createLinearAppWebhookProvider({ appId: linearAppId }));
+    }
     app.route(
       "",
       createAppWebhookRoutes({
         installationStore: createPostgresAppInstallationStore(),
         secretStore: appWebhookSecretStore,
-        providers: githubAppId
-          ? [createGithubAppWebhookProvider({ appId: githubAppId })]
-          : [],
+        providers: appWebhookProviders,
         resolveAppWebhookSecret:
           createDefaultAppWebhookSecretResolver(appWebhookSecretStore),
       }),

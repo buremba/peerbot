@@ -20,6 +20,7 @@ import {
   resolveWatcherRunsByMessageIds,
 } from './run-completion';
 import { nextRunAt } from '../utils/cron';
+import { getErrorMessage } from "@lobu/core";
 
 type WatcherRunStatus =
   | 'pending'
@@ -830,7 +831,7 @@ async function preflightWatcherMemoryTools(params: {
   } catch (error) {
     return {
       ok: false,
-      error: `${LOBU_MEMORY_MCP_ID} tools preflight failed: ${error instanceof Error ? error.message : String(error)}`,
+      error: `${LOBU_MEMORY_MCP_ID} tools preflight failed: ${getErrorMessage(error)}`,
     };
   }
 }

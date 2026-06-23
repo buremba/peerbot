@@ -5,7 +5,7 @@
  * overrides (which arrive via MCP as untrusted JSON).
  */
 import type { EntityLinkOverrides, EntityLinkRule } from '@lobu/connector-sdk';
-import { getDb } from '../db/client';
+import { getDb, pgTextArray } from '../db/client';
 import { clearEntityLinkRulesCache } from './entity-link-upsert';
 
 export function validateEntityLinkOverrides(overrides: unknown): string[] {
@@ -63,7 +63,7 @@ export async function verifyEntityLinkOverrideTargets(
     SELECT slug FROM entity_types
     WHERE organization_id = ${organizationId}
       AND deleted_at IS NULL
-      AND slug = ANY(${Array.from(targets)})
+      AND slug = ANY(${pgTextArray(Array.from(targets))}::text[])
   `;
   const found = new Set(rows.map((r) => r.slug as string));
   const missing = Array.from(targets).filter((slug) => !found.has(slug));

@@ -8,6 +8,7 @@
 import type { Context } from 'hono';
 import * as Sentry from '@sentry/node';
 import { ToolUserError } from './utils/errors';
+import { getErrorMessage } from "@lobu/core";
 
 const SENTRY_CAPTURED_FLAG = 'sentryErrorCaptured';
 
@@ -82,7 +83,7 @@ export async function trackMCPToolCall<T>(
 
         return result;
       } catch (error: unknown) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
+        const errorMessage = getErrorMessage(error);
 
         // 4xx-class outcomes raised by the tool itself (bad path, not found,
         // schema validation) aren't operational errors — annotate the span

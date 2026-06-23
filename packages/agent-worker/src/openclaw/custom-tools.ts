@@ -13,6 +13,7 @@ import {
   getChannelHistory,
   listConversations,
   logoutMcp,
+  maybePostApprovalCard,
   readConversation,
   sendMessage,
   startMcpLogin,
@@ -299,15 +300,24 @@ export function createMcpToolDefinitions(
         label: `${mcpId}/${def.name}`,
         description,
         parameters: schema,
-        execute: async (_toolCallId, args) =>
-          toToolResult(
-            await callMcpTool(
-              gw,
-              mcpId,
-              def.name,
-              (args || {}) as Record<string, unknown>
-            )
-          ),
+        execute: async (_toolCallId, args) => {
+          const result = await callMcpTool(
+            gw,
+            mcpId,
+            def.name,
+            (args || {}) as Record<string, unknown>
+          );
+          // Builder-gate bridge: a manage_agents write returns a
+          // `pending_approval` result; forward it as a chat approval card so
+          // the SPA renders the interactive diff. maybePostApprovalCard
+          // swallows its own errors (returns false), so this never blocks or
+          // alters the tool result the agent sees.
+          const text = result.content?.[0]?.text;
+          if (typeof text === "string") {
+            await maybePostApprovalCard(gw, def.name, text);
+          }
+          return toToolResult(result);
+        },
       });
     }
   }

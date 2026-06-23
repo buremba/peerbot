@@ -42,6 +42,7 @@ import {
 } from '../gateway/services/provider-registry-service';
 import logger from '../utils/logger';
 import { hasOrgSentinel } from './default-provisioning';
+import { getErrorMessage } from "@lobu/core";
 
 export const BUILDER_AGENT_ID = 'lobu-builder';
 export const BUILDER_AGENT_SENTINEL = 'builder_agent_provisioned';
@@ -126,7 +127,7 @@ async function resolveBuilderProviders(): Promise<ResolvedBuilderProviders> {
     configs = await registry.getProviderConfigs();
   } catch (err) {
     logger.warn(
-      { err: err instanceof Error ? err.message : String(err) },
+      { err: getErrorMessage(err) },
       '[builder-provisioning] providers.json read failed; relying on module registry'
     );
   }
@@ -456,7 +457,7 @@ export async function ensureBuilderAgent(
     logger.warn(
       {
         organizationId,
-        err: err instanceof Error ? err.message : String(err),
+        err: getErrorMessage(err),
       },
       '[builder-provisioning] Builder-agent provisioning failed (non-fatal)'
     );

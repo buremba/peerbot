@@ -151,6 +151,9 @@ UNIT_EXIT=0
   # bun job). Fails loudly if a file drifts into running nowhere — the
   # silent-skip class this change fixes.
   node scripts/check-test-runner-coverage.mjs;                      ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
+  # Guard: no raw JS array bound as a SQL param (the fetch_types:false trap —
+  # a malformed array literal that Postgres rejects, historically silent).
+  node scripts/check-raw-array-params.mjs;                          ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   bun test packages/core packages/cli;                              ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   bun test packages/agent-worker;                                   ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec
   bun test packages/server/src/__tests__/unit;                      ec=$?; [ $ec -gt $UNIT_EXIT ] && UNIT_EXIT=$ec

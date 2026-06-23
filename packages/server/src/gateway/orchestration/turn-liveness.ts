@@ -39,7 +39,10 @@
  * that holds the client's SSE.
  */
 
-import { createLogger } from "@lobu/core";
+import {
+	createLogger,
+	getErrorMessage,
+} from "@lobu/core";
 import { intervals } from "../../config/intervals.js";
 import { getDb, type DbClient } from "../../db/client.js";
 import type { IMessageQueue } from "../infrastructure/queue/index.js";
@@ -160,7 +163,7 @@ export async function extendTurnDeadlines(
         deploymentName,
         deadlineMs,
         queue: TURN_TIMEOUT_QUEUE,
-        err: err instanceof Error ? err.message : String(err),
+        err: getErrorMessage(err),
       },
       "Failed to extend turn-timeout deadline — in-flight turns for this deployment may be falsely failed by the sweep if extends keep failing"
     );

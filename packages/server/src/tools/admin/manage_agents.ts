@@ -18,14 +18,29 @@
  */
 
 import { type Static, Type } from '@sinclair/typebox';
-import { createDbClientFromEnv } from '../../db/client';
+import { createDbClientFromEnv, getDb } from '../../db/client';
 import type { Env } from '../../index';
 import { isValidAgentId } from '../../lobu/stores/postgres-stores';
+import { notifyActionApprovalNeeded } from '../../notifications/triggers';
+import { insertEvent } from '../../utils/insert-event';
+import logger from '../../utils/logger';
+import { buildEventPermalink } from '../../utils/url-builder';
 import { ToolUserError } from '../../utils/errors';
 import { requireOrgReadAccess, requireOrgWriteAccess } from '../../utils/organization-access';
 import type { ToolContext } from '../registry';
 import { withValidatedArgs } from '../validate-args';
+import { getOrgUrlContext } from '../view-urls';
 import { defineFlatActionTool, flatAction } from './action-tool';
+
+/**
+ * Synthetic `runs.action_key` tagging a manage_agents write held for approval.
+ * `manage_operations`' approve/reject handlers branch on this value to apply
+ * (or cancel) the held mutation, reusing the same durable runs/events approval
+ * primitive that connector operations use. These rows have run_type='internal'
+ * (no connector / connection), so the operation lookup in the connector path is
+ * skipped.
+ */
+export const MANAGE_AGENTS_ACTION_KEY = 'manage_agents';
 
 // ============================================
 // Typebox Schema (Flattened for MCP)
@@ -84,7 +99,28 @@ export type ManageAgentsResult =
   | { action: 'create'; agent_id: string; created: boolean }
   | { action: 'update'; agent_id: string; updated_fields: string[] }
   | { action: 'delete'; agent_id: string; deleted: boolean }
-  | { action: 'set_system_agent'; system_agent_id: string };
+  | { action: 'set_system_agent'; system_agent_id: string }
+  | {
+      action: 'create' | 'update' | 'delete';
+      run_id: number;
+      event_id?: number;
+      approval_url?: string;
+      status: 'pending_approval';
+      message: string;
+      // The proposed change + current agent row, so the worker can forward an
+      // approval card (run_id + diff) into the chat without a second fetch.
+      proposal: ManageAgentsProposal;
+      current: Record<string, unknown> | null;
+    };
+
+/** Proposed mutation held in `runs.action_input` for a builder-gate run. */
+export interface ManageAgentsProposal {
+  action: 'create' | 'update' | 'delete';
+  agent_id: string;
+  name?: string;
+  description?: string;
+  identity_md?: string;
+}
 
 // ============================================
 // Action handlers
@@ -143,7 +179,7 @@ async function handleGet(
   return { action: 'get', agent: rows[0] as unknown as AgentRecord };
 }
 
-async function handleCreate(
+export async function applyCreate(
   args: ManageAgentsArgs,
   ctx: ToolContext,
   env: Env
@@ -196,7 +232,7 @@ async function handleCreate(
   return { action: 'create', agent_id: args.agent_id, created };
 }
 
-async function handleUpdate(
+export async function applyUpdate(
   args: ManageAgentsArgs,
   ctx: ToolContext,
   env: Env
@@ -231,7 +267,7 @@ async function handleUpdate(
   return { action: 'update', agent_id: args.agent_id, updated_fields: updatedFields };
 }
 
-async function handleDelete(
+export async function applyDelete(
   args: ManageAgentsArgs,
   ctx: ToolContext,
   env: Env
@@ -281,6 +317,218 @@ async function handleSetSystemAgent(
 }
 
 // ============================================
+// Approval gate (reuses the runs/events primitive)
+// ============================================
+
+/** Fetch the current agent row so the approval card can diff proposed vs current. */
+async function fetchCurrentAgent(
+  organizationId: string,
+  agentId: string,
+  env: Env
+): Promise<Record<string, unknown> | null> {
+  const sql = createDbClientFromEnv(env);
+  const rows = await sql`
+    SELECT id, name, description, identity_md
+    FROM agents
+    WHERE organization_id = ${organizationId} AND id = ${agentId}
+    LIMIT 1
+  `;
+  return (rows[0] as Record<string, unknown> | undefined) ?? null;
+}
+
+/** Human label for each gated action, used in card titles + notifications. */
+function actionLabel(action: 'create' | 'update' | 'delete', agentId: string): string {
+  switch (action) {
+    case 'create':
+      return `Create agent "${agentId}"`;
+    case 'update':
+      return `Update agent "${agentId}"`;
+    case 'delete':
+      return `Delete agent "${agentId}"`;
+  }
+}
+
+/**
+ * Build the proposed-change payload held on the run for a write action, after
+ * validating the per-action required fields (so a malformed proposal is
+ * rejected at request time, not at approve time).
+ */
+function buildProposal(args: ManageAgentsArgs): ManageAgentsProposal {
+  const action = args.action as 'create' | 'update' | 'delete';
+  if (!args.agent_id) {
+    throw new ToolUserError(`agent_id is required for ${action} action`);
+  }
+  if (action === 'create') {
+    if (!isValidAgentId(args.agent_id)) {
+      throw new ToolUserError(
+        `Invalid agent_id "${args.agent_id}": must match /^[a-z][a-z0-9-]{2,59}$/`
+      );
+    }
+    if (!args.name) {
+      throw new ToolUserError('name is required for create action');
+    }
+  }
+  if (action === 'update') {
+    const hasField =
+      args.name !== undefined ||
+      args.description !== undefined ||
+      args.identity_md !== undefined;
+    if (!hasField) {
+      throw new ToolUserError(
+        'update requires at least one of: name, description, identity_md'
+      );
+    }
+  }
+  const proposal: ManageAgentsProposal = { action, agent_id: args.agent_id };
+  if (args.name !== undefined) proposal.name = args.name;
+  if (args.description !== undefined) proposal.description = args.description;
+  if (args.identity_md !== undefined) proposal.identity_md = args.identity_md;
+  return proposal;
+}
+
+/**
+ * Queue a manage_agents write for approval instead of running it. Writes a
+ * pending `runs` row (run_type='internal', action_key='manage_agents') plus an
+ * `interaction_type='approval'` event holding the proposed change AND the
+ * current agent row (for the frontend diff). The mutation is applied later by
+ * manage_operations' approve handler via {@link applyManageAgentsProposal}.
+ */
+async function queueWriteForApproval(
+  args: ManageAgentsArgs,
+  ctx: ToolContext,
+  env: Env
+): Promise<ManageAgentsResult> {
+  const proposal = buildProposal(args);
+  // create needs an owner to attribute the new agent to — fail at request time
+  // rather than after the human approves an unattributable create.
+  if (proposal.action === 'create' && !ctx.userId) {
+    throw new ToolUserError(
+      'create requires an authenticated caller to own the new agent'
+    );
+  }
+
+  const sql = getDb();
+  const current = await fetchCurrentAgent(ctx.organizationId, proposal.agent_id, env);
+  if (proposal.action === 'create' && current) {
+    throw new ToolUserError(`Agent "${proposal.agent_id}" already exists`, 409);
+  }
+  if (proposal.action !== 'create' && !current) {
+    throw new ToolUserError(`Agent "${proposal.agent_id}" not found`, 404);
+  }
+
+  // Reject a delete of the org's system agent up-front (same guard as
+  // applyDelete) so we never surface an un-approvable card.
+  if (proposal.action === 'delete') {
+    const orgRows = await sql`
+      SELECT system_agent_id FROM organization WHERE id = ${ctx.organizationId}
+    `;
+    if (orgRows[0]?.system_agent_id === proposal.agent_id) {
+      throw new ToolUserError(
+        `Cannot delete agent "${proposal.agent_id}": it is the org's system agent. Point system_agent_id elsewhere first.`
+      );
+    }
+  }
+
+  const inserted = await sql`
+    INSERT INTO runs (
+      organization_id, run_type, action_key, action_input,
+      created_by_user_id, approval_status, status, created_at
+    ) VALUES (
+      ${ctx.organizationId}, 'internal', ${MANAGE_AGENTS_ACTION_KEY},
+      ${sql.json(proposal as unknown as Record<string, unknown>)},
+      ${ctx.userId ?? null}, 'pending', 'pending', current_timestamp
+    )
+    RETURNING id
+  `;
+  const runId = Number((inserted[0] as { id: unknown }).id);
+
+  const label = actionLabel(proposal.action, proposal.agent_id);
+  const event = await insertEvent({
+    entityIds: [],
+    organizationId: ctx.organizationId,
+    originId: `run_${runId}_pending`,
+    title: `${label} — pending approval`,
+    content: `Builder requested: ${label}`,
+    semanticType: 'operation',
+    runId,
+    interactionType: 'approval',
+    interactionStatus: 'pending',
+    interactionInput: proposal as unknown as Record<string, unknown>,
+    metadata: {
+      tool: 'manage_agents',
+      action_key: MANAGE_AGENTS_ACTION_KEY,
+      action: proposal.action,
+      agent_id: proposal.agent_id,
+      proposal,
+      current: current ?? null,
+      status: 'pending_approval',
+      run_id: runId,
+    },
+    authorName: ctx.clientId ?? 'agent',
+  });
+  const eventId = Number(event.id);
+
+  const { ownerSlug, baseUrl } = await getOrgUrlContext(ctx);
+  const approvalUrl =
+    ownerSlug && baseUrl ? buildEventPermalink(ownerSlug, eventId, baseUrl) : undefined;
+
+  notifyActionApprovalNeeded({
+    orgId: ctx.organizationId,
+    runId,
+    actionKey: MANAGE_AGENTS_ACTION_KEY,
+    connectionName: label,
+    eventId,
+    approvalUrl,
+  }).catch((error) =>
+    logger.error(error, 'Failed to send manage_agents approval notification')
+  );
+
+  return {
+    action: proposal.action,
+    run_id: runId,
+    event_id: eventId,
+    approval_url: approvalUrl,
+    status: 'pending_approval',
+    message: `${label} requires approval. Approve or reject the card to apply it.`,
+    proposal,
+    current,
+  };
+}
+
+/**
+ * Apply a previously-queued manage_agents proposal. Called by
+ * manage_operations' approve handler once a human confirms. Maps the held
+ * proposal back onto the real apply* handler. `ownerUserId` is the original
+ * requester (persisted on the run), so an approving admin doesn't become the
+ * created agent's owner.
+ */
+export async function applyManageAgentsProposal(
+  proposal: ManageAgentsProposal,
+  ctx: ToolContext,
+  env: Env,
+  ownerUserId: string | null
+): Promise<ManageAgentsResult> {
+  const args: ManageAgentsArgs = {
+    action: proposal.action,
+    agent_id: proposal.agent_id,
+    name: proposal.name,
+    description: proposal.description,
+    identity_md: proposal.identity_md,
+  };
+  // create attributes ownership to the ORIGINAL requester, not the approver.
+  const applyCtx: ToolContext =
+    proposal.action === 'create' ? { ...ctx, userId: ownerUserId } : ctx;
+  switch (proposal.action) {
+    case 'create':
+      return applyCreate(args, applyCtx, env);
+    case 'update':
+      return applyUpdate(args, applyCtx, env);
+    case 'delete':
+      return applyDelete(args, applyCtx, env);
+  }
+}
+
+// ============================================
 // Main Function
 // ============================================
 
@@ -307,14 +555,19 @@ async function manageAgentsImpl(
   return runManageAgents(args, env, ctx);
 }
 
+// Write actions (create/update/delete) DON'T run their apply* handler here —
+// they queue a pending run + approval card via queueWriteForApproval, and are
+// applied later by manage_operations' approve handler (which calls
+// applyManageAgentsProposal → the apply* functions). list/get/set_system_agent
+// stay immediate.
 const runManageAgents = defineFlatActionTool<ManageAgentsArgs, ManageAgentsResult>(
   'manage_agents',
   {
     list: flatAction((args, ctx, env) => handleList(args, ctx, env)),
     get: flatAction((args, ctx, env) => handleGet(args, ctx, env)),
-    create: flatAction((args, ctx, env) => handleCreate(args, ctx, env)),
-    update: flatAction((args, ctx, env) => handleUpdate(args, ctx, env)),
-    delete: flatAction((args, ctx, env) => handleDelete(args, ctx, env)),
+    create: flatAction((args, ctx, env) => queueWriteForApproval(args, ctx, env)),
+    update: flatAction((args, ctx, env) => queueWriteForApproval(args, ctx, env)),
+    delete: flatAction((args, ctx, env) => queueWriteForApproval(args, ctx, env)),
     set_system_agent: flatAction((args, ctx, env) => handleSetSystemAgent(args, ctx, env)),
   }
 );

@@ -19,7 +19,10 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { createLogger } from "@lobu/core";
+import {
+	createLogger,
+	getErrorMessage,
+} from "@lobu/core";
 import * as Sentry from "@sentry/node";
 import { intervals } from "../../../config/intervals.js";
 import { getDb, getDbListener, type DbClient } from "../../../db/client.js";
@@ -693,7 +696,7 @@ export class RunsQueue implements IMessageQueue {
 
   private async markFailed(runId: number, err: unknown): Promise<void> {
     const sql = getDb();
-    const message = err instanceof Error ? err.message : String(err);
+    const message = getErrorMessage(err);
     const rows = await sql`
       UPDATE public.runs
       SET status = 'failed',

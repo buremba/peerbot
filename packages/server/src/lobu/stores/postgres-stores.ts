@@ -6,7 +6,7 @@ import type {
 	ChannelBinding,
 	StoredConnection,
 } from "@lobu/core";
-import { getDb } from "../../db/client";
+import { getDb, tsTime, tsTimeOrNull } from "../../db/client";
 import { recordLifecycleEvent } from "../../utils/insert-event";
 import { getOrgId, tryGetOrgId } from "./org-context";
 
@@ -64,9 +64,7 @@ function rowToSettings(row: Record<string, any>): AgentSettings {
 		preApprovedTools: row.pre_approved_tools ?? undefined,
 		guardrails: row.guardrails ?? undefined,
 		updatedAt:
-			row.updated_at instanceof Date
-				? row.updated_at.getTime()
-				: (row.updated_at ?? Date.now()),
+			tsTime(row.updated_at),
 	};
 }
 
@@ -81,13 +79,9 @@ function rowToMetadata(row: Record<string, any>): AgentMetadata {
 		},
 		organizationId: row.organization_id ?? undefined,
 		createdAt:
-			row.created_at instanceof Date
-				? row.created_at.getTime()
-				: (row.created_at ?? Date.now()),
+			tsTime(row.created_at),
 		lastUsedAt:
-			row.last_used_at instanceof Date
-				? row.last_used_at.getTime()
-				: (row.last_used_at ?? undefined),
+			tsTimeOrNull(row.last_used_at),
 	};
 }
 
@@ -114,13 +108,9 @@ function rowToConnection(row: Record<string, any>): StoredConnection {
 		status: row.status,
 		errorMessage: row.error_message ?? undefined,
 		createdAt:
-			row.created_at instanceof Date
-				? row.created_at.getTime()
-				: (row.created_at ?? Date.now()),
+			tsTime(row.created_at),
 		updatedAt:
-			row.updated_at instanceof Date
-				? row.updated_at.getTime()
-				: (row.updated_at ?? Date.now()),
+			tsTime(row.updated_at),
 	};
 }
 
@@ -131,9 +121,7 @@ function rowToChannelBinding(row: Record<string, any>): ChannelBinding {
 		channelId: row.channel_id,
 		teamId: row.team_id ?? undefined,
 		createdAt:
-			row.created_at instanceof Date
-				? row.created_at.getTime()
-				: (row.created_at ?? Date.now()),
+			tsTime(row.created_at),
 	};
 }
 

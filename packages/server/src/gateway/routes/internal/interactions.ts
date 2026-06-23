@@ -1,6 +1,9 @@
 #!/usr/bin/env bun
 
-import { createLogger } from "@lobu/core";
+import {
+	createLogger,
+	getErrorMessage,
+} from "@lobu/core";
 import { Hono } from "hono";
 import type { InteractionService } from "../../interactions.js";
 import { errorResponse, getVerifiedWorker } from "../shared/helpers.js";
@@ -67,6 +70,27 @@ export function createInteractionRoutes(
           return c.json({ id: posted.id, status: "posted" });
         }
 
+        // Durable approval card (runs/events-backed; today the builder agent's
+        // manage_agents write gate). Routed to the API platform's
+        // tool:durable-approval-card subscription, which enqueues it onto the
+        // SAME owner-gated thread_response queue the other cards use.
+        if (interactionType === "tool_approval") {
+          const posted = await interactionService.postDurableApprovalCard(
+            userId,
+            conversationId,
+            channelId,
+            teamId,
+            connectionId,
+            platform || "unknown",
+            Number(body.runId),
+            typeof body.action === "string" ? body.action : "change",
+            (body.proposal ?? null) as Record<string, unknown> | null,
+            (body.current ?? null) as Record<string, unknown> | null,
+            source
+          );
+          return c.json({ id: posted.id, status: "posted" });
+        }
+
         const posted = await interactionService.postQuestion(
           userId,
           conversationId,
@@ -88,7 +112,7 @@ export function createInteractionRoutes(
         // convention so the real cause (e.g. assertRoutableInteraction's
         // "connectionId is required") is visible.
         logger.error("Failed to post question", {
-          error: error instanceof Error ? error.message : String(error),
+          error: getErrorMessage(error),
           stack: error instanceof Error ? error.stack : undefined,
         });
         return errorResponse(c, "Failed to post question", 500);
@@ -121,7 +145,7 @@ export function createInteractionRoutes(
       return c.json({ success: true });
     } catch (error) {
       logger.error("Failed to send suggestions", {
-        error: error instanceof Error ? error.message : String(error),
+        error: getErrorMessage(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
       return errorResponse(c, "Failed to send suggestions", 500);

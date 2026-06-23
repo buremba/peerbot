@@ -71,24 +71,26 @@ export function buildLatestClassificationsCteSql(resultSetAlias = 'result_set'):
   return `
     latest_classifications AS (
       SELECT * FROM (
+        -- P4: dedup per (event, stable classifier_id) directly off event_classifications. The old
+        -- version-ordering (ccv.is_current/version) is redundant — each classifier is one current
+        -- config and old-version rows are purged on switch — so source priority + created_at picks
+        -- the same row without the event_classifier_versions JOIN.
         SELECT
           cc.event_id,
-          ccv.classifier_id,
+          cc.classifier_id,
           cc."values",
           cc.confidences,
           cc.source,
           cc.is_manual,
           ROW_NUMBER() OVER (
-            PARTITION BY cc.event_id, ccv.classifier_id
+            PARTITION BY cc.event_id, cc.classifier_id
             ORDER BY
               CASE cc.source WHEN 'user' THEN 1 WHEN 'llm' THEN 2 ELSE 3 END,
-              ccv.is_current DESC,
-              ccv.version DESC,
               cc.created_at DESC
           ) as rn
         FROM event_classifications cc
         JOIN ${resultSetAlias} rs ON rs.id = cc.event_id
-        JOIN event_classifier_versions ccv ON cc.classifier_version_id = ccv.id
+        WHERE cc.classifier_id IS NOT NULL
       ) sub WHERE rn = 1
     )
   `;

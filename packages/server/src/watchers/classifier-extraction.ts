@@ -383,13 +383,13 @@ function mergeValues(
 
 async function persistAttributeValues(
 	sql: DbClient,
-	versionId: number,
+	classifierId: number,
 	updatedValues: AttributeValues,
 ): Promise<void> {
 	await sql`
-    UPDATE event_classifier_versions
-    SET attribute_values = ${sql.json(updatedValues as any)}
-    WHERE id = ${versionId}
+    UPDATE classify_facet
+    SET attribute_values = ${sql.json(updatedValues as any)}, updated_at = now()
+    WHERE id = ${classifierId}
   `;
 }
 
@@ -410,9 +410,18 @@ export async function createClassifiersForWatcher(
 	const entityIdsLiteral = pgBigintArray([entityId]);
 
 	for (const def of classifierDefs) {
-		// Create or update classifier
+		// One classify_facet row holds identity + config (no version table). On re-apply (conflict)
+		// preserve the learned attribute_values + extraction config; only refresh identity.
+		const extractionConfig = {
+			source_path: def.source_path,
+			value_field: def.value_field,
+			description_field: def.description_field,
+			examples_field: def.examples_field,
+			citation_config: def.citation_config,
+			parent: def.parent,
+		};
 		const result = await sql`
-      INSERT INTO event_classifiers (
+      INSERT INTO classify_facet (
         slug,
         name,
         entity_id,
@@ -421,7 +430,10 @@ export async function createClassifiersForWatcher(
         organization_id,
         attribute_key,
         status,
-        created_by
+        created_by,
+        attribute_values,
+        min_similarity,
+        extraction_config
       )
       VALUES (
         ${def.slug},
@@ -432,52 +444,20 @@ export async function createClassifiersForWatcher(
         ${options.organizationId ?? null},
         ${def.slug},
         'active',
-        ${options.createdBy}
+        ${options.createdBy},
+        '{}'::jsonb,
+        0.7,
+        ${sql.json(extractionConfig as any)}
       )
       ON CONFLICT (entity_id, watcher_id, slug) DO UPDATE
       SET name = EXCLUDED.name,
-          organization_id = COALESCE(event_classifiers.organization_id, EXCLUDED.organization_id),
+          organization_id = COALESCE(classify_facet.organization_id, EXCLUDED.organization_id),
           updated_at = NOW()
       RETURNING id
     `;
 
 		const classifierId = result[0].id;
 		classifierIds.push(classifierId);
-
-		// Check if version exists
-		const existingVersion = await sql`
-      SELECT id FROM event_classifier_versions
-      WHERE classifier_id = ${classifierId} AND is_current = true
-    `;
-
-		if (existingVersion.length === 0) {
-			// Create initial version with extraction config
-			const extractionConfig = {
-				source_path: def.source_path,
-				value_field: def.value_field,
-				description_field: def.description_field,
-				examples_field: def.examples_field,
-				citation_config: def.citation_config,
-				parent: def.parent,
-			};
-
-			// Start with empty attribute_values; we'll populate from extracted_data
-			await sql`
-        INSERT INTO event_classifier_versions (
-          classifier_id, version, is_current,
-          attribute_values, min_similarity,
-          extraction_config, change_notes, created_by
-        )
-        VALUES (
-          ${classifierId}, 1, true,
-          '{}',
-          0.7,
-          ${sql.json(extractionConfig as any)},
-          'Initial version from watcher template',
-          ${options.createdBy}
-        )
-      `;
-		}
 
 		logger.info(
 			`[ClassifierExtraction] Created/updated classifier "${def.slug}" for watcher ${watcherId}`,
@@ -498,17 +478,17 @@ async function updateClassifierValues(
 	extractedData: any,
 	env: Env,
 ): Promise<void> {
-	// Get classifiers for this watcher with extraction config
+	// Get classifiers for this watcher with extraction config. persistAttributeValues writes learned
+	// values back to the single classify_facet row (keyed on cc.id).
 	const classifiers = await sql`
     SELECT
       cc.id,
       cc.slug,
-      ccv.id as version_id,
-      ccv.extraction_config,
-      ccv.attribute_values
-    FROM event_classifiers cc
-    JOIN event_classifier_versions ccv ON cc.id = ccv.classifier_id AND ccv.is_current = true
+      cc.extraction_config,
+      cc.attribute_values
+    FROM classify_facet cc
     WHERE cc.watcher_id = ${watcherId}
+      AND cc.status = 'active'
   `;
 
 	// Build a map of classifiers by slug for parent lookups
@@ -641,7 +621,7 @@ async function updateClassifierValues(
 			candidates,
 		);
 		if (hasChanges) {
-			await persistAttributeValues(sql, classifier.version_id, updatedValues);
+			await persistAttributeValues(sql, classifier.id, updatedValues);
 			logger.info(
 				{
 					slug: classifier.slug,
@@ -681,7 +661,7 @@ async function updateClassifierValues(
 		if (hasChanges) {
 			await persistAttributeValues(
 				sql,
-				parentClassifier.version_id,
+				parentClassifier.id,
 				updatedValues,
 			);
 			logger.info(
@@ -745,7 +725,6 @@ export async function enableClassifiersOnEntity(
 interface ClassifierRow {
 	id: number;
 	slug: string;
-	version_id: number;
 	extraction_config: ClassifierDefinition | null;
 }
 
@@ -971,12 +950,12 @@ async function processExtractedClassifications(
 
 					await sql`
             INSERT INTO event_classifications (
-              event_id, classifier_version_id, watcher_id, window_id,
+              event_id, classifier_id, watcher_id, window_id,
               values, excerpts, confidences, source, is_manual
             )
             VALUES (
               ${citation.content_id},
-              ${classifier.version_id},
+              ${classifier.id},
               ${watcherId},
               ${windowId},
               ARRAY[${value}]::text[],
@@ -985,7 +964,7 @@ async function processExtractedClassifications(
               'llm',
               false
             )
-            ON CONFLICT (event_id, classifier_version_id, source, COALESCE(watcher_id, 0))
+            ON CONFLICT (event_id, classifier_id, source, COALESCE(watcher_id, 0))
             DO UPDATE SET
               values = ARRAY(SELECT DISTINCT unnest(event_classifications.values || EXCLUDED.values)),
               excerpts = event_classifications.excerpts || EXCLUDED.excerpts,
@@ -1013,7 +992,7 @@ async function processExtractedClassifications(
 							logger.info(
 								{
 									foundParent: !!parentClassifier,
-									parentVersionId: parentClassifier?.version_id,
+									parentVersionId: parentClassifier?.id,
 									searchingFor: config.parent.slug,
 								},
 								"[ClassifierExtraction] Parent classifier lookup",
@@ -1021,12 +1000,12 @@ async function processExtractedClassifications(
 							if (parentClassifier) {
 								await sql`
                   INSERT INTO event_classifications (
-                    event_id, classifier_version_id, watcher_id, window_id,
+                    event_id, classifier_id, watcher_id, window_id,
                     values, excerpts, confidences, source, is_manual
                   )
                   VALUES (
                     ${citation.content_id},
-                    ${parentClassifier.version_id},
+                    ${parentClassifier.id},
                     ${watcherId},
                     ${windowId},
                     ARRAY[${parentValue}]::text[],
@@ -1035,7 +1014,7 @@ async function processExtractedClassifications(
                     'llm',
                     false
                   )
-                  ON CONFLICT (event_id, classifier_version_id, source, COALESCE(watcher_id, 0))
+                  ON CONFLICT (event_id, classifier_id, source, COALESCE(watcher_id, 0))
                   DO UPDATE SET
                     values = ARRAY(SELECT DISTINCT unnest(event_classifications.values || EXCLUDED.values)),
                     window_id = EXCLUDED.window_id
@@ -1046,7 +1025,7 @@ async function processExtractedClassifications(
 										contentId: citation.content_id,
 										parentSlug: config.parent.slug,
 										parentValue,
-										versionId: parentClassifier.version_id,
+										versionId: parentClassifier.id,
 									},
 									"[ClassifierExtraction] Created parent classification",
 								);

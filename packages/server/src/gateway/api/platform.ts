@@ -96,6 +96,25 @@ export class ApiPlatform implements PlatformAdapter {
       });
     });
 
+    // Durable approval card (runs/events-backed — today the builder agent's
+    // manage_agents write gate). Same SSE event name ("tool-approval") + same
+    // owner-gated thread_response delivery as the MCP grant above, but the
+    // payload carries run_id + action + the proposed-vs-current diff so the SPA
+    // ToolApprovalPart renders the interactive Approve/Reject card. The chat
+    // bridge does NOT subscribe to this event, so it never mis-renders it.
+    interactionService.on("tool:durable-approval-card", (event: any) => {
+      if (event.platform !== "api") return;
+      this.enqueueInteractionCard(queue, event, "tool-approval", {
+        type: "tool-approval",
+        requestId: event.id,
+        runId: event.runId,
+        action: event.cardAction,
+        proposal: event.proposal ?? null,
+        current: event.current ?? null,
+        toolName: "manage_agents",
+      });
+    });
+
     interactionService.on("suggestion:created", (event: any) => {
       if (event.platform !== "api") return;
       this.enqueueInteractionCard(queue, event, "suggestion", {

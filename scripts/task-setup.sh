@@ -181,21 +181,27 @@ echo "→ .env.local: PORT=$port WORKER_PROXY_PORT=$proxy PUBLIC_*_URL=http://12
 
 echo "$name" > "$worktree_dir/.task"
 
-# Register the worktree as a Lobu CLI context so the Mac menubar can spawn
-# `lobu run` for it (lifecycle: managed) against the worktree's source. Safe to
-# re-run — `lobu context add` overwrites the existing entry. Non-fatal: the
-# worktree is still useful even if the lobu CLI isn't on PATH yet.
-if command -v lobu >/dev/null 2>&1; then
-  if lobu context add "$name" \
-       --url "http://localhost:$port" \
-       --cwd "$worktree_dir" \
-       --lifecycle managed >/dev/null; then
-    echo "→ registered Lobu context '$name' (menubar can spawn its server)"
+# Opt-in: register the worktree as a Lobu CLI context (REGISTER_CONTEXT=1).
+# Off by default so we don't pollute ~/.config/lobu/config.json with a context
+# per worktree — the menu bar is status-only now and no longer spawns per-
+# worktree `lobu run` servers, so almost nobody needs this. Pass
+# REGISTER_CONTEXT=1 for the rare case you want the menu bar to manage a
+# `lobu run` (lifecycle: managed) against this worktree's source.
+if [ -n "${REGISTER_CONTEXT:-}" ]; then
+  if command -v lobu >/dev/null 2>&1; then
+    if lobu context add "$name" \
+         --url "http://localhost:$port" \
+         --cwd "$worktree_dir" \
+         --lifecycle managed >/dev/null; then
+      echo "→ registered Lobu context '$name' (menubar can spawn its server)"
+    else
+      echo "warning: failed to register Lobu context '$name'" >&2
+    fi
   else
-    echo "warning: failed to register Lobu context '$name'" >&2
+    echo "warning: 'lobu' CLI not on PATH; skipping context registration" >&2
   fi
 else
-  echo "warning: 'lobu' CLI not on PATH; skipping context registration" >&2
+  echo "→ skipped Lobu context registration (REGISTER_CONTEXT=1 to add one)"
 fi
 
 cat <<EOF

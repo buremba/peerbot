@@ -223,9 +223,9 @@ function Hero() {
           class="hero-rise hero-rise-2 mx-auto mt-5 max-w-[44rem] text-[17px] leading-[1.55]"
           style={{ color: "var(--color-page-text-muted)" }}
         >
-          Open-source infrastructure for AI teammates that watch, remember,
-          and act. Connectors and webhooks build a live org knowledge graph;
-          agents look it up and branch into a sandbox to do work.
+          Open-source infrastructure for AI teammates that watch, remember, and
+          act. Connectors and webhooks build a live org knowledge graph; agents
+          look it up and branch into a sandbox to do work.
         </p>
         <div class="hero-rise hero-rise-3 mt-8 flex flex-wrap items-center justify-center gap-3">
           <button

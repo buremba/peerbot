@@ -100,6 +100,17 @@ describe('entity CRUD', () => {
       SELECT enabled_classifiers::text AS ec FROM entities WHERE id = ${created.entity.id}
     `) as Array<{ ec: string }>;
     expect(updated.ec).toBe('{urgency}');
+
+    // Empty array is truthy → stays an empty text[] '{}', NOT null (matches the prior
+    // `?? null` intent; the load-bearing edge the pgTextArray() fix must preserve).
+    await owner.entities.update({
+      entity_id: created.entity.id,
+      enabled_classifiers: [],
+    });
+    const [emptied] = (await sql`
+      SELECT enabled_classifiers::text AS ec FROM entities WHERE id = ${created.entity.id}
+    `) as Array<{ ec: string }>;
+    expect(emptied.ec).toBe('{}');
   });
 
   it('hard-deletes a fresh entity with no event history', async () => {

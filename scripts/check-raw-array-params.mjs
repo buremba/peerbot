@@ -50,16 +50,13 @@ const SERVER_DIR = join(REPO_ROOT, "packages/server");
 const SERVER_SRC = join(SERVER_DIR, "src");
 const TSCONFIG = join(SERVER_DIR, "tsconfig.json");
 
-// Calls whose result is a safe (non-array) SQL binding — never flag these even if
-// the checker somehow widened their type. (Belt-and-suspenders; they return string/
-// Fragment so their type is not array-like anyway.)
-const SAFE_CALLEES = new Set([
-  "pgTextArray",
-  "pgBigintArray",
-  "json", // sql.json(...)
-  "array", // sql.array(...)
-  "stringify", // JSON.stringify(...)
-]);
+// The two repo helpers that return a pg-literal STRING. They're already safe via
+// the type check (string is not array-like); this name-skip is belt-and-suspenders
+// against a future signature change. NOT listed: sql.array()/sql.json()/
+// JSON.stringify() — they return non-array types so the type check passes them
+// anyway, and matching the bare names `array`/`json`/`stringify` would wrongly
+// skip an unrelated user function of the same name that returns a raw array.
+const SAFE_CALLEES = new Set(["pgTextArray", "pgBigintArray"]);
 
 // Property names treated as a query-param sink when their value is an identifier
 // that an array-typed value is later pushed into (the builder/consumer pattern).
@@ -128,12 +125,12 @@ function isSafeHelperCall(node) {
   return name ? SAFE_CALLEES.has(name) : false;
 }
 
-/** Symbol identity for a sink/target identifier (stable per declaration in a file). */
+/** Symbol identity for a sink/target identifier (stable per declaration in a file).
+ *  Note: a one-level alias (`const p = params`) is NOT followed — `p` and `params`
+ *  resolve to distinct symbols. That narrow case is a documented limitation. */
 function symbolOf(node) {
   if (!node || !ts.isIdentifier(node)) return undefined;
-  const sym = checker.getSymbolAtLocation(node);
-  // Resolve aliases so `const p = params` doesn't dodge the sink set in the common case.
-  return sym;
+  return checker.getSymbolAtLocation(node);
 }
 
 /** The array-literal expressions a map/flatMap/concat callback yields (concise or block body). */
@@ -223,11 +220,13 @@ function checkBinding(sourceFile, node, kind) {
   if (isArrayLikeType(type)) flag(sourceFile, node, kind);
 }
 
+let scannedCount = 0;
 for (const sourceFile of program.getSourceFiles()) {
   const f = sourceFile.fileName;
   if (sourceFile.isDeclarationFile) continue;
   if (!f.includes("/packages/server/src/")) continue;
   if (f.includes("/__tests__/")) continue;
+  scannedCount++;
 
   // ── Pass 1: collect param-sink symbols (consumers + returned `params:` props) ──
   const sinkSymbols = new Set();
@@ -340,14 +339,33 @@ for (const sourceFile of program.getSourceFiles()) {
         }
       }
     }
+    // 3c. SINK[i] = x  (element assignment of an array-typed value into a sink)
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isElementAccessExpression(node.left) &&
+      sinkSymbols.has(symbolOf(node.left.expression))
+    ) {
+      checkBinding(sourceFile, node.right, "param sink element assignment");
+    }
 
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
 }
 
+// Guard against a vacuous green: if the tsconfig globs ever stop matching
+// packages/server/src, the loop scans nothing and would report "clean" — silently
+// disabling the gate. The real tree resolves hundreds of files.
 if (!existsSync(SERVER_SRC)) {
   console.error(`✗ expected ${SERVER_SRC} to exist`);
+  process.exit(1);
+}
+if (scannedCount === 0) {
+  console.error(
+    "✗ raw-array-param gate scanned ZERO packages/server/src files — the tsconfig\n" +
+      "  file globs likely regressed. A clean result here would be vacuous; failing instead."
+  );
   process.exit(1);
 }
 

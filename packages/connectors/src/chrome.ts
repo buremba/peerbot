@@ -152,6 +152,46 @@ export default class ChromeConnector extends ConnectorRuntime {
           },
         },
       },
+      watch_observations: {
+        key: 'watch_observations',
+        name: 'Watch observations',
+        description:
+          'Form input + submit events captured while the user has "Watch active tab" turned on (the orange badge). Streamed only while watch is active — empty otherwise. Sensitive fields (password, one-time-code, credit-card autocomplete) are redacted in the page before the value ever reaches the buffer. No extra permission required (baseline `scripting`).',
+        configSchema: { type: 'object', properties: {} },
+        eventKinds: {
+          watch_observation: {
+            description:
+              'One row per observed input or form submit on a watched tab. event_type is one of: input, submit.',
+            metadataSchema: {
+              type: 'object',
+              required: ['source', 'origin_id', 'event_type'],
+              properties: {
+                source: { type: 'string', const: 'chrome_watch' },
+                origin_id: { type: 'string' },
+                event_type: { enum: ['input', 'submit'] },
+                url: { type: 'string' },
+                field_label: {
+                  type: 'string',
+                  description: 'For input events, the field the user typed into.',
+                },
+                tag: { type: 'string' },
+                type: { type: 'string' },
+                length: { type: 'integer' },
+                form_action: {
+                  type: 'string',
+                  description: 'For submit events, the form action URL.',
+                },
+                fields: {
+                  type: 'array',
+                  description:
+                    'For submit events, the form fields (sensitive values redacted).',
+                  items: { type: 'object' },
+                },
+              },
+            },
+          },
+        },
+      },
     },
     actions: {
       navigate: {

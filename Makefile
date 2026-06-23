@@ -18,7 +18,7 @@ help:
 	@echo "  make clean-workers                         - Stop any running embedded worker subprocesses"
 	@echo "  make clean-test-pg                         - Reap orphaned lobu-test-pg embedded-Postgres clusters (frees macOS shm slots)"
 	@echo "  make typecheck                             - Strict typecheck (same as Dockerfile) for server + owletto"
-	@echo "  make task-setup NAME=<name>                - Create a paired worktree at .claude/worktrees/<name> (lobu + submodule on real branch, .env copied, ports auto-assigned, Lobu context registered)"
+	@echo "  make task-setup NAME=<name> [CONTEXT=1]    - Create a paired worktree at .claude/worktrees/<name> (lobu + submodule on real branch, .env copied, ports auto-assigned; CONTEXT=1 registers a Lobu CLI context for the Mac menubar)"
 	@echo "  make task-clean NAME=<name> [FORCE=1]      - Remove the worktree, both branches, and the Lobu context (refuses if there's uncommitted/unpushed work unless FORCE=1)"
 	@echo "  make e2e-browser [RESTART=1]               - Launch/reuse the stable 'owletto' Chrome harness (extension from this worktree) for Chrome e2e"
 	@echo "  make bump SUBMODULE=<path> [TARGET=<ref>]  - Lightweight worktree + commit + PR for a trivial submodule pointer bump (skips bun install, .env, ports)"
@@ -106,8 +106,8 @@ test:
 # (the script also documents an optional `task-start` shell function alias).
 
 task-setup:
-	@: $${NAME?Usage: make task-setup NAME=<kebab-case-name>}
-	@./scripts/task-setup.sh "$(NAME)"
+	@: $${NAME?Usage: make task-setup NAME=<kebab-case-name> [CONTEXT=1]}
+	@CONTEXT="$(CONTEXT)" ./scripts/task-setup.sh "$(NAME)" $$( [ "$(CONTEXT)" = "1" ] && echo --context )
 
 task-clean:
 	@: $${NAME?Usage: make task-clean NAME=<name> [FORCE=1]}

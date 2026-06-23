@@ -2,8 +2,12 @@
 # task-setup.sh — prepare a paired-branch worktree for a new task.
 #
 # Usage:
-#   make task-setup NAME=<name>       (recommended, team-friendly)
-#   scripts/task-setup.sh <name>      (direct invocation)
+#   make task-setup NAME=<name> [CONTEXT=1]   (recommended, team-friendly)
+#   scripts/task-setup.sh <name> [--context]  (direct invocation)
+#
+#   CONTEXT=1 / --context — register a Lobu CLI context so the Mac menubar
+#   picker can spawn this worktree's server. Off by default: most tasks only
+#   need `cd` + `make dev`; opt in when you want Owletto menubar control.
 #
 #   <name>  kebab-case task slug (e.g. fix-sse-leak)
 #
@@ -51,13 +55,29 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 <name>" >&2
-  echo "  <name>  kebab-case task slug (lowercase letters/digits, hyphens)" >&2
+  echo "usage: $0 <name> [--context]" >&2
+  echo "  <name>       kebab-case task slug (lowercase letters/digits, hyphens)" >&2
+  echo "  --context    Register a Lobu CLI context for the Mac menubar picker" >&2
   exit 1
 }
 
-[[ $# -eq 1 ]] || usage
-name="$1"
+register_context=0
+name=""
+for arg in "$@"; do
+  case "$arg" in
+    --context|-c) register_context=1 ;;
+    -*) echo "error: unknown flag '$arg'" >&2; usage ;;
+    *)
+      if [[ -n "$name" ]]; then
+        usage
+      fi
+      name="$arg"
+      ;;
+  esac
+done
+[[ -n "$name" ]] || usage
+[[ "${CONTEXT:-}" == "1" || "${CONTEXT:-}" == "true" ]] && register_context=1
+[[ "${REGISTER_CONTEXT:-}" == "1" || "${REGISTER_CONTEXT:-}" == "true" ]] && register_context=1
 
 if ! [[ "$name" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
   echo "error: name must be kebab-case: '$name'" >&2
@@ -181,13 +201,10 @@ echo "→ .env.local: PORT=$port WORKER_PROXY_PORT=$proxy PUBLIC_*_URL=http://12
 
 echo "$name" > "$worktree_dir/.task"
 
-# Opt-in: register the worktree as a Lobu CLI context (REGISTER_CONTEXT=1).
-# Off by default so we don't pollute ~/.config/lobu/config.json with a context
-# per worktree — the menu bar is status-only now and no longer spawns per-
-# worktree `lobu run` servers, so almost nobody needs this. Pass
-# REGISTER_CONTEXT=1 for the rare case you want the menu bar to manage a
-# `lobu run` (lifecycle: managed) against this worktree's source.
-if [ -n "${REGISTER_CONTEXT:-}" ]; then
+# Optionally register the worktree as a Lobu CLI context so the Mac menubar can
+# spawn `lobu run` for it (lifecycle: managed) against the worktree's source.
+# Off by default — pass CONTEXT=1 or --context to opt in.
+if [[ $register_context -eq 1 ]]; then
   if command -v lobu >/dev/null 2>&1; then
     if lobu context add "$name" \
          --url "http://localhost:$port" \
@@ -201,7 +218,7 @@ if [ -n "${REGISTER_CONTEXT:-}" ]; then
     echo "warning: 'lobu' CLI not on PATH; skipping context registration" >&2
   fi
 else
-  echo "→ skipped Lobu context registration (REGISTER_CONTEXT=1 to add one)"
+  echo "→ skipped Lobu context registration (pass CONTEXT=1 or --context to register)"
 fi
 
 cat <<EOF

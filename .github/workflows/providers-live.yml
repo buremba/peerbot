@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # This job only reads + runs tests; the submodule fetch rides the
           # SSH deploy key below, so the persisted token is never needed.

@@ -65,6 +65,12 @@ export interface MessagePayload {
   // ── Message content (used by worker) ───────────────────────────────
   messageText: string;
 
+  /**
+   * Ephemeral context prepended to the user prompt for this turn only.
+   * Not stored in the transcript snapshot — use for watcher preprompts, etc.
+   */
+  ephemeralContext?: string;
+
   // ── Platform-specific data (used by worker for context) ────────────
   platformMetadata: Record<string, unknown>;
 

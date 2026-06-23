@@ -78,6 +78,8 @@ const ListRunsAction = Type.Object({
   approval_status: Type.Optional(Type.String()),
   /** Filter by run_type. Omit to list every run type (sync, action, auth, …). */
   run_types: Type.Optional(Type.Array(Type.String())),
+  /** Filter watcher runs by watcher id(s). */
+  watcher_ids: Type.Optional(Type.Array(Type.Number())),
   /** Keyset cursor: return runs ordered before (before_created_at, before_id). */
   before_id: Type.Optional(Type.Number()),
   before_created_at: Type.Optional(Type.String()),
@@ -919,6 +921,9 @@ async function handleListRuns(
   if (args.approval_status) {
     where = sql`${where} AND r.approval_status = ${args.approval_status}`;
   }
+  if (args.watcher_ids && args.watcher_ids.length > 0) {
+    where = sql`${where} AND r.watcher_id = ANY(${pgBigintArray(args.watcher_ids)}::bigint[])`;
+  }
 
   const countQuery = sql`SELECT COUNT(*)::int AS total FROM runs r WHERE ${where}`;
 
@@ -927,7 +932,7 @@ async function handleListRuns(
     pageWhere = sql`${pageWhere} AND (r.created_at, r.id) < (${args.before_created_at}::timestamptz, ${args.before_id})`;
   }
   const query = sql`
-    SELECT r.id, r.run_type, r.connection_id, r.feed_id, r.connector_key, r.connector_version,
+    SELECT r.id, r.run_type, r.watcher_id, r.connection_id, r.feed_id, r.connector_key, r.connector_version,
            r.action_key AS operation_key, r.action_input AS input, r.action_output AS output,
            r.approval_status, r.status, r.error_message, r.items_collected, r.checkpoint,
            r.created_at, r.completed_at,

@@ -466,6 +466,26 @@ export const ListWatchersSchema = Type.Object({
       description: 'Include prompt, schema, and sources in response (default: false)',
     })
   ),
+  watcher_group_id: Type.Optional(
+    Type.Number({
+      description: 'Filter watchers sharing a watcher_group_id (for legacy group URL resolution)',
+    })
+  ),
+  order_by: Type.Optional(
+    Type.Union([Type.Literal('last_fired_at'), Type.Literal('created_at')], {
+      description: 'Sort field. Omit for created_at DESC (default, backward compatible).',
+    })
+  ),
+  order_dir: Type.Optional(
+    Type.Union([Type.Literal('asc'), Type.Literal('desc')], {
+      description: 'Sort direction (default: desc)',
+    })
+  ),
+  limit: Type.Optional(
+    Type.Number({
+      description: 'Maximum watchers to return (omit for all)',
+    })
+  ),
 });
 
 // ============================================

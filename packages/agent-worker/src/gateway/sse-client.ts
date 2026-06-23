@@ -899,7 +899,12 @@ export class GatewayClient {
 
   private payloadToWorkerConfig(payload: MessagePayload): WorkerConfig {
     const conversationId = payload.conversationId || "default";
-    const platformMetadata = payload.platformMetadata;
+    const platformMetadata: Record<string, unknown> = {
+      ...payload.platformMetadata,
+      ...(payload.ephemeralContext?.trim()
+        ? { ephemeralContext: payload.ephemeralContext.trim() }
+        : {}),
+    };
 
     const agentOptions = {
       ...(payload.agentOptions || {}),

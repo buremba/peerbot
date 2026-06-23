@@ -1358,6 +1358,8 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
 
     const messageContent = body.content || body.message;
     const messageId = body.messageId || randomUUID();
+    const rawEphemeralContext =
+      typeof body.ephemeralContext === "string" ? body.ephemeralContext.trim() : "";
 
     if (!messageContent || typeof messageContent !== "string") {
       return c.json({ success: false, error: "content is required" }, 400);
@@ -1496,6 +1498,9 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
         ...remainingOptions
       } = agentOptions;
 
+      const applyEphemeralContext =
+        rawEphemeralContext.length > 0 && (session.turnCount ?? 0) === 0;
+
       const jobId = await queueProducer.enqueueMessage({
         userId: session.userId,
         conversationId: session.conversationId || agentId,
@@ -1509,6 +1514,9 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
         botId: "lobu-api",
         platform: "api",
         messageText: messageContent,
+        ...(applyEphemeralContext
+          ? { ephemeralContext: rawEphemeralContext.slice(0, 2048) }
+          : {}),
         platformMetadata: {
           agentId: realAgentId,
           // Echoed back on every response row (gateway-integration carries

@@ -1484,7 +1484,15 @@ Use it when the user references past discussions or you need context.`);
       })
       .join("\n\n");
 
-    const effectivePromptText = `${configNotice}${sessionSummary ? `${sessionSummary}\n\n` : ""}${prependContexts ? `${prependContexts}\n\n` : ""}${userPrompt}`;
+    const ephemeralContext =
+      typeof (platformMetadata as Record<string, unknown> | null)
+        ?.ephemeralContext === "string"
+        ? String(
+            (platformMetadata as Record<string, unknown>).ephemeralContext
+          ).trim()
+        : "";
+
+    const effectivePromptText = `${configNotice}${sessionSummary ? `${sessionSummary}\n\n` : ""}${ephemeralContext ? `${ephemeralContext}\n\n` : ""}${prependContexts ? `${prependContexts}\n\n` : ""}${userPrompt}`;
 
     // Load image attachments for vision-capable models
     const images = await loadImageAttachments();

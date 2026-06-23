@@ -10,9 +10,9 @@ import { getDb } from '../db/client';
 /**
  * Build a human-readable summary of past user corrections for a watcher.
  *
- * Returns only the most-recent correction per (field_path) — earlier
- * superseded corrections are dropped so the prompt does not accumulate
- * historical noise. Returns undefined if no feedback exists.
+ * Reads window-field corrections from the events spine (semantic_type='correction'). Returns
+ * only the most-recent correction per (field_path) — earlier superseded corrections are dropped
+ * so the prompt does not accumulate historical noise. Returns undefined if no feedback exists.
  */
 export async function getRecentFeedbackSummary(
   watcherId: number | string,
@@ -20,15 +20,20 @@ export async function getRecentFeedbackSummary(
 ): Promise<string | undefined> {
   const sql = getDb();
   const feedback = await sql`
-    SELECT DISTINCT ON (f.field_path)
-           f.field_path, f.mutation, f.corrected_value, f.note, f.created_at,
-           w.window_start, w.window_end
-    FROM watcher_window_field_feedback f
-    JOIN watcher_windows w ON f.window_id = w.id
-    WHERE f.watcher_id = ${watcherId}
-    ORDER BY f.field_path, f.created_at DESC
-    LIMIT ${limit}
-  `;
+        SELECT DISTINCT ON (e.metadata->>'field_path')
+               e.metadata->>'field_path' AS field_path,
+               e.metadata->>'mutation' AS mutation,
+               e.metadata->'corrected_value' AS corrected_value,
+               e.metadata->>'note' AS note,
+               e.created_at,
+               w.window_start, w.window_end
+        FROM events e
+        JOIN watcher_windows w ON (e.metadata->>'window_id')::bigint = w.id
+        WHERE e.semantic_type = 'correction'
+          AND (e.metadata->>'watcher_id')::bigint = ${watcherId}
+        ORDER BY e.metadata->>'field_path', e.created_at DESC
+        LIMIT ${limit}
+      `;
 
   if (feedback.length === 0) return undefined;
 

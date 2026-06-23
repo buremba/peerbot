@@ -89,10 +89,19 @@ describe('watcher feedback contract', () => {
   });
 
   beforeEach(async () => {
-    await getTestDb()`DELETE FROM watcher_window_field_feedback WHERE watcher_id = ${Number(watcherId)}`;
+    // Corrections are now append-only 'correction' events; use the documented escape hatch to
+    // isolate each test (watcher_window_field_feedback was retired in the P1 consolidation).
+    await getTestDb().begin(async (tx) => {
+      await tx`SET LOCAL lobu.allow_event_delete = 'on'`;
+      await tx`
+        DELETE FROM events
+        WHERE semantic_type = 'correction'
+          AND (metadata->>'watcher_id')::bigint = ${Number(watcherId)}
+      `;
+    });
   });
 
-  it('stores set/remove/add field corrections from one batch as separate rows', async () => {
+  it('stores set/remove/add field corrections from one batch as separate correction events', async () => {
     const result = (await manageWatchers(
       {
         action: 'submit_feedback',
@@ -111,10 +120,11 @@ describe('watcher feedback contract', () => {
     expect(result.feedback_ids).toHaveLength(3);
 
     const rows = await getTestDb()`
-      SELECT field_path, mutation, corrected_value, note
-      FROM watcher_window_field_feedback
-      WHERE watcher_id = ${Number(watcherId)}
-      ORDER BY field_path ASC
+      SELECT metadata->>'field_path' AS field_path, metadata->>'mutation' AS mutation,
+             metadata->'corrected_value' AS corrected_value, metadata->>'note' AS note
+      FROM events
+      WHERE semantic_type = 'correction' AND (metadata->>'watcher_id')::bigint = ${Number(watcherId)}
+      ORDER BY metadata->>'field_path' ASC
     `;
     expect(rows).toHaveLength(3);
     expect(rows.map((row) => `${row.field_path}:${row.mutation}`)).toEqual([

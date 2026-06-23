@@ -853,6 +853,8 @@ async function fetchScopeSummary(
         SELECT COUNT(*)::int
         FROM current_event_records ev
         WHERE ev.organization_id = ${organizationId}
+          -- Exclude null-shaped internal events (P1 corrections) from the org content count.
+          AND ev.semantic_type <> 'correction'
       ) AS total_content,
       (
         SELECT COUNT(*)::int
@@ -915,6 +917,8 @@ async function fetchRecentContent(
     FROM current_event_records ev
     LEFT JOIN connections cn ON cn.id = ev.connection_id
     WHERE ev.organization_id = $1
+      -- Exclude null-shaped internal events (P1 corrections) from the recent-content list.
+      AND ev.semantic_type <> 'correction'
       ${entityFilter}
     ORDER BY COALESCE(ev.occurred_at, ev.created_at) DESC
     LIMIT $2

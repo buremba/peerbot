@@ -12,13 +12,11 @@
  * body controls only the payload + terminal_status. Workers cannot
  * impersonate another conversation.
  *
- * Why these are new endpoints (vs. modifying `agent-history.ts` only): the
- * worker is sandboxed and has no `DATABASE_URL`. The snapshot write path
- * must go through an authenticated gateway hop. The hydrate path could
- * have lived inside agent-history's existing fallback logic, but that
- * route is settings-cookie-authenticated (admin UI), not worker-JWT —
- * keeping the worker-side reader on the same `/worker/*` mount keeps the
- * auth model consistent.
+ * Why these are separate from `agent-history.ts`: the worker is sandboxed
+ * and has no `DATABASE_URL`. The snapshot write path must go through an
+ * authenticated gateway hop. History reads for the web panel use
+ * settings-cookie auth on `/history/threads/*`; worker JWT auth stays on
+ * `/worker/transcript/*`.
  */
 
 import type { WorkerTokenData } from "@lobu/core";

@@ -21,10 +21,9 @@ import { Hono } from "hono";
 import { getDb } from "../../db/client.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";
 import { createTranscriptRoutes } from "../gateway/transcript-routes.js";
-import {
-  createAgentHistoryRoutes,
-  readLatestSnapshotJsonl,
-} from "../routes/public/agent-history.js";
+import { buildApiConversationId } from "../services/api-conversation-id.js";
+import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
+import { readSnapshotJsonl } from "../services/transcript-snapshot.js";
 import { setAuthProvider } from "../routes/public/settings-auth.js";
 import {
   ensureDbForGatewayTests,
@@ -584,8 +583,8 @@ describe("agent_transcript_snapshot — snapshot route", () => {
   });
 });
 
-describe("agent_transcript_snapshot — /agent-history fallback", () => {
-  test("dead-worker-fallback-from-db: readLatestSnapshotJsonl returns the latest completed snapshot's bytes", async () => {
+describe("agent_transcript_snapshot — history fallback", () => {
+  test("dead-worker-fallback-from-db: readSnapshotJsonl returns the latest completed snapshot's bytes", async () => {
     const orgId = await seedAgentRow("agent-hist", {
       organizationId: "org_hist",
     });
@@ -610,20 +609,20 @@ describe("agent_transcript_snapshot — /agent-history fallback", () => {
          ${jsonl}, ${Buffer.byteLength(jsonl, "utf-8")}, 'completed')
     `;
 
-    const out = await readLatestSnapshotJsonl(agentId, orgId);
+    const out = await readSnapshotJsonl({
+      agentId,
+      organizationId: orgId,
+      conversationId,
+    });
     expect(out).toBe(jsonl);
   });
 
-  test("dead-worker-no-snapshot: readLatestSnapshotJsonl returns null on miss (no 500)", async () => {
-    // No agent row → null. The callers (readSessionMessages / readSessionStats)
-    // fall through to findSessionFile, which returns the documented empty
-    // sentinel — never a 500. Also asserts that with no org pin the
-    // resolver returns null (codex P2: prior version would have returned
-    // SOME org's row via the unscoped agents lookup).
-    const out = await readLatestSnapshotJsonl(
-      "agent-does-not-exist",
-      undefined
-    );
+  test("dead-worker-no-snapshot: readSnapshotJsonl returns null on miss (no 500)", async () => {
+    const out = await readSnapshotJsonl({
+      agentId: "agent-does-not-exist",
+      organizationId: undefined,
+      conversationId: "conv-miss",
+    });
     expect(out).toBeNull();
   });
 
@@ -660,9 +659,13 @@ describe("agent_transcript_snapshot — /agent-history fallback", () => {
          ${jsonl}, ${Buffer.byteLength(jsonl, "utf-8")}, 'completed')
     `;
 
-    const out = await readLatestSnapshotJsonl(agentId, orgId);
+    const out = await readSnapshotJsonl({
+      agentId,
+      organizationId: orgId,
+      conversationId,
+    });
     expect(out).toBe(jsonl);
-    // Splitting on \n recovers the same line set the admin UI parses.
+    // Splitting on \n recovers the same line set the history API parses.
     expect(out!.split("\n").filter((l) => l.length > 0)).toEqual(lines);
   });
 });
@@ -1001,7 +1004,7 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
     expect(src).toMatch(/let lockReleased = false/);
   });
 
-  test("P2 tenant isolation: /api/v1/agents/:id/history reads orgA's snapshot only, not orgB's, when both share the agentId", async () => {
+  test("P2 tenant isolation: /api/v1/agents/:id/history/threads/:threadId/messages reads orgA's snapshot only, not orgB's, when both share the agentId", async () => {
     // PRE-FIX (round 1) behavior: `verifyOwnedAgentAccess` ran a fresh
     // `SELECT organization_id FROM public.agents WHERE id=? AND
     // owner_platform=? AND owner_user_id=? LIMIT 1` — owner_platform +
@@ -1056,15 +1059,29 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
     // unscoped agents lookup could pick orgB even when the caller is
     // authenticated as orgA.
     const sql = getDb();
+    const threadA = "thread-a";
+    const threadB = "thread-b";
+    const convA = buildApiConversationId({
+      agentId: sharedAgentId,
+      userId: "u-shared",
+      organizationId: orgA,
+      threadId: threadA,
+    });
+    const convB = buildApiConversationId({
+      agentId: sharedAgentId,
+      userId: "u-shared",
+      organizationId: orgB,
+      threadId: threadB,
+    });
     const runA = await insertRun({
       organizationId: orgA,
       agentId: sharedAgentId,
-      conversationId: "conv-a",
+      conversationId: convA,
     });
     const runB = await insertRun({
       organizationId: orgB,
       agentId: sharedAgentId,
-      conversationId: "conv-b",
+      conversationId: convB,
     });
     expect(runB).toBeGreaterThan(runA);
 
@@ -1083,9 +1100,9 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
         (organization_id, agent_id, conversation_id, run_id,
          snapshot_jsonl, byte_size, terminal_status)
       VALUES
-        (${orgA}, ${sharedAgentId}, 'conv-a', ${runA},
+        (${orgA}, ${sharedAgentId}, ${convA}, ${runA},
          ${aJsonl}, ${Buffer.byteLength(aJsonl, "utf-8")}, 'completed'),
-        (${orgB}, ${sharedAgentId}, 'conv-b', ${runB},
+        (${orgB}, ${sharedAgentId}, ${convB}, ${runB},
          ${bJsonl}, ${Buffer.byteLength(bJsonl, "utf-8")}, 'completed')
     `;
 
@@ -1104,17 +1121,6 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
       app.route(
         "/api/v1/agents/:agentId/history",
         createAgentHistoryRoutes({
-          connectionManager: {
-            getDeploymentsForAgent() {
-              return [];
-            },
-            getHttpUrl() {
-              return null;
-            },
-          } as any,
-          // No agent metadata store — keeps the route on the
-          // userAgentsStore (authoritative) path, which is the codex
-          // P2 fix point.
           userAgentsStore,
         })
       );
@@ -1124,7 +1130,7 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
       // to orgB and return "FROM-ORG-B".
       for (let i = 0; i < 5; i++) {
         const response = await app.request(
-          "/api/v1/agents/agent-shared/history/session/messages",
+          `/api/v1/agents/agent-shared/history/threads/${threadA}/messages`,
           {
             headers: { host: "localhost" },
             method: "GET",

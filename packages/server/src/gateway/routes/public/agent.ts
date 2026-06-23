@@ -30,6 +30,7 @@ import type { SettingsTokenPayload } from "../../auth/settings/token-service.js"
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
 import type { QueueProducer } from "../../infrastructure/queue/queue-producer.js";
 import type { PlatformRegistry } from "../../platform.js";
+import { buildApiConversationId } from "../../services/api-conversation-id.js";
 import { resolveAgentOptions } from "../../services/platform-helpers.js";
 import type { SseManager } from "../../services/sse-manager.js";
 import type { ISessionManager, ThreadSession } from "../../session.js";
@@ -957,11 +958,12 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     // both derive from this conversationId. Injecting `_<org>_` mid-id splits
     // `watcher_<id>` from `run_<id>`, breaking watcher→worker dispatch (caught
     // by the sdk-e2e gate). Keep the prod-proven shape for the watcher path.
-    const orgScope =
-      tokenOrganizationId && !watcherIntent ? `_${tokenOrganizationId}` : "";
-    const conversationId = effectiveThread
-      ? `${agentId}_${userId}${orgScope}_${effectiveThread}`
-      : `${agentId}_${userId}${orgScope}`;
+    const conversationId = buildApiConversationId({
+      agentId,
+      userId,
+      organizationId: watcherIntent ? undefined : tokenOrganizationId,
+      threadId: effectiveThread || undefined,
+    });
     const channelId = `api_${userId}`;
     const deploymentName = `api-${agentId.slice(0, 8)}`;
 

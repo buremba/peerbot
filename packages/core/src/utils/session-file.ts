@@ -139,3 +139,79 @@ export function entryToMessage(entry: SessionEntry): ParsedMessage | null {
   }
   return null;
 }
+
+/**
+ * Thread list title: first user message text, truncated. No LLM inference —
+ * the UI shows this until/unless we add an explicit title field on write.
+ */
+export function titleFromSessionJsonl(
+  jsonl: string,
+  fallback: string,
+  maxLen = 42
+): string {
+  const { entries } = parseSessionEntries(jsonl);
+  for (const entry of entries) {
+    if (entry.type !== "message" || entry.message?.role !== "user") continue;
+    const content = entry.message.content;
+    let text = "";
+    if (typeof content === "string") {
+      text = content;
+    } else if (Array.isArray(content)) {
+      for (const part of content) {
+        if (
+          part &&
+          typeof part === "object" &&
+          (part as { type?: string }).type === "text" &&
+          typeof (part as { text?: string }).text === "string"
+        ) {
+          text = (part as { text: string }).text;
+          break;
+        }
+      }
+    }
+    const normalized = text.replace(/\s+/g, " ").trim();
+    if (!normalized) continue;
+    return normalized.length > maxLen
+      ? `${normalized.slice(0, maxLen)}…`
+      : normalized;
+  }
+  return fallback;
+}
+
+/**
+ * Thread list title: first user message text, truncated. No LLM inference —
+ * the UI shows this until/unless we add an explicit title field on write.
+ */
+export function titleFromSessionJsonl(
+  jsonl: string,
+  fallback: string,
+  maxLen = 42
+): string {
+  const { entries } = parseSessionEntries(jsonl);
+  for (const entry of entries) {
+    if (entry.type !== "message" || entry.message?.role !== "user") continue;
+    const content = entry.message.content;
+    let text = "";
+    if (typeof content === "string") {
+      text = content;
+    } else if (Array.isArray(content)) {
+      for (const part of content) {
+        if (
+          part &&
+          typeof part === "object" &&
+          (part as { type?: string }).type === "text" &&
+          typeof (part as { text?: string }).text === "string"
+        ) {
+          text = (part as { text: string }).text;
+          break;
+        }
+      }
+    }
+    const normalized = text.replace(/\s+/g, " ").trim();
+    if (!normalized) continue;
+    return normalized.length > maxLen
+      ? `${normalized.slice(0, maxLen)}…`
+      : normalized;
+  }
+  return fallback;
+}

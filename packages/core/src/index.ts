@@ -146,6 +146,7 @@ export {
   type ParsedMessage,
   parseSessionEntries,
   type SessionEntry,
+  titleFromSessionJsonl,
 } from "./utils/session-file";
 export * from "./utils/urls";
 export * from "./worker/auth";

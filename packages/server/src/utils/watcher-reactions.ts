@@ -3,7 +3,7 @@
  */
 
 import { getDb } from '../db/client';
-import { listOperations } from '../operations/catalog';
+import { listOperations } from '../operations/connector-operations';
 import logger from './logger';
 
 /**

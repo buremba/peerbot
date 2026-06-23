@@ -133,9 +133,10 @@ const ROUTE_SUMMARIES: Record<string, string> = {
 
 	// Catalog
 	"get /catalog": "List global catalog manifests",
-	"get /api/{orgSlug}/installed": "List org-installed items",
+	"get /api/{orgSlug}/installed":
+		"List org-installed items (`include=catalog` merges bundled connectors)",
 	"get /api/{orgSlug}/installed/agents/{agentId}/installed":
-		"List agent-installed items",
+		"List agent-installed items (`include=catalog` merges bundled skills)",
 
 	// History
 	"get /api/v1/agents/{agentId}/history/status": "Get agent connection status",

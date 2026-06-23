@@ -17,7 +17,7 @@ import {
 	toggleConnectorLoginEnabled,
 	uninstallConnectorDefinition,
 	updateActiveConnectorDefinitionField,
-} from "../../connector-definition-helpers";
+} from "../../../../catalog/connector-definitions";
 import {
 	maybeUpsertAuthAfterInstall,
 	upsertConnectorAuthProfiles,

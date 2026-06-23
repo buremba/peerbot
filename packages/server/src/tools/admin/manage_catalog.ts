@@ -1,6 +1,7 @@
 import { Type } from "@sinclair/typebox";
 import { listAgentInstalled, listOrgInstalled } from "../../catalog/installed";
 import { listCatalogEntries } from "../../catalog/load";
+import { buildCatalogListResponse } from "../../catalog/responses";
 import {
 	AGENT_INSTALLED_KINDS,
 	type AgentInstalledKind,
@@ -35,6 +36,12 @@ export const ListInstalledAction = Type.Object({
 	agent_id: Type.Optional(
 		Type.String({ description: "Agent id — required for agent-scoped kinds." }),
 	),
+	include_catalog: Type.Optional(
+		Type.Boolean({
+			description:
+				"Merge global catalog entries for connectors (org) or skills (agent).",
+		}),
+	),
 });
 
 export const ManageCatalogSchema = Type.Union([
@@ -51,19 +58,16 @@ export type ListInstalledArgs = {
 	action: "list_installed";
 	kinds?: string[];
 	agent_id?: string;
+	include_catalog?: boolean;
 };
 
 async function handleListCatalog(args: ListCatalogArgs): Promise<unknown> {
 	const kinds = args.kinds?.length ? args.kinds : [...CATALOG_KINDS];
 	const all = await listCatalogEntries(kinds);
-	const catalogs: Record<
-		string,
-		{ kind: CatalogKind; entries: (typeof all)["connectors"] }
-	> = {};
-	for (const kind of kinds) {
-		catalogs[kind] = { kind, entries: all[kind] };
-	}
-	return { action: "list_catalog", catalogs };
+	return {
+		action: "list_catalog",
+		...buildCatalogListResponse(kinds, all),
+	};
 }
 
 async function handleListInstalled(
@@ -110,17 +114,24 @@ async function handleListInstalled(
 
 	const installed: Record<string, unknown> = {};
 
+	const listOptions = { includeCatalog: Boolean(args.include_catalog) };
+
 	if (resolvedOrgKinds.length > 0) {
 		Object.assign(
 			installed,
-			await listOrgInstalled(ctx.organizationId, resolvedOrgKinds, ctx),
+			await listOrgInstalled(
+				ctx.organizationId,
+				resolvedOrgKinds,
+				ctx,
+				listOptions,
+			),
 		);
 	}
 
 	if (args.agent_id && resolvedAgentKinds.length > 0) {
 		Object.assign(
 			installed,
-			await listAgentInstalled(args.agent_id, resolvedAgentKinds),
+			await listAgentInstalled(args.agent_id, resolvedAgentKinds, listOptions),
 		);
 	}
 

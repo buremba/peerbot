@@ -210,22 +210,6 @@ async function extractConnectorCatalogMetadata(
 
 const CATALOG_MANIFEST_VERSION = 1;
 
-/**
- * Filename of the build-time catalog manifest written next to the bundled
- * connector sources (see `scripts/build-connector-catalog-manifest.ts`). It maps
- * each connector file (path relative to the catalog dir, POSIX separators) to its
- * already-extracted metadata, so the runtime can serve the bundled catalog
- * WITHOUT compiling ~35 connectors on demand. That cold per-pod scan (esbuild +
- * a forked subprocess per connector, run serially) overran the request timeout
- * on freshly-rolled, CPU-limited prod replicas and returned 503 to the "Add a
- * connection" picker, which then rendered an empty "No connectors found".
- *
- * Files NOT covered by the manifest (custom `LOBU_CATALOG_URIS` dirs, a
- * missing/stale/corrupt manifest) still fall back to on-demand compilation, so
- * the dynamic runtime path is fully preserved.
- */
-export const CATALOG_MANIFEST_FILENAME = ".catalog-manifest.json";
-
 interface CatalogManifest {
 	version: number;
 	// null = file carries no ConnectorRuntime class (utility/index file). Recorded
@@ -329,7 +313,7 @@ export async function listCatalogConnectorDefinitions(): Promise<
  * Build-time: compile every bundled connector once and capture its metadata so
  * the runtime serves the catalog without on-demand compilation. Non-connector
  * files are stored as `null` so they aren't recompiled at runtime. Invoked by
- * `scripts/build-connector-catalog-manifest.ts`.
+ * `scripts/build-catalog-manifests.ts` (output: `dist/catalogs/connectors.json`).
  */
 export async function generateCatalogManifest(
 	dirPath: string,

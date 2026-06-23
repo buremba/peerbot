@@ -61,11 +61,31 @@ describe("manage_catalog list_installed", () => {
 				memberRole: "owner",
 				isAuthenticated: true,
 			}),
+			{ includeCatalog: false },
 		);
 		expect(installed.listAgentInstalled).not.toHaveBeenCalled();
 		expect(result).toEqual({
 			action: "list_installed",
 			installed: { connectors: { kind: "connectors", items: [] } },
 		});
+	});
+
+	it("forwards include_catalog to installed listers", async () => {
+		await manageCatalog(
+			{
+				action: "list_installed",
+				kinds: ["connectors"],
+				include_catalog: true,
+			},
+			{} as never,
+			ctx,
+		);
+
+		expect(installed.listOrgInstalled).toHaveBeenCalledWith(
+			"org-1",
+			["connectors"],
+			expect.any(Object),
+			{ includeCatalog: true },
+		);
 	});
 });

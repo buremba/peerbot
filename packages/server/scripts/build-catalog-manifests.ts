@@ -1,7 +1,7 @@
 /**
  * Build-time generator for LOBU catalog manifests (`dist/catalogs/*.json`).
- * Runs after the connector source bundle + `.catalog-manifest.json` so
- * `generateConnectorsManifest` can read pre-extracted metadata cheaply.
+ * Compiles bundled connectors once and writes unified manifest files consumed
+ * at runtime via `LOBU_CATALOG_URIS` (and vendored into the CLI tarball).
  */
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';

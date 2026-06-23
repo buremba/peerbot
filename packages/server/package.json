@@ -12,7 +12,7 @@
 		"dev": "tsx watch --ignore=../web/** --ignore=../owletto/** --ignore=../../node_modules/** src/server.ts",
 		"dev:local": "tsx watch --ignore=../web/** --ignore=../owletto/** --ignore=../../node_modules/** src/server.ts",
 		"start": "tsx src/server.ts",
-		"build:server": "node ./scripts/build-server-bundle.mjs && bun ./scripts/build-connector-catalog-manifest.ts && bun ./scripts/build-catalog-manifests.ts",
+		"build:server": "node ./scripts/build-server-bundle.mjs && bun ./scripts/build-catalog-manifests.ts",
 		"test": "vitest",
 		"test:gateway": "dirs=$(find src/gateway -type d -name __tests__ | sort); [ -n \"$dirs\" ] || { echo 'no gateway __tests__ dirs found' >&2; exit 1; }; rc=0; for d in $dirs; do bun test \"$d\" || rc=1; done; exit $rc",
 		"test:sandbox-runtime": "SKIP_TEST_DB_SETUP=1 vitest run src/__tests__/integration/sandbox/run-script-runtime.test.ts",

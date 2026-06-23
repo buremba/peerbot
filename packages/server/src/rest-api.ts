@@ -13,8 +13,8 @@ import { listOrgInstalled } from "./catalog/installed";
 import { getDb } from "./db/client";
 import { streamInvalidationEvents } from "./events/sse";
 import type { Env } from "./index";
-import { getOperationsSummary } from "./operations/catalog";
-import { getScopedConnectorDefinition } from "./tools/admin/connector-definition-helpers";
+import { getScopedConnectorDefinition } from "./catalog/connector-definitions";
+import { getOperationsSummary } from "./operations/connector-operations";
 import { manageClassifiers } from "./tools/admin/manage_classifiers";
 import { listWatchers } from "./tools/admin/manage_watchers";
 import {

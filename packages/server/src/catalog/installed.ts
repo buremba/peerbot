@@ -9,11 +9,16 @@ import {
 import {
 	EMPTY_SUMMARY,
 	getOperationsSummaryBatch,
-} from "../operations/catalog";
-import { listScopedConnectorDefinitions } from "../tools/admin/connector-definition-helpers";
+} from "../operations/connector-operations";
 import { handleList } from "../tools/admin/manage_watchers/list";
 import type { ToolContext } from "../tools/registry";
 import { connectorSourcePathToUri } from "../utils/connector-definition-install";
+import { listScopedConnectorDefinitions } from "./connector-definitions";
+import { listCatalogEntries } from "./load";
+import {
+	mergeConnectorInstalledWithCatalog,
+	mergeSkillInstalledWithCatalog,
+} from "./merge";
 import type {
 	AgentInstalledKind,
 	InstalledItem,
@@ -24,6 +29,10 @@ import type {
 const configStore = createPostgresAgentConfigStore();
 const connectionStore = createPostgresAgentConnectionStore();
 
+export type ListInstalledOptions = {
+	includeCatalog?: boolean;
+};
+
 export async function listOrgInstalled(
 	organizationId: string,
 	kinds: OrgInstalledKind[],
@@ -31,6 +40,7 @@ export async function listOrgInstalled(
 		ToolContext,
 		"organizationId" | "userId" | "memberRole" | "isAuthenticated"
 	>,
+	options: ListInstalledOptions = {},
 ): Promise<InstalledListResponse["installed"]> {
 	const result: InstalledListResponse["installed"] = {};
 	const wanted = new Set(kinds);
@@ -41,35 +51,41 @@ export async function listOrgInstalled(
 			organizationId,
 			rows.map((row) => row.key),
 		);
+		const installedItems = rows.map((row) => {
+			const operationsSummary = summaries.get(row.key) ?? {
+				...EMPTY_SUMMARY,
+			};
+			return {
+				id: row.key,
+				name: row.name,
+				detail: {
+					version: row.version,
+					description: row.description,
+					status: row.status,
+					login_enabled: Boolean(row.login_enabled),
+					auth_schema: row.auth_schema,
+					feeds_schema: row.feeds_schema,
+					actions_schema: row.actions_schema,
+					options_schema: row.options_schema,
+					favicon_domain: row.favicon_domain,
+					required_capability: row.required_capability,
+					runtime: row.runtime,
+					default_connection_config: row.default_connection_config,
+					default_repair_agent_id: row.default_repair_agent_id,
+					source_uri: connectorSourcePathToUri(row.source_path),
+					operations_summary: operationsSummary,
+					has_operations: operationsSummary.total > 0,
+				},
+			};
+		});
 		result.connectors = {
 			kind: "connectors",
-			items: rows.map((row) => {
-				const operationsSummary = summaries.get(row.key) ?? {
-					...EMPTY_SUMMARY,
-				};
-				return {
-					id: row.key,
-					name: row.name,
-					detail: {
-						version: row.version,
-						description: row.description,
-						status: row.status,
-						login_enabled: Boolean(row.login_enabled),
-						auth_schema: row.auth_schema,
-						feeds_schema: row.feeds_schema,
-						actions_schema: row.actions_schema,
-						options_schema: row.options_schema,
-						favicon_domain: row.favicon_domain,
-						required_capability: row.required_capability,
-						runtime: row.runtime,
-						default_connection_config: row.default_connection_config,
-						default_repair_agent_id: row.default_repair_agent_id,
-						source_uri: connectorSourcePathToUri(row.source_path),
-						operations_summary: operationsSummary,
-						has_operations: operationsSummary.total > 0,
-					},
-				};
-			}),
+			items: options.includeCatalog
+				? mergeConnectorInstalledWithCatalog(
+						installedItems,
+						(await listCatalogEntries(["connectors"])).connectors,
+					)
+				: installedItems,
 		};
 	}
 
@@ -110,6 +126,7 @@ export async function listOrgInstalled(
 export async function listAgentInstalled(
 	agentId: string,
 	kinds: AgentInstalledKind[],
+	options: ListInstalledOptions = {},
 ): Promise<InstalledListResponse["installed"]> {
 	const result: InstalledListResponse["installed"] = {};
 	const wanted = new Set(kinds);
@@ -119,20 +136,26 @@ export async function listAgentInstalled(
 
 	if (wanted.has("skills")) {
 		const skills = settings.skillsConfig?.skills ?? [];
+		const installedItems = skills.map((skill) => ({
+			id: skill.repo,
+			name: skill.name,
+			detail: {
+				enabled: skill.enabled,
+				description: skill.description,
+				system: skill.system,
+				mcp_servers: skill.mcpServers,
+				nix_packages: skill.nixPackages,
+				network_config: skill.networkConfig,
+			},
+		}));
 		result.skills = {
 			kind: "skills",
-			items: skills.map((skill) => ({
-				id: skill.repo,
-				name: skill.name,
-				detail: {
-					enabled: skill.enabled,
-					description: skill.description,
-					system: skill.system,
-					mcp_servers: skill.mcpServers,
-					nix_packages: skill.nixPackages,
-					network_config: skill.networkConfig,
-				},
-			})),
+			items: options.includeCatalog
+				? mergeSkillInstalledWithCatalog(
+						installedItems,
+						(await listCatalogEntries(["skills"])).skills,
+					)
+				: installedItems,
 		};
 	}
 

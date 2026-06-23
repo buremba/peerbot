@@ -13,7 +13,7 @@ import { callTool as callProxyTool } from '../../mcp-proxy/client';
 import { resolveCredentialsByConnectionId } from '../../mcp-proxy/credential-resolver';
 import { notifyActionApprovalNeeded } from '../../notifications/triggers';
 import { resolveActionMode } from '../../operations/action-modes';
-import { getOperationForConnection, listOperations } from '../../operations/catalog';
+import { getOperationForConnection, listOperations } from '../../operations/connector-operations';
 import type { AvailableOperation, OperationDescriptor } from '../../operations/types';
 import { resolveConnectorCode } from '../../utils/ensure-connector-installed';
 import { resolveExecutionAuth } from '../../utils/execution-context';

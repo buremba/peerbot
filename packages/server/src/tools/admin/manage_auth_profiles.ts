@@ -34,7 +34,7 @@ import {
 import { createConnectToken } from '../../utils/connect-tokens';
 import type { ToolContext } from '../registry';
 import { action, defineActionTool } from './action-tool';
-import { getScopedConnectorDefinition } from './connector-definition-helpers';
+import { getScopedConnectorDefinition } from "../../catalog/connector-definitions";
 import { callerIsAdmin } from './helpers/db-helpers';
 import {
   buildOAuthConnectConfig,

@@ -26,7 +26,7 @@ import {
 import { assertEntityIdsInOrg } from '../../helpers/db-helpers';
 import { rejectUnboundAppInstallationCreate } from '../../helpers/app-installation-guard';
 import { type FeedDefinition, splitConfigByFeedScope } from '../../helpers/feed-helpers';
-import { getScopedConnectorDefinition } from '../../connector-definition-helpers';
+import { getScopedConnectorDefinition } from '../../../../catalog/connector-definitions';
 import { buildConnectionsUrl } from '../../../../utils/url-builder';
 import { getOrgUrlContext } from '../../../view-urls';
 import { createConnectToken } from '../../../../utils/connect-tokens';

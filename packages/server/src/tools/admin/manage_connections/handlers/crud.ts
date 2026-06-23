@@ -8,7 +8,7 @@ import {
   EMPTY_SUMMARY,
   getOperationsSummary,
   getOperationsSummaryBatch,
-} from '../../../../operations/catalog';
+} from '../../../../operations/connector-operations';
 import {
   createAuthProfile,
   getAuthProfileById,
@@ -43,7 +43,7 @@ import {
 import { assertEntityIdsInOrg, callerIsAdmin as resolveCallerIsAdmin } from '../../helpers/db-helpers';
 import { rejectUnboundAppInstallationCreate } from '../../helpers/app-installation-guard';
 import { type FeedDefinition, splitConfigByFeedScope } from '../../helpers/feed-helpers';
-import { getScopedConnectorDefinition } from '../../connector-definition-helpers';
+import { getScopedConnectorDefinition } from '../../../../catalog/connector-definitions';
 import type { ToolContext } from '../../../registry';
 import type { ManageConnectionsResult, ConnectionsArgs } from '../schemas';
 import { resolveDeviceBinding, isManagedPublicOrgConnect } from './device-binding';

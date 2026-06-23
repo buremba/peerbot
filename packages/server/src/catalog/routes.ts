@@ -8,6 +8,8 @@ import {
 	parseKindsParam,
 } from "./installed";
 import { listCatalogEntries } from "./load";
+import { parseIncludeCatalog } from "./merge";
+import { buildCatalogListResponse } from "./responses";
 import {
 	AGENT_INSTALLED_KINDS,
 	type AgentInstalledKind,
@@ -22,14 +24,7 @@ const globalCatalogRoutes = new Hono();
 globalCatalogRoutes.get("/", async (c) => {
 	const kinds = parseKindsParam(c.req.query("kinds"), CATALOG_KINDS);
 	const all = await listCatalogEntries(kinds as CatalogKind[]);
-	const catalogs: Record<
-		string,
-		{ kind: CatalogKind; entries: typeof all.connectors }
-	> = {};
-	for (const kind of kinds) {
-		catalogs[kind] = { kind, entries: all[kind] };
-	}
-	return c.json({ catalogs });
+	return c.json(buildCatalogListResponse(kinds as CatalogKind[], all));
 });
 
 const orgInstalledRoutes = new Hono<{ Bindings: Env }>();
@@ -43,6 +38,7 @@ orgInstalledRoutes.use("*", async (c, next) => {
 
 orgInstalledRoutes.get("/", async (c) => {
 	const kinds = parseKindsParam(c.req.query("kinds"), ORG_INSTALLED_KINDS);
+	const includeCatalog = parseIncludeCatalog(c.req.query("include"));
 	const installed = await listOrgInstalled(
 		c.get("organizationId")!,
 		kinds as OrgInstalledKind[],
@@ -52,6 +48,7 @@ orgInstalledRoutes.get("/", async (c) => {
 			memberRole: c.get("memberRole") ?? null,
 			isAuthenticated: Boolean(c.get("user")),
 		},
+		{ includeCatalog },
 	);
 	return c.json({ installed });
 });
@@ -59,9 +56,11 @@ orgInstalledRoutes.get("/", async (c) => {
 orgInstalledRoutes.get("/agents/:agentId/installed", async (c) => {
 	const kinds = parseKindsParam(c.req.query("kinds"), AGENT_INSTALLED_KINDS);
 	const { agentId } = c.req.param();
+	const includeCatalog = parseIncludeCatalog(c.req.query("include"));
 	const installed = await listAgentInstalled(
 		agentId,
 		kinds as AgentInstalledKind[],
+		{ includeCatalog },
 	);
 	return c.json({ installed });
 });

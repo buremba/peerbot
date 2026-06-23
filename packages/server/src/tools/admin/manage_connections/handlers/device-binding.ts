@@ -4,7 +4,7 @@
 
 import { getDb } from '../../../../db/client';
 import { getPrimaryAuthProfileForKind } from '../../../../utils/auth-profiles';
-import type { ScopedConnectorDefinitionRow } from '../../connector-definition-helpers';
+import type { ScopedConnectorDefinitionRow } from '../../../../catalog/connector-definitions';
 
 // ============================================
 // Managed-connector detection (public-org delegation)

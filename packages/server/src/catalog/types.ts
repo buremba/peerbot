@@ -5,7 +5,8 @@
  *   (`LOBU_CATALOG_URIS`). Kinds: `connectors`, `skills`. No DB.
  *
  * - **Installed overlay** (`list_installed` / GET /installed): org or agent
- *   state layered on top of catalog browse.
+ *   state layered on top of catalog browse. Pass `include=catalog` (HTTP) or
+ *   `include_catalog: true` (MCP) to merge manifest entries in one response.
  *
  *   | Kind        | Installed source                                      | Catalog DB? |
  *   |-------------|-------------------------------------------------------|-------------|

@@ -21,62 +21,62 @@ import { createActionCaller } from "./action-call";
 export type AuthProfileKind = Exclude<StoredAuthProfileKind, "interactive">;
 
 export interface AuthProfileCreateInput {
-  profile_kind: AuthProfileKind;
-  connector_key: string;
-  display_name: string;
-  /** Optional stable slug for the new profile. Auto-derived when omitted. */
-  slug?: string;
-  credentials?: Record<string, string>;
-  auth_data?: Record<string, unknown>;
-  requested_scopes?: string[];
+	profile_kind: AuthProfileKind;
+	connector_key: string;
+	display_name: string;
+	/** Optional stable slug for the new profile. Auto-derived when omitted. */
+	slug?: string;
+	credentials?: Record<string, string>;
+	auth_data?: Record<string, unknown>;
+	requested_scopes?: string[];
 }
 
 export interface AuthProfileUpdateInput {
-  /** Identifies the profile to mutate. */
-  auth_profile_slug: string;
-  display_name?: string;
-  /** Rename the profile. */
-  slug?: string;
-  credentials?: Record<string, string>;
-  auth_data?: Record<string, unknown>;
-  requested_scopes?: string[];
-  status?: string;
-  reconnect?: boolean;
+	/** Identifies the profile to mutate. */
+	auth_profile_slug: string;
+	display_name?: string;
+	/** Rename the profile. */
+	slug?: string;
+	credentials?: Record<string, string>;
+	auth_data?: Record<string, unknown>;
+	requested_scopes?: string[];
+	status?: string;
+	reconnect?: boolean;
 }
 
 export interface AuthProfilesNamespace {
-  manage(input: Record<string, unknown>): Promise<unknown>;
-  list(input?: {
-    connector_key?: string;
-    provider?: string;
-    profile_kind?: AuthProfileKind;
-  }): Promise<unknown>;
-  get(auth_profile_slug: string): Promise<unknown>;
-  test(auth_profile_slug: string): Promise<unknown>;
-  create(input: AuthProfileCreateInput): Promise<unknown>;
-  update(input: AuthProfileUpdateInput): Promise<unknown>;
-  delete(
-    auth_profile_slug: string,
-    options?: { force?: boolean },
-  ): Promise<unknown>;
+	manage(input: Record<string, unknown>): Promise<unknown>;
+	list(input?: {
+		connector_key?: string;
+		provider?: string;
+		profile_kind?: AuthProfileKind;
+	}): Promise<unknown>;
+	get(auth_profile_slug: string): Promise<unknown>;
+	test(auth_profile_slug: string): Promise<unknown>;
+	create(input: AuthProfileCreateInput): Promise<unknown>;
+	update(input: AuthProfileUpdateInput): Promise<unknown>;
+	delete(
+		auth_profile_slug: string,
+		options?: { force?: boolean },
+	): Promise<unknown>;
 }
 
 export function buildAuthProfilesNamespace(
-  ctx: ToolContext,
-  env: Env,
+	ctx: ToolContext,
+	env: Env,
 ): AuthProfilesNamespace {
-  const { manage, action } = createActionCaller(manageAuthProfiles, env, ctx);
+	const { manage, action } = createActionCaller(manageAuthProfiles, env, ctx);
 
-  return {
-    manage,
-    list: (input) => action("list_auth_profiles", input),
-    get: (auth_profile_slug) =>
-      action("get_auth_profile", { auth_profile_slug }),
-    test: (auth_profile_slug) =>
-      action("test_auth_profile", { auth_profile_slug }),
-    create: (input) => action("create_auth_profile", input),
-    update: (input) => action("update_auth_profile", input),
-    delete: (auth_profile_slug, options) =>
-      action("delete_auth_profile", { auth_profile_slug, ...options }),
-  };
+	return {
+		manage,
+		list: (input) => action("list_auth_profiles", input),
+		get: (auth_profile_slug) =>
+			action("get_auth_profile", { auth_profile_slug }),
+		test: (auth_profile_slug) =>
+			action("test_auth_profile", { auth_profile_slug }),
+		create: (input) => action("create_auth_profile", input),
+		update: (input) => action("update_auth_profile", input),
+		delete: (auth_profile_slug, options) =>
+			action("delete_auth_profile", { auth_profile_slug, ...options }),
+	};
 }

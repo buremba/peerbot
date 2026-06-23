@@ -3,6 +3,7 @@
  */
 
 export { buildAuthProfilesNamespace } from "./auth-profiles";
+export { buildCatalogNamespace } from "./catalog";
 export { buildClassifiersNamespace } from "./classifiers";
 export { buildConnectionsNamespace } from "./connections";
 export { buildEntitiesNamespace } from "./entities";

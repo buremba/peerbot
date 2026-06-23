@@ -27,8 +27,8 @@ function mkFixtureDir(): string {
 
 /**
  * Route by URL substring. A handler receives the parsed request body so routes
- * sharing a URL (e.g. `manage_connections` carries both `list_connections` and
- * `list_connector_definitions` actions) can branch on the body `action`.
+ * sharing a URL (e.g. `manage_connections` carries `list` alongside other
+ * actions) can branch on the body `action`.
  */
 function buildFetch(
   routes: Record<string, (body: Record<string, unknown>) => unknown>
@@ -421,32 +421,27 @@ describe("lobu init --from-org", () => {
             },
           ],
         }),
-        // Both `list_connections` and `list_connector_definitions` POST here —
-        // branch on the body action.
-        manage_connections: (body) =>
-          body.action === "list_connector_definitions"
-            ? {
-                connector_definitions: [
+        manage_connections: () => ({ connections: [] }),
+        manage_catalog: (body) => {
+          const stripe = {
+            id: "stripe",
+            name: "Stripe",
+            detail: {
+              auth_schema: {
+                methods: [
                   {
-                    key: "stripe",
-                    name: "Stripe",
-                    // Real connector auth_schema: a `methods` array (env_keys
-                    // method with `fields[].key`), NOT a JSON Schema. The
-                    // credential KEY comes from `fields[].key` (`api_key`).
-                    auth_schema: {
-                      methods: [
-                        {
-                          type: "env_keys",
-                          fields: [
-                            { key: "api_key", required: true, secret: true },
-                          ],
-                        },
-                      ],
-                    },
+                    type: "env_keys",
+                    fields: [{ key: "api_key", required: true, secret: true }],
                   },
                 ],
-              }
-            : { connections: [] },
+              },
+            },
+          };
+          if (body.action === "list_catalog") {
+            return { catalogs: { connectors: { entries: [stripe] } } };
+          }
+          return { installed: { connectors: { items: [stripe] } } };
+        },
       }),
     });
 
@@ -658,29 +653,30 @@ describe("lobu init --from-org", () => {
             },
           ],
         }),
-        manage_connections: (body) =>
-          body.action === "list_connector_definitions"
-            ? {
-                connector_definitions: [
+        manage_connections: () => ({ connections: [] }),
+        manage_catalog: (body) => {
+          const slack = {
+            id: "slack",
+            name: "Slack",
+            detail: {
+              auth_schema: {
+                methods: [
                   {
-                    key: "slack",
-                    name: "Slack",
-                    // oauth method declares explicit credential key names.
-                    auth_schema: {
-                      methods: [
-                        {
-                          type: "oauth",
-                          provider: "slack",
-                          requiredScopes: ["chat:write"],
-                          clientIdKey: "SLACK_OAUTH_CLIENT_ID",
-                          clientSecretKey: "SLACK_OAUTH_CLIENT_SECRET",
-                        },
-                      ],
-                    },
+                    type: "oauth",
+                    provider: "slack",
+                    requiredScopes: ["chat:write"],
+                    clientIdKey: "SLACK_OAUTH_CLIENT_ID",
+                    clientSecretKey: "SLACK_OAUTH_CLIENT_SECRET",
                   },
                 ],
-              }
-            : { connections: [] },
+              },
+            },
+          };
+          if (body.action === "list_catalog") {
+            return { catalogs: { connectors: { entries: [slack] } } };
+          }
+          return { installed: { connectors: { items: [slack] } } };
+        },
       }),
     });
 

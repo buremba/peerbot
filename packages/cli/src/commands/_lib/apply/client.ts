@@ -980,17 +980,72 @@ export class ApplyClient {
     return parsed;
   }
 
+  private async catalogTool<T>(body: Record<string, unknown>): Promise<T> {
+    const { body: parsed } = await this.request<T>(
+      "POST",
+      `/api/${this.orgSlug}/manage_catalog`,
+      body
+    );
+    return parsed;
+  }
+
   /** Installed org connectors + (with `includeInstallable`) the bundled catalog. */
   async listConnectorDefinitions(
     includeInstallable = true
   ): Promise<RemoteConnectorDefinition[]> {
-    const body = await this.connectionsTool<{
-      connector_definitions?: RemoteConnectorDefinition[];
+    const installedBody = await this.catalogTool<{
+      installed?: {
+        connectors?: {
+          items?: Array<{
+            id: string;
+            name: string;
+            detail?: Record<string, unknown>;
+          }>;
+        };
+      };
     }>({
-      action: "list_connector_definitions",
-      include_installable: includeInstallable,
+      action: "list_installed",
+      kinds: ["connectors"],
     });
-    return body.connector_definitions ?? [];
+    const installedItems = installedBody.installed?.connectors?.items ?? [];
+    const installed = installedItems.map((item) =>
+      mapInstalledConnectorDefinition(item)
+    );
+
+    if (!includeInstallable) {
+      return installed;
+    }
+
+    const catalogBody = await this.catalogTool<{
+      catalogs?: {
+        connectors?: {
+          entries?: Array<{
+            id: string;
+            name: string;
+            version?: string;
+            description?: string | null;
+            detail?: Record<string, unknown>;
+          }>;
+        };
+      };
+    }>({
+      action: "list_catalog",
+      kinds: ["connectors"],
+    });
+    const catalogEntries = catalogBody.catalogs?.connectors?.entries ?? [];
+    const merged = new Map<string, RemoteConnectorDefinition>();
+    for (const entry of installed) {
+      merged.set(entry.key, entry);
+    }
+    for (const entry of catalogEntries) {
+      if (merged.has(entry.id)) continue;
+      merged.set(entry.id, mapCatalogConnectorDefinition(entry));
+    }
+    return [...merged.values()].sort((a, b) => {
+      if (a.installed && !b.installed) return -1;
+      if (!a.installed && b.installed) return 1;
+      return String(a.name ?? a.key).localeCompare(String(b.name ?? b.key));
+    });
   }
 
   /**
@@ -1259,6 +1314,68 @@ export class ApplyClient {
     }
     return body.feed;
   }
+}
+
+function mapInstalledConnectorDefinition(item: {
+  id: string;
+  name: string;
+  detail?: Record<string, unknown>;
+}): RemoteConnectorDefinition {
+  const detail = item.detail ?? {};
+  return {
+    key: item.id,
+    name: item.name,
+    version: typeof detail.version === "string" ? detail.version : undefined,
+    options_schema:
+      detail.options_schema && typeof detail.options_schema === "object"
+        ? (detail.options_schema as Record<string, unknown>)
+        : null,
+    feeds_schema:
+      detail.feeds_schema && typeof detail.feeds_schema === "object"
+        ? (detail.feeds_schema as Record<string, unknown>)
+        : null,
+    auth_schema:
+      detail.auth_schema && typeof detail.auth_schema === "object"
+        ? (detail.auth_schema as Record<string, unknown>)
+        : null,
+    installed: true,
+    installable: false,
+    catalog_origin: "org",
+    source_uri:
+      typeof detail.source_uri === "string" ? detail.source_uri : null,
+  };
+}
+
+function mapCatalogConnectorDefinition(entry: {
+  id: string;
+  name: string;
+  version?: string;
+  description?: string | null;
+  detail?: Record<string, unknown>;
+}): RemoteConnectorDefinition {
+  const detail = entry.detail ?? {};
+  return {
+    key: entry.id,
+    name: entry.name,
+    version: entry.version,
+    options_schema:
+      detail.options_schema && typeof detail.options_schema === "object"
+        ? (detail.options_schema as Record<string, unknown>)
+        : null,
+    feeds_schema:
+      detail.feeds_schema && typeof detail.feeds_schema === "object"
+        ? (detail.feeds_schema as Record<string, unknown>)
+        : null,
+    auth_schema:
+      detail.auth_schema && typeof detail.auth_schema === "object"
+        ? (detail.auth_schema as Record<string, unknown>)
+        : null,
+    installed: false,
+    installable: true,
+    catalog_origin: "catalog",
+    source_uri:
+      typeof detail.source_uri === "string" ? detail.source_uri : null,
+  };
 }
 
 /**

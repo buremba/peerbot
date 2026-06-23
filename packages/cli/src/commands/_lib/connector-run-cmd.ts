@@ -24,11 +24,10 @@ import { writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { printText } from "../../internal/output.js";
-
 import type { EventEnvelope } from "@lobu/connector-sdk";
 import { resolveContext } from "../../internal/context.js";
 import { fetchWithRetry } from "../../internal/http.js";
+import { printText } from "../../internal/output.js";
 import { getUsableToken, resolveOrg } from "../memory/_lib/openclaw-auth.js";
 import {
   compileConnectorFromFile,
@@ -299,7 +298,7 @@ export async function connectorRun(
   const sourcePath = findBundledConnectorFile(connectorKey);
   if (!sourcePath) {
     throw new Error(
-      `Connector '${connectorKey}' not found in the bundled catalog. Check: \`lobu memory run manage_connections '{"action":"list_connector_definitions"}'\`.`
+      `Connector '${connectorKey}' not found in the bundled catalog. Check: \`lobu memory run manage_catalog '{"action":"list_catalog","kinds":["connectors"]}'\`.`
     );
   }
   printText(`Compiling ${connectorKey} from ${sourcePath}...`);

@@ -521,8 +521,8 @@ function schemaFromAuthMethods(
 /**
  * Build per-connector validation schemas from a connector definition. Accepts
  * either a typed `ConnectorDefinition` (from `@lobu/connector-sdk`) or the
- * snake_cased shape the server's `manage_connections list_connector_definitions`
- * returns (`options_schema`, `feeds_schema`, `auth_schema`).
+ * snake_cased shape from `manage_catalog` connector entries
+ * (`options_schema`, `feeds_schema`, `auth_schema`).
  */
 export function resolveConnectorSchemas(
   def:

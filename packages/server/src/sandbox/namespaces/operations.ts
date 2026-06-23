@@ -11,56 +11,56 @@ import type { ToolContext } from "../../tools/registry";
 import { createActionCaller } from "./action-call";
 
 export interface OperationsExecuteInput {
-  connection_id: number;
-  operation_key: string;
-  input?: Record<string, unknown>;
-  /**
-   * Watcher provenance when this operation fires from a reaction. Both ids are
-   * numeric.
-   */
-  watcher_source?: { watcher_id: number; window_id: number };
+	connection_id: number;
+	operation_key: string;
+	input?: Record<string, unknown>;
+	/**
+	 * Watcher provenance when this operation fires from a reaction. Both ids are
+	 * numeric.
+	 */
+	watcher_source?: { watcher_id: number; window_id: number };
 }
 
 export interface OperationsNamespace {
-  manage(input: Record<string, unknown>): Promise<unknown>;
-  listAvailable(input?: { entity_id?: number }): Promise<unknown>;
-  execute(input: OperationsExecuteInput): Promise<unknown>;
-  listRuns(input?: {
-    connection_id?: number;
-    connection_ids?: number[];
-    feed_ids?: number[];
-    device_worker_id?: string;
-    operation_key?: string;
-    status?: string;
-    approval_status?: string;
-    /** Omit to list every run type (sync, action, auth, …). */
-    run_types?: string[];
-    before_id?: number;
-    before_created_at?: string;
-    limit?: number;
-    offset?: number;
-  }): Promise<unknown>;
-  getRun(run_id: number): Promise<unknown>;
-  approve(input: {
-    run_id: number;
-    input?: Record<string, unknown>;
-  }): Promise<unknown>;
-  reject(input: { run_id: number; reason?: string }): Promise<unknown>;
+	manage(input: Record<string, unknown>): Promise<unknown>;
+	listAvailable(input?: { entity_id?: number }): Promise<unknown>;
+	execute(input: OperationsExecuteInput): Promise<unknown>;
+	listRuns(input?: {
+		connection_id?: number;
+		connection_ids?: number[];
+		feed_ids?: number[];
+		device_worker_id?: string;
+		operation_key?: string;
+		status?: string;
+		approval_status?: string;
+		/** Omit to list every run type (sync, action, auth, …). */
+		run_types?: string[];
+		before_id?: number;
+		before_created_at?: string;
+		limit?: number;
+		offset?: number;
+	}): Promise<unknown>;
+	getRun(run_id: number): Promise<unknown>;
+	approve(input: {
+		run_id: number;
+		input?: Record<string, unknown>;
+	}): Promise<unknown>;
+	reject(input: { run_id: number; reason?: string }): Promise<unknown>;
 }
 
 export function buildOperationsNamespace(
-  ctx: ToolContext,
-  env: Env,
+	ctx: ToolContext,
+	env: Env,
 ): OperationsNamespace {
-  const { manage, action } = createActionCaller(manageOperations, env, ctx);
+	const { manage, action } = createActionCaller(manageOperations, env, ctx);
 
-  return {
-    manage,
-    listAvailable: (input) => action("list_available", input),
-    execute: (input) => action("execute", input),
-    listRuns: (input) => action("list_runs", input),
-    getRun: (run_id) => action("get_run", { run_id }),
-    approve: (input) => action("approve", input),
-    reject: (input) => action("reject", input),
-  };
+	return {
+		manage,
+		listAvailable: (input) => action("list_available", input),
+		execute: (input) => action("execute", input),
+		listRuns: (input) => action("list_runs", input),
+		getRun: (run_id) => action("get_run", { run_id }),
+		approve: (input) => action("approve", input),
+		reject: (input) => action("reject", input),
+	};
 }

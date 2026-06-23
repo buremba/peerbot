@@ -5,42 +5,38 @@
  */
 
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
-import type {
-  AgentConfigStore,
-  ModelOption,
-  SkillConfig,
-} from "@lobu/core";
+import type { AgentConfigStore, ModelOption, SkillConfig } from "@lobu/core";
 import type { Context } from "hono";
 import type { ProviderCatalogService } from "../../auth/provider-catalog.js";
 import { collectProviderModelOptions } from "../../auth/provider-model-options.js";
 
 import type {
-  AgentSettings,
-  AgentSettingsStore,
+	AgentSettings,
+	AgentSettingsStore,
 } from "../../auth/settings/agent-settings-store.js";
 import type { AuthProfilesManager } from "../../auth/settings/auth-profiles-manager.js";
 import { getModelSelectionState } from "../../auth/settings/model-selection.js";
 import {
-  canEditSettingsSection,
-  type ResolvedProviderView,
-  type ResolvedSectionView,
-  SETTINGS_SECTION_KEYS,
-  type SettingsSectionKey,
+	canEditSettingsSection,
+	type ResolvedProviderView,
+	type ResolvedSectionView,
+	SETTINGS_SECTION_KEYS,
+	type SettingsSectionKey,
 } from "../../auth/settings/resolved-settings-view.js";
 import type { SettingsTokenPayload } from "../../auth/settings/token-service.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
 import type { WorkerConnectionManager } from "../../gateway/connection-manager.js";
 import type { IMessageQueue } from "../../infrastructure/queue/index.js";
 import {
-  getModelProviderModules,
-  type ModelProviderModule,
+	getModelProviderModules,
+	type ModelProviderModule,
 } from "../../modules/module-system.js";
 import type { GrantStore } from "../../permissions/grant-store.js";
 import { createTokenVerifier } from "../shared/agent-ownership.js";
 import { errorResponse } from "../shared/helpers.js";
 import {
-  ErrorResponseSchema,
-  errorResponses,
+	ErrorResponseSchema,
+	errorResponses,
 } from "../shared/openapi-responses.js";
 import { verifySettingsSessionOrToken } from "./settings-auth.js";
 
@@ -49,446 +45,416 @@ const TokenQuery = z.object({ token: z.string().optional() });
 const REDACTED_VALUE = "__LOBU_REDACTED__";
 
 const SENSITIVE_KEY_PATTERN =
-  /(?:credential|secret|token|password|api(?:_|-)?key|authorization)/i;
+	/(?:credential|secret|token|password|api(?:_|-)?key|authorization)/i;
 
 // --- Route Definitions ---
 
 const getConfigRoute = createRoute({
-  method: "get",
-  path: "/",
-  tags: [TAG],
-  summary: "Get agent configuration",
-  request: { query: TokenQuery },
-  responses: {
-    200: {
-      description: "Configuration",
-      content: {
-        "application/json": {
-          schema: z.any(),
-        },
-      },
-    },
-    ...errorResponses(ErrorResponseSchema, {
-      401: "Unauthorized",
-    }),
-  },
+	method: "get",
+	path: "/",
+	tags: [TAG],
+	summary: "Get agent configuration",
+	request: { query: TokenQuery },
+	responses: {
+		200: {
+			description: "Configuration",
+			content: {
+				"application/json": {
+					schema: z.any(),
+				},
+			},
+		},
+		...errorResponses(ErrorResponseSchema, {
+			401: "Unauthorized",
+		}),
+	},
 });
 
 interface ProviderCredentialStore {
-  hasCredentials(
-    agentId: string,
-    context?: { userId?: string }
-  ): Promise<boolean>;
+	hasCredentials(
+		agentId: string,
+		context?: { userId?: string },
+	): Promise<boolean>;
 }
 
 interface AgentConfigRoutesConfig {
-  agentSettingsStore: AgentSettingsStore;
-  agentConfigStore: Pick<AgentConfigStore, "getMetadata" | "getSettings">;
-  userAgentsStore?: UserAgentsStore;
-  providerStores?: Record<string, ProviderCredentialStore>;
-  /**
-   * Provider connectivity overrides (e.g., system token means "connected" even if no user credentials are stored).
-   */
-  providerConnectedOverrides?: Record<string, boolean>;
-  providerCatalogService?: ProviderCatalogService;
-  authProfilesManager?: AuthProfilesManager;
-  queue?: IMessageQueue;
-  connectionManager?: WorkerConnectionManager;
-  grantStore?: GrantStore;
+	agentSettingsStore: AgentSettingsStore;
+	agentConfigStore: Pick<AgentConfigStore, "getMetadata" | "getSettings">;
+	userAgentsStore?: UserAgentsStore;
+	providerStores?: Record<string, ProviderCredentialStore>;
+	/**
+	 * Provider connectivity overrides (e.g., system token means "connected" even if no user credentials are stored).
+	 */
+	providerConnectedOverrides?: Record<string, boolean>;
+	providerCatalogService?: ProviderCatalogService;
+	authProfilesManager?: AuthProfilesManager;
+	queue?: IMessageQueue;
+	connectionManager?: WorkerConnectionManager;
+	grantStore?: GrantStore;
 }
 
 function getViewer(payload: SettingsTokenPayload | null | undefined): {
-  settingsMode?: "admin" | "user";
-  allowedScopes?: string[];
-  isAdmin?: boolean;
+	settingsMode?: "admin" | "user";
+	allowedScopes?: string[];
+	isAdmin?: boolean;
 } {
-  return {
-    settingsMode: payload?.settingsMode,
-    allowedScopes: payload?.allowedScopes,
-    isAdmin: payload?.isAdmin,
-  };
+	return {
+		settingsMode: payload?.settingsMode,
+		allowedScopes: payload?.allowedScopes,
+		isAdmin: payload?.isAdmin,
+	};
 }
 
 function getProviderModelPreferencesFromSettings(
-  settings: AgentSettings | null | undefined
+	settings: AgentSettings | null | undefined,
 ): Record<string, string> {
-  const directPreferences = Object.fromEntries(
-    Object.entries(settings?.providerModelPreferences || {})
-      .map(([providerId, modelRef]) => [providerId.trim(), modelRef.trim()])
-      .filter(([providerId, modelRef]) => providerId && modelRef)
-  );
-  if (Object.keys(directPreferences).length > 0) {
-    return directPreferences;
-  }
+	const directPreferences = Object.fromEntries(
+		Object.entries(settings?.providerModelPreferences || {})
+			.map(([providerId, modelRef]) => [providerId.trim(), modelRef.trim()])
+			.filter(([providerId, modelRef]) => providerId && modelRef),
+	);
+	if (Object.keys(directPreferences).length > 0) {
+		return directPreferences;
+	}
 
-  const fallbackPreferences: Record<string, string> = {};
-  for (const ip of settings?.installedProviders || []) {
-    if (ip.config?.modelPreference) {
-      fallbackPreferences[ip.providerId] = String(ip.config.modelPreference);
-    }
-  }
-  return fallbackPreferences;
+	const fallbackPreferences: Record<string, string> = {};
+	for (const ip of settings?.installedProviders || []) {
+		if (ip.config?.modelPreference) {
+			fallbackPreferences[ip.providerId] = String(ip.config.modelPreference);
+		}
+	}
+	return fallbackPreferences;
 }
 
 async function resolveSettingsView(
-  config: AgentConfigRoutesConfig,
-  agentId: string,
-  payload: SettingsTokenPayload | null
+	config: AgentConfigRoutesConfig,
+	agentId: string,
+	payload: SettingsTokenPayload | null,
 ): Promise<{
-  sections: Record<SettingsSectionKey, ResolvedSectionView>;
-  providerSources: Record<string, ResolvedProviderView>;
-  settings: AgentSettings | null;
+	sections: Record<SettingsSectionKey, ResolvedSectionView>;
+	providerSources: Record<string, ResolvedProviderView>;
+	settings: AgentSettings | null;
 }> {
-  const viewer = getViewer(payload);
-  const settings = await config.agentSettingsStore.getSettings(agentId);
+	const viewer = getViewer(payload);
+	const settings = await config.agentSettingsStore.getSettings(agentId);
 
-  const sections = Object.fromEntries(
-    SETTINGS_SECTION_KEYS.map((section) => [
-      section,
-      {
-        editable: canEditSettingsSection(section, viewer),
-      } satisfies ResolvedSectionView,
-    ])
-  ) as Record<SettingsSectionKey, ResolvedSectionView>;
+	const sections = Object.fromEntries(
+		SETTINGS_SECTION_KEYS.map((section) => [
+			section,
+			{
+				editable: canEditSettingsSection(section, viewer),
+			} satisfies ResolvedSectionView,
+		]),
+	) as Record<SettingsSectionKey, ResolvedSectionView>;
 
-  const providerSources = Object.fromEntries(
-    (settings?.installedProviders || []).map((provider) => [
-      provider.providerId,
-      {
-        id: provider.providerId,
-        canEdit: canEditSettingsSection("model", viewer),
-      } satisfies ResolvedProviderView,
-    ])
-  );
+	const providerSources = Object.fromEntries(
+		(settings?.installedProviders || []).map((provider) => [
+			provider.providerId,
+			{
+				id: provider.providerId,
+				canEdit: canEditSettingsSection("model", viewer),
+			} satisfies ResolvedProviderView,
+		]),
+	);
 
-  return { sections, providerSources, settings };
+	return { sections, providerSources, settings };
 }
 
 async function buildResolvedConfigResponse(
-  config: AgentConfigRoutesConfig,
-  agentId: string,
-  payload: SettingsTokenPayload | null,
-  providerModels: Record<string, ModelOption[]>
+	config: AgentConfigRoutesConfig,
+	agentId: string,
+	payload: SettingsTokenPayload | null,
+	providerModels: Record<string, ModelOption[]>,
 ): Promise<any> {
-  const [settingsView, grants] = await Promise.all([
-    resolveSettingsView(config, agentId, payload),
-    config.grantStore?.listGrants(agentId) ?? Promise.resolve([]),
-  ]);
-  const settings = settingsView.settings;
+	const [settingsView, grants] = await Promise.all([
+		resolveSettingsView(config, agentId, payload),
+		config.grantStore?.listGrants(agentId) ?? Promise.resolve([]),
+	]);
+	const settings = settingsView.settings;
 
-  const providers: Record<
-    string,
-    {
-      connected: boolean;
-      userConnected: boolean;
-      systemConnected: boolean;
-      activeAuthType?: string;
-      authMethods?: string[];
-    }
-  > = {};
-  if (config.providerStores) {
-    for (const [name, store] of Object.entries(config.providerStores)) {
-      try {
-        const hasSystemCredentials =
-          config.providerConnectedOverrides?.[name] === true;
-        const hasUserCredentials = await store.hasCredentials(
-          agentId,
-          payload?.userId ? { userId: payload.userId } : undefined
-        );
+	const providers: Record<
+		string,
+		{
+			connected: boolean;
+			userConnected: boolean;
+			systemConnected: boolean;
+			activeAuthType?: string;
+			authMethods?: string[];
+		}
+	> = {};
+	if (config.providerStores) {
+		for (const [name, store] of Object.entries(config.providerStores)) {
+			try {
+				const hasSystemCredentials =
+					config.providerConnectedOverrides?.[name] === true;
+				const hasUserCredentials = await store.hasCredentials(
+					agentId,
+					payload?.userId ? { userId: payload.userId } : undefined,
+				);
 
-        const profiles = config.authProfilesManager
-          ? await config.authProfilesManager.getProviderProfiles(
-              agentId,
-              name,
-              payload?.userId
-            )
-          : [];
-        const now = Date.now();
-        const validProfiles = profiles.filter(
-          (profile) =>
-            !profile.metadata?.expiresAt || profile.metadata.expiresAt > now
-        );
+				const profiles = config.authProfilesManager
+					? await config.authProfilesManager.getProviderProfiles(
+							agentId,
+							name,
+							payload?.userId,
+						)
+					: [];
+				const now = Date.now();
+				const validProfiles = profiles.filter(
+					(profile) =>
+						!profile.metadata?.expiresAt || profile.metadata.expiresAt > now,
+				);
 
-        providers[name] = {
-          connected: hasUserCredentials || hasSystemCredentials,
-          userConnected: hasUserCredentials,
-          systemConnected: hasSystemCredentials,
-          activeAuthType: validProfiles[0]?.authType,
-          authMethods: validProfiles.map((profile) => profile.authType),
-        };
-      } catch {
-        providers[name] = {
-          connected: false,
-          userConnected: false,
-          systemConnected: false,
-        };
-      }
-    }
-  }
+				providers[name] = {
+					connected: hasUserCredentials || hasSystemCredentials,
+					userConnected: hasUserCredentials,
+					systemConnected: hasSystemCredentials,
+					activeAuthType: validProfiles[0]?.authType,
+					authMethods: validProfiles.map((profile) => profile.authType),
+				};
+			} catch {
+				providers[name] = {
+					connected: false,
+					userConnected: false,
+					systemConnected: false,
+				};
+			}
+		}
+	}
 
-  const allModules = getModelProviderModules();
-  const allProviderMeta = allModules
-    .filter((module) => module.catalogVisible !== false)
-    .map((module: ModelProviderModule) => ({
-      id: module.providerId,
-      name: module.providerDisplayName,
-      iconUrl: module.providerIconUrl || "",
-      authType: (module.authType || "oauth") as
-        | "oauth"
-        | "device-code"
-        | "api-key",
-      supportedAuthTypes: (module.supportedAuthTypes as (
-        | "oauth"
-        | "device-code"
-        | "api-key"
-      )[]) || [
-        (module.authType || "oauth") as "oauth" | "device-code" | "api-key",
-      ],
-      apiKeyInstructions: module.apiKeyInstructions || "",
-      apiKeyPlaceholder: module.apiKeyPlaceholder || "",
-      capabilities: [] as string[],
-    }));
+	const allModules = getModelProviderModules();
+	const allProviderMeta = allModules
+		.filter((module) => module.catalogVisible !== false)
+		.map((module: ModelProviderModule) => ({
+			id: module.providerId,
+			name: module.providerDisplayName,
+			iconUrl: module.providerIconUrl || "",
+			authType: (module.authType || "oauth") as
+				| "oauth"
+				| "device-code"
+				| "api-key",
+			supportedAuthTypes: (module.supportedAuthTypes as (
+				| "oauth"
+				| "device-code"
+				| "api-key"
+			)[]) || [
+				(module.authType || "oauth") as "oauth" | "device-code" | "api-key",
+			],
+			apiKeyInstructions: module.apiKeyInstructions || "",
+			apiKeyPlaceholder: module.apiKeyPlaceholder || "",
+			capabilities: [] as string[],
+		}));
 
-  const installedIds = (settings?.installedProviders || []).map(
-    (provider) => provider.providerId
-  );
-  const installedIdSet = new Set(installedIds);
-  const catalogProviders = allProviderMeta.filter(
-    (provider) => !installedIdSet.has(provider.id)
-  );
-  const providerIconUrls: Record<string, string> = {};
-  for (const provider of allProviderMeta) {
-    if (provider.iconUrl) {
-      providerIconUrls[provider.id] = provider.iconUrl;
-    }
-  }
+	const installedIds = (settings?.installedProviders || []).map(
+		(provider) => provider.providerId,
+	);
+	const installedIdSet = new Set(installedIds);
+	const catalogProviders = allProviderMeta.filter(
+		(provider) => !installedIdSet.has(provider.id),
+	);
+	const providerIconUrls: Record<string, string> = {};
+	for (const provider of allProviderMeta) {
+		if (provider.iconUrl) {
+			providerIconUrls[provider.id] = provider.iconUrl;
+		}
+	}
 
-  const providerMeta: Record<string, object> = {};
-  for (const provider of allProviderMeta) {
-    providerMeta[provider.id] = {
-      name: provider.name,
-      authType: provider.authType,
-      supportedAuthTypes: provider.supportedAuthTypes,
-      apiKeyInstructions: provider.apiKeyInstructions,
-      apiKeyPlaceholder: provider.apiKeyPlaceholder,
-      capabilities: provider.capabilities,
-    };
-  }
+	const providerMeta: Record<string, object> = {};
+	for (const provider of allProviderMeta) {
+		providerMeta[provider.id] = {
+			name: provider.name,
+			authType: provider.authType,
+			supportedAuthTypes: provider.supportedAuthTypes,
+			apiKeyInstructions: provider.apiKeyInstructions,
+			apiKeyPlaceholder: provider.apiKeyPlaceholder,
+			capabilities: provider.capabilities,
+		};
+	}
 
-  const sanitized = sanitizeSettingsForResponse(settings);
-  return {
-    agentId,
-    sections: settingsView.sections,
-    providerViews: settingsView.providerSources,
-    instructions: {
-      identity: sanitized.identityMd || "",
-      soul: sanitized.soulMd || "",
-      user: sanitized.userMd || "",
-    },
-    providers: {
-      order: installedIds,
-      status: providers,
-      catalog: catalogProviders,
-      meta: providerMeta,
-      models: providerModels,
-      preferences: getProviderModelPreferencesFromSettings(settings),
-      icons: providerIconUrls,
-      modelSelection: getModelSelectionState(settings || undefined),
-      configManaged: [] as string[],
-    },
-    skills: sanitized.skillsConfig?.skills || [],
-    mcpServers: sanitized.mcpServers || {},
-    tools: {
-      nixPackages: sanitized.nixConfig?.packages || [],
-      permissions: grants,
-      registries: [],
-      globalRegistries: [],
-    },
-    settings: {
-      verboseLogging: !!sanitized.verboseLogging,
-      memoryEnabled: !!process.env.MEMORY_URL,
-    },
-  };
+	const sanitized = sanitizeSettingsForResponse(settings);
+	return {
+		agentId,
+		sections: settingsView.sections,
+		providerViews: settingsView.providerSources,
+		instructions: {
+			identity: sanitized.identityMd || "",
+			soul: sanitized.soulMd || "",
+			user: sanitized.userMd || "",
+		},
+		providers: {
+			order: installedIds,
+			status: providers,
+			catalog: catalogProviders,
+			meta: providerMeta,
+			models: providerModels,
+			preferences: getProviderModelPreferencesFromSettings(settings),
+			icons: providerIconUrls,
+			modelSelection: getModelSelectionState(settings || undefined),
+			configManaged: [] as string[],
+		},
+		skills: sanitized.skillsConfig?.skills || [],
+		mcpServers: sanitized.mcpServers || {},
+		tools: {
+			nixPackages: sanitized.nixConfig?.packages || [],
+			permissions: grants,
+			registries: [],
+			globalRegistries: [],
+		},
+		settings: {
+			verboseLogging: !!sanitized.verboseLogging,
+			memoryEnabled: !!process.env.MEMORY_URL,
+		},
+	};
 }
 
 export function createAgentConfigRoutes(
-  config: AgentConfigRoutesConfig
+	config: AgentConfigRoutesConfig,
 ): OpenAPIHono {
-  const app = new OpenAPIHono();
+	const app = new OpenAPIHono();
 
-  const baseVerifyToken = createTokenVerifier({
-    userAgentsStore: config.userAgentsStore,
-    agentMetadataStore: config.agentConfigStore,
-  });
+	const baseVerifyToken = createTokenVerifier({
+		userAgentsStore: config.userAgentsStore,
+		agentMetadataStore: config.agentConfigStore,
+	});
 
-  /**
-   * Verify settings token against agentId.
-   * Admin sessions bypass ownership checks.
-   * Owner-scoped browser sessions get admin-equivalent access for their own
-   * agents, while exact agent-scoped tokens remain limited unless they were
-   * explicitly minted as admin/user-mode sessions.
-   */
-  const verifyToken = async (
-    payload: SettingsTokenPayload | null,
-    agentId: string
-  ): Promise<SettingsTokenPayload | null> => {
-    if (!payload) return null;
-    if (payload.isAdmin || payload.settingsMode === "admin") {
-      return {
-        ...payload,
-        isAdmin: true,
-        settingsMode: "admin",
-      };
-    }
+	/**
+	 * Verify settings token against agentId.
+	 * Admin sessions bypass ownership checks.
+	 * Owner-scoped browser sessions get admin-equivalent access for their own
+	 * agents, while exact agent-scoped tokens remain limited unless they were
+	 * explicitly minted as admin/user-mode sessions.
+	 */
+	const verifyToken = async (
+		payload: SettingsTokenPayload | null,
+		agentId: string,
+	): Promise<SettingsTokenPayload | null> => {
+		if (!payload) return null;
+		if (payload.isAdmin || payload.settingsMode === "admin") {
+			return {
+				...payload,
+				isAdmin: true,
+				settingsMode: "admin",
+			};
+		}
 
-    const verified = await baseVerifyToken(payload, agentId);
-    if (!verified) return null;
+		const verified = await baseVerifyToken(payload, agentId);
+		if (!verified) return null;
 
-    if (verified.agentId || verified.settingsMode === "user") {
-      return verified;
-    }
+		if (verified.agentId || verified.settingsMode === "user") {
+			return verified;
+		}
 
-    return {
-      ...verified,
-      isAdmin: true,
-      settingsMode: "admin",
-    };
-  };
+		return {
+			...verified,
+			isAdmin: true,
+			settingsMode: "admin",
+		};
+	};
 
-  /**
-   * Resolve the `agentId` path param and verify the settings session/token for
-   * it. Returns the verified payload plus agentId, or a 401 Response to
-   * early-return. Collapses the identical preamble every config handler ran.
-   */
-  const requireConfigAuth = async (
-    c: Context
-  ): Promise<{ agentId: string; payload: SettingsTokenPayload } | Response> => {
-    const agentId = c.req.param("agentId") || "";
-    const payload = await verifyToken(
-      await verifySettingsSessionOrToken(c),
-      agentId
-    );
-    if (!payload) return errorResponse(c, "Unauthorized", 401);
-    return { agentId, payload };
-  };
+	/**
+	 * Resolve the `agentId` path param and verify the settings session/token for
+	 * it. Returns the verified payload plus agentId, or a 401 Response to
+	 * early-return. Collapses the identical preamble every config handler ran.
+	 */
+	const requireConfigAuth = async (
+		c: Context,
+	): Promise<{ agentId: string; payload: SettingsTokenPayload } | Response> => {
+		const agentId = c.req.param("agentId") || "";
+		const payload = await verifyToken(
+			await verifySettingsSessionOrToken(c),
+			agentId,
+		);
+		if (!payload) return errorResponse(c, "Unauthorized", 401);
+		return { agentId, payload };
+	};
 
-  app.openapi(getConfigRoute, async (c): Promise<any> => {
-    const auth = await requireConfigAuth(c);
-    if (auth instanceof Response) return auth;
-    const { agentId, payload } = auth;
-    const providerModels = await collectProviderModelOptions(
-      agentId,
-      payload.userId
-    );
-    return c.json(
-      await buildResolvedConfigResponse(
-        config,
-        agentId,
-        payload,
-        providerModels
-      )
-    );
-  });
+	app.openapi(getConfigRoute, async (c): Promise<any> => {
+		const auth = await requireConfigAuth(c);
+		if (auth instanceof Response) return auth;
+		const { agentId, payload } = auth;
+		const providerModels = await collectProviderModelOptions(
+			agentId,
+			payload.userId,
+		);
+		return c.json(
+			await buildResolvedConfigResponse(
+				config,
+				agentId,
+				payload,
+				providerModels,
+			),
+		);
+	});
 
-  // --- Provider Catalog Endpoints ---
+	// ===== Grant Endpoints (read-only) =====
 
-  // GET /providers/catalog
-  app.get("/providers/catalog", async (c): Promise<any> => {
-    const auth = await requireConfigAuth(c);
-    if (auth instanceof Response) return auth;
-    const { agentId } = auth;
+	if (config.grantStore) {
+		const grantStore = config.grantStore;
 
-    if (!config.providerCatalogService) {
-      return errorResponse(c, "Provider catalog not available", 503);
-    }
+		// GET /grants - List all active grants
+		app.get("/grants", async (c) => {
+			const auth = await requireConfigAuth(c);
+			if (auth instanceof Response) return auth;
 
-    const allProviders = config.providerCatalogService.listCatalogProviders();
-    const settings =
-      await config.agentSettingsStore.getSettings(agentId);
-    const installed = settings?.installedProviders || [];
-    const installedIds = new Set(installed.map((ip) => ip.providerId));
+			const grants = await grantStore.listGrants(auth.agentId);
+			return c.json(grants);
+		});
+	}
 
-    const catalog = allProviders.map((p) => ({
-      providerId: p.providerId,
-      name: p.providerDisplayName,
-      iconUrl: p.providerIconUrl || "",
-      authType: p.authType || "api-key",
-      description: p.catalogDescription || "",
-      installed: installedIds.has(p.providerId),
-    }));
-
-    return c.json({ catalog, installedProviders: installed });
-  });
-
-  // ===== Grant Endpoints (read-only) =====
-
-  if (config.grantStore) {
-    const grantStore = config.grantStore;
-
-    // GET /grants - List all active grants
-    app.get("/grants", async (c) => {
-      const auth = await requireConfigAuth(c);
-      if (auth instanceof Response) return auth;
-
-      const grants = await grantStore.listGrants(auth.agentId);
-      return c.json(grants);
-    });
-  }
-
-  return app;
+	return app;
 }
 
 function sanitizeSettingsForResponse(
-  settings: AgentSettings | null
+	settings: AgentSettings | null,
 ): AgentSettings | Record<string, never> {
-  if (!settings) return {};
+	if (!settings) return {};
 
-  const sanitized = redactSensitiveFields(settings) as AgentSettings;
+	const sanitized = redactSensitiveFields(settings) as AgentSettings;
 
-  if (sanitized.skillsConfig?.skills) {
-    sanitized.skillsConfig = {
-      skills: sanitized.skillsConfig.skills.map((skill) => {
-        const legacySkill = skill as SkillConfig & {
-          integrations?: unknown;
-        };
-        const {
-          integrations: _integrations,
-          modelPreference: _modelPreference,
-          thinkingLevel: _thinkingLevel,
-          ...rest
-        } = legacySkill;
-        return rest;
-      }),
-    };
-  }
+	if (sanitized.skillsConfig?.skills) {
+		sanitized.skillsConfig = {
+			skills: sanitized.skillsConfig.skills.map((skill) => {
+				const legacySkill = skill as SkillConfig & {
+					integrations?: unknown;
+				};
+				const {
+					integrations: _integrations,
+					modelPreference: _modelPreference,
+					thinkingLevel: _thinkingLevel,
+					...rest
+				} = legacySkill;
+				return rest;
+			}),
+		};
+	}
 
-  return sanitized;
+	return sanitized;
 }
 
 function redactSensitiveFields(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map((entry) => redactSensitiveFields(entry));
-  }
+	if (Array.isArray(value)) {
+		return value.map((entry) => redactSensitiveFields(entry));
+	}
 
-  if (!value || typeof value !== "object") {
-    return value;
-  }
+	if (!value || typeof value !== "object") {
+		return value;
+	}
 
-  const input = value as Record<string, unknown>;
-  const output: Record<string, unknown> = {};
+	const input = value as Record<string, unknown>;
+	const output: Record<string, unknown> = {};
 
-  for (const [key, rawValue] of Object.entries(input)) {
-    if (
-      typeof rawValue === "string" &&
-      rawValue.length > 0 &&
-      SENSITIVE_KEY_PATTERN.test(key)
-    ) {
-      output[key] = REDACTED_VALUE;
-      continue;
-    }
+	for (const [key, rawValue] of Object.entries(input)) {
+		if (
+			typeof rawValue === "string" &&
+			rawValue.length > 0 &&
+			SENSITIVE_KEY_PATTERN.test(key)
+		) {
+			output[key] = REDACTED_VALUE;
+			continue;
+		}
 
-    output[key] = redactSensitiveFields(rawValue);
-  }
+		output[key] = redactSensitiveFields(rawValue);
+	}
 
-  return output;
+	return output;
 }

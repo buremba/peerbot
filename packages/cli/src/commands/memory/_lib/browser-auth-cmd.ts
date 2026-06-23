@@ -18,8 +18,8 @@ import {
   fetchCdpVersionInfo,
   resolveCdpUrl,
 } from "@lobu/connector-sdk";
-import { resolveMcpEndpoint, restToolCall } from "./mcp.js";
 import { printText } from "../../../internal/output.js";
+import { resolveMcpEndpoint, restToolCall } from "./mcp.js";
 
 /** Stub of the old getProfile() shim. resolveMcpEndpoint falls through to
  * auth store / env when config is empty, which is what we want. */
@@ -130,13 +130,18 @@ async function resolveConnectorDomains(
     return null;
   }
 
-  const parsed = await restToolCall<any>(mcpUrl, "manage_connections", {
-    action: "list_connector_definitions",
+  const parsed = await restToolCall<any>(mcpUrl, "manage_catalog", {
+    action: "list_installed",
+    kinds: ["connectors"],
   });
 
-  const connectors: any[] = Array.isArray(parsed)
-    ? parsed
-    : (parsed?.connector_definitions ?? parsed?.connectors ?? []);
+  const installedItems: any[] = parsed?.installed?.connectors?.items ?? [];
+  const connectors: any[] = installedItems.map((item: any) => ({
+    key: item.id,
+    name: item.name,
+    favicon_domain: item.detail?.favicon_domain,
+    ...item.detail,
+  }));
   const connector = connectors.find((c: any) => c.key === connectorKey);
 
   if (!connector) {

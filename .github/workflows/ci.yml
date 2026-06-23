@@ -426,6 +426,13 @@ jobs:
         # running nowhere — a skipped test is indistinguishable from a passing one.
         run: bun scripts/check-test-runner-coverage.mjs
 
+      - name: Raw-array SQL-param gate
+        # packages/server's postgres.js client runs fetch_types:false, where a raw
+        # JS array bound as a query param serializes to a malformed array literal
+        # that Postgres rejects — a silent, prod-reproducing outage class. Type-aware
+        # gate: a value whose static type is a JS array, bound as a SQL param, fails.
+        run: bun scripts/check-raw-array-params.mjs
+
   typecheck:
     runs-on: ubuntu-latest
     timeout-minutes: 20

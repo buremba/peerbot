@@ -1,4 +1,7 @@
-import { createLogger } from "@lobu/core";
+import {
+	createLogger,
+	getErrorMessage,
+} from "@lobu/core";
 import { AnthropicJudgeClient } from "./anthropic-client.js";
 import { VerdictCache } from "./cache.js";
 import { CircuitBreaker } from "./circuit-breaker.js";
@@ -196,7 +199,7 @@ export abstract class JudgeRunner<TResult> {
           ...input.logFields,
           model,
           timeoutMs: timedOut ? this.judgeTimeoutMs : undefined,
-          error: err instanceof Error ? err.message : String(err),
+          error: getErrorMessage(err),
         }
       );
       return input.decorate(

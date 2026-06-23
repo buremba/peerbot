@@ -27,6 +27,7 @@ import { getModelProviderModules } from '../gateway/modules/module-system';
 import { getNextNumericId } from '../tools/admin/helpers/db-helpers';
 import { nextRunAt } from '../utils/cron';
 import logger from '../utils/logger';
+import { getErrorMessage } from "@lobu/core";
 
 export const DEFAULT_AGENT_SENTINEL = 'default_agent_provisioned';
 export const DEFAULT_WATCHER_SENTINEL = 'default_watcher_provisioned';
@@ -327,7 +328,7 @@ export async function ensureDefaultAgent(
     return { created: true, reason: 'inserted' };
   } catch (err) {
     logger.warn(
-      { organizationId, err: err instanceof Error ? err.message : String(err) },
+      { organizationId, err: getErrorMessage(err) },
       '[default-provisioning] Default-agent provisioning failed (non-fatal)'
     );
     return { created: false, reason: 'sentinel' };
@@ -523,7 +524,7 @@ export async function ensureDefaultWatcher(params: {
       {
         organizationId: params.organizationId,
         deviceWorkerId: params.deviceWorkerId,
-        err: err instanceof Error ? err.message : String(err),
+        err: getErrorMessage(err),
       },
       '[default-provisioning] Default-watcher provisioning failed (non-fatal)'
     );

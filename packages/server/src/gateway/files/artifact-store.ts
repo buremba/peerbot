@@ -3,7 +3,12 @@ import { createReadStream } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createLogger, decrypt, encrypt } from "@lobu/core";
+import {
+	createLogger,
+	decrypt,
+	getErrorMessage,
+	encrypt,
+} from "@lobu/core";
 
 const logger = createLogger("artifact-store");
 const DEFAULT_ARTIFACTS_DIR = path.join(os.tmpdir(), "lobu-artifacts");
@@ -153,7 +158,7 @@ export class ArtifactStore {
     } catch (error) {
       return {
         valid: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: getErrorMessage(error),
       };
     }
   }

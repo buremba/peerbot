@@ -31,6 +31,7 @@ import {
 import type { ToolContext } from '../registry';
 import logger from '../../utils/logger';
 import { nextRunAt as nextCronTickAt } from '../../utils/cron';
+import { getErrorMessage } from "@lobu/core";
 
 // ============================================
 // Schema
@@ -140,7 +141,7 @@ async function handleCreate(
       nextCronTickAt(args.cron);
     } catch (err) {
       return {
-        error: `cron expression rejected: ${err instanceof Error ? err.message : String(err)}`,
+        error: `cron expression rejected: ${getErrorMessage(err)}`,
       };
     }
   }

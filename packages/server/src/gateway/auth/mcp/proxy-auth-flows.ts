@@ -1,4 +1,8 @@
-import { createLogger, type WorkerTokenData } from "@lobu/core";
+import {
+	createLogger,
+	getErrorMessage,
+	type WorkerTokenData,
+} from "@lobu/core";
 import { startDeviceAuth } from "../../routes/internal/device-auth.js";
 import type { WritableSecretStore } from "../../secrets/index.js";
 import { startAuthCodeFlow } from "./oauth-flow.js";
@@ -254,7 +258,7 @@ export class McpAuthFlows {
 		} catch (error) {
 			logger.warn("Auto auth-code flow failed", {
 				mcpId: params.mcpId,
-				error: error instanceof Error ? error.message : String(error),
+				error: getErrorMessage(error),
 			});
 			return null;
 		}
@@ -312,7 +316,7 @@ export class McpAuthFlows {
 		} catch (error) {
 			logger.warn("Auto device-auth failed", {
 				mcpId,
-				error: error instanceof Error ? error.message : String(error),
+				error: getErrorMessage(error),
 			});
 			return null;
 		}

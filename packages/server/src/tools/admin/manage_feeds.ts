@@ -29,6 +29,7 @@ import { getDefaultSchedule } from './helpers/connection-helpers';
 import { assertEntityIdsInOrg } from './helpers/db-helpers';
 import { resolveFeedDisplayName } from './helpers/feed-helpers';
 import { PaginationFields } from './schemas/common-fields';
+import { getErrorMessage } from "@lobu/core";
 
 // ============================================
 // Schema
@@ -328,7 +329,7 @@ async function handleCreateFeed(
   try {
     await assertEntityIdsInOrg(sql, organizationId, args.entity_ids);
   } catch (err) {
-    return { error: err instanceof Error ? err.message : String(err) };
+    return { error: getErrorMessage(err) };
   }
   const entityIdsValue =
     args.entity_ids && args.entity_ids.length > 0 ? pgBigintArray(args.entity_ids) : null;
@@ -391,7 +392,7 @@ async function handleUpdateFeed(
     try {
       await assertEntityIdsInOrg(sql, organizationId, args.entity_ids);
     } catch (err) {
-      return { error: err instanceof Error ? err.message : String(err) };
+      return { error: getErrorMessage(err) };
     }
   }
   const entityIdsValue =

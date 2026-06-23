@@ -14,7 +14,11 @@
  * the org that calls this provider).
  */
 
-import { createLogger, decrypt } from "@lobu/core";
+import {
+	createLogger,
+	decrypt,
+	getErrorMessage,
+} from "@lobu/core";
 import { getDb } from "../../db/client.js";
 
 const logger = createLogger("provider-secrets");
@@ -52,7 +56,7 @@ export async function readOrgSharedProviderApiKey(
     return decrypt(ciphertext);
   } catch (error) {
     logger.warn(
-      `Failed to decrypt org-shared key for provider ${providerId}: ${error instanceof Error ? error.message : String(error)}`
+      `Failed to decrypt org-shared key for provider ${providerId}: ${getErrorMessage(error)}`
     );
     return null;
   }

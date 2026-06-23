@@ -35,6 +35,7 @@ import { resolveUsernames } from '../../../../utils/resolve-usernames';
 import type { ToolContext } from '../../../registry';
 import type { ManageConnectionsResult, ConnectionsArgs } from '../schemas';
 import { resolveDeviceBinding, isManagedPublicOrgConnect } from './device-binding';
+import { getErrorMessage } from "@lobu/core";
 
 export async function handleConnect(
   args: Extract<ConnectionsArgs, { action: 'connect' }>,
@@ -311,7 +312,7 @@ export async function handleConnect(
   try {
     await assertEntityIdsInOrg(sql, organizationId, args.entity_ids);
   } catch (err) {
-    return { error: err instanceof Error ? err.message : String(err), setup_url: setupUrl };
+    return { error: getErrorMessage(err), setup_url: setupUrl };
   }
   const connectEntityIdsValue =
     args.entity_ids && args.entity_ids.length > 0 ? pgBigintArray(args.entity_ids) : null;

@@ -50,6 +50,7 @@ import { resolveDeviceBinding, isManagedPublicOrgConnect } from './device-bindin
 import { assertConnectorAllowedInCloud } from '../../../../utils/connector-cloud-gate';
 import { ensureConnectorInstalled } from '../../../../utils/ensure-connector-installed';
 import { unregisterConnectorWebhook } from '../../../../connect/webhook-registration';
+import { getErrorMessage } from "@lobu/core";
 
 // ============================================
 // handleList
@@ -302,7 +303,7 @@ export async function handleCreate(
   try {
     assertConnectorAllowedInCloud(args.connector_key);
   } catch (err) {
-    return { error: err instanceof Error ? err.message : String(err) };
+    return { error: getErrorMessage(err) };
   }
 
   // Resolve caller role once — we use it for created_by overrides, explicit
@@ -733,7 +734,7 @@ export async function handleCreate(
   try {
     await assertEntityIdsInOrg(sql, organizationId, args.entity_ids);
   } catch (err) {
-    return { error: err instanceof Error ? err.message : String(err) };
+    return { error: getErrorMessage(err) };
   }
   const entityIdsValue =
     args.entity_ids && args.entity_ids.length > 0 ? pgBigintArray(args.entity_ids) : null;
@@ -1097,7 +1098,7 @@ export async function handleUpdate(
     try {
       await assertEntityIdsInOrg(sql, organizationId, args.entity_ids);
     } catch (err) {
-      return { error: err instanceof Error ? err.message : String(err) };
+      return { error: getErrorMessage(err) };
     }
   }
   // Tri-state, mirrors manage_feeds: undefined = leave unchanged (null → COALESCE

@@ -1,5 +1,8 @@
 import type { AuthProfile } from "@lobu/core";
-import { createLogger } from "@lobu/core";
+import {
+	createLogger,
+	getErrorMessage,
+} from "@lobu/core";
 import type { AuthProfilesManager } from "../auth/settings/auth-profiles-manager.js";
 
 const logger = createLogger("image-generation-service");
@@ -187,7 +190,7 @@ export class ImageGenerationService {
       };
     } catch (error) {
       const errorMessage =
-        error instanceof Error ? error.message : String(error);
+        getErrorMessage(error);
       logger.error("Image generation failed", {
         agentId,
         provider: config.provider,

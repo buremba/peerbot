@@ -32,6 +32,7 @@ import {
   applyManageAgentsProposal,
 } from './manage_agents';
 import { PaginationFields } from './schemas/common-fields';
+import { getErrorMessage } from "@lobu/core";
 
 const BackendLiteral = Type.Union([
   Type.Literal('local_action'),
@@ -236,7 +237,7 @@ async function executeLocalActionInline(
       (compiledRows[0] as { compiled_code: string | null } | undefined)?.compiled_code ?? null;
     compiledCode = await resolveConnectorCode(connection.connector_key, rawCode);
   } catch (err) {
-    return failRunInline(runId, organizationId, err instanceof Error ? err.message : String(err));
+    return failRunInline(runId, organizationId, getErrorMessage(err));
   }
 
   const { credentials, connectionCredentials, sessionState } = await resolveExecutionAuth({
@@ -308,7 +309,7 @@ async function executeLocalActionInline(
     }
     return completeRunInline(runId, organizationId, result.output);
   } catch (error) {
-    return failRunInline(runId, organizationId, error instanceof Error ? error.message : String(error));
+    return failRunInline(runId, organizationId, getErrorMessage(error));
   }
 }
 
@@ -465,7 +466,7 @@ async function executeHttpOperationInline(
     await sql`UPDATE runs SET status = 'completed', completed_at = NOW(), action_output = ${sql.json(output)} WHERE id = ${runId} AND organization_id = ${organizationId}`;
     return { status: 'completed', output, metadata };
   } catch (error) {
-    return failRunInline(runId, organizationId, error instanceof Error ? error.message : String(error));
+    return failRunInline(runId, organizationId, getErrorMessage(error));
   }
 }
 

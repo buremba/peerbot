@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import type { LookupAddress } from "node:dns";
 import * as dns from "node:dns/promises";
 import * as http from "node:http";
@@ -6,6 +5,7 @@ import * as net from "node:net";
 import { domainToASCII } from "node:url";
 import type { WorkerTokenData } from "@lobu/core";
 import { createLogger, verifyWorkerToken } from "@lobu/core";
+import { constantTimeEqual } from "../../utils/constant-time-equal.js";
 import {
   isUnrestrictedMode,
   loadAllowedDomains,
@@ -419,12 +419,10 @@ async function validateProxyAuth(
     void store.isRevoked(tokenData.jti).catch(() => {});
   }
 
-  const deploymentMatch =
-    tokenData.deploymentName.length === creds.deploymentName.length &&
-    crypto.timingSafeEqual(
-      Buffer.from(tokenData.deploymentName),
-      Buffer.from(creds.deploymentName)
-    );
+  const deploymentMatch = constantTimeEqual(
+    tokenData.deploymentName,
+    creds.deploymentName
+  );
   if (!deploymentMatch) {
     logger.warn(
       `Proxy auth failed: deployment mismatch (claimed: ${creds.deploymentName}, token: ${tokenData.deploymentName})`

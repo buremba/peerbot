@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import {
-  ConversationOwnedElsewhereError,
-  createLogger,
-  ErrorCode,
-  extractTraceId,
-  generateWorkerToken,
-  type MessagePayload,
-  OrchestratorError,
+	ConversationOwnedElsewhereError,
+	createLogger,
+	ErrorCode,
+	extractTraceId,
+	generateWorkerToken,
+	getErrorMessage,
+	type MessagePayload,
+	OrchestratorError,
 } from "@lobu/core";
 import type { ProviderCredentialContext } from "../embedded.js";
 import type { ModelProviderModule } from "../modules/module-system.js";
@@ -402,7 +403,7 @@ export abstract class BaseDeploymentManager {
           // The "existing" deployment is actually dead (stale snapshot / just
           // exited) — fall through to spawn a fresh one instead of returning.
           logger.warn(
-            `scaleDeployment(${deploymentName}, 1) failed (${scaleErr instanceof Error ? scaleErr.message : String(scaleErr)}); re-spawning`
+            `scaleDeployment(${deploymentName}, 1) failed (${getErrorMessage(scaleErr)}); re-spawning`
           );
         }
       }
@@ -442,7 +443,7 @@ export abstract class BaseDeploymentManager {
       }
       throw new OrchestratorError(
         ErrorCode.DEPLOYMENT_CREATE_FAILED,
-        `Failed to create worker deployment: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create worker deployment: ${getErrorMessage(error)}`,
         { userId, conversationId, error },
         true
       );
@@ -1150,7 +1151,7 @@ export abstract class BaseDeploymentManager {
     } catch (error) {
       throw new OrchestratorError(
         ErrorCode.DEPLOYMENT_DELETE_FAILED,
-        `Failed to delete deployment for ${deploymentName}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete deployment for ${deploymentName}: ${getErrorMessage(error)}`,
         { deploymentName, error },
         true
       );
@@ -1238,7 +1239,7 @@ export abstract class BaseDeploymentManager {
     } catch (error) {
       logger.error(
         "Error during deployment reconciliation:",
-        error instanceof Error ? error.message : String(error)
+        getErrorMessage(error)
       );
     }
   }

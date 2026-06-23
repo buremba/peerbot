@@ -24,6 +24,7 @@ import { getNextNumericId } from '../helpers/db-helpers';
 import type { ToolContext } from '../../registry';
 import type { ManageWatchersArgs } from '../manage_watchers';
 import { normalizeExtractedData, parseJson, requireWatcherAccess } from './shared';
+import { getErrorMessage } from "@lobu/core";
 
 // Initialize AJV for JSON Schema validation
 // removeAdditional: true strips fields like 'embedding' that workers add but aren't in the schema
@@ -103,7 +104,7 @@ export async function handleCompleteWindow(
       windowTokens.map((token) => verifyWindowToken(token, env))
     )) as VerifiedWindowToken[];
   } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : String(error);
+    const errorMsg = getErrorMessage(error);
     // Agent-recoverable validation (the message says how) — ToolUserError so
     // it returns 400 and stays out of the Sentry feed (was LOBU-BACKEND-D).
     throw new ToolUserError(
@@ -734,7 +735,7 @@ export async function handleCompleteWindow(
     }
   } catch (err) {
     reactionStatus = 'failed';
-    reactionError = err instanceof Error ? err.message : String(err);
+    reactionError = getErrorMessage(err);
     logger.warn({ err }, '[manage_watchers] Failed to execute reaction script');
   }
 

@@ -70,25 +70,19 @@
  * window.
  */
 
-import { timingSafeEqual } from "node:crypto";
-import { createLogger } from "@lobu/core";
+import {
+	createLogger,
+	getErrorMessage,
+} from "@lobu/core";
 import { Hono } from "hono";
 import { getDb } from "../../../db/client.js";
+import { constantTimeEqual } from "../../../utils/constant-time-equal.js";
 
 const logger = createLogger("smoke-dispatch");
 
 interface SmokeDispatchBody {
   conversationId?: string;
   messageText?: string;
-}
-
-function compareTokens(provided: string, expected: string): boolean {
-  if (provided.length !== expected.length) return false;
-  try {
-    return timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -170,7 +164,7 @@ export function createSmokeRoutes(): Hono {
       return c.json({ error: "Missing bearer token" }, 401);
     }
     const provided = auth.substring(7);
-    if (!compareTokens(provided, expected)) {
+    if (!constantTimeEqual(provided, expected)) {
       return c.json({ error: "Invalid smoke token" }, 401);
     }
 
@@ -306,7 +300,7 @@ export function createSmokeRoutes(): Hono {
         await sql`SELECT pg_notify('runs_lobu:messages', 'chat_message')`;
       } catch (err) {
         logger.warn(
-          `pg_notify after smoke dispatch failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`
+          `pg_notify after smoke dispatch failed (non-fatal): ${getErrorMessage(err)}`
         );
       }
 
@@ -316,7 +310,7 @@ export function createSmokeRoutes(): Hono {
       return c.json({ runId, idempotencyKey });
     } catch (err) {
       logger.error(
-        `Smoke dispatch INSERT failed: ${err instanceof Error ? err.message : String(err)}`
+        `Smoke dispatch INSERT failed: ${getErrorMessage(err)}`
       );
       return c.json({ error: "Internal error" }, 500);
     }

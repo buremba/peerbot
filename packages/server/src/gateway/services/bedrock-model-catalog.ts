@@ -6,7 +6,10 @@ import {
   type FoundationModelSummary,
 } from "@aws-sdk/client-bedrock";
 import { getModels, type Model } from "@mariozechner/pi-ai";
-import { createLogger } from "@lobu/core";
+import {
+	createLogger,
+	getErrorMessage,
+} from "@lobu/core";
 
 const logger = createLogger("bedrock-model-catalog");
 
@@ -187,7 +190,7 @@ export class BedrockModelCatalog {
     } catch (error) {
       logger.warn(
         {
-          error: error instanceof Error ? error.message : String(error),
+          error: getErrorMessage(error),
         },
         "Falling back to static Bedrock model registry"
       );

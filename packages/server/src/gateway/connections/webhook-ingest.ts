@@ -34,6 +34,7 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type { StoredConnection } from "@lobu/core";
 import { getDb } from "../../db/client.js";
+import { constantTimeEqual } from "../../utils/constant-time-equal.js";
 import { insertEvent } from "../../utils/insert-event.js";
 import logger from "../../utils/logger.js";
 import { getClientIP, getRateLimiter } from "../../utils/rate-limiter.js";
@@ -98,11 +99,17 @@ function json(status: number, body: Record<string, unknown>): Response {
 	});
 }
 
-/** Constant-time equality over fixed-length digests (inputs vary in length). */
+/**
+ * Constant-time token equality. The presented/configured tokens vary in length,
+ * which `constantTimeEqual` (and `timingSafeEqual`) can't compare directly — so
+ * hash both to fixed-length sha256 hex digests first and compare THOSE. Equal
+ * tokens hash equal; the length-revealing path can never fire on the digests.
+ */
 function tokensMatch(presented: string, configured: string): boolean {
-	const a = createHash("sha256").update(presented).digest();
-	const b = createHash("sha256").update(configured).digest();
-	return timingSafeEqual(a, b);
+	return constantTimeEqual(
+		createHash("sha256").update(presented).digest("hex"),
+		createHash("sha256").update(configured).digest("hex"),
+	);
 }
 
 /**

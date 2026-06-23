@@ -39,6 +39,7 @@ import {
 	createPostgresAgentConfigStore,
 	createPostgresAgentConnectionStore,
 } from "./stores/postgres-stores";
+import { getErrorMessage } from "@lobu/core";
 
 // Cache of (userId → orgId) lookups. Keyed by userId; users only see their
 // own row swap when they leave/join orgs, which doesn't happen often. The
@@ -74,7 +75,7 @@ async function resolveDefaultOrgId(userId: string): Promise<string | null> {
 		// The DB may not be reachable yet at request time (e.g. boot races).
 		// Do not cache that transient miss; callers decide how to surface it.
 		logger.warn(
-			{ err: err instanceof Error ? err.message : String(err) },
+			{ err: getErrorMessage(err) },
 			"[Lobu] resolveDefaultOrgId: lookup failed",
 		);
 		throw err;

@@ -18,7 +18,7 @@
 
 import { inferWatcherGranularityFromSchedule } from '@lobu/connector-sdk';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { type DbClient, parsePgNumberArray } from '../../../db/client';
+import type { DbClient } from '../../../db/client';
 import { createWatcherRun } from '../../../runs/queue-service';
 import { computePendingWindow } from '../../../utils/window-utils';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -171,7 +171,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     await cleanupTestDatabase();
   });
 
-  it('creates a child entity + observation event per keyed row', async () => {
+  it('creates a child entity per keyed row, with origin window provenance in its metadata', async () => {
     const ctx = await setupKeyedWatcher();
     const { sql, workspace, watcherId, parentEntityId } = ctx;
 
@@ -214,29 +214,26 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     expect(childTypes).toHaveLength(2);
     expect(childTypes.every((r) => String(r.slug) === 'topic')).toBe(true);
 
-    // One observation event per child, carrying window_id / stable_key.
-    const observations = await sql`
-      SELECT entity_ids, metadata
-      FROM events
-      WHERE organization_id = ${workspace.org.id}
-        AND semantic_type = 'observation'
-      ORDER BY metadata->>'stable_key'
+    // Origin provenance lives on the entity itself — each promoted child carries
+    // its window_id / stable_key in metadata (no separate observation event).
+    const childMeta = await sql`
+      SELECT e.metadata
+      FROM entities e
+      JOIN entity_identities ei ON ei.entity_id = e.id
+      WHERE ei.organization_id = ${workspace.org.id} AND ei.namespace = 'watcher_key'
+      ORDER BY ei.identifier
     `;
-    expect(observations).toHaveLength(2);
-    const keys = observations.map((o) => (o.metadata as Record<string, unknown>).stable_key);
-    expect(keys.sort()).toEqual(['performance::slow-loading', 'stability::app-crashes']);
-    for (const obs of observations) {
-      const md = obs.metadata as Record<string, unknown>;
+    expect(childMeta).toHaveLength(2);
+    const stableKeys = childMeta.map((r) => (r.metadata as Record<string, unknown>).stable_key);
+    expect(stableKeys.sort()).toEqual(['performance::slow-loading', 'stability::app-crashes']);
+    for (const row of childMeta) {
+      const md = row.metadata as Record<string, unknown>;
       expect(Number(md.window_id)).toBe(windowId);
       expect(Number(md.watcher_id)).toBe(watcherId);
-      // entity_ids is bigint[] → comes back as the literal "{N}" under
-      // fetch_types:false; parse before asserting it points at one child.
-      const eids = parsePgNumberArray(obs.entity_ids);
-      expect(eids).toHaveLength(1);
     }
   });
 
-  it('is idempotent across a same-window replay — no duplicate entities or observations', async () => {
+  it('is idempotent across a same-window replay — no duplicate entities', async () => {
     const ctx = await setupKeyedWatcher();
     const { sql, workspace, watcherId, parentEntityId } = ctx;
 
@@ -258,12 +255,7 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       WHERE organization_id = ${workspace.org.id} AND namespace = 'watcher_key'
       ORDER BY entity_id
     `;
-    const obsAfterFirst = await sql`
-      SELECT id FROM events
-      WHERE organization_id = ${workspace.org.id} AND semantic_type = 'observation'
-    `;
     expect(entitiesAfterFirst).toHaveLength(2);
-    expect(obsAfterFirst).toHaveLength(2);
 
     // Re-run the SAME window (run-driven idempotent replay reuses the same
     // window_id) — the agent retried the completion.
@@ -275,26 +267,11 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       WHERE organization_id = ${workspace.org.id} AND namespace = 'watcher_key'
       ORDER BY entity_id
     `;
-    const obsAfterSecond = await sql`
-      SELECT id, metadata FROM events
-      WHERE organization_id = ${workspace.org.id} AND semantic_type = 'observation'
-    `;
-
     // Same entities resolved — NO duplicates.
     expect(entitiesAfterSecond.map((r) => Number(r.entity_id)).sort()).toEqual(
       entitiesAfterFirst.map((r) => Number(r.entity_id)).sort()
     );
     expect(entitiesAfterSecond).toHaveLength(2);
-
-    // Still exactly two observation events — NO duplicates (same window_id +
-    // stable_key resolves the existing observation).
-    expect(obsAfterSecond).toHaveLength(2);
-    const keysSecond = obsAfterSecond.map(
-      (o) => (o.metadata as Record<string, unknown>).stable_key as string
-    );
-    expect(new Set(keysSecond)).toEqual(
-      new Set(['stability::app-crashes', 'performance::slow-loading'])
-    );
 
     // No entity-count growth under the parent.
     const childCount = await sql`
@@ -302,51 +279,5 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       WHERE parent_id = ${parentEntityId} AND organization_id = ${workspace.org.id}
     `;
     expect(Number(childCount[0].c)).toBe(2);
-  });
-
-  it('dedups a concurrent re-insert of the same observation via ON CONFLICT (N>1 race guard)', async () => {
-    // The sequential replay above is caught by the check-then-insert SELECT; this
-    // exercises the ON CONFLICT path that backs TRUE concurrency — two replicas
-    // completing the same window where neither's SELECT sees the other's uncommitted
-    // insert. The partial unique index must make the second a no-op, not a duplicate.
-    const ctx = await setupKeyedWatcher();
-    const { sql, workspace, parentEntityId } = ctx;
-
-    await createTestEvent({
-      entity_id: parentEntityId,
-      organization_id: workspace.org.id,
-      content: 'Users report the app crashing and loading slowly.',
-      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
-    });
-    const runId = await queueRunningRun(ctx);
-    const token = await readWindowToken(ctx);
-    await completeWithToken(ctx, token, runId);
-
-    const [obs] = (await sql`
-      SELECT origin_id, entity_ids, created_by, metadata FROM events
-      WHERE organization_id = ${workspace.org.id} AND semantic_type = 'observation'
-      ORDER BY metadata->>'stable_key' LIMIT 1
-    `) as Array<{
-      origin_id: string;
-      entity_ids: string;
-      created_by: string;
-      metadata: Record<string, unknown>;
-    }>;
-
-    // The racer: same (org, origin_id), the exact ON CONFLICT clause the producer uses.
-    const racer = await sql`
-      INSERT INTO events (entity_ids, organization_id, origin_id, semantic_type, metadata, created_by, created_at)
-      VALUES (${String(obs.entity_ids)}::bigint[], ${workspace.org.id}, ${String(obs.origin_id)}, 'observation', ${sql.json(obs.metadata)}, ${obs.created_by}, NOW())
-      ON CONFLICT (organization_id, origin_id)
-        WHERE semantic_type = 'observation' AND metadata ->> 'category' = 'watcher_promotion'
-        DO NOTHING
-      RETURNING id
-    `;
-    expect(racer).toHaveLength(0); // deduped by idx_events_watcher_promotion_observation_unique
-
-    const dupes = (await sql`
-      SELECT COUNT(*)::int AS n FROM events WHERE origin_id = ${String(obs.origin_id)}
-    `) as Array<{ n: number }>;
-    expect(dupes[0].n).toBe(1); // still exactly one — no duplicate observation
   });
 });

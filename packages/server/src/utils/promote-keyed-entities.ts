@@ -68,8 +68,6 @@ export interface PromoteKeyedEntitiesResult {
   promoted: number;
   /** Of those, how many created a brand-new entity (vs. matched an existing). */
   created: number;
-  /** Number of observation events newly inserted (excludes idempotent skips). */
-  observationsInserted: number;
 }
 
 /**
@@ -254,67 +252,8 @@ async function upsertKeyedEntity(params: {
 }
 
 /**
- * Emit an append-only `observation` event linking the child entity to the
- * window. Idempotent per (window_id, stable_key): a prior observation
- * short-circuits the insert. Runs on `tx` so it commits atomically with the
- * entity + window writes.
- */
-async function insertObservationEvent(params: {
-  tx: DbClient;
-  organizationId: string;
-  entityId: number;
-  watcherId: number;
-  windowId: number;
-  stableKey: string;
-  createdBy: string;
-}): Promise<boolean> {
-  const { tx, organizationId, entityId, watcherId, windowId, stableKey } = params;
-
-  // Idempotency guard: was this (window, key) already observed? Scoped by
-  // semantic_type so it never collides with other event kinds.
-  const existing = await tx<{ id: number }>`
-    SELECT id
-    FROM events
-    WHERE organization_id = ${organizationId}
-      AND semantic_type = 'observation'
-      AND metadata->>'window_id' = ${String(windowId)}
-      AND metadata->>'stable_key' = ${stableKey}
-      AND metadata->>'watcher_id' = ${String(watcherId)}
-    LIMIT 1
-  `;
-  if (existing.length > 0) return false;
-
-  const originId = `watcher-observation:${watcherId}:${windowId}:${stableKey}`;
-  const metadata = {
-    category: 'watcher_promotion',
-    window_id: windowId,
-    stable_key: stableKey,
-    watcher_id: watcherId,
-  };
-
-  // ON CONFLICT against idx_events_watcher_promotion_observation_unique makes the
-  // emit race-safe: if a concurrent completion of the same (window, key) already
-  // inserted, ours is a no-op (no row returned) — not a duplicate. The SELECT above
-  // is the sequential fast path; this is the N>1 guard the check-then-insert lacked.
-  const insertedRows = await tx<{ id: number }>`
-    INSERT INTO events (
-      entity_ids, organization_id, origin_id, semantic_type, metadata,
-      created_by, created_at
-    ) VALUES (
-      ${`{${entityId}}`}::bigint[], ${organizationId}, ${originId}, 'observation',
-      ${tx.json(metadata)}, ${params.createdBy}, NOW()
-    )
-    ON CONFLICT (organization_id, origin_id)
-      WHERE semantic_type = 'observation' AND metadata ->> 'category' = 'watcher_promotion'
-      DO NOTHING
-    RETURNING id
-  `;
-  return insertedRows.length > 0;
-}
-
-/**
- * Promote every keyed row at `keyingConfig.entity_path` into a child entity +
- * observation event. Skips rows whose stable key is empty. NEVER throws on a
+ * Promote every keyed row at `keyingConfig.entity_path` into a child entity.
+ * Skips rows whose stable key is empty. NEVER throws on a
  * single-row problem (e.g. unresolved entity type) — promotion must not break
  * window completion; it logs and returns what it managed to promote.
  */
@@ -333,7 +272,6 @@ export async function promoteKeyedEntities(
   const result: PromoteKeyedEntitiesResult = {
     promoted: 0,
     created: 0,
-    observationsInserted: 0,
   };
 
   const rows = getValueAtPath(extractedData, keyingConfig.entity_path);
@@ -377,10 +315,14 @@ export async function promoteKeyedEntities(
       watcher_id: watcherId,
       stable_key: stableKey,
       source: 'watcher_promotion',
+      // Origin provenance lives on the entity itself — the window that first
+      // produced it. (No separate append-only observation event in phase 1;
+      // the entity is upserted once, so this is its origin, not a time series.)
+      window_id: windowId,
     };
 
     try {
-      const { entityId, created } = await upsertKeyedEntity({
+      const { created } = await upsertKeyedEntity({
         tx,
         organizationId,
         entityTypeId,
@@ -393,17 +335,6 @@ export async function promoteKeyedEntities(
       });
       result.promoted += 1;
       if (created) result.created += 1;
-
-      const inserted = await insertObservationEvent({
-        tx,
-        organizationId,
-        entityId,
-        watcherId,
-        windowId,
-        stableKey,
-        createdBy,
-      });
-      if (inserted) result.observationsInserted += 1;
     } catch (err) {
       logger.error(
         { err, watcherId, windowId, stableKey, organizationId },
@@ -423,7 +354,6 @@ export async function promoteKeyedEntities(
       entityTypeSlug,
       promoted: result.promoted,
       created: result.created,
-      observationsInserted: result.observationsInserted,
     },
     '[promote-keyed-entities] promoted keyed window rows into entities'
   );

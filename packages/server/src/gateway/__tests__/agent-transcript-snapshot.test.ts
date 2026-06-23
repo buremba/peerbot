@@ -935,7 +935,7 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
     const { readFile } = await import("node:fs/promises");
     const src = await readFile(
       new URL(
-        "../orchestration/impl/embedded-deployment.ts",
+        "../orchestration/deployment-manager.ts",
         import.meta.url
       ),
       "utf-8"
@@ -979,7 +979,7 @@ describe("agent_transcript_snapshot — codex P1/P2 regressions", () => {
     const { readFile } = await import("node:fs/promises");
     const src = await readFile(
       new URL(
-        "../orchestration/impl/embedded-deployment.ts",
+        "../orchestration/deployment-manager.ts",
         import.meta.url
       ),
       "utf-8"

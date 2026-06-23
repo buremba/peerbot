@@ -556,7 +556,7 @@ describe("[finding 4] persisted Telegram polling rows are refused in cloud (clai
 
 // ─── Public Agent API mint path stamps organizationId on worker tokens ─────
 //
-// The chat-platform spawn path (`base-deployment-manager`,
+// The chat-platform spawn path (`deployment-manager`,
 // `agent-threads.createThreadForAgent`) already passes `organizationId`
 // into `generateWorkerToken`. The public Agent API entry point
 // (`POST /api/v1/agents`) did NOT — every worker spawned via `lobu chat`

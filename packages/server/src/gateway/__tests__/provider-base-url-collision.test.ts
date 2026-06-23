@@ -1,14 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { ApiKeyProviderModule } from "../auth/api-key-provider-module.js";
 import { ChatGPTOAuthModule } from "../auth/chatgpt/chatgpt-oauth-module.js";
-import { detectProviderBaseUrlCollisions } from "../orchestration/base-deployment-manager.js";
+import { detectProviderBaseUrlCollisions } from "../orchestration/deployment-manager.js";
 
 /**
  * Regression: the `chatgpt` (Codex, chatgpt.com/backend-api) provider once
  * declared `baseUrlEnvVarName: "OPENAI_BASE_URL"` — the SAME key the
  * sdkCompat:"openai" provider (api.openai.com) emits for the OpenAI SDK. When
  * both were installed on an agent, the unguarded `Object.assign` merge in
- * base-deployment-manager let the codex value clobber OPENAI_BASE_URL, so an
+ * deployment-manager let the codex value clobber OPENAI_BASE_URL, so an
  * `openai/<model>` request egressed to chatgpt.com/backend-api and 403'd
  * (no ChatGPT session on a fresh install). Each provider MUST own a distinct
  * base-URL env key so the merge can never mis-route.

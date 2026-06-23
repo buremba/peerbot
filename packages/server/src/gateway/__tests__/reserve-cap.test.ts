@@ -23,7 +23,7 @@ import {
   getReservedLockCount,
   resetReservedLockCountForTests,
   setReservedLockCountForTests,
-} from "../orchestration/impl/embedded-deployment.js";
+} from "../orchestration/deployment-manager.js";
 import {
   ensureDbForGatewayTests,
   resetTestDatabase,

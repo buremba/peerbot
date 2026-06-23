@@ -58,7 +58,7 @@ export async function initSentry() {
       // Tag worker events with the same environment/release the server uses
       // (instrument.ts) so worker and server issues group and filter together.
       // The gateway forwards ENVIRONMENT / SENTRY_RELEASE into the worker spawn
-      // env (base-deployment-manager.assembleBaseEnv); APP_GIT_SHA is the
+      // env (deployment-manager.assembleBaseEnv); APP_GIT_SHA is the
       // image-baked fallback when SENTRY_RELEASE is unset.
       environment: process.env.ENVIRONMENT || "production",
       release:

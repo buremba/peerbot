@@ -1,27 +1,45 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
 	ConversationOwnedElsewhereError,
 	createLogger,
 	ErrorCode,
+	extractTraceId,
+	generateWorkerToken,
 	getErrorMessage,
 	type MessagePayload,
 	OrchestratorError,
 	retryWithBackoff,
 } from "@lobu/core";
 import { nixPackageAttrRef as nixPackageAttrRefBase } from "@lobu/connector-sdk/nix-package";
-import { intervals } from "../../../config/intervals.js";
-import { getDb } from "../../../db/client.js";
-import type { ModelProviderModule } from "../../modules/module-system.js";
+import { intervals } from "../../config/intervals.js";
+import { getDb } from "../../db/client.js";
+import type { ProviderCredentialContext } from "../embedded.js";
+import type { ModelProviderModule } from "../modules/module-system.js";
+import type { GrantStore } from "../permissions/grant-store.js";
 import {
-  BaseDeploymentManager,
-  type DeploymentInfo,
-  type ModuleEnvVarsBuilder,
-  type OrchestratorConfig,
-} from "../base-deployment-manager.js";
-import { buildDeploymentInfoSummary } from "../deployment-utils.js";
-import { failTurnsForDeployment } from "../turn-liveness.js";
+  buildPolicyBundle,
+  type PolicyStore,
+} from "../permissions/policy-store.js";
+import {
+  deleteSecretMappings,
+  generatePlaceholder,
+} from "../proxy/secret-proxy.js";
+import {
+  deleteSecretsByPrefix,
+  persistSecretValue,
+  type WritableSecretStore,
+} from "../secrets/index.js";
+import {
+  buildDeploymentInfoSummary,
+  runInBatches,
+} from "./deployment-utils.js";
+import { failTurnsForDeployment } from "./turn-liveness.js";
+import { buildWorkerTokenClaims } from "./worker-token-claims.js";
+
+const logger = createLogger("orchestrator");
 
 /** Surfaced to the client when a worker dies before producing a reply. */
 const WORKER_DIED_MESSAGE =
@@ -73,8 +91,6 @@ function workerSandboxRequired(): boolean {
 
 /** One-shot guard so the "running unsandboxed" notice logs once per process. */
 let warnedUnsandboxedWorkers = false;
-
-const logger = createLogger("orchestrator");
 
 // The SIGTERM→SIGKILL grace window lives in config/intervals.ts
 // (`workerKillTimeoutMs`), env-overridable.
@@ -559,7 +575,239 @@ export function nixPackageAttrRef(pkg: string): string {
   );
 }
 
-export class EmbeddedDeploymentManager extends BaseDeploymentManager {
+/**
+ * Detect base-URL env keys claimed by more than one provider with CONFLICTING
+ * values. When agents merge every installed provider's proxy base-URL mappings,
+ * two providers sharing a key (e.g. the old bug where every sdkCompat provider
+ * emitted OPENAI_BASE_URL) means the later-merged one silently clobbers the
+ * earlier and a request egresses to the wrong slug. Pure + exported so the guard
+ * is testable independently of a full deploy. Order matches the merge:
+ * last-write-wins, so `incoming` is what survives.
+ */
+export function detectProviderBaseUrlCollisions(
+  perProvider: Array<{ providerId: string; mappings: Record<string, string> }>
+): Array<{ key: string; providerId: string; existing: string; incoming: string }> {
+  const seen: Record<string, string> = {};
+  const collisions: Array<{
+    key: string;
+    providerId: string;
+    existing: string;
+    incoming: string;
+  }> = [];
+  for (const { providerId, mappings } of perProvider) {
+    for (const [key, value] of Object.entries(mappings)) {
+      const existing = seen[key];
+      if (existing !== undefined && existing !== value) {
+        collisions.push({ key, providerId, existing, incoming: value });
+      }
+      seen[key] = value;
+    }
+  }
+  return collisions;
+}
+
+/**
+ * Mint the deployment-lifetime WORKER_TOKEN. This is the FALLBACK gateway auth
+ * the worker uses when no per-run runJobToken was minted (`session-runner`:
+ * `runJobToken || WORKER_TOKEN`). Extracted (mirrors message-consumer's
+ * `buildRunJobToken`) so both primary-auth mints share a tested claim-parity
+ * surface — the #1274 P0 was an omitted-claim divergence between exactly these
+ * two mints. Every claim a downstream consumer reads off the verified worker
+ * token MUST be set on BOTH mints, or a worker that lands on this fallback path
+ * loses it (e.g. headless `source` → owner-gated card dead-letters).
+ */
+export function buildDeploymentWorkerToken(args: {
+  userId: string;
+  conversationId: string;
+  deploymentName: string;
+  channelId: string;
+  teamId?: string;
+  agentId?: string;
+  organizationId?: string;
+  platform?: string;
+  platformMetadata?: Record<string, unknown>;
+  traceId?: string;
+}): string {
+  return generateWorkerToken(
+    args.userId,
+    args.conversationId,
+    args.deploymentName,
+    {
+      // Shared routing claims — kept in lockstep with the per-run mint via
+      // `buildWorkerTokenClaims` so a worker that falls back to this
+      // deployment-lifetime token carries the same connectionId/source and
+      // doesn't dead-letter its interaction cards (#1274).
+      ...buildWorkerTokenClaims(args),
+      // Deployment-token-specific claim.
+      traceId: args.traceId,
+    }
+  );
+}
+
+/**
+ * TTL applied to non-provider secret env var placeholders. Mappings are
+ * cascade-deleted on deployment teardown; this only bounds how long an
+ * orphaned mapping (pod crash, agent deleted mid-day) survives. 24h default,
+ * overridable via `SECRET_PLACEHOLDER_TTL_MS`.
+ */
+const SECRET_PLACEHOLDER_TTL_SECONDS = (() => {
+  const raw = process.env.SECRET_PLACEHOLDER_TTL_MS;
+  if (raw) {
+    const ms = Number(raw);
+    if (Number.isFinite(ms) && ms > 0) return Math.floor(ms / 1000);
+  }
+  return 24 * 60 * 60;
+})();
+
+/**
+ * Maximum number of agents tracked in the grant-sync LRU. Oldest entry is
+ * evicted when the cache grows past this bound, which prevents unbounded
+ * memory growth for long-running gateways that see a large agent churn.
+ */
+const GRANT_SYNC_CACHE_MAX = 1000;
+
+interface DeploymentIdentity {
+  conversationId: string;
+  channelId?: string;
+  platform?: string;
+  userId?: string;
+}
+
+/**
+ * Build a canonical conversation identity key for runtime routing.
+ * Preferred format: platform:channelId:conversationId
+ */
+export function buildCanonicalConversationKey(
+  identity: DeploymentIdentity
+): string {
+  const { conversationId, channelId, platform } = identity;
+  if (platform && channelId) {
+    return `${platform}:${channelId}:${conversationId}`;
+  }
+  if (channelId) {
+    return `${channelId}:${conversationId}`;
+  }
+  return conversationId;
+}
+
+/**
+ * Generate a consistent worker runtime ID from canonical conversation identity.
+ * Runtime IDs stay lowercase alphanumeric with hyphens for filesystem and
+ * process-manager compatibility.
+ */
+export function generateDeploymentName(identity: DeploymentIdentity): string {
+  const canonicalKey = buildCanonicalConversationKey(identity);
+  const rawHint = (identity.platform || identity.userId || "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+  const hint = (rawHint.slice(0, 8) || "ctx").toLowerCase();
+  const hash = createHash("sha256")
+    .update(canonicalKey)
+    .digest("hex")
+    .slice(0, 12);
+  return `lobu-worker-${hint}-${hash}`;
+}
+
+// Type for module environment variable builder function
+export type ModuleEnvVarsBuilder = (
+  agentId: string,
+  envVars: Record<string, string>,
+  context?: ProviderCredentialContext
+) => Promise<Record<string, string>>;
+
+// Orchestrator configuration
+export interface OrchestratorConfig {
+  queues: {
+    retryLimit: number;
+    retryDelay: number;
+    expireInSeconds: number;
+  };
+  worker: {
+    /**
+     * Absolute path to the worker TypeScript entrypoint. Callers compute
+     * this once at boot — the gateway never probes cwd or reads env at
+     * deployment time.
+     */
+    entryPoint?: string;
+    /**
+     * Extra PATH entries prepended when spawning worker processes (e.g.
+     * workspace-local `.bin` directories for `tsx`, `bun`). Callers supply
+     * absolute paths; the manager uses them verbatim.
+     */
+    binPathEntries?: string[];
+    startupTimeoutSeconds?: number;
+    idleCleanupMinutes: number;
+    maxDeployments: number;
+    env?: Record<string, string | number | boolean>;
+  };
+  cleanup: {
+    initialDelayMs: number;
+    intervalMs: number;
+    veryOldDays: number;
+  };
+}
+
+export interface DeploymentInfo {
+  deploymentName: string;
+  lastActivity: Date;
+  minutesIdle: number;
+  daysSinceActivity: number;
+  replicas: number;
+  isIdle: boolean;
+  isVeryOld: boolean;
+}
+
+/** Check if an env var name looks like a secret (API key / token / secret / password). */
+function isSecretEnvVar(
+  name: string,
+  providerModules: ModelProviderModule[]
+): boolean {
+  for (const provider of providerModules) {
+    if (provider.getSecretEnvVarNames().includes(name)) return true;
+  }
+  const upper = name.toUpperCase();
+  return (
+    upper.includes("_KEY") ||
+    upper.includes("_TOKEN") ||
+    upper.includes("_SECRET") ||
+    upper.includes("_PASSWORD")
+  );
+}
+
+/**
+ * Manages worker deployments for the embedded gateway: spawns each worker as a
+ * `child_process` subprocess (wrapped in `systemd-run --scope` + `nix-shell`
+ * when available), assembles the worker environment, syncs per-agent grants and
+ * egress policy, and reaps idle/old workers.
+ */
+export class DeploymentManager {
+  protected config: OrchestratorConfig;
+  protected moduleEnvVarsBuilder?: ModuleEnvVarsBuilder;
+  protected providerModules: ModelProviderModule[];
+  protected providerCatalogService?: import("../auth/provider-catalog.js").ProviderCatalogService;
+  /**
+   * Set by `setSecretStore` during `Orchestrator.injectCoreServices`.
+   * `generateEnvironmentVariables` asserts this is present before use.
+   */
+  protected secretStore?: WritableSecretStore;
+  protected grantStore?: GrantStore;
+  protected policyStore?: PolicyStore;
+  /**
+   * Per-agent cache of the last-synced grant pattern set. Used to
+   * (a) skip redundant `grantStore.grant()` writes when the set is
+   * unchanged and (b) compute the revoke-diff so patterns dropped from
+   * `networkConfig.allowedDomains` / `preApprovedTools` are removed from
+   * the grant store instead of lingering forever.
+   */
+  private grantSyncCache = new Map<string, Set<string>>();
+  /**
+   * In-flight `ensureDeployment` promises keyed by deploymentName. Coalesces
+   * concurrent calls within a single gateway process so the orchestrator-
+   * specific `spawnDeployment` only runs once per deployment slot. Cross-
+   * process concurrency (multi-replica gateway) is handled by the underlying
+   * orchestrator's atomic name-uniqueness guarantee — each subclass catches
+   * the resulting AlreadyExists error and treats it as benign success.
+   */
+  private inFlightCreates = new Map<string, Promise<void>>();
+
   private workers: Map<string, EmbeddedWorkerEntry> = new Map();
   /** Deployments currently being torn down deliberately (scale-to-0, idle
    *  reap, delete) via {@link killWorker}. The exit handler consumes the entry
@@ -573,7 +821,40 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
     moduleEnvVarsBuilder?: ModuleEnvVarsBuilder,
     providerModules: ModelProviderModule[] = []
   ) {
-    super(config, moduleEnvVarsBuilder, providerModules);
+    this.config = config;
+    this.moduleEnvVarsBuilder = moduleEnvVarsBuilder;
+    this.providerModules = providerModules;
+  }
+
+  setSecretStore(secretStore: WritableSecretStore): void {
+    this.secretStore = secretStore;
+  }
+
+  /**
+   * Refresh provider modules after module registry initialization.
+   */
+  setProviderModules(providerModules: ModelProviderModule[]): void {
+    this.providerModules = providerModules;
+  }
+
+  setProviderCatalogService(
+    service: import("../auth/provider-catalog.js").ProviderCatalogService
+  ): void {
+    this.providerCatalogService = service;
+  }
+
+  /**
+   * Inject grant store for auto-adding domain grants at deployment time.
+   */
+  setGrantStore(store: GrantStore): void {
+    this.grantStore = store;
+  }
+
+  /**
+   * Inject policy store for syncing per-agent egress judge rules.
+   */
+  setPolicyStore(store: PolicyStore): void {
+    this.policyStore = store;
   }
 
   protected getDispatcherHost(): string {
@@ -584,14 +865,922 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
 
   /**
    * Embedded gateway is served by `@lobu/server` at the `/lobu`
-   * mount on the configured PORT (default 8787). Without overriding here,
-   * `BaseDeploymentManager` would hand workers the standalone gateway default
-   * port with no mount prefix, so the worker would 404 on every dispatch and
-   * provider-proxy call.
+   * mount on the configured PORT (default 8787). The worker needs the
+   * mounted URL or it would 404 on every dispatch and provider-proxy call.
    */
   protected getDispatcherUrl(): string {
     const port = process.env.PORT || process.env.GATEWAY_PORT || "8787";
     return `http://${this.getDispatcherHost()}:${port}/lobu`;
+  }
+
+  /**
+   * Idempotent deployment ensure: returns the existing deployment if one is
+   * already being (or has been) created with this name, otherwise delegates
+   * to the orchestrator-specific `spawnDeployment`. Concurrent callers for
+   * the same name share a single in-flight promise.
+   */
+  async ensureDeployment(
+    deploymentName: string,
+    username: string,
+    userId: string,
+    messageData?: MessagePayload
+  ): Promise<void> {
+    const inFlight = this.inFlightCreates.get(deploymentName);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const promise = this.spawnDeployment(
+      deploymentName,
+      username,
+      userId,
+      messageData
+    ).finally(() => {
+      this.inFlightCreates.delete(deploymentName);
+    });
+    this.inFlightCreates.set(deploymentName, promise);
+    return promise;
+  }
+
+  /**
+   * Create worker deployment for handling messages.
+   * @param existingDeployments - Optional pre-fetched deployment list to avoid redundant API calls
+   */
+  async createWorkerDeployment(
+    userId: string,
+    conversationId: string,
+    messageData?: MessagePayload,
+    existingDeployments?: DeploymentInfo[]
+  ): Promise<void> {
+    const deploymentIdentity: DeploymentIdentity = {
+      userId,
+      conversationId,
+      channelId: messageData?.channelId,
+      platform: messageData?.platform,
+    };
+    const deploymentName = generateDeploymentName(deploymentIdentity);
+    const canonicalConversationKey =
+      buildCanonicalConversationKey(deploymentIdentity);
+
+    logger.info(
+      `Worker deployment - conversationId: ${conversationId}, canonicalKey: ${canonicalConversationKey}, deploymentName: ${deploymentName}`
+    );
+
+    try {
+      // Use pre-fetched list or fetch fresh
+      const deployments = existingDeployments ?? (await this.listDeployments());
+      const existingDeployment = deployments.find(
+        (d) => d.deploymentName === deploymentName
+      );
+
+      if (existingDeployment) {
+        // Scale up the existing deployment. Provider config is now delivered
+        // dynamically via session context, so no need to recreate.
+        try {
+          await this.scaleDeployment(deploymentName, 1);
+          return;
+        } catch (scaleErr) {
+          // The "existing" deployment is actually dead (stale snapshot / just
+          // exited) — fall through to spawn a fresh one instead of returning.
+          logger.warn(
+            `scaleDeployment(${deploymentName}, 1) failed (${getErrorMessage(scaleErr)}); re-spawning`
+          );
+        }
+      }
+
+      // Check if we would exceed max deployments limit
+      const maxDeployments = this.config.worker.maxDeployments;
+      if (maxDeployments > 0 && deployments.length >= maxDeployments) {
+        logger.warn(
+          `⚠️  Maximum deployments limit reached (${deployments.length}/${maxDeployments}). Running cleanup before creating new deployment.`
+        );
+        await this.reconcileDeployments();
+
+        // Check again after cleanup
+        const deploymentsAfterCleanup = await this.listDeployments();
+        if (deploymentsAfterCleanup.length >= maxDeployments) {
+          throw new OrchestratorError(
+            ErrorCode.DEPLOYMENT_CREATE_FAILED,
+            `Cannot create new deployment: Maximum deployments limit (${maxDeployments}) reached. Current active deployments: ${deploymentsAfterCleanup.length}`,
+            {
+              maxDeployments,
+              currentCount: deploymentsAfterCleanup.length,
+            },
+            true
+          );
+        }
+      }
+
+      await this.ensureDeployment(deploymentName, userId, userId, messageData);
+    } catch (error) {
+      // "Owned by another replica" is not a failure — it's the cross-pod
+      // handled-elsewhere signal. Re-throw it UNCHANGED so the orchestrator can
+      // distinguish it from a genuine startup failure and drop silently;
+      // wrapping it in DEPLOYMENT_CREATE_FAILED here would erase that
+      // distinction and resurface the user-facing "Worker startup failed".
+      if (error instanceof ConversationOwnedElsewhereError) {
+        throw error;
+      }
+      throw new OrchestratorError(
+        ErrorCode.DEPLOYMENT_CREATE_FAILED,
+        `Failed to create worker deployment: ${getErrorMessage(error)}`,
+        { userId, conversationId, error },
+        true
+      );
+    }
+  }
+
+  /**
+   * Validate that messageData has all required fields for deployment.
+   */
+  private validateMessageData(
+    deploymentName: string,
+    messageData?: MessagePayload
+  ): MessagePayload {
+    if (!messageData) {
+      throw new OrchestratorError(
+        ErrorCode.DEPLOYMENT_CREATE_FAILED,
+        "Message data is required for worker deployment",
+        { deploymentName },
+        true
+      );
+    }
+
+    const { conversationId, channelId } = messageData;
+    if (!conversationId || !channelId) {
+      throw new OrchestratorError(
+        ErrorCode.DEPLOYMENT_CREATE_FAILED,
+        "conversationId and channelId are required in message data",
+        {
+          deploymentName,
+          hasConversationId: !!conversationId,
+          hasChannelId: !!channelId,
+        },
+        true
+      );
+    }
+
+    return messageData;
+  }
+
+  /**
+   * Sync per-agent egress judge policies (judgedDomains + named judges +
+   * operator extra_policy) into the policy store so the HTTP proxy can
+   * resolve them at request time.
+   */
+  private syncEgressPolicy(
+    messageData: MessagePayload,
+    deploymentName?: string
+  ): void {
+    const agentId = messageData.agentId;
+    const organizationId = messageData.organizationId;
+    // PolicyStore is keyed by `(orgId, agentId)` to prevent cross-tenant
+    // policy clobbering — refuse to sync without an org id rather than
+    // collapsing into a shared bucket.
+    if (!this.policyStore || !agentId || !organizationId) {
+      if (!organizationId && agentId) {
+        logger.warn(
+          { agentId, deploymentName },
+          "Skipping egress policy sync — message has no organizationId"
+        );
+      }
+      return;
+    }
+
+    const bundle = buildPolicyBundle({
+      judgedDomains: messageData.networkConfig?.judgedDomains,
+      judges: messageData.networkConfig?.judges,
+      egressConfig: messageData.egressConfig,
+    });
+    if (bundle) {
+      this.policyStore.set(organizationId, agentId, bundle);
+      if (deploymentName) {
+        logger.info(
+          `Synced egress judge policy for ${deploymentName}: ${bundle.judgedDomains.length} rule(s), ${Object.keys(bundle.judges).length} judge(s)`
+        );
+      } else {
+        logger.debug("Synced egress judge policy", {
+          organizationId,
+          agentId,
+          rules: bundle.judgedDomains.length,
+          judges: Object.keys(bundle.judges).length,
+        });
+      }
+    } else {
+      this.policyStore.clear(organizationId, agentId);
+    }
+  }
+
+  /**
+   * Auto-add Nix cache domains as grants, sync per-agent grants (network +
+   * pre-approved MCP tools) and egress judge policy, and persist MCP configs
+   * for the deployment.
+   */
+  private async storeDeploymentConfigs(
+    deploymentName: string,
+    messageData: MessagePayload
+  ): Promise<void> {
+    const agentId = messageData.agentId;
+    const orgId = messageData.organizationId;
+
+    // Sync networkConfig.allowedDomains to grant store
+    if (
+      this.grantStore &&
+      agentId &&
+      messageData.networkConfig?.allowedDomains?.length
+    ) {
+      for (const domain of messageData.networkConfig.allowedDomains) {
+        await this.grantStore.grant(agentId, domain, null, undefined, orgId);
+      }
+      logger.info(
+        `Synced network config domains as grants for ${deploymentName}: ${messageData.networkConfig.allowedDomains.join(", ")}`
+      );
+    }
+
+    // Sync operator-pre-approved MCP tool patterns to grant store
+    if (this.grantStore && agentId && messageData.preApprovedTools?.length) {
+      for (const pattern of messageData.preApprovedTools) {
+        await this.grantStore.grant(agentId, pattern, null, undefined, orgId);
+      }
+      logger.info(
+        `Synced pre-approved tool patterns as grants for ${deploymentName}: ${messageData.preApprovedTools.join(", ")}`
+      );
+    }
+
+    this.syncEgressPolicy(messageData, deploymentName);
+
+    // Auto-add Nix cache domains as permanent grants when Nix packages are configured
+    if (
+      this.grantStore &&
+      agentId &&
+      (messageData.nixConfig?.packages?.length ||
+        messageData.nixConfig?.flakeUrl)
+    ) {
+      const NIX_DOMAINS = [
+        "cache.nixos.org",
+        "channels.nixos.org",
+        "releases.nixos.org",
+      ];
+      for (const domain of NIX_DOMAINS) {
+        await this.grantStore.grant(agentId, domain, null, undefined, orgId);
+      }
+      logger.info(
+        `Added Nix cache domains as grants for ${deploymentName}: ${NIX_DOMAINS.join(", ")}`
+      );
+    }
+  }
+
+  /**
+   * Sync per-agent grants (network domains + pre-approved MCP tool patterns)
+   * to the grant store for a running worker. Called on every message so
+   * config changes pick up without redeploying. Also refreshes the in-memory
+   * egress judge policy store, which is read by the shared HTTP proxy rather
+   * than by the worker process.
+   *
+   * Computes the diff against the last-synced set per agent:
+   *   - patterns in the new set but not the previous are `grant()`-ed
+   *   - patterns in the previous set but not the new are `revoke()`-d
+   * This means clearing `networkConfig.allowedDomains` or
+   * `preApprovedTools` in lobu.config.ts actually drops access, instead of
+   * leaving stale grants in the store.
+   */
+  async syncNetworkConfigGrants(messageData: MessagePayload): Promise<void> {
+    const agentId = messageData.agentId;
+    if (!agentId) return;
+
+    this.syncEgressPolicy(messageData);
+
+    if (!this.grantStore) return;
+
+    const nextPatterns = new Set<string>();
+    for (const domain of messageData.networkConfig?.allowedDomains ?? []) {
+      nextPatterns.add(domain);
+    }
+    for (const pattern of messageData.preApprovedTools ?? []) {
+      nextPatterns.add(pattern);
+    }
+
+    const previous = this.grantSyncCache.get(agentId) ?? new Set<string>();
+
+    // Unchanged set → skip the round-trip entirely.
+    if (
+      nextPatterns.size === previous.size &&
+      [...nextPatterns].every((p) => previous.has(p))
+    ) {
+      return;
+    }
+
+    const orgId = messageData.organizationId;
+
+    // Revoke patterns that were previously granted but are no longer
+    // present in the current config.
+    for (const pattern of previous) {
+      if (!nextPatterns.has(pattern)) {
+        await this.grantStore.revoke(agentId, pattern, orgId);
+      }
+    }
+
+    // Grant any new patterns. Repeating grants for existing patterns is
+    // idempotent, but skipping them saves writes.
+    for (const pattern of nextPatterns) {
+      if (!previous.has(pattern)) {
+        await this.grantStore.grant(agentId, pattern, null, undefined, orgId);
+      }
+    }
+
+    // LRU touch: delete + re-insert so the agent becomes the newest key.
+    this.grantSyncCache.delete(agentId);
+    this.grantSyncCache.set(agentId, nextPatterns);
+
+    // Evict the oldest entry if we've exceeded the cap.
+    if (this.grantSyncCache.size > GRANT_SYNC_CACHE_MAX) {
+      const oldest = this.grantSyncCache.keys().next().value;
+      if (oldest !== undefined) {
+        this.grantSyncCache.delete(oldest);
+      }
+    }
+  }
+
+  /**
+   * Clear the grant sync cache for an agent. Call this when the agent's
+   * networkConfig or preApprovedTools change (deployment teardown, config
+   * reload) so the next message re-syncs grants.
+   */
+  invalidateGrantSyncCache(agentId: string): void {
+    this.grantSyncCache.delete(agentId);
+  }
+
+  /** Clear the entire grant sync cache. Call on whole-config reload. */
+  clearAllGrantSyncCaches(): void {
+    this.grantSyncCache.clear();
+  }
+
+  /**
+   * Build proxy URL with deployment identification via Basic auth.
+   */
+  private buildProxyUrl(
+    deploymentName: string,
+    workerToken: string,
+    dispatcherHost: string
+  ): string {
+    const parsedProxyPort = Number.parseInt(
+      process.env.WORKER_PROXY_PORT || "8118",
+      10
+    );
+    const proxyPort = Number.isFinite(parsedProxyPort) ? parsedProxyPort : 8118;
+    return `http://${deploymentName}:${workerToken}@${dispatcherHost}:${proxyPort}`;
+  }
+
+  /**
+   * Assemble the base environment variables map for a worker deployment.
+   */
+  private assembleBaseEnv(
+    username: string,
+    userId: string,
+    deploymentName: string,
+    workerToken: string,
+    messageData: MessagePayload,
+    traceId: string | undefined,
+    proxyUrl: string,
+    dispatcherHost: string
+  ): Record<string, string> {
+    const { conversationId, channelId, platformMetadata } = messageData;
+
+    const envVars: Record<string, string> = {
+      USER_ID: userId,
+      USERNAME: username,
+      DEPLOYMENT_NAME: deploymentName,
+      CHANNEL_ID: channelId,
+      ORIGINAL_MESSAGE_TS:
+        (typeof platformMetadata?.originalMessageTs === "string"
+          ? platformMetadata.originalMessageTs
+          : "") ||
+        messageData.messageId ||
+        "",
+      LOG_LEVEL: "info",
+      WORKSPACE_DIR: "/workspace",
+      CONVERSATION_ID: conversationId,
+      WORKER_TOKEN: workerToken,
+      DISPATCHER_URL: this.getDispatcherUrl(),
+      NODE_ENV: process.env.NODE_ENV || "production",
+      DEBUG: "1",
+      HTTP_PROXY: proxyUrl,
+      HTTPS_PROXY: proxyUrl,
+      NO_PROXY: `${dispatcherHost},gateway,localhost,127.0.0.1`,
+      // Pin HOME inside the persistent workspace so per-tool caches
+      // (~/.npm, ~/.cache, ~/.config, ~/.local/share) survive worker restarts
+      // without leaking into the gateway host home directory.
+      HOME: "/workspace",
+      // Route temporary files and cache to persistent workspace storage.
+      TMPDIR: "/workspace/.tmp",
+      TMP: "/workspace/.tmp",
+      TEMP: "/workspace/.tmp",
+      XDG_CACHE_HOME: "/workspace/.cache",
+    };
+
+    if (typeof platformMetadata?.botResponseTs === "string") {
+      envVars.BOT_RESPONSE_TS = platformMetadata.botResponseTs;
+    }
+
+    if (traceId) {
+      envVars.TRACE_ID = traceId;
+    }
+
+    // Forward Sentry config so the worker subprocess can report provider/model
+    // failures to Sentry Issues (core/sentry.ts initSentry() is DSN-gated and
+    // no-ops without SENTRY_DSN). The app process owns the DSN via envFrom in
+    // prod; without this forwarding the worker is entirely unmonitored.
+    //
+    // EGRESS: the worker reaches Sentry THROUGH the gateway proxy (HTTP_PROXY),
+    // NOT directly. We deliberately do NOT add the Sentry host to NO_PROXY:
+    // under Linux prod the worker runs in a systemd scope with
+    // `IPAddressDeny=any` + `IPAddressAllow=127.0.0.1/::1`, so a direct
+    // connection to Sentry's public IP would be dropped by the kernel. Routing
+    // via the proxy (loopback, allowed) works in both prod and dev. The proxy's
+    // allowlist is widened to admit the Sentry ingest host in
+    // network-allowlist.ts (loadAllowedDomains), gated on SENTRY_DSN.
+    if (process.env.SENTRY_DSN) {
+      envVars.SENTRY_DSN = process.env.SENTRY_DSN;
+    }
+    if (process.env.ENVIRONMENT) {
+      envVars.ENVIRONMENT = process.env.ENVIRONMENT;
+    }
+    if (process.env.SENTRY_RELEASE) {
+      envVars.SENTRY_RELEASE = process.env.SENTRY_RELEASE;
+    }
+    // APP_GIT_SHA is baked into the prod image and used as the Sentry `release`
+    // fallback (core/sentry.ts) when SENTRY_RELEASE is unset.
+    if (process.env.APP_GIT_SHA) {
+      envVars.APP_GIT_SHA = process.env.APP_GIT_SHA;
+    }
+
+    // Add OTLP endpoint for distributed tracing
+    const otlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    if (otlpEndpoint) {
+      envVars.OTEL_EXPORTER_OTLP_ENDPOINT = otlpEndpoint;
+      try {
+        const otlpUrl = new URL(otlpEndpoint);
+        envVars.NO_PROXY = `${envVars.NO_PROXY},${otlpUrl.hostname}`;
+      } catch {
+        envVars.NO_PROXY = `${envVars.NO_PROXY},tempo`;
+      }
+    }
+
+    // Forward WORKER_ENV_* vars to workers with prefix stripped
+    const WORKER_ENV_PREFIX = "WORKER_ENV_";
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith(WORKER_ENV_PREFIX)) {
+        const stripped = key.slice(WORKER_ENV_PREFIX.length);
+        if (stripped) {
+          envVars[stripped] = process.env[key]!;
+        }
+      }
+    }
+
+    // Nix config
+    if (messageData.nixConfig) {
+      const { flakeUrl, packages } = messageData.nixConfig;
+      if (flakeUrl) envVars.NIX_FLAKE_URL = flakeUrl;
+      if (packages && packages.length > 0)
+        envVars.NIX_PACKAGES = packages.join(",");
+      logger.debug(
+        `Nix config for ${deploymentName}: flakeUrl=${flakeUrl || "none"}, packages=${packages?.length || 0}`
+      );
+    }
+
+    return envVars;
+  }
+
+  /**
+   * Replace secret env var values with opaque placeholders before passing to workers.
+   *
+   * Provider credential env vars are set to `"lobu-proxy"` — the proxy resolves
+   * the real credential at request time using agentId from the URL path
+   * (`/a/{agentId}`) and the provider slug.
+   *
+   * Non-provider secrets use UUID placeholders stored in the secret-proxy.
+   */
+  private async injectSecretPlaceholders(
+    envVars: Record<string, string>,
+    agentId: string,
+    deploymentName: string,
+    context?: ProviderCredentialContext
+  ): Promise<Record<string, string>> {
+    // Tests that exercise deployment lifecycle without a secret store can
+    // skip placeholder injection (no secrets to swap).
+    if (!this.secretStore) return envVars;
+    const secretStore = this.secretStore;
+
+    // Collect credential env var names from all providers
+    const providerCredentialVars = new Set<string>();
+    for (const provider of this.providerModules) {
+      providerCredentialVars.add(provider.getCredentialEnvVarName());
+    }
+
+    let hasSecrets = false;
+    const workerToken = envVars.WORKER_TOKEN;
+    for (const [key, value] of Object.entries(envVars)) {
+      if (!value || !isSecretEnvVar(key, this.providerModules)) continue;
+      if (key === "WORKER_TOKEN") continue;
+      // Some providers (e.g. Bedrock) authenticate workers by JWT and
+      // legitimately put the worker's own WORKER_TOKEN into the credential
+      // env var — the gateway verifies it on the incoming request. In that
+      // case we must not swap the value for a placeholder; the worker needs
+      // the real JWT to call the gateway route.
+      if (workerToken && value === workerToken) continue;
+
+      if (providerCredentialVars.has(key)) {
+        // Provider credentials use a proxy placeholder. The worker never
+        // sees real credentials. The proxy resolves the real credential
+        // using agentId from the URL path (/a/{agentId}) and the provider
+        // slug, then overrides the Authorization header before forwarding.
+        const ownerProvider = this.providerModules.find(
+          (p) => p.getCredentialEnvVarName() === key
+        );
+        if (ownerProvider?.buildCredentialPlaceholder) {
+          envVars[key] = await ownerProvider.buildCredentialPlaceholder(
+            agentId,
+            context
+          );
+        } else {
+          envVars[key] = "lobu-proxy";
+        }
+        hasSecrets = true;
+      } else {
+        // Custom env var secrets (non-provider): move the value into the
+        // secret store and hand the worker an opaque UUID placeholder.
+        try {
+          const secretRef = await persistSecretValue(
+            secretStore,
+            `deployments/${deploymentName}/${agentId}/${key}`,
+            value,
+            { ttlSeconds: SECRET_PLACEHOLDER_TTL_SECONDS }
+          );
+          if (!secretRef) continue;
+          const placeholder = generatePlaceholder(
+            agentId,
+            key,
+            secretRef,
+            deploymentName,
+            {
+              ttlSeconds: SECRET_PLACEHOLDER_TTL_SECONDS,
+              organizationId: context?.organizationId,
+            }
+          );
+          envVars[key] = placeholder;
+          hasSecrets = true;
+        } catch (error) {
+          logger.warn(`Failed to generate placeholder for ${key}:`, error);
+        }
+      }
+    }
+
+    if (hasSecrets) {
+      logger.info(
+        `🔐 Generated secret placeholders for ${deploymentName}, routing through proxy`
+      );
+    }
+
+    return envVars;
+  }
+
+  /**
+   * Generate environment variables common to all deployment types.
+   * Orchestrates the focused helpers above.
+   */
+  protected async generateEnvironmentVariables(
+    username: string,
+    userId: string,
+    deploymentName: string,
+    messageData?: MessagePayload,
+    includeSecrets: boolean = true
+  ): Promise<Record<string, string>> {
+    const validated = this.validateMessageData(deploymentName, messageData);
+    const { conversationId, channelId, platformMetadata, agentId, platform } =
+      validated;
+    const teamId =
+      validated.teamId ||
+      (typeof platformMetadata?.teamId === "string"
+        ? platformMetadata.teamId
+        : undefined);
+    const traceId = extractTraceId(validated);
+    const providerContext: ProviderCredentialContext = {
+      userId,
+      conversationId,
+      channelId,
+      deploymentName,
+      platform,
+      connectionId:
+        typeof platformMetadata?.connectionId === "string"
+          ? platformMetadata.connectionId
+          : undefined,
+      organizationId: validated.organizationId,
+    };
+
+    const workerToken = buildDeploymentWorkerToken({
+      userId,
+      conversationId,
+      deploymentName,
+      channelId,
+      teamId,
+      platform,
+      agentId,
+      organizationId: validated.organizationId,
+      platformMetadata,
+      traceId,
+    });
+
+    const dispatcherHost = this.getDispatcherHost();
+    await this.storeDeploymentConfigs(deploymentName, validated);
+
+    const proxyUrl = this.buildProxyUrl(
+      deploymentName,
+      workerToken,
+      dispatcherHost
+    );
+
+    let envVars = this.assembleBaseEnv(
+      username,
+      userId,
+      deploymentName,
+      workerToken,
+      validated,
+      traceId,
+      proxyUrl,
+      dispatcherHost
+    );
+
+    // Include host-provided secret references when requested.
+    if (includeSecrets && this.moduleEnvVarsBuilder) {
+      try {
+        envVars = await this.moduleEnvVarsBuilder(
+          agentId,
+          envVars,
+          providerContext
+        );
+      } catch (error) {
+        logger.warn("Failed to build module environment variables:", error);
+      }
+    }
+
+    // Add worker environment variables from configuration
+    if (this.config.worker.env) {
+      for (const [key, value] of Object.entries(this.config.worker.env)) {
+        envVars[key] = String(value);
+      }
+    }
+
+    // Resolve per-agent installed providers (catalog-only when active, no global fallback)
+    const effectiveProviders = this.providerCatalogService
+      ? await this.providerCatalogService.getInstalledModules(agentId)
+      : this.providerModules;
+
+    for (const provider of effectiveProviders) {
+      envVars = provider.injectSystemKeyFallback(envVars);
+    }
+
+    envVars = await this.injectSecretPlaceholders(
+      envVars,
+      agentId,
+      deploymentName,
+      providerContext
+    );
+
+    // Inject provider metadata into agentOptions so the worker can configure
+    // the SDK generically without hardcoded provider checks.
+    // Determine primary provider from the model in agentOptions.
+    const agentModel = validated.agentOptions?.model as string | undefined;
+    let primaryProvider: ModelProviderModule | undefined;
+
+    if (
+      agentModel &&
+      effectiveProviders.length > 0 &&
+      this.providerCatalogService
+    ) {
+      primaryProvider = await this.providerCatalogService.findProviderForModel(
+        agentModel,
+        effectiveProviders
+      );
+    }
+
+    // When no explicit model is set (auto mode), detect the primary provider
+    // from installed providers order (first with credentials = primary).
+    if (!primaryProvider && effectiveProviders.length > 0) {
+      for (const candidate of effectiveProviders) {
+        if (
+          candidate.hasSystemKey() ||
+          (await candidate.hasCredentials(agentId, providerContext))
+        ) {
+          primaryProvider = candidate;
+          break;
+        }
+      }
+    }
+
+    if (primaryProvider) {
+      logger.info(
+        {
+          agentId,
+          primaryProviderId: primaryProvider.providerId,
+          slug: primaryProvider.getUpstreamConfig?.()?.slug,
+        },
+        "Selected primary provider"
+      );
+
+      const proxyBaseUrl = `${this.getDispatcherUrl()}/api/proxy`;
+      const mappings = primaryProvider.getProxyBaseUrlMappings(
+        proxyBaseUrl,
+        agentId
+      );
+      const providerBaseUrl = Object.values(mappings)[0];
+      if (providerBaseUrl) {
+        validated.agentOptions = {
+          ...validated.agentOptions,
+          providerBaseUrl,
+        };
+      }
+
+      // CREDENTIAL_ENV_VAR_NAME and AGENT_DEFAULT_PROVIDER are now
+      // delivered dynamically via the session context endpoint instead of
+      // static process environment.
+    }
+
+    // Build full provider base URL mappings for all installed providers
+    const proxyBaseUrl = `${this.getDispatcherUrl()}/api/proxy`;
+    const perProvider = effectiveProviders.map((provider) => ({
+      providerId: provider.providerId,
+      mappings: provider.getProxyBaseUrlMappings(
+        proxyBaseUrl,
+        agentId,
+        providerContext
+      ),
+    }));
+    // Guard against two providers claiming the same base-URL env key with
+    // different values: the later one silently clobbers the earlier and
+    // mis-routes (this is exactly how an `openai/<model>` call once egressed to
+    // the codex backend). Surface it loudly instead of hiding it.
+    for (const c of detectProviderBaseUrlCollisions(perProvider)) {
+      logger.warn(
+        { agentId, ...c },
+        "[deployment-manager] provider base-URL env key collision — two providers map the same key to different URLs; the later one wins and may mis-route. Each provider must use a distinct baseUrlEnvVarName."
+      );
+    }
+    const providerBaseUrlMappings: Record<string, string> = {};
+    for (const { mappings } of perProvider) {
+      Object.assign(providerBaseUrlMappings, mappings);
+    }
+    if (Object.keys(providerBaseUrlMappings).length > 0) {
+      validated.agentOptions = {
+        ...validated.agentOptions,
+        providerBaseUrlMappings,
+      };
+    }
+
+    // CLI_BACKENDS is now delivered dynamically via session context.
+    // Still need to auto-add npm registry domains for npx at deploy time.
+    const hasCliBackendProviders = effectiveProviders.some((p) =>
+      p.getCliBackendConfig?.()
+    );
+    if (hasCliBackendProviders && this.grantStore && agentId) {
+      const NPM_DOMAINS = ["registry.npmjs.org", "registry.npmmirror.com"];
+      const orgId = validated.organizationId;
+      for (const domain of NPM_DOMAINS) {
+        await this.grantStore.grant(agentId, domain, null, undefined, orgId);
+      }
+      logger.info(
+        `Added npm registry domains as grants for ${deploymentName}: ${NPM_DOMAINS.join(", ")}`
+      );
+    }
+
+    return envVars;
+  }
+
+  /**
+   * Delete a worker deployment and associated resources
+   */
+  async deleteWorkerDeployment(deploymentName: string): Promise<void> {
+    try {
+      // Clean up secret placeholder mappings
+      deleteSecretMappings(deploymentName);
+
+      // Cascade-delete the underlying non-provider secrets written by
+      // `injectSecretPlaceholders` under `deployments/{deploymentName}/`.
+      // Without this, the placeholder mappings are gone but the backing
+      // secret entries linger until their TTL expires (and AWS SM
+      // entries would leak forever).
+      if (this.secretStore) {
+        try {
+          const cleared = await deleteSecretsByPrefix(
+            this.secretStore,
+            `deployments/${deploymentName}/`
+          );
+          if (cleared > 0) {
+            logger.debug(
+              `Cleared ${cleared} deployment secret(s) for ${deploymentName}`
+            );
+          }
+        } catch (error) {
+          logger.warn(
+            `Failed to clear deployment secrets for ${deploymentName}:`,
+            error
+          );
+        }
+      }
+
+      await this.deleteDeployment(deploymentName);
+    } catch (error) {
+      throw new OrchestratorError(
+        ErrorCode.DEPLOYMENT_DELETE_FAILED,
+        `Failed to delete deployment for ${deploymentName}: ${getErrorMessage(error)}`,
+        { deploymentName, error },
+        true
+      );
+    }
+  }
+
+  /**
+   * Reconcile deployments: unified method for cleanup and resource management.
+   */
+  async reconcileDeployments(): Promise<void> {
+    try {
+      const maxDeployments = this.config.worker.maxDeployments;
+
+      logger.debug("Running deployment cleanup...");
+
+      // Get all worker deployments from the backend
+      const activeDeployments = await this.listDeployments();
+
+      if (activeDeployments.length === 0) {
+        return;
+      }
+
+      // Sort deployments by last activity (oldest first)
+      const sortedDeployments = [...activeDeployments].sort(
+        (a, b) => a.lastActivity.getTime() - b.lastActivity.getTime()
+      );
+
+      let processedCount = 0;
+      const BATCH_SIZE = 10; // Process up to 10 deletions in parallel
+
+      // Collect actions to perform
+      const toDelete: string[] = [];
+      const toScaleDown: string[] = [];
+
+      for (const analysis of sortedDeployments) {
+        const { deploymentName, replicas, isIdle, isVeryOld } = analysis;
+
+        if (isVeryOld) {
+          toDelete.push(deploymentName);
+        } else if (isIdle && replicas > 0) {
+          toScaleDown.push(deploymentName);
+        }
+      }
+
+      // Check if we exceed max deployments
+      const remainingDeployments = sortedDeployments.filter(
+        (d) => !d.isVeryOld
+      );
+      if (remainingDeployments.length > maxDeployments) {
+        const excessCount = remainingDeployments.length - maxDeployments;
+        const deploymentsToDelete = remainingDeployments.slice(0, excessCount);
+        for (const { deploymentName } of deploymentsToDelete) {
+          if (!toDelete.includes(deploymentName)) {
+            toDelete.push(deploymentName);
+          }
+        }
+      }
+
+      // Process deletions in parallel batches
+      processedCount += await runInBatches(
+        toDelete,
+        BATCH_SIZE,
+        (name) => this.deleteWorkerDeployment(name),
+        (name, reason) => {
+          logger.error(`❌ Failed to delete deployment ${name}:`, reason);
+        }
+      );
+
+      // Process scale-downs in parallel batches
+      processedCount += await runInBatches(
+        toScaleDown,
+        BATCH_SIZE,
+        (name) => this.scaleDeployment(name, 0),
+        (name, reason) => {
+          logger.error(`❌ Failed to scale down deployment ${name}:`, reason);
+        }
+      );
+
+      if (processedCount > 0) {
+        logger.info(
+          `✅ Cleanup completed: processed ${processedCount} deployment(s)`
+        );
+      }
+    } catch (error) {
+      logger.error(
+        "Error during deployment reconciliation:",
+        getErrorMessage(error)
+      );
+    }
   }
 
   private getWorkerEntryPoint(): string {
@@ -624,8 +1813,8 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
     messageData?: MessagePayload
   ): Promise<void> {
     // Embedded mode is single-process by definition, so there is no cross-
-    // process orchestrator to enforce uniqueness. The base class's in-flight
-    // cache catches concurrent calls; this guards the rare case where a
+    // process orchestrator to enforce uniqueness. The in-flight cache
+    // catches concurrent calls; this guards the rare case where a
     // fully-completed worker is still in the map and a fresh create slips
     // past the upstream `listDeployments()` check (e.g. stale snapshot).
     if (this.workers.has(deploymentName)) {

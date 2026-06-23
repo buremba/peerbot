@@ -851,7 +851,7 @@ export class WorkerGateway {
 
   /**
    * Resolve dynamic provider configuration for a given agent.
-   * Mirrors the provider resolution logic in base-deployment-manager's
+   * Mirrors the provider resolution logic in deployment-manager's
    * generateEnvironmentVariables() but returns config values instead of env vars.
    */
   private async resolveProviderConfig(

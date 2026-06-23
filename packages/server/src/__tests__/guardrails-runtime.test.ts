@@ -29,8 +29,10 @@ import {
 } from '../gateway/guardrails/audit';
 import { registerBuiltinGuardrails } from '../gateway/guardrails/builtins';
 import { MessageConsumer } from '../gateway/orchestration/message-consumer';
-import type { OrchestratorConfig } from '../gateway/orchestration/base-deployment-manager';
-import type { BaseDeploymentManager } from '../gateway/orchestration/base-deployment-manager';
+import type {
+  DeploymentManager,
+  OrchestratorConfig,
+} from '../gateway/orchestration/deployment-manager';
 import { GrantStore } from '../gateway/permissions/grant-store';
 import {
   PostgresSecretStore,
@@ -527,7 +529,7 @@ describe('MessageConsumer — wired input guardrail', () => {
     // Stub deployment manager — happy-path branches need it for
     // listDeployments / scaleDeployment / etc, but the trip path
     // short-circuits before any of those are called.
-    const fakeDeployments: BaseDeploymentManager = {
+    const fakeDeployments: DeploymentManager = {
       listDeployments: async () => [],
       scaleDeployment: async () => {},
       updateDeploymentActivity: async () => {},
@@ -543,7 +545,7 @@ describe('MessageConsumer — wired input guardrail', () => {
       reconcileDeployments: async () => {},
       invalidateGrantSyncCache: () => {},
       clearAllGrantSyncCaches: () => {},
-    } as unknown as BaseDeploymentManager;
+    } as unknown as DeploymentManager;
 
     const config: OrchestratorConfig = {
       queues: { retryLimit: 1, expireInSeconds: 60 },
@@ -626,7 +628,7 @@ describe('MessageConsumer — wired input guardrail', () => {
     };
     const fakeDeployments = {
       listDeployments: async () => [],
-    } as unknown as BaseDeploymentManager;
+    } as unknown as DeploymentManager;
 
     const consumer = new TestableMessageConsumer(
       { queues: { retryLimit: 1, expireInSeconds: 60 } } as OrchestratorConfig,

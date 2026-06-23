@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { signalWorkerGroup } from "../../gateway/orchestration/impl/embedded-deployment";
+import { signalWorkerGroup } from "../../gateway/orchestration/deployment-manager";
 
 const realKill = process.kill;
 afterEach(() => {

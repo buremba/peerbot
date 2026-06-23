@@ -31,9 +31,9 @@ import {
 } from "@lobu/core";
 import type { IMessageQueue } from "../infrastructure/queue/index.js";
 import type {
-  BaseDeploymentManager,
+  DeploymentManager,
   OrchestratorConfig,
-} from "../orchestration/base-deployment-manager.js";
+} from "../orchestration/deployment-manager.js";
 import { MessageConsumer } from "../orchestration/message-consumer.js";
 
 // A no-op queue so `armTurnTimeout` / `sendToWorkerQueue` don't touch Postgres.
@@ -69,7 +69,7 @@ function makeConfig(): OrchestratorConfig {
 // "new thread → create" branch.
 function makeDeploymentManager(
   throwOnCreate: Error,
-): BaseDeploymentManager {
+): DeploymentManager {
   return {
     listDeployments: mock(async () => []),
     scaleDeployment: mock(async () => {}),
@@ -78,7 +78,7 @@ function makeDeploymentManager(
     createWorkerDeployment: mock(async () => {
       throw throwOnCreate;
     }),
-  } as unknown as BaseDeploymentManager;
+  } as unknown as DeploymentManager;
 }
 
 function makePayload(): MessagePayload {
@@ -147,7 +147,7 @@ describe("multi-replica: conversation owned by another pod", () => {
       makeFakeQueue(),
     );
 
-    const dm = (consumer as unknown as { deploymentManager: BaseDeploymentManager })
+    const dm = (consumer as unknown as { deploymentManager: DeploymentManager })
       .deploymentManager;
     const trackSpy = spyOn(
       consumer as unknown as {

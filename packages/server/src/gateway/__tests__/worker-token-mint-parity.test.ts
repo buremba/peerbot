@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { type WorkerTokenData, verifyWorkerToken } from "@lobu/core";
-import { buildDeploymentWorkerToken } from "../orchestration/base-deployment-manager.js";
+import { buildDeploymentWorkerToken } from "../orchestration/deployment-manager.js";
 import { buildRunJobToken } from "../orchestration/message-consumer.js";
 import { assertRoutableInteraction } from "../interactions.js";
 

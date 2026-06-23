@@ -1,10 +1,10 @@
 import { beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type { MessagePayload } from "@lobu/core";
 import {
-  BaseDeploymentManager,
   type DeploymentInfo,
+  DeploymentManager,
   type OrchestratorConfig,
-} from "../orchestration/base-deployment-manager.js";
+} from "../orchestration/deployment-manager.js";
 import { GrantStore } from "../permissions/grant-store.js";
 import { PolicyStore } from "../permissions/policy-store.js";
 import {
@@ -14,7 +14,7 @@ import {
 } from "./helpers/db-setup.js";
 
 /** Minimal concrete subclass — only exists so we can test grant syncing. */
-class TestDeploymentManager extends BaseDeploymentManager {
+class TestDeploymentManager extends DeploymentManager {
   async listDeployments(): Promise<DeploymentInfo[]> {
     return [];
   }
@@ -70,7 +70,7 @@ function buildPayload(overrides: Partial<MessagePayload>): MessagePayload {
   };
 }
 
-describe("BaseDeploymentManager.syncNetworkConfigGrants", () => {
+describe("DeploymentManager.syncNetworkConfigGrants", () => {
   let grantStore: GrantStore;
   let policyStore: PolicyStore;
   let manager: TestDeploymentManager;
@@ -304,8 +304,8 @@ describe("BaseDeploymentManager.syncNetworkConfigGrants", () => {
  * runtime-specific manager gets one shared implementation. Embedded
  * idempotency (`workers.has` short-circuit) is tested separately.
  */
-describe("BaseDeploymentManager.ensureDeployment in-flight coalescing", () => {
-  class CountingManager extends BaseDeploymentManager {
+describe("DeploymentManager.ensureDeployment in-flight coalescing", () => {
+  class CountingManager extends DeploymentManager {
     spawnCalls = 0;
     /** Resolver for the most recent spawn — lets tests hold spawn open. */
     releaseSpawn: () => void = () => {
@@ -388,7 +388,7 @@ describe("BaseDeploymentManager.ensureDeployment in-flight coalescing", () => {
   });
 
   test("rejected spawn clears the in-flight entry so the next call retries", async () => {
-    class FailingManager extends BaseDeploymentManager {
+    class FailingManager extends DeploymentManager {
       attempts = 0;
       async listDeployments(): Promise<DeploymentInfo[]> {
         return [];

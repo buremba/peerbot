@@ -14,7 +14,7 @@ import {
   getRequiredEnv,
   TIME,
 } from "@lobu/core";
-import type { OrchestratorConfig } from "../orchestration/base-deployment-manager.js";
+import type { OrchestratorConfig } from "../orchestration/deployment-manager.js";
 import { findEnclosingMonorepoRoot } from "../../utils/monorepo-root.js";
 
 const __filename = fileURLToPath(import.meta.url);

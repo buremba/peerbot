@@ -40,7 +40,7 @@ export interface ThreadSession {
   /**
    * Owning organization of the agent. Cached at session-create time so the
    * message-send path can stamp it on the queue payload without re-reading
-   * `agent_metadata` for every message. EmbeddedDeploymentManager refuses
+   * `agent_metadata` for every message. DeploymentManager refuses
    * `grantStore.grant()` calls without an org id, so without this the very
    * first message after `lobu chat` would fail at worker spawn even though
    * the session itself was created cleanly.

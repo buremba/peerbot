@@ -1,7 +1,7 @@
 /**
  * Shared claim extraction for the two worker-token mints — the per-run
  * `runJobToken` (message-consumer) and the deployment-lifetime `WORKER_TOKEN`
- * (base-deployment-manager). Both read the SAME routing claims off the message;
+ * (deployment-manager). Both read the SAME routing claims off the message;
  * the #1274 P0 was an omitted-claim divergence between exactly these two mints
  * (the per-run mint dropped `connectionId`, so every chat `ask_user` 500'd at
  * `assertRoutableInteraction`).

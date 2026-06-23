@@ -1,6 +1,5 @@
-export * from "./base-deployment-manager.js";
+export * from "./deployment-manager.js";
 export * from "./deployment-utils.js";
-export * from "./impl/embedded-deployment.js";
 
 import {
 	createLogger,
@@ -17,19 +16,18 @@ import {
 import type { GrantStore } from "../permissions/grant-store.js";
 import type { PolicyStore } from "../permissions/policy-store.js";
 import type { WritableSecretStore } from "../secrets/index.js";
-import type {
-  BaseDeploymentManager,
-  OrchestratorConfig,
-} from "./base-deployment-manager.js";
+import {
+  DeploymentManager,
+  type OrchestratorConfig,
+} from "./deployment-manager.js";
 import { buildModuleEnvVars } from "./deployment-utils.js";
-import { EmbeddedDeploymentManager } from "./impl/embedded-deployment.js";
 import { MessageConsumer } from "./message-consumer.js";
 
 const logger = createLogger("orchestrator");
 
 export class Orchestrator {
   private config: OrchestratorConfig;
-  private deploymentManager: BaseDeploymentManager;
+  private deploymentManager: DeploymentManager;
   private queueConsumer: MessageConsumer;
   private isRunning = false;
   private shuttingDown = false;
@@ -41,7 +39,7 @@ export class Orchestrator {
   constructor(config: OrchestratorConfig) {
     this.config = config;
     const providerModules: ModelProviderModule[] = getModelProviderModules();
-    this.deploymentManager = new EmbeddedDeploymentManager(
+    this.deploymentManager = new DeploymentManager(
       config,
       buildModuleEnvVars,
       providerModules
@@ -244,7 +242,7 @@ export class Orchestrator {
    * Expose the deployment manager so host code can drop per-agent
    * caches (e.g. grant sync cache) on config reload.
    */
-  getDeploymentManager(): BaseDeploymentManager {
+  getDeploymentManager(): DeploymentManager {
     return this.deploymentManager;
   }
 }

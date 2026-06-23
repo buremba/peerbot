@@ -81,7 +81,7 @@ import {
 import {
   getMaxReservedLocks,
   getReservedLockCount,
-} from './gateway/orchestration/impl/embedded-deployment';
+} from './gateway/orchestration/deployment-manager';
 import { getSchedulerHealth } from './scheduled/scheduler-health';
 import { getClientIP, getRateLimiter, RateLimitPresets } from './utils/rate-limiter';
 import { getRuntimeInfo } from './utils/runtime-info';

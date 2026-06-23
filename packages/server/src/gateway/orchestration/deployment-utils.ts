@@ -1,6 +1,6 @@
 import type { ProviderCredentialContext } from "../embedded.js";
 import { getOrchestratorModules } from "../modules/module-system.js";
-import type { DeploymentInfo } from "./base-deployment-manager.js";
+import type { DeploymentInfo } from "./deployment-manager.js";
 
 /**
  * Build environment variables by integrating all registered modules

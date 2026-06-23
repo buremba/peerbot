@@ -154,7 +154,7 @@ export class Gateway {
 
 		// 6. Start the turn-liveness deadline sweep — the cross-replica backstop
 		// that fails a turn whose worker hung or whose pod died (the fast path in
-		// EmbeddedDeploymentManager covers an observed crash instantly).
+		// DeploymentManager covers an observed crash instantly).
 		startTurnTimeoutSweep();
 
 		this.isRunning = true;

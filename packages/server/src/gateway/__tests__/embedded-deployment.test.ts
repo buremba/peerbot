@@ -11,7 +11,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { ErrorCode, type MessagePayload, OrchestratorError } from "@lobu/core";
-import type { OrchestratorConfig } from "../orchestration/base-deployment-manager.js";
+import type { OrchestratorConfig } from "../orchestration/deployment-manager.js";
 
 // ---------------------------------------------------------------------------
 // Mock child_process.spawn to return a fake ChildProcess
@@ -50,7 +50,7 @@ mock.module("node:child_process", () => ({
 // ---------------------------------------------------------------------------
 // Now import the class under test
 // ---------------------------------------------------------------------------
-import { EmbeddedDeploymentManager } from "../orchestration/impl/embedded-deployment.js";
+import { DeploymentManager } from "../orchestration/deployment-manager.js";
 
 // ---------------------------------------------------------------------------
 // Test config & helpers
@@ -101,14 +101,14 @@ function createTestMessagePayload(
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-describe("EmbeddedDeploymentManager", () => {
-  let manager: EmbeddedDeploymentManager;
+describe("DeploymentManager", () => {
+  let manager: DeploymentManager;
   let mkdirSyncSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
     process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
     process.env.LOBU_DISABLE_SYSTEMD_RUN = "1";
-    manager = new EmbeddedDeploymentManager(TEST_CONFIG);
+    manager = new DeploymentManager(TEST_CONFIG);
     mockChildProcesses.length = 0;
     mockSpawn.mockClear();
     mkdirSyncSpy = spyOn(fs, "mkdirSync").mockReturnValue(undefined);
@@ -173,7 +173,7 @@ describe("EmbeddedDeploymentManager", () => {
     });
 
     test("compiled worker entry points run with Node", async () => {
-      const jsManager = new EmbeddedDeploymentManager({
+      const jsManager = new DeploymentManager({
         ...TEST_CONFIG,
         worker: {
           ...TEST_CONFIG.worker,
@@ -281,7 +281,7 @@ describe("EmbeddedDeploymentManager", () => {
 
     test("scaleDeployment(name, 1) on non-existent name rejects so MessageConsumer can re-spawn", async () => {
       // Silent no-op would strand the queued message forever (no worker, no
-      // error, no retry); BaseDeploymentManager.ensureDeployment catches this
+      // error, no retry); DeploymentManager.ensureDeployment catches this
       // and falls through to spawn a fresh worker.
       await expect(
         manager.scaleDeployment("nonexistent", 1)
@@ -348,8 +348,8 @@ describe("EmbeddedDeploymentManager", () => {
       // snapshots (one reply silently wins). Post-fix, BOTH refuse: zero
       // duplicate spawns, so the divergent-snapshot race can't occur.
       test("two pods both refuse an org-less snapshot turn — no duplicate spawn across replicas", async () => {
-        const pod1 = new EmbeddedDeploymentManager(TEST_CONFIG);
-        const pod2 = new EmbeddedDeploymentManager(TEST_CONFIG);
+        const pod1 = new DeploymentManager(TEST_CONFIG);
+        const pod2 = new DeploymentManager(TEST_CONFIG);
         const msg = createTestMessagePayload({
           runId: 42,
           organizationId: undefined,

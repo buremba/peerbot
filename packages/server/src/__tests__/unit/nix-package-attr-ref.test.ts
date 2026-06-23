@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { OrchestratorError } from "@lobu/core";
-import { nixPackageAttrRef } from "../../gateway/orchestration/impl/embedded-deployment";
+import { nixPackageAttrRef } from "../../gateway/orchestration/deployment-manager";
 
 describe("nixPackageAttrRef", () => {
   it("accepts plain leaf package names", () => {

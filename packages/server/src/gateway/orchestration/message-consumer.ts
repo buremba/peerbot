@@ -30,11 +30,11 @@ import {
 } from "../infrastructure/queue/index.js";
 import { armTurnTimeout, failTurnIfPending } from "./turn-liveness.js";
 import {
-  type BaseDeploymentManager,
   buildCanonicalConversationKey,
+  type DeploymentManager,
   generateDeploymentName,
   type OrchestratorConfig,
-} from "./base-deployment-manager.js";
+} from "./deployment-manager.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
 import { getDb } from "../../db/client.js";
 
@@ -155,7 +155,7 @@ export function buildRunJobToken(args: {
 
 export class MessageConsumer {
   private queue: IMessageQueue;
-  private deploymentManager: BaseDeploymentManager;
+  private deploymentManager: DeploymentManager;
   private config: OrchestratorConfig;
   private isRunning = false;
   /**
@@ -163,14 +163,14 @@ export class MessageConsumer {
    * has a single MessageConsumer instance per process, so an in-memory Set
    * is sufficient for the "two consecutive messages for the same thread
    * race to create the deployment" guard. The cross-pod guard is the PG
-   * advisory lock in BaseDeploymentManager — this Set is pod-local only.
+   * advisory lock in DeploymentManager — this Set is pod-local only.
    */
   private deploymentLocks = new Set<string>();
   private agentSettingsStore?: AgentSettingsStore;
   private guardrailRegistry?: GuardrailRegistry;
   constructor(
     config: OrchestratorConfig,
-    deploymentManager: BaseDeploymentManager,
+    deploymentManager: DeploymentManager,
     // Test seam: the production path always uses the real Postgres-backed
     // RunsQueue. Tests inject a fake so `handleMessage` can be driven without a
     // database. Not a configuration knob — no caller passes this outside tests.

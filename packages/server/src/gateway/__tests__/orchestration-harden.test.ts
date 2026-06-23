@@ -11,7 +11,7 @@
  *  6. Spawn failure handling — spawn 'error' removes worker from map.
  *  7. Workspace dir creation / permissions.
  *  8. WORKER_ENV_* prefix-stripping → forwarded; non-prefixed not forwarded.
- *  9. Concurrency limits (EmbeddedDeploymentManager.maxDeployments).
+ *  9. Concurrency limits (DeploymentManager.maxDeployments).
  * 10. Nix package name injection prevention (via spawnDeployment path).
  * 11. Child-process exit during killWorker (double-exit safety).
  * 12. invalidateGrantSyncCache / clearAllGrantSyncCaches.
@@ -82,14 +82,12 @@ mock.module("node:child_process", () => ({
 
 import type { MessagePayload } from "@lobu/core";
 import {
-  EmbeddedDeploymentManager,
   __resetCapabilityProbesForTests,
-} from "../orchestration/impl/embedded-deployment.js";
-import {
   buildCanonicalConversationKey,
+  DeploymentManager,
   generateDeploymentName,
   type OrchestratorConfig,
-} from "../orchestration/base-deployment-manager.js";
+} from "../orchestration/deployment-manager.js";
 import {
   backoffSeconds,
   classifyQueue,
@@ -133,8 +131,8 @@ function makePayload(overrides?: Partial<MessagePayload>): MessagePayload {
   } as MessagePayload;
 }
 
-function makeManager(overrides?: Partial<OrchestratorConfig>): EmbeddedDeploymentManager {
-  return new EmbeddedDeploymentManager({ ...TEST_CONFIG, ...overrides });
+function makeManager(overrides?: Partial<OrchestratorConfig>): DeploymentManager {
+  return new DeploymentManager({ ...TEST_CONFIG, ...overrides });
 }
 
 // ── Suite setup ──────────────────────────────────────────────────────────────
@@ -724,7 +722,7 @@ describe("WORKER_ENV_* env-var passthrough", () => {
     // MY_SECRET_KEY should not be in the worker env unless it was explicitly set
     // via the gateway config, not just inherited from gateway process.env.
     // The worker env is built from scratch — gateway-only vars are intentionally
-    // excluded (see base-deployment-manager.ts: "Workers must not inherit
+    // excluded (see deployment-manager.ts: "Workers must not inherit
     // gateway-only secrets").
     process.env.MY_SECRET_KEY = "should-not-appear";
     const mgr = makeManager();
@@ -1042,7 +1040,7 @@ describe("validateWorkerImage", () => {
   });
 
   test("throws when no entryPoint configured", async () => {
-    const mgr = new EmbeddedDeploymentManager({
+    const mgr = new DeploymentManager({
       ...TEST_CONFIG,
       worker: { ...TEST_CONFIG.worker, entryPoint: undefined },
     });

@@ -2,7 +2,7 @@
  * Gateway ↔ worker wire contract.
  *
  * `MessagePayload` is what `MessageConsumer` (gateway) enqueues on the runs
- * queue, what `EmbeddedDeploymentManager.dispatch*` writes to the worker SSE
+ * queue, what `DeploymentManager.dispatch*` writes to the worker SSE
  * stream, and what the worker's `GatewayClient.handleThreadMessage` /
  * `handleExecJob` consumes. Same shape on both sides — keep it here.
  *

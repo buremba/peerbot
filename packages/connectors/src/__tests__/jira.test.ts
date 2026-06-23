@@ -1,14 +1,10 @@
 import { beforeAll, describe, expect, mock, test } from 'bun:test';
-// Use the real cursor paginator (the connector now delegates its sync loop to
-// it); the shared mock stubs it as throwing, so this file supplies its own SDK
-// stub that re-exports the genuine generator while keeping the browser stack out.
-import { paginateByCursor } from '../../../connector-sdk/src/pagination.ts';
+// The connector delegates its sync loop to the cursor paginator; the shared mock
+// provides a faithful real generator (not a throwing stub), so this exercises
+// the genuine paging semantics while keeping the browser stack out.
 import { connectorSdkMock } from './connector-sdk.mock';
 
-mock.module('@lobu/connector-sdk', () => ({
-  ...connectorSdkMock(),
-  paginateByCursor,
-}));
+mock.module('@lobu/connector-sdk', () => connectorSdkMock());
 
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let JiraConnector: any;

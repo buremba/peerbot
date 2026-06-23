@@ -1,12 +1,10 @@
 import { beforeAll, describe, expect, mock, test } from 'bun:test';
-// The connector now drives both sync loops through the real cursor paginator.
-import { paginateByCursor } from '../../../connector-sdk/src/pagination.ts';
+// The connector drives both sync loops through the cursor paginator; the shared
+// mock provides a faithful real generator (not a throwing stub), so this
+// exercises the genuine paging semantics while keeping the browser stack out.
 import { connectorSdkMock } from './connector-sdk.mock';
 
-mock.module('@lobu/connector-sdk', () => ({
-  ...connectorSdkMock(),
-  paginateByCursor,
-}));
+mock.module('@lobu/connector-sdk', () => connectorSdkMock());
 
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let GoogleCalendarConnector: any;

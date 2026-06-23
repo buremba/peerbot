@@ -8,9 +8,13 @@
 //
 // The SDK pulls in playwright; stubbing lets the pure connector logic be
 // imported without the browser stack. The runtime-only symbols throw if a
-// test actually reaches them; extensionDomScrape is faithfully re-implemented
-// so the home-feed path exercises the same dispatch shape (the real helper has
-// its own tests in packages/connector-sdk).
+// test actually reaches them; extensionDomScrape and the paginateBy* generators
+// are faithfully re-implemented so connectors that delegate their sync loops
+// exercise the real paging semantics (the real helpers have their own tests in
+// packages/connector-sdk). They are re-implemented inline rather than imported
+// from connector-sdk/src because this mock is copied verbatim into the cli's
+// dist/ for the packaged-connector test run, where that cross-package source
+// path does not resolve.
 
 interface DomScrapeOpts {
   dispatcher: {
@@ -23,6 +27,38 @@ interface DomScrapeOpts {
   allowedOrigins: string[];
   persistent?: boolean;
   focus?: boolean;
+}
+
+// Faithful copies of the SDK's pure pagination generators (no browser stack).
+// Kept byte-for-byte in step with packages/connector-sdk/src/pagination.ts.
+async function* paginateByCursor<T, C = string>(
+  fetchPage: (cursor: C | null) => Promise<{ items: T[]; nextCursor: C | null | undefined }>,
+  options: { maxPages?: number; initialCursor?: C | null; delayMs?: number } = {}
+): AsyncGenerator<T[], void, void> {
+  const maxPages = options.maxPages ?? Number.POSITIVE_INFINITY;
+  let cursor: C | null = options.initialCursor ?? null;
+  for (let page = 0; page < maxPages; page++) {
+    if (page > 0 && options.delayMs) await new Promise((r) => setTimeout(r, options.delayMs));
+    const { items, nextCursor } = await fetchPage(cursor);
+    yield items;
+    if (nextCursor === null || nextCursor === undefined) return;
+    cursor = nextCursor;
+  }
+}
+
+async function* paginateByOffset<T>(
+  fetchPage: (offset: number, pageSize: number) => Promise<{ items: T[]; hasMore: boolean }>,
+  options: { pageSize: number; maxPages?: number; startOffset?: number; delayMs?: number }
+): AsyncGenerator<T[], void, void> {
+  const maxPages = options.maxPages ?? Number.POSITIVE_INFINITY;
+  let offset = options.startOffset ?? 0;
+  for (let page = 0; page < maxPages; page++) {
+    if (page > 0 && options.delayMs) await new Promise((r) => setTimeout(r, options.delayMs));
+    const { items, hasMore } = await fetchPage(offset, options.pageSize);
+    yield items;
+    if (!hasMore) return;
+    offset += options.pageSize;
+  }
 }
 
 export function connectorSdkMock() {
@@ -42,8 +78,8 @@ export function connectorSdkMock() {
       request: notUsed('http.request'),
     }),
     requireBearerClient: notUsed('requireBearerClient'),
-    paginateByCursor: notUsed('paginateByCursor'),
-    paginateByOffset: notUsed('paginateByOffset'),
+    paginateByCursor,
+    paginateByOffset,
     ConnectorRuntime: class {},
     calculateEngagementScore: () => 0,
     IDENTITY: {

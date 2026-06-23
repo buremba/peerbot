@@ -7,7 +7,6 @@
 
 import { getErrorMessage } from "@lobu/core";
 import { getDb } from "../../../../db/client";
-import type { Env } from "../../../../index";
 import { normalizeAuthValues } from "../../../../utils/auth-profiles";
 import { applyEntityLinkOverrides } from "../../../../utils/entity-link-validation";
 import logger from "../../../../utils/logger";

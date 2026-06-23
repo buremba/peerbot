@@ -581,7 +581,7 @@ describe('first-party tool-name coverage', () => {
   // REST proxy (`POST /api/{slug}/{toolName}`). They must be registered AND
   // `internal: true` so they stay off the external MCP surface — no external
   // MCP client should see CLI bootstrap tools in `tools/list`.
-  const CLI_REST_BOOTSTRAP_TOOLS = ['manage_connections', 'manage_auth_profiles'] as const;
+  const CLI_REST_BOOTSTRAP_TOOLS = ['manage_catalog', 'manage_auth_profiles'] as const;
 
   it.each(CLI_REST_BOOTSTRAP_TOOLS)(
     'CLI bootstrap tool %s is registered and hidden from external MCP tools/list',

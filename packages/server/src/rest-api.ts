@@ -13,7 +13,7 @@ import { listOrgInstalled } from "./catalog/installed";
 import { getDb } from "./db/client";
 import { streamInvalidationEvents } from "./events/sse";
 import type { Env } from "./index";
-import { EMPTY_SUMMARY, getOperationsSummary } from "./operations/catalog";
+import { getOperationsSummary } from "./operations/catalog";
 import { getScopedConnectorDefinition } from "./tools/admin/connector-definition-helpers";
 import { manageClassifiers } from "./tools/admin/manage_classifiers";
 import { listWatchers } from "./tools/admin/manage_watchers";

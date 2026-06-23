@@ -60,7 +60,6 @@ orgInstalledRoutes.get("/agents/:agentId/installed", async (c) => {
 	const kinds = parseKindsParam(c.req.query("kinds"), AGENT_INSTALLED_KINDS);
 	const { agentId } = c.req.param();
 	const installed = await listAgentInstalled(
-		c.get("organizationId")!,
 		agentId,
 		kinds as AgentInstalledKind[],
 	);

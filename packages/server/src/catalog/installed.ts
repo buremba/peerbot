@@ -81,8 +81,9 @@ export async function listOrgInstalled(
 			isAuthenticated: ctx.isAuthenticated ?? false,
 			clientId: null,
 			tokenType: "session",
+			scopedToOrg: true,
+			allowCrossOrg: false,
 			requestUrl: "",
-			allowInternalTools: true,
 		};
 		const listed = await handleList({ status: "active" }, {} as Env, toolCtx);
 		const watchers = Array.isArray(listed.watchers) ? listed.watchers : [];
@@ -107,7 +108,6 @@ export async function listOrgInstalled(
 }
 
 export async function listAgentInstalled(
-	organizationId: string,
 	agentId: string,
 	kinds: AgentInstalledKind[],
 ): Promise<InstalledListResponse["installed"]> {
@@ -130,7 +130,7 @@ export async function listAgentInstalled(
 					system: skill.system,
 					mcp_servers: skill.mcpServers,
 					nix_packages: skill.nixPackages,
-					permissions: skill.permissions,
+					network_config: skill.networkConfig,
 				},
 			})),
 		};
@@ -193,10 +193,7 @@ export async function listAgentInstalled(
 	}
 
 	if (wanted.has("channels")) {
-		const platforms = await connectionStore.listConnections({
-			agentId,
-			organizationId,
-		});
+		const platforms = await connectionStore.listConnections({ agentId });
 		result.channels = {
 			kind: "channels",
 			items: platforms.map((platform) => ({

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -233,57 +233,10 @@ interface CatalogManifest {
 	entries: Record<string, ExtractedConnectorCatalogMetadata | null>;
 }
 
-// mtime-keyed so a regenerated manifest (dev) is picked up, and a known-bad
-// manifest isn't re-warned on every request.
-const manifestCache = new Map<
-	string,
-	{ mtimeMs: number; entries: CatalogManifest["entries"] | null }
->();
-
 // Manifests are keyed by POSIX-relative path so a manifest built on Linux (CI)
 // matches lookups on any runtime OS; mismatches simply fall back to compilation.
 function toPosixRelative(dirPath: string, filePath: string): string {
 	return relative(dirPath, filePath).split(sep).join("/");
-}
-
-async function loadCatalogManifest(
-	dirPath: string,
-): Promise<CatalogManifest["entries"] | null> {
-	const manifestPath = join(dirPath, CATALOG_MANIFEST_FILENAME);
-	let mtimeMs: number;
-	try {
-		mtimeMs = (await stat(manifestPath)).mtimeMs;
-	} catch {
-		return null; // no manifest → on-demand compilation path
-	}
-
-	const cached = manifestCache.get(manifestPath);
-	if (cached && cached.mtimeMs === mtimeMs) return cached.entries;
-
-	try {
-		const parsed = JSON.parse(
-			await readFile(manifestPath, "utf-8"),
-		) as CatalogManifest;
-		if (
-			parsed?.version !== CATALOG_MANIFEST_VERSION ||
-			typeof parsed.entries !== "object"
-		) {
-			manifestCache.set(manifestPath, { mtimeMs, entries: null });
-			return null;
-		}
-		manifestCache.set(manifestPath, { mtimeMs, entries: parsed.entries });
-		return parsed.entries;
-	} catch (error) {
-		logger.warn(
-			{
-				manifest_path: manifestPath,
-				error: getErrorMessage(error),
-			},
-			"Ignoring unreadable connector catalog manifest; falling back to on-demand compilation",
-		);
-		manifestCache.set(manifestPath, { mtimeMs, entries: null });
-		return null;
-	}
 }
 
 /**
@@ -325,21 +278,6 @@ async function collectConnectorSourceFiles(dirPath: string): Promise<string[]> {
 		}
 	}
 	return candidatePaths;
-}
-
-// Manifest hit → precomputed metadata (may be null = known non-connector, skip).
-// Manifest miss → compile + extract on demand (custom catalog dirs, or a bundled
-// file the manifest doesn't cover). Preserves the dynamic runtime path.
-async function resolveConnectorCatalogMetadata(
-	filePath: string,
-	dirPath: string,
-	manifest: CatalogManifest["entries"] | null,
-): Promise<ExtractedConnectorCatalogMetadata | null> {
-	if (manifest) {
-		const rel = toPosixRelative(dirPath, filePath);
-		if (Object.hasOwn(manifest, rel)) return manifest[rel];
-	}
-	return extractConnectorCatalogMetadata(filePath);
 }
 
 export async function listCatalogConnectorDefinitions(): Promise<

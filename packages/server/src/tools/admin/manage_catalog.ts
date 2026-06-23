@@ -9,7 +9,6 @@ import {
 	ORG_INSTALLED_KINDS,
 	type OrgInstalledKind,
 } from "../../catalog/types";
-import type { Env } from "../../index";
 import type { ToolContext } from "../registry";
 import { action, defineActionTool } from "./action-tool";
 
@@ -108,11 +107,7 @@ async function handleListInstalled(
 	if (args.agent_id && resolvedAgentKinds.length > 0) {
 		Object.assign(
 			installed,
-			await listAgentInstalled(
-				ctx.organizationId,
-				args.agent_id,
-				resolvedAgentKinds,
-			),
+			await listAgentInstalled(args.agent_id, resolvedAgentKinds),
 		);
 	}
 

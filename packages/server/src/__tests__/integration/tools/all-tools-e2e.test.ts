@@ -163,6 +163,11 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 				coverage: "reachable",
 				note: "lists connections for the org",
 			},
+			manage_catalog: {
+				args: { action: "list_catalog", kinds: ["connectors"] },
+				coverage: "reachable",
+				note: "lists global connector catalog manifests",
+			},
 			manage_agents: {
 				args: { action: "list" },
 				coverage: "reachable",

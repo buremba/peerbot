@@ -31,6 +31,7 @@ type GitHubContentType =
   | 'pr_comments'
   | 'discussions'
   | 'discussion_comments'
+  | 'commits'
   | 'stargazers';
 
 interface GitHubConfig {
@@ -120,6 +121,19 @@ interface GitHubCommentLike {
   created_at: string;
   updated_at: string;
   reactions?: { '+1'?: number; '-1'?: number; total_count?: number };
+}
+
+interface GitHubCommitLike {
+  sha: string;
+  html_url?: string;
+  commit?: {
+    message?: string;
+    author?: { name?: string; email?: string; date?: string };
+    committer?: { name?: string; email?: string; date?: string };
+  };
+  /** Linked GitHub account for the author — null when the commit email isn't tied to one. */
+  author?: { login?: string; id?: number } | null;
+  committer?: { login?: string; id?: number } | null;
 }
 
 interface GraphQLDiscussionNode {
@@ -220,6 +234,11 @@ const LOOKBACK_PROP = {
 
 const STARGAZER_PROFILE_REFRESH_MS = 30 * 24 * 60 * 60 * 1000;
 const STARGAZER_PROFILE_FETCH_LIMIT = 25;
+
+// Bound a single commits sync to 30 pages (3000 commits). Incremental `since`
+// keeps steady-state runs tiny; the cap only matters on a cold backfill of a
+// busy repo, where the remaining history rides subsequent runs.
+const COMMITS_MAX_PAGES = 30;
 
 const LABELS_PROP = {
   labels_filter: {
@@ -517,6 +536,35 @@ export default class GitHubConnector extends ConnectorRuntime {
                 discussion_number: { type: 'number' },
                 updated_at: { type: 'string' },
                 reactions: { type: 'number' },
+                author_login: { type: 'string' },
+                author_id: { type: 'string' },
+              },
+            },
+            entityLinks: [GITHUB_PERSON_ENTITY_LINK],
+          },
+        },
+      },
+      commits: {
+        key: 'commits',
+        name: 'Commits',
+        requiredScopes: [],
+        description: 'Sync commits pushed to a repository, attributed to their authors.',
+        displayNameTemplate: '{repo_owner}/{repo_name} commits',
+        configSchema: {
+          type: 'object',
+          required: ['repo_owner', 'repo_name'],
+          properties: { ...REPO_PROPS, ...LOOKBACK_PROP },
+        },
+        eventKinds: {
+          commit: {
+            description: 'A commit was authored in the repository',
+            metadataSchema: {
+              type: 'object',
+              properties: {
+                sha: { type: 'string' },
+                author_date: { type: 'string' },
+                committed_at: { type: 'string' },
+                author_email: { type: 'string' },
                 author_login: { type: 'string' },
                 author_id: { type: 'string' },
               },
@@ -940,7 +988,73 @@ export default class GitHubConnector extends ConnectorRuntime {
         return await this.syncDiscussions(repo, sinceIso, token);
       case 'discussion_comments':
         return await this.syncDiscussionComments(repo, sinceIso, token);
+      case 'commits':
+        return await this.syncCommits(repo, sinceIso, token);
     }
+  }
+
+  private async syncCommits(
+    repo: RepoRef,
+    sinceIso: string,
+    token: string | null
+  ): Promise<EventEnvelope[]> {
+    const events: EventEnvelope[] = [];
+
+    // Commits are durable and fully queryable, so polling recovers the complete
+    // "who committed when" history — no webhook dependency. `since` filters by
+    // commit date for incremental syncs; pagination is bounded so one run can't
+    // walk an unbounded history (deeper backfill rides subsequent runs).
+    const pages = paginateByOffset<GitHubCommitLike>(
+      async (offset, pageSize) => {
+        const query = new URLSearchParams({
+          per_page: String(pageSize),
+          page: String(offset / pageSize + 1),
+          since: sinceIso,
+        });
+        const url = `https://api.github.com/repos/${repo.owner}/${repo.repo}/commits?${query.toString()}`;
+        const commits = await this.requestJson<GitHubCommitLike[]>({ url, token });
+        return { items: commits, hasMore: commits.length === pageSize };
+      },
+      { pageSize: 100, maxPages: COMMITS_MAX_PAGES }
+    );
+
+    for await (const commits of pages) {
+      for (const commit of commits) {
+        if (!commit.sha) continue;
+        const authoredAtIso = commit.commit?.author?.date;
+        const authoredAt = authoredAtIso ? new Date(authoredAtIso) : null;
+        if (!authoredAt || Number.isNaN(authoredAt.getTime())) continue;
+
+        const message = commit.commit?.message ?? '';
+        const firstLine = message.split('\n', 1)[0].slice(0, 500);
+
+        events.push({
+          // Stable per-commit id (sha is globally unique) so re-syncs dedupe and
+          // a webhook trigger that re-polls supersedes rather than duplicates.
+          origin_id: `commit_${repo.owner}_${repo.repo}_${commit.sha}`,
+          title: firstLine || commit.sha.slice(0, 7),
+          payload_text: message.trim(),
+          // Prefer the linked GitHub login; fall back to the git author name when
+          // the commit email isn't tied to a GitHub account.
+          author_name: commit.author?.login ?? commit.commit?.author?.name,
+          source_url: commit.html_url,
+          occurred_at: authoredAt,
+          origin_type: 'commit',
+          metadata: {
+            sha: commit.sha,
+            author_date: authoredAtIso,
+            committed_at: commit.commit?.committer?.date ?? authoredAtIso,
+            author_email: commit.commit?.author?.email ?? null,
+            // Attribute to a person entity via the linked GitHub account (login +
+            // immutable id). Absent for unlinked-email commits — author_name still
+            // carries the git author.
+            ...this.buildAuthorMetadata(commit.author),
+          },
+        });
+      }
+    }
+
+    return events;
   }
 
   private async syncIssuesAndPulls(

@@ -10,7 +10,10 @@ import {
   type ActionResult,
   type ConnectorDefinition,
   ConnectorRuntime,
+  createHttpClient,
   type EventEnvelope,
+  type HttpClient,
+  paginateByCursor,
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
@@ -230,6 +233,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
       throw new Error('Google Calendar requires Google OAuth credentials.');
     }
 
+    const http = this.client(token);
     const calendarId = (ctx.config.calendar_id as string) || 'primary';
     const maxResults = Math.min((ctx.config.max_results as number) ?? 100, 2500);
     const lookbackDays = (ctx.config.lookback_days as number) ?? 30;
@@ -239,7 +243,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
 
     // Try incremental sync with syncToken first
     if (checkpoint.sync_token) {
-      const result = await this.syncWithToken(token, calendarId, checkpoint.sync_token, maxResults);
+      const result = await this.syncWithToken(http, calendarId, checkpoint.sync_token, maxResults);
       if (result) {
         return this.buildResult(result.events, result.nextSyncToken, result.events.length);
       }
@@ -252,58 +256,58 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     const timeMax = new Date();
     timeMax.setDate(timeMax.getDate() + 365); // Include future events
 
-    let pageToken: string | undefined;
     let nextSyncToken: string | undefined;
 
     // Safety bound — at 250 events/page, 200 pages = 50k events, more than
     // any reasonable calendar window. Stops a runaway loop if the upstream
     // ever returns a self-referential page token.
     const MAX_PAGES = 200;
-    let pages = 0;
 
-    while (pages < MAX_PAGES) {
-      pages++;
-      // Always request a full page — `maxResults` is a soft cap on *stored*
-      // events, not a reason to shrink the request size (shrinking to 1 once the
-      // cap is hit would crawl a busy calendar one event per round-trip).
-      const params = new URLSearchParams({
-        maxResults: '250',
-        orderBy: 'startTime',
-        singleEvents: 'true',
-        timeMin: timeMin.toISOString(),
-        timeMax: timeMax.toISOString(),
-      });
-      if (pageToken) {
-        params.set('pageToken', pageToken);
-      }
-
-      const url = `${this.BASE_URL}/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`;
-      const response = await this.apiGet(url, token);
-
-      if (!response.ok) {
-        throw new Error(
-          `Calendar events.list error (${response.status}): ${await response.text()}`
-        );
-      }
-
-      const data = (await response.json()) as CalendarEventListResponse;
-
-      if (data.items) {
-        for (const calEvent of data.items) {
-          if (events.length >= maxResults) break;
-          const envelope = this.calendarEventToEnvelope(calEvent);
-          if (envelope) events.push(envelope);
+    const pages = paginateByCursor<CalendarEvent, string>(
+      async (pageToken) => {
+        // Always request a full page — `maxResults` is a soft cap on *stored*
+        // events, not a reason to shrink the request size (shrinking to 1 once
+        // the cap is hit would crawl a busy calendar one event per round-trip).
+        const params = new URLSearchParams({
+          maxResults: '250',
+          orderBy: 'startTime',
+          singleEvents: 'true',
+          timeMin: timeMin.toISOString(),
+          timeMax: timeMax.toISOString(),
+        });
+        if (pageToken) {
+          params.set('pageToken', pageToken);
         }
-      }
 
-      nextSyncToken = data.nextSyncToken;
-      pageToken = data.nextPageToken;
-      // Google only returns nextSyncToken on the LAST page (no nextPageToken).
-      // Must keep paginating until pageToken is exhausted, otherwise the sync
-      // token is never obtained and every subsequent sync re-runs the full
-      // window from scratch — so we keep paging past `maxResults`, just stop
-      // appending events once the cap is reached.
-      if (!pageToken) break;
+        const url = `${this.BASE_URL}/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`;
+        const response = await http.raw(url);
+
+        if (!response.ok) {
+          throw new Error(
+            `Calendar events.list error (${response.status}): ${await response.text()}`
+          );
+        }
+
+        const data = (await response.json()) as CalendarEventListResponse;
+        // Google only returns nextSyncToken on the LAST page (no nextPageToken).
+        // Capture it whenever present so the trailing value survives; the
+        // generator keeps paging until nextPageToken is exhausted, otherwise the
+        // sync token is never obtained and every subsequent sync re-runs the full
+        // window from scratch.
+        nextSyncToken = data.nextSyncToken;
+        return { items: data.items ?? [], nextCursor: data.nextPageToken };
+      },
+      { maxPages: MAX_PAGES }
+    );
+
+    // Keep paginating past `maxResults`, just stop appending events once the cap
+    // is reached, so the trailing nextSyncToken is still captured.
+    for await (const items of pages) {
+      for (const calEvent of items) {
+        if (events.length >= maxResults) break;
+        const envelope = this.calendarEventToEnvelope(calEvent);
+        if (envelope) events.push(envelope);
+      }
     }
 
     return this.buildResult(events, nextSyncToken, events.length);
@@ -323,15 +327,17 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
         };
       }
 
+      const http = this.client(token);
+
       switch (ctx.actionKey) {
         case 'create_event':
-          return await this.createEvent(token, ctx.input);
+          return await this.createEvent(http, ctx.input);
         case 'update_event':
-          return await this.updateEvent(token, ctx.input);
+          return await this.updateEvent(http, ctx.input);
         case 'delete_event':
-          return await this.deleteEvent(token, ctx.input);
+          return await this.deleteEvent(http, ctx.input);
         case 'get_event':
-          return await this.getEvent(token, ctx.input);
+          return await this.getEvent(http, ctx.input);
         default:
           return { success: false, error: `Unknown action: ${ctx.actionKey}` };
       }
@@ -348,57 +354,62 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
   // -------------------------------------------------------------------------
 
   private async syncWithToken(
-    token: string,
+    http: HttpClient,
     calendarId: string,
     syncToken: string,
     maxResults: number
   ): Promise<{ events: EventEnvelope[]; nextSyncToken?: string } | null> {
     const events: EventEnvelope[] = [];
-    let pageToken: string | undefined;
     let nextSyncToken: string | undefined;
+    // 410 Gone means the syncToken is expired — abort and let the caller fall
+    // through to a full sync. Signalled out of the generator via this flag.
+    let syncTokenExpired = false;
 
     // Same hard ceiling as the full-sync path — defensive only.
     const MAX_PAGES = 200;
-    let pages = 0;
 
-    while (pages < MAX_PAGES) {
-      pages++;
-      const params = new URLSearchParams({
-        maxResults: String(Math.max(1, Math.min(250, maxResults - events.length))),
-        syncToken,
-      });
-      if (pageToken) {
-        params.set('pageToken', pageToken);
-      }
-
-      const url = `${this.BASE_URL}/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`;
-      const response = await this.apiGet(url, token);
-
-      // 410 Gone means syncToken is expired
-      if (response.status === 410) {
-        return null;
-      }
-
-      if (!response.ok) {
-        throw new Error(
-          `Calendar events.list error (${response.status}): ${await response.text()}`
-        );
-      }
-
-      const data = (await response.json()) as CalendarEventListResponse;
-
-      if (data.items) {
-        for (const calEvent of data.items) {
-          const envelope = this.calendarEventToEnvelope(calEvent);
-          if (envelope) events.push(envelope);
+    const pages = paginateByCursor<CalendarEvent, string>(
+      async (pageToken) => {
+        const params = new URLSearchParams({
+          // Page size shrinks toward the remaining cap as events accumulate,
+          // matching the original dynamic sizing.
+          maxResults: String(Math.max(1, Math.min(250, maxResults - events.length))),
+          syncToken,
+        });
+        if (pageToken) {
+          params.set('pageToken', pageToken);
         }
-      }
 
-      nextSyncToken = data.nextSyncToken;
-      pageToken = data.nextPageToken;
-      // Paginate until exhausted so we capture the trailing nextSyncToken.
-      if (!pageToken) break;
+        const url = `${this.BASE_URL}/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`;
+        const response = await http.raw(url);
+
+        if (response.status === 410) {
+          syncTokenExpired = true;
+          return { items: [], nextCursor: undefined };
+        }
+
+        if (!response.ok) {
+          throw new Error(
+            `Calendar events.list error (${response.status}): ${await response.text()}`
+          );
+        }
+
+        const data = (await response.json()) as CalendarEventListResponse;
+        // Capture the trailing nextSyncToken; generator pages until exhausted.
+        nextSyncToken = data.nextSyncToken;
+        return { items: data.items ?? [], nextCursor: data.nextPageToken };
+      },
+      { maxPages: MAX_PAGES }
+    );
+
+    for await (const items of pages) {
+      for (const calEvent of items) {
+        const envelope = this.calendarEventToEnvelope(calEvent);
+        if (envelope) events.push(envelope);
+      }
     }
+
+    if (syncTokenExpired) return null;
 
     return { events, nextSyncToken };
   }
@@ -407,7 +418,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
   // Actions
   // -------------------------------------------------------------------------
 
-  private async createEvent(token: string, input: Record<string, unknown>): Promise<ActionResult> {
+  private async createEvent(http: HttpClient, input: Record<string, unknown>): Promise<ActionResult> {
     const summary = input.summary as string;
     const start = input.start as string;
     const end = input.end as string;
@@ -441,12 +452,9 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     }
 
     const url = `${this.BASE_URL}/calendars/${encodeURIComponent(calendarId)}/events`;
-    const response = await fetch(url, {
+    const response = await http.raw(url, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(eventBody),
     });
 
@@ -469,7 +477,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     };
   }
 
-  private async updateEvent(token: string, input: Record<string, unknown>): Promise<ActionResult> {
+  private async updateEvent(http: HttpClient, input: Record<string, unknown>): Promise<ActionResult> {
     const eventId = input.event_id as string;
     const calendarId = (input.calendar_id as string) || 'primary';
 
@@ -485,12 +493,9 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     if (input.end !== undefined) patch.end = { dateTime: input.end as string };
 
     const url = `${this.BASE_URL}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
-    const response = await fetch(url, {
+    const response = await http.raw(url, {
       method: 'PATCH',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
     });
 
@@ -511,7 +516,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     };
   }
 
-  private async deleteEvent(token: string, input: Record<string, unknown>): Promise<ActionResult> {
+  private async deleteEvent(http: HttpClient, input: Record<string, unknown>): Promise<ActionResult> {
     const eventId = input.event_id as string;
     const calendarId = (input.calendar_id as string) || 'primary';
 
@@ -520,10 +525,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     }
 
     const url = `${this.BASE_URL}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
-    const response = await fetch(url, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const response = await http.raw(url, { method: 'DELETE' });
 
     if (!response.ok) {
       const errText = await response.text();
@@ -536,7 +538,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     };
   }
 
-  private async getEvent(token: string, input: Record<string, unknown>): Promise<ActionResult> {
+  private async getEvent(http: HttpClient, input: Record<string, unknown>): Promise<ActionResult> {
     const eventId = input.event_id as string;
     const calendarId = (input.calendar_id as string) || 'primary';
 
@@ -545,7 +547,7 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     }
 
     const url = `${this.BASE_URL}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
-    const response = await this.apiGet(url, token);
+    const response = await http.raw(url);
 
     if (!response.ok) {
       const errText = await response.text();
@@ -645,9 +647,10 @@ export default class GoogleCalendarConnector extends ConnectorRuntime {
     };
   }
 
-  private async apiGet(url: string, token: string): Promise<Response> {
-    return fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+  // Auth-aware client (Bearer + retry/backoff on transient 429/5xx). Built per
+  // token so each sync/action uses its own credentials. `.raw()` preserves the
+  // existing `response.ok`/status-code branching (e.g. 410 sync-token expiry).
+  private client(token: string): HttpClient {
+    return createHttpClient({ token, errorPrefix: 'Calendar API' });
   }
 }

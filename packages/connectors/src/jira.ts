@@ -12,6 +12,7 @@ import {
   type ConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
+  paginateByCursor,
   requireBearerClient,
   type SyncContext,
   type SyncCredentials,
@@ -210,33 +211,35 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
     const jql = ctx.config.jql ?? `updated >= -${lookbackDays}d order by updated DESC`;
 
     const events: EventEnvelope[] = [];
-    let nextPageToken: string | undefined;
-    let pages = 0;
 
-    while (pages < this.MAX_PAGES) {
-      // `/rest/api/3/search` was removed by Atlassian (CHANGE-2046); the
-      // replacement `/search/jql` paginates with an opaque nextPageToken and
-      // returns no total — iterate until the token is absent.
-      const params = new URLSearchParams({
-        jql,
-        maxResults: String(this.PAGE_SIZE),
-        fields: 'summary,description,status,assignee,reporter,created,updated',
-      });
-      if (nextPageToken) params.set('nextPageToken', nextPageToken);
-      const data = await http.json<JiraSearchResponse>(`${base}/search/jql?${params.toString()}`, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-      });
+    // `/rest/api/3/search` was removed by Atlassian (CHANGE-2046); the
+    // replacement `/search/jql` paginates with an opaque nextPageToken and
+    // returns no total — iterate until the token is absent.
+    const pages = paginateByCursor<JiraIssue, string>(
+      async (nextPageToken) => {
+        const params = new URLSearchParams({
+          jql,
+          maxResults: String(this.PAGE_SIZE),
+          fields: 'summary,description,status,assignee,reporter,created,updated',
+        });
+        if (nextPageToken) params.set('nextPageToken', nextPageToken);
+        const data = await http.json<JiraSearchResponse>(
+          `${base}/search/jql?${params.toString()}`,
+          { method: 'GET', headers: { Accept: 'application/json' } }
+        );
+        return { items: data.issues ?? [], nextCursor: data.nextPageToken };
+      },
+      { maxPages: this.MAX_PAGES }
+    );
 
-      const issues = data.issues ?? [];
+    for await (const issues of pages) {
       for (const issue of issues) {
         const event = this.issueEvent(issue);
         if (event) events.push(event);
       }
-
-      pages += 1;
-      nextPageToken = data.nextPageToken;
-      if (!nextPageToken || issues.length === 0) break;
+      // Preserve the original early-exit on an empty page even when a token is
+      // returned — guards against a degenerate self-referential cursor.
+      if (issues.length === 0) break;
     }
 
     return {

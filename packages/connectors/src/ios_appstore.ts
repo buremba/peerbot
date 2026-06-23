@@ -8,6 +8,7 @@ import {
   type ConnectorDefinition,
   ConnectorRuntime,
   calculateEngagementScore,
+  createHttpClient,
   type EventEnvelope,
   type SyncContext,
   type SyncResult,
@@ -98,6 +99,10 @@ export default class IOSAppStoreConnector extends ConnectorRuntime {
     },
   };
 
+  // RSS feeds are unauthenticated (authSchema: none); the client is adopted for
+  // retry/backoff on transient 429/5xx. IOS_HEADERS are applied per request.
+  private readonly http = createHttpClient({ errorPrefix: 'iOS App Store RSS' });
+
   async sync(ctx: SyncContext): Promise<SyncResult> {
     const appId = ctx.config.app_id as string;
     const country = ctx.config.country as string;
@@ -111,7 +116,18 @@ export default class IOSAppStoreConnector extends ConnectorRuntime {
     for (let page = 1; shouldContinue && page <= MAX_PAGES; page++) {
       const rssUrl = `https://itunes.apple.com/${country}/rss/customerreviews/page=${page}/id=${appId}/sortby=mostrecent/json`;
 
-      const response = await fetch(rssUrl, { headers: IOS_HEADERS });
+      // `.raw()` retries transient 429/5xx, then resolves non-2xx responses for
+      // our own handling — except a still-transient status throws after retries
+      // are exhausted. Page 1 surfaces any failure; later pages treat it as the
+      // end of the feed (the original break-on-non-ok behavior), so a thrown
+      // transient error past page 1 must collapse to the same break.
+      let response: Response;
+      try {
+        response = await this.http.raw(rssUrl, { headers: IOS_HEADERS });
+      } catch (error) {
+        if (page === 1) throw error;
+        break;
+      }
       if (!response.ok) {
         if (page === 1) {
           throw new Error(`RSS feed returned ${response.status}: ${rssUrl}`);

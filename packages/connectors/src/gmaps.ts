@@ -8,6 +8,7 @@ import {
   type ConnectorDefinition,
   ConnectorRuntime,
   calculateEngagementScore,
+  createHttpClient,
   type EventEnvelope,
   type SyncContext,
   type SyncResult,
@@ -101,6 +102,11 @@ export default class GoogleMapsConnector extends ConnectorRuntime {
     },
   };
 
+  // Google Places authenticates via the `key` query param, not a bearer header,
+  // so the client carries no token — it's adopted purely for retry/backoff on
+  // transient 429/5xx and consistent error formatting.
+  private readonly http = createHttpClient({ errorPrefix: 'Google Places' });
+
   async sync(ctx: SyncContext): Promise<SyncResult> {
     const apiKey = ctx.config.GOOGLE_MAPS_API_KEY as string | undefined;
     if (!apiKey) {
@@ -117,7 +123,7 @@ export default class GoogleMapsConnector extends ConnectorRuntime {
     // If no place_id, search by business name
     if (!placeId && businessName) {
       const searchUrl = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=${encodeURIComponent(businessName)}&inputtype=textquery&fields=place_id&key=${apiKey}`;
-      const searchResponse = await fetch(searchUrl);
+      const searchResponse = await this.http.raw(searchUrl);
       if (!searchResponse.ok) {
         throw new Error(
           `Google Places search failed (${searchResponse.status}): ${await searchResponse.text()}`
@@ -132,7 +138,7 @@ export default class GoogleMapsConnector extends ConnectorRuntime {
 
     // Fetch place details with reviews
     const detailsUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=name,reviews,url&key=${apiKey}`;
-    const detailsResponse = await fetch(detailsUrl);
+    const detailsResponse = await this.http.raw(detailsUrl);
     if (!detailsResponse.ok) {
       throw new Error(
         `Google Places details failed (${detailsResponse.status}): ${await detailsResponse.text()}`

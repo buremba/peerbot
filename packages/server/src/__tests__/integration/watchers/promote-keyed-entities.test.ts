@@ -16,6 +16,7 @@
  */
 
 import { inferWatcherGranularityFromSchedule } from '@lobu/connector-sdk';
+import { slugify } from '@lobu/core';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../../db/client';
 import { createWatcherRun } from '../../../runs/queue-service';
@@ -278,5 +279,66 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       WHERE parent_id = ${parentEntityId} AND organization_id = ${workspace.org.id}
     `;
     expect(Number(childCount[0].c)).toBe(2);
+  });
+
+  it('disambiguates a slug that collides with a pre-existing sibling — window is NOT poison-pilled', async () => {
+    const ctx = await setupKeyedWatcher();
+    const { sql, workspace, parentEntityId } = ctx;
+
+    await createTestEvent({
+      entity_id: parentEntityId,
+      organization_id: workspace.org.id,
+      content: 'Users report the app crashing and loading slowly.',
+      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    // Pre-create a sibling under the parent whose slug is EXACTLY the one the
+    // first keyed row ("Stability · App Crashes") slugifies to. Without
+    // collision-tolerant insertion, promotion's INSERT throws 23505 and rolls
+    // the whole window completion back — permanently, since the slug is
+    // deterministic (every retry re-hits it). This is the poison-pill.
+    const collidingSlug = slugify('Stability · App Crashes');
+    const [topicType] = (await sql`
+      SELECT id FROM entity_types
+      WHERE organization_id = ${workspace.org.id} AND slug = 'topic'
+      LIMIT 1
+    `) as Array<{ id: number }>;
+    await sql`
+      INSERT INTO entities (
+        organization_id, entity_type_id, name, slug, parent_id, created_by,
+        created_at, updated_at
+      ) VALUES (
+        ${workspace.org.id}, ${topicType.id}, 'Squatter', ${collidingSlug},
+        ${parentEntityId}, ${workspace.users.owner.id}, current_timestamp, current_timestamp
+      )
+    `;
+
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+    // MUST NOT throw — the window completes despite the slug collision.
+    const windowId = await completeWithToken(ctx, token, runId);
+
+    // Both keyed rows promoted: two watcher_key identities exist.
+    const identities = await sql`
+      SELECT ei.identifier, ei.entity_id, e.slug
+      FROM entity_identities ei
+      JOIN entities e ON e.id = ei.entity_id
+      WHERE ei.organization_id = ${workspace.org.id}
+        AND ei.namespace = 'watcher_key'
+      ORDER BY ei.identifier
+    `;
+    expect(identities).toHaveLength(2);
+
+    // The "App Crashes" promotion got a DISAMBIGUATED slug (not the squatter's).
+    const appCrashes = identities.find((r) =>
+      String(r.identifier).endsWith('::stability::app-crashes')
+    );
+    expect(appCrashes).toBeDefined();
+    expect(String(appCrashes?.slug)).not.toBe(collidingSlug);
+    expect(String(appCrashes?.slug).startsWith(`${collidingSlug}-`)).toBe(true);
+
+    // The squatter is untouched; the promoted entity carries its origin window.
+    const promoted = await sql`SELECT metadata FROM entities WHERE id = ${appCrashes?.entity_id}`;
+    expect(Number((promoted[0].metadata as Record<string, unknown>).window_id)).toBe(windowId);
   });
 });

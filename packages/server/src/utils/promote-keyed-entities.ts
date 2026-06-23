@@ -38,6 +38,7 @@ import type { DbClient } from '../db/client';
 import type { KeyingConfig } from '../types/watchers';
 import { getValueAtPath } from './object-path';
 import logger from './logger';
+import { isUniqueViolation } from './pg-errors';
 
 /** Namespace for the stable-key identity claim in `entity_identities`. */
 const WATCHER_KEY_NAMESPACE = 'watcher_key';
@@ -168,9 +169,74 @@ async function resolveEntityTypeId(
 }
 
 /**
+ * How many readable numeric suffixes (`-2`, `-3`, …) to try before falling back
+ * to a guaranteed-unique identifier-derived slug. Keeps slugs human-friendly
+ * while guaranteeing the insert terminates.
+ */
+const SLUG_DISAMBIGUATION_ATTEMPTS = 5;
+
+/**
+ * Insert the child entity, tolerating a slug collision on
+ * `entities_slug_parent_unique (organization_id, COALESCE(parent_id,0), slug)`.
+ * Two keyed rows can slugify to the same base slug, and the slug can clash with
+ * a pre-existing sibling. A raw INSERT would then throw 23505 and — because
+ * promotion runs inside the window-completion transaction — roll the whole
+ * completion back; since the slug is deterministic, every retry re-hits it and
+ * the window is permanently poison-pilled. The entity's real identity is its
+ * `watcher_key` claim, so the slug is cosmetic: retry with `-2`, `-3`, … and
+ * finally an identifier-derived suffix (unique per watcher+key). Each attempt is
+ * savepoint-isolated so a failed INSERT doesn't abort the outer transaction.
+ */
+async function insertEntityWithUniqueSlug(params: {
+  tx: DbClient;
+  organizationId: string;
+  entityTypeId: number;
+  parentEntityId: number | null;
+  name: string;
+  baseSlug: string;
+  identifier: string;
+  metadata: Record<string, unknown>;
+  createdBy: string;
+}): Promise<number> {
+  const { tx } = params;
+  const insertWithSlug = (slug: string) =>
+    tx.savepoint(
+      (sp) => sp<{ id: number | string }>`
+        INSERT INTO entities (
+          organization_id, entity_type_id, name, slug, parent_id, metadata,
+          created_by, created_at, updated_at
+        ) VALUES (
+          ${params.organizationId}, ${params.entityTypeId}, ${params.name}, ${slug},
+          ${params.parentEntityId}, ${tx.json(params.metadata)}, ${params.createdBy},
+          current_timestamp, current_timestamp
+        )
+        RETURNING id
+      `
+    );
+
+  for (let attempt = 1; attempt <= SLUG_DISAMBIGUATION_ATTEMPTS; attempt++) {
+    const slug = attempt === 1 ? params.baseSlug : `${params.baseSlug}-${attempt}`;
+    try {
+      const inserted = await insertWithSlug(slug);
+      return Number(inserted[0].id);
+    } catch (err) {
+      if (isUniqueViolation(err, 'entities_slug_parent_unique')) continue;
+      throw err;
+    }
+  }
+  // Readable suffixes exhausted: the identifier is unique per (watcher, key), so
+  // this slug is collision-free among promotions (and effectively so against any
+  // sibling). A final failure here propagates to the per-row guard in the loop.
+  const inserted = await insertWithSlug(`${params.baseSlug}-${slugify(params.identifier)}`);
+  return Number(inserted[0].id);
+}
+
+/**
  * Upsert a child entity by stable key. Returns its id and whether it was newly
  * created. Idempotent across re-runs / concurrent replicas via the
- * `entity_identities` live-unique index on (org, namespace, identifier).
+ * `entity_identities` live-unique index on (org, namespace, identifier). Slug
+ * collisions are disambiguated by `insertEntityWithUniqueSlug` (the stable key,
+ * not the slug, is the identity).
  */
 async function upsertKeyedEntity(params: {
   tx: DbClient;
@@ -179,7 +245,7 @@ async function upsertKeyedEntity(params: {
   parentEntityId: number | null;
   identifier: string;
   name: string;
-  slug: string;
+  baseSlug: string;
   metadata: Record<string, unknown>;
   createdBy: string;
 }): Promise<{ entityId: number; created: boolean }> {
@@ -201,19 +267,19 @@ async function upsertKeyedEntity(params: {
     return { entityId: Number(existing[0].entity_id), created: false };
   }
 
-  // 2. Create the entity (sequence-allocated id — multi-replica safe).
-  const inserted = await tx<{ id: number | string }>`
-    INSERT INTO entities (
-      organization_id, entity_type_id, name, slug, parent_id, metadata,
-      created_by, created_at, updated_at
-    ) VALUES (
-      ${organizationId}, ${params.entityTypeId}, ${params.name}, ${params.slug},
-      ${params.parentEntityId}, ${tx.json(params.metadata)}, ${params.createdBy},
-      current_timestamp, current_timestamp
-    )
-    RETURNING id
-  `;
-  const entityId = Number(inserted[0].id);
+  // 2. Create the entity (sequence-allocated id — multi-replica safe),
+  //    tolerating a slug collision so promotion can never poison-pill the window.
+  const entityId = await insertEntityWithUniqueSlug({
+    tx,
+    organizationId,
+    entityTypeId: params.entityTypeId,
+    parentEntityId: params.parentEntityId,
+    name: params.name,
+    baseSlug: params.baseSlug,
+    identifier,
+    metadata: params.metadata,
+    createdBy: params.createdBy,
+  });
 
   // 3. Claim the stable key. ON CONFLICT DO NOTHING against the live-unique
   //    index: if a concurrent completion already claimed it, our insert is a
@@ -322,28 +388,33 @@ export async function promoteKeyedEntities(
     };
 
     try {
-      const { created } = await upsertKeyedEntity({
-        tx,
-        organizationId,
-        entityTypeId,
-        parentEntityId,
-        identifier,
-        name,
-        slug,
-        metadata,
-        createdBy,
-      });
+      const { created } = await tx.savepoint((sp) =>
+        upsertKeyedEntity({
+          tx: sp,
+          organizationId,
+          entityTypeId,
+          parentEntityId,
+          identifier,
+          name,
+          baseSlug: slug,
+          metadata,
+          createdBy,
+        })
+      );
       result.promoted += 1;
       if (created) result.created += 1;
     } catch (err) {
+      // Non-fatal + savepoint-isolated: a single failing row rolls back only its
+      // savepoint, never the window-completion transaction. Re-throwing here
+      // would roll the whole completion back and — because the row is
+      // deterministic — poison-pill the window on every retry. Log and skip; the
+      // row is retried idempotently on the next window run (the identity claim
+      // dedupes). Slug clashes are already recovered inside upsertKeyedEntity, so
+      // reaching here means a genuinely unexpected error for this row.
       logger.error(
         { err, watcherId, windowId, stableKey, organizationId },
-        '[promote-keyed-entities] failed to promote keyed row'
+        '[promote-keyed-entities] skipped a keyed row after an unrecoverable error — window completion not blocked'
       );
-      // Re-throw: this runs inside the window transaction, so a partial write
-      // here would otherwise commit a half-promoted state. Surfacing the error
-      // rolls the whole completion back — the agent retries idempotently.
-      throw err;
     }
   }
 

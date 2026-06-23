@@ -21,6 +21,14 @@ export interface DbClient {
   array<T extends string | number>(values: T[], type?: string): unknown;
   json(value: unknown): unknown;
   begin<T>(fn: (sql: DbClient) => Promise<T>): Promise<T>;
+  /**
+   * Run `fn` inside a SAVEPOINT. A statement that errors inside `fn` rolls back
+   * only to the savepoint instead of aborting the whole transaction, so callers
+   * can recover (e.g. retry an INSERT with a different value) or skip a single
+   * failing item without poisoning the surrounding `begin()` transaction. Only
+   * valid when the client is already inside a transaction.
+   */
+  savepoint<T>(fn: (sql: DbClient) => Promise<T>): Promise<T>;
   end?: () => Promise<void>;
 }
 

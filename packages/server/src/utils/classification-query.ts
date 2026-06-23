@@ -59,6 +59,27 @@ function roundTo4(n: number): number {
   return Math.round(n * 10000) / 10000;
 }
 
+/**
+ * Parse a pgvector column value into a number[].
+ *
+ * The prod client runs `fetch_types:false` and registers NO pgvector type
+ * parser (db/client.ts only parses bigint + JSON/JSONB), so postgres.js returns
+ * a `vector` column as its TEXT representation `"[1,2,3]"` — NOT a JS array.
+ * Every other embedding consumer computes cosine in SQL via the `<=>` operator;
+ * this classification path is the ONLY one that materializes the raw vector in
+ * JS, so it MUST parse the text form. Treating the string as a number[] (the old
+ * `as number[]` cast) made cosineSimilarity iterate over characters → NaN, so the
+ * embedding path silently produced no real similarities (its only caller, the
+ * reconciliation cron, swallows the result). The Array.isArray branch is
+ * defensive in case a future parser pre-materializes the value.
+ */
+function parsePgVector(value: number[] | string | null | undefined): number[] | null {
+  if (value == null) return null;
+  if (Array.isArray(value)) return value;
+  const inner = value.slice(1, -1); // strip the surrounding "[ ]"
+  return inner.length === 0 ? [] : inner.split(',').map(Number);
+}
+
 interface ClassificationQueryOptions {
   /**
    * Target selection mode
@@ -154,8 +175,10 @@ async function fetchTargetContent(
     id: number;
     entity_ids: number[];
     parent_id: number | null;
-    embedding: number[] | null;
-    parent_embedding: number[] | null;
+    // pgvector columns come back as the TEXT form "[1,2,3]" under fetch_types:false
+    // (no registered parser) — parsePgVector() materializes them.
+    embedding: string | number[] | null;
+    parent_embedding: string | number[] | null;
   }>;
 
   // current_event_records no longer carries an embedding (multi-vector). For
@@ -236,23 +259,27 @@ async function fetchTargetContent(
     throw new Error(`Invalid mode: ${mode}`);
   }
 
-  // Compute combined embeddings in TypeScript
-  return targetRows.map((row) => {
-    const childEmb = row.embedding as number[];
-    const parentEmb = row.parent_embedding as number[] | null;
+  // Compute combined embeddings in TypeScript (parsing the pgvector text form).
+  return targetRows
+    .map((row) => {
+      const childEmb = parsePgVector(row.embedding);
+      // WHERE fe.embedding IS NOT NULL guarantees a vector, but stay defensive.
+      if (childEmb == null) return null;
+      const parentEmb = parsePgVector(row.parent_embedding);
 
-    const combined =
-      parentEmb != null
-        ? combineEmbeddings(childEmb, parentEmb, CHILD_EMBEDDING_WEIGHT, PARENT_EMBEDDING_WEIGHT)
-        : childEmb;
+      const combined =
+        parentEmb != null
+          ? combineEmbeddings(childEmb, parentEmb, CHILD_EMBEDDING_WEIGHT, PARENT_EMBEDDING_WEIGHT)
+          : childEmb;
 
-    return {
-      id: row.id,
-      entity_ids: row.entity_ids,
-      parent_id: row.parent_id,
-      combined_embedding: combined,
-    };
-  });
+      return {
+        id: row.id,
+        entity_ids: row.entity_ids,
+        parent_id: row.parent_id,
+        combined_embedding: combined,
+      };
+    })
+    .filter((tc): tc is TargetContent => tc !== null);
 }
 
 // ── Step 2: Fetch classifier templates ─────────────────────────────────

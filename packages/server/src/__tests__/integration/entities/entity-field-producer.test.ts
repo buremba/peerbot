@@ -66,6 +66,24 @@ describe('entity_field projection producer (manage_entity)', () => {
     expect(emp[0].value).toBe(50);
   });
 
+  it('emits a watcher-correction-shaped event per field (one edit model)', async () => {
+    const id = await makeEntity('Shape Co', { tier: 'gold' });
+    const rows = (await sql`
+      SELECT metadata FROM events
+      WHERE semantic_type = 'entity_field'
+        AND (metadata->>'entity_id')::bigint = ${id}
+        AND metadata->>'field_path' = 'tier'
+      ORDER BY id DESC LIMIT 1
+    `) as Array<{ metadata: Record<string, unknown> }>;
+    expect(rows).toHaveLength(1);
+    const md = rows[0].metadata;
+    // Same field-grained shape a watcher correction carries — one edit model.
+    expect(md.field_path).toBe('tier');
+    expect(md.mutation).toBe('set');
+    expect(md.corrected_value).toBe('gold');
+    expect(md.fields).toBeUndefined(); // no longer a fields-map snapshot
+  });
+
   it('update advances the projection and matches entities.metadata', async () => {
     const id = await makeEntity('Globex', { tier: 'silver' });
     const before = await tierState(id);

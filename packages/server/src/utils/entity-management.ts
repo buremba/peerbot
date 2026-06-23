@@ -207,22 +207,35 @@ async function emitEntityFieldEvent(
     createdBy?: string | null;
   }
 ): Promise<void> {
-  if (Object.keys(params.fields).length === 0) return;
+  const entries = Object.entries(params.fields);
+  if (entries.length === 0) return;
+  // One field-grained event PER changed field, carrying the SAME shape as a
+  // watcher correction ({field_path, mutation, corrected_value}) — so an entity
+  // edit and a watcher correction are one model on the events spine, foldable by
+  // the same per-(target, field_path) latest-wins logic. (Was a single
+  // fields-map snapshot; field-grained lets the projection and any reader treat
+  // both kinds of edit identically.)
   // No clientId on purpose: insertEvent's stale-clientId FK fallback retries
   // after a failed insert, which can't recover inside this caller's transaction
   // (a failed statement aborts the txn and would roll back the entity write).
-  // The projection event is internal; it doesn't need a client stamp.
-  await insertEvent(
-    {
-      entityIds: [],
-      organizationId: params.organizationId,
-      originId: `efield_${params.entityId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      semanticType: 'entity_field',
-      metadata: { entity_id: params.entityId, fields: params.fields },
-      createdBy: params.createdBy ?? null,
-    },
-    { sql: tx }
-  );
+  for (const [fieldPath, value] of entries) {
+    await insertEvent(
+      {
+        entityIds: [],
+        organizationId: params.organizationId,
+        originId: `efield_${params.entityId}_${fieldPath.replace(/[^a-zA-Z0-9_]/g, '-').slice(0, 40)}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        semanticType: 'entity_field',
+        metadata: {
+          entity_id: params.entityId,
+          field_path: fieldPath,
+          mutation: 'set',
+          corrected_value: value,
+        },
+        createdBy: params.createdBy ?? null,
+      },
+      { sql: tx }
+    );
+  }
 }
 
 export async function createEntity(

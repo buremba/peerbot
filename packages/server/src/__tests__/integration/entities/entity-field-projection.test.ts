@@ -43,15 +43,22 @@ async function emitFields(
   entityId: number,
   fields: Record<string, unknown>
 ): Promise<number> {
-  counter += 1;
-  const ev = await insertEvent({
-    entityIds: [],
-    organizationId: orgId,
-    originId: `efield_test_${counter}`,
-    semanticType: 'entity_field',
-    metadata: { entity_id: entityId, fields },
-  });
-  return ev.id;
+  // Field-grained: one 'entity_field' event per field, carrying the same shape
+  // as a watcher correction ({field_path, mutation, corrected_value}). Returns
+  // the last event's id.
+  let lastId = 0;
+  for (const [fieldPath, value] of Object.entries(fields)) {
+    counter += 1;
+    const ev = await insertEvent({
+      entityIds: [],
+      organizationId: orgId,
+      originId: `efield_test_${counter}`,
+      semanticType: 'entity_field',
+      metadata: { entity_id: entityId, field_path: fieldPath, mutation: 'set', corrected_value: value },
+    });
+    lastId = ev.id;
+  }
+  return lastId;
 }
 
 async function fieldState(
@@ -122,10 +129,10 @@ describe('entity_field_state projection substrate (expand phase)', () => {
     // Each of these must resolve (no thrown abort of the events insert) AND
     // leave no projection row.
     const bad: Array<Record<string, unknown>> = [
-      { fields: { x: 1 } }, // entity_id missing
-      { entity_id: 3.9, fields: { x: 1 } }, // non-integer number
-      { entity_id: 99999999999999999999999, fields: { x: 1 } }, // out of bigint range
-      { entity_id: id, fields: 'not-an-object' }, // fields not an object
+      { field_path: 'x', corrected_value: 1 }, // entity_id missing
+      { entity_id: 3.9, field_path: 'x', corrected_value: 1 }, // non-integer number
+      { entity_id: 99999999999999999999999, field_path: 'x', corrected_value: 1 }, // out of bigint range
+      { entity_id: id, corrected_value: 1 }, // field_path missing
     ];
     for (const [i, meta] of bad.entries()) {
       await expect(

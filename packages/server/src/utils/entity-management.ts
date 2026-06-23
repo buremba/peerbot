@@ -20,6 +20,7 @@ import type { ToolContext } from '../tools/registry';
 import { entityLinkMatchSql } from './content-search';
 import { type EntityHookContext, getEntityHooks } from './entity-hooks';
 import { ToolUserError } from './errors';
+import { insertEvent } from './insert-event';
 import { requireWriteAccess } from './organization-access';
 import { RESERVED_ENTITY_TYPES } from './reserved';
 
@@ -189,6 +190,41 @@ async function loadEntityTreeIds(sql: DbClient, entityId: number): Promise<numbe
  * Create new entity
  * Entity is created in the user's organization
  */
+/**
+ * Emit one 'entity_field' event INSIDE the given transaction — the projection
+ * source for entity_field_state. Emitting in the same txn as the entity write
+ * (under the row lock for updates) makes the event's events.id order consistently
+ * with the metadata write, which is what the projection's keep-greater fold
+ * relies on. entity_ids is empty (NULL) so the event never matches entity-linked
+ * content queries; org + entity id + the changed fields ride in metadata.
+ */
+async function emitEntityFieldEvent(
+  tx: ReturnType<typeof getDb>,
+  params: {
+    entityId: number;
+    organizationId: string;
+    fields: Record<string, unknown>;
+    createdBy?: string | null;
+  }
+): Promise<void> {
+  if (Object.keys(params.fields).length === 0) return;
+  // No clientId on purpose: insertEvent's stale-clientId FK fallback retries
+  // after a failed insert, which can't recover inside this caller's transaction
+  // (a failed statement aborts the txn and would roll back the entity write).
+  // The projection event is internal; it doesn't need a client stamp.
+  await insertEvent(
+    {
+      entityIds: [],
+      organizationId: params.organizationId,
+      originId: `efield_${params.entityId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      semanticType: 'entity_field',
+      metadata: { entity_id: params.entityId, fields: params.fields },
+      createdBy: params.createdBy ?? null,
+    },
+    { sql: tx }
+  );
+}
+
 export async function createEntity(
   data: EntityData,
   opts?: EntityCreateOptions
@@ -284,24 +320,38 @@ export async function createEntity(
   const contentHash = data.content_hash || null;
 
   try {
-    const result = await sql<Omit<CreatedEntity, 'entity_type'>>`
-      INSERT INTO entities (
-        organization_id, entity_type_id, name, slug, parent_id, metadata, enabled_classifiers, created_by, content, embedding, content_hash, created_at, updated_at
-      ) VALUES (
-        ${data.organization_id}, ${entityTypeId}, ${data.name.trim()}, ${slug}, ${data.parent_id || null},
-        ${sql.json(metadata)}, ${data.enabled_classifiers ? pgTextArray(data.enabled_classifiers) : null}::text[], ${createdBy},
-        ${contentValue}, ${embeddingLiteral}::vector, ${contentHash}, current_timestamp, current_timestamp
-      )
-      RETURNING id, name, slug, parent_id, metadata, created_at
-    `;
-
-    if (result.length === 0) {
-      throw new Error('Failed to create entity');
-    }
+    const inserted = await sql.begin(async (tx) => {
+      const rows = await tx<Omit<CreatedEntity, 'entity_type'>>`
+        INSERT INTO entities (
+          organization_id, entity_type_id, name, slug, parent_id, metadata, enabled_classifiers, created_by, content, embedding, content_hash, created_at, updated_at
+        ) VALUES (
+          ${data.organization_id}, ${entityTypeId}, ${data.name.trim()}, ${slug}, ${data.parent_id || null},
+          ${sql.json(metadata)}, ${data.enabled_classifiers ? pgTextArray(data.enabled_classifiers) : null}::text[], ${createdBy},
+          ${contentValue}, ${embeddingLiteral}::vector, ${contentHash}, current_timestamp, current_timestamp
+        )
+        RETURNING id, name, slug, parent_id, metadata, created_at
+      `;
+      if (rows.length === 0) {
+        throw new Error('Failed to create entity');
+      }
+      // Project the created metadata into entity_field_state in THIS txn — the
+      // new entity row is already visible to the trigger's ownership check.
+      const createdMetadata: Record<string, unknown> =
+        typeof rows[0].metadata === 'string'
+          ? JSON.parse(rows[0].metadata)
+          : ((rows[0].metadata as Record<string, unknown> | null) ?? {});
+      await emitEntityFieldEvent(tx as unknown as ReturnType<typeof getDb>, {
+        entityId: rows[0].id,
+        organizationId: data.organization_id as string,
+        fields: createdMetadata,
+        createdBy: createdBy === 'system' ? null : createdBy,
+      });
+      return rows[0];
+    });
 
     // The validator above already resolved data.entity_type → entityTypeId.
     // Pass the slug back through directly rather than JOIN-ing on every insert.
-    const created: CreatedEntity = { ...result[0], entity_type: data.entity_type };
+    const created: CreatedEntity = { ...inserted, entity_type: data.entity_type };
 
     // Run afterCreate hook
     if (!opts?.skipHooks && opts?.hookContext) {
@@ -363,55 +413,78 @@ export async function updateEntity(
   const metadataUpdates = mergeConvenienceFields(data, data.metadata ?? {}, 'update');
   const hasMetadataUpdates = Object.keys(metadataUpdates).length > 0;
 
-  // First get the current entity so we can merge metadata
-  const current = await sql`
-    SELECT metadata FROM entities WHERE id = ${entityId} AND deleted_at IS NULL
-  `;
-  if (current.length === 0) {
-    throw new Error(`Entity ${entityId} not found`);
-  }
-
-  // Merge metadata in TypeScript
-  let mergedMetadata: Record<string, unknown> | null = null;
-  if (hasMetadataUpdates) {
-    const existing =
-      typeof current[0].metadata === 'string'
-        ? JSON.parse(current[0].metadata as string)
-        : (current[0].metadata ?? {});
-    mergedMetadata = { ...existing, ...metadataUpdates };
-  }
-
   const hasContent = data.content !== undefined;
   const contentValue = data.content?.trim() || null;
   const hasEmbedding = data.embedding !== undefined;
   const embeddingLiteral = toVectorLiteral(data.embedding);
 
-  await sql`
-    UPDATE entities SET
-      name = COALESCE(${data.name ?? null}, name),
-      slug = COALESCE(${newSlug}, slug),
-      parent_id = CASE WHEN ${data.parent_id !== undefined} THEN ${data.parent_id ?? null}::bigint ELSE parent_id END,
-      metadata = CASE WHEN ${hasMetadataUpdates} THEN ${mergedMetadata ? sql.json(mergedMetadata) : null} ELSE metadata END,
-      enabled_classifiers = CASE WHEN ${data.enabled_classifiers !== undefined} THEN ${data.enabled_classifiers ? pgTextArray(data.enabled_classifiers) : null}::text[] ELSE enabled_classifiers END,
-      content = CASE WHEN ${hasContent} THEN ${contentValue} ELSE content END,
-      embedding = CASE WHEN ${hasEmbedding} THEN ${embeddingLiteral}::vector ELSE embedding END,
-      updated_at = current_timestamp
-    WHERE id = ${entityId} AND deleted_at IS NULL
-  `;
+  // Lock the entity row, merge metadata, write, and emit the projection event in
+  // ONE transaction: concurrent updates to the same entity serialize on the row
+  // lock, so the emitted entity_field event's events.id orders consistently with
+  // this metadata write — which is exactly what the projection's keep-greater
+  // fold relies on. (Also fixes the pre-existing non-transactional read-modify-
+  // write race on entities.metadata.)
+  const result = await sql.begin(async (tx) => {
+    const current = await tx`
+      SELECT metadata, organization_id FROM entities
+      WHERE id = ${entityId} AND deleted_at IS NULL
+      FOR UPDATE
+    `;
+    if (current.length === 0) {
+      throw new Error(`Entity ${entityId} not found`);
+    }
+    const orgId = current[0].organization_id as string;
 
-  const result = await sql<CreatedEntity>`
-    SELECT e.id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at
-    FROM entities e
-    JOIN entity_types et ON et.id = e.entity_type_id
-    WHERE e.id = ${entityId}
-    LIMIT 1
-  `;
+    let mergedMetadata: Record<string, unknown> | null = null;
+    const changedFields: Record<string, unknown> = {};
+    if (hasMetadataUpdates) {
+      const existing = (
+        typeof current[0].metadata === 'string'
+          ? JSON.parse(current[0].metadata as string)
+          : (current[0].metadata ?? {})
+      ) as Record<string, unknown>;
+      mergedMetadata = { ...existing, ...metadataUpdates };
+      for (const [k, v] of Object.entries(metadataUpdates)) {
+        if (JSON.stringify(existing[k]) !== JSON.stringify(v)) {
+          changedFields[k] = v;
+        }
+      }
+    }
 
-  if (result.length === 0) {
-    throw new Error(`Entity ${entityId} not found`);
-  }
+    await tx`
+      UPDATE entities SET
+        name = COALESCE(${data.name ?? null}, name),
+        slug = COALESCE(${newSlug}, slug),
+        parent_id = CASE WHEN ${data.parent_id !== undefined} THEN ${data.parent_id ?? null}::bigint ELSE parent_id END,
+        metadata = CASE WHEN ${hasMetadataUpdates} THEN ${mergedMetadata ? sql.json(mergedMetadata) : null} ELSE metadata END,
+        enabled_classifiers = CASE WHEN ${data.enabled_classifiers !== undefined} THEN ${data.enabled_classifiers ? pgTextArray(data.enabled_classifiers) : null}::text[] ELSE enabled_classifiers END,
+        content = CASE WHEN ${hasContent} THEN ${contentValue} ELSE content END,
+        embedding = CASE WHEN ${hasEmbedding} THEN ${embeddingLiteral}::vector ELSE embedding END,
+        updated_at = current_timestamp
+      WHERE id = ${entityId} AND deleted_at IS NULL
+    `;
 
-  return result[0];
+    await emitEntityFieldEvent(tx as unknown as ReturnType<typeof getDb>, {
+      entityId,
+      organizationId: orgId,
+      fields: changedFields,
+      createdBy: ctx.userId ?? null,
+    });
+
+    const sel = await tx<CreatedEntity>`
+      SELECT e.id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at
+      FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE e.id = ${entityId}
+      LIMIT 1
+    `;
+    if (sel.length === 0) {
+      throw new Error(`Entity ${entityId} not found`);
+    }
+    return sel[0];
+  });
+
+  return result;
 }
 
 /**

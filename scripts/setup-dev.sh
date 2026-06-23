@@ -5,8 +5,9 @@ set -euo pipefail
 command -v bun >/dev/null || { echo "Install bun: curl -fsSL https://bun.sh/install | bash"; exit 1; }
 
 # Provision the shared dev Postgres: brew postgresql@18 on :5418 — the default
-# `make dev` / dev-db.sh backend, same MAJOR as the product's embedded PG18.
-# Coexists with @17 on 5432 (lobu_test / the integration suite). Idempotent, and
+# `make dev` / dev-db.sh backend AND the `make test-integration` database, same
+# MAJOR as the product's embedded PG18. One local Postgres for everything; an
+# older brew major (e.g. @17 on 5432) is no longer needed. Idempotent, and
 # skipped gracefully if brew/@18 are absent — `make dev-embedded` still needs none.
 if command -v brew >/dev/null 2>&1 && brew list postgresql@18 >/dev/null 2>&1; then
   PGDATA18="$(brew --prefix)/var/postgresql@18"
@@ -22,7 +23,11 @@ if command -v brew >/dev/null 2>&1 && brew list postgresql@18 >/dev/null 2>&1; t
     # Role DB so `psql`/dev-db.sh connect as $USER (pgvector is installed per-DB on
     # first boot via LOBU_RUN_OWNS_DB; the extension bottle is already present).
     "$PGBIN18/createdb" -h localhost -p 5418 "$USER" 2>/dev/null || true
-    echo "✓ brew postgresql@18 running on :5418 (the default 'make dev' backend)"
+    # lobu_test for `make test-integration` (DATABASE_URL=…:5418/lobu_test), so the
+    # manual integration suite runs on PG18 too — no separate @17 cluster needed.
+    "$PGBIN18/createdb" -h localhost -p 5418 lobu_test 2>/dev/null || true
+    "$PGBIN18/psql" -h localhost -p 5418 -d lobu_test -c "CREATE EXTENSION IF NOT EXISTS vector" >/dev/null 2>&1 || true
+    echo "✓ brew postgresql@18 running on :5418 (the default 'make dev' backend + lobu_test)"
   else
     echo "✗ postgresql@18 did not come up on :5418 — 'make dev' will fail its preflight." >&2
     echo "  Check 'brew services list', or use the zero-dependency loop: make dev-embedded" >&2

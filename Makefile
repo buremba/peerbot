@@ -151,7 +151,9 @@ test-unit:
 
 # Integration suite — vitest under Node + bun:test packages that need Postgres.
 # Requires DATABASE_URL pointing at a Postgres with pgvector installed.
-# Tip for a clean local DB:
+# Local (macOS): `make setup` provisions brew postgresql@18 + lobu_test on :5418 — just:
+#   export DATABASE_URL=postgres://$USER@127.0.0.1:5418/lobu_test PGSSLMODE=disable
+# Linux / no brew:
 #   sudo apt-get install -y postgresql-16-pgvector
 #   sudo -u postgres createdb lobu_test
 #   sudo -u postgres psql -d lobu_test -c "CREATE EXTENSION vector"

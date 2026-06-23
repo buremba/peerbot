@@ -1,3 +1,6 @@
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { clearCatalogCacheForTests, listCatalogEntries } from "../load";
 
@@ -24,9 +27,6 @@ describe("catalog/load", () => {
 
 	it("deduplicates catalog entries by id within a kind", async () => {
 		const prev = process.env.LOBU_CATALOG_URIS;
-		const { mkdtemp, writeFile } = await import("node:fs/promises");
-		const { join } = await import("node:path");
-		const { tmpdir } = await import("node:os");
 		const dir = await mkdtemp(join(tmpdir(), "lobu-catalog-test-"));
 		const manifestPath = join(dir, "connectors.json");
 		await writeFile(

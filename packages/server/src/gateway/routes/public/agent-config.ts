@@ -444,11 +444,7 @@ function redactSensitiveFields(value: unknown): unknown {
 	const output: Record<string, unknown> = {};
 
 	for (const [key, rawValue] of Object.entries(input)) {
-		if (
-			typeof rawValue === "string" &&
-			rawValue.length > 0 &&
-			SENSITIVE_KEY_PATTERN.test(key)
-		) {
+		if (SENSITIVE_KEY_PATTERN.test(key)) {
 			output[key] = REDACTED_VALUE;
 			continue;
 		}

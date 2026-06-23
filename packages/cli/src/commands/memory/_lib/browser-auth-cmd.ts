@@ -137,10 +137,10 @@ async function resolveConnectorDomains(
 
   const installedItems: any[] = parsed?.installed?.connectors?.items ?? [];
   const connectors: any[] = installedItems.map((item: any) => ({
+    ...(item.detail ?? {}),
     key: item.id,
     name: item.name,
     favicon_domain: item.detail?.favicon_domain,
-    ...item.detail,
   }));
   const connector = connectors.find((c: any) => c.key === connectorKey);
 

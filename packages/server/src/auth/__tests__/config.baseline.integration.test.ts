@@ -16,6 +16,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getTestDb } from "../../__tests__/setup/test-db";
 import { createTestOrganization } from "../../__tests__/setup/test-fixtures";
+import { clearCatalogCacheForTests } from "../../catalog/load";
 import type { Env } from "../../index";
 import {
 	clearLoginProviderCachesForTests,
@@ -54,7 +55,6 @@ describe("login provider baseline (integration)", () => {
 	beforeAll(async () => {
 		prevCatalogUris = process.env.LOBU_CATALOG_URIS;
 		delete process.env.LOBU_CATALOG_URIS;
-		const { clearCatalogCacheForTests } = await import("../../catalog/load");
 		clearCatalogCacheForTests();
 		for (const key of CREDENTIAL_ENV_KEYS) {
 			ambientCredentials.set(key, process.env[key]);
@@ -66,7 +66,6 @@ describe("login provider baseline (integration)", () => {
 	afterAll(async () => {
 		if (prevCatalogUris === undefined) delete process.env.LOBU_CATALOG_URIS;
 		else process.env.LOBU_CATALOG_URIS = prevCatalogUris;
-		const { clearCatalogCacheForTests } = await import("../../catalog/load");
 		clearCatalogCacheForTests();
 		for (const [key, value] of ambientCredentials) {
 			if (value === undefined) delete process.env[key];

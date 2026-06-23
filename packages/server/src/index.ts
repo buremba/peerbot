@@ -1405,7 +1405,11 @@ app.post("/api/:orgSlug/:toolName", mcpAuth, async (c) => {
 // this polled endpoint into a Map lookup instead of an O(tools × schema) walk.
 const openApiSpecCache = new Map<string, object>();
 app.get("/openapi.json", (c) => {
-	const serverUrl = new URL(c.req.url).origin;
+	const configuredOrigin = getConfiguredPublicOrigin();
+	const serverUrl = configuredOrigin ?? new URL(c.req.url).origin;
+	if (!configuredOrigin) {
+		return c.json(generateOpenAPISpec(serverUrl));
+	}
 	let spec = openApiSpecCache.get(serverUrl);
 	if (!spec) {
 		spec = generateOpenAPISpec(serverUrl);

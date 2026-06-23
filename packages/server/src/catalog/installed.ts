@@ -173,20 +173,20 @@ export async function listAgentInstalled(
 		const enabled = new Set(settings.guardrails ?? []);
 		const core = getLobuCoreServices();
 		const registry = core?.getGuardrailRegistry?.();
-		if (!registry) return result;
-
-		const stages: GuardrailStage[] = ["input", "output", "pre-tool"];
 		const items: InstalledItem[] = [];
-		for (const stage of stages) {
-			for (const guardrail of registry.list(stage)) {
-				items.push({
-					id: guardrail.name,
-					name: guardrail.name,
-					detail: {
-						stage: guardrail.stage,
-						enabled: enabled.has(guardrail.name),
-					},
-				});
+		if (registry) {
+			const stages: GuardrailStage[] = ["input", "output", "pre-tool"];
+			for (const stage of stages) {
+				for (const guardrail of registry.list(stage)) {
+					items.push({
+						id: guardrail.name,
+						name: guardrail.name,
+						detail: {
+							stage: guardrail.stage,
+							enabled: enabled.has(guardrail.name),
+						},
+					});
+				}
 			}
 		}
 		result.guardrails = { kind: "guardrails", items };

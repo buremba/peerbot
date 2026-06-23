@@ -70,30 +70,43 @@ async function handleListInstalled(
 	args: ListInstalledArgs,
 	ctx: ToolContext,
 ): Promise<unknown> {
-	const agentKinds = (args.kinds ?? []).filter((k): k is AgentInstalledKind =>
-		(AGENT_INSTALLED_KINDS as readonly string[]).includes(k),
-	);
-	const orgKinds = (args.kinds ?? []).filter((k): k is OrgInstalledKind =>
-		(ORG_INSTALLED_KINDS as readonly string[]).includes(k),
-	);
+	const requestedKinds = args.kinds?.length ? args.kinds : undefined;
+	const isAgentKind = (k: string): k is AgentInstalledKind =>
+		(AGENT_INSTALLED_KINDS as readonly string[]).includes(k);
+	const isOrgKind = (k: string): k is OrgInstalledKind =>
+		(ORG_INSTALLED_KINDS as readonly string[]).includes(k);
 
-	const resolvedOrgKinds =
-		orgKinds.length > 0
-			? orgKinds
-			: args.agent_id
-				? []
-				: (["connectors"] as OrgInstalledKind[]);
-	const resolvedAgentKinds =
-		agentKinds.length > 0
-			? agentKinds
-			: args.agent_id
-				? ([
-						"skills",
-						"providers",
-						"guardrails",
-						"channels",
-					] as AgentInstalledKind[])
-				: [];
+	const agentKinds = (requestedKinds ?? []).filter(isAgentKind);
+	const orgKinds = (requestedKinds ?? []).filter(isOrgKind);
+	const unknownKinds = (requestedKinds ?? []).filter(
+		(k) => !isAgentKind(k) && !isOrgKind(k),
+	);
+	if (unknownKinds.length > 0) {
+		return {
+			error: `Unsupported installed kind(s): ${unknownKinds.join(", ")}`,
+		};
+	}
+	if (!args.agent_id && agentKinds.length > 0) {
+		return {
+			error: "`agent_id` is required for agent-scoped installed kinds.",
+		};
+	}
+
+	const resolvedOrgKinds = requestedKinds
+		? orgKinds
+		: args.agent_id
+			? []
+			: (["connectors"] as OrgInstalledKind[]);
+	const resolvedAgentKinds = requestedKinds
+		? agentKinds
+		: args.agent_id
+			? ([
+					"skills",
+					"providers",
+					"guardrails",
+					"channels",
+				] as AgentInstalledKind[])
+			: [];
 
 	const installed: Record<string, unknown> = {};
 
@@ -115,8 +128,8 @@ async function handleListInstalled(
 }
 
 const manageCatalogTool = defineActionTool("manage_catalog", {
-	list_catalog: action(ListCatalogAction, (_args, _ctx, _env) =>
-		handleListCatalog(_args as ListCatalogArgs),
+	list_catalog: action(ListCatalogAction, (args) =>
+		handleListCatalog(args as ListCatalogArgs),
 	),
 	list_installed: action(ListInstalledAction, (args, ctx) =>
 		handleListInstalled(args as ListInstalledArgs, ctx),

@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -53,7 +54,7 @@ export function getDefaultCatalogDir(): string {
 		resolve(process.cwd(), "packages/server/dist/catalogs"),
 	];
 	for (const candidate of candidates) {
-		return candidate;
+		if (existsSync(candidate)) return candidate;
 	}
 	return candidates[0]!;
 }

@@ -440,7 +440,12 @@ describe("lobu init --from-org", () => {
           if (body.action === "list_catalog") {
             return { catalogs: { connectors: { entries: [stripe] } } };
           }
-          return { installed: { connectors: { items: [stripe] } } };
+          if (body.action === "list_installed") {
+            return { installed: { connectors: { items: [stripe] } } };
+          }
+          throw new Error(
+            `unexpected manage_catalog action: ${String(body.action)}`,
+          );
         },
       }),
     });
@@ -675,7 +680,12 @@ describe("lobu init --from-org", () => {
           if (body.action === "list_catalog") {
             return { catalogs: { connectors: { entries: [slack] } } };
           }
-          return { installed: { connectors: { items: [slack] } } };
+          if (body.action === "list_installed") {
+            return { installed: { connectors: { items: [slack] } } };
+          }
+          throw new Error(
+            `unexpected manage_catalog action: ${String(body.action)}`,
+          );
         },
       }),
     });

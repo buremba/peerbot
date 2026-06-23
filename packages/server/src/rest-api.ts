@@ -114,6 +114,12 @@ async function withPublicOrg<T>(
 		const result = await handler(organizationId);
 		return c.json(toJsonSafe(result));
 	} catch (error) {
+		if (error instanceof ToolUserError) {
+			return c.json(
+				{ error: error.message },
+				error.httpStatus as 400 | 403 | 404 | 409 | 422,
+			);
+		}
 		return c.json({ error: errorMessage(error) }, 400);
 	}
 }
@@ -306,11 +312,12 @@ export async function restListTools(c: Context<{ Bindings: Env }>) {
 			: authCtx.memberRole === "owner" || authCtx.memberRole === "admin"
 				? "admin"
 				: "write";
-		const scopeAccessLevel = !authCtx.scopes
+		const scopes = authCtx.scopes ?? SCOPE_CHECK_NOT_APPLICABLE;
+		const scopeAccessLevel = scopes.includes("*")
 			? "admin"
-			: authCtx.scopes.includes("mcp:admin")
+			: scopes.includes("mcp:admin")
 				? "admin"
-				: authCtx.scopes.includes("mcp:write")
+				: scopes.includes("mcp:write")
 					? "write"
 					: "read";
 		const maxAccessLevel =
@@ -571,7 +578,7 @@ export async function publicRestGetConnector(c: Context<{ Bindings: Env }>) {
 		});
 
 		if (!connector) {
-			throw new Error("Connector not found");
+			throw new ToolUserError("Connector not found", 404);
 		}
 
 		const feeds = await sql`

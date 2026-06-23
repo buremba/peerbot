@@ -164,11 +164,6 @@ interface BrandedHandler {
   [VALIDATED_BRAND]?: string;
 }
 
-/** The tool name a handler was wrapped for, or undefined if unwrapped. */
-export function validatedToolName(handler: unknown): string | undefined {
-  return (handler as BrandedHandler)?.[VALIDATED_BRAND];
-}
-
 /**
  * Wrap a tool handler so its first argument is coerced + validated against
  * `schema` before the handler runs. Signature-preserving: remaining params

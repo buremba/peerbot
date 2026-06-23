@@ -28,6 +28,7 @@ import {
   summarizeResults,
   type WatcherOperationResult,
 } from './shared';
+import { getErrorMessage } from "@lobu/core";
 
 // ============================================
 // handleCreate
@@ -437,7 +438,7 @@ export async function handleDelete(args: ManageWatchersArgs): Promise<{
       results.push({
         watcher_id: watcherId,
         success: false,
-        message: error instanceof Error ? error.message : String(error),
+        message: getErrorMessage(error),
       });
     }
   }

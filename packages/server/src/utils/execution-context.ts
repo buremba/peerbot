@@ -18,6 +18,7 @@ import { parseJsonObject } from '@lobu/core';
 import { errorMessage } from './errors';
 import { insertEvent } from './insert-event';
 import logger from './logger';
+import { getErrorMessage } from "@lobu/core";
 
 interface ExecutionOAuthCredentials {
   provider: string;
@@ -362,7 +363,7 @@ function recordAppInstallationTenancyTrip(params: {
   }).catch((err) => {
     logger.warn(
       {
-        err: err instanceof Error ? err.message : String(err),
+        err: getErrorMessage(err),
         connection_id: params.connectionId,
         install_id: params.installId,
         reason: params.reason,

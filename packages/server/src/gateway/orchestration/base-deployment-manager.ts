@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import {
-  ConversationOwnedElsewhereError,
-  createLogger,
-  ErrorCode,
-  extractTraceId,
-  generateWorkerToken,
-  type MessagePayload,
-  OrchestratorError,
+	ConversationOwnedElsewhereError,
+	createLogger,
+	ErrorCode,
+	extractTraceId,
+	generateWorkerToken,
+	getErrorMessage,
+	type MessagePayload,
+	OrchestratorError,
 } from "@lobu/core";
 import type { ProviderCredentialContext } from "../embedded.js";
 import type { ModelProviderModule } from "../modules/module-system.js";
@@ -28,6 +29,37 @@ import { runInBatches } from "./deployment-utils.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
 
 const logger = createLogger("orchestrator");
+
+/**
+ * Detect base-URL env keys claimed by more than one provider with CONFLICTING
+ * values. When agents merge every installed provider's proxy base-URL mappings,
+ * two providers sharing a key (e.g. the old bug where every sdkCompat provider
+ * emitted OPENAI_BASE_URL) means the later-merged one silently clobbers the
+ * earlier and a request egresses to the wrong slug. Pure + exported so the guard
+ * is testable independently of a full deploy. Order matches the merge:
+ * last-write-wins, so `incoming` is what survives.
+ */
+export function detectProviderBaseUrlCollisions(
+  perProvider: Array<{ providerId: string; mappings: Record<string, string> }>
+): Array<{ key: string; providerId: string; existing: string; incoming: string }> {
+  const seen: Record<string, string> = {};
+  const collisions: Array<{
+    key: string;
+    providerId: string;
+    existing: string;
+    incoming: string;
+  }> = [];
+  for (const { providerId, mappings } of perProvider) {
+    for (const [key, value] of Object.entries(mappings)) {
+      const existing = seen[key];
+      if (existing !== undefined && existing !== value) {
+        collisions.push({ key, providerId, existing, incoming: value });
+      }
+      seen[key] = value;
+    }
+  }
+  return collisions;
+}
 
 /**
  * Mint the deployment-lifetime WORKER_TOKEN. This is the FALLBACK gateway auth
@@ -371,7 +403,7 @@ export abstract class BaseDeploymentManager {
           // The "existing" deployment is actually dead (stale snapshot / just
           // exited) — fall through to spawn a fresh one instead of returning.
           logger.warn(
-            `scaleDeployment(${deploymentName}, 1) failed (${scaleErr instanceof Error ? scaleErr.message : String(scaleErr)}); re-spawning`
+            `scaleDeployment(${deploymentName}, 1) failed (${getErrorMessage(scaleErr)}); re-spawning`
           );
         }
       }
@@ -411,7 +443,7 @@ export abstract class BaseDeploymentManager {
       }
       throw new OrchestratorError(
         ErrorCode.DEPLOYMENT_CREATE_FAILED,
-        `Failed to create worker deployment: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to create worker deployment: ${getErrorMessage(error)}`,
         { userId, conversationId, error },
         true
       );
@@ -1035,13 +1067,26 @@ export abstract class BaseDeploymentManager {
 
     // Build full provider base URL mappings for all installed providers
     const proxyBaseUrl = `${this.getDispatcherUrl()}/api/proxy`;
-    const providerBaseUrlMappings: Record<string, string> = {};
-    for (const provider of effectiveProviders) {
-      const mappings = provider.getProxyBaseUrlMappings(
+    const perProvider = effectiveProviders.map((provider) => ({
+      providerId: provider.providerId,
+      mappings: provider.getProxyBaseUrlMappings(
         proxyBaseUrl,
         agentId,
         providerContext
+      ),
+    }));
+    // Guard against two providers claiming the same base-URL env key with
+    // different values: the later one silently clobbers the earlier and
+    // mis-routes (this is exactly how an `openai/<model>` call once egressed to
+    // the codex backend). Surface it loudly instead of hiding it.
+    for (const c of detectProviderBaseUrlCollisions(perProvider)) {
+      logger.warn(
+        { agentId, ...c },
+        "[base-deployment] provider base-URL env key collision — two providers map the same key to different URLs; the later one wins and may mis-route. Each provider must use a distinct baseUrlEnvVarName."
       );
+    }
+    const providerBaseUrlMappings: Record<string, string> = {};
+    for (const { mappings } of perProvider) {
       Object.assign(providerBaseUrlMappings, mappings);
     }
     if (Object.keys(providerBaseUrlMappings).length > 0) {
@@ -1106,7 +1151,7 @@ export abstract class BaseDeploymentManager {
     } catch (error) {
       throw new OrchestratorError(
         ErrorCode.DEPLOYMENT_DELETE_FAILED,
-        `Failed to delete deployment for ${deploymentName}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to delete deployment for ${deploymentName}: ${getErrorMessage(error)}`,
         { deploymentName, error },
         true
       );
@@ -1194,7 +1239,7 @@ export abstract class BaseDeploymentManager {
     } catch (error) {
       logger.error(
         "Error during deployment reconciliation:",
-        error instanceof Error ? error.message : String(error)
+        getErrorMessage(error)
       );
     }
   }

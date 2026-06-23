@@ -10,6 +10,7 @@ import { isCloudMode } from './cloud-mode';
 import { CLOUD_RESTRICTED_CONNECTOR_KEYS } from './connector-cloud-gate';
 import { extractConnectorMetadata } from './connector-compiler';
 import logger from './logger';
+import { getErrorMessage } from "@lobu/core";
 
 const DEFAULT_CONNECTOR_DIR_CANDIDATES = [
   // Published CLI runtime: packages/cli/scripts/build.cjs copies bundled
@@ -228,7 +229,7 @@ async function extractConnectorCatalogMetadata(
     return value;
   } catch (error) {
     logger.warn(
-      { file_path: filePath, error: error instanceof Error ? error.message : String(error) },
+      { file_path: filePath, error: getErrorMessage(error) },
       'Skipping connector catalog entry after metadata extraction failed'
     );
     metadataCache.set(filePath, { mtimeMs: fileStat.mtimeMs, value: null });
@@ -298,7 +299,7 @@ async function loadCatalogManifest(dirPath: string): Promise<CatalogManifest['en
     logger.warn(
       {
         manifest_path: manifestPath,
-        error: error instanceof Error ? error.message : String(error),
+        error: getErrorMessage(error),
       },
       'Ignoring unreadable connector catalog manifest; falling back to on-demand compilation'
     );

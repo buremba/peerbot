@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
 	createLogger,
+	getErrorMessage,
 	type GuardrailRegistry,
 	runGuardrailInstances,
 	type WorkerTokenData,
@@ -329,7 +330,7 @@ export class McpProxy {
 				logger.warn("MCP initialize failed (continuing with tools/list)", {
 					mcpId,
 					error:
-						initError instanceof Error ? initError.message : String(initError),
+						getErrorMessage(initError),
 				});
 			}
 
@@ -379,7 +380,7 @@ export class McpProxy {
 		} catch (error) {
 			logger.warn("Failed to fetch tools for MCP, retrying once", {
 				mcpId,
-				error: error instanceof Error ? error.message : String(error),
+				error: getErrorMessage(error),
 			});
 
 			// Retry once after a short delay (upstream may still be starting)
@@ -532,7 +533,7 @@ export class McpProxy {
 				{
 					agentId,
 					toolName,
-					err: err instanceof Error ? err.message : String(err),
+					err: getErrorMessage(err),
 				},
 				"Pre-tool guardrail check failed — proceeding without guardrails",
 			);

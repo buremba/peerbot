@@ -564,7 +564,3 @@ export async function runScript(
     }
   }
 }
-
-export function getDefaultLimits(): Required<RunLimits> {
-  return { ...DEFAULT_LIMITS };
-}

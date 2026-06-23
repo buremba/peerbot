@@ -7,7 +7,6 @@ import type { ConnectorAuthAppInstallation } from '@lobu/connector-sdk';
 import {
   getAppInstallationAuthMethods,
   getOAuthAuthMethods,
-  getRequiredEnvAuthFields,
   normalizeConnectorAuthSchema,
 } from '../connector-auth';
 
@@ -141,40 +140,6 @@ describe('getOAuthAuthMethods', () => {
     const oauthMethods = getOAuthAuthMethods(schema);
     expect(oauthMethods.length).toBe(1);
     expect(oauthMethods[0].provider).toBe('google');
-  });
-});
-
-describe('getRequiredEnvAuthFields', () => {
-  it('should return required fields from env_keys methods', () => {
-    const schema = normalizeConnectorAuthSchema({
-      methods: [
-        {
-          type: 'env_keys',
-          required: true,
-          fields: [
-            { key: 'API_KEY', required: true },
-            { key: 'OPTIONAL', required: false },
-          ],
-        },
-      ],
-    });
-    const fields = getRequiredEnvAuthFields(schema);
-    expect(fields.length).toBe(1);
-    expect(fields[0].key).toBe('API_KEY');
-  });
-
-  it('should return empty for non-required methods', () => {
-    const schema = normalizeConnectorAuthSchema({
-      methods: [
-        {
-          type: 'env_keys',
-          required: false,
-          fields: [{ key: 'API_KEY' }],
-        },
-      ],
-    });
-    const fields = getRequiredEnvAuthFields(schema);
-    expect(fields.length).toBe(0);
   });
 });
 

@@ -9,20 +9,27 @@ import { getDb } from "../../../db/client.js";
  * `slack:oauth:state`, `mcp-oauth:state`) is stamped on the row so a single
  * table can hold every flow's nonces; the unique 32-byte token is the row id.
  *
- * Tokens have a 5-minute TTL. Reads are lazy: an expired row is filtered by
- * `expires_at > now()` and best-effort deleted on the same SELECT. The
- * periodic `sweep-ephemeral-tables` task (registered with TaskScheduler in
- * `scheduled/jobs.ts`) deletes any leftover rows older than the window.
+ * Tokens default to a 5-minute TTL, overridable per-instance via the
+ * constructor `ttlSeconds` option (e.g. the GitHub App install flow, which a
+ * human + OAuth + repo-select round-trip can exceed at 5 min). Reads are lazy:
+ * an expired row is filtered by `expires_at > now()` and best-effort deleted on
+ * the same SELECT. The periodic `sweep-ephemeral-tables` task (registered with
+ * TaskScheduler in `scheduled/jobs.ts`) deletes any leftover rows older than the
+ * window.
  */
 export class OAuthStateStore<T extends object> {
-  private static readonly TTL_SECONDS = 5 * 60; // 5 minutes
+  /** Default TTL when a store doesn't override it. */
+  private static readonly DEFAULT_TTL_SECONDS = 5 * 60; // 5 minutes
   protected logger: Logger;
+  private readonly ttlSeconds: number;
 
   constructor(
     private keyPrefix: string,
-    loggerName: string
+    loggerName: string,
+    options?: { ttlSeconds?: number }
   ) {
     this.logger = createLogger(loggerName);
+    this.ttlSeconds = options?.ttlSeconds ?? OAuthStateStore.DEFAULT_TTL_SECONDS;
   }
 
   /**
@@ -35,9 +42,7 @@ export class OAuthStateStore<T extends object> {
       createdAt: Date.now(),
     };
     const sql = getDb();
-    const expiresAt = new Date(
-      Date.now() + OAuthStateStore.TTL_SECONDS * 1000
-    );
+    const expiresAt = new Date(Date.now() + this.ttlSeconds * 1000);
 
     await sql`
       INSERT INTO oauth_states (id, scope, payload, expires_at)
@@ -180,10 +185,32 @@ interface GithubInstallStateData {
    * could plant a connection into a victim's org (CSRF / cross-tenant).
    */
   organizationId: string;
+  /**
+   * Set when the start route detected the App is ALREADY installed for the user
+   * and routed through GitHub's user-authorization OAuth flow (recovery) rather
+   * than the fresh install page. GitHub's user-auth redirect does NOT carry an
+   * `installation_id` query param, so the callback derives it from
+   * `GET /user/installations` (the same ownership lookup) when this flag is set.
+   * Recovery never relaxes any guard — the derived installation still passes the
+   * full ownership + session-org checks.
+   */
+  recovery?: boolean;
 }
 
+/**
+ * The GitHub App install-state store. A human completing GitHub's install +
+ * repo-select + OAuth round-trip routinely exceeds the default 5-minute OAuth
+ * TTL (a live install failed `invalid_state` at 5m24s), so this flow gets a
+ * 30-minute window. The longer TTL only widens the replay window for a
+ * single-use, cryptographically-random nonce that is still consumed on first
+ * use and ownership-checked before any mutation — no new exposure.
+ */
+const GITHUB_INSTALL_STATE_TTL_SECONDS = 30 * 60; // 30 minutes
+
 export function createGithubInstallStateStore(): OAuthStateStore<GithubInstallStateData> {
-  return new OAuthStateStore("github:app_install:state", "github-install-state");
+  return new OAuthStateStore("github:app_install:state", "github-install-state", {
+    ttlSeconds: GITHUB_INSTALL_STATE_TTL_SECONDS,
+  });
 }
 
 export type ProviderOAuthStateStore = OAuthStateStore<ProviderOAuthStateData>;

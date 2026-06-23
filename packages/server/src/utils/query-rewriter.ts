@@ -27,6 +27,7 @@
 
 import type { Env } from '../index';
 import logger from './logger';
+import { getErrorMessage } from "@lobu/core";
 
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_MODEL = 'gpt-4o-mini';
@@ -96,7 +97,7 @@ export async function rewriteQueries(query: string, env: Env): Promise<string[]>
     // Fail open: any error (timeout/abort, network, parse) means the caller
     // proceeds with the raw query alone.
     logger.warn(
-      { error: error instanceof Error ? error.message : String(error) },
+      { error: getErrorMessage(error) },
       '[query-rewriter] rewrite failed; falling back to raw query'
     );
     return [];

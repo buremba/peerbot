@@ -26,6 +26,7 @@ import {
   SAFE_COLUMN_DEFS,
   validateTableQuery,
 } from './table-schema';
+import { getErrorMessage } from "@lobu/core";
 
 /** A named SQL data source: { name, query } or keyed as Record<string, { query }> */
 export type DataSourceInput =
@@ -668,7 +669,7 @@ export function validateDataSourceQuery(name: string, query: string, parse = fal
         );
       }
     } catch (err) {
-      throw new Error(`Data source '${name}': ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(`Data source '${name}': ${getErrorMessage(err)}`);
     }
   }
 }
@@ -771,7 +772,7 @@ export async function executeDataSources(
         results[name] = Array.isArray(rows) ? rows.slice(0, MAX_ROWS) : [];
       } catch (err) {
         logger.warn(
-          { error: err instanceof Error ? err.message : String(err), dataSource: name },
+          { error: getErrorMessage(err), dataSource: name },
           'Data source execution failed'
         );
         results[name] = [];

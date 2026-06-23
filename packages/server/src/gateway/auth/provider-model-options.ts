@@ -1,4 +1,8 @@
-import { createLogger, type ModelOption } from "@lobu/core";
+import {
+	createLogger,
+	getErrorMessage,
+	type ModelOption,
+} from "@lobu/core";
 import { getModelProviderModules } from "../modules/module-system.js";
 
 const logger = createLogger("provider-model-options");
@@ -26,7 +30,7 @@ export async function collectProviderModelOptions(
         logger.warn(
           {
             providerId: mod.providerId,
-            error: error instanceof Error ? error.message : String(error),
+            error: getErrorMessage(error),
           },
           "Failed to collect model options for provider"
         );

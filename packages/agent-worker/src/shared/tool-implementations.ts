@@ -1137,7 +1137,80 @@ export async function sendMessage(
 const TOOLS_REQUESTING_JSON_FORMAT = new Set([
   "search_memory",
   "lobu_search_memory",
+  // The builder agent's manage_agents write gate returns a structured
+  // `pending_approval` result (run_id + proposed/current). We need the JSON,
+  // not formatted markdown, to forward an approval card into the chat (see
+  // maybePostApprovalCard / createMcpToolDefinitions).
+  "manage_agents",
 ]);
+
+/**
+ * Builder-gate bridge: when a manage_agents write returns a
+ * `pending_approval` result, post a durable approval card into the chat so the
+ * SPA renders the interactive Approve/Reject diff. Fire-and-forget — a failed
+ * post never breaks the tool call (the agent still narrates the result, and the
+ * events-tab approval card remains the fallback). Returns true when a card was
+ * posted (caller logs at debug only).
+ *
+ * The card rides the SAME owner-gated thread_response delivery as ask_user:
+ * POST /internal/interactions/create → InteractionService → API platform →
+ * Postgres thread_response queue → SSE-owning pod. Multi-replica safe by reuse.
+ */
+export async function maybePostApprovalCard(
+  gw: GatewayParams,
+  toolName: string,
+  rawResultText: string
+): Promise<boolean> {
+  if (toolName !== "manage_agents") return false;
+  let parsed: {
+    status?: unknown;
+    run_id?: unknown;
+    action?: unknown;
+    proposal?: unknown;
+    current?: unknown;
+  };
+  try {
+    parsed = JSON.parse(rawResultText);
+  } catch {
+    return false;
+  }
+  if (
+    parsed.status !== "pending_approval" ||
+    typeof parsed.run_id !== "number"
+  ) {
+    return false;
+  }
+
+  // Fire-and-forget: a failed post must never break the tool call (the agent
+  // still narrates the result, and the events-tab approval card is the
+  // fallback). gatewayFetch throws on a hard network error, so guard it too.
+  let error: TextResult | undefined;
+  try {
+    ({ error } = await gatewayFetch<{ id: string }>(
+      gw,
+      "/internal/interactions/create",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          interactionType: "tool_approval",
+          runId: parsed.run_id,
+          action: typeof parsed.action === "string" ? parsed.action : "change",
+          proposal: parsed.proposal ?? null,
+          current: parsed.current ?? null,
+        }),
+      },
+      "Failed to post approval card"
+    ));
+  } catch {
+    logger.warn("manage_agents approval card post threw");
+    return false;
+  }
+  if (error) {
+    logger.warn("manage_agents approval card post failed");
+    return false;
+  }
+  return true;
+}
 
 export async function callMcpTool(
   gw: GatewayParams,

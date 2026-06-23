@@ -1,6 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { getDb } from "../../db/client.js";
 import {
+  createGithubInstallStateStore,
   createOAuthStateStore,
   OAuthStateStore,
   sweepExpiredOAuthStates,
@@ -68,6 +69,50 @@ describe("OAuthStateStore (Postgres-backed)", () => {
     expect(await b.consume(sharedId)).toBeNull();
     const fromA = await a.consume(sharedId);
     expect(fromA?.kind).toBe("a");
+  });
+
+  test("TTL is configurable per-instance (default 5m, override applies)", async () => {
+    const sql = getDb();
+
+    // Default store: ~5 minutes out.
+    const def = new OAuthStateStore<{ kind: string }>("ttl-default", "ttl-def");
+    const before = Date.now();
+    const defState = await def.create({ kind: "d" });
+    const defRow = (await sql`
+      SELECT expires_at FROM oauth_states WHERE id = ${defState}
+    `) as unknown as Array<{ expires_at: Date }>;
+    const defTtlSec = (defRow[0].expires_at.getTime() - before) / 1000;
+    // 5 minutes ± a generous slack for test scheduling.
+    expect(defTtlSec).toBeGreaterThan(4 * 60);
+    expect(defTtlSec).toBeLessThan(6 * 60);
+
+    // Overridden store: ~30 minutes out.
+    const long = new OAuthStateStore<{ kind: string }>("ttl-long", "ttl-long", {
+      ttlSeconds: 30 * 60,
+    });
+    const beforeLong = Date.now();
+    const longState = await long.create({ kind: "l" });
+    const longRow = (await sql`
+      SELECT expires_at FROM oauth_states WHERE id = ${longState}
+    `) as unknown as Array<{ expires_at: Date }>;
+    const longTtlSec = (longRow[0].expires_at.getTime() - beforeLong) / 1000;
+    expect(longTtlSec).toBeGreaterThan(29 * 60);
+    expect(longTtlSec).toBeLessThan(31 * 60);
+  });
+
+  test("github install-state store uses the ~30-minute TTL", async () => {
+    const sql = getDb();
+    const store = createGithubInstallStateStore();
+    const before = Date.now();
+    const state = await store.create({ organizationId: "org-ttl" });
+    const row = (await sql`
+      SELECT scope, expires_at FROM oauth_states WHERE id = ${state}
+    `) as unknown as Array<{ scope: string; expires_at: Date }>;
+    expect(row[0].scope).toBe("github:app_install:state");
+    const ttlSec = (row[0].expires_at.getTime() - before) / 1000;
+    // Comfortably beyond the default 5m that a live install exceeded at 5m24s.
+    expect(ttlSec).toBeGreaterThan(29 * 60);
+    expect(ttlSec).toBeLessThan(31 * 60);
   });
 
   test("sweepExpiredOAuthStates deletes only expired rows", async () => {

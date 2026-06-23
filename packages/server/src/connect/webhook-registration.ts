@@ -25,6 +25,7 @@ import { resolveBaseUrl } from '../auth/base-url';
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { mergeExecutionConfig, resolveExecutionAuth } from '../utils/execution-context';
 import logger from '../utils/logger';
+import { getErrorMessage } from "@lobu/core";
 
 interface ConnectorConnectionRow {
   id: number;
@@ -228,7 +229,7 @@ export async function registerConnectorWebhook(params: {
     logger.warn(
       {
         connection_id: connectionId,
-        error: error instanceof Error ? error.message : String(error),
+        error: getErrorMessage(error),
       },
       'Connector webhook registration failed (connection stays active)'
     );
@@ -313,7 +314,7 @@ export async function unregisterConnectorWebhook(params: {
     logger.warn(
       {
         connection_id: connectionId,
-        error: error instanceof Error ? error.message : String(error),
+        error: getErrorMessage(error),
       },
       'Connector webhook teardown failed'
     );

@@ -1,7 +1,10 @@
 #!/usr/bin/env bun
 
 import { Readable } from "node:stream";
-import { createLogger } from "@lobu/core";
+import {
+	createLogger,
+	getErrorMessage,
+} from "@lobu/core";
 import { Hono } from "hono";
 import type { ArtifactStore } from "../../files/artifact-store.js";
 import type { PlatformRegistry } from "../../platform.js";
@@ -172,7 +175,7 @@ export function createFileRoutes(
       });
     } catch (error) {
       logger.error("Failed to upload file", {
-        error: error instanceof Error ? error.message : String(error),
+        error: getErrorMessage(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
       return errorResponse(c, "Failed to upload file", 500);
@@ -281,7 +284,7 @@ export function createFileRoutes(
       return c.json({ results });
     } catch (error) {
       logger.error("Failed to batch upload files", {
-        error: error instanceof Error ? error.message : String(error),
+        error: getErrorMessage(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
       return errorResponse(c, "Failed to batch upload files", 500);

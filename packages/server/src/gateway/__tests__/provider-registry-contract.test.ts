@@ -130,11 +130,20 @@ describe("provider registry contract (config/providers.json)", () => {
 				expect(mappings[baseUrlEnvVar]).toBeDefined();
 				expect(mappings[baseUrlEnvVar]).toContain(`${proxyUrl}/${id}`);
 
-				// OpenAI-compatible providers also remap OPENAI_BASE_URL so the
-				// OpenAI SDK the worker uses resolves through our proxy.
+				// Only the literal `openai` provider may own OPENAI_BASE_URL — the
+				// worker reads DEFAULT_PROVIDER_BASE_URL_ENV.openai === "OPENAI_BASE_URL"
+				// for it. Every OTHER sdkCompat provider resolves through its own
+				// <PROVIDER>_BASE_URL key (asserted above) and applies it as the model
+				// baseUrl explicitly, so it must NOT also claim OPENAI_BASE_URL: sharing
+				// that key let a co-installed provider clobber it on merge and mis-route
+				// openai/<model> requests to the wrong slug.
 				if (provider.sdkCompat === "openai") {
-					expect(mappings.OPENAI_BASE_URL).toBeDefined();
-					expect(mappings.OPENAI_BASE_URL).toContain(`${proxyUrl}/${id}`);
+					if (id === "openai") {
+						expect(mappings.OPENAI_BASE_URL).toBeDefined();
+						expect(mappings.OPENAI_BASE_URL).toContain(`${proxyUrl}/${id}`);
+					} else {
+						expect(mappings.OPENAI_BASE_URL).toBeUndefined();
+					}
 				}
 			});
 

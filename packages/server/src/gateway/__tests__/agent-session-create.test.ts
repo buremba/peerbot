@@ -387,6 +387,16 @@ describe("POST /api/v1/agents — default-agent resolution", () => {
       success: false,
       error: "Forbidden",
     });
+
+    // The pending-approvals route returns tool requestIds + args for a
+    // conversation, so it MUST enforce the same cross-org gate — without the
+    // authorizeAgentAccess pre-gate it had no auth at all and leaked another
+    // org's approval payloads (IDOR). The denial fires before the pending-tool
+    // store is touched, so this needs no DB.
+    const pendingDenied = await app.request(
+      `/api/v1/agents/${orgASession}/pending-approvals`
+    );
+    expect(pendingDenied.status).toBe(403);
   });
 
   test("returns 404 when the default agent belongs to a different org", async () => {

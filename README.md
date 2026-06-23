@@ -104,7 +104,7 @@ Local `lobu.config.ts` projects are still useful for `lobu validate` and `lobu a
 
 Single-process Node remains the simplest deployment: run it with `node`, `pm2`, `systemd`, or another process supervisor. The app needs `DATABASE_URL` (Postgres + pgvector) reachable from its environment.
 
-- **Local dev** (contributing to Lobu itself): clone, `make setup`, `make dev` (boots embedded gateway + workers + Vite HMR on `:8787`).
+- **Local dev** (contributing to Lobu itself): clone, `make setup` (provisions brew `postgresql@18`), `make dev` (gateway + workers + Vite HMR on `:8787`, against the shared brew Postgres@18; use `make dev-embedded` for the zero-dependency embedded Postgres).
 - **Production (VM/bare metal)**: `bun run --cwd packages/server build:server`, then `node packages/server/dist/server.bundle.mjs` under your process supervisor of choice.
 - **Production (Docker)**: a single self-hosting image — see [docs/DOCKER.md](docs/DOCKER.md).
 - **Production (Kubernetes)**: use the public Helm chart in `charts/lobu`:

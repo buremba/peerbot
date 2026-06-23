@@ -8,7 +8,7 @@
 
 import { insertEvent } from "../../utils/insert-event";
 import logger from "../../utils/logger";
-import type { GuardrailStage } from "@lobu/core";
+import { getErrorMessage, type GuardrailStage } from "@lobu/core";
 
 /**
  * Tracks in-flight `recordGuardrailTrip` calls. Production fires-and-forgets
@@ -101,7 +101,7 @@ async function doRecordGuardrailTrip(
   } catch (err) {
     logger.warn(
       {
-        err: err instanceof Error ? err.message : String(err),
+        err: getErrorMessage(err),
         guardrail: params.guardrail,
         stage: params.stage,
       },

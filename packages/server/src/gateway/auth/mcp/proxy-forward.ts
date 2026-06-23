@@ -1,4 +1,8 @@
-import { createLogger, verifyWorkerToken } from "@lobu/core";
+import {
+	createLogger,
+	getErrorMessage,
+	verifyWorkerToken,
+} from "@lobu/core";
 import type { Context } from "hono";
 import type { McpProxy } from "./proxy.js";
 import {
@@ -264,7 +268,7 @@ async function forwardRequest(
 		} catch (error) {
 			logger.warn("Pre-emptive MCP re-initialization failed", {
 				mcpId,
-				error: error instanceof Error ? error.message : String(error),
+				error: getErrorMessage(error),
 			});
 		}
 	}
@@ -366,7 +370,7 @@ async function forwardRequest(
 		} catch (error) {
 			logger.warn("Stale-session recovery failed on forward", {
 				mcpId,
-				error: error instanceof Error ? error.message : String(error),
+				error: getErrorMessage(error),
 			});
 		}
 	}

@@ -1,6 +1,6 @@
 import { createLogger } from "@lobu/core";
-import { getDb } from "../../db/client.js";
-import { tryGetOrgId } from "../../lobu/stores/org-context.js";
+import { getDb, tsTime } from "../../db/client.js";
+import { requireOrgId, resolveOrgId } from "../../lobu/stores/org-context.js";
 
 const logger = createLogger("channel-binding-service");
 
@@ -30,9 +30,7 @@ function rowToBinding(row: Record<string, any>): ChannelBinding {
     agentId: row.agent_id,
     organizationId: row.organization_id ?? undefined,
     createdAt:
-      row.created_at instanceof Date
-        ? row.created_at.getTime()
-        : (row.created_at ?? Date.now()),
+      tsTime(row.created_at),
   };
 }
 
@@ -48,7 +46,7 @@ export class ChannelBindingService {
     organizationId?: string
   ): Promise<ChannelBinding | null> {
     const sql = getDb();
-    const orgId = organizationId ?? tryGetOrgId();
+    const orgId = resolveOrgId(organizationId);
     const rows = teamId
       ? orgId
         ? await sql`
@@ -128,12 +126,10 @@ export class ChannelBindingService {
     options?: { configuredBy?: string; wasAdmin?: boolean; organizationId?: string }
   ): Promise<void> {
     const sql = getDb();
-    const orgId = options?.organizationId ?? tryGetOrgId();
-    if (!orgId) {
-      throw new Error(
-        "ChannelBindingService.createBinding requires organizationId (explicit or via orgContext)"
-      );
-    }
+    const orgId = requireOrgId(
+      options?.organizationId,
+      "ChannelBindingService.createBinding",
+    );
     if (teamId) {
       // The (organization_id, platform, channel_id, team_id) UNIQUE covers the
       // team-id-set case. The key is org-scoped so a sibling tenant binding the
@@ -171,7 +167,7 @@ export class ChannelBindingService {
     organizationId?: string
   ): Promise<boolean> {
     const sql = getDb();
-    const orgId = organizationId ?? tryGetOrgId();
+    const orgId = resolveOrgId(organizationId);
     const existing = await this.getBinding(platform, channelId, teamId, orgId ?? undefined);
     if (!existing) {
       logger.warn(`No binding found for ${platform}/${channelId}`);
@@ -220,7 +216,7 @@ export class ChannelBindingService {
     organizationId?: string
   ): Promise<ChannelBinding[]> {
     const sql = getDb();
-    const orgId = organizationId ?? tryGetOrgId();
+    const orgId = resolveOrgId(organizationId);
     const rows = orgId
       ? await sql`
           SELECT * FROM agent_channel_bindings
@@ -237,7 +233,7 @@ export class ChannelBindingService {
     organizationId?: string
   ): Promise<number> {
     const sql = getDb();
-    const orgId = organizationId ?? tryGetOrgId();
+    const orgId = resolveOrgId(organizationId);
     const rows = orgId
       ? await sql`
           DELETE FROM agent_channel_bindings

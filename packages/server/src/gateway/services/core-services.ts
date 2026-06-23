@@ -5,6 +5,7 @@ import {
 	type AgentConnectionStore,
 	CommandRegistry,
 	createLogger,
+	getErrorMessage,
 	GuardrailRegistry,
 	moduleRegistry,
 	type ProviderRegistryEntry,
@@ -13,9 +14,9 @@ import { getDb } from "../../db/client.js";
 import { resolveEnv } from "../auth/mcp/string-substitution.js";
 import { PostgresSecretStore } from "../../lobu/stores/postgres-secret-store.js";
 import {
-	createPostgresSlackInstallationStore,
-	type SlackInstallationStore,
-} from "../../lobu/stores/slack-installation-store.js";
+	type AppInstallationStore,
+	createPostgresAppInstallationStore,
+} from "../../lobu/stores/app-installation-store.js";
 import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { ApiKeyProviderModule } from "../auth/api-key-provider-module.js";
 import { BedrockProviderModule } from "../auth/bedrock/provider-module.js";
@@ -179,7 +180,7 @@ export class CoreServices {
 	// ============================================================================
 	private configStore?: AgentConfigStore;
 	private connectionStore?: AgentConnectionStore;
-	private slackInstallationStore?: SlackInstallationStore;
+	private appInstallationStore?: AppInstallationStore;
 
 	// SDK-embedded agents (passed via `GatewayConfig.agents`). lobu.config.ts
 	// file-declared agents have been moved out of the gateway boot path —
@@ -221,11 +222,11 @@ export class CoreServices {
 		return this.connectionStore;
 	}
 
-	getSlackInstallationStore(): SlackInstallationStore {
-		if (!this.slackInstallationStore) {
-			throw new Error("Slack installation store not initialized");
+	getAppInstallationStore(): AppInstallationStore {
+		if (!this.appInstallationStore) {
+			throw new Error("App installation store not initialized");
 		}
-		return this.slackInstallationStore;
+		return this.appInstallationStore;
 	}
 
 	/**
@@ -299,7 +300,7 @@ export class CoreServices {
 			}
 		} catch (error) {
 			logger.warn(
-				{ error: error instanceof Error ? error.message : String(error) },
+				{ error: getErrorMessage(error) },
 				"Ephemeral table sweeper failed",
 			);
 		}
@@ -384,13 +385,13 @@ export class CoreServices {
 			);
 		logger.debug("Secret store initialized");
 
-		// Slack workspace installs (the "Add to Slack" OAuth path) live in their
-		// own Postgres table keyed on (org, team) — not as agent connections —
-		// with the bot token in the secret store. Always Postgres-backed; only
-		// exercised on the OAuth/webhook path, which requires a DB.
-		this.slackInstallationStore = createPostgresSlackInstallationStore(
-			this.secretStore,
-		);
+		// The generic app-installation primitive: the multi-tenant record of "Lobu
+		// App <X> is installed into external tenant <Y>", shared by every provider
+		// (GitHub App installs, Slack OAuth workspace installs, Jira sites, …).
+		// Slack installs are a thin projection over this (see
+		// `lobu/stores/slack-installations.ts`) with NO bespoke table or store.
+		// Always Postgres-backed; only exercised on the OAuth/webhook path.
+		this.appInstallationStore = createPostgresAppInstallationStore();
 
 		this.channelBindingService = new ChannelBindingService();
 		this.userAgentsStore = new UserAgentsStore();

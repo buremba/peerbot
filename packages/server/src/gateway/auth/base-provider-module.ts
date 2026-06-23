@@ -1,6 +1,6 @@
 import { createLogger } from "@lobu/core";
 import { Hono } from "hono";
-import { tryGetOrgId } from "../../lobu/stores/org-context.js";
+import { resolveOrgId } from "../../lobu/stores/org-context.js";
 import { readOrgSharedProviderApiKey } from "../../lobu/stores/provider-secrets.js";
 import type { ProviderCredentialContext } from "../embedded.js";
 import {
@@ -30,7 +30,7 @@ async function readOrgSharedProviderKey(
   providerId: string,
   context?: ProviderCredentialContext
 ): Promise<string | null> {
-  const orgId = context?.organizationId ?? tryGetOrgId();
+  const orgId = resolveOrgId(context?.organizationId);
   if (!orgId) return null;
   return readOrgSharedProviderApiKey(providerId, orgId);
 }

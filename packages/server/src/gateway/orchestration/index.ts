@@ -3,9 +3,10 @@ export * from "./deployment-utils.js";
 export * from "./impl/embedded-deployment.js";
 
 import {
-  createLogger,
-  type GuardrailRegistry,
-  moduleRegistry,
+	createLogger,
+	getErrorMessage,
+	type GuardrailRegistry,
+	moduleRegistry,
 } from "@lobu/core";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import type { ProviderCatalogService } from "../auth/provider-catalog.js";
@@ -214,7 +215,7 @@ export class Orchestrator {
       } catch (error) {
         logger.error(
           "Error during deployment reconciliation:",
-          error instanceof Error ? error.message : String(error)
+          getErrorMessage(error)
         );
       } finally {
         this.activeReconciliation = null;

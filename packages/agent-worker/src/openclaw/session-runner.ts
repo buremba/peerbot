@@ -54,6 +54,7 @@ import {
   wrapToolsWithPluginToolHooks,
 } from "./plugin-loader";
 import type { OpenClawProgressProcessor } from "./processor";
+import { activeToolNames } from "./active-tool-names";
 import { getOpenClawSessionContext } from "./session-context";
 import {
   buildToolPolicy,
@@ -1114,7 +1115,17 @@ Use it when the user references past discussions or you need context.`);
       // too. The guard runs inside execute (before the tool body), so the
       // bound is tight — unlike the agent's async tool_execution_start event,
       // which lags several turns behind real execution.
-      tools: tools.map((tool) => tool.name),
+      // pi 0.73.x treats `tools` as BOTH the initial active set AND a hard
+      // allowlist (sdk.js: `allowedToolNames = options.tools`; agent-session
+      // filters every registered/custom tool whose name isn't in it). Passing
+      // only the base built-in names therefore silently dropped EVERY customTool
+      // (ask_user, MCP tools, memory, plugins, image/audio) before the model
+      // saw it — agents were left with just read/write/edit/bash/grep/find/ls.
+      // activeToolNames() unions the customTool names in so they survive the
+      // allowlist and stay active. (`builtinOverrides` still supplies the
+      // base-tool instances; the customTool instances come from the
+      // `customTools` option below.)
+      tools: activeToolNames(tools, customTools),
       builtinOverrides: wrapToolsWithTurnGuard(tools, turnController),
       // Wrap custom tools (plugin + MCP) so plugin before_tool_call/
       // after_tool_call hooks fire around in-process execution — these never

@@ -237,23 +237,3 @@ export function isPrimaryAuthMethodAppInstallation(
   return primary?.type === 'app_installation';
 }
 
-function dedupeAuthFields(fields: ConnectorAuthEnvField[]): ConnectorAuthEnvField[] {
-  const seen = new Set<string>();
-  const deduped: ConnectorAuthEnvField[] = [];
-
-  for (const field of fields) {
-    if (seen.has(field.key)) continue;
-    seen.add(field.key);
-    deduped.push(field);
-  }
-
-  return deduped;
-}
-
-export function getRequiredEnvAuthFields(authSchema: ConnectorAuthSchema): ConnectorAuthEnvField[] {
-  return dedupeAuthFields(
-    getEnvAuthMethods(authSchema)
-      .filter((method) => method.required !== false)
-      .flatMap((method) => method.fields.filter((field) => field.required !== false))
-  );
-}

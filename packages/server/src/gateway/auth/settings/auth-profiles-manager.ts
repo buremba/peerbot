@@ -1,4 +1,8 @@
-import { type AuthProfile, createLogger } from "@lobu/core";
+import {
+	type AuthProfile,
+	createLogger,
+	getErrorMessage,
+} from "@lobu/core";
 import { orgContext, tryGetOrgId } from "../../../lobu/stores/org-context.js";
 import type {
   ProviderCredentialContext,
@@ -235,7 +239,7 @@ export class AuthProfilesManager {
       logger.warn(
         {
           agentId,
-          error: error instanceof Error ? error.message : String(error),
+          error: getErrorMessage(error),
         },
         "agent owner resolver failed; skipping owner credential fallback"
       );
@@ -261,7 +265,7 @@ export class AuthProfilesManager {
       logger.warn(
         {
           agentId,
-          error: error instanceof Error ? error.message : String(error),
+          error: getErrorMessage(error),
         },
         "agent org resolver failed; credential reads run without org context"
       );
@@ -340,7 +344,7 @@ export class AuthProfilesManager {
               agentId,
               profileId: profile.id,
               provider: profile.provider,
-              error: error instanceof Error ? error.message : String(error),
+              error: getErrorMessage(error),
             },
             "Dropping auth profile with unresolvable secret ref"
           );
@@ -693,7 +697,7 @@ export class AuthProfilesManager {
         agentId,
         provider,
         model,
-        error: error instanceof Error ? error.message : String(error),
+        error: getErrorMessage(error),
       });
       return null;
     }
@@ -733,7 +737,7 @@ export class AuthProfilesManager {
         agentId,
         provider,
         model,
-        error: error instanceof Error ? error.message : String(error),
+        error: getErrorMessage(error),
       });
       return null;
     }

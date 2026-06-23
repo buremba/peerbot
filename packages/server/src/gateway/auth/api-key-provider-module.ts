@@ -67,8 +67,17 @@ export class ApiKeyProviderModule extends BaseProviderModule {
   }
 
   /**
-   * For openai-compatible providers, also map OPENAI_BASE_URL so the
-   * OpenAI SDK resolves through our proxy.
+   * Map OPENAI_BASE_URL so the OpenAI SDK resolves through our proxy — but ONLY
+   * for the literal `openai` provider. The worker reads
+   * DEFAULT_PROVIDER_BASE_URL_ENV.openai === "OPENAI_BASE_URL", so openai needs
+   * it under that exact key. Every OTHER sdkCompat:"openai" provider (groq,
+   * gemini, z-ai, openrouter, …) resolves its base URL through its OWN dedicated
+   * <PROVIDER>_BASE_URL key (super emits it; the worker reads it via
+   * DEFAULT_PROVIDER_BASE_URL_ENV, or falls back to the per-run singular
+   * providerBaseUrl). Emitting OPENAI_BASE_URL for those too made every
+   * sdkCompat provider claim the SAME key, so co-installing openai with any of
+   * them let the last-merged one clobber it and an openai/<model> request
+   * egressed to the wrong slug. Keep this key owned by openai alone.
    */
   override getProxyBaseUrlMappings(
     proxyUrl: string,
@@ -76,7 +85,7 @@ export class ApiKeyProviderModule extends BaseProviderModule {
     context?: import("../embedded.js").ProviderCredentialContext
   ): Record<string, string> {
     const mappings = super.getProxyBaseUrlMappings(proxyUrl, agentId, context);
-    if (this.apiKeyConfig.sdkCompat === "openai") {
+    if (this.apiKeyConfig.sdkCompat === "openai" && this.providerId === "openai") {
       const slug = this.providerConfig.slug || this.providerId;
       mappings.OPENAI_BASE_URL = this.buildAgentScopedProxyUrl(
         proxyUrl,

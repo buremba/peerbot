@@ -14,11 +14,18 @@
 
 import { randomUUID } from "node:crypto";
 import type { AgentConnectionStore, StoredConnection } from "@lobu/core";
-import { createLogger, isSecretRef } from "@lobu/core";
+import {
+	createLogger,
+	getErrorMessage,
+	isSecretRef,
+} from "@lobu/core";
 import { type AdapterPostableMessage, Chat } from "chat";
 import { getDb } from "../../db/client.js";
 import { orgContext, tryGetOrgId } from "../../lobu/stores/org-context.js";
-import { SLACK_INSTALLATION_ID_PREFIX } from "../../lobu/stores/slack-installation-store.js";
+import {
+  getSlackInstallById,
+  SLACK_INSTALLATION_ID_PREFIX,
+} from "../../lobu/stores/slack-installations.js";
 import { CommandDispatcher } from "../commands/command-dispatcher.js";
 import type { IFileHandler } from "../platform/file-handler.js";
 import type { CoreServices, PlatformAdapter } from "../platform.js";
@@ -399,7 +406,7 @@ export class ChatInstanceManager {
       await this.writeConnectionStatus(
         stored,
         "error",
-        `Startup failed: ${error instanceof Error ? error.message : String(error)}`
+        `Startup failed: ${getErrorMessage(error)}`
       );
       throw error;
     }
@@ -536,7 +543,7 @@ export class ChatInstanceManager {
           await this.writeConnectionStatus(
             reread,
             "error",
-            `Startup failed: ${error instanceof Error ? error.message : String(error)}`
+            `Startup failed: ${getErrorMessage(error)}`
           );
           throw error;
         }
@@ -1337,21 +1344,28 @@ export class ChatInstanceManager {
       forwardWebhook: this.handleWebhook.bind(this),
       getRunningChat: (connectionId) => this.getInstance(connectionId)?.chat,
       listSlackConnections: () => this.listConnections({ platform: "slack" }),
-      getInstallationStore: () => this.services.getSlackInstallationStore(),
+      getAppInstallationStore: () => this.services.getAppInstallationStore(),
+      getSecretStore: () => this.services.getSecretStore(),
     });
   }
 
   /**
    * Resolve the `StoredConnection` for `id` from the right source. Most ids are
    * `agent_connections` rows; ids in the Slack-installation namespace
-   * (`slackinst_…`) are OAuth workspace installs from `slack_installations`,
-   * surfaced as agentless connection-shaped rows so the existing hydration /
-   * instance-memo / webhook machinery runs them unchanged (the runtime never
-   * needs an owning agent — routing is per-message via bindings).
+   * (`slackinst-…`) are OAuth workspace installs stored as `app_installations`
+   * rows (provider=slack), surfaced as agentless connection-shaped rows so the
+   * existing hydration / instance-memo / webhook machinery runs them unchanged
+   * (the runtime never needs an owning agent — routing is per-message via
+   * bindings). The `slackinst-` id is the install's stable external id; it stays
+   * the secret-store prefix + memo/routing key, so it is resolved via the Slack
+   * install projection over the generic store rather than the bigint PK.
    */
   private async resolveStored(id: string): Promise<StoredConnection | null> {
     if (id.startsWith(SLACK_INSTALLATION_ID_PREFIX)) {
-      const inst = await this.services.getSlackInstallationStore().getById(id);
+      const inst = await getSlackInstallById(
+        this.services.getAppInstallationStore(),
+        id
+      );
       if (!inst) return null;
       return {
         id: inst.id,
@@ -1417,7 +1431,7 @@ export class ChatInstanceManager {
       await this.writeConnectionStatus(
         stored,
         "error",
-        `Startup failed: ${error instanceof Error ? error.message : String(error)}`
+        `Startup failed: ${getErrorMessage(error)}`
       );
       return false;
     }
@@ -1495,9 +1509,9 @@ export class ChatInstanceManager {
     ) {
       return;
     }
-    // OAuth workspace installs live in `slack_installations`, not
-    // `agent_connections`; their status isn't tracked there (token-health is a
-    // deferred concern). Log and skip — the hydration error is already logged.
+    // OAuth workspace installs live in `app_installations` (provider=slack), not
+    // `agent_connections`; their runtime status isn't tracked there (token-health
+    // is a deferred concern). Log and skip — the hydration error is already logged.
     if (row.id.startsWith(SLACK_INSTALLATION_ID_PREFIX)) {
       logger.warn(
         { id: row.id, status, errorMessage },
@@ -1662,7 +1676,7 @@ export class ChatInstanceManager {
           await this.writeConnectionStatus(
             s,
             "error",
-            `Startup failed: ${error instanceof Error ? error.message : String(error)}`
+            `Startup failed: ${getErrorMessage(error)}`
           );
         }
         // Schedule a bounded, exponentially-backed-off retry. The first-failure
@@ -1822,7 +1836,7 @@ export class ChatInstanceManager {
           await this.writeConnectionStatus(
             s,
             "error",
-            `Health check failed: ${error instanceof Error ? error.message : String(error)}`
+            `Health check failed: ${getErrorMessage(error)}`
           );
           result.errored += 1;
         }

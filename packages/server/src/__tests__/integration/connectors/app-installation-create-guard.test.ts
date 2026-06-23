@@ -13,6 +13,7 @@
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Env } from "../../../index";
 import type { ToolContext } from "../../../tools/registry";
+import { manageAuthProfiles } from "../../../tools/admin/manage_auth_profiles";
 import { manageConnections } from "../../../tools/admin/manage_connections";
 import { getTestDb } from "../../setup/test-db";
 import { initWorkspaceProvider } from "../../../workspace";
@@ -76,6 +77,40 @@ async function seedAppInstallConnector(organizationId: string): Promise<void> {
 	});
 }
 
+/**
+ * Create a REAL, resolvable auth profile for the seeded connector so the
+ * selection-aware guard sees a slug that actually resolves (the guard resolves
+ * the slug against auth_profiles — a bare asserted string no longer satisfies
+ * it). Returns the slug the profile ended up with.
+ */
+async function createRealAuthProfile(
+	ctx: ToolContext,
+	opts: {
+		profileKind: "env" | "oauth_app";
+		slug: string;
+		credentials: Record<string, string>;
+	},
+): Promise<string> {
+	const res = await manageAuthProfiles(
+		{
+			action: "create_auth_profile",
+			connector_key: CONNECTOR_KEY,
+			profile_kind: opts.profileKind,
+			display_name: opts.slug,
+			slug: opts.slug,
+			credentials: opts.credentials,
+		},
+		TEST_ENV,
+		ctx,
+	);
+	if (!("auth_profile" in res)) {
+		throw new Error(
+			`Failed to seed ${opts.profileKind} auth profile: ${JSON.stringify(res)}`,
+		);
+	}
+	return (res.auth_profile as { slug: string }).slug;
+}
+
 async function connectionCount(organizationId: string): Promise<number> {
 	const sql = getTestDb();
 	const rows = (await sql`
@@ -94,6 +129,7 @@ beforeAll(async () => {
 afterEach(async () => {
 	const sql = getTestDb();
 	await sql`DELETE FROM connections WHERE connector_key = ${CONNECTOR_KEY}`;
+	await sql`DELETE FROM auth_profiles WHERE connector_key = ${CONNECTOR_KEY}`;
 	await sql`DELETE FROM connector_definitions WHERE key = ${CONNECTOR_KEY}`;
 });
 
@@ -195,8 +231,71 @@ describe("manage_connections — app_installation guard is SELECTION-AWARE (regr
 		// No error at all is also a pass (guard skipped, create proceeded).
 	}
 
-	it("create WITH auth_profile_slug (oauth intent) is ALLOWED past the guard", async () => {
+	/** Assert the create/connect WAS rejected by the app-install guard. */
+	function expectGuardRejected(res: unknown): void {
+		expect(res && typeof res === "object" && "error" in res).toBe(true);
+		expect((res as { error: string }).error).toMatch(/\/github\/app\/install/);
+	}
+
+	it("create WITH a RESOLVABLE auth_profile_slug (oauth intent) is ALLOWED past the guard", async () => {
 		const org = await createTestOrganization({ name: "OAuth Profile Create Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		await seedAppInstallConnector(org.id);
+		const ctx = ctxFor(org.id, user.id);
+		// A REAL env-backed profile the guard can resolve to.
+		const slug = await createRealAuthProfile(ctx, {
+			profileKind: "env",
+			slug: "real-env-profile",
+			credentials: { DEMO_TOKEN: "ghp_real_token" },
+		});
+
+		const res = await manageConnections(
+			{
+				action: "create",
+				connector_key: CONNECTOR_KEY,
+				slug: "oauth-create",
+				display_name: "OAuth Create",
+				device_worker_id: null,
+				auth_profile_slug: slug,
+			},
+			TEST_ENV,
+			ctx,
+		);
+		expectGuardSkipped(res);
+	});
+
+	it("connect WITH a RESOLVABLE auth_profile_slug (oauth intent) is ALLOWED past the guard", async () => {
+		const org = await createTestOrganization({ name: "OAuth Profile Connect Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		await seedAppInstallConnector(org.id);
+		const ctx = ctxFor(org.id, user.id);
+		const slug = await createRealAuthProfile(ctx, {
+			profileKind: "env",
+			slug: "real-env-profile-connect",
+			credentials: { DEMO_TOKEN: "ghp_real_token" },
+		});
+
+		const res = await manageConnections(
+			{
+				action: "connect",
+				connector_key: CONNECTOR_KEY,
+				slug: "oauth-connect",
+				auth_profile_slug: slug,
+			},
+			TEST_ENV,
+			ctx,
+		);
+		expectGuardSkipped(res);
+	});
+
+	it("create WITH a NON-EXISTENT auth_profile_slug + no installation_ref is REJECTED (bypass closed)", async () => {
+		// The latent gap: the guard used to TRUST the asserted slug. A caller could
+		// pass a bogus, non-resolvable slug to bypass the guard and create a dead,
+		// unbound app_installation connection. The guard now RESOLVES the slug —
+		// an unresolvable one is treated as no slug at all → rejected.
+		const org = await createTestOrganization({ name: "Bogus Slug Create Org" });
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
 		await seedAppInstallConnector(org.id);
@@ -206,19 +305,21 @@ describe("manage_connections — app_installation guard is SELECTION-AWARE (regr
 			{
 				action: "create",
 				connector_key: CONNECTOR_KEY,
-				slug: "oauth-create",
-				display_name: "OAuth Create",
+				slug: "bogus-slug-create",
+				display_name: "Bogus Slug Create",
 				device_worker_id: null,
-				auth_profile_slug: "some-oauth-profile",
+				// No such auth profile exists for this org/connector.
+				auth_profile_slug: "does-not-exist-anywhere",
 			},
 			TEST_ENV,
 			ctx,
 		);
-		expectGuardSkipped(res);
+		expectGuardRejected(res);
+		expect(await connectionCount(org.id)).toBe(0);
 	});
 
-	it("connect WITH auth_profile_slug (oauth intent) is ALLOWED past the guard", async () => {
-		const org = await createTestOrganization({ name: "OAuth Profile Connect Org" });
+	it("connect WITH a NON-EXISTENT auth_profile_slug + no installation_ref is REJECTED (bypass closed)", async () => {
+		const org = await createTestOrganization({ name: "Bogus Slug Connect Org" });
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
 		await seedAppInstallConnector(org.id);
@@ -228,13 +329,106 @@ describe("manage_connections — app_installation guard is SELECTION-AWARE (regr
 			{
 				action: "connect",
 				connector_key: CONNECTOR_KEY,
-				slug: "oauth-connect",
-				auth_profile_slug: "some-oauth-profile",
+				slug: "bogus-slug-connect",
+				auth_profile_slug: "does-not-exist-anywhere",
 			},
 			TEST_ENV,
 			ctx,
 		);
-		expectGuardSkipped(res);
+		expectGuardRejected(res);
+		expect(await connectionCount(org.id)).toBe(0);
+	});
+
+	it("create WITH a NON-EXISTENT app_auth_profile_slug + no installation_ref is REJECTED (bypass closed)", async () => {
+		const org = await createTestOrganization({ name: "Bogus App Slug Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		await seedAppInstallConnector(org.id);
+		const ctx = ctxFor(org.id, user.id);
+
+		const res = await manageConnections(
+			{
+				action: "create",
+				connector_key: CONNECTOR_KEY,
+				slug: "bogus-app-slug-create",
+				display_name: "Bogus App Slug Create",
+				device_worker_id: null,
+				app_auth_profile_slug: "no-such-oauth-app",
+			},
+			TEST_ENV,
+			ctx,
+		);
+		expectGuardRejected(res);
+		expect(await connectionCount(org.id)).toBe(0);
+	});
+
+	it("create WITH auth_profile_slug pointing at an oauth_app (WRONG KIND) + no installation_ref is REJECTED", async () => {
+		// auth_profile_slug must resolve to a CREDENTIAL profile (env / account /
+		// browser / interactive). An oauth_app carries only the app's
+		// client_id/secret — it does NOT provide the connection's auth, so pointing
+		// auth_profile_slug at one is the wrong kind and must NOT satisfy the guard.
+		const org = await createTestOrganization({ name: "Wrong Kind Account Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		await seedAppInstallConnector(org.id);
+		const ctx = ctxFor(org.id, user.id);
+		// Seed a REAL, resolvable oauth_app profile, then mis-target it.
+		const appSlug = await createRealAuthProfile(ctx, {
+			profileKind: "oauth_app",
+			slug: "wrong-kind-app-profile",
+			credentials: {
+				DEMO_CLIENT_ID: "client-id",
+				DEMO_CLIENT_SECRET: "client-secret",
+			},
+		});
+
+		const res = await manageConnections(
+			{
+				action: "create",
+				connector_key: CONNECTOR_KEY,
+				slug: "wrong-kind-account-create",
+				display_name: "Wrong Kind Account Create",
+				device_worker_id: null,
+				// Resolvable, but it's an oauth_app — wrong kind for auth_profile_slug.
+				auth_profile_slug: appSlug,
+			},
+			TEST_ENV,
+			ctx,
+		);
+		expectGuardRejected(res);
+		expect(await connectionCount(org.id)).toBe(0);
+	});
+
+	it("create WITH app_auth_profile_slug pointing at a non-oauth_app profile (WRONG KIND) + no installation_ref is REJECTED", async () => {
+		// app_auth_profile_slug must resolve to an oauth_app. Pointing it at a real
+		// env (credential) profile is the wrong kind and must NOT satisfy the guard.
+		const org = await createTestOrganization({ name: "Wrong Kind App Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		await seedAppInstallConnector(org.id);
+		const ctx = ctxFor(org.id, user.id);
+		// Seed a REAL, resolvable env profile, then mis-target it as the app profile.
+		const envSlug = await createRealAuthProfile(ctx, {
+			profileKind: "env",
+			slug: "wrong-kind-env-profile",
+			credentials: { DEMO_TOKEN: "ghp_real_token" },
+		});
+
+		const res = await manageConnections(
+			{
+				action: "create",
+				connector_key: CONNECTOR_KEY,
+				slug: "wrong-kind-app-create",
+				display_name: "Wrong Kind App Create",
+				device_worker_id: null,
+				// Resolvable, but it's an env profile — wrong kind for app_auth_profile_slug.
+				app_auth_profile_slug: envSlug,
+			},
+			TEST_ENV,
+			ctx,
+		);
+		expectGuardRejected(res);
+		expect(await connectionCount(org.id)).toBe(0);
 	});
 
 	it("create WITH env/PAT creds in config is ALLOWED past the guard", async () => {
@@ -260,12 +454,21 @@ describe("manage_connections — app_installation guard is SELECTION-AWARE (regr
 		expectGuardSkipped(res);
 	});
 
-	it("create WITH app_auth_profile_slug is ALLOWED past the guard", async () => {
+	it("create WITH a RESOLVABLE app_auth_profile_slug is ALLOWED past the guard", async () => {
 		const org = await createTestOrganization({ name: "App Profile Create Org" });
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
 		await seedAppInstallConnector(org.id);
 		const ctx = ctxFor(org.id, user.id);
+		// A REAL oauth_app profile (local client creds) the guard can resolve to.
+		const appSlug = await createRealAuthProfile(ctx, {
+			profileKind: "oauth_app",
+			slug: "real-oauth-app",
+			credentials: {
+				DEMO_CLIENT_ID: "client-id",
+				DEMO_CLIENT_SECRET: "client-secret",
+			},
+		});
 
 		const res = await manageConnections(
 			{
@@ -274,7 +477,7 @@ describe("manage_connections — app_installation guard is SELECTION-AWARE (regr
 				slug: "appprofile-create",
 				display_name: "App Profile Create",
 				device_worker_id: null,
-				app_auth_profile_slug: "some-oauth-app",
+				app_auth_profile_slug: appSlug,
 			},
 			TEST_ENV,
 			ctx,
@@ -282,11 +485,47 @@ describe("manage_connections — app_installation guard is SELECTION-AWARE (regr
 		expectGuardSkipped(res);
 	});
 
-	it("lobu-apply-style oauth create (auth_profile_slug, no installation_ref) is ALLOWED", async () => {
+	it("lobu-apply-style oauth create (RESOLVABLE auth_profile_slug, no installation_ref) is ALLOWED", async () => {
 		// `lobu apply` of a declared github oauth connection sends auth_profile_slug
 		// (createConnection in apply/client.ts). It must pass the guard (it did on
-		// origin/main — the over-broad guard broke it).
+		// origin/main — the over-broad guard broke it) — provided the slug resolves.
 		const org = await createTestOrganization({ name: "Apply OAuth Org" });
+		const user = await createTestUser();
+		await addUserToOrganization(user.id, org.id, "owner");
+		await seedAppInstallConnector(org.id);
+		const ctx = ctxFor(org.id, user.id);
+		const accountSlug = await createRealAuthProfile(ctx, {
+			profileKind: "env",
+			slug: "gh-oauth",
+			credentials: { DEMO_TOKEN: "ghp_real_token" },
+		});
+		const appSlug = await createRealAuthProfile(ctx, {
+			profileKind: "oauth_app",
+			slug: "gh-oauth-app",
+			credentials: {
+				DEMO_CLIENT_ID: "client-id",
+				DEMO_CLIENT_SECRET: "client-secret",
+			},
+		});
+
+		const res = await manageConnections(
+			{
+				action: "create",
+				connector_key: CONNECTOR_KEY,
+				slug: "apply-oauth-conn",
+				display_name: "Apply OAuth Conn",
+				device_worker_id: null,
+				auth_profile_slug: accountSlug,
+				app_auth_profile_slug: appSlug,
+			},
+			TEST_ENV,
+			ctx,
+		);
+		expectGuardSkipped(res);
+	});
+
+	it("create WITH a managedBy.org grant is ALLOWED past the guard", async () => {
+		const org = await createTestOrganization({ name: "ManagedBy Create Org" });
 		const user = await createTestUser();
 		await addUserToOrganization(user.id, org.id, "owner");
 		await seedAppInstallConnector(org.id);
@@ -296,11 +535,10 @@ describe("manage_connections — app_installation guard is SELECTION-AWARE (regr
 			{
 				action: "create",
 				connector_key: CONNECTOR_KEY,
-				slug: "apply-oauth-conn",
-				display_name: "Apply OAuth Conn",
+				slug: "managed-create",
+				display_name: "Managed Create",
 				device_worker_id: null,
-				auth_profile_slug: "gh-oauth",
-				app_auth_profile_slug: "gh-oauth-app",
+				config: { managedBy: { org: org.id } },
 			},
 			TEST_ENV,
 			ctx,

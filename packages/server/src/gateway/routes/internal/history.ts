@@ -1,6 +1,9 @@
 #!/usr/bin/env bun
 
-import { createLogger } from "@lobu/core";
+import {
+	createLogger,
+	getErrorMessage,
+} from "@lobu/core";
 import { Hono } from "hono";
 import { platformRegistry } from "../../platform.js";
 import { errorResponse, getVerifiedWorker } from "../shared/helpers.js";
@@ -66,7 +69,7 @@ export function createHistoryRoutes(): Hono<WorkerContext> {
       });
     } catch (error) {
       logger.error(
-        `Failed to fetch history: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to fetch history: ${getErrorMessage(error)}`
       );
       return errorResponse(c, "Internal server error", 500);
     }

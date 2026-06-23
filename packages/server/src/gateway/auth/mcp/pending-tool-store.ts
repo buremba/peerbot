@@ -40,6 +40,40 @@ export async function storePendingTool(
 }
 
 /**
+ * Read (without consuming) the unresolved pending-tool invocations for a
+ * conversation. The live `tool-approval` SSE card is one-shot, so without this
+ * a pending approval vanishes from the web UI on reload. The SPA fetches this
+ * on load and replays open approvals as approval cards; resolution stays
+ * claim-and-delete via `takePendingTool`, so a row surfaced here disappears the
+ * moment the user approves/denies and never replays.
+ *
+ * `organizationId` is REQUIRED — it MUST be the caller's AUTHORIZED org
+ * (resolved by the route's authorizeAgentAccess) and always scopes the read so a
+ * row can never cross tenants, defense-in-depth on top of the conversationId
+ * key. The route returns 403 when no org resolves rather than ever issuing an
+ * unscoped read.
+ */
+export async function listPendingToolsForConversation(
+	conversationId: string,
+	organizationId: string,
+): Promise<Array<PendingToolInvocation & { requestId: string }>> {
+	const sql = getDb();
+	const rows = await sql`
+    SELECT id, payload
+    FROM oauth_states
+    WHERE scope = ${SCOPE}
+      AND expires_at > now()
+      AND payload->>'conversationId' = ${conversationId}
+      AND payload->>'organizationId' = ${organizationId}
+    ORDER BY expires_at ASC
+  `;
+	return rows.map((r) => {
+		const row = r as { id: string; payload: PendingToolInvocation };
+		return { ...row.payload, requestId: row.id };
+	});
+}
+
+/**
  * Atomically fetch and delete a pending tool invocation. Used by the
  * interaction bridge / CLI approve handler to claim the row exactly
  * once — Slack/Telegram webhook retries that arrive after the first

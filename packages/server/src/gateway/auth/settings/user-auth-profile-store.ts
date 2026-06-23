@@ -1,4 +1,8 @@
-import { type AuthProfile, createLogger } from "@lobu/core";
+import {
+	type AuthProfile,
+	createLogger,
+	getErrorMessage,
+} from "@lobu/core";
 import { getDb } from "../../../db/client.js";
 import {
   deleteSecretsByPrefix,
@@ -64,7 +68,7 @@ export class UserAuthProfileStore {
       logger.warn("Failed to read user auth profiles", {
         userId,
         agentId,
-        error: error instanceof Error ? error.message : String(error),
+        error: getErrorMessage(error),
       });
       return [];
     }

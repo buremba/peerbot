@@ -2,12 +2,13 @@ import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import {
-  ConversationOwnedElsewhereError,
-  createLogger,
-  ErrorCode,
-  type MessagePayload,
-  OrchestratorError,
-  retryWithBackoff,
+	ConversationOwnedElsewhereError,
+	createLogger,
+	ErrorCode,
+	getErrorMessage,
+	type MessagePayload,
+	OrchestratorError,
+	retryWithBackoff,
 } from "@lobu/core";
 import { nixPackageAttrRef as nixPackageAttrRefBase } from "@lobu/connector-sdk/nix-package";
 import { intervals } from "../../../config/intervals.js";
@@ -451,7 +452,7 @@ export async function acquireConversationLock(
         // key triple so the operator can target a manual
         // pg_advisory_unlock from psql if needed.
         logger.error(
-          `Failed to release advisory lock after ${MAX_ATTEMPTS} attempts for ${organizationId}/${agentId}/${conversationId}: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`
+          `Failed to release advisory lock after ${MAX_ATTEMPTS} attempts for ${organizationId}/${agentId}/${conversationId}: ${getErrorMessage(lastErr)}`
         );
       }
       // ALWAYS return the reserved connection to the pool — keeping it
@@ -710,7 +711,7 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
         );
       } catch (err) {
         logger.error(
-          `Failed to acquire conversation lock: ${err instanceof Error ? err.message : String(err)}`
+          `Failed to acquire conversation lock: ${getErrorMessage(err)}`
         );
         throw new OrchestratorError(
           ErrorCode.DEPLOYMENT_CREATE_FAILED,
@@ -937,7 +938,7 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
           WORKER_SANDBOX_REQUIRED_MESSAGE
         ).catch((failErr) => {
           logger.error(
-            `Failed to fail in-flight turns after refusing un-sandboxed worker ${deploymentName}: ${failErr instanceof Error ? failErr.message : String(failErr)}`
+            `Failed to fail in-flight turns after refusing un-sandboxed worker ${deploymentName}: ${getErrorMessage(failErr)}`
           );
         });
         return;
@@ -1007,7 +1008,7 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
       failTurnsForDeployment(deploymentName, WORKER_DIED_MESSAGE).catch(
         (failErr) => {
           logger.error(
-            `Failed to fail in-flight turns after spawn error for ${deploymentName} (client may hang until the turn-liveness sweep): ${failErr instanceof Error ? failErr.message : String(failErr)}`
+            `Failed to fail in-flight turns after spawn error for ${deploymentName} (client may hang until the turn-liveness sweep): ${getErrorMessage(failErr)}`
           );
         }
       );
@@ -1091,7 +1092,7 @@ export class EmbeddedDeploymentManager extends BaseDeploymentManager {
         failTurnsForDeployment(deploymentName, WORKER_DIED_MESSAGE).catch(
           (failErr) => {
             logger.error(
-              `Failed to fail in-flight turns after unexpected exit of ${deploymentName} (client may hang until the turn-liveness sweep): ${failErr instanceof Error ? failErr.message : String(failErr)}`
+              `Failed to fail in-flight turns after unexpected exit of ${deploymentName} (client may hang until the turn-liveness sweep): ${getErrorMessage(failErr)}`
             );
           }
         );

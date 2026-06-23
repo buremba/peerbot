@@ -24,6 +24,7 @@ import { buildConnectorDefinitionList } from '../../helpers/connector-definition
 import { maybeUpsertAuthAfterInstall, upsertConnectorAuthProfiles } from '../../helpers/connection-helpers';
 import type { ToolContext } from '../../../registry';
 import type { ManageConnectionsResult, ConnectionsArgs } from '../schemas';
+import { getErrorMessage } from "@lobu/core";
 
 // ============================================
 // handleListConnectorDefinitions
@@ -93,7 +94,7 @@ export async function handleInstallConnector(
     };
   } catch (error) {
     return {
-      error: `Install failed: ${error instanceof Error ? error.message : String(error)}`,
+      error: `Install failed: ${getErrorMessage(error)}`,
     };
   }
 }
@@ -115,7 +116,7 @@ export async function handleUninstallConnector(
       return { error: `Connector '${args.connector_key}' not found or already archived` };
     }
   } catch (error) {
-    return { error: error instanceof Error ? error.message : String(error) };
+    return { error: getErrorMessage(error) };
   }
 
   return { action: 'uninstall_connector', uninstalled: true, connector_key: args.connector_key };
@@ -158,7 +159,7 @@ export async function handleToggleConnectorLogin(
       login_enabled: args.enabled,
     };
   } catch (error) {
-    return { error: error instanceof Error ? error.message : String(error) };
+    return { error: getErrorMessage(error) };
   }
 }
 

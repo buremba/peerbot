@@ -31,8 +31,14 @@ const PROVIDERS_JSON = path.resolve(HERE, "../../../../../../config/providers.js
 
 describe("ensureBuilderAgent — provisioning reliability", () => {
 	const sql = getTestDb();
+	const CLAUDE_ENV_VARS = [
+		"ANTHROPIC_API_KEY",
+		"ANTHROPIC_AUTH_TOKEN",
+		"CLAUDE_CODE_OAUTH_TOKEN",
+	];
 	const prevRegistryPath = process.env.LOBU_PROVIDER_REGISTRY_PATH;
 	const prevOpenAI = process.env.OPENAI_API_KEY;
+	const prevClaude: Record<string, string | undefined> = {};
 
 	beforeAll(async () => {
 		await cleanupTestDatabase();
@@ -42,6 +48,15 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 		await access(PROVIDERS_JSON); // fail loudly if the path is wrong
 		process.env.LOBU_PROVIDER_REGISTRY_PATH = PROVIDERS_JSON;
 		process.env.OPENAI_API_KEY = "sk-test-builder-provisioning";
+		// Hermetic: clear ambient Claude keys so the openai-pin cases below are
+		// deterministic. Claude is now PREFERRED over openai when its key is
+		// present (resolveBuilderProviders pins the reliable always-API-key
+		// provider first), so a stray ANTHROPIC_API_KEY in the test environment
+		// would otherwise flip these expectations from openai/gpt-4o to claude.
+		for (const v of CLAUDE_ENV_VARS) {
+			prevClaude[v] = process.env[v];
+			delete process.env[v];
+		}
 	});
 
 	afterAll(() => {
@@ -50,6 +65,10 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 		else process.env.LOBU_PROVIDER_REGISTRY_PATH = prevRegistryPath;
 		if (prevOpenAI === undefined) delete process.env.OPENAI_API_KEY;
 		else process.env.OPENAI_API_KEY = prevOpenAI;
+		for (const [k, v] of Object.entries(prevClaude)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
 	});
 
 	async function readBuilder(orgId: string) {
@@ -85,6 +104,32 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 		// Deterministic default from providers.json (`openai` → `gpt-4o`).
 		expect(b?.model).toBe("openai/gpt-4o");
 		expect(await readPointer(org.id)).toBe(BUILDER_AGENT_ID);
+	});
+
+	it("prefers Claude over openai when BOTH system keys are present", async () => {
+		// The real-world trap this regression guards: an install carries
+		// OPENAI_API_KEY (which can be a ChatGPT/Codex OAuth token that 403s
+		// against api.openai.com) AND a real ANTHROPIC_API_KEY. The builder must
+		// pin the reliable always-API-key provider (claude), NOT openai/gpt-4o.
+		// The prior test only set OPENAI_API_KEY and asserted openai/gpt-4o, so it
+		// passed while a co-installed builder was dead on arrival in reality.
+		const prev = process.env.ANTHROPIC_API_KEY;
+		process.env.ANTHROPIC_API_KEY = "sk-ant-test-both";
+		try {
+			const org = await createTestOrganization({ name: "builder both keys" });
+			const res = await ensureBuilderAgent(org.id, sql);
+
+			expect(res.created).toBe(true);
+			const b = await readBuilder(org.id);
+			// openai still installs (its key resolves) but must NOT be the pin.
+			expect(
+				b?.installed_providers?.some((p) => p.providerId === "openai"),
+			).toBe(true);
+			expect(b?.model).toBe("claude/claude-sonnet-4-6");
+		} finally {
+			if (prev === undefined) delete process.env.ANTHROPIC_API_KEY;
+			else process.env.ANTHROPIC_API_KEY = prev;
+		}
 	});
 
 	it("repairs a builder stuck with empty providers/model (sentinel no longer makes breakage permanent)", async () => {

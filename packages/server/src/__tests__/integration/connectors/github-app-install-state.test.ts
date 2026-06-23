@@ -19,10 +19,15 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { getDb } from "../../../db/client";
 import {
 	type AppInstallRouterDeps,
+	autoProvisionGithubIssueFeeds,
 	createAppInstallRoutes,
 } from "../../../gateway/routes/public/app-install";
 import { createGithubInstallStateStore } from "../../../gateway/auth/oauth/state-store";
 import { createPostgresAppInstallationStore } from "../../../lobu/stores/app-installation-store";
+import {
+	__resetInstallationTokenRegistryForTests,
+	getInstallationTokenRegistry,
+} from "../../../gateway/installation/registry";
 import { getTestDb } from "../../setup/test-db";
 import { initWorkspaceProvider } from "../../../workspace";
 import {
@@ -77,6 +82,10 @@ type MockAccount = { login: string; type: "User" | "Organization" };
 interface RouterCapture {
 	exchangeRedirectUri?: string;
 	exchangeCalls: number;
+	/** feed ids passed to the (mocked) sync-run enqueue. */
+	enqueuedFeedIds: number[];
+	/** installation tokens the (mocked) repo enumeration was called with. */
+	repoFetchTokens: string[];
 }
 
 const PUBLIC_GATEWAY_URL = "https://app.lobu.ai";
@@ -91,6 +100,20 @@ function buildRouter(
 		exchangeReturns?: string | null;
 		/** Public gateway base for redirect_uri; defaults to PUBLIC_GATEWAY_URL. */
 		publicGatewayUrl?: string | undefined;
+		/**
+		 * Recovery: the sole ACCESSIBLE installation the (mocked) /user/installations
+		 * recovery lookup returns. `null`/`"ambiguous"`/`undefined` map to the
+		 * respective recovery outcomes. When omitted, the recovery lookup derives
+		 * from `installations`/`ownedInstallationIds` (sole entry → that install;
+		 * >1 → ambiguous; 0 → null).
+		 */
+		soleInstallation?:
+			| { installationId: number; account: MockAccount }
+			| null
+			| "ambiguous"
+			| undefined;
+		/** Repos the (mocked) /installation/repositories enumeration returns. */
+		installationRepos?: Array<{ owner: string; name: string }>;
 	} = {},
 ): { router: ReturnType<typeof createAppInstallRoutes>; captured: RouterCapture } {
 	const exchangeReturns =
@@ -109,7 +132,25 @@ function buildRouter(
 					]),
 				);
 
-	const captured: RouterCapture = { exchangeCalls: 0 };
+	const captured: RouterCapture = {
+		exchangeCalls: 0,
+		enqueuedFeedIds: [],
+		repoFetchTokens: [],
+	};
+
+	// Derive the recovery sole-installation outcome: explicit opt, else inferred
+	// from the installations map (sole → that install, >1 → ambiguous, 0 → null).
+	const soleInstallation: typeof opts.soleInstallation = (() => {
+		if (opts.soleInstallation !== undefined || "soleInstallation" in opts) {
+			return opts.soleInstallation;
+		}
+		if (installations === null) return undefined;
+		const entries = Object.entries(installations);
+		if (entries.length === 0) return null;
+		if (entries.length > 1) return "ambiguous";
+		const [id, account] = entries[0];
+		return { installationId: Number(id), account };
+	})();
 
 	const deps: AppInstallRouterDeps = {
 		installationStore: createPostgresAppInstallationStore(),
@@ -132,6 +173,15 @@ function buildRouter(
 		fetchOrgMembershipRole: async (_token, org) => {
 			if (opts.orgRoles === null) return undefined; // HTTP failure
 			return opts.orgRoles?.[org] ?? { state: "none", role: "none" };
+		},
+		fetchSoleAccessibleInstallation: async () => soleInstallation,
+		fetchInstallationRepositories: async (token) => {
+			captured.repoFetchTokens.push(token);
+			return opts.installationRepos ?? [];
+		},
+		enqueueSyncRun: async (feedId) => {
+			captured.enqueuedFeedIds.push(feedId);
+			return feedId; // stand-in run id
 		},
 	};
 	return { router: createAppInstallRoutes(deps), captured };
@@ -158,6 +208,30 @@ async function installCount(organizationId: string): Promise<number> {
 	return rows[0].n;
 }
 
+/** Issue feeds on the org's github connections (the auto-provisioned shape). */
+async function issueFeeds(
+	organizationId: string,
+): Promise<Array<{ id: number; repo_owner: string; repo_name: string; next_run_at: Date | null }>> {
+	const sql = getDb();
+	const rows = (await sql`
+		SELECT f.id, f.config ->> 'repo_owner' AS repo_owner,
+			f.config ->> 'repo_name' AS repo_name, f.next_run_at
+		FROM feeds f
+		JOIN connections c ON c.id = f.connection_id
+		WHERE c.organization_id = ${organizationId}
+			AND c.connector_key = ${CONNECTOR_KEY}
+			AND f.feed_key = 'issues'
+			AND f.deleted_at IS NULL
+		ORDER BY f.id
+	`) as unknown as Array<{
+		id: number;
+		repo_owner: string;
+		repo_name: string;
+		next_run_at: Date | null;
+	}>;
+	return rows;
+}
+
 const ENV_KEYS = [
 	"GITHUB_APP_ID",
 	"GITHUB_APP_SLUG",
@@ -166,13 +240,38 @@ const ENV_KEYS = [
 ] as const;
 const ORIGINAL_ENV: Record<string, string | undefined> = {};
 for (const k of ENV_KEYS) ORIGINAL_ENV[k] = process.env[k];
+const ORIGINAL_ENV_PK = process.env.GITHUB_APP_PRIVATE_KEY;
 
 async function cleanTables(): Promise<void> {
 	const sql = getTestDb();
+	// runs → feeds → connections ordering to satisfy FKs.
+	await sql`DELETE FROM runs WHERE connector_key = ${CONNECTOR_KEY}`;
+	await sql`DELETE FROM feeds WHERE connection_id IN (
+		SELECT id FROM connections WHERE connector_key = ${CONNECTOR_KEY}
+	)`;
 	await sql`DELETE FROM connections WHERE connector_key = ${CONNECTOR_KEY}`;
 	await sql`DELETE FROM connector_definitions WHERE key = ${CONNECTOR_KEY}`;
 	await sql`DELETE FROM app_installations WHERE provider_app_id = ${PROVIDER_APP_ID}`;
 	await sql`DELETE FROM oauth_states WHERE scope = 'github:app_install:state'`;
+}
+
+/**
+ * Register a spy GitHub mint provider so the auto-provision step (which mints the
+ * install's own token to enumerate repos) never reaches api.github.com. The
+ * router's injected `fetchInstallationRepositories` returns the test's repo list,
+ * so the token's value is irrelevant — only that minting succeeds.
+ */
+function installSpyMintProvider(): void {
+	__resetInstallationTokenRegistryForTests();
+	getInstallationTokenRegistry().register({
+		provider: "github",
+		async mintToken(install) {
+			return {
+				token: `spy-token-${install.id}`,
+				expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+			};
+		},
+	});
 }
 
 beforeAll(async () => {
@@ -186,6 +285,11 @@ beforeEach(async () => {
 	// "unset" test deletes them explicitly.
 	process.env.GITHUB_APP_CLIENT_ID = "Iv-test-app-client-id";
 	process.env.GITHUB_APP_CLIENT_SECRET = "test-app-client-secret";
+	// App private key so the spy/registry path is well-formed (value irrelevant —
+	// the spy provider never signs, and repo enumeration is injected).
+	process.env.GITHUB_APP_PRIVATE_KEY =
+		ORIGINAL_ENV_PK ?? "-----BEGIN PRIVATE KEY-----\\nspy\\n-----END PRIVATE KEY-----";
+	installSpyMintProvider();
 	await cleanTables();
 });
 
@@ -194,6 +298,9 @@ afterEach(async () => {
 		if (ORIGINAL_ENV[k] === undefined) delete process.env[k];
 		else process.env[k] = ORIGINAL_ENV[k];
 	}
+	if (ORIGINAL_ENV_PK === undefined) delete process.env.GITHUB_APP_PRIVATE_KEY;
+	else process.env.GITHUB_APP_PRIVATE_KEY = ORIGINAL_ENV_PK;
+	__resetInstallationTokenRegistryForTests();
 	await cleanTables();
 });
 
@@ -686,5 +793,349 @@ describe("GitHub App install callback — connection creation is race-safe", () 
 		// Exactly one connection and one active install despite the race.
 		expect(await connectionCount(org.id)).toBe(1);
 		expect(await installCount(org.id)).toBe(1);
+	});
+});
+
+describe("GitHub App install callback — auto-provision feeds", () => {
+	it("creates one issues feed per repo (due now) and enqueues a backfill for each", async () => {
+		const org = await createTestOrganization({ name: "AutoProvision Org" });
+		await seedGithubConnector(org.id);
+		const state = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+		});
+		const { router, captured } = buildRouter(org.id, {
+			ownedInstallationIds: [6200],
+			installationRepos: [
+				{ owner: "acme", name: "api" },
+				{ owner: "acme", name: "web" },
+			],
+		});
+
+		const res = await router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?installation_id=6200&setup_action=install&state=${state}&code=valid-oauth-code`,
+			),
+		);
+		expect(res.status).toBe(200);
+		expect(await connectionCount(org.id)).toBe(1);
+
+		// One issues feed per accessible repo, each active + due now (next_run_at set).
+		const feeds = await issueFeeds(org.id);
+		expect(feeds).toHaveLength(2);
+		expect(feeds.map((f) => `${f.repo_owner}/${f.repo_name}`).sort()).toEqual([
+			"acme/api",
+			"acme/web",
+		]);
+		for (const f of feeds) {
+			expect(f.next_run_at).not.toBeNull();
+		}
+
+		// A backfill sync run was enqueued for each new feed.
+		expect(captured.enqueuedFeedIds.sort()).toEqual(
+			feeds.map((f) => f.id).sort(),
+		);
+		// Repo enumeration used the install's OWN minted token (spy provider).
+		expect(captured.repoFetchTokens.length).toBe(1);
+		expect(captured.repoFetchTokens[0]).toMatch(/^spy-token-/);
+	});
+
+	it("is idempotent: re-bind reuses feeds and enqueues no duplicate backfill", async () => {
+		const org = await createTestOrganization({ name: "AutoProvision Reidem Org" });
+		await seedGithubConnector(org.id);
+
+		const first = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+		});
+		const r1 = buildRouter(org.id, {
+			ownedInstallationIds: [6300],
+			installationRepos: [{ owner: "acme", name: "api" }],
+		});
+		const res1 = await r1.router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?installation_id=6300&setup_action=install&state=${first}&code=valid-oauth-code`,
+			),
+		);
+		expect(res1.status).toBe(200);
+		expect(await issueFeeds(org.id)).toHaveLength(1);
+		expect(r1.captured.enqueuedFeedIds).toHaveLength(1);
+
+		// Second bind (same org+installation+repo) — fresh single-use state.
+		const second = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+		});
+		const r2 = buildRouter(org.id, {
+			ownedInstallationIds: [6300],
+			installationRepos: [{ owner: "acme", name: "api" }],
+		});
+		const res2 = await r2.router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?installation_id=6300&setup_action=install&state=${second}&code=valid-oauth-code`,
+			),
+		);
+		expect(res2.status).toBe(200);
+
+		// Still exactly one feed + one connection — no duplicate.
+		expect(await issueFeeds(org.id)).toHaveLength(1);
+		expect(await connectionCount(org.id)).toBe(1);
+		// No backfill enqueued the second time (feed already existed).
+		expect(r2.captured.enqueuedFeedIds).toHaveLength(0);
+	});
+
+	it("a successful bind with no accessible repos still succeeds (no feeds, no error)", async () => {
+		const org = await createTestOrganization({ name: "AutoProvision Empty Org" });
+		await seedGithubConnector(org.id);
+		const state = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+		});
+		const { router, captured } = buildRouter(org.id, {
+			ownedInstallationIds: [6400],
+			installationRepos: [],
+		});
+
+		const res = await router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?installation_id=6400&setup_action=install&state=${state}&code=valid-oauth-code`,
+			),
+		);
+		expect(res.status).toBe(200);
+		expect(await connectionCount(org.id)).toBe(1);
+		expect(await issueFeeds(org.id)).toHaveLength(0);
+		expect(captured.enqueuedFeedIds).toHaveLength(0);
+	});
+
+	it("CONCURRENCY: two parallel auto-provisions for the same (connection,repo) create exactly ONE feed (DB-enforced)", async () => {
+		const org = await createTestOrganization({ name: "AutoProvision Race Org" });
+		await seedGithubConnector(org.id);
+		// Seed an active install + a connection bound to it — the shape auto-provision
+		// operates on (mirrors what the callback produces).
+		const store = createPostgresAppInstallationStore();
+		const install = await store.upsert({
+			organizationId: org.id,
+			provider: "github",
+			providerInstance: "cloud",
+			providerAppId: PROVIDER_APP_ID,
+			externalTenantId: "6900",
+			status: "active",
+			metadata: { appIdKey: "GITHUB_APP_ID", privateKeyKey: "GITHUB_APP_PRIVATE_KEY" },
+		});
+		const sql = getDb();
+		const connRows = (await sql`
+			INSERT INTO connections (organization_id, connector_key, slug, display_name, status, config)
+			VALUES (${org.id}, ${CONNECTOR_KEY}, 'race-conn', 'Race Conn', 'active',
+				${sql.json({ installation_ref: install.id })})
+			RETURNING id
+		`) as unknown as Array<{ id: number }>;
+		const connectionId = Number(connRows[0].id);
+
+		// Two concurrent provisions for the SAME repo, simulating a double-click /
+		// two-tab race that completes AFTER the link advisory lock has released.
+		// Both call createSyncRun for whatever feed they create.
+		const provision = () =>
+			autoProvisionGithubIssueFeeds({
+				organizationId: org.id,
+				connectionId,
+				installId: install.id,
+				store,
+				fetchInstallationRepositories: async () => [
+					{ owner: "acme", name: "api" },
+				],
+				enqueueSyncRun: async (feedId) => feedId,
+			});
+
+		const [a, b] = await Promise.all([provision(), provision()]);
+
+		// DB-enforced: exactly ONE active issues feed for (connection, repo) despite
+		// the race. The partial unique index serialized the two INSERTs.
+		const feeds = await issueFeeds(org.id);
+		expect(feeds).toHaveLength(1);
+		// Exactly one of the two callers reports having CREATED the feed; the other
+		// reuses it (createdFeeds 0). Both still resolve the same feed id.
+		const totalCreated = a.createdFeeds + b.createdFeeds;
+		expect(totalCreated).toBe(1);
+		expect(a.feedIds).toEqual([feeds[0].id]);
+		expect(b.feedIds).toEqual([feeds[0].id]);
+		// Only the winner enqueued a backfill (no double-backfill).
+		const totalEnqueued =
+			a.enqueuedRunIds.length + b.enqueuedRunIds.length;
+		expect(totalEnqueued).toBe(1);
+	});
+});
+
+describe("GitHub App install callback — re-bind recovery (user-auth flow)", () => {
+	it("start route routes through GitHub user-auth (recovery) when an install row already exists", async () => {
+		const org = await createTestOrganization({ name: "Recovery Start Org" });
+		await seedGithubConnector(org.id);
+		// Pre-existing install row for this org+App → start route must use recovery.
+		await createPostgresAppInstallationStore().upsert({
+			organizationId: org.id,
+			provider: "github",
+			providerInstance: "cloud",
+			providerAppId: PROVIDER_APP_ID,
+			externalTenantId: "6500",
+			status: "active",
+		});
+		const { router } = buildRouter(org.id);
+
+		const res = await router.fetch(
+			new Request("http://gw.test/github/app/install"),
+		);
+		expect(res.status).toBe(302);
+		const location = res.headers.get("location") ?? "";
+		// Recovery → user-authorization endpoint (NOT the installations/new page).
+		expect(location).toContain("https://github.com/login/oauth/authorize");
+		expect(location).toContain("client_id=");
+		const minted = new URL(location).searchParams.get("state");
+		const peeked = await createGithubInstallStateStore().peek(minted as string);
+		expect(peeked?.organizationId).toBe(org.id);
+		expect(peeked?.recovery).toBe(true);
+	});
+
+	it("explicit ?recovery=1 routes through user-auth even with no install row", async () => {
+		const org = await createTestOrganization({ name: "Recovery Explicit Org" });
+		await seedGithubConnector(org.id);
+		const { router } = buildRouter(org.id);
+
+		const res = await router.fetch(
+			new Request("http://gw.test/github/app/install?recovery=1"),
+		);
+		expect(res.status).toBe(302);
+		expect(res.headers.get("location") ?? "").toContain(
+			"https://github.com/login/oauth/authorize",
+		);
+	});
+
+	it("fresh org (no install row, no recovery flag) still routes to the install page", async () => {
+		const org = await createTestOrganization({ name: "Fresh Install Org" });
+		await seedGithubConnector(org.id);
+		const { router } = buildRouter(org.id);
+
+		const res = await router.fetch(
+			new Request("http://gw.test/github/app/install"),
+		);
+		expect(res.status).toBe(302);
+		expect(res.headers.get("location") ?? "").toContain(
+			`https://github.com/apps/${APP_SLUG}/installations/new`,
+		);
+	});
+
+	it("recovery callback (no installation_id, no setup_action) derives the id and binds + provisions", async () => {
+		const org = await createTestOrganization({ name: "Recovery Callback Org" });
+		await seedGithubConnector(org.id);
+		// A recovery-flagged state (as the start route would mint).
+		const state = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+			recovery: true,
+		});
+		// The user administers exactly one installation (6600) → derived.
+		const { router, captured } = buildRouter(org.id, {
+			soleInstallation: {
+				installationId: 6600,
+				account: { login: "installer-user", type: "User" },
+			},
+			// fetchInstallationAccount must also confirm ownership of the derived id.
+			installations: { 6600: { login: "installer-user", type: "User" } },
+			installationRepos: [{ owner: "installer-user", name: "playground" }],
+		});
+
+		const res = await router.fetch(
+			// No installation_id, no setup_action — the recovery shape.
+			new Request(
+				`http://gw.test/github/app/install/callback?state=${state}&code=valid-oauth-code`,
+			),
+		);
+		expect(res.status).toBe(200);
+		// Bound the DERIVED installation id (6600).
+		expect(await installCount(org.id)).toBe(1);
+		expect(await connectionCount(org.id)).toBe(1);
+		const sql = getDb();
+		const rows = (await sql`
+			SELECT external_tenant_id FROM app_installations
+			WHERE organization_id = ${org.id} AND provider_app_id = ${PROVIDER_APP_ID}
+			LIMIT 1
+		`) as unknown as Array<{ external_tenant_id: string }>;
+		expect(rows[0].external_tenant_id).toBe("6600");
+		// Auto-provision still ran on the recovered bind.
+		const feeds = await issueFeeds(org.id);
+		expect(feeds).toHaveLength(1);
+		expect(captured.enqueuedFeedIds).toHaveLength(1);
+	});
+
+	it("recovery callback with ambiguous installations → 400, zero mutation", async () => {
+		const org = await createTestOrganization({ name: "Recovery Ambiguous Org" });
+		await seedGithubConnector(org.id);
+		const state = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+			recovery: true,
+		});
+		const { router } = buildRouter(org.id, {
+			soleInstallation: "ambiguous",
+		});
+
+		const res = await router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?state=${state}&code=valid-oauth-code`,
+			),
+		);
+		expect(res.status).toBe(400);
+		expect(await installCount(org.id)).toBe(0);
+		expect(await connectionCount(org.id)).toBe(0);
+	});
+
+	it("recovery callback STILL enforces session-org === state-org (anti-fixation)", async () => {
+		const stateOrg = await createTestOrganization({ name: "Recovery Attacker Org" });
+		const ambientOrg = await createTestOrganization({ name: "Recovery Victim Org" });
+		await seedGithubConnector(stateOrg.id);
+		await seedGithubConnector(ambientOrg.id);
+		const state = await createGithubInstallStateStore().create({
+			organizationId: stateOrg.id,
+			recovery: true,
+		});
+		// Completing session resolves to the AMBIENT org, not the state's org.
+		const { router } = buildRouter(ambientOrg.id, {
+			soleInstallation: {
+				installationId: 6700,
+				account: { login: "installer-user", type: "User" },
+			},
+			installations: { 6700: { login: "installer-user", type: "User" } },
+		});
+
+		const res = await router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?state=${state}&code=valid-oauth-code`,
+			),
+		);
+		expect(res.status).toBe(403);
+		expect(await installCount(stateOrg.id)).toBe(0);
+		expect(await installCount(ambientOrg.id)).toBe(0);
+		// Nonce not burned (peek-based mismatch) — the legit org can still recover.
+		const stillThere = await createGithubInstallStateStore().peek(state);
+		expect(stillThere?.organizationId).toBe(stateOrg.id);
+	});
+
+	it("recovery callback STILL enforces ownership (org member, not admin → 403)", async () => {
+		const org = await createTestOrganization({ name: "Recovery Member Org" });
+		await seedGithubConnector(org.id);
+		const state = await createGithubInstallStateStore().create({
+			organizationId: org.id,
+			recovery: true,
+		});
+		// Derived installation is an ORG account; the user is only a member.
+		const { router } = buildRouter(org.id, {
+			soleInstallation: {
+				installationId: 6800,
+				account: { login: "victim-org", type: "Organization" },
+			},
+			installations: { 6800: { login: "victim-org", type: "Organization" } },
+			orgRoles: { "victim-org": { state: "active", role: "member" } },
+		});
+
+		const res = await router.fetch(
+			new Request(
+				`http://gw.test/github/app/install/callback?state=${state}&code=valid-oauth-code`,
+			),
+		);
+		expect(res.status).toBe(403);
+		expect(await installCount(org.id)).toBe(0);
+		expect(await connectionCount(org.id)).toBe(0);
 	});
 });

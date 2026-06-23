@@ -1,14 +1,16 @@
-# Lobu — Multi-tenant OpenClaw for Organizations
+# Lobu — Open-source backend for AI teammates
 
-**Lobu** is an open-source multi-tenant gateway for [OpenClaw](https://github.com/openclaw/openclaw): one sandbox and filesystem per user/channel, shared memory across contexts, and agents that never see secrets. OpenClaw is a full agent runtime (~800k LOC) but it's [single-tenant by design](https://x.com/steipete/status/2026092642623201379) — every user shares the same filesystem and bash session. Lobu rewrites only the gateway layer (~40k LOC) to be multi-tenant and keeps OpenClaw's Pi harness untouched inside each worker.
+**Lobu** is open-source infrastructure for autonomous agents that **watch**, **remember**, and **act** where your team already works. Connect company tools, build living memory, and let agents run on schedules, in Slack threads, or over MCP — with sandboxed execution per user or channel and credentials agents never see.
 
-**Embedded mode** uses [just-bash](https://www.npmjs.com/package/just-bash) + Nix for reproducible packages: each user gets an isolated virtual filesystem and bash session at ~50MB per instance — tested at 300 concurrent instances on a single machine, no Docker needed. Embed OpenClaw-powered agents into your product, or give your team agents without managing a separate instance per person.
+Under the hood, workers run an [OpenClaw](https://openclaw.ai/)-style agent loop (bash, files, MCP tools, skills) inside an isolated sandbox per conversation. One Node process serves many agents and channels; shared memory and connectors live in Postgres (pgvector). Embed agents in your product, or give your team their own without running a separate instance per person.
 
 https://github.com/user-attachments/assets/d72a9286-0325-4b8b-afc0-c1efe9c96f4e
 
-## Quick Start
+## Two ways in
 
-Scaffold and run via the CLI. Lobu boots as a single Node process with a zero-config embedded Postgres by default (or bring your own — pgvector required — via `DATABASE_URL`).
+### 1. Full agent — Slack, Telegram, watchers, connectors
+
+Scaffold and run locally with the CLI. Lobu boots as a single Node process with zero-config embedded Postgres by default (or bring your own — pgvector required — via `DATABASE_URL`). `lobu run` opens the web UI on `:8787` and can wire Slack via the hosted bot or your own app.
 
 ```bash
 npx @lobu/cli@latest init my-bot
@@ -17,7 +19,21 @@ npx @lobu/cli@latest run                      # boots the stack and applies your
 npx @lobu/cli@latest chat -c local "hello"    # talk to it
 ```
 
-`lobu run` (embedded) auto-applies your `lobu.config.ts`, so the scaffolded agent is usable immediately. To use an external Postgres, set `DATABASE_URL` in `.env`; to push later config changes, run `lobu apply`. The same agents are reachable over a [REST API](https://lobu.ai/reference/api-reference/) and every chat platform — see [Channels](#channels).
+`lobu run` auto-applies your `lobu.config.ts`, so the scaffolded agent is usable immediately. To use an external Postgres, set `DATABASE_URL` in `.env`; to push later config changes, run `lobu apply`.
+
+Next steps: [Getting started](https://lobu.ai/getting-started/) (project layout, develop with your coding agent, evals) · [Memory](https://lobu.ai/getting-started/memory/) · [Skills](https://lobu.ai/getting-started/skills/) · [Channels](#channels)
+
+### 2. Memory for Claude Code (and Claude Desktop)
+
+Give Claude durable, structured memory via MCP — the same graph your Lobu agents use. Full setup: [Connect from Claude](https://lobu.ai/connect-from/claude/).
+
+```bash
+claude mcp add --transport http lobu https://lobu.ai/mcp   # or http://localhost:8787/mcp locally
+```
+
+Complete the OAuth flow when prompted, then enable the connector. Pair it with a project instruction or skill that tells Claude when to search memory and when to save what it learned.
+
+Works the same for [ChatGPT](https://lobu.ai/connect-from/chatgpt/) and [OpenClaw](https://lobu.ai/connect-from/openclaw/) — one memory backend across clients.
 
 ## Architecture
 
@@ -28,6 +44,7 @@ flowchart LR
   WhatsApp[WhatsApp] <--> GW
   Discord[Discord] <--> GW
   API[REST API] <--> GW
+  MCP[MCP clients] <--> GW
 
   GW <--> PG[(Postgres)]
   GW -->|spawn| W[Worker]
@@ -39,58 +56,55 @@ flowchart LR
   W -.->|HTTP proxy| GW
   W -.->|MCP proxy| GW
   GW -->|domain filter| Internet((Internet))
-  GW -->|scoped tokens| MCP[MCP Servers]
+  GW -->|scoped tokens| ExtMCP[MCP Servers]
 ```
 
 ## Capabilities
 
-Every Lobu agent ships with tools for autonomous execution and persistence:
+Most agent stacks treat MCP as the memory: every turn, the agent calls GitHub, Slack, and CRM tools to reconstruct what happened. That knowledge stays siloed in the session and disappears when the chat ends.
 
-| Feature | Built-in Tools |
-| --- | --- |
-| **Autonomous scheduling** — one-time or cron | `manage_schedules` |
-| **Human-in-the-loop** — pause on button input, resume on answer | `ask_user` |
-| **Full Linux toolbox** — sandboxed shell, file edit, search | `bash`, `read`, `write`, `edit`, `grep`, `find`, `ls` |
-| **Conversation context** — pull earlier thread messages | `get_channel_history` |
-| **File & media delivery** — share reports, charts, audio | `upload_file`, `generate_audio`, `generate_image` |
-| **Skills** — extend via `lobu.config.ts` or admin settings | `lobu.config.ts`, Settings UI |
-| **Connected APIs** — GitHub, Google, etc. with Lobu-managed OAuth | MCP tools via Lobu |
-| **Managed MCP proxy** — any MCP server with secret injection | [MCP Proxy](docs/SECURITY.md#credentials) |
-| **Nix + external MCP** — browsing, headless UI, custom tools | `bash` (Nix), MCP servers |
+Lobu runs a **data pipeline** instead. Connectors poll and webhooks push into one durable, append-only event log. Watchers and chat agents read the same org-scoped knowledge graph — typed entities, relationships, searchable events — so anyone can resume where the organization left off, not where one conversation left off.
+
+### Memory — ingest, entities, watchers
+
+**Ingest.** [Connectors](https://lobu.ai/sdks/connectors/) pull on a schedule; webhooks and the [REST API](https://lobu.ai/sdks/rest-api/) push. Stripe charges, GitHub PRs, form submissions, and connector polls all land as rows in the same log — a stable record of what happened in the world, not something the agent has to re-fetch through MCP every turn.
+
+**Entities.** You define the schema (`Company`, `Project`, `Incident`, …) in `lobu.config.ts`. Events attach to entity instances (`Company:Acme`) and build a live knowledge graph the whole org shares. Corrections supersede old facts; nothing is deleted, so provenance and time-travel stay intact.
+
+**Watchers.** Standing goals on a cron or tight interval: read new rows in the log (including webhook-fed events like `pull_request.opened`), extract structured memory onto dynamic entities, and optionally run a [reaction](https://lobu.ai/sdks/reactions/) to notify Slack, open a ticket, or kick off agent work — while nobody is in chat.
+
+Docs: [Memory](https://lobu.ai/getting-started/memory/) · [Connectors](https://lobu.ai/sdks/connectors/) · [Reactions](https://lobu.ai/sdks/reactions/)
+
+### Agents — read the graph, branch to act
+
+Chat agents **look up** what the pipeline already captured — search entities, read the event log, pull thread history — then **branch** into an isolated sandbox ([just-bash](https://www.npmjs.com/package/just-bash) + Nix) to run bash, edit files, and call MCP tools for side effects. MCP is for *doing*; the knowledge graph is for *knowing*. Pick any of [16 LLM providers](https://lobu.ai/reference/providers/); credentials stay on the gateway.
+
+Behavior comes from a **role file model** — `IDENTITY.md` (who), `SOUL.md` (rules), `USER.md` (context). **Guardrails** gate input, output, and tool calls (`secret-scan`, `pii-scan`, inline LLM judges) so policy holds even when the prompt doesn't. Destructive MCP calls wait for in-thread approval; every action writes back to the log.
+
+Docs: [Agent workspace](https://lobu.ai/guides/agent-prompts/) · [Guardrails](https://lobu.ai/guides/guardrails/) · [Security](https://lobu.ai/guides/security/)
 
 ### Channels
 
-One instance serves **Slack, Telegram, WhatsApp, Discord, Teams, Google Chat**, and a [REST API](https://lobu.ai/reference/api-reference/) [![API Docs](https://img.shields.io/badge/API_Docs-0096FF?style=for-the-badge&logo=readme&logoColor=white)](https://lobu.ai/reference/api-reference/). Each channel/DM gets its own runtime, model, tools, credentials, and Nix packages. Webhook is the default transport (Telegram also supports polling).
-
-### Popular MCP integrations
-
-- **Productivity:** Google Calendar, Slack, Jira, Notion
-- **Development:** GitHub, GitLab, Postgres, Docker
-- **Knowledge:** Wikipedia, Brave Search, YouTube, PDF Search
-
-### Runtime
-
-- **OpenClaw runtime.** Workers run [OpenClaw Pi Agent](https://openclaw.ai/) with per-agent model selection, OpenClaw skills, and `IDENTITY.md` / `SOUL.md` / `USER.md` workspace files.
-- **Multi-provider auth.** 16 LLM providers (OpenAI, Gemini, Groq, DeepSeek, Mistral, …) via a config-driven registry. API keys stay on the gateway.
+One instance serves **Slack, Telegram, WhatsApp, Discord, Teams, Google Chat**, and a [REST API](https://lobu.ai/reference/api-reference/) [![API Docs](https://img.shields.io/badge/API_Docs-0096FF?style=for-the-badge&logo=readme&logoColor=white)](https://lobu.ai/reference/api-reference/). Each channel/DM gets its own runtime, model, tools, credentials, and Nix packages. Platform setup: [Slack](https://lobu.ai/platforms/slack/) · [Telegram](https://lobu.ai/platforms/telegram/) · [Discord](https://lobu.ai/platforms/discord/) · [WhatsApp](https://lobu.ai/platforms/whatsapp/) · [Teams](https://lobu.ai/platforms/teams/) · [Google Chat](https://lobu.ai/platforms/google-chat/).
 
 ## How Lobu Differs
 
 Lobu is the **infrastructure layer** for autonomous agents. Frameworks like LangChain or CrewAI help you *write* agent logic; Lobu is the delivery layer that runs those agents at scale — sandboxing, persistence, and messaging connectivity.
 
-| | Lobu | OpenClaw |
-| --- | --- | --- |
-| Scale to zero | Workers scale down when idle | Requires always-on machine |
-| Multi-tenant | Single bot, per-channel/DM isolation | One instance per setup |
-| Multi-platform | Slack, Telegram, WhatsApp, Discord, Teams, Google Chat, REST API | [15+ chat platforms](https://openclaw.ai/integrations) |
-| Runtime | OpenClaw engine (sandboxed/proxied) | Native OpenClaw |
-| Onboarding | Config page with per-provider OAuth | CLI setup |
-| MCP access | Proxied through gateway, secrets isolated | Direct from agent |
-| Network | Sandboxed, domain-filtered egress | No built-in isolation |
-| Deployment | Single Node process (BYO Postgres) | Single node |
+**vs OpenClaw:** OpenClaw is [single-tenant by design](https://x.com/steipete/status/2026092642623201379) — every user shares the same filesystem and bash session. Lobu keeps the same autonomous loop but runs it **multi-tenant**: one gateway, an isolated sandbox per channel or DM, and org-scoped memory your whole team can share. Full write-up: [lobu.ai/getting-started/comparison](https://lobu.ai/getting-started/comparison/).
+
+| | Lobu | Claude Tag | OpenClaw |
+| --- | --- | --- | --- |
+| Tenancy | Multi-tenant — per-channel/DM isolation | Per-channel @Claude | Single-tenant — one shared runtime |
+| Open source / self-host | Yes | No | Yes |
+| Model choice | 16 providers | Claude only | Per setup |
+| Multi-platform | Slack, Telegram, WhatsApp, Discord, Teams, Google Chat, REST API, MCP | Slack (beta) | [15+ chat platforms](https://openclaw.ai/integrations) |
+| Custom connectors / watchers | Yes (`lobu.config.ts`) | Admin-provisioned tools | Skills + local setup |
+| Secrets & network | Gateway proxy, domain-filtered egress | Managed | Direct from agent, no built-in isolation |
 
 ## Agent configuration
 
-Runtime configuration is managed through the web app or the same org-scoped REST API used by the CLI:
+Runtime configuration is managed through the web app or the same org-scoped REST API used by the CLI. See the [CLI reference](https://lobu.ai/reference/cli/) and [`lobu apply`](https://lobu.ai/reference/lobu-apply/).
 
 ```bash
 npx @lobu/cli@latest login
@@ -102,27 +116,13 @@ Local `lobu.config.ts` projects are still useful for `lobu validate` and `lobu a
 
 ## Deployment
 
-Single-process Node remains the simplest deployment: run it with `node`, `pm2`, `systemd`, or another process supervisor. The app needs `DATABASE_URL` (Postgres + pgvector) reachable from its environment.
-
-- **Local dev** (contributing to Lobu itself): clone, `make setup` (provisions brew `postgresql@18`), `make dev` (gateway + workers + Vite HMR on `:8787`, against the shared brew Postgres@18; use `make dev-embedded` for the zero-dependency embedded Postgres).
-- **Production (VM/bare metal)**: `bun run --cwd packages/server build:server`, then `node packages/server/dist/server.bundle.mjs` under your process supervisor of choice.
-- **Production (Docker)**: a single self-hosting image — see [docs/DOCKER.md](docs/DOCKER.md).
-- **Production (Kubernetes)**: use the public Helm chart in `charts/lobu`:
-  ```bash
-  helm install lobu oci://ghcr.io/lobu-ai/charts/lobu \
-    --namespace lobu --create-namespace \
-    -f your-values.yaml
-  ```
-  See `charts/lobu/values.yaml` for the full set of tunables. At minimum supply an
-  ingress host, a `secretName` Secret containing `DATABASE_URL` + `ENCRYPTION_KEY` +
-  `BETTER_AUTH_SECRET` + provider API keys, and a `database.existingSecret`.
+The quick start above is the fastest path. For production self-hosting, see the [deployment docs](https://lobu.ai/deployment/docker/): [Docker](https://lobu.ai/deployment/docker/) · [Cloud](https://lobu.ai/deployment/cloud/) · [Kubernetes](https://lobu.ai/deployment/kubernetes/).
 
 ## Security and Privacy
 
-- [**Worker egress through the gateway proxy**](docs/SECURITY.md#network-egress) — `HTTP_PROXY=http://localhost:8118` with allowlist/blocklist + LLM egress judge. On Linux production hosts the worker spawn uses `systemd-run --user --scope` with `IPAddressDeny=any` to enforce egress at the kernel level; in dev (macOS) the proxy is best-effort.
-- [**Secrets stay in gateway**](docs/SECURITY.md#credentials) — provider credentials and `${env:}` substitution; OAuth lives in Lobu. Workers never see real keys.
-- [**Threat model: single-tenant local isolation**](docs/SECURITY.md) — `just-bash` and `isolated-vm` are policy + best-effort sandboxes, not security boundaries for hostile code. See `docs/SECURITY.md` before exposing Lobu to untrusted users.
-- [**Nix system packages**](docs/SECURITY.md#skills-and-policy) — per-agent reproducible tooling and skill policy.
+- [**Network isolation**](https://lobu.ai/guides/security/#network-isolation) — workers route egress through the gateway proxy with allowlist/blocklist + LLM egress judge.
+- [**Secrets stay in gateway**](https://lobu.ai/guides/secret-proxy/) — provider credentials and OAuth live in Lobu; workers never see real keys.
+- [**Threat model**](https://lobu.ai/guides/security/) — `just-bash` and `isolated-vm` are policy + best-effort sandboxes, not security boundaries for hostile code.
 
 ## Support & Consultancy
 
@@ -132,7 +132,7 @@ Lobu is open source, but deploying production-grade agents usually means tuning 
 - **Automated customer support** — multi-step ticket handling with human-in-the-loop.
 - **Autonomous workflows** — long-running, scheduled background jobs with persistent state.
 - **Managed infrastructure** — private Lobu deployments with updates and scaling.
-- **Custom tooling & skills** — bespoke MCP servers, Nix runtimes, and OpenClaw skills.
+- **Custom tooling & skills** — bespoke MCP servers, Nix runtimes, and agent skills.
 
 I'm a second-time technical founder. Previously founded [rakam.io](https://rakam.io) (enterprise analytics PaaS), acquired by [LiveRamp](https://liveramp.com) (NYSE: RAMP).
 

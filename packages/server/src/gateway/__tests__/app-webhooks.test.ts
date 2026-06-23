@@ -56,6 +56,27 @@ function buildApp() {
 	});
 }
 
+/**
+ * Build the router with the github provider's `resolveActor` wrapped in a
+ * counter, so a test can assert exactly one resolution per landed event.
+ */
+function buildAppWithActorCounter(): { app: ReturnType<typeof createAppWebhookRoutes>; calls: () => number } {
+	const provider = createGithubAppWebhookProvider({ appId: APP_ID });
+	const original = provider.resolveActor!.bind(provider);
+	let count = 0;
+	provider.resolveActor = async (params) => {
+		count += 1;
+		return original(params);
+	};
+	const app = createAppWebhookRoutes({
+		installationStore: createPostgresAppInstallationStore(),
+		secretStore: fakeSecretStore,
+		providers: [provider],
+		resolveAppWebhookSecret: async () => APP_SECRET,
+	});
+	return { app, calls: () => count };
+}
+
 /** Seed an ACTIVE github installation for the routed tenant tuple. */
 async function seedActiveInstall(): Promise<number> {
 	const store = createPostgresAppInstallationStore();
@@ -98,6 +119,69 @@ async function eventRows(connectorKey: string): Promise<any[]> {
     WHERE connector_key = ${connectorKey}
     ORDER BY id
   `;
+}
+
+/**
+ * Seed the prerequisites for actor → person resolution in the routed org: an
+ * org member (entities.created_by is NOT NULL — resolveOrgCreator reads it) and
+ * the `person` entity type the github actor rule auto-creates into.
+ */
+async function seedPersonResolutionPrereqs(orgId: string): Promise<void> {
+	const { getDb } = await import("../../db/client.js");
+	const sql = getDb();
+	const userId = `u-${orgId}`;
+	await sql`
+    INSERT INTO "user" (id, name, email, "emailVerified", "createdAt", "updatedAt")
+    VALUES (${userId}, 'Owner', ${`${userId}@example.com`}, true, NOW(), NOW())
+    ON CONFLICT (id) DO NOTHING
+  `;
+	await sql`
+    INSERT INTO "member" (id, "organizationId", "userId", role, "createdAt")
+    VALUES (${`m-${orgId}`}, ${orgId}, ${userId}, 'owner', NOW())
+    ON CONFLICT (id) DO NOTHING
+  `;
+	await sql`
+    INSERT INTO entity_types (organization_id, slug, name, created_at, updated_at)
+    VALUES (${orgId}, 'person', 'Person', NOW(), NOW())
+    ON CONFLICT DO NOTHING
+  `;
+}
+
+async function personRows(orgId: string): Promise<any[]> {
+	const { getDb } = await import("../../db/client.js");
+	return getDb()`
+    SELECT e.id, e.name, e.metadata
+    FROM entities e
+    JOIN entity_types et ON et.id = e.entity_type_id
+    WHERE e.organization_id = ${orgId} AND et.slug = 'person' AND e.deleted_at IS NULL
+    ORDER BY e.id
+  `;
+}
+
+/**
+ * Parse `events.entity_ids` regardless of how the driver hands it back: this
+ * gateway (bun:test) harness reads the raw column as a Postgres array literal
+ * string (`"{1,2}"` / `"{}"`); other paths return a JS array. Normalize to
+ * number[] so the attribution assertion is driver-agnostic.
+ */
+function parseEntityIds(value: unknown): number[] {
+	if (Array.isArray(value)) return value.map((v) => Number(v));
+	if (typeof value === "string") {
+		const inner = value.replace(/^\{|\}$/g, "").trim();
+		if (!inner) return [];
+		return inner.split(",").map((s) => Number(s));
+	}
+	return [];
+}
+
+async function identitiesFor(entityId: number): Promise<string[]> {
+	const { getDb } = await import("../../db/client.js");
+	const rows = await getDb()`
+    SELECT namespace, identifier FROM entity_identities
+    WHERE entity_id = ${entityId} AND deleted_at IS NULL
+    ORDER BY namespace, identifier
+  `;
+	return rows.map((r: any) => `${r.namespace}:${r.identifier}`);
 }
 
 beforeAll(async () => {
@@ -342,6 +426,188 @@ describe("app-webhook router (GitHub)", () => {
 		const rows = await eventRows(`webhook:app_install:${installId}`);
 		expect(rows.length).toBe(1);
 		expect(rows[0].origin_id).toBe("gh-dupe-1");
+	});
+
+	test("a signed delivery resolves the actor → person and lands NON-EMPTY entity_ids", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		await seedPersonResolutionPrereqs(ORG);
+		const installId = await seedActiveInstall();
+		const app = buildApp();
+
+		const raw = JSON.stringify({
+			action: "opened",
+			installation: { id: Number(INSTALLATION_ID) },
+			issue: {
+				number: 11,
+				title: "Prod is down",
+				html_url: "https://github.com/acme/api/issues/11",
+				user: { login: "Octocat", id: 583231 },
+			},
+			sender: { login: "Octocat", id: 583231 },
+			repository: { full_name: "acme/api" },
+		});
+		const res = await app.fetch(ghDelivery(raw, { deliveryId: "gh-attr-1" }));
+		expect(res.status).toBe(202);
+
+		// A person was created for the issue author and the row is attributed.
+		const people = await personRows(ORG);
+		expect(people.length).toBe(1);
+		expect(people[0].name).toBe("Octocat");
+		expect(await identitiesFor(Number(people[0].id))).toEqual([
+			"github_login:octocat",
+			"github_user_id:583231",
+		]);
+
+		const rows = await eventRows(`webhook:app_install:${installId}`);
+		expect(rows.length).toBe(1);
+		// THE assertion the PR claims: the landed row carries the resolved person.
+		expect(parseEntityIds(rows[0].entity_ids)).toEqual([Number(people[0].id)]);
+		// Canonical read-time identity slot stamped onto the row.
+		expect(rows[0].metadata.github_login).toBe("octocat");
+	});
+
+	test("an issue_comment delivery attributes the COMMENT author, not the issue author", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		await seedPersonResolutionPrereqs(ORG);
+		const installId = await seedActiveInstall();
+		const app = buildApp();
+
+		const raw = JSON.stringify({
+			action: "created",
+			installation: { id: Number(INSTALLATION_ID) },
+			issue: {
+				number: 11,
+				title: "Prod is down",
+				html_url: "https://github.com/acme/api/issues/11",
+				user: { login: "issue-author", id: 1 },
+			},
+			comment: {
+				id: 555,
+				body: "Looking into it",
+				html_url: "https://github.com/acme/api/issues/11#issuecomment-555",
+				user: { login: "Hubot", id: 42 },
+			},
+			sender: { login: "Hubot", id: 42 },
+			repository: { full_name: "acme/api" },
+		});
+		const res = await app.fetch(
+			ghDelivery(raw, { deliveryId: "gh-attr-2", event: "issue_comment" }),
+		);
+		expect(res.status).toBe(202);
+
+		const people = await personRows(ORG);
+		// Only the comment author is resolved by this delivery.
+		expect(people.length).toBe(1);
+		expect(people[0].name).toBe("Hubot");
+
+		const rows = await eventRows(`webhook:app_install:${installId}`);
+		expect(parseEntityIds(rows[0].entity_ids)).toEqual([Number(people[0].id)]);
+		expect(rows[0].metadata.github_login).toBe("hubot");
+	});
+
+	test("an unmapped event (push) lands the row but resolves no actor (empty entity_ids)", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		await seedPersonResolutionPrereqs(ORG);
+		const installId = await seedActiveInstall();
+		const app = buildApp();
+
+		const raw = JSON.stringify({
+			ref: "refs/heads/main",
+			installation: { id: Number(INSTALLATION_ID) },
+			pusher: { name: "someone" },
+			sender: { login: "someone", id: 9 },
+		});
+		const res = await app.fetch(
+			ghDelivery(raw, { deliveryId: "gh-push-1", event: "push" }),
+		);
+		expect(res.status).toBe(202);
+		// Delivery still lands (store-everything), just unattributed.
+		const rows = await eventRows(`webhook:app_install:${installId}`);
+		expect(rows.length).toBe(1);
+		expect(parseEntityIds(rows[0].entity_ids)).toEqual([]);
+		expect(await personRows(ORG)).toHaveLength(0);
+	});
+
+	test("a redelivered (deduped) delivery does NOT create a person, bump the graph, or land a second event", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		await seedPersonResolutionPrereqs(ORG);
+		const installId = await seedActiveInstall();
+		const app = buildApp();
+
+		const raw = JSON.stringify({
+			action: "opened",
+			installation: { id: Number(INSTALLATION_ID) },
+			issue: {
+				number: 11,
+				title: "Prod is down",
+				html_url: "https://github.com/acme/api/issues/11",
+				user: { login: "Octocat", id: 583231 },
+			},
+			sender: { login: "Octocat", id: 583231 },
+			repository: { full_name: "acme/api" },
+		});
+
+		// First delivery: persists + resolves the actor → one person.
+		const first = await app.fetch(ghDelivery(raw, { deliveryId: "gh-dedupe-attr" }));
+		expect(first.status).toBe(202);
+		const peopleAfterFirst = await personRows(ORG);
+		expect(peopleAfterFirst.length).toBe(1);
+		const firstAuthoredAt = peopleAfterFirst[0].metadata.last_authored_at;
+		expect(firstAuthoredAt).toBeTruthy();
+
+		// Redelivery of the SAME x-github-delivery: deduped → no new event AND no
+		// entity-graph mutation (no second person, last_authored_at unchanged).
+		const second = await app.fetch(ghDelivery(raw, { deliveryId: "gh-dedupe-attr" }));
+		expect(second.status).toBe(202);
+		expect((await second.json()).duplicate).toBe(true);
+
+		const peopleAfterSecond = await personRows(ORG);
+		expect(peopleAfterSecond.length).toBe(1);
+		// Same person, untouched — resolution never ran on the duplicate.
+		expect(peopleAfterSecond[0].id).toBe(peopleAfterFirst[0].id);
+		expect(peopleAfterSecond[0].metadata.last_authored_at).toBe(firstAuthoredAt);
+
+		// Exactly one event landed.
+		const rows = await eventRows(`webhook:app_install:${installId}`);
+		expect(rows.length).toBe(1);
+	});
+
+	test("TWO concurrent deliveries of the same event resolve the actor exactly once", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		await seedPersonResolutionPrereqs(ORG);
+		const installId = await seedActiveInstall();
+		const { app, calls } = buildAppWithActorCounter();
+
+		const raw = JSON.stringify({
+			action: "opened",
+			installation: { id: Number(INSTALLATION_ID) },
+			issue: {
+				number: 11,
+				title: "Prod is down",
+				html_url: "https://github.com/acme/api/issues/11",
+				user: { login: "Octocat", id: 583231 },
+			},
+			sender: { login: "Octocat", id: 583231 },
+			repository: { full_name: "acme/api" },
+		});
+
+		// Fire both deliveries of the SAME x-github-delivery simultaneously. The
+		// delivery-unique index picks one winner; the loser's tx rolls back before
+		// it ever resolves the actor.
+		const [a, b] = await Promise.all([
+			app.fetch(ghDelivery(raw, { deliveryId: "gh-concurrent" })),
+			app.fetch(ghDelivery(raw, { deliveryId: "gh-concurrent" })),
+		]);
+		expect([a.status, b.status]).toEqual([202, 202]);
+
+		// Exactly one actor resolution, one event, one person, one last_authored_at.
+		expect(calls()).toBe(1);
+		const rows = await eventRows(`webhook:app_install:${installId}`);
+		expect(rows.length).toBe(1);
+		expect(parseEntityIds(rows[0].entity_ids).length).toBe(1);
+		const people = await personRows(ORG);
+		expect(people.length).toBe(1);
+		expect(people[0].metadata.last_authored_at).toBeTruthy();
 	});
 
 	test("an unknown provider path returns 404", async () => {

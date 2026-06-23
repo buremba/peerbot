@@ -94,6 +94,25 @@ export function normalizeSlackUserId(
   return `${t}:${u}`.toUpperCase();
 }
 
+/**
+ * Canonicalize an already-combined Slack identity (`T0XYZ:U12345`) for the
+ * `normalizeIdentifier` dispatch. Connectors emit the team-prefixed form
+ * (build it with `normalizeSlackUserId(teamId, userId)`); this is the
+ * single-value cleanup pass the ingestion pipeline re-runs. Splits on the
+ * first colon and re-runs the two-part validator so a malformed value (no
+ * team prefix, bad chars) returns null rather than poisoning matching.
+ */
+export function normalizeSlackUserIdCombined(
+  raw: string | null | undefined
+): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const sep = trimmed.indexOf(':');
+  if (sep <= 0 || sep === trimmed.length - 1) return null;
+  return normalizeSlackUserId(trimmed.slice(0, sep), trimmed.slice(sep + 1));
+}
+
 export function normalizeGithubLogin(raw: string | null | undefined): string | null {
   if (typeof raw !== 'string') return null;
   const trimmed = raw.trim().toLowerCase();
@@ -155,6 +174,8 @@ export function normalizeIdentifier(
       return normalizeEmail(raw);
     case 'wa_jid':
       return normalizeWaJid(raw);
+    case 'slack_user_id':
+      return normalizeSlackUserIdCombined(raw);
     case 'github_login':
       return normalizeGithubLogin(raw);
     case 'github_user_id':

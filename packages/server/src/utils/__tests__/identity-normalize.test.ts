@@ -7,6 +7,7 @@ import {
   normalizeNumericId,
   normalizePhone,
   normalizeSlackUserId,
+  normalizeSlackUserIdCombined,
   normalizeWaJid,
 } from '@lobu/connector-sdk';
 import { describe, expect, it } from 'vitest';
@@ -88,6 +89,22 @@ describe('normalizeSlackUserId', () => {
   });
 });
 
+describe('normalizeSlackUserIdCombined', () => {
+  it('canonicalizes an already-combined TEAM:USER value, uppercase', () => {
+    expect(normalizeSlackUserIdCombined('T0abc:u123')).toBe('T0ABC:U123');
+    expect(normalizeSlackUserIdCombined(' T0ABC:U123 ')).toBe('T0ABC:U123');
+  });
+
+  it('rejects values without a team prefix or with malformed parts', () => {
+    expect(normalizeSlackUserIdCombined('U123')).toBeNull();
+    expect(normalizeSlackUserIdCombined(':U123')).toBeNull();
+    expect(normalizeSlackUserIdCombined('T0ABC:')).toBeNull();
+    expect(normalizeSlackUserIdCombined('T0 space:U123')).toBeNull();
+    expect(normalizeSlackUserIdCombined('')).toBeNull();
+    expect(normalizeSlackUserIdCombined(null)).toBeNull();
+  });
+});
+
 describe('normalizeGithubLogin', () => {
   it('lowercases valid logins', () => {
     expect(normalizeGithubLogin('Burak-Emre')).toBe('burak-emre');
@@ -150,6 +167,10 @@ describe('normalizeIdentifier dispatcher', () => {
     expect(normalizeIdentifier('github_login', 'Octocat')).toBe('octocat');
     expect(normalizeIdentifier('github_user_id', '  82745 ')).toBe('82745');
     expect(normalizeIdentifier('github_repo_full_name', 'Lobu-AI/Lobu')).toBe('lobu-ai/lobu');
+    // slack_user_id was barrel-exported but had no dispatch case (dead, like
+    // github_login once was) — it now canonicalizes the combined TEAM:USER form.
+    expect(normalizeIdentifier('slack_user_id', 't0abc:u123')).toBe('T0ABC:U123');
+    expect(normalizeIdentifier('slack_user_id', 'no-team-prefix')).toBeNull();
   });
 
   it('falls back to trim-only for unknown namespaces so custom identities still get hygiene', () => {

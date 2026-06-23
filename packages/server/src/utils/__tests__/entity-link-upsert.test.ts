@@ -7,7 +7,11 @@ import {
   createTestOrganization,
   createTestUser,
 } from '../../__tests__/setup/test-fixtures';
-import { applyEntityLinks, clearEntityLinkRulesCache } from '../entity-link-upsert';
+import {
+  applyEntityLinks,
+  clearEntityLinkRulesCache,
+  resolveEntityLinksForItems,
+} from '../entity-link-upsert';
 import { ensureMemberEntityType } from '../member-entity-type';
 
 const FEED_KEY = 'messages';
@@ -302,5 +306,105 @@ describe('applyEntityLinks', () => {
     `;
     // email was matchOnly, so only crm_contact_id is newly persisted alongside the seed email.
     expect(rows.map((r) => r.namespace)).toEqual(['crm_contact_id', 'email']);
+  });
+
+  it('two concurrent auto-creates for the same new actor → one entity, no orphan', async () => {
+    const { org } = await setupOrg('concurrent autocreate org');
+    const sql = getTestDb();
+
+    const rule: EntityLinkRule = {
+      entityType: '$member',
+      autoCreate: true,
+      titlePath: 'metadata.push_name',
+      identities: [{ namespace: 'phone', eventPath: 'metadata.phone' }],
+      traits: {
+        push_name: { eventPath: 'metadata.push_name', behavior: 'prefer_non_empty' },
+      },
+    };
+    const item = {
+      origin_type: 'msg',
+      metadata: { phone: '14155559999', push_name: 'Casey' },
+    };
+
+    // Both calls race to auto-create the SAME brand-new actor. One wins the
+    // identity insert; the loser's freshly-inserted entity row gets zero
+    // identities (ON CONFLICT) and must be discarded (no orphan), not used.
+    await Promise.all([
+      resolveEntityLinksForItems({
+        connectorKey: 'whatsapp',
+        orgId: org.id,
+        items: [{ ...item, metadata: { ...item.metadata } }],
+        rules: { msg: [rule] },
+      }),
+      resolveEntityLinksForItems({
+        connectorKey: 'whatsapp',
+        orgId: org.id,
+        items: [{ ...item, metadata: { ...item.metadata } }],
+        rules: { msg: [rule] },
+      }),
+    ]);
+
+    // Exactly one entity OWNS the identity. (A lost-race orphan would be an extra
+    // $member row with no entity_identities — assert there is none.)
+    const withIdentity = await sql<{ id: number }[]>`
+      SELECT e.id FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      JOIN entity_identities ei ON ei.entity_id = e.id AND ei.deleted_at IS NULL
+      WHERE e.organization_id = ${org.id} AND et.slug = '$member' AND e.deleted_at IS NULL
+        AND ei.namespace = 'phone' AND ei.identifier = '14155559999'
+    `;
+    expect(withIdentity).toHaveLength(1);
+
+    const orphans = await sql<{ count: string }[]>`
+      SELECT COUNT(*)::text AS count FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE e.organization_id = ${org.id} AND et.slug = '$member' AND e.deleted_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM entity_identities ei WHERE ei.entity_id = e.id AND ei.deleted_at IS NULL
+        )
+    `;
+    expect(orphans[0].count).toBe('0');
+
+    // Traits landed on the real (identity-owning) entity.
+    const winner = await sql<{ metadata: Record<string, unknown> }[]>`
+      SELECT metadata FROM entities WHERE id = ${withIdentity[0].id}
+    `;
+    expect(winner[0].metadata.push_name).toBe('Casey');
+  });
+
+  it('resolveEntityLinksForItems writes through the passed transaction handle', async () => {
+    const { org } = await setupOrg('tx-threaded org');
+    const sql = getTestDb();
+
+    const rule: EntityLinkRule = {
+      entityType: '$member',
+      autoCreate: true,
+      identities: [{ namespace: 'phone', eventPath: 'metadata.phone' }],
+    };
+
+    // Run resolution inside a tx we then ROLL BACK — if the resolver wrote
+    // through the passed handle, the entity must NOT survive the rollback.
+    await sql
+      .begin(async (tx) => {
+        await resolveEntityLinksForItems(
+          {
+            connectorKey: 'whatsapp',
+            orgId: org.id,
+            items: [{ origin_type: 'msg', metadata: { phone: '14155551111' } }],
+            rules: { msg: [rule] },
+          },
+          tx as unknown as ReturnType<typeof getTestDb>,
+        );
+        throw new Error('rollback');
+      })
+      .catch((e) => {
+        if (e.message !== 'rollback') throw e;
+      });
+
+    const rows = await sql<{ count: string }[]>`
+      SELECT COUNT(*)::text AS count FROM entity_identities
+      WHERE organization_id = ${org.id} AND namespace = 'phone' AND identifier = '14155551111'
+    `;
+    expect(rows[0].count).toBe('0');
   });
 });

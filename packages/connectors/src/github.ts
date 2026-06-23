@@ -14,6 +14,7 @@ import {
   type ConnectorDefinition,
   ConnectorRuntime,
   createHttpClient,
+  type EntityLinkRule,
   type EventEnvelope,
   IDENTITY,
   paginateByOffset,
@@ -98,7 +99,7 @@ interface GitHubIssueLike {
   number: number;
   title: string;
   body: string | null;
-  user?: { login?: string };
+  user?: { login?: string; id?: number };
   html_url: string;
   created_at: string;
   updated_at: string;
@@ -112,7 +113,7 @@ interface GitHubIssueLike {
 interface GitHubCommentLike {
   id: number;
   body: string;
-  user?: { login?: string };
+  user?: { login?: string; id?: number };
   html_url: string;
   issue_url?: string;
   pull_request_url?: string;
@@ -126,7 +127,7 @@ interface GraphQLDiscussionNode {
   number: number;
   title: string;
   body: string;
-  author?: { login?: string };
+  author?: { login?: string; databaseId?: number };
   url: string;
   createdAt: string;
   updatedAt: string;
@@ -138,7 +139,7 @@ interface GraphQLDiscussionNode {
 interface GraphQLDiscussionCommentNode {
   id: string;
   body: string;
-  author?: { login?: string };
+  author?: { login?: string; databaseId?: number };
   url: string;
   createdAt: string;
   updatedAt: string;
@@ -227,6 +228,40 @@ const LABELS_PROP = {
     description: 'Optional label filter',
   },
 } as const;
+
+/**
+ * Person entity-link rule for any authored GitHub event. Attribution is keyed
+ * PRIMARY on the immutable numeric `github_user_id` (a renamed login still
+ * resolves to the same person) and SECONDARY on `github_login` (the indexed
+ * read-time namespace + the human-legible name on auto-create). The ingestion
+ * pipeline (`applyEntityLinks`, run-lifecycle poll/sync path) extracts these
+ * from `metadata.author_id` / `metadata.author_login` — both stamped by
+ * `buildAuthorMetadata` — normalizes them, and looks them up / auto-creates a
+ * `person` in the SAME organization (entity_identities are per-org, never
+ * cross-tenant). `last_authored_at` tracks the most recent contribution.
+ */
+const GITHUB_PERSON_ENTITY_LINK: EntityLinkRule = {
+  entityType: 'person',
+  autoCreate: true,
+  titlePath: 'metadata.author_login',
+  identities: [
+    // PRIMARY: the immutable numeric id is authoritative — when present it
+    // governs resolution, so a renamed-then-reused login can't conflate a new
+    // account into the old person (see entity-link-upsert resolution).
+    { namespace: IDENTITY.GITHUB_USER_ID, eventPath: 'metadata.author_id', primary: true },
+    { namespace: IDENTITY.GITHUB_LOGIN, eventPath: 'metadata.author_login' },
+  ],
+  traits: {
+    github_login: {
+      eventPath: 'metadata.author_login',
+      behavior: 'prefer_non_empty',
+    },
+    last_authored_at: {
+      eventPath: 'occurred_at',
+      behavior: 'overwrite',
+    },
+  },
+};
 
 export default class GitHubConnector extends ConnectorRuntime {
   readonly definition: ConnectorDefinition = {
@@ -339,8 +374,11 @@ export default class GitHubConnector extends ConnectorRuntime {
                 updated_at: { type: 'string' },
                 reactions: { type: 'object' },
                 comments: { type: 'number' },
+                author_login: { type: 'string' },
+                author_id: { type: 'string' },
               },
             },
+            entityLinks: [GITHUB_PERSON_ENTITY_LINK],
           },
         },
       },
@@ -367,8 +405,11 @@ export default class GitHubConnector extends ConnectorRuntime {
                 updated_at: { type: 'string' },
                 reactions: { type: 'object' },
                 comments: { type: 'number' },
+                author_login: { type: 'string' },
+                author_id: { type: 'string' },
               },
             },
+            entityLinks: [GITHUB_PERSON_ENTITY_LINK],
           },
         },
       },
@@ -391,8 +432,11 @@ export default class GitHubConnector extends ConnectorRuntime {
               properties: {
                 updated_at: { type: 'string' },
                 reactions: { type: 'object' },
+                author_login: { type: 'string' },
+                author_id: { type: 'string' },
               },
             },
+            entityLinks: [GITHUB_PERSON_ENTITY_LINK],
           },
         },
       },
@@ -415,8 +459,11 @@ export default class GitHubConnector extends ConnectorRuntime {
               properties: {
                 updated_at: { type: 'string' },
                 reactions: { type: 'object' },
+                author_login: { type: 'string' },
+                author_id: { type: 'string' },
               },
             },
+            entityLinks: [GITHUB_PERSON_ENTITY_LINK],
           },
         },
       },
@@ -442,8 +489,11 @@ export default class GitHubConnector extends ConnectorRuntime {
                 updated_at: { type: 'string' },
                 comments: { type: 'number' },
                 reactions: { type: 'number' },
+                author_login: { type: 'string' },
+                author_id: { type: 'string' },
               },
             },
+            entityLinks: [GITHUB_PERSON_ENTITY_LINK],
           },
         },
       },
@@ -467,8 +517,11 @@ export default class GitHubConnector extends ConnectorRuntime {
                 discussion_number: { type: 'number' },
                 updated_at: { type: 'string' },
                 reactions: { type: 'number' },
+                author_login: { type: 'string' },
+                author_id: { type: 'string' },
               },
             },
+            entityLinks: [GITHUB_PERSON_ENTITY_LINK],
           },
         },
       },
@@ -494,8 +547,11 @@ export default class GitHubConnector extends ConnectorRuntime {
                 action: { type: 'string' },
                 starred_at: { type: 'string' },
                 source: { type: 'string' },
+                author_login: { type: 'string' },
+                author_id: { type: 'string' },
               },
             },
+            entityLinks: [GITHUB_PERSON_ENTITY_LINK],
           },
           stargazer_unstarred: {
             description: 'A GitHub user unstarred the repository',
@@ -938,6 +994,7 @@ export default class GitHubConnector extends ConnectorRuntime {
           updated_at: item.updated_at,
           reactions: item.reactions ?? {},
           comments: item.comments ?? 0,
+          ...this.buildAuthorMetadata(item.user),
         },
       });
     }
@@ -980,6 +1037,7 @@ export default class GitHubConnector extends ConnectorRuntime {
           metadata: {
             updated_at: comment.updated_at,
             reactions: comment.reactions ?? {},
+            ...this.buildAuthorMetadata(comment.user),
           },
         };
       })
@@ -1019,6 +1077,7 @@ export default class GitHubConnector extends ConnectorRuntime {
           metadata: {
             updated_at: comment.updated_at,
             reactions: comment.reactions ?? {},
+            ...this.buildAuthorMetadata(comment.user),
           },
         };
       })
@@ -1039,7 +1098,7 @@ export default class GitHubConnector extends ConnectorRuntime {
               number
               title
               body
-              author { login }
+              author { login ... on User { databaseId } }
               url
               createdAt
               updatedAt
@@ -1090,6 +1149,7 @@ export default class GitHubConnector extends ConnectorRuntime {
             updated_at: discussion.updatedAt,
             comments: discussion.comments?.totalCount ?? 0,
             reactions: discussion.reactions?.totalCount ?? 0,
+            ...this.buildGraphQLAuthorMetadata(discussion.author),
           },
         };
       })
@@ -1114,7 +1174,7 @@ export default class GitHubConnector extends ConnectorRuntime {
                   url
                   createdAt
                   updatedAt
-                  author { login }
+                  author { login ... on User { databaseId } }
                   reactions { totalCount }
                 }
               }
@@ -1167,6 +1227,7 @@ export default class GitHubConnector extends ConnectorRuntime {
             discussion_number: discussion.number,
             updated_at: comment.updatedAt,
             reactions: comment.reactions?.totalCount ?? 0,
+            ...this.buildGraphQLAuthorMetadata(comment.author),
           },
         });
       }
@@ -1256,6 +1317,7 @@ export default class GitHubConnector extends ConnectorRuntime {
               action: 'starred',
               starred_at: starredAt.toISOString(),
               source: 'github_stargazers_snapshot',
+              ...this.buildAuthorMetadata({ login, id: user.id }),
             },
           });
         }
@@ -1422,6 +1484,35 @@ export default class GitHubConnector extends ConnectorRuntime {
       verification_status: 'observed',
     });
     return identities;
+  }
+
+  /**
+   * Canonical author identity slot for entityLinks. Stamps `author_login`
+   * (the mutable handle, indexed for read-time attribution) and `author_id`
+   * (the immutable numeric GitHub user id, the PRIMARY match/dedupe key) into
+   * event metadata so the ingestion pipeline's `applyEntityLinks` resolves a
+   * `person` from REST payloads. Omitted keys when absent — bots/ghost authors
+   * may lack an id; the login still matches.
+   */
+  private buildAuthorMetadata(
+    user: { login?: string; id?: number } | undefined | null
+  ): Record<string, string> {
+    const out: Record<string, string> = {};
+    const login = asString(user?.login);
+    if (login) out.author_login = login;
+    if (typeof user?.id === 'number' && Number.isFinite(user.id)) {
+      out.author_id = String(user.id);
+    }
+    return out;
+  }
+
+  /** Same as {@link buildAuthorMetadata} but for GraphQL authors (`databaseId`). */
+  private buildGraphQLAuthorMetadata(
+    author: { login?: string; databaseId?: number } | undefined | null
+  ): Record<string, string> {
+    return this.buildAuthorMetadata(
+      author ? { login: author.login, id: author.databaseId } : undefined
+    );
   }
 
   private buildActor(user: GitHubStargazerLike['user'] | GitHubStargazerLike, login: string) {

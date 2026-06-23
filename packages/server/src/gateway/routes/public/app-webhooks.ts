@@ -38,6 +38,7 @@ import { Hono } from "hono";
 import { createLogger } from "@lobu/core";
 import type { StoredConnection } from "@lobu/core";
 import type { ConnectorWebhookSchema } from "@lobu/connector-sdk";
+import type { DbClient } from "../../../db/client.js";
 import {
 	handleWebhookIngest,
 	readBodyWithCap,
@@ -46,6 +47,7 @@ import {
 } from "../../connections/webhook-ingest.js";
 import type { SecretStore } from "../../secrets/index.js";
 import type { AppInstallationStore } from "../../../lobu/stores/app-installation-store.js";
+import { resolveGithubWebhookActor } from "./github-webhook-actor.js";
 
 const logger = createLogger("app-webhook-routes");
 
@@ -108,6 +110,19 @@ export interface AppWebhookProvider {
 	extractTenant(rawBody: Uint8Array, headers: Headers): AppWebhookTenant | null;
 	/** Optional title/source_url for the landed row; omitted → empty fields. */
 	extractContent?(rawBody: Uint8Array, headers: Headers): AppWebhookContent;
+	/**
+	 * Optional: resolve the delivery's authoring actor to a tenant-scoped
+	 * `person` → entity ids + identifier metadata slots for the landed row. The
+	 * org is the caller's resolved install, so resolution never crosses orgs.
+	 * Invoked lazily by handleWebhookIngest on the winning insert only; `sql` is
+	 * that insert's transaction, so the graph writes commit atomically with it.
+	 */
+	resolveActor?(params: {
+		organizationId: string;
+		rawBody: Uint8Array;
+		headers: Headers;
+		sql: DbClient;
+	}): Promise<{ entityIds: number[]; metadata: Record<string, string> } | null>;
 }
 
 /** Parse the raw JSON body once; returns undefined on malformed JSON. */
@@ -190,8 +205,11 @@ export function createSchemaDrivenAppWebhookProvider(options: {
 	extractTenant(rawBody: Uint8Array, headers: Headers): AppWebhookTenant | null;
 	/** Optional title/source_url projector for the landed row. */
 	extractContent?(rawBody: Uint8Array, headers: Headers): AppWebhookContent;
+	/** Optional actor → person resolver (see {@link AppWebhookProvider.resolveActor}). */
+	resolveActor?: AppWebhookProvider["resolveActor"];
 }): AppWebhookProvider {
-	const { provider, webhookSchema, extractTenant, extractContent } = options;
+	const { provider, webhookSchema, extractTenant, extractContent, resolveActor } =
+		options;
 	const signatureHeader = webhookSchema.signatureHeader;
 	if (!signatureHeader) {
 		throw new Error(
@@ -222,6 +240,7 @@ export function createSchemaDrivenAppWebhookProvider(options: {
 		},
 		extractTenant,
 		...(extractContent ? { extractContent } : {}),
+		...(resolveActor ? { resolveActor } : {}),
 	};
 }
 
@@ -275,6 +294,17 @@ export function createGithubAppWebhookProvider(options: {
 		},
 		extractContent(rawBody) {
 			return extractGithubWebhookContent(rawBody);
+		},
+		// Resolve the authoring github actor → a tenant-scoped person. Lazy: the
+		// router hands it the persist transaction so the graph writes are atomic
+		// with the event insert (and never run for deduped/lost-race deliveries).
+		async resolveActor({ organizationId, rawBody, headers, sql }) {
+			return resolveGithubWebhookActor({
+				organizationId,
+				githubEvent: headers.get("x-github-event"),
+				payload: parseJson(rawBody),
+				sql,
+			});
 		},
 	});
 }
@@ -535,10 +565,21 @@ export function createAppWebhookRoutes(deps: AppWebhookRouterDeps): Hono {
 			body: rawBody,
 		});
 
-		// Project the delivery to a human title + source url for the landed row.
-		// Optional per provider; a miss leaves the row's title/source_url empty
-		// (the prior behaviour) rather than failing the delivery.
+		// Title/source_url for the landed row; a miss leaves them empty.
 		const content = provider.extractContent?.(rawBody, c.req.raw.headers);
+
+		// Resolution runs lazily inside handleWebhookIngest on the winning insert
+		// only — resolving here would mutate the graph for deduped redeliveries.
+		// `sql` is the persist transaction, threaded so the actor writes are atomic.
+		const resolveActor = provider.resolveActor
+			? (sql: DbClient) =>
+					provider.resolveActor!({
+						organizationId: install.organizationId,
+						rawBody,
+						headers: c.req.raw.headers,
+						sql,
+					})
+			: undefined;
 
 		try {
 			return await handleWebhookIngest(
@@ -546,8 +587,12 @@ export function createAppWebhookRoutes(deps: AppWebhookRouterDeps): Hono {
 				ingestRequest,
 				deps.secretStore,
 				c.var.peerRemoteAddress,
-				content
-					? { title: content.title, sourceUrl: content.sourceUrl }
+				content || resolveActor
+					? {
+							title: content?.title,
+							sourceUrl: content?.sourceUrl,
+							resolveActor,
+						}
 					: undefined,
 			);
 		} catch (error) {

@@ -33,7 +33,7 @@
 
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import type { StoredConnection } from "@lobu/core";
-import { getDb } from "../../db/client.js";
+import { type DbClient, getDb } from "../../db/client.js";
 import { constantTimeEqual } from "../../utils/constant-time-equal.js";
 import { insertEvent } from "../../utils/insert-event.js";
 import logger from "../../utils/logger.js";
@@ -325,9 +325,24 @@ async function findExistingDeliveryId(
  * event type. The app-webhook router therefore extracts these per provider and
  * passes them here; when set they take precedence over `config.titlePath`.
  */
+/** Entity attribution for the landed row, produced by {@link WebhookIngestOverrides.resolveActor}. */
+export interface WebhookActorAttribution {
+	/** Entity ids → events.entity_ids (the webhook path has no feed, so read-time JOINs need this). */
+	entityIds?: number[];
+	/** Canonical identifier namespace slots (e.g. github_login) merged onto the row for read-time JOINs. */
+	metadata?: Record<string, unknown>;
+}
+
 export interface WebhookIngestOverrides {
 	title?: string | null;
 	sourceUrl?: string | null;
+	/**
+	 * Resolve the authoring actor → a person. Invoked only on the WINNING insert,
+	 * inside the persist transaction (the `sql` handle IS that tx), so the actor
+	 * graph writes commit atomically with the event and a deduped/lost-race
+	 * delivery never mutates the graph. A null/throw lands the row unattributed.
+	 */
+	resolveActor?: (sql: DbClient) => Promise<WebhookActorAttribution | null>;
 }
 
 /**
@@ -498,8 +513,8 @@ export async function handleWebhookIngest(
 			? config.semanticType
 			: "content";
 
-	// 6. Persist, then ack. A duplicate (pre-checked or raced) is still a 202 —
-	//    the provider delivered successfully; we just already had it.
+	// 6. Persist, then ack. Actor resolution is tied to the winning insert (see
+	//    the transaction below). Fast-path a sequential duplicate first.
 	const existingId = await findExistingDeliveryId(
 		organizationId,
 		connectorKey,
@@ -509,41 +524,82 @@ export async function handleWebhookIngest(
 		return json(202, { ok: true, id: existingId, duplicate: true });
 	}
 
+	const eventMetadata: Record<string, unknown> = {
+		webhook_connection_id: stored.id,
+		dedupe_source: dedupeSource,
+	};
+	const eventTitle =
+		overrides?.title != null && overrides.title.length > 0
+			? overrides.title.slice(0, 500)
+			: extractTitle(parsed, config.titlePath);
+	const eventContent = isSearchableEnabled(config) ? renderPayloadText(parsed) : null;
+
 	try {
-		const inserted = await insertEvent({
-			entityIds: [],
-			organizationId,
-			originId,
-			connectorKey,
-			semanticType,
-			payloadType: "json_template",
-			payloadData,
-			// Opt-in searchable text projection: only when `searchable` is set
-			// do we render payload_text, which is the gate the embed-backfill
-			// keys on (it skips empty payload_text). Default off keeps the row
-			// store-only (watcher SQL) and out of semantic memory. The full
-			// payload always stays in payload_data; this is lossy-by-cap.
-			content: isSearchableEnabled(config) ? renderPayloadText(parsed) : null,
-			// Caller-supplied title/url (app-webhook provider extractor) win over the
-			// static config.titlePath pointer; both fall through to undefined/null.
-			title:
-				overrides?.title != null && overrides.title.length > 0
-					? overrides.title.slice(0, 500)
-					: extractTitle(parsed, config.titlePath),
-			sourceUrl: overrides?.sourceUrl ?? null,
-			occurredAt: new Date(),
-			metadata: {
-				webhook_connection_id: stored.id,
-				dedupe_source: dedupeSource,
-			},
+		const landedId = await getDb().begin(async (tx) => {
+			// Insert FIRST (empty entity_ids). A concurrent duplicate trips the
+			// delivery-unique index → 23505 → this tx rolls back, so the loser never
+			// reaches actor resolution. Only the winner continues.
+			const inserted = await insertEvent(
+				{
+					entityIds: [],
+					organizationId,
+					originId,
+					connectorKey,
+					semanticType,
+					payloadType: "json_template",
+					payloadData,
+					content: eventContent,
+					title: eventTitle,
+					sourceUrl: overrides?.sourceUrl ?? null,
+					occurredAt: new Date(),
+					metadata: eventMetadata,
+				},
+				{ sql: tx as unknown as ReturnType<typeof getDb> },
+			);
+
+			// Winner-only resolution in the same tx: exactly one resolveActor per
+			// landed event, and no window where the row is visible with empty
+			// entity_ids. Best-effort — a miss/throw leaves the row unattributed.
+			let attribution: WebhookActorAttribution | null = null;
+			if (overrides?.resolveActor) {
+				try {
+					attribution = await overrides.resolveActor(
+						tx as unknown as DbClient,
+					);
+				} catch (error) {
+					logger.warn(
+						{ connectionId: stored.id, error: String(error) },
+						"[webhook-ingest] actor resolution failed — landing delivery unattributed",
+					);
+				}
+			}
+			if (
+				attribution &&
+				((attribution.entityIds && attribution.entityIds.length > 0) ||
+					(attribution.metadata && Object.keys(attribution.metadata).length > 0))
+			) {
+				const entityIdsValue =
+					attribution.entityIds && attribution.entityIds.length > 0
+						? `{${attribution.entityIds.join(",")}}`
+						: null;
+				await tx`
+					UPDATE events
+					SET entity_ids = COALESCE(${entityIdsValue}::bigint[], entity_ids),
+					    metadata = metadata || ${tx.json(attribution.metadata ?? {})}
+					WHERE id = ${inserted.id}
+				`;
+			}
+			return inserted.id;
 		});
 		logger.info(
-			{ connectionId: stored.id, eventId: inserted.id, dedupeSource },
+			{ connectionId: stored.id, eventId: landedId, dedupeSource },
 			"[webhook-ingest] delivery persisted",
 		);
-		return json(202, { ok: true, id: inserted.id });
+		return json(202, { ok: true, id: landedId });
 	} catch (error) {
 		if (isUniqueViolation(error)) {
+			// Lost the concurrent race: the winner's row exists; ack as a duplicate.
+			// The rolled-back tx means we never resolved the actor here.
 			const racedId = await findExistingDeliveryId(
 				organizationId,
 				connectorKey,

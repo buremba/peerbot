@@ -120,9 +120,12 @@ The quick start above is the fastest path. For production self-hosting, see the 
 
 ## Security and Privacy
 
-- [**Network isolation**](https://lobu.ai/guides/security/#network-isolation) — workers route egress through the gateway proxy with allowlist/blocklist + LLM egress judge.
-- [**Secrets stay in gateway**](https://lobu.ai/guides/secret-proxy/) — provider credentials and OAuth live in Lobu; workers never see real keys.
-- [**Threat model**](https://lobu.ai/guides/security/) — `just-bash` and `isolated-vm` are policy + best-effort sandboxes, not security boundaries for hostile code.
+Secrets, egress policy, and MCP credential injection stay on the gateway; each worker runs in an isolated sandbox per channel or DM. Guides: [Security](https://lobu.ai/guides/security/) · [Secret proxy](https://lobu.ai/guides/secret-proxy/) · [Guardrails](https://lobu.ai/guides/guardrails/) · [threat model](docs/SECURITY.md).
+
+- [**Worker egress through the gateway proxy**](https://lobu.ai/guides/security/#network-isolation) — `HTTP_PROXY=http://localhost:8118` with domain allowlist/blocklist and an optional [LLM egress judge](https://lobu.ai/guides/egress-judge/) for ambiguous hosts. On Linux production, worker spawn uses `systemd-run --user --scope` with `IPAddressDeny=any` to enforce egress at the kernel; on macOS dev the proxy is best-effort.
+- [**Secrets stay in the gateway**](https://lobu.ai/guides/secret-proxy/) — provider credentials and `${env:}` substitution; OAuth and MCP tokens live in Lobu. Workers get opaque placeholders; the secret proxy swaps real values at egress. Workers never see API keys or refresh tokens.
+- [**Threat model**](https://lobu.ai/guides/security/) — `just-bash` and `isolated-vm` are policy + best-effort sandboxes, not security boundaries for hostile code. Read [docs/SECURITY.md](docs/SECURITY.md) before exposing Lobu to untrusted users.
+- [**Nix system packages**](docs/SECURITY.md#skills-and-policy) — per-agent reproducible tooling and skill policy via `runtime.nix.packages` and `lobu.config.ts`.
 
 ## Support & Consultancy
 

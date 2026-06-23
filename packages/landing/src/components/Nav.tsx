@@ -26,6 +26,39 @@ type MegaMenu = {
   widthRem: number;
 };
 
+const CONNECT_MENU: MegaMenu = {
+  id: "connect",
+  label: "Connect",
+  width: "min(28rem, calc(100vw - 2rem))",
+  widthRem: 28,
+  columns: [
+    {
+      heading: "MEMORY FOR",
+      variant: "rich",
+      links: [
+        {
+          label: "Claude",
+          description: "Claude Code, Desktop, and claude.ai via MCP",
+          href: "/connect-from/claude/",
+          emoji: "✳️",
+        },
+        {
+          label: "ChatGPT",
+          description: "Org-scoped memory through one MCP endpoint",
+          href: "/connect-from/chatgpt/",
+          emoji: "💬",
+        },
+        {
+          label: "OpenClaw",
+          description: "Shared entity memory across OpenClaw agents",
+          href: "/connect-from/openclaw/",
+          emoji: "🦞",
+        },
+      ],
+    },
+  ],
+};
+
 const RESOURCES_MENU: MegaMenu = {
   id: "resources",
   label: "Resources",
@@ -307,6 +340,11 @@ export function Nav({ currentPath: _currentPath = "/" }: NavProps) {
             >
               Docs
             </a>
+            <MegaMenuTrigger
+              menu={CONNECT_MENU}
+              openId={openId}
+              setOpenId={setOpenId}
+            />
             <MegaMenuTrigger
               menu={RESOURCES_MENU}
               openId={openId}

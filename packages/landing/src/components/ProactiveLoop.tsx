@@ -710,7 +710,7 @@ export const SALES_LOOP: LoopData = {
     eyebrow: "Why Lobu",
     title: "Catch what you'd miss.",
     subtitle:
-      "Connect your data. Set a goal. Lobu watches for changes and prepares the next step.",
+      "Most stacks make agents call MCP every turn to reconstruct state. Lobu ingests connectors and webhooks into one append-only log first — so agents resume where the org left off.",
   },
   connectors: {
     items: [

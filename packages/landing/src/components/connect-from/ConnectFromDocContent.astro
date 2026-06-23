@@ -55,6 +55,10 @@ const relatedLinks = client.docsRelated.map((link) => {
 });
 ---
 
+{client.docsPipelineNote.map((paragraph) => (
+  <p>{paragraph}</p>
+))}
+
 <p>{client.valueProp}</p>
 
 <TryItSection

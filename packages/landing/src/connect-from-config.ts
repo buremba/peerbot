@@ -24,6 +24,8 @@ type ConnectFromClientConfig = {
   label: string;
   docsHref: string;
   docsLabel: string;
+  /** Shown above the value prop: MCP-as-memory vs Lobu's ingest pipeline. */
+  docsPipelineNote: string[];
   /**
    * One-liner shown directly under the page title that explains what Lobu
    * adds to this agent.
@@ -50,6 +52,11 @@ const mcpClientDescribe =
   (label: string) => (showcase: LandingUseCaseShowcase) =>
     `Use ${label} with the ${showcase.label.toLowerCase()} workspace so it can use the same org-scoped memory, sources, and tools shown here.`;
 
+const MCP_PIPELINE_NOTE = [
+  "Most agent setups treat MCP as the memory: every turn, the agent calls GitHub or Slack tools to reconstruct what happened. That knowledge stays siloed in the session.",
+  "Lobu runs a data pipeline instead. Connectors poll and webhooks push into one append-only org log; watchers and chat agents share the same knowledge graph. MCP here is for recall and write — ingestion still flows through connectors and webhooks.",
+];
+
 const connectFromClientConfigs: Record<
   ConnectFromClientId,
   ConnectFromClientConfig
@@ -59,6 +66,7 @@ const connectFromClientConfigs: Record<
     label: "ChatGPT",
     docsHref: "/connect-from/chatgpt/",
     docsLabel: "ChatGPT setup docs",
+    docsPipelineNote: MCP_PIPELINE_NOTE,
     valueProp:
       "Add structured, queryable long-term memory to ChatGPT, the same graph other agents share, recalled and updated through one MCP endpoint.",
     installPrompt:
@@ -83,6 +91,7 @@ const connectFromClientConfigs: Record<
     label: "Claude",
     docsHref: "/connect-from/claude/",
     docsLabel: "Claude setup docs",
+    docsPipelineNote: MCP_PIPELINE_NOTE,
     valueProp:
       "Give Claude durable, structured memory it can search and append to, so the same recall is available across Claude, ChatGPT, and your own agents.",
     installPrompt:
@@ -115,6 +124,10 @@ const connectFromClientConfigs: Record<
     label: "OpenClaw",
     docsHref: "/connect-from/openclaw/",
     docsLabel: "OpenClaw setup docs",
+    docsPipelineNote: [
+      ...MCP_PIPELINE_NOTE,
+      "The OpenClaw plugin layers this graph on top of filesystem memory so multiple OpenClaw agents converge on the same entities instead of separate notebooks.",
+    ],
     valueProp:
       "Layer structured, shareable Lobu memory on top of OpenClaw's built-in filesystem memory. The plugin extends OpenClaw's filesystem plugin and can optionally take over its memory slot, so different OpenClaw agents can talk to each other through the same Lobu graph.",
     installPrompt:

@@ -3,17 +3,17 @@ title: Comparison
 description: How Lobu compares to other agent deployment options.
 ---
 
-Lobu is the open-source backend for multi-user AI agents. It handles isolation, per-user OAuth, connected sources, shared memory, and platform delivery so you can ship agents without rebuilding that plumbing.
+Lobu is the open-source backend for AI teammates that watch, remember, and act. Connectors and webhooks build a live org knowledge graph; agents look it up and branch into a sandbox to do work — with per-channel isolation, OAuth, and credentials agents never see.
 
-This page compares Lobu against other ways to run agents for multiple users.
+This page compares Lobu against other ways to run agents for multiple users, including [Claude Tag](https://www.anthropic.com/news/introducing-claude-tag) (@Claude in Slack).
 
 ## At a glance
 
-| | Lobu | OpenClaw (direct) | DeepAgents Deploy | Claude Managed Agents |
+| | Lobu | OpenClaw (direct) | DeepAgents Deploy | Claude Tag |
 |---|---|---|---|---|
-| **What it is** | Open-source backend for multi-user agents | Single-user agent runtime | Hosted agent deployment (LangSmith) | Hosted managed agents |
-| **Multi-tenant** | Per-user/channel isolation | Single user | Per-thread sandbox | Per-conversation |
-| **Platforms** | Slack, Telegram, WhatsApp, Discord, Teams, Google Chat, REST API | CLI and API | API endpoints (MCP, A2A, Agent Protocol) | API |
+| **What it is** | Open-source backend for multi-user agents | Single-tenant agent runtime | Hosted agent deployment (LangSmith) | @Claude in Slack (team agents, beta) |
+| **Multi-tenant** | Per-user/channel isolation | Single-tenant — shared filesystem | Per-thread sandbox | Per-channel @Claude |
+| **Platforms** | Slack, Telegram, WhatsApp, Discord, Teams, Google Chat, REST API, MCP | CLI and API | API endpoints (MCP, A2A, Agent Protocol) | Slack (beta) |
 | **Embeddable** | Mount inside Next.js, Express, Hono, Fastify | No | No | No |
 | **Self-hosted** | Single Node process (embedded Postgres, or BYO Postgres) | Single process | LangSmith hosted (self-host option) | Cloud only |
 | **Model support** | Any provider via config | Any provider | Any LangChain-compatible provider | Anthropic only |
@@ -23,7 +23,8 @@ This page compares Lobu against other ways to run agents for multiple users.
 | **MCP support** | Proxied through gateway with secret injection | Direct | HTTP/SSE only | Yes |
 | **Agent Protocol / A2A** | Not yet | No | Yes | No |
 | **Built-in evals** | YAML eval framework with model comparison | No | No | No |
-| **Memory** | Self-hosted Lobu plugin | Local | LangSmith APIs | Platform-managed |
+| **Memory** | Append-only org graph (connectors, entities, watchers) | Local filesystem | LangSmith APIs | Channel-scoped, admin-provisioned |
+| **Custom connectors / watchers** | Yes (`lobu.config.ts`) | Skills + local setup | Limited | Admin-provisioned tools only |
 | **Worker lifecycle** | Persistent subprocess per channel; reaped on config change / shutdown | Always running | Managed by LangSmith | Managed |
 | **Config format** | `lobu.config.ts` (TypeScript) + IDENTITY/SOUL/USER.md | CLI flags | `deepagents.toml` + AGENTS.md | Dashboard |
 | **License** | Open source | Open source | MIT (harness), proprietary (hosting) | Proprietary |
@@ -82,7 +83,7 @@ Uses [just-bash](https://www.npmjs.com/package/just-bash) (virtual bash) + **Nix
 
 Workers call MCP tools through the gateway. The gateway resolves `${env:VAR}` secrets and injects OAuth tokens before forwarding to the upstream MCP server. Workers never see credentials — they receive opaque proxy URLs.
 
-| | Lobu | DeepAgents Deploy | Claude Managed Agents | Direct MCP |
+| | Lobu | DeepAgents Deploy | Claude Tag | Direct MCP |
 |---|---|---|---|---|
 | Secret injection | Gateway proxy resolves at request time | Environment variables | Platform-managed | Direct env vars |
 | OAuth management | Lobu handles token refresh | Manual | Platform-managed | Manual |
@@ -94,7 +95,7 @@ For compliance-bound deployments, agent code never touches API keys or OAuth tok
 
 ## Why Lobu for on-premise
 
-Hosted platforms (DeepAgents Deploy, Claude Managed Agents) require sending your data, prompts, and agent memory to a third party. For regulated industries (finance, healthcare, government) or organizations with data residency requirements, this is a non-starter.
+Hosted platforms (DeepAgents Deploy, Claude Tag) require sending your data, prompts, and agent memory to a third party. For regulated industries (finance, healthcare, government) or organizations with data residency requirements, this is a non-starter.
 
 Lobu runs entirely on your infrastructure:
 - **Data stays in your network** — Postgres, workspaces, and memory are all self-hosted
@@ -157,21 +158,26 @@ Inside each Lobu worker, the full OpenClaw runtime runs untouched. Lobu rewrites
 
 **Choose Lobu** if you need multi-tenant isolation for your users, platform-native messaging, embeddability in your app, or full infrastructure control.
 
-## Lobu vs Claude Managed Agents
+## Lobu vs Claude Tag
 
-Claude Managed Agents is Anthropic's hosted agent platform.
+[Claude Tag](https://www.anthropic.com/news/introducing-claude-tag) is Anthropic's @Claude in Slack: multiplayer team agents with channel memory, managed connectors, and async tasks. It validates the category Lobu has been building — but Lobu is the open-source path to run your own.
 
-| | Lobu | Claude Managed Agents |
+| | Lobu | Claude Tag |
 |---|---|---|
-| Model support | Any provider | Anthropic only |
-| Self-hosted | Yes | Cloud only |
+| Tenancy | Multi-tenant — per-channel/DM sandbox isolation | Per-channel @Claude |
+| Model support | Any provider (16 via config) | Claude only |
+| Self-hosted | Yes | Cloud only (Enterprise / Team) |
 | Open source | Yes | Proprietary |
-| Platform delivery | Slack, Telegram, WhatsApp, Discord, Teams, Google Chat | API |
+| Platform delivery | Slack, Telegram, WhatsApp, Discord, Teams, Google Chat, REST API, MCP | Slack (beta) |
+| Data pipeline | Connectors, webhooks, append-only org log | Admin-provisioned connectors |
+| Custom watchers / reactions | Yes (`lobu.config.ts`) | Not user-configurable |
 | Embeddable | Yes | No |
-| Network isolation | Domain-filtered egress | Platform-managed |
+| Network isolation | Domain-filtered egress, gateway proxy | Platform-managed |
 | Evals | Built-in | Not included |
 
-**Choose Claude Managed Agents** if you're committed to Anthropic models and want a fully managed experience.
+**Choose Claude Tag** if you want a fully managed @Claude in Slack on Claude Enterprise or Team and don't need self-hosting, multi-platform delivery, or custom ingest/watchers.
+
+**Choose Lobu** if you want to build your own team agents — your bot, your data, your connectors, any model — or layer org memory into Claude Code via MCP on the same graph your Slack agents use.
 
 **Choose Lobu** if you need model flexibility, self-hosting, platform delivery, or the ability to embed agents in your product.
 

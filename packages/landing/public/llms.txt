@@ -1,29 +1,31 @@
 # Lobu
 
-> Open-source backend for multi-user AI agents with isolated workers, per-user OAuth, connected sources, shared memory, and secrets agents never see. Self-hosted Lobu runs as a single Node process and uses Postgres with pgvector as the only required external service.
+> Open-source infrastructure for AI teammates that watch, remember, and act. Connectors and webhooks build a live org knowledge graph in an append-only log; agents look it up and branch into isolated sandboxes to do work. Self-hosted Lobu runs as a single Node process with embedded Postgres (or BYO Postgres + pgvector).
 
 ## Start here
 
-- [Home](https://lobu.ai/): Product overview, memory, skills, platforms, and architecture
+- [Home](https://lobu.ai/): Product overview, memory pipeline, skills, platforms
 - [Getting started](https://lobu.ai/getting-started/): Install and run your first agent
-- [Comparison](https://lobu.ai/getting-started/comparison/): How Lobu compares to other agent platforms
+- [Comparison](https://lobu.ai/getting-started/comparison/): Lobu vs OpenClaw, Claude Tag, and others
 - [Serverless OpenClaw](https://lobu.ai/serverless-openclaw/): Managed runtime and usage-based billing
 
 ## Core concepts
 
 - [Skills](https://lobu.ai/getting-started/skills/): Reusable agent capabilities via SKILL.md
-- [Memory](https://lobu.ai/getting-started/memory/): Persistent typed memory for agents
+- [Memory](https://lobu.ai/getting-started/memory/): Connectors, entities, watchers, append-only org memory
+- [Connectors](https://lobu.ai/sdks/connectors/): Ingest APIs, webhooks, and files into the event stream
+- [Reactions](https://lobu.ai/sdks/reactions/): Act after a watcher extracts data
 - [Architecture](https://lobu.ai/guides/architecture/): Gateway, workers, proxy, and sandboxing model
 - [Security](https://lobu.ai/guides/security/): Sandboxing, network policy, and credential isolation
+- [Guardrails](https://lobu.ai/guides/guardrails/): Input, output, and pre-tool policy checks
 - [Tool policy](https://lobu.ai/guides/tool-policy/): Approval model for destructive MCP tools
 
 ## Deployment
 
+- [Getting started](https://lobu.ai/getting-started/): Boot Lobu locally with `lobu run`
 - [Lobu Cloud](https://lobu.ai/deployment/cloud/): Managed deployment with no infrastructure to run
 - [Docker](https://lobu.ai/deployment/docker/): Run the Lobu app container on a single host
 - [Kubernetes](https://lobu.ai/deployment/kubernetes/): Deploy Lobu with the public Helm chart
-- [Getting started](https://lobu.ai/getting-started/): Boot Lobu locally with `lobu run`
-- [Architecture](https://lobu.ai/guides/architecture/): Embedded gateway + worker deployment model
 
 ## Messaging platforms
 
@@ -37,8 +39,8 @@
 
 ## Connect external agents
 
+- [Claude](https://lobu.ai/connect-from/claude/): Claude Code, Desktop, claude.ai via MCP
 - [ChatGPT](https://lobu.ai/connect-from/chatgpt/)
-- [Claude](https://lobu.ai/connect-from/claude/)
 - [OpenClaw](https://lobu.ai/connect-from/openclaw/)
 
 ## Reference
@@ -63,6 +65,7 @@
 
 ## Blog
 
+- [The agent loop is the new SaaS](https://lobu.ai/blog/the-agent-loop-is-the-new-saas/)
 - [Filesystem vs database agent memory](https://lobu.ai/blog/filesystem-vs-database-agent-memory/)
 - [MCP is overengineered, skills are too primitive](https://lobu.ai/blog/mcp-is-overengineered-skills-are-too-primitive/)
 - [Introducing Lobu](https://lobu.ai/blog/hello-world/)

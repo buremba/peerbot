@@ -1,21 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-
-const listOrgInstalled = vi.fn(async () => ({
-	connectors: { kind: "connectors", items: [] },
-}));
-const listAgentInstalled = vi.fn(async () => ({
-	skills: { kind: "skills", items: [] },
-}));
-
-vi.mock("../../../catalog/installed", () => ({
-	listOrgInstalled,
-	listAgentInstalled,
-}));
-
-vi.mock("../../../catalog/load", () => ({
-	listCatalogEntries: vi.fn(),
-}));
-
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as installed from "../../../catalog/installed";
 import { manageCatalog } from "../manage_catalog";
 
 const ctx = {
@@ -33,8 +17,16 @@ const ctx = {
 
 describe("manage_catalog list_installed", () => {
 	beforeEach(() => {
-		listOrgInstalled.mockClear();
-		listAgentInstalled.mockClear();
+		vi.spyOn(installed, "listOrgInstalled").mockResolvedValue({
+			connectors: { kind: "connectors", items: [] },
+		});
+		vi.spyOn(installed, "listAgentInstalled").mockResolvedValue({
+			skills: { kind: "skills", items: [] },
+		});
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
 	});
 
 	it("does not default to org connectors when kinds is explicitly agent-scoped", async () => {
@@ -46,7 +38,7 @@ describe("manage_catalog list_installed", () => {
 		expect(result).toEqual({
 			error: "`agent_id` is required for agent-scoped installed kinds.",
 		});
-		expect(listOrgInstalled).not.toHaveBeenCalled();
+		expect(installed.listOrgInstalled).not.toHaveBeenCalled();
 	});
 
 	it("honors explicit org kinds without adding agent defaults", async () => {
@@ -60,8 +52,17 @@ describe("manage_catalog list_installed", () => {
 			ctx,
 		);
 
-		expect(listOrgInstalled).toHaveBeenCalledWith("org-1", ["watchers"], ctx);
-		expect(listAgentInstalled).not.toHaveBeenCalled();
+		expect(installed.listOrgInstalled).toHaveBeenCalledWith(
+			"org-1",
+			["watchers"],
+			expect.objectContaining({
+				organizationId: "org-1",
+				userId: "user-1",
+				memberRole: "owner",
+				isAuthenticated: true,
+			}),
+		);
+		expect(installed.listAgentInstalled).not.toHaveBeenCalled();
 		expect(result).toEqual({
 			action: "list_installed",
 			installed: { connectors: { kind: "connectors", items: [] } },

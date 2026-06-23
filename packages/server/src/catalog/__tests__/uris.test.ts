@@ -6,14 +6,21 @@ import { getDefaultCatalogDir } from "../uris";
 
 describe("catalog/uris", () => {
 	it("getDefaultCatalogDir returns the first existing candidate", () => {
-		const here =
-			import.meta.dirname ?? fileURLToPath(new URL(".", import.meta.url));
+		// Mirror uris.ts candidate resolution from the catalog module dir, not
+		// this test file's __tests__ location (vitest/bun cwd layouts differ).
+		const catalogModuleDir = fileURLToPath(new URL("..", import.meta.url));
 		const candidates = [
-			resolve(here, "../../dist/catalogs"),
-			resolve(here, "../../../dist/catalogs"),
+			resolve(catalogModuleDir, "../../dist/catalogs"),
+			resolve(catalogModuleDir, "../../../dist/catalogs"),
 			resolve(process.cwd(), "packages/server/dist/catalogs"),
 		];
-		const expected = candidates.find((candidate) => existsSync(candidate));
-		expect(getDefaultCatalogDir()).toBe(expected ?? candidates[0]);
+		const expected =
+			candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
+		const result = getDefaultCatalogDir();
+
+		expect(result).toBe(expected);
+		if (existsSync(result)) {
+			expect(candidates).toContain(result);
+		}
 	});
 });

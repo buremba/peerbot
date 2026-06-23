@@ -6,11 +6,12 @@
  */
 
 import Ajv from 'ajv';
-import { createDbClientFromEnv, getDb, pgBigintArray } from '../../../db/client';
+import { createDbClientFromEnv, getDb, parsePgNumberArray, pgBigintArray } from '../../../db/client';
 import type { Env } from '../../../index';
 import { ToolUserError } from '../../../utils/errors';
 import { verifyWindowToken } from '../../../utils/jwt';
 import logger from '../../../utils/logger';
+import { promoteKeyedEntities } from '../../../utils/promote-keyed-entities';
 import { computeStableKeys } from '../../../utils/stable-keys';
 import { trackWatcherReaction } from '../../../utils/watcher-reactions';
 import {
@@ -21,6 +22,7 @@ import {
 import { advanceWatcherSchedule } from '../../../watchers/automation';
 import { executeReaction } from '../../../watchers/reaction-executor';
 import { getNextNumericId } from '../helpers/db-helpers';
+import type { KeyingConfig } from '../../../types/watchers';
 import type { ToolContext } from '../../registry';
 import type { ManageWatchersArgs } from '../manage_watchers';
 import { normalizeExtractedData, parseJson, requireWatcherAccess } from './shared';
@@ -204,6 +206,7 @@ export async function handleCompleteWindow(
       i.schedule,
       i.entity_ids,
       i.organization_id,
+      i.created_by,
       wv.id as version_id,
       wv.prompt as prompt,
       wv.extraction_schema as extraction_schema,
@@ -254,11 +257,19 @@ export async function handleCompleteWindow(
     data: parseJson(watcherRows[0].version_sources) ?? undefined,
     classifiers: parseJson(watcherRows[0].classifiers) ?? undefined,
   } as Record<string, any>;
-  const keyingConfig = parseJson(watcherRows[0].keying_config) as {
-    entity_path: string;
-    key_fields: string[];
-    key_output_field: string;
-  } | null;
+  const keyingConfig = parseJson(watcherRows[0].keying_config) as KeyingConfig | null;
+
+  // The org + bound parent entity the promoted child entities hang under. The
+  // watcher's first bound entity is the parent; unbound watchers promote at the
+  // root (parent_id NULL). `entities.created_by` is NOT NULL with an
+  // ON DELETE RESTRICT FK to user(id); the watcher's own `created_by` is a
+  // guaranteed-live user (same FK), so it's the correct attribution.
+  const watcherOrgId = watcherRows[0].organization_id as string;
+  const watcherCreatedBy = (watcherRows[0].created_by as string | null) ?? null;
+  // entity_ids is bigint[]; the prod pool runs fetch_types:false, so postgres.js
+  // hands it back as the literal string "{4}" (NOT a JS array) — parse it.
+  const boundEntityIds = parsePgNumberArray(watcherRows[0].entity_ids);
+  const parentEntityId = boundEntityIds.length > 0 ? boundEntityIds[0] : null;
 
   // ============================================
   // STEP 2.5: Validate extracted_data against template's extraction_schema
@@ -553,6 +564,30 @@ export async function handleCompleteWindow(
          ON CONFLICT DO NOTHING`,
         insertParams
       );
+    }
+
+    // ============================================
+    // STEP 8.5: Promote keyed rows into child entities (P2 phase 1)
+    // computeStableKeys (STEP 2.6) stamped a deterministic stable key onto each
+    // extracted entity; promote those keyed rows into real child entities under
+    // the watcher's bound entity, plus an append-only `observation` event per
+    // child linking it back to this window. Runs on `tx` so the entity +
+    // identity + event writes commit atomically with the window itself.
+    // Idempotent across re-runs and concurrent replicas (entity_identities
+    // live-unique key + per-(window, key) observation guard). Skipped on the
+    // rollup path (early return above).
+    // ============================================
+    if (keyingConfig) {
+      await promoteKeyedEntities({
+        tx,
+        extractedData,
+        keyingConfig,
+        watcherId: Number(watcherId),
+        organizationId: watcherOrgId,
+        windowId,
+        parentEntityId,
+        createdBy: watcherCreatedBy,
+      });
     }
 
     // ============================================

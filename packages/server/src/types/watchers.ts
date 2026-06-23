@@ -78,6 +78,15 @@ export interface KeyingConfig {
   entity_path: string;
   key_fields: string[];
   key_output_field: string;
+  /**
+   * Entity-type slug the keyed rows are promoted into (P2 phase 1). When
+   * omitted, promotion derives a slug from the last segment of `entity_path`
+   * (e.g. `analysis.results.problems` → `problem`). The type must already
+   * exist in the watcher's org (or the public catalog); if it can't be
+   * resolved, promotion is skipped for this window rather than failing the
+   * completion.
+   */
+  entity_type?: string;
 }
 
 // ============================================

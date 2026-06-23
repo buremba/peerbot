@@ -283,8 +283,7 @@ async function upsertKeyedEntity(params: {
 
   // 3. Claim the stable key. ON CONFLICT DO NOTHING against the live-unique
   //    index: if a concurrent completion already claimed it, our insert is a
-  //    no-op and we re-read the winner (and drop the entity row we just made —
-  //    it is orphaned but harmless; the winner's entity is canonical).
+  //    no-op and we resolve the winner instead.
   const claimed = await tx<{ entity_id: number | string }>`
     INSERT INTO entity_identities (
       organization_id, entity_id, namespace, identifier, source_connector
@@ -299,7 +298,9 @@ async function upsertKeyedEntity(params: {
     return { entityId, created: true };
   }
 
-  // Lost the race: another transaction claimed this key. Resolve the winner.
+  // Lost the race: another live transaction already claimed this key. Resolve
+  // the winner, then drop the entity we just created so it doesn't linger as an
+  // orphaned (identity-less) duplicate child under the parent.
   const winner = await tx<{ entity_id: number | string }>`
     SELECT entity_id
     FROM entity_identities
@@ -310,10 +311,18 @@ async function upsertKeyedEntity(params: {
     LIMIT 1
   `;
   if (winner.length > 0) {
+    // Safe hard delete: this entity is brand-new in THIS transaction — nothing
+    // references it yet (no identity, children, events, or relationships), and
+    // entities' only blocking FK is `parent_id ON DELETE RESTRICT`, which can't
+    // fire on a freshly-created leaf.
+    await tx`
+      DELETE FROM entities
+      WHERE id = ${entityId} AND organization_id = ${organizationId}
+    `;
     return { entityId: Number(winner[0].entity_id), created: false };
   }
-  // Extremely unlikely: the conflicting row was tombstoned between INSERT and
-  // re-read. Fall back to the entity we created.
+  // Extremely unlikely: the conflicting claim was tombstoned between our INSERT
+  // and this re-read. Keep our entity as the canonical one.
   return { entityId, created: true };
 }
 

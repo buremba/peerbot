@@ -1,12 +1,13 @@
-import { createHash, randomInt } from 'node:crypto';
-import { slugify } from '@lobu/core';
-import type { Context } from 'hono';
-import { getDb } from '../db/client';
-import type { Env } from '../index';
-import { errorMessage } from '../utils/errors';
-import logger from '../utils/logger';
-import { requireOrgUser } from '../utils/require-org-user';
-import { parseJsonBody } from '../gateway/routes/shared/helpers';
+import { createHash, randomInt } from "node:crypto";
+import { slugify } from "@lobu/core";
+import type { Context } from "hono";
+import { getDb } from "../db/client";
+import { parseJsonBody } from "../gateway/routes/shared/helpers";
+import type { Env } from "../index";
+import { errorMessage } from "../utils/errors";
+import logger from "../utils/logger";
+import { requireOrgUser } from "../utils/require-org-user";
+import { MANAGED_CHAT_PLATFORMS_SET } from "./managed-platforms";
 
 // Slack Preview lets people trying Lobu locally talk to their agent through the
 // hosted "Lobu Developer" Slack workspace before they have their own bot token.
@@ -20,86 +21,87 @@ import { parseJsonBody } from '../gateway/routes/shared/helpers';
 //     connection uses.
 
 // Slack DM channel ids start with `D`; the canonical binding key is `slack:<id>`.
-const SLACK_PLATFORM = 'slack';
-const CLAIM_SCOPE = 'slack-preview-claim';
+const SLACK_PLATFORM = "slack";
+const CLAIM_SCOPE = "slack-preview-claim";
 const DEFAULT_TTL_MINUTES = 15;
 const MAX_TTL_MINUTES = 60;
-const SURFACES = new Set(['dm', 'channel']);
+const SURFACES = new Set(["dm", "channel"]);
 
 // Hosted preview bots — the platforms a `preview.<platform>` block / claim mint
 // is allowed for (currently Slack and Telegram), and the default join links.
 // Both Slack and Telegram route through the same Chat SDK adapter path.
-const PREVIEW_PLATFORMS = new Set(['slack', 'telegram']);
+const PREVIEW_PLATFORMS = MANAGED_CHAT_PLATFORMS_SET;
 const PREVIEW_JOIN_DEFAULTS: Record<string, string> = {
-  slack: 'https://lobu.ai/slack',
-  telegram: 'https://t.me/lobuaibot',
+	slack: "https://lobu.ai/slack",
+	telegram: "https://t.me/lobuaibot",
 };
 
-type SurfaceType = 'dm' | 'channel';
+type SurfaceType = "dm" | "channel";
 
 // Slash-command spellings differ by platform: Slack only delivers the
 // natively-registered `/lobu`, so its subcommands are `/lobu try` etc.; other
 // platforms register each command directly (`/try`, `/agents`, `/link`).
 function tryCommand(platform: string): string {
-  return platform === 'slack' ? '/lobu try' : '/try';
+	return platform === "slack" ? "/lobu try" : "/try";
 }
 function listCommand(platform: string): string {
-  return platform === 'slack' ? '/lobu agents' : '/agents';
+	return platform === "slack" ? "/lobu agents" : "/agents";
 }
 function linkCommand(platform: string): string {
-  return platform === 'slack' ? '/lobu link' : '/link';
+	return platform === "slack" ? "/lobu link" : "/link";
 }
 
 interface ClaimPayload {
-  organizationId: string;
-  agentId: string;
-  createdBy: string | null;
-  allowedSurfaces: SurfaceType[];
-  createdAt: number;
+	organizationId: string;
+	agentId: string;
+	createdBy: string | null;
+	allowedSurfaces: SurfaceType[];
+	createdAt: number;
 }
 
 function codeHash(code: string): string {
-  return createHash('sha256').update(code.trim().toLowerCase()).digest('hex');
+	return createHash("sha256").update(code.trim().toLowerCase()).digest("hex");
 }
 
 // Uppercase letters + digits — readable, no ambiguous punctuation, and a fixed
 // length (the old base64url-then-strip approach could yield < 6 chars when the
 // random bytes happened to land on `-`/`_`).
-const CODE_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+const CODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
 function randomCodeSuffix(): string {
-  let out = '';
-  for (let i = 0; i < 6; i++) out += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)];
-  return out;
+	let out = "";
+	for (let i = 0; i < 6; i++)
+		out += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)];
+	return out;
 }
 
 function normalizeSurfaces(input: unknown): SurfaceType[] {
-  if (!Array.isArray(input) || input.length === 0) return ['dm'];
-  const values = input
-    .map((value) => (typeof value === 'string' ? value.trim() : ''))
-    .filter((value): value is SurfaceType => SURFACES.has(value));
-  return Array.from(new Set(values.length > 0 ? values : ['dm']));
+	if (!Array.isArray(input) || input.length === 0) return ["dm"];
+	const values = input
+		.map((value) => (typeof value === "string" ? value.trim() : ""))
+		.filter((value): value is SurfaceType => SURFACES.has(value));
+	return Array.from(new Set(values.length > 0 ? values : ["dm"]));
 }
 
 function normalizeTtlMinutes(input: unknown): number {
-  const parsed = typeof input === 'number' ? input : Number(input);
-  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_TTL_MINUTES;
-  return Math.min(Math.trunc(parsed), MAX_TTL_MINUTES);
+	const parsed = typeof input === "number" ? input : Number(input);
+	if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_TTL_MINUTES;
+	return Math.min(Math.trunc(parsed), MAX_TTL_MINUTES);
 }
 
 // "Join the hosted workspace" link for a preview platform — overridable per
 // platform via `LOBU_PREVIEW_<PLATFORM>_URL` on the deployment.
 function previewJoinUrl(platform: string): string {
-  return (
-    process.env[`LOBU_PREVIEW_${platform.toUpperCase()}_URL`] ||
-    PREVIEW_JOIN_DEFAULTS[platform] ||
-    ''
-  );
+	return (
+		process.env[`LOBU_PREVIEW_${platform.toUpperCase()}_URL`] ||
+		PREVIEW_JOIN_DEFAULTS[platform] ||
+		""
+	);
 }
 
 /** The slash command to send to the hosted bot to redeem a code. */
 function previewLinkCommand(platform: string, code: string): string {
-  return platform === 'slack' ? `/lobu link ${code}` : `/link ${code}`;
+	return platform === "slack" ? `/lobu link ${code}` : `/link ${code}`;
 }
 
 /**
@@ -110,9 +112,9 @@ function previewLinkCommand(platform: string, code: string): string {
  * transport prefix is left as-is.
  */
 export function canonicalSlackChannelId(channelId: string): string {
-  return /^[a-z]+:/i.test(channelId)
-    ? channelId
-    : `${SLACK_PLATFORM}:${channelId}`;
+	return /^[a-z]+:/i.test(channelId)
+		? channelId
+		: `${SLACK_PLATFORM}:${channelId}`;
 }
 
 /**
@@ -121,91 +123,95 @@ export function canonicalSlackChannelId(channelId: string): string {
  * Body: `{ agent_id, platform, surfaces?, ttl_minutes? }`.
  */
 export async function createPreviewClaim(c: Context<{ Bindings: Env }>) {
-  const auth = requireOrgUser(c);
-  if (!auth) return c.json({ error: 'Unauthorized' }, 401);
+	const auth = requireOrgUser(c);
+	if (!auth) return c.json({ error: "Unauthorized" }, 401);
 
-  const body = await parseJsonBody<Record<string, unknown>>(
-    c,
-    'Invalid or missing JSON body'
-  );
-  if (body instanceof Response) return body;
+	const body = await parseJsonBody<Record<string, unknown>>(
+		c,
+		"Invalid or missing JSON body",
+	);
+	if (body instanceof Response) return body;
 
-  const agentId = typeof body.agent_id === 'string' ? body.agent_id.trim() : '';
-  if (!agentId) return c.json({ error: 'agent_id is required' }, 400);
+	const agentId = typeof body.agent_id === "string" ? body.agent_id.trim() : "";
+	if (!agentId) return c.json({ error: "agent_id is required" }, 400);
 
-  const platform =
-    typeof body.platform === 'string' ? body.platform.trim().toLowerCase() : '';
-  if (!PREVIEW_PLATFORMS.has(platform)) {
-    return c.json(
-      {
-        error: 'Unsupported preview platform',
-        message: `platform must be one of: ${[...PREVIEW_PLATFORMS].join(', ')}`,
-      },
-      400
-    );
-  }
+	const platform =
+		typeof body.platform === "string" ? body.platform.trim().toLowerCase() : "";
+	if (!PREVIEW_PLATFORMS.has(platform)) {
+		return c.json(
+			{
+				error: "Unsupported preview platform",
+				message: `platform must be one of: ${[...PREVIEW_PLATFORMS].join(", ")}`,
+			},
+			400,
+		);
+	}
 
-  const surfaces = normalizeSurfaces(body.surfaces);
-  const ttlMinutes = normalizeTtlMinutes(body.ttl_minutes);
-  const codePrefix = slugify(agentId, { maxLength: 32 }) || 'agent';
-  const sql = getDb();
+	const surfaces = normalizeSurfaces(body.surfaces);
+	const ttlMinutes = normalizeTtlMinutes(body.ttl_minutes);
+	const codePrefix = slugify(agentId, { maxLength: 32 }) || "agent";
+	const sql = getDb();
 
-  const agentRows = await sql<{ id: string }>`
+	const agentRows = await sql<{ id: string }>`
     SELECT id
     FROM agents
     WHERE id = ${agentId}
       AND organization_id = ${auth.organizationId}
     LIMIT 1
   `;
-  if (agentRows.length === 0) {
-    return c.json(
-      {
-        error: 'Agent not found',
-        message: 'Run `lobu apply` first so the preview bot can bind to this agent in Lobu Cloud.',
-      },
-      404
-    );
-  }
+	if (agentRows.length === 0) {
+		return c.json(
+			{
+				error: "Agent not found",
+				message:
+					"Run `lobu apply` first so the preview bot can bind to this agent in Lobu Cloud.",
+			},
+			404,
+		);
+	}
 
-  const expiresAt = new Date(Date.now() + ttlMinutes * 60_000);
+	const expiresAt = new Date(Date.now() + ttlMinutes * 60_000);
 
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const code = `${codePrefix}-${randomCodeSuffix()}`;
-    const payload: ClaimPayload = {
-      organizationId: auth.organizationId,
-      agentId,
-      createdBy: auth.userId,
-      allowedSurfaces: surfaces,
-      createdAt: Date.now(),
-    };
-    try {
-      await sql`
+	for (let attempt = 0; attempt < 5; attempt++) {
+		const code = `${codePrefix}-${randomCodeSuffix()}`;
+		const payload: ClaimPayload = {
+			organizationId: auth.organizationId,
+			agentId,
+			createdBy: auth.userId,
+			allowedSurfaces: surfaces,
+			createdAt: Date.now(),
+		};
+		try {
+			await sql`
         INSERT INTO oauth_states (id, scope, payload, expires_at)
         VALUES (${codeHash(code)}, ${CLAIM_SCOPE}, ${sql.json(payload)}, ${expiresAt})
       `;
-      return c.json({
-        provider: `lobu-public-${platform}`,
-        platform,
-        code,
-        command: previewLinkCommand(platform, code),
-        join_url: previewJoinUrl(platform),
-        expires_at: expiresAt.toISOString(),
-        allowed_surfaces: surfaces,
-      });
-    } catch (err: unknown) {
-      if ((err as { code?: string }).code === '23505') continue;
-      logger.error({ err: errorMessage(err), platform }, '[preview] create claim failed');
-      return c.json({ error: errorMessage(err) }, 500);
-    }
-  }
+			return c.json({
+				provider: `lobu-public-${platform}`,
+				platform,
+				code,
+				command: previewLinkCommand(platform, code),
+				join_url: previewJoinUrl(platform),
+				expires_at: expiresAt.toISOString(),
+				allowed_surfaces: surfaces,
+			});
+		} catch (err: unknown) {
+			if ((err as { code?: string }).code === "23505") continue;
+			logger.error(
+				{ err: errorMessage(err), platform },
+				"[preview] create claim failed",
+			);
+			return c.json({ error: errorMessage(err) }, 500);
+		}
+	}
 
-  return c.json({ error: 'Could not allocate a unique preview code' }, 500);
+	return c.json({ error: "Could not allocate a unique preview code" }, 500);
 }
 
 type ConsumeClaimResult =
-  | { status: 'bound'; agentId: string; organizationId: string }
-  | { status: 'not_found' }
-  | { status: 'surface_not_allowed'; surfaceType: SurfaceType };
+	| { status: "bound"; agentId: string; organizationId: string }
+	| { status: "not_found" }
+	| { status: "surface_not_allowed"; surfaceType: SurfaceType };
 
 // `agent_channel_bindings` upsert — last link for THIS org's chat wins. The
 // uniqueness is org-scoped (org_id, platform, channel_id[, team_id]) so a
@@ -214,23 +220,23 @@ type ConsumeClaimResult =
 // so a binding cannot change owners. The team_id IS NULL branch upserts via the
 // org-scoped partial unique index. `tx` is a `sql` or a `sql.begin` handle.
 async function upsertBinding(
-  tx: ReturnType<typeof getDb>,
-  platform: string,
-  channelId: string,
-  teamId: string | undefined,
-  agentId: string,
-  organizationId: string
+	tx: ReturnType<typeof getDb>,
+	platform: string,
+	channelId: string,
+	teamId: string | undefined,
+	agentId: string,
+	organizationId: string,
 ): Promise<void> {
-  if (teamId) {
-    await tx`
+	if (teamId) {
+		await tx`
       INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
       VALUES (${organizationId}, ${agentId}, ${platform}, ${channelId}, ${teamId}, now())
       ON CONFLICT (organization_id, platform, channel_id, team_id) DO UPDATE SET
         agent_id = EXCLUDED.agent_id,
         created_at = EXCLUDED.created_at
     `;
-  } else {
-    await tx`
+	} else {
+		await tx`
       INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
       VALUES (${organizationId}, ${agentId}, ${platform}, ${channelId}, NULL, now())
       ON CONFLICT (organization_id, platform, channel_id)
@@ -238,7 +244,7 @@ async function upsertBinding(
         DO UPDATE SET agent_id = EXCLUDED.agent_id,
           created_at = EXCLUDED.created_at
     `;
-  }
+	}
 }
 
 /**
@@ -255,52 +261,60 @@ async function upsertBinding(
  * account in `chat_user_identities` so later links can skip the code.
  */
 export async function consumePreviewClaim(args: {
-  code: string;
-  platform: string;
-  /** Workspace id for platforms that have one (Slack); undefined otherwise. */
-  teamId?: string;
-  channelId: string;
-  surfaceType: SurfaceType;
-  /** Sender's platform user id (e.g. Slack `U…`), if known. */
-  platformUserId?: string;
+	code: string;
+	platform: string;
+	/** Workspace id for platforms that have one (Slack); undefined otherwise. */
+	teamId?: string;
+	channelId: string;
+	surfaceType: SurfaceType;
+	/** Sender's platform user id (e.g. Slack `U…`), if known. */
+	platformUserId?: string;
 }): Promise<ConsumeClaimResult> {
-  const { code, platform, teamId, channelId, surfaceType, platformUserId } = args;
-  const sql = getDb();
+	const { code, platform, teamId, channelId, surfaceType, platformUserId } =
+		args;
+	const sql = getDb();
 
-  return sql.begin(async (tx) => {
-    const claims = await tx<{ payload: ClaimPayload }>`
+	return sql.begin(async (tx) => {
+		const claims = await tx<{ payload: ClaimPayload }>`
       DELETE FROM oauth_states
       WHERE id = ${codeHash(code)}
         AND scope = ${CLAIM_SCOPE}
         AND expires_at > now()
       RETURNING payload
     `;
-    const claim = claims[0]?.payload;
-    if (!claim) return { status: 'not_found' as const };
-    if (!claim.allowedSurfaces.includes(surfaceType)) {
-      return { status: 'surface_not_allowed' as const, surfaceType };
-    }
+		const claim = claims[0]?.payload;
+		if (!claim) return { status: "not_found" as const };
+		if (!claim.allowedSurfaces.includes(surfaceType)) {
+			return { status: "surface_not_allowed" as const, surfaceType };
+		}
 
-    await upsertBinding(tx, platform, channelId, teamId, claim.agentId, claim.organizationId);
+		await upsertBinding(
+			tx,
+			platform,
+			channelId,
+			teamId,
+			claim.agentId,
+			claim.organizationId,
+		);
 
-    // The code was minted by an authenticated `lobu run`, so the sender is the
-    // same Lobu user. Record the chat-platform → Lobu-user link so they can
-    // re-bind chats with `/lobu link <agentId>` without a fresh code.
-    if (claim.createdBy && platformUserId) {
-      await tx`
+		// The code was minted by an authenticated `lobu run`, so the sender is the
+		// same Lobu user. Record the chat-platform → Lobu-user link so they can
+		// re-bind chats with `/lobu link <agentId>` without a fresh code.
+		if (claim.createdBy && platformUserId) {
+			await tx`
         INSERT INTO chat_user_identities (platform, team_id, platform_user_id, lobu_user_id, updated_at)
-        VALUES (${platform}, ${teamId ?? ''}, ${platformUserId}, ${claim.createdBy}, now())
+        VALUES (${platform}, ${teamId ?? ""}, ${platformUserId}, ${claim.createdBy}, now())
         ON CONFLICT (platform, team_id, platform_user_id)
           DO UPDATE SET lobu_user_id = EXCLUDED.lobu_user_id, updated_at = now()
       `;
-    }
+		}
 
-    return {
-      status: 'bound' as const,
-      agentId: claim.agentId,
-      organizationId: claim.organizationId,
-    };
-  });
+		return {
+			status: "bound" as const,
+			agentId: claim.agentId,
+			organizationId: claim.organizationId,
+		};
+	});
 }
 
 // ── Public-preview "try a demo agent" ────────────────────────────────────────
@@ -313,9 +327,9 @@ export async function consumePreviewClaim(args: {
 // connection's own placeholder/concierge agent is excluded from the list.
 
 interface PreviewAgent {
-  agentId: string;
-  name: string;
-  description: string | null;
+	agentId: string;
+	name: string;
+	description: string | null;
 }
 
 /**
@@ -324,18 +338,18 @@ interface PreviewAgent {
  * Returns null when the connection or its owning agent can't be resolved.
  */
 async function resolvePreviewConnectionOrg(
-  connectionId: string
+	connectionId: string,
 ): Promise<{ organizationId: string; owningAgentId: string } | null> {
-  const sql = getDb();
-  const rows = (await sql`
+	const sql = getDb();
+	const rows = (await sql`
     SELECT organization_id, agent_id
     FROM agent_connections
     WHERE id = ${connectionId}
     LIMIT 1
   `) as Array<{ organization_id: string | null; agent_id: string | null }>;
-  const row = rows[0];
-  if (!row?.organization_id || !row.agent_id) return null;
-  return { organizationId: row.organization_id, owningAgentId: row.agent_id };
+	const row = rows[0];
+	if (!row?.organization_id || !row.agent_id) return null;
+	return { organizationId: row.organization_id, owningAgentId: row.agent_id };
 }
 
 /**
@@ -344,36 +358,42 @@ async function resolvePreviewConnectionOrg(
  * runs on the hot path of every unlinked message and the worst case is a
  * fallback notice instead of the menu.
  */
-export async function listPreviewAgents(connectionId: string): Promise<PreviewAgent[]> {
-  try {
-    const org = await resolvePreviewConnectionOrg(connectionId);
-    if (!org) return [];
-    const sql = getDb();
-    const rows = (await sql`
+export async function listPreviewAgents(
+	connectionId: string,
+): Promise<PreviewAgent[]> {
+	try {
+		const org = await resolvePreviewConnectionOrg(connectionId);
+		if (!org) return [];
+		const sql = getDb();
+		const rows = (await sql`
       SELECT id, name, description
       FROM agents
       WHERE organization_id = ${org.organizationId}
         AND id <> ${org.owningAgentId}
       ORDER BY name NULLS LAST, id
-    `) as Array<{ id: string; name: string | null; description: string | null }>;
-    return rows.map((r) => ({
-      agentId: r.id,
-      name: r.name ?? r.id,
-      description: r.description ?? null,
-    }));
-  } catch (err) {
-    logger.warn(
-      { err: errorMessage(err), connectionId },
-      '[preview] listPreviewAgents failed'
-    );
-    return [];
-  }
+    `) as Array<{
+			id: string;
+			name: string | null;
+			description: string | null;
+		}>;
+		return rows.map((r) => ({
+			agentId: r.id,
+			name: r.name ?? r.id,
+			description: r.description ?? null,
+		}));
+	} catch (err) {
+		logger.warn(
+			{ err: errorMessage(err), connectionId },
+			"[preview] listPreviewAgents failed",
+		);
+		return [];
+	}
 }
 
 type BindPreviewAgentResult =
-  | { status: 'bound'; agentId: string }
-  | { status: 'not_available' }
-  | { status: 'no_connection' };
+	| { status: "bound"; agentId: string }
+	| { status: "not_available" }
+	| { status: "no_connection" };
 
 /**
  * Bind a chat to a demo agent for a preview connection. The agent must live in
@@ -382,46 +402,57 @@ type BindPreviewAgentResult =
  * Last bind wins; re-running with another agent just rebinds.
  */
 export async function bindChatToPreviewAgent(args: {
-  connectionId: string;
-  agentId: string;
-  platform: string;
-  /** Workspace id for platforms that have one (Slack); undefined otherwise. */
-  teamId?: string;
-  /** Canonical channel id the message handler looks bindings up by. */
-  channelId: string;
+	connectionId: string;
+	agentId: string;
+	platform: string;
+	/** Workspace id for platforms that have one (Slack); undefined otherwise. */
+	teamId?: string;
+	/** Canonical channel id the message handler looks bindings up by. */
+	channelId: string;
 }): Promise<BindPreviewAgentResult> {
-  const org = await resolvePreviewConnectionOrg(args.connectionId);
-  if (!org) return { status: 'no_connection' };
-  const sql = getDb();
-  const agentRows = (await sql`
+	const org = await resolvePreviewConnectionOrg(args.connectionId);
+	if (!org) return { status: "no_connection" };
+	const sql = getDb();
+	const agentRows = (await sql`
     SELECT id FROM agents
     WHERE id = ${args.agentId} AND organization_id = ${org.organizationId}
     LIMIT 1
   `) as Array<{ id: string }>;
-  const target = agentRows[0];
-  if (!target) return { status: 'not_available' };
+	const target = agentRows[0];
+	if (!target) return { status: "not_available" };
 
-  const { platform, teamId, channelId } = args;
-  // Org-scoped upsert (same dance as `upsertBinding`): another tenant's binding
-  // for the same platform+channel is a different row and cannot be clobbered,
-  // and `organization_id` is never reassigned, so a binding can't change owners.
-  await upsertBinding(sql, platform, channelId, teamId, target.id, org.organizationId);
-  return { status: 'bound', agentId: target.id };
+	const { platform, teamId, channelId } = args;
+	// Org-scoped upsert (same dance as `upsertBinding`): another tenant's binding
+	// for the same platform+channel is a different row and cannot be clobbered,
+	// and `organization_id` is never reassigned, so a binding can't change owners.
+	await upsertBinding(
+		sql,
+		platform,
+		channelId,
+		teamId,
+		target.id,
+		org.organizationId,
+	);
+	return { status: "bound", agentId: target.id };
 }
 
 /** The "pick a demo agent" menu — shown on `/lobu try` / `/lobu agents`. */
-export function previewAgentMenu(platform: string, agents: PreviewAgent[]): string {
-  if (agents.length === 0) {
-    return 'No demo agents are available here yet.';
-  }
-  return [
-    'Demo agents you can try here:',
-    ...agents.map(
-      (a) => `• \`${tryCommand(platform)} ${a.agentId}\` — ${a.description || a.name}`
-    ),
-    '',
-    `Pick one, then just send a message. \`${listCommand(platform)}\` shows this list again.`,
-  ].join('\n');
+export function previewAgentMenu(
+	platform: string,
+	agents: PreviewAgent[],
+): string {
+	if (agents.length === 0) {
+		return "No demo agents are available here yet.";
+	}
+	return [
+		"Demo agents you can try here:",
+		...agents.map(
+			(a) =>
+				`• \`${tryCommand(platform)} ${a.agentId}\` — ${a.description || a.name}`,
+		),
+		"",
+		`Pick one, then just send a message. \`${listCommand(platform)}\` shows this list again.`,
+	].join("\n");
 }
 
 /**
@@ -431,25 +462,25 @@ export function previewAgentMenu(platform: string, agents: PreviewAgent[]): stri
  * there's nothing useful to say (unknown platform).
  */
 export async function previewUnlinkedNotice(
-  platform: string,
-  connectionId: string
+	platform: string,
+	connectionId: string,
 ): Promise<string | null> {
-  if (!PREVIEW_PLATFORMS.has(platform)) return null;
-  const agents = await listPreviewAgents(connectionId);
-  if (agents.length > 0) {
-    return [
-      `👋 Welcome! ${previewAgentMenu(platform, agents)}`,
-      '',
-      `(Building your own agent? Run \`lobu run\` and send the \`${linkCommand(platform)} <code>\` it prints.)`,
-    ].join('\n');
-  }
-  return [
-    "👋 This chat isn't linked to a Lobu agent yet.",
-    '',
-    'New to Lobu? Scaffold a project with `npx @lobu/cli init`, then:',
-    '`lobu apply` to sync it, and `lobu run` to get a ' +
-      `\`${linkCommand(platform)} <code>\` — paste that code here to link this chat.`,
-  ].join('\n');
+	if (!PREVIEW_PLATFORMS.has(platform)) return null;
+	const agents = await listPreviewAgents(connectionId);
+	if (agents.length > 0) {
+		return [
+			`👋 Welcome! ${previewAgentMenu(platform, agents)}`,
+			"",
+			`(Building your own agent? Run \`lobu run\` and send the \`${linkCommand(platform)} <code>\` it prints.)`,
+		].join("\n");
+	}
+	return [
+		"👋 This chat isn't linked to a Lobu agent yet.",
+		"",
+		"New to Lobu? Scaffold a project with `npx @lobu/cli init`, then:",
+		"`lobu apply` to sync it, and `lobu run` to get a " +
+			`\`${linkCommand(platform)} <code>\` — paste that code here to link this chat.`,
+	].join("\n");
 }
 
 /**
@@ -461,31 +492,29 @@ export async function previewUnlinkedNotice(
  * (OAuth install is Slack-only today).
  */
 export function workspaceUnlinkedNotice(platform: string): string | null {
-  if (platform !== 'slack') return null;
-  return [
-    "👋 Thanks for adding Lobu! This channel isn't linked to one of your agents yet.",
-    '',
-    `Run \`${linkCommand(platform)} <code>\` here with a link code from your Lobu dashboard (or \`lobu run\`) to connect an agent.`,
-  ].join('\n');
+	if (platform !== "slack") return null;
+	return [
+		"👋 Thanks for adding Lobu! This channel isn't linked to one of your agents yet.",
+		"",
+		`Run \`${linkCommand(platform)} <code>\` here with a link code from your Lobu dashboard (or \`lobu run\`) to connect an agent.`,
+	].join("\n");
 }
 
 /** The Lobu user id a chat-platform user has linked to, or null. */
 export async function resolveChatUserIdentity(
-  platform: string,
-  teamId: string | undefined,
-  platformUserId: string
+	platform: string,
+	teamId: string | undefined,
+	platformUserId: string,
 ): Promise<string | null> {
-  const rows = await getDb()<{ lobu_user_id: string }>`
+	const rows = await getDb()<{ lobu_user_id: string }>`
     SELECT lobu_user_id FROM chat_user_identities
-    WHERE platform = ${platform} AND team_id = ${teamId ?? ''} AND platform_user_id = ${platformUserId}
+    WHERE platform = ${platform} AND team_id = ${teamId ?? ""} AND platform_user_id = ${platformUserId}
     LIMIT 1
   `;
-  return rows[0]?.lobu_user_id ?? null;
+	return rows[0]?.lobu_user_id ?? null;
 }
 
-type BindForOwnerResult =
-  | { status: 'bound' }
-  | { status: 'forbidden' };
+type BindForOwnerResult = { status: "bound" } | { status: "forbidden" };
 
 /**
  * Re-bind a chat to one of the caller's agents by id, without a code — only
@@ -493,25 +522,25 @@ type BindForOwnerResult =
  * and only for agents in an org they're a member of.
  */
 export async function bindChatToAgentForOwner(args: {
-  platform: string;
-  teamId?: string;
-  channelId: string;
-  agentId: string;
-  lobuUserId: string;
+	platform: string;
+	teamId?: string;
+	channelId: string;
+	agentId: string;
+	lobuUserId: string;
 }): Promise<BindForOwnerResult> {
-  const { platform, teamId, channelId, agentId, lobuUserId } = args;
-  const sql = getDb();
-  const owned = await sql<{ organization_id: string }>`
+	const { platform, teamId, channelId, agentId, lobuUserId } = args;
+	const sql = getDb();
+	const owned = await sql<{ organization_id: string }>`
     SELECT a.organization_id
     FROM agents a
     JOIN "member" m ON m."organizationId" = a.organization_id
     WHERE a.id = ${agentId} AND m."userId" = ${lobuUserId}
     LIMIT 1
   `;
-  if (owned.length === 0) return { status: 'forbidden' };
-  const organizationId = owned[0].organization_id;
-  await sql.begin((tx) =>
-    upsertBinding(tx, platform, channelId, teamId, agentId, organizationId)
-  );
-  return { status: 'bound' };
+	if (owned.length === 0) return { status: "forbidden" };
+	const organizationId = owned[0].organization_id;
+	await sql.begin((tx) =>
+		upsertBinding(tx, platform, channelId, teamId, agentId, organizationId),
+	);
+	return { status: "bound" };
 }

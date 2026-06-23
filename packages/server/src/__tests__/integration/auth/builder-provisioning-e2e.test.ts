@@ -10,9 +10,9 @@
  * builders stuck in the broken state.
  */
 
+import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { access, readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
 	BUILDER_AGENT_ID,
@@ -27,7 +27,10 @@ import {
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // packages/server/src/__tests__/integration/auth → repo root (6 levels up).
-const PROVIDERS_JSON = path.resolve(HERE, "../../../../../../config/providers.json");
+const PROVIDERS_JSON = path.resolve(
+	HERE,
+	"../../../../../../config/providers.json",
+);
 
 describe("ensureBuilderAgent — provisioning reliability", () => {
 	const sql = getTestDb();
@@ -36,9 +39,11 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 		"ANTHROPIC_AUTH_TOKEN",
 		"CLAUDE_CODE_OAUTH_TOKEN",
 	];
+	const ZAI_ENV_VARS = ["Z_AI_API_KEY", "ZAI_API_KEY"];
 	const prevRegistryPath = process.env.LOBU_PROVIDER_REGISTRY_PATH;
 	const prevOpenAI = process.env.OPENAI_API_KEY;
 	const prevClaude: Record<string, string | undefined> = {};
+	const prevZai: Record<string, string | undefined> = {};
 
 	beforeAll(async () => {
 		await cleanupTestDatabase();
@@ -57,6 +62,10 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 			prevClaude[v] = process.env[v];
 			delete process.env[v];
 		}
+		for (const v of ZAI_ENV_VARS) {
+			prevZai[v] = process.env[v];
+			delete process.env[v];
+		}
 	});
 
 	afterAll(() => {
@@ -66,6 +75,10 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 		if (prevOpenAI === undefined) delete process.env.OPENAI_API_KEY;
 		else process.env.OPENAI_API_KEY = prevOpenAI;
 		for (const [k, v] of Object.entries(prevClaude)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+		for (const [k, v] of Object.entries(prevZai)) {
 			if (v === undefined) delete process.env[k];
 			else process.env[k] = v;
 		}
@@ -98,9 +111,9 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 		expect(b).toBeTruthy();
 		expect(Array.isArray(b?.installed_providers)).toBe(true);
 		expect(b?.installed_providers?.length ?? 0).toBeGreaterThan(0);
-		expect(
-			b?.installed_providers?.some((p) => p.providerId === "openai"),
-		).toBe(true);
+		expect(b?.installed_providers?.some((p) => p.providerId === "openai")).toBe(
+			true,
+		);
 		// Deterministic default from providers.json (`openai` → `gpt-4o`).
 		expect(b?.model).toBe("openai/gpt-4o");
 		expect(await readPointer(org.id)).toBe(BUILDER_AGENT_ID);
@@ -173,7 +186,9 @@ describe("ensureBuilderAgent — provisioning reliability", () => {
 		expect(b?.model).toBeTruthy();
 		// Invariant: the pinned model's provider is always installed.
 		const pid = b?.model?.slice(0, b.model.indexOf("/")) ?? "";
-		expect(b?.installed_providers?.some((p) => p.providerId === pid)).toBe(true);
+		expect(b?.installed_providers?.some((p) => p.providerId === pid)).toBe(
+			true,
+		);
 	});
 
 	it("provisions a usable builder when ONLY an Anthropic system key is present (not in providers.json)", async () => {

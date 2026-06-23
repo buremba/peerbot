@@ -319,7 +319,7 @@ async function fetchRemoteSnapshot(
   const hasConnectors = hasDesiredConnectors(state);
   const fetchConnectors = !only && (hasConnectors || prune);
   const connectorDefinitions = fetchConnectors
-    ? await client.listConnectorDefinitions(true)
+    ? await client.listConnectors(true)
     : [];
   const authProfiles = fetchConnectors ? await client.listAuthProfiles() : [];
   const connections = fetchConnectors ? await client.listConnections() : [];
@@ -453,7 +453,7 @@ async function installConnectorDefinitions(
     );
   }
 
-  return mutated ? await client.listConnectorDefinitions(true) : catalog;
+  return mutated ? await client.listConnectors(true) : catalog;
 }
 
 // ── Connector config validation (against a given catalog) ──────────────────

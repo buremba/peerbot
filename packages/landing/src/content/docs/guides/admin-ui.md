@@ -119,11 +119,11 @@ curl -X POST http://localhost:8787/api/v1/auth/openai/logout \
 ### Browse available providers
 
 ```bash
-curl http://localhost:8787/api/v1/agents/support/config/providers/catalog \
+curl "http://localhost:8787/api/my-org/installed/agents/support/installed?kinds=providers" \
   -H "Authorization: Bearer $LOBU_API_TOKEN"
 ```
 
-Returns providers that are not yet installed for this agent.
+Returns installed provider modules for the agent (from the unified catalog installed overlay).
 
 ## Session history
 

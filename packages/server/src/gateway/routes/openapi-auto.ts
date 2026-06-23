@@ -131,6 +131,12 @@ const ROUTE_SUMMARIES: Record<string, string> = {
 	// Configuration
 	"get /api/v1/agents/{agentId}/config/grants": "List domain grants",
 
+	// Catalog
+	"get /catalog": "List global catalog manifests",
+	"get /api/{orgSlug}/installed": "List org-installed items",
+	"get /api/{orgSlug}/installed/agents/{agentId}/installed":
+		"List agent-installed items",
+
 	// History
 	"get /api/v1/agents/{agentId}/history/status": "Get agent connection status",
 	"get /api/v1/agents/{agentId}/history/session/messages":

@@ -990,7 +990,7 @@ export class ApplyClient {
   }
 
   /** Installed org connectors + (with `includeInstallable`) the bundled catalog. */
-  async listConnectorDefinitions(
+  async listConnectors(
     includeInstallable = true
   ): Promise<RemoteConnectorDefinition[]> {
     const installedBody = await this.catalogTool<{

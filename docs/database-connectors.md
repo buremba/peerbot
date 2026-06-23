@@ -43,7 +43,7 @@ scrapers' block-all-private-IPs rule can't be reused.
 - **Untrusted multi-tenant cloud:** a tenant-supplied `DATABASE_URL` (metadata
   IPs, internal CIDRs, another tenant's DB) is an exfil/scan vector. **Not allowed
   yet.** Under `LOBU_CLOUD_MODE=1` the postgres connector is hidden from the
-  catalog (`connector-catalog.ts`) and connection-create is hard-blocked
+  catalog (`LOBU_CATALOG_URIS` / `manage_catalog list_catalog`) and connection-create is hard-blocked
   (`manage_connections.ts` via `connector-cloud-gate.ts`). Execution is gated
   independently at every run path, not just by catalog-hide: scheduled-sync run
   creation (`runs/queue-service.ts`), the production worker poll (`worker-api.ts`), the

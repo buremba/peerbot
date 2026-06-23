@@ -22,8 +22,6 @@ import type {
   GetApiV1AgentsByAgentIdConfigErrors,
   GetApiV1AgentsByAgentIdConfigGrantsData,
   GetApiV1AgentsByAgentIdConfigGrantsResponses,
-  GetApiV1AgentsByAgentIdConfigProvidersCatalogData,
-  GetApiV1AgentsByAgentIdConfigProvidersCatalogResponses,
   GetApiV1AgentsByAgentIdConfigResponses,
   GetApiV1AgentsByAgentIdData,
   GetApiV1AgentsByAgentIdErrors,
@@ -458,27 +456,6 @@ export const getApiV1AgentsByAgentIdHistorySessionStats = <
     ThrowOnError
   >({
     url: "/api/v1/agents/{agentId}/history/session/stats",
-    ...options,
-  });
-};
-
-/**
- * List provider catalog
- */
-export const getApiV1AgentsByAgentIdConfigProvidersCatalog = <
-  ThrowOnError extends boolean = false,
->(
-  options: Options<
-    GetApiV1AgentsByAgentIdConfigProvidersCatalogData,
-    ThrowOnError
-  >,
-) => {
-  return (options.client ?? client).get<
-    GetApiV1AgentsByAgentIdConfigProvidersCatalogResponses,
-    unknown,
-    ThrowOnError
-  >({
-    url: "/api/v1/agents/{agentId}/config/providers/catalog",
     ...options,
   });
 };

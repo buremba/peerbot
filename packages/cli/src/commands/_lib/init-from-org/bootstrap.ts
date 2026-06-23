@@ -887,7 +887,7 @@ async function fetchOrgState(
     // Connector defs carry each connector's auth_schema, so init-from-org can
     // emit auth-profile credentials keyed by the real schema fields. Best-effort
     // — a fetch failure falls back to placeholder credential keys.
-    client.listConnectorDefinitions(true).catch(() => []),
+    client.listConnectors(true).catch(() => []),
   ]);
 
   // The relationship-type `list` action omits rules, so hydrate each type's

@@ -766,7 +766,10 @@ async function fetchBootstrap(
     fetchRecentFeeds(sql, workspace.id, entity?.id ?? null),
     fetchRecentWatchers(sql, workspace.slug, workspace.id, entity?.id ?? null),
   ]);
-  const connectorDefinitions = await listConnectorDefinitions(sql, workspace.id);
+  const connectorDefinitions = await listWorkspaceConnectorDefinitions(
+    sql,
+    workspace.id,
+  );
 
   return {
     entity_types: entityTypes,
@@ -1124,7 +1127,7 @@ function extractOAuthDomain(authSchema: Record<string, unknown> | null | undefin
   return null;
 }
 
-async function listConnectorDefinitions(
+async function listWorkspaceConnectorDefinitions(
   sql: DbClient,
   organizationId: string
 ): Promise<BootstrapConnectorDefinition[]> {

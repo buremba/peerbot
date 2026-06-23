@@ -1061,22 +1061,6 @@ export type GetApiV1AgentsByAgentIdHistorySessionStatsResponses = {
   200: unknown;
 };
 
-export type GetApiV1AgentsByAgentIdConfigProvidersCatalogData = {
-  body?: never;
-  path: {
-    agentId: string;
-  };
-  query?: never;
-  url: "/api/v1/agents/{agentId}/config/providers/catalog";
-};
-
-export type GetApiV1AgentsByAgentIdConfigProvidersCatalogResponses = {
-  /**
-   * OK
-   */
-  200: unknown;
-};
-
 export type GetApiV1AgentsByAgentIdConfigGrantsData = {
   body?: never;
   path: {

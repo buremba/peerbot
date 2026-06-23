@@ -1,18 +1,23 @@
 /**
  * Shared multi-tenant app-webhook router (app-installation design §4.3).
  *
- * Drives the REAL Hono route (`createAppWebhookRoutes`) → GitHub provider
- * plugin → `handleWebhookIngest` → real Postgres, the path an actual GitHub App
- * delivery exercises (minus the live provider POST). We hold the app webhook
- * secret, so we compute a real `x-hub-signature-256` HMAC over the raw body.
+ * Drives the REAL Hono route (`createAppWebhookRoutes`) → provider plugin →
+ * real Postgres, the path an actual App delivery exercises (minus the live
+ * provider POST). We hold the app webhook secret, so we compute a real HMAC
+ * over the raw body.
  *
- * Under test:
- *  1. A signed `issues` delivery with a seeded ACTIVE install routes to the
- *     owning org and lands an `events` row (connector_key='webhook:app_install:<id>').
- *  2. A forged signature → 401, nothing landed.
- *  3. An unknown tenant (no active install) → 200 ack, nothing landed (the
- *     delivery-before-install-callback case must NOT 500).
- *  4. Redelivery (same x-github-delivery) dedupes to one event.
+ * GitHub is a TRIGGER provider: it has a sync mapping, so the canonical record
+ * is the poll, not the webhook. A signed delivery resolves the acting user into
+ * a `person` (keeps the member graph live in real time) and marks the affected
+ * repo's feeds due (`next_run_at = now()`) so the poll fetches the structured
+ * update — it never stores a raw `events` row. Jira/Linear have no sync mapping,
+ * so they still land the raw delivery (connector_key='webhook:app_install:<id>').
+ *
+ * Under test (GitHub):
+ *  1. A signed delivery for a CONFIGURED repo → 200, feeds marked due, NO raw event.
+ *  2. A delivery for an UNCONFIGURED repo → 200 triggered:false, nothing stored.
+ *  3. The acting user is resolved into a tenant-scoped person (identity graph).
+ *  4. Forged/wrong-secret/tampered → 401; unknown tenant / no install → 200 ack.
  */
 
 import { createHmac } from "node:crypto";
@@ -54,27 +59,6 @@ function buildApp() {
 		providers: [createGithubAppWebhookProvider({ appId: APP_ID })],
 		resolveAppWebhookSecret: async () => APP_SECRET,
 	});
-}
-
-/**
- * Build the router with the github provider's `resolveActor` wrapped in a
- * counter, so a test can assert exactly one resolution per landed event.
- */
-function buildAppWithActorCounter(): { app: ReturnType<typeof createAppWebhookRoutes>; calls: () => number } {
-	const provider = createGithubAppWebhookProvider({ appId: APP_ID });
-	const original = provider.resolveActor!.bind(provider);
-	let count = 0;
-	provider.resolveActor = async (params) => {
-		count += 1;
-		return original(params);
-	};
-	const app = createAppWebhookRoutes({
-		installationStore: createPostgresAppInstallationStore(),
-		secretStore: fakeSecretStore,
-		providers: [provider],
-		resolveAppWebhookSecret: async () => APP_SECRET,
-	});
-	return { app, calls: () => count };
 }
 
 /** Seed an ACTIVE github installation for the routed tenant tuple. */
@@ -121,6 +105,57 @@ async function eventRows(connectorKey: string): Promise<any[]> {
   `;
 }
 
+/** Count every raw app-install event regardless of which install key it landed under. */
+async function appInstallEventCount(): Promise<number> {
+	const { getDb } = await import("../../db/client.js");
+	const [row] = await getDb()`
+    SELECT count(*)::int AS n FROM events WHERE connector_key LIKE 'webhook:app_install:%'
+  `;
+	return row.n;
+}
+
+/**
+ * Seed a github connection bound to `installId` (its config.installation_ref is
+ * the app_installations row id, exactly as the install callback writes it) plus
+ * one ACTIVE feed for {owner,name} with `next_run_at` NULL. A trigger sets it to
+ * now(), so NULL→NOT NULL cleanly proves the webhook marked the feed due.
+ */
+async function seedGithubFeed(opts: {
+	installId: number;
+	owner: string;
+	name: string;
+	feedKey?: string;
+}): Promise<number> {
+	const { getDb } = await import("../../db/client.js");
+	const sql = getDb();
+	const [conn] = await sql`
+    INSERT INTO connections (
+      organization_id, connector_key, slug, display_name, status, config, visibility, created_at, updated_at
+    ) VALUES (
+      ${ORG}, 'github', ${`github-${opts.owner}-${opts.name}`}, 'GitHub', 'active',
+      ${sql.json({ installation_ref: opts.installId })}, 'org', NOW(), NOW()
+    )
+    RETURNING id
+  `;
+	const [feed] = await sql`
+    INSERT INTO feeds (
+      organization_id, connection_id, feed_key, display_name, status, config, next_run_at
+    ) VALUES (
+      ${ORG}, ${conn.id}, ${opts.feedKey ?? "issues"}, 'Issues', 'active',
+      ${sql.json({ repo_owner: opts.owner, repo_name: opts.name })}, NULL
+    )
+    RETURNING id
+  `;
+	return Number(feed.id);
+}
+
+/** Current `next_run_at` of a feed (NULL until a trigger marks it due). */
+async function feedNextRunAt(feedId: number): Promise<unknown> {
+	const { getDb } = await import("../../db/client.js");
+	const [row] = await getDb()`SELECT next_run_at FROM feeds WHERE id = ${feedId}`;
+	return row?.next_run_at ?? null;
+}
+
 /**
  * Seed the prerequisites for actor → person resolution in the routed org: an
  * org member (entities.created_by is NOT NULL — resolveOrgCreator reads it) and
@@ -158,22 +193,6 @@ async function personRows(orgId: string): Promise<any[]> {
   `;
 }
 
-/**
- * Parse `events.entity_ids` regardless of how the driver hands it back: this
- * gateway (bun:test) harness reads the raw column as a Postgres array literal
- * string (`"{1,2}"` / `"{}"`); other paths return a JS array. Normalize to
- * number[] so the attribution assertion is driver-agnostic.
- */
-function parseEntityIds(value: unknown): number[] {
-	if (Array.isArray(value)) return value.map((v) => Number(v));
-	if (typeof value === "string") {
-		const inner = value.replace(/^\{|\}$/g, "").trim();
-		if (!inner) return [];
-		return inner.split(",").map((s) => Number(s));
-	}
-	return [];
-}
-
 async function identitiesFor(entityId: number): Promise<string[]> {
 	const { getDb } = await import("../../db/client.js");
 	const rows = await getDb()`
@@ -198,9 +217,16 @@ beforeEach(async () => {
 }, 30_000);
 
 describe("app-webhook router (GitHub)", () => {
-	test("a signed issues delivery routes to the owning org and lands an event", async () => {
+	test("a signed delivery for a configured repo marks its feeds due and stores NO raw event", async () => {
 		await seedAgentRow(AGENT, { organizationId: ORG });
 		const installId = await seedActiveInstall();
+		// A github connection bound to this install + an active issues feed for the
+		// repo the delivery is about. next_run_at starts NULL.
+		const feedId = await seedGithubFeed({
+			installId,
+			owner: "acme",
+			name: "api",
+		});
 		const app = buildApp();
 
 		const raw = JSON.stringify({
@@ -211,90 +237,43 @@ describe("app-webhook router (GitHub)", () => {
 				title: "Prod is down",
 				html_url: "https://github.com/acme/api/issues/11",
 			},
-			repository: { full_name: "acme/api" },
+			repository: { owner: { login: "acme" }, name: "api", full_name: "acme/api" },
 		});
 		const res = await app.fetch(ghDelivery(raw));
-		expect(res.status).toBe(202);
+		// Trigger path acks 200 (not 202 — nothing was landed as a record).
+		expect(res.status).toBe(200);
+		expect((await res.json()).triggered).toBe(true);
 
-		const rows = await eventRows(`webhook:app_install:${installId}`);
-		expect(rows.length).toBe(1);
-		// EL: the raw GitHub payload is what landed — untransformed.
-		expect(rows[0].payload_data).toEqual({
-			action: "opened",
-			installation: { id: Number(INSTALLATION_ID) },
-			issue: {
-				number: 11,
-				title: "Prod is down",
-				html_url: "https://github.com/acme/api/issues/11",
-			},
-			repository: { full_name: "acme/api" },
-		});
-		// Routed into the install's owning org, deduped on the delivery id.
-		expect(rows[0].organization_id).toBe(ORG);
-		expect(rows[0].origin_id).toBe("gh-app-1");
-		// Title + source_url projected from the issue (not left empty).
-		expect(rows[0].title).toBe("Prod is down");
-		expect(rows[0].source_url).toBe("https://github.com/acme/api/issues/11");
+		// The poll is the canonical record, so the webhook stores no raw event…
+		expect(await appInstallEventCount()).toBe(0);
+		// …it just marks the affected feed due (NULL → now()).
+		expect(await feedNextRunAt(feedId)).not.toBeNull();
 	});
 
-	test("an issue_comment delivery lands the parent issue title + comment url", async () => {
+	test("a delivery for an unconfigured repo acks 200 triggered:false and stores nothing", async () => {
 		await seedAgentRow(AGENT, { organizationId: ORG });
 		const installId = await seedActiveInstall();
-		const app = buildApp();
-
-		const raw = JSON.stringify({
-			action: "created",
-			installation: { id: Number(INSTALLATION_ID) },
-			issue: {
-				number: 11,
-				title: "Prod is down",
-				html_url: "https://github.com/acme/api/issues/11",
-			},
-			comment: {
-				id: 555,
-				body: "Looking into it",
-				html_url: "https://github.com/acme/api/issues/11#issuecomment-555",
-			},
-			repository: { full_name: "acme/api" },
+		// A feed exists, but for a DIFFERENT repo than the delivery is about.
+		const otherFeedId = await seedGithubFeed({
+			installId,
+			owner: "acme",
+			name: "other",
 		});
-		const res = await app.fetch(
-			ghDelivery(raw, { deliveryId: "gh-comment-1", event: "issue_comment" }),
-		);
-		expect(res.status).toBe(202);
-
-		const rows = await eventRows(`webhook:app_install:${installId}`);
-		expect(rows.length).toBe(1);
-		// Title is the PARENT issue's; url deep-links the comment itself.
-		expect(rows[0].title).toBe("Prod is down");
-		expect(rows[0].source_url).toBe(
-			"https://github.com/acme/api/issues/11#issuecomment-555",
-		);
-	});
-
-	test("a pull_request delivery lands the PR title + html_url", async () => {
-		await seedAgentRow(AGENT, { organizationId: ORG });
-		const installId = await seedActiveInstall();
 		const app = buildApp();
 
 		const raw = JSON.stringify({
 			action: "opened",
 			installation: { id: Number(INSTALLATION_ID) },
-			pull_request: {
-				number: 42,
-				title: "Add app_installation auth method",
-				html_url: "https://github.com/acme/api/pull/42",
-			},
-			repository: { full_name: "acme/api" },
+			issue: { number: 1, title: "x" },
+			repository: { owner: { login: "acme" }, name: "api", full_name: "acme/api" },
 		});
-		const res = await app.fetch(
-			ghDelivery(raw, { deliveryId: "gh-pr-1", event: "pull_request" }),
-		);
-		expect(res.status).toBe(202);
-
-		const rows = await eventRows(`webhook:app_install:${installId}`);
-		expect(rows.length).toBe(1);
-		expect(rows[0].title).toBe("Add app_installation auth method");
-		expect(rows[0].source_url).toBe("https://github.com/acme/api/pull/42");
+		const res = await app.fetch(ghDelivery(raw, { deliveryId: "gh-unconf-1" }));
+		expect(res.status).toBe(200);
+		// No matching feed for acme/api → triggered:false, a no-op (not an error).
+		expect((await res.json()).triggered).toBe(false);
+		expect(await appInstallEventCount()).toBe(0);
+		// The unrelated repo's feed was left untouched.
+		expect(await feedNextRunAt(otherFeedId)).toBeNull();
 	});
 
 	test("a forged signature is rejected with 401 and lands nothing", async () => {
@@ -408,30 +387,33 @@ describe("app-webhook router (GitHub)", () => {
 		expect((await res.json()).landed).toBe(false);
 	});
 
-	test("redelivery of the same x-github-delivery dedupes to one event", async () => {
+	test("a redelivery just re-stamps next_run_at — idempotent, still no event", async () => {
 		await seedAgentRow(AGENT, { organizationId: ORG });
 		const installId = await seedActiveInstall();
+		const feedId = await seedGithubFeed({ installId, owner: "acme", name: "api" });
 		const app = buildApp();
 
 		const raw = JSON.stringify({
 			action: "edited",
 			installation: { id: Number(INSTALLATION_ID) },
 			issue: { number: 9 },
+			repository: { owner: { login: "acme" }, name: "api" },
 		});
 		const first = await app.fetch(ghDelivery(raw, { deliveryId: "gh-dupe-1" }));
 		const second = await app.fetch(ghDelivery(raw, { deliveryId: "gh-dupe-1" }));
-		expect(first.status).toBe(202);
-		expect(second.status).toBe(202);
-		expect((await second.json()).duplicate).toBe(true);
-		const rows = await eventRows(`webhook:app_install:${installId}`);
-		expect(rows.length).toBe(1);
-		expect(rows[0].origin_id).toBe("gh-dupe-1");
+		expect(first.status).toBe(200);
+		expect(second.status).toBe(200);
+		expect((await second.json()).triggered).toBe(true);
+		// Re-stamping next_run_at is idempotent; the poll (not the webhook) dedupes
+		// the actual content by stable origin_id, so still nothing landed raw.
+		expect(await feedNextRunAt(feedId)).not.toBeNull();
+		expect(await appInstallEventCount()).toBe(0);
 	});
 
-	test("a signed delivery resolves the actor → person and lands NON-EMPTY entity_ids", async () => {
+	test("a signed delivery resolves the acting user into a tenant-scoped person (no raw event)", async () => {
 		await seedAgentRow(AGENT, { organizationId: ORG });
 		await seedPersonResolutionPrereqs(ORG);
-		const installId = await seedActiveInstall();
+		await seedActiveInstall();
 		const app = buildApp();
 
 		const raw = JSON.stringify({
@@ -444,12 +426,13 @@ describe("app-webhook router (GitHub)", () => {
 				user: { login: "Octocat", id: 583231 },
 			},
 			sender: { login: "Octocat", id: 583231 },
-			repository: { full_name: "acme/api" },
+			repository: { owner: { login: "acme" }, name: "api" },
 		});
 		const res = await app.fetch(ghDelivery(raw, { deliveryId: "gh-attr-1" }));
-		expect(res.status).toBe(202);
+		expect(res.status).toBe(200);
 
-		// A person was created for the issue author and the row is attributed.
+		// The webhook keeps the member graph live: a person was created for the
+		// issue author, keyed on the same identity namespaces as the poll path…
 		const people = await personRows(ORG);
 		expect(people.length).toBe(1);
 		expect(people[0].name).toBe("Octocat");
@@ -457,19 +440,14 @@ describe("app-webhook router (GitHub)", () => {
 			"github_login:octocat",
 			"github_user_id:583231",
 		]);
-
-		const rows = await eventRows(`webhook:app_install:${installId}`);
-		expect(rows.length).toBe(1);
-		// THE assertion the PR claims: the landed row carries the resolved person.
-		expect(parseEntityIds(rows[0].entity_ids)).toEqual([Number(people[0].id)]);
-		// Canonical read-time identity slot stamped onto the row.
-		expect(rows[0].metadata.github_login).toBe("octocat");
+		// …without storing a raw event (the poll is the canonical record).
+		expect(await appInstallEventCount()).toBe(0);
 	});
 
 	test("an issue_comment delivery attributes the COMMENT author, not the issue author", async () => {
 		await seedAgentRow(AGENT, { organizationId: ORG });
 		await seedPersonResolutionPrereqs(ORG);
-		const installId = await seedActiveInstall();
+		await seedActiveInstall();
 		const app = buildApp();
 
 		const raw = JSON.stringify({
@@ -488,27 +466,25 @@ describe("app-webhook router (GitHub)", () => {
 				user: { login: "Hubot", id: 42 },
 			},
 			sender: { login: "Hubot", id: 42 },
-			repository: { full_name: "acme/api" },
+			repository: { owner: { login: "acme" }, name: "api" },
 		});
 		const res = await app.fetch(
 			ghDelivery(raw, { deliveryId: "gh-attr-2", event: "issue_comment" }),
 		);
-		expect(res.status).toBe(202);
+		expect(res.status).toBe(200);
 
 		const people = await personRows(ORG);
 		// Only the comment author is resolved by this delivery.
 		expect(people.length).toBe(1);
 		expect(people[0].name).toBe("Hubot");
-
-		const rows = await eventRows(`webhook:app_install:${installId}`);
-		expect(parseEntityIds(rows[0].entity_ids)).toEqual([Number(people[0].id)]);
-		expect(rows[0].metadata.github_login).toBe("hubot");
+		expect(await appInstallEventCount()).toBe(0);
 	});
 
-	test("an unmapped event (push) lands the row but resolves no actor (empty entity_ids)", async () => {
+	test("an unmapped event (push) triggers the repo sync but resolves no actor", async () => {
 		await seedAgentRow(AGENT, { organizationId: ORG });
 		await seedPersonResolutionPrereqs(ORG);
 		const installId = await seedActiveInstall();
+		const feedId = await seedGithubFeed({ installId, owner: "acme", name: "api" });
 		const app = buildApp();
 
 		const raw = JSON.stringify({
@@ -516,22 +492,25 @@ describe("app-webhook router (GitHub)", () => {
 			installation: { id: Number(INSTALLATION_ID) },
 			pusher: { name: "someone" },
 			sender: { login: "someone", id: 9 },
+			repository: { owner: { login: "acme" }, name: "api" },
 		});
 		const res = await app.fetch(
 			ghDelivery(raw, { deliveryId: "gh-push-1", event: "push" }),
 		);
-		expect(res.status).toBe(202);
-		// Delivery still lands (store-everything), just unattributed.
-		const rows = await eventRows(`webhook:app_install:${installId}`);
-		expect(rows.length).toBe(1);
-		expect(parseEntityIds(rows[0].entity_ids)).toEqual([]);
+		expect(res.status).toBe(200);
+		// push carries a repo, so it still marks the feed due…
+		expect((await res.json()).triggered).toBe(true);
+		expect(await feedNextRunAt(feedId)).not.toBeNull();
+		// …but `push` is not an authored-content event, so no person is resolved.
 		expect(await personRows(ORG)).toHaveLength(0);
+		expect(await appInstallEventCount()).toBe(0);
 	});
 
-	test("a redelivered (deduped) delivery does NOT create a person, bump the graph, or land a second event", async () => {
+	test("two deliveries of the same actor resolve to ONE person (idempotent), never an event", async () => {
 		await seedAgentRow(AGENT, { organizationId: ORG });
 		await seedPersonResolutionPrereqs(ORG);
 		const installId = await seedActiveInstall();
+		await seedGithubFeed({ installId, owner: "acme", name: "api" });
 		const app = buildApp();
 
 		const raw = JSON.stringify({
@@ -544,70 +523,20 @@ describe("app-webhook router (GitHub)", () => {
 				user: { login: "Octocat", id: 583231 },
 			},
 			sender: { login: "Octocat", id: 583231 },
-			repository: { full_name: "acme/api" },
+			repository: { owner: { login: "acme" }, name: "api" },
 		});
 
-		// First delivery: persists + resolves the actor → one person.
-		const first = await app.fetch(ghDelivery(raw, { deliveryId: "gh-dedupe-attr" }));
-		expect(first.status).toBe(202);
-		const peopleAfterFirst = await personRows(ORG);
-		expect(peopleAfterFirst.length).toBe(1);
-		const firstAuthoredAt = peopleAfterFirst[0].metadata.last_authored_at;
-		expect(firstAuthoredAt).toBeTruthy();
+		const first = await app.fetch(ghDelivery(raw, { deliveryId: "gh-idem-1" }));
+		const second = await app.fetch(ghDelivery(raw, { deliveryId: "gh-idem-2" }));
+		expect(first.status).toBe(200);
+		expect(second.status).toBe(200);
 
-		// Redelivery of the SAME x-github-delivery: deduped → no new event AND no
-		// entity-graph mutation (no second person, last_authored_at unchanged).
-		const second = await app.fetch(ghDelivery(raw, { deliveryId: "gh-dedupe-attr" }));
-		expect(second.status).toBe(202);
-		expect((await second.json()).duplicate).toBe(true);
-
-		const peopleAfterSecond = await personRows(ORG);
-		expect(peopleAfterSecond.length).toBe(1);
-		// Same person, untouched — resolution never ran on the duplicate.
-		expect(peopleAfterSecond[0].id).toBe(peopleAfterFirst[0].id);
-		expect(peopleAfterSecond[0].metadata.last_authored_at).toBe(firstAuthoredAt);
-
-		// Exactly one event landed.
-		const rows = await eventRows(`webhook:app_install:${installId}`);
-		expect(rows.length).toBe(1);
-	});
-
-	test("TWO concurrent deliveries of the same event resolve the actor exactly once", async () => {
-		await seedAgentRow(AGENT, { organizationId: ORG });
-		await seedPersonResolutionPrereqs(ORG);
-		const installId = await seedActiveInstall();
-		const { app, calls } = buildAppWithActorCounter();
-
-		const raw = JSON.stringify({
-			action: "opened",
-			installation: { id: Number(INSTALLATION_ID) },
-			issue: {
-				number: 11,
-				title: "Prod is down",
-				html_url: "https://github.com/acme/api/issues/11",
-				user: { login: "Octocat", id: 583231 },
-			},
-			sender: { login: "Octocat", id: 583231 },
-			repository: { full_name: "acme/api" },
-		});
-
-		// Fire both deliveries of the SAME x-github-delivery simultaneously. The
-		// delivery-unique index picks one winner; the loser's tx rolls back before
-		// it ever resolves the actor.
-		const [a, b] = await Promise.all([
-			app.fetch(ghDelivery(raw, { deliveryId: "gh-concurrent" })),
-			app.fetch(ghDelivery(raw, { deliveryId: "gh-concurrent" })),
-		]);
-		expect([a.status, b.status]).toEqual([202, 202]);
-
-		// Exactly one actor resolution, one event, one person, one last_authored_at.
-		expect(calls()).toBe(1);
-		const rows = await eventRows(`webhook:app_install:${installId}`);
-		expect(rows.length).toBe(1);
-		expect(parseEntityIds(rows[0].entity_ids).length).toBe(1);
+		// The entity-link upsert is idempotent: two deliveries → one person, and
+		// the webhook never stores an event on either delivery.
 		const people = await personRows(ORG);
 		expect(people.length).toBe(1);
 		expect(people[0].metadata.last_authored_at).toBeTruthy();
+		expect(await appInstallEventCount()).toBe(0);
 	});
 
 	test("an unknown provider path returns 404", async () => {

@@ -38,7 +38,7 @@ import { Hono } from "hono";
 import { createLogger } from "@lobu/core";
 import type { StoredConnection } from "@lobu/core";
 import type { ConnectorWebhookSchema } from "@lobu/connector-sdk";
-import type { DbClient } from "../../../db/client.js";
+import { type DbClient, getDb } from "../../../db/client.js";
 import {
 	handleWebhookIngest,
 	readBodyWithCap,
@@ -123,6 +123,23 @@ export interface AppWebhookProvider {
 		headers: Headers;
 		sql: DbClient;
 	}): Promise<{ entityIds: number[]; metadata: Record<string, string> } | null>;
+	/**
+	 * Optional: handle the delivery as a TRIGGER instead of storing a raw event.
+	 * For connectors with a sync mapping (github), the canonical record is the
+	 * poll — so a delivery just resolves identity (real-time person-graph signal)
+	 * and marks the affected feeds due (`next_run_at = now()`), letting the poll
+	 * fetch the structured update that dedupes/supersedes by stable origin_id. No
+	 * raw blob is stored. Providers that define this NEVER fall through to the raw
+	 * ingest path; providers without it keep raw store (jira/linear). `triggered`
+	 * reports whether a matching feed was marked due (telemetry only — the router
+	 * acks 200 either way; an unconfigured repo is a no-op, not an error).
+	 */
+	onDelivery?(params: {
+		rawBody: Uint8Array;
+		headers: Headers;
+		install: { id: number | string; organizationId: string };
+		sql: DbClient;
+	}): Promise<{ triggered: boolean }>;
 }
 
 /** Parse the raw JSON body once; returns undefined on malformed JSON. */
@@ -139,45 +156,6 @@ function strField(node: unknown, key: string): string | undefined {
 	if (node === null || typeof node !== "object") return undefined;
 	const value = (node as Record<string, unknown>)[key];
 	return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-/**
- * Project a GitHub webhook payload to a human title + source url.
- *
- * GitHub event payloads put the subject under one of a handful of top-level
- * keys, each with `title` + `html_url`:
- *   - `issues`         → `issue.{title,html_url}`
- *   - `pull_request`   → `pull_request.{title,html_url}`
- *   - `discussion`     → `discussion.{title,html_url}`
- * Comment events (`issue_comment`, `pull_request_review_comment`,
- * `discussion_comment`, `commit_comment`) carry the comment under `comment`
- * (whose `html_url` deep-links the comment) AND the parent subject alongside it
- * (`issue`/`pull_request`/`discussion`) — the title belongs to the PARENT, so
- * we read the title from the parent and prefer the comment's own `html_url`.
- * Falls back across keys so a new comment-bearing event still lands a title.
- */
-export function extractGithubWebhookContent(rawBody: Uint8Array): AppWebhookContent {
-	const body = parseJson(rawBody);
-	if (body === null || typeof body !== "object") return {};
-	const root = body as Record<string, unknown>;
-
-	// The subject the title comes from: a comment's parent, else the subject
-	// itself. Order matters only for the parent lookup — a payload has exactly
-	// one of these for a given event.
-	const subject =
-		root.issue ?? root.pull_request ?? root.discussion ?? root.release;
-	const comment = root.comment;
-
-	const title = strField(subject, "title");
-	// Prefer the comment's deep link when this is a comment event; else the
-	// subject's own url.
-	const sourceUrl =
-		strField(comment, "html_url") ?? strField(subject, "html_url");
-
-	const content: AppWebhookContent = {};
-	if (title) content.title = title;
-	if (sourceUrl) content.sourceUrl = sourceUrl;
-	return content;
 }
 
 /**
@@ -207,8 +185,10 @@ export function createSchemaDrivenAppWebhookProvider(options: {
 	extractContent?(rawBody: Uint8Array, headers: Headers): AppWebhookContent;
 	/** Optional actor → person resolver (see {@link AppWebhookProvider.resolveActor}). */
 	resolveActor?: AppWebhookProvider["resolveActor"];
+	/** Optional trigger handler (see {@link AppWebhookProvider.onDelivery}). */
+	onDelivery?: AppWebhookProvider["onDelivery"];
 }): AppWebhookProvider {
-	const { provider, webhookSchema, extractTenant, extractContent, resolveActor } =
+	const { provider, webhookSchema, extractTenant, extractContent, resolveActor, onDelivery } =
 		options;
 	const signatureHeader = webhookSchema.signatureHeader;
 	if (!signatureHeader) {
@@ -241,6 +221,7 @@ export function createSchemaDrivenAppWebhookProvider(options: {
 		extractTenant,
 		...(extractContent ? { extractContent } : {}),
 		...(resolveActor ? { resolveActor } : {}),
+		...(onDelivery ? { onDelivery } : {}),
 	};
 }
 
@@ -258,9 +239,10 @@ export function createSchemaDrivenAppWebhookProvider(options: {
  * (GHES would be the host — out of scope here). A delivery with no
  * `installation.id` (rare app-level events) has no tenant to route to → null.
  *
- * Content: issue/PR/discussion title + html_url (a comment's title is its
- * parent's; its url is the comment deep-link) populate `events.title` +
- * `events.source_url` so the landed row is legible without digging payload_data.
+ * Delivery: github has a sync mapping, so deliveries are TRIGGERS, not stored
+ * raw — `onDelivery` resolves the acting user (real-time person graph) and marks
+ * the affected repo's feeds due so the canonical poll fetches the structured
+ * update (dedupes/supersedes by stable origin_id). Push + backfill stay one set.
  */
 export function createGithubAppWebhookProvider(options: {
 	/** Receiving GitHub App id, stamped as `provider_app_id`. */
@@ -292,21 +274,76 @@ export function createGithubAppWebhookProvider(options: {
 				externalTenantId,
 			};
 		},
-		extractContent(rawBody) {
-			return extractGithubWebhookContent(rawBody);
-		},
-		// Resolve the authoring github actor → a tenant-scoped person. Lazy: the
-		// router hands it the persist transaction so the graph writes are atomic
-		// with the event insert (and never run for deduped/lost-race deliveries).
-		async resolveActor({ organizationId, rawBody, headers, sql }) {
-			return resolveGithubWebhookActor({
-				organizationId,
+		// GitHub has a sync mapping, so the canonical record is the POLL, not the
+		// webhook. Treat each delivery as a trigger: resolve the acting user into a
+		// person (keeps the member graph's real-time signal) and mark the affected
+		// repo's feeds due so the poll fetches the structured update now — which
+		// dedupes/supersedes by stable origin_id. No raw blob is stored, so push
+		// and backfill stay one consolidated dataset.
+		async onDelivery({ rawBody, headers, install, sql }) {
+			const payload = parseJson(rawBody);
+			await resolveGithubWebhookActor({
+				organizationId: install.organizationId,
 				githubEvent: headers.get("x-github-event"),
-				payload: parseJson(rawBody),
+				payload,
 				sql,
-			});
+			}).catch(() => null);
+			const repo = extractGithubRepo(payload);
+			if (!repo) return { triggered: false };
+			const triggered = await markGithubFeedsDue({ sql, install, repo });
+			return { triggered };
 		},
 	});
+}
+
+/** Extract the {owner, name} of the repo a GitHub delivery is about, or null. */
+export function extractGithubRepo(
+	body: unknown,
+): { owner: string; name: string } | null {
+	if (body === null || typeof body !== "object") return null;
+	const repository = (body as Record<string, unknown>).repository;
+	if (repository === null || typeof repository !== "object") return null;
+	const repo = repository as Record<string, unknown>;
+	const name = typeof repo.name === "string" ? repo.name : undefined;
+	const owner = strField(repo.owner, "login");
+	if (owner && name) return { owner, name };
+	// Fall back to full_name ("owner/name") when the split fields are absent.
+	const fullName = typeof repo.full_name === "string" ? repo.full_name : undefined;
+	if (fullName?.includes("/")) {
+		const [o, n] = fullName.split("/", 2);
+		if (o && n) return { owner: o, name: n };
+	}
+	return null;
+}
+
+/**
+ * Mark every active github feed for (install, repo) due NOW so the orchestrator
+ * syncs it on its next tick — the webhook becomes the "when to run" signal, with
+ * the schedule as the self-covering backstop. Idempotent: redeliveries just
+ * re-stamp `next_run_at`. Returns whether any feed matched (telemetry only — an
+ * unconfigured repo is a no-op, not an error).
+ */
+export async function markGithubFeedsDue(params: {
+	sql: DbClient;
+	install: { id: number | string; organizationId: string };
+	repo: { owner: string; name: string };
+}): Promise<boolean> {
+	const { sql, install, repo } = params;
+	const rows = await sql`
+		UPDATE feeds f
+		SET next_run_at = now(), updated_at = now()
+		FROM connections c
+		WHERE f.connection_id = c.id
+		  AND c.organization_id = ${install.organizationId}
+		  AND c.connector_key = 'github'
+		  AND (c.config->>'installation_ref') = ${String(install.id)}
+		  AND f.config->>'repo_owner' = ${repo.owner}
+		  AND f.config->>'repo_name' = ${repo.name}
+		  AND f.status = 'active'
+		  AND f.deleted_at IS NULL
+		RETURNING f.id
+	`;
+	return rows.length > 0;
 }
 
 /** First non-empty `*.self` URL found by a shallow scan of the delivery body. */
@@ -523,7 +560,30 @@ export function createAppWebhookRoutes(deps: AppWebhookRouterDeps): Hono {
 			return json(200, { ok: true, landed: false });
 		}
 
-		// 4. Land the RAW delivery through the same event-log path as connection
+		// 4. Trigger-handling providers (github) treat the delivery as a "sync now"
+		//    signal rather than a record: resolve identity + mark the affected
+		//    repo's feeds due, no raw event. The canonical record is the poll, so
+		//    push and backfill stay one consolidated dataset. Providers without
+		//    onDelivery fall through to the raw store below (jira/linear).
+		if (provider.onDelivery) {
+			try {
+				const { triggered } = await provider.onDelivery({
+					rawBody,
+					headers: c.req.raw.headers,
+					install,
+					sql: getDb(),
+				});
+				return json(200, { ok: true, triggered });
+			} catch (error) {
+				logger.error(
+					{ provider: providerName, installationId: install.id, error: String(error) },
+					"[app-webhook] onDelivery trigger failed",
+				);
+				return json(500, { error: "Failed to handle delivery" });
+			}
+		}
+
+		// 5. Land the RAW delivery through the same event-log path as connection
 		//    ingest. We synthesize a StoredConnection scoped to the install's org
 		//    and keyed on the install id, replaying the PROVIDER's signature scheme
 		//    (from `provider.webhookScheme`, not a hardcoded GitHub one) with the

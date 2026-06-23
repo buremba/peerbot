@@ -4,22 +4,22 @@
  * `computeStableKeys()` stamps a deterministic stable-key string onto each
  * extracted entity (at `keyingConfig.key_output_field`). That key dead-ended:
  * nothing turned the keyed rows into rows in the `entities` table. This module
- * closes that gap. For each keyed row it:
+ * closes that gap. For each keyed row it upserts a child entity, idempotent by
+ * stable key. The stable key is persisted as an `entity_identities` row in a
+ * dedicated `watcher_key` namespace (identifier = `<watcherId>::<stableKey>`),
+ * so a re-run — or a second replica racing the same window — resolves to the
+ * existing entity instead of creating a duplicate. The partial unique index
+ * `idx_entity_identities_live_unique (organization_id, namespace, identifier)
+ * WHERE deleted_at IS NULL` is the lock.
  *
- *   1. Upserts a child entity, idempotent by stable key. The stable key is
- *      persisted as an `entity_identities` row in a dedicated `watcher_key`
- *      namespace (identifier = `<watcherId>::<stableKey>`), so a re-run — or a
- *      second replica racing the same window — resolves to the existing entity
- *      instead of creating a duplicate. The partial unique index
- *      `idx_entity_identities_live_unique (organization_id, namespace,
- *      identifier) WHERE deleted_at IS NULL` is the lock.
- *   2. Emits an append-only `observation` event linking the child entity to the
- *      window (`metadata.window_id` / `stable_key` / `watcher_id`). Idempotent:
- *      a prior observation for the same `(window_id, stable_key)` short-circuits
- *      the insert. Events are append-only — we never DELETE.
+ * Origin provenance (the window that first produced the entity, its stable key,
+ * and the watcher) is stamped onto the entity's own `metadata` at creation —
+ * `metadata.window_id` / `stable_key` / `watcher_id`. There is NO separate
+ * observation event: an entity is promoted once (it's an identity, not a time
+ * series), so its origin lives on the row itself.
  *
- * Both steps run on the caller's transaction handle so the entity, identity, and
- * observation writes commit atomically with the window itself.
+ * The upsert runs on the caller's transaction handle so the entity and identity
+ * writes commit atomically with the window itself.
  *
  * Multi-replica notes:
  *   - `entities.id` / `entity_identities.id` are `nextval()` sequence columns,
@@ -27,10 +27,10 @@
  *     needed here — that's only for the MAX(id)+1 tables).
  *   - The window itself is guarded by `idx_watcher_windows_unique_period`, so at
  *     most one completion creates a given window; idempotent replays reuse it and
- *     re-enter this function, where the per-(window, key) guards make repeats
+ *     re-enter this function, where the per-key identity claim makes repeats
  *     no-ops.
- *   - `fetch_types: false`: never bind a raw JS array — identifiers are scalar
- *     params and ANY-array lookups go through `pgTextArray()`.
+ *   - `fetch_types: false`: never bind a raw JS array — all identifiers here are
+ *     scalar params.
  */
 
 import { slugify } from '@lobu/core';

@@ -1,19 +1,18 @@
 /**
  * Integration test for P2 phase 1: promoting keyed watcher-window rows into
- * real child entities + append-only observation events.
+ * real child entities.
  *
  * complete_window computes stable keys (keying_config) and then promotes each
- * keyed row into:
- *   - a child entity under the watcher's bound parent, keyed by an
- *     entity_identities `watcher_key` claim (idempotency lock), and
- *   - an append-only `observation` event linking it to the window
- *     (metadata.window_id / stable_key / watcher_id).
+ * keyed row into a child entity under the watcher's bound parent, keyed by an
+ * entity_identities `watcher_key` claim (the idempotency lock). Origin
+ * provenance (window_id / stable_key / watcher_id) is stamped onto the child
+ * entity's own metadata — there is no separate observation event.
  *
  * Proves:
  *   1. Completing a window with keyed rows creates the expected child entities
- *      (resolvable by stable key) and one observation event per child.
+ *      (resolvable by stable key), each carrying its origin window in metadata.
  *   2. Re-running the SAME window (run-driven idempotent replay, same window_id)
- *      creates NO duplicate entities and NO duplicate observation events.
+ *      creates NO duplicate entities.
  */
 
 import { inferWatcherGranularityFromSchedule } from '@lobu/connector-sdk';

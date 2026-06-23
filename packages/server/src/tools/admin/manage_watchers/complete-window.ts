@@ -570,12 +570,12 @@ export async function handleCompleteWindow(
     // STEP 8.5: Promote keyed rows into child entities (P2 phase 1)
     // computeStableKeys (STEP 2.6) stamped a deterministic stable key onto each
     // extracted entity; promote those keyed rows into real child entities under
-    // the watcher's bound entity, plus an append-only `observation` event per
-    // child linking it back to this window. Runs on `tx` so the entity +
-    // identity + event writes commit atomically with the window itself.
-    // Idempotent across re-runs and concurrent replicas (entity_identities
-    // live-unique key + per-(window, key) observation guard). Skipped on the
-    // rollup path (early return above).
+    // the watcher's bound entity. Origin provenance (window_id / stable_key /
+    // watcher_id) is stamped onto each child's metadata — no separate event.
+    // Runs on `tx` so the entity + identity writes commit atomically with the
+    // window itself. Idempotent across re-runs and concurrent replicas
+    // (entity_identities live-unique key). Skipped on the rollup path (early
+    // return above).
     // ============================================
     if (keyingConfig) {
       await promoteKeyedEntities({

@@ -40,6 +40,23 @@ const RECENT_SCAN_LIMIT = 5000;
 // re-collects the exact ids per org regardless. Overridable for ops/tests.
 const DISCOVERY_SCAN_TIMEOUT = process.env.EMBED_BACKFILL_SCAN_TIMEOUT || '8s';
 
+// Max organizations to dispatch an embed_backfill run for per */5 tick. Each run
+// is claimed by an independent worker and POSTs its whole batch to the SINGLE
+// embeddings service, which is single-threaded (transformers.js CPU inference
+// blocks the event loop — one batch at a time). N concurrent runs therefore
+// serialize at the service and, on a CPU-constrained node, blow past the
+// worker's 30s embed timeout — every run aborts, the events re-queue, and the
+// backlog never drains (congestion collapse: incident 2026-06-24, embed_backfill
+// 0-completed for hours, EmbedBackfillFailing firing). Default 1 so embed
+// pressure on the service stays serial; raise it only where the embeddings tier
+// is genuinely horizontally scaled. The skipped orgs are not starved — the next
+// tick re-runs discovery and the most-backlogged org that lacks an active run
+// surfaces again (createBackfillRun is idempotent per org).
+function maxOrgsPerTick(): number {
+  const parsed = Number.parseInt(process.env.EMBED_BACKFILL_MAX_ORGS_PER_TICK || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
+
 interface BackfillResult {
   organizations: number;
   runsCreated: number;
@@ -68,7 +85,7 @@ const NOT_SUPERSEDED_PREDICATE =
   'NOT EXISTS (SELECT 1 FROM events newer WHERE newer.supersedes_event_id = e.id)';
 
 // Org-discovery scan, bounded by statement_timeout and run READ ONLY. Returns
-// the per-org recent-window backlog counts (top 10). If the scan exceeds
+// the per-org recent-window backlog counts (top MAX_ORGS_PER_TICK). If the scan exceeds
 // DISCOVERY_SCAN_TIMEOUT it is aborted by Postgres (SQLSTATE 57014) and we skip
 // this cycle rather than error — see DISCOVERY_SCAN_TIMEOUT for why a heavy
 // scan is dangerous. The timeout is set via tx.unsafe (SET rejects bind
@@ -101,7 +118,7 @@ async function discoverBacklogOrgs(needsEmbedding: string): Promise<readonly Org
         ) sub
         GROUP BY organization_id
         ORDER BY event_count DESC
-        LIMIT 10
+        LIMIT ${maxOrgsPerTick()}
       `;
     });
   } catch (error) {

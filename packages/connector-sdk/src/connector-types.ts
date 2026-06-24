@@ -318,6 +318,34 @@ export interface ConnectorAuthAppInstallation {
   /** Provider key, e.g. `'github' | 'slack' | 'jira'`. */
   provider: string;
   /**
+   * The install HANDSHAKE shape. The gateway's generic install engine mounts a
+   * start + callback route per integration connector and dispatches the actual
+   * handshake on THIS — never on a provider name:
+   * - `'oauth-code-exchange'` — the standard "Add to <app>" OAuth flow: redirect
+   *   to {@link authorizeUrl} with the declared `clientIdKey` + scopes
+   *   ({@link permissions}), then on callback exchange the `code` at
+   *   {@link tokenUrl} and complete the install (Slack; reusable by any future
+   *   OAuth-code app). Mounted at `/{provider}/install` + `/{provider}/oauth_callback`.
+   * - `'github-app'` — GitHub's App-installation flow (installation_id, ownership
+   *   verification, repo/team provisioning, recovery via user-authorization).
+   *   Mounted at the GitHub App's fixed `/github/app/install[/callback]` paths.
+   * Omit to declare no hosted install route for this method.
+   */
+  installShape?: 'oauth-code-exchange' | 'github-app';
+  /**
+   * `oauth-code-exchange` only: the provider's OAuth authorize URL the install
+   * start route redirects to (e.g. Slack `https://slack.com/oauth/v2/authorize`).
+   * Gateway-side; carries no secret.
+   */
+  authorizeUrl?: string;
+  /**
+   * `oauth-code-exchange` only: the provider's token-exchange URL used to turn the
+   * callback `code` into an access token (e.g. Slack
+   * `https://slack.com/api/oauth.v2.access`). Gateway-side; the exchange runs WITH
+   * the client secret in core and never reaches connector/worker code.
+   */
+  tokenUrl?: string;
+  /**
    * Provider instance: `'cloud'` (default) for the public SaaS, a GitHub
    * Enterprise Server host, or an Atlassian site class. Lets one connector serve
    * multiple deployments of the same provider.

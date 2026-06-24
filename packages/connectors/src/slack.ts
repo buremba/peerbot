@@ -104,13 +104,20 @@ export default class SlackConnector extends IntegrationConnector {
           type: 'app_installation',
           provider: 'slack',
           providerInstance: 'cloud',
+          // "Add to Slack" is a standard OAuth code exchange: the gateway's
+          // generic install engine mounts /slack/install + /slack/oauth_callback,
+          // redirects to `authorizeUrl` with the client id + scopes, and on
+          // callback exchanges the code at `tokenUrl`. The engine dispatches on
+          // this shape, never on the `slack` name.
+          installShape: 'oauth-code-exchange',
+          authorizeUrl: 'https://slack.com/oauth/v2/authorize',
+          tokenUrl: 'https://slack.com/api/oauth.v2.access',
           // The hosted Lobu Slack app's OAuth client (used for the "Add to Slack"
           // install handshake) + the signing secret used to verify inbound
           // events. Declared as env-var NAMES; the gateway resolves the values.
           clientIdKey: 'SLACK_CLIENT_ID',
           clientSecretKey: 'SLACK_CLIENT_SECRET',
           webhookSecretKey: 'SLACK_SIGNING_SECRET',
-          installUrlTemplate: 'https://slack.com/oauth/v2/authorize',
           permissions: SLACK_BOT_SCOPES,
           events: SLACK_BOT_EVENTS,
           required: false,

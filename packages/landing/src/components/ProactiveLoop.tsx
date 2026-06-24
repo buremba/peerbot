@@ -396,10 +396,7 @@ function SourcesCardImpl({
         </div>
       ) : null}
 
-      <div
-        class="relative z-10 mt-auto flex items-center justify-between gap-3 border-t pt-2"
-        style={{ borderColor: "var(--color-page-border)" }}
-      >
+      <div class="relative z-10 mt-auto flex items-center justify-between gap-3 pt-2">
         <span
           class="text-[11.5px]"
           style={{ color: "var(--color-page-text-muted)" }}
@@ -433,8 +430,8 @@ function MemoryCard({
           {memory.label ? <Eyebrow>{memory.label}</Eyebrow> : <span />}
           {memory.typeChip ? (
             <span
-              class="rounded-md border px-2 py-0.5 font-mono text-[10.5px]"
-              style={{ borderColor: "var(--color-page-border)", color: ACCENT }}
+              class="rounded-md px-2 py-0.5 font-mono text-[10.5px]"
+              style={{ backgroundColor: "var(--color-page-surface-dim)", color: ACCENT }}
             >
               {memory.typeChip}
             </span>
@@ -444,10 +441,9 @@ function MemoryCard({
 
       {/* Expanded: the record that drifted */}
       <div
-        class={`rounded-[10px] border ${scanning ? "memory-scan-shell" : ""}`}
+        class={`rounded-[10px] ${scanning ? "memory-scan-shell" : ""}`}
         style={{
-          borderColor: `${statusColor(primary.status.tone)}55`,
-          backgroundColor: "var(--color-page-surface)",
+          backgroundColor: "var(--color-page-surface-dim)",
         }}
       >
         <div class="flex items-start justify-between gap-3 px-3 py-2">
@@ -470,10 +466,7 @@ function MemoryCard({
           <StatusBadge status={primary.status} />
         </div>
 
-        <div
-          class="flex flex-wrap gap-x-6 gap-y-1 border-t px-3 py-2 font-mono text-[12px]"
-          style={{ borderColor: "var(--color-page-border)" }}
-        >
+        <div class="flex flex-wrap gap-x-6 gap-y-1 px-3 py-2 font-mono text-[12px]">
           {primary.fields.map((row) => (
             <span key={row[0]}>
               <span style={{ color: "var(--color-page-text-muted)" }}>
@@ -485,10 +478,7 @@ function MemoryCard({
         </div>
 
         {/* Event timeline the values above are derived from */}
-        <div
-          class="border-t px-3 py-2.5"
-          style={{ borderColor: "var(--color-page-border)" }}
-        >
+        <div class="px-3 py-2.5">
           <div
             class="mb-2 text-[11px]"
             style={{ color: "var(--color-page-text-muted)" }}
@@ -541,8 +531,8 @@ function MemoryCard({
       {memory.others.map((row) => (
         <div
           key={row.name}
-          class="flex items-center justify-between rounded-[10px] border px-3 py-2"
-          style={{ borderColor: "var(--color-page-border)" }}
+          class="flex items-center justify-between rounded-[10px] px-3 py-2"
+          style={{ backgroundColor: "var(--color-page-surface-dim)" }}
         >
           <span
             class="font-mono text-[13px]"
@@ -583,10 +573,7 @@ function GoalCard({
       >
         “{goal.prompt}”
       </p>
-      <div
-        class="mt-auto flex items-center justify-between gap-3 border-t pt-2"
-        style={{ borderColor: "var(--color-page-border)" }}
-      >
+      <div class="mt-auto flex items-center justify-between gap-3 pt-2">
         <span
           class="text-[11.5px]"
           style={{ color: "var(--color-page-text-muted)" }}
@@ -675,7 +662,7 @@ export function MemoryLoop({ data }: { data: LoopData }) {
               class="flex w-full flex-col gap-3"
               style={{ minWidth: "280px" }}
             >
-              <SampleChat useCase={data.chat} theme={SLACK_THEME} />
+              <SampleChat useCase={data.chat} theme={SLACK_THEME} noBorder />
               <ChatChannels />
             </div>
           }

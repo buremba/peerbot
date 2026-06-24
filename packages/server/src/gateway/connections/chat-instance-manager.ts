@@ -75,22 +75,57 @@ const logger = createLogger("chat-instance-manager");
  * per-agent or per-user attribution. Returns null on any failure so the home
  * tab degrades to a slug-less dashboard link rather than failing to render.
  */
+/** How many recent events the home tab's "Recent activity" list shows. */
+const SLACK_HOME_RECENT_LIMIT = 5;
+
+/** Title an event for the recent list: its title, else a payload snippet. */
+function recentDisplayTitle(
+  title: string | null,
+  payloadText: string | null,
+): string {
+  const t = title?.trim();
+  if (t) return t;
+  const snippet = payloadText?.replace(/\s+/g, " ").trim();
+  if (snippet) {
+    return snippet.length > 60 ? `${snippet.slice(0, 59)}…` : snippet;
+  }
+  return "(untitled)";
+}
+
 async function resolveSlackHomeContext(
   organizationId: string,
 ): Promise<SlackHomeContext | null> {
   try {
-    const rows = await getDb()`
-      SELECT
-        (SELECT slug FROM organization WHERE id = ${organizationId}) AS org_slug,
-        (SELECT count(*) FROM entities
-           WHERE organization_id = ${organizationId} AND deleted_at IS NULL)
-          AS entities_tracked,
-        (SELECT count(*) FROM events
-           WHERE organization_id = ${organizationId}
-             AND created_at >= date_trunc('day', now()))
-          AS captured_today
-    `;
-    const row = rows[0] as
+    const db = getDb();
+    const [countRows, recentRows] = await Promise.all([
+      db`
+        SELECT
+          (SELECT slug FROM organization WHERE id = ${organizationId}) AS org_slug,
+          (SELECT count(*) FROM entities
+             WHERE organization_id = ${organizationId} AND deleted_at IS NULL)
+            AS entities_tracked,
+          (SELECT count(*) FROM events
+             WHERE organization_id = ${organizationId}
+               AND created_at >= date_trunc('day', now()))
+            AS captured_today
+      `,
+      // Mirrors the web "recent" feed (resolve_path.ts fetchRecentContent):
+      // supersession-masked, internal corrections excluded, newest first.
+      db`
+        SELECT
+          ev.title,
+          ev.payload_text,
+          COALESCE(ev.connector_key, cn.connector_key) AS platform,
+          extract(epoch FROM COALESCE(ev.occurred_at, ev.created_at))::bigint AS ts
+        FROM current_event_records ev
+        LEFT JOIN connections cn ON cn.id = ev.connection_id
+        WHERE ev.organization_id = ${organizationId}
+          AND ev.semantic_type <> 'correction'
+        ORDER BY COALESCE(ev.occurred_at, ev.created_at) DESC
+        LIMIT ${SLACK_HOME_RECENT_LIMIT}
+      `,
+    ]);
+    const row = countRows[0] as
       | {
           org_slug: string | null;
           entities_tracked: number | string;
@@ -98,10 +133,23 @@ async function resolveSlackHomeContext(
         }
       | undefined;
     if (!row) return null;
+    const recent = (
+      recentRows as {
+        title: string | null;
+        payload_text: string | null;
+        platform: string | null;
+        ts: number | string | null;
+      }[]
+    ).map((r) => ({
+      title: recentDisplayTitle(r.title, r.payload_text),
+      platform: r.platform,
+      ts: Number(r.ts) || 0,
+    }));
     return {
       orgSlug: row.org_slug,
       entitiesTracked: Number(row.entities_tracked) || 0,
       capturedToday: Number(row.captured_today) || 0,
+      recent,
     };
   } catch (error) {
     logger.warn(

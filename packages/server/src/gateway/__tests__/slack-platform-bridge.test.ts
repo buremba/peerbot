@@ -341,6 +341,10 @@ describe("Slack platform bridge", () => {
       orgSlug: "acme",
       entitiesTracked: 976,
       capturedToday: 5,
+      recent: [
+        { title: "Acme raised a Series B", platform: "gmail", ts: 1_700_000_000 },
+        { title: "Standup notes", platform: null, ts: 1_700_000_100 },
+      ],
     }));
     registerSlackAppHome(h.chat, connection(), {
       publicGatewayUrl: "https://gw.example/",
@@ -361,6 +365,31 @@ describe("Slack platform bridge", () => {
     // Counts render as a context line.
     expect(text).toContain("976 tracked");
     expect(text).toContain("5 captured today");
+    // Recent activity list renders with a source label and a Slack date token.
+    expect(text).toContain("Recent activity");
+    expect(text).toContain("Acme raised a Series B");
+    expect(text).toContain("Gmail");
+    expect(text).toContain("<!date^1700000000");
+  });
+
+  test("recent titles are escaped and the list is skipped when empty", async () => {
+    const h = makeHomeChat();
+    registerSlackAppHome(h.chat, connection(), {
+      publicGatewayUrl: "https://gw.example",
+      resolveHomeContext: mock(async () => ({
+        orgSlug: "acme",
+        entitiesTracked: 1,
+        capturedToday: 0,
+        recent: [{ title: "<script>&", platform: null, ts: 1 }],
+      })),
+    });
+    const publishHomeView = mock(async () => undefined);
+    await h.open("U123", publishHomeView);
+    const text = blocksText(publishHomeView.mock.calls[0]![1] as any);
+    expect(text).toContain("Recent activity");
+    // mrkdwn control chars escaped, JSON-encoded in the serialized blocks.
+    expect(text).toContain("&lt;script&gt;&amp;");
+    expect(text).not.toContain("<script>");
   });
 
   test("dashboard card links to the web root and omits counts when context is unavailable", async () => {
@@ -389,6 +418,7 @@ describe("Slack platform bridge", () => {
         orgSlug: "acme",
         entitiesTracked: 1,
         capturedToday: 1,
+        recent: [],
       })),
     });
     const publishHomeView = mock(async () => undefined);
@@ -404,6 +434,7 @@ describe("Slack platform bridge", () => {
       orgSlug: "acme",
       entitiesTracked: 1,
       capturedToday: 1,
+      recent: [],
     }));
     registerSlackAppHome(
       h.chat,

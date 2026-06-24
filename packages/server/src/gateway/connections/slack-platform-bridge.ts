@@ -149,10 +149,22 @@ type SlackActionEvent = {
   raw?: unknown;
 };
 
+/** A single "what's recent" row for the home tab, mirroring the web's recent feed. */
+export interface SlackHomeRecentItem {
+  /** Display title (event title, or a payload snippet, or a fallback). */
+  title: string;
+  /** Source label (connector key / platform), or null when unknown. */
+  platform: string | null;
+  /** Unix seconds of occurred_at|created_at — rendered via a Slack date token. */
+  ts: number;
+}
+
 /**
  * Glanceable, org-scoped context for the home tab's dashboard card. `events`
  * has no per-agent or per-user attribution column, so every count here is
- * organization-wide — never present it as "your" items.
+ * organization-wide — never present it as "your" items. (Per-user delivery
+ * lives in `notification_targets`, but it's keyed on Lobu user ids and is
+ * empty for unlinked Slack users, so it isn't surfaced here.)
  */
 export interface SlackHomeContext {
   /** Org slug for the dashboard deep link, or null if it can't be resolved. */
@@ -161,6 +173,8 @@ export interface SlackHomeContext {
   entitiesTracked: number;
   /** Events captured today (org-wide, local server day). */
   capturedToday: number;
+  /** Most-recent org events (mirrors the web "recent" feed), newest first. */
+  recent: SlackHomeRecentItem[];
 }
 
 /** Dependencies the App Home tab needs to render status and run OAuth. */
@@ -268,6 +282,43 @@ function trimTrailingSlash(url: string): string {
   return url.replace(/\/+$/, "");
 }
 
+/** Turn a connector key like `apple.screen_time` into `Apple Screen Time`. */
+function humanizeSource(platform: string | null): string | null {
+  if (!platform) return null;
+  return platform.replace(/[._-]+/g, " ").replace(/\b\w/g, (c) =>
+    c.toUpperCase(),
+  );
+}
+
+/** Escape Slack mrkdwn control chars so titles can't inject formatting. */
+function escapeMrkdwn(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Render the "Recent activity" list as a single section, or `[]` if empty. */
+function recentBlocks(
+  recent: SlackHomeRecentItem[],
+): Record<string, unknown>[] {
+  if (recent.length === 0) return [];
+  const lines = recent.map((item) => {
+    const title = escapeMrkdwn(item.title);
+    const source = humanizeSource(item.platform);
+    // `<!date^…>` renders in the viewer's own timezone; the pipe text is the
+    // fallback Slack shows if it can't resolve the token.
+    const when = `<!date^${item.ts}^{date_short_pretty}|recently>`;
+    return source
+      ? `• *${title}*  ·  ${escapeMrkdwn(source)}  ·  ${when}`
+      : `• *${title}*  ·  ${when}`;
+  });
+  return [
+    {
+      type: "section",
+      text: { type: "mrkdwn", text: `*Recent activity*\n${lines.join("\n")}` },
+    },
+    { type: "divider" },
+  ];
+}
+
 /**
  * The dashboard card: a "Open dashboard" deep link into the web app plus a
  * context line of org-wide counts. Returns `[]` when there's nowhere to link
@@ -355,6 +406,7 @@ async function buildSlackHomeBlocks(
       );
     }
     blocks.push(...dashboardBlocks(deps.publicGatewayUrl, context));
+    blocks.push(...recentBlocks(context?.recent ?? []));
   }
 
   if (!isPreview && connection.agentId && deps.mcpConfigService) {

@@ -249,6 +249,147 @@ describe("computeDiff — idempotency (applying twice is a no-op)", () => {
       expect(row.changedFields).toContain("metrics");
   });
 
+  test("entity type: same declared eventKinds is a noop (round-trips verbatim)", () => {
+    const eventKinds = {
+      valuation: {
+        description: "A valuation snapshot",
+        metadataSchema: {
+          type: "object",
+          properties: { amount: { "x-table-column": 1 } },
+        },
+      },
+    };
+    const desired = buildState([], {
+      memorySchema: {
+        entityTypes: [{ slug: "deal", name: "Deal", eventKinds }],
+        relationshipTypes: [],
+      },
+    });
+    const afterFirstApply: RemoteSnapshot = {
+      ...emptyRemote(),
+      // Remote hoists event_kinds verbatim — structurally identical to desired.
+      entityTypes: [{ slug: "deal", name: "Deal", eventKinds }],
+    };
+    const plan = computeDiff(desired, afterFirstApply);
+    const row = plan.rows.find((r) => r.kind === "entity-type");
+    expect(row?.verb).toBe("noop");
+    expect(plan.counts.update).toBe(0);
+  });
+
+  test("entity type: a changed eventKind is an update (eventKinds diffed)", () => {
+    const desired = buildState([], {
+      memorySchema: {
+        entityTypes: [
+          {
+            slug: "deal",
+            name: "Deal",
+            eventKinds: { note: { description: "v2" } },
+          },
+        ],
+        relationshipTypes: [],
+      },
+    });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      entityTypes: [
+        {
+          slug: "deal",
+          name: "Deal",
+          eventKinds: { note: { description: "v1" } },
+        },
+      ],
+    };
+    const plan = computeDiff(desired, remote);
+    const row = plan.rows.find((r) => r.kind === "entity-type");
+    expect(row?.verb).toBe("update");
+    if (row?.kind === "entity-type")
+      expect(row.changedFields).toContain("eventKinds");
+  });
+
+  test("entity type: same declared viewTemplate is a noop", () => {
+    const viewTemplate = { type: "card", children: [] };
+    const desired = buildState([], {
+      memorySchema: {
+        entityTypes: [{ slug: "deal", name: "Deal", viewTemplate }],
+        relationshipTypes: [],
+      },
+    });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      entityTypes: [{ slug: "deal", name: "Deal", viewTemplate }],
+    };
+    const plan = computeDiff(desired, remote);
+    expect(plan.rows.find((r) => r.kind === "entity-type")?.verb).toBe("noop");
+  });
+
+  test("entity type: a changed declared viewTemplate is an update", () => {
+    const desired = buildState([], {
+      memorySchema: {
+        entityTypes: [
+          {
+            slug: "deal",
+            name: "Deal",
+            viewTemplate: { type: "card", id: "v2" },
+          },
+        ],
+        relationshipTypes: [],
+      },
+    });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      entityTypes: [
+        {
+          slug: "deal",
+          name: "Deal",
+          viewTemplate: { type: "card", id: "v1" },
+        },
+      ],
+    };
+    const plan = computeDiff(desired, remote);
+    const row = plan.rows.find((r) => r.kind === "entity-type");
+    expect(row?.verb).toBe("update");
+    if (row?.kind === "entity-type")
+      expect(row.changedFields).toContain("viewTemplate");
+  });
+
+  test("entity type: omitted viewTemplate is unmanaged WITHOUT prune (no churn)", () => {
+    const desired = buildState([], {
+      memorySchema: {
+        entityTypes: [{ slug: "deal", name: "Deal" }],
+        relationshipTypes: [],
+      },
+    });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      // A UI-authored template the config doesn't mention.
+      entityTypes: [
+        { slug: "deal", name: "Deal", viewTemplate: { type: "card" } },
+      ],
+    };
+    const plan = computeDiff(desired, remote);
+    expect(plan.rows.find((r) => r.kind === "entity-type")?.verb).toBe("noop");
+  });
+
+  test("entity type: omitted viewTemplate WITH prune clears a present remote template", () => {
+    const desired = buildState([], {
+      memorySchema: {
+        entityTypes: [{ slug: "deal", name: "Deal" }],
+        relationshipTypes: [],
+      },
+    });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      entityTypes: [
+        { slug: "deal", name: "Deal", viewTemplate: { type: "card" } },
+      ],
+    };
+    const plan = computeDiff(desired, remote, { prune: true });
+    const row = plan.rows.find((r) => r.kind === "entity-type");
+    expect(row?.verb).toBe("update");
+    if (row?.kind === "entity-type")
+      expect(row.changedFields).toContain("viewTemplate");
+  });
+
   test("entity type: no metrics on either side is a noop (no churn)", () => {
     const desired = buildState([], {
       memorySchema: {

@@ -339,7 +339,6 @@ describe("all agent MCP tools — registry-driven e2e (model-free)", () => {
 				slug: "coverage-watcher",
 				name: "Coverage Watcher",
 				prompt: "Track coverage signals.",
-				extraction_schema: { type: "object", properties: {} },
 				agent_id: agentId,
 			},
 			TEST_ENV,

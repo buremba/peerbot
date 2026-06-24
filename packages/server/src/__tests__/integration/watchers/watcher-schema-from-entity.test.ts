@@ -1,9 +1,9 @@
 /**
  * Integration test: a watcher derives its extraction schema from its target
  * entity type's metadata_schema (consolidation — "schema lives on the entity
- * type"). When a watcher names keying_config.entity_type and supplies NO inline
- * extraction_schema, complete_window validates the extracted data against the
- * entity type's schema — the SAME schema that validates manual entity writes, so
+ * type"). When a watcher names keying_config.entity_type, complete_window
+ * validates the extracted data against the entity type's schema — the SAME
+ * schema that validates manual entity writes, so
  * a record's shape is defined exactly once.
  *
  * Proves:
@@ -11,7 +11,7 @@
  *      (single + nested entity_path).
  *   2. deriveWatcherExtractionSchema resolves a real entity type's schema.
  *   3. complete_window REJECTS extracted data that violates the entity type's
- *      schema and ACCEPTS data that conforms — with no inline extraction_schema.
+ *      schema and ACCEPTS data that conforms — with no inline watcher schema.
  */
 
 import { inferWatcherGranularityFromSchedule } from '@lobu/connector-sdk';
@@ -102,7 +102,7 @@ async function setupEntityTypedWatcher() {
     name: 'Schema Agent',
   });
 
-  // NB: NO extraction_schema — the watcher relies on the entity type's schema.
+  // NB: no inline watcher schema — the watcher relies on the entity type's schema.
   const watcher = (await workspace.owner.watchers.create({
     entity_id: parentEntity.id,
     slug: 'schema-watcher',
@@ -185,7 +185,7 @@ describe('complete_window derives its schema from the entity type', () => {
         extracted_data: { problems: [{ category: 'Stability' }] },
         run_metadata: { watcher_run_id: runId },
       })
-    ).rejects.toThrow(/extraction_schema|does not match|name/i);
+    ).rejects.toThrow(/does not match|name/i);
   });
 
   it('ACCEPTS extracted data that conforms to the entity type schema (no inline schema)', async () => {

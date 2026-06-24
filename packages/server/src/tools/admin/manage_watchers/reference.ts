@@ -85,19 +85,11 @@ export function handleGetComponentReference(): {
           name: 'Problem Detection',
           description: 'Extracts recurring product issues from source content.',
           prompt: 'Analyze {{entities}} feedback and extract recurring problems.',
-          extraction_schema: {
-            type: 'object',
-            properties: {
-              problems: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: { name: { type: 'string' }, severity: { type: 'string' } },
-                  required: ['name', 'severity'],
-                },
-              },
-            },
-            required: ['problems'],
+          keying_config: {
+            entity_type: 'problem',
+            entity_path: 'problems',
+            key_fields: ['name'],
+            key_output_field: 'problem_key',
           },
           data: {
             daily_volume: {

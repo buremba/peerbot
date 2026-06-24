@@ -105,6 +105,39 @@ export async function executeReaction(options: ExecuteReactionOptions): Promise<
  * also happens inside `runScript` itself; this is a fast-path for
  * pre-validation.
  */
+/**
+ * Extract a reaction's exported `input` schema (a TypeBox schema, i.e. plain
+ * JSON Schema) by loading the compiled module in the isolate WITHOUT invoking
+ * its handler. This is how the watcher's extraction contract is derived from
+ * the reaction: the worker is told the exact shape the reaction will
+ * `Value.Parse`, so "the reaction owns the schema" holds end to end.
+ *
+ * Returns null when the reaction declares no `input` export (legacy/free-form
+ * reactions) or the load fails — callers then fall back to `{ summary }`.
+ */
+export async function extractReactionInputSchema(
+  source: string
+): Promise<Record<string, unknown> | null> {
+  // Pass RAW TS — runScript compiles it once (external:[], bundling the SDK).
+  // Pre-compiling here would double-compile and mangle the named export.
+  // Extract mode never invokes the handler, so the guest never touches the SDK
+  // — a stub keeps this DB/env-free. The reaction's top-level only constructs
+  // its `input` schema.
+  const result = await runScript({
+    source,
+    sdk: {} as unknown as Parameters<typeof runScript>[0]['sdk'],
+    allowCrossOrg: false,
+    context: {},
+    extractExport: 'input',
+    limits: { timeoutMs: 5_000 },
+  });
+  if (!result.success) return null;
+  const v = result.returnValue;
+  return v && typeof v === 'object' && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : null;
+}
+
 export async function compileReactionScript(source: string): Promise<string> {
   // Match `runScript`'s execute-time esbuild config exactly so save-time and
   // runtime accept the same set of imports. Drift here used to externalize

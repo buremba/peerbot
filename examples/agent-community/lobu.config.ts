@@ -155,26 +155,6 @@ const opportunityMatcher = defineWatcher({
   ),
   prompt:
     "Monitor connected profiles, newsletters, websites, and member updates for new launches, posts, hiring signals, funding news, and project changes. Identify which members are likely to care, explain why, and queue approved intro or outreach drafts.\n",
-  extractionSchema: {
-    type: "object",
-    required: ["signals"],
-    properties: {
-      signals: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            type: { type: "string" },
-            source: { type: "string" },
-            related_topics: { type: "array", items: { type: "string" } },
-            interested_members: { type: "array", items: { type: "string" } },
-            reason: { type: "string" },
-            suggested_action: { type: "string" },
-          },
-        },
-      },
-    },
-  },
 });
 
 export default defineConfig({

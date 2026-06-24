@@ -119,6 +119,20 @@ export default class JiraConnector extends ConnectorRuntime<JiraCheckpoint, Jira
       signatureHeader: 'x-hub-signature',
       algorithm: 'sha256',
       signaturePrefix: 'sha256=',
+      // App-installation delivery: one webhook is configured ONCE on the Jira
+      // Connect app; deliveries route via `/api/v1/app-webhooks/jira`. Jira
+      // bodies don't carry the cloudId, but every entity exposes a REST `self`
+      // URL on its site host — the tenant is that host (one install per site).
+      delivery: 'app_installation',
+      routingKeyPaths: [
+        'self',
+        'issue.self',
+        'comment.self',
+        'user.self',
+        'project.self',
+        'version.self',
+      ],
+      routingKeyTransform: 'url-host',
     },
     authSchema: {
       methods: [

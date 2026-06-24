@@ -72,6 +72,13 @@ export interface AgentSettings {
   /** Enable verbose logging (show tool calls, reasoning, etc.) */
   verboseLogging?: boolean;
   /**
+   * Render the agent's tool invocations (name + args + result) as cards in the
+   * web chat. Off by default — tool internals are noise for most end users, so
+   * this is an opt-in display toggle. Gates both the live `tool_use` stream and
+   * the persisted tool-call blocks rebuilt on reload.
+   */
+  showToolCalls?: boolean;
+  /**
    * MCP tool patterns the operator has pre-approved. Each entry is a grant
    * pattern (e.g. "/mcp/gmail/tools/send_email" or "/mcp/linear/tools/*").
    * Synced to the grant store at deployment time to bypass the approval card

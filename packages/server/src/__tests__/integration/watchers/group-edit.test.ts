@@ -55,11 +55,6 @@ async function seedRootWatcher(workspace: TestWorkspace, suffix: string) {
     slug: `digest-${suffix}`,
     name: `Digest ${suffix}`,
     prompt: 'Summarize content for {{entities}}.',
-    extraction_schema: {
-      type: 'object',
-      properties: { summary: { type: 'string' } },
-      required: ['summary'],
-    },
     schedule: '0 9 * * *',
     agent_id: agent.agentId,
   })) as { watcher_id: string };
@@ -133,7 +128,7 @@ describe('watcher group edit contract', () => {
     expect(Number(versionCount[0].n)).toBe(1);
   });
 
-  it('create_from_version copies the reaction script onto each new assignment', async () => {
+  it('create_from_version copies the reaction script AND its input schema onto each new assignment', async () => {
     const sql = getTestDb();
     const workspace = await TestWorkspace.create({ name: 'Group Script Copy Org' });
     const { watcherId: rootId } = await seedRootWatcher(workspace, 'script-copy');
@@ -142,7 +137,12 @@ describe('watcher group edit contract', () => {
       {
         action: 'set_reaction_script',
         watcher_id: String(rootId),
-        reaction_script: 'export default async function reaction() { return; }',
+        // Declares an `input` contract → reaction_input_schema is populated. A
+        // clone must carry BOTH the script and the schema, else the cloned
+        // reaction silently loses its extraction contract (runs free-form).
+        reaction_script:
+          'export const input = { type: "object", properties: { s: { type: "string" } }, required: ["s"] };\n' +
+          'export default async function reaction() { return; }',
       } as never,
       {} as Env,
       ownerCtx(workspace)
@@ -161,10 +161,54 @@ describe('watcher group edit contract', () => {
     const siblingId = await assignToEntity(workspace, rootVersionId, siblingEntity.id);
 
     const [siblingRow] = await sql`
-      SELECT reaction_script, reaction_script_compiled FROM watchers WHERE id = ${siblingId}
+      SELECT reaction_script, reaction_script_compiled, reaction_input_schema
+      FROM watchers WHERE id = ${siblingId}
     `;
     expect(siblingRow.reaction_script).toContain('reaction');
     expect(siblingRow.reaction_script_compiled).not.toBeNull();
+    // The reaction-owned input contract travels with the clone.
+    const siblingSchema = siblingRow.reaction_input_schema as Record<string, unknown> | null;
+    expect(siblingSchema).not.toBeNull();
+    expect(JSON.stringify(siblingSchema)).toContain('"s"');
+  });
+
+  it('set_reaction_script extracts the exported input schema to reaction_input_schema', async () => {
+    const sql = getTestDb();
+    const workspace = await TestWorkspace.create({ name: 'Reaction Input Org' });
+    const { watcherId: rootId } = await seedRootWatcher(workspace, 'react-input');
+
+    await manageWatchers(
+      {
+        action: 'set_reaction_script',
+        watcher_id: String(rootId),
+        // `input` is a PLAIN JSON Schema (no typebox — it breaks the isolate
+        // client). The host validates extracted_data against it.
+        reaction_script:
+          'export const input = { type: "object", properties: { s: { type: "string" } }, required: ["s"] };\n' +
+          'export default async function reaction(ctx) { void ctx.extracted_data; }',
+      } as never,
+      {} as Env,
+      ownerCtx(workspace)
+    );
+
+    const [row] = await sql`
+      SELECT reaction_input_schema FROM watchers WHERE id = ${rootId}
+    `;
+    const schema = row.reaction_input_schema as Record<string, unknown> | null;
+    expect(schema).not.toBeNull();
+    expect(schema?.type).toBe('object');
+    expect(JSON.stringify(schema)).toContain('"s"');
+
+    // Clearing the script wipes the cached schema too.
+    await manageWatchers(
+      { action: 'set_reaction_script', watcher_id: String(rootId), reaction_script: '' } as never,
+      {} as Env,
+      ownerCtx(workspace)
+    );
+    const [cleared] = await sql`
+      SELECT reaction_input_schema FROM watchers WHERE id = ${rootId}
+    `;
+    expect(cleared.reaction_input_schema ?? null).toBeNull();
   });
 
   it('create_version cascades current_version_id and name across the whole group', async () => {

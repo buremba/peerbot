@@ -99,8 +99,8 @@ export default defineConfig({
             { label: "Discord", link: "/platforms/discord/" },
             { label: "Microsoft Teams", link: "/platforms/teams/" },
             { label: "Google Chat", link: "/platforms/google-chat/" },
+            { label: "Web App", link: "/platforms/web/" },
             { label: "WhatsApp", link: "/platforms/whatsapp/" },
-            { label: "Telegram", link: "/platforms/telegram/" },
           ],
         },
         {

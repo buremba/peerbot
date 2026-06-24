@@ -21,7 +21,7 @@ lobu memory configure --url <mcp-url> --org <org-slug>
 lobu memory health    --url <mcp-url> --org <org-slug>
 ```
 
-Replace `<mcp-url>` with your workspace MCP URL: `https://lobu.ai/mcp/acme` for cloud, or `http://localhost:8787/mcp` for the local runtime. `lobu memory configure` writes a `tokenCommand` that shells out to `lobu token --raw`, so the plugin reuses your top-level Lobu CLI login rather than holding its own credential.
+Replace `<mcp-url>` with your workspace MCP URL: `https://app.lobu.ai/mcp/acme` for cloud, or `http://localhost:8787/mcp` for the local runtime. `lobu memory configure` writes a `tokenCommand` that shells out to `lobu token --raw`, so the plugin reuses your top-level Lobu CLI login rather than holding its own credential.
 
 ## Configuration
 

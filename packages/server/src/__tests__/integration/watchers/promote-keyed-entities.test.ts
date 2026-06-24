@@ -32,22 +32,18 @@ const KEYING_CONFIG = {
   entity_type: 'topic',
 };
 
-const EXTRACTION_SCHEMA = {
+/**
+ * Per-record shape owned by the `topic` entity type's `metadata_schema`.
+ * The watcher's extraction contract is DERIVED from this (an array of these
+ * records at `keying_config.entity_path`), never authored on the watcher.
+ */
+const TOPIC_RECORD_SCHEMA = {
   type: 'object',
   properties: {
-    problems: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          category: { type: 'string' },
-          name: { type: 'string' },
-        },
-        additionalProperties: true,
-      },
-    },
+    category: { type: 'string' },
+    name: { type: 'string' },
   },
-  required: ['problems'],
+  additionalProperties: true,
 };
 
 const KEYED_EXTRACTED_DATA = {
@@ -69,10 +65,11 @@ async function setupKeyedWatcher() {
     created_by: ownerUserId,
   });
 
-  // Promotion resolves the target type itself; ensure `topic` exists in the org.
+  // Promotion resolves the target type itself; ensure `topic` exists in the
+  // org, and own the extraction contract on the type's `metadata_schema`.
   await sql`
-    INSERT INTO entity_types (organization_id, slug, name, created_at, updated_at)
-    VALUES (${workspace.org.id}, 'topic', 'Topic', current_timestamp, current_timestamp)
+    INSERT INTO entity_types (organization_id, slug, name, metadata_schema, created_at, updated_at)
+    VALUES (${workspace.org.id}, 'topic', 'Topic', ${sql.json(TOPIC_RECORD_SCHEMA)}, current_timestamp, current_timestamp)
     ON CONFLICT DO NOTHING
   `;
 
@@ -88,7 +85,6 @@ async function setupKeyedWatcher() {
     slug: 'keyed-watcher',
     name: 'Keyed Watcher',
     prompt: 'Extract problems for {{entities}}.',
-    extraction_schema: EXTRACTION_SCHEMA,
     keying_config: KEYING_CONFIG,
     schedule: '0 9 * * *',
     agent_id: agent.agentId,

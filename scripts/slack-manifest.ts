@@ -101,11 +101,11 @@ function patchManifestGatewayUrls(
   connectionId?: string
 ): void {
   const base = normalizeBaseUrl(publicGatewayUrl);
-  // Per-connection self-install uses the webhook endpoint; multi-tenant
-  // community install uses the generic /slack/events entry point.
+  // Per-connection self-install uses the connection webhook endpoint;
+  // multi-tenant community install uses the generic app-webhook endpoint.
   const requestUrl = connectionId
     ? `${base}/api/v1/webhooks/${connectionId}`
-    : `${base}/slack/events`;
+    : `${base}/api/v1/app-webhooks/slack`;
 
   const settings = manifest.settings as Record<string, unknown> | undefined;
   if (settings) {

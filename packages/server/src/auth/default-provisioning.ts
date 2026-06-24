@@ -54,10 +54,6 @@ const DEFAULT_WATCHER_PROMPT =
 	"say that clearly and suggest what the user could connect " +
 	"or track next (calendar, browser activity, etc.).";
 
-const DEFAULT_WATCHER_EXTRACTION_SCHEMA = {
-	type: "object",
-	properties: { summary: { type: "string" } },
-};
 
 /**
  * Read the JSON-decoded `organization.metadata` for the given org.
@@ -515,12 +511,8 @@ export async function ensureDefaultWatcher(params: {
 			return { created: false, reason: "no_agent" };
 		}
 
-		const extractionSchema = DEFAULT_WATCHER_EXTRACTION_SCHEMA;
 		const sources = [
-			{
-				name: "content",
-				query: "SELECT * FROM events ORDER BY occurred_at DESC",
-			},
+			{ name: "content", query: "SELECT * FROM events ORDER BY occurred_at DESC" },
 		];
 
 		await sql.begin(async (tx) => {
@@ -553,14 +545,14 @@ export async function ensureDefaultWatcher(params: {
 			await tx`
         INSERT INTO watcher_versions (
           id, watcher_id, version, name, description,
-          prompt, extraction_schema, version_sources,
-          json_template, keying_config, classifiers,
+          prompt, version_sources,
+          keying_config, classifiers,
           condensation_prompt, condensation_window_count,
           reactions_guidance, change_notes, created_by, created_at
         ) VALUES (
           ${versionId}, ${watcherId}, 1, ${DEFAULT_WATCHER_NAME}, NULL,
-          ${DEFAULT_WATCHER_PROMPT}, ${tx.json(extractionSchema)}, ${tx.json(sources)},
-          NULL, NULL, NULL,
+          ${DEFAULT_WATCHER_PROMPT}, ${tx.json(sources)},
+          NULL, NULL,
           NULL, NULL,
           NULL, 'Initial version', ${createdBy}, NOW()
         )

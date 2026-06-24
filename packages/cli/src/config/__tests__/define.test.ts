@@ -55,7 +55,6 @@ describe("authoring producers", () => {
       agent: crm,
       slug: "health",
       prompt: "assess",
-      extractionSchema: { type: "object" },
     });
     expect(w.kind).toBe("watcher");
     expect((w.agent as Agent).id).toBe("crm");
@@ -72,7 +71,6 @@ describe("authoring producers", () => {
       agent: "crm",
       slug: "health",
       prompt: "assess",
-      extractionSchema: { type: "object" },
       reaction: reactionFromFile("./reactions/health.reaction.ts"),
     });
     expect(w.reaction?.kind).toBe("reactionSource");

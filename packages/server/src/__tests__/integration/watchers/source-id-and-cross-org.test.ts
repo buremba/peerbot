@@ -29,11 +29,6 @@ describe("manage_watchers source-id + cross-org guards", () => {
 	let inOrgEntityId: number;
 	let foreignEntityId: number;
 
-	const schema = {
-		type: "object",
-		properties: { items: { type: "array", items: { type: "string" } } },
-	};
-
 	beforeAll(async () => {
 		await cleanupTestDatabase();
 		const org = await createTestOrganization({ name: "Watcher Guard Org" });
@@ -79,7 +74,6 @@ describe("manage_watchers source-id + cross-org guards", () => {
 				slug: "no-id-source",
 				name: "No Id Source",
 				prompt: "Track stuff.",
-				extraction_schema: schema,
 				agent_id: agentId,
 				sources: [
 					{
@@ -97,7 +91,6 @@ describe("manage_watchers source-id + cross-org guards", () => {
 			slug: "with-id-source",
 			name: "With Id Source",
 			prompt: "Track stuff.",
-			extraction_schema: schema,
 			agent_id: agentId,
 			sources: [
 				{
@@ -115,7 +108,6 @@ describe("manage_watchers source-id + cross-org guards", () => {
 			slug: "version-id-guard",
 			name: "Version Id Guard",
 			prompt: "Track stuff.",
-			extraction_schema: schema,
 			agent_id: agentId,
 			sources: [{ name: "content", query: "SELECT id FROM events" }],
 		})) as { watcher_id: string };
@@ -124,7 +116,6 @@ describe("manage_watchers source-id + cross-org guards", () => {
 			owner.watchers.createVersion({
 				watcher_id: created.watcher_id,
 				prompt: "Track stuff v2.",
-				extraction_schema: schema,
 				change_notes: "omit id",
 				sources: [
 					{ name: "content", query: "SELECT payload_text FROM events" },
@@ -141,7 +132,6 @@ describe("manage_watchers source-id + cross-org guards", () => {
 			slug: "cfv-base",
 			name: "CFV Base",
 			prompt: "Track stuff.",
-			extraction_schema: schema,
 			agent_id: agentId,
 			sources: [{ name: "content", query: "SELECT id FROM events" }],
 		})) as { watcher_id: string };
@@ -174,7 +164,6 @@ describe("manage_watchers source-id + cross-org guards", () => {
 			slug: "cfv-base-ok",
 			name: "CFV Base OK",
 			prompt: "Track stuff.",
-			extraction_schema: schema,
 			agent_id: agentId,
 			sources: [{ name: "content", query: "SELECT id FROM events" }],
 		})) as { watcher_id: string };

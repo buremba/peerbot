@@ -50,6 +50,21 @@ export interface DesiredEntityType {
   description?: string;
   required?: string[];
   properties?: Record<string, unknown>;
+  /**
+   * Event kinds (semantic types) for events linked to this type, keyed by
+   * semantic_type — `{ description?, metadataSchema?, jsonTemplate? }`. Present
+   * only when the type declares them; absent ⇒ never churns the diff. Persisted
+   * to `entity_types.event_kinds` via manage_entity_schema.
+   */
+  eventKinds?: Record<string, unknown>;
+  /**
+   * Default view template (render-DSL root node) for this type's detail page.
+   * Present only when declared. Applied via manage_view_templates set/clear and
+   * diffed against the remote current default (which apply-cmd fetches per
+   * relevant type — NOT streamed in the entity-type list). Prune-aware: under
+   * prune an absent template clears the remote one; otherwise it is left alone.
+   */
+  viewTemplate?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
   /**
    * Present only for derived (SQL-view-backed) entity types; absent ⇒ stored
@@ -83,8 +98,6 @@ export interface DesiredWatcher {
   description?: string;
   schedule?: string;
   prompt: string;
-  /** Parsed JSON Schema object describing the LLM output. */
-  extractionSchema: Record<string, unknown>;
   /** Optional SQL data sources; server applies a default when omitted. */
   sources?: WatcherSource[];
   /**
@@ -110,8 +123,6 @@ export interface DesiredWatcher {
   tags?: string[];
   /** Optional agent-kind override (e.g. "background", "notifier"). */
   agentKind?: string;
-  /** Optional JSON template for renderer. */
-  jsonTemplate?: unknown;
   /** Stable key generation across windows. */
   keyingConfig?: Record<string, unknown>;
   /** Classifier definitions for extraction (server-side feature). */

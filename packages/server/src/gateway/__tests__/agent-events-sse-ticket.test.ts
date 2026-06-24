@@ -38,6 +38,7 @@ function makeApp() {
     sessionManager: { async getSession() { return null; } } as never,
     sseManager: {} as never,
     publicGatewayUrl: "http://localhost:8787",
+    artifactStore: {} as never,
   });
 }
 

@@ -61,6 +61,36 @@ describe('entity schema CRUD', () => {
       expect(tombstone.entity_type).toBeNull();
     });
 
+    it('accepts event_kinds with a jsonTemplate, and event_kinds:null to clear (lobu apply)', async () => {
+      // `lobu apply` sends event_kinds on every upsert: an object to declare,
+      // `null` to clear. The schema must accept BOTH — a regression here halted
+      // apply for every type that declares no event kinds (caught by sdk-e2e).
+      await owner.entity_schema.createType({
+        slug: 'deal-ek',
+        name: 'Deal',
+        event_kinds: {
+          valuation: {
+            description: 'A snapshot',
+            metadataSchema: { type: 'object', properties: { amount: {} } },
+            jsonTemplate: { type: 'card', children: [] },
+          },
+        },
+      } as never);
+      const got = (await owner.entity_schema.getType('deal-ek')) as {
+        entity_type?: { event_kinds?: Record<string, unknown> | null };
+      };
+      expect(got.entity_type?.event_kinds).toMatchObject({ valuation: { description: 'A snapshot' } });
+
+      // Clearing via null must validate and wipe the column.
+      await owner.entity_schema.updateType({ slug: 'deal-ek', event_kinds: null } as never);
+      const cleared = (await owner.entity_schema.getType('deal-ek')) as {
+        entity_type?: { event_kinds?: Record<string, unknown> | null };
+      };
+      expect(cleared.entity_type?.event_kinds ?? null).toBeNull();
+
+      await owner.entity_schema.deleteType('deal-ek');
+    });
+
     it('rejects a duplicate slug create with a coded 409', async () => {
       await owner.entity_schema.createType({ slug: 'dup-asset', name: 'Dup' });
       // `lobu apply` upserts by probing create and retrying as update ONLY on

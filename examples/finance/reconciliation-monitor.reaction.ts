@@ -6,6 +6,20 @@
  */
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
+// Plain JSON Schema (no TypeBox — importing it into a reaction bundle breaks the
+// isolate's SDK client proxy). The host validates `ctx.extracted_data` against
+// this before the reaction runs, so the handler just reads it with a TS cast.
+export const input = {
+  type: "object",
+  properties: {
+    unreconciled_count: { type: "number" },
+    new_variances: { type: "array", items: { type: "string" } },
+    approaching_deadlines: { type: "array", items: { type: "string" } },
+    payment_risks: { type: "array", items: { type: "string" } },
+  },
+  required: ["unreconciled_count", "new_variances", "approaching_deadlines"],
+};
+
 interface ReconciliationData {
   unreconciled_count: number;
   new_variances: string[];
@@ -17,7 +31,7 @@ export default async (
   ctx: ReactionContext,
   client: ReactionClient
 ): Promise<void> => {
-  const data = ctx.extracted_data as unknown as ReconciliationData;
+  const data = ctx.extracted_data as ReconciliationData;
 
   const hasIssues =
     data.unreconciled_count > 0 ||

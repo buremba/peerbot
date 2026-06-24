@@ -1,51 +1,96 @@
+import { createHmac } from "node:crypto";
 import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Hono } from "hono";
 import { getDb } from "../../db/client.js";
 import {
-  createSlackRoutes,
-  slackOAuthCallbackUrl,
-} from "../routes/public/slack.js";
+  createInstallRoutes,
+} from "../routes/public/app-install.js";
+import type { ConnectorWebhookSchema } from "@lobu/connector-sdk";
+import {
+  type AppWebhookProvider,
+  createAppWebhookRoutes,
+  createChatWebhookDelivery,
+  createDeclaredAppWebhookProvider,
+  verifyDeclaredWebhook,
+} from "../routes/public/app-webhooks.js";
+import { createPostgresAppInstallationStore } from "../../lobu/stores/app-installation-store.js";
+
+/** Slack's DECLARED webhook schema (mirror of the slack connector's block). */
+const SLACK_WEBHOOK_SCHEMA: ConnectorWebhookSchema = {
+  signatureHeader: "x-slack-signature",
+  algorithm: "sha256",
+  signaturePrefix: "v0=",
+  signingBaseTemplate: "v0:{timestamp}:{body}",
+  timestampHeader: "x-slack-request-timestamp",
+  freshnessSeconds: 300,
+  delivery: "app_installation",
+  routingKeyPaths: ["team_id", "team.id", "event.team_id"],
+};
+
+/** verifySlackSignature shim over the generic engine (preserves the old call shape). */
+function verifySlackSignature(
+  rawBody: Uint8Array,
+  headers: Headers,
+  signingSecret: string,
+): boolean {
+  return verifyDeclaredWebhook(rawBody, headers, signingSecret, SLACK_WEBHOOK_SCHEMA);
+}
+
+/** Build a slack app-webhook provider from the declared schema + delivery hook. */
+function slackProvider(
+  handleChatAppWebhook: (request: Request) => Promise<Response>,
+): AppWebhookProvider {
+  return createDeclaredAppWebhookProvider({
+    provider: "slack",
+    appId: "slack-app",
+    webhookSchema: SLACK_WEBHOOK_SCHEMA,
+    handleDelivery: createChatWebhookDelivery({ handleChatAppWebhook }),
+  });
+}
 import { ensureDbForGatewayTests, resetTestDatabase } from "./helpers/db-setup.js";
 
-describe("slackOAuthCallbackUrl", () => {
-  // The gateway is served under the public `/lobu` prefix in prod, so the
-  // callback must preserve it (else Slack rejects the install with
-  // "redirect_uri did not match any configured URIs").
-  test("preserves the /lobu prefix from the configured gateway base", () => {
-    expect(
-      slackOAuthCallbackUrl("https://app.lobu.ai/lobu", "https://app.lobu.ai/lobu/slack/install")
-    ).toBe("https://app.lobu.ai/lobu/slack/oauth_callback");
-  });
+/** Seed a Slack connector_definitions row so getOrgAppInstallationMethod resolves. */
+async function seedSlackConnectorDef(
+  organizationId: string,
+  clientId = "client-123",
+  scopes = ["chat:write", "commands"],
+): Promise<void> {
+  const sql = getDb();
+  // Ensure the org row exists first (FK constraint).
+  await sql`
+    INSERT INTO organization (id, name, slug)
+    VALUES (${organizationId}, ${organizationId}, ${organizationId})
+    ON CONFLICT (id) DO NOTHING
+  `;
+  await sql`
+    INSERT INTO connector_definitions (organization_id, key, name, version, auth_schema, status)
+    VALUES (
+      ${organizationId}, ${"slack"}, ${"Slack"}, ${"1.0.0"},
+      ${sql.json({
+        methods: [
+          {
+            type: "app_installation",
+            provider: "slack",
+            providerInstance: "cloud",
+            clientIdKey: "SLACK_CLIENT_ID",
+            clientSecretKey: "SLACK_CLIENT_SECRET",
+            webhookSecretKey: "SLACK_SIGNING_SECRET",
+            permissions: scopes,
+          },
+        ],
+      })},
+      ${"active"}
+    )
+    ON CONFLICT DO NOTHING
+  `;
+  // The resolver reads from env by the DECLARED key name, so set it.
+  process.env.SLACK_CLIENT_ID = clientId;
+}
 
-  test("trims a trailing slash on the gateway base", () => {
-    expect(
-      slackOAuthCallbackUrl("https://app.lobu.ai/lobu/", "https://app.lobu.ai/lobu/slack/install")
-    ).toBe("https://app.lobu.ai/lobu/slack/oauth_callback");
-  });
-
-  test("supports a root-mounted gateway (no prefix)", () => {
-    expect(
-      slackOAuthCallbackUrl("https://gateway.example.com", "https://gateway.example.com/slack/install")
-    ).toBe("https://gateway.example.com/slack/oauth_callback");
-  });
-
-  test("falls back to deriving the mount prefix from the request path", () => {
-    expect(
-      slackOAuthCallbackUrl(undefined, "https://app.lobu.ai/lobu/slack/install")
-    ).toBe("https://app.lobu.ai/lobu/slack/oauth_callback");
-    expect(
-      slackOAuthCallbackUrl(undefined, "https://app.lobu.ai/slack/install?foo=bar")
-    ).toBe("https://app.lobu.ai/slack/oauth_callback");
-  });
-});
-
-describe("slack routes", () => {
+describe("slack OAuth install routes", () => {
   const originalClientId = process.env.SLACK_CLIENT_ID;
-  const originalScopes = process.env.SLACK_OAUTH_SCOPES;
 
   let completeSlackOAuthInstall: ReturnType<typeof mock>;
-  let handleSlackAppWebhook: ReturnType<typeof mock>;
-  let router: ReturnType<typeof createSlackRoutes>;
   let app: Hono;
   // Per-test org id injected into the Hono context — mirrors what
   // `lobuApp.use('*', ...)` sets in production (see lobu/gateway.ts). The
@@ -59,34 +104,52 @@ describe("slack routes", () => {
 
   beforeEach(async () => {
     await resetTestDatabase();
-    process.env.SLACK_CLIENT_ID = "client-123";
-    process.env.SLACK_OAUTH_SCOPES = "chat:write,commands";
 
     completeSlackOAuthInstall = mock(async () => ({
       teamId: "T123",
       teamName: "Acme",
       installationId: "slackinst-1",
     }));
-    handleSlackAppWebhook = mock(async (request: Request) => {
-      const body = await request.text();
-      return new Response(`handled:${body}`);
-    });
-
-    router = createSlackRoutes({
-      getServices: () => ({
-        getPublicGatewayUrl: () => "https://gateway.example.com",
-      }),
-      completeSlackOAuthInstall,
-      handleSlackAppWebhook,
-    } as any);
 
     sessionOrgId = "org-default";
+
+    await seedSlackConnectorDef(sessionOrgId);
+
+    const installRouter = createInstallRoutes({
+      installationStore: createPostgresAppInstallationStore(),
+      resolveInstallOrgId: async (c) => {
+        const fromCtx = c.get("organizationId" as never) as string | null | undefined;
+        return typeof fromCtx === "string" && fromCtx.length > 0 ? fromCtx : null;
+      },
+      getPublicGatewayUrl: () => "https://gateway.example.com",
+      // The generic engine mounts /slack/install + /slack/oauth_callback from
+      // this declared oauth-code-exchange integration; completion is dispatched
+      // by provider through completeChatInstall.
+      integrations: [
+        {
+          connectorKey: "slack",
+          provider: "slack",
+          method: {
+            type: "app_installation",
+            provider: "slack",
+            installShape: "oauth-code-exchange",
+            authorizeUrl: "https://slack.com/oauth/v2/authorize",
+            tokenUrl: "https://slack.com/api/oauth.v2.access",
+            clientIdKey: "SLACK_CLIENT_ID",
+          },
+          deliveryKind: "chat",
+        },
+      ],
+      completeChatInstall: (_provider, req, redirectUri, orgId) =>
+        completeSlackOAuthInstall(req, redirectUri, orgId),
+    });
+
     app = new Hono();
     app.use("*", async (c, next) => {
       if (sessionOrgId !== null) c.set("organizationId" as never, sessionOrgId);
       await next();
     });
-    app.route("", router);
+    app.route("", installRouter);
   });
 
   afterEach(() => {
@@ -94,12 +157,6 @@ describe("slack routes", () => {
       delete process.env.SLACK_CLIENT_ID;
     } else {
       process.env.SLACK_CLIENT_ID = originalClientId;
-    }
-
-    if (originalScopes === undefined) {
-      delete process.env.SLACK_OAUTH_SCOPES;
-    } else {
-      process.env.SLACK_OAUTH_SCOPES = originalScopes;
     }
   });
 
@@ -230,18 +287,213 @@ describe("slack routes", () => {
     `;
     expect(remaining.length).toBe(1);
   });
+});
 
-  test("POST /slack/events forwards requests to the chat manager", async () => {
-    const response = await app.request("/slack/events", {
+// The Slack event webhook now flows through the generic app-webhook router
+// (`POST /api/v1/app-webhooks/slack`). The Slack provider performs the edge
+// `v0` signing verify and then delegates the FULL routing precedence (BYO
+// agent_connections → active OAuth install → preview → OAuth fallback) to
+// `ChatInstanceManager.handleSlackAppWebhook` — which is stubbed here so these
+// tests pin the router→provider contract (verify + delegate), not the
+// coordinator's internal precedence (covered in slack-connection-coordinator.test.ts).
+const SLACK_SIGNING_SECRET = "8f742231b10e8888abcd99yyyzzz85a5";
+
+/** Compute a valid Slack `v0` signature header over (timestamp, body). */
+function slackSignature(body: string, timestamp: string): string {
+  const base = `v0:${timestamp}:${body}`;
+  return `v0=${createHmac("sha256", SLACK_SIGNING_SECRET).update(base).digest("hex")}`;
+}
+
+function nowTs(): string {
+  return String(Math.floor(Date.now() / 1000));
+}
+
+describe("verifySlackSignature", () => {
+  test("accepts a fresh, correctly-signed delivery", () => {
+    const body = JSON.stringify({ type: "event_callback" });
+    const ts = nowTs();
+    const headers = new Headers({
+      "x-slack-request-timestamp": ts,
+      "x-slack-signature": slackSignature(body, ts),
+    });
+    expect(
+      verifySlackSignature(
+        new TextEncoder().encode(body),
+        headers,
+        SLACK_SIGNING_SECRET,
+      ),
+    ).toBe(true);
+  });
+
+  test("rejects a stale timestamp (replay outside the 5-minute window)", () => {
+    const body = "{}";
+    const staleTs = String(Math.floor(Date.now() / 1000) - 60 * 6);
+    const headers = new Headers({
+      "x-slack-request-timestamp": staleTs,
+      "x-slack-signature": slackSignature(body, staleTs),
+    });
+    expect(
+      verifySlackSignature(
+        new TextEncoder().encode(body),
+        headers,
+        SLACK_SIGNING_SECRET,
+      ),
+    ).toBe(false);
+  });
+
+  test("rejects a forged signature", () => {
+    const body = "{}";
+    const ts = nowTs();
+    const headers = new Headers({
+      "x-slack-request-timestamp": ts,
+      "x-slack-signature": "v0=deadbeef",
+    });
+    expect(
+      verifySlackSignature(
+        new TextEncoder().encode(body),
+        headers,
+        SLACK_SIGNING_SECRET,
+      ),
+    ).toBe(false);
+  });
+
+  test("rejects a signature computed with the wrong secret", () => {
+    const body = "{}";
+    const ts = nowTs();
+    const wrong = `v0=${createHmac("sha256", "not-the-secret").update(`v0:${ts}:${body}`).digest("hex")}`;
+    const headers = new Headers({
+      "x-slack-request-timestamp": ts,
+      "x-slack-signature": wrong,
+    });
+    expect(
+      verifySlackSignature(
+        new TextEncoder().encode(body),
+        headers,
+        SLACK_SIGNING_SECRET,
+      ),
+    ).toBe(false);
+  });
+
+  test("rejects when headers are missing", () => {
+    expect(
+      verifySlackSignature(
+        new TextEncoder().encode("{}"),
+        new Headers(),
+        SLACK_SIGNING_SECRET,
+      ),
+    ).toBe(false);
+  });
+
+  test("rejects a non-numeric timestamp", () => {
+    const headers = new Headers({
+      "x-slack-request-timestamp": "not-a-number",
+      "x-slack-signature": "v0=abc",
+    });
+    expect(
+      verifySlackSignature(
+        new TextEncoder().encode("{}"),
+        headers,
+        SLACK_SIGNING_SECRET,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("slack app-webhook route", () => {
+  let handleSlackAppWebhook: ReturnType<typeof mock>;
+  let app: Hono;
+
+  beforeAll(async () => {
+    await ensureDbForGatewayTests();
+  });
+
+  beforeEach(async () => {
+    await resetTestDatabase();
+    handleSlackAppWebhook = mock(async (request: Request) => {
+      const body = await request.text();
+      return new Response(`handled:${body}`, { status: 200 });
+    });
+    app = createAppWebhookRoutes({
+      installationStore: createPostgresAppInstallationStore(),
+      secretStore: { get: async () => null },
+      providers: [slackProvider(handleSlackAppWebhook)],
+      resolveAppWebhookSecret: async () => SLACK_SIGNING_SECRET,
+    });
+  });
+
+  function slackDelivery(body: string, ts = nowTs(), signature?: string): Request {
+    return new Request("http://gateway.test/api/v1/app-webhooks/slack", {
       method: "POST",
       headers: {
         "content-type": "application/json",
+        "x-slack-request-timestamp": ts,
+        "x-slack-signature": signature ?? slackSignature(body, ts),
       },
-      body: JSON.stringify({ team_id: "T123", type: "event_callback" }),
+      body,
+    });
+  }
+
+  test("a valid signed delivery delegates to handleSlackAppWebhook with the same bytes", async () => {
+    // Capture the forwarded body inside the stub (the stub consumes the stream,
+    // so it can't be re-read from the call args afterward). Byte-identity proves
+    // the adapter's own downstream v0 verify over the same bytes still passes.
+    let forwardedBody: string | undefined;
+    handleSlackAppWebhook = mock(async (request: Request) => {
+      forwardedBody = await request.text();
+      return new Response(`handled:${forwardedBody}`, { status: 200 });
+    });
+    app = createAppWebhookRoutes({
+      installationStore: createPostgresAppInstallationStore(),
+      secretStore: { get: async () => null },
+      providers: [slackProvider(handleSlackAppWebhook)],
+      resolveAppWebhookSecret: async () => SLACK_SIGNING_SECRET,
     });
 
-    expect(response.status).toBe(200);
-    expect(await response.text()).toContain("handled:");
+    const body = JSON.stringify({ team_id: "T123", type: "event_callback" });
+    const res = await app.fetch(slackDelivery(body));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(`handled:${body}`);
     expect(handleSlackAppWebhook).toHaveBeenCalledTimes(1);
+    expect(forwardedBody).toBe(body);
+  });
+
+  test("a stale-timestamp delivery is rejected 401 BEFORE delegating", async () => {
+    const body = "{}";
+    const staleTs = String(Math.floor(Date.now() / 1000) - 60 * 6);
+    const res = await app.fetch(slackDelivery(body, staleTs));
+    expect(res.status).toBe(401);
+    expect(handleSlackAppWebhook).not.toHaveBeenCalled();
+  });
+
+  test("a forged signature is rejected 401 and never delegates", async () => {
+    const res = await app.fetch(slackDelivery("{}", nowTs(), "v0=forged"));
+    expect(res.status).toBe(401);
+    expect(handleSlackAppWebhook).not.toHaveBeenCalled();
+  });
+
+  test("a coordinator throw surfaces as 500", async () => {
+    handleSlackAppWebhook = mock(async () => {
+      throw new Error("boom");
+    });
+    app = createAppWebhookRoutes({
+      installationStore: createPostgresAppInstallationStore(),
+      secretStore: { get: async () => null },
+      providers: [slackProvider(handleSlackAppWebhook)],
+      resolveAppWebhookSecret: async () => SLACK_SIGNING_SECRET,
+    });
+    const res = await app.fetch(slackDelivery("{}"));
+    expect(res.status).toBe(500);
+  });
+
+  test("fails closed 401 when the signing secret is unconfigured", async () => {
+    app = createAppWebhookRoutes({
+      installationStore: createPostgresAppInstallationStore(),
+      secretStore: { get: async () => null },
+      providers: [slackProvider(handleSlackAppWebhook)],
+      resolveAppWebhookSecret: async () => undefined,
+    });
+    const res = await app.fetch(slackDelivery("{}"));
+    expect(res.status).toBe(401);
+    expect(handleSlackAppWebhook).not.toHaveBeenCalled();
   });
 });

@@ -25,13 +25,19 @@ import { createAgentApi } from "../routes/public/agent.js";
 import {
   type AppWebhookProvider,
   createAppWebhookRoutes,
+  createChatWebhookDelivery,
+  createDataWebhookDelivery,
+  createDeclaredAppWebhookProvider,
   createDefaultAppWebhookSecretResolver,
-  createGithubAppWebhookProvider,
-  createJiraAppWebhookProvider,
-  createLinearAppWebhookProvider,
 } from "../routes/public/app-webhooks.js";
-import { createAppInstallRoutes } from "../routes/public/app-install.js";
-import { resolveInstallOrgId } from "../routes/public/slack.js";
+import {
+  createInstallRoutes,
+} from "../routes/public/app-install.js";
+import {
+  type BundledIntegrationConnector,
+  resolveAppInstallCredentials,
+} from "../installation/app-install-credentials.js";
+import { resolveInstallOrgId } from "../routes/public/install-org.js";
 import { createAgentConfigRoutes } from "../routes/public/agent-config.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
 import { createAgentRoutes } from "../routes/public/agents.js";
@@ -49,7 +55,6 @@ import {
   setAuthProvider,
   verifySettingsSessionOrToken,
 } from "../routes/public/settings-auth.js";
-import { createSlackRoutes } from "../routes/public/slack.js";
 
 const logger = createLogger("gateway-startup");
 
@@ -65,6 +70,13 @@ interface CreateGatewayAppOptions {
     | null;
   /** Custom auth provider for embedded mode. When set, gateway delegates auth to this function instead of using cookie-based sessions. */
   authProvider?: AuthProvider;
+  /**
+   * Bundled connectors that receive app-level webhook deliveries
+   * (`delivery: 'app_installation'`), discovered + primed at boot. The gateway
+   * registers ONE generic app-webhook provider per entry — no hardcoded
+   * provider list. Empty/undefined → no app-webhook providers registered.
+   */
+  bundledIntegrationConnectors?: BundledIntegrationConnector[];
 }
 
 /**
@@ -84,6 +96,7 @@ export function createGatewayApp(
     coreServices,
     chatInstanceManager,
     authProvider,
+    bundledIntegrationConnectors,
   } = options;
 
   if (authProvider) {
@@ -281,6 +294,7 @@ export function createGatewayApp(
         sessionManager: sessionMgr,
         sseManager: coreServices.getSseManager(),
         publicGatewayUrl: publicUrl,
+        artifactStore: coreServices.getArtifactStore(),
         externalAuthClient: coreServices.getExternalAuthClient(),
         agentSettingsStore: coreServices.getAgentSettingsStore(),
         agentConfigStore: coreServices.getConfigStore(),
@@ -636,6 +650,8 @@ export function createGatewayApp(
           connectionManager,
           agentConfigStore: coreServices.getConfigStore(),
           userAgentsStore: coreServices.getUserAgentsStore(),
+          artifactStore: coreServices.getArtifactStore(),
+          publicGatewayUrl: coreServices.getPublicGatewayUrl(),
         });
         app.route("/api/v1/agents/:agentId/history", agentHistoryRouter);
         logger.debug(
@@ -701,29 +717,61 @@ export function createGatewayApp(
   }
 
   if (chatInstanceManager) {
-    app.route("", createSlackRoutes(chatInstanceManager));
     app.route("", createConnectionWebhookRoutes(chatInstanceManager));
 
     // Shared multi-tenant app-webhook router (app-installation design §4.3): one
-    // public endpoint per provider for an installed Lobu App. A provider plugin
-    // is registered only when its Lobu app id is configured (GitHub App id, or
-    // the provider's OAuth client id) — otherwise the route is present but
-    // reports the provider unknown (404), since a missing app id can't match any
-    // installation. GitHub/Jira/Linear share one schema-driven HMAC verify;
-    // Slack stays a custom plugin (timestamped signing base).
+    // public endpoint per provider for an installed Lobu App. DATA-DRIVEN: we
+    // iterate the bundled integration connectors discovered + primed at boot
+    // (those declaring `webhook.delivery: 'app_installation'`) and register ONE
+    // GENERIC provider per declaration — verify + tenant + registration carry no
+    // provider name. The only per-KIND piece is the delivery hook (github's
+    // poll-canonical trigger/store, slack's chat-adapter forward), keyed off the
+    // connector, not branched on a provider literal in the engine. A provider is
+    // registered only when its Lobu App id is configured (the declared env var is
+    // set); otherwise the route reports the provider unknown (404).
     const appWebhookSecretStore = coreServices.getSecretStore();
     const appWebhookProviders: AppWebhookProvider[] = [];
-    const githubAppId = process.env.GITHUB_APP_ID;
-    if (githubAppId) {
-      appWebhookProviders.push(createGithubAppWebhookProvider({ appId: githubAppId }));
-    }
-    const jiraAppId = process.env.JIRA_CLIENT_ID;
-    if (jiraAppId) {
-      appWebhookProviders.push(createJiraAppWebhookProvider({ appId: jiraAppId }));
-    }
-    const linearAppId = process.env.LINEAR_CLIENT_ID;
-    if (linearAppId) {
-      appWebhookProviders.push(createLinearAppWebhookProvider({ appId: linearAppId }));
+    const declaredSecretEnvKeys: Record<string, string | undefined> = {};
+    for (const integration of bundledIntegrationConnectors ?? []) {
+      // Reference resolveAppInstallCredentials so the declared env-var contract
+      // stays the single source of truth (validates the method's key names).
+      if (integration.method) resolveAppInstallCredentials(integration.method);
+      if (!integration.appId) continue;
+      declaredSecretEnvKeys[integration.provider] = integration.webhookSecretKey;
+
+      // Per-KIND delivery, dispatched off the DECLARED `deliveryKind` — never a
+      // provider name. A `chat` connector forwards verified deliveries to the
+      // chat adapter for its provider (Slack today); a `data` connector lands
+      // them through the data path: its poll-canonical trigger/store hook when it
+      // ships one (GitHub), else the raw event-ingest fallback (Jira/Linear → no
+      // hook). Both the chat-forward routing and the data hooks live outside this
+      // wiring, keyed off the connector, so gateway core carries no provider
+      // literal.
+      const deliveryKind = integration.webhookSchema.deliveryKind ?? "data";
+      const deliveryHooks: Pick<
+        AppWebhookProvider,
+        "onDelivery" | "handleDelivery"
+      > = {};
+      if (deliveryKind === "chat") {
+        const provider = integration.provider;
+        deliveryHooks.handleDelivery = createChatWebhookDelivery({
+          handleChatAppWebhook: (req) =>
+            chatInstanceManager.handleChatAppWebhook(provider, req),
+        });
+      } else {
+        const onDelivery = createDataWebhookDelivery(integration.connectorKey);
+        if (onDelivery) deliveryHooks.onDelivery = onDelivery;
+      }
+
+      appWebhookProviders.push(
+        createDeclaredAppWebhookProvider({
+          provider: integration.provider,
+          appId: integration.appId,
+          webhookSchema: integration.webhookSchema,
+          providerInstance: integration.method?.providerInstance,
+          ...deliveryHooks,
+        }),
+      );
     }
     app.route(
       "",
@@ -731,20 +779,41 @@ export function createGatewayApp(
         installationStore: createPostgresAppInstallationStore(),
         secretStore: appWebhookSecretStore,
         providers: appWebhookProviders,
-        resolveAppWebhookSecret:
-          createDefaultAppWebhookSecretResolver(appWebhookSecretStore),
+        resolveAppWebhookSecret: createDefaultAppWebhookSecretResolver(
+          appWebhookSecretStore,
+          declaredSecretEnvKeys,
+        ),
       }),
     );
 
-    // GitHub App post-install callback (app-installation design §4.4): records
-    // the installation + links the org's github connection to it. Session-bound
-    // org resolution shares the Slack install flow's resolver.
+    // Hosted-app install router (app-installation design §4.4). DATA-DRIVEN: one
+    // generic engine iterates the SAME bundled integration connectors and mounts
+    // a start + callback per connector, dispatching the handshake on the declared
+    // `installShape` — github-app (GitHub App: installation ids + ownership
+    // verification + provisioning) vs oauth-code-exchange ("Add to <app>" OAuth,
+    // e.g. Slack at /slack/install + /slack/oauth_callback). No per-provider
+    // install router wiring, no "github"/"slack" branch: adding a new hosted
+    // OAuth app is a connector declaration, not new core route code. The chat
+    // completion is provider-dispatched (mirrors handleChatAppWebhook).
     app.route(
       "",
-      createAppInstallRoutes({
+      createInstallRoutes({
         installationStore: createPostgresAppInstallationStore(),
         resolveInstallOrgId,
         getPublicGatewayUrl: () => coreServices.getPublicGatewayUrl(),
+        integrations: (bundledIntegrationConnectors ?? []).map((integration) => ({
+          connectorKey: integration.connectorKey,
+          provider: integration.provider,
+          method: integration.method,
+          deliveryKind: integration.webhookSchema.deliveryKind ?? "data",
+        })),
+        completeChatInstall: (provider, req, redirectUri, orgId) =>
+          chatInstanceManager.completeChatAppInstall(
+            provider,
+            req,
+            redirectUri,
+            orgId,
+          ),
       }),
     );
     app.route(

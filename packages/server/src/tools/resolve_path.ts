@@ -21,6 +21,7 @@ import { ToolUserError } from '../utils/errors';
 import { resolveMemberSchemaFieldsFromSchema } from '../utils/member-entity-type';
 import { stripMemberEmailsFromRows } from '../utils/member-redaction';
 import { derivedRowName, derivedRowSlug } from '../utils/entity-management';
+import { buildDefaultEntityTemplate } from '../utils/default-entity-template';
 import { measureColumns as inferMeasureColumns } from '../utils/infer-measures';
 import { RESERVED_PATHS } from '../utils/reserved';
 import { getWorkspaceProvider } from '../workspace';
@@ -419,7 +420,8 @@ async function _resolvePath(
           e.metadata,
           e.created_at,
           COALESCE(vtv_entity.json_template, vtv_et.json_template) as json_template,
-          COALESCE(vtv_entity.version, vtv_et.version) as json_template_version
+          COALESCE(vtv_entity.version, vtv_et.version) as json_template_version,
+          et.metadata_schema as entity_type_metadata_schema
         FROM entities e
         JOIN entity_types et ON et.id = e.entity_type_id
         LEFT JOIN view_template_versions vtv_entity
@@ -467,6 +469,7 @@ async function _resolvePath(
     const entityRow = row[0] as unknown as ResolvedEntityRow & {
       json_template: Record<string, any> | null;
       json_template_version: number | null;
+      entity_type_metadata_schema: Record<string, any> | null;
     };
     resolvedPath.push({
       id: entityRow.id,
@@ -552,6 +555,16 @@ async function _resolvePath(
         template_data: stripMemberEmailsFromRows(tab.template_data, emailField),
       }));
     }
+    // Rendering resolution tail: when neither the entity nor its type declares
+    // a view template, synthesize a default field card from the type's
+    // metadata_schema so a typed/promoted entity never renders bare. A type
+    // with no schema properties yields null → the client keeps the dashboard
+    // overview. Custom tabs (a richer authored view) suppress the auto-default.
+    const resolvedTemplate =
+      entityCleanTpl ??
+      (processedEntityTabs.length === 0
+        ? buildDefaultEntityTemplate(entityRow.entity_type_metadata_schema)
+        : null);
     resolvedEntity = {
       id: entityRow.id,
       entity_type: entityRow.entity_type,
@@ -559,7 +572,7 @@ async function _resolvePath(
       name: entityRow.name,
       parent_id: entityRow.parent_id,
       metadata: safeEntityMetadata,
-      json_template: entityCleanTpl,
+      json_template: resolvedTemplate,
       json_template_version: toVersionNumber(entityRow.json_template_version),
       template_data: redactedTemplateData,
       tabs: processedEntityTabs,

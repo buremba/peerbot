@@ -180,16 +180,6 @@ const reconciliationMonitor = defineWatcher({
   ),
   prompt:
     "Check accounts for unreconciled transactions, new variances, and approaching reporting deadlines. Lead with exceptions that need review.\n",
-  extractionSchema: {
-    type: "object",
-    required: ["unreconciled_count", "new_variances", "approaching_deadlines"],
-    properties: {
-      unreconciled_count: { type: "integer" },
-      new_variances: { type: "array", items: { type: "string" } },
-      approaching_deadlines: { type: "array", items: { type: "string" } },
-      payment_risks: { type: "array", items: { type: "string" } },
-    },
-  },
 });
 
 export default defineConfig({

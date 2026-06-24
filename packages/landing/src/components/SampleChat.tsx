@@ -66,6 +66,14 @@ function createTheme(opts: {
 
 // --- Preset themes ---
 
+export const WEB_THEME = createTheme({
+  primary: "#6366f1",
+  bg: "#09090b",
+  border: "#27272a",
+  botBubbleBg: "#18181b",
+  botBubbleBorder: "#27272a",
+});
+
 export const TELEGRAM_THEME = createTheme({
   primary: "#f97316",
   bg: "#0b0c0f",
@@ -197,6 +205,8 @@ interface SampleChatProps {
   onButtonHover?: (hovering: boolean) => void;
   /** Extra classes for the outer window (e.g. `h-full` to fill a grid cell). */
   class?: string;
+  /** Whether to hide the outer border of the chat window. */
+  noBorder?: boolean;
 }
 
 export function SampleChat({
@@ -208,6 +218,7 @@ export function SampleChat({
   children,
   onButtonHover,
   class: cls = "",
+  noBorder = false,
 }: SampleChatProps) {
   const name = botName ?? useCase?.botName ?? "Bot";
   const initial = botInitial ?? useCase?.botInitial ?? "B";
@@ -246,7 +257,7 @@ export function SampleChat({
     <div
       class={`flex flex-col rounded-2xl overflow-hidden w-full ${cls}`}
       style={{
-        border: `1px solid ${theme.border}`,
+        border: noBorder ? "none" : `1px solid ${theme.border}`,
         backgroundColor: theme.bg,
         fontFamily:
           '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',

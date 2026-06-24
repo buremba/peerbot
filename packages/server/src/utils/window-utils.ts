@@ -174,7 +174,6 @@ export function buildWindowsSelectClause(): string {
       iw.execution_time_ms,
       iw.created_at,
       iw.version_id,
-      COALESCE(window_v.json_template, watcher_v.json_template) as json_template,
       CAST(COUNT(*) OVER () AS INTEGER) as total_count
     FROM watcher_windows iw
     JOIN watchers i ON iw.watcher_id = i.id

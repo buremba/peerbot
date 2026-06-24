@@ -17,11 +17,13 @@ import {
   SLACK_THEME,
   TEAMS_THEME,
   TELEGRAM_THEME,
+  WEB_THEME,
   WHATSAPP_THEME,
 } from "./SampleChat";
 import { UseCaseTabs } from "./UseCaseTabs";
 
 const THEMES: Record<string, ChatTheme> = {
+  web: WEB_THEME,
   telegram: TELEGRAM_THEME,
   slack: SLACK_THEME,
   discord: DISCORD_THEME,

@@ -314,8 +314,20 @@ export default class GitHubConnector extends ConnectorRuntime {
           type: 'app_installation',
           provider: 'github',
           providerInstance: 'cloud',
+          // GitHub App installation handshake (installation_id + ownership
+          // verification + repo/team provisioning + user-auth recovery). The
+          // generic install engine dispatches on this shape to the github-app
+          // route module — never on the `github` name.
+          installShape: 'github-app',
           appIdKey: 'GITHUB_APP_ID',
           privateKeyKey: 'GITHUB_APP_PRIVATE_KEY',
+          appSlugKey: 'GITHUB_APP_SLUG',
+          // The App's OWN OAuth client (used for the user-authorization leg of
+          // install / recovery), distinct from the user-login `oauth` method's
+          // GITHUB_CLIENT_ID/SECRET below.
+          clientIdKey: 'GITHUB_APP_CLIENT_ID',
+          clientSecretKey: 'GITHUB_APP_CLIENT_SECRET',
+          webhookSecretKey: 'GITHUB_APP_WEBHOOK_SECRET',
           // Install URL for the Lobu GitHub App. `{{app_slug}}` is substituted
           // by the install UI from the configured App slug; the user picks the
           // org/repos to grant during GitHub's install flow.
@@ -327,7 +339,21 @@ export default class GitHubConnector extends ConnectorRuntime {
           // granted Organization → Members → Read in its settings (out-of-band,
           // user action) or every real org admin's membership lookup 403s.
           permissions: ['issues', 'pull_requests', 'contents', 'metadata', 'discussions', 'members'],
-          events: ['issues', 'pull_request', 'issue_comment', 'discussion', 'discussion_comment'],
+          // Webhook subscriptions the live App must enable. Must cover every
+          // event referenced by a feed's `webhook.events` above (push → commits,
+          // star/watch → stargazers, pull_request_review_comment → pr_comments),
+          // or those feeds get no deliveries and fall back to the schedule.
+          events: [
+            'issues',
+            'pull_request',
+            'issue_comment',
+            'pull_request_review_comment',
+            'discussion',
+            'discussion_comment',
+            'push',
+            'star',
+            'watch',
+          ],
           required: false,
           description:
             'Install the Lobu GitHub App on your org to grant tenant-scoped access (no per-connection token). Repo/issue/PR reads and write actions flow through the App installation.',
@@ -376,6 +402,7 @@ export default class GitHubConnector extends ConnectorRuntime {
         requiredScopes: [],
         description: 'Sync GitHub issues from a repository.',
         displayNameTemplate: '{repo_owner}/{repo_name} issues',
+        webhook: { events: ['issues'] },
         configSchema: {
           type: 'object',
           required: ['repo_owner', 'repo_name'],
@@ -407,6 +434,7 @@ export default class GitHubConnector extends ConnectorRuntime {
         requiredScopes: [],
         description: 'Sync GitHub pull requests from a repository.',
         displayNameTemplate: '{repo_owner}/{repo_name} PRs',
+        webhook: { events: ['pull_request'] },
         configSchema: {
           type: 'object',
           required: ['repo_owner', 'repo_name'],
@@ -438,6 +466,7 @@ export default class GitHubConnector extends ConnectorRuntime {
         requiredScopes: [],
         description: 'Sync comments on GitHub issues.',
         displayNameTemplate: '{repo_owner}/{repo_name} issue comments',
+        webhook: { events: ['issue_comment'] },
         configSchema: {
           type: 'object',
           required: ['repo_owner', 'repo_name'],
@@ -465,6 +494,7 @@ export default class GitHubConnector extends ConnectorRuntime {
         requiredScopes: [],
         description: 'Sync comments on GitHub pull requests.',
         displayNameTemplate: '{repo_owner}/{repo_name} PR comments',
+        webhook: { events: ['pull_request_review_comment'] },
         configSchema: {
           type: 'object',
           required: ['repo_owner', 'repo_name'],
@@ -492,6 +522,7 @@ export default class GitHubConnector extends ConnectorRuntime {
         requiredScopes: [],
         description: 'Sync GitHub discussions from a repository.',
         displayNameTemplate: '{repo_owner}/{repo_name} discussions',
+        webhook: { events: ['discussion'] },
         configSchema: {
           type: 'object',
           required: ['repo_owner', 'repo_name'],
@@ -522,6 +553,7 @@ export default class GitHubConnector extends ConnectorRuntime {
         requiredScopes: [],
         description: 'Sync comments on GitHub discussions.',
         displayNameTemplate: '{repo_owner}/{repo_name} discussion comments',
+        webhook: { events: ['discussion_comment'] },
         configSchema: {
           type: 'object',
           required: ['repo_owner', 'repo_name'],
@@ -550,6 +582,7 @@ export default class GitHubConnector extends ConnectorRuntime {
         requiredScopes: [],
         description: 'Sync commits pushed to a repository, attributed to their authors.',
         displayNameTemplate: '{repo_owner}/{repo_name} commits',
+        webhook: { events: ['push'] },
         configSchema: {
           type: 'object',
           required: ['repo_owner', 'repo_name'],
@@ -579,6 +612,7 @@ export default class GitHubConnector extends ConnectorRuntime {
         requiredScopes: [],
         description: 'Sync GitHub users who starred a repository.',
         displayNameTemplate: '{repo_owner}/{repo_name} stargazers',
+        webhook: { events: ['star', 'watch'], mode: 'store' },
         configSchema: {
           type: 'object',
           required: ['repo_owner', 'repo_name'],

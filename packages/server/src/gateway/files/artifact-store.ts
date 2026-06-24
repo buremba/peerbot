@@ -169,9 +169,12 @@ export class ArtifactStore {
     ttlMs = this.defaultTtlMs
   ): string {
     const baseUrl = normalizeBaseUrl(publicGatewayUrl);
+    // Concatenate onto the base rather than `new URL("/api/v1/...", baseUrl)`:
+    // a leading-slash path is absolute from the origin root, which silently
+    // drops a base path prefix (e.g. the embedded/local gateway is mounted
+    // under `/lobu`, so the worker must fetch `/lobu/api/v1/files/...`).
     const url = new URL(
-      `/api/v1/files/${encodeURIComponent(artifactId)}`,
-      baseUrl
+      `${baseUrl}/api/v1/files/${encodeURIComponent(artifactId)}`
     );
     url.searchParams.set("token", this.createDownloadToken(artifactId, ttlMs));
     return url.toString();

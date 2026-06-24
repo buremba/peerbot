@@ -16,6 +16,10 @@ import { authenticatePat, extractPatBearer } from "../auth/pat-auth";
 import { getDb } from "../db/client";
 import { ApiPlatform } from "../gateway/api/platform";
 import { createGatewayApp } from "../gateway/cli/gateway";
+import {
+	primeAppInstallationMethods,
+	primeBundledIntegrationConnectors,
+} from "../gateway/installation/app-install-credentials";
 import { buildGatewayConfig } from "../gateway/config/index";
 import { ChatInstanceManager } from "../gateway/connections/chat-instance-manager";
 import { ChatResponseBridge } from "../gateway/connections/chat-response-bridge";
@@ -460,6 +464,26 @@ export async function initLobuGateway(): Promise<Hono | null> {
 			{ hasWorkerGateway: !!workerGateway, hasGetApp: !!workerGateway?.getApp },
 			"[Lobu] Worker gateway check",
 		);
+
+		// Prime the bundled app-installation methods so the org-less gateway wiring
+		// (app-webhook provider registration in createGatewayApp) can read each
+		// connector's declared credential env-var names synchronously instead of
+		// hardcoding `process.env.GITHUB_APP_ID` literals. Env-var names are
+		// deployment-wide constants, so one resolve per (connector, provider) at
+		// boot is correct; per-org routes read the per-org DB declaration instead.
+		await primeAppInstallationMethods([
+			{ connectorKey: "github", provider: "github" },
+			{ connectorKey: "slack", provider: "slack" },
+		]);
+
+		// Discover every bundled connector that receives app-level webhook
+		// deliveries (`webhook.delivery: 'app_installation'`) so the gateway can
+		// register ONE generic app-webhook provider per declaration — no hardcoded
+		// github/slack/jira/linear list. Best-effort: a discovery failure leaves the
+		// list empty (no app-webhook providers) rather than blocking boot.
+		const bundledIntegrationConnectors =
+			await primeBundledIntegrationConnectors().catch(() => []);
+
 		const rawLobuApp = createGatewayApp({
 			secretProxy: coreServices.getSecretProxy(),
 			workerGateway,
@@ -469,6 +493,7 @@ export async function initLobuGateway(): Promise<Hono | null> {
 			coreServices,
 			chatInstanceManager,
 			authProvider,
+			bundledIntegrationConnectors,
 		});
 
 		// Mount worker gateway routes before wrapping in lobuApp (createGatewayApp

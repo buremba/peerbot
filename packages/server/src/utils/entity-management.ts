@@ -20,7 +20,6 @@ import type { ToolContext } from '../tools/registry';
 import { entityLinkMatchSql } from './content-search';
 import { type EntityHookContext, getEntityHooks } from './entity-hooks';
 import { ToolUserError } from './errors';
-import { insertEvent } from './insert-event';
 import { requireWriteAccess } from './organization-access';
 import { RESERVED_ENTITY_TYPES } from './reserved';
 
@@ -190,54 +189,6 @@ async function loadEntityTreeIds(sql: DbClient, entityId: number): Promise<numbe
  * Create new entity
  * Entity is created in the user's organization
  */
-/**
- * Emit one 'entity_field' event INSIDE the given transaction — the projection
- * source for entity_field_state. Emitting in the same txn as the entity write
- * (under the row lock for updates) makes the event's events.id order consistently
- * with the metadata write, which is what the projection's keep-greater fold
- * relies on. entity_ids is empty (NULL) so the event never matches entity-linked
- * content queries; org + entity id + the changed fields ride in metadata.
- */
-async function emitEntityFieldEvent(
-  tx: ReturnType<typeof getDb>,
-  params: {
-    entityId: number;
-    organizationId: string;
-    fields: Record<string, unknown>;
-    createdBy?: string | null;
-  }
-): Promise<void> {
-  const entries = Object.entries(params.fields);
-  if (entries.length === 0) return;
-  // One field-grained event PER changed field, carrying the SAME shape as a
-  // watcher correction ({field_path, mutation, corrected_value}) — so an entity
-  // edit and a watcher correction are one model on the events spine, foldable by
-  // the same per-(target, field_path) latest-wins logic. (Was a single
-  // fields-map snapshot; field-grained lets the projection and any reader treat
-  // both kinds of edit identically.)
-  // No clientId on purpose: insertEvent's stale-clientId FK fallback retries
-  // after a failed insert, which can't recover inside this caller's transaction
-  // (a failed statement aborts the txn and would roll back the entity write).
-  for (const [fieldPath, value] of entries) {
-    await insertEvent(
-      {
-        entityIds: [],
-        organizationId: params.organizationId,
-        originId: `efield_${params.entityId}_${fieldPath.replace(/[^a-zA-Z0-9_]/g, '-').slice(0, 40)}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        semanticType: 'entity_field',
-        metadata: {
-          entity_id: params.entityId,
-          field_path: fieldPath,
-          mutation: 'set',
-          corrected_value: value,
-        },
-        createdBy: params.createdBy ?? null,
-      },
-      { sql: tx }
-    );
-  }
-}
-
 export async function createEntity(
   data: EntityData,
   opts?: EntityCreateOptions
@@ -347,18 +298,6 @@ export async function createEntity(
       if (rows.length === 0) {
         throw new Error('Failed to create entity');
       }
-      // Project the created metadata into entity_field_state in THIS txn — the
-      // new entity row is already visible to the trigger's ownership check.
-      const createdMetadata: Record<string, unknown> =
-        typeof rows[0].metadata === 'string'
-          ? JSON.parse(rows[0].metadata)
-          : ((rows[0].metadata as Record<string, unknown> | null) ?? {});
-      await emitEntityFieldEvent(tx as unknown as ReturnType<typeof getDb>, {
-        entityId: rows[0].id,
-        organizationId: data.organization_id as string,
-        fields: createdMetadata,
-        createdBy: createdBy === 'system' ? null : createdBy,
-      });
       return rows[0];
     });
 
@@ -431,12 +370,9 @@ export async function updateEntity(
   const hasEmbedding = data.embedding !== undefined;
   const embeddingLiteral = toVectorLiteral(data.embedding);
 
-  // Lock the entity row, merge metadata, write, and emit the projection event in
-  // ONE transaction: concurrent updates to the same entity serialize on the row
-  // lock, so the emitted entity_field event's events.id orders consistently with
-  // this metadata write — which is exactly what the projection's keep-greater
-  // fold relies on. (Also fixes the pre-existing non-transactional read-modify-
-  // write race on entities.metadata.)
+  // Lock the entity row, merge metadata, and write in ONE transaction: concurrent
+  // updates to the same entity serialize on the row lock, fixing the pre-existing
+  // non-transactional read-modify-write race on entities.metadata.
   const result = await sql.begin(async (tx) => {
     const current = await tx`
       SELECT metadata, organization_id FROM entities
@@ -446,10 +382,8 @@ export async function updateEntity(
     if (current.length === 0) {
       throw new Error(`Entity ${entityId} not found`);
     }
-    const orgId = current[0].organization_id as string;
 
     let mergedMetadata: Record<string, unknown> | null = null;
-    const changedFields: Record<string, unknown> = {};
     if (hasMetadataUpdates) {
       const existing = (
         typeof current[0].metadata === 'string'
@@ -457,11 +391,6 @@ export async function updateEntity(
           : (current[0].metadata ?? {})
       ) as Record<string, unknown>;
       mergedMetadata = { ...existing, ...metadataUpdates };
-      for (const [k, v] of Object.entries(metadataUpdates)) {
-        if (JSON.stringify(existing[k]) !== JSON.stringify(v)) {
-          changedFields[k] = v;
-        }
-      }
     }
 
     await tx`
@@ -476,13 +405,6 @@ export async function updateEntity(
         updated_at = current_timestamp
       WHERE id = ${entityId} AND deleted_at IS NULL
     `;
-
-    await emitEntityFieldEvent(tx as unknown as ReturnType<typeof getDb>, {
-      entityId,
-      organizationId: orgId,
-      fields: changedFields,
-      createdBy: ctx.userId ?? null,
-    });
 
     const sel = await tx<CreatedEntity>`
       SELECT e.id, et.slug AS entity_type, e.name, e.slug, e.parent_id, e.metadata, e.created_at

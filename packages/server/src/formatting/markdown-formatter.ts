@@ -828,7 +828,7 @@ function formatManageWatchersResult(result: any, _options: FormatterOptions): st
   }
 
   // Show detailed results for operations that return them (delete, upgrade)
-  if (results && results.length > 0 && ['delete', 'upgrade'].includes(action)) {
+  if (results && results.length > 0 && action === 'delete') {
     const failedResults = results.filter((r: any) => !r.success);
     const successfulResults = results.filter((r: any) => r.success);
 

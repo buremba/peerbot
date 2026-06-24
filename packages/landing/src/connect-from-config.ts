@@ -70,17 +70,17 @@ const connectFromClientConfigs: Record<
     valueProp:
       "Add structured, queryable long-term memory to ChatGPT, the same graph other agents share, recalled and updated through one MCP endpoint.",
     installPrompt:
-      "Connect ChatGPT to Lobu: open Settings → Integrations → Model Context Protocol → Add Server, name it `Lobu`, and paste the MCP URL https://lobu.ai/mcp. Sign in with your Lobu account when prompted, then point ChatGPT at the workspace I want it to use.",
+      "Connect ChatGPT to Lobu: open Settings → Integrations → Model Context Protocol → Add Server, name it `Lobu`, and paste the MCP URL https://app.lobu.ai/mcp. Sign in with your Lobu account when prompted, then point ChatGPT at the workspace I want it to use.",
     describe: mcpClientDescribe("ChatGPT"),
     docsSetupTitle: "Connect ChatGPT",
     docsSetupSteps: [
       "Open Settings → Integrations → Model Context Protocol → Add Server in ChatGPT.",
-      "Name the server `Lobu` and paste https://lobu.ai/mcp as the URL.",
+      "Name the server `Lobu` and paste https://app.lobu.ai/mcp as the URL.",
       "Complete the Lobu sign-in flow in the popup.",
       "Pick the workspace ChatGPT should read and write.",
     ],
     docsSetupNote:
-      "ChatGPT discovers the available memory tools automatically once the MCP connection is approved.",
+      "ChatGPT discovers the available memory tools automatically once the MCP connection is approved. If you are self-hosting, replace `https://app.lobu.ai/mcp` with your custom instance URL (e.g., `http://localhost:8787/mcp`).",
     docsRelated: [
       { label: "Memory", href: "/getting-started/memory/" },
       { label: "Lobu memory CLI", href: "/reference/lobu-memory/" },
@@ -95,17 +95,17 @@ const connectFromClientConfigs: Record<
     valueProp:
       "Give Claude durable, structured memory it can search and append to, so the same recall is available across Claude, ChatGPT, and your own agents.",
     installPrompt:
-      "Connect Claude to Lobu: open Settings → Connectors → Add Custom Connector, paste the MCP URL https://lobu.ai/mcp, complete the Lobu sign-in, then enable the connector. Pick the workspace I want Claude to read and write.",
+      "Connect Claude to Lobu: open Settings → Connectors → Add Custom Connector, paste the MCP URL https://app.lobu.ai/mcp, complete the Lobu sign-in, then enable the connector. Pick the workspace I want Claude to read and write.",
     describe: mcpClientDescribe("Claude"),
     docsSetupTitle: "Connect Claude",
     docsSetupSteps: [
       "Open Settings → Connectors → Add Custom Connector in Claude Desktop or claude.ai.",
-      "Paste https://lobu.ai/mcp as the MCP URL.",
+      "Paste https://app.lobu.ai/mcp as the MCP URL.",
       "Complete the Lobu sign-in flow.",
       "Enable the connector and choose the workspace Claude should use.",
     ],
     docsSetupNote:
-      "For Claude Code, run `claude mcp add --transport http lobu https://lobu.ai/mcp` instead and complete the OAuth flow when prompted.",
+      "For Claude Code, run `claude mcp add --transport http lobu https://app.lobu.ai/mcp` instead and complete the OAuth flow when prompted. If you are self-hosting, replace `https://app.lobu.ai/mcp` with your custom instance URL (e.g., `http://localhost:8787/mcp`).",
     docsExtraSection: {
       title: "Claude Code and Claude Desktop",
       paragraphs: [
@@ -131,7 +131,7 @@ const connectFromClientConfigs: Record<
     valueProp:
       "Layer structured, shareable Lobu memory on top of OpenClaw's built-in filesystem memory. The plugin extends OpenClaw's filesystem plugin and can optionally take over its memory slot, so different OpenClaw agents can talk to each other through the same Lobu graph.",
     installPrompt:
-      "Connect OpenClaw to Lobu. Run:\n\n  openclaw plugins install @lobu/openclaw-plugin\n  lobu login\n  lobu memory configure --url https://lobu.ai/mcp --org <org-slug>\n  lobu memory health --url https://lobu.ai/mcp --org <org-slug>\n\nUse Lobu as the multi-user backend for OpenClaw: org-scoped memory, connected sources, watchers, and credentials that stay behind the gateway.",
+      "Connect OpenClaw to Lobu. Run:\n\n  openclaw plugins install @lobu/openclaw-plugin\n  lobu login\n  lobu memory configure --url https://app.lobu.ai/mcp --org <org-slug>\n  lobu memory health --url https://app.lobu.ai/mcp --org <org-slug>\n\nUse Lobu as the multi-user backend for OpenClaw: org-scoped memory, connected sources, watchers, and credentials that stay behind the gateway.",
     npmPackage: {
       name: "@lobu/openclaw-plugin",
       registryUrl: "https://www.npmjs.com/package/@lobu/openclaw-plugin",
@@ -145,11 +145,11 @@ const connectFromClientConfigs: Record<
     docsSetupSteps: [
       "Install the plugin: `openclaw plugins install @lobu/openclaw-plugin`.",
       "Log in to Lobu: `lobu login`.",
-      "Wire it into OpenClaw: `lobu memory configure --url https://lobu.ai/mcp --org <org-slug>` (writes the plugin config and, if you opt in, takes over the filesystem memory slot).",
-      "Verify: `lobu memory health --url https://lobu.ai/mcp --org <org-slug>`.",
+      "Wire it into OpenClaw: `lobu memory configure --url https://app.lobu.ai/mcp --org <org-slug>` (writes the plugin config and, if you opt in, takes over the filesystem memory slot).",
+      "Verify: `lobu memory health --url https://app.lobu.ai/mcp --org <org-slug>`.",
     ],
     docsSetupNote:
-      "The plugin extends OpenClaw's filesystem plugin. Leave that plugin enabled if you want both, or let `lobu memory configure` swap Lobu memory in as the memory slot.",
+      "The plugin extends OpenClaw's filesystem plugin. If you are self-hosting, replace `https://app.lobu.ai/mcp` with your custom instance URL (e.g., `http://localhost:8787/mcp`).",
     docsExtraSection: {
       title: "Cross-agent memory",
       paragraphs: [

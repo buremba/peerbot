@@ -12,7 +12,6 @@ import {
   requireWriteAccess,
 } from '../../../utils/organization-access';
 import { validateTemplate } from '../../../watchers/renderer';
-import { validateClassifierSourcePaths, validateExtractionSchema } from '../../../watchers/validator';
 import { queryProjectsIdColumn } from '../../../utils/execute-data-sources';
 import type { ToolContext } from '../../registry';
 
@@ -107,7 +106,7 @@ export function normalizeExtractedData(value: unknown): Record<string, unknown> 
   return coerceJson(value, {
     requireObject: {
       parseError: 'extracted_data must be a valid JSON object. Received an invalid JSON string.',
-      shapeError: 'extracted_data must be a JSON object matching the template extraction_schema.',
+      shapeError: 'extracted_data must be a JSON object matching the watcher\'s extraction contract.',
     },
   });
 }
@@ -155,8 +154,6 @@ export function summarizeResults(results: WatcherOperationResult[]) {
 
 function validateWatcherConfig(input: {
   prompt?: string;
-  extraction_schema?: unknown;
-  entityTyped?: boolean;
   classifiers?: unknown[];
   sources?: Array<{ name: string; query: string }>;
 }): string | null {
@@ -169,17 +166,10 @@ function validateWatcherConfig(input: {
     return `prompt: ${templateValidation}`;
   }
 
-  // extraction_schema is required UNLESS the watcher is entity-typed — it then
-  // derives its schema from the target entity type's metadata_schema (schema
-  // lives on the type). If an inline schema IS supplied either way, validate it.
-  if (input.extraction_schema && typeof input.extraction_schema === 'object') {
-    const schemaValidation = validateExtractionSchema(input.extraction_schema);
-    if (schemaValidation) {
-      return `extraction_schema: ${schemaValidation}`;
-    }
-  } else if (!input.entityTyped) {
-    return 'extraction_schema is required and must be an object';
-  }
+  // The output contract is no longer authored on the watcher. An entity-typed
+  // watcher (keying_config.entity_type) derives it from that entity type's
+  // metadata_schema at runtime; an untyped watcher runs the worker's free-form
+  // summary fallback. There is no inline watcher schema input.
 
   if (input.classifiers !== undefined) {
     if (!Array.isArray(input.classifiers)) {
@@ -215,30 +205,16 @@ function validateWatcherConfig(input: {
  */
 export function assertWatcherVersionConfigValid(parsed: {
   prompt?: string;
-  extractionSchema?: unknown;
-  entityTyped?: boolean;
   classifiers?: unknown[];
   sources?: Array<{ name: string; query: string }>;
 }): void {
   const validation = validateWatcherConfig({
     prompt: parsed.prompt,
-    extraction_schema: parsed.extractionSchema,
-    entityTyped: parsed.entityTyped,
     classifiers: parsed.classifiers,
     sources: parsed.sources,
   });
   if (validation) {
     throw new ToolUserError(`Watcher validation failed: ${validation}`, 422);
-  }
-
-  if (parsed.classifiers && parsed.extractionSchema) {
-    const classifierValidation = validateClassifierSourcePaths(
-      parsed.classifiers as Array<{ slug: string; source_path?: string }>,
-      parsed.extractionSchema
-    );
-    if (classifierValidation) {
-      throw new ToolUserError(`Classifier-schema compatibility error: ${classifierValidation}`, 422);
-    }
   }
 }
 

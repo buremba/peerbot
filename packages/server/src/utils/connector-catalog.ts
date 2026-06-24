@@ -52,6 +52,7 @@ type ExtractedConnectorCatalogMetadata = {
 	description: string | null;
 	version: string;
 	auth_schema: Record<string, unknown> | null;
+	webhook: Record<string, unknown> | null;
 	feeds_schema: Record<string, unknown> | null;
 	actions_schema: Record<string, unknown> | null;
 	options_schema: Record<string, unknown> | null;
@@ -70,6 +71,7 @@ interface CatalogConnectorDefinition {
 	description: string | null;
 	version: string;
 	auth_schema: Record<string, unknown> | null;
+	webhook: Record<string, unknown> | null;
 	feeds_schema: Record<string, unknown> | null;
 	actions_schema: Record<string, unknown> | null;
 	options_schema: Record<string, unknown> | null;
@@ -184,6 +186,7 @@ async function extractConnectorCatalogMetadata(
 			description: metadata.description ?? null,
 			version: metadata.version,
 			auth_schema: metadata.authSchema ?? null,
+			webhook: metadata.webhook ?? null,
 			feeds_schema: metadata.feeds ?? null,
 			actions_schema: metadata.actions ?? null,
 			options_schema: metadata.optionsSchema ?? null,
@@ -290,6 +293,7 @@ export async function listCatalogConnectorDefinitions(): Promise<
 			version: entry.version ?? "0.0.0",
 			auth_schema:
 				(detail.auth_schema as Record<string, unknown> | null) ?? null,
+			webhook: (detail.webhook as Record<string, unknown> | null) ?? null,
 			feeds_schema:
 				(detail.feeds_schema as Record<string, unknown> | null) ?? null,
 			actions_schema:

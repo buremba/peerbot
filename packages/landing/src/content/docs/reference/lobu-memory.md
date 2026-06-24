@@ -6,7 +6,7 @@ description: Use the Lobu CLI to configure memory MCP endpoints, seed workspaces
 Lobu memory commands live under `lobu memory`. Authentication is shared with the rest of the CLI: run `lobu login` once, then memory commands reuse that session.
 
 - Hosted: [app.lobu.ai](https://app.lobu.ai)
-- Default MCP endpoint: `https://lobu.ai/mcp`
+- Default MCP endpoint: `https://app.lobu.ai/mcp` (If self-hosting or running locally, replace with your custom instance URL, e.g., `http://localhost:8787/mcp`)
 
 ## Install And Authenticate
 
@@ -59,8 +59,8 @@ Writes OpenClaw plugin config for `@lobu/openclaw-plugin`. The generated plugin 
 ```bash
 openclaw plugins install @lobu/openclaw-plugin
 lobu login
-lobu memory configure --url https://lobu.ai/mcp --org my-org
-lobu memory health --url https://lobu.ai/mcp --org my-org
+lobu memory configure --url https://app.lobu.ai/mcp --org my-org
+lobu memory health --url https://app.lobu.ai/mcp --org my-org
 ```
 
 ## Health
@@ -125,7 +125,7 @@ Sugar for `lobu memory run run_sdk '{"script": ...}'` — runs the given TypeScr
 
 ```bash
 lobu memory exec 'export default async (ctx, client) => client.entities.list({ entity_type: "company", limit: 5 })' --org my-org
-lobu memory exec "$(cat script.ts)" --url https://lobu.ai/mcp --org my-org
+lobu memory exec "$(cat script.ts)" --url https://app.lobu.ai/mcp --org my-org
 ```
 
 Accepts the same `--url`, `--org`, and `-c/--context` flags as `lobu memory run`.
@@ -169,7 +169,7 @@ export default defineConfig({
 ```bash
 lobu memory seed
 lobu memory seed --dry-run
-lobu memory seed --org my-org --url https://lobu.ai/mcp
+lobu memory seed --org my-org --url https://app.lobu.ai/mcp
 ```
 
 ## Browser Auth

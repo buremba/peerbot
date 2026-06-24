@@ -61,7 +61,6 @@ export interface WatcherWindow {
   execution_time_ms: number;
   created_at: string;
   version_id?: number;
-  json_template?: unknown;
   /** Reaction-script execution log for this window (newest first). */
   reactions?: WatcherWindowReaction[];
 }
@@ -122,9 +121,19 @@ export interface WatcherMetadata {
   sources: WatcherSource[];
   prompt?: string;
   description?: string;
-  extraction_schema?: Record<string, unknown>;
-  json_template?: unknown;
   keying_config?: KeyingConfig | null;
+  /**
+   * Render home (consolidation): for an entity-typed watcher, the target entity
+   * type's per-record render — its declared view template, or (when none is
+   * declared) an auto-default synthesized from the type's `metadata_schema` via the
+   * shared `resolveEntityRender` primitive. The client iterates the record array at
+   * `entity_render_path` and renders each record with this. Undefined only when the
+   * watcher isn't entity-typed or the type has neither a template nor schema
+   * properties. There is no per-watcher inline render override.
+   */
+  entity_type_render?: unknown;
+  /** Dotted path into a window's `extracted_data` where the record array lives. */
+  entity_render_path?: string | null;
   rendered_prompt?: string;
   available_versions?: WatcherVersionInfo[];
   reaction_script?: string;

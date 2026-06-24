@@ -182,3 +182,27 @@ export abstract class BridgeOnlyConnector extends ConnectorRuntime {
     throw new Error(this.bridgeMessage);
   }
 }
+
+/**
+ * Base class for `kind: 'integration'` connectors — pure app/auth declarations
+ * (e.g. Slack) that carry an `authSchema` + `webhook` but have NO `feeds` and are
+ * NEVER polled: inbound traffic is forwarded to a chat adapter, not synced. The
+ * base satisfies the `sync()` contract with a hard throw so a scheduled sync
+ * (which can only ever be a wiring bug — an integration connector has no feeds)
+ * fails loudly instead of silently no-op'ing. Subclasses declare only their
+ * `definition` (with `kind: 'integration'`).
+ *
+ * @example
+ * ```ts
+ * export default class SlackConnector extends IntegrationConnector {
+ *   readonly definition: ConnectorDefinition = { key: 'slack', kind: 'integration', ... };
+ * }
+ * ```
+ */
+export abstract class IntegrationConnector extends ConnectorRuntime {
+  async sync(): Promise<SyncResult> {
+    throw new Error(
+      `${this.definition.key} is an integration connector (kind: 'integration') with no syncable feeds; inbound traffic flows through its app-webhook endpoint, not a poll.`,
+    );
+  }
+}

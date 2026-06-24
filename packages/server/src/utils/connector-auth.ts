@@ -118,9 +118,21 @@ export function normalizeConnectorAuthSchema(value: unknown): ConnectorAuthSchem
         provider,
         providerInstance:
           typeof method.providerInstance === 'string' ? method.providerInstance : undefined,
+        installShape:
+          method.installShape === 'oauth-code-exchange' || method.installShape === 'github-app'
+            ? method.installShape
+            : undefined,
+        authorizeUrl: typeof method.authorizeUrl === 'string' ? method.authorizeUrl : undefined,
+        tokenUrl: typeof method.tokenUrl === 'string' ? method.tokenUrl : undefined,
         appIdKey: typeof method.appIdKey === 'string' ? method.appIdKey : undefined,
         privateKeyKey:
           typeof method.privateKeyKey === 'string' ? method.privateKeyKey : undefined,
+        appSlugKey: typeof method.appSlugKey === 'string' ? method.appSlugKey : undefined,
+        clientIdKey: typeof method.clientIdKey === 'string' ? method.clientIdKey : undefined,
+        clientSecretKey:
+          typeof method.clientSecretKey === 'string' ? method.clientSecretKey : undefined,
+        webhookSecretKey:
+          typeof method.webhookSecretKey === 'string' ? method.webhookSecretKey : undefined,
         installUrlTemplate:
           typeof method.installUrlTemplate === 'string' ? method.installUrlTemplate : undefined,
         ...(permissions && permissions.length > 0 ? { permissions } : {}),

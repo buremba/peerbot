@@ -16,13 +16,14 @@
  *      per-connection ingest (`connector_key='webhook:<id>'`, reusing the
  *      dedupe index, size cap, and rate limit).
  *
- * Verification is per-PROVIDER (HMAC scheme differs). For pure raw-body HMAC
- * providers (GitHub, Jira, Linear) the `verify` is DERIVED from the connector's
- * `ConnectorWebhookSchema` (signatureHeader / algorithm / signaturePrefix) by
- * {@link createSchemaDrivenAppWebhookProvider} — those plugins supply only the
- * tenant extractor, never a hand-written verify. Slack stays a custom plugin:
- * its `v0:{ts}:{rawBody}` + timestamp-freshness scheme can't be expressed by the
- * HMAC-only schema. Hence the plugin registry.
+ * Verification + tenant extraction are GENERIC, derived entirely from the
+ * connector's `ConnectorWebhookSchema`: {@link verifyDeclaredWebhook} computes
+ * HMAC over the declared `signingBaseTemplate` (default `{body}` for
+ * GitHub/Jira/Linear; `v0:{timestamp}:{body}` + freshness for Slack) and
+ * {@link extractTenantFromSchema} reads the tenant from the declared
+ * `routingKeyPath(s)` (+ optional `url-host` transform for Jira). There is NO
+ * per-provider verify or extractor and NO provider-name branch — one engine,
+ * one builder ({@link createDeclaredAppWebhookProvider}).
  *
  * Delivery before the install callback: a provider may deliver before the
  * OAuth/install callback has written the `app_installations` row. That is NOT
@@ -34,20 +35,21 @@
  * Any replica can serve any delivery.
  */
 
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { createLogger } from "@lobu/core";
 import type { StoredConnection } from "@lobu/core";
 import type { ConnectorWebhookSchema } from "@lobu/connector-sdk";
-import type { DbClient } from "../../../db/client.js";
+import { type DbClient, getDb } from "../../../db/client.js";
 import {
 	handleWebhookIngest,
 	readBodyWithCap,
-	verifyWebhookSignature,
 	WEBHOOK_INGEST_MAX_BODY_BYTES,
 } from "../../connections/webhook-ingest.js";
 import type { SecretStore } from "../../secrets/index.js";
 import type { AppInstallationStore } from "../../../lobu/stores/app-installation-store.js";
-import { resolveGithubWebhookActor } from "./github-webhook-actor.js";
+import { insertEvent } from "../../../utils/insert-event.js";
+import { extractGithubActor, resolveGithubWebhookActor } from "./github-webhook-actor.js";
 
 const logger = createLogger("app-webhook-routes");
 
@@ -72,10 +74,11 @@ export interface AppWebhookContent {
 }
 
 /**
- * Per-provider verifier + tenant extractor. New providers add a plugin without
- * touching the router. Pure-HMAC providers (GitHub, Jira, Linear) are built by
- * {@link createSchemaDrivenAppWebhookProvider}; Slack ships its own custom
- * verify (timestamped signing base, not expressible by the HMAC schema).
+ * A registered provider: verifier + tenant extractor + optional per-KIND
+ * delivery hooks. Every integration provider is built by the SINGLE generic
+ * {@link createDeclaredAppWebhookProvider} from its declared
+ * {@link ConnectorWebhookSchema} — no per-provider verify/extractor code. A new
+ * provider is a connector DECLARATION, not a new plugin in this file.
  */
 export interface AppWebhookProvider {
 	provider: string;
@@ -123,6 +126,55 @@ export interface AppWebhookProvider {
 		headers: Headers;
 		sql: DbClient;
 	}): Promise<{ entityIds: number[]; metadata: Record<string, string> } | null>;
+	/**
+	 * Optional: handle the delivery itself instead of storing a raw event. For
+	 * connectors with a sync mapping (github) the canonical record is the poll, so
+	 * the provider decides per event type (see the github plugin):
+	 *  - TRIGGER (most events) — mark the affected feed due (`next_run_at = now()`)
+	 *    and let the poll fetch the complete record (dedupes/supersedes by stable
+	 *    origin_id). No identity resolution here — the poll resolves it once.
+	 *  - STORE (event-complete signals, e.g. stars) — resolve the actor and insert
+	 *    the structured event directly, keyed on the same origin_id the poll uses.
+	 * No raw blob is stored either way. Providers that define this NEVER fall
+	 * through to the raw ingest path; providers without it keep raw store
+	 * (jira/linear). `triggered` reports whether a feed was marked due OR an event
+	 * stored (telemetry only — the router acks 200 either way; an unconfigured
+	 * repo/feed is a no-op, not an error).
+	 */
+	onDelivery?(params: {
+		rawBody: Uint8Array;
+		headers: Headers;
+		install: { id: number | string; organizationId: string };
+		sql: DbClient;
+	}): Promise<{ triggered: boolean }>;
+	/**
+	 * Optional: take over the ENTIRE delivery after `verify`, bypassing the
+	 * router's `extractTenant` → `resolveActiveByTenant` (`app_installations`) →
+	 * ingest pipeline. A provider that defines this owns its own routing AND its
+	 * own HTTP response; the router returns the Response verbatim.
+	 *
+	 * This exists for Slack, whose live messaging path does NOT fit the
+	 * resolve-install-then-store model:
+	 *  - Slack's PRIMARY routing target is a BYO `agent_connections` row keyed on
+	 *    team_id — there is NO `app_installations` row for it, so the generic
+	 *    `resolveActiveByTenant` would 200-ack the delivery and the live bot would
+	 *    stop receiving events. The precedence (BYO connection → active OAuth
+	 *    install → preview connection → OAuth-fallback chat) and the live forward
+	 *    to a running chat adapter (url_verification challenges, replies) live in
+	 *    {@link SlackConnectionCoordinator.handleAppWebhook} and must be preserved
+	 *    exactly.
+	 *  - A delivery is forwarded to a running adapter, not stored as a raw event.
+	 *
+	 * `verify` still runs first (fail-closed signing check at the edge); only the
+	 * post-verify routing is delegated. `rawBody` is the already-read body; the
+	 * provider reconstructs a Request from it as needed.
+	 */
+	handleDelivery?(params: {
+		rawBody: Uint8Array;
+		headers: Headers;
+		url: string;
+		method: string;
+	}): Promise<Response>;
 }
 
 /** Parse the raw JSON body once; returns undefined on malformed JSON. */
@@ -142,79 +194,161 @@ function strField(node: unknown, key: string): string | undefined {
 }
 
 /**
- * Project a GitHub webhook payload to a human title + source url.
- *
- * GitHub event payloads put the subject under one of a handful of top-level
- * keys, each with `title` + `html_url`:
- *   - `issues`         → `issue.{title,html_url}`
- *   - `pull_request`   → `pull_request.{title,html_url}`
- *   - `discussion`     → `discussion.{title,html_url}`
- * Comment events (`issue_comment`, `pull_request_review_comment`,
- * `discussion_comment`, `commit_comment`) carry the comment under `comment`
- * (whose `html_url` deep-links the comment) AND the parent subject alongside it
- * (`issue`/`pull_request`/`discussion`) — the title belongs to the PARENT, so
- * we read the title from the parent and prefer the comment's own `html_url`.
- * Falls back across keys so a new comment-bearing event still lands a title.
+ * Follow a dotted JSON path (`a.b.c`) into a parsed body and return the leaf as
+ * a non-empty string, or undefined. Numbers are stringified (GitHub installation
+ * ids are integers). Used by the generic tenant extractor — no provider literal.
  */
-export function extractGithubWebhookContent(rawBody: Uint8Array): AppWebhookContent {
-	const body = parseJson(rawBody);
-	if (body === null || typeof body !== "object") return {};
-	const root = body as Record<string, unknown>;
-
-	// The subject the title comes from: a comment's parent, else the subject
-	// itself. Order matters only for the parent lookup — a payload has exactly
-	// one of these for a given event.
-	const subject =
-		root.issue ?? root.pull_request ?? root.discussion ?? root.release;
-	const comment = root.comment;
-
-	const title = strField(subject, "title");
-	// Prefer the comment's deep link when this is a comment event; else the
-	// subject's own url.
-	const sourceUrl =
-		strField(comment, "html_url") ?? strField(subject, "html_url");
-
-	const content: AppWebhookContent = {};
-	if (title) content.title = title;
-	if (sourceUrl) content.sourceUrl = sourceUrl;
-	return content;
+function readPath(body: unknown, path: string): string | undefined {
+	let node: unknown = body;
+	for (const segment of path.split(".")) {
+		if (node === null || typeof node !== "object") return undefined;
+		node = (node as Record<string, unknown>)[segment];
+	}
+	if (typeof node === "string") return node.length > 0 ? node : undefined;
+	if (typeof node === "number" && Number.isFinite(node)) return String(node);
+	return undefined;
 }
 
 /**
- * Build an {@link AppWebhookProvider} whose `verify` is DERIVED from a
- * connector's {@link ConnectorWebhookSchema} — the single source of truth for
- * the provider's raw-body HMAC scheme. The caller supplies ONLY the
- * provider-specific tenant extractor (and optionally a content projector); the
- * verify is identical machinery across every pure-HMAC provider, so it never
- * gets hand-written again (GitHub, Jira, Linear all flow through here).
+ * THE generic webhook verifier. Computes HMAC over the schema's rendered signing
+ * base (`{body}` and `{timestamp}` substituted) with the declared
+ * algorithm/prefix, compares constant-time against `signatureHeader`, and
+ * optionally rejects stale timestamps. Pure over (rawBody, headers, secret) — no
+ * I/O — so it is trivially multi-replica safe. Returns false on any miss.
  *
- * The schema's `signatureHeader` is REQUIRED here: an app-webhook endpoint must
- * fail closed, so a provider that signs nothing has no schema-driven verify to
- * derive — it would have to ship a custom plugin (Slack). We throw at
- * construction rather than silently accepting unverifiable deliveries.
- *
- * `algorithm` defaults to `sha256` and `signaturePrefix` to none, matching
- * {@link ConnectorWebhookSchema} defaults.
+ * Coverage by declaration alone (no provider branch):
+ *  - GitHub/Jira/Linear: default base `{body}` → plain raw-body HMAC.
+ *  - Slack: base `v0:{timestamp}:{body}` + `timestampHeader` +
+ *    `freshnessSeconds: 300` → the full `v0` scheme.
  */
-export function createSchemaDrivenAppWebhookProvider(options: {
+export function verifyDeclaredWebhook(
+	rawBody: Uint8Array,
+	headers: Headers,
+	secret: string,
+	schema: ConnectorWebhookSchema,
+): boolean {
+	const signatureHeader = schema.signatureHeader;
+	if (!signatureHeader) return false;
+	const provided = headers.get(signatureHeader);
+	if (!provided) return false;
+	const algorithm = schema.algorithm ?? "sha256";
+	const prefix = schema.signaturePrefix;
+
+	// Resolve the timestamp once: it feeds both the signing base and the optional
+	// freshness guard. Required only when the template references it.
+	const template = schema.signingBaseTemplate ?? "{body}";
+	const needsTimestamp = template.includes("{timestamp}");
+	let timestamp: string | undefined;
+	if (needsTimestamp || schema.freshnessSeconds !== undefined) {
+		if (!schema.timestampHeader) return false;
+		timestamp = headers.get(schema.timestampHeader) ?? undefined;
+		if (!timestamp) return false;
+		if (schema.freshnessSeconds !== undefined) {
+			const ts = Number.parseInt(timestamp, 10);
+			if (!Number.isFinite(ts)) return false;
+			const nowSec = Math.floor(Date.now() / 1000);
+			if (Math.abs(nowSec - ts) > schema.freshnessSeconds) return false;
+		}
+	}
+
+	// Render the signing base. `{body}` is the raw bytes (kept as bytes so binary
+	// payloads sign correctly); the template is split around `{body}` so the body
+	// is concatenated, not decoded.
+	const tsPart = timestamp ?? "";
+	const withTimestamp = template.replace(/\{timestamp\}/g, tsPart);
+	const segments = withTimestamp.split("{body}");
+	const parts: Buffer[] = [];
+	segments.forEach((seg: string, i: number) => {
+		if (i > 0) parts.push(Buffer.from(rawBody));
+		if (seg) parts.push(Buffer.from(seg, "utf8"));
+	});
+	const base = Buffer.concat(parts);
+
+	const expectedHex = createHmac(algorithm, secret).update(base).digest("hex");
+	const expected = (prefix ?? "") + expectedHex;
+	const providedBuf = Buffer.from(provided, "utf8");
+	const expectedBuf = Buffer.from(expected, "utf8");
+	if (providedBuf.length !== expectedBuf.length) return false;
+	try {
+		return timingSafeEqual(providedBuf, expectedBuf);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * THE generic tenant extractor. Reads the external tenant id from the body via
+ * the schema's ordered `routingKeyPaths` (or single `routingKeyPath`), first
+ * non-empty match wins, then applies the declared `routingKeyTransform`
+ * (`url-host` → the value's URL host, for Jira's `self` URLs). Returns null when
+ * no path resolves (e.g. an app-level ping) → the router acks without landing.
+ */
+export function extractTenantFromSchema(
+	rawBody: Uint8Array,
+	schema: ConnectorWebhookSchema,
+	providerAppId: string,
+	providerInstance = "cloud",
+): AppWebhookTenant | null {
+	const paths =
+		schema.routingKeyPaths ??
+		(schema.routingKeyPath ? [schema.routingKeyPath] : []);
+	if (paths.length === 0) return null;
+	const body = parseJson(rawBody);
+	for (const path of paths) {
+		const raw = readPath(body, path);
+		if (!raw) continue;
+		let externalTenantId = raw;
+		if (schema.routingKeyTransform === "url-host") {
+			try {
+				externalTenantId = new URL(raw).host;
+			} catch {
+				continue;
+			}
+			if (!externalTenantId) continue;
+		}
+		return { providerInstance, providerAppId, externalTenantId };
+	}
+	return null;
+}
+
+/**
+ * Build an {@link AppWebhookProvider} entirely from a connector's DECLARED
+ * {@link ConnectorWebhookSchema} — verify ({@link verifyDeclaredWebhook}) and
+ * tenant extraction ({@link extractTenantFromSchema}) are both generic, so this
+ * one builder covers every integration provider (GitHub/Jira/Linear/Slack) with
+ * NO provider-name branch. The only per-KIND parts are the optional delivery
+ * hooks (`onDelivery` for poll-canonical triggers, `handleDelivery` for chat
+ * adapters), injected by the caller — they are Phase-D concerns and carry no
+ * verify/tenant/registration knowledge.
+ *
+ * `signatureHeader` is REQUIRED: an app-webhook endpoint must fail closed, so a
+ * provider that signs nothing has no derivable verify. We throw at construction
+ * rather than silently accept unverifiable deliveries.
+ */
+export function createDeclaredAppWebhookProvider(options: {
 	/** The `:provider` path segment + `app_installations.provider` value. */
 	provider: string;
-	/** The connector's declared HMAC scheme; `verify` is derived from it. */
+	/** Receiving Lobu App id, stamped as `provider_app_id`. */
+	appId: string;
+	/** The connector's declared webhook scheme; verify + tenant derive from it. */
 	webhookSchema: ConnectorWebhookSchema;
-	/** Pull the tenant tuple from the delivery (the only per-provider verify-free part). */
-	extractTenant(rawBody: Uint8Array, headers: Headers): AppWebhookTenant | null;
+	/** Provider instance (default `'cloud'`). */
+	providerInstance?: string;
 	/** Optional title/source_url projector for the landed row. */
-	extractContent?(rawBody: Uint8Array, headers: Headers): AppWebhookContent;
+	extractContent?: AppWebhookProvider["extractContent"];
 	/** Optional actor → person resolver (see {@link AppWebhookProvider.resolveActor}). */
 	resolveActor?: AppWebhookProvider["resolveActor"];
+	/** Optional per-KIND trigger handler (see {@link AppWebhookProvider.onDelivery}). */
+	onDelivery?: AppWebhookProvider["onDelivery"];
+	/** Optional per-KIND full-delivery takeover (chat adapters; {@link AppWebhookProvider.handleDelivery}). */
+	handleDelivery?: AppWebhookProvider["handleDelivery"];
 }): AppWebhookProvider {
-	const { provider, webhookSchema, extractTenant, extractContent, resolveActor } =
-		options;
+	const { provider, appId, webhookSchema, providerInstance } = options;
 	const signatureHeader = webhookSchema.signatureHeader;
 	if (!signatureHeader) {
 		throw new Error(
-			`Schema-driven app-webhook provider "${provider}" requires a webhook ` +
-				`signatureHeader (a non-signing provider must ship a custom verify plugin).`,
+			`App-webhook provider "${provider}" requires a webhook signatureHeader ` +
+				`(a non-signing provider can't be verified — fail closed).`,
 		);
 	}
 	const algorithm = webhookSchema.algorithm ?? "sha256";
@@ -230,182 +364,413 @@ export function createSchemaDrivenAppWebhookProvider(options: {
 				: {}),
 		},
 		verify(rawBody, headers, appWebhookSecret) {
-			return verifyWebhookSignature(
+			return verifyDeclaredWebhook(rawBody, headers, appWebhookSecret, webhookSchema);
+		},
+		extractTenant(rawBody) {
+			return extractTenantFromSchema(
 				rawBody,
-				headers.get(signatureHeader),
-				appWebhookSecret,
-				algorithm,
-				signaturePrefix,
+				webhookSchema,
+				appId,
+				providerInstance,
 			);
 		},
-		extractTenant,
-		...(extractContent ? { extractContent } : {}),
-		...(resolveActor ? { resolveActor } : {}),
+		...(options.extractContent ? { extractContent: options.extractContent } : {}),
+		...(options.resolveActor ? { resolveActor: options.resolveActor } : {}),
+		...(options.onDelivery ? { onDelivery: options.onDelivery } : {}),
+		...(options.handleDelivery ? { handleDelivery: options.handleDelivery } : {}),
+	};
+}
+
+/** Webhook routing for one feed: which feed a delivery updates, and how. */
+interface WebhookRoute {
+	feedKey: string;
+	mode: "trigger" | "store";
+}
+
+/**
+ * Build the github event → feed routing from the org's connector definition
+ * feeds_schema, where each feed declares `webhook: { events, mode }`. Read from
+ * the DB — the same persisted surface the poll path reads its entity-link rules
+ * from — so the server hardcodes NO provider event types or feed names. A
+ * per-delivery query (webhooks are low-frequency); an org with no active github
+ * definition yields an empty map → deliveries ack as no-ops.
+ *
+ * Routing strategies (declared by the connector per feed):
+ *  - TRIGGER — the poll brings strictly more than the webhook (an `issues`
+ *    payload omits computed counts; a `push` lacks the immutable github user id
+ *    `/commits` returns), so the delivery marks THAT feed due and the poll
+ *    fetches the complete record.
+ *  - STORE — the payload is event-complete (a `star` carries actor + starred_at)
+ *    and re-polling the whole list is waste, so the event is stored directly.
+ */
+async function loadGithubWebhookRoutes(
+	organizationId: string,
+	connectorKey: string,
+): Promise<Map<string, WebhookRoute>> {
+	const rows = await getDb()`
+		SELECT feeds_schema FROM connector_definitions
+		WHERE key = ${connectorKey} AND organization_id = ${organizationId} AND status = 'active'
+		ORDER BY updated_at DESC
+		LIMIT 1
+	`;
+	const routes = new Map<string, WebhookRoute>();
+	const feedsSchema = rows[0]?.feeds_schema as
+		| Record<string, { webhook?: { events?: unknown; mode?: unknown } }>
+		| null
+		| undefined;
+	if (!feedsSchema) return routes;
+	for (const [feedKey, feed] of Object.entries(feedsSchema)) {
+		const events = feed?.webhook?.events;
+		if (!Array.isArray(events)) continue;
+		const mode = feed.webhook?.mode === "store" ? "store" : "trigger";
+		for (const event of events) {
+			if (typeof event === "string" && event) routes.set(event, { feedKey, mode });
+		}
+	}
+	return routes;
+}
+
+/**
+ * GitHub's per-KIND delivery hook (poll-canonical trigger/store), built
+ * separately from the generic provider so it can be injected via
+ * {@link createDeclaredAppWebhookProvider}'s `onDelivery`. This is the only
+ * GitHub-specific code left in this file; relocating it out of the gateway core
+ * is the Phase-D per-kind delivery work. Verify + tenant + registration are
+ * fully generic (no GitHub branch).
+ *
+ * Routing comes from {@link loadGithubWebhookRoutes} (the connector's
+ * feeds_schema), not a hardcoded map. Most events TRIGGER the affected feed's
+ * poll; event-complete signals (stars) are STORED directly, consolidating with
+ * the poll on origin_id.
+ */
+export function createGithubWebhookDelivery(options: {
+	/**
+	 * The connector key whose feeds/connections this delivery routes to and
+	 * whose value is stamped on any stored event — threaded from the delivery
+	 * context (BundledIntegrationConnector.connectorKey), never a literal.
+	 */
+	connectorKey: string;
+	/**
+	 * Land event-complete deliveries (stars) directly instead of re-polling.
+	 * Default true. Set false to make every delivery a trigger (the scheduled
+	 * poll then captures stars on its next backstop run).
+	 */
+	storeWebhookEvents?: boolean;
+}): NonNullable<AppWebhookProvider["onDelivery"]> {
+	const { connectorKey } = options;
+	const storeWebhookEvents = options.storeWebhookEvents ?? true;
+	return async ({ rawBody, headers, install, sql }) => {
+		const event = headers.get("x-github-event");
+		if (!event) return { triggered: false };
+		// Routing is declared by the connector (feeds_schema), read from the DB.
+		const route = (
+			await loadGithubWebhookRoutes(install.organizationId, connectorKey)
+		).get(event);
+		if (!route) return { triggered: false };
+		const payload = parseJson(rawBody);
+		const repo = extractGithubRepo(payload);
+		if (!repo) return { triggered: false };
+
+		// STORE (event-complete signals, e.g. stars): land the structured event
+		// directly, consolidating with the poll on origin_id — no wasteful
+		// re-poll. Resolution happens here because the poll won't run for this
+		// feed on the webhook's account. Gated by storeWebhookEvents; when off,
+		// fall through to a trigger so the scheduled poll picks it up.
+		if (route.mode === "store" && storeWebhookEvents) {
+			const stored = await storeGithubWebhookEvent({
+				sql,
+				connectorKey,
+				install,
+				repo,
+				event,
+				feedKey: route.feedKey,
+				payload,
+			});
+			return { triggered: stored };
+		}
+
+		// TRIGGER: the poll brings more, so mark THAT feed due and let the poll
+		// fetch the complete record (dedupes/supersedes by origin_id) and resolve
+		// the person once — no webhook-side resolution (avoids double work).
+		const triggered = await markGithubFeedDue({
+			sql,
+			connectorKey,
+			install,
+			repo,
+			feedKey: route.feedKey,
+		});
+		return { triggered };
 	};
 }
 
 /**
- * GitHub App webhook plugin.
- *
- * Verify: schema-driven (GitHub signs the raw body and sends
- * `x-hub-signature-256: sha256=<hex>`; the scheme is the github connector's
- * {@link ConnectorWebhookSchema}). The shared HMAC verifier is constant-time
- * with a decoded-length compare — a non-hex right-length header can't slip
- * through or throw.
- *
- * Extract: the tenant is the `installation.id` in the JSON body; the Lobu App
- * is the receiving GitHub App (`GITHUB_APP_ID`), and the instance is 'cloud'
- * (GHES would be the host — out of scope here). A delivery with no
- * `installation.id` (rare app-level events) has no tenant to route to → null.
- *
- * Content: issue/PR/discussion title + html_url (a comment's title is its
- * parent's; its url is the comment deep-link) populate `events.title` +
- * `events.source_url` so the landed row is legible without digging payload_data.
+ * Resolve the DATA-kind delivery hook for a connector, selected by its KIND of
+ * data delivery — NOT by a provider-name branch in the gateway wiring. A data
+ * integration whose deliveries are POLL-CANONICAL (GitHub: trigger the affected
+ * feed / store event-complete signals) ships a hook here; data integrations that
+ * RAW-STORE their deliveries (Jira/Linear) ship none, so the router falls through
+ * to the raw event-ingest path. This lookup lives in the data-delivery module
+ * (alongside the hook impls), so the gateway selects `data` vs `chat` by
+ * deliveryKind and delegates the per-connector data hook to this — gateway core
+ * stays free of provider literals. A new poll-canonical data integration adds its
+ * hook here; everything else needs no change.
  */
-export function createGithubAppWebhookProvider(options: {
-	/** Receiving GitHub App id, stamped as `provider_app_id`. */
-	appId: string;
-}): AppWebhookProvider {
-	return createSchemaDrivenAppWebhookProvider({
-		provider: "github",
-		// GitHub raw-body HMAC: `x-hub-signature-256: sha256=<hex>` (sha256).
-		// `x-github-delivery` is the per-delivery UUID used for redelivery dedupe.
-		webhookSchema: {
-			signatureHeader: "x-hub-signature-256",
-			algorithm: "sha256",
-			signaturePrefix: "sha256=",
-			dedupeHeader: "x-github-delivery",
-		},
-		extractTenant(rawBody) {
-			const body = parseJson(rawBody);
-			if (body === null || typeof body !== "object") return null;
-			const installation = (body as Record<string, unknown>).installation;
-			if (installation === null || typeof installation !== "object") return null;
-			const id = (installation as Record<string, unknown>).id;
-			// GitHub installation ids are integers; accept the numeric/string forms.
-			if (typeof id !== "number" && typeof id !== "string") return null;
-			const externalTenantId = String(id);
-			if (!externalTenantId) return null;
-			return {
-				providerInstance: "cloud",
-				providerAppId: options.appId,
-				externalTenantId,
-			};
-		},
-		extractContent(rawBody) {
-			return extractGithubWebhookContent(rawBody);
-		},
-		// Resolve the authoring github actor → a tenant-scoped person. Lazy: the
-		// router hands it the persist transaction so the graph writes are atomic
-		// with the event insert (and never run for deduped/lost-race deliveries).
-		async resolveActor({ organizationId, rawBody, headers, sql }) {
-			return resolveGithubWebhookActor({
-				organizationId,
-				githubEvent: headers.get("x-github-event"),
-				payload: parseJson(rawBody),
-				sql,
-			});
-		},
-	});
-}
-
-/** First non-empty `*.self` URL found by a shallow scan of the delivery body. */
-function firstSelfUrl(body: unknown): string | undefined {
-	if (body === null || typeof body !== "object") return undefined;
-	const root = body as Record<string, unknown>;
-	const direct = strField(root, "self");
-	if (direct) return direct;
-	// Jira nests the entity (issue/comment/user/project) one level down; each
-	// entity carries its own REST `self` URL on the same Atlassian site.
-	for (const value of Object.values(root)) {
-		const nested = strField(value, "self");
-		if (nested) return nested;
+export function createDataWebhookDelivery(
+	connectorKey: string,
+): AppWebhookProvider["onDelivery"] | undefined {
+	if (connectorKey === "github") {
+		return createGithubWebhookDelivery({
+			connectorKey,
+			storeWebhookEvents: process.env.GITHUB_WEBHOOK_STORE_EVENTS !== "false",
+		});
 	}
 	return undefined;
 }
 
-/**
- * Jira (Cloud) app webhook plugin.
- *
- * Verify: schema-driven from the jira connector's {@link ConnectorWebhookSchema}
- * — Jira dynamic webhooks HMAC-sign the raw body with the registration secret
- * and send `x-hub-signature: sha256=<hex>`.
- *
- * Extract: the tenant is the Atlassian SITE the delivery came from. Jira webhook
- * bodies don't carry the cloudId directly, but every entity exposes a REST
- * `self` URL on its site host (e.g.
- * `https://acme.atlassian.net/rest/api/2/issue/10000`). We use the site host as
- * `external_tenant_id` (one install row per site); `provider_app_id` is the Lobu
- * OAuth/Connect app id. A delivery with no resolvable `self` URL (e.g. a test
- * ping) has no tenant → null.
- */
-export function createJiraAppWebhookProvider(options: {
-	/** Lobu Jira app id (`JIRA_CLIENT_ID`), stamped as `provider_app_id`. */
-	appId: string;
-}): AppWebhookProvider {
-	return createSchemaDrivenAppWebhookProvider({
-		provider: "jira",
-		// Jira raw-body HMAC: `x-hub-signature: sha256=<hex>` (sha256).
-		webhookSchema: {
-			signatureHeader: "x-hub-signature",
-			algorithm: "sha256",
-			signaturePrefix: "sha256=",
-		},
-		extractTenant(rawBody) {
-			const body = parseJson(rawBody);
-			const selfUrl = firstSelfUrl(body);
-			if (!selfUrl) return null;
-			let host: string;
-			try {
-				host = new URL(selfUrl).host;
-			} catch {
-				return null;
-			}
-			if (!host) return null;
-			return {
-				providerInstance: "cloud",
-				providerAppId: options.appId,
-				externalTenantId: host,
-			};
-		},
-	});
+/** Extract the {owner, name} of the repo a GitHub delivery is about, or null. */
+function extractGithubRepo(
+	body: unknown,
+): { owner: string; name: string } | null {
+	if (body === null || typeof body !== "object") return null;
+	const repository = (body as Record<string, unknown>).repository;
+	if (repository === null || typeof repository !== "object") return null;
+	const repo = repository as Record<string, unknown>;
+	const name = typeof repo.name === "string" ? repo.name : undefined;
+	const owner = strField(repo.owner, "login");
+	if (owner && name) return { owner, name };
+	// Fall back to full_name ("owner/name") when the split fields are absent.
+	const fullName = typeof repo.full_name === "string" ? repo.full_name : undefined;
+	if (fullName?.includes("/")) {
+		const [o, n] = fullName.split("/", 2);
+		if (o && n) return { owner: o, name: n };
+	}
+	return null;
 }
 
 /**
- * Linear app webhook plugin.
- *
- * Verify: schema-driven from the linear connector's {@link ConnectorWebhookSchema}
- * — Linear HMAC-signs the raw body and sends a BARE hex digest in
- * `linear-signature` (no `sha256=` prefix).
- *
- * Extract: every Linear webhook delivery carries the top-level `organizationId`
- * of the workspace it belongs to — that's the tenant (one install row per Linear
- * workspace). `provider_app_id` is the Lobu Linear OAuth app id. A delivery with
- * no `organizationId` has no tenant → null.
+ * Mark the active github feed for (install, repo, feedKey) due NOW so the
+ * orchestrator syncs it on its next tick — the webhook becomes the "when to run"
+ * signal, with the schedule as the self-covering backstop. Scoped to the one
+ * feed the event belongs to, so unrelated feeds aren't re-polled. Idempotent:
+ * redeliveries just re-stamp `next_run_at`. Returns whether the feed matched
+ * (telemetry only — an unconfigured repo/feed is a no-op, not an error).
  */
-export function createLinearAppWebhookProvider(options: {
-	/** Lobu Linear app id (`LINEAR_CLIENT_ID`), stamped as `provider_app_id`. */
-	appId: string;
-}): AppWebhookProvider {
-	return createSchemaDrivenAppWebhookProvider({
-		provider: "linear",
-		// Linear raw-body HMAC: `linear-signature: <hex>` (sha256, no prefix).
-		webhookSchema: {
-			signatureHeader: "linear-signature",
-			algorithm: "sha256",
-		},
-		extractTenant(rawBody) {
-			const body = parseJson(rawBody);
-			if (body === null || typeof body !== "object") return null;
-			const organizationId = strField(body, "organizationId");
-			if (!organizationId) return null;
-			return {
-				providerInstance: "cloud",
-				providerAppId: options.appId,
-				externalTenantId: organizationId,
-			};
-		},
+async function markGithubFeedDue(params: {
+	sql: DbClient;
+	connectorKey: string;
+	install: { id: number | string; organizationId: string };
+	repo: { owner: string; name: string };
+	feedKey: string;
+}): Promise<boolean> {
+	const { sql, connectorKey, install, repo, feedKey } = params;
+	const rows = await sql`
+		UPDATE feeds f
+		SET next_run_at = now(), updated_at = now()
+		FROM connections c
+		WHERE f.connection_id = c.id
+		  AND c.organization_id = ${install.organizationId}
+		  AND c.connector_key = ${connectorKey}
+		  AND c.status = 'active'
+		  AND c.deleted_at IS NULL
+		  AND (c.config->>'installation_ref') = ${String(install.id)}
+		  AND f.feed_key = ${feedKey}
+		  AND lower(f.config->>'repo_owner') = lower(${repo.owner})
+		  AND lower(f.config->>'repo_name') = lower(${repo.name})
+		  AND f.status = 'active'
+		  AND f.deleted_at IS NULL
+		RETURNING f.id
+	`;
+	return rows.length > 0;
+}
+
+/**
+ * The active github feed matching (install, repo, feedKey) and its connection.
+ * The store path is gated on this exactly like the trigger path
+ * ({@link markGithubFeedDue}) — a repo with no such feed configured is a no-op,
+ * not an unconfigured event. The connection id is the feed's own, so the stored
+ * event shares the poll's (connection_id, origin_id) and consolidates.
+ */
+async function resolveGithubFeedTarget(params: {
+	sql: DbClient;
+	connectorKey: string;
+	install: { id: number | string; organizationId: string };
+	repo: { owner: string; name: string };
+	feedKey: string;
+}): Promise<{
+	connectionId: number;
+	feedId: number;
+	owner: string;
+	name: string;
+} | null> {
+	const { sql, connectorKey, install, repo, feedKey } = params;
+	// GitHub owner/repo are case-insensitive; match accordingly and return the
+	// feed config's canonical casing so the store builds the SAME origin_id the
+	// poll does (the connector keys origin_id off the feed config, not the
+	// webhook payload's display casing) — otherwise consolidation would break.
+	const [row] = await sql`
+		SELECT f.id AS feed_id, f.connection_id,
+		       f.config->>'repo_owner' AS repo_owner, f.config->>'repo_name' AS repo_name
+		FROM feeds f
+		JOIN connections c ON c.id = f.connection_id
+		WHERE c.organization_id = ${install.organizationId}
+		  AND c.connector_key = ${connectorKey}
+		  AND c.status = 'active'
+		  AND c.deleted_at IS NULL
+		  AND (c.config->>'installation_ref') = ${String(install.id)}
+		  AND f.feed_key = ${feedKey}
+		  AND lower(f.config->>'repo_owner') = lower(${repo.owner})
+		  AND lower(f.config->>'repo_name') = lower(${repo.name})
+		  AND f.status = 'active'
+		  AND f.deleted_at IS NULL
+		LIMIT 1
+	`;
+	return row
+		? {
+				connectionId: Number(row.connection_id),
+				feedId: Number(row.feed_id),
+				owner: String(row.repo_owner),
+				name: String(row.repo_name),
+			}
+		: null;
+}
+
+/**
+ * Land an event-complete github delivery (star/watch) as a structured event
+ * instead of re-polling. The origin_id mirrors the github connector's stargazer
+ * scheme (`stargazer_<owner>_<repo>_<github_user_id:ID | github_login:login>`,
+ * non-alnum → `_`) and the event is stored under the install's github
+ * connection, so the scheduled `/stargazers` poll supersedes/dedupes it on the
+ * SAME (connection_id, origin_id). The actor is resolved to a person here (the
+ * poll won't run on the webhook's account). Unstars are transient — not tracked
+ * (the user opted out of delete signals). Returns false (no-op) when no active
+ * matching feed is configured for the repo or the delivery isn't a new star.
+ */
+async function storeGithubWebhookEvent(params: {
+	sql: DbClient;
+	connectorKey: string;
+	install: { id: number | string; organizationId: string };
+	repo: { owner: string; name: string };
+	event: string;
+	feedKey: string;
+	payload: unknown;
+}): Promise<boolean> {
+	const { sql, connectorKey, install, repo, event, feedKey, payload } = params;
+	const root =
+		payload && typeof payload === "object"
+			? (payload as Record<string, unknown>)
+			: null;
+	if (!root) return false;
+	// `star` → action created/deleted; `watch` → action started. Only a NEW star
+	// is landed; unstars/transient states are intentionally ignored.
+	const action = strField(root, "action");
+	if (event === "star" && action !== "created") return false;
+	if (event === "watch" && action !== "started") return false;
+
+	const actor = extractGithubActor(payload);
+	if (!actor) return false;
+	// Gate on the configured feed (same as the trigger path) so an unconfigured
+	// repo never lands a stray event; use the feed's own connection + id, and its
+	// canonical owner/name casing so origin_id matches the poll's exactly.
+	const target = await resolveGithubFeedTarget({
+		sql,
+		connectorKey,
+		install,
+		repo,
+		feedKey,
 	});
+	if (!target) return false;
+	const { owner, name } = target;
+
+	// origin_id mirrors the connector: key on the immutable user id when present.
+	const key = actor.author_id
+		? `github_user_id:${actor.author_id}`
+		: `github_login:${actor.author_login.toLowerCase()}`;
+	const originId = `stargazer_${owner}_${name}_${key.replace(/[^a-z0-9]+/gi, "_")}`;
+	const starredAt = strField(root, "starred_at") ?? new Date().toISOString();
+	const profileUrl =
+		strField(root.sender, "html_url") ??
+		`https://github.com/${actor.author_login}`;
+
+	// Resolve the actor → person so the star is attributed exactly like the poll.
+	// Best-effort by design: a failure leaves the event unattributed (the poll
+	// backstop re-resolves on its next run), but we log it so it isn't invisible.
+	const resolution = await resolveGithubWebhookActor({
+		organizationId: install.organizationId,
+		githubEvent: event,
+		payload,
+		sql,
+	}).catch((error) => {
+		logger.warn(
+			{ event, originId, error: String(error) },
+			"[app-webhook] github star actor resolution failed; storing unattributed",
+		);
+		return null;
+	});
+
+	await insertEvent(
+		{
+			organizationId: install.organizationId,
+			connectorKey,
+			connectionId: target.connectionId,
+			feedKey,
+			feedId: target.feedId,
+			originId,
+			originType: "stargazer",
+			semanticType: "content",
+			title: `${actor.author_login} starred ${owner}/${name}`,
+			authorName: actor.author_login,
+			sourceUrl: profileUrl,
+			occurredAt: starredAt,
+			score: 1,
+			entityIds: resolution?.entityIds ?? [],
+			metadata: {
+				action: "starred",
+				starred_at: starredAt,
+				source: "github_star_webhook",
+				author_login: actor.author_login,
+				...(actor.author_id ? { author_id: actor.author_id } : {}),
+				...(resolution?.metadata ?? {}),
+			},
+		},
+		{ onConflictUpdate: true },
+	);
+	return true;
+}
+
+/**
+ * The CHAT-kind full-delivery hook: forward a verified delivery to the chat
+ * adapter for its provider (the coordinator's routing chain — for Slack: BYO
+ * connection → active OAuth install → preview → OAuth fallback, incl. the
+ * url_verification challenge echo). Built separately so it can be injected via
+ * {@link createDeclaredAppWebhookProvider}'s `handleDelivery`; the generic
+ * provider still runs the declarative verify at the edge first. Provider-generic:
+ * the caller supplies the per-provider forward (see
+ * `ChatInstanceManager.handleChatAppWebhook`), so a new chat platform reuses this
+ * unchanged.
+ */
+export function createChatWebhookDelivery(options: {
+	/**
+	 * Delegate to the chat adapter's full routing chain for the delivery's
+	 * provider. Given the verified raw bytes + original headers, returns the
+	 * adapter's Response.
+	 */
+	handleChatAppWebhook(request: Request): Promise<Response>;
+}): NonNullable<AppWebhookProvider["handleDelivery"]> {
+	return async ({ rawBody, headers, url, method }) => {
+		// Reconstruct the verified delivery as a Request the coordinator can
+		// re-read (it calls `request.text()` + reads content-type). The raw bytes
+		// pass through unchanged so the adapter's own downstream `verifySignature`
+		// over `v0:{ts}:{body}` still passes.
+		const request = new Request(url, {
+			method,
+			headers,
+			body:
+				method === "GET" || method === "HEAD"
+					? undefined
+					: Buffer.from(rawBody),
+		});
+		return options.handleChatAppWebhook(request);
+	};
 }
 
 /** Dependencies the router needs, injected at registration (testable). */
@@ -423,19 +788,23 @@ export interface AppWebhookRouterDeps {
 }
 
 /**
- * Default app-webhook secret resolver: env var first
- * (`GITHUB_APP_WEBHOOK_SECRET` etc.), then a conventional secret-store ref
- * (`secret://app-webhook/<provider>`) so prod can seal it like any other
- * credential. Plaintext env wins for local/dev parity with the rest of the
- * gateway (`.env` is the single source of truth).
+ * Default app-webhook secret resolver. Resolution order per provider:
+ *  1. the env var the connector DECLARES as `webhookSecretKey` (passed via
+ *     `declaredSecretEnvKeys`), so the gateway holds NO provider-specific env
+ *     literal and NO `<PROVIDER>_APP_WEBHOOK_SECRET` naming convention — the
+ *     connector declaration is the single source of truth (e.g. Slack's signing
+ *     secret IS its webhook secret, declared as `SLACK_SIGNING_SECRET`);
+ *  2. a conventional secret-store ref (`secret://app-webhook/<provider>`) so
+ *     prod can seal it like any other credential.
+ * Plaintext env wins for local/dev parity (`.env` is the single source of truth).
  */
 export function createDefaultAppWebhookSecretResolver(
 	secretStore: SecretStore,
+	declaredSecretEnvKeys: Record<string, string | undefined> = {},
 ): (provider: string) => Promise<string | undefined> {
 	return async (provider) => {
-		const envName = `${provider.toUpperCase()}_APP_WEBHOOK_SECRET`;
-		const fromEnv = process.env[envName];
-		if (fromEnv) return fromEnv;
+		const declaredKey = declaredSecretEnvKeys[provider];
+		if (declaredKey && process.env[declaredKey]) return process.env[declaredKey];
 		return (await secretStore.get(`secret://app-webhook/${provider}`)) ?? undefined;
 	};
 }
@@ -489,6 +858,30 @@ export function createAppWebhookRoutes(deps: AppWebhookRouterDeps): Hono {
 			return json(401, { error: "Unauthorized" });
 		}
 
+		// 1b. Providers that own their own routing (Slack) take over here, after
+		//     the edge signing check. They do NOT resolve an `app_installations`
+		//     row — Slack's primary target is a BYO `agent_connections` row that
+		//     has no install row, so the generic resolveActiveByTenant would
+		//     200-ack the live bot's traffic into oblivion. They run their own
+		//     precedence chain and return their own Response; the generic
+		//     install/ingest pipeline below is skipped entirely.
+		if (provider.handleDelivery) {
+			try {
+				return await provider.handleDelivery({
+					rawBody,
+					headers: c.req.raw.headers,
+					url: c.req.raw.url,
+					method: c.req.raw.method,
+				});
+			} catch (error) {
+				logger.error(
+					{ provider: providerName, error: String(error) },
+					"[app-webhook] handleDelivery failed",
+				);
+				return json(500, { error: "Failed to handle delivery" });
+			}
+		}
+
 		// 2. Extract the provider tenant tuple. A delivery with no resolvable
 		//    tenant (e.g. an app-level ping) is acked without landing.
 		const tenant = provider.extractTenant(rawBody, c.req.raw.headers);
@@ -523,7 +916,30 @@ export function createAppWebhookRoutes(deps: AppWebhookRouterDeps): Hono {
 			return json(200, { ok: true, landed: false });
 		}
 
-		// 4. Land the RAW delivery through the same event-log path as connection
+		// 4. Trigger-handling providers (github) treat the delivery as a "sync now"
+		//    signal rather than a record: resolve identity + mark the affected
+		//    repo's feeds due, no raw event. The canonical record is the poll, so
+		//    push and backfill stay one consolidated dataset. Providers without
+		//    onDelivery fall through to the raw store below (jira/linear).
+		if (provider.onDelivery) {
+			try {
+				const { triggered } = await provider.onDelivery({
+					rawBody,
+					headers: c.req.raw.headers,
+					install,
+					sql: getDb(),
+				});
+				return json(200, { ok: true, triggered });
+			} catch (error) {
+				logger.error(
+					{ provider: providerName, installationId: install.id, error: String(error) },
+					"[app-webhook] onDelivery trigger failed",
+				);
+				return json(500, { error: "Failed to handle delivery" });
+			}
+		}
+
+		// 5. Land the RAW delivery through the same event-log path as connection
 		//    ingest. We synthesize a StoredConnection scoped to the install's org
 		//    and keyed on the install id, replaying the PROVIDER's signature scheme
 		//    (from `provider.webhookScheme`, not a hardcoded GitHub one) with the

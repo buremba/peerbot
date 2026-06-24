@@ -7,19 +7,37 @@
  *  1. The Slack adapter (`@chat-adapter/slack`) rejects a forged
  *     `x-slack-signature` with HTTP 401 and accepts a correctly-signed
  *     payload — proving the HMAC-SHA256(`v0:{ts}:{rawBody}`) check is live.
- *  2. The `/slack/events` route keeps its edge-layer freshness-window check
- *     (replay defense) and forwards everything else to
- *     `ChatInstanceManager.handleSlackAppWebhook`, which fans out to the
- *     adapter described above.
+ *  2. The Slack app-webhook provider (`POST /api/v1/app-webhooks/slack`)
+ *     performs the edge `v0` signing + freshness verify (replay defense) and,
+ *     only on success, delegates everything to
+ *     `ChatInstanceManager.handleChatAppWebhook`, which fans out to the
+ *     adapter described above. The bespoke `/slack/events` route was folded
+ *     into this generic endpoint.
  */
 
 import { createHmac } from "node:crypto";
 import { createSlackAdapter } from "@chat-adapter/slack";
+import type { ConnectorWebhookSchema } from "@lobu/connector-sdk";
 import { describe, expect, it, vi } from "vitest";
-import { createSlackRoutes } from "../gateway/routes/public/slack.js";
-import type { ChatInstanceManager } from "../gateway/connections/chat-instance-manager.js";
+import {
+  createAppWebhookRoutes,
+  createChatWebhookDelivery,
+  createDeclaredAppWebhookProvider,
+} from "../gateway/routes/public/app-webhooks.js";
 
 const SIGNING_SECRET = "8f742231b10e8888abcd99yyyzzz85a5";
+
+/** Slack's DECLARED webhook schema (mirror of the slack connector's block). */
+const SLACK_WEBHOOK_SCHEMA: ConnectorWebhookSchema = {
+  signatureHeader: "x-slack-signature",
+  algorithm: "sha256",
+  signaturePrefix: "v0=",
+  signingBaseTemplate: "v0:{timestamp}:{body}",
+  timestampHeader: "x-slack-request-timestamp",
+  freshnessSeconds: 300,
+  delivery: "app_installation",
+  routingKeyPaths: ["team_id", "team.id", "event.team_id"],
+};
 
 function slackSignature(body: string, timestamp: string): string {
   const base = `v0:${timestamp}:${body}`;
@@ -110,39 +128,65 @@ describe("Slack adapter webhook signature verification", () => {
   });
 });
 
-describe("/slack/events route", () => {
-  function makeRouter(handleSlackAppWebhook: (req: Request) => Promise<Response>) {
-    const manager = {
-      handleSlackAppWebhook,
-      getServices: () => ({ getPublicGatewayUrl: () => undefined }),
-    } as unknown as ChatInstanceManager;
-    return createSlackRoutes(manager);
+describe("slack app-webhook provider route", () => {
+  // The Slack provider runs only the edge verify through the generic router,
+  // then delegates; verify+secret resolution are pure (no DB), and the
+  // delegate handler is stubbed, so this needs no Postgres.
+  function makeRouter(handleChatAppWebhook: (req: Request) => Promise<Response>) {
+    return createAppWebhookRoutes({
+      installationStore: {} as never,
+      secretStore: { get: async () => null },
+      providers: [
+        createDeclaredAppWebhookProvider({
+          provider: "slack",
+          appId: "slack-app",
+          webhookSchema: SLACK_WEBHOOK_SCHEMA,
+          handleDelivery: createChatWebhookDelivery({ handleChatAppWebhook }),
+        }),
+      ],
+      resolveAppWebhookSecret: async () => SIGNING_SECRET,
+    });
   }
 
-  it("rejects a stale timestamp at the edge before delegating", async () => {
+  function delivery(body: string, ts: string, signature?: string): Request {
+    return new Request("http://gateway.test/api/v1/app-webhooks/slack", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-slack-request-timestamp": ts,
+        "x-slack-signature": signature ?? slackSignature(body, ts),
+      },
+      body,
+    });
+  }
+
+  it("rejects a stale-but-signed delivery 401 at the edge before delegating", async () => {
     const handler = vi.fn(async () => new Response("ok"));
     const router = makeRouter(handler);
     const staleTs = String(Math.floor(Date.now() / 1000) - 60 * 60);
 
-    const res = await router.request("/slack/events", {
-      method: "POST",
-      headers: { "x-slack-request-timestamp": staleTs },
-      body: "{}",
-    });
+    const res = await router.fetch(delivery("{}", staleTs));
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(401);
     expect(handler).not.toHaveBeenCalled();
   });
 
-  it("delegates a fresh request to ChatInstanceManager.handleSlackAppWebhook", async () => {
-    const handler = vi.fn(async () => new Response("forwarded", { status: 200 }));
+  it("rejects a forged signature 401 before delegating", async () => {
+    const handler = vi.fn(async () => new Response("ok"));
     const router = makeRouter(handler);
 
-    const res = await router.request("/slack/events", {
-      method: "POST",
-      headers: { "x-slack-request-timestamp": nowTs() },
-      body: JSON.stringify({ type: "event_callback" }),
-    });
+    const res = await router.fetch(delivery("{}", nowTs(), "v0=forged"));
+
+    expect(res.status).toBe(401);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("delegates a fresh, valid delivery to handleSlackAppWebhook", async () => {
+    const handler = vi.fn(async () => new Response("forwarded", { status: 200 }));
+    const router = makeRouter(handler);
+    const body = JSON.stringify({ type: "event_callback" });
+
+    const res = await router.fetch(delivery(body, nowTs()));
 
     expect(handler).toHaveBeenCalledTimes(1);
     expect(res.status).toBe(200);
@@ -155,11 +199,7 @@ describe("/slack/events route", () => {
     });
     const router = makeRouter(handler);
 
-    const res = await router.request("/slack/events", {
-      method: "POST",
-      headers: { "x-slack-request-timestamp": nowTs() },
-      body: "{}",
-    });
+    const res = await router.fetch(delivery("{}", nowTs()));
 
     expect(res.status).toBe(500);
   });

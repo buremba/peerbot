@@ -48,25 +48,15 @@ export async function handleCreate(
 }> {
   const sql = getDb();
 
-  // Require slug + prompt for create. extraction_schema is required too, UNLESS
-  // the watcher is entity-typed: a watcher that names keying_config.entity_type
-  // derives its output schema from that entity type's metadata_schema (schema
-  // lives on the type), so it needs no inline one.
+  // Require slug + prompt for create. The output contract is not authored
+  // here: an entity-typed watcher (keying_config.entity_type) derives it from
+  // entity_types.metadata_schema at runtime, and an untyped watcher uses the
+  // worker's free-form summary fallback.
   if (!args.slug) {
     throw new ToolUserError('slug is required for create action');
   }
   if (!args.prompt) {
     throw new ToolUserError('prompt is required for create action');
-  }
-  const keyingEntityType =
-    args.keying_config && typeof args.keying_config === 'object'
-      ? (args.keying_config as { entity_type?: unknown }).entity_type
-      : undefined;
-  const isEntityTyped = typeof keyingEntityType === 'string' && keyingEntityType.trim().length > 0;
-  if (!args.extraction_schema && !isEntityTyped) {
-    throw new ToolUserError(
-      'extraction_schema is required for create action (unless keying_config.entity_type is set)'
-    );
   }
   assertValidExecutionConfig(args.execution_config, ctx);
   // A device pin runs the watcher's agent CLI on the device owner's machine —
@@ -78,11 +68,6 @@ export async function handleCreate(
   const entityId = args.entity_id;
 
   // Parse JSON inputs
-  const extractionSchema = parseJsonInput<Record<string, unknown>>(
-    args.extraction_schema,
-    'extraction_schema'
-  );
-  const jsonTemplate = parseJsonInput<unknown>(args.json_template, 'json_template');
   const keyingConfig = parseJsonInput<Record<string, unknown>>(args.keying_config, 'keying_config');
   const classifiers = parseJsonInput<unknown[]>(args.classifiers, 'classifiers');
 
@@ -95,8 +80,6 @@ export async function handleCreate(
   // Validate watcher config
   assertWatcherVersionConfigValid({
     prompt: args.prompt,
-    extractionSchema,
-    entityTyped: isEntityTyped,
     classifiers,
     sources,
   });
@@ -210,14 +193,14 @@ export async function handleCreate(
     await tx`
       INSERT INTO watcher_versions (
         id, watcher_id, version, name, description,
-        prompt, extraction_schema, version_sources,
-        json_template, keying_config, classifiers,
+        prompt, version_sources,
+        keying_config, classifiers,
         condensation_prompt, condensation_window_count,
         reactions_guidance, change_notes, created_by, created_at
       ) VALUES (
         ${versionId}, ${watcherId}, 1, ${args.name ?? args.slug}, ${args.description ?? null},
-        ${args.prompt}, ${toJsonParam(tx, extractionSchema)}, ${toJsonParam(tx, sources)},
-        ${toJsonParam(tx, jsonTemplate)}, ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
+        ${args.prompt}, ${toJsonParam(tx, sources)},
+        ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
         ${args.condensation_prompt ?? null}, ${args.condensation_window_count ?? null},
         ${args.reactions_guidance ?? null}, ${'Initial version'}, ${createdBy}, NOW()
       )
@@ -480,14 +463,16 @@ export async function handleCreateFromVersion(
     throw new Error('entity_ids is required for create_from_version');
   }
 
-  // Fetch the source version + the source watcher's reaction script.
-  // Reaction script lives on the watchers row, not on watcher_versions, so
-  // it has to be copied explicitly when assigning the template to a new
-  // entity. Without this copy the new assignment would have no reactions.
+  // Fetch the source version + the source watcher's reaction script AND its
+  // derived input schema. Reaction script + its `reaction_input_schema` contract
+  // live on the watchers row, not on watcher_versions, so they have to be copied
+  // explicitly when assigning the template to a new entity. Without this copy the
+  // new assignment would have no reactions — or (dropping the input schema) a
+  // reaction with no extraction contract, silently running free-form.
   const versionRows = await sql`
     SELECT wv.*, w.organization_id, w.schedule, w.sources, w.agent_id, w.scheduler_client_id,
            w.model_config, w.execution_config, w.tags, w.watcher_group_id,
-           w.reaction_script, w.reaction_script_compiled
+           w.reaction_script, w.reaction_script_compiled, w.reaction_input_schema
     FROM watcher_versions wv
     JOIN watchers w ON w.id = wv.watcher_id
     WHERE wv.id = ${args.version_id}
@@ -552,7 +537,7 @@ export async function handleCreateFromVersion(
         schedule, next_run_at, agent_id, scheduler_client_id, model_config, execution_config, sources, version,
         current_version_id, tags, status, created_by, created_at, updated_at,
         watcher_group_id, source_watcher_id,
-        reaction_script, reaction_script_compiled
+        reaction_script, reaction_script_compiled, reaction_input_schema
       ) VALUES (
         ${watcherId}, ${watcherName}, ${watcherSlug}, ${organizationId},
         ${`{${entityId}}`}::bigint[],
@@ -563,7 +548,8 @@ export async function handleCreateFromVersion(
         'active', ${createdBy}, NOW(), NOW(),
         ${groupId}, ${version.watcher_id},
         ${(version.reaction_script as string | null) ?? null},
-        ${(version.reaction_script_compiled as string | null) ?? null}
+        ${(version.reaction_script_compiled as string | null) ?? null},
+        ${toJsonParam(sql, version.reaction_input_schema)}
       )
     `;
 

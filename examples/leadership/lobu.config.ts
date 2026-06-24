@@ -189,21 +189,6 @@ const boardActionTracker = defineWatcher({
   agentKind: "notifier",
   prompt:
     "Track board action items: check task delivery status, blocker resolution progress, and approaching deadlines for the next board packet.\n",
-  extractionSchema: {
-    type: "object",
-    required: [
-      "action_items",
-      "blocked_items",
-      "deadlines_approaching",
-      "completion_status",
-    ],
-    properties: {
-      action_items: { type: "array", items: { type: "string" } },
-      blocked_items: { type: "array", items: { type: "string" } },
-      deadlines_approaching: { type: "array", items: { type: "string" } },
-      completion_status: { type: "string" },
-    },
-  },
 });
 
 export default defineConfig({

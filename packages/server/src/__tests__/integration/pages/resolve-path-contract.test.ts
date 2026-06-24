@@ -39,6 +39,22 @@ async function seedFixture(): Promise<Fixture> {
       (${org.id}, 'brand', 'Brand', NOW(), NOW()),
       (${org.id}, 'product', 'Product', NOW(), NOW())
   `;
+  // A typed entity type WITH a metadata_schema (no view template declared) —
+  // exercises the auto-default rendering tail.
+  await sql`
+    INSERT INTO entity_types (organization_id, slug, name, metadata_schema, created_at, updated_at)
+    VALUES (
+      ${org.id}, 'deal', 'Deal',
+      ${sql.json({
+        type: 'object',
+        properties: {
+          stage: { title: 'Deal Stage', 'x-table-column': 1 },
+          amount: { 'x-table-column': 2 },
+        },
+      })},
+      NOW(), NOW()
+    )
+  `;
 
   const brand = (await api.entities.create({ type: 'brand', name: 'Acme Brand' })) as {
     entity: { id: number };
@@ -47,6 +63,11 @@ async function seedFixture(): Promise<Fixture> {
     type: 'product',
     name: 'Acme Product',
     parent_id: brand.entity.id,
+  });
+  await api.entities.create({
+    type: 'deal',
+    name: 'Acme Deal',
+    metadata: { stage: 'negotiation', amount: 50000 },
   });
 
   const oauthClient = await createTestOAuthClient();
@@ -84,6 +105,28 @@ describe('resolve_path contract', () => {
       path: `/${fixture.orgSlug}/brand/acme-brand/product/acme-product`,
     })) as { entity?: { name: string } };
     expect(nested.entity?.name).toBe('Acme Product');
+  });
+
+  it('auto-generates a default json_template from metadata_schema when none is declared', async () => {
+    const resolved = (await resolvePath(fixture, {
+      path: `/${fixture.orgSlug}/deal/acme-deal`,
+    })) as { entity?: { json_template?: Record<string, unknown> | null } };
+
+    const template = resolved.entity?.json_template;
+    expect(template).toBeTruthy();
+    // The root node is a card, and each schema field is data-bound by key.
+    const serialized = JSON.stringify(template);
+    expect(template?.type).toBe('card');
+    expect(serialized).toContain('"path":"stage"');
+    expect(serialized).toContain('"path":"amount"');
+    expect(serialized).toContain('Deal Stage');
+  });
+
+  it('does not synthesize a template for a type without metadata_schema', async () => {
+    const resolved = (await resolvePath(fixture, {
+      path: `/${fixture.orgSlug}/brand/acme-brand`,
+    })) as { entity?: { json_template?: Record<string, unknown> | null } };
+    expect(resolved.entity?.json_template ?? null).toBeNull();
   });
 
   it('rejects malformed or missing paths instead of silently falling back', async () => {

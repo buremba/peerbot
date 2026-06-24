@@ -42,6 +42,7 @@ function makeApp() {
     sessionManager: {} as never,
     sseManager: {} as never,
     publicGatewayUrl: "http://localhost:8787",
+    artifactStore: {} as never,
     agentMetadataStore: {
       async getMetadata(agentId: string) {
         return agentId === EXISTING_AGENT
@@ -147,6 +148,7 @@ describe("POST /api/v1/agents — default-agent resolution", () => {
       sessionManager: recorder.store as never,
       sseManager: {} as never,
       publicGatewayUrl: "http://localhost:8787",
+      artifactStore: {} as never,
       agentSettingsStore: {
         async saveSettings() {},
       } as never,
@@ -263,6 +265,7 @@ describe("POST /api/v1/agents — default-agent resolution", () => {
         },
       } as never,
       publicGatewayUrl: "http://localhost:8787",
+      artifactStore: {} as never,
       agentMetadataStore: {
         async getMetadata(id: string) {
           if (id !== "owletto-default") return null;
@@ -346,6 +349,7 @@ describe("POST /api/v1/agents — default-agent resolution", () => {
         },
       } as never,
       publicGatewayUrl: "http://localhost:8787",
+      artifactStore: {} as never,
       agentMetadataStore: {
         async getMetadata(id: string) {
           if (id !== "owletto-default") return null;
@@ -454,6 +458,7 @@ describe("POST /api/v1/agents — watcher session id shape", () => {
       } as never,
       sseManager: {} as never,
       publicGatewayUrl: "http://localhost:8787",
+      artifactStore: {} as never,
       agentMetadataStore: {
         async getMetadata(id: string) {
           // Non-empty org metadata → tokenOrganizationId resolves, so the

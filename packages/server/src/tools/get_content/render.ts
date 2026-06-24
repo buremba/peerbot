@@ -9,6 +9,8 @@ import { parseJsonObject } from '@lobu/core';
 import { type DbClient, parsePgNumberArray, pgTextArray } from '../../db/client';
 import logger from '../../utils/logger';
 import { buildEventPermalink } from '../../utils/url-builder';
+import { resolveEntityRender } from '../../utils/default-entity-template';
+import { resolveEventKindDefinition } from '../../utils/event-kind-validation';
 import type { ContentRow } from './types';
 import { parseRecordArray, toNumberOrUndefined } from './types';
 
@@ -178,6 +180,31 @@ export async function buildContentItems(opts: {
       permalink: ownerSlug ? buildEventPermalink(ownerSlug, f.id, baseUrl) : null,
     };
   });
+
+  // Event rendering resolution tail: a metadata-only event ('empty') with no
+  // authored payload_template falls back to a default render synthesized from
+  // its event kind — the kind's authored jsonTemplate, else a field card built
+  // from the kind's metadataSchema (same generator as entity auto-default). An
+  // event with real body content (text/markdown/media) or an explicit template
+  // is left untouched. Resolution rides the cached event_kinds registry, so the
+  // per-event lookups are cheap and bounded to the metadata-only minority.
+  await Promise.all(
+    contentItems.map(async (item) => {
+      if (item.payload_template || item.payload_type !== 'empty') return;
+      if (!item.metadata || Object.keys(item.metadata).length === 0) return;
+      const kind = await resolveEventKindDefinition(
+        item.semantic_type,
+        organizationId,
+        item.entity_ids
+      );
+      if (!kind) return;
+      const root = resolveEntityRender(kind.jsonTemplate, kind.metadataSchema);
+      if (!root) return;
+      item.payload_template = { root };
+      item.payload_type = 'json_template';
+      item.payload_data = item.metadata;
+    })
+  );
 
   return contentItems;
 }

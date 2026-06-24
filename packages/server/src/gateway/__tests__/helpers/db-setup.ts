@@ -135,3 +135,70 @@ export async function seedAgentRow(
   `;
   return orgId;
 }
+
+/**
+ * Seed a `github` connector_definitions row whose feeds_schema carries the
+ * webhook routing (`webhook: { events, mode }`) + the person entity-link rule —
+ * the exact persisted surface the app-webhook router reads (routing via
+ * loadGithubWebhookRoutes, the rule via loadEntityLinkRuleByType). Mirrors the
+ * real github connector's declarations so the gateway tests exercise the
+ * DB-driven path, not a server-side hardcode.
+ */
+export async function seedGithubConnectorDef(orgId: string): Promise<void> {
+  const sql = getDb();
+  await sql`
+    INSERT INTO organization (id, name, slug)
+    VALUES (${orgId}, ${orgId}, ${orgId})
+    ON CONFLICT (id) DO NOTHING
+  `;
+  const personRule = {
+    entityType: "person",
+    autoCreate: true,
+    titlePath: "metadata.author_login",
+    identities: [
+      { namespace: "github_user_id", eventPath: "metadata.author_id", primary: true },
+      { namespace: "github_login", eventPath: "metadata.author_login" },
+    ],
+    traits: {
+      github_login: { eventPath: "metadata.author_login", behavior: "prefer_non_empty" },
+      last_authored_at: { eventPath: "occurred_at", behavior: "overwrite" },
+    },
+  };
+  const kind = (k: string) => ({ eventKinds: { [k]: { entityLinks: [personRule] } } });
+  const feedsSchema = {
+    issues: { key: "issues", name: "Issues", webhook: { events: ["issues"] }, ...kind("issue") },
+    pull_requests: {
+      key: "pull_requests",
+      name: "Pull Requests",
+      webhook: { events: ["pull_request"] },
+      ...kind("pull_request"),
+    },
+    issue_comments: {
+      key: "issue_comments",
+      name: "Issue Comments",
+      webhook: { events: ["issue_comment"] },
+      ...kind("issue_comment"),
+    },
+    pr_comments: {
+      key: "pr_comments",
+      name: "PR Comments",
+      webhook: { events: ["pull_request_review_comment"] },
+      ...kind("pr_comment"),
+    },
+    commits: { key: "commits", name: "Commits", webhook: { events: ["push"] }, ...kind("commit") },
+    stargazers: {
+      key: "stargazers",
+      name: "Stargazers",
+      webhook: { events: ["star", "watch"], mode: "store" },
+      ...kind("stargazer"),
+    },
+  };
+  await sql`
+    INSERT INTO connector_definitions (
+      organization_id, key, name, version, feeds_schema, status, created_at, updated_at
+    ) VALUES (
+      ${orgId}, 'github', 'GitHub', '1.0.0', ${sql.json(feedsSchema)}, 'active', NOW(), NOW()
+    )
+    ON CONFLICT DO NOTHING
+  `;
+}

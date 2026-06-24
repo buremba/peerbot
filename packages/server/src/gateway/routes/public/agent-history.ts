@@ -19,6 +19,7 @@ import {
 	listAgentThreads,
 	readThreadMessages,
 } from "../../services/agent-thread-list.js";
+import { forkThread } from "../../services/fork-thread.js";
 import {
 	createOwnershipResolver,
 	resolveSettingsLookupUserId,
@@ -329,6 +330,44 @@ export function createAgentHistoryRoutes(deps: {
 			userId: scope.userId,
 		});
 		return c.json(data);
+	});
+
+	app.post("/threads/:threadId/fork", async (c) => {
+		const scope = await getAuthorizedAgentScope(c);
+		if (!scope) return errorResponse(c, "Unauthorized", 401);
+
+		const sourceThreadId = c.req.param("threadId") || "";
+		if (!isSafeThreadId(sourceThreadId)) {
+			return errorResponse(c, "Invalid thread id", 400);
+		}
+
+		let body: { throughMessageId?: unknown } = {};
+		try {
+			body = await c.req.json();
+		} catch {
+			body = {};
+		}
+		const throughMessageId =
+			typeof body.throughMessageId === "string" && body.throughMessageId
+				? body.throughMessageId
+				: undefined;
+
+		const result = await forkThread({
+			agentId: scope.agentId,
+			organizationId: scope.organizationId,
+			userId: scope.userId,
+			sourceThreadId,
+			throughMessageId,
+		});
+
+		if ("error" in result) {
+			if (result.error === "no-snapshot") {
+				return errorResponse(c, "Thread has no persisted history to fork", 404);
+			}
+			return errorResponse(c, "Message not found in thread", 404);
+		}
+
+		return c.json({ threadId: result.threadId });
 	});
 
 	app.get("/status", async (c) => {

@@ -106,6 +106,7 @@ function makeApp(
     sessionManager: session.mgr,
     sseManager: { hasActiveConnection: () => false } as never,
     publicGatewayUrl: "http://localhost:8787",
+    artifactStore: {} as never,
     userAgentsStore,
     agentMetadataStore: agentMetadataStore as never,
   });

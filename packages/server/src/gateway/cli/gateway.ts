@@ -281,6 +281,7 @@ export function createGatewayApp(
         sessionManager: sessionMgr,
         sseManager: coreServices.getSseManager(),
         publicGatewayUrl: publicUrl,
+        artifactStore: coreServices.getArtifactStore(),
         externalAuthClient: coreServices.getExternalAuthClient(),
         agentSettingsStore: coreServices.getAgentSettingsStore(),
         agentConfigStore: coreServices.getConfigStore(),

@@ -28,6 +28,8 @@ import type { ExternalAuthClient } from "../../auth/external/client.js";
 import type { AgentSettingsStore } from "../../auth/settings/agent-settings-store.js";
 import type { SettingsTokenPayload } from "../../auth/settings/token-service.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
+import { ingestInboundAttachments } from "../../connections/message-handler-bridge.js";
+import type { ArtifactStore } from "../../files/artifact-store.js";
 import type { QueueProducer } from "../../infrastructure/queue/queue-producer.js";
 import type { PlatformRegistry } from "../../platform.js";
 import { buildApiConversationId } from "../../services/api-conversation-id.js";
@@ -428,6 +430,7 @@ interface AgentApiConfig {
   sessionManager: ISessionManager;
   sseManager: SseManager;
   publicGatewayUrl: string;
+  artifactStore: ArtifactStore;
   externalAuthClient?: ExternalAuthClient;
   agentSettingsStore?: AgentSettingsStore;
   agentConfigStore?: Pick<
@@ -456,6 +459,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
   const sessMgr = config.sessionManager;
   const sseManager = config.sseManager;
   const pubUrl = config.publicGatewayUrl;
+  const artifactStore = config.artifactStore;
   const app = new OpenAPIHono();
 
   // Unified auth middleware for all agent API routes
@@ -1278,7 +1282,9 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     // Parse body — multipart for file uploads, JSON otherwise
     const contentType = c.req.header("content-type") || "";
     let body: Record<string, any>;
-    let files: Array<{ buffer: Buffer; filename: string }> | undefined;
+    let files:
+      | Array<{ buffer: Buffer; filename: string; mimeType: string }>
+      | undefined;
 
     if (contentType.includes("multipart/form-data")) {
       const formData = await c.req.formData();
@@ -1322,7 +1328,11 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
         );
       }
       if (fileEntries.length > 0) {
-        const fileResults: Array<{ buffer: Buffer; filename: string }> = [];
+        const fileResults: Array<{
+          buffer: Buffer;
+          filename: string;
+          mimeType: string;
+        }> = [];
         let totalSize = 0;
         for (const entry of fileEntries) {
           if (entry instanceof File) {
@@ -1349,6 +1359,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
             fileResults.push({
               buffer: Buffer.from(arrayBuffer),
               filename: entry.name,
+              mimeType: entry.type || "application/octet-stream",
             });
           }
         }
@@ -1503,6 +1514,27 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       const applyEphemeralContext =
         rawEphemeralContext.length > 0 && (session.turnCount ?? 0) === 0;
 
+      // Inbound attachments: publish each uploaded file as a signed gateway
+      // artifact and forward the worker-facing `files` array in
+      // platformMetadata — the same multi-replica-safe path used by the
+      // platform adapters (`ingestInboundAttachments`). The worker downloads
+      // these into its `input/` dir and embeds images for visual analysis.
+      // Local-disk staging would break under N>1 replicas (the worker pod is
+      // routinely not the pod that received the upload).
+      const ingestedFiles = files
+        ? (
+            await ingestInboundAttachments(
+              files.map((f) => ({
+                data: f.buffer,
+                name: f.filename,
+                mimeType: f.mimeType,
+              })),
+              artifactStore,
+              pubUrl
+            )
+          ).files
+        : [];
+
       const jobId = await queueProducer.enqueueMessage({
         userId: session.userId,
         conversationId: session.conversationId || agentId,
@@ -1531,6 +1563,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
           traceparent: traceparent || undefined,
           dryRun: session.dryRun || false,
           intent: session.intent,
+          ...(ingestedFiles.length > 0 ? { files: ingestedFiles } : {}),
         },
         agentOptions: remainingOptions,
         networkConfig: session.networkConfig || settingsNetwork,

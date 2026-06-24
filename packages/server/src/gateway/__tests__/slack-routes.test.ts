@@ -17,6 +17,12 @@ async function seedSlackConnectorDef(
   scopes = ["chat:write", "commands"],
 ): Promise<void> {
   const sql = getDb();
+  // Ensure the org row exists first (FK constraint).
+  await sql`
+    INSERT INTO organization (id, name, slug)
+    VALUES (${organizationId}, ${organizationId}, ${organizationId})
+    ON CONFLICT (id) DO NOTHING
+  `;
   await sql`
     INSERT INTO connector_definitions (organization_id, key, name, version, auth_schema, status)
     VALUES (

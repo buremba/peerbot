@@ -146,9 +146,8 @@ function Card({
 }) {
   return (
     <div
-      class={`flex w-full flex-col gap-2.5 rounded-2xl border p-5 ${cls}`}
+      class={`flex w-full flex-col gap-2.5 rounded-2xl p-5 ${cls}`}
       style={{
-        borderColor: "var(--color-page-border)",
         backgroundImage:
           "linear-gradient(to bottom, var(--color-page-bg-elevated), var(--color-page-bg))",
         boxShadow:

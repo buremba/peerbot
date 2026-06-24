@@ -451,11 +451,10 @@ function BrowseExamplesSection() {
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
           {featured.map((ex, index) => (
             <a
-              class="relative overflow-hidden group flex flex-col rounded-lg border p-4 transition-colors hover:border-[color:var(--color-tg-accent)]"
+              class="relative overflow-hidden group flex flex-col rounded-lg p-4 transition-colors"
               href={`/for/${ex.slug}`}
               key={ex.slug}
               style={{
-                borderColor: "var(--color-page-border)",
                 backgroundColor: "var(--color-page-surface)",
               }}
             >
@@ -840,9 +839,8 @@ function RunAnywhereSection() {
         {cards.map((card, index) => (
           <div
             key={card.title}
-            class="relative overflow-hidden group flex min-w-0 flex-col rounded-lg border p-6"
+            class="relative overflow-hidden group flex min-w-0 flex-col rounded-lg p-6"
             style={{
-              borderColor: "var(--color-page-border)",
               backgroundColor: "var(--color-page-surface)",
             }}
           >

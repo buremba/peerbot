@@ -73,8 +73,6 @@ const bundledMethodCache = new Map<
 	string,
 	ConnectorAuthAppInstallation | null
 >();
-/** Primed bundled webhook schemas, keyed by connector key. */
-const bundledWebhookCache = new Map<string, ConnectorWebhookSchema | null>();
 
 async function resolveBundledMethod(
 	connectorKey: string,
@@ -86,17 +84,12 @@ async function resolveBundledMethod(
 	const file = findBundledConnectorFile(connectorKey);
 	if (!file) {
 		bundledMethodCache.set(cacheKey, null);
-		bundledWebhookCache.set(connectorKey, null);
 		return null;
 	}
 	const code = await compileConnectorFromFile(file);
 	const metadata = await extractConnectorMetadata(code);
 	const method = pickMethod(metadata.authSchema, provider);
 	bundledMethodCache.set(cacheKey, method);
-	bundledWebhookCache.set(
-		connectorKey,
-		(metadata.webhook as ConnectorWebhookSchema | null) ?? null,
-	);
 	return method;
 }
 
@@ -110,13 +103,6 @@ export function getPrimedBundledMethod(
 	provider?: string,
 ): ConnectorAuthAppInstallation | null | undefined {
 	return bundledMethodCache.get(`${connectorKey}::${provider ?? ""}`);
-}
-
-/** Synchronous read of a primed bundled-connector webhook schema. */
-export function getPrimedBundledWebhook(
-	connectorKey: string,
-): ConnectorWebhookSchema | null | undefined {
-	return bundledWebhookCache.get(connectorKey);
 }
 
 /** Warm the bundled-method cache at async boot so sync gateway wiring can read it. */
@@ -217,8 +203,7 @@ export async function primeBundledIntegrationConnectors(): Promise<
 				method?.appIdKey ?? method?.clientIdKey ?? oauth?.clientIdKey;
 			const appId = appIdKey ? process.env[appIdKey] : undefined;
 			const webhookSecretKey = method?.webhookSecretKey;
-			// Cache for synchronous accessors used elsewhere in wiring.
-			bundledWebhookCache.set(def.key, webhookSchema);
+			// Cache the resolved method for synchronous wiring accessors.
 			bundledMethodCache.set(`${def.key}::${provider}`, method);
 			bundledMethodCache.set(`${def.key}::`, method);
 			const kind = metadata.kind === "integration" ? "integration" : "data";
@@ -242,7 +227,6 @@ export async function primeBundledIntegrationConnectors(): Promise<
 /** Test-only: drop the primed bundled methods. */
 export function clearBundledMethodCache(): void {
 	bundledMethodCache.clear();
-	bundledWebhookCache.clear();
 }
 
 // ---- pure credential resolution -------------------------------------------

@@ -76,38 +76,10 @@ export async function resolveInstallOrgId(c: Context): Promise<string | null> {
   return resolveSingleTenantOrgId();
 }
 
-/**
- * Build the Slack OAuth `redirect_uri`. The gateway — and the Slack install
- * routes — are served under the public `/lobu` prefix, so the callback lives
- * at `<gateway-base>/slack/oauth_callback`. `getPublicGatewayUrl()` already
- * encodes that prefix, so append the callback path to it directly.
- *
- * We must NOT route this through `resolvePublicUrl("/slack/oauth_callback")`:
- * an absolute `/slack/...` path resolves against the origin and drops `/lobu`,
- * producing a `redirect_uri` that matches neither the real callback route nor
- * the Slack app's configured redirect-URI allowlist (Slack then rejects the
- * install with "redirect_uri did not match any configured URIs").
- *
- * Falls back to deriving the mount prefix from the request path
- * (`…/slack/install` → `…`) when no public gateway URL is configured.
- */
-export function slackOAuthCallbackUrl(
-  gatewayBaseUrl: string | undefined,
-  requestUrl: string
-): string {
-  if (gatewayBaseUrl) {
-    return `${gatewayBaseUrl.replace(/\/+$/, "")}/slack/oauth_callback`;
-  }
-  const url = new URL(requestUrl);
-  const prefix = url.pathname.replace(/\/slack\/install\/?$/, "");
-  return `${url.origin}${prefix}/slack/oauth_callback`;
-}
-
 // The Slack event-webhook route (`POST /slack/events`) has been folded into the
 // generic app-webhook endpoint `POST /api/v1/app-webhooks/slack` — see the
 // declared Slack provider in `app-webhooks.ts`. The OAuth install routes
 // (`/slack/install`, `/slack/oauth_callback`) are now mounted by the generic
 // `createInstallRoutes` engine (`app-install.ts`) from the connector's
 // `installShape: 'oauth-code-exchange'` declaration — no Slack-specific router.
-// This module now only exports the shared install-flow URL helpers
-// (`resolveInstallOrgId`, `slackOAuthCallbackUrl`) consumed by both.
+// This module now only exports the shared `resolveInstallOrgId` helper.

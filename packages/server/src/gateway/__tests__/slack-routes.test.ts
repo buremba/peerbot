@@ -47,7 +47,6 @@ function slackProvider(
     handleDelivery: createChatWebhookDelivery({ handleChatAppWebhook }),
   });
 }
-import { slackOAuthCallbackUrl } from "../routes/public/slack.js";
 import { ensureDbForGatewayTests, resetTestDatabase } from "./helpers/db-setup.js";
 
 /** Seed a Slack connector_definitions row so getOrgAppInstallationMethod resolves. */
@@ -87,38 +86,6 @@ async function seedSlackConnectorDef(
   // The resolver reads from env by the DECLARED key name, so set it.
   process.env.SLACK_CLIENT_ID = clientId;
 }
-
-describe("slackOAuthCallbackUrl", () => {
-  // The gateway is served under the public `/lobu` prefix in prod, so the
-  // callback must preserve it (else Slack rejects the install with
-  // "redirect_uri did not match any configured URIs").
-  test("preserves the /lobu prefix from the configured gateway base", () => {
-    expect(
-      slackOAuthCallbackUrl("https://app.lobu.ai/lobu", "https://app.lobu.ai/lobu/slack/install")
-    ).toBe("https://app.lobu.ai/lobu/slack/oauth_callback");
-  });
-
-  test("trims a trailing slash on the gateway base", () => {
-    expect(
-      slackOAuthCallbackUrl("https://app.lobu.ai/lobu/", "https://app.lobu.ai/lobu/slack/install")
-    ).toBe("https://app.lobu.ai/lobu/slack/oauth_callback");
-  });
-
-  test("supports a root-mounted gateway (no prefix)", () => {
-    expect(
-      slackOAuthCallbackUrl("https://gateway.example.com", "https://gateway.example.com/slack/install")
-    ).toBe("https://gateway.example.com/slack/oauth_callback");
-  });
-
-  test("falls back to deriving the mount prefix from the request path", () => {
-    expect(
-      slackOAuthCallbackUrl(undefined, "https://app.lobu.ai/lobu/slack/install")
-    ).toBe("https://app.lobu.ai/lobu/slack/oauth_callback");
-    expect(
-      slackOAuthCallbackUrl(undefined, "https://app.lobu.ai/slack/install?foo=bar")
-    ).toBe("https://app.lobu.ai/slack/oauth_callback");
-  });
-});
 
 describe("slack OAuth install routes", () => {
   const originalClientId = process.env.SLACK_CLIENT_ID;

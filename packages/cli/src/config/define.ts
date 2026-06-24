@@ -70,6 +70,23 @@ export type {
   Segment,
 } from "@lobu/connector-sdk";
 
+/**
+ * An event kind (semantic type) declared on an entity type — its metadata
+ * contract and optional render template. Mirrors the server's stored
+ * `entity_types.event_kinds` shape and a connector feed's `eventKinds`.
+ */
+export interface EntityEventKind {
+  /** Human description of the kind. */
+  description?: string;
+  /** JSON Schema for the event's metadata. Also the source of the default render template. */
+  metadataSchema?: Record<string, unknown>;
+  /**
+   * Optional authored render template (render-DSL root node). When omitted,
+   * events of this kind render a default field card built from `metadataSchema`.
+   */
+  jsonTemplate?: Record<string, unknown>;
+}
+
 export interface EntityType {
   readonly kind: "entityType";
   /** Stable slug — diff key. */
@@ -80,6 +97,21 @@ export interface EntityType {
   required?: string[];
   /** JSON Schema properties for the entity's metadata. */
   properties?: Record<string, unknown>;
+  /**
+   * Event kinds (semantic types) valid for events linked to this entity type,
+   * keyed by semantic_type. Declares each kind's metadata contract + optional
+   * render template; applied declaratively so event types are git-audited like
+   * the rest of the schema (mirrors a connector feed's `eventKinds`).
+   */
+  eventKinds?: Record<string, EntityEventKind>;
+  /**
+   * Default view template (render-DSL root node, optionally with a `data_sources`
+   * key) for this entity type's detail page. Applied declaratively and
+   * git-audited. Under `prune`, omitting it clears any existing template (the
+   * page falls back to the schema-derived default); without prune, omitting it
+   * leaves a UI-authored template untouched.
+   */
+  viewTemplate?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
   /**
    * Present only for DERIVED types — a read-only SQL view (`{ sql }`). Omitted ⇒
@@ -319,8 +351,22 @@ export interface Watcher {
   description?: string;
   schedule?: string;
   prompt: string;
-  /** JSON Schema (or TypeBox schema) describing the LLM output. */
-  extractionSchema: Record<string, unknown>;
+  /**
+   * Stable key generation for promoted entities. When `entityType` is set, the
+   * watcher is entity-typed: its output schema derives from that entity type's
+   * metadata schema (schema lives on the type, never on the watcher), and
+   * extracted rows are keyed + merged into entities of that type across windows.
+   * Omit for an untyped watcher that runs the worker's free-form `{ summary }`
+   * fallback. There is no inline watcher schema — schema is owned by the entity
+   * type, full stop.
+   */
+  keyingConfig?: {
+    entityType?: string;
+    entityPath?: string;
+    keyFields?: string[];
+    keyOutputField?: string;
+    [k: string]: unknown;
+  };
   /** Named SQL data sources (`name` -> query). */
   sources?: Record<string, string>;
   notification?: WatcherNotification;

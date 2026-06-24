@@ -8,7 +8,7 @@ Lobu runs goal-driven AI teammates where your team already works: Slack, Telegra
 
 ## Connect any agent to Lobu
 
-The canonical MCP endpoint at [https://lobu.ai/mcp](https://lobu.ai/mcp) lets MCP-capable clients such as Claude, ChatGPT, Claude Code, and OpenClaw sign in once and read/write the same org graph your Slack agents use. MCP is for recall and write; ingestion still flows through connectors and webhooks. See [/mcp](https://lobu.ai/mcp/) and [Connect from Claude](https://lobu.ai/connect-from/claude/).
+The canonical MCP endpoint at [https://app.lobu.ai/mcp](https://app.lobu.ai/mcp) (or your custom self-hosted instance URL, e.g., `http://localhost:8787/mcp`) lets MCP-capable clients such as Claude, ChatGPT, Claude Code, and OpenClaw sign in once and read/write the same org graph your Slack agents use. MCP is for recall and write; ingestion still flows through connectors and webhooks. See [/mcp](https://lobu.ai/mcp/) and [Connect from Claude](https://lobu.ai/connect-from/claude/).
 
 ## Start here
 

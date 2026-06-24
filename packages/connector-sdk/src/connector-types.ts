@@ -23,6 +23,17 @@ export interface ConnectorDefinition {
   description?: string;
   /** Semantic version */
   version: string;
+  /**
+   * What this connector IS, which decides whether it carries syncable data.
+   * - `'data'` (default, absent) — the dominant case: a source the platform
+   *   POLLS via `sync()` and/or receives data webhooks for. Declares `feeds`.
+   *   GitHub/Jira/Linear are data even though they're App installs.
+   * - `'integration'` — a pure app/auth declaration (e.g. Slack): it carries an
+   *   `authSchema` (`app_installation`) + `webhook` but NO `feeds` and NO
+   *   `sync()`. Inbound traffic is forwarded to a chat adapter, never polled.
+   *   Extend {@link IntegrationConnector} (sync is invalid for this kind).
+   */
+  kind?: 'data' | 'integration';
   /** Auth configuration */
   authSchema?: ConnectorAuthSchema;
   /** Available feed definitions (keyed by feed_key) */
@@ -114,6 +125,27 @@ export interface ConnectorWebhookSchema {
    */
   signaturePrefix?: string;
   /**
+   * Template for the bytes the HMAC is computed over. Supports `{body}` (the raw
+   * request body) and `{timestamp}` (the value of {@link timestampHeader}).
+   * Default `'{body}'` (plain raw-body HMAC: GitHub/Jira/Linear). Slack signs
+   * `'v0:{timestamp}:{body}'`, so its whole signing scheme is expressible here —
+   * no hand-written verify plugin needed. The compared signature is
+   * `signaturePrefix + hex(HMAC(secret, renderedBase))`.
+   */
+  signingBaseTemplate?: string;
+  /**
+   * Request header carrying the timestamp substituted into
+   * {@link signingBaseTemplate} as `{timestamp}` (e.g. `x-slack-request-timestamp`).
+   * Required when the template references `{timestamp}`.
+   */
+  timestampHeader?: string;
+  /**
+   * Optional replay guard: reject a delivery whose {@link timestampHeader} value
+   * (unix seconds) is more than this many seconds from now. Slack uses 300.
+   * Omit to skip the freshness check.
+   */
+  freshnessSeconds?: number;
+  /**
    * Request header carrying the provider's unique delivery id, used for
    * idempotent dedupe (e.g. `x-github-delivery`, `linear-delivery`). Falls back
    * to a body hash when unset.
@@ -136,12 +168,39 @@ export interface ConnectorWebhookSchema {
    */
   delivery?: 'registered' | 'app_installation';
   /**
+   * `app_installation` mode only: how a VERIFIED delivery is dispatched once the
+   * generic engine has checked its signature.
+   * - `'data'` (default, absent) — land/trigger through the data path: the
+   *   connector's poll-canonical trigger/store hook when it has one (GitHub), else
+   *   the raw event-ingest path (Jira/Linear).
+   * - `'chat'` — forward to the chat adapter for the connector's provider (Slack;
+   *   reusable by any future chat platform), bypassing the data-ingest pipeline.
+   * The engine dispatches on THIS, never on a provider name.
+   */
+  deliveryKind?: 'data' | 'chat';
+  /**
    * `app_installation` mode only: JSON path to the external tenant id within the
-   * delivery body, e.g. `'installation.id'`. Informational/UI hint; the actual
-   * tenant extraction + verification is owned by the provider plugin (§4.3),
-   * which may read headers/site-URL that this single path cannot express.
+   * delivery body, e.g. `'installation.id'`. The generic app-webhook engine reads
+   * this (or {@link routingKeyPaths}) to extract the tenant — no per-provider
+   * extractor. A single path; use {@link routingKeyPaths} when the id can sit in
+   * more than one place.
    */
   routingKeyPath?: string;
+  /**
+   * `app_installation` mode only: an ORDERED list of JSON paths tried in turn for
+   * the external tenant id; first non-empty match wins. Use when the id sits in
+   * multiple places across event shapes (Slack: `team_id` | `team.id` |
+   * `event.team_id`). Takes precedence over {@link routingKeyPath}.
+   */
+  routingKeyPaths?: string[];
+  /**
+   * `app_installation` mode only: transform applied to the value found at
+   * {@link routingKeyPath} / {@link routingKeyPaths} before it becomes the tenant
+   * id. `'url-host'` parses the value as a URL and uses its host (Jira: every
+   * entity carries a REST `self` URL on its site host, which is the tenant).
+   * Omit for the identity transform (the value IS the tenant id).
+   */
+  routingKeyTransform?: 'url-host';
 }
 
 // =============================================================================
@@ -259,6 +318,34 @@ export interface ConnectorAuthAppInstallation {
   /** Provider key, e.g. `'github' | 'slack' | 'jira'`. */
   provider: string;
   /**
+   * The install HANDSHAKE shape. The gateway's generic install engine mounts a
+   * start + callback route per integration connector and dispatches the actual
+   * handshake on THIS — never on a provider name:
+   * - `'oauth-code-exchange'` — the standard "Add to <app>" OAuth flow: redirect
+   *   to {@link authorizeUrl} with the declared `clientIdKey` + scopes
+   *   ({@link permissions}), then on callback exchange the `code` at
+   *   {@link tokenUrl} and complete the install (Slack; reusable by any future
+   *   OAuth-code app). Mounted at `/{provider}/install` + `/{provider}/oauth_callback`.
+   * - `'github-app'` — GitHub's App-installation flow (installation_id, ownership
+   *   verification, repo/team provisioning, recovery via user-authorization).
+   *   Mounted at the GitHub App's fixed `/github/app/install[/callback]` paths.
+   * Omit to declare no hosted install route for this method.
+   */
+  installShape?: 'oauth-code-exchange' | 'github-app';
+  /**
+   * `oauth-code-exchange` only: the provider's OAuth authorize URL the install
+   * start route redirects to (e.g. Slack `https://slack.com/oauth/v2/authorize`).
+   * Gateway-side; carries no secret.
+   */
+  authorizeUrl?: string;
+  /**
+   * `oauth-code-exchange` only: the provider's token-exchange URL used to turn the
+   * callback `code` into an access token (e.g. Slack
+   * `https://slack.com/api/oauth.v2.access`). Gateway-side; the exchange runs WITH
+   * the client secret in core and never reaches connector/worker code.
+   */
+  tokenUrl?: string;
+  /**
    * Provider instance: `'cloud'` (default) for the public SaaS, a GitHub
    * Enterprise Server host, or an Atlassian site class. Lets one connector serve
    * multiple deployments of the same provider.
@@ -268,6 +355,24 @@ export interface ConnectorAuthAppInstallation {
   appIdKey?: string;
   /** Env var holding the App private key used to mint tokens (GitHub). Gateway-side. */
   privateKeyKey?: string;
+  /**
+   * Env var holding the App's URL slug (e.g. `GITHUB_APP_SLUG`), substituted into
+   * {@link installUrlTemplate} as `{{app_slug}}`. Gateway-side.
+   */
+  appSlugKey?: string;
+  /**
+   * Env var holding the App's OAuth client id used for the user-authorization
+   * leg of installation (e.g. `GITHUB_APP_CLIENT_ID`). Distinct from a separate
+   * user-login OAuth method's `clientIdKey`. Gateway-side.
+   */
+  clientIdKey?: string;
+  /** Env var holding the App's OAuth client secret (e.g. `GITHUB_APP_CLIENT_SECRET`). Gateway-side. */
+  clientSecretKey?: string;
+  /**
+   * Env var holding the secret used to verify inbound app-webhook deliveries
+   * (e.g. `GITHUB_APP_WEBHOOK_SECRET`). Gateway-side.
+   */
+  webhookSecretKey?: string;
   /** Template URL the UI sends the user to in order to install the App. */
   installUrlTemplate?: string;
   /** Declared App permissions (informational; surfaced in the install UI). */

@@ -64,6 +64,7 @@ export const ManageViewTemplatesSchema = Type.Object({
       Type.Literal('get'),
       Type.Literal('rollback'),
       Type.Literal('remove_tab'),
+      Type.Literal('clear'),
     ],
     { description: 'Action to perform' }
   ),
@@ -105,7 +106,8 @@ type ManageViewTemplatesResult =
       tabs: ViewTemplateTabInfo[];
     }
   | { action: 'rollback'; version: ViewTemplateVersionRow; message: string }
-  | { action: 'remove_tab'; success: boolean; message: string };
+  | { action: 'remove_tab'; success: boolean; message: string }
+  | { action: 'clear'; success: boolean; message: string };
 
 // ============================================
 // Main Function
@@ -121,6 +123,7 @@ export const manageViewTemplates = withValidatedArgs(
       get: flatAction(handleGet),
       rollback: flatAction(handleRollback),
       remove_tab: flatAction(handleRemoveTab),
+      clear: flatAction(handleClear),
     }
   )
 );
@@ -357,6 +360,38 @@ async function handleGet(
       current_version_id: Number(r.current_version_id),
       json_template: r.json_template as Record<string, unknown>,
     })),
+  };
+}
+
+/**
+ * Clear the default (non-tab) view template: null the parent's
+ * `current_view_template_version_id` so the detail page falls back to the
+ * schema-derived auto-default. Append-only — the version history rows stay, so
+ * a later `rollback` can restore. This is how `lobu apply` removes a view
+ * template a pruning config no longer declares (named tabs use `remove_tab`).
+ */
+async function handleClear(
+  args: ManageViewTemplatesArgs,
+  ctx: ToolContext
+): Promise<ManageViewTemplatesResult> {
+  const sql = getDb();
+  const rowId = await verifyAccess(sql, args, ctx, true);
+
+  await sql.unsafe(
+    `UPDATE ${parentTable(args.resource_type)}
+     SET current_view_template_version_id = NULL, updated_at = NOW()
+     WHERE id = $1`,
+    [rowId]
+  );
+
+  emit(ctx.organizationId, {
+    keys: ['resolve-path', 'entity-types', 'view-template-history'],
+  });
+
+  return {
+    action: 'clear',
+    success: true,
+    message: 'Default view template cleared',
   };
 }
 

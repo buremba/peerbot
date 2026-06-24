@@ -10,6 +10,31 @@
  */
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
+// Plain JSON Schema (no TypeBox — importing it into a reaction bundle breaks the
+// isolate's SDK client proxy). The host validates `ctx.extracted_data` against
+// this before the reaction runs, so the handler just reads it with a TS cast.
+export const input = {
+  type: "object",
+  properties: {
+    new_leads: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          source: { type: "string" },
+          stage: { type: "string" },
+          why: { type: "string" },
+        },
+        required: ["name", "source", "stage"],
+      },
+    },
+    recommended_actions: { type: "array", items: { type: "string" } },
+    notable: { type: "boolean" },
+  },
+  required: [],
+};
+
 interface TriageData {
   new_leads?: Array<{
     name: string;

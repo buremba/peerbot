@@ -2,19 +2,19 @@
  * Watcher extraction schema — derived from the target entity type (consolidation:
  * "schema lives on the entity type, not the watcher").
  *
- * A watcher that names an `entity_type` in its `keying_config` and supplies NO
- * inline `extraction_schema` derives its output contract from that entity type's
- * `metadata_schema`: the extraction must produce an array of records (at
- * `keying_config.entity_path`) that each conform to the type's schema. This is
- * the single source of truth — the same schema validates manual entity writes
- * (`schema-validation.ts`), so a record's shape is defined ONCE, on the type.
+ * A watcher that names an `entity_type` in its `keying_config` derives its output
+ * contract from that entity type's `metadata_schema`: the extraction must produce
+ * an array of records (at `keying_config.entity_path`) that each conform to the
+ * type's schema. This is the single source of truth — the same schema validates
+ * manual entity writes (`schema-validation.ts`), so a record's shape is defined
+ * ONCE, on the type.
  *
- * Both the worker payload (poll.ts — ships the contract to the device) and
- * window completion (complete-window.ts — validates the returned data) resolve
- * the schema through this helper, so extraction and validation can never drift.
- * Returns null when the watcher isn't entity-typed or the type has no schema —
- * callers then fall back to the inline `extraction_schema` (the escape hatch for
- * heterogeneous / non-entity-shaped watchers).
+ * Both the worker payload (poll.ts / get_content — ships the contract to the
+ * device) and window completion (complete-window.ts — validates the returned
+ * data) resolve the schema through this helper, so extraction and validation can
+ * never drift. Returns null when the watcher isn't entity-typed or the type has
+ * no schema — callers then run the worker's free-form `{ summary }` fallback
+ * (there is no inline extraction schema; that path was removed).
  */
 
 import type { DbClient } from '../db/client';
@@ -86,18 +86,42 @@ export function wrapMetadataSchemaAtPath(
 }
 
 /**
- * Derive a watcher's extraction schema from its target entity type. Returns null
- * when the watcher isn't entity-typed (no `keying_config.entity_type`) or the
- * type carries no schema — callers fall back to the inline `extraction_schema`.
+ * Derive a watcher's extraction schema. Precedence:
+ *  1. Entity-typed (`keying_config.entity_type`) → the type's `metadata_schema`
+ *     wrapped as an array at `entity_path`.
+ *  2. Reaction watcher → the reaction's exported `input` schema, cached on
+ *     `watchers.reaction_input_schema` at set_reaction_script time. This is how
+ *     "the reaction owns the schema" reaches the worker: the device extracts
+ *     against exactly what the reaction will `Value.Parse`.
+ *  3. Otherwise null — the worker runs the free-form `{ summary }` fallback.
+ *
+ * Both the worker payload and complete_window validation resolve through here,
+ * so extraction and validation can never drift. `watcherId` enables the reaction
+ * lookup; omit it to skip step 2 (entity-typed-only callers).
  */
 export async function deriveWatcherExtractionSchema(
   sql: DbClient,
   organizationId: string,
-  keyingConfig: KeyingConfig | null | undefined
+  keyingConfig: KeyingConfig | null | undefined,
+  watcherId?: string | number | null
 ): Promise<Record<string, unknown> | null> {
   const entityType = keyingConfig?.entity_type?.trim();
-  if (!entityType || !keyingConfig?.entity_path) return null;
-  const metadataSchema = await resolveEntityTypeMetadataSchema(sql, organizationId, entityType);
-  if (!metadataSchema) return null;
-  return wrapMetadataSchemaAtPath(metadataSchema, keyingConfig.entity_path);
+  if (entityType && keyingConfig?.entity_path) {
+    const metadataSchema = await resolveEntityTypeMetadataSchema(sql, organizationId, entityType);
+    if (metadataSchema) return wrapMetadataSchemaAtPath(metadataSchema, keyingConfig.entity_path);
+  }
+  if (watcherId != null && watcherId !== '') {
+    const rows = await sql<{ reaction_input_schema: Record<string, unknown> | string | null }>`
+      SELECT reaction_input_schema FROM watchers
+      WHERE id = ${watcherId} AND organization_id = ${organizationId}
+      LIMIT 1
+    `;
+    const raw = rows[0]?.reaction_input_schema ?? null;
+    if (raw == null) return null;
+    const schema = typeof raw === 'string' ? safeParse(raw) : raw;
+    if (schema && typeof schema === 'object' && Object.keys(schema).length > 0) {
+      return schema as Record<string, unknown>;
+    }
+  }
+  return null;
 }

@@ -30,13 +30,13 @@ Create the app for your public Lobu deployment and wire Slack back to these Lobu
 
 - **Install URL for users:** `https://<your-lobu-base-url>/slack/install`
 - **OAuth redirect URL:** `https://<your-lobu-base-url>/slack/oauth_callback`
-- **Events / interactivity / slash commands URL:** `https://<your-lobu-base-url>/slack/events`
+- **Events / interactivity / slash commands URL:** `https://<your-lobu-base-url>/api/v1/app-webhooks/slack`
 
 Steps:
 
 1. Create a Slack app for your public Lobu domain.
 2. Set the app's OAuth redirect URL to `https://<your-lobu-base-url>/slack/oauth_callback`.
-3. Point event subscriptions, interactive requests, and slash commands to `https://<your-lobu-base-url>/slack/events`.
+3. Point event subscriptions, interactive requests, and slash commands to `https://<your-lobu-base-url>/api/v1/app-webhooks/slack`.
 4. Add the bot scopes your Lobu deployment needs.
 5. Configure Lobu with the Slack app's **Client ID**, **Client Secret**, and **Signing Secret**.
 6. Share `https://<your-lobu-base-url>/slack/install` with users who should install the app.

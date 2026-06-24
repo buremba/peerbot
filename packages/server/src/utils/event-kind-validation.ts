@@ -29,6 +29,12 @@ interface KindValidationResult {
 interface EventKindDefinition {
   description?: string;
   metadataSchema?: Record<string, unknown>;
+  /**
+   * Optional authored render template (render-DSL root node) for events of this
+   * kind. When absent, rendering falls back to a default synthesized from
+   * `metadataSchema` — mirroring the entity resolution tail.
+   */
+  jsonTemplate?: Record<string, unknown>;
 }
 
 // ============================================
@@ -274,6 +280,27 @@ export async function validateSaveContentSemanticType(
   }
 
   return validateKindAgainstDefinitions(semanticType, metadata, memberKinds);
+}
+
+/**
+ * Resolve the single event-kind definition that governs an event, for
+ * rendering. Resolution order mirrors validateSaveContentSemanticType:
+ * entity-type event_kinds (most specific) first, then the org-wide $member
+ * event_kinds. Returns null when no definition declares this kind (the caller
+ * then has no schema to render from). Reuses the same per-pod TTL cache.
+ */
+export async function resolveEventKindDefinition(
+  semanticType: string,
+  orgId: string,
+  entityIds?: number[]
+): Promise<EventKindDefinition | null> {
+  if (entityIds && entityIds.length > 0) {
+    const entityTypeKinds = await getEntityTypeEventKinds(orgId, entityIds[0]);
+    const entityDef = entityTypeKinds?.[semanticType];
+    if (entityDef) return entityDef;
+  }
+  const memberKinds = await getMemberEventKinds(orgId);
+  return memberKinds?.[semanticType] ?? null;
 }
 
 /**

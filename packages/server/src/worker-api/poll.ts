@@ -490,7 +490,6 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
         w.notification_priority AS watcher_notification_priority,
         w.execution_config AS watcher_execution_config,
         wv.prompt AS watcher_prompt,
-        wv.extraction_schema AS watcher_extraction_schema,
         wv.keying_config AS watcher_keying_config
       FROM runs r
       LEFT JOIN feeds f ON f.id = r.feed_id
@@ -571,7 +570,6 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     watcher_notification_priority: string | null;
     watcher_execution_config: Record<string, unknown> | null;
     watcher_prompt: string | null;
-    watcher_extraction_schema: Record<string, unknown> | string | null;
     watcher_keying_config: Record<string, unknown> | string | null;
     // Auth run fields
     run_auth_profile_id: number | null;
@@ -598,17 +596,17 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
       typeof approved['agent_kind'] === 'string' && (approved['agent_kind'] as string).trim()
         ? (approved['agent_kind'] as string).trim()
         : null;
-    // Output contract for the device: the watcher's inline extraction_schema, or —
-    // when it's entity-typed with no inline schema — derived from the target entity
-    // type's metadata_schema (schema lives on the type). Same helper complete_window
-    // validates with, so the device extracts against exactly what we'll validate.
-    const watcherExtractionSchema =
-      parseClaimJson(row.watcher_extraction_schema) ??
-      (await deriveWatcherExtractionSchema(
-        getDb(),
-        row.organization_id,
-        parseClaimJson(row.watcher_keying_config) as KeyingConfig | null
-      ));
+    // Output contract for the device: derived from the target entity type's
+    // metadata_schema when the watcher is entity-typed (keying_config.entity_type);
+    // null for an untyped watcher, which runs the worker's free-form {summary}
+    // fallback. Same helper complete_window validates with, so the device extracts
+    // against exactly what we'll validate. The contract is never authored inline.
+    const watcherExtractionSchema = await deriveWatcherExtractionSchema(
+      getDb(),
+      row.organization_id,
+      parseClaimJson(row.watcher_keying_config) as KeyingConfig | null,
+      row.watcher_id
+    );
     return c.json({
       run_id: row.run_id,
       run_type: row.run_type,
@@ -636,12 +634,12 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
           // "process this" and improvised; shipping it lets the device run the
           // real prompt. Null only if the watcher has no version row.
           prompt: row.watcher_prompt ?? null,
-          // The pinned version's extraction_schema (same version-resolution
-          // as the prompt above). The dispatcher embeds it in the prompt as
-          // the output contract: the CLI must finish with a JSON object
-          // matching it, which /complete-watcher feeds through the shared
-          // complete_window pipeline (schema validation included). Null when
-          // the watcher has no schema — the dispatcher then asks for a
+          // The derived extraction contract (entity-typed → derived from that
+          // entity type's metadata_schema; untyped → null). The dispatcher embeds
+          // it in the prompt as the output contract: the CLI must finish with a
+          // JSON object matching it, which /complete-watcher feeds through the
+          // shared complete_window pipeline (schema validation included). Null
+          // when the watcher is untyped — the dispatcher then asks for a
           // free-form `{"summary": ...}` object.
           extraction_schema: watcherExtractionSchema,
         },

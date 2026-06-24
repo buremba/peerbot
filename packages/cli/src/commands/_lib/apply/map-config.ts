@@ -548,6 +548,14 @@ function mapEntityType(entity: EntityType): DesiredEntityType {
     ...(entity.description ? { description: entity.description } : {}),
     ...(entity.required ? { required: entity.required } : {}),
     ...(entity.properties ? { properties: entity.properties } : {}),
+    // Event kinds included only when declared so a type with none compares equal
+    // on both sides and never churns the diff (mirrors `backing`/`metrics`).
+    ...(entity.eventKinds && Object.keys(entity.eventKinds).length > 0
+      ? { eventKinds: entity.eventKinds }
+      : {}),
+    // View template included only when declared so absence never churns the diff
+    // (a no-prune apply leaves any UI-authored template untouched).
+    ...(entity.viewTemplate ? { viewTemplate: entity.viewTemplate } : {}),
     // metadata is carried for config-API compat (defineEntityType consumers may
     // attach it) but is neither diffed nor sent to the server.
     ...(entity.metadata ? { metadata: entity.metadata } : {}),
@@ -587,6 +595,28 @@ function mapRelationshipType(rel: RelationshipType): DesiredRelationshipType {
   };
 }
 
+/**
+ * The config API authors `keyingConfig` in camelCase (`entityType`, `entityPath`,
+ * `keyFields`, `keyOutputField`), but the server stores it verbatim into
+ * `keying_config` and reads snake_case keys (`watcher-extraction-schema.ts`,
+ * `promote-keyed-entities.ts`). Without this translation an entity-typed watcher
+ * authored via config silently lands as untyped (schema derivation + promotion
+ * both miss `entity_type`). Translate the known keys; pass any extra keys through.
+ */
+const KEYING_KEY_MAP: Record<string, string> = {
+  entityType: "entity_type",
+  entityPath: "entity_path",
+  keyFields: "key_fields",
+  keyOutputField: "key_output_field",
+};
+function normalizeKeyingConfig(
+  kc: Record<string, unknown>
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(kc)) out[KEYING_KEY_MAP[k] ?? k] = v;
+  return out;
+}
+
 function mapWatcher(watcher: Watcher): DesiredWatcher {
   if (watcher.schedule) {
     const err = cronError(watcher.schedule);
@@ -603,7 +633,9 @@ function mapWatcher(watcher: Watcher): DesiredWatcher {
     slug: watcher.slug,
     agent: agentId(watcher.agent),
     prompt: watcher.prompt,
-    extractionSchema: watcher.extractionSchema,
+    ...(watcher.keyingConfig
+      ? { keyingConfig: normalizeKeyingConfig(watcher.keyingConfig) }
+      : {}),
     ...(watcher.name ? { name: watcher.name } : {}),
     ...(watcher.description ? { description: watcher.description } : {}),
     ...(watcher.schedule ? { schedule: watcher.schedule } : {}),

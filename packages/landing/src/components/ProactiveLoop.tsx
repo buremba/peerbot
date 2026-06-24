@@ -31,6 +31,7 @@ import {
 } from "simple-icons";
 import { GITHUB_EXAMPLES_URL } from "../lib/urls";
 import type { UseCase } from "../types";
+import { CanvasAurora } from "./CanvasAurora";
 import { messagingChannels } from "./platforms";
 import { SampleChat, SLACK_THEME } from "./SampleChat";
 
@@ -139,19 +140,21 @@ function Eyebrow({ children }: { children: preact.ComponentChildren }) {
 function Card({
   children,
   class: cls = "",
+  style = {},
 }: {
   children: preact.ComponentChildren;
   class?: string;
+  style?: preact.JSX.CSSProperties;
 }) {
   return (
     <div
-      class={`flex w-full flex-col gap-2.5 rounded-2xl border p-5 ${cls}`}
+      class={`flex w-full flex-col gap-2.5 rounded-2xl p-5 ${cls}`}
       style={{
-        borderColor: "var(--color-page-border)",
         backgroundImage:
           "linear-gradient(to bottom, var(--color-page-bg-elevated), var(--color-page-bg))",
         boxShadow:
           "0 1px 2px rgb(0 0 0 / 0.04), 0 14px 34px -18px rgb(0 0 0 / 0.14)",
+        ...style,
       }}
     >
       {children}
@@ -207,7 +210,7 @@ function StepText({
   return (
     <div class="max-w-[360px] px-1 md:px-0">
       <h3
-        class="text-[1.2rem] font-bold leading-tight tracking-tight"
+        class="text-[1.45rem] font-bold leading-tight tracking-tight"
         style={{ color: "var(--color-page-text)" }}
       >
         {title}
@@ -335,8 +338,27 @@ function SourcesCardImpl({
   class?: string;
 }) {
   return (
-    <Card class={cls}>
-      <div class="flex flex-wrap items-center gap-x-4 gap-y-2.5">
+    <Card
+      class={`${cls} relative overflow-hidden group`}
+      style={{
+        backgroundImage: "none",
+        backgroundColor: "var(--color-page-bg)",
+        boxShadow: "none",
+      }}
+    >
+      <CanvasAurora
+        color1={[0.2, 0.35, 0.95]} // Deep Blue
+        color2={[0.85, 0.15, 0.4]} // Magenta/Pink
+        color3={[0.95, 0.6, 0.15]} // Vibrant Orange
+        speed={0.35}
+        scale={1.2}
+        opacity={0.75}
+        blur="2.5px"
+        pixelSize={16}
+        alignment={[0.85, 0.5]} // Right-aligned glow
+        className="absolute inset-0 z-0 h-full w-full pointer-events-none transition-opacity duration-500 opacity-75 group-hover:opacity-90"
+      />
+      <div class="relative z-10 flex flex-wrap items-center gap-x-4 gap-y-2.5">
         {connectors.items.map((c) =>
           c.icon ? (
             <BrandLogo key={c.label} icon={c.icon} />
@@ -350,14 +372,14 @@ function SourcesCardImpl({
       </div>
 
       <div
-        class="text-[11.5px] leading-snug"
+        class="relative z-10 text-[11.5px] leading-snug"
         style={{ color: "var(--color-page-text-muted)" }}
       >
         {connectors.caption}
       </div>
 
       {connectors.codeLine ? (
-        <div class="flex items-center gap-2">
+        <div class="relative z-10 flex items-center gap-2">
           <span
             class="font-mono text-[12px]"
             style={{ color: ACCENT }}
@@ -374,10 +396,7 @@ function SourcesCardImpl({
         </div>
       ) : null}
 
-      <div
-        class="mt-auto flex items-center justify-between gap-3 border-t pt-2"
-        style={{ borderColor: "var(--color-page-border)" }}
-      >
+      <div class="relative z-10 mt-auto flex items-center justify-between gap-3 pt-2">
         <span
           class="text-[11.5px]"
           style={{ color: "var(--color-page-text-muted)" }}
@@ -411,8 +430,11 @@ function MemoryCard({
           {memory.label ? <Eyebrow>{memory.label}</Eyebrow> : <span />}
           {memory.typeChip ? (
             <span
-              class="rounded-md border px-2 py-0.5 font-mono text-[10.5px]"
-              style={{ borderColor: "var(--color-page-border)", color: ACCENT }}
+              class="rounded-md px-2 py-0.5 font-mono text-[10.5px]"
+              style={{
+                backgroundColor: "var(--color-page-surface-dim)",
+                color: ACCENT,
+              }}
             >
               {memory.typeChip}
             </span>
@@ -422,10 +444,9 @@ function MemoryCard({
 
       {/* Expanded: the record that drifted */}
       <div
-        class={`rounded-[10px] border ${scanning ? "memory-scan-shell" : ""}`}
+        class={`rounded-[10px] ${scanning ? "memory-scan-shell" : ""}`}
         style={{
-          borderColor: `${statusColor(primary.status.tone)}55`,
-          backgroundColor: "var(--color-page-surface)",
+          backgroundColor: "var(--color-page-surface-dim)",
         }}
       >
         <div class="flex items-start justify-between gap-3 px-3 py-2">
@@ -448,10 +469,7 @@ function MemoryCard({
           <StatusBadge status={primary.status} />
         </div>
 
-        <div
-          class="flex flex-wrap gap-x-6 gap-y-1 border-t px-3 py-2 font-mono text-[12px]"
-          style={{ borderColor: "var(--color-page-border)" }}
-        >
+        <div class="flex flex-wrap gap-x-6 gap-y-1 px-3 py-2 font-mono text-[12px]">
           {primary.fields.map((row) => (
             <span key={row[0]}>
               <span style={{ color: "var(--color-page-text-muted)" }}>
@@ -463,10 +481,7 @@ function MemoryCard({
         </div>
 
         {/* Event timeline the values above are derived from */}
-        <div
-          class="border-t px-3 py-2.5"
-          style={{ borderColor: "var(--color-page-border)" }}
-        >
+        <div class="px-3 py-2.5">
           <div
             class="mb-2 text-[11px]"
             style={{ color: "var(--color-page-text-muted)" }}
@@ -519,8 +534,8 @@ function MemoryCard({
       {memory.others.map((row) => (
         <div
           key={row.name}
-          class="flex items-center justify-between rounded-[10px] border px-3 py-2"
-          style={{ borderColor: "var(--color-page-border)" }}
+          class="flex items-center justify-between rounded-[10px] px-3 py-2"
+          style={{ backgroundColor: "var(--color-page-surface-dim)" }}
         >
           <span
             class="font-mono text-[13px]"
@@ -561,10 +576,7 @@ function GoalCard({
       >
         “{goal.prompt}”
       </p>
-      <div
-        class="mt-auto flex items-center justify-between gap-3 border-t pt-2"
-        style={{ borderColor: "var(--color-page-border)" }}
-      >
+      <div class="mt-auto flex items-center justify-between gap-3 pt-2">
         <span
           class="text-[11.5px]"
           style={{ color: "var(--color-page-text-muted)" }}
@@ -591,7 +603,7 @@ export function MemoryLoop({ data }: { data: LoopData }) {
             {data.heading.eyebrow}
           </div>
           <h2
-            class="font-display text-[1.85rem] font-bold leading-[1.1] tracking-tight sm:text-[2.25rem]"
+            class="font-display text-[1.85rem] font-bold leading-[1.1] tracking-[-0.005em] sm:text-[2.25rem]"
             style={{ color: "var(--color-page-text)" }}
           >
             {data.heading.title}
@@ -631,7 +643,7 @@ export function MemoryLoop({ data }: { data: LoopData }) {
 
         <TimelineStep
           number={3}
-          title="Your agent works autonomously"
+          title="Lobu works autonomously"
           visual={
             <MemoryCard
               memory={data.memory}
@@ -653,7 +665,7 @@ export function MemoryLoop({ data }: { data: LoopData }) {
               class="flex w-full flex-col gap-3"
               style={{ minWidth: "280px" }}
             >
-              <SampleChat useCase={data.chat} theme={SLACK_THEME} />
+              <SampleChat useCase={data.chat} theme={SLACK_THEME} noBorder />
               <ChatChannels />
             </div>
           }

@@ -28,11 +28,33 @@
 
 import { createHmac } from "node:crypto";
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import type { ConnectorWebhookSchema } from "@lobu/connector-sdk";
 import {
 	createAppWebhookRoutes,
-	createGithubAppWebhookProvider,
+	createDeclaredAppWebhookProvider,
+	createGithubWebhookDelivery,
 } from "../routes/public/app-webhooks.js";
 import { createPostgresAppInstallationStore } from "../../lobu/stores/app-installation-store.js";
+
+/** GitHub's DECLARED webhook schema (mirror of the github connector's block). */
+const GITHUB_WEBHOOK_SCHEMA: ConnectorWebhookSchema = {
+	signatureHeader: "x-hub-signature-256",
+	algorithm: "sha256",
+	signaturePrefix: "sha256=",
+	dedupeHeader: "x-github-delivery",
+	delivery: "app_installation",
+	routingKeyPath: "installation.id",
+};
+
+/** Build a github app-webhook provider from the declared schema + delivery hook. */
+function createGithubAppWebhookProvider(options: { appId: string }) {
+	return createDeclaredAppWebhookProvider({
+		provider: "github",
+		appId: options.appId,
+		webhookSchema: GITHUB_WEBHOOK_SCHEMA,
+		onDelivery: createGithubWebhookDelivery({ connectorKey: "github" }),
+	});
+}
 import {
 	ensureDbForGatewayTests,
 	ensureEncryptionKey,

@@ -43,10 +43,6 @@ describe('classifier CRUD', () => {
       slug: 'cls-watcher',
       name: 'Classifier Watcher',
       prompt: 'gather signals.',
-      extraction_schema: {
-        type: 'object',
-        properties: { signal: { type: 'string' } },
-      },
       agent_id: agent.agentId,
     })) as { watcher_id: string };
     watcherId = Number(w.watcher_id);

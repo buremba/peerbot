@@ -82,11 +82,6 @@ async function createAutomatedWatcher() {
     slug: 'automation-watcher',
     name: 'Automation Watcher',
     prompt: 'Summarize content for {{entities}}.',
-    extraction_schema: {
-      type: 'object',
-      properties: { summary: { type: 'string' } },
-      required: ['summary'],
-    },
     schedule: '0 9 * * *',
     agent_id: agent.agentId,
   })) as { watcher_id: string };
@@ -1265,11 +1260,6 @@ describe('watcher automation contract', () => {
         slug: 'tick-watcher-b',
         name: 'Tick Watcher B',
         prompt: 'Summarize content for {{entities}}.',
-        extraction_schema: {
-          type: 'object',
-          properties: { summary: { type: 'string' } },
-          required: ['summary'],
-        },
         schedule: '0 9 * * *',
         agent_id: agent.agentId,
       })) as { watcher_id: string };

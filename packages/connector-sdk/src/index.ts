@@ -2,14 +2,23 @@
 // V1 Integration Platform — Connector SDK
 // =============================================================================
 
-// TypeBox (schema authoring convenience)
+// TypeBox (schema authoring convenience for connector definitions / fact
+// schemas). NOTE: do NOT import these into a watcher reaction — bundling
+// typebox into the isolate breaks the SDK client proxy (see
+// reaction-execute-typebox.test.ts). A reaction declares its `input` as a
+// PLAIN JSON Schema object; the host validates `ctx.extracted_data` against it.
 export type { Static } from '@sinclair/typebox';
 export { Type } from '@sinclair/typebox';
+export { Value } from '@sinclair/typebox/value';
 // ky (shared HTTP dependency)
 export type { KyInstance, Options } from 'ky';
 export { default as ky, HTTPError } from 'ky';
 // Connector runtime & types (primary API)
-export { BridgeOnlyConnector, ConnectorRuntime } from './connector-runtime.js';
+export {
+  BridgeOnlyConnector,
+  ConnectorRuntime,
+  IntegrationConnector,
+} from './connector-runtime.js';
 export { defineConnector } from './define-connector.js';
 export { validateEntityMetrics } from './metrics.js';
 // Entity-bound metric layer contract (shared by CLI authoring + server

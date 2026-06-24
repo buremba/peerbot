@@ -123,11 +123,6 @@ function fullOrgRoutes(): Record<string, () => unknown> {
           name: "Account health",
           agent_id: "sales",
           prompt: "Poll CRM data.",
-          extraction_schema: {
-            type: "object",
-            required: ["risk_level"],
-            properties: { risk_level: { type: "string" } },
-          },
           schedule: "0 */12 * * *",
           sources: [{ name: "content", query: "SELECT * FROM events" }],
           tags: ["sales", "health"],
@@ -310,11 +305,9 @@ describe("lobu init --from-org", () => {
     expect(w?.name).toBe("Account health");
     expect(w?.prompt).toBe("Poll CRM data.");
     expect(w?.schedule).toBe("0 */12 * * *");
-    expect(w?.extractionSchema).toEqual({
-      type: "object",
-      required: ["risk_level"],
-      properties: { risk_level: { type: "string" } },
-    });
+    // No keyingConfig means this round-trips as an untyped watcher that uses
+    // the worker's free-form `{ summary }` fallback.
+    expect(w?.keyingConfig).toBeUndefined();
     expect(w?.sources).toEqual([
       { name: "content", query: "SELECT * FROM events" },
     ]);

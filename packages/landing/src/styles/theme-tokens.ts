@@ -55,15 +55,15 @@ export const light = {
 
 /** Dark palette: tweakcn "Retro" (aligned with packages/owletto/src/index.css .dark) */
 export const dark = {
-  "--color-page-bg": "oklch(0.1700 0.0040 50)",
-  "--color-page-bg-elevated": "oklch(0.2250 0.0050 50)",
-  "--color-page-bg-overlay": "oklch(0.1700 0.0040 50 / 0.85)",
-  "--color-page-surface": "oklch(0.2250 0.0050 50)",
-  "--color-page-surface-dim": "oklch(0.2000 0.0050 50)",
-  "--color-page-border": "oklch(0.3400 0.0080 50)",
+  "--color-page-bg": "oklch(0.18 0.010 43.150)",
+  "--color-page-bg-elevated": "oklch(0.22 0.012 43.150)",
+  "--color-page-bg-overlay": "oklch(0.18 0.010 43.150 / 0.85)",
+  "--color-page-surface": "oklch(0.22 0.012 43.150)",
+  "--color-page-surface-dim": "oklch(0.20 0.011 43.150)",
+  "--color-page-border": "oklch(0.34 0.015 43.150)",
   "--color-page-border-active": "oklch(0.7006 0.1891 46.5400 / 0.55)",
   "--color-page-text": "oklch(0.9206 0.0042 56.3709)",
-  "--color-page-text-muted": "oklch(0.7200 0.0080 50)",
+  "--color-page-text-muted": "oklch(0.72 0.010 43.150)",
 
   "--color-tg-bg": "oklch(0.2250 0.0050 50)",
   "--color-tg-bg-secondary": "oklch(0.2000 0.0050 50)",

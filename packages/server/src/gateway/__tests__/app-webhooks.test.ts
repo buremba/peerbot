@@ -24,13 +24,57 @@
 
 import { createHmac } from "node:crypto";
 import { beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import type { ConnectorWebhookSchema } from "@lobu/connector-sdk";
 import {
+	type AppWebhookProvider,
 	createAppWebhookRoutes,
-	createGithubAppWebhookProvider,
-	createJiraAppWebhookProvider,
-	createLinearAppWebhookProvider,
-	createSchemaDrivenAppWebhookProvider,
+	createDeclaredAppWebhookProvider,
+	createGithubWebhookDelivery,
+	extractTenantFromSchema,
+	verifyDeclaredWebhook,
 } from "../routes/public/app-webhooks.js";
+
+// The connectors' DECLARED webhook schemas (mirrors of their `webhook` blocks).
+// Drives the generic engine in tests exactly as the bundled declaration does in
+// production — no named per-provider factory.
+const GITHUB_WEBHOOK_SCHEMA: ConnectorWebhookSchema = {
+	signatureHeader: "x-hub-signature-256",
+	algorithm: "sha256",
+	signaturePrefix: "sha256=",
+	dedupeHeader: "x-github-delivery",
+	delivery: "app_installation",
+	routingKeyPath: "installation.id",
+};
+const JIRA_WEBHOOK_SCHEMA: ConnectorWebhookSchema = {
+	signatureHeader: "x-hub-signature",
+	algorithm: "sha256",
+	signaturePrefix: "sha256=",
+	delivery: "app_installation",
+	routingKeyPaths: ["self", "issue.self", "comment.self"],
+	routingKeyTransform: "url-host",
+};
+const LINEAR_WEBHOOK_SCHEMA: ConnectorWebhookSchema = {
+	signatureHeader: "linear-signature",
+	algorithm: "sha256",
+	delivery: "app_installation",
+	routingKeyPath: "organizationId",
+};
+
+/** Build a github app-webhook provider from the declared schema + delivery hook. */
+function githubProvider(
+	appId: string,
+	opts: { storeWebhookEvents?: boolean } = {},
+): AppWebhookProvider {
+	return createDeclaredAppWebhookProvider({
+		provider: "github",
+		appId,
+		webhookSchema: GITHUB_WEBHOOK_SCHEMA,
+		onDelivery: createGithubWebhookDelivery({
+			connectorKey: "github",
+			storeWebhookEvents: opts.storeWebhookEvents,
+		}),
+	});
+}
 import { createPostgresAppInstallationStore } from "../../lobu/stores/app-installation-store.js";
 import {
 	ensureDbForGatewayTests,
@@ -59,7 +103,7 @@ function buildApp() {
 	return createAppWebhookRoutes({
 		installationStore: createPostgresAppInstallationStore(),
 		secretStore: fakeSecretStore,
-		providers: [createGithubAppWebhookProvider({ appId: APP_ID })],
+		providers: [githubProvider(APP_ID)],
 		resolveAppWebhookSecret: async () => APP_SECRET,
 	});
 }
@@ -562,7 +606,7 @@ describe("app-webhook router (GitHub)", () => {
 			installationStore: createPostgresAppInstallationStore(),
 			secretStore: fakeSecretStore,
 			providers: [
-				createGithubAppWebhookProvider({ appId: APP_ID, storeWebhookEvents: false }),
+				githubProvider(APP_ID, { storeWebhookEvents: false }),
 			],
 			resolveAppWebhookSecret: async () => APP_SECRET,
 		});
@@ -666,7 +710,7 @@ describe("app-webhook router (GitHub)", () => {
 		const app = createAppWebhookRoutes({
 			installationStore: createPostgresAppInstallationStore(),
 			secretStore: fakeSecretStore,
-			providers: [createGithubAppWebhookProvider({ appId: APP_ID })],
+			providers: [githubProvider(APP_ID)],
 			resolveAppWebhookSecret: async () => undefined,
 		});
 
@@ -697,7 +741,7 @@ function buildJiraApp() {
 	return createAppWebhookRoutes({
 		installationStore: createPostgresAppInstallationStore(),
 		secretStore: fakeSecretStore,
-		providers: [createJiraAppWebhookProvider({ appId: JIRA_APP_ID })],
+		providers: [createDeclaredAppWebhookProvider({ provider: "jira", appId: JIRA_APP_ID, webhookSchema: JIRA_WEBHOOK_SCHEMA })],
 		resolveAppWebhookSecret: async () => JIRA_SECRET,
 	});
 }
@@ -797,7 +841,7 @@ function buildLinearApp() {
 	return createAppWebhookRoutes({
 		installationStore: createPostgresAppInstallationStore(),
 		secretStore: fakeSecretStore,
-		providers: [createLinearAppWebhookProvider({ appId: LINEAR_APP_ID })],
+		providers: [createDeclaredAppWebhookProvider({ provider: "linear", appId: LINEAR_APP_ID, webhookSchema: LINEAR_WEBHOOK_SCHEMA })],
 		resolveAppWebhookSecret: async () => LINEAR_SECRET,
 	});
 }
@@ -876,40 +920,115 @@ describe("app-webhook router (Linear)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Schema-driven verify factory — provider-agnostic HMAC derivation
+// Generic engine — ONE verify + ONE tenant extractor, no provider name
 // ---------------------------------------------------------------------------
 
-describe("createSchemaDrivenAppWebhookProvider", () => {
-	test("derives verify from the schema header/algorithm/prefix", () => {
-		const provider = createSchemaDrivenAppWebhookProvider({
-			provider: "demo",
-			webhookSchema: {
-				signatureHeader: "x-demo-sig",
-				algorithm: "sha256",
-				signaturePrefix: "sha256=",
-			},
-			extractTenant: () => null,
-		});
+describe("verifyDeclaredWebhook (the single generic verifier)", () => {
+	test("GitHub-shape (plain {body} HMAC) verifies by declaration alone", () => {
 		const raw = new TextEncoder().encode("hello");
 		const secret = "s3cret";
 		const digest = createHmac("sha256", secret).update(raw).digest("hex");
-
-		const good = new Headers({ "x-demo-sig": `sha256=${digest}` });
-		expect(provider.verify(raw, good, secret)).toBe(true);
-
+		const good = new Headers({ "x-hub-signature-256": `sha256=${digest}` });
+		expect(verifyDeclaredWebhook(raw, good, secret, GITHUB_WEBHOOK_SCHEMA)).toBe(
+			true,
+		);
+		const forged = new Headers({ "x-hub-signature-256": "sha256=deadbeef" });
+		expect(verifyDeclaredWebhook(raw, forged, secret, GITHUB_WEBHOOK_SCHEMA)).toBe(
+			false,
+		);
 		const wrongHeader = new Headers({ "x-other": `sha256=${digest}` });
-		expect(provider.verify(raw, wrongHeader, secret)).toBe(false);
-
-		const forged = new Headers({ "x-demo-sig": "sha256=deadbeef" });
-		expect(provider.verify(raw, forged, secret)).toBe(false);
+		expect(
+			verifyDeclaredWebhook(raw, wrongHeader, secret, GITHUB_WEBHOOK_SCHEMA),
+		).toBe(false);
 	});
 
+	test("Slack-shape (v0:{ts}:{body} + freshness) verifies by the SAME fn", () => {
+		const schema: ConnectorWebhookSchema = {
+			signatureHeader: "x-slack-signature",
+			algorithm: "sha256",
+			signaturePrefix: "v0=",
+			signingBaseTemplate: "v0:{timestamp}:{body}",
+			timestampHeader: "x-slack-request-timestamp",
+			freshnessSeconds: 300,
+		};
+		const body = JSON.stringify({ team_id: "T1" });
+		const raw = new TextEncoder().encode(body);
+		const secret = "slack-secret";
+		const ts = String(Math.floor(Date.now() / 1000));
+		const sig = `v0=${createHmac("sha256", secret).update(`v0:${ts}:${body}`).digest("hex")}`;
+		const good = new Headers({
+			"x-slack-request-timestamp": ts,
+			"x-slack-signature": sig,
+		});
+		expect(verifyDeclaredWebhook(raw, good, secret, schema)).toBe(true);
+
+		// A stale timestamp (replay) is rejected even with a valid signature.
+		const staleTs = String(Math.floor(Date.now() / 1000) - 60 * 6);
+		const staleSig = `v0=${createHmac("sha256", secret).update(`v0:${staleTs}:${body}`).digest("hex")}`;
+		const stale = new Headers({
+			"x-slack-request-timestamp": staleTs,
+			"x-slack-signature": staleSig,
+		});
+		expect(verifyDeclaredWebhook(raw, stale, secret, schema)).toBe(false);
+	});
+
+	test("rejects (no throw) when the schema declares no signatureHeader", () => {
+		const raw = new TextEncoder().encode("x");
+		expect(
+			verifyDeclaredWebhook(raw, new Headers(), "s", { algorithm: "sha256" }),
+		).toBe(false);
+	});
+});
+
+describe("extractTenantFromSchema (the single generic tenant extractor)", () => {
+	test("reads a single routingKeyPath (github installation.id, numeric)", () => {
+		const raw = new TextEncoder().encode(
+			JSON.stringify({ installation: { id: 42 } }),
+		);
+		expect(
+			extractTenantFromSchema(raw, GITHUB_WEBHOOK_SCHEMA, "app-1"),
+		).toEqual({
+			providerInstance: "cloud",
+			providerAppId: "app-1",
+			externalTenantId: "42",
+		});
+	});
+
+	test("ordered routingKeyPaths, first match wins (slack team id)", () => {
+		const schema: ConnectorWebhookSchema = {
+			signatureHeader: "x-slack-signature",
+			routingKeyPaths: ["team_id", "team.id", "event.team_id"],
+		};
+		const raw = new TextEncoder().encode(
+			JSON.stringify({ event: { team_id: "TEV" } }),
+		);
+		expect(extractTenantFromSchema(raw, schema, "app")?.externalTenantId).toBe(
+			"TEV",
+		);
+	});
+
+	test("url-host transform yields the site host (jira self URL)", () => {
+		const raw = new TextEncoder().encode(
+			JSON.stringify({ issue: { self: "https://acme.atlassian.net/rest/x" } }),
+		);
+		expect(
+			extractTenantFromSchema(raw, JIRA_WEBHOOK_SCHEMA, "app")?.externalTenantId,
+		).toBe("acme.atlassian.net");
+	});
+
+	test("no resolvable path → null (acked without landing)", () => {
+		const raw = new TextEncoder().encode(JSON.stringify({ zen: "x" }));
+		expect(extractTenantFromSchema(raw, GITHUB_WEBHOOK_SCHEMA, "app")).toBeNull();
+	});
+});
+
+describe("createDeclaredAppWebhookProvider", () => {
 	test("throws when the schema declares no signatureHeader (must fail closed)", () => {
 		expect(() =>
-			createSchemaDrivenAppWebhookProvider({
+			createDeclaredAppWebhookProvider({
 				provider: "unsigned",
+				appId: "x",
 				webhookSchema: { algorithm: "sha256" },
-				extractTenant: () => null,
 			}),
 		).toThrow(/signatureHeader/);
 	});

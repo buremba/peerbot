@@ -29,18 +29,24 @@ type MegaMenu = {
 const CONNECT_MENU: MegaMenu = {
   id: "connect",
   label: "Connect",
-  width: "min(28rem, calc(100vw - 2rem))",
-  widthRem: 28,
+  width: "min(40rem, calc(100vw - 2rem))",
+  widthRem: 40,
   columns: [
     {
-      heading: "MEMORY FOR",
+      heading: "AGENTS & MEMORY",
       variant: "rich",
       links: [
         {
-          label: "Claude",
-          description: "Claude Code, Desktop, and claude.ai via MCP",
+          label: "Claude Desktop",
+          description: "Connect Claude Desktop and claude.ai via MCP",
           href: "/connect-from/claude/",
           emoji: "✳️",
+        },
+        {
+          label: "Claude Code",
+          description: "Plug memory directly into the Claude CLI",
+          href: "/connect-from/claude/",
+          emoji: "💻",
         },
         {
           label: "ChatGPT",
@@ -56,35 +62,34 @@ const CONNECT_MENU: MegaMenu = {
         },
       ],
     },
-  ],
-};
-
-const RESOURCES_MENU: MegaMenu = {
-  id: "resources",
-  label: "Resources",
-  width: "min(28rem, calc(100vw - 2rem))",
-  widthRem: 28,
-  columns: [
     {
-      heading: "LEARN",
+      heading: "CHAT & API",
       variant: "rich",
       links: [
         {
-          label: "Blog",
-          description: "Engineering notes and updates",
-          href: "/blog",
-          emoji: "✍️",
+          label: "Slack",
+          description: "Run goal-driven agents in your Slack channels",
+          href: "/platforms/slack/",
+          emoji: "💬",
         },
-      ],
-    },
-    {
-      heading: "PROJECT",
-      variant: "plain",
-      links: [
-        { label: "GitHub", href: GITHUB_URL },
-        { label: "Changelog", href: "/blog" },
-        { label: "Privacy", href: "/privacy" },
-        { label: "Terms", href: "/terms" },
+        {
+          label: "Web App",
+          description: "Interact with your agents natively in the web console",
+          href: "https://app.lobu.ai",
+          emoji: "💻",
+        },
+        {
+          label: "REST API",
+          description: "Query org memory & trigger actions from any app",
+          href: "/platforms/rest-api/",
+          emoji: "🔌",
+        },
+        {
+          label: "See all platforms",
+          description: "Discord, WhatsApp, Teams, Google Chat...",
+          href: "/getting-started/",
+          emoji: "🔗",
+        },
       ],
     },
   ],
@@ -316,7 +321,7 @@ export function Nav({ currentPath: _currentPath = "/" }: NavProps) {
         class="sticky top-0 z-40 px-4 sm:px-8"
         style={{
           backgroundColor:
-            "color-mix(in oklch, var(--color-page-bg) 68%, transparent)",
+            "color-mix(in oklch, var(--color-page-bg-elevated) 30%, transparent)",
           backdropFilter: "blur(12px)",
         }}
       >
@@ -345,11 +350,13 @@ export function Nav({ currentPath: _currentPath = "/" }: NavProps) {
               openId={openId}
               setOpenId={setOpenId}
             />
-            <MegaMenuTrigger
-              menu={RESOURCES_MENU}
-              openId={openId}
-              setOpenId={setOpenId}
-            />
+            <a
+              href="/blog"
+              class="inline-flex items-center text-[14px] font-medium px-3 h-9 rounded-full transition-colors hover:bg-[var(--color-page-surface-dim)]"
+              style={{ color: "var(--color-page-text)" }}
+            >
+              Blog
+            </a>
           </div>
           <div class="ml-auto flex items-center gap-3">
             <a

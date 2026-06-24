@@ -38,6 +38,14 @@ export interface RunScriptOptions {
 	limits?: RunLimits;
 	/** Forwarded to the script entry point after `(ctx, client)`. */
 	extraArgs?: unknown[];
+	/**
+	 * When set, the module is loaded but its default handler is NOT invoked;
+	 * instead `returnValue` is the named export, serialized via JSON (drops
+	 * non-enumerable TypeBox symbols, leaving plain JSON Schema). Used to read a
+	 * reaction's exported `input` contract. Runs strictly LESS guest code than a
+	 * normal run (top-level only, no handler), so it adds no attack surface.
+	 */
+	extractExport?: string;
 }
 
 interface LogEntry {
@@ -312,6 +320,16 @@ const GUEST_RUNNER = `
 })()
 `;
 
+// Read a named export instead of invoking the handler — the module top-level
+// runs (constructing exports), then we serialize the requested export. `__name`
+// is host-injected via jail, never interpolated into source.
+const EXTRACT_RUNNER = `
+(async () => {
+  const __v = module.exports[__extract_name];
+  return __v === undefined || __v === null ? null : JSON.stringify(__v);
+})()
+`;
+
 export async function runScript(
 	options: RunScriptOptions,
 ): Promise<RunScriptResult> {
@@ -571,9 +589,12 @@ export async function runScript(
 			JSON.stringify(options.extraArgs ?? []),
 		);
 		await jail.set("__sdk_manifest_json", JSON.stringify(manifest));
+		if (options.extractExport) {
+			await jail.set("__extract_name", options.extractExport);
+		}
 
 		const script = await isolate.compileScript(
-			`${GUEST_PREAMBLE}\n${compiled}\n${GUEST_RUNNER}`,
+			`${GUEST_PREAMBLE}\n${compiled}\n${options.extractExport ? EXTRACT_RUNNER : GUEST_RUNNER}`,
 		);
 		const returnJson = (await withTimeout(
 			script.run(context, {

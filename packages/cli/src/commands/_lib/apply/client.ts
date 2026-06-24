@@ -37,6 +37,15 @@ export interface RemoteEntityType {
   description?: string;
   required?: string[];
   properties?: Record<string, unknown>;
+  /** Event kinds keyed by semantic_type (mirrors {@link DesiredEntityType.eventKinds}); hoisted from the row's `event_kinds`. */
+  eventKinds?: Record<string, unknown>;
+  /**
+   * Current default view template (mirrors {@link DesiredEntityType.viewTemplate}).
+   * NOT returned by the entity-type list (kept off that hot path); apply-cmd
+   * fetches it per relevant type via {@link ApplyClient.getEntityTypeViewTemplate}
+   * and attaches it before diffing.
+   */
+  viewTemplate?: Record<string, unknown>;
   /** Present only for derived types (mirrors {@link DesiredEntityType.backing}). */
   backing?: EntityBacking;
   /** Declared metrics (mirrors {@link DesiredEntityType.metrics}); hoisted from the row's `metrics_config`. */
@@ -82,9 +91,7 @@ export interface RemoteWatcher {
   // include_details=true → version-bound fields
   description?: string | null;
   prompt?: string | null;
-  extraction_schema?: Record<string, unknown> | null;
   classifiers?: unknown[] | null;
-  json_template?: unknown;
   keying_config?: Record<string, unknown> | null;
   condensation_prompt?: string | null;
   condensation_window_count?: number | null;
@@ -199,6 +206,7 @@ function pickArray<T>(body: Record<string, unknown>, ...keys: string[]): T[] {
 function hoistEntityTypeSchema(
   row: RemoteEntityType & {
     metadata_schema?: unknown;
+    event_kinds?: unknown;
     backing_sql?: string | null;
     backing_source?: string | null;
     metrics_config?: unknown;
@@ -242,6 +250,11 @@ function hoistEntityTypeSchema(
     Object.keys(row.metrics_config).length > 0
   ) {
     out.metrics = row.metrics_config as EntityMetrics;
+  }
+  // Hoist event_kinds only when non-empty, so a type with no declared kinds
+  // stays `undefined` on both sides and never churns the diff (mirrors metrics).
+  if (isRecord(row.event_kinds) && Object.keys(row.event_kinds).length > 0) {
+    out.eventKinds = row.event_kinds as Record<string, unknown>;
   }
   return out;
 }
@@ -489,6 +502,7 @@ export class ApplyClient {
   async listEntityTypes(): Promise<RemoteEntityType[]> {
     type RawEntityTypeRow = RemoteEntityType & {
       metadata_schema?: unknown;
+      event_kinds?: unknown;
       backing_sql?: string | null;
     };
     const { body } = await this.request<{
@@ -551,8 +565,16 @@ export class ApplyClient {
     // `properties`/`required`. Fold them into `metadata_schema` so the schema
     // actually persists (otherwise every apply re-reports a `properties`
     // update because the stored schema stays empty).
-    const { slug, name, description, required, properties, backing, metrics } =
-      entity;
+    const {
+      slug,
+      name,
+      description,
+      required,
+      properties,
+      eventKinds,
+      backing,
+      metrics,
+    } = entity;
     const payload: Record<string, unknown> = { slug };
     if (name !== undefined) payload.name = name;
     if (description !== undefined) payload.description = description;
@@ -563,6 +585,9 @@ export class ApplyClient {
         ...(required && required.length > 0 ? { required } : {}),
       };
     }
+    // Event kinds sent on every upsert so it is deterministic: an object declares
+    // the type's kinds; `null` clears them. Stored verbatim in event_kinds.
+    payload.event_kinds = eventKinds ?? null;
     // Backing is sent on every upsert so it is deterministic: `{ sql }` makes
     // the type derived; `null` makes it stored (and reverts a previously-derived
     // type). `connection` (a slug) is forwarded so the server can bind the view
@@ -577,6 +602,57 @@ export class ApplyClient {
     // the type's metrics; `null` clears them. Stored verbatim in metrics_config.
     payload.metrics_config = metrics ?? null;
     return this.upsertSchemaResource("entity_type", payload);
+  }
+
+  /**
+   * Fetch an entity type's current default view template (`null` if none).
+   * Apply uses this to diff ONLY the types it needs (declared templates, plus
+   * every config type under prune) — the template is deliberately NOT returned
+   * by the entity-type list, which the UI/bootstrap also calls.
+   */
+  async getEntityTypeViewTemplate(
+    slug: string
+  ): Promise<Record<string, unknown> | null> {
+    const { body } = await this.request<{
+      default_tab?: {
+        current?: { json_template?: Record<string, unknown> } | null;
+      };
+    }>("POST", `/api/${this.orgSlug}/manage_view_templates`, {
+      action: "get",
+      resource_type: "entity_type",
+      resource_id: slug,
+    });
+    return body.default_tab?.current?.json_template ?? null;
+  }
+
+  /**
+   * Set the entity type's default view template. A separate, version-appending
+   * tool from the schema upsert, so apply calls this ONLY on create or a changed
+   * template (see apply-cmd) — never every run, which would churn the history.
+   */
+  async setEntityTypeViewTemplate(
+    slug: string,
+    jsonTemplate: Record<string, unknown>
+  ): Promise<void> {
+    await this.request("POST", `/api/${this.orgSlug}/manage_view_templates`, {
+      action: "set",
+      resource_type: "entity_type",
+      resource_id: slug,
+      json_template: jsonTemplate,
+      change_notes: "lobu apply",
+    });
+  }
+
+  /**
+   * Clear the entity type's default view template (prune-gated removal). Nulls
+   * the current-version pointer server-side; history rows stay for rollback.
+   */
+  async clearEntityTypeViewTemplate(slug: string): Promise<void> {
+    await this.request("POST", `/api/${this.orgSlug}/manage_view_templates`, {
+      action: "clear",
+      resource_type: "entity_type",
+      resource_id: slug,
+    });
   }
 
   async listRelationshipTypes(): Promise<RemoteRelationshipType[]> {
@@ -726,9 +802,8 @@ export class ApplyClient {
 
   async listWatchers(): Promise<RemoteWatcher[]> {
     // `include_details=true` pulls the version-bound fields (prompt,
-    // extraction_schema, classifiers, json_template, keying_config,
-    // condensation_*, reactions_guidance) too. Apply diffs against these to
-    // detect drift on the prompt / schema / sources / etc.
+    // classifiers, keying_config, condensation_*, reactions_guidance) too.
+    // Apply diffs against these to detect drift on prompt / sources / etc.
     const { body } = await this.request<{ watchers?: RemoteWatcher[] }>(
       "GET",
       `/api/${this.orgSlug}/watchers?include_details=true`
@@ -737,9 +812,7 @@ export class ApplyClient {
   }
 
   /**
-   * Create a watcher owned by `agentId`. `extraction_schema` is sent as a JSON
-   * object — the `manage_watchers` tool accepts `Type.Any()` there and
-   * normalizes string-or-object internally. Duplicate-slug surfaces as a
+   * Create a watcher owned by `agentId`. Duplicate-slug surfaces as a
    * structured error the caller swallows for idempotency.
    */
   async createWatcher(payload: {
@@ -748,7 +821,6 @@ export class ApplyClient {
     name?: string;
     description?: string;
     prompt: string;
-    extraction_schema: Record<string, unknown>;
     schedule?: string;
     sources?: WatcherSource[];
     reactions_guidance?: string;
@@ -759,7 +831,6 @@ export class ApplyClient {
     min_cooldown_seconds?: number;
     tags?: string[];
     agent_kind?: string;
-    json_template?: unknown;
     keying_config?: Record<string, unknown>;
     classifiers?: unknown[];
     condensation_prompt?: string;
@@ -775,7 +846,6 @@ export class ApplyClient {
         ...(payload.name ? { name: payload.name } : {}),
         ...(payload.description ? { description: payload.description } : {}),
         prompt: payload.prompt,
-        extraction_schema: payload.extraction_schema,
         ...(payload.schedule ? { schedule: payload.schedule } : {}),
         ...(payload.sources?.length ? { sources: payload.sources } : {}),
         ...(payload.reactions_guidance !== undefined
@@ -800,9 +870,6 @@ export class ApplyClient {
         ...(payload.agent_kind !== undefined
           ? { agent_kind: payload.agent_kind }
           : {}),
-        ...(payload.json_template !== undefined
-          ? { json_template: payload.json_template }
-          : {}),
         ...(payload.keying_config !== undefined
           ? { keying_config: payload.keying_config }
           : {}),
@@ -822,9 +889,9 @@ export class ApplyClient {
 
   /**
    * Update the **scalar** fields on the `watchers` row — these don't require
-   * a new version. Version-bound fields (prompt / extraction_schema / sources
-   * / reactions_guidance / json_template / keying_config / classifiers /
-   * condensation_*) require `createWatcherVersion` instead.
+   * a new version. Version-bound fields (prompt / sources / reactions_guidance /
+   * keying_config / classifiers / condensation_*) require `createWatcherVersion`
+   * instead.
    *
    * `null` clears nullable fields (device_worker_id, scheduler_client_id,
    * agent_kind) per the server contract.
@@ -876,9 +943,7 @@ export class ApplyClient {
   async createWatcherVersion(payload: {
     watcher_id: string;
     prompt?: string;
-    extraction_schema?: Record<string, unknown>;
     sources?: WatcherSource[];
-    json_template?: unknown;
     keying_config?: Record<string, unknown>;
     classifiers?: unknown[];
     reactions_guidance?: string;
@@ -894,13 +959,7 @@ export class ApplyClient {
         watcher_id: payload.watcher_id,
         set_as_current: true,
         ...(payload.prompt !== undefined ? { prompt: payload.prompt } : {}),
-        ...(payload.extraction_schema !== undefined
-          ? { extraction_schema: payload.extraction_schema }
-          : {}),
         ...(payload.sources !== undefined ? { sources: payload.sources } : {}),
-        ...(payload.json_template !== undefined
-          ? { json_template: payload.json_template }
-          : {}),
         ...(payload.keying_config !== undefined
           ? { keying_config: payload.keying_config }
           : {}),

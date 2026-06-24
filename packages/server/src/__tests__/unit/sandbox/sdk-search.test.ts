@@ -30,7 +30,7 @@ describe("sdkSearch", () => {
       stubEnv,
       stubCtx,
     );
-    // "extraction_schema" appears in watchers.create's summary or example.
+    // "extraction" appears in watchers.create's summary (entity-type derive).
     expect(result.match_count).toBeGreaterThan(0);
   });
 

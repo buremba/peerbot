@@ -9,18 +9,19 @@ import { getLatestPosts } from "../latest-posts";
 const latestPosts = await getLatestPosts(3);
 ---
 
-<BaseLayout>
+<BaseLayout forceTheme="dark">
   <div
-    class="landing-backdrop min-h-screen grid-lines"
+    class="landing-backdrop min-h-screen grid-lines relative"
     style={{
       backgroundColor: "var(--color-page-bg)",
       "--grid-max-w": "72rem",
     }}
   >
     <Nav client:load currentPath={Astro.url.pathname} />
-    <main class="relative z-[1]">
+    <main class="relative z-[1] -mt-16">
       <LandingPage client:load latestPosts={latestPosts} />
     </main>
     <Footer />
   </div>
 </BaseLayout>
+

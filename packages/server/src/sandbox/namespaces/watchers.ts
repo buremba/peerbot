@@ -58,13 +58,11 @@ export interface WatcherCreateInput {
 	/** Attach the watcher to an entity. Omit for an org-scoped/global watcher. */
 	entity_id?: number;
 	prompt: string;
-	extraction_schema: Record<string, unknown>;
 	sources?: Source[];
 	schedule?: string;
 	slug?: string;
 	name?: string;
 	description?: string;
-	json_template?: Record<string, unknown>;
 	keying_config?: Record<string, unknown>;
 	classifiers?: Record<string, unknown>;
 	condensation_prompt?: string;
@@ -106,12 +104,6 @@ export interface WatcherCreateVersionInput extends WatcherActionInput {
 	watcher_id: WatcherId;
 }
 
-export interface WatcherUpgradeInput {
-	watcher_id: WatcherId;
-	target_version?: number;
-	version?: number;
-}
-
 export interface WatcherVersionDetailsInput {
 	watcher_id: WatcherId;
 	version?: number;
@@ -148,7 +140,6 @@ export interface WatchersNamespace {
 	create(input: WatcherCreateInput): Promise<unknown>;
 	update(input: WatcherUpdateInput): Promise<unknown>;
 	createVersion(input: WatcherCreateVersionInput): Promise<unknown>;
-	upgrade(input: WatcherUpgradeInput): Promise<unknown>;
 	completeWindow(input: WatcherCompleteWindowInput): Promise<unknown>;
 	trigger(watcher_id: WatcherId): Promise<unknown>;
 	/** Delete one or more watchers. */
@@ -213,7 +204,6 @@ export function buildWatchersNamespace(
 		update: (input) => action("update", normalizeWatcherId(input)),
 		createVersion: (input) =>
 			action("create_version", normalizeWatcherId(input)),
-		upgrade: (input) => action("upgrade", normalizeWatcherId(input)),
 		completeWindow: (input) =>
 			action("complete_window", normalizeWatcherId(input)),
 		trigger: (watcher_id) =>

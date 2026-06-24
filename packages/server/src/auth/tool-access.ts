@@ -93,7 +93,6 @@ const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 		"create",
 		"update",
 		"create_version",
-		"upgrade",
 		"trigger",
 		"delete",
 		"set_reaction_script",
@@ -114,7 +113,7 @@ const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 		"delete",
 		"classify",
 	]),
-	manage_view_templates: new Set(["set", "rollback", "remove_tab"]),
+	manage_view_templates: new Set(["set", "rollback", "remove_tab", "clear"]),
 };
 
 const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {

@@ -314,8 +314,20 @@ export default class GitHubConnector extends ConnectorRuntime {
           type: 'app_installation',
           provider: 'github',
           providerInstance: 'cloud',
+          // GitHub App installation handshake (installation_id + ownership
+          // verification + repo/team provisioning + user-auth recovery). The
+          // generic install engine dispatches on this shape to the github-app
+          // route module — never on the `github` name.
+          installShape: 'github-app',
           appIdKey: 'GITHUB_APP_ID',
           privateKeyKey: 'GITHUB_APP_PRIVATE_KEY',
+          appSlugKey: 'GITHUB_APP_SLUG',
+          // The App's OWN OAuth client (used for the user-authorization leg of
+          // install / recovery), distinct from the user-login `oauth` method's
+          // GITHUB_CLIENT_ID/SECRET below.
+          clientIdKey: 'GITHUB_APP_CLIENT_ID',
+          clientSecretKey: 'GITHUB_APP_CLIENT_SECRET',
+          webhookSecretKey: 'GITHUB_APP_WEBHOOK_SECRET',
           // Install URL for the Lobu GitHub App. `{{app_slug}}` is substituted
           // by the install UI from the configured App slug; the user picks the
           // org/repos to grant during GitHub's install flow.

@@ -1059,7 +1059,7 @@ export class ChatInstanceManager {
     // can receive any connection's webhook (the LB sprays platform deliveries
     // across pods), so the instance is treated as a memo of the
     // `agent_connections` row: fresh memo → serve, stale/missing → re-hydrate
-    // from the row, gone/stopped row → 404. The coordinator's `/slack/events`
+    // from the row, gone/stopped row → 404. The coordinator's `/api/v1/app-webhooks/slack`
     // pre-call goes through the same check and stays harmless. Mirrors
     // `postMessageToChannel`.
     const running = await this.ensureConnectionRunning(connectionId);
@@ -1116,7 +1116,15 @@ export class ChatInstanceManager {
     return this.slackCoordinator.getDefaultConnection();
   }
 
-  async completeSlackOAuthInstall(
+  /**
+   * Complete an oauth-code-exchange install for a chat connector: exchange the
+   * code, upsert the `app_installations` row, store the bot token. Dispatched by
+   * provider (mirrors {@link handleChatAppWebhook}) so the generic install engine
+   * carries no provider literal. Today only Slack is a chat platform; an unknown
+   * provider is a wiring bug, so we throw.
+   */
+  async completeChatAppInstall(
+    provider: string,
     request: Request,
     redirectUri: string | undefined,
     organizationId: string
@@ -1125,15 +1133,35 @@ export class ChatInstanceManager {
     teamName?: string;
     installationId: string;
   }> {
-    return this.slackCoordinator.completeOAuthInstall(
-      request,
-      redirectUri,
-      organizationId
+    if (provider === "slack") {
+      return this.slackCoordinator.completeOAuthInstall(
+        request,
+        redirectUri,
+        organizationId
+      );
+    }
+    throw new Error(
+      `No chat coordinator registered for app-install provider "${provider}"`
     );
   }
 
-  async handleSlackAppWebhook(request: Request): Promise<Response> {
-    return this.slackCoordinator.handleAppWebhook(request);
+  /**
+   * Forward a verified app-webhook delivery to the chat coordinator for its
+   * provider. The generic app-webhook engine has already run the declarative
+   * signature verify at the edge; this only routes by provider — no provider
+   * literal reaches the gateway wiring. Today only Slack is a chat platform;
+   * an unknown provider is a wiring bug (404-equivalent), so we throw.
+   */
+  async handleChatAppWebhook(
+    provider: string,
+    request: Request
+  ): Promise<Response> {
+    if (provider === "slack") {
+      return this.slackCoordinator.handleAppWebhook(request);
+    }
+    throw new Error(
+      `No chat coordinator registered for app-webhook provider "${provider}"`
+    );
   }
 
   // --- Private ---
@@ -1174,7 +1202,7 @@ export class ChatInstanceManager {
     // by AsyncLocalStorage org context (see #516). Some callers reach
     // here with org context already bound (HTTP routes via agent-routes
     // middleware); others don't (boot-time initialize(), the public
-    // /slack/events webhook, anywhere ensureConnectionRunning() is
+    // /api/v1/app-webhooks/slack webhook, anywhere ensureConnectionRunning() is
     // triggered without an HTTP request). Always rebind to the
     // connection's owning org id so the per-tenant secret-store query
     // hits the right bucket — including when a caller's org happens to

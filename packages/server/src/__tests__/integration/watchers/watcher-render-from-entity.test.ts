@@ -8,15 +8,19 @@
  * record with the SAME template the entity detail page uses.
  *
  * Proves:
- *   1. deriveWatcherRender resolves a real entity type's render (and the path).
- *   2. It returns null when the type has no render / the watcher isn't entity-typed.
- *   3. get_watchers serves entity_type_render only when the watcher carries no
- *      inline json_template (own render wins).
+ *   1. deriveWatcherRender resolves a real entity type's declared render (+ path).
+ *   2. When the type declares NO view template it AUTO-DEFAULTS the render from the
+ *      type's metadata_schema (the shared resolveEntityRender primitive) — so an
+ *      entity-typed watcher never renders bare. Null only when the type has neither
+ *      a template nor schema properties, or the watcher isn't entity-typed.
+ *   3. get_watchers serves entity_type_render for an entity-typed watcher. There is
+ *      no per-watcher inline json_template override (consolidation removed it).
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../../db/client';
 import type { WatcherMetadata } from '../../../types/watchers';
+import { buildDefaultEntityTemplate } from '../../../utils/default-entity-template';
 import { deriveWatcherRender } from '../../../utils/watcher-render';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import { createTestAgent, createTestEntity } from '../../setup/test-fixtures';
@@ -43,11 +47,13 @@ const KEYING_CONFIG = {
   entity_type: 'topic',
 };
 
-async function setupWorkspace(opts: { withRender: boolean }) {
+async function setupWorkspace(opts: { withRender: boolean; schema?: Record<string, unknown> | null }) {
   const sql = getTestDb();
   const dbClient = sql as unknown as DbClient;
   const workspace = await TestWorkspace.create({ name: 'Render-From-Entity Org' });
   const ownerUserId = workspace.users.owner.id;
+
+  const schema = opts.schema === undefined ? TOPIC_METADATA_SCHEMA : opts.schema;
 
   const parentEntity = await createTestEntity({
     name: 'Parent Brand',
@@ -62,14 +68,15 @@ async function setupWorkspace(opts: { withRender: boolean }) {
     WHERE organization_id = ${workspace.org.id} AND slug = 'topic' AND deleted_at IS NULL
     LIMIT 1
   `;
+  const schemaJson = schema === null ? null : sql.json(schema);
   let topicId: number;
   if (existing.length > 0) {
     topicId = Number(existing[0].id);
-    await sql`UPDATE entity_types SET metadata_schema = ${sql.json(TOPIC_METADATA_SCHEMA)} WHERE id = ${topicId}`;
+    await sql`UPDATE entity_types SET metadata_schema = ${schemaJson} WHERE id = ${topicId}`;
   } else {
     const ins = await sql`
       INSERT INTO entity_types (organization_id, slug, name, metadata_schema, created_at, updated_at)
-      VALUES (${workspace.org.id}, 'topic', 'Topic', ${sql.json(TOPIC_METADATA_SCHEMA)}, current_timestamp, current_timestamp)
+      VALUES (${workspace.org.id}, 'topic', 'Topic', ${schemaJson}, current_timestamp, current_timestamp)
       RETURNING id
     `;
     topicId = Number(ins[0].id);
@@ -110,7 +117,7 @@ describe('deriveWatcherRender', () => {
     await cleanupTestDatabase();
   });
 
-  it('resolves a real entity type render + the record-array path', async () => {
+  it('resolves a real entity type render + the record-array path (declared template wins)', async () => {
     const ctx = await setupWorkspace({ withRender: true });
     const derived = await deriveWatcherRender(ctx.dbClient, ctx.workspace.org.id, KEYING_CONFIG);
     expect(derived).not.toBeNull();
@@ -118,8 +125,27 @@ describe('deriveWatcherRender', () => {
     expect(derived?.entityPath).toBe('problems');
   });
 
-  it('returns null when the entity type carries no render', async () => {
+  it('auto-defaults the render from metadata_schema when the type declares no view template', async () => {
     const ctx = await setupWorkspace({ withRender: false });
+    const derived = await deriveWatcherRender(ctx.dbClient, ctx.workspace.org.id, KEYING_CONFIG);
+    // No declared template → the shared resolveEntityRender primitive synthesizes a
+    // field card from the type's metadata_schema (same generator the entity detail
+    // page and event render use), so the watcher window never renders bare. Assert
+    // shape + field coverage rather than deep-equal: metadata_schema round-trips
+    // through jsonb, which reorders keys, so only the field SET is stable.
+    expect(derived).not.toBeNull();
+    const sample = buildDefaultEntityTemplate(TOPIC_METADATA_SCHEMA);
+    expect((derived?.render as { type?: string })?.type).toBe(
+      (sample as { type?: string })?.type
+    );
+    const paths = (s: unknown): string[] =>
+      Array.from(JSON.stringify(s).matchAll(/"path":"([^"]+)"/g), (m) => m[1]).sort();
+    expect(paths(derived?.render)).toEqual(['category', 'name']);
+    expect(derived?.entityPath).toBe('problems');
+  });
+
+  it('returns null when the type has neither a template nor schema properties', async () => {
+    const ctx = await setupWorkspace({ withRender: false, schema: null });
     const derived = await deriveWatcherRender(ctx.dbClient, ctx.workspace.org.id, KEYING_CONFIG);
     expect(derived).toBeNull();
   });
@@ -137,7 +163,7 @@ describe('get_watchers serves the derived render', () => {
     await cleanupTestDatabase();
   });
 
-  it('serves entity_type_render + entity_render_path for an entity-typed watcher with no inline json_template', async () => {
+  it('serves entity_type_render + entity_render_path for an entity-typed watcher', async () => {
     const ctx = await setupWorkspace({ withRender: true });
     const created = (await ctx.workspace.owner.watchers.create({
       entity_id: ctx.parentEntityId,
@@ -152,29 +178,7 @@ describe('get_watchers serves the derived render', () => {
     const got = (await ctx.workspace.owner.watchers.get(created.watcher_id)) as {
       watcher?: WatcherMetadata;
     };
-    expect(got.watcher?.json_template).toBeUndefined();
     expect(got.watcher?.entity_type_render).toEqual(TOPIC_RENDER);
     expect(got.watcher?.entity_render_path).toBe('problems');
-  });
-
-  it('does NOT derive a render when the watcher has its own json_template (own render wins)', async () => {
-    const ctx = await setupWorkspace({ withRender: true });
-    const ownTemplate = { type: 'card', children: [{ type: 'text', content: 'own' }] };
-    const created = (await ctx.workspace.owner.watchers.create({
-      entity_id: ctx.parentEntityId,
-      slug: 'own-render-watcher',
-      name: 'Own Render Watcher',
-      prompt: 'Extract problems for {{entities}}.',
-      keying_config: KEYING_CONFIG,
-      json_template: ownTemplate,
-      schedule: '0 9 * * *',
-      agent_id: ctx.agent.agentId,
-    })) as { watcher_id: string };
-
-    const got = (await ctx.workspace.owner.watchers.get(created.watcher_id)) as {
-      watcher?: WatcherMetadata;
-    };
-    expect(got.watcher?.json_template).toEqual(ownTemplate);
-    expect(got.watcher?.entity_type_render).toBeUndefined();
   });
 });

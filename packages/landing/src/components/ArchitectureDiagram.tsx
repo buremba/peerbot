@@ -77,7 +77,7 @@ function Header() {
         Operating loop
       </div>
       <h2
-        class="font-display text-[1.85rem] font-bold leading-[1.1] tracking-tight sm:text-[2.25rem]"
+        class="font-display text-[1.85rem] font-bold leading-[1.1] tracking-[-0.005em] sm:text-[2.25rem]"
         style={{ color: "var(--color-page-text)" }}
       >
         One loop behind every AI teammate.

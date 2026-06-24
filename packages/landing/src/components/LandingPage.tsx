@@ -4,9 +4,10 @@ import connectorsManifest from "../generated/connectors.json";
 import snippetsManifest from "../generated/landing-snippets.json";
 import { GITHUB_CONNECTORS_BLOB_URL, GITHUB_EXAMPLES_URL } from "../lib/urls";
 import { getLobuBaseUrl } from "../use-case-showcases";
+import { CanvasAurora } from "./CanvasAurora";
 import { CodeBlock, type CodeSnippet } from "./CodeBlock";
 import { CTA } from "./CTA";
-import { LatestBlogPosts, type LatestBlogPost } from "./LatestBlogPosts";
+import { type LatestBlogPost, LatestBlogPosts } from "./LatestBlogPosts";
 import {
   loopForUseCase,
   MemoryLoop,
@@ -53,7 +54,7 @@ const SETUP_PROMPT = `I want to build a Lobu agent with you. Lobu helps create i
    - Who uses it: just me, my team, or each of my customers (multi-tenant)?
    - What should it remember? (we'll model this as 1-3 entity types)
    - Where does its data come from? Lobu has built-in connectors for Gmail, GitHub, Google Calendar, Outlook, websites, RSS, Reddit, X, LinkedIn, YouTube, Hacker News, Product Hunt, WhatsApp, Spotify, and more, or you can write a custom connector for any other source (an API, a webhook, a CSV). Tell me the source and I'll map it to a built-in connector or plan a custom one. Pick one to start.
-   - Where do people talk to it? (Slack, Telegram, Discord, WhatsApp, web/HTTP, or MCP)
+   - Where do people talk to it? (Slack, Web App, Discord, WhatsApp, or MCP)
    - Anything on a schedule? (optional: one watcher, e.g. a daily summary)
    - Which LLM provider key do I have: Anthropic (ANTHROPIC_API_KEY), OpenAI, Gemini, Groq, DeepSeek, Mistral, Z.ai, or another (16 providers supported)?
 
@@ -61,7 +62,7 @@ const SETUP_PROMPT = `I want to build a Lobu agent with you. Lobu helps create i
 
 2. Scaffold it: check my Node is 22-24 or 26+ (only Node 25 is unsupported; help me switch if not), then run npx @lobu/cli@latest init with the name and the provider from above. Postgres is built in, so lobu run starts an embedded one. Don't ask me for a database unless I want an external Postgres (then I set DATABASE_URL). Read the AGENTS.md it writes (your guide to the config API: the define* helpers, connectors, auth, watchers, memory), and read examples/lobu-crm/lobu.config.ts before writing any connection, watcher, or reaction so you match the real field names instead of guessing. Then, before writing config, explain to me in plain terms how Lobu will work for my case: how the connector collects my data incrementally (feeds run on a schedule and only pull what's new since the last run, no re-ingesting), how each item becomes an event that memory turns into the entities above, and how both the watcher and the chat read that memory. Keep it short.
 
-3. Build it from my answers: edit lobu.config.ts plus any connector, reaction, and skill files it needs. For Slack or Telegram, prefer the hosted Lobu bot: declare the platform with no config (e.g. { type: "slack" }) so I need no bot token; lobu run then prints a /lobu link <code> I redeem by DMing the hosted bot. Only set up a bot token if I explicitly want my own app. Then tell me in one go every secret you'll need (API keys, OAuth client id/secret, bot tokens) and we'll add them to .env together as secret(...) placeholders. Never invent one, and for OAuth sources authorize the account in the admin UI rather than hand-crafting a token.
+3. Build it from my answers: edit lobu.config.ts plus any connector, reaction, and skill files it needs. For Slack, prefer the hosted Lobu bot: declare the platform with no config (e.g. { type: "slack" }) so I need no bot token; lobu run then prints a /lobu link <code> I redeem by DMing the hosted bot. Only set up a bot token if I explicitly want my own app. Then tell me in one go every secret you'll need (API keys, OAuth client id/secret, bot tokens) and we'll add them to .env together as secret(...) placeholders. Never invent one, and for OAuth sources authorize the account in the admin UI rather than hand-crafting a token.
 
 4. Run and verify: run npx @lobu/cli@latest validate and fix any errors, then boot with npx @lobu/cli@latest run. Send a test message on the channel I chose, trigger the data source manually (don't wait on a poll or cron), and show me the memory event that was written plus the admin UI at http://localhost:8787. If I set up a watcher or an action, exercise that too: run the watcher once, and confirm any action triggers in approval mode rather than firing for real.
 
@@ -69,8 +70,6 @@ Repo: https://github.com/lobu-ai/lobu. Docs: https://lobu.ai/getting-started/`;
 
 // The canonical "test it" command, kept in sync with InstallSection.
 const QUICKSTART_CMD = "npx @lobu/cli@latest init my-agent";
-const CLAUDE_MCP_CMD =
-  "claude mcp add --transport http lobu https://lobu.ai/mcp";
 
 export function LandingPage(props: {
   latestPosts?: LatestBlogPost[];
@@ -97,7 +96,31 @@ export function LandingPage(props: {
   const isHome = !props.defaultUseCaseId;
 
   return (
-    <>
+    <div class="relative w-full">
+      <CanvasAurora
+        color1={[0.2, 0.35, 0.95]}
+        color2={[0.85, 0.15, 0.4]}
+        color3={[0.95, 0.6, 0.15]}
+        speed={0.35}
+        scale={1.2}
+        opacity={0.3}
+        blur="2px"
+        pixelSize={24}
+        alignment={[0.15, 0.45]}
+        className="absolute inset-x-0 top-0 h-[50rem] w-full pointer-events-none z-0 opacity-50"
+      />
+      <CanvasAurora
+        color1={[0.95, 0.6, 0.15]}
+        color2={[0.85, 0.15, 0.4]}
+        color3={[0.2, 0.35, 0.95]}
+        speed={0.35}
+        scale={1.2}
+        opacity={0.3}
+        blur="2px"
+        pixelSize={24}
+        alignment={[0.85, 0.45]}
+        className="absolute inset-x-0 top-0 h-[50rem] w-full pointer-events-none z-0 opacity-50"
+      />
       <Hero />
       {isHome ? (
         <Container className="pt-10 pb-4 sm:pt-14">
@@ -130,7 +153,7 @@ export function LandingPage(props: {
       {props.latestPosts?.length ? (
         <LatestBlogPosts posts={props.latestPosts} />
       ) : null}
-    </>
+    </div>
   );
 }
 
@@ -170,7 +193,7 @@ function SectionHeading(props: {
 }) {
   return (
     <h2
-      class={`font-display text-[1.85rem] font-bold leading-[1.1] tracking-tight sm:text-[2.25rem] ${props.className ?? ""}`}
+      class={`font-display text-[1.85rem] font-bold leading-[1.1] tracking-[-0.005em] sm:text-[2.25rem] ${props.className ?? ""}`}
       style={{ color: "var(--color-page-text)" }}
     >
       {props.children}
@@ -185,16 +208,12 @@ function SectionHeading(props: {
 function Hero() {
   // Tracks which of the two copy actions fired last, so each shows its own
   // confirmation: the quickstart command (primary) or the setup prompt (sub).
-  const [copied, setCopied] = useState<"cmd" | "mcp" | "prompt" | null>(null);
+  const [copied, setCopied] = useState<"cmd" | "prompt" | null>(null);
 
-  const copy = async (which: "cmd" | "mcp" | "prompt") => {
+  const copy = async (which: "cmd" | "prompt") => {
     try {
       await navigator.clipboard.writeText(
-        which === "cmd"
-          ? QUICKSTART_CMD
-          : which === "mcp"
-            ? CLAUDE_MCP_CMD
-            : SETUP_PROMPT
+        which === "cmd" ? QUICKSTART_CMD : SETUP_PROMPT
       );
       setCopied(which);
       window.setTimeout(() => setCopied(null), 2200);
@@ -204,10 +223,10 @@ function Hero() {
   };
 
   return (
-    <section class="px-4 pb-12 pt-20 text-center sm:pb-16 sm:pt-28">
-      <Container>
+    <section class="relative overflow-hidden px-4 pb-12 pt-36 text-center sm:pb-16 sm:pt-44">
+      <Container className="relative z-10">
         <h1
-          class="hero-rise hero-rise-1 mx-auto max-w-[78rem] font-display text-[clamp(2.25rem,4.15vw,3.25rem)] font-bold leading-[1.06] tracking-[-0.028em]"
+          class="hero-rise hero-rise-1 mx-auto max-w-[78rem] font-display text-[clamp(2.25rem,4.15vw,3.25rem)] font-bold leading-[1.06] tracking-[-0.008em]"
           style={{ color: "var(--color-page-text)" }}
         >
           Build AI teammates that{" "}
@@ -229,7 +248,7 @@ function Hero() {
         </p>
         <div class="hero-rise hero-rise-3 mt-8 flex flex-wrap items-center justify-center gap-3">
           <button
-            class="inline-flex items-center gap-3 rounded-xl px-5 py-3 text-[14.5px] font-semibold shadow-sm transition-opacity hover:opacity-90"
+            class="inline-flex items-center gap-3 rounded-xl px-5 py-3 text-[14.5px] font-semibold shadow-sm transition-all duration-300 ease-out hover:-translate-y-[2px] hover:scale-[1.02] hover:shadow-[0_8px_24px_rgba(255,255,255,0.15)]"
             onClick={() => copy("prompt")}
             style={{
               backgroundColor: "var(--color-page-text)",
@@ -250,7 +269,7 @@ function Hero() {
             </span>
           </button>
           <ScheduleCallButton
-            class="inline-flex items-center gap-2 rounded-xl border px-5 py-3 text-[14.5px] font-semibold transition-colors hover:bg-[var(--color-page-surface-dim)]"
+            class="inline-flex items-center gap-2 rounded-xl border px-5 py-3 text-[14.5px] font-semibold transition-all duration-300 ease-out hover:-translate-y-[2px] hover:scale-[1.02] hover:bg-[var(--color-page-border)] hover:shadow-[0_8px_20px_rgba(0,0,0,0.3)]"
             style={{
               borderColor: "var(--color-page-border)",
               color: "var(--color-page-text)",
@@ -286,33 +305,6 @@ function Hero() {
             <CopyIcon copied={copied === "cmd"} />
           </button>
           {copied === "cmd" ? <span>copied</span> : null}
-        </p>
-        <p
-          class="hero-rise hero-rise-4 mt-2.5 flex flex-wrap items-center justify-center gap-2 text-[13px]"
-          style={{ color: "var(--color-page-text-muted)" }}
-        >
-          Or plug memory into Claude Code:
-          <button
-            type="button"
-            class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-[12.5px] transition-colors hover:border-[color:var(--color-tg-accent)]"
-            onClick={() => copy("mcp")}
-            style={{
-              borderColor: "var(--color-page-border)",
-              color: "var(--color-page-text)",
-            }}
-          >
-            <span style={{ opacity: 0.5 }}>$</span>
-            {CLAUDE_MCP_CMD}
-            <CopyIcon copied={copied === "mcp"} />
-          </button>
-          {copied === "mcp" ? <span>copied</span> : null}
-          <a
-            href="/connect-from/claude/"
-            class="font-medium transition-colors hover:text-[color:var(--color-tg-accent)]"
-            style={{ color: "var(--color-page-text-muted)" }}
-          >
-            Setup docs →
-          </a>
         </p>
       </Container>
     </section>
@@ -432,6 +424,33 @@ const FEATURED_EXAMPLE_SLUGS = [
   "agent-community",
 ] as const;
 
+const SHADER_PALETTES: Array<{
+  color1: [number, number, number];
+  color2: [number, number, number];
+  color3: [number, number, number];
+}> = [
+  {
+    color1: [0.1, 0.6, 0.8], // Cyan/Teal
+    color2: [0.2, 0.3, 0.95], // Deep Blue
+    color3: [0.5, 0.1, 0.85], // Violet
+  },
+  {
+    color1: [0.1, 0.8, 0.4], // Emerald
+    color2: [0.1, 0.5, 0.8], // Teal/Blue
+    color3: [0.9, 0.6, 0.1], // Orange/Gold
+  },
+  {
+    color1: [0.85, 0.15, 0.4], // Magenta
+    color2: [0.5, 0.1, 0.85], // Violet
+    color3: [0.2, 0.3, 0.95], // Deep Blue
+  },
+  {
+    color1: [0.95, 0.3, 0.15], // Red-Orange
+    color2: [0.95, 0.6, 0.15], // Orange-Gold
+    color3: [0.85, 0.15, 0.7], // Pink/Rose
+  },
+];
+
 function BrowseExamplesSection() {
   const bySlug = new Map(snippets.examples.map((ex) => [ex.slug, ex]));
   const featured = FEATURED_EXAMPLE_SLUGS.map((slug) =>
@@ -456,23 +475,22 @@ function BrowseExamplesSection() {
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
           {featured.map((ex) => (
             <a
-              class="flex flex-col rounded-lg border p-4 transition-colors hover:border-[color:var(--color-tg-accent)]"
+              class="relative overflow-hidden group flex flex-col rounded-lg p-4 transition-colors"
               href={`/for/${ex.slug}`}
               key={ex.slug}
               style={{
-                borderColor: "var(--color-page-border)",
                 backgroundColor: "var(--color-page-surface)",
               }}
             >
               <span
-                class="mb-2 text-[14px] font-semibold"
+                class="relative z-10 mb-2 text-[14px] font-semibold"
                 style={{ color: "var(--color-page-text)" }}
               >
                 {ex.label}
               </span>
               {ex.description ? (
                 <span
-                  class="text-[13px] leading-[1.5]"
+                  class="relative z-10 text-[13px] leading-[1.5]"
                   style={{ color: "var(--color-page-text-muted)" }}
                 >
                   {ex.description}
@@ -835,36 +853,37 @@ function RunAnywhereSection() {
         {cards.map((card) => (
           <div
             key={card.title}
-            class="flex min-w-0 flex-col rounded-lg border p-6"
+            class="relative overflow-hidden group flex min-w-0 flex-col rounded-lg p-6"
             style={{
-              borderColor: "var(--color-page-border)",
               backgroundColor: "var(--color-page-surface)",
             }}
           >
-            <Eyebrow>{card.eyebrow}</Eyebrow>
-            <h3
-              class="mb-2 text-[1.05rem] font-bold tracking-tight"
-              style={{ color: "var(--color-page-text)" }}
-            >
-              {card.title}
-            </h3>
-            <p
-              class="text-[14.5px] leading-[1.55]"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              {card.body}
-            </p>
-            <div class="mt-auto flex flex-wrap gap-x-4 gap-y-1 pt-4">
-              {card.links.map((link) => (
-                <a
-                  key={link.href}
-                  href={link.href}
-                  class="inline-flex items-center gap-1 font-mono text-[12px] text-[color:var(--color-page-text-muted)] transition-colors hover:text-[color:var(--color-tg-accent)]"
-                >
-                  {link.label}
-                  <span aria-hidden="true">↗</span>
-                </a>
-              ))}
+            <div class="relative z-10 flex flex-col h-full">
+              <Eyebrow>{card.eyebrow}</Eyebrow>
+              <h3
+                class="mb-2 text-[1.05rem] font-bold tracking-normal"
+                style={{ color: "var(--color-page-text)" }}
+              >
+                {card.title}
+              </h3>
+              <p
+                class="text-[14.5px] leading-[1.55]"
+                style={{ color: "var(--color-page-text-muted)" }}
+              >
+                {card.body}
+              </p>
+              <div class="mt-auto flex flex-wrap gap-x-4 gap-y-1 pt-4">
+                {card.links.map((link) => (
+                  <a
+                    key={link.href}
+                    href={link.href}
+                    class="inline-flex items-center gap-1 font-mono text-[12px] text-[color:var(--color-page-text-muted)] transition-colors hover:text-[color:var(--color-tg-accent)]"
+                  >
+                    {link.label}
+                    <span aria-hidden="true">↗</span>
+                  </a>
+                ))}
+              </div>
             </div>
           </div>
         ))}

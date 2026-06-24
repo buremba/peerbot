@@ -1,0 +1,30 @@
+---
+title: Web App
+description: Built-in web chat console and widgets for Lobu agents.
+---
+
+import { PlatformChatExamples } from "../../../components/PlatformChatExamples";
+
+Lobu's built-in Web App platform provides a native, feature-rich chat interface directly inside the Lobu console.
+
+<PlatformChatExamples platform="web" client:visible />
+
+## Setup
+
+Every Lobu agent automatically gets a native web chat console. There is no external bot setup, webhook, or token configuration required.
+
+1. Open the Lobu Admin Console at [app.lobu.ai](https://app.lobu.ai) (or `http://localhost:8787` for local development).
+2. Go to **Agents** and select your agent.
+3. Click on the **Chat** tab to start interacting with your agent immediately.
+
+## Features
+
+- **Native Chat Console**: A clean, responsive interface for real-time conversation with your agents.
+- **Interactive UI Cards**: Render rich visual elements, tables, and buttons directly in the chat stream.
+- **Human-in-the-Loop Approvals**: Approve or deny sensitive actions and tool calls with interactive buttons.
+- **Durable Event Log**: Every message, tool execution, and memory update is recorded in a single, auditable event thread.
+- **Zero Latency**: Direct WebSockets/SSE communication between the browser console and the agent runner.
+
+## Integrating into Your Frontend
+
+To embed the Lobu chat console or interact with it from your own frontend, you can use the `@lobu/sdk` client or standard REST API endpoints. See the [Client SDK](/sdks/client/) and [REST API](/sdks/rest-api/) guides for details.

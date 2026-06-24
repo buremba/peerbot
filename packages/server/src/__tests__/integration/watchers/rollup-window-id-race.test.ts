@@ -72,11 +72,6 @@ describe('rollup complete_window id allocation race', () => {
       slug: 'rollup-watcher',
       name: 'Rollup Watcher',
       prompt: 'Summarize {{entities}}.',
-      extraction_schema: {
-        type: 'object',
-        properties: { summary: { type: 'string' } },
-        required: ['summary'],
-      },
       schedule: '0 9 * * *',
       agent_id: agent.agentId,
     })) as { watcher_id: string };

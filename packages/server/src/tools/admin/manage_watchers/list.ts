@@ -98,9 +98,7 @@ export async function handleList(
 		query += `,
       cv.description,
       cv.prompt,
-      cv.extraction_schema,
       cv.classifiers,
-      cv.json_template,
       cv.keying_config,
       cv.condensation_prompt,
       cv.condensation_window_count,
@@ -222,9 +220,7 @@ export async function handleList(
 
 		if (!args.include_details) {
 			delete (rest as Record<string, unknown>).prompt;
-			delete (rest as Record<string, unknown>).extraction_schema;
 			delete (rest as Record<string, unknown>).classifiers;
-			delete (rest as Record<string, unknown>).json_template;
 			delete (rest as Record<string, unknown>).description;
 		}
 

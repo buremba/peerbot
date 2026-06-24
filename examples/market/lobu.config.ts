@@ -471,57 +471,6 @@ const founderActivityTracker = defineWatcher({
   },
   reactionsGuidance:
     "When a founder signals hiring activity, fundraising, or pivots, flag for the investment team.\nTrack founders going quiet as a potential concern.\nAlert on any public statements about competitors or market conditions.\n",
-  extractionSchema: {
-    type: "object",
-    required: ["summary", "founders", "notable_signals"],
-    properties: {
-      summary: { type: "string" },
-      founders: {
-        type: "array",
-        items: {
-          type: "object",
-          required: ["name", "company", "activity_level", "themes"],
-          properties: {
-            name: { type: "string" },
-            company: { type: "string" },
-            activity_level: {
-              type: "string",
-              enum: ["high", "medium", "low", "inactive"],
-            },
-            themes: { type: "array", items: { type: "string" } },
-            sentiment: {
-              type: "string",
-              enum: ["bullish", "neutral", "cautious", "concerned"],
-            },
-            signals: { type: "array", items: { type: "string" } },
-            notable_posts: { type: "array", items: { type: "string" } },
-          },
-        },
-      },
-      cross_patterns: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            theme: { type: "string" },
-            founders_involved: { type: "array", items: { type: "string" } },
-          },
-        },
-      },
-      notable_signals: {
-        type: "array",
-        items: {
-          type: "object",
-          required: ["signal", "founder", "impact"],
-          properties: {
-            signal: { type: "string" },
-            founder: { type: "string" },
-            impact: { type: "string", enum: ["high", "medium", "low"] },
-          },
-        },
-      },
-    },
-  },
 });
 
 const opportunityMatcher = defineWatcher({
@@ -537,53 +486,6 @@ const opportunityMatcher = defineWatcher({
   sources: {
     content:
       "SELECT id, title, payload_text, author_name, source_url, occurred_at, score, origin_type, connector_key FROM events WHERE entity_id IN (SELECT id FROM entities WHERE entity_type = 'founder') ORDER BY occurred_at DESC LIMIT 300\n",
-  },
-  extractionSchema: {
-    type: "object",
-    required: ["signals", "intro_recommendations", "summary"],
-    properties: {
-      signals: {
-        type: "array",
-        items: {
-          type: "object",
-          required: [
-            "type",
-            "source",
-            "summary",
-            "strength",
-            "related_topics",
-            "interested_members",
-            "reason",
-            "suggested_action",
-          ],
-          properties: {
-            type: { type: "string" },
-            source: { type: "string" },
-            summary: { type: "string" },
-            strength: { type: "string", enum: ["high", "medium", "low"] },
-            related_topics: { type: "array", items: { type: "string" } },
-            interested_members: { type: "array", items: { type: "string" } },
-            reason: { type: "string" },
-            suggested_action: { type: "string" },
-          },
-        },
-      },
-      intro_recommendations: {
-        type: "array",
-        items: {
-          type: "object",
-          required: ["member_a", "member_b", "overlap", "confidence"],
-          properties: {
-            member_a: { type: "string" },
-            member_b: { type: "string" },
-            overlap: { type: "string" },
-            draft_intro: { type: "string" },
-            confidence: { type: "string", enum: ["high", "medium"] },
-          },
-        },
-      },
-      summary: { type: "string" },
-    },
   },
 });
 

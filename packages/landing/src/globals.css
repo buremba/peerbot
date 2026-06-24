@@ -1,7 +1,23 @@
+@font-face {
+	font-family: "exposure";
+	src: url("/fonts/Exposure.woff2") format("woff2");
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "exposure";
+	src: url("/fonts/Exposure_Italic.woff2") format("woff2");
+	font-weight: 400;
+	font-style: italic;
+	font-display: swap;
+}
+
 @import "tailwindcss";
 
-/* tweakcn "Retro" theme fonts */
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@200..800&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap');
+/* tweakcn "Modern/Hyperspell" theme fonts */
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap");
 
 /* Scan gateway settings components so their Tailwind classes are generated */
 @source "../../gateway/src/routes/public/settings-page/**/*.tsx";
@@ -13,10 +29,10 @@
  * element.style — winning over every CSS rule including @layer theme.
  */
 @theme {
-  --font-sans: "Manrope", ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --font-serif: "Instrument Serif", ui-serif, serif;
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-serif: "exposure", Georgia, serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
-  --font-display: "Manrope", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-display: "exposure", Georgia, serif;
 
   --color-page-bg: oklch(0.9808 0.0079 73.7452);
   --color-page-bg-elevated: oklch(0.9724 0.0096 72.6627);
@@ -51,239 +67,211 @@
 }
 
 button {
-  cursor: pointer;
+	cursor: pointer;
 }
 
 html {
-  overflow-x: hidden;
-  background-color: var(--color-page-bg);
-  color: var(--color-page-text);
-  font-family: "Manrope", ui-sans-serif, system-ui, -apple-system, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+	overflow-x: hidden;
+	background-color: var(--color-page-bg) !important;
+	color: var(--color-page-text);
+	font-family: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
 }
 
 body {
-  margin: 0;
+	margin: 0;
+	background-color: var(--color-page-bg) !important;
 }
 
 h1,
 h2,
 h3,
 .font-display {
-  font-family: "Manrope", ui-sans-serif, system-ui, -apple-system, sans-serif;
-  letter-spacing: -0.02em;
+	font-family: "exposure", Georgia, serif;
+	letter-spacing: -0.005em;
 }
 
 /* Subtle homepage depth: a neutral top wash plus a signal grid that fades out. */
 .landing-backdrop {
-  background-image: linear-gradient(
-    to bottom,
-    color-mix(in oklch, var(--color-page-bg-elevated) 72%, var(--color-page-bg)),
-    var(--color-page-bg) 34rem
-  );
-  background-position: center top;
-  position: relative;
-}
-
-.landing-backdrop::after {
-  content: "";
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 48rem;
-  pointer-events: none;
-  z-index: 0;
-  background-image:
-    linear-gradient(var(--color-page-grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--color-page-grid) 1px, transparent 1px);
-  background-size: 76px 76px;
-  background-position: center top;
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    rgba(0, 0, 0, 0.6) 0,
-    rgba(0, 0, 0, 0.32) 14rem,
-    rgba(0, 0, 0, 0.1) 30rem,
-    transparent 46rem
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    rgba(0, 0, 0, 0.6) 0,
-    rgba(0, 0, 0, 0.32) 14rem,
-    rgba(0, 0, 0, 0.1) 30rem,
-    transparent 46rem
-  );
+	background-image: radial-gradient(
+		circle at 50% 0%,
+		color-mix(in oklch, var(--color-page-bg-elevated) 80%, var(--color-page-bg))
+			0%,
+		var(--color-page-bg) 60rem
+	);
+	background-position: center top;
+	position: relative;
 }
 
 /* Vercel-style edge lines */
 .grid-lines {
-  --grid-color: var(--color-page-grid);
-  --grid-max-w: 64rem;
-  position: relative;
+	--grid-color: var(--color-page-grid);
+	--grid-max-w: 64rem;
+	position: relative;
 }
 
 .grid-lines::before {
-  content: "";
-  position: fixed;
-  top: 0;
-  bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(var(--grid-max-w), calc(100% - 3rem));
-  pointer-events: none;
-  z-index: 0;
+	content: "";
+	position: fixed;
+	top: 0;
+	bottom: 0;
+	left: 50%;
+	transform: translateX(-50%);
+	width: min(var(--grid-max-w), calc(100% - 3rem));
+	pointer-events: none;
+	z-index: 0;
 }
 
 /* Section divider with + marks */
 .section-divider {
-  position: relative;
-  height: 1px;
-  background-color: var(--grid-color);
-  width: calc(min(var(--grid-max-w), calc(100% - 3rem)) - 4px);
-  max-width: calc(100% - 3rem - 4px);
-  margin: 1rem auto;
-  overflow: hidden;
+	position: relative;
+	height: 1px;
+	background-color: var(--grid-color);
+	width: calc(min(var(--grid-max-w), calc(100% - 3rem)) - 4px);
+	max-width: calc(100% - 3rem - 4px);
+	margin: 1rem auto;
+	overflow: hidden;
 }
 
 .section-divider::before,
 .section-divider::after {
-  content: "+";
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: 13px;
-  font-weight: 300;
-  line-height: 1;
-  color: var(--color-page-divider-mark);
+	content: "+";
+	position: absolute;
+	top: 50%;
+	transform: translateY(-50%);
+	font-size: 13px;
+	font-weight: 300;
+	line-height: 1;
+	color: var(--color-page-divider-mark);
 }
 
 .section-divider::before {
-  left: 0;
+	left: 0;
 }
 
 .section-divider::after {
-  right: 0;
+	right: 0;
 }
 
 /* Hero tab progress underline — grows left→right over the cycle */
 @keyframes hero-tab-progress {
-  from {
-    transform: scaleX(0);
-  }
-  to {
-    transform: scaleX(1);
-  }
+	from {
+		transform: scaleX(0);
+	}
+	to {
+		transform: scaleX(1);
+	}
 }
 
 .hero-tab-progress {
-  position: absolute;
-  top: -1px;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background-color: var(--color-tg-accent);
-  transform-origin: left center;
-  animation: hero-tab-progress var(--hero-tab-cycle, 5000ms) linear forwards;
+	position: absolute;
+	top: -1px;
+	left: 0;
+	right: 0;
+	height: 2px;
+	background-color: var(--color-tg-accent);
+	transform-origin: left center;
+	animation: hero-tab-progress var(--hero-tab-cycle, 5000ms) linear forwards;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hero-tab-progress {
-    animation: none;
-    transform: scaleX(1);
-  }
+	.hero-tab-progress {
+		animation: none;
+		transform: scaleX(1);
+	}
 }
 
 /* Dotted background used in attio's feature panels */
 .dotted-bg {
-  background-image: radial-gradient(
-    var(--color-page-dotted) 1px,
-    transparent 1px
-  );
-  background-size: 14px 14px;
-  background-position: -1px -1px;
+	background-image: radial-gradient(
+		var(--color-page-dotted) 1px,
+		transparent 1px
+	);
+	background-size: 14px 14px;
+	background-position: -1px -1px;
 }
 
 /* Chat action button hover — theme sets --chat-btn-glow via inline style.
    !important is needed because Starlight resets transition: all. */
 button.chat-action-btn {
-  transition:
-    transform 0.2s ease,
-    box-shadow 0.2s ease,
-    background-color 0.2s ease !important;
+	transition:
+		transform 0.2s ease,
+		box-shadow 0.2s ease,
+		background-color 0.2s ease !important;
 }
 
 button.chat-action-btn:hover {
-  transform: translateY(-1px) scale(1.04);
-  box-shadow: 0 2px 14px var(--chat-btn-glow, rgba(224, 121, 56, 0.4));
-  background-color: var(--chat-btn-glow, rgba(224, 121, 56, 0.12)) !important;
+	transform: translateY(-1px) scale(1.04);
+	box-shadow: 0 2px 14px var(--chat-btn-glow, rgba(224, 121, 56, 0.4));
+	background-color: var(--chat-btn-glow, rgba(224, 121, 56, 0.12)) !important;
 }
 
 /* Schedule dialog */
 .schedule-dialog {
-  padding: 0;
-  border: none;
-  border-radius: 16px;
-  background: transparent;
-  max-width: min(480px, 92vw);
-  width: 100%;
-  max-height: 90vh;
-  position: fixed;
-  inset: 0;
-  margin: auto;
+	padding: 0;
+	border: none;
+	border-radius: 16px;
+	background: transparent;
+	max-width: min(480px, 92vw);
+	width: 100%;
+	max-height: 90vh;
+	position: fixed;
+	inset: 0;
+	margin: auto;
 }
 
 .schedule-dialog::backdrop {
-  background: var(--color-page-overlay-backdrop);
-  backdrop-filter: blur(4px);
+	background: var(--color-page-overlay-backdrop);
+	backdrop-filter: blur(4px);
 }
 
 .schedule-dialog-content {
-  position: relative;
-  border-radius: 16px;
-  overflow: hidden;
-  background: var(--color-page-surface);
+	position: relative;
+	border-radius: 16px;
+	overflow: hidden;
+	background: var(--color-page-surface);
 }
 
 .schedule-dialog-close {
-  position: absolute;
-  top: 8px;
-  right: 12px;
-  z-index: 10;
-  width: 32px;
-  height: 32px;
-  border: none;
-  background: var(--color-page-dialog-close-bg);
-  color: var(--color-page-text-inverted);
-  font-size: 20px;
-  line-height: 1;
-  border-radius: 50%;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+	position: absolute;
+	top: 8px;
+	right: 12px;
+	z-index: 10;
+	width: 32px;
+	height: 32px;
+	border: none;
+	background: var(--color-page-dialog-close-bg);
+	color: var(--color-page-text-inverted);
+	font-size: 20px;
+	line-height: 1;
+	border-radius: 50%;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
 }
 
 .schedule-dialog-close:hover {
-  background: var(--color-page-dialog-close-hover);
+	background: var(--color-page-dialog-close-hover);
 }
 
 .schedule-dialog-iframe {
-  width: 100%;
-  height: 80vh;
-  max-height: 720px;
-  border: none;
-  display: block;
+	width: 100%;
+	height: 80vh;
+	max-height: 720px;
+	border: none;
+	display: block;
 }
 
 .blog-prose {
-  color: var(--color-page-text);
-  font-size: 1.0625rem;
-  line-height: 1.8;
+	color: var(--color-page-text);
+	font-size: 1.0625rem;
+	line-height: 1.8;
 }
 
 .blog-prose > :first-child {
-  margin-top: 0;
+	margin-top: 0;
 }
 
 .blog-prose p,
@@ -292,14 +280,14 @@ button.chat-action-btn:hover {
 .blog-prose pre,
 .blog-prose table,
 .blog-prose blockquote {
-  margin: 0 0 1.5rem;
+	margin: 0 0 1.5rem;
 }
 
 .blog-prose p,
 .blog-prose li,
 .blog-prose td,
 .blog-prose blockquote {
-  color: var(--color-page-prose-text);
+	color: var(--color-page-prose-text);
 }
 
 .blog-prose h2,
@@ -307,185 +295,197 @@ button.chat-action-btn:hover {
 .blog-prose h4,
 .blog-prose strong,
 .blog-prose th {
-  color: var(--color-page-text);
+	color: var(--color-page-text);
 }
 
 .blog-prose h2 {
-  font-size: 1.75rem;
-  line-height: 1.2;
-  font-weight: 700;
-  letter-spacing: -0.03em;
-  margin: 3rem 0 1rem;
+	font-size: 1.75rem;
+	line-height: 1.2;
+	font-weight: 700;
+	letter-spacing: -0.03em;
+	margin: 3rem 0 1rem;
 }
 
 .blog-prose h3 {
-  font-size: 1.2rem;
-  line-height: 1.35;
-  font-weight: 650;
-  margin: 2rem 0 0.75rem;
+	font-size: 1.2rem;
+	line-height: 1.35;
+	font-weight: 650;
+	margin: 2rem 0 0.75rem;
 }
 
 .blog-prose a {
-  color: var(--color-tg-accent);
-  text-decoration: none;
+	color: var(--color-tg-accent);
+	text-decoration: none;
 }
 
 .blog-prose a:hover {
-  text-decoration: underline;
+	text-decoration: underline;
 }
 
 .blog-prose ul,
 .blog-prose ol {
-  padding-left: 1.5rem;
+	padding-left: 1.5rem;
 }
 
 .blog-prose ul {
-  list-style: disc;
+	list-style: disc;
 }
 
 .blog-prose ol {
-  list-style: decimal;
+	list-style: decimal;
 }
 
 .blog-prose li {
-  margin-bottom: 0.45rem;
+	margin-bottom: 0.45rem;
 }
 
 .blog-prose li::marker {
-  color: var(--color-page-text-muted);
+	color: var(--color-page-text-muted);
 }
 
 .blog-prose blockquote {
-  border-left: 3px solid rgba(224, 121, 56, 0.45);
-  padding: 0.125rem 0 0.125rem 1rem;
-  color: var(--color-page-prose-blockquote);
+	border-left: 3px solid rgba(224, 121, 56, 0.45);
+	padding: 0.125rem 0 0.125rem 1rem;
+	color: var(--color-page-prose-blockquote);
 }
 
 .blog-prose code {
-  font-family:
-    "SFMono-Regular", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-    "Liberation Mono", "Courier New", monospace;
-  font-size: 0.92em;
-  background: var(--color-page-code-bg);
-  border: 1px solid var(--color-page-code-border);
-  border-radius: 0.4rem;
-  padding: 0.15rem 0.35rem;
+	font-family:
+		"SFMono-Regular", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+		"Liberation Mono", "Courier New", monospace;
+	font-size: 0.92em;
+	background: var(--color-page-code-bg);
+	border: 1px solid var(--color-page-code-border);
+	border-radius: 0.4rem;
+	padding: 0.15rem 0.35rem;
 }
 
 .blog-prose pre {
-  position: relative;
-  overflow-x: auto;
-  border-radius: 0.9rem;
-  border: 1px solid var(--color-page-pre-border);
-  background: linear-gradient(180deg, var(--color-page-pre-bg-from), var(--color-page-pre-bg-to));
-  padding: 1rem 1.1rem;
+	position: relative;
+	overflow-x: auto;
+	border-radius: 0.9rem;
+	border: 1px solid var(--color-page-pre-border);
+	background: linear-gradient(
+		180deg,
+		var(--color-page-pre-bg-from),
+		var(--color-page-pre-bg-to)
+	);
+	padding: 1rem 1.1rem;
 }
 
 .blog-prose pre code {
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-  padding: 0;
-  color: rgba(250, 250, 250, 0.95);
-  font-size: 0.88rem;
-  line-height: 1.7;
+	background: transparent;
+	border: 0;
+	border-radius: 0;
+	padding: 0;
+	color: rgba(250, 250, 250, 0.95);
+	font-size: 0.88rem;
+	line-height: 1.7;
 }
 
 .blog-prose table {
-  width: 100%;
-  border-collapse: collapse;
+	width: 100%;
+	border-collapse: collapse;
 }
 
 .blog-prose th,
 .blog-prose td {
-  text-align: left;
-  padding: 0.85rem 1rem;
-  border-bottom: 1px solid var(--color-page-border);
-  vertical-align: top;
+	text-align: left;
+	padding: 0.85rem 1rem;
+	border-bottom: 1px solid var(--color-page-border);
+	vertical-align: top;
 }
 
 .blog-prose th {
-  font-size: 0.9rem;
-  font-weight: 600;
+	font-size: 0.9rem;
+	font-weight: 600;
 }
 
 .blog-prose td {
-  font-size: 0.96rem;
+	font-size: 0.96rem;
 }
 
 .blog-prose hr {
-  border: 0;
-  border-top: 1px solid var(--color-page-border);
-  margin: 2.5rem 0;
+	border: 0;
+	border-top: 1px solid var(--color-page-border);
+	margin: 2.5rem 0;
 }
 
 .blog-prose .expressive-code,
 .blog-prose .astro-code {
-  margin: 0 0 1.5rem;
+	margin: 0 0 1.5rem;
 }
 
 .blog-prose .expressive-code pre,
 .blog-prose .astro-code {
-  overflow-x: auto;
-  border-radius: 0.9rem;
+	overflow-x: auto;
+	border-radius: 0.9rem;
 }
 
 /* ---------- Subtle landing animations ---------- */
 
 /* Hero entrance: fade + rise on first paint, staggered by child. */
 @keyframes hero-rise {
-  from {
-    opacity: 0;
-    transform: translate3d(0, 8px, 0);
-  }
-  to {
-    opacity: 1;
-    transform: translate3d(0, 0, 0);
-  }
+	from {
+		opacity: 0;
+		transform: translate3d(0, 8px, 0);
+	}
+	to {
+		opacity: 1;
+		transform: translate3d(0, 0, 0);
+	}
 }
 
 .hero-rise {
-  opacity: 0;
-  animation: hero-rise 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+	opacity: 0;
+	animation: hero-rise 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-.hero-rise-1 { animation-delay: 0ms; }
-.hero-rise-2 { animation-delay: 80ms; }
-.hero-rise-3 { animation-delay: 160ms; }
-.hero-rise-4 { animation-delay: 240ms; }
+.hero-rise-1 {
+	animation-delay: 0ms;
+}
+.hero-rise-2 {
+	animation-delay: 80ms;
+}
+.hero-rise-3 {
+	animation-delay: 160ms;
+}
+.hero-rise-4 {
+	animation-delay: 240ms;
+}
 
 /* Scroll-reveal: applied to elements observed by useReveal().
    Only transform/opacity — no layout shift. */
 .reveal {
-  opacity: 0;
-  transform: translate3d(0, 12px, 0);
-  transition:
-    opacity 420ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: opacity, transform;
+	opacity: 0;
+	transform: translate3d(0, 12px, 0);
+	transition:
+		opacity 420ms cubic-bezier(0.22, 1, 0.36, 1),
+		transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+	will-change: opacity, transform;
 }
 
 .reveal.is-visible {
-  opacity: 1;
-  transform: translate3d(0, 0, 0);
+	opacity: 1;
+	transform: translate3d(0, 0, 0);
 }
 
 /* Respect user motion preference — disable all landing animations. */
 @media (prefers-reduced-motion: reduce) {
-  .hero-rise,
-  .hero-rise-1,
-  .hero-rise-2,
-  .hero-rise-3,
-  .hero-rise-4 {
-    animation: none;
-    opacity: 1;
-    transform: none;
-  }
+	.hero-rise,
+	.hero-rise-1,
+	.hero-rise-2,
+	.hero-rise-3,
+	.hero-rise-4 {
+		animation: none;
+		opacity: 1;
+		transform: none;
+	}
 
-  .reveal,
-  .reveal.is-visible {
-    opacity: 1;
-    transform: none;
-    transition: none;
-  }
+	.reveal,
+	.reveal.is-visible {
+		opacity: 1;
+		transform: none;
+		transition: none;
+	}
 }

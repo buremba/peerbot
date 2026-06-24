@@ -44,18 +44,6 @@ async function seedWatcher(workspace: TestWorkspace, suffix: string) {
     slug: `feedback-watcher-${suffix}`,
     name: `Feedback Watcher ${suffix}`,
     prompt: 'Analyze inputs.',
-    extraction_schema: {
-      type: 'object',
-      properties: {
-        problems: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: { name: { type: 'string' }, severity: { type: 'string' } },
-          },
-        },
-      },
-    },
     agent_id: agent.agentId,
   })) as { watcher_id: string };
 

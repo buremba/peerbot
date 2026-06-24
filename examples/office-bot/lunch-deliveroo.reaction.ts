@@ -26,8 +26,24 @@
  */
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
-interface FinalizeData {
-  outcome?: "placed" | "manual" | "cancelled" | "no-run";
+/**
+ * The reaction owns its input contract: it declares the shape it consumes as a
+ * plain JSON Schema (no TypeBox — importing it into a reaction bundle breaks the
+ * isolate's SDK client proxy). The host validates `ctx.extracted_data` against
+ * this schema before the reaction runs, failing the run loudly on a mismatch
+ * rather than acting on malformed data, so the handler just reads it with a cast.
+ */
+export const input = {
+  type: "object",
+  properties: {
+    outcome: { enum: ["placed", "manual", "cancelled", "no-run"] },
+    restaurant: { type: "string" },
+  },
+  required: ["outcome"],
+};
+
+interface Input {
+  outcome: "placed" | "manual" | "cancelled" | "no-run";
   restaurant?: string;
 }
 
@@ -44,7 +60,9 @@ export default async (
   ctx: ReactionContext,
   client: ReactionClient
 ): Promise<void> => {
-  const data = ctx.extracted_data as FinalizeData;
+  // The host has already validated the payload against this reaction's own
+  // contract (`input`); read it with a cast.
+  const data = ctx.extracted_data as Input;
   const restaurant = (data.restaurant ?? "").trim();
   // Only chase a menu when the run actually settled on a restaurant.
   if (!restaurant || (data.outcome !== "placed" && data.outcome !== "manual")) {

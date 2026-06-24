@@ -192,21 +192,6 @@ const accountHealthMonitor = defineWatcher({
   ),
   prompt:
     "Poll CRM data for tracked accounts. Track expansion progress, risk level changes, and renewal timeline.\n",
-  extractionSchema: {
-    type: "object",
-    required: [
-      "risk_level",
-      "expansion_status",
-      "renewal_blockers",
-      "activity_delta",
-    ],
-    properties: {
-      risk_level: { type: "string" },
-      expansion_status: { type: "string" },
-      renewal_blockers: { type: "array", items: { type: "string" } },
-      activity_delta: { type: "string" },
-    },
-  },
 });
 
 export default defineConfig({

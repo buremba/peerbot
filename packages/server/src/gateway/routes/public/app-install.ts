@@ -40,6 +40,7 @@ import {
 	createLogger,
 	getErrorMessage,
 } from "@lobu/core";
+import type { ConnectorAuthAppInstallation } from "@lobu/connector-sdk";
 import { getDb } from "../../../db/client.js";
 import {
 	ConnectionSlugConflictError,
@@ -52,11 +53,19 @@ import {
 } from "../../../utils/connector-auth.js";
 import type { AppInstallationStore } from "../../../lobu/stores/app-installation-store.js";
 import { exchangeCodeForTokens } from "../../../connect/oauth-providers.js";
-import { createGithubInstallStateStore } from "../../auth/oauth/state-store.js";
+import {
+	createGithubInstallStateStore,
+	OAuthStateStore,
+} from "../../auth/oauth/state-store.js";
 import {
 	renderOAuthErrorPage,
 	renderOAuthSuccessPage,
 } from "../../auth/oauth-templates.js";
+import {
+	getOrgAppInstallationMethod,
+	renderAppInstallUrl,
+	resolveAppInstallCredentials,
+} from "../../installation/app-install-credentials.js";
 import { getInstallationTokenRegistry } from "../../installation/registry.js";
 import { createSyncRun } from "../../../runs/queue-service.js";
 import {
@@ -962,6 +971,14 @@ export interface AppInstallRouterDeps {
 async function verifyInstallationOwnership(params: {
 	code: string | undefined;
 	/**
+	 * The App's OWN OAuth client credentials, resolved from the org's connector
+	 * declaration (`clientIdKey`/`clientSecretKey`) — NOT read from env literals
+	 * here. The route resolves them after the signed state is peeked (so the org
+	 * is known) and passes them in; both unset → fail safe (503).
+	 */
+	clientId: string | undefined;
+	clientSecret: string | undefined;
+	/**
 	 * The installation_id GitHub passed on the install redirect. `undefined` only
 	 * in the recovery flow (GitHub's user-auth redirect omits it); then it is
 	 * DERIVED from the user's sole ACCESSIBLE installation via
@@ -980,9 +997,9 @@ async function verifyInstallationOwnership(params: {
 		AppInstallRouterDeps["fetchSoleAccessibleInstallation"]
 	>;
 }): Promise<InstallOwnershipResult> {
-	// The App's OAuth creds (NOT the Lobu login OAuth app). Fail safe if unset.
-	const clientId = process.env.GITHUB_APP_CLIENT_ID;
-	const clientSecret = process.env.GITHUB_APP_CLIENT_SECRET;
+	// The App's OAuth creds (NOT the Lobu login OAuth app), resolved from the
+	// org's connector declaration by the caller. Fail safe if unset.
+	const { clientId, clientSecret } = params;
 	if (!clientId || !clientSecret) {
 		return {
 			ok: false,
@@ -1194,21 +1211,9 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 	// `installation_id`). The callback derives the installation from
 	// /user/installations and runs the SAME ownership + session-org guards.
 	router.get("/github/app/install", async (c) => {
-		const appSlug = process.env.GITHUB_APP_SLUG;
-		const appId = process.env.GITHUB_APP_ID;
-		if (!appId || !appSlug) {
-			return c.html(
-				renderOAuthErrorPage(
-					"github_app_not_configured",
-					"The Lobu GitHub App is not configured on this gateway (set GITHUB_APP_ID and GITHUB_APP_SLUG).",
-				),
-				503,
-			);
-		}
-
 		// Bind the install to the initiating session's active org (single-tenant
-		// fallback for self-host). Without this the resulting state would carry no
-		// authoritative org and the callback couldn't tell which tenant initiated.
+		// fallback for self-host). Resolved first because credential config is read
+		// from THIS org's connector_definitions declaration (no env literals here).
 		const orgId = await deps.resolveInstallOrgId(c);
 		if (!orgId) {
 			return c.html(
@@ -1220,12 +1225,30 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 			);
 		}
 
+		const method = await getOrgAppInstallationMethod(
+			orgId,
+			GITHUB_CONNECTOR_KEY,
+			"github",
+		);
+		const creds = method ? resolveAppInstallCredentials(method) : null;
+		const appSlug = creds?.appSlug;
+		const appId = creds?.appId;
+		if (!appId || !appSlug) {
+			return c.html(
+				renderOAuthErrorPage(
+					"github_app_not_configured",
+					"The Lobu GitHub App is not configured on this gateway (set GITHUB_APP_ID and GITHUB_APP_SLUG).",
+				),
+				503,
+			);
+		}
+
 		// Decide recovery vs fresh install. Explicit `?recovery=1`, or this org
 		// already has an app_installations row for this App (a prior bind exists, so
 		// the install page would dead-end). Recovery needs the App's OAuth client id
 		// to send the user through user-authorization.
 		const explicitRecovery = c.req.query("recovery") === "1";
-		const clientId = process.env.GITHUB_APP_CLIENT_ID;
+		const clientId = creds?.clientId;
 		const alreadyHasInstallRow = await orgHasGithubInstallRow(orgId, appId);
 		const useRecovery = (explicitRecovery || alreadyHasInstallRow) && !!clientId;
 
@@ -1246,21 +1269,13 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		}
 
 		const state = await stateStore.create({ organizationId: orgId });
-		return c.redirect(githubAppInstallUrl(appSlug, state), 302);
+		const installUrl =
+			renderAppInstallUrl(creds?.installUrlTemplate, appSlug, state) ??
+			githubAppInstallUrl(appSlug, state);
+		return c.redirect(installUrl, 302);
 	});
 
 	router.get("/github/app/install/callback", async (c) => {
-		const appId = process.env.GITHUB_APP_ID;
-		if (!appId) {
-			return c.html(
-				renderOAuthErrorPage(
-					"github_app_not_configured",
-					"The Lobu GitHub App is not configured on this gateway (GITHUB_APP_ID unset).",
-				),
-				503,
-			);
-		}
-
 		const setupAction = parseSetupAction(c.req.query("setup_action"));
 		const installationIdRaw = c.req.query("installation_id");
 
@@ -1377,6 +1392,29 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		// Bind to the org encoded in the verified state (== callbackOrgId).
 		const orgId = installState.organizationId;
 
+		// Resolve App credentials from THIS org's connector declaration — only now,
+		// AFTER the signed state is verified and the org is known (this is the CSRF /
+		// cross-tenant boundary, so we never resolve creds against an attacker-chosen
+		// org). The declared `appIdKey`/`privateKeyKey` are stamped onto the install
+		// row so token minting later reads the right gateway env vars; clientId/secret
+		// are the App's OWN OAuth client for the ownership-proof leg.
+		const method = await getOrgAppInstallationMethod(
+			orgId,
+			GITHUB_CONNECTOR_KEY,
+			"github",
+		);
+		const creds = method ? resolveAppInstallCredentials(method) : null;
+		const appId = creds?.appId;
+		if (!appId) {
+			return c.html(
+				renderOAuthErrorPage(
+					"github_app_not_configured",
+					"The Lobu GitHub App is not configured on this gateway (GITHUB_APP_ID unset).",
+				),
+				503,
+			);
+		}
+
 		// Ownership proof. The signed state proves WHICH org initiated, but NOT that
 		// the caller OWNS the supplied installation_id (an enumerable integer).
 		// Without this, an attacker with their own valid state could pass a victim's
@@ -1417,6 +1455,8 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		);
 		const ownership = await verifyInstallationOwnership({
 			code: c.req.query("code"),
+			clientId: creds?.clientId,
+			clientSecret: creds?.clientSecret,
 			installationId: suppliedInstallationId,
 			recovery: isRecovery,
 			redirectUri: callbackUrl,
@@ -1503,12 +1543,19 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 				// Record the ownership-verified account (GitHub omits it from the
 				// redirect query) so the install row carries the org login/type/id the
 				// team-graph build and UI rely on, falling back to any query value.
+				// Also stamp the declared credential env-var NAMES (appIdKey/
+				// privateKeyKey) so later token minting (registry.mintFor) reads the
+				// right gateway env vars from the row instead of a hardcoded literal.
 				metadata: {
 					...buildInstallMetadata(c),
 					account_login: ownerAccount.login,
 					account_type: ownerAccount.type,
 					...(typeof ownerAccount.id === "number"
 						? { account_id: ownerAccount.id }
+						: {}),
+					...(creds?.appIdKey ? { appIdKey: creds.appIdKey } : {}),
+					...(creds?.privateKeyKey
+						? { privateKeyKey: creds.privateKeyKey }
 						: {}),
 				},
 			});
@@ -1616,4 +1663,360 @@ function buildInstallMetadata(c: import("hono").Context): Record<string, unknown
 	const setupAction = c.req.query("setup_action");
 	if (setupAction) metadata.setup_action = setupAction;
 	return metadata;
+}
+
+// ---------------------------------------------------------------------------
+// oauth-code-exchange install shape (generic "Add to <app>" OAuth flow)
+//
+// The standard hosted-app install: redirect to the provider's authorize URL with
+// the declared client id + scopes, then on callback verify the CSRF state and
+// hand off to the connector's KIND-dispatched completion (chat → the chat
+// adapter's code→token + bot-token + app_installations write). Mounted by the
+// generic engine at `/{provider}/install` + `/{provider}/oauth_callback`, so the
+// existing Slack URLs (`/slack/install`, `/slack/oauth_callback`) are preserved
+// without any provider literal in the route code. Org binding, state CSRF, and
+// the org-mismatch guard mirror the GitHub flow; no ownership proof is needed —
+// the provider's OAuth already proves the user authorized the install.
+// ---------------------------------------------------------------------------
+
+const oauthInstallLogger = createLogger("oauth-install-routes");
+
+/** Per-request CSRF state for an oauth-code-exchange install. */
+interface OAuthInstallStateData {
+	redirectUri: string;
+	/**
+	 * Active org of the session that initiated the install. The callback verifies
+	 * the completing session's active org matches; a mismatch rejects the install
+	 * so a link minted under org A's session can never plant an install into org B.
+	 */
+	organizationId: string;
+}
+
+/** The per-provider state store (scope `<provider>:oauth:state`). */
+function oauthInstallStateStore(
+	provider: string,
+): OAuthStateStore<OAuthInstallStateData> {
+	return new OAuthStateStore(`${provider}:oauth:state`, `${provider}-install-state`);
+}
+
+/**
+ * Resolve the OAuth callback URL for an oauth-code-exchange provider. Must stay
+ * in sync with the provider's registered redirect URIs:
+ * `<gateway-base>/{provider}/oauth_callback`. Behind the prod TLS-terminating
+ * ingress `c.req.url` is the internal pod URL, so prefer the configured public
+ * base; fall back to deriving the mount prefix from the request path on
+ * self-host (single-origin).
+ */
+function resolveOAuthInstallCallbackUrl(
+	gatewayBaseUrl: string | undefined,
+	requestUrl: string,
+	provider: string,
+): string {
+	if (gatewayBaseUrl) {
+		return `${gatewayBaseUrl.replace(/\/+$/, "")}/${provider}/oauth_callback`;
+	}
+	const url = new URL(requestUrl);
+	const prefix = url.pathname.replace(
+		new RegExp(`/${provider}/install/?$`),
+		"",
+	);
+	return `${url.origin}${prefix}/${provider}/oauth_callback`;
+}
+
+/** Capitalize a provider key for the success-page title ("slack" → "Slack"). */
+function providerDisplayName(provider: string): string {
+	return provider.length > 0
+		? provider[0].toUpperCase() + provider.slice(1)
+		: provider;
+}
+
+/**
+ * Complete an oauth-code-exchange install: exchange the callback `code` for a
+ * token, upsert the `app_installations` row, and (for chat connectors) store the
+ * bot token / boot the agentless instance. Provider-dispatched (mirrors the
+ * webhook delivery dispatch) so gateway core carries no provider literal.
+ */
+type CompleteOAuthInstall = (
+	provider: string,
+	request: Request,
+	redirectUri: string,
+	organizationId: string,
+) => Promise<{ teamId: string; teamName?: string; installationId: string }>;
+
+/**
+ * Mount the start + callback routes for ONE oauth-code-exchange connector onto
+ * `router`, at the connector's `/{provider}/install` + `/{provider}/oauth_callback`
+ * paths. `authorizeUrl` is the provider's declared OAuth authorize endpoint; the
+ * per-request client id + scopes are read from the org's connector declaration
+ * (multi-tenant source of truth). `complete` runs the KIND-dispatched completion.
+ */
+function mountOAuthCodeExchangeRoutes(
+	router: Hono,
+	params: {
+		connectorKey: string;
+		provider: string;
+		authorizeUrl: string;
+		resolveInstallOrgId(c: import("hono").Context): Promise<string | null>;
+		getPublicGatewayUrl?(): string | undefined;
+		complete: CompleteOAuthInstall;
+	},
+): void {
+	const { connectorKey, provider, authorizeUrl } = params;
+	const display = providerDisplayName(provider);
+
+	router.get(`/${provider}/install`, async (c) => {
+		// Bind the install to the initiating session's active org. Without this an
+		// OAuth link minted under org A's session can be opened from org B's
+		// browser and the resulting install lands in the wrong tenant. On self-host
+		// (no session middleware mounted), fall back to the sole org row.
+		const installOrgId = await params.resolveInstallOrgId(c);
+		if (!installOrgId) {
+			return c.html(
+				renderOAuthErrorPage(
+					"unauthorized",
+					`Sign in to an organization before starting ${display} install.`,
+				),
+				401,
+			);
+		}
+
+		// Resolve clientId + scopes from the org's connector declaration (the env
+		// var NAMES are declared; the gateway reads the values). No env literal.
+		const method = await getOrgAppInstallationMethod(
+			installOrgId,
+			connectorKey,
+			provider,
+		);
+		const creds = method ? resolveAppInstallCredentials(method) : null;
+		const clientId = creds?.clientId;
+		if (!clientId) {
+			return c.html(
+				renderOAuthErrorPage(
+					`${provider}_not_configured`,
+					`${display} OAuth is not configured on this gateway. Set ${
+						method?.clientIdKey ?? "the app's client id env var"
+					} and try again.`,
+				),
+				503,
+			);
+		}
+
+		const stateStore = oauthInstallStateStore(provider);
+		const redirectUri = resolveOAuthInstallCallbackUrl(
+			params.getPublicGatewayUrl?.(),
+			c.req.url,
+			provider,
+		);
+		const scopes =
+			Array.isArray(method?.permissions) && method.permissions.length > 0
+				? method.permissions
+				: [];
+		const state = await stateStore.create({
+			redirectUri,
+			organizationId: installOrgId,
+		});
+
+		const oauthUrl = new URL(authorizeUrl);
+		oauthUrl.searchParams.set("client_id", clientId);
+		oauthUrl.searchParams.set("scope", scopes.join(","));
+		oauthUrl.searchParams.set("redirect_uri", redirectUri);
+		oauthUrl.searchParams.set("state", state);
+
+		return c.redirect(oauthUrl.toString(), 302);
+	});
+
+	router.get(`/${provider}/oauth_callback`, async (c) => {
+		const state = c.req.query("state");
+		const code = c.req.query("code");
+		if (!state || !code) {
+			return c.html(
+				renderOAuthErrorPage(
+					"invalid_request",
+					`The ${display} OAuth callback is missing the required state or code parameter.`,
+				),
+				400,
+			);
+		}
+
+		const stateStore = oauthInstallStateStore(provider);
+		// Peek (non-destructive) before validating side-channel context so a
+		// cross-org or unauthenticated hit doesn't burn the install link.
+		const oauthState = await stateStore.peek(state);
+		if (!oauthState) {
+			return c.html(
+				renderOAuthErrorPage(
+					"invalid_state",
+					`This ${display} install link is invalid or has expired.`,
+				),
+				400,
+			);
+		}
+
+		// Reject the callback if the session that's completing the install belongs
+		// to a different org than the one that started it.
+		const callbackOrgId = await params.resolveInstallOrgId(c);
+		if (!callbackOrgId || callbackOrgId !== oauthState.organizationId) {
+			oauthInstallLogger.warn(
+				{
+					provider,
+					stateOrg: oauthState.organizationId,
+					callbackOrg: callbackOrgId ?? null,
+				},
+				"Rejecting OAuth install callback: session org does not match install state",
+			);
+			return c.html(
+				renderOAuthErrorPage(
+					"org_mismatch",
+					`This ${display} install link was started in a different organization. Sign in to that organization and try again.`,
+				),
+				403,
+			);
+		}
+
+		// Org check passed — atomically consume the nonce so the link can't be replayed.
+		const consumed = await stateStore.consume(state);
+		if (!consumed) {
+			return c.html(
+				renderOAuthErrorPage(
+					"invalid_state",
+					`This ${display} install link is invalid or has expired.`,
+				),
+				400,
+			);
+		}
+
+		try {
+			const result = await params.complete(
+				provider,
+				c.req.raw,
+				consumed.redirectUri,
+				oauthState.organizationId,
+			);
+			return c.html(
+				renderOAuthSuccessPage(result.teamName || result.teamId, undefined, {
+					title: `${providerDisplayName(provider)} installed`,
+					description:
+						"Workspace connected to Lobu. In a channel, run /lobu link <code> to wire an agent:",
+					details:
+						"Get a code from an agent's Deploy tab in your Lobu dashboard.",
+				}),
+			);
+		} catch (error) {
+			oauthInstallLogger.error(
+				{ provider, error: String(error) },
+				"OAuth install callback failed",
+			);
+			return c.html(
+				renderOAuthErrorPage(
+					`${provider}_install_failed`,
+					error instanceof Error
+						? error.message
+						: `${display} OAuth callback failed.`,
+				),
+				500,
+			);
+		}
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Generic install engine — one provider-agnostic hosted-app install router
+//
+// Iterates the bundled integration connectors and, per connector that declares
+// an `installShape`, mounts a start + callback router and dispatches the actual
+// handshake on the DECLARED shape — never on a provider name:
+//   - 'github-app'          → the GitHub App flow (createAppInstallRoutes).
+//   - 'oauth-code-exchange' → the generic "Add to <app>" OAuth flow above; its
+//      post-install completion is dispatched by the connector's deliveryKind
+//      (chat → the chat adapter), mirroring the app-webhook delivery dispatch.
+// Adding a new hosted OAuth app needs ZERO new core route code: declare
+// installShape:'oauth-code-exchange' + authorizeUrl + clientIdKey + scopes.
+// ---------------------------------------------------------------------------
+
+/** One bundled integration connector the install engine may mount routes for. */
+export interface InstallEngineIntegration {
+	connectorKey: string;
+	provider: string;
+	/** The declared app-installation method (carries installShape/authorizeUrl). */
+	method: ConnectorAuthAppInstallation | null;
+	/** The connector's webhook deliveryKind — decides the post-install completion. */
+	deliveryKind?: "data" | "chat";
+}
+
+/** Dependencies the generic install engine needs (injected for testability). */
+export interface InstallEngineDeps {
+	installationStore: AppInstallationStore;
+	/** Resolve the active org for the request (session-bound + single-tenant). */
+	resolveInstallOrgId(c: import("hono").Context): Promise<string | null>;
+	/** The public gateway base URL used to build OAuth `redirect_uri`s. */
+	getPublicGatewayUrl?(): string | undefined;
+	/** The bundled integration connectors to mount install routes for. */
+	integrations: InstallEngineIntegration[];
+	/**
+	 * Complete an oauth-code-exchange install whose connector forwards to a chat
+	 * adapter (deliveryKind 'chat'). Provider-dispatched so core carries no
+	 * provider literal. Required when any chat oauth-code-exchange connector is
+	 * registered; omit on deployments with none.
+	 */
+	completeChatInstall?: CompleteOAuthInstall;
+}
+
+/**
+ * Build the single hosted-app install router. Mounted at the gateway root
+ * (`app.route("", ...)`); each connector's routes live at its declared paths.
+ */
+export function createInstallRoutes(deps: InstallEngineDeps): Hono {
+	const router = new Hono();
+
+	for (const integration of deps.integrations) {
+		const shape = integration.method?.installShape;
+		if (!shape) continue;
+
+		if (shape === "github-app") {
+			// The GitHub App flow keeps its own module + fixed
+			// `/github/app/install[/callback]` paths (installation ids, ownership
+			// verification, repo/team provisioning, recovery). Wire it from the
+			// shared deps; the per-provider business logic is unchanged.
+			router.route(
+				"",
+				createAppInstallRoutes({
+					installationStore: deps.installationStore,
+					resolveInstallOrgId: deps.resolveInstallOrgId,
+					getPublicGatewayUrl: deps.getPublicGatewayUrl,
+				}),
+			);
+			continue;
+		}
+
+		// oauth-code-exchange. Completion is dispatched by the connector's
+		// deliveryKind: a chat connector hands off to the chat adapter. A
+		// non-chat oauth-code-exchange connector has no completion wired yet, so
+		// skip it rather than mount a dead route.
+		const authorizeUrl = integration.method?.authorizeUrl;
+		if (!authorizeUrl) {
+			oauthInstallLogger.warn(
+				{ provider: integration.provider },
+				"Skipping oauth-code-exchange install routes: connector declares no authorizeUrl",
+			);
+			continue;
+		}
+		if (integration.deliveryKind !== "chat" || !deps.completeChatInstall) {
+			oauthInstallLogger.warn(
+				{ provider: integration.provider, deliveryKind: integration.deliveryKind },
+				"Skipping oauth-code-exchange install routes: no post-install completion for this delivery kind",
+			);
+			continue;
+		}
+
+		mountOAuthCodeExchangeRoutes(router, {
+			connectorKey: integration.connectorKey,
+			provider: integration.provider,
+			authorizeUrl,
+			resolveInstallOrgId: deps.resolveInstallOrgId,
+			getPublicGatewayUrl: deps.getPublicGatewayUrl,
+			complete: deps.completeChatInstall,
+		});
+	}
+
+	return router;
 }

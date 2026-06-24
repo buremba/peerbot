@@ -209,10 +209,6 @@ export async function handleCompleteWindow(
       i.organization_id,
       i.created_by,
       wv.id as version_id,
-      wv.prompt as prompt,
-      wv.extraction_schema as extraction_schema,
-      wv.version_sources as version_sources,
-      wv.classifiers as classifiers,
       wv.keying_config
     FROM watchers i
     LEFT JOIN watcher_versions wv
@@ -252,12 +248,6 @@ export async function handleCompleteWindow(
 
   const resolvedVersionId =
     watcherRows[0].version_id != null ? Number(watcherRows[0].version_id) : null;
-  const templateData = {
-    prompt: watcherRows[0].prompt ?? undefined,
-    extraction_schema: parseJson(watcherRows[0].extraction_schema) ?? undefined,
-    data: parseJson(watcherRows[0].version_sources) ?? undefined,
-    classifiers: parseJson(watcherRows[0].classifiers) ?? undefined,
-  } as Record<string, any>;
   const keyingConfig = parseJson(watcherRows[0].keying_config) as KeyingConfig | null;
 
   // The org + bound parent entity the promoted child entities hang under. The
@@ -274,15 +264,18 @@ export async function handleCompleteWindow(
 
   // ============================================
   // STEP 2.5: Validate extracted_data against the extraction schema.
-  // The schema is the watcher's inline extraction_schema, OR — when the watcher
-  // is entity-typed (keying_config.entity_type) and gave no inline schema —
-  // derived from that entity type's metadata_schema (consolidation: "schema lives
-  // on the entity type"). Same helper the worker payload uses, so the contract the
-  // device extracts against and the contract we validate against never drift.
+  // The schema is DERIVED from the bound entity type's metadata_schema
+  // (keying_config.entity_type) — schema lives on the type, never on the watcher.
+  // Same helper the worker payload uses, so the contract the device extracts
+  // against and the contract we validate against never drift. An untyped watcher
+  // (no entity_type) gets null here and skips validation (free-form summary).
   // ============================================
-  const extractionSchema: Record<string, any> | null =
-    templateData?.extraction_schema ??
-    (await deriveWatcherExtractionSchema(getDb(), watcherOrgId, keyingConfig));
+  const extractionSchema: Record<string, any> | null = await deriveWatcherExtractionSchema(
+    getDb(),
+    watcherOrgId,
+    keyingConfig,
+    watcherId
+  );
   if (extractionSchema) {
     const validate = ajv.compile(extractionSchema);
     // Validate a deep copy since removeAdditional:true mutates the data
@@ -298,7 +291,7 @@ export async function handleCompleteWindow(
       });
 
       throw new Error(
-        `extracted_data does not match template's extraction_schema.\n\n` +
+        `extracted_data does not match the watcher\'s extraction contract (derived from its entity type or reaction \`input\` schema).\n\n` +
           `Validation errors:\n${errorMessages.join('\n')}\n\n` +
           'Expected schema requires:\n' +
           `  - Required fields: ${JSON.stringify(extractionSchema.required || [])}\n` +

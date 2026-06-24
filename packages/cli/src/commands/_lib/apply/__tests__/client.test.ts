@@ -42,7 +42,7 @@ describe("ApplyClient", () => {
 
     const watchers = await client.listWatchers();
     // `include_details=true` so the apply diff can see prompt /
-    // extraction_schema / reactions_guidance / etc. for drift detection.
+    // reactions_guidance / etc. for drift detection.
     expect(calls[0]?.url).toBe(
       "https://example.test/api/acme/watchers?include_details=true"
     );
@@ -67,7 +67,6 @@ describe("ApplyClient", () => {
       agentId: "triage",
       name: "Digest",
       prompt: "Produce a digest.",
-      extraction_schema: { type: "object" },
       schedule: "0 9 * * 1",
     });
 
@@ -80,10 +79,10 @@ describe("ApplyClient", () => {
       agent_id: "triage",
       name: "Digest",
       prompt: "Produce a digest.",
-      extraction_schema: { type: "object" },
       schedule: "0 9 * * 1",
     });
     expect("entity_id" in body).toBe(false);
+    expect("extraction_schema" in body).toBe(false);
   });
 
   test("listOrgs reads organizations from the OAuth userinfo endpoint", async () => {
@@ -279,6 +278,109 @@ describe("ApplyClient — prune", () => {
 
     const body = JSON.parse(String(calls[0]?.init?.body));
     expect(body.metrics_config).toBeNull();
+  });
+
+  test("upsertEntityType POSTs event_kinds for a type that declares kinds, null otherwise", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    const eventKinds = {
+      valuation: {
+        description: "A snapshot",
+        metadataSchema: { type: "object" },
+      },
+    };
+    await client.upsertEntityType({ slug: "deal", eventKinds });
+    expect(JSON.parse(String(calls[0]?.init?.body)).event_kinds).toEqual(
+      eventKinds
+    );
+
+    await client.upsertEntityType({ slug: "person", name: "Person" });
+    expect(JSON.parse(String(calls[1]?.init?.body)).event_kinds).toBeNull();
+  });
+
+  test("listEntityTypes hoists event_kinds; null/empty stays undefined", async () => {
+    const eventKinds = { note: { description: "A note" } };
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async () =>
+        new Response(
+          JSON.stringify({
+            entity_types: [
+              { slug: "deal", event_kinds: eventKinds },
+              { slug: "person", event_kinds: null },
+              { slug: "empty", event_kinds: {} },
+            ],
+          }),
+          { status: 200 }
+        )) as typeof fetch
+    );
+
+    const types = await client.listEntityTypes();
+    const byKey = Object.fromEntries(types.map((t) => [t.slug, t]));
+    expect(byKey.deal?.eventKinds).toEqual(eventKinds);
+    expect(byKey.person?.eventKinds).toBeUndefined();
+    expect(byKey.empty?.eventKinds).toBeUndefined();
+  });
+
+  test("view template get/set/clear POST manage_view_templates with the right action", async () => {
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({
+          url: String(url),
+          body: JSON.parse(String(init?.body)),
+        });
+        return new Response(
+          JSON.stringify({
+            default_tab: { current: { json_template: { type: "card" } } },
+          }),
+          { status: 200 }
+        );
+      }) as typeof fetch
+    );
+
+    const got = await client.getEntityTypeViewTemplate("deal");
+    expect(got).toEqual({ type: "card" });
+    expect(calls[0]?.url).toContain("/manage_view_templates");
+    expect(calls[0]?.body).toMatchObject({
+      action: "get",
+      resource_type: "entity_type",
+      resource_id: "deal",
+    });
+
+    await client.setEntityTypeViewTemplate("deal", { type: "card", id: "x" });
+    expect(calls[1]?.body).toMatchObject({
+      action: "set",
+      resource_type: "entity_type",
+      resource_id: "deal",
+      json_template: { type: "card", id: "x" },
+    });
+
+    await client.clearEntityTypeViewTemplate("deal");
+    expect(calls[2]?.body).toMatchObject({
+      action: "clear",
+      resource_type: "entity_type",
+      resource_id: "deal",
+    });
+  });
+
+  test("getEntityTypeViewTemplate returns null when no default template", async () => {
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async () =>
+        new Response(JSON.stringify({ default_tab: { current: null } }), {
+          status: 200,
+        })) as typeof fetch
+    );
+    expect(await client.getEntityTypeViewTemplate("deal")).toBeNull();
   });
 
   test("listEntityTypes hoists metrics_config to metrics; null/empty stays undefined", async () => {

@@ -39,6 +39,12 @@ async function seedGithubConnector(organizationId: string): Promise<void> {
 					providerInstance: "cloud",
 					appIdKey: "GITHUB_APP_ID",
 					privateKeyKey: "GITHUB_APP_PRIVATE_KEY",
+					appSlugKey: "GITHUB_APP_SLUG",
+					clientIdKey: "GITHUB_APP_CLIENT_ID",
+					clientSecretKey: "GITHUB_APP_CLIENT_SECRET",
+					webhookSecretKey: "GITHUB_APP_WEBHOOK_SECRET",
+					installUrlTemplate:
+						"https://github.com/apps/{{app_slug}}/installations/new",
 				},
 			],
 		},

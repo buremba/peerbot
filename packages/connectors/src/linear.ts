@@ -80,6 +80,10 @@ export default class LinearConnector extends ConnectorRuntime<LinearCheckpoint, 
       // Linear signs the raw body with HMAC-SHA256 and sends a bare hex digest
       // (no `sha256=` prefix). It does not send a stable delivery id header, so
       // dedupe falls back to a body hash (no `dedupeHeader`).
+      // App-installation delivery: one webhook configured ONCE on the Linear app;
+      // every delivery carries the workspace `organizationId` — that's the tenant.
+      delivery: 'app_installation',
+      routingKeyPath: 'organizationId',
     },
     authSchema: {
       methods: [

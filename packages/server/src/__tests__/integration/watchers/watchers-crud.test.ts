@@ -66,10 +66,6 @@ describe('watcher CRUD', () => {
       slug: 'lifecycle-watcher',
       name: 'Lifecycle Watcher',
       prompt: 'Track product launches.',
-      extraction_schema: {
-        type: 'object',
-        properties: { launches: { type: 'array', items: { type: 'string' } } },
-      },
       schedule: '0 9 * * *',
       agent_id: agentId,
     })) as { watcher_id: string };
@@ -94,13 +90,27 @@ describe('watcher CRUD', () => {
     expect(list.watchers?.some((w) => w.watcher_id === watcherId)).toBe(false);
   });
 
+  it('creates an org-scoped watcher without an inline extraction schema', async () => {
+    const created = (await owner.watchers.create({
+      slug: 'org-scoped-summary-watcher',
+      name: 'Org Scoped Summary Watcher',
+      prompt: 'Summarize recent workspace activity.',
+      schedule: '0 12 * * *',
+      agent_id: agentId,
+    })) as { watcher_id: string };
+
+    const got = (await owner.watchers.get(created.watcher_id)) as {
+      watcher?: { entity_id?: number | null };
+    };
+    expect(got.watcher?.entity_id ?? null).toBeNull();
+  });
+
   it('round-trips execution_config through create → list → update', async () => {
     const created = (await owner.watchers.create({
       entity_id: entityId,
       slug: 'exec-config-watcher',
       name: 'Exec Config Watcher',
       prompt: 'Track things.',
-      extraction_schema: { type: 'object', properties: {} },
       agent_id: agentId,
       execution_config: {
         timeout_seconds: 1800,
@@ -156,7 +166,6 @@ describe('watcher CRUD', () => {
       slug: 'no-exec-config-watcher',
       name: 'No Exec Config',
       prompt: 'Track things.',
-      extraction_schema: { type: 'object', properties: {} },
       agent_id: agentId,
     })) as { watcher_id: string };
 
@@ -177,7 +186,6 @@ describe('watcher CRUD', () => {
       entity_id: entityId,
       name: 'Bad Exec',
       prompt: 'x',
-      extraction_schema: { type: 'object', properties: {} },
       agent_id: agentId,
     };
     // timeout_seconds below minimum
@@ -217,10 +225,6 @@ describe('watcher CRUD', () => {
       slug: 'org-scoped-watcher',
       name: 'Org Scoped',
       prompt: 'Track org-wide signals.',
-      extraction_schema: {
-        type: 'object',
-        properties: { signals: { type: 'array', items: { type: 'string' } } },
-      },
       agent_id: agentId,
     })) as { watcher_id: string };
     expect(created.watcher_id).toBeDefined();
@@ -240,7 +244,6 @@ describe('watcher CRUD', () => {
         slug: 'no-org-watcher',
         name: 'No Org',
         prompt: 'should fail',
-        extraction_schema: { type: 'object', properties: {} },
         agent_id: agentId,
       })
     ).rejects.toThrow(/organization|entity_id/i);
@@ -251,10 +254,6 @@ describe('watcher CRUD', () => {
       slug: 'cross-org-org-scoped-watcher',
       name: 'Cross Org Protected',
       prompt: 'Track org-wide signals.',
-      extraction_schema: {
-        type: 'object',
-        properties: { signals: { type: 'array', items: { type: 'string' } } },
-      },
       agent_id: agentId,
     })) as { watcher_id: string };
 
@@ -285,10 +284,6 @@ describe('watcher CRUD', () => {
       slug: 'protected-watcher',
       name: 'Protected',
       prompt: 'guarded.',
-      extraction_schema: {
-        type: 'object',
-        properties: { signal: { type: 'string' } },
-      },
       agent_id: agentId,
     })) as { watcher_id: string };
 
@@ -333,7 +328,6 @@ describe('watcher CRUD', () => {
         slug: 'device-pin-allowed',
         name: 'Device Pin Allowed',
         prompt: 'x',
-        extraction_schema: { type: 'object', properties: {} },
         agent_id: agentId,
         device_worker_id: deviceId,
       })) as { watcher_id: string };
@@ -361,7 +355,6 @@ describe('watcher CRUD', () => {
           slug: 'device-pin-foreign',
           name: 'Device Pin Foreign',
           prompt: 'x',
-          extraction_schema: { type: 'object', properties: {} },
           agent_id: agentId,
           device_worker_id: foreignDeviceId,
         })
@@ -376,7 +369,6 @@ describe('watcher CRUD', () => {
           slug: 'device-pin-missing',
           name: 'Device Pin Missing',
           prompt: 'x',
-          extraction_schema: { type: 'object', properties: {} },
           agent_id: agentId,
           device_worker_id: '00000000-0000-0000-0000-000000000000',
         })
@@ -389,7 +381,6 @@ describe('watcher CRUD', () => {
         slug: 'device-pin-update',
         name: 'Device Pin Update',
         prompt: 'x',
-        extraction_schema: { type: 'object', properties: {} },
         agent_id: agentId,
       })) as { watcher_id: string };
 

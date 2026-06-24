@@ -4,7 +4,7 @@ import "../globals.css";
 import { Footer } from "../components/Footer";
 import { Nav } from "../components/Nav";
 
-const mcpUrl = "https://lobu.ai/mcp";
+const mcpUrl = "https://app.lobu.ai/mcp";
 const claudeCodeCommand = `claude mcp add --transport http lobu ${mcpUrl}`;
 const openClawCommand = `lobu memory configure --url ${mcpUrl} --org <org-slug>`;
 
@@ -36,7 +36,7 @@ const clients = [
 
 <BaseLayout
   title="Lobu MCP - Connect agents to your multi-user backend"
-  description="https://lobu.ai/mcp is the canonical MCP endpoint. Sign in once, then use org-scoped memory, connectors, watchers, and tools from any MCP-capable agent."
+  description="https://app.lobu.ai/mcp is the canonical MCP endpoint. Sign in once, then use org-scoped memory, connectors, watchers, and tools from any MCP-capable agent."
 >
   <div
     class="min-h-screen grid-lines"
@@ -111,6 +111,13 @@ const clients = [
             </li>
           ))}
         </ul>
+
+        <p
+          class="text-xs mb-10 leading-relaxed"
+          style={{ color: "var(--color-page-text-muted)" }}
+        >
+          <strong>Self-hosting note:</strong> If you are self-hosting or running locally, replace <code>https://app.lobu.ai/mcp</code> in the commands/URLs above with your custom instance URL (e.g., <code>http://localhost:8787/mcp</code>).
+        </p>
 
         <h2
           class="text-xl font-semibold mb-4"

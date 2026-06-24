@@ -10,11 +10,11 @@
     "sourceRepository": "https://github.com/lobu-ai/lobu",
     "license": "Apache-2.0"
   },
-  "description": "Lobu exposes shared agent memory over MCP. Connect once at https://lobu.ai/mcp, sign in with OAuth, list your organizations, and switch to the workspace an agent should read and write.",
+  "description": "Lobu exposes shared agent memory over MCP. Connect once at https://app.lobu.ai/mcp, sign in with OAuth, list your organizations, and switch to the workspace an agent should read and write.",
   "transports": [
     {
       "type": "streamable-http",
-      "endpointTemplate": "https://lobu.ai/mcp",
+      "endpointTemplate": "https://app.lobu.ai/mcp",
       "note": "Use the canonical hosted endpoint for Lobu-managed workspaces. Self-hosted Lobu gateways can expose their own MCP endpoint through the gateway proxy."
     }
   ],

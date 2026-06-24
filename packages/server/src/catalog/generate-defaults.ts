@@ -69,6 +69,7 @@ export async function generateConnectorsManifest(): Promise<CatalogManifest> {
 				source_uri: pathToFileURL(filePath).toString(),
 				source_path: sourcePath,
 				auth_schema: metadata.auth_schema,
+				webhook: metadata.webhook,
 				feeds_schema: metadata.feeds_schema,
 				actions_schema: metadata.actions_schema,
 				options_schema: metadata.options_schema,

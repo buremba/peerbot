@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Hono } from "hono";
 import { getDb } from "../../db/client.js";
@@ -5,9 +6,12 @@ import {
   createSlackInstallRoutes,
 } from "../routes/public/app-install.js";
 import {
-  createSlackRoutes,
-  slackOAuthCallbackUrl,
-} from "../routes/public/slack.js";
+  createAppWebhookRoutes,
+  createSlackAppWebhookProvider,
+  verifySlackSignature,
+} from "../routes/public/app-webhooks.js";
+import { createPostgresAppInstallationStore } from "../../lobu/stores/app-installation-store.js";
+import { slackOAuthCallbackUrl } from "../routes/public/slack.js";
 import { ensureDbForGatewayTests, resetTestDatabase } from "./helpers/db-setup.js";
 
 /** Seed a Slack connector_definitions row so getOrgAppInstallationMethod resolves. */
@@ -262,36 +266,211 @@ describe("slack OAuth install routes", () => {
   });
 });
 
-describe("slack events route", () => {
-  let handleSlackAppWebhook: ReturnType<typeof mock>;
-  let router: ReturnType<typeof createSlackRoutes>;
-  let app: Hono;
+// The Slack event webhook now flows through the generic app-webhook router
+// (`POST /api/v1/app-webhooks/slack`). The Slack provider performs the edge
+// `v0` signing verify and then delegates the FULL routing precedence (BYO
+// agent_connections → active OAuth install → preview → OAuth fallback) to
+// `ChatInstanceManager.handleSlackAppWebhook` — which is stubbed here so these
+// tests pin the router→provider contract (verify + delegate), not the
+// coordinator's internal precedence (covered in slack-connection-coordinator.test.ts).
+const SLACK_SIGNING_SECRET = "8f742231b10e8888abcd99yyyzzz85a5";
 
-  beforeEach(() => {
-    handleSlackAppWebhook = mock(async (request: Request) => {
-      const body = await request.text();
-      return new Response(`handled:${body}`);
+/** Compute a valid Slack `v0` signature header over (timestamp, body). */
+function slackSignature(body: string, timestamp: string): string {
+  const base = `v0:${timestamp}:${body}`;
+  return `v0=${createHmac("sha256", SLACK_SIGNING_SECRET).update(base).digest("hex")}`;
+}
+
+function nowTs(): string {
+  return String(Math.floor(Date.now() / 1000));
+}
+
+describe("verifySlackSignature", () => {
+  test("accepts a fresh, correctly-signed delivery", () => {
+    const body = JSON.stringify({ type: "event_callback" });
+    const ts = nowTs();
+    const headers = new Headers({
+      "x-slack-request-timestamp": ts,
+      "x-slack-signature": slackSignature(body, ts),
     });
-
-    router = createSlackRoutes({
-      handleSlackAppWebhook,
-    } as any);
-
-    app = new Hono();
-    app.route("", router);
+    expect(
+      verifySlackSignature(
+        new TextEncoder().encode(body),
+        headers,
+        SLACK_SIGNING_SECRET,
+      ),
+    ).toBe(true);
   });
 
-  test("POST /slack/events forwards requests to the chat manager", async () => {
-    const response = await app.request("/slack/events", {
+  test("rejects a stale timestamp (replay outside the 5-minute window)", () => {
+    const body = "{}";
+    const staleTs = String(Math.floor(Date.now() / 1000) - 60 * 6);
+    const headers = new Headers({
+      "x-slack-request-timestamp": staleTs,
+      "x-slack-signature": slackSignature(body, staleTs),
+    });
+    expect(
+      verifySlackSignature(
+        new TextEncoder().encode(body),
+        headers,
+        SLACK_SIGNING_SECRET,
+      ),
+    ).toBe(false);
+  });
+
+  test("rejects a forged signature", () => {
+    const body = "{}";
+    const ts = nowTs();
+    const headers = new Headers({
+      "x-slack-request-timestamp": ts,
+      "x-slack-signature": "v0=deadbeef",
+    });
+    expect(
+      verifySlackSignature(
+        new TextEncoder().encode(body),
+        headers,
+        SLACK_SIGNING_SECRET,
+      ),
+    ).toBe(false);
+  });
+
+  test("rejects a signature computed with the wrong secret", () => {
+    const body = "{}";
+    const ts = nowTs();
+    const wrong = `v0=${createHmac("sha256", "not-the-secret").update(`v0:${ts}:${body}`).digest("hex")}`;
+    const headers = new Headers({
+      "x-slack-request-timestamp": ts,
+      "x-slack-signature": wrong,
+    });
+    expect(
+      verifySlackSignature(
+        new TextEncoder().encode(body),
+        headers,
+        SLACK_SIGNING_SECRET,
+      ),
+    ).toBe(false);
+  });
+
+  test("rejects when headers are missing", () => {
+    expect(
+      verifySlackSignature(
+        new TextEncoder().encode("{}"),
+        new Headers(),
+        SLACK_SIGNING_SECRET,
+      ),
+    ).toBe(false);
+  });
+
+  test("rejects a non-numeric timestamp", () => {
+    const headers = new Headers({
+      "x-slack-request-timestamp": "not-a-number",
+      "x-slack-signature": "v0=abc",
+    });
+    expect(
+      verifySlackSignature(
+        new TextEncoder().encode("{}"),
+        headers,
+        SLACK_SIGNING_SECRET,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("slack app-webhook route", () => {
+  let handleSlackAppWebhook: ReturnType<typeof mock>;
+  let app: Hono;
+
+  beforeAll(async () => {
+    await ensureDbForGatewayTests();
+  });
+
+  beforeEach(async () => {
+    await resetTestDatabase();
+    handleSlackAppWebhook = mock(async (request: Request) => {
+      const body = await request.text();
+      return new Response(`handled:${body}`, { status: 200 });
+    });
+    app = createAppWebhookRoutes({
+      installationStore: createPostgresAppInstallationStore(),
+      secretStore: { get: async () => null },
+      providers: [createSlackAppWebhookProvider({ handleSlackAppWebhook })],
+      resolveAppWebhookSecret: async () => SLACK_SIGNING_SECRET,
+    });
+  });
+
+  function slackDelivery(body: string, ts = nowTs(), signature?: string): Request {
+    return new Request("http://gateway.test/api/v1/app-webhooks/slack", {
       method: "POST",
       headers: {
         "content-type": "application/json",
+        "x-slack-request-timestamp": ts,
+        "x-slack-signature": signature ?? slackSignature(body, ts),
       },
-      body: JSON.stringify({ team_id: "T123", type: "event_callback" }),
+      body,
+    });
+  }
+
+  test("a valid signed delivery delegates to handleSlackAppWebhook with the same bytes", async () => {
+    // Capture the forwarded body inside the stub (the stub consumes the stream,
+    // so it can't be re-read from the call args afterward). Byte-identity proves
+    // the adapter's own downstream v0 verify over the same bytes still passes.
+    let forwardedBody: string | undefined;
+    handleSlackAppWebhook = mock(async (request: Request) => {
+      forwardedBody = await request.text();
+      return new Response(`handled:${forwardedBody}`, { status: 200 });
+    });
+    app = createAppWebhookRoutes({
+      installationStore: createPostgresAppInstallationStore(),
+      secretStore: { get: async () => null },
+      providers: [createSlackAppWebhookProvider({ handleSlackAppWebhook })],
+      resolveAppWebhookSecret: async () => SLACK_SIGNING_SECRET,
     });
 
-    expect(response.status).toBe(200);
-    expect(await response.text()).toContain("handled:");
+    const body = JSON.stringify({ team_id: "T123", type: "event_callback" });
+    const res = await app.fetch(slackDelivery(body));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(`handled:${body}`);
     expect(handleSlackAppWebhook).toHaveBeenCalledTimes(1);
+    expect(forwardedBody).toBe(body);
+  });
+
+  test("a stale-timestamp delivery is rejected 401 BEFORE delegating", async () => {
+    const body = "{}";
+    const staleTs = String(Math.floor(Date.now() / 1000) - 60 * 6);
+    const res = await app.fetch(slackDelivery(body, staleTs));
+    expect(res.status).toBe(401);
+    expect(handleSlackAppWebhook).not.toHaveBeenCalled();
+  });
+
+  test("a forged signature is rejected 401 and never delegates", async () => {
+    const res = await app.fetch(slackDelivery("{}", nowTs(), "v0=forged"));
+    expect(res.status).toBe(401);
+    expect(handleSlackAppWebhook).not.toHaveBeenCalled();
+  });
+
+  test("a coordinator throw surfaces as 500", async () => {
+    handleSlackAppWebhook = mock(async () => {
+      throw new Error("boom");
+    });
+    app = createAppWebhookRoutes({
+      installationStore: createPostgresAppInstallationStore(),
+      secretStore: { get: async () => null },
+      providers: [createSlackAppWebhookProvider({ handleSlackAppWebhook })],
+      resolveAppWebhookSecret: async () => SLACK_SIGNING_SECRET,
+    });
+    const res = await app.fetch(slackDelivery("{}"));
+    expect(res.status).toBe(500);
+  });
+
+  test("fails closed 401 when the signing secret is unconfigured", async () => {
+    app = createAppWebhookRoutes({
+      installationStore: createPostgresAppInstallationStore(),
+      secretStore: { get: async () => null },
+      providers: [createSlackAppWebhookProvider({ handleSlackAppWebhook })],
+      resolveAppWebhookSecret: async () => undefined,
+    });
+    const res = await app.fetch(slackDelivery("{}"));
+    expect(res.status).toBe(401);
+    expect(handleSlackAppWebhook).not.toHaveBeenCalled();
   });
 });

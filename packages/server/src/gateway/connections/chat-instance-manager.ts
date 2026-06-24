@@ -55,6 +55,7 @@ import { SlackConnectionCoordinator } from "./slack-connection-coordinator.js";
 import {
   registerSlackAppHome,
   registerSlackPlatformHandlers,
+  type SlackHomeContext,
 } from "./slack-platform-bridge.js";
 import { createGatewayStateAdapter } from "./state-adapter.js";
 import {
@@ -67,6 +68,106 @@ import { configsEqual } from "./config-equal.js";
 
 
 const logger = createLogger("chat-instance-manager");
+
+/**
+ * Org-scoped counts + slug + recent feed for the Slack App Home dashboard
+ * card. Runs the counts and recent queries in parallel. All counts are
+ * organization-wide because `events` carries no per-agent or per-user
+ * attribution. Returns null on any failure so the home tab degrades to a
+ * slug-less dashboard link rather than failing to render.
+ */
+/** How many recent events the home tab's "Recent activity" list shows. */
+const SLACK_HOME_RECENT_LIMIT = 5;
+
+/** Collapse whitespace and clamp to a bounded length for a one-line Slack row. */
+function clampRecentText(text: string): string {
+  const s = text.replace(/\s+/g, " ").trim();
+  return s.length > 60 ? `${s.slice(0, 59)}…` : s;
+}
+
+/**
+ * Title an event for the recent list: its title, else a payload snippet. Both
+ * paths are clamped so an unbounded title can't blow past Slack's section text
+ * limit and force the home view into its minimal fallback.
+ */
+function recentDisplayTitle(
+  title: string | null,
+  payloadText: string | null,
+): string {
+  const t = title?.trim();
+  if (t) return clampRecentText(t);
+  const snippet = payloadText?.trim();
+  if (snippet) return clampRecentText(snippet);
+  return "(untitled)";
+}
+
+async function resolveSlackHomeContext(
+  organizationId: string,
+): Promise<SlackHomeContext | null> {
+  try {
+    const db = getDb();
+    const [countRows, recentRows] = await Promise.all([
+      db`
+        SELECT
+          (SELECT slug FROM organization WHERE id = ${organizationId}) AS org_slug,
+          (SELECT count(*) FROM entities
+             WHERE organization_id = ${organizationId} AND deleted_at IS NULL)
+            AS entities_tracked,
+          (SELECT count(*) FROM events
+             WHERE organization_id = ${organizationId}
+               AND created_at >= date_trunc('day', now()))
+            AS captured_today
+      `,
+      // Mirrors the web "recent" feed (resolve_path.ts fetchRecentContent):
+      // supersession-masked, internal corrections excluded, newest first.
+      db`
+        SELECT
+          ev.title,
+          ev.payload_text,
+          COALESCE(ev.connector_key, cn.connector_key) AS platform,
+          extract(epoch FROM COALESCE(ev.occurred_at, ev.created_at))::bigint AS ts
+        FROM current_event_records ev
+        LEFT JOIN connections cn ON cn.id = ev.connection_id
+        WHERE ev.organization_id = ${organizationId}
+          AND ev.semantic_type <> 'correction'
+        ORDER BY COALESCE(ev.occurred_at, ev.created_at) DESC
+        LIMIT ${SLACK_HOME_RECENT_LIMIT}
+      `,
+    ]);
+    const row = countRows[0] as
+      | {
+          org_slug: string | null;
+          entities_tracked: number | string;
+          captured_today: number | string;
+        }
+      | undefined;
+    if (!row) return null;
+    const recent = (
+      recentRows as {
+        title: string | null;
+        payload_text: string | null;
+        platform: string | null;
+        ts: number | string | null;
+      }[]
+    ).map((r) => ({
+      title: recentDisplayTitle(r.title, r.payload_text),
+      platform: r.platform,
+      ts: Number(r.ts) || 0,
+    }));
+    return {
+      orgSlug: row.org_slug,
+      entitiesTracked: Number(row.entities_tracked) || 0,
+      capturedToday: Number(row.captured_today) || 0,
+      recent,
+    };
+  } catch (error) {
+    logger.warn(
+      { error, organizationId },
+      "Failed to load Slack home dashboard context",
+    );
+    return null;
+  }
+}
 
 /**
  * Exclusive-transport lease cadence. Each replica ticks every
@@ -1147,6 +1248,7 @@ export class ChatInstanceManager {
         mcpConfigService: this.services.getMcpConfigService(),
         secretStore: this.services.getSecretStore(),
         publicGatewayUrl: this.publicGatewayUrl,
+        resolveHomeContext: resolveSlackHomeContext,
       });
 
       chat.registerSingleton();

@@ -180,3 +180,70 @@ describe('triggerEmbedBackfill query rewrite', () => {
     expect(enqueued.indexOf(ids.unembeddedNew)).toBeLessThan(enqueued.indexOf(ids.unembeddedOld));
   });
 });
+
+describe('triggerEmbedBackfill org-per-tick cap (serialize)', () => {
+  let originalModel: string | undefined;
+  let originalCap: string | undefined;
+
+  // Three orgs each carrying unembedded backlog, so discovery has more
+  // candidates than any cap under test.
+  beforeAll(async () => {
+    originalModel = process.env.EMBEDDINGS_MODEL;
+    originalCap = process.env.EMBED_BACKFILL_MAX_ORGS_PER_TICK;
+    process.env.EMBEDDINGS_MODEL = MODEL;
+
+    await cleanupTestDatabase();
+    await seedSystemEntityTypes();
+
+    for (let i = 0; i < 3; i++) {
+      const org = await createTestOrganization({ name: `Cap Org ${i}` });
+      const entity = await createTestEntity({ name: `Cap Target ${i}`, organization_id: org.id });
+      await createTestConnectorDefinition({
+        key: `cap-connector-${i}`,
+        name: `Cap ${i}`,
+        organization_id: org.id,
+      });
+      const connection = await createTestConnection({
+        organization_id: org.id,
+        connector_key: `cap-connector-${i}`,
+        entity_ids: [entity.id],
+      });
+      await insertEvent({
+        entityIds: [entity.id],
+        organizationId: org.id,
+        semanticType: 'content',
+        originType: 'content',
+        connectorKey: `cap-connector-${i}`,
+        connectionId: connection.id,
+        originId: `cap-unembedded-${i}`,
+        title: `cap unembedded ${i}`,
+        content: `org ${i} content needing an embedding`,
+        occurredAt: new Date(),
+      });
+    }
+  });
+
+  afterAll(() => {
+    if (originalModel === undefined) delete process.env.EMBEDDINGS_MODEL;
+    else process.env.EMBEDDINGS_MODEL = originalModel;
+    if (originalCap === undefined) delete process.env.EMBED_BACKFILL_MAX_ORGS_PER_TICK;
+    else process.env.EMBED_BACKFILL_MAX_ORGS_PER_TICK = originalCap;
+  });
+
+  it('defaults to a single org per tick — concurrent runs never pile onto the single embeddings service', async () => {
+    delete process.env.EMBED_BACKFILL_MAX_ORGS_PER_TICK;
+    const result = await triggerEmbedBackfill({} as Env);
+    expect(result.runsCreated).toBe(1);
+  });
+
+  it('dispatches up to EMBED_BACKFILL_MAX_ORGS_PER_TICK when the embeddings tier is scaled', async () => {
+    const sql = getTestDb();
+    // Clear the prior tick's run so all three orgs are eligible again
+    // (createBackfillRun skips an org with an active run).
+    await sql`DELETE FROM runs WHERE run_type = 'embed_backfill'`;
+
+    process.env.EMBED_BACKFILL_MAX_ORGS_PER_TICK = '2';
+    const result = await triggerEmbedBackfill({} as Env);
+    expect(result.runsCreated).toBe(2);
+  });
+});

@@ -149,6 +149,34 @@ type SlackActionEvent = {
   raw?: unknown;
 };
 
+/** A single "what's recent" row for the home tab, mirroring the web's recent feed. */
+export interface SlackHomeRecentItem {
+  /** Display title (event title, or a payload snippet, or a fallback). */
+  title: string;
+  /** Source label (connector key / platform), or null when unknown. */
+  platform: string | null;
+  /** Unix seconds of occurred_at|created_at — rendered via a Slack date token. */
+  ts: number;
+}
+
+/**
+ * Glanceable, org-scoped context for the home tab's dashboard card. `events`
+ * has no per-agent or per-user attribution column, so every count here is
+ * organization-wide — never present it as "your" items. (Per-user delivery
+ * lives in `notification_targets`, but it's keyed on Lobu user ids and is
+ * empty for unlinked Slack users, so it isn't surfaced here.)
+ */
+export interface SlackHomeContext {
+  /** Org slug for the dashboard deep link, or null if it can't be resolved. */
+  orgSlug: string | null;
+  /** Non-deleted entities tracked in the org. */
+  entitiesTracked: number;
+  /** Events captured today (org-wide, local server day). */
+  capturedToday: number;
+  /** Most-recent org events (mirrors the web "recent" feed), newest first. */
+  recent: SlackHomeRecentItem[];
+}
+
 /** Dependencies the App Home tab needs to render status and run OAuth. */
 interface SlackAppHomeDeps {
   /**
@@ -160,8 +188,18 @@ interface SlackAppHomeDeps {
   adapter?: SlackHomeAdapter;
   mcpConfigService?: McpConfigService;
   secretStore?: WritableSecretStore;
-  /** Public origin of the gateway — used to build the OAuth redirect URI. */
+  /**
+   * Public origin of the gateway — used to build the OAuth redirect URI and,
+   * since the web SPA is served same-origin, the dashboard deep link.
+   */
   publicGatewayUrl?: string;
+  /**
+   * Resolves the org dashboard slug + glanceable counts for the home tab.
+   * Read-only; failures degrade gracefully to a slug-less dashboard link.
+   */
+  resolveHomeContext?: (
+    organizationId: string,
+  ) => Promise<SlackHomeContext | null>;
 }
 
 // Internal plumbing MCPs (e.g. the Lobu memory backend) — not user integrations.
@@ -239,6 +277,93 @@ function integrationSection(
   };
 }
 
+/** Trim a trailing slash so we can append `/segment` cleanly. */
+function trimTrailingSlash(url: string): string {
+  return url.replace(/\/+$/, "");
+}
+
+/** Turn a connector key like `apple.screen_time` into `Apple Screen Time`. */
+function humanizeSource(platform: string | null): string | null {
+  if (!platform) return null;
+  return platform.replace(/[._-]+/g, " ").replace(/\b\w/g, (c) =>
+    c.toUpperCase(),
+  );
+}
+
+/** Escape Slack mrkdwn control chars so titles can't inject formatting. */
+function escapeMrkdwn(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Render the "Recent activity" list as a single section, or `[]` if empty. */
+function recentBlocks(
+  recent: SlackHomeRecentItem[],
+): Record<string, unknown>[] {
+  if (recent.length === 0) return [];
+  const lines = recent.map((item) => {
+    const title = escapeMrkdwn(item.title);
+    const source = humanizeSource(item.platform);
+    // `<!date^…>` renders in the viewer's own timezone; the pipe text is the
+    // fallback Slack shows if it can't resolve the token.
+    const when = `<!date^${item.ts}^{date_short_pretty}|recently>`;
+    return source
+      ? `• *${title}*  ·  ${escapeMrkdwn(source)}  ·  ${when}`
+      : `• *${title}*  ·  ${when}`;
+  });
+  return [
+    {
+      type: "section",
+      text: { type: "mrkdwn", text: `*Recent activity*\n${lines.join("\n")}` },
+    },
+    { type: "divider" },
+  ];
+}
+
+/**
+ * The dashboard card: a "Open dashboard" deep link into the web app plus a
+ * context line of org-wide counts. Returns `[]` when there's nowhere to link
+ * (no public URL), so the home tab still renders without it.
+ */
+function dashboardBlocks(
+  webBaseUrl: string | undefined,
+  context: SlackHomeContext | null,
+): Record<string, unknown>[] {
+  if (!webBaseUrl) return [];
+  const base = trimTrailingSlash(webBaseUrl);
+  const dashboardUrl = context?.orgSlug ? `${base}/${context.orgSlug}` : base;
+
+  const blocks: Record<string, unknown>[] = [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: "*Your dashboard*\nBrowse everything I've captured, review entities, and tune what I watch.",
+      },
+      accessory: {
+        type: "button",
+        text: { type: "plain_text", text: "Open dashboard ↗" },
+        url: dashboardUrl,
+        style: "primary",
+      },
+    },
+  ];
+
+  if (context && (context.entitiesTracked > 0 || context.capturedToday > 0)) {
+    blocks.push({
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `:bar_chart: ${context.entitiesTracked.toLocaleString()} tracked  ·  ${context.capturedToday.toLocaleString()} captured today`,
+        },
+      ],
+    });
+  }
+
+  blocks.push({ type: "divider" });
+  return blocks;
+}
+
 interface HomeViewParams {
   connection: PlatformConnection;
   deps: SlackAppHomeDeps;
@@ -263,11 +388,26 @@ async function buildSlackHomeBlocks(
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*${botName}* :wave:\n\nMention me in any channel, or send me a DM, to start a thread.`,
+        text: `*${botName}* :wave:\n\nI watch your tools, build shared memory, and act on your goals. Mention me in any channel, or send me a DM, to start a thread.`,
       },
     },
     { type: "divider" },
   ];
+
+  if (!isPreview && connection.organizationId) {
+    let context: SlackHomeContext | null = null;
+    try {
+      context =
+        (await deps.resolveHomeContext?.(connection.organizationId)) ?? null;
+    } catch (error) {
+      logger.warn(
+        { error, organizationId: connection.organizationId },
+        "Failed to resolve Slack home dashboard context; rendering link without counts",
+      );
+    }
+    blocks.push(...dashboardBlocks(deps.publicGatewayUrl, context));
+    blocks.push(...recentBlocks(context?.recent ?? []));
+  }
 
   if (!isPreview && connection.agentId && deps.mcpConfigService) {
     try {

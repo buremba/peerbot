@@ -57,6 +57,14 @@ export interface DesiredEntityType {
    * to `entity_types.event_kinds` via manage_entity_schema.
    */
   eventKinds?: Record<string, unknown>;
+  /**
+   * Default view template (render-DSL root node) for this type's detail page.
+   * Present only when declared. Applied via manage_view_templates set/clear and
+   * diffed against the remote current default (which apply-cmd fetches per
+   * relevant type — NOT streamed in the entity-type list). Prune-aware: under
+   * prune an absent template clears the remote one; otherwise it is left alone.
+   */
+  viewTemplate?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
   /**
    * Present only for derived (SQL-view-backed) entity types; absent ⇒ stored

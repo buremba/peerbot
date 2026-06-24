@@ -293,6 +293,22 @@ async function fetchRemoteSnapshot(
   }
 
   const entityTypes = only === "agents" ? [] : await client.listEntityTypes();
+  // View templates are fetched per-type, NOT streamed in the entity-type list
+  // (the UI/bootstrap calls that endpoint). Fetch only for types the config
+  // declares a template for — plus, under prune, every config type so an omitted
+  // template can be detected as a removal. Bounded to config-present types.
+  if (entityTypes.length > 0) {
+    const desiredBySlug = new Map(
+      state.memorySchema.entityTypes.map((e) => [e.slug, e])
+    );
+    for (const remote of entityTypes) {
+      const desired = desiredBySlug.get(remote.slug);
+      if (!desired) continue;
+      if (desired.viewTemplate === undefined && !prune) continue;
+      const tpl = await client.getEntityTypeViewTemplate(remote.slug);
+      if (tpl) remote.viewTemplate = tpl;
+    }
+  }
   const relationshipTypes =
     only === "agents" ? [] : await client.listRelationshipTypes();
   // The relationship-type `list` action omits rules, so the diff would compare
@@ -722,6 +738,21 @@ export async function executePlan(
     if (row.kind !== "entity-type") continue;
     if (!row.desired) continue;
     await ctx.client.upsertEntityType(row.desired);
+    // View template is a separate, version-appending tool. Reconcile it only on
+    // create (when declared) or a flagged change — never every run, so the
+    // version history doesn't churn. Declared ⇒ set; omitted-under-prune ⇒ clear.
+    const tpl = row.desired.viewTemplate;
+    const templateChanged =
+      row.verb === "create"
+        ? tpl !== undefined
+        : (row.changedFields?.includes("viewTemplate") ?? false);
+    if (templateChanged) {
+      if (tpl !== undefined) {
+        await ctx.client.setEntityTypeViewTemplate(row.desired.slug, tpl);
+      } else {
+        await ctx.client.clearEntityTypeViewTemplate(row.desired.slug);
+      }
+    }
     printText(renderProgress(row.verb, "entity-type", row.id));
   }
 

@@ -104,6 +104,14 @@ export interface EntityType {
    * the rest of the schema (mirrors a connector feed's `eventKinds`).
    */
   eventKinds?: Record<string, EntityEventKind>;
+  /**
+   * Default view template (render-DSL root node, optionally with a `data_sources`
+   * key) for this entity type's detail page. Applied declaratively and
+   * git-audited. Under `prune`, omitting it clears any existing template (the
+   * page falls back to the schema-derived default); without prune, omitting it
+   * leaves a UI-authored template untouched.
+   */
+  viewTemplate?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
   /**
    * Present only for DERIVED types — a read-only SQL view (`{ sql }`). Omitted ⇒

@@ -553,6 +553,9 @@ function mapEntityType(entity: EntityType): DesiredEntityType {
     ...(entity.eventKinds && Object.keys(entity.eventKinds).length > 0
       ? { eventKinds: entity.eventKinds }
       : {}),
+    // View template included only when declared so absence never churns the diff
+    // (a no-prune apply leaves any UI-authored template untouched).
+    ...(entity.viewTemplate ? { viewTemplate: entity.viewTemplate } : {}),
     // metadata is carried for config-API compat (defineEntityType consumers may
     // attach it) but is neither diffed nor sent to the server.
     ...(entity.metadata ? { metadata: entity.metadata } : {}),

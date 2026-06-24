@@ -454,7 +454,8 @@ function diffPlatform(
 
 function diffEntityType(
   desired: DesiredEntityType,
-  remote: RemoteEntityType | undefined
+  remote: RemoteEntityType | undefined,
+  prune: boolean
 ): EntityTypeDiffRow {
   return buildDiffRow({
     kind: "entity-type",
@@ -492,6 +493,17 @@ function diffEntityType(
         // no declared kinds, so deepEqual(undefined, undefined) ⇒ no churn.
         name: "eventKinds",
         changed: (d, r) => !deepEqual(d.eventKinds, r.eventKinds),
+      },
+      {
+        // View template — prune-aware. Declared: diff against the remote current
+        // default (apply sets on change). Omitted + prune: a present remote
+        // template is a removal (apply clears it). Omitted + no prune: unmanaged
+        // (never churns), so a UI-authored template is left alone.
+        name: "viewTemplate",
+        changed: (d, r) =>
+          d.viewTemplate !== undefined
+            ? !deepEqual(d.viewTemplate, r.viewTemplate)
+            : prune && r.viewTemplate !== undefined,
       },
     ],
   }) as EntityTypeDiffRow;
@@ -990,7 +1002,9 @@ export function computeDiff(
       desired.memorySchema.entityTypes.map((e) => e.slug)
     );
     for (const entity of desired.memorySchema.entityTypes) {
-      rows.push(diffEntityType(entity, remoteEntityBySlug.get(entity.slug)));
+      rows.push(
+        diffEntityType(entity, remoteEntityBySlug.get(entity.slug), prune)
+      );
     }
     for (const remoteEntity of ownedEntityTypes) {
       if (!desiredEntitySlugs.has(remoteEntity.slug)) {

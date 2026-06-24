@@ -102,4 +102,5 @@ packages/*/~/
 .sdk-e2e-run/
 .managed-e2e-run/
 .cli-smoke-run/
+.mac-cli-auth-e2e/
 examples/lobu-crm/evals/tool-surface/last-run.json

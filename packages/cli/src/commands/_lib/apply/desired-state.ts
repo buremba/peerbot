@@ -50,6 +50,13 @@ export interface DesiredEntityType {
   description?: string;
   required?: string[];
   properties?: Record<string, unknown>;
+  /**
+   * Event kinds (semantic types) for events linked to this type, keyed by
+   * semantic_type — `{ description?, metadataSchema?, jsonTemplate? }`. Present
+   * only when the type declares them; absent ⇒ never churns the diff. Persisted
+   * to `entity_types.event_kinds` via manage_entity_schema.
+   */
+  eventKinds?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
   /**
    * Present only for derived (SQL-view-backed) entity types; absent ⇒ stored

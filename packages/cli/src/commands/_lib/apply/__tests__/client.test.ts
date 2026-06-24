@@ -280,6 +280,55 @@ describe("ApplyClient — prune", () => {
     expect(body.metrics_config).toBeNull();
   });
 
+  test("upsertEntityType POSTs event_kinds for a type that declares kinds, null otherwise", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async (url, init) => {
+        calls.push({ url: String(url), init });
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch
+    );
+
+    const eventKinds = {
+      valuation: {
+        description: "A snapshot",
+        metadataSchema: { type: "object" },
+      },
+    };
+    await client.upsertEntityType({ slug: "deal", eventKinds });
+    expect(JSON.parse(String(calls[0]?.init?.body)).event_kinds).toEqual(
+      eventKinds
+    );
+
+    await client.upsertEntityType({ slug: "person", name: "Person" });
+    expect(JSON.parse(String(calls[1]?.init?.body)).event_kinds).toBeNull();
+  });
+
+  test("listEntityTypes hoists event_kinds; null/empty stays undefined", async () => {
+    const eventKinds = { note: { description: "A note" } };
+    const client = new ApplyClient(
+      { apiBaseUrl: "https://example.test", orgSlug: "acme", token: "tok" },
+      (async () =>
+        new Response(
+          JSON.stringify({
+            entity_types: [
+              { slug: "deal", event_kinds: eventKinds },
+              { slug: "person", event_kinds: null },
+              { slug: "empty", event_kinds: {} },
+            ],
+          }),
+          { status: 200 }
+        )) as typeof fetch
+    );
+
+    const types = await client.listEntityTypes();
+    const byKey = Object.fromEntries(types.map((t) => [t.slug, t]));
+    expect(byKey.deal?.eventKinds).toEqual(eventKinds);
+    expect(byKey.person?.eventKinds).toBeUndefined();
+    expect(byKey.empty?.eventKinds).toBeUndefined();
+  });
+
   test("listEntityTypes hoists metrics_config to metrics; null/empty stays undefined", async () => {
     const metrics = {
       measures: {

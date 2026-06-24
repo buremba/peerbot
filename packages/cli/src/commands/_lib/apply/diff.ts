@@ -487,6 +487,12 @@ function diffEntityType(
         name: "metrics",
         changed: (d, r) => !deepEqual(d.metrics, r.metrics),
       },
+      {
+        // event_kinds round-trips verbatim; both sides omit it for a type with
+        // no declared kinds, so deepEqual(undefined, undefined) ⇒ no churn.
+        name: "eventKinds",
+        changed: (d, r) => !deepEqual(d.eventKinds, r.eventKinds),
+      },
     ],
   }) as EntityTypeDiffRow;
 }

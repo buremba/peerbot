@@ -548,6 +548,11 @@ function mapEntityType(entity: EntityType): DesiredEntityType {
     ...(entity.description ? { description: entity.description } : {}),
     ...(entity.required ? { required: entity.required } : {}),
     ...(entity.properties ? { properties: entity.properties } : {}),
+    // Event kinds included only when declared so a type with none compares equal
+    // on both sides and never churns the diff (mirrors `backing`/`metrics`).
+    ...(entity.eventKinds && Object.keys(entity.eventKinds).length > 0
+      ? { eventKinds: entity.eventKinds }
+      : {}),
     // metadata is carried for config-API compat (defineEntityType consumers may
     // attach it) but is neither diffed nor sent to the server.
     ...(entity.metadata ? { metadata: entity.metadata } : {}),

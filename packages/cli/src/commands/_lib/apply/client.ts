@@ -37,6 +37,8 @@ export interface RemoteEntityType {
   description?: string;
   required?: string[];
   properties?: Record<string, unknown>;
+  /** Event kinds keyed by semantic_type (mirrors {@link DesiredEntityType.eventKinds}); hoisted from the row's `event_kinds`. */
+  eventKinds?: Record<string, unknown>;
   /** Present only for derived types (mirrors {@link DesiredEntityType.backing}). */
   backing?: EntityBacking;
   /** Declared metrics (mirrors {@link DesiredEntityType.metrics}); hoisted from the row's `metrics_config`. */
@@ -197,6 +199,7 @@ function pickArray<T>(body: Record<string, unknown>, ...keys: string[]): T[] {
 function hoistEntityTypeSchema(
   row: RemoteEntityType & {
     metadata_schema?: unknown;
+    event_kinds?: unknown;
     backing_sql?: string | null;
     backing_source?: string | null;
     metrics_config?: unknown;
@@ -240,6 +243,11 @@ function hoistEntityTypeSchema(
     Object.keys(row.metrics_config).length > 0
   ) {
     out.metrics = row.metrics_config as EntityMetrics;
+  }
+  // Hoist event_kinds only when non-empty, so a type with no declared kinds
+  // stays `undefined` on both sides and never churns the diff (mirrors metrics).
+  if (isRecord(row.event_kinds) && Object.keys(row.event_kinds).length > 0) {
+    out.eventKinds = row.event_kinds as Record<string, unknown>;
   }
   return out;
 }
@@ -487,6 +495,7 @@ export class ApplyClient {
   async listEntityTypes(): Promise<RemoteEntityType[]> {
     type RawEntityTypeRow = RemoteEntityType & {
       metadata_schema?: unknown;
+      event_kinds?: unknown;
       backing_sql?: string | null;
     };
     const { body } = await this.request<{
@@ -549,8 +558,16 @@ export class ApplyClient {
     // `properties`/`required`. Fold them into `metadata_schema` so the schema
     // actually persists (otherwise every apply re-reports a `properties`
     // update because the stored schema stays empty).
-    const { slug, name, description, required, properties, backing, metrics } =
-      entity;
+    const {
+      slug,
+      name,
+      description,
+      required,
+      properties,
+      eventKinds,
+      backing,
+      metrics,
+    } = entity;
     const payload: Record<string, unknown> = { slug };
     if (name !== undefined) payload.name = name;
     if (description !== undefined) payload.description = description;
@@ -561,6 +578,9 @@ export class ApplyClient {
         ...(required && required.length > 0 ? { required } : {}),
       };
     }
+    // Event kinds sent on every upsert so it is deterministic: an object declares
+    // the type's kinds; `null` clears them. Stored verbatim in event_kinds.
+    payload.event_kinds = eventKinds ?? null;
     // Backing is sent on every upsert so it is deterministic: `{ sql }` makes
     // the type derived; `null` makes it stored (and reverts a previously-derived
     // type). `connection` (a slug) is forwarded so the server can bind the view

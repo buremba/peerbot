@@ -150,7 +150,7 @@ export function CanvasAurora() {
     const resolutionLocation = gl.getUniformLocation(program, "u_resolution");
 
     let animationFrameId: number;
-    let startTime = Date.now();
+    const startTime = Date.now();
 
     const render = () => {
       // Resize canvas to match display size
@@ -178,10 +178,13 @@ export function CanvasAurora() {
   }, []);
 
   return (
-    <div class="pointer-events-none absolute inset-0 z-[-1] overflow-hidden" aria-hidden="true">
+    <div
+      className="pointer-events-none absolute inset-0 z-0 overflow-hidden"
+      aria-hidden="true"
+    >
       <canvas
         ref={canvasRef}
-        class="absolute left-1/2 top-0 h-[800px] w-[1400px] -translate-x-1/2 opacity-70 mix-blend-screen"
+        className="absolute left-1/2 top-0 h-[800px] w-[1400px] -translate-x-1/2 opacity-70 mix-blend-screen"
         style={{ filter: "blur(40px)" }}
       />
     </div>

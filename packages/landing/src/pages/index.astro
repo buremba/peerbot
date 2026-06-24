@@ -19,11 +19,13 @@ const latestPosts = await getLatestPosts(3);
     }}
   >
     <CanvasAurora client:load />
-    <Nav client:load currentPath={Astro.url.pathname} />
-    <main class="relative z-[1]">
-      <LandingPage client:load latestPosts={latestPosts} />
-    </main>
-    <Footer />
+    <div class="relative z-[1]">
+      <Nav client:load currentPath={Astro.url.pathname} />
+      <main class="relative z-[1]">
+        <LandingPage client:load latestPosts={latestPosts} />
+      </main>
+      <Footer />
+    </div>
   </div>
 </BaseLayout>
 

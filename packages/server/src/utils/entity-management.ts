@@ -370,12 +370,9 @@ export async function updateEntity(
   const hasEmbedding = data.embedding !== undefined;
   const embeddingLiteral = toVectorLiteral(data.embedding);
 
-  // Lock the entity row, merge metadata, write, and emit the projection event in
-  // ONE transaction: concurrent updates to the same entity serialize on the row
-  // lock, so the emitted entity_field event's events.id orders consistently with
-  // this metadata write — which is exactly what the projection's keep-greater
-  // fold relies on. (Also fixes the pre-existing non-transactional read-modify-
-  // write race on entities.metadata.)
+  // Lock the entity row, merge metadata, and write in ONE transaction: concurrent
+  // updates to the same entity serialize on the row lock, fixing the pre-existing
+  // non-transactional read-modify-write race on entities.metadata.
   const result = await sql.begin(async (tx) => {
     const current = await tx`
       SELECT metadata, organization_id FROM entities

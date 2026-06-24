@@ -69,7 +69,8 @@ export interface DerivedWatcherRender {
   /**
    * Dotted path into a window's `extracted_data` where the record array lives
    * (from `keying_config.entity_path`). The renderer maps this array, rendering
-   * each record with `render`. Empty string ⇒ the extracted data IS the array.
+   * each record with `render`. Always non-empty — `deriveWatcherRender` returns
+   * null when `entity_path` is missing (the same contract as the schema helper).
    */
   entityPath: string;
 }

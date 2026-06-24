@@ -95,37 +95,6 @@ const CONNECT_MENU: MegaMenu = {
   ],
 };
 
-const RESOURCES_MENU: MegaMenu = {
-  id: "resources",
-  label: "Resources",
-  width: "min(28rem, calc(100vw - 2rem))",
-  widthRem: 28,
-  columns: [
-    {
-      heading: "LEARN",
-      variant: "rich",
-      links: [
-        {
-          label: "Blog",
-          description: "Engineering notes and updates",
-          href: "/blog",
-          emoji: "✍️",
-        },
-      ],
-    },
-    {
-      heading: "PROJECT",
-      variant: "plain",
-      links: [
-        { label: "GitHub", href: GITHUB_URL },
-        { label: "Changelog", href: "/blog" },
-        { label: "Privacy", href: "/privacy" },
-        { label: "Terms", href: "/terms" },
-      ],
-    },
-  ],
-};
-
 function ChevronDown() {
   return (
     <svg
@@ -381,11 +350,13 @@ export function Nav({ currentPath: _currentPath = "/" }: NavProps) {
               openId={openId}
               setOpenId={setOpenId}
             />
-            <MegaMenuTrigger
-              menu={RESOURCES_MENU}
-              openId={openId}
-              setOpenId={setOpenId}
-            />
+            <a
+              href="/blog"
+              class="inline-flex items-center text-[14px] font-medium px-3 h-9 rounded-full transition-colors hover:bg-[var(--color-page-surface-dim)]"
+              style={{ color: "var(--color-page-text)" }}
+            >
+              Blog
+            </a>
           </div>
           <div class="ml-auto flex items-center gap-3">
             <a

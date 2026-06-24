@@ -431,23 +431,36 @@ async function markGithubFeedDue(params: {
 }
 
 /**
- * The github connection bound to an install (so webhook-landed events share the
- * poll's connection_id and consolidate on origin_id), or null.
+ * The active github feed matching (install, repo, feedKey) and its connection.
+ * The store path is gated on this exactly like the trigger path
+ * ({@link markGithubFeedDue}) — a repo with no such feed configured is a no-op,
+ * not an unconfigured event. The connection id is the feed's own, so the stored
+ * event shares the poll's (connection_id, origin_id) and consolidates.
  */
-async function resolveGithubConnectionId(
-	sql: DbClient,
-	install: { id: number | string; organizationId: string },
-): Promise<number | null> {
-	const [conn] = await sql`
-		SELECT id FROM connections
-		WHERE organization_id = ${install.organizationId}
-		  AND connector_key = 'github'
-		  AND (config->>'installation_ref') = ${String(install.id)}
-		  AND status = 'active'
-		  AND deleted_at IS NULL
+async function resolveGithubFeedTarget(params: {
+	sql: DbClient;
+	install: { id: number | string; organizationId: string };
+	repo: { owner: string; name: string };
+	feedKey: string;
+}): Promise<{ connectionId: number; feedId: number } | null> {
+	const { sql, install, repo, feedKey } = params;
+	const [row] = await sql`
+		SELECT f.id AS feed_id, f.connection_id
+		FROM feeds f
+		JOIN connections c ON c.id = f.connection_id
+		WHERE c.organization_id = ${install.organizationId}
+		  AND c.connector_key = 'github'
+		  AND (c.config->>'installation_ref') = ${String(install.id)}
+		  AND f.feed_key = ${feedKey}
+		  AND f.config->>'repo_owner' = ${repo.owner}
+		  AND f.config->>'repo_name' = ${repo.name}
+		  AND f.status = 'active'
+		  AND f.deleted_at IS NULL
 		LIMIT 1
 	`;
-	return conn ? Number(conn.id) : null;
+	return row
+		? { connectionId: Number(row.connection_id), feedId: Number(row.feed_id) }
+		: null;
 }
 
 /**
@@ -458,8 +471,8 @@ async function resolveGithubConnectionId(
  * connection, so the scheduled `/stargazers` poll supersedes/dedupes it on the
  * SAME (connection_id, origin_id). The actor is resolved to a person here (the
  * poll won't run on the webhook's account). Unstars are transient — not tracked
- * (the user opted out of delete signals). Returns false (no-op) when the install
- * has no github connection or the delivery isn't an actionable new star.
+ * (the user opted out of delete signals). Returns false (no-op) when no active
+ * matching feed is configured for the repo or the delivery isn't a new star.
  */
 async function storeGithubWebhookEvent(params: {
 	sql: DbClient;
@@ -483,8 +496,10 @@ async function storeGithubWebhookEvent(params: {
 
 	const actor = extractGithubActor(payload);
 	if (!actor) return false;
-	const connectionId = await resolveGithubConnectionId(sql, install);
-	if (connectionId === null) return false;
+	// Gate on the configured feed (same as the trigger path) so an unconfigured
+	// repo never lands a stray event; use the feed's own connection + id.
+	const target = await resolveGithubFeedTarget({ sql, install, repo, feedKey });
+	if (!target) return false;
 
 	// origin_id mirrors the connector: key on the immutable user id when present.
 	const key = actor.author_id
@@ -508,8 +523,9 @@ async function storeGithubWebhookEvent(params: {
 		{
 			organizationId: install.organizationId,
 			connectorKey: "github",
-			connectionId,
+			connectionId: target.connectionId,
 			feedKey,
+			feedId: target.feedId,
 			originId,
 			originType: "stargazer",
 			semanticType: "content",

@@ -127,30 +127,36 @@ async function githubEvents(organizationId: string): Promise<any[]> {
 
 /**
  * Seed a `github` connection (the trigger path keys on connector_key='github')
- * bound to `installId` via config.installation_ref, plus one ACTIVE issues feed
- * for {owner,name} with next_run_at NULL. A delivery for that repo flips it to
- * now(), so NULL→NOT NULL proves the webhook marked the org's feed due.
+ * bound to `installId` via config.installation_ref, plus one ACTIVE feed (default
+ * `issues`) for {owner,name} with next_run_at NULL. A trigger flips it to now(),
+ * so NULL→NOT NULL proves the webhook marked the org's feed due. The connection
+ * is reused per (org, repo) so multiple feed types don't collide on the slug.
  */
 async function seedGithubFeed(
 	organizationId: string,
 	installId: number,
 	owner = "acme",
 	name = "api",
+	feedKey = "issues",
 ): Promise<number> {
 	const { getDb } = await import("../../db/client.js");
 	const sql = getDb();
-	const [conn] = await sql`
-    INSERT INTO connections (organization_id, connector_key, slug, status, config)
-    VALUES (
-      ${organizationId}, ${"github"}, ${`gh-feed-${organizationId}-${owner}-${name}`},
-      ${"active"}, ${sql.json({ installation_ref: installId })}
-    )
-    RETURNING id
-  `;
+	const slug = `gh-feed-${organizationId}-${owner}-${name}`;
+	let [conn] = await sql`SELECT id FROM connections WHERE organization_id = ${organizationId} AND slug = ${slug}`;
+	if (!conn) {
+		[conn] = await sql`
+      INSERT INTO connections (organization_id, connector_key, slug, status, config)
+      VALUES (
+        ${organizationId}, ${"github"}, ${slug},
+        ${"active"}, ${sql.json({ installation_ref: installId })}
+      )
+      RETURNING id
+    `;
+	}
 	const [feed] = await sql`
     INSERT INTO feeds (organization_id, connection_id, feed_key, status, config, next_run_at)
     VALUES (
-      ${organizationId}, ${conn.id}, ${"issues"}, ${"active"},
+      ${organizationId}, ${conn.id}, ${feedKey}, ${"active"},
       ${sql.json({ repo_owner: owner, repo_name: name })}, NULL
     )
     RETURNING id
@@ -308,7 +314,9 @@ describe("app-installation e2e: star delivery stored directly (event-complete)",
 	test("a star lands a stargazer event under the install's github connection, no poll", async () => {
 		await seedAgentRow(AGENT_A, { organizationId: ORG_A });
 		const installId = await seedActiveInstall(ORG_A);
-		// seeds the github connection (+ an issues feed) the store path resolves.
+		// The store path is gated on a configured stargazers feed (like the trigger
+		// path). Also seed an issues feed to prove the star store doesn't touch it.
+		const stargazersFeed = await seedGithubFeed(ORG_A, installId, "acme", "api", "stargazers");
 		const issuesFeed = await seedGithubFeed(ORG_A, installId);
 		const router = buildRouter();
 
@@ -332,6 +340,9 @@ describe("app-installation e2e: star delivery stored directly (event-complete)",
 		expect(events.length).toBe(1);
 		expect(events[0].origin_type).toBe("stargazer");
 		expect(events[0].origin_id).toBe("stargazer_acme_api_github_user_id_583231");
+		// Store, not trigger: neither the stargazers feed nor the issues feed is
+		// marked due, and no raw app-install event is landed.
+		expect(await feedNextRunAt(stargazersFeed)).toBeNull();
 		expect(await feedNextRunAt(issuesFeed)).toBeNull();
 		expect(await allInstallEventCount()).toBe(0);
 	});

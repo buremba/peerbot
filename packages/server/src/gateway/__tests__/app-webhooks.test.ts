@@ -474,6 +474,29 @@ describe("app-webhook router (GitHub)", () => {
 		expect(await feedNextRunAt(stargazersFeed)).toBeNull();
 	});
 
+	test("a star for a repo with no stargazers feed configured is a no-op (nothing stored)", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		await seedPersonResolutionPrereqs(ORG);
+		// Routing comes from the seeded connector def (star → store), but there is
+		// NO stargazers feed instance for acme/api — so the store path must no-op,
+		// mirroring the trigger path's "unconfigured feed → nothing happens".
+		await seedActiveInstall();
+		const app = buildApp();
+
+		const raw = JSON.stringify({
+			action: "created",
+			starred_at: "2026-06-20T10:00:00Z",
+			installation: { id: Number(INSTALLATION_ID) },
+			sender: { login: "Octocat", id: 583231 },
+			repository: { owner: { login: "acme" }, name: "api" },
+		});
+		const res = await app.fetch(ghDelivery(raw, { deliveryId: "gh-star-nofeed", event: "star" }));
+		expect(res.status).toBe(200);
+		expect((await res.json()).triggered).toBe(false);
+		expect(await eventRows("github")).toHaveLength(0);
+		expect(await personRows(ORG)).toHaveLength(0);
+	});
+
 	test("with storeWebhookEvents off, a star falls back to a poll trigger (nothing stored)", async () => {
 		await seedAgentRow(AGENT, { organizationId: ORG });
 		await seedPersonResolutionPrereqs(ORG);

@@ -5,14 +5,11 @@
  * rumors) as `founder_activity` events. The opportunity-matcher watcher reads
  * these events to suggest cross-portfolio introductions.
  */
-import {
-  Type,
-  type Static,
-  Value,
-  type ReactionContext,
-} from "@lobu/connector-sdk";
+import { Type, type Static } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
+import type { ReactionContext } from "@lobu/connector-sdk";
 
-const input = Type.Object({
+export const input = Type.Object({
   signals: Type.Optional(
     Type.Array(
       Type.Object({

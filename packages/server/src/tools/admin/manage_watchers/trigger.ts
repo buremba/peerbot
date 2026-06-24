@@ -8,7 +8,10 @@ import type { Env } from '../../../index';
 import { isLobuGatewayRunning } from '../../../lobu/gateway';
 import logger from '../../../utils/logger';
 import { getWatcherRunInfo, queueAndDispatchWatcherRun } from '../../../watchers/automation';
-import { compileReactionScript } from '../../../watchers/reaction-executor';
+import {
+  compileReactionScript,
+  extractReactionInputSchema,
+} from '../../../watchers/reaction-executor';
 import { requireExists } from '../helpers/db-helpers';
 import type { ManageWatchersArgs } from '../manage_watchers';
 
@@ -83,7 +86,8 @@ export async function handleSetReactionScript(
   if (!script || script.trim() === '') {
     await sql`
       UPDATE watchers
-      SET reaction_script = NULL, reaction_script_compiled = NULL
+      SET reaction_script = NULL, reaction_script_compiled = NULL,
+          reaction_input_schema = NULL
       WHERE watcher_group_id = ${groupId}
     `;
     return {
@@ -95,10 +99,15 @@ export async function handleSetReactionScript(
   }
 
   const compiledCode = await compileReactionScript(script);
+  // Derive the reaction's extraction contract from its exported `input` schema,
+  // so the worker is told the exact shape the reaction will Value.Parse. NULL
+  // when the reaction declares no `input` (free-form `{ summary }` fallback).
+  const reactionInputSchema = await extractReactionInputSchema(script);
 
   await sql`
     UPDATE watchers
-    SET reaction_script = ${script}, reaction_script_compiled = ${compiledCode}
+    SET reaction_script = ${script}, reaction_script_compiled = ${compiledCode},
+        reaction_input_schema = ${reactionInputSchema ? sql.json(reactionInputSchema) : null}
     WHERE watcher_group_id = ${groupId}
   `;
 

@@ -24,13 +24,9 @@
  * (the operation's poll is cancelled, see waitForDeviceActionRun's abortSignal)
  * and the agent's summary still stands.
  */
-import {
-  type ReactionClient,
-  type ReactionContext,
-  type Static,
-  Type,
-  Value,
-} from "@lobu/connector-sdk";
+import { Type, type Static } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
+import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
 /**
  * The reaction owns its input contract: it declares the shape it consumes and
@@ -39,7 +35,7 @@ import {
  * no schema. `Value.Parse` throws on a mismatch, failing the run loudly rather
  * than acting on malformed data.
  */
-const input = Type.Object({
+export const input = Type.Object({
   outcome: Type.Union([
     Type.Literal("placed"),
     Type.Literal("manual"),

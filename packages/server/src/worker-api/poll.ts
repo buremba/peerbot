@@ -604,7 +604,8 @@ export async function pollWorkerJob(c: Context<{ Bindings: Env }>) {
     const watcherExtractionSchema = await deriveWatcherExtractionSchema(
       getDb(),
       row.organization_id,
-      parseClaimJson(row.watcher_keying_config) as KeyingConfig | null
+      parseClaimJson(row.watcher_keying_config) as KeyingConfig | null,
+      row.watcher_id
     );
     return c.json({
       run_id: row.run_id,

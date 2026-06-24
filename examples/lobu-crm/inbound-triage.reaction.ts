@@ -8,15 +8,11 @@
  * actions to the team via `client.notifications.send` (fans out to the #leads
  * Slack connection + the in-app inbox).
  */
-import {
-  Type,
-  type Static,
-  Value,
-  type ReactionClient,
-  type ReactionContext,
-} from "@lobu/connector-sdk";
+import { Type, type Static } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
+import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
-const input = Type.Object({
+export const input = Type.Object({
   new_leads: Type.Optional(
     Type.Array(
       Type.Object({

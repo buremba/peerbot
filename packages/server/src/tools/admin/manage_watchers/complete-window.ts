@@ -273,7 +273,8 @@ export async function handleCompleteWindow(
   const extractionSchema: Record<string, any> | null = await deriveWatcherExtractionSchema(
     getDb(),
     watcherOrgId,
-    keyingConfig
+    keyingConfig,
+    watcherId
   );
   if (extractionSchema) {
     const validate = ajv.compile(extractionSchema);

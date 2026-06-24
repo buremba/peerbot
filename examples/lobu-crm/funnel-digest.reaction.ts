@@ -12,15 +12,11 @@
  *      the org's active bot connections (the #leads Slack connection) and the
  *      in-app inbox. `watcher_source` attributes it to this window.
  */
-import {
-  Type,
-  type Static,
-  Value,
-  type ReactionClient,
-  type ReactionContext,
-} from "@lobu/connector-sdk";
+import { Type, type Static } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
+import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
-const input = Type.Object({
+export const input = Type.Object({
   top_action: Type.Optional(Type.String()),
   stage_counts: Type.Optional(Type.Record(Type.String(), Type.Number())),
   conversations_this_week: Type.Optional(Type.Number()),

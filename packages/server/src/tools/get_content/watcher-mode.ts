@@ -216,7 +216,8 @@ export async function handleWatcherMode(
   const templateExtractionSchema = await deriveWatcherExtractionSchema(
     sql,
     watcher.organization_id as string,
-    parseJson(watcher.template_keying_config) as KeyingConfig | null
+    parseJson(watcher.template_keying_config) as KeyingConfig | null,
+    watcherId
   );
 
   // ============================================

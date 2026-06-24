@@ -6,14 +6,11 @@
  * 90+ days are flagged so a curator can decide whether to refresh, retire, or
  * leave them.
  */
-import {
-  Type,
-  type Static,
-  Value,
-  type ReactionContext,
-} from "@lobu/connector-sdk";
+import { Type, type Static } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
+import type { ReactionContext } from "@lobu/connector-sdk";
 
-const input = Type.Object({
+export const input = Type.Object({
   stale_entries: Type.Optional(
     Type.Array(
       Type.Object({

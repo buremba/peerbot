@@ -140,6 +140,7 @@ export const QUERYABLE_SCHEMA = {
         'organization_id',
         'reaction_script',
         'reaction_script_compiled',
+        'reaction_input_schema',
         'connection_id',
         'source_watcher_id',
         'watcher_group_id',

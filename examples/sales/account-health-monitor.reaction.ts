@@ -5,20 +5,16 @@
  * persist a `health_change` event so the renewal-risk view + weekly digest
  * have a stable record without re-extracting from the CRM stream.
  */
-import {
-  Type,
-  type Static,
-  Value,
-  type ReactionClient,
-  type ReactionContext,
-} from "@lobu/connector-sdk";
+import { Type, type Static } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
+import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
 const RISK = Type.Union([
   Type.Literal("low"),
   Type.Literal("medium"),
   Type.Literal("high"),
 ]);
-const input = Type.Object({
+export const input = Type.Object({
   account_changes: Type.Optional(
     Type.Array(
       Type.Object({

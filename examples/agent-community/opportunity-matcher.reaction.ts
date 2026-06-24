@@ -6,14 +6,11 @@
  * downstream consumers (intro-drafting agents, weekly digest, audit log) can
  * iterate over a single source of truth instead of re-running the matcher.
  */
-import {
-  Type,
-  type Static,
-  Value,
-  type ReactionContext,
-} from "@lobu/connector-sdk";
+import { Type, type Static } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
+import type { ReactionContext } from "@lobu/connector-sdk";
 
-const input = Type.Object({
+export const input = Type.Object({
   signals: Type.Optional(
     Type.Array(
       Type.Object({

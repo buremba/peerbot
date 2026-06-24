@@ -4,15 +4,11 @@
  * Persists variance events when unreconciled transactions or new anomalies
  * are detected during the daily reconciliation pass.
  */
-import {
-  Type,
-  type Static,
-  Value,
-  type ReactionClient,
-  type ReactionContext,
-} from "@lobu/connector-sdk";
+import { Type, type Static } from "@sinclair/typebox";
+import { Value } from "@sinclair/typebox/value";
+import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
-const input = Type.Object({
+export const input = Type.Object({
   unreconciled_count: Type.Number(),
   new_variances: Type.Array(Type.String()),
   approaching_deadlines: Type.Array(Type.String()),

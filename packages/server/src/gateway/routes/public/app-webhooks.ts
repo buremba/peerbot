@@ -297,7 +297,7 @@ export function createGithubAppWebhookProvider(options: {
 }
 
 /** Extract the {owner, name} of the repo a GitHub delivery is about, or null. */
-export function extractGithubRepo(
+function extractGithubRepo(
 	body: unknown,
 ): { owner: string; name: string } | null {
 	if (body === null || typeof body !== "object") return null;
@@ -323,7 +323,7 @@ export function extractGithubRepo(
  * re-stamp `next_run_at`. Returns whether any feed matched (telemetry only — an
  * unconfigured repo is a no-op, not an error).
  */
-export async function markGithubFeedsDue(params: {
+async function markGithubFeedsDue(params: {
 	sql: DbClient;
 	install: { id: number | string; organizationId: string };
 	repo: { owner: string; name: string };

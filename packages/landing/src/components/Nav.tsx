@@ -29,11 +29,11 @@ type MegaMenu = {
 const CONNECT_MENU: MegaMenu = {
   id: "connect",
   label: "Connect",
-  width: "min(28rem, calc(100vw - 2rem))",
-  widthRem: 28,
+  width: "min(40rem, calc(100vw - 2rem))",
+  widthRem: 40,
   columns: [
     {
-      heading: "MEMORY FOR",
+      heading: "AGENTS & MEMORY",
       variant: "rich",
       links: [
         {
@@ -59,6 +59,36 @@ const CONNECT_MENU: MegaMenu = {
           description: "Shared entity memory across OpenClaw agents",
           href: "/connect-from/openclaw/",
           emoji: "🦞",
+        },
+      ],
+    },
+    {
+      heading: "CHAT & API",
+      variant: "rich",
+      links: [
+        {
+          label: "Slack",
+          description: "Run goal-driven agents in your Slack channels",
+          href: "/platforms/slack/",
+          emoji: "💬",
+        },
+        {
+          label: "Telegram",
+          description: "Interactive bots with inline menus & polling",
+          href: "/platforms/telegram/",
+          emoji: "🤖",
+        },
+        {
+          label: "REST API",
+          description: "Query org memory & trigger actions from any app",
+          href: "/platforms/rest-api/",
+          emoji: "🔌",
+        },
+        {
+          label: "See all platforms",
+          description: "Discord, WhatsApp, Teams, Google Chat...",
+          href: "/getting-started/",
+          emoji: "🔗",
         },
       ],
     },

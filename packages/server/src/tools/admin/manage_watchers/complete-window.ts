@@ -291,7 +291,7 @@ export async function handleCompleteWindow(
       });
 
       throw new Error(
-        `extracted_data does not match the watcher\'s extraction contract (derived from its entity type).\n\n` +
+        `extracted_data does not match the watcher\'s extraction contract (derived from its entity type or reaction \`input\` schema).\n\n` +
           `Validation errors:\n${errorMessages.join('\n')}\n\n` +
           'Expected schema requires:\n' +
           `  - Required fields: ${JSON.stringify(extractionSchema.required || [])}\n` +

@@ -9,7 +9,11 @@ export { Type } from '@sinclair/typebox';
 export type { KyInstance, Options } from 'ky';
 export { default as ky, HTTPError } from 'ky';
 // Connector runtime & types (primary API)
-export { BridgeOnlyConnector, ConnectorRuntime } from './connector-runtime.js';
+export {
+  BridgeOnlyConnector,
+  ConnectorRuntime,
+  IntegrationConnector,
+} from './connector-runtime.js';
 export { defineConnector } from './define-connector.js';
 export { validateEntityMetrics } from './metrics.js';
 // Entity-bound metric layer contract (shared by CLI authoring + server

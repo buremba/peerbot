@@ -23,6 +23,17 @@ export interface ConnectorDefinition {
   description?: string;
   /** Semantic version */
   version: string;
+  /**
+   * What this connector IS, which decides whether it carries syncable data.
+   * - `'data'` (default, absent) — the dominant case: a source the platform
+   *   POLLS via `sync()` and/or receives data webhooks for. Declares `feeds`.
+   *   GitHub/Jira/Linear are data even though they're App installs.
+   * - `'integration'` — a pure app/auth declaration (e.g. Slack): it carries an
+   *   `authSchema` (`app_installation`) + `webhook` but NO `feeds` and NO
+   *   `sync()`. Inbound traffic is forwarded to a chat adapter, never polled.
+   *   Extend {@link IntegrationConnector} (sync is invalid for this kind).
+   */
+  kind?: 'data' | 'integration';
   /** Auth configuration */
   authSchema?: ConnectorAuthSchema;
   /** Available feed definitions (keyed by feed_key) */

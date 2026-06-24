@@ -13,6 +13,8 @@ export interface ConnectorMetadata {
   name: string;
   description?: string;
   version: string;
+  /** `'data'` (default/absent) vs `'integration'` (pure app/auth, no feeds/sync). */
+  kind?: 'data' | 'integration' | null;
   authSchema: Record<string, unknown> | null;
   /** Declarative inbound-webhook schema (signing scheme + routing), if any. */
   webhook: Record<string, unknown> | null;
@@ -80,6 +82,7 @@ async function main() {
       name: def.name || null,
       description: def.description || null,
       version: def.version || null,
+      kind: def.kind || null,
       authSchema: def.authSchema || null,
       webhook: def.webhook || null,
       feeds: def.feeds || null,

@@ -9,27 +9,24 @@
  * declared env-var NAMES here (`SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`,
  * `SLACK_SIGNING_SECRET`) instead of hardcoding `process.env.SLACK_*` literals.
  *
- * Deliberately INERT as a catalog entry (see the bundled-connector side-effect
- * audit):
+ * Declared as `kind: 'integration'` (see {@link IntegrationConnector}): a pure
+ * app/auth declaration, deliberately INERT as a catalog entry (see the
+ * bundled-connector side-effect audit):
  *  - NO `feeds` → no auto-provisioned data feeds, nothing for device-reconcile
  *    to wire, and the install callback writes only the `app_installations` row.
  *  - NO `runtime` / `requiredCapability` → `getBundledDeviceConnectors()` filters
  *    it out, so it is never auto-installed onto a device fleet.
- *  - `sync()` throws → it must never be scheduled as a poll (it has no feeds, so
- *    it never will be; the throw is a hard backstop).
+ *  - NO `sync()` → an integration connector has no syncable feeds; the
+ *    `IntegrationConnector` base throws if one is ever scheduled (a wiring bug).
  *
- * The webhook `delivery: 'app_installation'` + `routingKeyPath: 'team_id'` tells
- * the app-webhook router this connector's deliveries route by Slack `team_id`
- * through `/api/v1/app-webhooks/slack` (the Slack provider plugin owns the
- * `v0:{ts}:{rawBody}` verify, which the HMAC-only webhook schema can't express).
+ * The webhook `delivery: 'app_installation'` + `routingKeyPaths` tells the
+ * app-webhook router this connector's deliveries route by Slack `team_id` through
+ * `/api/v1/app-webhooks/slack`. Verify is FULLY DECLARATIVE — the generic engine
+ * computes Slack's `v0:{ts}:{rawBody}` HMAC straight from this schema; there is no
+ * Slack-specific verify plugin.
  */
 
-import {
-  type ConnectorDefinition,
-  ConnectorRuntime,
-  type SyncContext,
-  type SyncResult,
-} from '@lobu/connector-sdk';
+import { type ConnectorDefinition, IntegrationConnector } from '@lobu/connector-sdk';
 
 /**
  * Bot scopes the hosted Lobu Slack app requests (mentions, threads, slash
@@ -70,9 +67,10 @@ const SLACK_BOT_EVENTS = [
   'team_join',
 ];
 
-export default class SlackConnector extends ConnectorRuntime {
+export default class SlackConnector extends IntegrationConnector {
   readonly definition: ConnectorDefinition = {
     key: 'slack',
+    kind: 'integration',
     name: 'Slack',
     description:
       'Connect a Slack workspace to Lobu. Mention the bot, DM it, or run /lobu in any channel to drive a sandboxed agent.',
@@ -118,12 +116,4 @@ export default class SlackConnector extends ConnectorRuntime {
       ],
     },
   };
-
-  // Slack is a chat platform — it has no data feeds and is never polled. A
-  // scheduled sync would be a wiring bug; throw rather than silently no-op.
-  async sync(_ctx: SyncContext): Promise<SyncResult> {
-    throw new Error(
-      'The Slack connector is a chat platform and has no syncable feeds; inbound traffic flows through /api/v1/app-webhooks/slack.',
-    );
-  }
 }

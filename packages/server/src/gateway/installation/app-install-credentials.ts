@@ -143,9 +143,16 @@ export async function primeAppInstallationMethods(
 export interface BundledIntegrationConnector {
 	connectorKey: string;
 	provider: string;
+	/**
+	 * Connector classification: `'integration'` (pure app/auth, no feeds — Slack)
+	 * vs `'data'` (default — GitHub/Jira/Linear poll + receive data webhooks). The
+	 * delivery DISPATCH keys off the webhook's `deliveryKind`, not this — `kind`
+	 * records what the connector IS (captured from its declaration).
+	 */
+	kind: "data" | "integration";
 	/** The app-installation auth method, when the connector declares one (github/slack). */
 	method: ConnectorAuthAppInstallation | null;
-	/** The declared webhook schema (signing scheme + routing). */
+	/** The declared webhook schema (signing scheme + routing + deliveryKind). */
 	webhookSchema: ConnectorWebhookSchema;
 	/**
 	 * Resolved Lobu App id (`provider_app_id`), read from the connector's declared
@@ -201,9 +208,11 @@ export async function primeBundledIntegrationConnectors(): Promise<
 			bundledWebhookCache.set(def.key, webhookSchema);
 			bundledMethodCache.set(`${def.key}::${provider}`, method);
 			bundledMethodCache.set(`${def.key}::`, method);
+			const kind = metadata.kind === "integration" ? "integration" : "data";
 			result.push({
 				connectorKey: def.key,
 				provider,
+				kind,
 				method,
 				webhookSchema,
 				...(appId ? { appId } : {}),

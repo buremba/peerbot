@@ -131,11 +131,6 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
     oauth_tokens: new Set(['token_hash']),
     feeds: new Set(['checkpoint']),
     user: new Set(['email', 'phoneNumber', 'phoneNumberVerified']),
-    // Two-phase removal in progress: watcher inline json_template and
-    // extraction_schema were dropped from QUERYABLE_SCHEMA (rendering is the
-    // type's job; the contract is derived/reaction-owned), but the DROP COLUMN
-    // is deferred to a contract release. Omit until the column is gone.
-    watcher_versions: new Set(['json_template', 'extraction_schema']),
   };
 
   it('should have every DB column listed in the schema (or intentionally omitted)', async (ctx) => {

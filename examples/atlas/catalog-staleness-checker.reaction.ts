@@ -6,19 +6,29 @@
  * 90+ days are flagged so a curator can decide whether to refresh, retire, or
  * leave them.
  */
-import type { ReactionContext } from "@lobu/connector-sdk";
+import {
+  Type,
+  type Static,
+  Value,
+  type ReactionContext,
+} from "@lobu/connector-sdk";
 
-interface StaleData {
-  stale_entries?: Array<{
-    entity_type: string;
-    slug: string;
-    last_updated: string;
-    suggested_action: string;
-  }>;
-}
+const input = Type.Object({
+  stale_entries: Type.Optional(
+    Type.Array(
+      Type.Object({
+        entity_type: Type.String(),
+        slug: Type.String(),
+        last_updated: Type.String(),
+        suggested_action: Type.String(),
+      })
+    )
+  ),
+});
+type StaleData = Static<typeof input>;
 
 export default async (ctx: ReactionContext, client: any): Promise<void> => {
-  const data = ctx.extracted_data as StaleData;
+  const data: StaleData = Value.Parse(input, ctx.extracted_data);
   const stale = data.stale_entries ?? [];
   if (stale.length === 0) return;
 

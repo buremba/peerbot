@@ -5,16 +5,32 @@
  * persist a `health_change` event so the renewal-risk view + weekly digest
  * have a stable record without re-extracting from the CRM stream.
  */
-import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
+import {
+  Type,
+  type Static,
+  Value,
+  type ReactionClient,
+  type ReactionContext,
+} from "@lobu/connector-sdk";
 
-interface HealthData {
-  account_changes?: Array<{
-    account: string;
-    previous_risk: "low" | "medium" | "high";
-    current_risk: "low" | "medium" | "high";
-    signals: string[];
-  }>;
-}
+const RISK = Type.Union([
+  Type.Literal("low"),
+  Type.Literal("medium"),
+  Type.Literal("high"),
+]);
+const input = Type.Object({
+  account_changes: Type.Optional(
+    Type.Array(
+      Type.Object({
+        account: Type.String(),
+        previous_risk: RISK,
+        current_risk: RISK,
+        signals: Type.Array(Type.String()),
+      })
+    )
+  ),
+});
+type HealthData = Static<typeof input>;
 
 const RISK_ORDER = { low: 0, medium: 1, high: 2 } as const;
 
@@ -22,7 +38,7 @@ export default async (
   ctx: ReactionContext,
   client: ReactionClient
 ): Promise<void> => {
-  const data = ctx.extracted_data as HealthData;
+  const data: HealthData = Value.Parse(input, ctx.extracted_data);
   const changes = data.account_changes ?? [];
   const escalations = changes.filter(
     (c) => RISK_ORDER[c.current_risk] > RISK_ORDER[c.previous_risk]

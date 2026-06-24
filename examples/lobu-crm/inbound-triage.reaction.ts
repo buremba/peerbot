@@ -8,24 +8,35 @@
  * actions to the team via `client.notifications.send` (fans out to the #leads
  * Slack connection + the in-app inbox).
  */
-import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
+import {
+  Type,
+  type Static,
+  Value,
+  type ReactionClient,
+  type ReactionContext,
+} from "@lobu/connector-sdk";
 
-interface TriageData {
-  new_leads?: Array<{
-    name: string;
-    source: string;
-    stage: string;
-    why?: string;
-  }>;
-  recommended_actions?: string[];
-  notable?: boolean;
-}
+const input = Type.Object({
+  new_leads: Type.Optional(
+    Type.Array(
+      Type.Object({
+        name: Type.String(),
+        source: Type.String(),
+        stage: Type.String(),
+        why: Type.Optional(Type.String()),
+      })
+    )
+  ),
+  recommended_actions: Type.Optional(Type.Array(Type.String())),
+  notable: Type.Optional(Type.Boolean()),
+});
+type TriageData = Static<typeof input>;
 
 export default async (
   ctx: ReactionContext,
   client: ReactionClient
 ): Promise<void> => {
-  const data = ctx.extracted_data as TriageData;
+  const data: TriageData = Value.Parse(input, ctx.extracted_data);
   if (!data.notable) return;
 
   const actions = data.recommended_actions ?? [];

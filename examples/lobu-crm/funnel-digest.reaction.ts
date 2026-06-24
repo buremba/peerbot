@@ -12,20 +12,27 @@
  *      the org's active bot connections (the #leads Slack connection) and the
  *      in-app inbox. `watcher_source` attributes it to this window.
  */
-import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
+import {
+  Type,
+  type Static,
+  Value,
+  type ReactionClient,
+  type ReactionContext,
+} from "@lobu/connector-sdk";
 
-interface DigestData {
-  top_action?: string;
-  stage_counts?: Record<string, number>;
-  conversations_this_week?: number;
-  gap?: string;
-}
+const input = Type.Object({
+  top_action: Type.Optional(Type.String()),
+  stage_counts: Type.Optional(Type.Record(Type.String(), Type.Number())),
+  conversations_this_week: Type.Optional(Type.Number()),
+  gap: Type.Optional(Type.String()),
+});
+type DigestData = Static<typeof input>;
 
 export default async (
   ctx: ReactionContext,
   client: ReactionClient
 ): Promise<void> => {
-  const data = ctx.extracted_data as DigestData;
+  const data: DigestData = Value.Parse(input, ctx.extracted_data);
   const stageSummary = Object.entries(data.stage_counts ?? {})
     .map(([stage, n]) => `${stage}: ${n}`)
     .join(", ");

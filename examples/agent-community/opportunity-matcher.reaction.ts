@@ -6,19 +6,29 @@
  * downstream consumers (intro-drafting agents, weekly digest, audit log) can
  * iterate over a single source of truth instead of re-running the matcher.
  */
-import type { ReactionContext } from "@lobu/connector-sdk";
+import {
+  Type,
+  type Static,
+  Value,
+  type ReactionContext,
+} from "@lobu/connector-sdk";
 
-interface MatchData {
-  signals?: Array<{
-    member_a: string;
-    member_b: string;
-    reason: string;
-    confidence?: number;
-  }>;
-}
+const input = Type.Object({
+  signals: Type.Optional(
+    Type.Array(
+      Type.Object({
+        member_a: Type.String(),
+        member_b: Type.String(),
+        reason: Type.String(),
+        confidence: Type.Optional(Type.Number()),
+      })
+    )
+  ),
+});
+type MatchData = Static<typeof input>;
 
 export default async (ctx: ReactionContext, client: any): Promise<void> => {
-  const data = ctx.extracted_data as MatchData;
+  const data: MatchData = Value.Parse(input, ctx.extracted_data);
   const signals = data.signals ?? [];
   if (signals.length === 0) return;
 

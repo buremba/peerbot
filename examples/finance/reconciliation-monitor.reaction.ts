@@ -4,20 +4,27 @@
  * Persists variance events when unreconciled transactions or new anomalies
  * are detected during the daily reconciliation pass.
  */
-import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
+import {
+  Type,
+  type Static,
+  Value,
+  type ReactionClient,
+  type ReactionContext,
+} from "@lobu/connector-sdk";
 
-interface ReconciliationData {
-  unreconciled_count: number;
-  new_variances: string[];
-  approaching_deadlines: string[];
-  payment_risks?: string[];
-}
+const input = Type.Object({
+  unreconciled_count: Type.Number(),
+  new_variances: Type.Array(Type.String()),
+  approaching_deadlines: Type.Array(Type.String()),
+  payment_risks: Type.Optional(Type.Array(Type.String())),
+});
+type ReconciliationData = Static<typeof input>;
 
 export default async (
   ctx: ReactionContext,
   client: ReactionClient
 ): Promise<void> => {
-  const data = ctx.extracted_data as unknown as ReconciliationData;
+  const data: ReconciliationData = Value.Parse(input, ctx.extracted_data);
 
   const hasIssues =
     data.unreconciled_count > 0 ||

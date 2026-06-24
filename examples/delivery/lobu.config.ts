@@ -159,21 +159,6 @@ const phoenixRolloutTracker = defineWatcher({
   minCooldownSeconds: 3600,
   prompt:
     "Check project blockers, milestone progress, and generate the weekly risk summary for leadership.\n",
-  extractionSchema: {
-    type: "object",
-    required: [
-      "blockers_resolved",
-      "milestone_state",
-      "new_risks",
-      "risk_summary",
-    ],
-    properties: {
-      blockers_resolved: { type: "array", items: { type: "string" } },
-      milestone_state: { type: "string" },
-      new_risks: { type: "array", items: { type: "string" } },
-      risk_summary: { type: "string" },
-    },
-  },
 });
 
 export default defineConfig({

@@ -168,23 +168,6 @@ const customerActivityTracker = defineWatcher({
   minCooldownSeconds: 300,
   prompt:
     "Monitor customers for new orders, subscription changes, delivery requests, and support interactions.\n",
-  extractionSchema: {
-    type: "object",
-    required: [
-      "subscription_status",
-      "pending_changes",
-      "recent_orders",
-      "communication_preferences",
-      "open_requests",
-    ],
-    properties: {
-      subscription_status: { type: "string" },
-      pending_changes: { type: "array", items: { type: "string" } },
-      recent_orders: { type: "array", items: { type: "string" } },
-      communication_preferences: { type: "string" },
-      open_requests: { type: "array", items: { type: "string" } },
-    },
-  },
 });
 
 export default defineConfig({

@@ -211,25 +211,6 @@ const catalogStalenessChecker = defineWatcher({
   ),
   prompt:
     'Sweep the atlas reference catalog for entries that haven\'t been\nupdated in 90+ days. List the stalest 10 across cities, countries,\nindustries, technologies, and universities. Suggest a re-verification\naction for each (e.g. "country/PL: confirm population from latest census").\n',
-  extractionSchema: {
-    type: "object",
-    required: ["stale_entries"],
-    properties: {
-      stale_entries: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            entity_type: { type: "string" },
-            slug: { type: "string" },
-            last_updated: { type: "string" },
-            suggested_action: { type: "string" },
-          },
-        },
-      },
-      total_stale_count: { type: "integer" },
-    },
-  },
 });
 
 export default defineConfig({

@@ -181,20 +181,6 @@ const contractReviewTracker = defineWatcher({
     "For any contract with `status: needs_counsel`, route an entity-scoped event\nto the assigned reviewer. For contracts >90 days unsigned, escalate to the\ncounterparty owner; never auto-resolve risk items.\n",
   prompt:
     "Review active contracts for approaching deadlines, unsigned agreements, and unresolved risk items. Flag any clauses that still need counsel approval.\n",
-  extractionSchema: {
-    type: "object",
-    required: [
-      "pending_contracts",
-      "unresolved_risks",
-      "approaching_deadlines",
-    ],
-    properties: {
-      pending_contracts: { type: "array", items: { type: "string" } },
-      unresolved_risks: { type: "array", items: { type: "string" } },
-      approaching_deadlines: { type: "array", items: { type: "string" } },
-      flagged_clauses: { type: "array", items: { type: "string" } },
-    },
-  },
 });
 
 export default defineConfig({

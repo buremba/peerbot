@@ -12,6 +12,7 @@ import { createLogger, entryToMessage, parseSessionEntries } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { getDb } from "../../../db/client.js";
+import type { ArtifactStore } from "../../files/artifact-store.js";
 import { resolveOrgId } from "../../../lobu/stores/org-context.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
 import type { WorkerConnectionManager } from "../../gateway/connection-manager.js";
@@ -57,6 +58,44 @@ export async function readLatestSnapshotJsonl(
 }
 
 const logger = createLogger("agent-history-routes");
+
+// Tokenless artifact references persisted in the transcript by the message-send
+// path (`[name](/api/v1/files/:id)`). They carry no expiring credential, so the
+// history read path re-signs them with a fresh, absolute download URL on every
+// load — keeping links live across reloads without ever persisting a token.
+// Matches the path only when NOT already followed by a query string (so an
+// already-signed link is left untouched).
+const TOKENLESS_FILE_REF = /\/api\/v1\/files\/([A-Za-z0-9._~-]+)(?![A-Za-z0-9._~?-])/g;
+
+/**
+ * Recursively rewrite tokenless `/api/v1/files/:id` references in a user
+ * message's persisted content into fresh, absolute, signed download URLs.
+ * Exported for unit testing.
+ */
+export function resignFileRefs(
+	content: unknown,
+	artifactStore: ArtifactStore,
+	publicGatewayUrl: string,
+): unknown {
+	if (typeof content === "string") {
+		return content.replace(TOKENLESS_FILE_REF, (_match, artifactId: string) =>
+			artifactStore.buildDownloadUrl(publicGatewayUrl, artifactId),
+		);
+	}
+	if (Array.isArray(content)) {
+		return content.map((entry) =>
+			resignFileRefs(entry, artifactStore, publicGatewayUrl),
+		);
+	}
+	if (content && typeof content === "object") {
+		const out: Record<string, unknown> = {};
+		for (const [key, value] of Object.entries(content)) {
+			out[key] = resignFileRefs(value, artifactStore, publicGatewayUrl);
+		}
+		return out;
+	}
+	return content;
+}
 
 const SAFE_AGENT_ID = /^[a-zA-Z0-9_-]+$/;
 const SAFE_THREAD_ID = /^[a-zA-Z0-9_-]+$/;
@@ -226,9 +265,11 @@ export function createAgentHistoryRoutes(deps: {
 	connectionManager?: WorkerConnectionManager;
 	agentConfigStore?: Pick<AgentConfigStore, "getMetadata">;
 	userAgentsStore?: UserAgentsStore;
+	artifactStore?: ArtifactStore;
+	publicGatewayUrl?: string;
 }) {
 	const app = new Hono();
-	const { connectionManager } = deps;
+	const { connectionManager, artifactStore, publicGatewayUrl } = deps;
 	const resolveOwnership = createOwnershipResolver({
 		userAgentsStore: deps.userAgentsStore,
 		agentMetadataStore: deps.agentConfigStore,
@@ -328,6 +369,24 @@ export function createAgentHistoryRoutes(deps: {
 			organizationId: scope.organizationId,
 			userId: scope.userId,
 		});
+
+		// Re-sign tokenless attachment references in user messages so their
+		// download links are valid for this session (the transcript stores them
+		// tokenless and portable; see `resignFileRefs`).
+		if (artifactStore && publicGatewayUrl && Array.isArray(data.messages)) {
+			data.messages = data.messages.map((message) =>
+				message.role === "user"
+					? {
+							...message,
+							content: resignFileRefs(
+								message.content,
+								artifactStore,
+								publicGatewayUrl,
+							),
+						}
+					: message,
+			);
+		}
 		return c.json(data);
 	});
 

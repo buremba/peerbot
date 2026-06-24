@@ -1535,6 +1535,25 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
           ).files
         : [];
 
+      // Persist each attachment as a tokenless artifact-route reference appended
+      // to the user's message text. The pi-ai transcript only carries text +
+      // images, so non-image files would otherwise vanish on reload; this is the
+      // table-free durable record. The web lifts `/api/v1/files/` links back into
+      // native attachment chips, and the history read path re-signs them with a
+      // fresh download token (the tokenless form keeps the transcript portable
+      // and never embeds an expiring credential). Images already survive as
+      // inline transcript blocks, so they're skipped here to avoid a duplicate
+      // chip alongside the rendered image.
+      const persistedFileRefs = ingestedFiles
+        .filter((f) => !f.mimetype?.startsWith("image/"))
+        .map((f) => `[${f.name}](/api/v1/files/${f.id})`);
+      const messageTextForTranscript =
+        persistedFileRefs.length > 0
+          ? [messageContent, persistedFileRefs.join("\n")]
+              .filter((part) => part.length > 0)
+              .join("\n\n")
+          : messageContent;
+
       const jobId = await queueProducer.enqueueMessage({
         userId: session.userId,
         conversationId: session.conversationId || agentId,
@@ -1547,7 +1566,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
           : {}),
         botId: "lobu-api",
         platform: "api",
-        messageText: messageContent,
+        messageText: messageTextForTranscript,
         ...(applyEphemeralContext
           ? { ephemeralContext: rawEphemeralContext.slice(0, 2048) }
           : {}),

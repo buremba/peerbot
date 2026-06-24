@@ -302,6 +302,7 @@ async function buildResolvedConfigResponse(
 		},
 		settings: {
 			verboseLogging: !!sanitized.verboseLogging,
+			showToolCalls: !!sanitized.showToolCalls,
 			memoryEnabled: !!process.env.MEMORY_URL,
 		},
 	};

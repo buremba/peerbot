@@ -405,10 +405,11 @@ interface WebhookRoute {
  */
 async function loadGithubWebhookRoutes(
 	organizationId: string,
+	connectorKey: string,
 ): Promise<Map<string, WebhookRoute>> {
 	const rows = await getDb()`
 		SELECT feeds_schema FROM connector_definitions
-		WHERE key = 'github' AND organization_id = ${organizationId} AND status = 'active'
+		WHERE key = ${connectorKey} AND organization_id = ${organizationId} AND status = 'active'
 		ORDER BY updated_at DESC
 		LIMIT 1
 	`;
@@ -444,20 +445,27 @@ async function loadGithubWebhookRoutes(
  */
 export function createGithubWebhookDelivery(options: {
 	/**
+	 * The connector key whose feeds/connections this delivery routes to and
+	 * whose value is stamped on any stored event — threaded from the delivery
+	 * context (BundledIntegrationConnector.connectorKey), never a literal.
+	 */
+	connectorKey: string;
+	/**
 	 * Land event-complete deliveries (stars) directly instead of re-polling.
 	 * Default true. Set false to make every delivery a trigger (the scheduled
 	 * poll then captures stars on its next backstop run).
 	 */
 	storeWebhookEvents?: boolean;
 }): NonNullable<AppWebhookProvider["onDelivery"]> {
+	const { connectorKey } = options;
 	const storeWebhookEvents = options.storeWebhookEvents ?? true;
 	return async ({ rawBody, headers, install, sql }) => {
 		const event = headers.get("x-github-event");
 		if (!event) return { triggered: false };
 		// Routing is declared by the connector (feeds_schema), read from the DB.
-		const route = (await loadGithubWebhookRoutes(install.organizationId)).get(
-			event,
-		);
+		const route = (
+			await loadGithubWebhookRoutes(install.organizationId, connectorKey)
+		).get(event);
 		if (!route) return { triggered: false };
 		const payload = parseJson(rawBody);
 		const repo = extractGithubRepo(payload);
@@ -471,6 +479,7 @@ export function createGithubWebhookDelivery(options: {
 		if (route.mode === "store" && storeWebhookEvents) {
 			const stored = await storeGithubWebhookEvent({
 				sql,
+				connectorKey,
 				install,
 				repo,
 				event,
@@ -485,12 +494,37 @@ export function createGithubWebhookDelivery(options: {
 		// the person once — no webhook-side resolution (avoids double work).
 		const triggered = await markGithubFeedDue({
 			sql,
+			connectorKey,
 			install,
 			repo,
 			feedKey: route.feedKey,
 		});
 		return { triggered };
 	};
+}
+
+/**
+ * Resolve the DATA-kind delivery hook for a connector, selected by its KIND of
+ * data delivery — NOT by a provider-name branch in the gateway wiring. A data
+ * integration whose deliveries are POLL-CANONICAL (GitHub: trigger the affected
+ * feed / store event-complete signals) ships a hook here; data integrations that
+ * RAW-STORE their deliveries (Jira/Linear) ship none, so the router falls through
+ * to the raw event-ingest path. This lookup lives in the data-delivery module
+ * (alongside the hook impls), so the gateway selects `data` vs `chat` by
+ * deliveryKind and delegates the per-connector data hook to this — gateway core
+ * stays free of provider literals. A new poll-canonical data integration adds its
+ * hook here; everything else needs no change.
+ */
+export function createDataWebhookDelivery(
+	connectorKey: string,
+): AppWebhookProvider["onDelivery"] | undefined {
+	if (connectorKey === "github") {
+		return createGithubWebhookDelivery({
+			connectorKey,
+			storeWebhookEvents: process.env.GITHUB_WEBHOOK_STORE_EVENTS !== "false",
+		});
+	}
+	return undefined;
 }
 
 /** Extract the {owner, name} of the repo a GitHub delivery is about, or null. */
@@ -523,18 +557,19 @@ function extractGithubRepo(
  */
 async function markGithubFeedDue(params: {
 	sql: DbClient;
+	connectorKey: string;
 	install: { id: number | string; organizationId: string };
 	repo: { owner: string; name: string };
 	feedKey: string;
 }): Promise<boolean> {
-	const { sql, install, repo, feedKey } = params;
+	const { sql, connectorKey, install, repo, feedKey } = params;
 	const rows = await sql`
 		UPDATE feeds f
 		SET next_run_at = now(), updated_at = now()
 		FROM connections c
 		WHERE f.connection_id = c.id
 		  AND c.organization_id = ${install.organizationId}
-		  AND c.connector_key = 'github'
+		  AND c.connector_key = ${connectorKey}
 		  AND c.status = 'active'
 		  AND c.deleted_at IS NULL
 		  AND (c.config->>'installation_ref') = ${String(install.id)}
@@ -557,6 +592,7 @@ async function markGithubFeedDue(params: {
  */
 async function resolveGithubFeedTarget(params: {
 	sql: DbClient;
+	connectorKey: string;
 	install: { id: number | string; organizationId: string };
 	repo: { owner: string; name: string };
 	feedKey: string;
@@ -566,7 +602,7 @@ async function resolveGithubFeedTarget(params: {
 	owner: string;
 	name: string;
 } | null> {
-	const { sql, install, repo, feedKey } = params;
+	const { sql, connectorKey, install, repo, feedKey } = params;
 	// GitHub owner/repo are case-insensitive; match accordingly and return the
 	// feed config's canonical casing so the store builds the SAME origin_id the
 	// poll does (the connector keys origin_id off the feed config, not the
@@ -577,7 +613,7 @@ async function resolveGithubFeedTarget(params: {
 		FROM feeds f
 		JOIN connections c ON c.id = f.connection_id
 		WHERE c.organization_id = ${install.organizationId}
-		  AND c.connector_key = 'github'
+		  AND c.connector_key = ${connectorKey}
 		  AND c.status = 'active'
 		  AND c.deleted_at IS NULL
 		  AND (c.config->>'installation_ref') = ${String(install.id)}
@@ -611,13 +647,14 @@ async function resolveGithubFeedTarget(params: {
  */
 async function storeGithubWebhookEvent(params: {
 	sql: DbClient;
+	connectorKey: string;
 	install: { id: number | string; organizationId: string };
 	repo: { owner: string; name: string };
 	event: string;
 	feedKey: string;
 	payload: unknown;
 }): Promise<boolean> {
-	const { sql, install, repo, event, feedKey, payload } = params;
+	const { sql, connectorKey, install, repo, event, feedKey, payload } = params;
 	const root =
 		payload && typeof payload === "object"
 			? (payload as Record<string, unknown>)
@@ -634,7 +671,13 @@ async function storeGithubWebhookEvent(params: {
 	// Gate on the configured feed (same as the trigger path) so an unconfigured
 	// repo never lands a stray event; use the feed's own connection + id, and its
 	// canonical owner/name casing so origin_id matches the poll's exactly.
-	const target = await resolveGithubFeedTarget({ sql, install, repo, feedKey });
+	const target = await resolveGithubFeedTarget({
+		sql,
+		connectorKey,
+		install,
+		repo,
+		feedKey,
+	});
 	if (!target) return false;
 	const { owner, name } = target;
 
@@ -667,7 +710,7 @@ async function storeGithubWebhookEvent(params: {
 	await insertEvent(
 		{
 			organizationId: install.organizationId,
-			connectorKey: "github",
+			connectorKey,
 			connectionId: target.connectionId,
 			feedKey,
 			feedId: target.feedId,
@@ -695,20 +738,23 @@ async function storeGithubWebhookEvent(params: {
 }
 
 /**
- * Slack's per-KIND full-delivery hook: forward the verified delivery to the
- * coordinator's chat routing chain (BYO connection → active OAuth install →
- * preview → OAuth fallback). Built separately so it can be injected via
+ * The CHAT-kind full-delivery hook: forward a verified delivery to the chat
+ * adapter for its provider (the coordinator's routing chain — for Slack: BYO
+ * connection → active OAuth install → preview → OAuth fallback, incl. the
+ * url_verification challenge echo). Built separately so it can be injected via
  * {@link createDeclaredAppWebhookProvider}'s `handleDelivery`; the generic
- * provider still runs the declarative `v0` verify at the edge first. Relocating
- * this chat-adapter routing out of the gateway core is the Phase-D per-kind
- * delivery work.
+ * provider still runs the declarative verify at the edge first. Provider-generic:
+ * the caller supplies the per-provider forward (see
+ * `ChatInstanceManager.handleChatAppWebhook`), so a new chat platform reuses this
+ * unchanged.
  */
-export function createSlackWebhookDelivery(options: {
+export function createChatWebhookDelivery(options: {
 	/**
-	 * Delegate to the coordinator's full Slack routing chain. Given the verified
-	 * raw bytes + original headers, returns the adapter's Response.
+	 * Delegate to the chat adapter's full routing chain for the delivery's
+	 * provider. Given the verified raw bytes + original headers, returns the
+	 * adapter's Response.
 	 */
-	handleSlackAppWebhook(request: Request): Promise<Response>;
+	handleChatAppWebhook(request: Request): Promise<Response>;
 }): NonNullable<AppWebhookProvider["handleDelivery"]> {
 	return async ({ rawBody, headers, url, method }) => {
 		// Reconstruct the verified delivery as a Request the coordinator can
@@ -723,7 +769,7 @@ export function createSlackWebhookDelivery(options: {
 					? undefined
 					: Buffer.from(rawBody),
 		});
-		return options.handleSlackAppWebhook(request);
+		return options.handleChatAppWebhook(request);
 	};
 }
 

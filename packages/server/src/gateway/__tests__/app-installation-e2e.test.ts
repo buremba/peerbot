@@ -52,7 +52,7 @@ function createGithubAppWebhookProvider(options: { appId: string }) {
 		provider: "github",
 		appId: options.appId,
 		webhookSchema: GITHUB_WEBHOOK_SCHEMA,
-		onDelivery: createGithubWebhookDelivery({}),
+		onDelivery: createGithubWebhookDelivery({ connectorKey: "github" }),
 	});
 }
 import {

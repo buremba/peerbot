@@ -84,6 +84,10 @@ export default class SlackConnector extends IntegrationConnector {
       // `v0=`), plus a 300s timestamp-freshness replay guard — the generic engine
       // verifies it with no Slack-specific code.
       delivery: 'app_installation',
+      // Verified deliveries forward to the chat adapter (the routing chain in
+      // SlackConnectionCoordinator), not the data-ingest path. The generic engine
+      // dispatches on this, never on the `slack` name.
+      deliveryKind: 'chat',
       signatureHeader: 'x-slack-signature',
       algorithm: 'sha256',
       signaturePrefix: 'v0=',

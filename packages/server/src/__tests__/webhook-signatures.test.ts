@@ -10,7 +10,7 @@
  *  2. The Slack app-webhook provider (`POST /api/v1/app-webhooks/slack`)
  *     performs the edge `v0` signing + freshness verify (replay defense) and,
  *     only on success, delegates everything to
- *     `ChatInstanceManager.handleSlackAppWebhook`, which fans out to the
+ *     `ChatInstanceManager.handleChatAppWebhook`, which fans out to the
  *     adapter described above. The bespoke `/slack/events` route was folded
  *     into this generic endpoint.
  */
@@ -21,8 +21,8 @@ import type { ConnectorWebhookSchema } from "@lobu/connector-sdk";
 import { describe, expect, it, vi } from "vitest";
 import {
   createAppWebhookRoutes,
+  createChatWebhookDelivery,
   createDeclaredAppWebhookProvider,
-  createSlackWebhookDelivery,
 } from "../gateway/routes/public/app-webhooks.js";
 
 const SIGNING_SECRET = "8f742231b10e8888abcd99yyyzzz85a5";
@@ -132,7 +132,7 @@ describe("slack app-webhook provider route", () => {
   // The Slack provider runs only the edge verify through the generic router,
   // then delegates; verify+secret resolution are pure (no DB), and the
   // delegate handler is stubbed, so this needs no Postgres.
-  function makeRouter(handleSlackAppWebhook: (req: Request) => Promise<Response>) {
+  function makeRouter(handleChatAppWebhook: (req: Request) => Promise<Response>) {
     return createAppWebhookRoutes({
       installationStore: {} as never,
       secretStore: { get: async () => null },
@@ -141,7 +141,7 @@ describe("slack app-webhook provider route", () => {
           provider: "slack",
           appId: "slack-app",
           webhookSchema: SLACK_WEBHOOK_SCHEMA,
-          handleDelivery: createSlackWebhookDelivery({ handleSlackAppWebhook }),
+          handleDelivery: createChatWebhookDelivery({ handleChatAppWebhook }),
         }),
       ],
       resolveAppWebhookSecret: async () => SIGNING_SECRET,

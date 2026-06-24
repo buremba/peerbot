@@ -25,10 +25,10 @@ import { createAgentApi } from "../routes/public/agent.js";
 import {
   type AppWebhookProvider,
   createAppWebhookRoutes,
+  createChatWebhookDelivery,
+  createDataWebhookDelivery,
   createDeclaredAppWebhookProvider,
   createDefaultAppWebhookSecretResolver,
-  createGithubWebhookDelivery,
-  createSlackWebhookDelivery,
 } from "../routes/public/app-webhooks.js";
 import {
   createAppInstallRoutes,
@@ -736,32 +736,38 @@ export function createGatewayApp(
       if (integration.method) resolveAppInstallCredentials(integration.method);
       if (!integration.appId) continue;
       declaredSecretEnvKeys[integration.provider] = integration.webhookSecretKey;
+
+      // Per-KIND delivery, dispatched off the DECLARED `deliveryKind` — never a
+      // provider name. A `chat` connector forwards verified deliveries to the
+      // chat adapter for its provider (Slack today); a `data` connector lands
+      // them through the data path: its poll-canonical trigger/store hook when it
+      // ships one (GitHub), else the raw event-ingest fallback (Jira/Linear → no
+      // hook). Both the chat-forward routing and the data hooks live outside this
+      // wiring, keyed off the connector, so gateway core carries no provider
+      // literal.
+      const deliveryKind = integration.webhookSchema.deliveryKind ?? "data";
+      const deliveryHooks: Pick<
+        AppWebhookProvider,
+        "onDelivery" | "handleDelivery"
+      > = {};
+      if (deliveryKind === "chat") {
+        const provider = integration.provider;
+        deliveryHooks.handleDelivery = createChatWebhookDelivery({
+          handleChatAppWebhook: (req) =>
+            chatInstanceManager.handleChatAppWebhook(provider, req),
+        });
+      } else {
+        const onDelivery = createDataWebhookDelivery(integration.connectorKey);
+        if (onDelivery) deliveryHooks.onDelivery = onDelivery;
+      }
+
       appWebhookProviders.push(
         createDeclaredAppWebhookProvider({
           provider: integration.provider,
           appId: integration.appId,
           webhookSchema: integration.webhookSchema,
           providerInstance: integration.method?.providerInstance,
-          // Per-KIND delivery hooks (Phase D relocates these out of core):
-          //  - github is poll-canonical → trigger/store the affected feed.
-          //  - slack is a chat platform → forward to the coordinator's routing
-          //    chain (BYO connection → install → preview → OAuth fallback).
-          ...(integration.connectorKey === "github"
-            ? {
-                onDelivery: createGithubWebhookDelivery({
-                  storeWebhookEvents:
-                    process.env.GITHUB_WEBHOOK_STORE_EVENTS !== "false",
-                }),
-              }
-            : {}),
-          ...(integration.connectorKey === "slack"
-            ? {
-                handleDelivery: createSlackWebhookDelivery({
-                  handleSlackAppWebhook: (req) =>
-                    chatInstanceManager.handleSlackAppWebhook(req),
-                }),
-              }
-            : {}),
+          ...deliveryHooks,
         }),
       );
     }

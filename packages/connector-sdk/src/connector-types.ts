@@ -168,6 +168,17 @@ export interface ConnectorWebhookSchema {
    */
   delivery?: 'registered' | 'app_installation';
   /**
+   * `app_installation` mode only: how a VERIFIED delivery is dispatched once the
+   * generic engine has checked its signature.
+   * - `'data'` (default, absent) — land/trigger through the data path: the
+   *   connector's poll-canonical trigger/store hook when it has one (GitHub), else
+   *   the raw event-ingest path (Jira/Linear).
+   * - `'chat'` — forward to the chat adapter for the connector's provider (Slack;
+   *   reusable by any future chat platform), bypassing the data-ingest pipeline.
+   * The engine dispatches on THIS, never on a provider name.
+   */
+  deliveryKind?: 'data' | 'chat';
+  /**
    * `app_installation` mode only: JSON path to the external tenant id within the
    * delivery body, e.g. `'installation.id'`. The generic app-webhook engine reads
    * this (or {@link routingKeyPaths}) to extract the tenant — no per-provider

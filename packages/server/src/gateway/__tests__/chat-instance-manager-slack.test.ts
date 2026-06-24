@@ -27,7 +27,7 @@ async function loadChatInstanceManager() {
 }
 
 describe("ChatInstanceManager Slack marketplace support", () => {
-  test("handleSlackAppWebhook delegates to the Slack coordinator", async () => {
+  test("handleChatAppWebhook routes the slack provider to the Slack coordinator", async () => {
     const ChatInstanceManager = await loadChatInstanceManager();
     const manager = new ChatInstanceManager() as any;
     const request = new Request("https://gateway.example.com/slack/events", {
@@ -40,7 +40,7 @@ describe("ChatInstanceManager Slack marketplace support", () => {
       handleAppWebhook,
     };
 
-    const response = await manager.handleSlackAppWebhook(request);
+    const response = await manager.handleChatAppWebhook("slack", request);
 
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("ok");

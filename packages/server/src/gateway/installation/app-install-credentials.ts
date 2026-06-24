@@ -178,8 +178,21 @@ export async function primeBundledIntegrationConnectors(): Promise<
 	BundledIntegrationConnector[]
 > {
 	const defs = await listCatalogConnectorDefinitions();
+	// Narrow to candidates BEFORE compiling. The catalog manifest already carries
+	// each connector's `webhook` block, so we can pick the (few) connectors that
+	// declare `delivery: 'app_installation'` without spawning a metadata-extract
+	// subprocess for all ~37 bundled connectors — that bulk compile is slow and,
+	// under boot load, races the 30s per-connector extract timeout (a swallowed
+	// timeout silently dropped a real provider). When the manifest predates the
+	// `webhook` field (no candidate carries one), fall back to scanning all.
+	const declared = defs.filter(
+		(d) =>
+			(d.webhook as ConnectorWebhookSchema | null)?.delivery ===
+			"app_installation",
+	);
+	const candidates = declared.length > 0 ? declared : defs;
 	const result: BundledIntegrationConnector[] = [];
-	for (const def of defs) {
+	for (const def of candidates) {
 		const file = findBundledConnectorFile(def.key);
 		if (!file) continue;
 		let webhookSchema: ConnectorWebhookSchema | null = null;

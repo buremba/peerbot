@@ -9,8 +9,8 @@ import type { ConnectorWebhookSchema } from "@lobu/connector-sdk";
 import {
   type AppWebhookProvider,
   createAppWebhookRoutes,
+  createChatWebhookDelivery,
   createDeclaredAppWebhookProvider,
-  createSlackWebhookDelivery,
   verifyDeclaredWebhook,
 } from "../routes/public/app-webhooks.js";
 import { createPostgresAppInstallationStore } from "../../lobu/stores/app-installation-store.js";
@@ -38,13 +38,13 @@ function verifySlackSignature(
 
 /** Build a slack app-webhook provider from the declared schema + delivery hook. */
 function slackProvider(
-  handleSlackAppWebhook: (request: Request) => Promise<Response>,
+  handleChatAppWebhook: (request: Request) => Promise<Response>,
 ): AppWebhookProvider {
   return createDeclaredAppWebhookProvider({
     provider: "slack",
     appId: "slack-app",
     webhookSchema: SLACK_WEBHOOK_SCHEMA,
-    handleDelivery: createSlackWebhookDelivery({ handleSlackAppWebhook }),
+    handleDelivery: createChatWebhookDelivery({ handleChatAppWebhook }),
   });
 }
 import { slackOAuthCallbackUrl } from "../routes/public/slack.js";

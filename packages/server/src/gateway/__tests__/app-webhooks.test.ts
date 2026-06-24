@@ -70,6 +70,7 @@ function githubProvider(
 		appId,
 		webhookSchema: GITHUB_WEBHOOK_SCHEMA,
 		onDelivery: createGithubWebhookDelivery({
+			connectorKey: "github",
 			storeWebhookEvents: opts.storeWebhookEvents,
 		}),
 	});

@@ -1132,8 +1132,23 @@ export class ChatInstanceManager {
     );
   }
 
-  async handleSlackAppWebhook(request: Request): Promise<Response> {
-    return this.slackCoordinator.handleAppWebhook(request);
+  /**
+   * Forward a verified app-webhook delivery to the chat coordinator for its
+   * provider. The generic app-webhook engine has already run the declarative
+   * signature verify at the edge; this only routes by provider — no provider
+   * literal reaches the gateway wiring. Today only Slack is a chat platform;
+   * an unknown provider is a wiring bug (404-equivalent), so we throw.
+   */
+  async handleChatAppWebhook(
+    provider: string,
+    request: Request
+  ): Promise<Response> {
+    if (provider === "slack") {
+      return this.slackCoordinator.handleAppWebhook(request);
+    }
+    throw new Error(
+      `No chat coordinator registered for app-webhook provider "${provider}"`
+    );
   }
 
   // --- Private ---

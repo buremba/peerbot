@@ -83,7 +83,6 @@ export interface RemoteWatcher {
   description?: string | null;
   prompt?: string | null;
   classifiers?: unknown[] | null;
-  json_template?: unknown;
   keying_config?: Record<string, unknown> | null;
   condensation_prompt?: string | null;
   condensation_window_count?: number | null;

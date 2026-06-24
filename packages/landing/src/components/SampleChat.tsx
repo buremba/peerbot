@@ -66,6 +66,14 @@ function createTheme(opts: {
 
 // --- Preset themes ---
 
+export const WEB_THEME = createTheme({
+  primary: "#6366f1",
+  bg: "#09090b",
+  border: "#27272a",
+  botBubbleBg: "#18181b",
+  botBubbleBorder: "#27272a",
+});
+
 export const TELEGRAM_THEME = createTheme({
   primary: "#f97316",
   bg: "#0b0c0f",

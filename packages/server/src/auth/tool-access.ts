@@ -129,7 +129,7 @@ const PUBLIC_READ_ACTIONS: Record<string, Set<string> | null> = {
 	list_watchers: null,
 	manage_entity: new Set(["list", "get", "list_links"]),
 	manage_entity_schema: new Set(["list", "get", "audit", "list_rules"]),
-	manage_connections: new Set(["list", "get"]),
+	manage_connections: new Set(["list", "list_connector_groups", "get"]),
 	manage_catalog: new Set(["list_catalog", "list_installed"]),
 	manage_feeds: new Set(["list_feeds", "get_feed"]),
 	manage_auth_profiles: new Set(["list_auth_profiles"]),

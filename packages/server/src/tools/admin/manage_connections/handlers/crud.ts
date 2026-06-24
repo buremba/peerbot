@@ -53,6 +53,56 @@ import { unregisterConnectorWebhook } from '../../../../connect/webhook-registra
 import { getErrorMessage } from "@lobu/core";
 
 // ============================================
+// handleListConnectorGroups
+// ============================================
+
+export async function handleListConnectorGroups(
+  _args: Extract<ConnectionsArgs, { action: 'list_connector_groups' }>,
+  ctx: ToolContext
+): Promise<ManageConnectionsResult> {
+  const sql = getDb();
+  const { organizationId } = ctx;
+
+  const rows = await sql`
+    SELECT c.connector_key,
+           MAX(cd.name) AS connector_name,
+           MAX(cd.favicon_domain) AS favicon_domain,
+           COUNT(*)::int AS connection_count,
+           array_agg(c.id ORDER BY COALESCE(NULLIF(TRIM(c.display_name), ''), cd.name, c.connector_key), c.id)
+             AS connection_ids
+    FROM connections c
+    LEFT JOIN LATERAL (
+      SELECT name, favicon_domain
+      FROM connector_definitions
+      WHERE key = c.connector_key
+        AND status = 'active'
+        AND organization_id = ${organizationId}
+      ORDER BY updated_at DESC
+      LIMIT 1
+    ) cd ON TRUE
+    WHERE c.organization_id = ${organizationId}
+      AND c.deleted_at IS NULL
+    GROUP BY c.connector_key
+    ORDER BY MAX(cd.name), c.connector_key
+  `;
+
+  return {
+    action: 'list_connector_groups',
+    groups: rows.map((row) => ({
+      connector_key: String(row.connector_key),
+      connector_name:
+        row.connector_name != null ? String(row.connector_name) : null,
+      favicon_domain:
+        row.favicon_domain != null ? String(row.favicon_domain) : null,
+      connection_count: Number(row.connection_count) || 0,
+      connection_ids: Array.isArray(row.connection_ids)
+        ? row.connection_ids.map((id) => Number(id))
+        : [],
+    })),
+  };
+}
+
+// ============================================
 // handleList
 // ============================================
 

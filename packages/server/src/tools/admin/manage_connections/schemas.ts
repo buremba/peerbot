@@ -9,6 +9,10 @@ import { PaginationFields } from "../schemas/common-fields";
 // Schema
 // ============================================
 
+export const ListConnectorGroupsAction = Type.Object({
+	action: Type.Literal("list_connector_groups"),
+});
+
 export const ListAction = Type.Object({
 	action: Type.Literal("list"),
 	connector_key: Type.Optional(
@@ -317,6 +321,16 @@ export type ManageConnectionsResult =
 			offset: number;
 			view_url?: string;
 	  }
+	| {
+			action: "list_connector_groups";
+			groups: Array<{
+				connector_key: string;
+				connector_name: string | null;
+				favicon_domain: string | null;
+				connection_count: number;
+				connection_ids: number[];
+			}>;
+	  }
 	| { action: "get"; connection: ConnectionRow; view_url?: string }
 	| {
 			action: "create";
@@ -384,6 +398,7 @@ export type ManageConnectionsResult =
  * modules can use `Extract<ConnectionsArgs, ...>` without a circular type.
  */
 export type ConnectionsArgs =
+	| Static<typeof ListConnectorGroupsAction>
 	| Static<typeof ListAction>
 	| Static<typeof GetAction>
 	| Static<typeof CreateAction>

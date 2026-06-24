@@ -509,7 +509,7 @@ describe("Slack platform bridge", () => {
     expect(text).toContain("/lobu link");
   });
 
-  test("preview setup button deep-links to /{org}/agents when the user's org is known", async () => {
+  test("preview setup button deep-links to the user's org home when known", async () => {
     const h = makeHomeChat();
     registerSlackAppHome(
       h.chat,
@@ -526,7 +526,8 @@ describe("Slack platform bridge", () => {
     const publishHomeView = mock(async () => undefined);
     await h.open("U123", publishHomeView);
     const text = blocksText(publishHomeView.mock.calls[0]![1] as any);
-    expect(text).toContain('"url":"https://gw.example/acme/agents"');
+    // /{org} (the Builder home), NOT /{org}/agents — the latter redirects.
+    expect(text).toContain('"url":"https://gw.example/acme"');
   });
 
   test("falls back to a minimal home view if the rich view is rejected", async () => {

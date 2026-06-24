@@ -213,7 +213,7 @@ async function resolveSlackHomeUserInbox(
         FROM notification_targets
         WHERE user_id = ${lobuUserId} AND read_at IS NULL
       `,
-      // The user's primary org slug, for the setup deep link to /{slug}/agents.
+      // The user's primary org slug, for the setup deep link to /{slug} (home).
       db`
         SELECT o.slug
         FROM member m

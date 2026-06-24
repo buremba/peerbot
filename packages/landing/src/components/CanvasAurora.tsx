@@ -142,7 +142,7 @@ export function CanvasAurora({
     if (!canvas) return;
     const gl = canvas.getContext("webgl", {
       alpha: true,
-      premultipliedAlpha: false,
+      premultipliedAlpha: true,
     });
     if (!gl) return;
 

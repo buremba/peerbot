@@ -72,7 +72,7 @@ button {
 
 html {
   overflow-x: hidden;
-  background-color: var(--color-page-bg);
+  background-color: var(--color-page-bg) !important;
   color: var(--color-page-text);
   font-family: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -81,6 +81,7 @@ html {
 
 body {
   margin: 0;
+  background-color: var(--color-page-bg) !important;
 }
 
 h1,

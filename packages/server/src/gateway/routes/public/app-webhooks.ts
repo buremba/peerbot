@@ -692,16 +692,23 @@ export interface AppWebhookRouterDeps {
 }
 
 /**
- * Default app-webhook secret resolver: env var first
- * (`GITHUB_APP_WEBHOOK_SECRET` etc.), then a conventional secret-store ref
- * (`secret://app-webhook/<provider>`) so prod can seal it like any other
- * credential. Plaintext env wins for local/dev parity with the rest of the
- * gateway (`.env` is the single source of truth).
+ * Default app-webhook secret resolver. Resolution order per provider:
+ *  1. the env var the connector DECLARES as `webhookSecretKey` (passed via
+ *     `declaredSecretEnvKeys`), so the gateway holds no provider-specific env
+ *     literal — the connector declaration is the single source of truth;
+ *  2. the conventional `<PROVIDER>_APP_WEBHOOK_SECRET` env var (back-compat for
+ *     providers with no declared key);
+ *  3. a conventional secret-store ref (`secret://app-webhook/<provider>`) so
+ *     prod can seal it like any other credential.
+ * Plaintext env wins for local/dev parity (`.env` is the single source of truth).
  */
 export function createDefaultAppWebhookSecretResolver(
 	secretStore: SecretStore,
+	declaredSecretEnvKeys: Record<string, string | undefined> = {},
 ): (provider: string) => Promise<string | undefined> {
 	return async (provider) => {
+		const declaredKey = declaredSecretEnvKeys[provider];
+		if (declaredKey && process.env[declaredKey]) return process.env[declaredKey];
 		const envName = `${provider.toUpperCase()}_APP_WEBHOOK_SECRET`;
 		const fromEnv = process.env[envName];
 		if (fromEnv) return fromEnv;

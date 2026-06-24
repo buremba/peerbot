@@ -31,6 +31,10 @@ import {
   createLinearAppWebhookProvider,
 } from "../routes/public/app-webhooks.js";
 import { createAppInstallRoutes } from "../routes/public/app-install.js";
+import {
+  getPrimedBundledMethod,
+  resolveAppInstallCredentials,
+} from "../installation/app-install-credentials.js";
 import { resolveInstallOrgId } from "../routes/public/slack.js";
 import { createAgentConfigRoutes } from "../routes/public/agent-config.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
@@ -713,7 +717,17 @@ export function createGatewayApp(
     // Slack stays a custom plugin (timestamped signing base).
     const appWebhookSecretStore = coreServices.getSecretStore();
     const appWebhookProviders: AppWebhookProvider[] = [];
-    const githubAppId = process.env.GITHUB_APP_ID;
+    // Resolve the GitHub App id from the connector's DECLARED `appIdKey` (primed
+    // at boot by primeAppInstallationMethods) instead of a hardcoded
+    // `process.env.GITHUB_APP_ID` literal. The bundled connector declares which
+    // env var holds the id; we read it here. Falls back to the conventional env
+    // var only when the bundled method couldn't be primed (e.g. a build without
+    // the connector on disk).
+    const githubMethod = getPrimedBundledMethod("github", "github");
+    const githubCreds = githubMethod
+      ? resolveAppInstallCredentials(githubMethod)
+      : null;
+    const githubAppId = githubCreds?.appId ?? process.env.GITHUB_APP_ID;
     if (githubAppId) {
       appWebhookProviders.push(
         createGithubAppWebhookProvider({
@@ -738,8 +752,12 @@ export function createGatewayApp(
         installationStore: createPostgresAppInstallationStore(),
         secretStore: appWebhookSecretStore,
         providers: appWebhookProviders,
-        resolveAppWebhookSecret:
-          createDefaultAppWebhookSecretResolver(appWebhookSecretStore),
+        resolveAppWebhookSecret: createDefaultAppWebhookSecretResolver(
+          appWebhookSecretStore,
+          // Prefer each connector's DECLARED webhook-secret env var over the
+          // conventional `<PROVIDER>_APP_WEBHOOK_SECRET` literal.
+          { github: githubCreds?.webhookSecretKey },
+        ),
       }),
     );
 

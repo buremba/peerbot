@@ -16,6 +16,7 @@ import { authenticatePat, extractPatBearer } from "../auth/pat-auth";
 import { getDb } from "../db/client";
 import { ApiPlatform } from "../gateway/api/platform";
 import { createGatewayApp } from "../gateway/cli/gateway";
+import { primeAppInstallationMethods } from "../gateway/installation/app-install-credentials";
 import { buildGatewayConfig } from "../gateway/config/index";
 import { ChatInstanceManager } from "../gateway/connections/chat-instance-manager";
 import { ChatResponseBridge } from "../gateway/connections/chat-response-bridge";
@@ -460,6 +461,17 @@ export async function initLobuGateway(): Promise<Hono | null> {
 			{ hasWorkerGateway: !!workerGateway, hasGetApp: !!workerGateway?.getApp },
 			"[Lobu] Worker gateway check",
 		);
+
+		// Prime the bundled app-installation methods so the org-less gateway wiring
+		// (app-webhook provider registration in createGatewayApp) can read each
+		// connector's declared credential env-var names synchronously instead of
+		// hardcoding `process.env.GITHUB_APP_ID` literals. Env-var names are
+		// deployment-wide constants, so one resolve per (connector, provider) at
+		// boot is correct; per-org routes read the per-org DB declaration instead.
+		await primeAppInstallationMethods([
+			{ connectorKey: "github", provider: "github" },
+		]);
+
 		const rawLobuApp = createGatewayApp({
 			secretProxy: coreServices.getSecretProxy(),
 			workerGateway,

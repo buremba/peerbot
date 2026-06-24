@@ -133,6 +133,8 @@ export interface ResolvedAppInstallCredentials {
 	/** Declared env-var names, stamped onto the install row so token minting reads the right vars. */
 	appIdKey?: string;
 	privateKeyKey?: string;
+	/** Declared env-var name for the app-webhook secret (so the webhook resolver prefers it). */
+	webhookSecretKey?: string;
 }
 
 /** Read each declared credential env var by the NAME the connector declares. */
@@ -152,6 +154,7 @@ export function resolveAppInstallCredentials(
 		installUrlTemplate: method.installUrlTemplate,
 		appIdKey: method.appIdKey,
 		privateKeyKey: method.privateKeyKey,
+		webhookSecretKey: method.webhookSecretKey,
 	};
 }
 

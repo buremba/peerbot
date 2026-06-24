@@ -121,6 +121,12 @@ export function normalizeConnectorAuthSchema(value: unknown): ConnectorAuthSchem
         appIdKey: typeof method.appIdKey === 'string' ? method.appIdKey : undefined,
         privateKeyKey:
           typeof method.privateKeyKey === 'string' ? method.privateKeyKey : undefined,
+        appSlugKey: typeof method.appSlugKey === 'string' ? method.appSlugKey : undefined,
+        clientIdKey: typeof method.clientIdKey === 'string' ? method.clientIdKey : undefined,
+        clientSecretKey:
+          typeof method.clientSecretKey === 'string' ? method.clientSecretKey : undefined,
+        webhookSecretKey:
+          typeof method.webhookSecretKey === 'string' ? method.webhookSecretKey : undefined,
         installUrlTemplate:
           typeof method.installUrlTemplate === 'string' ? method.installUrlTemplate : undefined,
         ...(permissions && permissions.length > 0 ? { permissions } : {}),

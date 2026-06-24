@@ -967,6 +967,14 @@ export interface AppInstallRouterDeps {
 async function verifyInstallationOwnership(params: {
 	code: string | undefined;
 	/**
+	 * The App's OWN OAuth client credentials, resolved from the org's connector
+	 * declaration (`clientIdKey`/`clientSecretKey`) — NOT read from env literals
+	 * here. The route resolves them after the signed state is peeked (so the org
+	 * is known) and passes them in; both unset → fail safe (503).
+	 */
+	clientId: string | undefined;
+	clientSecret: string | undefined;
+	/**
 	 * The installation_id GitHub passed on the install redirect. `undefined` only
 	 * in the recovery flow (GitHub's user-auth redirect omits it); then it is
 	 * DERIVED from the user's sole ACCESSIBLE installation via
@@ -985,9 +993,9 @@ async function verifyInstallationOwnership(params: {
 		AppInstallRouterDeps["fetchSoleAccessibleInstallation"]
 	>;
 }): Promise<InstallOwnershipResult> {
-	// The App's OAuth creds (NOT the Lobu login OAuth app). Fail safe if unset.
-	const clientId = process.env.GITHUB_APP_CLIENT_ID;
-	const clientSecret = process.env.GITHUB_APP_CLIENT_SECRET;
+	// The App's OAuth creds (NOT the Lobu login OAuth app), resolved from the
+	// org's connector declaration by the caller. Fail safe if unset.
+	const { clientId, clientSecret } = params;
 	if (!clientId || !clientSecret) {
 		return {
 			ok: false,
@@ -1264,17 +1272,6 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 	});
 
 	router.get("/github/app/install/callback", async (c) => {
-		const appId = process.env.GITHUB_APP_ID;
-		if (!appId) {
-			return c.html(
-				renderOAuthErrorPage(
-					"github_app_not_configured",
-					"The Lobu GitHub App is not configured on this gateway (GITHUB_APP_ID unset).",
-				),
-				503,
-			);
-		}
-
 		const setupAction = parseSetupAction(c.req.query("setup_action"));
 		const installationIdRaw = c.req.query("installation_id");
 
@@ -1391,6 +1388,29 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		// Bind to the org encoded in the verified state (== callbackOrgId).
 		const orgId = installState.organizationId;
 
+		// Resolve App credentials from THIS org's connector declaration — only now,
+		// AFTER the signed state is verified and the org is known (this is the CSRF /
+		// cross-tenant boundary, so we never resolve creds against an attacker-chosen
+		// org). The declared `appIdKey`/`privateKeyKey` are stamped onto the install
+		// row so token minting later reads the right gateway env vars; clientId/secret
+		// are the App's OWN OAuth client for the ownership-proof leg.
+		const method = await getOrgAppInstallationMethod(
+			orgId,
+			GITHUB_CONNECTOR_KEY,
+			"github",
+		);
+		const creds = method ? resolveAppInstallCredentials(method) : null;
+		const appId = creds?.appId;
+		if (!appId) {
+			return c.html(
+				renderOAuthErrorPage(
+					"github_app_not_configured",
+					"The Lobu GitHub App is not configured on this gateway (GITHUB_APP_ID unset).",
+				),
+				503,
+			);
+		}
+
 		// Ownership proof. The signed state proves WHICH org initiated, but NOT that
 		// the caller OWNS the supplied installation_id (an enumerable integer).
 		// Without this, an attacker with their own valid state could pass a victim's
@@ -1431,6 +1451,8 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		);
 		const ownership = await verifyInstallationOwnership({
 			code: c.req.query("code"),
+			clientId: creds?.clientId,
+			clientSecret: creds?.clientSecret,
 			installationId: suppliedInstallationId,
 			recovery: isRecovery,
 			redirectUri: callbackUrl,
@@ -1517,12 +1539,19 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 				// Record the ownership-verified account (GitHub omits it from the
 				// redirect query) so the install row carries the org login/type/id the
 				// team-graph build and UI rely on, falling back to any query value.
+				// Also stamp the declared credential env-var NAMES (appIdKey/
+				// privateKeyKey) so later token minting (registry.mintFor) reads the
+				// right gateway env vars from the row instead of a hardcoded literal.
 				metadata: {
 					...buildInstallMetadata(c),
 					account_login: ownerAccount.login,
 					account_type: ownerAccount.type,
 					...(typeof ownerAccount.id === "number"
 						? { account_id: ownerAccount.id }
+						: {}),
+					...(creds?.appIdKey ? { appIdKey: creds.appIdKey } : {}),
+					...(creds?.privateKeyKey
+						? { privateKeyKey: creds.privateKeyKey }
 						: {}),
 				},
 			});

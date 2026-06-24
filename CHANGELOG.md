@@ -1,5 +1,14 @@
 # Changelog
 
+## [13.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v13.0.0...lobu-v13.1.0) (2026-06-24)
+
+
+### Features
+
+* **gateway:** provider-agnostic app-install + app-webhook engine ([#1553](https://github.com/lobu-ai/lobu/issues/1553)) ([63e2e83](https://github.com/lobu-ai/lobu/commit/63e2e83a2b55adb041174923790951e3a399ef3d))
+* **server:** home-chat file attachments (artifact ingest + /lobu downloadUrl fix) ([#1551](https://github.com/lobu-ai/lobu/issues/1551)) ([7e1c06c](https://github.com/lobu-ai/lobu/commit/7e1c06cece7c9afc29b435610ecdc35f6e656c07))
+* **watchers:** consolidate render+schema derivation onto entity types; reaction input contracts ([#1533](https://github.com/lobu-ai/lobu/issues/1533)) ([6ace3bf](https://github.com/lobu-ai/lobu/commit/6ace3bfa3a65aba9a74594f8cf15acdbb64da051))
+
 ## [13.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v12.1.0...lobu-v13.0.0) (2026-06-24)
 
 

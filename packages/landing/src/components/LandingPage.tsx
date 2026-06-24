@@ -229,7 +229,7 @@ function Hero() {
         </p>
         <div class="hero-rise hero-rise-3 mt-8 flex flex-wrap items-center justify-center gap-3">
           <button
-            class="inline-flex items-center gap-3 rounded-xl px-5 py-3 text-[14.5px] font-semibold shadow-sm transition-opacity hover:opacity-90"
+            class="inline-flex items-center gap-3 rounded-xl px-5 py-3 text-[14.5px] font-semibold shadow-sm transition-all duration-300 ease-out hover:-translate-y-[2px] hover:scale-[1.02] hover:shadow-[0_8px_24px_rgba(255,255,255,0.15)]"
             onClick={() => copy("prompt")}
             style={{
               backgroundColor: "var(--color-page-text)",
@@ -250,7 +250,7 @@ function Hero() {
             </span>
           </button>
           <ScheduleCallButton
-            class="inline-flex items-center gap-2 rounded-xl border px-5 py-3 text-[14.5px] font-semibold transition-colors hover:bg-[var(--color-page-surface-dim)]"
+            class="inline-flex items-center gap-2 rounded-xl border px-5 py-3 text-[14.5px] font-semibold transition-all duration-300 ease-out hover:-translate-y-[2px] hover:scale-[1.02] hover:bg-[var(--color-page-border)] hover:shadow-[0_8px_20px_rgba(0,0,0,0.3)]"
             style={{
               borderColor: "var(--color-page-border)",
               color: "var(--color-page-text)",

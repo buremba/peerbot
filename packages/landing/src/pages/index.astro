@@ -9,9 +9,9 @@ import { getLatestPosts } from "../latest-posts";
 const latestPosts = await getLatestPosts(3);
 ---
 
-<BaseLayout>
+<BaseLayout forceTheme="dark">
   <div
-    class="landing-backdrop min-h-screen grid-lines"
+    class="landing-backdrop min-h-screen grid-lines noise-bg"
     style={{
       backgroundColor: "var(--color-page-bg)",
       "--grid-max-w": "72rem",

@@ -12,7 +12,6 @@ import type { ManageWatchersArgs, ManageWatchersResult } from '../manage_watcher
 import {
   assertWatcherVersionConfigValid,
   parseJsonInput,
-  parseJson,
   normalizeStoredJsonField,
   toJsonParam,
 } from './shared';
@@ -198,70 +197,6 @@ export async function handleCreateVersion(
   };
 }
 
-// ============================================
-// handleUpgrade
-// ============================================
-
-export async function handleUpgrade(
-  args: ManageWatchersArgs,
-  _env: unknown
-): Promise<{
-  action: 'upgrade';
-  watcher_id: string;
-  version: number;
-  previous_version: number;
-}> {
-  const sql = getDb();
-
-  if (!args.watcher_id) {
-    throw new Error('watcher_id is required for upgrade action');
-  }
-  if (args.target_version === undefined) {
-    throw new Error('target_version is required for upgrade action');
-  }
-
-  // Get current watcher version
-  const watcherRows = await sql`
-    SELECT i.id, i.version, i.current_version_id
-    FROM watchers i WHERE i.id = ${args.watcher_id}
-  `;
-  if (watcherRows.length === 0) {
-    throw new Error(`Watcher ${args.watcher_id} not found`);
-  }
-  const previousVersion = Number(watcherRows[0].version);
-
-  // Find target version
-  const versionRows = await sql`
-    SELECT id, version, version_sources
-    FROM watcher_versions
-    WHERE watcher_id = ${args.watcher_id} AND version = ${args.target_version}
-    LIMIT 1
-  `;
-  if (versionRows.length === 0) {
-    throw new Error(`Version ${args.target_version} not found for watcher ${args.watcher_id}`);
-  }
-
-  const newVersionId = versionRows[0].id;
-  const versionSources = parseJson(versionRows[0].version_sources);
-
-  // Update watcher to point to the new version
-  await sql`
-    UPDATE watchers
-    SET
-      current_version_id = ${newVersionId},
-      version = ${args.target_version},
-      sources = ${sql.json(versionSources || [])},
-      updated_at = NOW()
-    WHERE id = ${args.watcher_id}
-  `;
-
-  return {
-    action: 'upgrade',
-    watcher_id: args.watcher_id,
-    version: args.target_version,
-    previous_version: previousVersion,
-  };
-}
 
 // ============================================
 // handleGetVersions

@@ -93,7 +93,6 @@ const OWNER_ADMIN_ACTIONS: Record<string, Set<string>> = {
 		"create",
 		"update",
 		"create_version",
-		"upgrade",
 		"trigger",
 		"delete",
 		"set_reaction_script",

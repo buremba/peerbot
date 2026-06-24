@@ -8,7 +8,6 @@
  * - update: Modify config (model, schedule, sources)
  * - create_version: Create a new version for a watcher (prompt/schema/sources)
  * - create_from_version: Create a new watcher from an existing version
- * - upgrade: Upgrade watcher to a specific version
  * - complete_window: Complete a window using window_token from read_knowledge
  * - trigger: Manually trigger a watcher run
  * - delete: Remove watcher
@@ -38,7 +37,7 @@ import { withValidatedArgs } from '../validate-args';
 import { defineFlatActionTool, flatAction } from './action-tool';
 import { requireWatcherAccess } from './manage_watchers/shared';
 import { handleCreate, handleUpdate, handleDelete, handleCreateFromVersion } from './manage_watchers/crud';
-import { handleCreateVersion, handleUpgrade, handleGetVersions, handleGetVersionDetails } from './manage_watchers/version-actions';
+import { handleCreateVersion, handleGetVersions, handleGetVersionDetails } from './manage_watchers/version-actions';
 import { handleCompleteWindow } from './manage_watchers/complete-window';
 import { handleTrigger, handleSetReactionScript } from './manage_watchers/trigger';
 import { handleSubmitFeedback, handleGetFeedback } from './manage_watchers/feedback';
@@ -65,7 +64,6 @@ export const ManageWatchersSchema = Type.Object({
       Type.Literal('create'),
       Type.Literal('update'),
       Type.Literal('create_version'),
-      Type.Literal('upgrade'),
       Type.Literal('complete_window'),
       Type.Literal('trigger'),
       Type.Literal('delete'),
@@ -379,7 +377,6 @@ export type ManageWatchersResult =
       version: number;
       previous_version: number;
     }
-  | { action: 'upgrade'; watcher_id: string; version: number; previous_version: number }
   | {
       action: 'complete_window';
       watcher_id: string;
@@ -508,14 +505,6 @@ async function manageWatchersImpl(
     await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'write');
   } else if (args.action === 'delete' && args.watcher_ids && args.watcher_ids.length > 0) {
     await requireWatcherAccess(pgSql, args.watcher_ids, ctx, 'write');
-  } else if (args.action === 'upgrade') {
-    if (args.watcher_ids && args.watcher_ids.length > 0) {
-      await requireWatcherAccess(pgSql, args.watcher_ids, ctx, 'write');
-    } else if (args.watcher_id) {
-      await requireWatcherAccess(pgSql, [args.watcher_id], ctx, 'write');
-    } else if (args.entity_id) {
-      await requireWriteAccess(pgSql, args.entity_id, ctx);
-    }
   } else if (args.action === 'complete_window' && args.entity_id) {
     await requireWriteAccess(pgSql, args.entity_id, ctx);
   } else if (args.action === 'create_version' && args.watcher_id) {
@@ -545,7 +534,6 @@ const runManageWatchers = defineFlatActionTool<ManageWatchersArgs, ManageWatcher
     create: flatAction((args, ctx, env) => handleCreate(args, env, ctx)),
     update: flatAction((args, ctx, env) => handleUpdate(args, env, ctx)),
     create_version: flatAction((args, ctx, env) => handleCreateVersion(args, env, ctx)),
-    upgrade: flatAction((args, _ctx, env) => handleUpgrade(args, env)),
     complete_window: flatAction((args, ctx, env) => handleCompleteWindow(args, env, ctx)),
     trigger: flatAction((args, _ctx, env) => handleTrigger(args, env)),
     delete: flatAction(handleDelete),

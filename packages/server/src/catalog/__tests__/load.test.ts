@@ -36,7 +36,7 @@ describe("catalog/load", () => {
 		expect(first?.id).toBeTruthy();
 		expect(first?.name).toBeTruthy();
 		// detail mirrors the watcher create-form fields (used for prefill)
-		expect(first?.detail.extraction_schema).toBeTruthy();
+		expect(first?.detail.prompt).toBeTruthy();
 
 		if (prev === undefined) delete process.env.LOBU_CATALOG_URIS;
 		else process.env.LOBU_CATALOG_URIS = prev;

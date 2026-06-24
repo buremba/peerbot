@@ -8,9 +8,12 @@ import type { CatalogEntry } from "./types";
  * the "Clone existing" path uses.
  *
  * Templates stay entity-agnostic (no `sources` SQL, no entity binding): the
- * user picks the entity and schedule in the form. Override or replace these by
- * pointing `LOBU_CATALOG_URIS` at your own `watchers.json` manifest (env wins
- * outright — there is no merge with these defaults).
+ * user picks the entity and schedule in the form. Output structure is governed
+ * by the bound entity type (render + schema derive from it — see lobu#1533), so
+ * templates express the desired output shape in the prompt rather than via an
+ * inline extraction schema. Override or replace these by pointing
+ * `LOBU_CATALOG_URIS` at your own `watchers.json` manifest (env wins outright —
+ * there is no merge with these defaults).
  */
 export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 	{
@@ -23,23 +26,7 @@ export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 			slug: "daily-summary",
 			schedule: "0 8 * * *",
 			prompt:
-				"Review the activity in this window and produce a concise summary of what matters most. Call out anything notable, surprising, or worth acting on.\n",
-			extraction_schema: {
-				type: "object",
-				required: ["summary", "highlights"],
-				properties: {
-					summary: {
-						type: "string",
-						description: "Short narrative summary of the window.",
-					},
-					highlights: {
-						type: "array",
-						items: { type: "string" },
-						description: "Bullet-point list of the most important items.",
-					},
-				},
-				additionalProperties: false,
-			},
+				"Review the activity in this window and produce a concise summary of what matters most. Call out anything notable, surprising, or worth acting on.\n\nReturn a short narrative summary plus a bullet-point list of the most important highlights.\n",
 			tags: ["summary", "digest"],
 		},
 	},
@@ -53,28 +40,7 @@ export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 			slug: "sentiment-monitor",
 			schedule: "0 */6 * * *",
 			prompt:
-				"Analyze the overall sentiment of the activity in this window. Classify it, score it, and explain the main drivers behind the sentiment.\n",
-			extraction_schema: {
-				type: "object",
-				required: ["sentiment", "score", "drivers"],
-				properties: {
-					sentiment: {
-						type: "string",
-						enum: ["positive", "neutral", "negative"],
-						description: "Overall sentiment classification.",
-					},
-					score: {
-						type: "number",
-						description: "Sentiment score from -1 (negative) to 1 (positive).",
-					},
-					drivers: {
-						type: "array",
-						items: { type: "string" },
-						description: "Key factors driving the sentiment.",
-					},
-				},
-				additionalProperties: false,
-			},
+				"Analyze the overall sentiment of the activity in this window. Classify it, score it, and explain the main drivers behind the sentiment.\n\nReport the sentiment classification (positive, neutral, or negative), a score from -1 (negative) to 1 (positive), and the key factors driving it.\n",
 			classifiers: [
 				{
 					slug: "sentiment",
@@ -96,30 +62,9 @@ export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 			slug: "risk-alert",
 			schedule: "0 */4 * * *",
 			prompt:
-				"Inspect the activity in this window for anomalies, risks, or anything that deviates from the norm. Assess the risk level and recommend whether action is needed.\n",
-			extraction_schema: {
-				type: "object",
-				required: ["risk_level", "anomalies", "recommended_action"],
-				properties: {
-					risk_level: {
-						type: "string",
-						enum: ["low", "medium", "high"],
-						description: "Overall risk level for this window.",
-					},
-					anomalies: {
-						type: "array",
-						items: { type: "string" },
-						description: "Specific anomalies or risks detected.",
-					},
-					recommended_action: {
-						type: "string",
-						description: "What, if anything, should be done about it.",
-					},
-				},
-				additionalProperties: false,
-			},
+				"Inspect the activity in this window for anomalies, risks, or anything that deviates from the norm. Assess the risk level and recommend whether action is needed.\n\nReport the overall risk level (low, medium, or high), the specific anomalies or risks detected, and a recommended action.\n",
 			reactions_guidance:
-				"Only alert when risk_level is high, or medium with a concrete recommended_action. Keep low-risk windows silent.",
+				"Only alert when risk is high, or medium with a concrete recommended action. Keep low-risk windows silent.",
 			tags: ["risk", "alert", "monitoring"],
 		},
 	},
@@ -133,36 +78,7 @@ export const WATCHER_CATALOG_TEMPLATES: CatalogEntry[] = [
 			slug: "action-items",
 			schedule: "0 18 * * *",
 			prompt:
-				"Extract every actionable task, follow-up, or commitment mentioned in this window. Capture who owns it and any due date if stated.\n",
-			extraction_schema: {
-				type: "object",
-				required: ["action_items"],
-				properties: {
-					action_items: {
-						type: "array",
-						items: {
-							type: "object",
-							required: ["title"],
-							properties: {
-								title: {
-									type: "string",
-									description: "The action to take.",
-								},
-								owner: {
-									type: "string",
-									description: "Who is responsible, if known.",
-								},
-								due: {
-									type: "string",
-									description: "Due date or timeframe, if stated.",
-								},
-							},
-							additionalProperties: false,
-						},
-					},
-				},
-				additionalProperties: false,
-			},
+				"Extract every actionable task, follow-up, or commitment mentioned in this window. Capture who owns it and any due date if stated.\n\nReturn a list of action items, each with a title and — when known — an owner and a due date or timeframe.\n",
 			tags: ["tasks", "action-items"],
 		},
 	},

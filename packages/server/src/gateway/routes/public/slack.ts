@@ -8,6 +8,10 @@ import {
   renderOAuthErrorPage,
   renderOAuthSuccessPage,
 } from "../../auth/oauth-templates.js";
+import {
+  getOrgAppInstallationMethod,
+  resolveAppInstallCredentials,
+} from "../../installation/app-install-credentials.js";
 import type { ChatInstanceManager } from "../../connections/chat-instance-manager.js";
 
 const logger = createLogger("slack-routes");
@@ -178,17 +182,6 @@ export function createSlackRoutes(manager: ChatInstanceManager): Hono {
   const router = new Hono();
 
   router.get("/slack/install", async (c) => {
-    const clientId = process.env.SLACK_CLIENT_ID;
-    if (!clientId) {
-      return c.html(
-        renderOAuthErrorPage(
-          "slack_not_configured",
-          "Slack OAuth is not configured on this gateway. Set SLACK_CLIENT_ID and try again."
-        ),
-        503
-      );
-    }
-
     // Bind the install to the initiating session's active org. Without this
     // an OAuth link minted under org A's session can be opened from org B's
     // browser and the resulting connection lands in the wrong tenant. On
@@ -205,12 +198,38 @@ export function createSlackRoutes(manager: ChatInstanceManager): Hono {
       );
     }
 
+    // Resolve clientId from the org's Slack connector declaration (same
+    // mechanism as GitHub — no env literal in the route).
+    const slackMethod = await getOrgAppInstallationMethod(
+      installOrgId,
+      "slack",
+      "slack"
+    );
+    const slackCreds = slackMethod ? resolveAppInstallCredentials(slackMethod) : null;
+    const clientId = slackCreds?.clientId;
+    if (!clientId) {
+      return c.html(
+        renderOAuthErrorPage(
+          "slack_not_configured",
+          "Slack OAuth is not configured on this gateway. Set SLACK_CLIENT_ID and try again."
+        ),
+        503
+      );
+    }
+
     const stateStore = createSlackInstallStateStore();
     const redirectUri = slackOAuthCallbackUrl(
       manager.getServices().getPublicGatewayUrl?.(),
       c.req.url
     );
-    const scopes = await loadSlackBotScopes();
+    // Use the declared scopes from the connector when available (the single source
+    // of truth); fall back to the manifest/env/defaults for operators without the
+    // connector definition synced.
+    const declaredScopes = slackMethod?.permissions;
+    const scopes =
+      Array.isArray(declaredScopes) && declaredScopes.length > 0
+        ? declaredScopes
+        : await loadSlackBotScopes();
     const state = await stateStore.create({
       redirectUri,
       organizationId: installOrgId,

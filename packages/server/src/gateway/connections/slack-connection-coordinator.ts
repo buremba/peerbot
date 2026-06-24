@@ -6,6 +6,10 @@ import {
   upsertSlackInstallByTeam,
 } from "../../lobu/stores/slack-installations.js";
 import type { WritableSecretStore } from "../secrets/index.js";
+import {
+  getPrimedBundledMethod,
+  resolveAppInstallCredentials,
+} from "../installation/app-install-credentials.js";
 import type { PlatformAdapterConfig, PlatformConnection } from "./types.js";
 import {
   parseSlackTeamJoinEvent,
@@ -41,23 +45,37 @@ type SlackRuntimeConfig = {
 };
 
 /**
- * App-level Slack credentials for the shared (hosted) Lobu Slack app, read from
- * the environment. These power the OAuth install handshake and the hosted
- * preview/linking bot. Reading them from env (not from whatever connection
- * happens to be warm on the current pod) makes config resolution deterministic
- * across replicas — every pod sees the same values regardless of which Slack
- * connections it has warmed. Per-workspace connections persist only tenant data
- * (bot token); the Slack adapter falls back to these env vars at runtime, so
- * rotating them does not require reinstalling each workspace.
+ * App-level Slack credentials for the shared (hosted) Lobu Slack app.
+ *
+ * The three core OAuth/signing keys (clientId, clientSecret, signingSecret)
+ * are read via the declared env-var names from the Slack catalog connector
+ * (primed at boot by primeAppInstallationMethods). All other keys (botToken,
+ * encryptionKey, installationKeyPrefix, userName) remain direct env reads —
+ * they are not part of the app_installation auth schema.
+ *
+ * Reading from env (not from whatever connection happens to be warm on the
+ * current pod) makes config resolution deterministic across replicas — every
+ * pod sees the same values regardless of which Slack connections it has warmed.
+ * Per-workspace connections persist only tenant data (bot token); the Slack
+ * adapter falls back to these env vars at runtime, so rotating them does not
+ * require reinstalling each workspace.
  *
  * When the env is unset, OAuth/preview is simply unavailable and operators must
  * bring their own Slack credentials on a per-connection basis.
  */
 function readSlackAppEnvConfig(): SlackRuntimeConfig {
+  // Use the declared env-var names from the Slack connector declaration (primed
+  // at boot). Falls back to direct env reads when the bundled method is not
+  // primed (e.g. a build without the connector on disk), so startup ordering
+  // is never a hard failure.
+  const primedMethod = getPrimedBundledMethod("slack", "slack");
+  const declared = primedMethod
+    ? resolveAppInstallCredentials(primedMethod)
+    : null;
   return {
-    signingSecret: process.env.SLACK_SIGNING_SECRET,
-    clientId: process.env.SLACK_CLIENT_ID,
-    clientSecret: process.env.SLACK_CLIENT_SECRET,
+    signingSecret: declared?.webhookSecret ?? process.env.SLACK_SIGNING_SECRET,
+    clientId: declared?.clientId ?? process.env.SLACK_CLIENT_ID,
+    clientSecret: declared?.clientSecret ?? process.env.SLACK_CLIENT_SECRET,
     encryptionKey: process.env.SLACK_ENCRYPTION_KEY,
     installationKeyPrefix: process.env.SLACK_INSTALLATION_KEY_PREFIX,
     userName: process.env.SLACK_USER_NAME,

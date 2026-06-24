@@ -470,6 +470,7 @@ export async function initLobuGateway(): Promise<Hono | null> {
 		// boot is correct; per-org routes read the per-org DB declaration instead.
 		await primeAppInstallationMethods([
 			{ connectorKey: "github", provider: "github" },
+			{ connectorKey: "slack", provider: "slack" },
 		]);
 
 		const rawLobuApp = createGatewayApp({

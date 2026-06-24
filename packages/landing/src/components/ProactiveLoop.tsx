@@ -210,7 +210,7 @@ function StepText({
   return (
     <div class="max-w-[360px] px-1 md:px-0">
       <h3
-        class="text-[1.2rem] font-bold leading-tight tracking-tight"
+        class="text-[1.45rem] font-bold leading-tight tracking-tight"
         style={{ color: "var(--color-page-text)" }}
       >
         {title}

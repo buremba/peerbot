@@ -125,6 +125,17 @@ export interface WatcherMetadata {
   extraction_schema?: Record<string, unknown>;
   json_template?: unknown;
   keying_config?: KeyingConfig | null;
+  /**
+   * Render home (consolidation): for an entity-typed watcher with no inline
+   * `json_template`, the target entity type's per-record render template — the
+   * client iterates the record array at `entity_render_path` and renders each
+   * record with this template. Undefined when the watcher carries its own
+   * `json_template` or isn't entity-typed (then the client uses `json_template`
+   * / the schema-auto renderer as before).
+   */
+  entity_type_render?: unknown;
+  /** Dotted path into a window's `extracted_data` where the record array lives. */
+  entity_render_path?: string | null;
   rendered_prompt?: string;
   available_versions?: WatcherVersionInfo[];
   reaction_script?: string;

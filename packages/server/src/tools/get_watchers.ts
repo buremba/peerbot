@@ -15,6 +15,7 @@ import { type Static, Type } from '@sinclair/typebox';
 import { createDbClientFromEnv, type DbClient, getDb } from '../db/client';
 import type { Env } from '../index';
 import type {
+  KeyingConfig,
   PendingAnalysis,
   WatcherMetadata,
   WatcherSource,
@@ -22,6 +23,7 @@ import type {
   WatcherWindow,
   WatcherWindowReaction,
 } from '../types/watchers';
+import { deriveWatcherRender } from '../utils/watcher-render';
 import {
   buildEntityLinkUnion,
   STANDARD_IDENTITY_NAMESPACES,
@@ -230,6 +232,7 @@ interface WatcherQueryRow {
   sel_version_version_sources: unknown;
   sel_version_classifiers: unknown;
   sel_version_json_template: unknown;
+  sel_version_keying_config: unknown;
   // Latest window end (folded MAX(window_end) lookup)
   latest_window_end: string | null;
   // jsonb_agg of entities (folded entityCheck/watcherEntityQuery)
@@ -616,6 +619,7 @@ async function getWatcherImpl(
         sv.version_sources as sel_version_version_sources,
         sv.classifiers as sel_version_classifiers,
         sv.json_template as sel_version_json_template,
+        sv.keying_config as sel_version_keying_config,
         -- Latest window end for the unprocessedCount bound
         (SELECT MAX(window_end) FROM watcher_windows WHERE watcher_id = i.id) as latest_window_end,
         -- Entities + parent info for entityInfoForUrl / entitiesForTemplate
@@ -828,6 +832,7 @@ async function getWatcherImpl(
           version_sources: watcherRow.sel_version_version_sources,
           classifiers: watcherRow.sel_version_classifiers,
           json_template: watcherRow.sel_version_json_template,
+          keying_config: watcherRow.sel_version_keying_config,
         }
       : null;
 
@@ -850,6 +855,19 @@ async function getWatcherImpl(
     // Sources come from watcher row (or version if present)
     const watcherSources = parseWatcherSources(watcherRow.sources);
 
+    // Render home: an entity-typed watcher with NO inline json_template renders
+    // its window via the target entity type's render (consolidation — render
+    // lives on the type, sibling of the extraction-schema derivation). The client
+    // iterates the record array at entity_render_path, rendering each record with
+    // entity_type_render (the same template the entity detail page uses).
+    const derivedRender = version?.json_template
+      ? null
+      : await deriveWatcherRender(
+          sql,
+          ctx.organizationId,
+          (version?.keying_config as KeyingConfig | null | undefined) ?? null
+        );
+
     watcherMetadata = {
       watcher_id: watcherRow.watcher_id,
       watcher_name: watcherRow.name || (version?.name as string) || 'Watcher',
@@ -866,6 +884,9 @@ async function getWatcherImpl(
       description: (version?.description as string) || undefined,
       extraction_schema: version?.extraction_schema as Record<string, unknown> | undefined,
       json_template: version?.json_template || undefined,
+      keying_config: (version?.keying_config as KeyingConfig | null | undefined) ?? undefined,
+      entity_type_render: derivedRender?.render,
+      entity_render_path: derivedRender?.entityPath,
       rendered_prompt: version?.prompt
         ? renderPromptPreview(version.prompt as string, entitiesForTemplate)
         : undefined,

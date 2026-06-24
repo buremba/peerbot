@@ -199,7 +199,7 @@ function Hero() {
   };
 
   return (
-    <section class="relative overflow-hidden px-4 pb-12 pt-20 text-center sm:pb-16 sm:pt-28">
+    <section class="relative overflow-hidden px-4 pb-12 pt-36 text-center sm:pb-16 sm:pt-44">
       <CanvasAurora
         color1={[0.2, 0.35, 0.95]}
         color2={[0.85, 0.15, 0.4]}

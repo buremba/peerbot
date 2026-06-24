@@ -34,7 +34,7 @@ const latestPosts = await getLatestPosts(3);
     }}
   >
     <Nav client:load currentPath={Astro.url.pathname} />
-    <main class="relative z-[1]">
+    <main class="relative z-[1] -mt-16">
       <LandingPage
         client:load
         defaultUseCaseId={showcase.id}

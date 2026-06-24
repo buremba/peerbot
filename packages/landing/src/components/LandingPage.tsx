@@ -5,6 +5,7 @@ import snippetsManifest from "../generated/landing-snippets.json";
 import { GITHUB_CONNECTORS_BLOB_URL, GITHUB_EXAMPLES_URL } from "../lib/urls";
 import { getLobuBaseUrl } from "../use-case-showcases";
 import { CodeBlock, type CodeSnippet } from "./CodeBlock";
+import { CanvasAurora } from "./CanvasAurora";
 import { CTA } from "./CTA";
 import { LatestBlogPosts, type LatestBlogPost } from "./LatestBlogPosts";
 import {
@@ -432,6 +433,33 @@ const FEATURED_EXAMPLE_SLUGS = [
   "agent-community",
 ] as const;
 
+const SHADER_PALETTES: Array<{
+  color1: [number, number, number];
+  color2: [number, number, number];
+  color3: [number, number, number];
+}> = [
+  {
+    color1: [0.1, 0.6, 0.8], // Cyan/Teal
+    color2: [0.2, 0.3, 0.95], // Deep Blue
+    color3: [0.5, 0.1, 0.85], // Violet
+  },
+  {
+    color1: [0.1, 0.8, 0.4], // Emerald
+    color2: [0.1, 0.5, 0.8], // Teal/Blue
+    color3: [0.9, 0.6, 0.1], // Orange/Gold
+  },
+  {
+    color1: [0.85, 0.15, 0.40], // Magenta
+    color2: [0.5, 0.1, 0.85], // Violet
+    color3: [0.2, 0.3, 0.95], // Deep Blue
+  },
+  {
+    color1: [0.95, 0.3, 0.15], // Red-Orange
+    color2: [0.95, 0.6, 0.15], // Orange-Gold
+    color3: [0.85, 0.15, 0.70], // Pink/Rose
+  }
+];
+
 function BrowseExamplesSection() {
   const bySlug = new Map(snippets.examples.map((ex) => [ex.slug, ex]));
   const featured = FEATURED_EXAMPLE_SLUGS.map((slug) =>
@@ -454,9 +482,9 @@ function BrowseExamplesSection() {
           </p>
         </div>
         <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
-          {featured.map((ex) => (
+          {featured.map((ex, index) => (
             <a
-              class="flex flex-col rounded-lg border p-4 transition-colors hover:border-[color:var(--color-tg-accent)]"
+              class="relative overflow-hidden group flex flex-col rounded-lg border p-4 transition-colors hover:border-[color:var(--color-tg-accent)]"
               href={`/for/${ex.slug}`}
               key={ex.slug}
               style={{
@@ -464,15 +492,25 @@ function BrowseExamplesSection() {
                 backgroundColor: "var(--color-page-surface)",
               }}
             >
+              <CanvasAurora
+                color1={SHADER_PALETTES[index % SHADER_PALETTES.length].color1}
+                color2={SHADER_PALETTES[index % SHADER_PALETTES.length].color2}
+                color3={SHADER_PALETTES[index % SHADER_PALETTES.length].color3}
+                speed={0.12}
+                scale={1.4}
+                opacity={0.5}
+                blur="10px"
+                className="absolute inset-0 z-0 h-full w-full pointer-events-none transition-opacity duration-500 opacity-40 group-hover:opacity-60"
+              />
               <span
-                class="mb-2 text-[14px] font-semibold"
+                class="relative z-10 mb-2 text-[14px] font-semibold"
                 style={{ color: "var(--color-page-text)" }}
               >
                 {ex.label}
               </span>
               {ex.description ? (
                 <span
-                  class="text-[13px] leading-[1.5]"
+                  class="relative z-10 text-[13px] leading-[1.5]"
                   style={{ color: "var(--color-page-text-muted)" }}
                 >
                   {ex.description}
@@ -832,39 +870,51 @@ function RunAnywhereSection() {
         </SectionHeading>
       </div>
       <div class="grid gap-6 md:grid-cols-3">
-        {cards.map((card) => (
+        {cards.map((card, index) => (
           <div
             key={card.title}
-            class="flex min-w-0 flex-col rounded-lg border p-6"
+            class="relative overflow-hidden group flex min-w-0 flex-col rounded-lg border p-6"
             style={{
               borderColor: "var(--color-page-border)",
               backgroundColor: "var(--color-page-surface)",
             }}
           >
-            <Eyebrow>{card.eyebrow}</Eyebrow>
-            <h3
-              class="mb-2 text-[1.05rem] font-bold tracking-tight"
-              style={{ color: "var(--color-page-text)" }}
-            >
-              {card.title}
-            </h3>
-            <p
-              class="text-[14.5px] leading-[1.55]"
-              style={{ color: "var(--color-page-text-muted)" }}
-            >
-              {card.body}
-            </p>
-            <div class="mt-auto flex flex-wrap gap-x-4 gap-y-1 pt-4">
-              {card.links.map((link) => (
-                <a
-                  key={link.href}
-                  href={link.href}
-                  class="inline-flex items-center gap-1 font-mono text-[12px] text-[color:var(--color-page-text-muted)] transition-colors hover:text-[color:var(--color-tg-accent)]"
-                >
-                  {link.label}
-                  <span aria-hidden="true">↗</span>
-                </a>
-              ))}
+            <CanvasAurora
+              color1={SHADER_PALETTES[(index + 2) % SHADER_PALETTES.length].color1}
+              color2={SHADER_PALETTES[(index + 2) % SHADER_PALETTES.length].color2}
+              color3={SHADER_PALETTES[(index + 2) % SHADER_PALETTES.length].color3}
+              speed={0.1}
+              scale={1.5}
+              opacity={0.5}
+              blur="10px"
+              className="absolute inset-0 z-0 h-full w-full pointer-events-none transition-opacity duration-500 opacity-40 group-hover:opacity-60"
+            />
+            <div class="relative z-10 flex flex-col h-full">
+              <Eyebrow>{card.eyebrow}</Eyebrow>
+              <h3
+                class="mb-2 text-[1.05rem] font-bold tracking-tight"
+                style={{ color: "var(--color-page-text)" }}
+              >
+                {card.title}
+              </h3>
+              <p
+                class="text-[14.5px] leading-[1.55]"
+                style={{ color: "var(--color-page-text-muted)" }}
+              >
+                {card.body}
+              </p>
+              <div class="mt-auto flex flex-wrap gap-x-4 gap-y-1 pt-4">
+                {card.links.map((link) => (
+                  <a
+                    key={link.href}
+                    href={link.href}
+                    class="inline-flex items-center gap-1 font-mono text-[12px] text-[color:var(--color-page-text-muted)] transition-colors hover:text-[color:var(--color-tg-accent)]"
+                  >
+                    {link.label}
+                    <span aria-hidden="true">↗</span>
+                  </a>
+                ))}
+              </div>
             </div>
           </div>
         ))}

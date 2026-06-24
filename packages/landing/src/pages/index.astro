@@ -4,7 +4,6 @@ import "../globals.css";
 import { Footer } from "../components/Footer";
 import { LandingPage } from "../components/LandingPage";
 import { Nav } from "../components/Nav";
-import { CanvasAurora } from "../components/CanvasAurora";
 import { getLatestPosts } from "../latest-posts";
 
 const latestPosts = await getLatestPosts(3);
@@ -18,14 +17,11 @@ const latestPosts = await getLatestPosts(3);
       "--grid-max-w": "72rem",
     }}
   >
-    <CanvasAurora client:load />
-    <div class="relative z-[1]">
-      <Nav client:load currentPath={Astro.url.pathname} />
-      <main class="relative z-[1]">
-        <LandingPage client:load latestPosts={latestPosts} />
-      </main>
-      <Footer />
-    </div>
+    <Nav client:load currentPath={Astro.url.pathname} />
+    <main class="relative z-[1]">
+      <LandingPage client:load latestPosts={latestPosts} />
+    </main>
+    <Footer />
   </div>
 </BaseLayout>
 

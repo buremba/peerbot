@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
-/* tweakcn "Retro" theme fonts */
-@import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap');
+/* tweakcn "Modern/Hyperspell" theme fonts */
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap');
 
 /* Scan gateway settings components so their Tailwind classes are generated */
 @source "../../gateway/src/routes/public/settings-page/**/*.tsx";
@@ -13,10 +13,10 @@
  * element.style — winning over every CSS rule including @layer theme.
  */
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --font-serif: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-serif: "Instrument Serif", Georgia, serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
-  --font-display: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-display: "Instrument Serif", Georgia, serif;
 
   --color-page-bg: oklch(0.9808 0.0079 73.7452);
   --color-page-bg-elevated: oklch(0.9724 0.0096 72.6627);
@@ -58,7 +58,7 @@ html {
   overflow-x: hidden;
   background-color: var(--color-page-bg);
   color: var(--color-page-text);
-  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-family: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -71,7 +71,7 @@ h1,
 h2,
 h3,
 .font-display {
-  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  font-family: "Instrument Serif", Georgia, serif;
   letter-spacing: -0.03em;
 }
 

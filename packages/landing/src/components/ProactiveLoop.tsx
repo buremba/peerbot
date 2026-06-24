@@ -33,6 +33,7 @@ import { GITHUB_EXAMPLES_URL } from "../lib/urls";
 import type { UseCase } from "../types";
 import { messagingChannels } from "./platforms";
 import { SampleChat, SLACK_THEME } from "./SampleChat";
+import { CanvasAurora } from "./CanvasAurora";
 
 const ACCENT = "var(--color-tg-accent)";
 const RISK = "#f5a524"; // amber: "at risk"
@@ -335,8 +336,18 @@ function SourcesCardImpl({
   class?: string;
 }) {
   return (
-    <Card class={cls}>
-      <div class="flex flex-wrap items-center gap-x-4 gap-y-2.5">
+    <Card class={`${cls} relative overflow-hidden group`}>
+      <CanvasAurora
+        color1={[0.20, 0.35, 0.95]} // Deep Blue
+        color2={[0.85, 0.15, 0.40]} // Magenta/Pink
+        color3={[0.95, 0.60, 0.15]} // Vibrant Orange
+        speed={0.15}
+        scale={1.2}
+        opacity={0.75}
+        blur="12px"
+        className="absolute inset-0 z-0 h-full w-full pointer-events-none transition-opacity duration-500 opacity-75 group-hover:opacity-90"
+      />
+      <div class="relative z-10 flex flex-wrap items-center gap-x-4 gap-y-2.5">
         {connectors.items.map((c) =>
           c.icon ? (
             <BrandLogo key={c.label} icon={c.icon} />
@@ -350,14 +361,14 @@ function SourcesCardImpl({
       </div>
 
       <div
-        class="text-[11.5px] leading-snug"
+        class="relative z-10 text-[11.5px] leading-snug"
         style={{ color: "var(--color-page-text-muted)" }}
       >
         {connectors.caption}
       </div>
 
       {connectors.codeLine ? (
-        <div class="flex items-center gap-2">
+        <div class="relative z-10 flex items-center gap-2">
           <span
             class="font-mono text-[12px]"
             style={{ color: ACCENT }}
@@ -375,7 +386,7 @@ function SourcesCardImpl({
       ) : null}
 
       <div
-        class="mt-auto flex items-center justify-between gap-3 border-t pt-2"
+        class="relative z-10 mt-auto flex items-center justify-between gap-3 border-t pt-2"
         style={{ borderColor: "var(--color-page-border)" }}
       >
         <span

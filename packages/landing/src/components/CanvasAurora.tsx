@@ -11,6 +11,11 @@ const fragmentShaderSource = `
   precision mediump float;
   uniform float u_time;
   uniform vec2 u_resolution;
+  uniform vec3 u_color1;
+  uniform vec3 u_color2;
+  uniform vec3 u_color3;
+  uniform float u_speed;
+  uniform float u_scale;
 
   // Modulo 289 without a division (only multiplications)
   vec3 mod289(vec3 x) {
@@ -38,7 +43,7 @@ const fragmentShaderSource = `
     i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
     vec4 x12 = x0.xyxy + C.xxzz;
     x12.xy -= i1;
-    i = mod289(i); // Avoid truncation effects in permutation
+    i = mod289(i);
     vec3 p = permute(permute(i.y + vec3(0.0, i1.y, 1.0))
                    + i.x + vec3(0.0, i1.x, 1.0));
     vec3 m = max(0.5 - vec3(dot(x0, x0), dot(x12.xy, x12.xy), dot(x12.zw, x12.zw)), 0.0);
@@ -60,33 +65,29 @@ const fragmentShaderSource = `
     st.x *= u_resolution.x / u_resolution.y;
 
     // Move the noise field over time
-    vec2 pos = vec2(st * 1.0);
-    float time = u_time * 0.2;
+    vec2 pos = vec2(st * u_scale);
+    float time = u_time * u_speed;
 
     // Generate complex flowing noise by layering
     float n = snoise(pos + time);
     n += 0.5 * snoise(pos * 2.0 - time * 0.5);
     n += 0.25 * snoise(pos * 4.0 + time * 0.25);
     
-    // Normalize noise a bit
+    // Normalize noise to [0, 1]
     n = n * 0.5 + 0.5;
 
-    // Base colors (mimicking Hyperspell's vibrant aurora)
-    vec3 color1 = vec3(0.85, 0.15, 0.40); // Magenta/Pink
-    vec3 color2 = vec3(0.20, 0.35, 0.95); // Deep Blue
-    vec3 color3 = vec3(0.95, 0.60, 0.15); // Vibrant Orange
-    vec3 bgCol  = vec3(0.08, 0.08, 0.09); // Dark background
+    // Mix the aurora colors based on noise
+    vec3 colorMix = mix(u_color2, u_color1, smoothstep(0.3, 0.7, n));
+    colorMix = mix(colorMix, u_color3, smoothstep(0.6, 1.0, n));
 
-    // Mix colors based on noise ranges
-    vec3 finalColor = mix(bgCol, color2, smoothstep(0.0, 0.5, n));
-    finalColor = mix(finalColor, color1, smoothstep(0.3, 0.7, n));
-    finalColor = mix(finalColor, color3, smoothstep(0.6, 1.0, n));
+    // Calculate intensity/alpha band based on noise
+    float intensity = smoothstep(0.15, 0.55, n) * smoothstep(1.0, 0.55, n);
 
     // Add a dark vignette fade so it blends into the edges smoothly
-    float vignette = smoothstep(1.5, 0.0, length(st - vec2(0.5, 0.5)));
-    finalColor = mix(bgCol, finalColor, vignette);
+    float vignette = smoothstep(1.2, 0.0, length(st - vec2(0.5, 0.5)));
+    float finalAlpha = intensity * vignette;
 
-    gl_FragColor = vec4(finalColor, 1.0);
+    gl_FragColor = vec4(colorMix, finalAlpha);
   }
 `;
 
@@ -103,14 +104,43 @@ function createShader(gl: WebGLRenderingContext, type: number, source: string) {
   return shader;
 }
 
-export function CanvasAurora() {
+export interface CanvasAuroraProps {
+  color1?: [number, number, number]; // [r, g, b] 0-1
+  color2?: [number, number, number];
+  color3?: [number, number, number];
+  speed?: number;
+  scale?: number;
+  opacity?: number;
+  blur?: string;
+  className?: string;
+}
+
+export function CanvasAurora({
+  color1 = [0.85, 0.15, 0.40], // Magenta/Pink
+  color2 = [0.20, 0.35, 0.95], // Deep Blue
+  color3 = [0.95, 0.60, 0.15], // Vibrant Orange
+  speed = 0.2,
+  scale = 1.0,
+  opacity = 0.7,
+  blur = "40px",
+  className = "",
+}: CanvasAuroraProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const propsRef = useRef({ color1, color2, color3, speed, scale });
+
+  useEffect(() => {
+    propsRef.current = { color1, color2, color3, speed, scale };
+  }, [color1, color2, color3, speed, scale]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const gl = canvas.getContext("webgl");
+    const gl = canvas.getContext("webgl", { alpha: true, premultipliedAlpha: false });
     if (!gl) return;
+
+    // Enable standard alpha blending
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
     const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
     const fragmentShader = createShader(
@@ -148,6 +178,11 @@ export function CanvasAurora() {
 
     const timeLocation = gl.getUniformLocation(program, "u_time");
     const resolutionLocation = gl.getUniformLocation(program, "u_resolution");
+    const color1Location = gl.getUniformLocation(program, "u_color1");
+    const color2Location = gl.getUniformLocation(program, "u_color2");
+    const color3Location = gl.getUniformLocation(program, "u_color3");
+    const speedLocation = gl.getUniformLocation(program, "u_speed");
+    const scaleLocation = gl.getUniformLocation(program, "u_scale");
 
     let animationFrameId: number;
     const startTime = Date.now();
@@ -165,6 +200,13 @@ export function CanvasAurora() {
       gl.uniform2f(resolutionLocation, gl.canvas.width, gl.canvas.height);
       gl.uniform1f(timeLocation, (Date.now() - startTime) / 1000.0);
 
+      const currentProps = propsRef.current;
+      gl.uniform3f(color1Location, currentProps.color1[0], currentProps.color1[1], currentProps.color1[2]);
+      gl.uniform3f(color2Location, currentProps.color2[0], currentProps.color2[1], currentProps.color2[2]);
+      gl.uniform3f(color3Location, currentProps.color3[0], currentProps.color3[1], currentProps.color3[2]);
+      gl.uniform1f(speedLocation, currentProps.speed);
+      gl.uniform1f(scaleLocation, currentProps.scale);
+
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       animationFrameId = requestAnimationFrame(render);
     };
@@ -178,15 +220,13 @@ export function CanvasAurora() {
   }, []);
 
   return (
-    <div
-      className="pointer-events-none absolute inset-0 z-0 overflow-hidden"
-      aria-hidden="true"
-    >
-      <canvas
-        ref={canvasRef}
-        className="absolute left-1/2 top-0 h-[800px] w-[1400px] -translate-x-1/2 opacity-70 mix-blend-screen"
-        style={{ filter: "blur(40px)" }}
-      />
-    </div>
+    <canvas
+      ref={canvasRef}
+      className={className}
+      style={{
+        filter: blur ? `blur(${blur})` : undefined,
+        opacity: opacity,
+      }}
+    />
   );
 }

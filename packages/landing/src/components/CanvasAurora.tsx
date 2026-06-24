@@ -61,8 +61,9 @@ const fragmentShaderSource = `
   }
 
   void main() {
+    float aspect = u_resolution.x / u_resolution.y;
     vec2 st = gl_FragCoord.xy / u_resolution.xy;
-    st.x *= u_resolution.x / u_resolution.y;
+    st.x *= aspect;
 
     // Move the noise field over time
     vec2 pos = vec2(st * u_scale);
@@ -83,8 +84,9 @@ const fragmentShaderSource = `
     // Calculate intensity/alpha band based on noise
     float intensity = smoothstep(0.15, 0.55, n) * smoothstep(1.0, 0.55, n);
 
-    // Add a dark vignette fade so it blends into the edges smoothly
-    float vignette = smoothstep(1.2, 0.0, length(st - vec2(0.5, 0.5)));
+    // Add a dark vignette fade centered on the right side so it blends into the edges smoothly
+    vec2 center = vec2(max(0.5, aspect - 0.4), 0.5);
+    float vignette = smoothstep(1.2, 0.0, length(st - center));
     float finalAlpha = intensity * vignette;
 
     gl_FragColor = vec4(colorMix, finalAlpha);

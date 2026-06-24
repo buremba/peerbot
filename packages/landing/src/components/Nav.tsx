@@ -37,10 +37,16 @@ const CONNECT_MENU: MegaMenu = {
       variant: "rich",
       links: [
         {
-          label: "Claude",
-          description: "Claude Code, Desktop, and claude.ai via MCP",
+          label: "Claude Desktop",
+          description: "Connect Claude Desktop and claude.ai via MCP",
           href: "/connect-from/claude/",
           emoji: "✳️",
+        },
+        {
+          label: "Claude Code",
+          description: "Plug memory directly into the Claude CLI",
+          href: "/connect-from/claude/",
+          emoji: "💻",
         },
         {
           label: "ChatGPT",

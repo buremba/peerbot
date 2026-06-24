@@ -97,6 +97,12 @@
       "githubUrl": "https://github.com/lobu-ai/lobu/tree/main/examples/office-bot"
     },
     {
+      "slug": "personal-agent",
+      "label": "Buremba",
+      "description": "Personal agent tracking finances, people, companies, subscriptions, trips, and topics.",
+      "githubUrl": "https://github.com/lobu-ai/lobu/tree/main/examples/personal-agent"
+    },
+    {
       "slug": "personal-finance",
       "label": "Personal Finance",
       "description": "UK Self Assessment helper — captures financial activity across the tax year and assembles SA100 + supplementary pages.",

@@ -70,8 +70,6 @@ Repo: https://github.com/lobu-ai/lobu. Docs: https://lobu.ai/getting-started/`;
 
 // The canonical "test it" command, kept in sync with InstallSection.
 const QUICKSTART_CMD = "npx @lobu/cli@latest init my-agent";
-const CLAUDE_MCP_CMD =
-  "claude mcp add --transport http lobu https://lobu.ai/mcp";
 
 export function LandingPage(props: {
   latestPosts?: LatestBlogPost[];
@@ -186,16 +184,12 @@ function SectionHeading(props: {
 function Hero() {
   // Tracks which of the two copy actions fired last, so each shows its own
   // confirmation: the quickstart command (primary) or the setup prompt (sub).
-  const [copied, setCopied] = useState<"cmd" | "mcp" | "prompt" | null>(null);
+  const [copied, setCopied] = useState<"cmd" | "prompt" | null>(null);
 
-  const copy = async (which: "cmd" | "mcp" | "prompt") => {
+  const copy = async (which: "cmd" | "prompt") => {
     try {
       await navigator.clipboard.writeText(
-        which === "cmd"
-          ? QUICKSTART_CMD
-          : which === "mcp"
-            ? CLAUDE_MCP_CMD
-            : SETUP_PROMPT
+        which === "cmd" ? QUICKSTART_CMD : SETUP_PROMPT
       );
       setCopied(which);
       window.setTimeout(() => setCopied(null), 2200);
@@ -287,33 +281,6 @@ function Hero() {
             <CopyIcon copied={copied === "cmd"} />
           </button>
           {copied === "cmd" ? <span>copied</span> : null}
-        </p>
-        <p
-          class="hero-rise hero-rise-4 mt-2.5 flex flex-wrap items-center justify-center gap-2 text-[13px]"
-          style={{ color: "var(--color-page-text-muted)" }}
-        >
-          Or plug memory into Claude Code:
-          <button
-            type="button"
-            class="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-[12.5px] transition-colors hover:border-[color:var(--color-tg-accent)]"
-            onClick={() => copy("mcp")}
-            style={{
-              borderColor: "var(--color-page-border)",
-              color: "var(--color-page-text)",
-            }}
-          >
-            <span style={{ opacity: 0.5 }}>$</span>
-            {CLAUDE_MCP_CMD}
-            <CopyIcon copied={copied === "mcp"} />
-          </button>
-          {copied === "mcp" ? <span>copied</span> : null}
-          <a
-            href="/connect-from/claude/"
-            class="font-medium transition-colors hover:text-[color:var(--color-tg-accent)]"
-            style={{ color: "var(--color-page-text-muted)" }}
-          >
-            Setup docs →
-          </a>
         </p>
       </Container>
     </section>

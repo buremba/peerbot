@@ -6,26 +6,42 @@
  * downstream consumers (intro-drafting agents, weekly digest, audit log) can
  * iterate over a single source of truth instead of re-running the matcher.
  */
-import { Type, type Static } from "@sinclair/typebox";
-import { Value } from "@sinclair/typebox/value";
 import type { ReactionContext } from "@lobu/connector-sdk";
 
-export const input = Type.Object({
-  signals: Type.Optional(
-    Type.Array(
-      Type.Object({
-        member_a: Type.String(),
-        member_b: Type.String(),
-        reason: Type.String(),
-        confidence: Type.Optional(Type.Number()),
-      })
-    )
-  ),
-});
-type MatchData = Static<typeof input>;
+// Plain JSON Schema (no TypeBox — importing it into a reaction bundle breaks the
+// isolate's SDK client proxy). The host validates `ctx.extracted_data` against
+// this before the reaction runs, so the handler just reads it with a TS cast.
+export const input = {
+  type: "object",
+  properties: {
+    signals: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          member_a: { type: "string" },
+          member_b: { type: "string" },
+          reason: { type: "string" },
+          confidence: { type: "number" },
+        },
+        required: ["member_a", "member_b", "reason"],
+      },
+    },
+  },
+  required: [],
+};
+
+interface MatchData {
+  signals?: Array<{
+    member_a: string;
+    member_b: string;
+    reason: string;
+    confidence?: number;
+  }>;
+}
 
 export default async (ctx: ReactionContext, client: any): Promise<void> => {
-  const data: MatchData = Value.Parse(input, ctx.extracted_data);
+  const data = ctx.extracted_data as MatchData;
   const signals = data.signals ?? [];
   if (signals.length === 0) return;
 

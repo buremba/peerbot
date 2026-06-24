@@ -24,27 +24,28 @@
  * (the operation's poll is cancelled, see waitForDeviceActionRun's abortSignal)
  * and the agent's summary still stands.
  */
-import { Type, type Static } from "@sinclair/typebox";
-import { Value } from "@sinclair/typebox/value";
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
 /**
- * The reaction owns its input contract: it declares the shape it consumes and
- * validates `ctx.extracted_data` against it. One source of truth (this schema is
- * also the TS type via `Static`), enforced by the consumer — the watcher authors
- * no schema. `Value.Parse` throws on a mismatch, failing the run loudly rather
- * than acting on malformed data.
+ * The reaction owns its input contract: it declares the shape it consumes as a
+ * plain JSON Schema (no TypeBox — importing it into a reaction bundle breaks the
+ * isolate's SDK client proxy). The host validates `ctx.extracted_data` against
+ * this schema before the reaction runs, failing the run loudly on a mismatch
+ * rather than acting on malformed data, so the handler just reads it with a cast.
  */
-export const input = Type.Object({
-  outcome: Type.Union([
-    Type.Literal("placed"),
-    Type.Literal("manual"),
-    Type.Literal("cancelled"),
-    Type.Literal("no-run"),
-  ]),
-  restaurant: Type.Optional(Type.String()),
-});
-type Input = Static<typeof input>;
+export const input = {
+  type: "object",
+  properties: {
+    outcome: { enum: ["placed", "manual", "cancelled", "no-run"] },
+    restaurant: { type: "string" },
+  },
+  required: ["outcome"],
+};
+
+interface Input {
+  outcome: "placed" | "manual" | "cancelled" | "no-run";
+  restaurant?: string;
+}
 
 interface SearchOutput {
   restaurants?: Array<{ name: string; url: string }>;
@@ -59,8 +60,9 @@ export default async (
   ctx: ReactionContext,
   client: ReactionClient
 ): Promise<void> => {
-  // Validate + type the payload against this reaction's own contract.
-  const data: Input = Value.Parse(input, ctx.extracted_data);
+  // The host has already validated the payload against this reaction's own
+  // contract (`input`); read it with a cast.
+  const data = ctx.extracted_data as Input;
   const restaurant = (data.restaurant ?? "").trim();
   // Only chase a menu when the run actually settled on a restaurant.
   if (!restaurant || (data.outcome !== "placed" && data.outcome !== "manual")) {

@@ -8,31 +8,49 @@
  * actions to the team via `client.notifications.send` (fans out to the #leads
  * Slack connection + the in-app inbox).
  */
-import { Type, type Static } from "@sinclair/typebox";
-import { Value } from "@sinclair/typebox/value";
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
-export const input = Type.Object({
-  new_leads: Type.Optional(
-    Type.Array(
-      Type.Object({
-        name: Type.String(),
-        source: Type.String(),
-        stage: Type.String(),
-        why: Type.Optional(Type.String()),
-      })
-    )
-  ),
-  recommended_actions: Type.Optional(Type.Array(Type.String())),
-  notable: Type.Optional(Type.Boolean()),
-});
-type TriageData = Static<typeof input>;
+// Plain JSON Schema (no TypeBox — importing it into a reaction bundle breaks the
+// isolate's SDK client proxy). The host validates `ctx.extracted_data` against
+// this before the reaction runs, so the handler just reads it with a TS cast.
+export const input = {
+  type: "object",
+  properties: {
+    new_leads: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          source: { type: "string" },
+          stage: { type: "string" },
+          why: { type: "string" },
+        },
+        required: ["name", "source", "stage"],
+      },
+    },
+    recommended_actions: { type: "array", items: { type: "string" } },
+    notable: { type: "boolean" },
+  },
+  required: [],
+};
+
+interface TriageData {
+  new_leads?: Array<{
+    name: string;
+    source: string;
+    stage: string;
+    why?: string;
+  }>;
+  recommended_actions?: string[];
+  notable?: boolean;
+}
 
 export default async (
   ctx: ReactionContext,
   client: ReactionClient
 ): Promise<void> => {
-  const data: TriageData = Value.Parse(input, ctx.extracted_data);
+  const data = ctx.extracted_data as TriageData;
   if (!data.notable) return;
 
   const actions = data.recommended_actions ?? [];

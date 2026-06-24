@@ -5,28 +5,41 @@
  * persist a `health_change` event so the renewal-risk view + weekly digest
  * have a stable record without re-extracting from the CRM stream.
  */
-import { Type, type Static } from "@sinclair/typebox";
-import { Value } from "@sinclair/typebox/value";
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
-const RISK = Type.Union([
-  Type.Literal("low"),
-  Type.Literal("medium"),
-  Type.Literal("high"),
-]);
-export const input = Type.Object({
-  account_changes: Type.Optional(
-    Type.Array(
-      Type.Object({
-        account: Type.String(),
-        previous_risk: RISK,
-        current_risk: RISK,
-        signals: Type.Array(Type.String()),
-      })
-    )
-  ),
-});
-type HealthData = Static<typeof input>;
+const RISK = { enum: ["low", "medium", "high"] };
+
+// Plain JSON Schema (no TypeBox — importing it into a reaction bundle breaks the
+// isolate's SDK client proxy). The host validates `ctx.extracted_data` against
+// this before the reaction runs, so the handler just reads it with a TS cast.
+export const input = {
+  type: "object",
+  properties: {
+    account_changes: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          account: { type: "string" },
+          previous_risk: RISK,
+          current_risk: RISK,
+          signals: { type: "array", items: { type: "string" } },
+        },
+        required: ["account", "previous_risk", "current_risk", "signals"],
+      },
+    },
+  },
+  required: [],
+};
+
+interface HealthData {
+  account_changes?: Array<{
+    account: string;
+    previous_risk: "low" | "medium" | "high";
+    current_risk: "low" | "medium" | "high";
+    signals: string[];
+  }>;
+}
 
 const RISK_ORDER = { low: 0, medium: 1, high: 2 } as const;
 
@@ -34,7 +47,7 @@ export default async (
   ctx: ReactionContext,
   client: ReactionClient
 ): Promise<void> => {
-  const data: HealthData = Value.Parse(input, ctx.extracted_data);
+  const data = ctx.extracted_data as HealthData;
   const changes = data.account_changes ?? [];
   const escalations = changes.filter(
     (c) => RISK_ORDER[c.current_risk] > RISK_ORDER[c.previous_risk]

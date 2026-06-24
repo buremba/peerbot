@@ -4,23 +4,34 @@
  * Persists variance events when unreconciled transactions or new anomalies
  * are detected during the daily reconciliation pass.
  */
-import { Type, type Static } from "@sinclair/typebox";
-import { Value } from "@sinclair/typebox/value";
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
-export const input = Type.Object({
-  unreconciled_count: Type.Number(),
-  new_variances: Type.Array(Type.String()),
-  approaching_deadlines: Type.Array(Type.String()),
-  payment_risks: Type.Optional(Type.Array(Type.String())),
-});
-type ReconciliationData = Static<typeof input>;
+// Plain JSON Schema (no TypeBox — importing it into a reaction bundle breaks the
+// isolate's SDK client proxy). The host validates `ctx.extracted_data` against
+// this before the reaction runs, so the handler just reads it with a TS cast.
+export const input = {
+  type: "object",
+  properties: {
+    unreconciled_count: { type: "number" },
+    new_variances: { type: "array", items: { type: "string" } },
+    approaching_deadlines: { type: "array", items: { type: "string" } },
+    payment_risks: { type: "array", items: { type: "string" } },
+  },
+  required: ["unreconciled_count", "new_variances", "approaching_deadlines"],
+};
+
+interface ReconciliationData {
+  unreconciled_count: number;
+  new_variances: string[];
+  approaching_deadlines: string[];
+  payment_risks?: string[];
+}
 
 export default async (
   ctx: ReactionContext,
   client: ReactionClient
 ): Promise<void> => {
-  const data: ReconciliationData = Value.Parse(input, ctx.extracted_data);
+  const data = ctx.extracted_data as ReconciliationData;
 
   const hasIssues =
     data.unreconciled_count > 0 ||

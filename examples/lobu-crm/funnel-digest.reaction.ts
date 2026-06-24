@@ -12,23 +12,37 @@
  *      the org's active bot connections (the #leads Slack connection) and the
  *      in-app inbox. `watcher_source` attributes it to this window.
  */
-import { Type, type Static } from "@sinclair/typebox";
-import { Value } from "@sinclair/typebox/value";
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
-export const input = Type.Object({
-  top_action: Type.Optional(Type.String()),
-  stage_counts: Type.Optional(Type.Record(Type.String(), Type.Number())),
-  conversations_this_week: Type.Optional(Type.Number()),
-  gap: Type.Optional(Type.String()),
-});
-type DigestData = Static<typeof input>;
+// Plain JSON Schema (no TypeBox — importing it into a reaction bundle breaks the
+// isolate's SDK client proxy). The host validates `ctx.extracted_data` against
+// this before the reaction runs, so the handler just reads it with a TS cast.
+export const input = {
+  type: "object",
+  properties: {
+    top_action: { type: "string" },
+    stage_counts: {
+      type: "object",
+      additionalProperties: { type: "number" },
+    },
+    conversations_this_week: { type: "number" },
+    gap: { type: "string" },
+  },
+  required: [],
+};
+
+interface DigestData {
+  top_action?: string;
+  stage_counts?: Record<string, number>;
+  conversations_this_week?: number;
+  gap?: string;
+}
 
 export default async (
   ctx: ReactionContext,
   client: ReactionClient
 ): Promise<void> => {
-  const data: DigestData = Value.Parse(input, ctx.extracted_data);
+  const data = ctx.extracted_data as DigestData;
   const stageSummary = Object.entries(data.stage_counts ?? {})
     .map(([stage, n]) => `${stage}: ${n}`)
     .join(", ");

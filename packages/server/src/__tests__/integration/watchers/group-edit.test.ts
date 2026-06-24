@@ -162,6 +162,45 @@ describe('watcher group edit contract', () => {
     expect(siblingRow.reaction_script_compiled).not.toBeNull();
   });
 
+  it('set_reaction_script extracts the exported input schema to reaction_input_schema', async () => {
+    const sql = getTestDb();
+    const workspace = await TestWorkspace.create({ name: 'Reaction Input Org' });
+    const { watcherId: rootId } = await seedRootWatcher(workspace, 'react-input');
+
+    await manageWatchers(
+      {
+        action: 'set_reaction_script',
+        watcher_id: String(rootId),
+        // `input` is a PLAIN JSON Schema (no typebox — it breaks the isolate
+        // client). The host validates extracted_data against it.
+        reaction_script:
+          'export const input = { type: "object", properties: { s: { type: "string" } }, required: ["s"] };\n' +
+          'export default async function reaction(ctx) { void ctx.extracted_data; }',
+      } as never,
+      {} as Env,
+      ownerCtx(workspace)
+    );
+
+    const [row] = await sql`
+      SELECT reaction_input_schema FROM watchers WHERE id = ${rootId}
+    `;
+    const schema = row.reaction_input_schema as Record<string, unknown> | null;
+    expect(schema).not.toBeNull();
+    expect(schema?.type).toBe('object');
+    expect(JSON.stringify(schema)).toContain('"s"');
+
+    // Clearing the script wipes the cached schema too.
+    await manageWatchers(
+      { action: 'set_reaction_script', watcher_id: String(rootId), reaction_script: '' } as never,
+      {} as Env,
+      ownerCtx(workspace)
+    );
+    const [cleared] = await sql`
+      SELECT reaction_input_schema FROM watchers WHERE id = ${rootId}
+    `;
+    expect(cleared.reaction_input_schema ?? null).toBeNull();
+  });
+
   it('create_version cascades current_version_id and name across the whole group', async () => {
     const sql = getTestDb();
     const workspace = await TestWorkspace.create({ name: 'Group Cascade Org' });

@@ -5,32 +5,42 @@
  * rumors) as `founder_activity` events. The opportunity-matcher watcher reads
  * these events to suggest cross-portfolio introductions.
  */
-import { Type, type Static } from "@sinclair/typebox";
-import { Value } from "@sinclair/typebox/value";
 import type { ReactionContext } from "@lobu/connector-sdk";
 
-export const input = Type.Object({
-  signals: Type.Optional(
-    Type.Array(
-      Type.Object({
-        founder: Type.String(),
-        activity_type: Type.String(),
-        summary: Type.String(),
-        importance: Type.Optional(
-          Type.Union([
-            Type.Literal("low"),
-            Type.Literal("medium"),
-            Type.Literal("high"),
-          ])
-        ),
-      })
-    )
-  ),
-});
-type FounderActivityData = Static<typeof input>;
+// Plain JSON Schema (no TypeBox — importing it into a reaction bundle breaks the
+// isolate's SDK client proxy). The host validates `ctx.extracted_data` against
+// this before the reaction runs, so the handler just reads it with a TS cast.
+export const input = {
+  type: "object",
+  properties: {
+    signals: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          founder: { type: "string" },
+          activity_type: { type: "string" },
+          summary: { type: "string" },
+          importance: { enum: ["low", "medium", "high"] },
+        },
+        required: ["founder", "activity_type", "summary"],
+      },
+    },
+  },
+  required: [],
+};
+
+interface FounderActivityData {
+  signals?: Array<{
+    founder: string;
+    activity_type: string;
+    summary: string;
+    importance?: "low" | "medium" | "high";
+  }>;
+}
 
 export default async (ctx: ReactionContext, client: any): Promise<void> => {
-  const data: FounderActivityData = Value.Parse(input, ctx.extracted_data);
+  const data = ctx.extracted_data as FounderActivityData;
   const signals = data.signals ?? [];
   // High-importance only — low-noise channel for the intel feed.
   const notable = signals.filter((s) => s.importance === "high");

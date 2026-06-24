@@ -6,26 +6,42 @@
  * 90+ days are flagged so a curator can decide whether to refresh, retire, or
  * leave them.
  */
-import { Type, type Static } from "@sinclair/typebox";
-import { Value } from "@sinclair/typebox/value";
 import type { ReactionContext } from "@lobu/connector-sdk";
 
-export const input = Type.Object({
-  stale_entries: Type.Optional(
-    Type.Array(
-      Type.Object({
-        entity_type: Type.String(),
-        slug: Type.String(),
-        last_updated: Type.String(),
-        suggested_action: Type.String(),
-      })
-    )
-  ),
-});
-type StaleData = Static<typeof input>;
+// Plain JSON Schema (no TypeBox — importing it into a reaction bundle breaks the
+// isolate's SDK client proxy). The host validates `ctx.extracted_data` against
+// this before the reaction runs, so the handler just reads it with a TS cast.
+export const input = {
+  type: "object",
+  properties: {
+    stale_entries: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          entity_type: { type: "string" },
+          slug: { type: "string" },
+          last_updated: { type: "string" },
+          suggested_action: { type: "string" },
+        },
+        required: ["entity_type", "slug", "last_updated", "suggested_action"],
+      },
+    },
+  },
+  required: [],
+};
+
+interface StaleData {
+  stale_entries?: Array<{
+    entity_type: string;
+    slug: string;
+    last_updated: string;
+    suggested_action: string;
+  }>;
+}
 
 export default async (ctx: ReactionContext, client: any): Promise<void> => {
-  const data: StaleData = Value.Parse(input, ctx.extracted_data);
+  const data = ctx.extracted_data as StaleData;
   const stale = data.stale_entries ?? [];
   if (stale.length === 0) return;
 

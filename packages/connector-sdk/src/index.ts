@@ -2,9 +2,11 @@
 // V1 Integration Platform — Connector SDK
 // =============================================================================
 
-// TypeBox (schema authoring convenience). `Value` lets a watcher reaction
-// validate its own `ctx.extracted_data` against the input schema it declares —
-// the contract lives with the consumer (the reaction), not on the watcher.
+// TypeBox (schema authoring convenience for connector definitions / fact
+// schemas). NOTE: do NOT import these into a watcher reaction — bundling
+// typebox into the isolate breaks the SDK client proxy (see
+// reaction-execute-typebox.test.ts). A reaction declares its `input` as a
+// PLAIN JSON Schema object; the host validates `ctx.extracted_data` against it.
 export type { Static } from '@sinclair/typebox';
 export { Type } from '@sinclair/typebox';
 export { Value } from '@sinclair/typebox/value';

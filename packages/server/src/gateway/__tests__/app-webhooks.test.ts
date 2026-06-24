@@ -497,6 +497,32 @@ describe("app-webhook router (GitHub)", () => {
 		expect(await personRows(ORG)).toHaveLength(0);
 	});
 
+	test("a star with different repo casing matches the feed and uses the feed's canonical origin_id", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		await seedPersonResolutionPrereqs(ORG);
+		const installId = await seedActiveInstall();
+		// Feed config is lowercase acme/api; the delivery uses display casing.
+		await seedGithubFeed({ installId, owner: "acme", name: "api", feedKey: "stargazers" });
+		const app = buildApp();
+
+		const raw = JSON.stringify({
+			action: "created",
+			starred_at: "2026-06-20T10:00:00Z",
+			installation: { id: Number(INSTALLATION_ID) },
+			sender: { login: "Octocat", id: 583231 },
+			repository: { owner: { login: "ACME" }, name: "API" },
+		});
+		const res = await app.fetch(ghDelivery(raw, { deliveryId: "gh-star-case", event: "star" }));
+		expect(res.status).toBe(200);
+		expect((await res.json()).triggered).toBe(true);
+
+		// Matched case-insensitively, and origin_id uses the feed's casing so it
+		// consolidates with the poll (which keys off the feed config, not the payload).
+		const events = await eventRows("github");
+		expect(events.length).toBe(1);
+		expect(events[0].origin_id).toBe("stargazer_acme_api_github_user_id_583231");
+	});
+
 	test("with storeWebhookEvents off, a star falls back to a poll trigger (nothing stored)", async () => {
 		await seedAgentRow(AGENT, { organizationId: ORG });
 		await seedPersonResolutionPrereqs(ORG);

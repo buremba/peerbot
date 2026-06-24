@@ -421,8 +421,8 @@ async function markGithubFeedDue(params: {
 		  AND c.connector_key = 'github'
 		  AND (c.config->>'installation_ref') = ${String(install.id)}
 		  AND f.feed_key = ${feedKey}
-		  AND f.config->>'repo_owner' = ${repo.owner}
-		  AND f.config->>'repo_name' = ${repo.name}
+		  AND lower(f.config->>'repo_owner') = lower(${repo.owner})
+		  AND lower(f.config->>'repo_name') = lower(${repo.name})
 		  AND f.status = 'active'
 		  AND f.deleted_at IS NULL
 		RETURNING f.id
@@ -442,24 +442,39 @@ async function resolveGithubFeedTarget(params: {
 	install: { id: number | string; organizationId: string };
 	repo: { owner: string; name: string };
 	feedKey: string;
-}): Promise<{ connectionId: number; feedId: number } | null> {
+}): Promise<{
+	connectionId: number;
+	feedId: number;
+	owner: string;
+	name: string;
+} | null> {
 	const { sql, install, repo, feedKey } = params;
+	// GitHub owner/repo are case-insensitive; match accordingly and return the
+	// feed config's canonical casing so the store builds the SAME origin_id the
+	// poll does (the connector keys origin_id off the feed config, not the
+	// webhook payload's display casing) — otherwise consolidation would break.
 	const [row] = await sql`
-		SELECT f.id AS feed_id, f.connection_id
+		SELECT f.id AS feed_id, f.connection_id,
+		       f.config->>'repo_owner' AS repo_owner, f.config->>'repo_name' AS repo_name
 		FROM feeds f
 		JOIN connections c ON c.id = f.connection_id
 		WHERE c.organization_id = ${install.organizationId}
 		  AND c.connector_key = 'github'
 		  AND (c.config->>'installation_ref') = ${String(install.id)}
 		  AND f.feed_key = ${feedKey}
-		  AND f.config->>'repo_owner' = ${repo.owner}
-		  AND f.config->>'repo_name' = ${repo.name}
+		  AND lower(f.config->>'repo_owner') = lower(${repo.owner})
+		  AND lower(f.config->>'repo_name') = lower(${repo.name})
 		  AND f.status = 'active'
 		  AND f.deleted_at IS NULL
 		LIMIT 1
 	`;
 	return row
-		? { connectionId: Number(row.connection_id), feedId: Number(row.feed_id) }
+		? {
+				connectionId: Number(row.connection_id),
+				feedId: Number(row.feed_id),
+				owner: String(row.repo_owner),
+				name: String(row.repo_name),
+			}
 		: null;
 }
 
@@ -497,15 +512,17 @@ async function storeGithubWebhookEvent(params: {
 	const actor = extractGithubActor(payload);
 	if (!actor) return false;
 	// Gate on the configured feed (same as the trigger path) so an unconfigured
-	// repo never lands a stray event; use the feed's own connection + id.
+	// repo never lands a stray event; use the feed's own connection + id, and its
+	// canonical owner/name casing so origin_id matches the poll's exactly.
 	const target = await resolveGithubFeedTarget({ sql, install, repo, feedKey });
 	if (!target) return false;
+	const { owner, name } = target;
 
 	// origin_id mirrors the connector: key on the immutable user id when present.
 	const key = actor.author_id
 		? `github_user_id:${actor.author_id}`
 		: `github_login:${actor.author_login.toLowerCase()}`;
-	const originId = `stargazer_${repo.owner}_${repo.name}_${key.replace(/[^a-z0-9]+/gi, "_")}`;
+	const originId = `stargazer_${owner}_${name}_${key.replace(/[^a-z0-9]+/gi, "_")}`;
 	const starredAt = strField(root, "starred_at") ?? new Date().toISOString();
 	const profileUrl =
 		strField(root.sender, "html_url") ??
@@ -529,7 +546,7 @@ async function storeGithubWebhookEvent(params: {
 			originId,
 			originType: "stargazer",
 			semanticType: "content",
-			title: `${actor.author_login} starred ${repo.owner}/${repo.name}`,
+			title: `${actor.author_login} starred ${owner}/${name}`,
 			authorName: actor.author_login,
 			sourceUrl: profileUrl,
 			occurredAt: starredAt,

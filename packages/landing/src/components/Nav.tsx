@@ -352,7 +352,7 @@ export function Nav({ currentPath: _currentPath = "/" }: NavProps) {
         class="sticky top-0 z-40 px-4 sm:px-8"
         style={{
           backgroundColor:
-            "color-mix(in oklch, var(--color-page-bg) 68%, transparent)",
+            "color-mix(in oklch, var(--color-page-bg-elevated) 30%, transparent)",
           backdropFilter: "blur(12px)",
         }}
       >

@@ -198,6 +198,7 @@ export async function installConnectorFromMcpUrl(params: {
 		description: probed.instructions,
 		version: probed.serverInfo.version || "0.0.0",
 		authSchema: null,
+		webhook: null,
 		feeds: null,
 		actions: null,
 		optionsSchema: null,

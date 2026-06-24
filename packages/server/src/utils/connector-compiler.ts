@@ -14,6 +14,8 @@ export interface ConnectorMetadata {
   description?: string;
   version: string;
   authSchema: Record<string, unknown> | null;
+  /** Declarative inbound-webhook schema (signing scheme + routing), if any. */
+  webhook: Record<string, unknown> | null;
   feeds: Record<string, unknown> | null;
   actions: Record<string, unknown> | null;
   optionsSchema: Record<string, unknown> | null;
@@ -79,6 +81,7 @@ async function main() {
       description: def.description || null,
       version: def.version || null,
       authSchema: def.authSchema || null,
+      webhook: def.webhook || null,
       feeds: def.feeds || null,
       actions: def.actions || null,
       optionsSchema: def.optionsSchema || null,

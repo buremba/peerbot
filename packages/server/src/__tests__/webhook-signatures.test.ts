@@ -17,13 +17,27 @@
 
 import { createHmac } from "node:crypto";
 import { createSlackAdapter } from "@chat-adapter/slack";
+import type { ConnectorWebhookSchema } from "@lobu/connector-sdk";
 import { describe, expect, it, vi } from "vitest";
 import {
   createAppWebhookRoutes,
-  createSlackAppWebhookProvider,
+  createDeclaredAppWebhookProvider,
+  createSlackWebhookDelivery,
 } from "../gateway/routes/public/app-webhooks.js";
 
 const SIGNING_SECRET = "8f742231b10e8888abcd99yyyzzz85a5";
+
+/** Slack's DECLARED webhook schema (mirror of the slack connector's block). */
+const SLACK_WEBHOOK_SCHEMA: ConnectorWebhookSchema = {
+  signatureHeader: "x-slack-signature",
+  algorithm: "sha256",
+  signaturePrefix: "v0=",
+  signingBaseTemplate: "v0:{timestamp}:{body}",
+  timestampHeader: "x-slack-request-timestamp",
+  freshnessSeconds: 300,
+  delivery: "app_installation",
+  routingKeyPaths: ["team_id", "team.id", "event.team_id"],
+};
 
 function slackSignature(body: string, timestamp: string): string {
   const base = `v0:${timestamp}:${body}`;
@@ -122,7 +136,14 @@ describe("slack app-webhook provider route", () => {
     return createAppWebhookRoutes({
       installationStore: {} as never,
       secretStore: { get: async () => null },
-      providers: [createSlackAppWebhookProvider({ handleSlackAppWebhook })],
+      providers: [
+        createDeclaredAppWebhookProvider({
+          provider: "slack",
+          appId: "slack-app",
+          webhookSchema: SLACK_WEBHOOK_SCHEMA,
+          handleDelivery: createSlackWebhookDelivery({ handleSlackAppWebhook }),
+        }),
+      ],
       resolveAppWebhookSecret: async () => SIGNING_SECRET,
     });
   }

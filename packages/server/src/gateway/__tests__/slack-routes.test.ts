@@ -5,12 +5,48 @@ import { getDb } from "../../db/client.js";
 import {
   createSlackInstallRoutes,
 } from "../routes/public/app-install.js";
+import type { ConnectorWebhookSchema } from "@lobu/connector-sdk";
 import {
+  type AppWebhookProvider,
   createAppWebhookRoutes,
-  createSlackAppWebhookProvider,
-  verifySlackSignature,
+  createDeclaredAppWebhookProvider,
+  createSlackWebhookDelivery,
+  verifyDeclaredWebhook,
 } from "../routes/public/app-webhooks.js";
 import { createPostgresAppInstallationStore } from "../../lobu/stores/app-installation-store.js";
+
+/** Slack's DECLARED webhook schema (mirror of the slack connector's block). */
+const SLACK_WEBHOOK_SCHEMA: ConnectorWebhookSchema = {
+  signatureHeader: "x-slack-signature",
+  algorithm: "sha256",
+  signaturePrefix: "v0=",
+  signingBaseTemplate: "v0:{timestamp}:{body}",
+  timestampHeader: "x-slack-request-timestamp",
+  freshnessSeconds: 300,
+  delivery: "app_installation",
+  routingKeyPaths: ["team_id", "team.id", "event.team_id"],
+};
+
+/** verifySlackSignature shim over the generic engine (preserves the old call shape). */
+function verifySlackSignature(
+  rawBody: Uint8Array,
+  headers: Headers,
+  signingSecret: string,
+): boolean {
+  return verifyDeclaredWebhook(rawBody, headers, signingSecret, SLACK_WEBHOOK_SCHEMA);
+}
+
+/** Build a slack app-webhook provider from the declared schema + delivery hook. */
+function slackProvider(
+  handleSlackAppWebhook: (request: Request) => Promise<Response>,
+): AppWebhookProvider {
+  return createDeclaredAppWebhookProvider({
+    provider: "slack",
+    appId: "slack-app",
+    webhookSchema: SLACK_WEBHOOK_SCHEMA,
+    handleDelivery: createSlackWebhookDelivery({ handleSlackAppWebhook }),
+  });
+}
 import { slackOAuthCallbackUrl } from "../routes/public/slack.js";
 import { ensureDbForGatewayTests, resetTestDatabase } from "./helpers/db-setup.js";
 
@@ -393,7 +429,7 @@ describe("slack app-webhook route", () => {
     app = createAppWebhookRoutes({
       installationStore: createPostgresAppInstallationStore(),
       secretStore: { get: async () => null },
-      providers: [createSlackAppWebhookProvider({ handleSlackAppWebhook })],
+      providers: [slackProvider(handleSlackAppWebhook)],
       resolveAppWebhookSecret: async () => SLACK_SIGNING_SECRET,
     });
   });
@@ -422,7 +458,7 @@ describe("slack app-webhook route", () => {
     app = createAppWebhookRoutes({
       installationStore: createPostgresAppInstallationStore(),
       secretStore: { get: async () => null },
-      providers: [createSlackAppWebhookProvider({ handleSlackAppWebhook })],
+      providers: [slackProvider(handleSlackAppWebhook)],
       resolveAppWebhookSecret: async () => SLACK_SIGNING_SECRET,
     });
 
@@ -455,7 +491,7 @@ describe("slack app-webhook route", () => {
     app = createAppWebhookRoutes({
       installationStore: createPostgresAppInstallationStore(),
       secretStore: { get: async () => null },
-      providers: [createSlackAppWebhookProvider({ handleSlackAppWebhook })],
+      providers: [slackProvider(handleSlackAppWebhook)],
       resolveAppWebhookSecret: async () => SLACK_SIGNING_SECRET,
     });
     const res = await app.fetch(slackDelivery("{}"));
@@ -466,7 +502,7 @@ describe("slack app-webhook route", () => {
     app = createAppWebhookRoutes({
       installationStore: createPostgresAppInstallationStore(),
       secretStore: { get: async () => null },
-      providers: [createSlackAppWebhookProvider({ handleSlackAppWebhook })],
+      providers: [slackProvider(handleSlackAppWebhook)],
       resolveAppWebhookSecret: async () => undefined,
     });
     const res = await app.fetch(slackDelivery("{}"));

@@ -16,7 +16,10 @@ import { authenticatePat, extractPatBearer } from "../auth/pat-auth";
 import { getDb } from "../db/client";
 import { ApiPlatform } from "../gateway/api/platform";
 import { createGatewayApp } from "../gateway/cli/gateway";
-import { primeAppInstallationMethods } from "../gateway/installation/app-install-credentials";
+import {
+	primeAppInstallationMethods,
+	primeBundledIntegrationConnectors,
+} from "../gateway/installation/app-install-credentials";
 import { buildGatewayConfig } from "../gateway/config/index";
 import { ChatInstanceManager } from "../gateway/connections/chat-instance-manager";
 import { ChatResponseBridge } from "../gateway/connections/chat-response-bridge";
@@ -473,6 +476,14 @@ export async function initLobuGateway(): Promise<Hono | null> {
 			{ connectorKey: "slack", provider: "slack" },
 		]);
 
+		// Discover every bundled connector that receives app-level webhook
+		// deliveries (`webhook.delivery: 'app_installation'`) so the gateway can
+		// register ONE generic app-webhook provider per declaration — no hardcoded
+		// github/slack/jira/linear list. Best-effort: a discovery failure leaves the
+		// list empty (no app-webhook providers) rather than blocking boot.
+		const bundledIntegrationConnectors =
+			await primeBundledIntegrationConnectors().catch(() => []);
+
 		const rawLobuApp = createGatewayApp({
 			secretProxy: coreServices.getSecretProxy(),
 			workerGateway,
@@ -482,6 +493,7 @@ export async function initLobuGateway(): Promise<Hono | null> {
 			coreServices,
 			chatInstanceManager,
 			authProvider,
+			bundledIntegrationConnectors,
 		});
 
 		// Mount worker gateway routes before wrapping in lobuApp (createGatewayApp

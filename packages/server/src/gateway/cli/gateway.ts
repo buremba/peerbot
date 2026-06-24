@@ -25,18 +25,17 @@ import { createAgentApi } from "../routes/public/agent.js";
 import {
   type AppWebhookProvider,
   createAppWebhookRoutes,
+  createDeclaredAppWebhookProvider,
   createDefaultAppWebhookSecretResolver,
-  createGithubAppWebhookProvider,
-  createJiraAppWebhookProvider,
-  createLinearAppWebhookProvider,
-  createSlackAppWebhookProvider,
+  createGithubWebhookDelivery,
+  createSlackWebhookDelivery,
 } from "../routes/public/app-webhooks.js";
 import {
   createAppInstallRoutes,
   createSlackInstallRoutes,
 } from "../routes/public/app-install.js";
 import {
-  getPrimedBundledMethod,
+  type BundledIntegrationConnector,
   resolveAppInstallCredentials,
 } from "../installation/app-install-credentials.js";
 import { resolveInstallOrgId } from "../routes/public/slack.js";
@@ -72,6 +71,13 @@ interface CreateGatewayAppOptions {
     | null;
   /** Custom auth provider for embedded mode. When set, gateway delegates auth to this function instead of using cookie-based sessions. */
   authProvider?: AuthProvider;
+  /**
+   * Bundled connectors that receive app-level webhook deliveries
+   * (`delivery: 'app_installation'`), discovered + primed at boot. The gateway
+   * registers ONE generic app-webhook provider per entry — no hardcoded
+   * provider list. Empty/undefined → no app-webhook providers registered.
+   */
+  bundledIntegrationConnectors?: BundledIntegrationConnector[];
 }
 
 /**
@@ -91,6 +97,7 @@ export function createGatewayApp(
     coreServices,
     chatInstanceManager,
     authProvider,
+    bundledIntegrationConnectors,
   } = options;
 
   if (authProvider) {
@@ -711,62 +718,50 @@ export function createGatewayApp(
     app.route("", createConnectionWebhookRoutes(chatInstanceManager));
 
     // Shared multi-tenant app-webhook router (app-installation design §4.3): one
-    // public endpoint per provider for an installed Lobu App. A provider plugin
-    // is registered only when its Lobu app id is configured (GitHub App id, or
-    // the provider's OAuth client id) — otherwise the route is present but
-    // reports the provider unknown (404), since a missing app id can't match any
-    // installation. GitHub/Jira/Linear share one schema-driven HMAC verify;
-    // Slack stays a custom plugin (timestamped signing base).
+    // public endpoint per provider for an installed Lobu App. DATA-DRIVEN: we
+    // iterate the bundled integration connectors discovered + primed at boot
+    // (those declaring `webhook.delivery: 'app_installation'`) and register ONE
+    // GENERIC provider per declaration — verify + tenant + registration carry no
+    // provider name. The only per-KIND piece is the delivery hook (github's
+    // poll-canonical trigger/store, slack's chat-adapter forward), keyed off the
+    // connector, not branched on a provider literal in the engine. A provider is
+    // registered only when its Lobu App id is configured (the declared env var is
+    // set); otherwise the route reports the provider unknown (404).
     const appWebhookSecretStore = coreServices.getSecretStore();
     const appWebhookProviders: AppWebhookProvider[] = [];
-    // Resolve the GitHub App id from the connector's DECLARED `appIdKey` (primed
-    // at boot by primeAppInstallationMethods) instead of a hardcoded
-    // `process.env.GITHUB_APP_ID` literal. The bundled connector declares which
-    // env var holds the id; we read it here. Falls back to the conventional env
-    // var only when the bundled method couldn't be primed (e.g. a build without
-    // the connector on disk).
-    const githubMethod = getPrimedBundledMethod("github", "github");
-    const githubCreds = githubMethod
-      ? resolveAppInstallCredentials(githubMethod)
-      : null;
-    const githubAppId = githubCreds?.appId ?? process.env.GITHUB_APP_ID;
-    if (githubAppId) {
+    const declaredSecretEnvKeys: Record<string, string | undefined> = {};
+    for (const integration of bundledIntegrationConnectors ?? []) {
+      // Reference resolveAppInstallCredentials so the declared env-var contract
+      // stays the single source of truth (validates the method's key names).
+      if (integration.method) resolveAppInstallCredentials(integration.method);
+      if (!integration.appId) continue;
+      declaredSecretEnvKeys[integration.provider] = integration.webhookSecretKey;
       appWebhookProviders.push(
-        createGithubAppWebhookProvider({
-          appId: githubAppId,
-          // Land event-complete deliveries (stars) directly instead of re-polling.
-          // Default on; GITHUB_WEBHOOK_STORE_EVENTS=false makes every delivery a trigger.
-          storeWebhookEvents: process.env.GITHUB_WEBHOOK_STORE_EVENTS !== "false",
-        }),
-      );
-    }
-    const jiraAppId = process.env.JIRA_CLIENT_ID;
-    if (jiraAppId) {
-      appWebhookProviders.push(createJiraAppWebhookProvider({ appId: jiraAppId }));
-    }
-    const linearAppId = process.env.LINEAR_CLIENT_ID;
-    if (linearAppId) {
-      appWebhookProviders.push(createLinearAppWebhookProvider({ appId: linearAppId }));
-    }
-    // Slack: the shared `/slack/events` route is folded into the generic
-    // app-webhook endpoint (`/api/v1/app-webhooks/slack`). Unlike the other
-    // providers Slack runs its OWN routing chain (BYO agent_connections →
-    // active OAuth install → preview → OAuth fallback) via the coordinator's
-    // handleSlackAppWebhook, so the generic router only performs the edge `v0`
-    // signing verify and then delegates. Gated, like github, on the creds
-    // resolved from the Slack connector declaration (clientId + signing secret).
-    const slackMethod = getPrimedBundledMethod("slack", "slack");
-    const slackCreds = slackMethod ? resolveAppInstallCredentials(slackMethod) : null;
-    const slackClientId = slackCreds?.clientId ?? process.env.SLACK_CLIENT_ID;
-    const slackSigningSecretKey = slackCreds?.webhookSecretKey;
-    const slackSigningSecret =
-      (slackSigningSecretKey ? process.env[slackSigningSecretKey] : undefined) ??
-      process.env.SLACK_SIGNING_SECRET;
-    if (slackClientId && slackSigningSecret) {
-      appWebhookProviders.push(
-        createSlackAppWebhookProvider({
-          handleSlackAppWebhook: (req) =>
-            chatInstanceManager.handleSlackAppWebhook(req),
+        createDeclaredAppWebhookProvider({
+          provider: integration.provider,
+          appId: integration.appId,
+          webhookSchema: integration.webhookSchema,
+          providerInstance: integration.method?.providerInstance,
+          // Per-KIND delivery hooks (Phase D relocates these out of core):
+          //  - github is poll-canonical → trigger/store the affected feed.
+          //  - slack is a chat platform → forward to the coordinator's routing
+          //    chain (BYO connection → install → preview → OAuth fallback).
+          ...(integration.connectorKey === "github"
+            ? {
+                onDelivery: createGithubWebhookDelivery({
+                  storeWebhookEvents:
+                    process.env.GITHUB_WEBHOOK_STORE_EVENTS !== "false",
+                }),
+              }
+            : {}),
+          ...(integration.connectorKey === "slack"
+            ? {
+                handleDelivery: createSlackWebhookDelivery({
+                  handleSlackAppWebhook: (req) =>
+                    chatInstanceManager.handleSlackAppWebhook(req),
+                }),
+              }
+            : {}),
         }),
       );
     }
@@ -778,14 +773,7 @@ export function createGatewayApp(
         providers: appWebhookProviders,
         resolveAppWebhookSecret: createDefaultAppWebhookSecretResolver(
           appWebhookSecretStore,
-          // Prefer each connector's DECLARED webhook-secret env var over the
-          // conventional `<PROVIDER>_APP_WEBHOOK_SECRET` literal.
-          {
-            github: githubCreds?.webhookSecretKey,
-            // Slack's app webhook secret IS its signing secret (the `v0` verify
-            // key), declared on the Slack connector as `webhookSecretKey`.
-            slack: slackSigningSecretKey,
-          },
+          declaredSecretEnvKeys,
         ),
       }),
     );

@@ -18,15 +18,20 @@
  *    constants, so one resolve per (connectorKey, provider) per process is correct.
  */
 
-import type { ConnectorAuthAppInstallation } from "@lobu/connector-sdk";
+import type {
+	ConnectorAuthAppInstallation,
+	ConnectorWebhookSchema,
+} from "@lobu/connector-sdk";
 import { getDb } from "../../db/client.js";
 import {
 	getAppInstallationAuthMethods,
+	getOAuthAuthMethods,
 	normalizeConnectorAuthSchema,
 } from "../../utils/connector-auth.js";
 import {
 	compileConnectorFromFile,
 	findBundledConnectorFile,
+	listCatalogConnectorDefinitions,
 } from "../../utils/connector-catalog.js";
 import { extractConnectorMetadata } from "../../utils/connector-compiler.js";
 
@@ -68,6 +73,8 @@ const bundledMethodCache = new Map<
 	string,
 	ConnectorAuthAppInstallation | null
 >();
+/** Primed bundled webhook schemas, keyed by connector key. */
+const bundledWebhookCache = new Map<string, ConnectorWebhookSchema | null>();
 
 async function resolveBundledMethod(
 	connectorKey: string,
@@ -79,12 +86,17 @@ async function resolveBundledMethod(
 	const file = findBundledConnectorFile(connectorKey);
 	if (!file) {
 		bundledMethodCache.set(cacheKey, null);
+		bundledWebhookCache.set(connectorKey, null);
 		return null;
 	}
 	const code = await compileConnectorFromFile(file);
 	const metadata = await extractConnectorMetadata(code);
 	const method = pickMethod(metadata.authSchema, provider);
 	bundledMethodCache.set(cacheKey, method);
+	bundledWebhookCache.set(
+		connectorKey,
+		(metadata.webhook as ConnectorWebhookSchema | null) ?? null,
+	);
 	return method;
 }
 
@@ -98,6 +110,13 @@ export function getPrimedBundledMethod(
 	provider?: string,
 ): ConnectorAuthAppInstallation | null | undefined {
 	return bundledMethodCache.get(`${connectorKey}::${provider ?? ""}`);
+}
+
+/** Synchronous read of a primed bundled-connector webhook schema. */
+export function getPrimedBundledWebhook(
+	connectorKey: string,
+): ConnectorWebhookSchema | null | undefined {
+	return bundledWebhookCache.get(connectorKey);
 }
 
 /** Warm the bundled-method cache at async boot so sync gateway wiring can read it. */
@@ -115,9 +134,93 @@ export async function primeAppInstallationMethods(
 	);
 }
 
+/**
+ * One bundled integration connector that receives app-level webhook deliveries:
+ * its key, its declared app-installation auth method (when it declares one), and
+ * its declared webhook schema. Drives data-driven app-webhook provider
+ * registration — the gateway iterates these instead of a hardcoded provider list.
+ */
+export interface BundledIntegrationConnector {
+	connectorKey: string;
+	provider: string;
+	/** The app-installation auth method, when the connector declares one (github/slack). */
+	method: ConnectorAuthAppInstallation | null;
+	/** The declared webhook schema (signing scheme + routing). */
+	webhookSchema: ConnectorWebhookSchema;
+	/**
+	 * Resolved Lobu App id (`provider_app_id`), read from the connector's declared
+	 * env-var name: the app-installation method's `appIdKey` (github), else its /
+	 * the OAuth method's `clientIdKey` (slack/jira/linear). Undefined when the
+	 * deployment hasn't configured the app id → that provider isn't registered.
+	 */
+	appId?: string;
+	/** Declared env-var name holding the app-webhook secret, when declared (slack: SLACK_SIGNING_SECRET). */
+	webhookSecretKey?: string;
+}
+
+/**
+ * Discover every bundled connector whose webhook declares
+ * `delivery: 'app_installation'` and prime it, returning one
+ * {@link BundledIntegrationConnector} per declaration. This is the single source
+ * the gateway iterates to register app-webhook providers — no hardcoded
+ * github/slack/jira/linear list, no provider-name branch. `provider` comes from
+ * the connector's app-installation method when present, else its connector key
+ * (jira/linear authenticate via OAuth but still receive app-level webhooks).
+ */
+export async function primeBundledIntegrationConnectors(): Promise<
+	BundledIntegrationConnector[]
+> {
+	const defs = await listCatalogConnectorDefinitions();
+	const result: BundledIntegrationConnector[] = [];
+	for (const def of defs) {
+		const file = findBundledConnectorFile(def.key);
+		if (!file) continue;
+		let webhookSchema: ConnectorWebhookSchema | null = null;
+		let method: ConnectorAuthAppInstallation | null = null;
+		try {
+			const code = await compileConnectorFromFile(file);
+			const metadata = await extractConnectorMetadata(code);
+			webhookSchema =
+				(metadata.webhook as ConnectorWebhookSchema | null) ?? null;
+			if (!webhookSchema || webhookSchema.delivery !== "app_installation") {
+				continue;
+			}
+			const authSchema = normalizeConnectorAuthSchema(metadata.authSchema);
+			method = pickMethod(metadata.authSchema);
+			const oauth = getOAuthAuthMethods(authSchema)[0];
+			const provider = method?.provider ?? def.key;
+			// The Lobu App id (`provider_app_id`) is the GitHub App id when the
+			// connector declares an app_installation method with `appIdKey`, else the
+			// OAuth client id (slack/jira/linear). Read by the DECLARED env-var name
+			// — no hardcoded `process.env.GITHUB_APP_ID`/`JIRA_CLIENT_ID` literal.
+			const appIdKey =
+				method?.appIdKey ?? method?.clientIdKey ?? oauth?.clientIdKey;
+			const appId = appIdKey ? process.env[appIdKey] : undefined;
+			const webhookSecretKey = method?.webhookSecretKey;
+			// Cache for synchronous accessors used elsewhere in wiring.
+			bundledWebhookCache.set(def.key, webhookSchema);
+			bundledMethodCache.set(`${def.key}::${provider}`, method);
+			bundledMethodCache.set(`${def.key}::`, method);
+			result.push({
+				connectorKey: def.key,
+				provider,
+				method,
+				webhookSchema,
+				...(appId ? { appId } : {}),
+				...(webhookSecretKey ? { webhookSecretKey } : {}),
+			});
+		} catch {
+			// Skip connectors that fail to compile/extract; they simply won't be
+			// registered as app-webhook providers.
+		}
+	}
+	return result;
+}
+
 /** Test-only: drop the primed bundled methods. */
 export function clearBundledMethodCache(): void {
 	bundledMethodCache.clear();
+	bundledWebhookCache.clear();
 }
 
 // ---- pure credential resolution -------------------------------------------

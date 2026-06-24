@@ -16,13 +16,14 @@
  *      per-connection ingest (`connector_key='webhook:<id>'`, reusing the
  *      dedupe index, size cap, and rate limit).
  *
- * Verification is per-PROVIDER (HMAC scheme differs). For pure raw-body HMAC
- * providers (GitHub, Jira, Linear) the `verify` is DERIVED from the connector's
- * `ConnectorWebhookSchema` (signatureHeader / algorithm / signaturePrefix) by
- * {@link createSchemaDrivenAppWebhookProvider} — those plugins supply only the
- * tenant extractor, never a hand-written verify. Slack stays a custom plugin:
- * its `v0:{ts}:{rawBody}` + timestamp-freshness scheme can't be expressed by the
- * HMAC-only schema. Hence the plugin registry.
+ * Verification + tenant extraction are GENERIC, derived entirely from the
+ * connector's `ConnectorWebhookSchema`: {@link verifyDeclaredWebhook} computes
+ * HMAC over the declared `signingBaseTemplate` (default `{body}` for
+ * GitHub/Jira/Linear; `v0:{timestamp}:{body}` + freshness for Slack) and
+ * {@link extractTenantFromSchema} reads the tenant from the declared
+ * `routingKeyPath(s)` (+ optional `url-host` transform for Jira). There is NO
+ * per-provider verify or extractor and NO provider-name branch — one engine,
+ * one builder ({@link createDeclaredAppWebhookProvider}).
  *
  * Delivery before the install callback: a provider may deliver before the
  * OAuth/install callback has written the `app_installations` row. That is NOT
@@ -43,7 +44,6 @@ import { type DbClient, getDb } from "../../../db/client.js";
 import {
 	handleWebhookIngest,
 	readBodyWithCap,
-	verifyWebhookSignature,
 	WEBHOOK_INGEST_MAX_BODY_BYTES,
 } from "../../connections/webhook-ingest.js";
 import type { SecretStore } from "../../secrets/index.js";
@@ -74,10 +74,11 @@ export interface AppWebhookContent {
 }
 
 /**
- * Per-provider verifier + tenant extractor. New providers add a plugin without
- * touching the router. Pure-HMAC providers (GitHub, Jira, Linear) are built by
- * {@link createSchemaDrivenAppWebhookProvider}; Slack ships its own custom
- * verify (timestamped signing base, not expressible by the HMAC schema).
+ * A registered provider: verifier + tenant extractor + optional per-KIND
+ * delivery hooks. Every integration provider is built by the SINGLE generic
+ * {@link createDeclaredAppWebhookProvider} from its declared
+ * {@link ConnectorWebhookSchema} — no per-provider verify/extractor code. A new
+ * provider is a connector DECLARATION, not a new plugin in this file.
  */
 export interface AppWebhookProvider {
 	provider: string;
@@ -193,42 +194,161 @@ function strField(node: unknown, key: string): string | undefined {
 }
 
 /**
- * Build an {@link AppWebhookProvider} whose `verify` is DERIVED from a
- * connector's {@link ConnectorWebhookSchema} — the single source of truth for
- * the provider's raw-body HMAC scheme. The caller supplies ONLY the
- * provider-specific tenant extractor (and optionally a content projector); the
- * verify is identical machinery across every pure-HMAC provider, so it never
- * gets hand-written again (GitHub, Jira, Linear all flow through here).
- *
- * The schema's `signatureHeader` is REQUIRED here: an app-webhook endpoint must
- * fail closed, so a provider that signs nothing has no schema-driven verify to
- * derive — it would have to ship a custom plugin (Slack). We throw at
- * construction rather than silently accepting unverifiable deliveries.
- *
- * `algorithm` defaults to `sha256` and `signaturePrefix` to none, matching
- * {@link ConnectorWebhookSchema} defaults.
+ * Follow a dotted JSON path (`a.b.c`) into a parsed body and return the leaf as
+ * a non-empty string, or undefined. Numbers are stringified (GitHub installation
+ * ids are integers). Used by the generic tenant extractor — no provider literal.
  */
-export function createSchemaDrivenAppWebhookProvider(options: {
+function readPath(body: unknown, path: string): string | undefined {
+	let node: unknown = body;
+	for (const segment of path.split(".")) {
+		if (node === null || typeof node !== "object") return undefined;
+		node = (node as Record<string, unknown>)[segment];
+	}
+	if (typeof node === "string") return node.length > 0 ? node : undefined;
+	if (typeof node === "number" && Number.isFinite(node)) return String(node);
+	return undefined;
+}
+
+/**
+ * THE generic webhook verifier. Computes HMAC over the schema's rendered signing
+ * base (`{body}` and `{timestamp}` substituted) with the declared
+ * algorithm/prefix, compares constant-time against `signatureHeader`, and
+ * optionally rejects stale timestamps. Pure over (rawBody, headers, secret) — no
+ * I/O — so it is trivially multi-replica safe. Returns false on any miss.
+ *
+ * Coverage by declaration alone (no provider branch):
+ *  - GitHub/Jira/Linear: default base `{body}` → plain raw-body HMAC.
+ *  - Slack: base `v0:{timestamp}:{body}` + `timestampHeader` +
+ *    `freshnessSeconds: 300` → the full `v0` scheme.
+ */
+export function verifyDeclaredWebhook(
+	rawBody: Uint8Array,
+	headers: Headers,
+	secret: string,
+	schema: ConnectorWebhookSchema,
+): boolean {
+	const signatureHeader = schema.signatureHeader;
+	if (!signatureHeader) return false;
+	const provided = headers.get(signatureHeader);
+	if (!provided) return false;
+	const algorithm = schema.algorithm ?? "sha256";
+	const prefix = schema.signaturePrefix;
+
+	// Resolve the timestamp once: it feeds both the signing base and the optional
+	// freshness guard. Required only when the template references it.
+	const template = schema.signingBaseTemplate ?? "{body}";
+	const needsTimestamp = template.includes("{timestamp}");
+	let timestamp: string | undefined;
+	if (needsTimestamp || schema.freshnessSeconds !== undefined) {
+		if (!schema.timestampHeader) return false;
+		timestamp = headers.get(schema.timestampHeader) ?? undefined;
+		if (!timestamp) return false;
+		if (schema.freshnessSeconds !== undefined) {
+			const ts = Number.parseInt(timestamp, 10);
+			if (!Number.isFinite(ts)) return false;
+			const nowSec = Math.floor(Date.now() / 1000);
+			if (Math.abs(nowSec - ts) > schema.freshnessSeconds) return false;
+		}
+	}
+
+	// Render the signing base. `{body}` is the raw bytes (kept as bytes so binary
+	// payloads sign correctly); the template is split around `{body}` so the body
+	// is concatenated, not decoded.
+	const tsPart = timestamp ?? "";
+	const withTimestamp = template.replace(/\{timestamp\}/g, tsPart);
+	const segments = withTimestamp.split("{body}");
+	const parts: Buffer[] = [];
+	segments.forEach((seg: string, i: number) => {
+		if (i > 0) parts.push(Buffer.from(rawBody));
+		if (seg) parts.push(Buffer.from(seg, "utf8"));
+	});
+	const base = Buffer.concat(parts);
+
+	const expectedHex = createHmac(algorithm, secret).update(base).digest("hex");
+	const expected = (prefix ?? "") + expectedHex;
+	const providedBuf = Buffer.from(provided, "utf8");
+	const expectedBuf = Buffer.from(expected, "utf8");
+	if (providedBuf.length !== expectedBuf.length) return false;
+	try {
+		return timingSafeEqual(providedBuf, expectedBuf);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * THE generic tenant extractor. Reads the external tenant id from the body via
+ * the schema's ordered `routingKeyPaths` (or single `routingKeyPath`), first
+ * non-empty match wins, then applies the declared `routingKeyTransform`
+ * (`url-host` → the value's URL host, for Jira's `self` URLs). Returns null when
+ * no path resolves (e.g. an app-level ping) → the router acks without landing.
+ */
+export function extractTenantFromSchema(
+	rawBody: Uint8Array,
+	schema: ConnectorWebhookSchema,
+	providerAppId: string,
+	providerInstance = "cloud",
+): AppWebhookTenant | null {
+	const paths =
+		schema.routingKeyPaths ??
+		(schema.routingKeyPath ? [schema.routingKeyPath] : []);
+	if (paths.length === 0) return null;
+	const body = parseJson(rawBody);
+	for (const path of paths) {
+		const raw = readPath(body, path);
+		if (!raw) continue;
+		let externalTenantId = raw;
+		if (schema.routingKeyTransform === "url-host") {
+			try {
+				externalTenantId = new URL(raw).host;
+			} catch {
+				continue;
+			}
+			if (!externalTenantId) continue;
+		}
+		return { providerInstance, providerAppId, externalTenantId };
+	}
+	return null;
+}
+
+/**
+ * Build an {@link AppWebhookProvider} entirely from a connector's DECLARED
+ * {@link ConnectorWebhookSchema} — verify ({@link verifyDeclaredWebhook}) and
+ * tenant extraction ({@link extractTenantFromSchema}) are both generic, so this
+ * one builder covers every integration provider (GitHub/Jira/Linear/Slack) with
+ * NO provider-name branch. The only per-KIND parts are the optional delivery
+ * hooks (`onDelivery` for poll-canonical triggers, `handleDelivery` for chat
+ * adapters), injected by the caller — they are Phase-D concerns and carry no
+ * verify/tenant/registration knowledge.
+ *
+ * `signatureHeader` is REQUIRED: an app-webhook endpoint must fail closed, so a
+ * provider that signs nothing has no derivable verify. We throw at construction
+ * rather than silently accept unverifiable deliveries.
+ */
+export function createDeclaredAppWebhookProvider(options: {
 	/** The `:provider` path segment + `app_installations.provider` value. */
 	provider: string;
-	/** The connector's declared HMAC scheme; `verify` is derived from it. */
+	/** Receiving Lobu App id, stamped as `provider_app_id`. */
+	appId: string;
+	/** The connector's declared webhook scheme; verify + tenant derive from it. */
 	webhookSchema: ConnectorWebhookSchema;
-	/** Pull the tenant tuple from the delivery (the only per-provider verify-free part). */
-	extractTenant(rawBody: Uint8Array, headers: Headers): AppWebhookTenant | null;
+	/** Provider instance (default `'cloud'`). */
+	providerInstance?: string;
 	/** Optional title/source_url projector for the landed row. */
-	extractContent?(rawBody: Uint8Array, headers: Headers): AppWebhookContent;
+	extractContent?: AppWebhookProvider["extractContent"];
 	/** Optional actor → person resolver (see {@link AppWebhookProvider.resolveActor}). */
 	resolveActor?: AppWebhookProvider["resolveActor"];
-	/** Optional trigger handler (see {@link AppWebhookProvider.onDelivery}). */
+	/** Optional per-KIND trigger handler (see {@link AppWebhookProvider.onDelivery}). */
 	onDelivery?: AppWebhookProvider["onDelivery"];
+	/** Optional per-KIND full-delivery takeover (chat adapters; {@link AppWebhookProvider.handleDelivery}). */
+	handleDelivery?: AppWebhookProvider["handleDelivery"];
 }): AppWebhookProvider {
-	const { provider, webhookSchema, extractTenant, extractContent, resolveActor, onDelivery } =
-		options;
+	const { provider, appId, webhookSchema, providerInstance } = options;
 	const signatureHeader = webhookSchema.signatureHeader;
 	if (!signatureHeader) {
 		throw new Error(
-			`Schema-driven app-webhook provider "${provider}" requires a webhook ` +
-				`signatureHeader (a non-signing provider must ship a custom verify plugin).`,
+			`App-webhook provider "${provider}" requires a webhook signatureHeader ` +
+				`(a non-signing provider can't be verified — fail closed).`,
 		);
 	}
 	const algorithm = webhookSchema.algorithm ?? "sha256";
@@ -244,18 +364,20 @@ export function createSchemaDrivenAppWebhookProvider(options: {
 				: {}),
 		},
 		verify(rawBody, headers, appWebhookSecret) {
-			return verifyWebhookSignature(
+			return verifyDeclaredWebhook(rawBody, headers, appWebhookSecret, webhookSchema);
+		},
+		extractTenant(rawBody) {
+			return extractTenantFromSchema(
 				rawBody,
-				headers.get(signatureHeader),
-				appWebhookSecret,
-				algorithm,
-				signaturePrefix,
+				webhookSchema,
+				appId,
+				providerInstance,
 			);
 		},
-		extractTenant,
-		...(extractContent ? { extractContent } : {}),
-		...(resolveActor ? { resolveActor } : {}),
-		...(onDelivery ? { onDelivery } : {}),
+		...(options.extractContent ? { extractContent: options.extractContent } : {}),
+		...(options.resolveActor ? { resolveActor: options.resolveActor } : {}),
+		...(options.onDelivery ? { onDelivery: options.onDelivery } : {}),
+		...(options.handleDelivery ? { handleDelivery: options.handleDelivery } : {}),
 	};
 }
 
@@ -308,102 +430,67 @@ async function loadGithubWebhookRoutes(
 }
 
 /**
- * GitHub App webhook plugin.
+ * GitHub's per-KIND delivery hook (poll-canonical trigger/store), built
+ * separately from the generic provider so it can be injected via
+ * {@link createDeclaredAppWebhookProvider}'s `onDelivery`. This is the only
+ * GitHub-specific code left in this file; relocating it out of the gateway core
+ * is the Phase-D per-kind delivery work. Verify + tenant + registration are
+ * fully generic (no GitHub branch).
  *
- * Verify: schema-driven (GitHub signs the raw body and sends
- * `x-hub-signature-256: sha256=<hex>`; the scheme is the github connector's
- * {@link ConnectorWebhookSchema}). The shared HMAC verifier is constant-time
- * with a decoded-length compare — a non-hex right-length header can't slip
- * through or throw.
- *
- * Extract: the tenant is the `installation.id` in the JSON body; the Lobu App
- * is the receiving GitHub App (`GITHUB_APP_ID`), and the instance is 'cloud'
- * (GHES would be the host — out of scope here). A delivery with no
- * `installation.id` (rare app-level events) has no tenant to route to → null.
- *
- * Delivery: routing comes from {@link loadGithubWebhookRoutes} (the connector's
+ * Routing comes from {@link loadGithubWebhookRoutes} (the connector's
  * feeds_schema), not a hardcoded map. Most events TRIGGER the affected feed's
  * poll; event-complete signals (stars) are STORED directly, consolidating with
  * the poll on origin_id.
  */
-export function createGithubAppWebhookProvider(options: {
-	/** Receiving GitHub App id, stamped as `provider_app_id`. */
-	appId: string;
+export function createGithubWebhookDelivery(options: {
 	/**
 	 * Land event-complete deliveries (stars) directly instead of re-polling.
 	 * Default true. Set false to make every delivery a trigger (the scheduled
 	 * poll then captures stars on its next backstop run).
 	 */
 	storeWebhookEvents?: boolean;
-}): AppWebhookProvider {
+}): NonNullable<AppWebhookProvider["onDelivery"]> {
 	const storeWebhookEvents = options.storeWebhookEvents ?? true;
-	return createSchemaDrivenAppWebhookProvider({
-		provider: "github",
-		// GitHub raw-body HMAC: `x-hub-signature-256: sha256=<hex>` (sha256).
-		// `x-github-delivery` is the per-delivery UUID used for redelivery dedupe.
-		webhookSchema: {
-			signatureHeader: "x-hub-signature-256",
-			algorithm: "sha256",
-			signaturePrefix: "sha256=",
-			dedupeHeader: "x-github-delivery",
-		},
-		extractTenant(rawBody) {
-			const body = parseJson(rawBody);
-			if (body === null || typeof body !== "object") return null;
-			const installation = (body as Record<string, unknown>).installation;
-			if (installation === null || typeof installation !== "object") return null;
-			const id = (installation as Record<string, unknown>).id;
-			// GitHub installation ids are integers; accept the numeric/string forms.
-			if (typeof id !== "number" && typeof id !== "string") return null;
-			const externalTenantId = String(id);
-			if (!externalTenantId) return null;
-			return {
-				providerInstance: "cloud",
-				providerAppId: options.appId,
-				externalTenantId,
-			};
-		},
-		async onDelivery({ rawBody, headers, install, sql }) {
-			const event = headers.get("x-github-event");
-			if (!event) return { triggered: false };
-			// Routing is declared by the connector (feeds_schema), read from the DB.
-			const route = (await loadGithubWebhookRoutes(install.organizationId)).get(
-				event,
-			);
-			if (!route) return { triggered: false };
-			const payload = parseJson(rawBody);
-			const repo = extractGithubRepo(payload);
-			if (!repo) return { triggered: false };
+	return async ({ rawBody, headers, install, sql }) => {
+		const event = headers.get("x-github-event");
+		if (!event) return { triggered: false };
+		// Routing is declared by the connector (feeds_schema), read from the DB.
+		const route = (await loadGithubWebhookRoutes(install.organizationId)).get(
+			event,
+		);
+		if (!route) return { triggered: false };
+		const payload = parseJson(rawBody);
+		const repo = extractGithubRepo(payload);
+		if (!repo) return { triggered: false };
 
-			// STORE (event-complete signals, e.g. stars): land the structured event
-			// directly, consolidating with the poll on origin_id — no wasteful
-			// re-poll. Resolution happens here because the poll won't run for this
-			// feed on the webhook's account. Gated by storeWebhookEvents; when off,
-			// fall through to a trigger so the scheduled poll picks it up.
-			if (route.mode === "store" && storeWebhookEvents) {
-				const stored = await storeGithubWebhookEvent({
-					sql,
-					install,
-					repo,
-					event,
-					feedKey: route.feedKey,
-					payload,
-				});
-				return { triggered: stored };
-			}
-
-			// TRIGGER: the poll brings more, so mark THAT feed due and let the poll
-			// fetch the complete record (dedupes/supersedes by origin_id) and resolve
-			// the person once — no webhook-side resolution (avoids double work).
-			const triggered = await markGithubFeedDue({
+		// STORE (event-complete signals, e.g. stars): land the structured event
+		// directly, consolidating with the poll on origin_id — no wasteful
+		// re-poll. Resolution happens here because the poll won't run for this
+		// feed on the webhook's account. Gated by storeWebhookEvents; when off,
+		// fall through to a trigger so the scheduled poll picks it up.
+		if (route.mode === "store" && storeWebhookEvents) {
+			const stored = await storeGithubWebhookEvent({
 				sql,
 				install,
 				repo,
+				event,
 				feedKey: route.feedKey,
+				payload,
 			});
-			return { triggered };
-		},
-	});
+			return { triggered: stored };
+		}
+
+		// TRIGGER: the poll brings more, so mark THAT feed due and let the poll
+		// fetch the complete record (dedupes/supersedes by origin_id) and resolve
+		// the person once — no webhook-side resolution (avoids double work).
+		const triggered = await markGithubFeedDue({
+			sql,
+			install,
+			repo,
+			feedKey: route.feedKey,
+		});
+		return { triggered };
+	};
 }
 
 /** Extract the {owner, name} of the repo a GitHub delivery is about, or null. */
@@ -607,213 +694,36 @@ async function storeGithubWebhookEvent(params: {
 	return true;
 }
 
-/** First non-empty `*.self` URL found by a shallow scan of the delivery body. */
-function firstSelfUrl(body: unknown): string | undefined {
-	if (body === null || typeof body !== "object") return undefined;
-	const root = body as Record<string, unknown>;
-	const direct = strField(root, "self");
-	if (direct) return direct;
-	// Jira nests the entity (issue/comment/user/project) one level down; each
-	// entity carries its own REST `self` URL on the same Atlassian site.
-	for (const value of Object.values(root)) {
-		const nested = strField(value, "self");
-		if (nested) return nested;
-	}
-	return undefined;
-}
-
 /**
- * Jira (Cloud) app webhook plugin.
- *
- * Verify: schema-driven from the jira connector's {@link ConnectorWebhookSchema}
- * — Jira dynamic webhooks HMAC-sign the raw body with the registration secret
- * and send `x-hub-signature: sha256=<hex>`.
- *
- * Extract: the tenant is the Atlassian SITE the delivery came from. Jira webhook
- * bodies don't carry the cloudId directly, but every entity exposes a REST
- * `self` URL on its site host (e.g.
- * `https://acme.atlassian.net/rest/api/2/issue/10000`). We use the site host as
- * `external_tenant_id` (one install row per site); `provider_app_id` is the Lobu
- * OAuth/Connect app id. A delivery with no resolvable `self` URL (e.g. a test
- * ping) has no tenant → null.
+ * Slack's per-KIND full-delivery hook: forward the verified delivery to the
+ * coordinator's chat routing chain (BYO connection → active OAuth install →
+ * preview → OAuth fallback). Built separately so it can be injected via
+ * {@link createDeclaredAppWebhookProvider}'s `handleDelivery`; the generic
+ * provider still runs the declarative `v0` verify at the edge first. Relocating
+ * this chat-adapter routing out of the gateway core is the Phase-D per-kind
+ * delivery work.
  */
-export function createJiraAppWebhookProvider(options: {
-	/** Lobu Jira app id (`JIRA_CLIENT_ID`), stamped as `provider_app_id`. */
-	appId: string;
-}): AppWebhookProvider {
-	return createSchemaDrivenAppWebhookProvider({
-		provider: "jira",
-		// Jira raw-body HMAC: `x-hub-signature: sha256=<hex>` (sha256).
-		webhookSchema: {
-			signatureHeader: "x-hub-signature",
-			algorithm: "sha256",
-			signaturePrefix: "sha256=",
-		},
-		extractTenant(rawBody) {
-			const body = parseJson(rawBody);
-			const selfUrl = firstSelfUrl(body);
-			if (!selfUrl) return null;
-			let host: string;
-			try {
-				host = new URL(selfUrl).host;
-			} catch {
-				return null;
-			}
-			if (!host) return null;
-			return {
-				providerInstance: "cloud",
-				providerAppId: options.appId,
-				externalTenantId: host,
-			};
-		},
-	});
-}
-
-/**
- * Linear app webhook plugin.
- *
- * Verify: schema-driven from the linear connector's {@link ConnectorWebhookSchema}
- * — Linear HMAC-signs the raw body and sends a BARE hex digest in
- * `linear-signature` (no `sha256=` prefix).
- *
- * Extract: every Linear webhook delivery carries the top-level `organizationId`
- * of the workspace it belongs to — that's the tenant (one install row per Linear
- * workspace). `provider_app_id` is the Lobu Linear OAuth app id. A delivery with
- * no `organizationId` has no tenant → null.
- */
-export function createLinearAppWebhookProvider(options: {
-	/** Lobu Linear app id (`LINEAR_CLIENT_ID`), stamped as `provider_app_id`. */
-	appId: string;
-}): AppWebhookProvider {
-	return createSchemaDrivenAppWebhookProvider({
-		provider: "linear",
-		// Linear raw-body HMAC: `linear-signature: <hex>` (sha256, no prefix).
-		webhookSchema: {
-			signatureHeader: "linear-signature",
-			algorithm: "sha256",
-		},
-		extractTenant(rawBody) {
-			const body = parseJson(rawBody);
-			if (body === null || typeof body !== "object") return null;
-			const organizationId = strField(body, "organizationId");
-			if (!organizationId) return null;
-			return {
-				providerInstance: "cloud",
-				providerAppId: options.appId,
-				externalTenantId: organizationId,
-			};
-		},
-	});
-}
-
-/**
- * Verify a Slack delivery's `v0` signature against the app SIGNING SECRET.
- *
- * Slack's scheme (NOT a plain raw-body HMAC, so it can't be schema-derived):
- *   base = `v0:{x-slack-request-timestamp}:{rawBody}`
- *   expected = `v0=` + HMAC-SHA256(signingSecret, base) (hex)
- *   compared constant-time against `x-slack-signature`.
- * Plus a 5-minute timestamp-freshness window to reject replays of an
- * intercepted (still-signed) payload. This mirrors the Slack adapter's own
- * `verifySignature` so the edge fails closed identically to the downstream
- * adapter — defense in depth, and the prerequisite for delegating routing to
- * the coordinator without re-reading the body there.
- *
- * Pure over (rawBody, headers, secret) — no I/O — so it is trivially
- * multi-replica safe. Returns false on any miss; the router then 401s.
- */
-export function verifySlackSignature(
-	rawBody: Uint8Array,
-	headers: Headers,
-	signingSecret: string,
-): boolean {
-	const timestamp = headers.get("x-slack-request-timestamp");
-	const signature = headers.get("x-slack-signature");
-	if (!timestamp || !signature) return false;
-	const ts = Number.parseInt(timestamp, 10);
-	if (!Number.isFinite(ts)) return false;
-	const nowSec = Math.floor(Date.now() / 1000);
-	// 5-minute freshness window (Slack's documented bound) — rejects replays.
-	if (Math.abs(nowSec - ts) > 60 * 5) return false;
-	const base = Buffer.concat([
-		Buffer.from(`v0:${timestamp}:`, "utf8"),
-		Buffer.from(rawBody),
-	]);
-	const expected =
-		"v0=" + createHmac("sha256", signingSecret).update(base).digest("hex");
-	const provided = Buffer.from(signature, "utf8");
-	const expectedBuf = Buffer.from(expected, "utf8");
-	if (provided.length !== expectedBuf.length) return false;
-	try {
-		return timingSafeEqual(provided, expectedBuf);
-	} catch {
-		return false;
-	}
-}
-
-/**
- * Slack app webhook plugin.
- *
- * Slack does NOT fit the generic resolve-install-then-store pipeline:
- *  - Its PRIMARY routing target is a BYO `agent_connections` row keyed on
- *    team_id (created in the UI with its own bot token) — there is NO
- *    `app_installations` row for it, so `resolveActiveByTenant` would 200-ack
- *    the delivery and the LIVE bot would stop receiving events.
- *  - A delivery is forwarded LIVE to a running chat adapter (url_verification
- *    challenges, replies), not stored as a raw event.
- *
- * So the plugin runs only the edge signing `verify` through the generic router
- * and then takes over via {@link AppWebhookProvider.handleDelivery}, delegating
- * the full precedence chain (BYO connection → active OAuth install → preview
- * connection → OAuth-fallback chat) to the coordinator's `handleSlackAppWebhook`
- * — the SAME tested routing as the legacy `/slack/events` route.
- *
- * `webhookScheme` is required by the interface but unused on the handleDelivery
- * path (no schema-driven verify, no ingest); it records Slack's signature header
- * for completeness.
- */
-export function createSlackAppWebhookProvider(options: {
+export function createSlackWebhookDelivery(options: {
 	/**
-	 * Delegate to the coordinator's full Slack routing chain (BYO →
-	 * install → preview → OAuth fallback). Given the verified raw bytes +
-	 * original headers, returns the adapter's Response.
+	 * Delegate to the coordinator's full Slack routing chain. Given the verified
+	 * raw bytes + original headers, returns the adapter's Response.
 	 */
 	handleSlackAppWebhook(request: Request): Promise<Response>;
-}): AppWebhookProvider {
-	return {
-		provider: "slack",
-		// Recorded for completeness; unused on the handleDelivery path (Slack's
-		// `v0` scheme isn't a plain raw-body HMAC and nothing is ingested).
-		webhookScheme: {
-			signatureHeader: "x-slack-signature",
-			algorithm: "sha256",
-		},
-		verify(rawBody, headers, appWebhookSecret) {
-			return verifySlackSignature(rawBody, headers, appWebhookSecret);
-		},
-		// Slack routes by team_id inside the coordinator (which also handles the
-		// BYO / install / preview / fallback precedence), so the router-level
-		// tenant extraction is unused — but the interface requires it. Return null
-		// so that even if handleDelivery were ever absent, the router fails safe
-		// (acks without landing) rather than mis-routing.
-		extractTenant() {
-			return null;
-		},
-		async handleDelivery({ rawBody, headers, url, method }) {
-			// Reconstruct the verified delivery as a Request the coordinator can
-			// re-read (it calls `request.text()` + reads content-type). The raw
-			// bytes are passed through unchanged so the adapter's own downstream
-			// `verifySignature` over `v0:{ts}:{body}` still passes.
-			const request = new Request(url, {
-				method,
-				headers,
-				body:
-					method === "GET" || method === "HEAD"
-						? undefined
-						: Buffer.from(rawBody),
-			});
-			return options.handleSlackAppWebhook(request);
-		},
+}): NonNullable<AppWebhookProvider["handleDelivery"]> {
+	return async ({ rawBody, headers, url, method }) => {
+		// Reconstruct the verified delivery as a Request the coordinator can
+		// re-read (it calls `request.text()` + reads content-type). The raw bytes
+		// pass through unchanged so the adapter's own downstream `verifySignature`
+		// over `v0:{ts}:{body}` still passes.
+		const request = new Request(url, {
+			method,
+			headers,
+			body:
+				method === "GET" || method === "HEAD"
+					? undefined
+					: Buffer.from(rawBody),
+		});
+		return options.handleSlackAppWebhook(request);
 	};
 }
 
@@ -834,11 +744,11 @@ export interface AppWebhookRouterDeps {
 /**
  * Default app-webhook secret resolver. Resolution order per provider:
  *  1. the env var the connector DECLARES as `webhookSecretKey` (passed via
- *     `declaredSecretEnvKeys`), so the gateway holds no provider-specific env
- *     literal — the connector declaration is the single source of truth;
- *  2. the conventional `<PROVIDER>_APP_WEBHOOK_SECRET` env var (back-compat for
- *     providers with no declared key);
- *  3. a conventional secret-store ref (`secret://app-webhook/<provider>`) so
+ *     `declaredSecretEnvKeys`), so the gateway holds NO provider-specific env
+ *     literal and NO `<PROVIDER>_APP_WEBHOOK_SECRET` naming convention — the
+ *     connector declaration is the single source of truth (e.g. Slack's signing
+ *     secret IS its webhook secret, declared as `SLACK_SIGNING_SECRET`);
+ *  2. a conventional secret-store ref (`secret://app-webhook/<provider>`) so
  *     prod can seal it like any other credential.
  * Plaintext env wins for local/dev parity (`.env` is the single source of truth).
  */
@@ -849,9 +759,6 @@ export function createDefaultAppWebhookSecretResolver(
 	return async (provider) => {
 		const declaredKey = declaredSecretEnvKeys[provider];
 		if (declaredKey && process.env[declaredKey]) return process.env[declaredKey];
-		const envName = `${provider.toUpperCase()}_APP_WEBHOOK_SECRET`;
-		const fromEnv = process.env[envName];
-		if (fromEnv) return fromEnv;
 		return (await secretStore.get(`secret://app-webhook/${provider}`)) ?? undefined;
 	};
 }

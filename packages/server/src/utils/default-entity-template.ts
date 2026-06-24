@@ -101,3 +101,39 @@ export function buildDefaultEntityTemplate(
     ],
   };
 }
+
+/** Coerce a stored view template (JSON string or object) to a render node, or null. */
+function coerceTemplate(raw: unknown): TemplateNode | null {
+  if (raw == null) return null;
+  let tpl: unknown = raw;
+  if (typeof raw === 'string') {
+    try {
+      tpl = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!tpl || typeof tpl !== 'object' || Array.isArray(tpl)) return null;
+  if (Object.keys(tpl as object).length === 0) return null;
+  return tpl as TemplateNode;
+}
+
+/**
+ * The ONE render-resolution primitive — a declared view template wins; otherwise
+ * auto-default from the metadata schema. Returns the renderer ROOT NODE, or null
+ * when neither a template nor usable schema properties exist (free-form type →
+ * dashboard).
+ *
+ * Every render surface reuses this so a type renders identically everywhere:
+ * watcher window (`deriveWatcherRender`), entity detail (`resolve_path`), and
+ * event render (`get_content`). Surface-specific overrides (an entity instance's
+ * own template, an event kind's `jsonTemplate`) are applied by the caller as the
+ * first argument; the type's declared `viewTemplate` is the fallback that this
+ * helper consults before auto-defaulting.
+ */
+export function resolveEntityRender(
+  declaredTemplate: unknown,
+  metadataSchema: Record<string, unknown> | null | undefined
+): TemplateNode | null {
+  return coerceTemplate(declaredTemplate) ?? buildDefaultEntityTemplate(metadataSchema);
+}

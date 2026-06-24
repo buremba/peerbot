@@ -9,7 +9,7 @@ import { parseJsonObject } from '@lobu/core';
 import { type DbClient, parsePgNumberArray, pgTextArray } from '../../db/client';
 import logger from '../../utils/logger';
 import { buildEventPermalink } from '../../utils/url-builder';
-import { buildDefaultEntityTemplate } from '../../utils/default-entity-template';
+import { resolveEntityRender } from '../../utils/default-entity-template';
 import { resolveEventKindDefinition } from '../../utils/event-kind-validation';
 import type { ContentRow } from './types';
 import { parseRecordArray, toNumberOrUndefined } from './types';
@@ -198,7 +198,7 @@ export async function buildContentItems(opts: {
         item.entity_ids
       );
       if (!kind) return;
-      const root = kind.jsonTemplate ?? buildDefaultEntityTemplate(kind.metadataSchema);
+      const root = resolveEntityRender(kind.jsonTemplate, kind.metadataSchema);
       if (!root) return;
       item.payload_template = { root };
       item.payload_type = 'json_template';

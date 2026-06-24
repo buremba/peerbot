@@ -15,43 +15,47 @@
  * per-record template plus the path, and the renderer iterates — it does NOT wrap
  * the template server-side (the render DSL's iteration node binds item scope on
  * the client, which would require rewriting every binding path). Returns null
- * when the watcher isn't entity-typed or the type has no render — callers fall
- * back to the inline `json_template` (the escape hatch for bespoke renders).
+ * only when the watcher isn't entity-typed or the type has neither a declared
+ * view template nor schema properties to auto-default from — there is no
+ * per-watcher inline override.
  */
 
 import type { DbClient } from '../db/client';
 import type { KeyingConfig } from '../types/watchers';
+import { resolveEntityRender } from './default-entity-template';
 
 /**
- * Resolve an entity type's current default render template, tenant-first then
- * public catalog — the same precedence as `resolveEntityTypeMetadataSchema`, so
- * schema derivation and render derivation agree on which type they resolve. The
- * render is the version pointed to by `entity_types.current_view_template_version_id`
- * (the default/overview tab). Returns null when the type carries no render.
+ * Resolve an entity type's render, tenant-first then public catalog — the same
+ * precedence as `resolveEntityTypeMetadataSchema`, so schema derivation and render
+ * derivation agree on which type they resolve. The render is the type's declared
+ * view template (the version at `entity_types.current_view_template_version_id`),
+ * or — when none is declared — auto-defaulted from `metadata_schema` via the shared
+ * `resolveEntityRender` primitive (the SAME resolution the entity detail page and
+ * event render use). Returns null only when the type has neither.
  */
 async function resolveEntityTypeRender(
   sql: DbClient,
   organizationId: string,
   entityTypeSlug: string
 ): Promise<Record<string, unknown> | null> {
-  const rows = await sql<{ json_template: Record<string, unknown> | string | null }>`
-    SELECT vtv.json_template
+  const rows = await sql<{
+    json_template: Record<string, unknown> | string | null;
+    metadata_schema: Record<string, unknown> | string | null;
+  }>`
+    SELECT vtv.json_template, et.metadata_schema
     FROM entity_types et
     LEFT JOIN organization o ON o.id = et.organization_id
-    JOIN view_template_versions vtv ON vtv.id = et.current_view_template_version_id
+    LEFT JOIN view_template_versions vtv ON vtv.id = et.current_view_template_version_id
     WHERE et.slug = ${entityTypeSlug}
       AND et.deleted_at IS NULL
       AND (et.organization_id = ${organizationId} OR o.visibility = 'public')
     ORDER BY (et.organization_id = ${organizationId}) DESC, et.id ASC
     LIMIT 1
   `;
-  const raw = rows[0]?.json_template ?? null;
-  if (raw == null) return null;
-  const template = typeof raw === 'string' ? safeParse(raw) : raw;
-  if (!template || typeof template !== 'object' || Object.keys(template).length === 0) {
-    return null;
-  }
-  return template as Record<string, unknown>;
+  if (rows.length === 0) return null;
+  const rawSchema = rows[0].metadata_schema;
+  const schema = (typeof rawSchema === 'string' ? safeParse(rawSchema) : rawSchema) ?? null;
+  return resolveEntityRender(rows[0].json_template, schema);
 }
 
 function safeParse(value: string): Record<string, unknown> | null {

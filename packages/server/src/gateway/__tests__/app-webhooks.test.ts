@@ -6,12 +6,14 @@
  * provider POST). We hold the app webhook secret, so we compute a real HMAC
  * over the raw body.
  *
- * GitHub is a TRIGGER provider: it has a sync mapping, so the canonical record
- * is the poll, not the webhook. A signed delivery resolves the acting user into
- * a `person` (keeps the member graph live in real time) and marks the affected
- * repo's feeds due (`next_run_at = now()`) so the poll fetches the structured
- * update — it never stores a raw `events` row. Jira/Linear have no sync mapping,
- * so they still land the raw delivery (connector_key='webhook:app_install:<id>').
+ * GitHub is poll-canonical: it has a sync mapping, so the canonical record is
+ * the poll, not the webhook. Per event type the provider either TRIGGERS (marks
+ * the one affected feed due so the poll fetches the complete record — no actor
+ * resolution; the poll resolves the person once) or, for event-complete signals
+ * (stars), STORES the structured event directly + resolves the actor, keyed on
+ * the same origin_id the poll uses. It never stores a raw `events` row. Jira/
+ * Linear have no sync mapping, so they still land the raw delivery
+ * (connector_key='webhook:app_install:<id>').
  *
  * Under test (GitHub):
  *  1. A signed delivery for a CONFIGURED repo → 200, feeds marked due, NO raw event.

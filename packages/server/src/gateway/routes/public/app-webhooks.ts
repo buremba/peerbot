@@ -125,15 +125,19 @@ export interface AppWebhookProvider {
 		sql: DbClient;
 	}): Promise<{ entityIds: number[]; metadata: Record<string, string> } | null>;
 	/**
-	 * Optional: handle the delivery as a TRIGGER instead of storing a raw event.
-	 * For connectors with a sync mapping (github), the canonical record is the
-	 * poll — so a delivery just resolves identity (real-time person-graph signal)
-	 * and marks the affected feeds due (`next_run_at = now()`), letting the poll
-	 * fetch the structured update that dedupes/supersedes by stable origin_id. No
-	 * raw blob is stored. Providers that define this NEVER fall through to the raw
-	 * ingest path; providers without it keep raw store (jira/linear). `triggered`
-	 * reports whether a matching feed was marked due (telemetry only — the router
-	 * acks 200 either way; an unconfigured repo is a no-op, not an error).
+	 * Optional: handle the delivery itself instead of storing a raw event. For
+	 * connectors with a sync mapping (github) the canonical record is the poll, so
+	 * the provider decides per event type (see the github plugin):
+	 *  - TRIGGER (most events) — mark the affected feed due (`next_run_at = now()`)
+	 *    and let the poll fetch the complete record (dedupes/supersedes by stable
+	 *    origin_id). No identity resolution here — the poll resolves it once.
+	 *  - STORE (event-complete signals, e.g. stars) — resolve the actor and insert
+	 *    the structured event directly, keyed on the same origin_id the poll uses.
+	 * No raw blob is stored either way. Providers that define this NEVER fall
+	 * through to the raw ingest path; providers without it keep raw store
+	 * (jira/linear). `triggered` reports whether a feed was marked due OR an event
+	 * stored (telemetry only — the router acks 200 either way; an unconfigured
+	 * repo/feed is a no-op, not an error).
 	 */
 	onDelivery?(params: {
 		rawBody: Uint8Array;

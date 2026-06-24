@@ -104,7 +104,7 @@ pass "lobu run booted on :$GW_PORT"
 # local-init via whoami --json
 runlobu "$PROJ" whoami --json -c local
 [ "$RC" -eq 0 ] || fail "whoami --json exit $RC"
-JSON="$(tr -d '\n' <"$OUT")"
+JSON="$(grep -E '^\{' "$OUT" | tail -1)"
 WHOAMI="$(
   node -e '
 const j = JSON.parse(process.argv[1]);
@@ -160,7 +160,7 @@ grep -q swift-decode-ok "$OUT" && pass "Swift JSONDecoder matches whoami --json"
 
 # Legacy OAuth import (credentials.json write path — same as Keychain migration)
 MIG_CTX="legacy-migrate-e2e"
-swift -e '
+HOME="$HOME" BASE_URL="$BASE_URL" swift -e '
 import Foundation
 struct LegacyUserInfo: Codable { let sub: String; let email: String; let name: String? }
 struct LegacyKeychainOAuthEntry: Codable {
@@ -204,7 +204,7 @@ let contexts = json?["contexts"] as? [String: [String: Any]]
 let tok = (contexts?[ctx]?["accessToken"] as? String) ?? ""
 guard tok == "legacy-access" else { fputs("bad-token:\(tok)\n", stderr); exit(3) }
 print("migration-ok")
-' HOME="$HOME" BASE_URL="$BASE_URL" >"$OUT" 2>&1
+' >"$OUT" 2>&1
 grep -q migration-ok "$OUT" && pass "legacy OAuth import → credentials.json (legacy-access)" \
   || fail "legacy OAuth import: $(cat "$OUT")"
 runlobu "$PROJ" context add "$MIG_CTX" --url "$BASE_URL/api/v1"

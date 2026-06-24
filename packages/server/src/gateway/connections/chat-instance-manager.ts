@@ -70,25 +70,34 @@ import { configsEqual } from "./config-equal.js";
 const logger = createLogger("chat-instance-manager");
 
 /**
- * Org-scoped counts + slug for the Slack App Home dashboard card. One
- * round-trip; all counts are organization-wide because `events` carries no
- * per-agent or per-user attribution. Returns null on any failure so the home
- * tab degrades to a slug-less dashboard link rather than failing to render.
+ * Org-scoped counts + slug + recent feed for the Slack App Home dashboard
+ * card. Runs the counts and recent queries in parallel. All counts are
+ * organization-wide because `events` carries no per-agent or per-user
+ * attribution. Returns null on any failure so the home tab degrades to a
+ * slug-less dashboard link rather than failing to render.
  */
 /** How many recent events the home tab's "Recent activity" list shows. */
 const SLACK_HOME_RECENT_LIMIT = 5;
 
-/** Title an event for the recent list: its title, else a payload snippet. */
+/** Collapse whitespace and clamp to a bounded length for a one-line Slack row. */
+function clampRecentText(text: string): string {
+  const s = text.replace(/\s+/g, " ").trim();
+  return s.length > 60 ? `${s.slice(0, 59)}…` : s;
+}
+
+/**
+ * Title an event for the recent list: its title, else a payload snippet. Both
+ * paths are clamped so an unbounded title can't blow past Slack's section text
+ * limit and force the home view into its minimal fallback.
+ */
 function recentDisplayTitle(
   title: string | null,
   payloadText: string | null,
 ): string {
   const t = title?.trim();
-  if (t) return t;
-  const snippet = payloadText?.replace(/\s+/g, " ").trim();
-  if (snippet) {
-    return snippet.length > 60 ? `${snippet.slice(0, 59)}…` : snippet;
-  }
+  if (t) return clampRecentText(t);
+  const snippet = payloadText?.trim();
+  if (snippet) return clampRecentText(snippet);
   return "(untitled)";
 }
 

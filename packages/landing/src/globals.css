@@ -88,7 +88,7 @@ h2,
 h3,
 .font-display {
   font-family: "exposure", Georgia, serif;
-  letter-spacing: -0.03em;
+  letter-spacing: -0.005em;
 }
 
 /* Subtle homepage depth: a neutral top wash plus a signal grid that fades out. */

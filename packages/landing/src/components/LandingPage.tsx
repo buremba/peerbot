@@ -169,7 +169,7 @@ function SectionHeading(props: {
 }) {
   return (
     <h2
-      class={`font-display text-[1.85rem] font-bold leading-[1.1] tracking-tight sm:text-[2.25rem] ${props.className ?? ""}`}
+      class={`font-display text-[1.85rem] font-bold leading-[1.1] tracking-[-0.005em] sm:text-[2.25rem] ${props.className ?? ""}`}
       style={{ color: "var(--color-page-text)" }}
     >
       {props.children}
@@ -202,7 +202,7 @@ function Hero() {
     <section class="px-4 pb-12 pt-20 text-center sm:pb-16 sm:pt-28">
       <Container>
         <h1
-          class="hero-rise hero-rise-1 mx-auto max-w-[78rem] font-display text-[clamp(2.25rem,4.15vw,3.25rem)] font-bold leading-[1.06] tracking-[-0.028em]"
+          class="hero-rise hero-rise-1 mx-auto max-w-[78rem] font-display text-[clamp(2.25rem,4.15vw,3.25rem)] font-bold leading-[1.06] tracking-[-0.008em]"
           style={{ color: "var(--color-page-text)" }}
         >
           Build AI teammates that{" "}
@@ -863,7 +863,7 @@ function RunAnywhereSection() {
             <div class="relative z-10 flex flex-col h-full">
               <Eyebrow>{card.eyebrow}</Eyebrow>
               <h3
-                class="mb-2 text-[1.05rem] font-bold tracking-tight"
+                class="mb-2 text-[1.05rem] font-bold tracking-normal"
                 style={{ color: "var(--color-page-text)" }}
               >
                 {card.title}

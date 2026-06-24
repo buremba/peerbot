@@ -34,6 +34,7 @@
  * Any replica can serve any delivery.
  */
 
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { createLogger } from "@lobu/core";
 import type { StoredConnection } from "@lobu/core";
@@ -145,6 +146,34 @@ export interface AppWebhookProvider {
 		install: { id: number | string; organizationId: string };
 		sql: DbClient;
 	}): Promise<{ triggered: boolean }>;
+	/**
+	 * Optional: take over the ENTIRE delivery after `verify`, bypassing the
+	 * router's `extractTenant` → `resolveActiveByTenant` (`app_installations`) →
+	 * ingest pipeline. A provider that defines this owns its own routing AND its
+	 * own HTTP response; the router returns the Response verbatim.
+	 *
+	 * This exists for Slack, whose live messaging path does NOT fit the
+	 * resolve-install-then-store model:
+	 *  - Slack's PRIMARY routing target is a BYO `agent_connections` row keyed on
+	 *    team_id — there is NO `app_installations` row for it, so the generic
+	 *    `resolveActiveByTenant` would 200-ack the delivery and the live bot would
+	 *    stop receiving events. The precedence (BYO connection → active OAuth
+	 *    install → preview connection → OAuth-fallback chat) and the live forward
+	 *    to a running chat adapter (url_verification challenges, replies) live in
+	 *    {@link SlackConnectionCoordinator.handleAppWebhook} and must be preserved
+	 *    exactly.
+	 *  - A delivery is forwarded to a running adapter, not stored as a raw event.
+	 *
+	 * `verify` still runs first (fail-closed signing check at the edge); only the
+	 * post-verify routing is delegated. `rawBody` is the already-read body; the
+	 * provider reconstructs a Request from it as needed.
+	 */
+	handleDelivery?(params: {
+		rawBody: Uint8Array;
+		headers: Headers;
+		url: string;
+		method: string;
+	}): Promise<Response>;
 }
 
 /** Parse the raw JSON body once; returns undefined on malformed JSON. */
@@ -677,6 +706,117 @@ export function createLinearAppWebhookProvider(options: {
 	});
 }
 
+/**
+ * Verify a Slack delivery's `v0` signature against the app SIGNING SECRET.
+ *
+ * Slack's scheme (NOT a plain raw-body HMAC, so it can't be schema-derived):
+ *   base = `v0:{x-slack-request-timestamp}:{rawBody}`
+ *   expected = `v0=` + HMAC-SHA256(signingSecret, base) (hex)
+ *   compared constant-time against `x-slack-signature`.
+ * Plus a 5-minute timestamp-freshness window to reject replays of an
+ * intercepted (still-signed) payload. This mirrors the Slack adapter's own
+ * `verifySignature` so the edge fails closed identically to the downstream
+ * adapter — defense in depth, and the prerequisite for delegating routing to
+ * the coordinator without re-reading the body there.
+ *
+ * Pure over (rawBody, headers, secret) — no I/O — so it is trivially
+ * multi-replica safe. Returns false on any miss; the router then 401s.
+ */
+export function verifySlackSignature(
+	rawBody: Uint8Array,
+	headers: Headers,
+	signingSecret: string,
+): boolean {
+	const timestamp = headers.get("x-slack-request-timestamp");
+	const signature = headers.get("x-slack-signature");
+	if (!timestamp || !signature) return false;
+	const ts = Number.parseInt(timestamp, 10);
+	if (!Number.isFinite(ts)) return false;
+	const nowSec = Math.floor(Date.now() / 1000);
+	// 5-minute freshness window (Slack's documented bound) — rejects replays.
+	if (Math.abs(nowSec - ts) > 60 * 5) return false;
+	const base = Buffer.concat([
+		Buffer.from(`v0:${timestamp}:`, "utf8"),
+		Buffer.from(rawBody),
+	]);
+	const expected =
+		"v0=" + createHmac("sha256", signingSecret).update(base).digest("hex");
+	const provided = Buffer.from(signature, "utf8");
+	const expectedBuf = Buffer.from(expected, "utf8");
+	if (provided.length !== expectedBuf.length) return false;
+	try {
+		return timingSafeEqual(provided, expectedBuf);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Slack app webhook plugin.
+ *
+ * Slack does NOT fit the generic resolve-install-then-store pipeline:
+ *  - Its PRIMARY routing target is a BYO `agent_connections` row keyed on
+ *    team_id (created in the UI with its own bot token) — there is NO
+ *    `app_installations` row for it, so `resolveActiveByTenant` would 200-ack
+ *    the delivery and the LIVE bot would stop receiving events.
+ *  - A delivery is forwarded LIVE to a running chat adapter (url_verification
+ *    challenges, replies), not stored as a raw event.
+ *
+ * So the plugin runs only the edge signing `verify` through the generic router
+ * and then takes over via {@link AppWebhookProvider.handleDelivery}, delegating
+ * the full precedence chain (BYO connection → active OAuth install → preview
+ * connection → OAuth-fallback chat) to the coordinator's `handleSlackAppWebhook`
+ * — the SAME tested routing as the legacy `/slack/events` route.
+ *
+ * `webhookScheme` is required by the interface but unused on the handleDelivery
+ * path (no schema-driven verify, no ingest); it records Slack's signature header
+ * for completeness.
+ */
+export function createSlackAppWebhookProvider(options: {
+	/**
+	 * Delegate to the coordinator's full Slack routing chain (BYO →
+	 * install → preview → OAuth fallback). Given the verified raw bytes +
+	 * original headers, returns the adapter's Response.
+	 */
+	handleSlackAppWebhook(request: Request): Promise<Response>;
+}): AppWebhookProvider {
+	return {
+		provider: "slack",
+		// Recorded for completeness; unused on the handleDelivery path (Slack's
+		// `v0` scheme isn't a plain raw-body HMAC and nothing is ingested).
+		webhookScheme: {
+			signatureHeader: "x-slack-signature",
+			algorithm: "sha256",
+		},
+		verify(rawBody, headers, appWebhookSecret) {
+			return verifySlackSignature(rawBody, headers, appWebhookSecret);
+		},
+		// Slack routes by team_id inside the coordinator (which also handles the
+		// BYO / install / preview / fallback precedence), so the router-level
+		// tenant extraction is unused — but the interface requires it. Return null
+		// so that even if handleDelivery were ever absent, the router fails safe
+		// (acks without landing) rather than mis-routing.
+		extractTenant() {
+			return null;
+		},
+		async handleDelivery({ rawBody, headers, url, method }) {
+			// Reconstruct the verified delivery as a Request the coordinator can
+			// re-read (it calls `request.text()` + reads content-type). The raw
+			// bytes are passed through unchanged so the adapter's own downstream
+			// `verifySignature` over `v0:{ts}:{body}` still passes.
+			const request = new Request(url, {
+				method,
+				headers,
+				body:
+					method === "GET" || method === "HEAD"
+						? undefined
+						: Buffer.from(rawBody),
+			});
+			return options.handleSlackAppWebhook(request);
+		},
+	};
+}
+
 /** Dependencies the router needs, injected at registration (testable). */
 export interface AppWebhookRouterDeps {
 	installationStore: AppInstallationStore;
@@ -763,6 +903,30 @@ export function createAppWebhookRoutes(deps: AppWebhookRouterDeps): Hono {
 		}
 		if (!provider.verify(rawBody, c.req.raw.headers, appSecret)) {
 			return json(401, { error: "Unauthorized" });
+		}
+
+		// 1b. Providers that own their own routing (Slack) take over here, after
+		//     the edge signing check. They do NOT resolve an `app_installations`
+		//     row — Slack's primary target is a BYO `agent_connections` row that
+		//     has no install row, so the generic resolveActiveByTenant would
+		//     200-ack the live bot's traffic into oblivion. They run their own
+		//     precedence chain and return their own Response; the generic
+		//     install/ingest pipeline below is skipped entirely.
+		if (provider.handleDelivery) {
+			try {
+				return await provider.handleDelivery({
+					rawBody,
+					headers: c.req.raw.headers,
+					url: c.req.raw.url,
+					method: c.req.raw.method,
+				});
+			} catch (error) {
+				logger.error(
+					{ provider: providerName, error: String(error) },
+					"[app-webhook] handleDelivery failed",
+				);
+				return json(500, { error: "Failed to handle delivery" });
+			}
 		}
 
 		// 2. Extract the provider tenant tuple. A delivery with no resolvable

@@ -1,8 +1,6 @@
 import { createLogger } from "@lobu/core";
 import type { Context } from "hono";
-import { Hono } from "hono";
 import { getDb } from "../../../db/client.js";
-import type { ChatInstanceManager } from "../../connections/chat-instance-manager.js";
 
 const logger = createLogger("slack-routes");
 
@@ -105,50 +103,9 @@ export function slackOAuthCallbackUrl(
   return `${url.origin}${prefix}/slack/oauth_callback`;
 }
 
-/**
- * Slack event-webhook route. The install routes (`/slack/install` and
- * `/slack/oauth_callback`) have been moved to `createSlackInstallRoutes`
- * in `app-install.ts` alongside the GitHub App install routes.
- */
-export function createSlackRoutes(manager: ChatInstanceManager): Hono {
-  const router = new Hono();
-
-  router.post("/slack/events", async (c) => {
-    // Reject webhooks whose timestamp is outside Slack's 5-minute window.
-    //
-    // HMAC signature verification proper happens downstream in the Chat SDK
-    // Slack adapter — `@chat-adapter/slack`'s `SlackAdapter.handleWebhook()`
-    // recomputes `v0={HMAC-SHA256(signingSecret, "v0:{ts}:{rawBody}")}` and
-    // `timingSafeEqual`s it against `x-slack-signature`, returning a 401 on
-    // mismatch (see `verifySignature`). Every path out of this route reaches
-    // that adapter: `manager.handleSlackAppWebhook` → `SlackConnection
-    // Coordinator.handleAppWebhook` → `forwardWebhook` → `ChatInstanceManager
-    // .handleWebhook` → `chat.webhooks.slack` (the adapter), or the OAuth
-    // fallback chat that calls `adapter.handleWebhook` directly.
-    //
-    // Enforcing the freshness window here as well is cheap defense-in-depth:
-    // it rejects replays of an intercepted (still-signed) payload before any
-    // body parsing, independent of the adapter.
-    const tsHeader = c.req.header("x-slack-request-timestamp");
-    if (tsHeader) {
-      const ts = Number(tsHeader);
-      const nowSec = Math.floor(Date.now() / 1000);
-      if (!Number.isFinite(ts) || Math.abs(nowSec - ts) > 60 * 5) {
-        logger.warn(
-          { tsHeader, nowSec },
-          "Rejecting Slack webhook: timestamp outside 5-minute window"
-        );
-        return c.text("stale request", 400);
-      }
-    }
-
-    try {
-      return await manager.handleSlackAppWebhook(c.req.raw);
-    } catch (error) {
-      logger.error({ error: String(error) }, "Slack event handling failed");
-      return c.text("Slack webhook processing failed", 500);
-    }
-  });
-
-  return router;
-}
+// The Slack event-webhook route (`POST /slack/events`) has been folded into the
+// generic app-webhook endpoint `POST /api/v1/app-webhooks/slack` — see
+// `createSlackAppWebhookProvider` in `app-webhooks.ts`. The OAuth install routes
+// (`/slack/install`, `/slack/oauth_callback`) live in `createSlackInstallRoutes`
+// (`app-install.ts`). This module now only exports the shared install-flow URL
+// helpers (`resolveInstallOrgId`, `slackOAuthCallbackUrl`) consumed by both.

@@ -29,6 +29,7 @@ import {
   createGithubAppWebhookProvider,
   createJiraAppWebhookProvider,
   createLinearAppWebhookProvider,
+  createSlackAppWebhookProvider,
 } from "../routes/public/app-webhooks.js";
 import {
   createAppInstallRoutes,
@@ -56,7 +57,6 @@ import {
   setAuthProvider,
   verifySettingsSessionOrToken,
 } from "../routes/public/settings-auth.js";
-import { createSlackRoutes } from "../routes/public/slack.js";
 
 const logger = createLogger("gateway-startup");
 
@@ -708,7 +708,6 @@ export function createGatewayApp(
   }
 
   if (chatInstanceManager) {
-    app.route("", createSlackRoutes(chatInstanceManager));
     app.route("", createConnectionWebhookRoutes(chatInstanceManager));
 
     // Shared multi-tenant app-webhook router (app-installation design §4.3): one
@@ -749,6 +748,28 @@ export function createGatewayApp(
     if (linearAppId) {
       appWebhookProviders.push(createLinearAppWebhookProvider({ appId: linearAppId }));
     }
+    // Slack: the shared `/slack/events` route is folded into the generic
+    // app-webhook endpoint (`/api/v1/app-webhooks/slack`). Unlike the other
+    // providers Slack runs its OWN routing chain (BYO agent_connections →
+    // active OAuth install → preview → OAuth fallback) via the coordinator's
+    // handleSlackAppWebhook, so the generic router only performs the edge `v0`
+    // signing verify and then delegates. Gated, like github, on the creds
+    // resolved from the Slack connector declaration (clientId + signing secret).
+    const slackMethod = getPrimedBundledMethod("slack", "slack");
+    const slackCreds = slackMethod ? resolveAppInstallCredentials(slackMethod) : null;
+    const slackClientId = slackCreds?.clientId ?? process.env.SLACK_CLIENT_ID;
+    const slackSigningSecretKey = slackCreds?.webhookSecretKey;
+    const slackSigningSecret =
+      (slackSigningSecretKey ? process.env[slackSigningSecretKey] : undefined) ??
+      process.env.SLACK_SIGNING_SECRET;
+    if (slackClientId && slackSigningSecret) {
+      appWebhookProviders.push(
+        createSlackAppWebhookProvider({
+          handleSlackAppWebhook: (req) =>
+            chatInstanceManager.handleSlackAppWebhook(req),
+        }),
+      );
+    }
     app.route(
       "",
       createAppWebhookRoutes({
@@ -759,7 +780,12 @@ export function createGatewayApp(
           appWebhookSecretStore,
           // Prefer each connector's DECLARED webhook-secret env var over the
           // conventional `<PROVIDER>_APP_WEBHOOK_SECRET` literal.
-          { github: githubCreds?.webhookSecretKey },
+          {
+            github: githubCreds?.webhookSecretKey,
+            // Slack's app webhook secret IS its signing secret (the `v0` verify
+            // key), declared on the Slack connector as `webhookSecretKey`.
+            slack: slackSigningSecretKey,
+          },
         ),
       }),
     );

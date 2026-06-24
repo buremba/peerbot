@@ -51,47 +51,31 @@ import { assertConnectorAllowedInCloud } from '../../../../utils/connector-cloud
 import { ensureConnectorInstalled } from '../../../../utils/ensure-connector-installed';
 import { unregisterConnectorWebhook } from '../../../../connect/webhook-registration';
 import { getErrorMessage } from "@lobu/core";
-import { listCatalogEntries } from '../../../../catalog/load';
+import { enrichConnectorGroupsWithCatalogDisplay } from '../../../../catalog/connector-group-display';
 
 // ============================================
 // handleListConnectorGroups
 // ============================================
 
-function catalogFaviconDomain(
-  detail: Record<string, unknown> | undefined,
-): string | null {
-  return typeof detail?.favicon_domain === 'string' ? detail.favicon_domain : null;
-}
-
-async function enrichConnectorGroupDisplay<
-  T extends {
-    connector_key: string;
-    connector_name: string | null;
-    favicon_domain: string | null;
-  },
->(groups: T[]): Promise<T[]> {
-  const catalogByKey = new Map(
-    (await listCatalogEntries(['connectors'])).connectors.map((entry) => [
-      entry.id,
-      entry,
-    ]),
-  );
-
-  return groups
-    .map((group) => {
-      const catalog = catalogByKey.get(group.connector_key);
-      return {
-        ...group,
-        connector_name: group.connector_name ?? catalog?.name ?? null,
-        favicon_domain:
-          group.favicon_domain ?? catalogFaviconDomain(catalog?.detail),
-      };
-    })
-    .sort((a, b) =>
-      (a.connector_name ?? a.connector_key).localeCompare(
-        b.connector_name ?? b.connector_key,
-      ),
-    );
+function mapConnectorGroupSummaries(raw: unknown): Array<{
+  id: number;
+  display_name: string;
+  feed_count: number;
+}> {
+  if (!Array.isArray(raw)) return [];
+  const summaries: Array<{ id: number; display_name: string; feed_count: number }> =
+    [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const id = Number(record.id);
+    const displayName =
+      typeof record.display_name === 'string' ? record.display_name.trim() : '';
+    const feedCount = Number(record.feed_count) || 0;
+    if (!Number.isFinite(id) || !displayName) continue;
+    summaries.push({ id, display_name: displayName, feed_count: feedCount });
+  }
+  return summaries;
 }
 
 export async function handleListConnectorGroups(
@@ -106,8 +90,18 @@ export async function handleListConnectorGroups(
            MAX(cd.name) AS connector_name,
            MAX(cd.favicon_domain) AS favicon_domain,
            COUNT(*)::int AS connection_count,
-           array_agg(c.id ORDER BY COALESCE(NULLIF(TRIM(c.display_name), ''), cd.name, c.connector_key), c.id)
-             AS connection_ids
+           COALESCE(
+             json_agg(
+               json_build_object(
+                 'id', c.id,
+                 'display_name',
+                   COALESCE(NULLIF(TRIM(c.display_name), ''), cd.name, c.connector_key),
+                 'feed_count', fc.feed_count
+               )
+               ORDER BY COALESCE(NULLIF(TRIM(c.display_name), ''), cd.name, c.connector_key), c.id
+             ),
+             '[]'::json
+           ) AS connections
     FROM connections c
     LEFT JOIN LATERAL (
       SELECT name, favicon_domain
@@ -118,6 +112,12 @@ export async function handleListConnectorGroups(
       ORDER BY updated_at DESC
       LIMIT 1
     ) cd ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*)::int AS feed_count
+      FROM feeds f
+      WHERE f.connection_id = c.id
+        AND f.deleted_at IS NULL
+    ) fc ON TRUE
     WHERE c.organization_id = ${organizationId}
       AND c.deleted_at IS NULL
     GROUP BY c.connector_key
@@ -131,12 +131,12 @@ export async function handleListConnectorGroups(
     favicon_domain:
       row.favicon_domain != null ? String(row.favicon_domain) : null,
     connection_count: Number(row.connection_count) || 0,
-    connection_ids: parsePgNumberArray(row.connection_ids),
+    connections: mapConnectorGroupSummaries(row.connections),
   }));
 
   return {
     action: 'list_connector_groups',
-    groups: await enrichConnectorGroupDisplay(groups),
+    groups: await enrichConnectorGroupsWithCatalogDisplay(groups),
   };
 }
 

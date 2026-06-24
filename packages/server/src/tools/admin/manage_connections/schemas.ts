@@ -333,7 +333,11 @@ export type ManageConnectionsResult =
 				connector_name: string | null;
 				favicon_domain: string | null;
 				connection_count: number;
-				connection_ids: number[];
+				connections: Array<{
+					id: number;
+					display_name: string;
+					feed_count: number;
+				}>;
 			}>;
 	  }
 	| { action: "get"; connection: ConnectionRow; view_url?: string }

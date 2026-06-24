@@ -38,6 +38,9 @@ import { getErrorMessage } from "@lobu/core";
 const ListFeedsAction = Type.Object({
   action: Type.Literal('list_feeds'),
   connection_id: Type.Optional(Type.Number({ description: 'Filter by connection ID' })),
+  feed_ids: Type.Optional(
+    Type.Array(Type.Number(), { description: 'Filter to specific feed IDs' })
+  ),
   entity_id: Type.Optional(Type.Number({ description: 'Filter by linked entity ID' })),
   status: Type.Optional(Type.String({ description: 'Filter by status: active, paused, error' })),
   ...PaginationFields,
@@ -160,6 +163,9 @@ async function handleListFeeds(
   }
   if (args.status) {
     pageQuery = sql`${pageQuery} AND f.status = ${args.status}`;
+  }
+  if (args.feed_ids?.length) {
+    pageQuery = sql`${pageQuery} AND f.id = ANY(${pgBigintArray(args.feed_ids)})`;
   }
 
   pageQuery = sql`${pageQuery} ORDER BY f.created_at DESC LIMIT ${limit} OFFSET ${offset}`;

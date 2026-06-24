@@ -293,7 +293,7 @@ describe("oauth", () => {
       expect(body.client_id).toBe("client-1");
       expect(body.client_secret).toBe("shh");
       expect(body.scope).toBe(
-        "mcp:read mcp:write mcp:admin profile:read connections:token"
+        "device_worker:run mcp:read mcp:write mcp:admin profile:read connections:token"
       );
     });
 

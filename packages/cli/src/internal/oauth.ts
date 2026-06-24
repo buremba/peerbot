@@ -14,7 +14,12 @@ const SOFTWARE_ID = "lobu-cli";
 // device-code path — it is NOT auto-appended — so `lobu login` must ask for it
 // here. The endpoint's scope gate stays meaningful because nothing widens a
 // token onto this scope unless the grant explicitly requested it.
-const SCOPE = "mcp:read mcp:write mcp:admin profile:read connections:token";
+// `device_worker:run` is required for Mac menubar + Chrome bridge flows that
+// call POST /api/me/devices/mint-child-token and poll /api/workers/* — the
+// server gates both on that scope. The old Owletto Mac OAuthClient requested it
+// explicitly; the CLI must too so `lobu login` tokens work for device workers.
+const SCOPE =
+  "device_worker:run mcp:read mcp:write mcp:admin profile:read connections:token";
 const GRANT_DEVICE_CODE = "urn:ietf:params:oauth:grant-type:device_code";
 const GRANT_REFRESH_TOKEN = "refresh_token";
 /** RFC 8628 §3.5: on `slow_down`, the device MUST increase the interval by 5s. */

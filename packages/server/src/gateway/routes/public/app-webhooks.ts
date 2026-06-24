@@ -533,12 +533,20 @@ async function storeGithubWebhookEvent(params: {
 		`https://github.com/${actor.author_login}`;
 
 	// Resolve the actor → person so the star is attributed exactly like the poll.
+	// Best-effort by design: a failure leaves the event unattributed (the poll
+	// backstop re-resolves on its next run), but we log it so it isn't invisible.
 	const resolution = await resolveGithubWebhookActor({
 		organizationId: install.organizationId,
 		githubEvent: event,
 		payload,
 		sql,
-	}).catch(() => null);
+	}).catch((error) => {
+		logger.warn(
+			{ event, originId, error: String(error) },
+			"[app-webhook] github star actor resolution failed; storing unattributed",
+		);
+		return null;
+	});
 
 	await insertEvent(
 		{

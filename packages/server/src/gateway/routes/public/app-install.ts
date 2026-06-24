@@ -40,6 +40,7 @@ import {
 	createLogger,
 	getErrorMessage,
 } from "@lobu/core";
+import type { ConnectorAuthAppInstallation } from "@lobu/connector-sdk";
 import { getDb } from "../../../db/client.js";
 import {
 	ConnectionSlugConflictError,
@@ -54,7 +55,7 @@ import type { AppInstallationStore } from "../../../lobu/stores/app-installation
 import { exchangeCodeForTokens } from "../../../connect/oauth-providers.js";
 import {
 	createGithubInstallStateStore,
-	createSlackInstallStateStore,
+	OAuthStateStore,
 } from "../../auth/oauth/state-store.js";
 import {
 	renderOAuthErrorPage,
@@ -1665,114 +1666,157 @@ function buildInstallMetadata(c: import("hono").Context): Record<string, unknown
 }
 
 // ---------------------------------------------------------------------------
-// Slack OAuth App-install routes
+// oauth-code-exchange install shape (generic "Add to <app>" OAuth flow)
 //
-// The "Add to Slack" flow is simpler than GitHub's App install:
-//   1. GET /slack/install  — mint a CSRF state, redirect to Slack's OAuth URL.
-//   2. GET /slack/oauth_callback — verify state, exchange code, upsert
-//      `app_installations` (provider=slack) via the coordinator's completeOAuthInstall.
-//
-// Org binding, state CSRF, org-mismatch guard, and redirect-URI building all
-// mirror the GitHub flow. No ownership verification is needed: Slack's OAuth
-// already proves the user authorized the install on the workspace. Moved here
-// from the bespoke slack.ts so all app-level OAuth install flows live together.
+// The standard hosted-app install: redirect to the provider's authorize URL with
+// the declared client id + scopes, then on callback verify the CSRF state and
+// hand off to the connector's KIND-dispatched completion (chat → the chat
+// adapter's code→token + bot-token + app_installations write). Mounted by the
+// generic engine at `/{provider}/install` + `/{provider}/oauth_callback`, so the
+// existing Slack URLs (`/slack/install`, `/slack/oauth_callback`) are preserved
+// without any provider literal in the route code. Org binding, state CSRF, and
+// the org-mismatch guard mirror the GitHub flow; no ownership proof is needed —
+// the provider's OAuth already proves the user authorized the install.
 // ---------------------------------------------------------------------------
 
-const slackInstallLogger = createLogger("slack-install-routes");
+const oauthInstallLogger = createLogger("oauth-install-routes");
 
-/** Resolve the OAuth callback URL for Slack. Kept in sync with Slack's
- * registered redirect URIs: `<gateway-base>/slack/oauth_callback`. */
-function resolveSlackCallbackUrl(
-	gatewayBaseUrl: string | undefined,
-	requestUrl: string,
-): string {
-	if (gatewayBaseUrl) {
-		return `${gatewayBaseUrl.replace(/\/+$/, "")}/slack/oauth_callback`;
-	}
-	const url = new URL(requestUrl);
-	const prefix = url.pathname.replace(/\/slack\/install\/?$/, "");
-	return `${url.origin}${prefix}/slack/oauth_callback`;
+/** Per-request CSRF state for an oauth-code-exchange install. */
+interface OAuthInstallStateData {
+	redirectUri: string;
+	/**
+	 * Active org of the session that initiated the install. The callback verifies
+	 * the completing session's active org matches; a mismatch rejects the install
+	 * so a link minted under org A's session can never plant an install into org B.
+	 */
+	organizationId: string;
 }
 
-/** Dependencies the Slack install routes need (injected for testability). */
-export interface SlackInstallRouterDeps {
-	/** Resolve the active org for the request (session-bound + single-tenant). */
-	resolveInstallOrgId(c: import("hono").Context): Promise<string | null>;
-	/** The public gateway base URL, used to derive the registered callback URL. */
-	getPublicGatewayUrl?(): string | undefined;
-	/**
-	 * Complete the Slack OAuth install: exchange the code, upsert the
-	 * `app_installations` row via the coordinator, return workspace info.
-	 */
-	completeSlackOAuthInstall(
-		request: Request,
-		redirectUri: string,
-		organizationId: string,
-	): Promise<{ teamId: string; teamName?: string; installationId: string }>;
+/** The per-provider state store (scope `<provider>:oauth:state`). */
+function oauthInstallStateStore(
+	provider: string,
+): OAuthStateStore<OAuthInstallStateData> {
+	return new OAuthStateStore(`${provider}:oauth:state`, `${provider}-install-state`);
 }
 
 /**
- * Build the Slack OAuth app-install routes.
- *
- * Mounted at the gateway root (`app.route("", ...)`), so the routes live at
- * `<gateway-base>/slack/install` and `<gateway-base>/slack/oauth_callback`.
+ * Resolve the OAuth callback URL for an oauth-code-exchange provider. Must stay
+ * in sync with the provider's registered redirect URIs:
+ * `<gateway-base>/{provider}/oauth_callback`. Behind the prod TLS-terminating
+ * ingress `c.req.url` is the internal pod URL, so prefer the configured public
+ * base; fall back to deriving the mount prefix from the request path on
+ * self-host (single-origin).
  */
-export function createSlackInstallRoutes(deps: SlackInstallRouterDeps): Hono {
-	const router = new Hono();
+function resolveOAuthInstallCallbackUrl(
+	gatewayBaseUrl: string | undefined,
+	requestUrl: string,
+	provider: string,
+): string {
+	if (gatewayBaseUrl) {
+		return `${gatewayBaseUrl.replace(/\/+$/, "")}/${provider}/oauth_callback`;
+	}
+	const url = new URL(requestUrl);
+	const prefix = url.pathname.replace(
+		new RegExp(`/${provider}/install/?$`),
+		"",
+	);
+	return `${url.origin}${prefix}/${provider}/oauth_callback`;
+}
 
-	router.get("/slack/install", async (c) => {
-		// Bind the install to the initiating session's active org. Without this
-		// an OAuth link minted under org A's session can be opened from org B's
-		// browser and the resulting connection lands in the wrong tenant. On
-		// self-host (no session middleware mounted), fall back to the sole org
-		// row when exactly one exists — see resolveInstallOrgId in slack.ts.
-		const installOrgId = await deps.resolveInstallOrgId(c);
+/** Capitalize a provider key for the success-page title ("slack" → "Slack"). */
+function providerDisplayName(provider: string): string {
+	return provider.length > 0
+		? provider[0].toUpperCase() + provider.slice(1)
+		: provider;
+}
+
+/**
+ * Complete an oauth-code-exchange install: exchange the callback `code` for a
+ * token, upsert the `app_installations` row, and (for chat connectors) store the
+ * bot token / boot the agentless instance. Provider-dispatched (mirrors the
+ * webhook delivery dispatch) so gateway core carries no provider literal.
+ */
+type CompleteOAuthInstall = (
+	provider: string,
+	request: Request,
+	redirectUri: string,
+	organizationId: string,
+) => Promise<{ teamId: string; teamName?: string; installationId: string }>;
+
+/**
+ * Mount the start + callback routes for ONE oauth-code-exchange connector onto
+ * `router`, at the connector's `/{provider}/install` + `/{provider}/oauth_callback`
+ * paths. `authorizeUrl` is the provider's declared OAuth authorize endpoint; the
+ * per-request client id + scopes are read from the org's connector declaration
+ * (multi-tenant source of truth). `complete` runs the KIND-dispatched completion.
+ */
+function mountOAuthCodeExchangeRoutes(
+	router: Hono,
+	params: {
+		connectorKey: string;
+		provider: string;
+		authorizeUrl: string;
+		resolveInstallOrgId(c: import("hono").Context): Promise<string | null>;
+		getPublicGatewayUrl?(): string | undefined;
+		complete: CompleteOAuthInstall;
+	},
+): void {
+	const { connectorKey, provider, authorizeUrl } = params;
+	const display = providerDisplayName(provider);
+
+	router.get(`/${provider}/install`, async (c) => {
+		// Bind the install to the initiating session's active org. Without this an
+		// OAuth link minted under org A's session can be opened from org B's
+		// browser and the resulting install lands in the wrong tenant. On self-host
+		// (no session middleware mounted), fall back to the sole org row.
+		const installOrgId = await params.resolveInstallOrgId(c);
 		if (!installOrgId) {
 			return c.html(
 				renderOAuthErrorPage(
 					"unauthorized",
-					"Sign in to an organization before starting Slack install.",
+					`Sign in to an organization before starting ${display} install.`,
 				),
 				401,
 			);
 		}
 
-		// Resolve clientId + scopes from the org's Slack connector declaration.
-		const slackMethod = await getOrgAppInstallationMethod(
+		// Resolve clientId + scopes from the org's connector declaration (the env
+		// var NAMES are declared; the gateway reads the values). No env literal.
+		const method = await getOrgAppInstallationMethod(
 			installOrgId,
-			"slack",
-			"slack",
+			connectorKey,
+			provider,
 		);
-		const slackCreds = slackMethod
-			? resolveAppInstallCredentials(slackMethod)
-			: null;
-		const clientId = slackCreds?.clientId;
+		const creds = method ? resolveAppInstallCredentials(method) : null;
+		const clientId = creds?.clientId;
 		if (!clientId) {
 			return c.html(
 				renderOAuthErrorPage(
-					"slack_not_configured",
-					"Slack OAuth is not configured on this gateway. Set SLACK_CLIENT_ID and try again.",
+					`${provider}_not_configured`,
+					`${display} OAuth is not configured on this gateway. Set ${
+						method?.clientIdKey ?? "the app's client id env var"
+					} and try again.`,
 				),
 				503,
 			);
 		}
 
-		const stateStore = createSlackInstallStateStore();
-		const redirectUri = resolveSlackCallbackUrl(
-			deps.getPublicGatewayUrl?.(),
+		const stateStore = oauthInstallStateStore(provider);
+		const redirectUri = resolveOAuthInstallCallbackUrl(
+			params.getPublicGatewayUrl?.(),
 			c.req.url,
+			provider,
 		);
-		// Use the declared scopes from the connector when available.
 		const scopes =
-			Array.isArray(slackMethod?.permissions) && slackMethod.permissions.length > 0
-				? slackMethod.permissions
+			Array.isArray(method?.permissions) && method.permissions.length > 0
+				? method.permissions
 				: [];
 		const state = await stateStore.create({
 			redirectUri,
 			organizationId: installOrgId,
 		});
 
-		const oauthUrl = new URL("https://slack.com/oauth/v2/authorize");
+		const oauthUrl = new URL(authorizeUrl);
 		oauthUrl.searchParams.set("client_id", clientId);
 		oauthUrl.searchParams.set("scope", scopes.join(","));
 		oauthUrl.searchParams.set("redirect_uri", redirectUri);
@@ -1781,20 +1825,20 @@ export function createSlackInstallRoutes(deps: SlackInstallRouterDeps): Hono {
 		return c.redirect(oauthUrl.toString(), 302);
 	});
 
-	router.get("/slack/oauth_callback", async (c) => {
+	router.get(`/${provider}/oauth_callback`, async (c) => {
 		const state = c.req.query("state");
 		const code = c.req.query("code");
 		if (!state || !code) {
 			return c.html(
 				renderOAuthErrorPage(
 					"invalid_request",
-					"The Slack OAuth callback is missing the required state or code parameter.",
+					`The ${display} OAuth callback is missing the required state or code parameter.`,
 				),
 				400,
 			);
 		}
 
-		const stateStore = createSlackInstallStateStore();
+		const stateStore = oauthInstallStateStore(provider);
 		// Peek (non-destructive) before validating side-channel context so a
 		// cross-org or unauthenticated hit doesn't burn the install link.
 		const oauthState = await stateStore.peek(state);
@@ -1802,27 +1846,28 @@ export function createSlackInstallRoutes(deps: SlackInstallRouterDeps): Hono {
 			return c.html(
 				renderOAuthErrorPage(
 					"invalid_state",
-					"This Slack install link is invalid or has expired.",
+					`This ${display} install link is invalid or has expired.`,
 				),
 				400,
 			);
 		}
 
-		// Reject the callback if the session that's completing the install
-		// belongs to a different org than the one that started it.
-		const callbackOrgId = await deps.resolveInstallOrgId(c);
+		// Reject the callback if the session that's completing the install belongs
+		// to a different org than the one that started it.
+		const callbackOrgId = await params.resolveInstallOrgId(c);
 		if (!callbackOrgId || callbackOrgId !== oauthState.organizationId) {
-			slackInstallLogger.warn(
+			oauthInstallLogger.warn(
 				{
+					provider,
 					stateOrg: oauthState.organizationId,
 					callbackOrg: callbackOrgId ?? null,
 				},
-				"Rejecting Slack OAuth callback: session org does not match install state",
+				"Rejecting OAuth install callback: session org does not match install state",
 			);
 			return c.html(
 				renderOAuthErrorPage(
 					"org_mismatch",
-					"This Slack install link was started in a different organization. Sign in to that organization and try again.",
+					`This ${display} install link was started in a different organization. Sign in to that organization and try again.`,
 				),
 				403,
 			);
@@ -1834,21 +1879,22 @@ export function createSlackInstallRoutes(deps: SlackInstallRouterDeps): Hono {
 			return c.html(
 				renderOAuthErrorPage(
 					"invalid_state",
-					"This Slack install link is invalid or has expired.",
+					`This ${display} install link is invalid or has expired.`,
 				),
 				400,
 			);
 		}
 
 		try {
-			const result = await deps.completeSlackOAuthInstall(
+			const result = await params.complete(
+				provider,
 				c.req.raw,
 				consumed.redirectUri,
 				oauthState.organizationId,
 			);
 			return c.html(
 				renderOAuthSuccessPage(result.teamName || result.teamId, undefined, {
-					title: "Slack installed",
+					title: `${providerDisplayName(provider)} installed`,
 					description:
 						"Workspace connected to Lobu. In a channel, run /lobu link <code> to wire an agent:",
 					details:
@@ -1856,19 +1902,121 @@ export function createSlackInstallRoutes(deps: SlackInstallRouterDeps): Hono {
 				}),
 			);
 		} catch (error) {
-			slackInstallLogger.error(
-				{ error: String(error) },
-				"Slack OAuth callback failed",
+			oauthInstallLogger.error(
+				{ provider, error: String(error) },
+				"OAuth install callback failed",
 			);
 			return c.html(
 				renderOAuthErrorPage(
-					"slack_install_failed",
-					error instanceof Error ? error.message : "Slack OAuth callback failed.",
+					`${provider}_install_failed`,
+					error instanceof Error
+						? error.message
+						: `${display} OAuth callback failed.`,
 				),
 				500,
 			);
 		}
 	});
+}
+
+// ---------------------------------------------------------------------------
+// Generic install engine — one provider-agnostic hosted-app install router
+//
+// Iterates the bundled integration connectors and, per connector that declares
+// an `installShape`, mounts a start + callback router and dispatches the actual
+// handshake on the DECLARED shape — never on a provider name:
+//   - 'github-app'          → the GitHub App flow (createAppInstallRoutes).
+//   - 'oauth-code-exchange' → the generic "Add to <app>" OAuth flow above; its
+//      post-install completion is dispatched by the connector's deliveryKind
+//      (chat → the chat adapter), mirroring the app-webhook delivery dispatch.
+// Adding a new hosted OAuth app needs ZERO new core route code: declare
+// installShape:'oauth-code-exchange' + authorizeUrl + clientIdKey + scopes.
+// ---------------------------------------------------------------------------
+
+/** One bundled integration connector the install engine may mount routes for. */
+export interface InstallEngineIntegration {
+	connectorKey: string;
+	provider: string;
+	/** The declared app-installation method (carries installShape/authorizeUrl). */
+	method: ConnectorAuthAppInstallation | null;
+	/** The connector's webhook deliveryKind — decides the post-install completion. */
+	deliveryKind?: "data" | "chat";
+}
+
+/** Dependencies the generic install engine needs (injected for testability). */
+export interface InstallEngineDeps {
+	installationStore: AppInstallationStore;
+	/** Resolve the active org for the request (session-bound + single-tenant). */
+	resolveInstallOrgId(c: import("hono").Context): Promise<string | null>;
+	/** The public gateway base URL used to build OAuth `redirect_uri`s. */
+	getPublicGatewayUrl?(): string | undefined;
+	/** The bundled integration connectors to mount install routes for. */
+	integrations: InstallEngineIntegration[];
+	/**
+	 * Complete an oauth-code-exchange install whose connector forwards to a chat
+	 * adapter (deliveryKind 'chat'). Provider-dispatched so core carries no
+	 * provider literal. Required when any chat oauth-code-exchange connector is
+	 * registered; omit on deployments with none.
+	 */
+	completeChatInstall?: CompleteOAuthInstall;
+}
+
+/**
+ * Build the single hosted-app install router. Mounted at the gateway root
+ * (`app.route("", ...)`); each connector's routes live at its declared paths.
+ */
+export function createInstallRoutes(deps: InstallEngineDeps): Hono {
+	const router = new Hono();
+
+	for (const integration of deps.integrations) {
+		const shape = integration.method?.installShape;
+		if (!shape) continue;
+
+		if (shape === "github-app") {
+			// The GitHub App flow keeps its own module + fixed
+			// `/github/app/install[/callback]` paths (installation ids, ownership
+			// verification, repo/team provisioning, recovery). Wire it from the
+			// shared deps; the per-provider business logic is unchanged.
+			router.route(
+				"",
+				createAppInstallRoutes({
+					installationStore: deps.installationStore,
+					resolveInstallOrgId: deps.resolveInstallOrgId,
+					getPublicGatewayUrl: deps.getPublicGatewayUrl,
+				}),
+			);
+			continue;
+		}
+
+		// oauth-code-exchange. Completion is dispatched by the connector's
+		// deliveryKind: a chat connector hands off to the chat adapter. A
+		// non-chat oauth-code-exchange connector has no completion wired yet, so
+		// skip it rather than mount a dead route.
+		const authorizeUrl = integration.method?.authorizeUrl;
+		if (!authorizeUrl) {
+			oauthInstallLogger.warn(
+				{ provider: integration.provider },
+				"Skipping oauth-code-exchange install routes: connector declares no authorizeUrl",
+			);
+			continue;
+		}
+		if (integration.deliveryKind !== "chat" || !deps.completeChatInstall) {
+			oauthInstallLogger.warn(
+				{ provider: integration.provider, deliveryKind: integration.deliveryKind },
+				"Skipping oauth-code-exchange install routes: no post-install completion for this delivery kind",
+			);
+			continue;
+		}
+
+		mountOAuthCodeExchangeRoutes(router, {
+			connectorKey: integration.connectorKey,
+			provider: integration.provider,
+			authorizeUrl,
+			resolveInstallOrgId: deps.resolveInstallOrgId,
+			getPublicGatewayUrl: deps.getPublicGatewayUrl,
+			complete: deps.completeChatInstall,
+		});
+	}
 
 	return router;
 }

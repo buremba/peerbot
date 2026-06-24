@@ -139,7 +139,7 @@ describe("ChatInstanceManager Slack marketplace support", () => {
     }
   });
 
-  test("completeSlackOAuthInstall delegates to the Slack coordinator", async () => {
+  test("completeChatAppInstall delegates to the Slack coordinator", async () => {
     const ChatInstanceManager = await loadChatInstanceManager();
     const manager = new ChatInstanceManager() as any;
     const request = new Request(
@@ -154,7 +154,8 @@ describe("ChatInstanceManager Slack marketplace support", () => {
       completeOAuthInstall,
     };
 
-    const result = await manager.completeSlackOAuthInstall(
+    const result = await manager.completeChatAppInstall(
+      "slack",
       request,
       "https://gateway.example.com/slack/oauth_callback",
       "org-1"

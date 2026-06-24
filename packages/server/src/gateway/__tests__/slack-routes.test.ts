@@ -3,7 +3,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "
 import { Hono } from "hono";
 import { getDb } from "../../db/client.js";
 import {
-  createSlackInstallRoutes,
+  createInstallRoutes,
 } from "../routes/public/app-install.js";
 import type { ConnectorWebhookSchema } from "@lobu/connector-sdk";
 import {
@@ -148,13 +148,33 @@ describe("slack OAuth install routes", () => {
 
     await seedSlackConnectorDef(sessionOrgId);
 
-    const installRouter = createSlackInstallRoutes({
+    const installRouter = createInstallRoutes({
+      installationStore: createPostgresAppInstallationStore(),
       resolveInstallOrgId: async (c) => {
         const fromCtx = c.get("organizationId" as never) as string | null | undefined;
         return typeof fromCtx === "string" && fromCtx.length > 0 ? fromCtx : null;
       },
       getPublicGatewayUrl: () => "https://gateway.example.com",
-      completeSlackOAuthInstall,
+      // The generic engine mounts /slack/install + /slack/oauth_callback from
+      // this declared oauth-code-exchange integration; completion is dispatched
+      // by provider through completeChatInstall.
+      integrations: [
+        {
+          connectorKey: "slack",
+          provider: "slack",
+          method: {
+            type: "app_installation",
+            provider: "slack",
+            installShape: "oauth-code-exchange",
+            authorizeUrl: "https://slack.com/oauth/v2/authorize",
+            tokenUrl: "https://slack.com/api/oauth.v2.access",
+            clientIdKey: "SLACK_CLIENT_ID",
+          },
+          deliveryKind: "chat",
+        },
+      ],
+      completeChatInstall: (_provider, req, redirectUri, orgId) =>
+        completeSlackOAuthInstall(req, redirectUri, orgId),
     });
 
     app = new Hono();

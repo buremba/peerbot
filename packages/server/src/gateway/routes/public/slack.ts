@@ -104,8 +104,10 @@ export function slackOAuthCallbackUrl(
 }
 
 // The Slack event-webhook route (`POST /slack/events`) has been folded into the
-// generic app-webhook endpoint `POST /api/v1/app-webhooks/slack` — see
-// `createSlackAppWebhookProvider` in `app-webhooks.ts`. The OAuth install routes
-// (`/slack/install`, `/slack/oauth_callback`) live in `createSlackInstallRoutes`
-// (`app-install.ts`). This module now only exports the shared install-flow URL
-// helpers (`resolveInstallOrgId`, `slackOAuthCallbackUrl`) consumed by both.
+// generic app-webhook endpoint `POST /api/v1/app-webhooks/slack` — see the
+// declared Slack provider in `app-webhooks.ts`. The OAuth install routes
+// (`/slack/install`, `/slack/oauth_callback`) are now mounted by the generic
+// `createInstallRoutes` engine (`app-install.ts`) from the connector's
+// `installShape: 'oauth-code-exchange'` declaration — no Slack-specific router.
+// This module now only exports the shared install-flow URL helpers
+// (`resolveInstallOrgId`, `slackOAuthCallbackUrl`) consumed by both.

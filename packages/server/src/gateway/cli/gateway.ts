@@ -31,8 +31,7 @@ import {
   createDefaultAppWebhookSecretResolver,
 } from "../routes/public/app-webhooks.js";
 import {
-  createAppInstallRoutes,
-  createSlackInstallRoutes,
+  createInstallRoutes,
 } from "../routes/public/app-install.js";
 import {
   type BundledIntegrationConnector,
@@ -784,27 +783,34 @@ export function createGatewayApp(
       }),
     );
 
-    // GitHub App post-install callback (app-installation design §4.4): records
-    // the installation + links the org's github connection to it. Session-bound
-    // org resolution shares the Slack install flow's resolver.
+    // Hosted-app install router (app-installation design §4.4). DATA-DRIVEN: one
+    // generic engine iterates the SAME bundled integration connectors and mounts
+    // a start + callback per connector, dispatching the handshake on the declared
+    // `installShape` — github-app (GitHub App: installation ids + ownership
+    // verification + provisioning) vs oauth-code-exchange ("Add to <app>" OAuth,
+    // e.g. Slack at /slack/install + /slack/oauth_callback). No per-provider
+    // install router wiring, no "github"/"slack" branch: adding a new hosted
+    // OAuth app is a connector declaration, not new core route code. The chat
+    // completion is provider-dispatched (mirrors handleChatAppWebhook).
     app.route(
       "",
-      createAppInstallRoutes({
+      createInstallRoutes({
         installationStore: createPostgresAppInstallationStore(),
         resolveInstallOrgId,
         getPublicGatewayUrl: () => coreServices.getPublicGatewayUrl(),
-      }),
-    );
-    // Slack "Add to Slack" OAuth install flow (/slack/install + /slack/oauth_callback).
-    // Moved from the bespoke slack.ts handlers so all app-level OAuth install flows
-    // live in app-install.ts alongside the GitHub App install routes.
-    app.route(
-      "",
-      createSlackInstallRoutes({
-        resolveInstallOrgId,
-        getPublicGatewayUrl: () => coreServices.getPublicGatewayUrl(),
-        completeSlackOAuthInstall: (req, redirectUri, orgId) =>
-          chatInstanceManager.completeSlackOAuthInstall(req, redirectUri, orgId),
+        integrations: (bundledIntegrationConnectors ?? []).map((integration) => ({
+          connectorKey: integration.connectorKey,
+          provider: integration.provider,
+          method: integration.method,
+          deliveryKind: integration.webhookSchema.deliveryKind ?? "data",
+        })),
+        completeChatInstall: (provider, req, redirectUri, orgId) =>
+          chatInstanceManager.completeChatAppInstall(
+            provider,
+            req,
+            redirectUri,
+            orgId,
+          ),
       }),
     );
     app.route(

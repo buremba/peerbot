@@ -1116,7 +1116,15 @@ export class ChatInstanceManager {
     return this.slackCoordinator.getDefaultConnection();
   }
 
-  async completeSlackOAuthInstall(
+  /**
+   * Complete an oauth-code-exchange install for a chat connector: exchange the
+   * code, upsert the `app_installations` row, store the bot token. Dispatched by
+   * provider (mirrors {@link handleChatAppWebhook}) so the generic install engine
+   * carries no provider literal. Today only Slack is a chat platform; an unknown
+   * provider is a wiring bug, so we throw.
+   */
+  async completeChatAppInstall(
+    provider: string,
     request: Request,
     redirectUri: string | undefined,
     organizationId: string
@@ -1125,10 +1133,15 @@ export class ChatInstanceManager {
     teamName?: string;
     installationId: string;
   }> {
-    return this.slackCoordinator.completeOAuthInstall(
-      request,
-      redirectUri,
-      organizationId
+    if (provider === "slack") {
+      return this.slackCoordinator.completeOAuthInstall(
+        request,
+        redirectUri,
+        organizationId
+      );
+    }
+    throw new Error(
+      `No chat coordinator registered for app-install provider "${provider}"`
     );
   }
 

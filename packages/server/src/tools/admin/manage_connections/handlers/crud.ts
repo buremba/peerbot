@@ -51,10 +51,48 @@ import { assertConnectorAllowedInCloud } from '../../../../utils/connector-cloud
 import { ensureConnectorInstalled } from '../../../../utils/ensure-connector-installed';
 import { unregisterConnectorWebhook } from '../../../../connect/webhook-registration';
 import { getErrorMessage } from "@lobu/core";
+import { listCatalogEntries } from '../../../../catalog/load';
 
 // ============================================
 // handleListConnectorGroups
 // ============================================
+
+function catalogFaviconDomain(
+  detail: Record<string, unknown> | undefined,
+): string | null {
+  return typeof detail?.favicon_domain === 'string' ? detail.favicon_domain : null;
+}
+
+async function enrichConnectorGroupDisplay<
+  T extends {
+    connector_key: string;
+    connector_name: string | null;
+    favicon_domain: string | null;
+  },
+>(groups: T[]): Promise<T[]> {
+  const catalogByKey = new Map(
+    (await listCatalogEntries(['connectors'])).connectors.map((entry) => [
+      entry.id,
+      entry,
+    ]),
+  );
+
+  return groups
+    .map((group) => {
+      const catalog = catalogByKey.get(group.connector_key);
+      return {
+        ...group,
+        connector_name: group.connector_name ?? catalog?.name ?? null,
+        favicon_domain:
+          group.favicon_domain ?? catalogFaviconDomain(catalog?.detail),
+      };
+    })
+    .sort((a, b) =>
+      (a.connector_name ?? a.connector_key).localeCompare(
+        b.connector_name ?? b.connector_key,
+      ),
+    );
+}
 
 export async function handleListConnectorGroups(
   _args: Extract<ConnectionsArgs, { action: 'list_connector_groups' }>,
@@ -86,19 +124,21 @@ export async function handleListConnectorGroups(
     ORDER BY MAX(cd.name), c.connector_key
   `;
 
+  const groups = rows.map((row) => ({
+    connector_key: String(row.connector_key),
+    connector_name:
+      row.connector_name != null ? String(row.connector_name) : null,
+    favicon_domain:
+      row.favicon_domain != null ? String(row.favicon_domain) : null,
+    connection_count: Number(row.connection_count) || 0,
+    connection_ids: Array.isArray(row.connection_ids)
+      ? row.connection_ids.map((id) => Number(id))
+      : [],
+  }));
+
   return {
     action: 'list_connector_groups',
-    groups: rows.map((row) => ({
-      connector_key: String(row.connector_key),
-      connector_name:
-        row.connector_name != null ? String(row.connector_name) : null,
-      favicon_domain:
-        row.favicon_domain != null ? String(row.favicon_domain) : null,
-      connection_count: Number(row.connection_count) || 0,
-      connection_ids: Array.isArray(row.connection_ids)
-        ? row.connection_ids.map((id) => Number(id))
-        : [],
-    })),
+    groups: await enrichConnectorGroupDisplay(groups),
   };
 }
 

@@ -131,9 +131,7 @@ export async function handleListConnectorGroups(
     favicon_domain:
       row.favicon_domain != null ? String(row.favicon_domain) : null,
     connection_count: Number(row.connection_count) || 0,
-    connection_ids: Array.isArray(row.connection_ids)
-      ? row.connection_ids.map((id) => Number(id))
-      : [],
+    connection_ids: parsePgNumberArray(row.connection_ids),
   }));
 
   return {
@@ -236,6 +234,9 @@ export async function handleList(
   }
   if (args.created_by) {
     query = sql`${query} AND c.created_by = ${args.created_by}`;
+  }
+  if (args.connection_ids?.length) {
+    query = sql`${query} AND c.id = ANY(${pgBigintArray(args.connection_ids)})`;
   }
 
   // Visibility: non-admin users see only org connections + their own private connections

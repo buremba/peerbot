@@ -31,6 +31,11 @@ export const ListAction = Type.Object({
 			description: "Filter by user ID who created the connection",
 		}),
 	),
+	connection_ids: Type.Optional(
+		Type.Array(Type.Number(), {
+			description: "Filter to specific connection IDs",
+		}),
+	),
 	...PaginationFields,
 });
 

@@ -1,17 +1,7 @@
-import { readFile } from "node:fs/promises";
 import { createLogger } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { getDb } from "../../../db/client.js";
-import { createSlackInstallStateStore } from "../../auth/oauth/state-store.js";
-import {
-  renderOAuthErrorPage,
-  renderOAuthSuccessPage,
-} from "../../auth/oauth-templates.js";
-import {
-  getOrgAppInstallationMethod,
-  resolveAppInstallCredentials,
-} from "../../installation/app-install-credentials.js";
 import type { ChatInstanceManager } from "../../connections/chat-instance-manager.js";
 
 const logger = createLogger("slack-routes");
@@ -53,7 +43,7 @@ function readSessionOrgId(c: Context): string | null {
 
 /**
  * Self-host fallback: when there's exactly one organization row in the
- * database, return its id. This keeps `/slack/install` usable on
+ * database, return its id. This keeps install routes usable on
  * single-tenant deployments where the route is mounted without the
  * lobuApp session middleware that populates `c.get('organizationId')`.
  *
@@ -88,74 +78,11 @@ export async function resolveInstallOrgId(c: Context): Promise<string | null> {
   return resolveSingleTenantOrgId();
 }
 
-const DEFAULT_SLACK_BOT_SCOPES = [
-  "app_mentions:read",
-  "assistant:write",
-  "channels:history",
-  "channels:read",
-  "chat:write",
-  "chat:write.public",
-  "commands",
-  "files:read",
-  "files:write",
-  "groups:history",
-  "groups:read",
-  "im:history",
-  "im:read",
-  "im:write",
-  "mpim:read",
-  "reactions:read",
-  "reactions:write",
-  "users:read",
-];
-type SlackManifest = {
-  oauth_config?: {
-    scopes?: {
-      bot?: string[];
-    };
-  };
-};
-
-function splitScopes(scopes: string): string[] {
-  return scopes
-    .split(",")
-    .map((scope) => scope.trim())
-    .filter(Boolean);
-}
-
-async function loadSlackBotScopes(): Promise<string[]> {
-  const envScopes = process.env.SLACK_OAUTH_SCOPES;
-  if (envScopes) {
-    return splitScopes(envScopes);
-  }
-
-  const manifestPath =
-    process.env.SLACK_MANIFEST_PATH ||
-    "config/slack-app-manifest.self-install.json";
-
-  try {
-    const raw = await readFile(manifestPath, "utf8");
-    const manifest = JSON.parse(raw) as SlackManifest;
-    const scopes = manifest.oauth_config?.scopes?.bot;
-    if (Array.isArray(scopes) && scopes.length > 0) {
-      return scopes;
-    }
-  } catch (error) {
-    logger.warn(
-      { manifestPath, error: String(error) },
-      "Failed to load Slack scopes from manifest, using defaults"
-    );
-  }
-
-  return DEFAULT_SLACK_BOT_SCOPES;
-}
-
 /**
- * Build the Slack OAuth `redirect_uri`. The gateway — and these Slack routes —
- * are served under the public `/lobu` prefix, so the callback lives at
- * `<gateway-base>/slack/oauth_callback` (e.g.
- * `https://app.lobu.ai/lobu/slack/oauth_callback`). `getPublicGatewayUrl()`
- * already encodes that prefix, so append the callback path to it directly.
+ * Build the Slack OAuth `redirect_uri`. The gateway — and the Slack install
+ * routes — are served under the public `/lobu` prefix, so the callback lives
+ * at `<gateway-base>/slack/oauth_callback`. `getPublicGatewayUrl()` already
+ * encodes that prefix, so append the callback path to it directly.
  *
  * We must NOT route this through `resolvePublicUrl("/slack/oauth_callback")`:
  * an absolute `/slack/...` path resolves against the origin and drops `/lobu`,
@@ -178,166 +105,13 @@ export function slackOAuthCallbackUrl(
   return `${url.origin}${prefix}/slack/oauth_callback`;
 }
 
+/**
+ * Slack event-webhook route. The install routes (`/slack/install` and
+ * `/slack/oauth_callback`) have been moved to `createSlackInstallRoutes`
+ * in `app-install.ts` alongside the GitHub App install routes.
+ */
 export function createSlackRoutes(manager: ChatInstanceManager): Hono {
   const router = new Hono();
-
-  router.get("/slack/install", async (c) => {
-    // Bind the install to the initiating session's active org. Without this
-    // an OAuth link minted under org A's session can be opened from org B's
-    // browser and the resulting connection lands in the wrong tenant. On
-    // self-host (no session middleware mounted), fall back to the sole org
-    // row when exactly one exists — see {@link resolveSingleTenantOrgId}.
-    const installOrgId = await resolveInstallOrgId(c);
-    if (!installOrgId) {
-      return c.html(
-        renderOAuthErrorPage(
-          "unauthorized",
-          "Sign in to an organization before starting Slack install."
-        ),
-        401
-      );
-    }
-
-    // Resolve clientId from the org's Slack connector declaration (same
-    // mechanism as GitHub — no env literal in the route).
-    const slackMethod = await getOrgAppInstallationMethod(
-      installOrgId,
-      "slack",
-      "slack"
-    );
-    const slackCreds = slackMethod ? resolveAppInstallCredentials(slackMethod) : null;
-    const clientId = slackCreds?.clientId;
-    if (!clientId) {
-      return c.html(
-        renderOAuthErrorPage(
-          "slack_not_configured",
-          "Slack OAuth is not configured on this gateway. Set SLACK_CLIENT_ID and try again."
-        ),
-        503
-      );
-    }
-
-    const stateStore = createSlackInstallStateStore();
-    const redirectUri = slackOAuthCallbackUrl(
-      manager.getServices().getPublicGatewayUrl?.(),
-      c.req.url
-    );
-    // Use the declared scopes from the connector when available (the single source
-    // of truth); fall back to the manifest/env/defaults for operators without the
-    // connector definition synced.
-    const declaredScopes = slackMethod?.permissions;
-    const scopes =
-      Array.isArray(declaredScopes) && declaredScopes.length > 0
-        ? declaredScopes
-        : await loadSlackBotScopes();
-    const state = await stateStore.create({
-      redirectUri,
-      organizationId: installOrgId,
-    });
-
-    const oauthUrl = new URL("https://slack.com/oauth/v2/authorize");
-    oauthUrl.searchParams.set("client_id", clientId);
-    oauthUrl.searchParams.set("scope", scopes.join(","));
-    oauthUrl.searchParams.set("redirect_uri", redirectUri);
-    oauthUrl.searchParams.set("state", state);
-
-    return c.redirect(oauthUrl.toString(), 302);
-  });
-
-  router.get("/slack/oauth_callback", async (c) => {
-    const state = c.req.query("state");
-    const code = c.req.query("code");
-    if (!state || !code) {
-      return c.html(
-        renderOAuthErrorPage(
-          "invalid_request",
-          "The Slack OAuth callback is missing the required state or code parameter."
-        ),
-        400
-      );
-    }
-
-    const stateStore = createSlackInstallStateStore();
-    // Peek (non-destructive) before validating side-channel context so a
-    // cross-org or unauthenticated hit doesn't burn the install link.
-    // Consume only after the org check passes — the row stays available
-    // for the legitimate caller to retry.
-    const oauthState = await stateStore.peek(state);
-
-    if (!oauthState) {
-      return c.html(
-        renderOAuthErrorPage(
-          "invalid_state",
-          "This Slack install link is invalid or has expired."
-        ),
-        400
-      );
-    }
-
-    // Reject the callback if the session that's completing the install
-    // belongs to a different org than the one that started it. Prevents
-    // an attacker who phishes the install link from landing a connection
-    // in their own org under a victim's authorization. Self-host falls
-    // back to the single-tenant resolver (same as `/slack/install`).
-    const callbackOrgId = await resolveInstallOrgId(c);
-    if (!callbackOrgId || callbackOrgId !== oauthState.organizationId) {
-      logger.warn(
-        {
-          stateOrg: oauthState.organizationId,
-          callbackOrg: callbackOrgId ?? null,
-        },
-        "Rejecting Slack OAuth callback: session org does not match install state"
-      );
-      return c.html(
-        renderOAuthErrorPage(
-          "org_mismatch",
-          "This Slack install link was started in a different organization. Sign in to that organization and try again."
-        ),
-        403
-      );
-    }
-
-    // Org check passed — now atomically consume so the link can't be
-    // replayed. If the row is gone between peek and consume (another
-    // tab raced), fall through to the same invalid_state response.
-    const consumed = await stateStore.consume(state);
-    if (!consumed) {
-      return c.html(
-        renderOAuthErrorPage(
-          "invalid_state",
-          "This Slack install link is invalid or has expired."
-        ),
-        400
-      );
-    }
-
-    try {
-      const result = await manager.completeSlackOAuthInstall(
-        c.req.raw,
-        consumed.redirectUri,
-        oauthState.organizationId
-      );
-      return c.html(
-        renderOAuthSuccessPage(result.teamName || result.teamId, undefined, {
-          title: "Slack installed",
-          description:
-            "Workspace connected to Lobu. In a channel, run /lobu link <code> to wire an agent:",
-          details: "Get a code from an agent's Deploy tab in your Lobu dashboard.",
-        })
-      );
-    } catch (error) {
-      logger.error({ error: String(error) }, "Slack OAuth callback failed");
-      return c.html(
-        renderOAuthErrorPage(
-          "slack_install_failed",
-          error instanceof Error
-            ? error.message
-            : "Slack OAuth callback failed."
-        ),
-        500
-      );
-    }
-  });
 
   router.post("/slack/events", async (c) => {
     // Reject webhooks whose timestamp is outside Slack's 5-minute window.

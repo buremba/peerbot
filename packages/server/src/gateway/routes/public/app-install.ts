@@ -52,7 +52,10 @@ import {
 } from "../../../utils/connector-auth.js";
 import type { AppInstallationStore } from "../../../lobu/stores/app-installation-store.js";
 import { exchangeCodeForTokens } from "../../../connect/oauth-providers.js";
-import { createGithubInstallStateStore } from "../../auth/oauth/state-store.js";
+import {
+	createGithubInstallStateStore,
+	createSlackInstallStateStore,
+} from "../../auth/oauth/state-store.js";
 import {
 	renderOAuthErrorPage,
 	renderOAuthSuccessPage,
@@ -1659,4 +1662,213 @@ function buildInstallMetadata(c: import("hono").Context): Record<string, unknown
 	const setupAction = c.req.query("setup_action");
 	if (setupAction) metadata.setup_action = setupAction;
 	return metadata;
+}
+
+// ---------------------------------------------------------------------------
+// Slack OAuth App-install routes
+//
+// The "Add to Slack" flow is simpler than GitHub's App install:
+//   1. GET /slack/install  — mint a CSRF state, redirect to Slack's OAuth URL.
+//   2. GET /slack/oauth_callback — verify state, exchange code, upsert
+//      `app_installations` (provider=slack) via the coordinator's completeOAuthInstall.
+//
+// Org binding, state CSRF, org-mismatch guard, and redirect-URI building all
+// mirror the GitHub flow. No ownership verification is needed: Slack's OAuth
+// already proves the user authorized the install on the workspace. Moved here
+// from the bespoke slack.ts so all app-level OAuth install flows live together.
+// ---------------------------------------------------------------------------
+
+const slackInstallLogger = createLogger("slack-install-routes");
+
+/** Resolve the OAuth callback URL for Slack. Kept in sync with Slack's
+ * registered redirect URIs: `<gateway-base>/slack/oauth_callback`. */
+function resolveSlackCallbackUrl(
+	gatewayBaseUrl: string | undefined,
+	requestUrl: string,
+): string {
+	if (gatewayBaseUrl) {
+		return `${gatewayBaseUrl.replace(/\/+$/, "")}/slack/oauth_callback`;
+	}
+	const url = new URL(requestUrl);
+	const prefix = url.pathname.replace(/\/slack\/install\/?$/, "");
+	return `${url.origin}${prefix}/slack/oauth_callback`;
+}
+
+/** Dependencies the Slack install routes need (injected for testability). */
+export interface SlackInstallRouterDeps {
+	/** Resolve the active org for the request (session-bound + single-tenant). */
+	resolveInstallOrgId(c: import("hono").Context): Promise<string | null>;
+	/** The public gateway base URL, used to derive the registered callback URL. */
+	getPublicGatewayUrl?(): string | undefined;
+	/**
+	 * Complete the Slack OAuth install: exchange the code, upsert the
+	 * `app_installations` row via the coordinator, return workspace info.
+	 */
+	completeSlackOAuthInstall(
+		request: Request,
+		redirectUri: string,
+		organizationId: string,
+	): Promise<{ teamId: string; teamName?: string; installationId: string }>;
+}
+
+/**
+ * Build the Slack OAuth app-install routes.
+ *
+ * Mounted at the gateway root (`app.route("", ...)`), so the routes live at
+ * `<gateway-base>/slack/install` and `<gateway-base>/slack/oauth_callback`.
+ */
+export function createSlackInstallRoutes(deps: SlackInstallRouterDeps): Hono {
+	const router = new Hono();
+
+	router.get("/slack/install", async (c) => {
+		// Bind the install to the initiating session's active org. Without this
+		// an OAuth link minted under org A's session can be opened from org B's
+		// browser and the resulting connection lands in the wrong tenant. On
+		// self-host (no session middleware mounted), fall back to the sole org
+		// row when exactly one exists — see resolveInstallOrgId in slack.ts.
+		const installOrgId = await deps.resolveInstallOrgId(c);
+		if (!installOrgId) {
+			return c.html(
+				renderOAuthErrorPage(
+					"unauthorized",
+					"Sign in to an organization before starting Slack install.",
+				),
+				401,
+			);
+		}
+
+		// Resolve clientId + scopes from the org's Slack connector declaration.
+		const slackMethod = await getOrgAppInstallationMethod(
+			installOrgId,
+			"slack",
+			"slack",
+		);
+		const slackCreds = slackMethod
+			? resolveAppInstallCredentials(slackMethod)
+			: null;
+		const clientId = slackCreds?.clientId;
+		if (!clientId) {
+			return c.html(
+				renderOAuthErrorPage(
+					"slack_not_configured",
+					"Slack OAuth is not configured on this gateway. Set SLACK_CLIENT_ID and try again.",
+				),
+				503,
+			);
+		}
+
+		const stateStore = createSlackInstallStateStore();
+		const redirectUri = resolveSlackCallbackUrl(
+			deps.getPublicGatewayUrl?.(),
+			c.req.url,
+		);
+		// Use the declared scopes from the connector when available.
+		const scopes =
+			Array.isArray(slackMethod?.permissions) && slackMethod.permissions.length > 0
+				? slackMethod.permissions
+				: [];
+		const state = await stateStore.create({
+			redirectUri,
+			organizationId: installOrgId,
+		});
+
+		const oauthUrl = new URL("https://slack.com/oauth/v2/authorize");
+		oauthUrl.searchParams.set("client_id", clientId);
+		oauthUrl.searchParams.set("scope", scopes.join(","));
+		oauthUrl.searchParams.set("redirect_uri", redirectUri);
+		oauthUrl.searchParams.set("state", state);
+
+		return c.redirect(oauthUrl.toString(), 302);
+	});
+
+	router.get("/slack/oauth_callback", async (c) => {
+		const state = c.req.query("state");
+		const code = c.req.query("code");
+		if (!state || !code) {
+			return c.html(
+				renderOAuthErrorPage(
+					"invalid_request",
+					"The Slack OAuth callback is missing the required state or code parameter.",
+				),
+				400,
+			);
+		}
+
+		const stateStore = createSlackInstallStateStore();
+		// Peek (non-destructive) before validating side-channel context so a
+		// cross-org or unauthenticated hit doesn't burn the install link.
+		const oauthState = await stateStore.peek(state);
+		if (!oauthState) {
+			return c.html(
+				renderOAuthErrorPage(
+					"invalid_state",
+					"This Slack install link is invalid or has expired.",
+				),
+				400,
+			);
+		}
+
+		// Reject the callback if the session that's completing the install
+		// belongs to a different org than the one that started it.
+		const callbackOrgId = await deps.resolveInstallOrgId(c);
+		if (!callbackOrgId || callbackOrgId !== oauthState.organizationId) {
+			slackInstallLogger.warn(
+				{
+					stateOrg: oauthState.organizationId,
+					callbackOrg: callbackOrgId ?? null,
+				},
+				"Rejecting Slack OAuth callback: session org does not match install state",
+			);
+			return c.html(
+				renderOAuthErrorPage(
+					"org_mismatch",
+					"This Slack install link was started in a different organization. Sign in to that organization and try again.",
+				),
+				403,
+			);
+		}
+
+		// Org check passed — atomically consume the nonce so the link can't be replayed.
+		const consumed = await stateStore.consume(state);
+		if (!consumed) {
+			return c.html(
+				renderOAuthErrorPage(
+					"invalid_state",
+					"This Slack install link is invalid or has expired.",
+				),
+				400,
+			);
+		}
+
+		try {
+			const result = await deps.completeSlackOAuthInstall(
+				c.req.raw,
+				consumed.redirectUri,
+				oauthState.organizationId,
+			);
+			return c.html(
+				renderOAuthSuccessPage(result.teamName || result.teamId, undefined, {
+					title: "Slack installed",
+					description:
+						"Workspace connected to Lobu. In a channel, run /lobu link <code> to wire an agent:",
+					details:
+						"Get a code from an agent's Deploy tab in your Lobu dashboard.",
+				}),
+			);
+		} catch (error) {
+			slackInstallLogger.error(
+				{ error: String(error) },
+				"Slack OAuth callback failed",
+			);
+			return c.html(
+				renderOAuthErrorPage(
+					"slack_install_failed",
+					error instanceof Error ? error.message : "Slack OAuth callback failed.",
+				),
+				500,
+			);
+		}
+	});
+
+	return router;
 }

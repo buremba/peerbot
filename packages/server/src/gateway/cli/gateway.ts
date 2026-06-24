@@ -30,7 +30,10 @@ import {
   createJiraAppWebhookProvider,
   createLinearAppWebhookProvider,
 } from "../routes/public/app-webhooks.js";
-import { createAppInstallRoutes } from "../routes/public/app-install.js";
+import {
+  createAppInstallRoutes,
+  createSlackInstallRoutes,
+} from "../routes/public/app-install.js";
 import {
   getPrimedBundledMethod,
   resolveAppInstallCredentials,
@@ -770,6 +773,18 @@ export function createGatewayApp(
         installationStore: createPostgresAppInstallationStore(),
         resolveInstallOrgId,
         getPublicGatewayUrl: () => coreServices.getPublicGatewayUrl(),
+      }),
+    );
+    // Slack "Add to Slack" OAuth install flow (/slack/install + /slack/oauth_callback).
+    // Moved from the bespoke slack.ts handlers so all app-level OAuth install flows
+    // live in app-install.ts alongside the GitHub App install routes.
+    app.route(
+      "",
+      createSlackInstallRoutes({
+        resolveInstallOrgId,
+        getPublicGatewayUrl: () => coreServices.getPublicGatewayUrl(),
+        completeSlackOAuthInstall: (req, redirectUri, orgId) =>
+          chatInstanceManager.completeSlackOAuthInstall(req, redirectUri, orgId),
       }),
     );
     app.route(

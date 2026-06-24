@@ -2,10 +2,45 @@ import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "
 import { Hono } from "hono";
 import { getDb } from "../../db/client.js";
 import {
+  createSlackInstallRoutes,
+} from "../routes/public/app-install.js";
+import {
   createSlackRoutes,
   slackOAuthCallbackUrl,
 } from "../routes/public/slack.js";
 import { ensureDbForGatewayTests, resetTestDatabase } from "./helpers/db-setup.js";
+
+/** Seed a Slack connector_definitions row so getOrgAppInstallationMethod resolves. */
+async function seedSlackConnectorDef(
+  organizationId: string,
+  clientId = "client-123",
+  scopes = ["chat:write", "commands"],
+): Promise<void> {
+  const sql = getDb();
+  await sql`
+    INSERT INTO connector_definitions (organization_id, key, name, version, auth_schema, status)
+    VALUES (
+      ${organizationId}, ${"slack"}, ${"Slack"}, ${"1.0.0"},
+      ${sql.json({
+        methods: [
+          {
+            type: "app_installation",
+            provider: "slack",
+            providerInstance: "cloud",
+            clientIdKey: "SLACK_CLIENT_ID",
+            clientSecretKey: "SLACK_CLIENT_SECRET",
+            webhookSecretKey: "SLACK_SIGNING_SECRET",
+            permissions: scopes,
+          },
+        ],
+      })},
+      ${"active"}
+    )
+    ON CONFLICT DO NOTHING
+  `;
+  // The resolver reads from env by the DECLARED key name, so set it.
+  process.env.SLACK_CLIENT_ID = clientId;
+}
 
 describe("slackOAuthCallbackUrl", () => {
   // The gateway is served under the public `/lobu` prefix in prod, so the
@@ -39,13 +74,10 @@ describe("slackOAuthCallbackUrl", () => {
   });
 });
 
-describe("slack routes", () => {
+describe("slack OAuth install routes", () => {
   const originalClientId = process.env.SLACK_CLIENT_ID;
-  const originalScopes = process.env.SLACK_OAUTH_SCOPES;
 
   let completeSlackOAuthInstall: ReturnType<typeof mock>;
-  let handleSlackAppWebhook: ReturnType<typeof mock>;
-  let router: ReturnType<typeof createSlackRoutes>;
   let app: Hono;
   // Per-test org id injected into the Hono context — mirrors what
   // `lobuApp.use('*', ...)` sets in production (see lobu/gateway.ts). The
@@ -59,34 +91,32 @@ describe("slack routes", () => {
 
   beforeEach(async () => {
     await resetTestDatabase();
-    process.env.SLACK_CLIENT_ID = "client-123";
-    process.env.SLACK_OAUTH_SCOPES = "chat:write,commands";
 
     completeSlackOAuthInstall = mock(async () => ({
       teamId: "T123",
       teamName: "Acme",
       installationId: "slackinst-1",
     }));
-    handleSlackAppWebhook = mock(async (request: Request) => {
-      const body = await request.text();
-      return new Response(`handled:${body}`);
-    });
-
-    router = createSlackRoutes({
-      getServices: () => ({
-        getPublicGatewayUrl: () => "https://gateway.example.com",
-      }),
-      completeSlackOAuthInstall,
-      handleSlackAppWebhook,
-    } as any);
 
     sessionOrgId = "org-default";
+
+    await seedSlackConnectorDef(sessionOrgId);
+
+    const installRouter = createSlackInstallRoutes({
+      resolveInstallOrgId: async (c) => {
+        const fromCtx = c.get("organizationId" as never) as string | null | undefined;
+        return typeof fromCtx === "string" && fromCtx.length > 0 ? fromCtx : null;
+      },
+      getPublicGatewayUrl: () => "https://gateway.example.com",
+      completeSlackOAuthInstall,
+    });
+
     app = new Hono();
     app.use("*", async (c, next) => {
       if (sessionOrgId !== null) c.set("organizationId" as never, sessionOrgId);
       await next();
     });
-    app.route("", router);
+    app.route("", installRouter);
   });
 
   afterEach(() => {
@@ -94,12 +124,6 @@ describe("slack routes", () => {
       delete process.env.SLACK_CLIENT_ID;
     } else {
       process.env.SLACK_CLIENT_ID = originalClientId;
-    }
-
-    if (originalScopes === undefined) {
-      delete process.env.SLACK_OAUTH_SCOPES;
-    } else {
-      process.env.SLACK_OAUTH_SCOPES = originalScopes;
     }
   });
 
@@ -229,6 +253,26 @@ describe("slack routes", () => {
       SELECT 1 FROM oauth_states WHERE id = 'cross-org-state'
     `;
     expect(remaining.length).toBe(1);
+  });
+});
+
+describe("slack events route", () => {
+  let handleSlackAppWebhook: ReturnType<typeof mock>;
+  let router: ReturnType<typeof createSlackRoutes>;
+  let app: Hono;
+
+  beforeEach(() => {
+    handleSlackAppWebhook = mock(async (request: Request) => {
+      const body = await request.text();
+      return new Response(`handled:${body}`);
+    });
+
+    router = createSlackRoutes({
+      handleSlackAppWebhook,
+    } as any);
+
+    app = new Hono();
+    app.route("", router);
   });
 
   test("POST /slack/events forwards requests to the chat manager", async () => {

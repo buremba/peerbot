@@ -61,7 +61,7 @@ export async function handleCreateVersion(
   const prevRows = await sql`
     SELECT
       name, description, prompt, version_sources,
-      json_template, keying_config, classifiers,
+      keying_config, classifiers,
       reactions_guidance, condensation_prompt, condensation_window_count
     FROM watcher_versions
     WHERE watcher_id = ${groupId}
@@ -139,7 +139,7 @@ export async function handleCreateVersion(
       INSERT INTO watcher_versions (
         id, watcher_id, version, name, description,
         prompt, version_sources,
-        json_template, keying_config, classifiers,
+        keying_config, classifiers,
         condensation_prompt, condensation_window_count,
         reactions_guidance, change_notes, created_by, created_at
       ) VALUES (
@@ -147,7 +147,7 @@ export async function handleCreateVersion(
         ${args.name ?? (prev.name as string) ?? 'Watcher'},
         ${args.description !== undefined ? (args.description ?? null) : ((prev.description as string) ?? null)},
         ${prompt}, NULL,
-        NULL, ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
+        ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
         ${args.condensation_prompt ?? (prev.condensation_prompt as string) ?? null},
         ${args.condensation_window_count ?? (prev.condensation_window_count as number) ?? null},
         ${args.reactions_guidance ?? (prev.reactions_guidance as string) ?? null},
@@ -346,7 +346,7 @@ export async function handleGetVersionDetails(
     rows = await sql`
       SELECT
         id, version, name, description, prompt,
-        version_sources, json_template,
+        version_sources,
         keying_config, classifiers,
         condensation_prompt, condensation_window_count,
         reactions_guidance
@@ -358,7 +358,7 @@ export async function handleGetVersionDetails(
     rows = await sql`
       SELECT
         v.id, v.version, v.name, v.description, v.prompt,
-        v.version_sources, v.json_template,
+        v.version_sources,
         v.keying_config, v.classifiers,
         v.condensation_prompt, v.condensation_window_count,
         v.reactions_guidance
@@ -389,7 +389,6 @@ export async function handleGetVersionDetails(
       v.version_sources,
       [] as Array<{ name: string; query: string }>
     ),
-    json_template: normalizeStoredJsonField(v.json_template, undefined as unknown),
     keying_config: normalizeStoredJsonField(v.keying_config, undefined as unknown),
     classifiers: normalizeStoredJsonField(v.classifiers, undefined as unknown[] | undefined),
     condensation_prompt: v.condensation_prompt as string | undefined,

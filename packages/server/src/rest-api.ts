@@ -162,7 +162,7 @@ export async function restGetWatchers(c: Context<{ Bindings: Env }>) {
 				c.req.query("include_classification") || undefined,
 			include_versions: c.req.query("include_versions") === "true",
 			include_pending_ranges: c.req.query("include_pending_ranges") === "true",
-			// Always include template details when fetching a specific watcher (prompt/schema/json_template)
+			// Always include template details when fetching a specific watcher (prompt / keying_config / sources)
 			include_template_details: true,
 		};
 

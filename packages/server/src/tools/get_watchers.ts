@@ -184,7 +184,6 @@ interface WindowRow {
   execution_time_ms: number | null;
   created_at: string | null;
   version_id: number | null;
-  json_template: unknown | null;
   total_count: number; // COUNT(*) OVER () — same value on every row
 }
 
@@ -228,7 +227,6 @@ interface WatcherQueryRow {
   sel_version_prompt: string | null;
   sel_version_version_sources: unknown;
   sel_version_classifiers: unknown;
-  sel_version_json_template: unknown;
   // Latest window end (folded MAX(window_end) lookup)
   latest_window_end: string | null;
   // jsonb_agg of entities (folded entityCheck/watcherEntityQuery)
@@ -613,7 +611,6 @@ async function getWatcherImpl(
         sv.prompt as sel_version_prompt,
         sv.version_sources as sel_version_version_sources,
         sv.classifiers as sel_version_classifiers,
-        sv.json_template as sel_version_json_template,
         -- Latest window end for the unprocessedCount bound
         (SELECT MAX(window_end) FROM watcher_windows WHERE watcher_id = i.id) as latest_window_end,
         -- Entities + parent info for entityInfoForUrl / entitiesForTemplate
@@ -774,7 +771,6 @@ async function getWatcherImpl(
       execution_time_ms: w.execution_time_ms ?? 0,
       created_at: w.created_at ?? w.window_end,
       version_id: w.version_id ?? undefined,
-      json_template: w.json_template ?? undefined,
       reactions: reactionsMap.get(windowIdNum),
     };
   });
@@ -824,7 +820,6 @@ async function getWatcherImpl(
           prompt: watcherRow.sel_version_prompt,
           version_sources: watcherRow.sel_version_version_sources,
           classifiers: watcherRow.sel_version_classifiers,
-          json_template: watcherRow.sel_version_json_template,
         }
       : null;
 
@@ -861,7 +856,6 @@ async function getWatcherImpl(
       sources: watcherSources,
       prompt: version?.prompt as string | undefined,
       description: (version?.description as string) || undefined,
-      json_template: version?.json_template || undefined,
       rendered_prompt: version?.prompt
         ? renderPromptPreview(version.prompt as string, entitiesForTemplate)
         : undefined,

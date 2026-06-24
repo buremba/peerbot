@@ -61,7 +61,6 @@ export interface WatcherWindow {
   execution_time_ms: number;
   created_at: string;
   version_id?: number;
-  json_template?: unknown;
   /** Reaction-script execution log for this window (newest first). */
   reactions?: WatcherWindowReaction[];
 }
@@ -122,7 +121,6 @@ export interface WatcherMetadata {
   sources: WatcherSource[];
   prompt?: string;
   description?: string;
-  json_template?: unknown;
   keying_config?: KeyingConfig | null;
   rendered_prompt?: string;
   available_versions?: WatcherVersionInfo[];

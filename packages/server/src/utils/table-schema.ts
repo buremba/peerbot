@@ -187,7 +187,6 @@ export const QUERYABLE_SCHEMA = {
         'description',
         'prompt',
         'sources',
-        'json_template',
         'keying_config',
         'classifiers',
         'condensation_prompt',

@@ -257,7 +257,7 @@ export default async (ctx, client) => {
 		summary:
 			"Create a watcher. REQUIRES slug, prompt, and agent_id (the executing agent — a watcher without one is a zombie row). The output contract is not authored here: set keying_config.entity_type so extraction derives from that entity type's metadata_schema, or omit it for a free-form summary watcher. Each sources[].query must be a read-only SELECT/WITH projecting an `id` column (it runs against org-scoped virtual tables, NOT a URL). entity_id is optional (omit for an org-scoped watcher).",
 		access: "write",
-		throws: ["EntityNotFound", "InvalidExtractionSchema"],
+		throws: ["EntityNotFound"],
 		example:
 			"await client.watchers.create({ slug: 'pricing', agent_id: 'agt_123', prompt: 'Extract pricing records from {{content}}.', keying_config: { entity_type: 'price', entity_path: 'prices', key_fields: ['sku'], key_output_field: 'price_key' }, sources: [{ name: 'content', query: 'SELECT id, content FROM events ORDER BY occurred_at DESC' }] });",
 		usageExample: `// Stand up a watcher that extracts pricing entities from recent events.

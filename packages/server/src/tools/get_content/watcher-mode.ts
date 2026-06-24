@@ -298,7 +298,7 @@ export async function handleWatcherMode(
       window_token: windowToken,
       window_start: windowStart,
       window_end: windowEnd,
-      extraction_schema: templateExtractionSchema,
+      extraction_schema: templateExtractionSchema ?? undefined,
     };
   }
 
@@ -526,7 +526,7 @@ export async function handleWatcherMode(
     window_start: windowStartIso,
     window_end: windowEndIso,
     prompt_rendered: enrichedPrompt,
-    extraction_schema: templateExtractionSchema,
+    extraction_schema: templateExtractionSchema ?? undefined,
     sources: sourcesContent as Record<string, ContentItem[]>,
     classifiers: classifiers.length > 0 ? classifiers : undefined,
     unprocessed_ranges: unprocessedRanges,

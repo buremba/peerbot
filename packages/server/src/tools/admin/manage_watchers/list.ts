@@ -99,7 +99,6 @@ export async function handleList(
       cv.description,
       cv.prompt,
       cv.classifiers,
-      cv.json_template,
       cv.keying_config,
       cv.condensation_prompt,
       cv.condensation_window_count,

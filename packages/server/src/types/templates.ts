@@ -30,6 +30,6 @@ export interface ComponentReferenceDocumentation {
     description: string;
     prompt?: string;
     data?: Record<string, { query: string }>;
-    json_template?: unknown;
+    keying_config?: unknown;
   }>;
 }

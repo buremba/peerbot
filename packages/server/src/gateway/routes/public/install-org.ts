@@ -2,7 +2,7 @@ import { createLogger } from "@lobu/core";
 import type { Context } from "hono";
 import { getDb } from "../../../db/client.js";
 
-const logger = createLogger("slack-routes");
+const logger = createLogger("install-org");
 
 /**
  * Resolve the active organization id for the current request.
@@ -69,17 +69,12 @@ async function resolveSingleTenantOrgId(): Promise<string | null> {
  * Resolve the install-flow org for the current request: session-bound first,
  * then the self-host single-tenant fallback. Returns `null` only when
  * neither path yields a definite org — at which point the route must reject.
+ *
+ * Shared by every app-installation flow (the generic install engine in
+ * `app-install.ts`), so it lives here rather than in any one provider's module.
  */
 export async function resolveInstallOrgId(c: Context): Promise<string | null> {
   const sessionOrgId = readSessionOrgId(c);
   if (sessionOrgId) return sessionOrgId;
   return resolveSingleTenantOrgId();
 }
-
-// The Slack event-webhook route (`POST /slack/events`) has been folded into the
-// generic app-webhook endpoint `POST /api/v1/app-webhooks/slack` — see the
-// declared Slack provider in `app-webhooks.ts`. The OAuth install routes
-// (`/slack/install`, `/slack/oauth_callback`) are now mounted by the generic
-// `createInstallRoutes` engine (`app-install.ts`) from the connector's
-// `installShape: 'oauth-code-exchange'` declaration — no Slack-specific router.
-// This module now only exports the shared `resolveInstallOrgId` helper.

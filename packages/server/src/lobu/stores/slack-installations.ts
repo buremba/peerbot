@@ -24,7 +24,7 @@ import { orgContext } from "./org-context.js";
  *     serve as it, and re-keying provisioned secrets would be destructive);
  *   - the Slack tenant tuple mapping (provider=slack, instance/app='cloud',
  *     external_tenant_id=team_id — Slack routing keys on team_id alone, the
- *     `/slack/events` endpoint carries no org context);
+ *     `/api/v1/app-webhooks/slack` endpoint carries no org context);
  *   - the bot token, persisted to the secret store by ref (never plaintext in
  *     the row); the ref is carried in `metadata.config.botToken`.
  *
@@ -249,7 +249,7 @@ export async function getSlackInstallById(
 }
 
 /**
- * Resolve the ACTIVE install for a team across orgs — the public `/slack/events`
+ * Resolve the ACTIVE install for a team across orgs — the public `/api/v1/app-webhooks/slack`
  * route carries no org context, so routing keys on team_id alone. Returns null
  * when no active install owns the team (a stopped/transferred workspace), which
  * is exactly what the coordinator wants: it then falls through to the OAuth /

@@ -37,7 +37,7 @@ import {
   type BundledIntegrationConnector,
   resolveAppInstallCredentials,
 } from "../installation/app-install-credentials.js";
-import { resolveInstallOrgId } from "../routes/public/slack.js";
+import { resolveInstallOrgId } from "../routes/public/install-org.js";
 import { createAgentConfigRoutes } from "../routes/public/agent-config.js";
 import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
 import { createAgentRoutes } from "../routes/public/agents.js";

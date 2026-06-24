@@ -1059,7 +1059,7 @@ export class ChatInstanceManager {
     // can receive any connection's webhook (the LB sprays platform deliveries
     // across pods), so the instance is treated as a memo of the
     // `agent_connections` row: fresh memo → serve, stale/missing → re-hydrate
-    // from the row, gone/stopped row → 404. The coordinator's `/slack/events`
+    // from the row, gone/stopped row → 404. The coordinator's `/api/v1/app-webhooks/slack`
     // pre-call goes through the same check and stays harmless. Mirrors
     // `postMessageToChannel`.
     const running = await this.ensureConnectionRunning(connectionId);
@@ -1202,7 +1202,7 @@ export class ChatInstanceManager {
     // by AsyncLocalStorage org context (see #516). Some callers reach
     // here with org context already bound (HTTP routes via agent-routes
     // middleware); others don't (boot-time initialize(), the public
-    // /slack/events webhook, anywhere ensureConnectionRunning() is
+    // /api/v1/app-webhooks/slack webhook, anywhere ensureConnectionRunning() is
     // triggered without an HTTP request). Always rebind to the
     // connection's owning org id so the per-tenant secret-store query
     // hits the right bucket — including when a caller's org happens to

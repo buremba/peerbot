@@ -131,7 +131,7 @@ export class SlackConnectionCoordinator {
    * yet still carries that org's bot token). Forwarding an unmatched-team
    * webhook to any tenant-owned row would let one tenant's bot act on (and
    * reply with its own bot token to) another tenant's Slack traffic.
-   * `listSlackConnections()` is platform-scoped only (the public `/slack/events`
+   * `listSlackConnections()` is platform-scoped only (the public `/api/v1/app-webhooks/slack`
    * route carries no org context, so the store's per-tenant predicate doesn't
    * apply) — so we must require the explicit preview marker and otherwise fail
    * closed (return null → handled-by-OAuth-fallback / 503) rather than pick a

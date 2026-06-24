@@ -453,6 +453,7 @@ describe("Slack platform bridge", () => {
     const h = makeHomeChat();
     const resolveUserInbox = mock(async () => ({
       unreadCount: 2,
+      orgSlug: "acme",
       items: [
         { title: "Series B closed", url: "/acme/companies/1", isRead: false },
         { title: "Synced", url: "https://x.test/full", isRead: true },
@@ -503,8 +504,29 @@ describe("Slack platform bridge", () => {
     await h.open("U123", publishHomeView);
     const text = blocksText(publishHomeView.mock.calls[0]![1] as any);
     expect(text).toContain("Set up your agent");
+    // No resolved identity → no org → setup button points at the web root.
     expect(text).toContain('"url":"https://gw.example"');
     expect(text).toContain("/lobu link");
+  });
+
+  test("preview setup button deep-links to /{org}/agents when the user's org is known", async () => {
+    const h = makeHomeChat();
+    registerSlackAppHome(
+      h.chat,
+      connection({ settings: { previewMode: true } }),
+      {
+        publicGatewayUrl: "https://gw.example",
+        resolveUserInbox: mock(async () => ({
+          unreadCount: 0,
+          orgSlug: "acme",
+          items: [],
+        })),
+      }
+    );
+    const publishHomeView = mock(async () => undefined);
+    await h.open("U123", publishHomeView);
+    const text = blocksText(publishHomeView.mock.calls[0]![1] as any);
+    expect(text).toContain('"url":"https://gw.example/acme/agents"');
   });
 
   test("falls back to a minimal home view if the rich view is rejected", async () => {

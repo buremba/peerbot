@@ -196,7 +196,7 @@ async function resolveSlackHomeUserInbox(
     if (idRows.length !== 1) return null;
     const lobuUserId = idRows[0].lobu_user_id;
 
-    const [itemRows, unreadRows] = await Promise.all([
+    const [itemRows, unreadRows, orgRows] = await Promise.all([
       db`
         SELECT
           e.title,
@@ -213,6 +213,15 @@ async function resolveSlackHomeUserInbox(
         FROM notification_targets
         WHERE user_id = ${lobuUserId} AND read_at IS NULL
       `,
+      // The user's primary org slug, for the setup deep link to /{slug}/agents.
+      db`
+        SELECT o.slug
+        FROM member m
+        JOIN organization o ON o.id = m."organizationId"
+        WHERE m."userId" = ${lobuUserId}
+        ORDER BY m."createdAt" ASC
+        LIMIT 1
+      `,
     ]);
     const items = (
       itemRows as {
@@ -227,7 +236,8 @@ async function resolveSlackHomeUserInbox(
     }));
     const unreadCount =
       Number((unreadRows as { c: number | string }[])[0]?.c) || 0;
-    return { unreadCount, items };
+    const orgSlug = (orgRows as { slug: string }[])[0]?.slug ?? null;
+    return { unreadCount, items, orgSlug };
   } catch (error) {
     logger.warn(
       { error, slackUserId },

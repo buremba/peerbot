@@ -177,6 +177,8 @@ export interface SlackHomeNotification {
 export interface SlackHomeInbox {
   unreadCount: number;
   items: SlackHomeNotification[];
+  /** The user's primary org slug, for deep-linking the setup button to `/{slug}/agents`. */
+  orgSlug: string | null;
 }
 
 /**
@@ -425,11 +427,18 @@ function notificationBlocks(
 
 /**
  * Preview-workspace onboarding: a button to set up an agent for this DM in the
- * web app, alongside the `/lobu link <code>` CLI path. Returns `[]` with no web
- * URL (the CLI hint in the tips section still covers it).
+ * web app, alongside the `/lobu link <code>` CLI path. Deep-links to the user's
+ * `/{slug}/agents` page (the connect-a-channel / mint-link-code surface) when we
+ * know their org, else the web root (which logs them in and routes them there).
+ * Returns `[]` with no web URL — the CLI hint in the tips section still covers it.
  */
-function setupBlocks(webBaseUrl: string | undefined): Record<string, unknown>[] {
+function setupBlocks(
+  webBaseUrl: string | undefined,
+  orgSlug: string | null,
+): Record<string, unknown>[] {
   if (!webBaseUrl) return [];
+  const base = trimTrailingSlash(webBaseUrl);
+  const setupUrl = orgSlug ? `${base}/${orgSlug}/agents` : base;
   return [
     {
       type: "section",
@@ -440,7 +449,7 @@ function setupBlocks(webBaseUrl: string | undefined): Record<string, unknown>[] 
       accessory: {
         type: "button",
         text: { type: "plain_text", text: "Set up your agent ↗" },
-        url: trimTrailingSlash(webBaseUrl),
+        url: setupUrl,
         style: "primary",
       },
     },
@@ -550,7 +559,7 @@ async function buildSlackHomeBlocks(
   }
 
   if (isPreview) {
-    blocks.push(...setupBlocks(deps.publicGatewayUrl));
+    blocks.push(...setupBlocks(deps.publicGatewayUrl, inbox?.orgSlug ?? null));
   }
 
   blocks.push({

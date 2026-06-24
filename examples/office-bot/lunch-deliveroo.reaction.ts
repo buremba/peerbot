@@ -24,18 +24,31 @@
  * (the operation's poll is cancelled, see waitForDeviceActionRun's abortSignal)
  * and the agent's summary still stands.
  */
-import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
+import {
+  type ReactionClient,
+  type ReactionContext,
+  type Static,
+  Type,
+  Value,
+} from "@lobu/connector-sdk";
 
 /**
- * The run's state lives on the `lunch-run` entity (the watcher prompt creates +
- * updates it), not on a bespoke extraction payload. The reaction reads that
- * entity — one source of truth, editable/correctable like any entity — instead
- * of a watcher-authored `extracted_data` schema.
+ * The reaction owns its input contract: it declares the shape it consumes and
+ * validates `ctx.extracted_data` against it. One source of truth (this schema is
+ * also the TS type via `Static`), enforced by the consumer — the watcher authors
+ * no schema. `Value.Parse` throws on a mismatch, failing the run loudly rather
+ * than acting on malformed data.
  */
-interface LunchRun {
-  status?: "collecting" | "done" | "cancelled";
-  restaurant?: string;
-}
+const input = Type.Object({
+  outcome: Type.Union([
+    Type.Literal("placed"),
+    Type.Literal("manual"),
+    Type.Literal("cancelled"),
+    Type.Literal("no-run"),
+  ]),
+  restaurant: Type.Optional(Type.String()),
+});
+type Input = Static<typeof input>;
 
 interface SearchOutput {
   restaurants?: Array<{ name: string; url: string }>;
@@ -50,22 +63,11 @@ export default async (
   ctx: ReactionContext,
   client: ReactionClient
 ): Promise<void> => {
-  // Read the run off the `lunch-run` entity the agent just updated (most-recent
-  // wins — finalize runs minutes after touching today's run). `metadata` may come
-  // back as a jsonb object or a JSON string depending on the pool, so handle both.
-  const runRows = (await client.query(
-    `SELECT metadata FROM entities
-     WHERE entity_type = 'lunch-run'
-     ORDER BY updated_at DESC
-     LIMIT 1`
-  )) as Array<{ metadata: Record<string, unknown> | string }>;
-  const raw = runRows[0]?.metadata;
-  const run: LunchRun =
-    typeof raw === "string" ? JSON.parse(raw) : ((raw as LunchRun) ?? {});
-  const restaurant = (run.restaurant ?? "").trim();
-  // Only chase a menu when the run actually settled on a restaurant (status
-  // "done"); "collecting"/"cancelled" or no run at all → nothing to do.
-  if (run.status !== "done" || !restaurant) {
+  // Validate + type the payload against this reaction's own contract.
+  const data: Input = Value.Parse(input, ctx.extracted_data);
+  const restaurant = (data.restaurant ?? "").trim();
+  // Only chase a menu when the run actually settled on a restaurant.
+  if (!restaurant || (data.outcome !== "placed" && data.outcome !== "manual")) {
     return;
   }
 

@@ -38,9 +38,13 @@ afterEach(() => {
 });
 
 describe('getOwnedOwlettoExtensionIds', () => {
-  test('always includes the canonical published extension id', () => {
+  test('always includes both the dev/unpacked and published store ids', () => {
     const ids = getOwnedOwlettoExtensionIds(makeEnv());
+    // Dev/unpacked id, derived from the manifest `key`.
     expect(ids).toContain('amnnhclgmbldmfcfamonoggjhfidemmm');
+    // Chrome Web Store id — without this, app.lobu.ai's frame-ancestors
+    // blocked the published sidepanel iframe even though local dev worked.
+    expect(ids).toContain('jhgcecbdpnoehfnhpdfihlchjddapepi');
   });
 
   test('merges in well-formed ids from LOBU_OWLETTO_EXTENSION_IDS', () => {
@@ -49,16 +53,27 @@ describe('getOwnedOwlettoExtensionIds', () => {
       makeEnv({ LOBU_OWLETTO_EXTENSION_IDS: `  ${fakeDevId} , bogus-id, ` })
     );
     expect(ids).toContain('amnnhclgmbldmfcfamonoggjhfidemmm');
+    expect(ids).toContain('jhgcecbdpnoehfnhpdfihlchjddapepi');
     expect(ids).toContain(fakeDevId);
     expect(ids).not.toContain('bogus-id');
   });
 });
 
 describe('isAllowedCorsOrigin — chrome-extension://', () => {
-  test('accepts the canonical Owletto extension origin', () => {
+  test('accepts the dev/unpacked Owletto extension origin', () => {
     expect(
       isAllowedCorsOrigin(
         'chrome-extension://amnnhclgmbldmfcfamonoggjhfidemmm',
+        makeEnv(),
+        REQUEST_URL
+      )
+    ).toBe(true);
+  });
+
+  test('accepts the published Chrome Web Store extension origin', () => {
+    expect(
+      isAllowedCorsOrigin(
+        'chrome-extension://jhgcecbdpnoehfnhpdfihlchjddapepi',
         makeEnv(),
         REQUEST_URL
       )

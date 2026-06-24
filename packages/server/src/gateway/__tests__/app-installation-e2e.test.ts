@@ -11,10 +11,11 @@
  *
  * Chain under test:
  *   1. install (store.upsert) → signed GitHub `issues` delivery → router →
- *      `handleWebhookIngest` → `events` row in the OWNING org; redelivery dedupes.
+ *      `onDelivery` trigger marks the OWNING org's feeds due (no raw event —
+ *      github is poll-canonical); redelivery just re-stamps next_run_at.
  *   2. reject/transfer: org A active → transfer to org B (atomic demote+activate)
- *      → delivery now routes to B, not A; a 2nd concurrent active insert for the
- *      same tenant is rejected by the partial unique index.
+ *      → delivery now triggers B's feeds, not A's; a 2nd concurrent active insert
+ *      for the same tenant is rejected by the partial unique index.
  *   3. token mint via `resolveExecutionAuth`: an app_installation-backed
  *      connection mints + returns a usable bearer credential, with the GitHub
  *      `/access_tokens` exchange MOCKED (registry seam / injected fetch — never
@@ -37,6 +38,7 @@ import {
 	ensureEncryptionKey,
 	resetTestDatabase,
 	seedAgentRow,
+	seedGithubConnectorDef,
 } from "./helpers/db-setup.js";
 
 // One Lobu GitHub App receiving deliveries for many installed tenants.
@@ -105,19 +107,74 @@ function issuesBody(tenant = TENANT, extra: Record<string, unknown> = {}) {
 	};
 }
 
-async function eventRows(connectorKey: string): Promise<any[]> {
-	const { getDb } = await import("../../db/client.js");
-	return getDb()`
-    SELECT * FROM events WHERE connector_key = ${connectorKey} ORDER BY id
-  `;
-}
-
 async function allInstallEventCount(): Promise<number> {
 	const { getDb } = await import("../../db/client.js");
 	const rows = await getDb()`
     SELECT count(*)::int AS n FROM events WHERE connector_key LIKE 'webhook:app_install:%'
   `;
 	return rows[0].n as number;
+}
+
+/** Structured github events (connector_key='github') in an org, newest first. */
+async function githubEvents(organizationId: string): Promise<any[]> {
+	const { getDb } = await import("../../db/client.js");
+	return getDb()`
+    SELECT origin_id, origin_type, connection_id, metadata FROM events
+    WHERE organization_id = ${organizationId} AND connector_key = 'github'
+    ORDER BY id
+  `;
+}
+
+/**
+ * Seed a `github` connection (the trigger path keys on connector_key='github')
+ * bound to `installId` via config.installation_ref, plus one ACTIVE feed (default
+ * `issues`) for {owner,name} with next_run_at NULL. A trigger flips it to now(),
+ * so NULL→NOT NULL proves the webhook marked the org's feed due. The connection
+ * is reused per (org, repo) so multiple feed types don't collide on the slug.
+ */
+async function seedGithubFeed(
+	organizationId: string,
+	installId: number,
+	owner = "acme",
+	name = "api",
+	feedKey = "issues",
+): Promise<number> {
+	const { getDb } = await import("../../db/client.js");
+	const sql = getDb();
+	const slug = `gh-feed-${organizationId}-${owner}-${name}`;
+	let [conn] = await sql`SELECT id FROM connections WHERE organization_id = ${organizationId} AND slug = ${slug}`;
+	if (!conn) {
+		[conn] = await sql`
+      INSERT INTO connections (organization_id, connector_key, slug, status, config)
+      VALUES (
+        ${organizationId}, ${"github"}, ${slug},
+        ${"active"}, ${sql.json({ installation_ref: installId })}
+      )
+      RETURNING id
+    `;
+	}
+	const [feed] = await sql`
+    INSERT INTO feeds (organization_id, connection_id, feed_key, status, config, next_run_at)
+    VALUES (
+      ${organizationId}, ${conn.id}, ${feedKey}, ${"active"},
+      ${sql.json({ repo_owner: owner, repo_name: name })}, NULL
+    )
+    RETURNING id
+  `;
+	return Number(feed.id);
+}
+
+/** Current `next_run_at` of a feed (NULL until a trigger marks it due). */
+async function feedNextRunAt(feedId: number): Promise<unknown> {
+	const { getDb } = await import("../../db/client.js");
+	const [row] = await getDb()`SELECT next_run_at FROM feeds WHERE id = ${feedId}`;
+	return row?.next_run_at ?? null;
+}
+
+/** Reset a feed back to "not due" so a later delivery's effect is observable. */
+async function clearFeedDue(feedId: number): Promise<void> {
+	const { getDb } = await import("../../db/client.js");
+	await getDb()`UPDATE feeds SET next_run_at = NULL WHERE id = ${feedId}`;
 }
 
 /** Seed one active github install for a tenant tuple under an org. */
@@ -205,6 +262,14 @@ beforeEach(async () => {
 		"../installation/registry.js"
 	);
 	__resetInstallationTokenRegistryForTests();
+	// Webhook routing + person rule are read from the connector definition; seed
+	// it for both orgs (the transfer case routes to ORG_B).
+	const { clearEntityLinkRulesCache } = await import(
+		"../../utils/entity-link-upsert.js"
+	);
+	clearEntityLinkRulesCache();
+	await seedGithubConnectorDef(ORG_A);
+	await seedGithubConnectorDef(ORG_B);
 }, 30_000);
 
 afterEach(async () => {
@@ -214,34 +279,72 @@ afterEach(async () => {
 	__resetInstallationTokenRegistryForTests();
 });
 
-describe("app-installation e2e: install → webhook → ingest (happy path)", () => {
-	test("a signed delivery routes to the owning org, lands one event, and redelivery dedupes", async () => {
+describe("app-installation e2e: install → webhook → trigger (happy path)", () => {
+	test("a signed delivery routes to the owning org and marks its feeds due, storing no raw event", async () => {
 		await seedAgentRow(AGENT_A, { organizationId: ORG_A });
 		const installId = await seedActiveInstall(ORG_A);
+		const feedId = await seedGithubFeed(ORG_A, installId);
 		const router = buildRouter();
 
-		// First delivery lands.
+		// First delivery triggers the org's feed (next_run_at NULL → now()).
 		const res = await router.fetch(
 			issuesDelivery(issuesBody(), { deliveryId: "gh-happy-1" }),
 		);
-		expect(res.status).toBe(202);
+		expect(res.status).toBe(200);
+		expect((await res.json()).triggered).toBe(true);
 
-		const key = `webhook:app_install:${installId}`;
-		let rows = await eventRows(key);
-		expect(rows.length).toBe(1);
-		// Routed into the install's owning org; the RAW GitHub payload landed.
-		expect(rows[0].organization_id).toBe(ORG_A);
-		expect(rows[0].origin_id).toBe("gh-happy-1");
-		expect(rows[0].payload_data).toEqual(issuesBody());
+		// github is a poll-canonical connector: the webhook stores no raw event…
+		expect(await allInstallEventCount()).toBe(0);
+		// …it just marks the affected feed due, in the install's owning org.
+		expect(await feedNextRunAt(feedId)).not.toBeNull();
 
-		// Redelivery of the same x-github-delivery dedupes — no second row.
+		// Redelivery is idempotent: re-stamps next_run_at, still lands no event.
+		await clearFeedDue(feedId);
 		const redelivery = await router.fetch(
 			issuesDelivery(issuesBody(), { deliveryId: "gh-happy-1" }),
 		);
-		expect(redelivery.status).toBe(202);
-		expect((await redelivery.json()).duplicate).toBe(true);
-		rows = await eventRows(key);
-		expect(rows.length).toBe(1);
+		expect(redelivery.status).toBe(200);
+		expect((await redelivery.json()).triggered).toBe(true);
+		expect(await feedNextRunAt(feedId)).not.toBeNull();
+		expect(await allInstallEventCount()).toBe(0);
+	});
+});
+
+describe("app-installation e2e: star delivery stored directly (event-complete)", () => {
+	test("a star lands a stargazer event under the install's github connection, no poll", async () => {
+		await seedAgentRow(AGENT_A, { organizationId: ORG_A });
+		const installId = await seedActiveInstall(ORG_A);
+		// The store path is gated on a configured stargazers feed (like the trigger
+		// path). Also seed an issues feed to prove the star store doesn't touch it.
+		const stargazersFeed = await seedGithubFeed(ORG_A, installId, "acme", "api", "stargazers");
+		const issuesFeed = await seedGithubFeed(ORG_A, installId);
+		const router = buildRouter();
+
+		const starBody = {
+			action: "created",
+			starred_at: "2026-06-20T10:00:00Z",
+			installation: { id: Number(TENANT) },
+			sender: { login: "Octocat", id: 583231 },
+			repository: { owner: { login: "acme" }, name: "api" },
+		};
+		const res = await router.fetch(
+			issuesDelivery(starBody, { deliveryId: "gh-star-e2e", event: "star" }),
+		);
+		expect(res.status).toBe(200);
+		expect((await res.json()).triggered).toBe(true);
+
+		// The structured stargazer event landed under the github connection (so the
+		// scheduled /stargazers poll dedupes it on the same origin_id) — and the
+		// store path did NOT mark the issues feed due (it's a store, not a trigger).
+		const events = await githubEvents(ORG_A);
+		expect(events.length).toBe(1);
+		expect(events[0].origin_type).toBe("stargazer");
+		expect(events[0].origin_id).toBe("stargazer_acme_api_github_user_id_583231");
+		// Store, not trigger: neither the stargazers feed nor the issues feed is
+		// marked due, and no raw app-install event is landed.
+		expect(await feedNextRunAt(stargazersFeed)).toBeNull();
+		expect(await feedNextRunAt(issuesFeed)).toBeNull();
+		expect(await allInstallEventCount()).toBe(0);
 	});
 });
 
@@ -260,14 +363,17 @@ describe("app-installation e2e: reject / transfer ownership", () => {
 			externalTenantId: TENANT,
 			status: "active",
 		});
+		const feedA = await seedGithubFeed(ORG_A, a.id);
 		const router = buildRouter();
 
-		// A delivery routes to org A.
+		// A delivery triggers org A's feed.
 		const first = await router.fetch(
 			issuesDelivery(issuesBody(), { deliveryId: "gh-xfer-1" }),
 		);
-		expect(first.status).toBe(202);
-		expect((await eventRows(`webhook:app_install:${a.id}`)).length).toBe(1);
+		expect(first.status).toBe(200);
+		expect(await feedNextRunAt(feedA)).not.toBeNull();
+		// Reset so a later trigger of org A's feed (which must NOT happen) is visible.
+		await clearFeedDue(feedA);
 
 		// Org B re-installs the SAME tenant → transfer (A demoted, B active) in one tx.
 		const b = await store.upsert({
@@ -280,6 +386,7 @@ describe("app-installation e2e: reject / transfer ownership", () => {
 		});
 		expect(b.id).not.toBe(a.id);
 		expect(b.organizationId).toBe(ORG_B);
+		const feedB = await seedGithubFeed(ORG_B, b.id);
 
 		// Prior owner demoted (kept for audit), exactly one active owner remains.
 		const aAfter = await store.getById(a.id);
@@ -293,14 +400,16 @@ describe("app-installation e2e: reject / transfer ownership", () => {
 		expect(active?.id).toBe(b.id);
 		expect(active?.organizationId).toBe(ORG_B);
 
-		// A new delivery now routes to org B, NOT org A.
+		// A new delivery now triggers org B's feed, NOT org A's.
 		const second = await router.fetch(
 			issuesDelivery(issuesBody(), { deliveryId: "gh-xfer-2" }),
 		);
-		expect(second.status).toBe(202);
-		expect((await eventRows(`webhook:app_install:${b.id}`)).length).toBe(1);
-		// Org A got nothing new — its single event is the pre-transfer one.
-		expect((await eventRows(`webhook:app_install:${a.id}`)).length).toBe(1);
+		expect(second.status).toBe(200);
+		expect(await feedNextRunAt(feedB)).not.toBeNull();
+		// Org A's feed was left untouched — routing follows the active install.
+		expect(await feedNextRunAt(feedA)).toBeNull();
+		// No raw events on either side throughout the transfer.
+		expect(await allInstallEventCount()).toBe(0);
 	});
 
 	test("a 2nd concurrent active insert for the same tenant is rejected by the unique index", async () => {
@@ -528,14 +637,15 @@ describe("app-installation e2e: token mint via resolveExecutionAuth", () => {
 });
 
 describe("app-installation e2e: multi-replica safety", () => {
-	test("a delivery lands with NO warm in-memory state (stateless, Postgres-mediated)", async () => {
+	test("a delivery triggers with NO warm in-memory state (stateless, Postgres-mediated)", async () => {
 		await seedAgentRow(AGENT_A, { organizationId: ORG_A });
 		const installId = await seedActiveInstall(ORG_A);
+		const feedId = await seedGithubFeed(ORG_A, installId);
 
 		// Simulate a COLD pod: a freshly-built router + a freshly-built store, no
 		// memoized instance, no warm cache. The delivery must still resolve the
-		// install from Postgres and land — proving any replica can serve any
-		// delivery.
+		// install from Postgres and mark the feed due — proving any replica can
+		// serve any delivery.
 		const coldRouter = createAppWebhookRoutes({
 			installationStore: createPostgresAppInstallationStore(),
 			secretStore: { get: async () => null },
@@ -546,10 +656,10 @@ describe("app-installation e2e: multi-replica safety", () => {
 		const res = await coldRouter.fetch(
 			issuesDelivery(issuesBody(), { deliveryId: "gh-cold-1" }),
 		);
-		expect(res.status).toBe(202);
-		const rows = await eventRows(`webhook:app_install:${installId}`);
-		expect(rows.length).toBe(1);
-		expect(rows[0].organization_id).toBe(ORG_A);
+		expect(res.status).toBe(200);
+		expect((await res.json()).triggered).toBe(true);
+		expect(await feedNextRunAt(feedId)).not.toBeNull();
+		expect(await allInstallEventCount()).toBe(0);
 	});
 
 	test("concurrent install upserts for one tenant converge to exactly one active row", async () => {

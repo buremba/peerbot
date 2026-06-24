@@ -5,34 +5,12 @@
  * Org-scoped via the caller's resolved install; resolution never crosses orgs.
  */
 
-import type { EntityLinkRule } from "@lobu/connector-sdk";
 import { IDENTITY } from "@lobu/connector-sdk";
 import type { DbClient } from "../../../db/client.js";
-import { resolveEntityLinksForItems } from "../../../utils/entity-link-upsert.js";
-
-// Mirrors the github connector's GITHUB_PERSON_ENTITY_LINK (server can't import
-// the connector package). PRIMARY immutable github_user_id (rename-safe) +
-// secondary github_login.
-const GITHUB_PERSON_RULE: EntityLinkRule = {
-	entityType: "person",
-	autoCreate: true,
-	titlePath: "metadata.author_login",
-	identities: [
-		{
-			namespace: IDENTITY.GITHUB_USER_ID,
-			eventPath: "metadata.author_id",
-			primary: true,
-		},
-		{ namespace: IDENTITY.GITHUB_LOGIN, eventPath: "metadata.author_login" },
-	],
-	traits: {
-		github_login: {
-			eventPath: "metadata.author_login",
-			behavior: "prefer_non_empty",
-		},
-		last_authored_at: { eventPath: "occurred_at", behavior: "overwrite" },
-	},
-};
+import {
+	loadEntityLinkRuleByType,
+	resolveEntityLinksForItems,
+} from "../../../utils/entity-link-upsert.js";
 
 interface GithubActor {
 	login?: unknown;
@@ -129,6 +107,16 @@ export async function resolveGithubWebhookActor(params: {
 	const actor = extractGithubActor(params.payload);
 	if (!actor) return null;
 
+	// The person entity-link rule is read from the connector definition (same
+	// source the poll path uses) — not mirrored here. Absent def/rule → no
+	// attribution (best-effort).
+	const rule = await loadEntityLinkRuleByType({
+		connectorKey: "github",
+		orgId: params.organizationId,
+		entityType: "person",
+	});
+	if (!rule) return null;
+
 	// occurred_at is a top-level EventEnvelope field — the last_authored_at trait
 	// reads it there, matching the poll path.
 	const item: {
@@ -149,7 +137,7 @@ export async function resolveGithubWebhookActor(params: {
 			connectorKey: "github",
 			orgId: params.organizationId,
 			items: [item],
-			rules: { [kind]: [GITHUB_PERSON_RULE] },
+			rules: { [kind]: [rule] },
 		},
 		params.sql,
 	);

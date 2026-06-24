@@ -352,6 +352,10 @@ describe('github member-identity attribution', () => {
 
   it('webhook: resolveGithubWebhookActor resolves the actor to a person and returns entity ids + the github_login metadata slot', async () => {
     const org = await seedOrg('GitHub Webhook Org');
+    // The rule is loaded from the connector definition (not mirrored), so the
+    // webhook path needs the github def seeded just like the poll path.
+    await seedGithubConnector(org.id);
+    clearEntityLinkRulesCache();
 
     const resolution = await resolveGithubWebhookActor({
       organizationId: org.id,
@@ -397,6 +401,9 @@ describe('github member-identity attribution', () => {
   it('tenant-scoped: the same github user in two orgs resolves to two distinct persons', async () => {
     const orgA = await seedOrg('GitHub Tenant A');
     const orgB = await seedOrg('GitHub Tenant B');
+    await seedGithubConnector(orgA.id);
+    await seedGithubConnector(orgB.id);
+    clearEntityLinkRulesCache();
 
     const a = await resolveGithubWebhookActor({
       organizationId: orgA.id,

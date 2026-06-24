@@ -38,6 +38,7 @@ import {
 	ensureEncryptionKey,
 	resetTestDatabase,
 	seedAgentRow,
+	seedGithubConnectorDef,
 } from "./helpers/db-setup.js";
 
 // One Lobu GitHub App receiving deliveries for many installed tenants.
@@ -255,6 +256,14 @@ beforeEach(async () => {
 		"../installation/registry.js"
 	);
 	__resetInstallationTokenRegistryForTests();
+	// Webhook routing + person rule are read from the connector definition; seed
+	// it for both orgs (the transfer case routes to ORG_B).
+	const { clearEntityLinkRulesCache } = await import(
+		"../../utils/entity-link-upsert.js"
+	);
+	clearEntityLinkRulesCache();
+	await seedGithubConnectorDef(ORG_A);
+	await seedGithubConnectorDef(ORG_B);
 }, 30_000);
 
 afterEach(async () => {

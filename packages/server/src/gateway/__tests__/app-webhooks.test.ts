@@ -37,6 +37,7 @@ import {
 	ensureEncryptionKey,
 	resetTestDatabase,
 	seedAgentRow,
+	seedGithubConnectorDef,
 } from "./helpers/db-setup.js";
 
 const ORG = "org-app-webhook";
@@ -222,6 +223,13 @@ beforeEach(async () => {
 		"../../utils/rate-limiter.js"
 	);
 	resetRateLimiterForTests();
+	// The github webhook routing + person rule are read from the connector
+	// definition (feeds_schema), so every github delivery test needs it seeded.
+	const { clearEntityLinkRulesCache } = await import(
+		"../../utils/entity-link-upsert.js"
+	);
+	clearEntityLinkRulesCache();
+	await seedGithubConnectorDef(ORG);
 }, 30_000);
 
 describe("app-webhook router (GitHub)", () => {

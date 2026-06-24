@@ -99,6 +99,54 @@ async function loadEntityLinkRules(params: {
   });
 }
 
+/**
+ * Load the FIRST entity-link rule for `entityType` declared anywhere in the
+ * connector's feeds_schema. The live app-webhook path resolves an actor without
+ * a feed context (a delivery names an event, not a feed), and a connector's
+ * person rule is identical across its feeds — so any feed's rule serves. Reads
+ * from connector_definitions like the poll path, so the webhook path no longer
+ * mirrors the connector's rule server-side. Returns null when absent.
+ */
+export async function loadEntityLinkRuleByType(params: {
+  connectorKey: string;
+  orgId: string;
+  entityType: string;
+}): Promise<EntityLinkRule | null> {
+  const cacheKey = `${params.orgId}:${params.connectorKey}:__bytype__:${params.entityType}`;
+  const map = await rulesCache.getOrSet(cacheKey, async () => {
+    const sql = getDb();
+    const rows = await sql`
+      SELECT feeds_schema, entity_link_overrides
+      FROM connector_definitions
+      WHERE key = ${params.connectorKey}
+        AND organization_id = ${params.orgId}
+      LIMIT 1
+    `;
+    const result: RuleMap = {};
+    const feedsSchema = rows[0]?.feeds_schema as Record<string, any> | null | undefined;
+    const overrides = rows[0]?.entity_link_overrides as EntityLinkOverrides | null | undefined;
+    if (feedsSchema) {
+      for (const feed of Object.values(feedsSchema)) {
+        const eventKinds = (feed as { eventKinds?: Record<string, { entityLinks?: EntityLinkRule[] }> })
+          ?.eventKinds;
+        if (!eventKinds) continue;
+        for (const def of Object.values(eventKinds)) {
+          if (!Array.isArray(def?.entityLinks)) continue;
+          const match = resolveEntityLinkRules(def.entityLinks, overrides).find(
+            (r) => r.entityType === params.entityType,
+          );
+          if (match) {
+            result[params.entityType] = [match];
+            return result;
+          }
+        }
+      }
+    }
+    return result;
+  });
+  return map[params.entityType]?.[0] ?? null;
+}
+
 export function clearEntityLinkRulesCache(): void {
   rulesCache.clear();
   creatorCache.clear();

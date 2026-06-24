@@ -230,37 +230,53 @@ export function createSchemaDrivenAppWebhookProvider(options: {
 	};
 }
 
+/** Webhook routing for one feed: which feed a delivery updates, and how. */
+interface WebhookRoute {
+	feedKey: string;
+	mode: "trigger" | "store";
+}
+
 /**
- * How the github provider handles each webhook event type. `feedKey` names the
- * connector feed the event belongs to. `store` distinguishes two strategies:
+ * Build the github event → feed routing from the org's connector definition
+ * feeds_schema, where each feed declares `webhook: { events, mode }`. Read from
+ * the DB — the same persisted surface the poll path reads its entity-link rules
+ * from — so the server hardcodes NO provider event types or feed names. A
+ * per-delivery query (webhooks are low-frequency); an org with no active github
+ * definition yields an empty map → deliveries ack as no-ops.
  *
- *  - TRIGGER (`store` falsey) — the poll brings strictly more than the webhook,
- *    so re-fetch is required for a correct record. Examples: an `issues` payload
- *    omits reaction/comment counts the list endpoint computes; a `push` payload
- *    carries only the git author name/email, NOT the immutable github user id
- *    that `/commits` returns (so a webhook-landed commit couldn't be attributed
- *    to a person). The delivery just marks THAT ONE feed due so the poll fetches
- *    the complete record — scoped to the feed, so an `issues` push never
- *    re-polls commits/stargazers.
- *  - STORE (`store: true`) — the webhook payload is already complete and the
- *    poll alternative is wasteful. A `star` carries the actor + `starred_at`;
- *    re-polling the entire stargazer list to capture one new star is pure waste.
- *    We land the structured event directly, keyed on the SAME origin_id the poll
- *    uses, so the scheduled poll (the backstop) supersedes/dedupes it cleanly.
- *
- * Event types absent from this map (e.g. label edits) are acked as no-ops.
+ * Routing strategies (declared by the connector per feed):
+ *  - TRIGGER — the poll brings strictly more than the webhook (an `issues`
+ *    payload omits computed counts; a `push` lacks the immutable github user id
+ *    `/commits` returns), so the delivery marks THAT feed due and the poll
+ *    fetches the complete record.
+ *  - STORE — the payload is event-complete (a `star` carries actor + starred_at)
+ *    and re-polling the whole list is waste, so the event is stored directly.
  */
-const GITHUB_EVENT_FEED: Record<string, { feedKey: string; store?: boolean }> = {
-	issues: { feedKey: "issues" },
-	pull_request: { feedKey: "pull_requests" },
-	issue_comment: { feedKey: "issue_comments" },
-	pull_request_review_comment: { feedKey: "pr_comments" },
-	discussion: { feedKey: "discussions" },
-	discussion_comment: { feedKey: "discussion_comments" },
-	push: { feedKey: "commits" },
-	star: { feedKey: "stargazers", store: true },
-	watch: { feedKey: "stargazers", store: true },
-};
+async function loadGithubWebhookRoutes(
+	organizationId: string,
+): Promise<Map<string, WebhookRoute>> {
+	const rows = await getDb()`
+		SELECT feeds_schema FROM connector_definitions
+		WHERE key = 'github' AND organization_id = ${organizationId} AND status = 'active'
+		ORDER BY updated_at DESC
+		LIMIT 1
+	`;
+	const routes = new Map<string, WebhookRoute>();
+	const feedsSchema = rows[0]?.feeds_schema as
+		| Record<string, { webhook?: { events?: unknown; mode?: unknown } }>
+		| null
+		| undefined;
+	if (!feedsSchema) return routes;
+	for (const [feedKey, feed] of Object.entries(feedsSchema)) {
+		const events = feed?.webhook?.events;
+		if (!Array.isArray(events)) continue;
+		const mode = feed.webhook?.mode === "store" ? "store" : "trigger";
+		for (const event of events) {
+			if (typeof event === "string" && event) routes.set(event, { feedKey, mode });
+		}
+	}
+	return routes;
+}
 
 /**
  * GitHub App webhook plugin.
@@ -276,10 +292,10 @@ const GITHUB_EVENT_FEED: Record<string, { feedKey: string; store?: boolean }> = 
  * (GHES would be the host — out of scope here). A delivery with no
  * `installation.id` (rare app-level events) has no tenant to route to → null.
  *
- * Delivery: github has a sync mapping, so most deliveries are TRIGGERS — they
- * mark the one affected feed due and let the poll fetch the complete record (it
- * brings more than the webhook). Event-complete signals (stars) are STORED
- * directly, consolidating with the poll on origin_id. See {@link GITHUB_EVENT_FEED}.
+ * Delivery: routing comes from {@link loadGithubWebhookRoutes} (the connector's
+ * feeds_schema), not a hardcoded map. Most events TRIGGER the affected feed's
+ * poll; event-complete signals (stars) are STORED directly, consolidating with
+ * the poll on origin_id.
  */
 export function createGithubAppWebhookProvider(options: {
 	/** Receiving GitHub App id, stamped as `provider_app_id`. */
@@ -320,36 +336,41 @@ export function createGithubAppWebhookProvider(options: {
 		},
 		async onDelivery({ rawBody, headers, install, sql }) {
 			const event = headers.get("x-github-event");
-			const policy = event ? GITHUB_EVENT_FEED[event] : undefined;
-			if (!policy) return { triggered: false };
+			if (!event) return { triggered: false };
+			// Routing is declared by the connector (feeds_schema), read from the DB.
+			const route = (await loadGithubWebhookRoutes(install.organizationId)).get(
+				event,
+			);
+			if (!route) return { triggered: false };
 			const payload = parseJson(rawBody);
 			const repo = extractGithubRepo(payload);
 			if (!repo) return { triggered: false };
 
-			// Event-complete signals (stars): land the structured event directly,
-			// consolidating with the poll on origin_id — no wasteful re-poll. The
-			// scheduled poll stays the backstop. Resolution happens here because the
-			// poll won't run for this feed on the webhook's account.
-			if (policy.store && storeWebhookEvents) {
+			// STORE (event-complete signals, e.g. stars): land the structured event
+			// directly, consolidating with the poll on origin_id — no wasteful
+			// re-poll. Resolution happens here because the poll won't run for this
+			// feed on the webhook's account. Gated by storeWebhookEvents; when off,
+			// fall through to a trigger so the scheduled poll picks it up.
+			if (route.mode === "store" && storeWebhookEvents) {
 				const stored = await storeGithubWebhookEvent({
 					sql,
 					install,
 					repo,
-					event: event as string,
+					event,
+					feedKey: route.feedKey,
 					payload,
 				});
 				return { triggered: stored };
 			}
 
-			// Everything else: the poll brings more, so mark THAT feed due and let
-			// the poll fetch the complete record (dedupes/supersedes by origin_id).
-			// No actor resolution here — the poll resolves the person once, avoiding
-			// the double work that buys only sub-poll-latency freshness we don't need.
+			// TRIGGER: the poll brings more, so mark THAT feed due and let the poll
+			// fetch the complete record (dedupes/supersedes by origin_id) and resolve
+			// the person once — no webhook-side resolution (avoids double work).
 			const triggered = await markGithubFeedDue({
 				sql,
 				install,
 				repo,
-				feedKey: policy.feedKey,
+				feedKey: route.feedKey,
 			});
 			return { triggered };
 		},
@@ -445,9 +466,10 @@ async function storeGithubWebhookEvent(params: {
 	install: { id: number | string; organizationId: string };
 	repo: { owner: string; name: string };
 	event: string;
+	feedKey: string;
 	payload: unknown;
 }): Promise<boolean> {
-	const { sql, install, repo, event, payload } = params;
+	const { sql, install, repo, event, feedKey, payload } = params;
 	const root =
 		payload && typeof payload === "object"
 			? (payload as Record<string, unknown>)
@@ -487,7 +509,7 @@ async function storeGithubWebhookEvent(params: {
 			organizationId: install.organizationId,
 			connectorKey: "github",
 			connectionId,
-			feedKey: "stargazers",
+			feedKey,
 			originId,
 			originType: "stargazer",
 			semanticType: "content",

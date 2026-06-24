@@ -1,5 +1,84 @@
 # Changelog
 
+## [13.0.0](https://github.com/lobu-ai/lobu/compare/lobu-v12.1.0...lobu-v13.0.0) (2026-06-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **classifiers:** collapse classifier version model — classify_facet is the sole config table (P4) ([#1483](https://github.com/lobu-ai/lobu/issues/1483))
+* **slack:** drop bespoke Slack install table/store — fully on app_installations (contract) ([#1471](https://github.com/lobu-ai/lobu/issues/1471))
+
+### Features
+
+* **agents:** backend-persisted agent thread list API ([#1524](https://github.com/lobu-ai/lobu/issues/1524)) ([b2ef525](https://github.com/lobu-ai/lobu/commit/b2ef525a70159e246bc20816243624283fa21106))
+* **agents:** builder agent — manage the workspace from chat ([#1409](https://github.com/lobu-ai/lobu/issues/1409)) ([8bf373d](https://github.com/lobu-ai/lobu/commit/8bf373d98fcef5528d1a16ffa2a296e2f5c7e4dc))
+* **api:** pending-approvals endpoint + interactive approval cards (owletto pointer bump) ([#1486](https://github.com/lobu-ai/lobu/issues/1486)) ([3d36dd2](https://github.com/lobu-ai/lobu/commit/3d36dd27a69b365d6cd82a3c69dca7753213b673))
+* **catalog:** consolidate build pipeline and server-side merge ([#1521](https://github.com/lobu-ai/lobu/issues/1521)) ([b5ae4cc](https://github.com/lobu-ai/lobu/commit/b5ae4cc404298e2ad292ef976ee82e2778660867))
+* **catalog:** unify catalog discovery under LOBU_CATALOG_URIS ([#1518](https://github.com/lobu-ai/lobu/issues/1518)) ([d519ff9](https://github.com/lobu-ai/lobu/commit/d519ff9ae957ad645c7401d83e1c8e51df0fb3ba))
+* **classifiers:** collapse classifier version model — classify_facet is the sole config table (P4) ([#1483](https://github.com/lobu-ai/lobu/issues/1483)) ([e77d2b0](https://github.com/lobu-ai/lobu/commit/e77d2b08ad7edfa1746aae5fcc30e221d052e9ac))
+* **cli:** whoami --json + Mac CLI auth delegation ([#263](https://github.com/lobu-ai/lobu/issues/263)) ([#1531](https://github.com/lobu-ai/lobu/issues/1531)) ([14d963f](https://github.com/lobu-ai/lobu/commit/14d963f59f585b121a5b1f226f5cb85941ddb725))
+* **connections:** move feeds into a left rail like the memory page ([#1534](https://github.com/lobu-ai/lobu/issues/1534)) ([e7fc795](https://github.com/lobu-ai/lobu/commit/e7fc795288a5530684da60bee29066f5fbdc5962))
+* **connector-sdk:** app_installation auth method + installation context + webhook delivery mode ([#1428](https://github.com/lobu-ai/lobu/issues/1428)) ([2b8e0cc](https://github.com/lobu-ai/lobu/commit/2b8e0cc1101232a525b0bffab5a013bceb56826f))
+* **connectors+gateway:** GitHub App install flow + device_worker_id serverless fix + tenancy audit ([#1435](https://github.com/lobu-ai/lobu/issues/1435)) ([39ddd77](https://github.com/lobu-ai/lobu/commit/39ddd77f9bae91011b904538e1153d48d97773c4))
+* **connectors:** inbound webhook ingestion (extract-load) + GitHub self-service registration ([#1408](https://github.com/lobu-ai/lobu/issues/1408)) ([c0e647d](https://github.com/lobu-ai/lobu/commit/c0e647dea436c053381b5b33bd5b1eb03c2fe5dd))
+* **connectors:** Mac+Chrome device connectors (watch v2, EventKit, system-audio) + owletto pointer ([#1487](https://github.com/lobu-ai/lobu/issues/1487)) ([31af160](https://github.com/lobu-ai/lobu/commit/31af160a455750ea20fb48e09ef2fa559efc9a3a))
+* **connectors:** refresh built-in connector defs across deploys + populate github webhook title/url ([#1467](https://github.com/lobu-ai/lobu/issues/1467)) ([ecba5d9](https://github.com/lobu-ai/lobu/commit/ecba5d96d69d7743ff1ef31aea970ae5a1124eab))
+* **connectors:** self-service webhook ingestion + GitHub OAuth env creds ([#1418](https://github.com/lobu-ai/lobu/issues/1418)) ([693e3f8](https://github.com/lobu-ai/lobu/commit/693e3f8c5e6e54faebd0a8a1b0a883de72c5db5b))
+* **corrections:** retire watcher_window_field_feedback onto correction events (P1, collapsed) ([#1512](https://github.com/lobu-ai/lobu/issues/1512)) ([5cee99e](https://github.com/lobu-ai/lobu/commit/5cee99e51b882892eea1ed83eed64bf50c1ff94b))
+* **db:** app_installations table + store (reject/transfer install ownership) ([#1429](https://github.com/lobu-ai/lobu/issues/1429)) ([318066e](https://github.com/lobu-ai/lobu/commit/318066e12be397ab1bc6944d0952622f5ba550dc))
+* **dev:** default `make dev` to shared brew Postgres@18, embedded opt-in ([#1496](https://github.com/lobu-ai/lobu/issues/1496)) ([a2ecfee](https://github.com/lobu-ai/lobu/commit/a2ecfeed88edba0545d1e595475fb80f25d5ec4d))
+* **dev:** parallel local instances + DB-per-branch on local Postgres ([#1436](https://github.com/lobu-ai/lobu/issues/1436)) ([15921fc](https://github.com/lobu-ai/lobu/commit/15921fc42b4d034aca1bceb255b08b33e524a103))
+* **entities:** event-sourced entity field projection (P5, collapsed) ([#1508](https://github.com/lobu-ai/lobu/issues/1508)) ([2e026e4](https://github.com/lobu-ai/lobu/commit/2e026e49681ccbc03a3d937484978552580899ff))
+* **entities:** unify the edit event shape — one model for entity + watcher corrections ([#1515](https://github.com/lobu-ai/lobu/issues/1515)) ([01930fe](https://github.com/lobu-ai/lobu/commit/01930fe58d911943b33f2144466f641ce7e1277a))
+* **gateway:** InstallationTokenProvider + GitHub installation-token minting ([#1430](https://github.com/lobu-ai/lobu/issues/1430)) ([a383533](https://github.com/lobu-ai/lobu/commit/a383533e0b6052343711ab29f551af6ca1f07f66))
+* **gateway:** make GitHub App install self-service + recoverable ([#1468](https://github.com/lobu-ai/lobu/issues/1468)) ([f419822](https://github.com/lobu-ai/lobu/commit/f4198228a293ea58270780a33edfb3e807ffbaa9))
+* **gateway:** schema-driven app-webhook verify + register Jira/Linear plugins ([#1491](https://github.com/lobu-ai/lobu/issues/1491)) ([a98cb65](https://github.com/lobu-ai/lobu/commit/a98cb6557bb4c1353ce1c46325e6b651a3c36605))
+* **gateway:** shared /app-webhooks/:provider router + GitHub verifier/extractor ([#1431](https://github.com/lobu-ai/lobu/issues/1431)) ([129d6ed](https://github.com/lobu-ai/lobu/commit/129d6ed4b2a7661f035c60205f6b57bd9eaa836a))
+* **github:** add commits feed — attribute who committed when ([#1513](https://github.com/lobu-ai/lobu/issues/1513)) ([8fb57d1](https://github.com/lobu-ai/lobu/commit/8fb57d1672610ab202bae104b55ab6a16d5f178d))
+* **github:** attribute member identity from connector ingest ([#1492](https://github.com/lobu-ai/lobu/issues/1492)) ([e69b19a](https://github.com/lobu-ai/lobu/commit/e69b19a851ccfaa62a760378deaa53061f94db84))
+* **github:** build org-membership team graph on App install ([#1494](https://github.com/lobu-ai/lobu/issues/1494)) ([0aa65c7](https://github.com/lobu-ai/lobu/commit/0aa65c7bfc7ed5f5391c0afff98bd6c0bac49613))
+* **github:** poll-canonical webhook triggers + direct-store for stars ([#1540](https://github.com/lobu-ai/lobu/issues/1540)) ([b84f9cd](https://github.com/lobu-ai/lobu/commit/b84f9cd2be50dd9cdbb65fda63cfe4e5160c7e14))
+* **landing:** add the agent-loop-is-the-new-saas blog post ([292e625](https://github.com/lobu-ai/lobu/commit/292e6257f24b9236251e09d0f224bac3fd0d1720))
+* **landing:** explanatory OG image — Watch → Understand → Act ([#1406](https://github.com/lobu-ai/lobu/issues/1406)) ([ea548db](https://github.com/lobu-ai/lobu/commit/ea548db79e6a7f52eab628c262069d656a0bf49d))
+* **landing:** new Watch→Understand→Act loop OG image ([#1412](https://github.com/lobu-ai/lobu/issues/1412)) ([ee8c4a1](https://github.com/lobu-ai/lobu/commit/ee8c4a1c775bc776b3f6671405a330578c91ad5c))
+* **landing:** reposition hero subline + meta to open-source infra framing ([#1403](https://github.com/lobu-ai/lobu/issues/1403)) ([c1f538a](https://github.com/lobu-ai/lobu/commit/c1f538aab73a534756ec590ff59fd19a29245973))
+* **memory:** filter events by source connections ([#1532](https://github.com/lobu-ai/lobu/issues/1532)) ([6aa0f41](https://github.com/lobu-ai/lobu/commit/6aa0f41a7caab89af7da62bbcab15d0cdde99791))
+* **server:** Builder confirm/diff gate for manage_agents ([#1485](https://github.com/lobu-ai/lobu/issues/1485)) ([7f2a829](https://github.com/lobu-ai/lobu/commit/7f2a8298121d26f9314aacadba010212fa09a72d))
+* **server:** shared system-provider resolution and managed platform metadata ([#1525](https://github.com/lobu-ai/lobu/issues/1525)) ([97c1c0a](https://github.com/lobu-ai/lobu/commit/97c1c0a6003cefd06bcb21e4c68c760d7198c147))
+* **server:** wire entity_types filter for org-wide read_knowledge ([#1529](https://github.com/lobu-ai/lobu/issues/1529)) ([cd43281](https://github.com/lobu-ai/lobu/commit/cd43281e9db5e841ca1c6455718c629d67b8896c))
+* **slack:** consolidate Slack installs onto app_installations (expand) ([#1470](https://github.com/lobu-ai/lobu/issues/1470)) ([d78e2b2](https://github.com/lobu-ai/lobu/commit/d78e2b2b8bdfa7ddd32fc9cc8f1ef71d1e0eab52))
+* **slack:** dashboard deep-link, org counts, and recent activity on App Home ([#1537](https://github.com/lobu-ai/lobu/issues/1537)) ([0ce5616](https://github.com/lobu-ai/lobu/commit/0ce5616d78b7e9c543ad983c73d01da0f3c4a9ed))
+* **slack:** drop bespoke Slack install table/store — fully on app_installations (contract) ([#1471](https://github.com/lobu-ai/lobu/issues/1471)) ([63d5704](https://github.com/lobu-ai/lobu/commit/63d5704de8fe4102e6590287264628d1dd8670a1))
+* **watchers:** backend support for conversational watcher UX ([#1523](https://github.com/lobu-ai/lobu/issues/1523)) ([1e5e868](https://github.com/lobu-ai/lobu/commit/1e5e86805b82761b7d19b3a69347e2aab8310668))
+* **watchers:** derive extraction schema from the entity type (schema lives on the type) ([#1514](https://github.com/lobu-ai/lobu/issues/1514)) ([3c6e40f](https://github.com/lobu-ai/lobu/commit/3c6e40f4c4e80377bb3fb99a194020aecdfdd975))
+* **watchers:** derive window render from the entity type (P3 server) ([#1542](https://github.com/lobu-ai/lobu/issues/1542)) ([5468be9](https://github.com/lobu-ai/lobu/commit/5468be97a4f6b61630e783324c809e8aeb2fa26e))
+* **watchers:** promote keyed window rows into entities + observation events (P2 phase 1) ([#1502](https://github.com/lobu-ai/lobu/issues/1502)) ([80f64ad](https://github.com/lobu-ai/lobu/commit/80f64ade832a80ec18f5160d743e56bfc154aeeb))
+
+
+### Bug Fixes
+
+* **builder:** reliable builder provisioning — deterministic resolve + self-heal ([#1426](https://github.com/lobu-ai/lobu/issues/1426)) ([49c4f76](https://github.com/lobu-ai/lobu/commit/49c4f7661f642c0419d953e957cc4fbfafdb645d))
+* **catalog:** address PR [#1518](https://github.com/lobu-ai/lobu/issues/1518) review findings ([#1519](https://github.com/lobu-ai/lobu/issues/1519)) ([671b8ed](https://github.com/lobu-ai/lobu/commit/671b8ed3c2ed7d008c4142c49180ef0d75eb1739))
+* **connections:** resolve asserted auth-profile slug in app_installation guard ([#1488](https://github.com/lobu-ai/lobu/issues/1488)) ([29f1996](https://github.com/lobu-ai/lobu/commit/29f199668a42929083a11676ec05a50573d4798e))
+* **connectors:** resolve OAuth app client creds from env in the connect path ([#1427](https://github.com/lobu-ai/lobu/issues/1427)) ([8bba0db](https://github.com/lobu-ai/lobu/commit/8bba0dbd2a3e98264c7f400bcda0b7a1cd58ac2c))
+* **db:** resolve duplicate migration version 20260622000030 ([#1493](https://github.com/lobu-ai/lobu/issues/1493)) ([b763087](https://github.com/lobu-ai/lobu/commit/b76308730b8687f18d9a9de2b8e82aecee23ff82))
+* **dev:** drop per-branch dev DB on task-clean + clean-merged sweep ([#1457](https://github.com/lobu-ai/lobu/issues/1457)) ([9b09ed5](https://github.com/lobu-ai/lobu/commit/9b09ed567ea74fd72aa7b48b818d5638fb56e2fa))
+* **dev:** make dev-db a walk-in single-user install (LOBU_SINGLE_USER=1) ([#1441](https://github.com/lobu-ai/lobu/issues/1441)) ([89b9cb0](https://github.com/lobu-ai/lobu/commit/89b9cb017c5bddbe9a8b4589b7b24e82325c4ab7))
+* **embeddings:** serialize embed_backfill dispatch to one org per tick ([#1536](https://github.com/lobu-ai/lobu/issues/1536)) ([57652a8](https://github.com/lobu-ai/lobu/commit/57652a8ce7a604f5723716e8dbf393d978c6986e))
+* **gateway:** worker poll rejects browser-session auth with 401 so the extension can refresh ([#1402](https://github.com/lobu-ai/lobu/issues/1402)) ([cbafc13](https://github.com/lobu-ai/lobu/commit/cbafc130229cd6e7a6983e7cc509c0e66b8ae74f))
+* **jira:** migrate sync to /rest/api/3/search/jql ([#1411](https://github.com/lobu-ai/lobu/issues/1411)) ([47d906f](https://github.com/lobu-ai/lobu/commit/47d906f3b50385385da95a476c12bd9d3e058480))
+* **landing:** unblock format-lint (remove useless fragment in LandingPage) ([40659c8](https://github.com/lobu-ai/lobu/commit/40659c81f63c1f5322cd1cfe29b15d55f44b5878))
+* **mac:** always show context row; opt-in task-setup context registration ([#1509](https://github.com/lobu-ai/lobu/issues/1509)) ([3d8407b](https://github.com/lobu-ai/lobu/commit/3d8407b93a4e5ff5e1066e5562b40bcadef7ffce))
+* **migrate:** fail fast when a pending SET NOT NULL has unbacked NULLs ([#1538](https://github.com/lobu-ai/lobu/issues/1538)) ([74c3d20](https://github.com/lobu-ai/lobu/commit/74c3d20de357341a00bfb8db6d10f67a316d11c9))
+* **model:** resolve provider-prefixed models + upgrade pi-ai for adaptive thinking ([#1434](https://github.com/lobu-ai/lobu/issues/1434)) ([06688d2](https://github.com/lobu-ai/lobu/commit/06688d2cf2a25cf2dd7bca09414e0c547641716f))
+* **orchestrator:** make the systemd worker sandbox actually work, degrade safely where it can't ([#1407](https://github.com/lobu-ai/lobu/issues/1407)) ([fc2ea0e](https://github.com/lobu-ai/lobu/commit/fc2ea0ef642625dbb67500c51664593e1216ffcb))
+* **provider:** stop the system/builder agent defaulting to an unusable provider ([#1481](https://github.com/lobu-ai/lobu/issues/1481)) ([a711992](https://github.com/lobu-ai/lobu/commit/a71199243d06ad0f8e476bea614a7557422f73fb))
+* **server:** allow published Chrome Web Store extension ID in CSP + CORS ([#1547](https://github.com/lobu-ai/lobu/issues/1547)) ([f4cb94b](https://github.com/lobu-ai/lobu/commit/f4cb94ba1f8459a77d0676ea507ec55e18227896))
+* **server:** bound embed-backfill discovery scan with statement_timeout ([#1462](https://github.com/lobu-ai/lobu/issues/1462)) ([805d8ae](https://github.com/lobu-ai/lobu/commit/805d8ae6727871bd6b98ede592a907769fe8ea3d))
+* **slack:** bind publishHomeView so the App Home tab publishes ([#1545](https://github.com/lobu-ai/lobu/issues/1545)) ([eabd81e](https://github.com/lobu-ai/lobu/commit/eabd81eae19d18783fef8fed45bc1d017cb4834e))
+* **slack:** surface App Home publish errors in logs ([#1543](https://github.com/lobu-ai/lobu/issues/1543)) ([afad7e6](https://github.com/lobu-ai/lobu/commit/afad7e6892102b7500947fb9cf662e6fb5fbe4ec))
+* **worker:** expose customTools to the model (pi 0.73.x treats options.tools as a hard allowlist) ([#1484](https://github.com/lobu-ai/lobu/issues/1484)) ([cd974c8](https://github.com/lobu-ai/lobu/commit/cd974c85491ba36c4ec1496ca0627ac342ef9b2f))
+
 ## [12.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v12.0.0...lobu-v12.1.0) (2026-06-20)
 
 

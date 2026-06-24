@@ -16,6 +16,7 @@ const fragmentShaderSource = `
   uniform vec3 u_color3;
   uniform float u_speed;
   uniform float u_scale;
+  uniform vec2 u_vignetteCenter;
 
   // Modulo 289 without a division (only multiplications)
   vec3 mod289(vec3 x) {
@@ -84,8 +85,8 @@ const fragmentShaderSource = `
     // Calculate intensity/alpha band based on noise
     float intensity = smoothstep(0.15, 0.55, n) * smoothstep(1.0, 0.55, n);
 
-    // Add a dark vignette fade centered on the right side so it blends into the edges smoothly
-    vec2 center = vec2(max(0.5, aspect - 0.4), 0.5);
+    // Add a dark vignette fade centered dynamically based on u_vignetteCenter so it blends into the edges smoothly
+    vec2 center = vec2(u_vignetteCenter.x * aspect, u_vignetteCenter.y);
     float vignette = smoothstep(1.2, 0.0, length(st - center));
     float finalAlpha = intensity * vignette;
 
@@ -114,6 +115,7 @@ export interface CanvasAuroraProps {
   scale?: number;
   opacity?: number;
   blur?: string;
+  alignment?: [number, number]; // [x, y] in [0, 1] range. Specifies where the glow center is.
   className?: string;
 }
 
@@ -125,14 +127,15 @@ export function CanvasAurora({
   scale = 1.0,
   opacity = 0.7,
   blur = "40px",
+  alignment = [0.5, 0.5],
   className = "",
 }: CanvasAuroraProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const propsRef = useRef({ color1, color2, color3, speed, scale });
+  const propsRef = useRef({ color1, color2, color3, speed, scale, alignment });
 
   useEffect(() => {
-    propsRef.current = { color1, color2, color3, speed, scale };
-  }, [color1, color2, color3, speed, scale]);
+    propsRef.current = { color1, color2, color3, speed, scale, alignment };
+  }, [color1, color2, color3, speed, scale, alignment]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -188,6 +191,10 @@ export function CanvasAurora({
     const color3Location = gl.getUniformLocation(program, "u_color3");
     const speedLocation = gl.getUniformLocation(program, "u_speed");
     const scaleLocation = gl.getUniformLocation(program, "u_scale");
+    const vignetteCenterLocation = gl.getUniformLocation(
+      program,
+      "u_vignetteCenter"
+    );
 
     let animationFrameId: number;
     const startTime = Date.now();
@@ -226,6 +233,11 @@ export function CanvasAurora({
       );
       gl.uniform1f(speedLocation, currentProps.speed);
       gl.uniform1f(scaleLocation, currentProps.scale);
+      gl.uniform2f(
+        vignetteCenterLocation,
+        currentProps.alignment[0],
+        currentProps.alignment[1]
+      );
 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
       animationFrameId = requestAnimationFrame(render);

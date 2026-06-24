@@ -199,8 +199,30 @@ function Hero() {
   };
 
   return (
-    <section class="px-4 pb-12 pt-20 text-center sm:pb-16 sm:pt-28">
-      <Container>
+    <section class="relative overflow-hidden px-4 pb-12 pt-20 text-center sm:pb-16 sm:pt-28">
+      <CanvasAurora
+        color1={[0.2, 0.35, 0.95]}
+        color2={[0.85, 0.15, 0.4]}
+        color3={[0.95, 0.6, 0.15]}
+        speed={0.12}
+        scale={1.2}
+        opacity={0.3}
+        blur="40px"
+        alignment={[0.15, 0.5]}
+        className="absolute left-0 top-0 h-full w-1/2 pointer-events-none z-0 opacity-50"
+      />
+      <CanvasAurora
+        color1={[0.95, 0.6, 0.15]}
+        color2={[0.85, 0.15, 0.4]}
+        color3={[0.2, 0.35, 0.95]}
+        speed={0.12}
+        scale={1.2}
+        opacity={0.3}
+        blur="40px"
+        alignment={[0.85, 0.5]}
+        className="absolute right-0 top-0 h-full w-1/2 pointer-events-none z-0 opacity-50"
+      />
+      <Container className="relative z-10">
         <h1
           class="hero-rise hero-rise-1 mx-auto max-w-[78rem] font-display text-[clamp(2.25rem,4.15vw,3.25rem)] font-bold leading-[1.06] tracking-[-0.008em]"
           style={{ color: "var(--color-page-text)" }}
@@ -466,6 +488,7 @@ function BrowseExamplesSection() {
                 scale={1.4}
                 opacity={0.5}
                 blur="10px"
+                alignment={[0.85, 0.5]}
                 className="absolute inset-0 z-0 h-full w-full pointer-events-none transition-opacity duration-500 opacity-40 group-hover:opacity-60"
               />
               <span
@@ -858,6 +881,7 @@ function RunAnywhereSection() {
               scale={1.5}
               opacity={0.5}
               blur="10px"
+              alignment={[0.85, 0.5]}
               className="absolute inset-0 z-0 h-full w-full pointer-events-none transition-opacity duration-500 opacity-40 group-hover:opacity-60"
             />
             <div class="relative z-10 flex flex-col h-full">

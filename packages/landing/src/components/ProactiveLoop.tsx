@@ -344,6 +344,7 @@ function SourcesCardImpl({
         scale={1.2}
         opacity={0.75}
         blur="12px"
+        alignment={[0.85, 0.5]} // Right-aligned glow
         className="absolute inset-0 z-0 h-full w-full pointer-events-none transition-opacity duration-500 opacity-75 group-hover:opacity-90"
       />
       <div class="relative z-10 flex flex-wrap items-center gap-x-4 gap-y-2.5">

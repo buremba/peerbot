@@ -463,14 +463,16 @@ export async function handleCreateFromVersion(
     throw new Error('entity_ids is required for create_from_version');
   }
 
-  // Fetch the source version + the source watcher's reaction script.
-  // Reaction script lives on the watchers row, not on watcher_versions, so
-  // it has to be copied explicitly when assigning the template to a new
-  // entity. Without this copy the new assignment would have no reactions.
+  // Fetch the source version + the source watcher's reaction script AND its
+  // derived input schema. Reaction script + its `reaction_input_schema` contract
+  // live on the watchers row, not on watcher_versions, so they have to be copied
+  // explicitly when assigning the template to a new entity. Without this copy the
+  // new assignment would have no reactions — or (dropping the input schema) a
+  // reaction with no extraction contract, silently running free-form.
   const versionRows = await sql`
     SELECT wv.*, w.organization_id, w.schedule, w.sources, w.agent_id, w.scheduler_client_id,
            w.model_config, w.execution_config, w.tags, w.watcher_group_id,
-           w.reaction_script, w.reaction_script_compiled
+           w.reaction_script, w.reaction_script_compiled, w.reaction_input_schema
     FROM watcher_versions wv
     JOIN watchers w ON w.id = wv.watcher_id
     WHERE wv.id = ${args.version_id}
@@ -535,7 +537,7 @@ export async function handleCreateFromVersion(
         schedule, next_run_at, agent_id, scheduler_client_id, model_config, execution_config, sources, version,
         current_version_id, tags, status, created_by, created_at, updated_at,
         watcher_group_id, source_watcher_id,
-        reaction_script, reaction_script_compiled
+        reaction_script, reaction_script_compiled, reaction_input_schema
       ) VALUES (
         ${watcherId}, ${watcherName}, ${watcherSlug}, ${organizationId},
         ${`{${entityId}}`}::bigint[],
@@ -546,7 +548,8 @@ export async function handleCreateFromVersion(
         'active', ${createdBy}, NOW(), NOW(),
         ${groupId}, ${version.watcher_id},
         ${(version.reaction_script as string | null) ?? null},
-        ${(version.reaction_script_compiled as string | null) ?? null}
+        ${(version.reaction_script_compiled as string | null) ?? null},
+        ${toJsonParam(sql, version.reaction_input_schema)}
       )
     `;
 

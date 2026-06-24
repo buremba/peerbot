@@ -128,7 +128,7 @@ describe('watcher group edit contract', () => {
     expect(Number(versionCount[0].n)).toBe(1);
   });
 
-  it('create_from_version copies the reaction script onto each new assignment', async () => {
+  it('create_from_version copies the reaction script AND its input schema onto each new assignment', async () => {
     const sql = getTestDb();
     const workspace = await TestWorkspace.create({ name: 'Group Script Copy Org' });
     const { watcherId: rootId } = await seedRootWatcher(workspace, 'script-copy');
@@ -137,7 +137,12 @@ describe('watcher group edit contract', () => {
       {
         action: 'set_reaction_script',
         watcher_id: String(rootId),
-        reaction_script: 'export default async function reaction() { return; }',
+        // Declares an `input` contract → reaction_input_schema is populated. A
+        // clone must carry BOTH the script and the schema, else the cloned
+        // reaction silently loses its extraction contract (runs free-form).
+        reaction_script:
+          'export const input = { type: "object", properties: { s: { type: "string" } }, required: ["s"] };\n' +
+          'export default async function reaction() { return; }',
       } as never,
       {} as Env,
       ownerCtx(workspace)
@@ -156,10 +161,15 @@ describe('watcher group edit contract', () => {
     const siblingId = await assignToEntity(workspace, rootVersionId, siblingEntity.id);
 
     const [siblingRow] = await sql`
-      SELECT reaction_script, reaction_script_compiled FROM watchers WHERE id = ${siblingId}
+      SELECT reaction_script, reaction_script_compiled, reaction_input_schema
+      FROM watchers WHERE id = ${siblingId}
     `;
     expect(siblingRow.reaction_script).toContain('reaction');
     expect(siblingRow.reaction_script_compiled).not.toBeNull();
+    // The reaction-owned input contract travels with the clone.
+    const siblingSchema = siblingRow.reaction_input_schema as Record<string, unknown> | null;
+    expect(siblingSchema).not.toBeNull();
+    expect(JSON.stringify(siblingSchema)).toContain('"s"');
   });
 
   it('set_reaction_script extracts the exported input schema to reaction_input_schema', async () => {

@@ -1,7 +1,23 @@
+@font-face {
+  font-family: 'exposure';
+  src: url('/fonts/Exposure.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'exposure';
+  src: url('/fonts/Exposure_Italic.woff2') format('woff2');
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
 @import "tailwindcss";
 
 /* tweakcn "Modern/Hyperspell" theme fonts */
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap');
 
 /* Scan gateway settings components so their Tailwind classes are generated */
 @source "../../gateway/src/routes/public/settings-page/**/*.tsx";
@@ -14,9 +30,9 @@
  */
 @theme {
   --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --font-serif: "Instrument Serif", Georgia, serif;
+  --font-serif: "exposure", Georgia, serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
-  --font-display: "Instrument Serif", Georgia, serif;
+  --font-display: "exposure", Georgia, serif;
 
   --color-page-bg: oklch(0.9808 0.0079 73.7452);
   --color-page-bg-elevated: oklch(0.9724 0.0096 72.6627);
@@ -71,7 +87,7 @@ h1,
 h2,
 h3,
 .font-display {
-  font-family: "Instrument Serif", Georgia, serif;
+  font-family: "exposure", Georgia, serif;
   letter-spacing: -0.03em;
 }
 

@@ -338,9 +338,9 @@ function SourcesCardImpl({
   return (
     <Card class={`${cls} relative overflow-hidden group`}>
       <CanvasAurora
-        color1={[0.20, 0.35, 0.95]} // Deep Blue
-        color2={[0.85, 0.15, 0.40]} // Magenta/Pink
-        color3={[0.95, 0.60, 0.15]} // Vibrant Orange
+        color1={[0.2, 0.35, 0.95]} // Deep Blue
+        color2={[0.85, 0.15, 0.4]} // Magenta/Pink
+        color3={[0.95, 0.6, 0.15]} // Vibrant Orange
         speed={0.15}
         scale={1.2}
         opacity={0.75}

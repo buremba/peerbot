@@ -116,9 +116,9 @@ export interface CanvasAuroraProps {
 }
 
 export function CanvasAurora({
-  color1 = [0.85, 0.15, 0.40], // Magenta/Pink
-  color2 = [0.20, 0.35, 0.95], // Deep Blue
-  color3 = [0.95, 0.60, 0.15], // Vibrant Orange
+  color1 = [0.85, 0.15, 0.4], // Magenta/Pink
+  color2 = [0.2, 0.35, 0.95], // Deep Blue
+  color3 = [0.95, 0.6, 0.15], // Vibrant Orange
   speed = 0.2,
   scale = 1.0,
   opacity = 0.7,
@@ -135,7 +135,10 @@ export function CanvasAurora({
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const gl = canvas.getContext("webgl", { alpha: true, premultipliedAlpha: false });
+    const gl = canvas.getContext("webgl", {
+      alpha: true,
+      premultipliedAlpha: false,
+    });
     if (!gl) return;
 
     // Enable standard alpha blending
@@ -201,9 +204,24 @@ export function CanvasAurora({
       gl.uniform1f(timeLocation, (Date.now() - startTime) / 1000.0);
 
       const currentProps = propsRef.current;
-      gl.uniform3f(color1Location, currentProps.color1[0], currentProps.color1[1], currentProps.color1[2]);
-      gl.uniform3f(color2Location, currentProps.color2[0], currentProps.color2[1], currentProps.color2[2]);
-      gl.uniform3f(color3Location, currentProps.color3[0], currentProps.color3[1], currentProps.color3[2]);
+      gl.uniform3f(
+        color1Location,
+        currentProps.color1[0],
+        currentProps.color1[1],
+        currentProps.color1[2]
+      );
+      gl.uniform3f(
+        color2Location,
+        currentProps.color2[0],
+        currentProps.color2[1],
+        currentProps.color2[2]
+      );
+      gl.uniform3f(
+        color3Location,
+        currentProps.color3[0],
+        currentProps.color3[1],
+        currentProps.color3[2]
+      );
       gl.uniform1f(speedLocation, currentProps.speed);
       gl.uniform1f(scaleLocation, currentProps.scale);
 

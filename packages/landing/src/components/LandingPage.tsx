@@ -449,15 +449,15 @@ const SHADER_PALETTES: Array<{
     color3: [0.9, 0.6, 0.1], // Orange/Gold
   },
   {
-    color1: [0.85, 0.15, 0.40], // Magenta
+    color1: [0.85, 0.15, 0.4], // Magenta
     color2: [0.5, 0.1, 0.85], // Violet
     color3: [0.2, 0.3, 0.95], // Deep Blue
   },
   {
     color1: [0.95, 0.3, 0.15], // Red-Orange
     color2: [0.95, 0.6, 0.15], // Orange-Gold
-    color3: [0.85, 0.15, 0.70], // Pink/Rose
-  }
+    color3: [0.85, 0.15, 0.7], // Pink/Rose
+  },
 ];
 
 function BrowseExamplesSection() {
@@ -880,9 +880,15 @@ function RunAnywhereSection() {
             }}
           >
             <CanvasAurora
-              color1={SHADER_PALETTES[(index + 2) % SHADER_PALETTES.length].color1}
-              color2={SHADER_PALETTES[(index + 2) % SHADER_PALETTES.length].color2}
-              color3={SHADER_PALETTES[(index + 2) % SHADER_PALETTES.length].color3}
+              color1={
+                SHADER_PALETTES[(index + 2) % SHADER_PALETTES.length].color1
+              }
+              color2={
+                SHADER_PALETTES[(index + 2) % SHADER_PALETTES.length].color2
+              }
+              color3={
+                SHADER_PALETTES[(index + 2) % SHADER_PALETTES.length].color3
+              }
               speed={0.1}
               scale={1.5}
               opacity={0.5}

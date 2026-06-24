@@ -68,10 +68,10 @@ const fragmentShaderSource = `
     vec2 pos = vec2(st * u_scale);
     float time = u_time * u_speed;
 
-    // Generate complex flowing noise by layering
-    float n = snoise(pos + time);
-    n += 0.5 * snoise(pos * 2.0 - time * 0.5);
-    n += 0.25 * snoise(pos * 4.0 + time * 0.25);
+    // Generate complex flowing noise by layering with strict vec2 coordinates
+    float n = snoise(pos + vec2(time * 0.3, time * 0.2));
+    n += 0.5 * snoise(pos * 2.0 - vec2(time * 0.15, time * 0.25));
+    n += 0.25 * snoise(pos * 4.0 + vec2(time * 0.1, time * 0.15));
     
     // Normalize noise to [0, 1]
     n = n * 0.5 + 0.5;

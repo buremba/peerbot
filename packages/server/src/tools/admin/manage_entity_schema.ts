@@ -105,15 +105,21 @@ export const ManageEntitySchemaSchema = Type.Object({
     Type.String({ description: '[entity_type: create/update] Color for UI display' })
   ),
   event_kinds: Type.Optional(
-    Type.Record(
-      Type.String(),
-      Type.Object({
-        description: Type.Optional(Type.String()),
-        metadataSchema: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-      }),
+    Type.Union(
+      [
+        Type.Null(),
+        Type.Record(
+          Type.String(),
+          Type.Object({
+            description: Type.Optional(Type.String()),
+            metadataSchema: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+            jsonTemplate: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+          })
+        ),
+      ],
       {
         description:
-          '[entity_type: create/update] Event semantic types this type produces, keyed by semantic_type slug. Each entry can have a description and optional metadataSchema (JSON Schema).',
+          '[entity_type: create/update] Event semantic types this type produces, keyed by semantic_type slug. Each entry can have a description, optional metadataSchema (JSON Schema), and optional jsonTemplate (render template). `null` clears all kinds; omit to leave unchanged.',
       }
     )
   ),

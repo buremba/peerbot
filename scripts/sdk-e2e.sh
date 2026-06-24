@@ -93,7 +93,21 @@ const agent = defineAgent({
   id: "echo", name: "Echo", dir: "./agents/echo",
   providers: [{ id: "mock", model: "mock-model", key: secret("MOCK_API_KEY") }],
 });
-const company = defineEntityType({ key: "company", name: "Company" });
+// `company` exercises the declarative rendering config: event_kinds (with a
+// metadataSchema) and a default viewTemplate, both applied + diffed by lobu apply.
+const company = defineEntityType({
+  key: "company", name: "Company",
+  eventKinds: {
+    valuation: {
+      description: "A valuation snapshot",
+      metadataSchema: { type: "object", properties: { amount: {} } },
+    },
+  },
+  viewTemplate: {
+    type: "card",
+    children: [{ type: "card-content", children: [{ type: "data", path: "name" }] }],
+  },
+});
 const contact = defineEntityType({ key: "contact", name: "Contact" });
 const worksAt = defineRelationshipType({ key: "works-at", name: "Works at", rules: [{ source: contact, target: company }] });
 
@@ -361,6 +375,24 @@ WATCHER_ID="$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{c
 [ -n "$WATCHER_ID" ] || { cat "$WATCHERS" >&2; fail "no 'digest' watcher found after apply"; }
 echo "✓ apply created the digest watcher (id=$WATCHER_ID)"
 
+# Declarative rendering config: the `company` type's event_kinds + view template
+# must have applied. event_kinds rides manage_entity_schema; the view template is
+# a separate manage_view_templates set (apply fetches it per-type, NOT in the
+# entity list). Capture the template version so the re-apply can prove no churn.
+ETJSON="$RUN_DIR/company-et.json"
+api manage_entity_schema '{"schema_type":"entity_type","action":"get","slug":"company"}' > "$ETJSON" 2>/dev/null \
+  || { cat "$ETJSON" >&2; fail "manage_entity_schema get company failed"; }
+grep -q '"valuation"' "$ETJSON" || { cat "$ETJSON" >&2; fail "company event_kinds.valuation was not applied (declarative event_kinds broken)"; }
+echo "✓ apply set entity-type event_kinds (company.valuation)"
+
+vt_version() {
+  api manage_view_templates '{"action":"get","resource_type":"entity_type","resource_id":"company"}' 2>/dev/null \
+    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);process.stdout.write(String(j.default_tab?.current?.version??""))}catch{}})'
+}
+VT_V1="$(vt_version)"
+[ -n "$VT_V1" ] || fail "company view template was not applied (no default version — declarative viewTemplate broken)"
+echo "✓ apply set entity-type view template (company default v$VT_V1)"
+
 # Trigger the watcher — exercise the FULL dispatch path. This mints an internal
 # service token (needs the `lobu-internal` oauth_client, ensured by
 # getLobuServiceToken) and dispatches a watcher run to a spawned worker. We
@@ -426,5 +458,14 @@ REAPPLY="$RUN_DIR/reapply.out"
 grep -qiE "Nothing to apply|Apply complete" "$REAPPLY" || { cat "$REAPPLY" >&2; fail "re-apply neither completed nor was a noop"; }
 if grep -qE "Summary:.*[1-9][0-9]* delete" "$REAPPLY"; then fail "re-apply was not idempotent (deleted something on a stable config)"; fi
 echo "✓ re-apply is idempotent (no deletes on a stable config)"
+
+# The view template must NOT churn: apply sets it only on create/change, so a
+# stable re-apply leaves the same version (no new view_template_versions row).
+# A growing version here means the set-on-change / bounded-fetch logic regressed.
+VT_V2="$(vt_version)"
+[ "$VT_V1" = "$VT_V2" ] || { cat "$REAPPLY" >&2; fail "re-apply churned the company view template (v$VT_V1 -> v$VT_V2) — set-on-change broken"; }
+grep -qE "entity-type company" "$REAPPLY" && grep -qiE "viewTemplate|eventKinds" "$REAPPLY" \
+  && fail "re-apply reported a company render-config change on a stable config (diff churn)"
+echo "✓ re-apply did not churn entity-type event_kinds / view template (still v$VT_V2)"
 
 echo "✅ SDK lifecycle e2e PASSED"

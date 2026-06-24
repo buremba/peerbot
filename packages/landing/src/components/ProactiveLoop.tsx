@@ -431,7 +431,10 @@ function MemoryCard({
           {memory.typeChip ? (
             <span
               class="rounded-md px-2 py-0.5 font-mono text-[10.5px]"
-              style={{ backgroundColor: "var(--color-page-surface-dim)", color: ACCENT }}
+              style={{
+                backgroundColor: "var(--color-page-surface-dim)",
+                color: ACCENT,
+              }}
             >
               {memory.typeChip}
             </span>
@@ -640,7 +643,7 @@ export function MemoryLoop({ data }: { data: LoopData }) {
 
         <TimelineStep
           number={3}
-          title="Your agent works autonomously"
+          title="Lobu works autonomously"
           visual={
             <MemoryCard
               memory={data.memory}

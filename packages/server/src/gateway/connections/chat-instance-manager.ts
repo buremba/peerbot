@@ -55,6 +55,7 @@ import { SlackConnectionCoordinator } from "./slack-connection-coordinator.js";
 import {
   registerSlackAppHome,
   registerSlackPlatformHandlers,
+  type SlackHomeContext,
 } from "./slack-platform-bridge.js";
 import { createGatewayStateAdapter } from "./state-adapter.js";
 import {
@@ -67,6 +68,49 @@ import { configsEqual } from "./config-equal.js";
 
 
 const logger = createLogger("chat-instance-manager");
+
+/**
+ * Org-scoped counts + slug for the Slack App Home dashboard card. One
+ * round-trip; all counts are organization-wide because `events` carries no
+ * per-agent or per-user attribution. Returns null on any failure so the home
+ * tab degrades to a slug-less dashboard link rather than failing to render.
+ */
+async function resolveSlackHomeContext(
+  organizationId: string,
+): Promise<SlackHomeContext | null> {
+  try {
+    const rows = await getDb()`
+      SELECT
+        (SELECT slug FROM organization WHERE id = ${organizationId}) AS org_slug,
+        (SELECT count(*) FROM entities
+           WHERE organization_id = ${organizationId} AND deleted_at IS NULL)
+          AS entities_tracked,
+        (SELECT count(*) FROM events
+           WHERE organization_id = ${organizationId}
+             AND created_at >= date_trunc('day', now()))
+          AS captured_today
+    `;
+    const row = rows[0] as
+      | {
+          org_slug: string | null;
+          entities_tracked: number | string;
+          captured_today: number | string;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      orgSlug: row.org_slug,
+      entitiesTracked: Number(row.entities_tracked) || 0,
+      capturedToday: Number(row.captured_today) || 0,
+    };
+  } catch (error) {
+    logger.warn(
+      { error, organizationId },
+      "Failed to load Slack home dashboard context",
+    );
+    return null;
+  }
+}
 
 /**
  * Exclusive-transport lease cadence. Each replica ticks every
@@ -1147,6 +1191,7 @@ export class ChatInstanceManager {
         mcpConfigService: this.services.getMcpConfigService(),
         secretStore: this.services.getSecretStore(),
         publicGatewayUrl: this.publicGatewayUrl,
+        resolveHomeContext: resolveSlackHomeContext,
       });
 
       chat.registerSingleton();

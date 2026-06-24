@@ -149,6 +149,20 @@ type SlackActionEvent = {
   raw?: unknown;
 };
 
+/**
+ * Glanceable, org-scoped context for the home tab's dashboard card. `events`
+ * has no per-agent or per-user attribution column, so every count here is
+ * organization-wide — never present it as "your" items.
+ */
+export interface SlackHomeContext {
+  /** Org slug for the dashboard deep link, or null if it can't be resolved. */
+  orgSlug: string | null;
+  /** Non-deleted entities tracked in the org. */
+  entitiesTracked: number;
+  /** Events captured today (org-wide, local server day). */
+  capturedToday: number;
+}
+
 /** Dependencies the App Home tab needs to render status and run OAuth. */
 interface SlackAppHomeDeps {
   /**
@@ -160,8 +174,18 @@ interface SlackAppHomeDeps {
   adapter?: SlackHomeAdapter;
   mcpConfigService?: McpConfigService;
   secretStore?: WritableSecretStore;
-  /** Public origin of the gateway — used to build the OAuth redirect URI. */
+  /**
+   * Public origin of the gateway — used to build the OAuth redirect URI and,
+   * since the web SPA is served same-origin, the dashboard deep link.
+   */
   publicGatewayUrl?: string;
+  /**
+   * Resolves the org dashboard slug + glanceable counts for the home tab.
+   * Read-only; failures degrade gracefully to a slug-less dashboard link.
+   */
+  resolveHomeContext?: (
+    organizationId: string,
+  ) => Promise<SlackHomeContext | null>;
 }
 
 // Internal plumbing MCPs (e.g. the Lobu memory backend) — not user integrations.
@@ -239,6 +263,56 @@ function integrationSection(
   };
 }
 
+/** Trim a trailing slash so we can append `/segment` cleanly. */
+function trimTrailingSlash(url: string): string {
+  return url.replace(/\/+$/, "");
+}
+
+/**
+ * The dashboard card: a "Open dashboard" deep link into the web app plus a
+ * context line of org-wide counts. Returns `[]` when there's nowhere to link
+ * (no public URL), so the home tab still renders without it.
+ */
+function dashboardBlocks(
+  webBaseUrl: string | undefined,
+  context: SlackHomeContext | null,
+): Record<string, unknown>[] {
+  if (!webBaseUrl) return [];
+  const base = trimTrailingSlash(webBaseUrl);
+  const dashboardUrl = context?.orgSlug ? `${base}/${context.orgSlug}` : base;
+
+  const blocks: Record<string, unknown>[] = [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: "*Your dashboard*\nBrowse everything I've captured, review entities, and tune what I watch.",
+      },
+      accessory: {
+        type: "button",
+        text: { type: "plain_text", text: "Open dashboard ↗" },
+        url: dashboardUrl,
+        style: "primary",
+      },
+    },
+  ];
+
+  if (context && (context.entitiesTracked > 0 || context.capturedToday > 0)) {
+    blocks.push({
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `:bar_chart: ${context.entitiesTracked.toLocaleString()} tracked  ·  ${context.capturedToday.toLocaleString()} captured today`,
+        },
+      ],
+    });
+  }
+
+  blocks.push({ type: "divider" });
+  return blocks;
+}
+
 interface HomeViewParams {
   connection: PlatformConnection;
   deps: SlackAppHomeDeps;
@@ -263,11 +337,25 @@ async function buildSlackHomeBlocks(
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*${botName}* :wave:\n\nMention me in any channel, or send me a DM, to start a thread.`,
+        text: `*${botName}* :wave:\n\nI watch your tools, build shared memory, and act on your goals. Mention me in any channel, or send me a DM, to start a thread.`,
       },
     },
     { type: "divider" },
   ];
+
+  if (!isPreview && connection.organizationId) {
+    let context: SlackHomeContext | null = null;
+    try {
+      context =
+        (await deps.resolveHomeContext?.(connection.organizationId)) ?? null;
+    } catch (error) {
+      logger.warn(
+        { error, organizationId: connection.organizationId },
+        "Failed to resolve Slack home dashboard context; rendering link without counts",
+      );
+    }
+    blocks.push(...dashboardBlocks(deps.publicGatewayUrl, context));
+  }
 
   if (!isPreview && connection.agentId && deps.mcpConfigService) {
     try {

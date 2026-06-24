@@ -335,6 +335,89 @@ describe("Slack platform bridge", () => {
     expect(view.blocks.some((b) => b.type === "header")).toBe(false);
   });
 
+  test("home tab renders the dashboard card with a slug deep link and org counts", async () => {
+    const h = makeHomeChat();
+    const resolveHomeContext = mock(async () => ({
+      orgSlug: "acme",
+      entitiesTracked: 976,
+      capturedToday: 5,
+    }));
+    registerSlackAppHome(h.chat, connection(), {
+      publicGatewayUrl: "https://gw.example/",
+      resolveHomeContext,
+    });
+    const publishHomeView = mock(async () => undefined);
+    await h.open("U123", publishHomeView);
+
+    expect(resolveHomeContext).toHaveBeenCalledWith("org-test");
+    const text = blocksText(
+      publishHomeView.mock.calls[0]![1] as {
+        blocks?: Array<Record<string, unknown>>;
+      }
+    );
+    // Deep link uses the org slug, trailing slash trimmed.
+    expect(text).toContain("https://gw.example/acme");
+    expect(text).toContain("Open dashboard");
+    // Counts render as a context line.
+    expect(text).toContain("976 tracked");
+    expect(text).toContain("5 captured today");
+  });
+
+  test("dashboard card links to the web root and omits counts when context is unavailable", async () => {
+    const h = makeHomeChat();
+    registerSlackAppHome(h.chat, connection(), {
+      publicGatewayUrl: "https://gw.example",
+      resolveHomeContext: mock(async () => null),
+    });
+    const publishHomeView = mock(async () => undefined);
+    await h.open("U123", publishHomeView);
+
+    const view = publishHomeView.mock.calls[0]![1] as {
+      blocks: Array<Record<string, unknown>>;
+    };
+    const text = blocksText(view);
+    expect(text).toContain('"url":"https://gw.example"');
+    expect(text).toContain("Open dashboard");
+    // No counts line, and no crash on a null context.
+    expect(view.blocks.some((b) => b.type === "context")).toBe(false);
+  });
+
+  test("dashboard card is skipped without a public gateway url", async () => {
+    const h = makeHomeChat();
+    registerSlackAppHome(h.chat, connection(), {
+      resolveHomeContext: mock(async () => ({
+        orgSlug: "acme",
+        entitiesTracked: 1,
+        capturedToday: 1,
+      })),
+    });
+    const publishHomeView = mock(async () => undefined);
+    await h.open("U123", publishHomeView);
+    expect(blocksText(publishHomeView.mock.calls[0]![1] as any)).not.toContain(
+      "Open dashboard"
+    );
+  });
+
+  test("preview workspaces don't render the dashboard card", async () => {
+    const h = makeHomeChat();
+    const resolveHomeContext = mock(async () => ({
+      orgSlug: "acme",
+      entitiesTracked: 1,
+      capturedToday: 1,
+    }));
+    registerSlackAppHome(
+      h.chat,
+      connection({ settings: { previewMode: true } }),
+      { publicGatewayUrl: "https://gw.example", resolveHomeContext }
+    );
+    const publishHomeView = mock(async () => undefined);
+    await h.open("U123", publishHomeView);
+    expect(resolveHomeContext).not.toHaveBeenCalled();
+    expect(blocksText(publishHomeView.mock.calls[0]![1] as any)).not.toContain(
+      "Open dashboard"
+    );
+  });
+
   test("falls back to a minimal home view if the rich view is rejected", async () => {
     const h = makeHomeChat();
     registerSlackAppHome(h.chat, connection(), {});

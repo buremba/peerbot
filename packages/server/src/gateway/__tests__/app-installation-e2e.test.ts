@@ -114,6 +114,16 @@ async function allInstallEventCount(): Promise<number> {
 	return rows[0].n as number;
 }
 
+/** Structured github events (connector_key='github') in an org, newest first. */
+async function githubEvents(organizationId: string): Promise<any[]> {
+	const { getDb } = await import("../../db/client.js");
+	return getDb()`
+    SELECT origin_id, origin_type, connection_id, metadata FROM events
+    WHERE organization_id = ${organizationId} AND connector_key = 'github'
+    ORDER BY id
+  `;
+}
+
 /**
  * Seed a `github` connection (the trigger path keys on connector_key='github')
  * bound to `installId` via config.installation_ref, plus one ACTIVE issues feed
@@ -281,6 +291,39 @@ describe("app-installation e2e: install → webhook → trigger (happy path)", (
 		expect(redelivery.status).toBe(200);
 		expect((await redelivery.json()).triggered).toBe(true);
 		expect(await feedNextRunAt(feedId)).not.toBeNull();
+		expect(await allInstallEventCount()).toBe(0);
+	});
+});
+
+describe("app-installation e2e: star delivery stored directly (event-complete)", () => {
+	test("a star lands a stargazer event under the install's github connection, no poll", async () => {
+		await seedAgentRow(AGENT_A, { organizationId: ORG_A });
+		const installId = await seedActiveInstall(ORG_A);
+		// seeds the github connection (+ an issues feed) the store path resolves.
+		const issuesFeed = await seedGithubFeed(ORG_A, installId);
+		const router = buildRouter();
+
+		const starBody = {
+			action: "created",
+			starred_at: "2026-06-20T10:00:00Z",
+			installation: { id: Number(TENANT) },
+			sender: { login: "Octocat", id: 583231 },
+			repository: { owner: { login: "acme" }, name: "api" },
+		};
+		const res = await router.fetch(
+			issuesDelivery(starBody, { deliveryId: "gh-star-e2e", event: "star" }),
+		);
+		expect(res.status).toBe(200);
+		expect((await res.json()).triggered).toBe(true);
+
+		// The structured stargazer event landed under the github connection (so the
+		// scheduled /stargazers poll dedupes it on the same origin_id) — and the
+		// store path did NOT mark the issues feed due (it's a store, not a trigger).
+		const events = await githubEvents(ORG_A);
+		expect(events.length).toBe(1);
+		expect(events[0].origin_type).toBe("stargazer");
+		expect(events[0].origin_id).toBe("stargazer_acme_api_github_user_id_583231");
+		expect(await feedNextRunAt(issuesFeed)).toBeNull();
 		expect(await allInstallEventCount()).toBe(0);
 	});
 });

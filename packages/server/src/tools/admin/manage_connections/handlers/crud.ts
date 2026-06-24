@@ -2,7 +2,7 @@
  * CRUD action handlers: list, get, create, update, delete.
  */
 
-import { parseJsonObject } from '@lobu/core';
+import { getErrorMessage, parseJsonObject } from '@lobu/core';
 import { getDb, parsePgNumberArray, pgBigintArray } from '../../../../db/client';
 import {
   EMPTY_SUMMARY,
@@ -50,7 +50,108 @@ import { resolveDeviceBinding, isManagedPublicOrgConnect } from './device-bindin
 import { assertConnectorAllowedInCloud } from '../../../../utils/connector-cloud-gate';
 import { ensureConnectorInstalled } from '../../../../utils/ensure-connector-installed';
 import { unregisterConnectorWebhook } from '../../../../connect/webhook-registration';
-import { getErrorMessage } from "@lobu/core";
+import { enrichConnectorGroupsWithCatalogDisplay } from '../../../../catalog/connector-group-display';
+
+// ============================================
+// handleListConnectorGroups
+// ============================================
+
+function mapConnectorGroupSummaries(raw: unknown): Array<{
+  id: number;
+  display_name: string | null;
+  feed_count: number;
+}> {
+  if (!Array.isArray(raw)) return [];
+  const summaries: Array<{
+    id: number;
+    display_name: string | null;
+    feed_count: number;
+  }> = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const id = Number(record.id);
+    const displayName =
+      typeof record.display_name === 'string' && record.display_name.trim()
+        ? record.display_name.trim()
+        : null;
+    const feedCount = Number(record.feed_count) || 0;
+    if (!Number.isFinite(id)) continue;
+    summaries.push({ id, display_name: displayName, feed_count: feedCount });
+  }
+  return summaries;
+}
+
+export async function handleListConnectorGroups(
+  _args: Extract<ConnectionsArgs, { action: 'list_connector_groups' }>,
+  ctx: ToolContext
+): Promise<ManageConnectionsResult> {
+  const sql = getDb();
+  const { organizationId } = ctx;
+
+  let query = sql`
+    SELECT c.connector_key,
+           MAX(cd.name) AS connector_name,
+           MAX(cd.favicon_domain) AS favicon_domain,
+           COUNT(*)::int AS connection_count,
+           COALESCE(
+             json_agg(
+               json_build_object(
+                 'id', c.id,
+                 'display_name', NULLIF(TRIM(c.display_name), ''),
+                 'feed_count', fc.feed_count
+               )
+               ORDER BY COALESCE(NULLIF(TRIM(c.display_name), ''), cd.name, c.connector_key), c.id
+             ),
+             '[]'::json
+           ) AS connections
+    FROM connections c
+    LEFT JOIN LATERAL (
+      SELECT name, favicon_domain
+      FROM connector_definitions
+      WHERE key = c.connector_key
+        AND status = 'active'
+        AND organization_id = ${organizationId}
+      ORDER BY updated_at DESC
+      LIMIT 1
+    ) cd ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*)::int AS feed_count
+      FROM feeds f
+      WHERE f.connection_id = c.id
+        AND f.deleted_at IS NULL
+    ) fc ON TRUE
+    WHERE c.organization_id = ${organizationId}
+      AND c.deleted_at IS NULL
+  `;
+
+  if (!ctx.userId) {
+    query = sql`${query} AND c.visibility = 'org'`;
+  } else {
+    const userRole = await getWorkspaceRole(sql, organizationId, ctx.userId);
+    if (userRole !== 'owner' && userRole !== 'admin') {
+      query = sql`${query} AND (c.visibility = 'org' OR c.created_by = ${ctx.userId})`;
+    }
+  }
+
+  query = sql`${query} GROUP BY c.connector_key ORDER BY MAX(cd.name), c.connector_key`;
+
+  const rows = await query;
+  const groups = rows.map((row) => ({
+    connector_key: String(row.connector_key),
+    connector_name:
+      row.connector_name != null ? String(row.connector_name) : null,
+    favicon_domain:
+      row.favicon_domain != null ? String(row.favicon_domain) : null,
+    connection_count: Number(row.connection_count) || 0,
+    connections: mapConnectorGroupSummaries(row.connections),
+  }));
+
+  return {
+    action: 'list_connector_groups',
+    groups: await enrichConnectorGroupsWithCatalogDisplay(groups),
+  };
+}
 
 // ============================================
 // handleList
@@ -147,9 +248,15 @@ export async function handleList(
   if (args.created_by) {
     query = sql`${query} AND c.created_by = ${args.created_by}`;
   }
+  if (args.connection_ids?.length) {
+    query = sql`${query} AND c.id = ANY(${pgBigintArray(args.connection_ids)}::bigint[])`;
+  }
 
-  // Visibility: non-admin users see only org connections + their own private connections
-  if (ctx.userId) {
+  // Visibility: anonymous readers see org-visible connections only; non-admin
+  // users see org connections plus their own private connections.
+  if (!ctx.userId) {
+    query = sql`${query} AND c.visibility = 'org'`;
+  } else {
     const userRole = await getWorkspaceRole(sql, organizationId, ctx.userId);
     if (userRole !== 'owner' && userRole !== 'admin') {
       query = sql`${query} AND (c.visibility = 'org' OR c.created_by = ${ctx.userId})`;
@@ -200,7 +307,7 @@ export async function handleGet(
   const sql = getDb();
   const { organizationId } = ctx;
 
-  const rows = await sql`
+  let query = sql`
     SELECT c.*,
            cd.name AS connector_name,
            cd.feeds_schema,
@@ -242,6 +349,16 @@ export async function handleGet(
       AND c.deleted_at IS NULL
   `;
 
+  if (!ctx.userId) {
+    query = sql`${query} AND c.visibility = 'org'`;
+  } else {
+    const userRole = await getWorkspaceRole(sql, organizationId, ctx.userId);
+    if (userRole !== 'owner' && userRole !== 'admin') {
+      query = sql`${query} AND (c.visibility = 'org' OR c.created_by = ${ctx.userId})`;
+    }
+  }
+
+  const rows = await query;
   if (rows.length === 0) {
     return { error: 'Connection not found' };
   }

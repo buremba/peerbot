@@ -752,7 +752,6 @@ export async function executePlan(
         name: w.name,
         description: w.description,
         prompt: w.prompt,
-        extraction_schema: w.extractionSchema,
         schedule: w.schedule,
         sources: w.sources,
         reactions_guidance: w.reactionsGuidance,
@@ -763,7 +762,6 @@ export async function executePlan(
         min_cooldown_seconds: w.minCooldownSeconds,
         tags: w.tags,
         agent_kind: w.agentKind,
-        json_template: w.jsonTemplate,
         keying_config: w.keyingConfig,
         classifiers: w.classifiers,
         condensation_prompt: w.condensationPrompt,
@@ -822,18 +820,12 @@ export async function executePlan(
         await ctx.client.createWatcherVersion({
           watcher_id: watcherId,
           ...(versionBound.has("prompt") ? { prompt: w.prompt } : {}),
-          ...(versionBound.has("extraction_schema")
-            ? { extraction_schema: w.extractionSchema }
-            : {}),
           ...(versionBound.has("sources") && w.sources !== undefined
             ? { sources: w.sources }
             : {}),
           ...(versionBound.has("reactions_guidance") &&
           w.reactionsGuidance !== undefined
             ? { reactions_guidance: w.reactionsGuidance }
-            : {}),
-          ...(versionBound.has("json_template") && w.jsonTemplate !== undefined
-            ? { json_template: w.jsonTemplate }
             : {}),
           ...(versionBound.has("keying_config") && w.keyingConfig !== undefined
             ? { keying_config: w.keyingConfig }

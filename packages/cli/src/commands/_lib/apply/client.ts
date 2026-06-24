@@ -82,7 +82,6 @@ export interface RemoteWatcher {
   // include_details=true → version-bound fields
   description?: string | null;
   prompt?: string | null;
-  extraction_schema?: Record<string, unknown> | null;
   classifiers?: unknown[] | null;
   json_template?: unknown;
   keying_config?: Record<string, unknown> | null;
@@ -726,9 +725,8 @@ export class ApplyClient {
 
   async listWatchers(): Promise<RemoteWatcher[]> {
     // `include_details=true` pulls the version-bound fields (prompt,
-    // extraction_schema, classifiers, json_template, keying_config,
-    // condensation_*, reactions_guidance) too. Apply diffs against these to
-    // detect drift on the prompt / schema / sources / etc.
+    // classifiers, keying_config, condensation_*, reactions_guidance) too.
+    // Apply diffs against these to detect drift on prompt / sources / etc.
     const { body } = await this.request<{ watchers?: RemoteWatcher[] }>(
       "GET",
       `/api/${this.orgSlug}/watchers?include_details=true`
@@ -737,9 +735,7 @@ export class ApplyClient {
   }
 
   /**
-   * Create a watcher owned by `agentId`. `extraction_schema` is sent as a JSON
-   * object — the `manage_watchers` tool accepts `Type.Any()` there and
-   * normalizes string-or-object internally. Duplicate-slug surfaces as a
+   * Create a watcher owned by `agentId`. Duplicate-slug surfaces as a
    * structured error the caller swallows for idempotency.
    */
   async createWatcher(payload: {
@@ -748,7 +744,6 @@ export class ApplyClient {
     name?: string;
     description?: string;
     prompt: string;
-    extraction_schema: Record<string, unknown>;
     schedule?: string;
     sources?: WatcherSource[];
     reactions_guidance?: string;
@@ -759,7 +754,6 @@ export class ApplyClient {
     min_cooldown_seconds?: number;
     tags?: string[];
     agent_kind?: string;
-    json_template?: unknown;
     keying_config?: Record<string, unknown>;
     classifiers?: unknown[];
     condensation_prompt?: string;
@@ -775,7 +769,6 @@ export class ApplyClient {
         ...(payload.name ? { name: payload.name } : {}),
         ...(payload.description ? { description: payload.description } : {}),
         prompt: payload.prompt,
-        extraction_schema: payload.extraction_schema,
         ...(payload.schedule ? { schedule: payload.schedule } : {}),
         ...(payload.sources?.length ? { sources: payload.sources } : {}),
         ...(payload.reactions_guidance !== undefined
@@ -800,9 +793,6 @@ export class ApplyClient {
         ...(payload.agent_kind !== undefined
           ? { agent_kind: payload.agent_kind }
           : {}),
-        ...(payload.json_template !== undefined
-          ? { json_template: payload.json_template }
-          : {}),
         ...(payload.keying_config !== undefined
           ? { keying_config: payload.keying_config }
           : {}),
@@ -822,9 +812,9 @@ export class ApplyClient {
 
   /**
    * Update the **scalar** fields on the `watchers` row — these don't require
-   * a new version. Version-bound fields (prompt / extraction_schema / sources
-   * / reactions_guidance / json_template / keying_config / classifiers /
-   * condensation_*) require `createWatcherVersion` instead.
+   * a new version. Version-bound fields (prompt / sources / reactions_guidance /
+   * keying_config / classifiers / condensation_*) require `createWatcherVersion`
+   * instead.
    *
    * `null` clears nullable fields (device_worker_id, scheduler_client_id,
    * agent_kind) per the server contract.
@@ -876,9 +866,7 @@ export class ApplyClient {
   async createWatcherVersion(payload: {
     watcher_id: string;
     prompt?: string;
-    extraction_schema?: Record<string, unknown>;
     sources?: WatcherSource[];
-    json_template?: unknown;
     keying_config?: Record<string, unknown>;
     classifiers?: unknown[];
     reactions_guidance?: string;
@@ -894,13 +882,7 @@ export class ApplyClient {
         watcher_id: payload.watcher_id,
         set_as_current: true,
         ...(payload.prompt !== undefined ? { prompt: payload.prompt } : {}),
-        ...(payload.extraction_schema !== undefined
-          ? { extraction_schema: payload.extraction_schema }
-          : {}),
         ...(payload.sources !== undefined ? { sources: payload.sources } : {}),
-        ...(payload.json_template !== undefined
-          ? { json_template: payload.json_template }
-          : {}),
         ...(payload.keying_config !== undefined
           ? { keying_config: payload.keying_config }
           : {}),

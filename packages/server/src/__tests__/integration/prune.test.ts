@@ -163,10 +163,6 @@ describe('prune (server gate)', () => {
         slug: 'prune-watcher',
         agent_id: agent.agentId,
         prompt: 'Watch for things.',
-        extraction_schema: {
-          type: 'object',
-          properties: { thing: { type: 'string' } },
-        },
       })) as { watcher_id?: string };
       expect(created.watcher_id).toBeTruthy();
 

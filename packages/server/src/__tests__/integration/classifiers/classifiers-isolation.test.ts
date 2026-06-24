@@ -44,7 +44,6 @@ async function seedClassifier(workspace: TestWorkspace, slug: string): Promise<S
     slug: `${slug}-watcher`,
     name: `${slug} Watcher`,
     prompt: 'collect signals.',
-    extraction_schema: { type: 'object', properties: { signal: { type: 'string' } } },
     agent_id: agent.agentId,
   })) as { watcher_id: string };
 

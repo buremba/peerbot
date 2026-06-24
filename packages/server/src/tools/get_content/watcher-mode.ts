@@ -10,12 +10,13 @@ import type { ContentItem } from '@lobu/connector-sdk';
 import { getNextWatcherGranularity, inferWatcherGranularityFromSchedule } from '@lobu/connector-sdk';
 import { type DbClient, parsePgNumberArray } from '../../db/client';
 import type { Env } from '../../index';
-import type { UnprocessedRange, WatcherSource } from '../../types/watchers';
+import type { KeyingConfig, UnprocessedRange, WatcherSource } from '../../types/watchers';
 import { parseDateAlias, toEndOfDay } from '../../utils/date-aliases';
 import { type DataSourceContext, executeDataSources } from '../../utils/execute-data-sources';
 import logger from '../../utils/logger';
 import { getRecentFeedbackSummary } from '../../utils/watcher-feedback';
 import { getAvailableOperations, getPastReactionsSummary } from '../../utils/watcher-reactions';
+import { deriveWatcherExtractionSchema } from '../../utils/watcher-extraction-schema';
 import {
   computePendingWindow,
   foldUnprocessedRanges,
@@ -185,7 +186,7 @@ export async function handleWatcherMode(
       i.schedule,
       i.organization_id,
       cv.prompt as template_prompt,
-      cv.extraction_schema as template_extraction_schema,
+      cv.keying_config as template_keying_config,
       cv.reactions_guidance,
       cv.condensation_prompt,
       cv.condensation_window_count,
@@ -210,7 +211,13 @@ export async function handleWatcherMode(
     versionSources.length > 0 ? versionSources : parseJson(watcher.sources) || [];
   const timeGranularity = inferWatcherGranularityFromSchedule(watcher.schedule as string | null);
   const templatePrompt = (watcher.template_prompt as string | null) ?? undefined;
-  const templateExtractionSchema = parseJson(watcher.template_extraction_schema) ?? undefined;
+  // The extraction contract is derived from the bound entity type's
+  // metadata_schema (entity-typed) — never read from a stored inline schema.
+  const templateExtractionSchema = await deriveWatcherExtractionSchema(
+    sql,
+    watcher.organization_id as string,
+    parseJson(watcher.template_keying_config) as KeyingConfig | null
+  );
 
   // ============================================
   // Condensation mode: return prompt for rolling up completed leaf windows

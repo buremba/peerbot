@@ -60,7 +60,7 @@ export async function handleCreateVersion(
   // the caller didn't specify.
   const prevRows = await sql`
     SELECT
-      name, description, prompt, extraction_schema, version_sources,
+      name, description, prompt, version_sources,
       json_template, keying_config, classifiers,
       reactions_guidance, condensation_prompt, condensation_window_count
     FROM watcher_versions
@@ -76,9 +76,6 @@ export async function handleCreateVersion(
   const prev = prevRows[0] as Record<string, unknown>;
 
   const prompt = args.prompt ?? (prev.prompt as string);
-  const extractionSchema =
-    parseJsonInput<Record<string, unknown>>(args.extraction_schema, 'extraction_schema') ??
-    normalizeStoredJsonField(prev.extraction_schema, {} as Record<string, unknown>);
   // Sources are per-assignment now. When the caller omits args.sources we
   // keep the seed watcher's existing sources; we deliberately do not fall
   // back to prev.version_sources from the prior version row, because
@@ -89,9 +86,6 @@ export async function handleCreateVersion(
       watcherRows[0].sources,
       [] as Array<{ name: string; query: string }>
     );
-  const jsonTemplate =
-    parseJsonInput<unknown>(args.json_template, 'json_template') ??
-    normalizeStoredJsonField(prev.json_template, undefined as unknown);
   const keyingConfig =
     parseJsonInput<Record<string, unknown>>(args.keying_config, 'keying_config') ??
     normalizeStoredJsonField(prev.keying_config, undefined as Record<string, unknown> | undefined);
@@ -99,11 +93,11 @@ export async function handleCreateVersion(
     parseJsonInput<unknown[]>(args.classifiers, 'classifiers') ??
     normalizeStoredJsonField(prev.classifiers, undefined as unknown[] | undefined);
 
-  // Validate. An entity-typed watcher (keying_config.entity_type) derives its
-  // schema from the entity type, so an inline extraction_schema isn't required.
-  const keyingEntityType = (keyingConfig as { entity_type?: unknown } | undefined)?.entity_type;
-  const entityTyped = typeof keyingEntityType === 'string' && keyingEntityType.trim().length > 0;
-  assertWatcherVersionConfigValid({ prompt, extractionSchema, entityTyped, classifiers, sources });
+  // Validate. The output contract is not authored on the watcher: an
+  // entity-typed watcher (keying_config.entity_type) derives it from that
+  // entity type's metadata_schema at runtime, and an untyped watcher runs
+  // the worker's free-form summary fallback.
+  assertWatcherVersionConfigValid({ prompt, classifiers, sources });
 
   if (args.schedule) {
     const scheduleError = validateSchedule(args.schedule);
@@ -144,7 +138,7 @@ export async function handleCreateVersion(
     await tx`
       INSERT INTO watcher_versions (
         id, watcher_id, version, name, description,
-        prompt, extraction_schema, version_sources,
+        prompt, version_sources,
         json_template, keying_config, classifiers,
         condensation_prompt, condensation_window_count,
         reactions_guidance, change_notes, created_by, created_at
@@ -152,8 +146,8 @@ export async function handleCreateVersion(
         ${versionId}, ${groupId}, ${lockedNextVersion},
         ${args.name ?? (prev.name as string) ?? 'Watcher'},
         ${args.description !== undefined ? (args.description ?? null) : ((prev.description as string) ?? null)},
-        ${prompt}, ${toJsonParam(tx, extractionSchema)}, NULL,
-        ${toJsonParam(tx, jsonTemplate)}, ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
+        ${prompt}, NULL,
+        NULL, ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
         ${args.condensation_prompt ?? (prev.condensation_prompt as string) ?? null},
         ${args.condensation_window_count ?? (prev.condensation_window_count as number) ?? null},
         ${args.reactions_guidance ?? (prev.reactions_guidance as string) ?? null},
@@ -352,7 +346,7 @@ export async function handleGetVersionDetails(
     rows = await sql`
       SELECT
         id, version, name, description, prompt,
-        extraction_schema, version_sources, json_template,
+        version_sources, json_template,
         keying_config, classifiers,
         condensation_prompt, condensation_window_count,
         reactions_guidance
@@ -364,7 +358,7 @@ export async function handleGetVersionDetails(
     rows = await sql`
       SELECT
         v.id, v.version, v.name, v.description, v.prompt,
-        v.extraction_schema, v.version_sources, v.json_template,
+        v.version_sources, v.json_template,
         v.keying_config, v.classifiers,
         v.condensation_prompt, v.condensation_window_count,
         v.reactions_guidance
@@ -391,7 +385,6 @@ export async function handleGetVersionDetails(
     name: v.name as string | undefined,
     description: v.description as string | undefined,
     prompt: v.prompt as string,
-    extraction_schema: normalizeStoredJsonField(v.extraction_schema, undefined as unknown),
     sources: normalizeStoredJsonField(
       v.version_sources,
       [] as Array<{ name: string; query: string }>

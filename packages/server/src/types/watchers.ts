@@ -122,7 +122,6 @@ export interface WatcherMetadata {
   sources: WatcherSource[];
   prompt?: string;
   description?: string;
-  extraction_schema?: Record<string, unknown>;
   json_template?: unknown;
   keying_config?: KeyingConfig | null;
   rendered_prompt?: string;

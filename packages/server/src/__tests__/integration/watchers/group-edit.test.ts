@@ -55,11 +55,6 @@ async function seedRootWatcher(workspace: TestWorkspace, suffix: string) {
     slug: `digest-${suffix}`,
     name: `Digest ${suffix}`,
     prompt: 'Summarize content for {{entities}}.',
-    extraction_schema: {
-      type: 'object',
-      properties: { summary: { type: 'string' } },
-      required: ['summary'],
-    },
     schedule: '0 9 * * *',
     agent_id: agent.agentId,
   })) as { watcher_id: string };

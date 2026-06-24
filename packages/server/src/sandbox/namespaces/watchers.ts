@@ -58,13 +58,11 @@ export interface WatcherCreateInput {
 	/** Attach the watcher to an entity. Omit for an org-scoped/global watcher. */
 	entity_id?: number;
 	prompt: string;
-	extraction_schema: Record<string, unknown>;
 	sources?: Source[];
 	schedule?: string;
 	slug?: string;
 	name?: string;
 	description?: string;
-	json_template?: Record<string, unknown>;
 	keying_config?: Record<string, unknown>;
 	classifiers?: Record<string, unknown>;
 	condensation_prompt?: string;

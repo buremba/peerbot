@@ -171,13 +171,18 @@ const digest = defineWatcher({
   name: "Daily digest",
   schedule: "0 9 * * *", // cron
   prompt: "Summarize yesterday's tickets by root cause and post to Slack.",
-  extractionSchema: { type: "object", properties: { summary: { type: "string" } } },
+  // Entity-typed: the output schema comes from the `ticket` entity type's
+  // properties (schema lives on the type, not the watcher), and extracted rows
+  // are keyed + merged into ticket entities across windows.
+  keyingConfig: { entityType: "ticket", entityPath: "tickets", keyFields: ["id"], keyOutputField: "ticket_key" },
   // reaction: reactionFromFile<typeof reactionMod>("./daily-digest.reaction.ts"),
 });
 ```
 
 No `reaction` → the extracted data is written to memory. A `reaction` lets the
-watcher act (post a message, update entities).
+watcher act (post a message, update entities). Omit `keyingConfig` for an
+untyped watcher that runs the worker's free-form `{ summary }` fallback — there
+is no inline watcher schema; the schema is owned by the entity type.
 
 ### Wire it together
 

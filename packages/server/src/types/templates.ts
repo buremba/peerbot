@@ -29,7 +29,6 @@ export interface ComponentReferenceDocumentation {
     name: string;
     description: string;
     prompt?: string;
-    extraction_schema?: unknown;
     data?: Record<string, { query: string }>;
     json_template?: unknown;
   }>;

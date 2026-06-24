@@ -594,11 +594,6 @@ function diffWatcher(
   if (desired.prompt !== (remote.prompt ?? "")) {
     versionBound.push("prompt");
   }
-  if (
-    !deepEqual(desired.extractionSchema ?? {}, remote.extraction_schema ?? {})
-  ) {
-    versionBound.push("extraction_schema");
-  }
   // Sources live on the watchers row but are written as part of create_version
   // when changed (server copies them to the version's per-assignment scope).
   // Diff against `remote.sources` (also from the row) and route through
@@ -614,12 +609,6 @@ function diffWatcher(
     desired.reactionsGuidance !== (remote.reactions_guidance ?? "")
   ) {
     versionBound.push("reactions_guidance");
-  }
-  if (
-    desired.jsonTemplate !== undefined &&
-    !deepEqual(desired.jsonTemplate, remote.json_template)
-  ) {
-    versionBound.push("json_template");
   }
   if (
     desired.keyingConfig !== undefined &&

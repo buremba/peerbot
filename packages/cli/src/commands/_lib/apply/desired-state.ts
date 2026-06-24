@@ -83,8 +83,6 @@ export interface DesiredWatcher {
   description?: string;
   schedule?: string;
   prompt: string;
-  /** Parsed JSON Schema object describing the LLM output. */
-  extractionSchema: Record<string, unknown>;
   /** Optional SQL data sources; server applies a default when omitted. */
   sources?: WatcherSource[];
   /**
@@ -110,8 +108,6 @@ export interface DesiredWatcher {
   tags?: string[];
   /** Optional agent-kind override (e.g. "background", "notifier"). */
   agentKind?: string;
-  /** Optional JSON template for renderer. */
-  jsonTemplate?: unknown;
   /** Stable key generation across windows. */
   keyingConfig?: Record<string, unknown>;
   /** Classifier definitions for extraction (server-side feature). */

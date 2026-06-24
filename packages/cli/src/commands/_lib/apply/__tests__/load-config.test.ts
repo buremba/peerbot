@@ -410,7 +410,7 @@ describe("loadDesiredStateFromConfig", () => {
         `export default defineConfig({`,
         `  agents: [crm],`,
         `  watchers: [defineWatcher({`,
-        `    agent: crm, slug: "health", prompt: "p", extractionSchema: { type: "object" },`,
+        `    agent: crm, slug: "health", prompt: "p",`,
         `    reaction: reactionFromFile("./reactions/health.reaction.ts"),`,
         `  })],`,
         `});`,
@@ -433,7 +433,7 @@ describe("loadDesiredStateFromConfig", () => {
           `import { defineAgent, defineConfig, defineWatcher, reactionFromFile } from "@lobu/cli/config";`,
           `const crm = defineAgent({ id: "crm" });`,
           `export default defineConfig({ agents: [crm], watchers: [defineWatcher({`,
-          `  agent: crm, slug: "w", prompt: "p", extractionSchema: {}, reaction: reactionFromFile(${JSON.stringify(reaction)}),`,
+          `  agent: crm, slug: "w", prompt: "p", reaction: reactionFromFile(${JSON.stringify(reaction)}),`,
           `})] });`,
           ``,
         ].join("\n")
@@ -468,7 +468,7 @@ describe("loadDesiredStateFromConfig", () => {
         `import { defineAgent, defineConfig, defineWatcher } from "@lobu/cli/config";`,
         `const crm = defineAgent({ id: "crm" });`,
         `export default defineConfig({ agents: [crm], watchers: [defineWatcher({`,
-        `  agent: crm, slug: "w", prompt: "p", extractionSchema: {}, reaction: "./reactions/x.reaction.ts",`,
+        `  agent: crm, slug: "w", prompt: "p", reaction: "./reactions/x.reaction.ts",`,
         `})] });`,
         ``,
       ].join("\n")
@@ -491,8 +491,8 @@ describe("loadDesiredStateFromConfig", () => {
         `import { defineAgent, defineConfig, defineWatcher, reactionFromFile } from "@lobu/cli/config";`,
         `const a = defineAgent({ id: "a" });`,
         `export default defineConfig({ agents: [a], watchers: [`,
-        `  defineWatcher({ agent: a, slug: "first", prompt: "p", extractionSchema: {} }),`,
-        `  defineWatcher({ agent: a, slug: "second", prompt: "p", extractionSchema: {}, reaction: reactionFromFile("./reactions/second.reaction.ts") }),`,
+        `  defineWatcher({ agent: a, slug: "first", prompt: "p" }),`,
+        `  defineWatcher({ agent: a, slug: "second", prompt: "p", reaction: reactionFromFile("./reactions/second.reaction.ts") }),`,
         `] });`,
         ``,
       ].join("\n")

@@ -108,11 +108,6 @@ async function setupDevicePinnedWatcher(opts: {
     slug: 'trigger-watcher',
     name: 'Trigger Watcher',
     prompt: 'Summarize {{entities}}.',
-    extraction_schema: {
-      type: 'object',
-      properties: { summary: { type: 'string' } },
-      required: ['summary'],
-    },
     schedule: '0 9 * * *',
     agent_id: agent.agentId,
   })) as { watcher_id: string };

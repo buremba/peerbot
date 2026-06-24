@@ -319,8 +319,22 @@ export interface Watcher {
   description?: string;
   schedule?: string;
   prompt: string;
-  /** JSON Schema (or TypeBox schema) describing the LLM output. */
-  extractionSchema: Record<string, unknown>;
+  /**
+   * Stable key generation for promoted entities. When `entityType` is set, the
+   * watcher is entity-typed: its output schema derives from that entity type's
+   * metadata schema (schema lives on the type, never on the watcher), and
+   * extracted rows are keyed + merged into entities of that type across windows.
+   * Omit for an untyped watcher that runs the worker's free-form `{ summary }`
+   * fallback. There is no inline watcher schema — schema is owned by the entity
+   * type, full stop.
+   */
+  keyingConfig?: {
+    entityType?: string;
+    entityPath?: string;
+    keyFields?: string[];
+    keyOutputField?: string;
+    [k: string]: unknown;
+  };
   /** Named SQL data sources (`name` -> query). */
   sources?: Record<string, string>;
   notification?: WatcherNotification;

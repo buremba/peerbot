@@ -603,7 +603,7 @@ function mapWatcher(watcher: Watcher): DesiredWatcher {
     slug: watcher.slug,
     agent: agentId(watcher.agent),
     prompt: watcher.prompt,
-    extractionSchema: watcher.extractionSchema,
+    ...(watcher.keyingConfig ? { keyingConfig: watcher.keyingConfig } : {}),
     ...(watcher.name ? { name: watcher.name } : {}),
     ...(watcher.description ? { description: watcher.description } : {}),
     ...(watcher.schedule ? { schedule: watcher.schedule } : {}),

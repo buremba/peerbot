@@ -42,7 +42,7 @@ describe("ApplyClient", () => {
 
     const watchers = await client.listWatchers();
     // `include_details=true` so the apply diff can see prompt /
-    // extraction_schema / reactions_guidance / etc. for drift detection.
+    // reactions_guidance / etc. for drift detection.
     expect(calls[0]?.url).toBe(
       "https://example.test/api/acme/watchers?include_details=true"
     );
@@ -67,7 +67,6 @@ describe("ApplyClient", () => {
       agentId: "triage",
       name: "Digest",
       prompt: "Produce a digest.",
-      extraction_schema: { type: "object" },
       schedule: "0 9 * * 1",
     });
 
@@ -80,10 +79,10 @@ describe("ApplyClient", () => {
       agent_id: "triage",
       name: "Digest",
       prompt: "Produce a digest.",
-      extraction_schema: { type: "object" },
       schedule: "0 9 * * 1",
     });
     expect("entity_id" in body).toBe(false);
+    expect("extraction_schema" in body).toBe(false);
   });
 
   test("listOrgs reads organizations from the OAuth userinfo endpoint", async () => {

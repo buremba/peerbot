@@ -48,25 +48,15 @@ export async function handleCreate(
 }> {
   const sql = getDb();
 
-  // Require slug + prompt for create. extraction_schema is required too, UNLESS
-  // the watcher is entity-typed: a watcher that names keying_config.entity_type
-  // derives its output schema from that entity type's metadata_schema (schema
-  // lives on the type), so it needs no inline one.
+  // Require slug + prompt for create. The output contract is not authored
+  // here: an entity-typed watcher (keying_config.entity_type) derives it from
+  // entity_types.metadata_schema at runtime, and an untyped watcher uses the
+  // worker's free-form summary fallback.
   if (!args.slug) {
     throw new ToolUserError('slug is required for create action');
   }
   if (!args.prompt) {
     throw new ToolUserError('prompt is required for create action');
-  }
-  const keyingEntityType =
-    args.keying_config && typeof args.keying_config === 'object'
-      ? (args.keying_config as { entity_type?: unknown }).entity_type
-      : undefined;
-  const isEntityTyped = typeof keyingEntityType === 'string' && keyingEntityType.trim().length > 0;
-  if (!args.extraction_schema && !isEntityTyped) {
-    throw new ToolUserError(
-      'extraction_schema is required for create action (unless keying_config.entity_type is set)'
-    );
   }
   assertValidExecutionConfig(args.execution_config, ctx);
   // A device pin runs the watcher's agent CLI on the device owner's machine —
@@ -78,11 +68,6 @@ export async function handleCreate(
   const entityId = args.entity_id;
 
   // Parse JSON inputs
-  const extractionSchema = parseJsonInput<Record<string, unknown>>(
-    args.extraction_schema,
-    'extraction_schema'
-  );
-  const jsonTemplate = parseJsonInput<unknown>(args.json_template, 'json_template');
   const keyingConfig = parseJsonInput<Record<string, unknown>>(args.keying_config, 'keying_config');
   const classifiers = parseJsonInput<unknown[]>(args.classifiers, 'classifiers');
 
@@ -95,8 +80,6 @@ export async function handleCreate(
   // Validate watcher config
   assertWatcherVersionConfigValid({
     prompt: args.prompt,
-    extractionSchema,
-    entityTyped: isEntityTyped,
     classifiers,
     sources,
   });
@@ -210,14 +193,14 @@ export async function handleCreate(
     await tx`
       INSERT INTO watcher_versions (
         id, watcher_id, version, name, description,
-        prompt, extraction_schema, version_sources,
+        prompt, version_sources,
         json_template, keying_config, classifiers,
         condensation_prompt, condensation_window_count,
         reactions_guidance, change_notes, created_by, created_at
       ) VALUES (
         ${versionId}, ${watcherId}, 1, ${args.name ?? args.slug}, ${args.description ?? null},
-        ${args.prompt}, ${toJsonParam(tx, extractionSchema)}, ${toJsonParam(tx, sources)},
-        ${toJsonParam(tx, jsonTemplate)}, ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
+        ${args.prompt}, ${toJsonParam(tx, sources)},
+        NULL, ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
         ${args.condensation_prompt ?? null}, ${args.condensation_window_count ?? null},
         ${args.reactions_guidance ?? null}, ${'Initial version'}, ${createdBy}, NOW()
       )

@@ -57,10 +57,10 @@ function str(value: string): string {
 }
 
 /**
- * Emit a JS value as pretty TS source. Handles the JSON-Schema objects in
- * entity `properties` / watcher `extractionSchema` and arbitrary connection
- * `config` blobs as real object/array literals (not `JSON.stringify` blobs),
- * with object keys unquoted where they're valid identifiers.
+ * Emit a JS value as pretty TS source. Handles JSON-Schema objects in entity
+ * `properties` and arbitrary connection `config` blobs as real object/array
+ * literals (not `JSON.stringify` blobs), with object keys unquoted where they're
+ * valid identifiers.
  */
 function emitValue(value: unknown, indent: number): string {
   const pad = "  ".repeat(indent);
@@ -666,9 +666,12 @@ function emitWatcher(
   if (w.description) fields.push(`description: ${str(w.description)}`);
   if (w.schedule) fields.push(`schedule: ${str(w.schedule)}`);
   fields.push(`prompt: ${str(w.prompt ?? "")}`);
-  fields.push(
-    `extractionSchema: ${emitValue(w.extraction_schema ?? { type: "object" }, 1)}`
-  );
+  // A watcher's output schema is owned by its entity type (keying_config.entityType)
+  // or falls back to the worker's free-form `{ summary }` — never inline. Emit
+  // `keyingConfig` (the entity connection) only.
+  if (w.keying_config) {
+    fields.push(`keyingConfig: ${emitValue(w.keying_config, 1)}`);
+  }
   if (w.sources?.length) {
     const sourceObj = Object.fromEntries(
       w.sources.map((s) => [s.name, s.query])

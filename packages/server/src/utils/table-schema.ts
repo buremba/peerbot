@@ -186,7 +186,6 @@ export const QUERYABLE_SCHEMA = {
         'name',
         'description',
         'prompt',
-        'extraction_schema',
         'sources',
         'json_template',
         'keying_config',

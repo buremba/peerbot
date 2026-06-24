@@ -129,20 +129,10 @@ export const ManageWatchersSchema = Type.Object({
         '[create/create_version] LLM prompt template (Handlebars). Variables: {{entities}}, {{content}}, {{sources.name}}, {{data.name}}, {{#each entities}}{{name}}{{/each}}.',
     })
   ),
-  extraction_schema: Type.Optional(
-    Type.Any({
-      description: '[create/create_version] JSON Schema defining LLM output structure.',
-    })
-  ),
   sources: Type.Optional(
     Type.Array(SourceSchema, {
       description:
         '[create/create_version/update] Array of SQL data sources. Each source is { name, query }.',
-    })
-  ),
-  json_template: Type.Optional(
-    Type.Any({
-      description: '[create/create_version] JSON template for React rendering.',
     })
   ),
   keying_config: Type.Optional(
@@ -261,7 +251,7 @@ export const ManageWatchersSchema = Type.Object({
       {
         additionalProperties: true,
         description:
-          '[complete_window] Required. LLM analysis results. Must match extraction_schema.',
+          '[complete_window] Required. LLM analysis results. Must match the watcher\'s extraction contract (derived from its entity type).',
       }
     )
   ),

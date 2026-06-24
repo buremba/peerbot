@@ -138,13 +138,11 @@ describe("mapProjectToDesiredState", () => {
       slug: "w",
       agent: a,
       prompt: "p",
-      extractionSchema: { type: "object" },
     });
     const w2 = defineWatcher({
       slug: "w",
       agent: a,
       prompt: "p",
-      extractionSchema: { type: "object" },
     });
     expect(() =>
       mapProjectToDesiredState(
@@ -319,7 +317,6 @@ describe("mapProjectToDesiredState", () => {
       agent: crm,
       slug: "health",
       prompt: "assess",
-      extractionSchema: { type: "object" },
       sources: { accounts: "SELECT 1" },
       schedule: "0 */12 * * *",
       notification: { channel: "both", priority: "high" },
@@ -342,7 +339,6 @@ describe("mapProjectToDesiredState", () => {
       agent: crm,
       slug: "w",
       prompt: "p",
-      extractionSchema: {},
       reactionsGuidance: "Notify the account owner.",
       agentKind: "notifier",
     });
@@ -358,7 +354,6 @@ describe("mapProjectToDesiredState", () => {
       agent: "ghost",
       slug: "x",
       prompt: "p",
-      extractionSchema: {},
     });
     expect(() =>
       mapProjectToDesiredState(
@@ -475,7 +470,6 @@ describe("mapProjectToDesiredState", () => {
       agent: crm,
       slug: "w",
       prompt: "p",
-      extractionSchema: {},
       schedule: "not-a-cron",
     });
     expect(() =>
@@ -491,7 +485,6 @@ describe("mapProjectToDesiredState", () => {
       agent: crm,
       slug: "w",
       prompt: "p",
-      extractionSchema: {},
       schedule: "*/30 * * * * *",
     });
     expect(() =>

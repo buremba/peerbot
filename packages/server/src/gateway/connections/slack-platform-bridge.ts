@@ -518,33 +518,32 @@ async function publishHome(
   adapter: SlackHomeAdapter | undefined,
 	params: HomeViewParams,
 ): Promise<void> {
-  const publishHomeView = adapter?.publishHomeView;
-  if (typeof publishHomeView !== "function") return;
+  if (typeof adapter?.publishHomeView !== "function") return;
+  // Call `publishHomeView` AS A METHOD on the adapter. Extracting it into a
+  // local (`const fn = adapter.publishHomeView; fn(...)`) drops the `this`
+  // binding, so inside `@chat-adapter/slack` `this` is undefined and
+  // `this.client.views.publish(...)` throws "Cannot read properties of
+  // undefined (reading 'client')" — failing every publish, rich AND fallback,
+  // which left the App Home tab frozen on its last-published view.
   try {
     const blocks = await buildSlackHomeBlocks(params);
-    await publishHomeView(params.userId, { type: "home", blocks });
+    await adapter.publishHomeView(params.userId, { type: "home", blocks });
   } catch (error) {
-    // Message-first form: the console logger drops the metadata object when
-    // called pino-style (`logger.warn({...}, "msg")`), so structured error
-    // detail never reaches the logs. Inline it here. `hasToken` distinguishes
-    // a real publish failure on a token-bearing adapter from a token-less
-    // (multi-workspace / OAuth-fallback) adapter routed here without a bot token.
-    const hasToken = Boolean(
-      (adapter as { defaultBotToken?: unknown } | undefined)?.defaultBotToken,
-    );
+    // Message-first: the console logger drops the metadata object for
+    // pino-style `logger.warn({...}, "msg")` calls, so inline the detail here.
     logger.warn(
-      `Failed to publish Slack home tab (conn=${params.connection.id} user=${params.userId} hasToken=${hasToken}); falling back: ${JSON.stringify(errorDetail(error))}`,
+      `Failed to publish Slack home tab (conn=${params.connection.id} user=${params.userId}); falling back: ${JSON.stringify(errorDetail(error))}`,
     );
     // The rich view failed. Don't leave the user staring at a stale cached
     // view — publish a plain text-only home tab.
     try {
-      await publishHomeView(params.userId, {
+      await adapter.publishHomeView(params.userId, {
         type: "home",
         blocks: HOME_FALLBACK_BLOCKS,
       });
     } catch (fallbackError) {
       logger.warn(
-        `Failed to publish fallback Slack home tab (conn=${params.connection.id} hasToken=${hasToken}): ${JSON.stringify(errorDetail(fallbackError))}`,
+        `Failed to publish fallback Slack home tab (conn=${params.connection.id}): ${JSON.stringify(errorDetail(fallbackError))}`,
       );
     }
   }

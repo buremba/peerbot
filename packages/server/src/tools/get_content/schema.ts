@@ -201,6 +201,12 @@ export const GetContentSchema = Type.Object({
       }
     )
   ),
+  entity_types: Type.Optional(
+    Type.Array(Type.String(), {
+      description:
+        'Org-wide filter: limit to events linked to entities whose type slug is in this list. Ignored when entity_id is set.',
+    })
+  ),
   interaction_status: Type.Optional(
     Type.Union(
       [

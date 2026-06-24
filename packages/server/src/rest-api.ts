@@ -379,6 +379,15 @@ function parseIdListParam(raw: string | undefined): number[] | undefined {
 	return ids.length > 0 ? ids : undefined;
 }
 
+function parseStringListParam(raw: string | undefined): string[] | undefined {
+	if (!raw) return undefined;
+	const values = raw
+		.split(",")
+		.map((value) => value.trim())
+		.filter((value) => value.length > 0);
+	return values.length > 0 ? values : undefined;
+}
+
 export async function restSearchKnowledge(c: Context<{ Bindings: Env }>) {
 	try {
 		const query = c.req.query("query");
@@ -420,6 +429,7 @@ export async function restSearchKnowledge(c: Context<{ Bindings: Env }>) {
 			after_occurred_at: c.req.query("after_occurred_at") || undefined,
 			after_id: safeParseInt(c.req.query("after_id"), { min: 1 }),
 			interaction_status: c.req.query("interaction_status") || undefined,
+			entity_types: parseStringListParam(c.req.query("entity_types")),
 		};
 
 		const ctx = toToolContext(extractAuthContext(c));
@@ -497,6 +507,7 @@ export async function publicRestSearchKnowledge(c: Context<{ Bindings: Env }>) {
 			after_occurred_at: c.req.query("after_occurred_at") || undefined,
 			after_id: safeParseInt(c.req.query("after_id"), { min: 1 }),
 			interaction_status: c.req.query("interaction_status") || undefined,
+			entity_types: parseStringListParam(c.req.query("entity_types")),
 		};
 
 		return getContent(

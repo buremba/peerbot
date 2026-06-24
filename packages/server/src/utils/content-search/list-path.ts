@@ -31,6 +31,7 @@ import {
   type ContentSearchResponse,
   type ContentSearchResult,
 } from './types';
+import { buildEntityTypesFilterClause } from './entity-types-filter';
 import { buildConnectionVisibilityClause, buildExcludeWatcherClause, buildOrgScopeWhere } from './visibility';
 import { buildStandardParams, buildStandardWhereSql, WINDOW_JOIN_SQL } from './params';
 
@@ -345,12 +346,21 @@ export async function listContentInternal(
       userId: options.visibility_scope?.userId ?? null,
       baseParamIndex: filterParamsBeforeVisibility.length + 1,
     });
-    const allFilterParams = [...filterParamsBeforeVisibility, ...visibilityClause.params];
+    const filterParamsBeforeEntityTypes = [
+      ...filterParamsBeforeVisibility,
+      ...visibilityClause.params,
+    ];
+    const entityTypesClause = buildEntityTypesFilterClause({
+      entity_types: options.entity_types,
+      organization_id: organizationId,
+      baseParamIndex: filterParamsBeforeEntityTypes.length + 1,
+    });
+    const allFilterParams = [...filterParamsBeforeEntityTypes, ...entityTypesClause.params];
 
     return executeListQuery({
       sql,
       joinSql: '',
-      whereExpr: `${whereSql} ${excludeClause.sql} ${visibilityClause.sql}`,
+      whereExpr: `${whereSql} ${excludeClause.sql} ${visibilityClause.sql}${entityTypesClause.sql}`,
       countParams: allFilterParams,
       threadEntityLinkSqlForP: threadEntityLinkSql,
       needClassifications,
@@ -419,7 +429,13 @@ export async function listContentInternal(
     userId: options.visibility_scope?.userId ?? null,
     baseParamIndex: paramsBeforeVisibility.length + 1,
   });
-  const countParams = [...paramsBeforeVisibility, ...visibilityClause.params];
+  const paramsBeforeEntityTypes = [...paramsBeforeVisibility, ...visibilityClause.params];
+  const entityTypesClause = buildEntityTypesFilterClause({
+    entity_types: options.entity_types,
+    organization_id: organizationId,
+    baseParamIndex: paramsBeforeEntityTypes.length + 1,
+  });
+  const countParams = [...paramsBeforeEntityTypes, ...entityTypesClause.params];
 
   return executeListQuery({
     sql,
@@ -430,7 +446,7 @@ export async function listContentInternal(
           AND ${runCondition}
           ${excludeClause.sql}
           ${visibilityClause.sql}
-          ${orgScope.sql}`,
+          ${orgScope.sql}${entityTypesClause.sql}`,
     countParams,
     threadEntityLinkSqlForP: standardEntityLinkSqlForP,
     needClassifications,

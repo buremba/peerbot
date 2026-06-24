@@ -324,6 +324,7 @@ async function getContentImpl(
         classification_filters: classificationFilters,
         classification_source: args.classification_source,
         semantic_type: args.semantic_type,
+        entity_types: args.entity_types,
         interaction_status: args.interaction_status,
         limit,
         offset,

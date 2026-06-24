@@ -30,6 +30,7 @@ import {
   type ContentSearchResponse,
   type ContentSearchResult,
 } from './types';
+import { buildEntityTypesFilterClause } from './entity-types-filter';
 import { buildConnectionVisibilityClause, buildExcludeWatcherClause, buildOrgScopeWhere } from './visibility';
 import { getErrorMessage } from "@lobu/core";
 
@@ -118,7 +119,13 @@ export async function searchContentBySingleQuery(
     userId: options.visibility_scope?.userId ?? null,
     baseParamIndex: visibilityParamIdx,
   });
-  const entityLinkParamIdx = visibilityParamIdx + visibilityClause.params.length;
+  const entityTypesParamIdx = visibilityParamIdx + visibilityClause.params.length;
+  const entityTypesClause = buildEntityTypesFilterClause({
+    entity_types: options.entity_types,
+    organization_id: options.organization_id,
+    baseParamIndex: entityTypesParamIdx,
+  });
+  const entityLinkParamIdx = entityTypesParamIdx + entityTypesClause.params.length;
   // Build entity-link UNION (alias `f` for filtered_ids; alias `p` for thread
   // walk). Params slot after visibility, before vector/min_similarity.
   let searchEntityLinkSql: string;
@@ -166,7 +173,7 @@ export async function searchContentBySingleQuery(
           AND ($11::text IS NULL OR f.metadata->>'agent_id' = $11::text)
           ${excludeClause.sql}
           ${visibilityClause.sql}
-          ${orgScope.sql}`;
+          ${orgScope.sql}${entityTypesClause.sql}`;
 
   const textDocumentExpr = buildSearchDocumentExpr('f');
   const resultDocumentExpr = buildSearchDocumentExpr('fi');
@@ -460,6 +467,7 @@ export async function searchContentBySingleQuery(
     ...orgScope.params,
     ...excludeClause.params,
     ...visibilityClause.params,
+    ...entityTypesClause.params,
     ...searchEntityLinkParams,
     ...(hasEmbedding ? [toVectorLiteral(queryEmbedding!), minSimilarity] : []),
     ...cursorClause.params,

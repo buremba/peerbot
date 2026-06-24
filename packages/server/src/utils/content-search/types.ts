@@ -36,6 +36,8 @@ export interface ContentSearchOptions {
   limit?: number; // default: 50, max: 100
   content_ids?: number[]; // Filter to specific content IDs
   semantic_type?: string | string[]; // Filter by semantic type — single value or array (matches any)
+  /** Org-wide filter: events whose entity_ids overlap entities of these type slugs. */
+  entity_types?: string[];
   interaction_status?: 'pending' | 'approved' | 'rejected' | 'completed' | 'failed';
 
   // Per-agent memory scope. Filters events whose `metadata->>'agent_id'`

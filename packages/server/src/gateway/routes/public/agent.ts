@@ -28,7 +28,10 @@ import type { ExternalAuthClient } from "../../auth/external/client.js";
 import type { AgentSettingsStore } from "../../auth/settings/agent-settings-store.js";
 import type { SettingsTokenPayload } from "../../auth/settings/token-service.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
-import { ingestInboundAttachments } from "../../connections/message-handler-bridge.js";
+import {
+  buildAttachmentTranscriptText,
+  ingestInboundAttachments,
+} from "../../connections/message-handler-bridge.js";
 import type { ArtifactStore } from "../../files/artifact-store.js";
 import type { QueueProducer } from "../../infrastructure/queue/queue-producer.js";
 import type { PlatformRegistry } from "../../platform.js";
@@ -1369,13 +1372,21 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       body = c.req.valid("json");
     }
 
-    const messageContent = body.content || body.message;
+    const rawMessageContent = body.content || body.message;
     const messageId = body.messageId || randomUUID();
     const rawEphemeralContext =
       typeof body.ephemeralContext === "string" ? body.ephemeralContext.trim() : "";
 
-    if (!messageContent || typeof messageContent !== "string") {
-      return c.json({ success: false, error: "content is required" }, 400);
+    if (rawMessageContent != null && typeof rawMessageContent !== "string") {
+      return c.json({ success: false, error: "content must be a string" }, 400);
+    }
+    // A file-only message (attachment with an empty caption) is valid — the web
+    // composer permits it. Require *some* payload: text or at least one file.
+    const messageContent =
+      typeof rawMessageContent === "string" ? rawMessageContent : "";
+    const hasInboundFiles = Array.isArray(files) && files.length > 0;
+    if (!messageContent && !hasInboundFiles) {
+      return c.json({ success: false, error: "content or files required" }, 400);
     }
 
     const platform = body.platform as string | undefined;
@@ -1535,24 +1546,15 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
           ).files
         : [];
 
-      // Persist each attachment as a tokenless artifact-route reference appended
-      // to the user's message text. The pi-ai transcript only carries text +
-      // images, so non-image files would otherwise vanish on reload; this is the
-      // table-free durable record. The web lifts `/api/v1/files/` links back into
-      // native attachment chips, and the history read path re-signs them with a
-      // fresh download token (the tokenless form keeps the transcript portable
-      // and never embeds an expiring credential). Images already survive as
-      // inline transcript blocks, so they're skipped here to avoid a duplicate
-      // chip alongside the rendered image.
-      const persistedFileRefs = ingestedFiles
-        .filter((f) => !f.mimetype?.startsWith("image/"))
-        .map((f) => `[${f.name}](/api/v1/files/${f.id})`);
-      const messageTextForTranscript =
-        persistedFileRefs.length > 0
-          ? [messageContent, persistedFileRefs.join("\n")]
-              .filter((part) => part.length > 0)
-              .join("\n\n")
-          : messageContent;
+      // Persist non-image attachments as tokenless artifact-route references in
+      // the user's message text so they survive in the (text+image-only) pi-ai
+      // transcript and the web can lift them into chips on reload. The history
+      // read path re-signs them with a fresh download token. See
+      // `buildAttachmentTranscriptText`.
+      const messageTextForTranscript = buildAttachmentTranscriptText(
+        messageContent,
+        ingestedFiles
+      );
 
       const jobId = await queueProducer.enqueueMessage({
         userId: session.userId,

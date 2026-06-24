@@ -1,6 +1,6 @@
 # Development Makefile for Lobu
 
-.PHONY: help setup build test clean dev dev-db dev-embedded build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean e2e-browser bump review
+.PHONY: help setup build test clean dev dev-db dev-embedded build-packages ensure-submodule clean-workers clean-test-pg test-unit test-integration test-e2e test-e2e-sdk test-e2e-cli test-providers-live typecheck task-setup task-clean dev-recover clean-merged e2e-browser bump review
 
 # Default target
 help:
@@ -16,6 +16,7 @@ help:
 	@echo "  make test-e2e-cli                          - Boot lobu run + walk every CLI command (the CI cli-smoke gate)"
 	@echo "  make test-providers-live                   - Validate every provider against its live API (keyless tier + key-gated smoke)"
 	@echo "  make clean-workers                         - Stop any running embedded worker subprocesses"
+	@echo "  make dev-recover [RESTART=1]               - Free this checkout's dev ports + clean workers; RESTART=1 also boots make dev"
 	@echo "  make clean-test-pg                         - Reap orphaned lobu-test-pg embedded-Postgres clusters (frees macOS shm slots)"
 	@echo "  make typecheck                             - Strict typecheck (same as Dockerfile) for server + owletto"
 	@echo "  make task-setup NAME=<name> [CONTEXT=1]    - Create a paired worktree at .claude/worktrees/<name> (lobu + submodule on real branch, .env copied, ports auto-assigned; CONTEXT=1 registers a Lobu CLI context for the Mac menubar)"
@@ -119,6 +120,9 @@ task-clean:
 # GitHub PR state, not git ancestry.
 clean-merged:
 	@./scripts/clean-merged.sh $$( [ "$(APPLY)" = "1" ] && echo --apply )
+
+dev-recover:
+	@RESTART="$(RESTART)" ./scripts/dev-recover.sh
 
 # Stable Owletto Chrome harness for e2e: one persistent profile, paired once,
 # reused from any agent session (mirrors the installed Mac app). Loads the

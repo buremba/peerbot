@@ -95,6 +95,7 @@ packages/*/~/
 
 # Embedded PGlite dev data (make dev without DATABASE_URL)
 .lobu-dev/
+.lobu-dev-recover.log
 # Local benchmark run artifacts (harness moved to lobu-ai/agent-memory-benchmark)
 .lobu/
 .bench-hindsight/

@@ -26,8 +26,14 @@
  */
 import type { ReactionClient, ReactionContext } from "@lobu/connector-sdk";
 
-interface FinalizeData {
-  outcome?: "placed" | "manual" | "cancelled" | "no-run";
+/**
+ * The run's state lives on the `lunch-run` entity (the watcher prompt creates +
+ * updates it), not on a bespoke extraction payload. The reaction reads that
+ * entity — one source of truth, editable/correctable like any entity — instead
+ * of a watcher-authored `extracted_data` schema.
+ */
+interface LunchRun {
+  status?: "collecting" | "done" | "cancelled";
   restaurant?: string;
 }
 
@@ -44,10 +50,22 @@ export default async (
   ctx: ReactionContext,
   client: ReactionClient
 ): Promise<void> => {
-  const data = ctx.extracted_data as FinalizeData;
-  const restaurant = (data.restaurant ?? "").trim();
-  // Only chase a menu when the run actually settled on a restaurant.
-  if (!restaurant || (data.outcome !== "placed" && data.outcome !== "manual")) {
+  // Read the run off the `lunch-run` entity the agent just updated (most-recent
+  // wins — finalize runs minutes after touching today's run). `metadata` may come
+  // back as a jsonb object or a JSON string depending on the pool, so handle both.
+  const runRows = (await client.query(
+    `SELECT metadata FROM entities
+     WHERE entity_type = 'lunch-run'
+     ORDER BY updated_at DESC
+     LIMIT 1`
+  )) as Array<{ metadata: Record<string, unknown> | string }>;
+  const raw = runRows[0]?.metadata;
+  const run: LunchRun =
+    typeof raw === "string" ? JSON.parse(raw) : ((raw as LunchRun) ?? {});
+  const restaurant = (run.restaurant ?? "").trim();
+  // Only chase a menu when the run actually settled on a restaurant (status
+  // "done"); "collecting"/"cancelled" or no run at all → nothing to do.
+  if (run.status !== "done" || !restaurant) {
     return;
   }
 

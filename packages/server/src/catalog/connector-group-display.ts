@@ -1,4 +1,4 @@
-import { getCatalogEntry, listCatalogEntries } from './load';
+import { listCatalogEntries } from './load';
 
 export type ConnectorGroupDisplayFields = {
   connector_key: string;
@@ -42,14 +42,4 @@ export async function enrichConnectorGroupsWithCatalogDisplay<
         b.connector_name ?? b.connector_key,
       ),
     );
-}
-
-export async function resolveCatalogConnectorDisplay(
-  connectorKey: string,
-): Promise<{ name: string | null; favicon_domain: string | null }> {
-  const catalog = await getCatalogEntry('connectors', connectorKey);
-  return {
-    name: catalog?.name ?? null,
-    favicon_domain: catalogFaviconDomain(catalog?.detail),
-  };
 }

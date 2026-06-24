@@ -32,7 +32,7 @@ export const ListAction = Type.Object({
 		}),
 	),
 	connection_ids: Type.Optional(
-		Type.Array(Type.Number(), {
+		Type.Array(Type.Integer({ minimum: 1 }), {
 			description: "Filter to specific connection IDs",
 		}),
 	),
@@ -335,7 +335,7 @@ export type ManageConnectionsResult =
 				connection_count: number;
 				connections: Array<{
 					id: number;
-					display_name: string;
+					display_name: string | null;
 					feed_count: number;
 				}>;
 			}>;

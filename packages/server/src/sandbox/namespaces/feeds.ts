@@ -21,7 +21,7 @@ export interface FeedsCreateInput {
 
 export interface FeedsNamespace {
 	manage(input: Record<string, unknown>): Promise<unknown>;
-	list(input?: { connection_id?: number }): Promise<unknown>;
+	list(input?: { connection_id?: number; feed_ids?: number[] }): Promise<unknown>;
 	get(feed_id: number): Promise<unknown>;
 	create(input: FeedsCreateInput): Promise<unknown>;
 	update(input: {

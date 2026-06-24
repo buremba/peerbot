@@ -198,6 +198,12 @@ async function loadEntityTreeIds(sql: DbClient, entityId: number): Promise<numbe
  * relies on. entity_ids is empty (NULL) so the event never matches entity-linked
  * content queries; org + entity id + the changed fields ride in metadata.
  */
+/**
+ * `source` drives projection precedence (see `project_entity_field`): a human
+ * edit (`user`) outranks an `agent`/`system` write, so a correction is never
+ * clobbered by a later automated re-write. Defaults to `agent` — the safe
+ * assumption for programmatic writers (connectors, member/link helpers).
+ */
 async function emitEntityFieldEvent(
   tx: ReturnType<typeof getDb>,
   params: {
@@ -205,6 +211,7 @@ async function emitEntityFieldEvent(
     organizationId: string;
     fields: Record<string, unknown>;
     createdBy?: string | null;
+    source?: 'user' | 'agent' | 'system';
   }
 ): Promise<void> {
   const entries = Object.entries(params.fields);
@@ -230,6 +237,7 @@ async function emitEntityFieldEvent(
           field_path: fieldPath,
           mutation: 'set',
           corrected_value: value,
+          source: params.source ?? 'agent',
         },
         createdBy: params.createdBy ?? null,
       },
@@ -358,6 +366,9 @@ export async function createEntity(
         organizationId: data.organization_id as string,
         fields: createdMetadata,
         createdBy: createdBy === 'system' ? null : createdBy,
+        // Initial creation is a programmatic write; a later human edit (source
+        // 'user') outranks these starting values.
+        source: 'agent',
       });
       return rows[0];
     });
@@ -482,6 +493,10 @@ export async function updateEntity(
       organizationId: orgId,
       fields: changedFields,
       createdBy: ctx.userId ?? null,
+      // A human-authenticated edit (a real user, not an agent MCP session) is a
+      // correction that must outrank later agent re-writes; agent sessions carry
+      // an agentId, system contexts have neither.
+      source: ctx.agentId ? 'agent' : ctx.userId ? 'user' : 'system',
     });
 
     const sel = await tx<CreatedEntity>`

@@ -41,7 +41,8 @@ async function makeEntity(client: TestApiClient, name: string): Promise<number> 
 async function emitFields(
   orgId: string,
   entityId: number,
-  fields: Record<string, unknown>
+  fields: Record<string, unknown>,
+  source?: 'user' | 'agent' | 'system'
 ): Promise<number> {
   // Field-grained: one 'entity_field' event per field, carrying the same shape
   // as a watcher correction ({field_path, mutation, corrected_value}). Returns
@@ -54,7 +55,13 @@ async function emitFields(
       organizationId: orgId,
       originId: `efield_test_${counter}`,
       semanticType: 'entity_field',
-      metadata: { entity_id: entityId, field_path: fieldPath, mutation: 'set', corrected_value: value },
+      metadata: {
+        entity_id: entityId,
+        field_path: fieldPath,
+        mutation: 'set',
+        corrected_value: value,
+        ...(source ? { source } : {}),
+      },
     });
     lastId = ev.id;
   }
@@ -109,6 +116,23 @@ describe('entity_field_state projection substrate (expand phase)', () => {
     const after = await fieldState(id);
     expect(after.tier.value).toBe('platinum');
     expect(after.tier.obs).toBeGreaterThan(before.tier.obs);
+  });
+
+  it('a human correction (source=user) survives a LATER agent write (precedence)', async () => {
+    const id = await makeEntity(clientA, 'Initrode');
+    await emitFields(orgA, id, { tier: 'gold' }, 'agent'); // agent sets it
+    await emitFields(orgA, id, { tier: 'platinum' }, 'user'); // human corrects it
+    await emitFields(orgA, id, { tier: 'bronze' }, 'agent'); // agent re-runs LATER (higher id)
+    const st = await fieldState(id);
+    expect(st.tier.value).toBe('platinum'); // correction sticks; agent re-write rejected
+  });
+
+  it('a newer same-source write still advances (ties fall back to keep-greater)', async () => {
+    const id = await makeEntity(clientA, 'Hooli');
+    await emitFields(orgA, id, { tier: 'gold' }, 'user');
+    await emitFields(orgA, id, { tier: 'silver' }, 'user'); // same source, newer → wins
+    const st = await fieldState(id);
+    expect(st.tier.value).toBe('silver');
   });
 
   it('keep-greater REJECTS an event with a lower observation_id (out-of-order)', async () => {

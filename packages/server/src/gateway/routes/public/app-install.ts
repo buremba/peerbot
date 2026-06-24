@@ -57,6 +57,11 @@ import {
 	renderOAuthErrorPage,
 	renderOAuthSuccessPage,
 } from "../../auth/oauth-templates.js";
+import {
+	getOrgAppInstallationMethod,
+	renderAppInstallUrl,
+	resolveAppInstallCredentials,
+} from "../../installation/app-install-credentials.js";
 import { getInstallationTokenRegistry } from "../../installation/registry.js";
 import { createSyncRun } from "../../../runs/queue-service.js";
 import {
@@ -1194,21 +1199,9 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 	// `installation_id`). The callback derives the installation from
 	// /user/installations and runs the SAME ownership + session-org guards.
 	router.get("/github/app/install", async (c) => {
-		const appSlug = process.env.GITHUB_APP_SLUG;
-		const appId = process.env.GITHUB_APP_ID;
-		if (!appId || !appSlug) {
-			return c.html(
-				renderOAuthErrorPage(
-					"github_app_not_configured",
-					"The Lobu GitHub App is not configured on this gateway (set GITHUB_APP_ID and GITHUB_APP_SLUG).",
-				),
-				503,
-			);
-		}
-
 		// Bind the install to the initiating session's active org (single-tenant
-		// fallback for self-host). Without this the resulting state would carry no
-		// authoritative org and the callback couldn't tell which tenant initiated.
+		// fallback for self-host). Resolved first because credential config is read
+		// from THIS org's connector_definitions declaration (no env literals here).
 		const orgId = await deps.resolveInstallOrgId(c);
 		if (!orgId) {
 			return c.html(
@@ -1220,12 +1213,30 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 			);
 		}
 
+		const method = await getOrgAppInstallationMethod(
+			orgId,
+			GITHUB_CONNECTOR_KEY,
+			"github",
+		);
+		const creds = method ? resolveAppInstallCredentials(method) : null;
+		const appSlug = creds?.appSlug;
+		const appId = creds?.appId;
+		if (!appId || !appSlug) {
+			return c.html(
+				renderOAuthErrorPage(
+					"github_app_not_configured",
+					"The Lobu GitHub App is not configured on this gateway (set GITHUB_APP_ID and GITHUB_APP_SLUG).",
+				),
+				503,
+			);
+		}
+
 		// Decide recovery vs fresh install. Explicit `?recovery=1`, or this org
 		// already has an app_installations row for this App (a prior bind exists, so
 		// the install page would dead-end). Recovery needs the App's OAuth client id
 		// to send the user through user-authorization.
 		const explicitRecovery = c.req.query("recovery") === "1";
-		const clientId = process.env.GITHUB_APP_CLIENT_ID;
+		const clientId = creds?.clientId;
 		const alreadyHasInstallRow = await orgHasGithubInstallRow(orgId, appId);
 		const useRecovery = (explicitRecovery || alreadyHasInstallRow) && !!clientId;
 
@@ -1246,7 +1257,10 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		}
 
 		const state = await stateStore.create({ organizationId: orgId });
-		return c.redirect(githubAppInstallUrl(appSlug, state), 302);
+		const installUrl =
+			renderAppInstallUrl(creds?.installUrlTemplate, appSlug, state) ??
+			githubAppInstallUrl(appSlug, state);
+		return c.redirect(installUrl, 302);
 	});
 
 	router.get("/github/app/install/callback", async (c) => {

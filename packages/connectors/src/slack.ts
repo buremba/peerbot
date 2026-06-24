@@ -81,11 +81,20 @@ export default class SlackConnector extends ConnectorRuntime {
     webhook: {
       // App-level delivery: one webhook is configured ONCE on the Slack app, and
       // inbound deliveries route via the shared `/api/v1/app-webhooks/slack`
-      // endpoint keyed on `team_id`. Slack's signature scheme is custom
-      // (`v0:{ts}:{rawBody}`), so the Slack app-webhook provider plugin owns
-      // verify — there is no raw-body HMAC `signatureHeader` to derive one from.
+      // endpoint. Slack's signature scheme is FULLY declarative: HMAC-SHA256 over
+      // `v0:{timestamp}:{body}` compared against `x-slack-signature` (prefix
+      // `v0=`), plus a 300s timestamp-freshness replay guard — the generic engine
+      // verifies it with no Slack-specific code.
       delivery: 'app_installation',
-      routingKeyPath: 'team_id',
+      signatureHeader: 'x-slack-signature',
+      algorithm: 'sha256',
+      signaturePrefix: 'v0=',
+      signingBaseTemplate: 'v0:{timestamp}:{body}',
+      timestampHeader: 'x-slack-request-timestamp',
+      freshnessSeconds: 300,
+      // The team id sits in different places across Slack event shapes; first
+      // match wins.
+      routingKeyPaths: ['team_id', 'team.id', 'event.team_id'],
     },
     authSchema: {
       methods: [

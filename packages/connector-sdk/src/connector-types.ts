@@ -114,6 +114,27 @@ export interface ConnectorWebhookSchema {
    */
   signaturePrefix?: string;
   /**
+   * Template for the bytes the HMAC is computed over. Supports `{body}` (the raw
+   * request body) and `{timestamp}` (the value of {@link timestampHeader}).
+   * Default `'{body}'` (plain raw-body HMAC: GitHub/Jira/Linear). Slack signs
+   * `'v0:{timestamp}:{body}'`, so its whole signing scheme is expressible here —
+   * no hand-written verify plugin needed. The compared signature is
+   * `signaturePrefix + hex(HMAC(secret, renderedBase))`.
+   */
+  signingBaseTemplate?: string;
+  /**
+   * Request header carrying the timestamp substituted into
+   * {@link signingBaseTemplate} as `{timestamp}` (e.g. `x-slack-request-timestamp`).
+   * Required when the template references `{timestamp}`.
+   */
+  timestampHeader?: string;
+  /**
+   * Optional replay guard: reject a delivery whose {@link timestampHeader} value
+   * (unix seconds) is more than this many seconds from now. Slack uses 300.
+   * Omit to skip the freshness check.
+   */
+  freshnessSeconds?: number;
+  /**
    * Request header carrying the provider's unique delivery id, used for
    * idempotent dedupe (e.g. `x-github-delivery`, `linear-delivery`). Falls back
    * to a body hash when unset.
@@ -137,11 +158,27 @@ export interface ConnectorWebhookSchema {
   delivery?: 'registered' | 'app_installation';
   /**
    * `app_installation` mode only: JSON path to the external tenant id within the
-   * delivery body, e.g. `'installation.id'`. Informational/UI hint; the actual
-   * tenant extraction + verification is owned by the provider plugin (§4.3),
-   * which may read headers/site-URL that this single path cannot express.
+   * delivery body, e.g. `'installation.id'`. The generic app-webhook engine reads
+   * this (or {@link routingKeyPaths}) to extract the tenant — no per-provider
+   * extractor. A single path; use {@link routingKeyPaths} when the id can sit in
+   * more than one place.
    */
   routingKeyPath?: string;
+  /**
+   * `app_installation` mode only: an ORDERED list of JSON paths tried in turn for
+   * the external tenant id; first non-empty match wins. Use when the id sits in
+   * multiple places across event shapes (Slack: `team_id` | `team.id` |
+   * `event.team_id`). Takes precedence over {@link routingKeyPath}.
+   */
+  routingKeyPaths?: string[];
+  /**
+   * `app_installation` mode only: transform applied to the value found at
+   * {@link routingKeyPath} / {@link routingKeyPaths} before it becomes the tenant
+   * id. `'url-host'` parses the value as a URL and uses its host (Jira: every
+   * entity carries a REST `self` URL on its site host, which is the tenant).
+   * Omit for the identity transform (the value IS the tenant id).
+   */
+  routingKeyTransform?: 'url-host';
 }
 
 // =============================================================================

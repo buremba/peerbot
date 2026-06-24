@@ -324,6 +324,27 @@ export interface FeedDefinition {
    * `local.directory.files` needs a per-folder `folder_id` from the Mac app.
    */
   userManaged?: boolean;
+  /**
+   * Routes inbound app-webhook deliveries to this feed. Lives on the feed (not
+   * the connector's webhook schema) because feeds_schema is the persisted,
+   * server-readable surface — the app-webhook router reads this to dispatch a
+   * delivery WITHOUT hardcoding provider event types. The connector owns this
+   * knowledge (which event updates which feed, and whether the payload is
+   * complete enough to store):
+   *  - `mode: 'trigger'` (default) — the poll brings more than the webhook, so
+   *    mark this feed due and let the poll fetch the complete record (deduped by
+   *    origin_id). Use for events whose poll endpoint returns richer data.
+   *  - `mode: 'store'` — the payload is event-complete (e.g. a GitHub `star`
+   *    carries the actor + starred_at) and re-polling the whole list is wasteful,
+   *    so the router stores the structured event directly, consolidating with the
+   *    poll on the same origin_id.
+   */
+  webhook?: {
+    /** Provider webhook event types (e.g. `x-github-event` values) that update this feed. */
+    events: string[];
+    /** How a matching delivery is handled. Default `'trigger'`. */
+    mode?: 'trigger' | 'store';
+  };
   /** Event kinds this feed produces, keyed by kind slug */
   eventKinds?: Record<
     string,

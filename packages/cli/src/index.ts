@@ -393,8 +393,11 @@ Memory:
 
   // ─── whoami ─────────────────────────────────────────────────────────
   withCommonOpts(
-    program.command("whoami").description("Show current user and linked agent")
-  ).action(async (options: { context?: string }) => {
+    program
+      .command("whoami")
+      .description("Show current user and linked agent")
+      .option("--json", "Emit machine-readable session JSON (for Owletto Mac)")
+  ).action(async (options: { context?: string; json?: boolean }) => {
     const { whoamiCommand } = await import("./commands/whoami.js");
     await whoamiCommand(options);
   });

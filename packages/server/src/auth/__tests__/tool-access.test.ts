@@ -285,6 +285,13 @@ describe('isPublicReadable', () => {
     expect(isPublicReadable('manage_entity', { action: 'list' })).toBe(true);
   });
 
+  it('should allow public read for manage_connections lists', () => {
+    expect(isPublicReadable('manage_connections', { action: 'list' })).toBe(true);
+    expect(isPublicReadable('manage_connections', { action: 'list_connector_groups' })).toBe(
+      true
+    );
+  });
+
   it('should deny public read for manage_entity create', () => {
     expect(isPublicReadable('manage_entity', { action: 'create' })).toBe(false);
   });

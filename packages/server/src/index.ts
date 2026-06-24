@@ -101,18 +101,30 @@ export type { Env };
 
 const LOCALHOST_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
-// The published Owletto for Chrome extension ID, pinned via the manifest's
-// `key` field (see lobu-ai/owletto:apps/chrome/manifest.json). Identity for
-// CSP frame-ancestors AND CORS — both have to agree that this extension is
-// "us", otherwise either iframe embedding or fetch-from-SW breaks.
-const CANONICAL_OWLETTO_EXTENSION_ID = "amnnhclgmbldmfcfamonoggjhfidemmm";
+// Owned Owletto for Chrome extension IDs. Identity for CSP frame-ancestors
+// AND CORS — both have to agree that an extension is "us", otherwise either
+// iframe embedding or fetch-from-SW breaks. There are two distinct IDs and
+// both are production facts, so both are pinned here:
+//   - DEV/UNPACKED: derived from the manifest `key` field (see
+//     lobu-ai/owletto:apps/chrome/manifest.json). This is the ID our local
+//     harness and any unpacked build loads as.
+//   - PUBLISHED: assigned by the Chrome Web Store, which overrides the
+//     manifest `key` with its own signing key, so the store build runs under
+//     a different ID (see lobu-ai/owletto:store-assets/STORE-LISTING.md and
+//     apps/mac/Owletto/OwlettoApp.swift). The store ID was previously missing
+//     from this list, so app.lobu.ai's frame-ancestors blocked the published
+//     sidepanel iframe even though local dev worked.
+const OWLETTO_EXTENSION_IDS = [
+	"amnnhclgmbldmfcfamonoggjhfidemmm", // dev/unpacked (manifest `key`)
+	"jhgcecbdpnoehfnhpdfihlchjddapepi", // Chrome Web Store (published)
+] as const;
 
 const CHROME_EXTENSION_ID_RE = /^[a-p]{32}$/;
 
 /**
- * Owned Owletto extension IDs (canonical + anything pinned via the
- * LOBU_OWLETTO_EXTENSION_IDS env so a dev build with a different manifest
- * key can be allowed alongside the published one). Same source for both
+ * Owned Owletto extension IDs (the pinned dev + published IDs, plus anything
+ * pinned via the LOBU_OWLETTO_EXTENSION_IDS env so an ad-hoc build with a
+ * different manifest key can be allowed alongside them). Same source for both
  * the CSP frame-ancestors directive on HTML responses and the CORS
  * allowlist that lets the service worker fetch /api/workers/poll.
  */
@@ -121,7 +133,7 @@ export function getOwnedOwlettoExtensionIds(env: Env): string[] {
 		.split(",")
 		.map((s) => s.trim())
 		.filter((s) => CHROME_EXTENSION_ID_RE.test(s));
-	return [CANONICAL_OWLETTO_EXTENSION_ID, ...extra];
+	return [...OWLETTO_EXTENSION_IDS, ...extra];
 }
 
 export function isAllowedCorsOrigin(

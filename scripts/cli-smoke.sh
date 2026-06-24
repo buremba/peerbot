@@ -253,6 +253,12 @@ echo ">> resolved local org: $ORG"
 # ============================================================================
 note "identity / status / token"
 expect_grep "lobu whoami -c local" "Context" "$PROJ" whoami -c local
+runlobu "$PROJ" whoami --json -c local
+if [ "$RC" -eq 0 ] && grep -q '"loggedIn":true' "$OUT" && grep -q '"workerToken"' "$OUT"; then
+  pass "lobu whoami --json (loggedIn + workerToken)"
+else
+  softfail "lobu whoami --json (exit=$RC, missing loggedIn/workerToken)"
+fi
 expect_grep "lobu status -c local" "API:" "$PROJ" status -c local
 expect_grep "lobu token -c local" "Token" "$PROJ" token -c local
 runlobu "$PROJ" token -c local --raw

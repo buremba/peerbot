@@ -715,7 +715,14 @@ export function createGatewayApp(
     const appWebhookProviders: AppWebhookProvider[] = [];
     const githubAppId = process.env.GITHUB_APP_ID;
     if (githubAppId) {
-      appWebhookProviders.push(createGithubAppWebhookProvider({ appId: githubAppId }));
+      appWebhookProviders.push(
+        createGithubAppWebhookProvider({
+          appId: githubAppId,
+          // Land event-complete deliveries (stars) directly instead of re-polling.
+          // Default on; GITHUB_WEBHOOK_STORE_EVENTS=false makes every delivery a trigger.
+          storeWebhookEvents: process.env.GITHUB_WEBHOOK_STORE_EVENTS !== "false",
+        }),
+      );
     }
     const jiraAppId = process.env.JIRA_CLIENT_ID;
     if (jiraAppId) {

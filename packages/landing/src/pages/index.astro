@@ -4,6 +4,7 @@ import "../globals.css";
 import { Footer } from "../components/Footer";
 import { LandingPage } from "../components/LandingPage";
 import { Nav } from "../components/Nav";
+import { CanvasAurora } from "../components/CanvasAurora";
 import { getLatestPosts } from "../latest-posts";
 
 const latestPosts = await getLatestPosts(3);
@@ -11,12 +12,13 @@ const latestPosts = await getLatestPosts(3);
 
 <BaseLayout forceTheme="dark">
   <div
-    class="landing-backdrop min-h-screen grid-lines noise-bg"
+    class="landing-backdrop min-h-screen grid-lines noise-bg relative"
     style={{
       backgroundColor: "var(--color-page-bg)",
       "--grid-max-w": "72rem",
     }}
   >
+    <CanvasAurora client:load />
     <Nav client:load currentPath={Astro.url.pathname} />
     <main class="relative z-[1]">
       <LandingPage client:load latestPosts={latestPosts} />
@@ -24,3 +26,4 @@ const latestPosts = await getLatestPosts(3);
     <Footer />
   </div>
 </BaseLayout>
+

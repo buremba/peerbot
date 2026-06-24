@@ -419,6 +419,8 @@ async function markGithubFeedDue(params: {
 		WHERE f.connection_id = c.id
 		  AND c.organization_id = ${install.organizationId}
 		  AND c.connector_key = 'github'
+		  AND c.status = 'active'
+		  AND c.deleted_at IS NULL
 		  AND (c.config->>'installation_ref') = ${String(install.id)}
 		  AND f.feed_key = ${feedKey}
 		  AND lower(f.config->>'repo_owner') = lower(${repo.owner})
@@ -460,6 +462,8 @@ async function resolveGithubFeedTarget(params: {
 		JOIN connections c ON c.id = f.connection_id
 		WHERE c.organization_id = ${install.organizationId}
 		  AND c.connector_key = 'github'
+		  AND c.status = 'active'
+		  AND c.deleted_at IS NULL
 		  AND (c.config->>'installation_ref') = ${String(install.id)}
 		  AND f.feed_key = ${feedKey}
 		  AND lower(f.config->>'repo_owner') = lower(${repo.owner})

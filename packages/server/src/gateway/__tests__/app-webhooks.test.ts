@@ -295,6 +295,31 @@ describe("app-webhook router (GitHub)", () => {
 		expect(await feedNextRunAt(otherFeedId)).toBeNull();
 	});
 
+	test("a delivery for an active feed on a PAUSED connection is a no-op", async () => {
+		await seedAgentRow(AGENT, { organizationId: ORG });
+		const installId = await seedActiveInstall();
+		const feedId = await seedGithubFeed({ installId, owner: "acme", name: "api" });
+		// Pause the github connection; the feed row stays active.
+		const { getDb } = await import("../../db/client.js");
+		await getDb()`
+			UPDATE connections SET status = 'paused'
+			WHERE organization_id = ${ORG} AND connector_key = 'github'
+		`;
+		const app = buildApp();
+
+		const raw = JSON.stringify({
+			action: "opened",
+			installation: { id: Number(INSTALLATION_ID) },
+			issue: { number: 1, title: "x" },
+			repository: { owner: { login: "acme" }, name: "api" },
+		});
+		const res = await app.fetch(ghDelivery(raw, { deliveryId: "gh-paused-conn" }));
+		expect(res.status).toBe(200);
+		// Connection isn't active → no feed woken, even though the feed row is.
+		expect((await res.json()).triggered).toBe(false);
+		expect(await feedNextRunAt(feedId)).toBeNull();
+	});
+
 	test("a forged signature is rejected with 401 and lands nothing", async () => {
 		await seedAgentRow(AGENT, { organizationId: ORG });
 		const installId = await seedActiveInstall();

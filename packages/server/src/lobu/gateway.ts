@@ -16,6 +16,7 @@ import { authenticatePat, extractPatBearer } from "../auth/pat-auth";
 import { getDb } from "../db/client";
 import { ApiPlatform } from "../gateway/api/platform";
 import { createGatewayApp } from "../gateway/cli/gateway";
+import { primeAppInstallationMethods } from "../gateway/installation/app-install-credentials";
 import { buildGatewayConfig } from "../gateway/config/index";
 import { ChatInstanceManager } from "../gateway/connections/chat-instance-manager";
 import { ChatResponseBridge } from "../gateway/connections/chat-response-bridge";
@@ -460,6 +461,12 @@ export async function initLobuGateway(): Promise<Hono | null> {
 			{ hasWorkerGateway: !!workerGateway, hasGetApp: !!workerGateway?.getApp },
 			"[Lobu] Worker gateway check",
 		);
+		// Warm app-installation credential declarations so createGatewayApp (sync)
+		// can resolve the GitHub App id from the connector's declared appIdKey
+		// rather than a hardcoded env literal.
+		await primeAppInstallationMethods([
+			{ connectorKey: "github", provider: "github" },
+		]);
 		const rawLobuApp = createGatewayApp({
 			secretProxy: coreServices.getSecretProxy(),
 			workerGateway,

@@ -30,6 +30,10 @@ import {
   createJiraAppWebhookProvider,
   createLinearAppWebhookProvider,
 } from "../routes/public/app-webhooks.js";
+import {
+  getCachedAppInstallationMethod,
+  resolveAppInstallCredentials,
+} from "../installation/app-install-credentials.js";
 import { createAppInstallRoutes } from "../routes/public/app-install.js";
 import { resolveInstallOrgId } from "../routes/public/slack.js";
 import { createAgentConfigRoutes } from "../routes/public/agent-config.js";
@@ -713,7 +717,12 @@ export function createGatewayApp(
     // Slack stays a custom plugin (timestamped signing base).
     const appWebhookSecretStore = coreServices.getSecretStore();
     const appWebhookProviders: AppWebhookProvider[] = [];
-    const githubAppId = process.env.GITHUB_APP_ID;
+    // GitHub App id resolved from the connector's declared `appIdKey` (primed
+    // during async boot via primeAppInstallationMethods), not a server literal.
+    const githubInstallMethod = getCachedAppInstallationMethod("github", "github");
+    const githubAppId = githubInstallMethod
+      ? resolveAppInstallCredentials(githubInstallMethod).appId
+      : undefined;
     if (githubAppId) {
       appWebhookProviders.push(
         createGithubAppWebhookProvider({

@@ -57,6 +57,11 @@ import {
 	renderOAuthErrorPage,
 	renderOAuthSuccessPage,
 } from "../../auth/oauth-templates.js";
+import {
+	getBundledAppInstallationMethod,
+	renderAppInstallUrl,
+	resolveAppInstallCredentials,
+} from "../../installation/app-install-credentials.js";
 import { getInstallationTokenRegistry } from "../../installation/registry.js";
 import { createSyncRun } from "../../../runs/queue-service.js";
 import {
@@ -674,12 +679,20 @@ export async function autoProvisionGithubIssueFeeds(params: {
 		);
 		return result;
 	}
+	// Pre-stamp rows (linked before app_installation keys were recorded) lack
+	// metadata.{appIdKey,privateKeyKey}; fall back to the connector's declaration
+	// rather than a hardcoded literal.
+	const fallbackMethod = await getBundledAppInstallationMethod(
+		GITHUB_CONNECTOR_KEY,
+		"github",
+	);
 	const installWithKeys = {
 		...install,
 		metadata: {
 			...install.metadata,
-			appIdKey: install.metadata?.appIdKey ?? "GITHUB_APP_ID",
-			privateKeyKey: install.metadata?.privateKeyKey ?? "GITHUB_APP_PRIVATE_KEY",
+			appIdKey: install.metadata?.appIdKey ?? fallbackMethod?.appIdKey,
+			privateKeyKey:
+				install.metadata?.privateKeyKey ?? fallbackMethod?.privateKeyKey,
 		},
 	};
 
@@ -825,12 +838,20 @@ export async function provisionGithubTeamGraph(params: {
 		);
 		return empty;
 	}
+	// Pre-stamp rows (linked before app_installation keys were recorded) lack
+	// metadata.{appIdKey,privateKeyKey}; fall back to the connector's declaration
+	// rather than a hardcoded literal.
+	const fallbackMethod = await getBundledAppInstallationMethod(
+		GITHUB_CONNECTOR_KEY,
+		"github",
+	);
 	const installWithKeys = {
 		...install,
 		metadata: {
 			...install.metadata,
-			appIdKey: install.metadata?.appIdKey ?? "GITHUB_APP_ID",
-			privateKeyKey: install.metadata?.privateKeyKey ?? "GITHUB_APP_PRIVATE_KEY",
+			appIdKey: install.metadata?.appIdKey ?? fallbackMethod?.appIdKey,
+			privateKeyKey:
+				install.metadata?.privateKeyKey ?? fallbackMethod?.privateKeyKey,
 		},
 	};
 
@@ -980,9 +1001,17 @@ async function verifyInstallationOwnership(params: {
 		AppInstallRouterDeps["fetchSoleAccessibleInstallation"]
 	>;
 }): Promise<InstallOwnershipResult> {
-	// The App's OAuth creds (NOT the Lobu login OAuth app). Fail safe if unset.
-	const clientId = process.env.GITHUB_APP_CLIENT_ID;
-	const clientSecret = process.env.GITHUB_APP_CLIENT_SECRET;
+	// The App's OAuth creds (NOT the Lobu login OAuth app), read from the
+	// connector's declared `clientIdKey`/`clientSecretKey`. Fail safe if unset.
+	const ownershipMethod = await getBundledAppInstallationMethod(
+		GITHUB_CONNECTOR_KEY,
+		"github",
+	);
+	const ownershipCreds = ownershipMethod
+		? resolveAppInstallCredentials(ownershipMethod)
+		: null;
+	const clientId = ownershipCreds?.clientId;
+	const clientSecret = ownershipCreds?.clientSecret;
 	if (!clientId || !clientSecret) {
 		return {
 			ok: false,
@@ -1194,8 +1223,13 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 	// `installation_id`). The callback derives the installation from
 	// /user/installations and runs the SAME ownership + session-org guards.
 	router.get("/github/app/install", async (c) => {
-		const appSlug = process.env.GITHUB_APP_SLUG;
-		const appId = process.env.GITHUB_APP_ID;
+		const method = await getBundledAppInstallationMethod(
+			GITHUB_CONNECTOR_KEY,
+			"github",
+		);
+		const creds = method ? resolveAppInstallCredentials(method) : null;
+		const appSlug = creds?.appSlug;
+		const appId = creds?.appId;
 		if (!appId || !appSlug) {
 			return c.html(
 				renderOAuthErrorPage(
@@ -1225,7 +1259,7 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		// the install page would dead-end). Recovery needs the App's OAuth client id
 		// to send the user through user-authorization.
 		const explicitRecovery = c.req.query("recovery") === "1";
-		const clientId = process.env.GITHUB_APP_CLIENT_ID;
+		const clientId = creds?.clientId;
 		const alreadyHasInstallRow = await orgHasGithubInstallRow(orgId, appId);
 		const useRecovery = (explicitRecovery || alreadyHasInstallRow) && !!clientId;
 
@@ -1246,11 +1280,19 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 		}
 
 		const state = await stateStore.create({ organizationId: orgId });
-		return c.redirect(githubAppInstallUrl(appSlug, state), 302);
+		const installUrl =
+			renderAppInstallUrl(creds?.installUrlTemplate, appSlug, state) ??
+			githubAppInstallUrl(appSlug, state);
+		return c.redirect(installUrl, 302);
 	});
 
 	router.get("/github/app/install/callback", async (c) => {
-		const appId = process.env.GITHUB_APP_ID;
+		const method = await getBundledAppInstallationMethod(
+			GITHUB_CONNECTOR_KEY,
+			"github",
+		);
+		const creds = method ? resolveAppInstallCredentials(method) : null;
+		const appId = creds?.appId;
 		if (!appId) {
 			return c.html(
 				renderOAuthErrorPage(
@@ -1505,6 +1547,13 @@ export function createAppInstallRoutes(deps: AppInstallRouterDeps): Hono {
 				// team-graph build and UI rely on, falling back to any query value.
 				metadata: {
 					...buildInstallMetadata(c),
+					// Stamp the connector-declared credential env-var names so the
+					// installation token provider mints with the right gateway vars,
+					// instead of relying on a hardcoded server default.
+					...(creds?.appIdKey ? { appIdKey: creds.appIdKey } : {}),
+					...(creds?.privateKeyKey
+						? { privateKeyKey: creds.privateKeyKey }
+						: {}),
 					account_login: ownerAccount.login,
 					account_type: ownerAccount.type,
 					...(typeof ownerAccount.id === "number"

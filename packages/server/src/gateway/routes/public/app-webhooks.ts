@@ -45,6 +45,7 @@ import {
 	verifyWebhookSignature,
 	WEBHOOK_INGEST_MAX_BODY_BYTES,
 } from "../../connections/webhook-ingest.js";
+import { getCachedAppInstallationMethod } from "../../installation/app-install-credentials.js";
 import type { SecretStore } from "../../secrets/index.js";
 import type { AppInstallationStore } from "../../../lobu/stores/app-installation-store.js";
 import { insertEvent } from "../../../utils/insert-event.js";
@@ -692,17 +693,20 @@ export interface AppWebhookRouterDeps {
 }
 
 /**
- * Default app-webhook secret resolver: env var first
- * (`GITHUB_APP_WEBHOOK_SECRET` etc.), then a conventional secret-store ref
- * (`secret://app-webhook/<provider>`) so prod can seal it like any other
- * credential. Plaintext env wins for local/dev parity with the rest of the
- * gateway (`.env` is the single source of truth).
+ * Default app-webhook secret resolver: the connector-declared `webhookSecretKey`
+ * env var first (falling back to the `<PROVIDER>_APP_WEBHOOK_SECRET` convention
+ * for providers that don't declare an app_installation method, e.g. jira/linear),
+ * then a conventional secret-store ref (`secret://app-webhook/<provider>`) so prod
+ * can seal it like any other credential. Plaintext env wins for local/dev parity
+ * with the rest of the gateway (`.env` is the single source of truth).
  */
 export function createDefaultAppWebhookSecretResolver(
 	secretStore: SecretStore,
 ): (provider: string) => Promise<string | undefined> {
 	return async (provider) => {
-		const envName = `${provider.toUpperCase()}_APP_WEBHOOK_SECRET`;
+		const declaredKey =
+			getCachedAppInstallationMethod(provider, provider)?.webhookSecretKey;
+		const envName = declaredKey ?? `${provider.toUpperCase()}_APP_WEBHOOK_SECRET`;
 		const fromEnv = process.env[envName];
 		if (fromEnv) return fromEnv;
 		return (await secretStore.get(`secret://app-webhook/${provider}`)) ?? undefined;

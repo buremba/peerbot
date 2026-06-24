@@ -349,6 +349,32 @@ describe("mapProjectToDesiredState", () => {
     expect(dw?.agentKind).toBe("notifier");
   });
 
+  test("normalizes keyingConfig camelCase → snake_case for the server", () => {
+    const crm = defineAgent({ id: "crm" });
+    const watcher = defineWatcher({
+      agent: crm,
+      slug: "pricing",
+      prompt: "extract",
+      keyingConfig: {
+        entityType: "price",
+        entityPath: "prices",
+        keyFields: ["sku"],
+        keyOutputField: "price_key",
+      },
+    });
+    const dw = mapProjectToDesiredState(
+      defineConfig({ agents: [crm], watchers: [watcher] })
+    ).watchers[0];
+    // Server reads snake_case (watcher-extraction-schema.ts / promote-keyed-entities.ts);
+    // camelCase would silently land the watcher as untyped.
+    expect(dw?.keyingConfig).toEqual({
+      entity_type: "price",
+      entity_path: "prices",
+      key_fields: ["sku"],
+      key_output_field: "price_key",
+    });
+  });
+
   test("throws when a watcher names an unknown agent", () => {
     const watcher = defineWatcher({
       agent: "ghost",

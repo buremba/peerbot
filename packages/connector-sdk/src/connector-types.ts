@@ -268,6 +268,24 @@ export interface ConnectorAuthAppInstallation {
   appIdKey?: string;
   /** Env var holding the App private key used to mint tokens (GitHub). Gateway-side. */
   privateKeyKey?: string;
+  /**
+   * Env var holding the App's URL slug (e.g. `GITHUB_APP_SLUG`), substituted into
+   * {@link installUrlTemplate} as `{{app_slug}}`. Gateway-side.
+   */
+  appSlugKey?: string;
+  /**
+   * Env var holding the App's OAuth client id used for the user-authorization
+   * leg of installation (e.g. `GITHUB_APP_CLIENT_ID`). Distinct from a separate
+   * user-login OAuth method's `clientIdKey`. Gateway-side.
+   */
+  clientIdKey?: string;
+  /** Env var holding the App's OAuth client secret (e.g. `GITHUB_APP_CLIENT_SECRET`). Gateway-side. */
+  clientSecretKey?: string;
+  /**
+   * Env var holding the secret used to verify inbound app-webhook deliveries
+   * (e.g. `GITHUB_APP_WEBHOOK_SECRET`). Gateway-side.
+   */
+  webhookSecretKey?: string;
   /** Template URL the UI sends the user to in order to install the App. */
   installUrlTemplate?: string;
   /** Declared App permissions (informational; surfaced in the install UI). */

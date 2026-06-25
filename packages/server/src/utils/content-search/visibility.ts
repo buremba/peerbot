@@ -93,7 +93,7 @@ export function buildConnectionVisibilityClause(
   const userParam = `$${options.baseParamIndex + 1}::text`;
   return {
     sql: `AND (${tableAlias}.connection_id IS NULL OR ${tableAlias}.connection_id IN (
-      SELECT vc.id FROM connections vc
+      SELECT vc.id FROM public.connections vc
       WHERE vc.organization_id = ${orgParam}
         AND vc.deleted_at IS NULL
         AND (vc.visibility = 'org' OR (${userParam} IS NOT NULL AND vc.created_by = ${userParam}))

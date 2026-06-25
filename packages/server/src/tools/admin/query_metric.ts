@@ -51,6 +51,7 @@ async function queryMetricImpl(
     by: args.by,
     segment: args.segment,
     entityId: args.entity_id,
+    userId: ctx.userId,
   });
   return { rows, row_count: rows.length };
 }

@@ -76,6 +76,9 @@ async function metricSeriesImpl(
     // `connections` can't pull credential columns the allowlist withholds.
     safeColumns: SAFE_COLUMN_DEFS,
     restrictedTables: isAdmin ? undefined : ADMIN_ONLY_QUERYABLE_TABLES,
+    // Charts are filtered to the requesting user's connection visibility, so a
+    // member can't sparkline another user's private-connection events.
+    userId: ctx.userId,
   });
   const db = getDb();
 

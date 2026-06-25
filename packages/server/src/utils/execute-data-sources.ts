@@ -18,6 +18,7 @@
 import { Dialect, ast, parse as parseSql } from '@polyglot-sql/sdk';
 import type { DbClient } from '../db/client';
 import logger from './logger';
+import { buildConnectionVisibilityClause } from './content-search/visibility';
 import {
   ADMIN_ONLY_QUERYABLE_TABLES,
   buildColumnList,
@@ -35,6 +36,13 @@ export type DataSourceInput =
 
 export interface DataSourceContext {
   organizationId: string;
+  /**
+   * The requesting user. When set, the events CTE additionally intersects with
+   * per-user connection visibility (visibility='org' OR created_by=userId) so
+   * query_sql / metrics / client.query don't leak other users' private-connection
+   * data — matching what search_memory/get_content already enforce.
+   */
+  userId?: string | null;
   /** When set, events CTE filters to events belonging to any of these entities */
   entityIds?: number[];
   query?: Record<string, string>;
@@ -304,6 +312,13 @@ export function validateAndScopeQuery(
      * metric_series. Omit for admin / server-internal callers (full access).
      */
     restrictedTables?: ReadonlySet<string>;
+    /**
+     * The requesting user. Threaded into the events CTE so connection-sourced
+     * rows are filtered to org-visible connections or this user's own private
+     * ones (per-user visibility). Omit for service/headless callers — null
+     * yields org-visible-only (fail-closed for private data).
+     */
+    userId?: string | null;
   }
 ): { sql: string; params: unknown[] } {
   const trimmed = rawSql.trim();
@@ -344,7 +359,12 @@ export function validateAndScopeQuery(
     }
   }
 
-  return buildScopedQuery(trimmed, tableRefs, { organizationId }, options);
+  return buildScopedQuery(
+    trimmed,
+    tableRefs,
+    { organizationId, userId: options?.userId ?? null },
+    options
+  );
 }
 
 // ============================================
@@ -357,7 +377,7 @@ export function validateAndScopeQuery(
  * Core tables get predefined scoping patterns. Unknown table names are
  * treated as entity_type slugs (filtered from the entities table).
  */
-function buildScopedQuery(
+export function buildScopedQuery(
   userQuery: string,
   tableRefs: string[],
   context: DataSourceContext,
@@ -370,6 +390,39 @@ function buildScopedQuery(
   idx++;
   params.push(context.organizationId);
   const orgP = `$${idx}`;
+
+  // Per-user connection visibility (S0). Applied to EVERY CTE on this seam that
+  // exposes connection-sourced event content — `events`, `event_classifications`
+  // (whose `excerpts` is verbatim source text), and `connections` — so query_sql
+  // / metrics / client.query never surface another user's private-connection data.
+  // This is the same gate search_memory/get_content already enforce. `userId`
+  // null (headless/service) yields org-visible-only, fail-closed for private data.
+
+  // For a table holding events (alias has a `connection_id` col): restrict to
+  // org-visible connections or the requesting user's own private ones.
+  const eventConnVisibility = (alias: string): string => {
+    const vis = buildConnectionVisibilityClause(
+      {
+        organizationId: context.organizationId,
+        userId: context.userId ?? null,
+        baseParamIndex: idx + 1,
+      },
+      alias
+    );
+    if (!vis.sql) return '';
+    params.push(...vis.params);
+    idx += vis.params.length;
+    return ` ${vis.sql}`;
+  };
+
+  // For the `connections` table itself: the row is visible when org-shared or
+  // owned by the requesting user (mirrors manage_connections CRUD).
+  const connectionRowVisibility = (alias: string): string => {
+    idx += 1;
+    params.push(context.userId ?? null);
+    const userP = `$${idx}::text`;
+    return ` AND (${alias}.visibility = 'org' OR (${userP} IS NOT NULL AND ${alias}.created_by = ${userP}))`;
+  };
 
   // {{entityId}} substitution — only allocates a param when the query uses it
   let processedQuery = userQuery;
@@ -489,11 +542,22 @@ function buildScopedQuery(
         eventsCte += ` AND ev.occurred_at >= ${windowStartP}::timestamptz AND ev.occurred_at < ${windowEndP}::timestamptz`;
       }
 
+      eventsCte += eventConnVisibility('ev');
+
       eventsCte += ')';
       ctes.push(eventsCte);
     } else if (table === 'connections') {
+      // A private connection's own row (display_name, account_id, config) is
+      // per-user too — mirror manage_connections CRUD so a member can't read
+      // another user's private-connection metadata via raw SQL.
+      // Soft-deleted rows are intentionally NOT excluded here — query_sql is an
+      // audit/debug surface and there's no cross-user leak (a deleted private
+      // connection still carries created_by, so the visibility predicate blocks
+      // it). The per-user predicate is the security boundary.
       ctes.push(
-        `"${safeName}" AS (SELECT ${sel(table)} FROM public.connections WHERE organization_id = ${orgP})`
+        `"${safeName}" AS (SELECT ${sel(table, 'cn')} FROM public.connections cn WHERE cn.organization_id = ${orgP}` +
+          connectionRowVisibility('cn') +
+          ')'
       );
     } else if (table === 'watchers') {
       // security-allowed: see block comment above the for-loop
@@ -504,11 +568,19 @@ function buildScopedQuery(
       );
     } else if (table === 'event_classifications') {
       // security-allowed: see block comment above the for-loop
+      // `excerpts`/`values`/`reasoning` carry verbatim source-event content, so
+      // the EXISTS must apply per-user connection visibility on `ev` — otherwise
+      // any member reads classifications of another user's private-connection
+      // events (the same leak the events CTE closes, on the joined table).
+      // Use current_event_records (not public.events) for tombstone parity with
+      // the events CTE — a superseded event's classifications shouldn't surface.
       ctes.push(
         `"${safeName}" AS (SELECT ${sel(table, 'ec')} FROM public.event_classifications ec WHERE EXISTS (` +
-          'SELECT 1 FROM public.events ev ' +
+          'SELECT 1 FROM public.current_event_records ev ' +
           'JOIN public.entities ent ON ent.id = ANY(ev.entity_ids) ' +
-          `WHERE ev.id = ec.event_id AND ent.organization_id = ${orgP}))`
+          `WHERE ev.id = ec.event_id AND ent.organization_id = ${orgP}` +
+          eventConnVisibility('ev') +
+          '))'
       );
     } else if (table === 'watcher_versions') {
       // security-allowed: see block comment above the for-loop
@@ -541,8 +613,13 @@ function buildScopedQuery(
           `WHERE m."organizationId" = ${orgP})`
       );
     } else if (table === 'feeds') {
+      // Every feed derives from a connection (`connection_id` NOT NULL), so a
+      // private connection's feeds (display_name, config, last_error) are
+      // per-user too — gate via the owning connection's visibility.
       ctes.push(
-        `"${safeName}" AS (SELECT ${sel(table)} FROM public.feeds WHERE organization_id = ${orgP})`
+        `"${safeName}" AS (SELECT ${sel(table, 'fd')} FROM public.feeds fd WHERE fd.organization_id = ${orgP}` +
+          eventConnVisibility('fd') +
+          ')'
       );
     } else if (table === 'connector_definitions') {
       ctes.push(

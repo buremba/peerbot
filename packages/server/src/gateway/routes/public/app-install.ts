@@ -63,6 +63,7 @@ import {
 } from "../../auth/oauth-templates.js";
 import {
 	getOrgAppInstallationMethod,
+	getPrimedBundledMethod,
 	renderAppInstallUrl,
 	resolveAppInstallCredentials,
 } from "../../installation/app-install-credentials.js";
@@ -1782,11 +1783,16 @@ function mountOAuthCodeExchangeRoutes(
 
 		// Resolve clientId + scopes from the org's connector declaration (the env
 		// var NAMES are declared; the gateway reads the values). No env literal.
-		const method = await getOrgAppInstallationMethod(
-			installOrgId,
-			connectorKey,
-			provider,
-		);
+		// Fall back to the env-primed bundled method when the org has no per-org
+		// `connector_definitions` row: the HOSTED app's credentials are the same
+		// for every tenant, so a system-key deployment must not require each org
+		// to first persist a connector row before "Add to <app>" works. This
+		// mirrors the token-exchange completion, which already reads the primed
+		// bundled method (slack-connection-coordinator).
+		const method =
+			(await getOrgAppInstallationMethod(installOrgId, connectorKey, provider)) ??
+			getPrimedBundledMethod(connectorKey, provider) ??
+			null;
 		const creds = method ? resolveAppInstallCredentials(method) : null;
 		const clientId = creds?.clientId;
 		if (!clientId) {

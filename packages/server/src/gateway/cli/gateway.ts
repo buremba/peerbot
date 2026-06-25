@@ -695,6 +695,8 @@ export function createGatewayApp(
         channelBindingService,
         userAgentsStore: coreServices.getUserAgentsStore(),
         agentMetadataStore: coreServices.getAgentMetadataStore(),
+        appInstallationStore: createPostgresAppInstallationStore(),
+        secretStore: coreServices.getSecretStore(),
       });
       app.route("/api/v1/agents/:agentId/channels", channelBindingRouter);
       logger.debug(

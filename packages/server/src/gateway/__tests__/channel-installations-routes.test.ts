@@ -9,6 +9,7 @@ import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";
 import { createPostgresAgentConfigStore } from "../../lobu/stores/postgres-stores.js";
 import { createChannelBindingRoutes } from "../routes/public/channels.js";
+import { listCatalogConnectorDefinitions } from "../../utils/connector-catalog.js";
 import { setAuthProvider } from "../routes/public/settings-auth.js";
 import type { SlackWebApi } from "../connections/slack-web.js";
 import {
@@ -59,7 +60,14 @@ describe("channel installation routes", () => {
 
   beforeAll(async () => {
     await ensureDbForGatewayTests();
-  });
+    // Warm the connector catalog. In the test env there's no prebuilt manifest
+    // (CI's integration job doesn't run build:server), so the first call
+    // compiles the bundled connectors live (~5s) and caches them. Pay that cost
+    // here so GET /installations — which joins connector metadata — doesn't blow
+    // its per-test timeout on the cold compile. Prod ships the manifest, so the
+    // handler is fast there.
+    await listCatalogConnectorDefinitions();
+  }, 60_000);
 
   beforeEach(async () => {
     await resetTestDatabase();

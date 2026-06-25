@@ -422,7 +422,9 @@ export async function promoteKeyedEntities(
     // The extracted record's data fields (everything except the computed stable
     // key) are the entity's field values — synced into metadata on create and,
     // for existing entities, merged honoring human ownership.
-    const { [keyingConfig.key_output_field]: _stableKey, ...fieldValues } = entityRecord;
+    const fieldValues = Object.fromEntries(
+      Object.entries(entityRecord).filter(([k]) => k !== keyingConfig.key_output_field)
+    );
     const metadata: Record<string, unknown> = {
       ...fieldValues,
       watcher_id: watcherId,

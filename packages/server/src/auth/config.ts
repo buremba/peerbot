@@ -35,7 +35,9 @@ interface EnabledLoginProviderConfig {
 	loginScopes: string[];
 	clientIdKey: string;
 	clientSecretKey: string;
+	authorizationUrl?: string;
 	tokenUrl?: string;
+	userinfoUrl?: string;
 	tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
 }
 
@@ -51,7 +53,9 @@ type OAuthMethod = {
 	loginScopes?: string[];
 	clientIdKey?: string;
 	clientSecretKey?: string;
+	authorizationUrl?: string;
 	tokenUrl?: string;
+	userinfoUrl?: string;
 	tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
 	loginProvisioning?: {
 		autoCreateConnection?: boolean;
@@ -158,7 +162,13 @@ export function collectEnabledLoginProviderConfigs(
 				clientSecretKey: hasValue(method.clientSecretKey)
 					? method.clientSecretKey!
 					: `${providerUpper}_CLIENT_SECRET`,
+				...(hasValue(method.authorizationUrl) && {
+					authorizationUrl: method.authorizationUrl,
+				}),
 				...(hasValue(method.tokenUrl) && { tokenUrl: method.tokenUrl }),
+				...(hasValue(method.userinfoUrl) && {
+					userinfoUrl: method.userinfoUrl,
+				}),
 				...(method.tokenEndpointAuthMethod && {
 					tokenEndpointAuthMethod: method.tokenEndpointAuthMethod,
 				}),

@@ -3,6 +3,7 @@ import { passkey } from "@better-auth/passkey";
 import { APIError, betterAuth } from "better-auth";
 import { magicLink, organization, phoneNumber } from "better-auth/plugins";
 import { bearer } from "better-auth/plugins/bearer";
+import { genericOAuth } from "better-auth/plugins/generic-oauth";
 import { getAuthDialect, getDb } from "../db/client";
 import { sendTransactionalEmail } from "../email/send";
 import {
@@ -108,11 +109,33 @@ export async function createAuth(
 
 	const providerRows = await getEnabledLoginProviderConfigs(organizationId);
 
-	// Build dynamic social providers from enabled connectors
+	// Build login providers from enabled connectors. Two routes, chosen purely by
+	// what the connector declares — core stays provider-name-free:
+	//   • Self-describing (declares its OIDC authorize/token/userinfo endpoints) →
+	//     Better Auth's provider-agnostic `genericOAuth` plugin. This is the path
+	//     for any provider Better Auth has no built-in for (e.g. Slack).
+	//   • Otherwise → the built-in `socialProviders` map, where Better Auth owns
+	//     the endpoints by provider id (google, github, …).
 	const socialProviders: Record<
 		string,
 		{ clientId: string; clientSecret: string; scope?: string[] }
 	> = {};
+	const genericOAuthConfigs: Array<{
+		providerId: string;
+		clientId: string;
+		clientSecret: string;
+		authorizationUrl: string;
+		tokenUrl: string;
+		userInfoUrl: string;
+		scopes?: string[];
+		mapProfileToUser: (profile: Record<string, unknown>) => {
+			id: string;
+			email?: string;
+			name?: string;
+			image?: string;
+			emailVerified?: boolean;
+		};
+	}> = [];
 
 	for (const row of providerRows) {
 		const provider = row.provider;
@@ -128,6 +151,36 @@ export async function createAuth(
 		const clientSecret = credentials.clientSecret ?? "";
 
 		if (!clientId || !clientSecret) continue;
+
+		// Self-describing connector → generic-oauth route.
+		if (row.authorizationUrl && row.tokenUrl && row.userinfoUrl) {
+			if (genericOAuthConfigs.some((c) => c.providerId === provider)) continue;
+			genericOAuthConfigs.push({
+				providerId: provider,
+				clientId,
+				clientSecret,
+				authorizationUrl: row.authorizationUrl,
+				tokenUrl: row.tokenUrl,
+				userInfoUrl: row.userinfoUrl,
+				...(row.loginScopes.length > 0 && { scopes: row.loginScopes }),
+				// Standard OIDC claim mapping — no provider special-casing. Slack's
+				// openid.connect.userInfo returns `sub` (stable user id) plus the
+				// usual email/name/picture claims.
+				mapProfileToUser: (profile) => ({
+					id: String(profile.sub ?? ""),
+					email:
+						typeof profile.email === "string" ? profile.email : undefined,
+					name: typeof profile.name === "string" ? profile.name : undefined,
+					image:
+						typeof profile.picture === "string"
+							? profile.picture
+							: undefined,
+					emailVerified: profile.email_verified === true,
+				}),
+			});
+			continue;
+		}
+
 		if (socialProviders[provider]) continue;
 
 		// Pass the connector-declared login scopes directly to Better Auth.
@@ -272,7 +325,10 @@ export async function createAuth(
 				// Trust only the social providers that are actually configured for this org.
 				// Keep core auth connector-agnostic: provider trust should be data-driven from
 				// enabled login providers, not hardcoded per connector/provider in app code.
-				trustedProviders: Object.keys(socialProviders),
+				trustedProviders: [
+					...Object.keys(socialProviders),
+					...genericOAuthConfigs.map((c) => c.providerId),
+				],
 				updateUserInfoOnLink: true,
 			},
 		},
@@ -285,6 +341,14 @@ export async function createAuth(
 
 		// Plugins
 		plugins: [
+			// Self-describing login providers (Slack, …) that Better Auth has no
+			// built-in for. Same library + same downstream as `socialProviders`
+			// (account rows → the account.create hook → connector provisioning +
+			// identity ingest), only the provider config comes from the connector
+			// declaration instead of Better Auth's built-in registry.
+			...(genericOAuthConfigs.length > 0
+				? [genericOAuth({ config: genericOAuthConfigs })]
+				: []),
 			// Accept the Better Auth session token as Authorization: Bearer too.
 			// Used by the macOS menu bar and the CLI's `local` context — both hold
 			// a session token minted via POST /api/local-init and prefer

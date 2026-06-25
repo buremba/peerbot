@@ -534,19 +534,33 @@ credentialRoutes.get('/extension-bootstrap', (c) => {
   history.replaceState(null, "", location.pathname);
   var next = worker ? "/#worker=" + encodeURIComponent(worker) : "/";
   if (!token) { location.replace("/"); return; }
+  var retried = false;
   function fail(msg) {
     // Surface a real error instead of redirecting to a token-less app, which
     // would just render signed-out and hang on a spinner — the exact failure
-    // this whole flow exists to avoid.
+    // this whole flow exists to avoid. Retry re-submits the SAME deep-link
+    // token captured in the URL fragment, so once it has failed at least once
+    // we also offer an escape hatch to the panel's Settings (change-server /
+    // re-pair) — the only path that recovers a token this page can't refresh.
     document.body.innerHTML =
       '<div style="font:14px/1.5 system-ui,sans-serif;color:#334155;padding:24px;max-width:24rem">' +
       '<p style="margin:0 0 .5rem;font-weight:600">Could not connect to your Owletto.</p>' +
       '<p style="margin:0 0 1rem;color:#64748b"></p>' +
       '<button id="owl-retry" style="font:inherit;padding:.4rem .9rem;border:1px solid #cbd5e1;border-radius:.4rem;background:#f8fafc;cursor:pointer">Retry</button>' +
+      (retried
+        ? '<button id="owl-settings" style="font:inherit;margin-left:.5rem;padding:.4rem .9rem;border:1px solid #cbd5e1;border-radius:.4rem;background:#f8fafc;cursor:pointer">Change server</button>'
+        : '') +
       '</div>';
     document.querySelectorAll("p")[1].textContent = msg;
     var b = document.getElementById("owl-retry");
-    if (b) b.onclick = attempt;
+    if (b) b.onclick = function () { retried = true; attempt(); };
+    // The bootstrap page is a cross-origin iframe inside the extension side
+    // panel and can't open Settings itself — ask the panel parent to switch to
+    // its Settings view (origin-checked on the receiving end).
+    var s = document.getElementById("owl-settings");
+    if (s) s.onclick = function () {
+      try { window.parent.postMessage({ owletto: "open-settings" }, "*"); } catch (e) {}
+    };
   }
   function attempt() {
     document.body.textContent = "Connecting\\u2026";

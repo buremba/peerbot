@@ -346,12 +346,20 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     expect(created.field_controls).toEqual({});
     const entityId = Number(created.id);
 
-    // A human takes ownership of `severity`.
-    await workspace.owner.entities.update({ entity_id: entityId, metadata: { severity: 'high' } });
+    // A human takes ownership of `severity`, attaching a correction note.
+    await workspace.owner.entities.update({
+      entity_id: entityId,
+      metadata: { severity: 'high' },
+      field_note: 'confirmed critical with eng',
+    });
     const [edited] = await sql`SELECT metadata, field_controls FROM entities WHERE id = ${entityId}`;
-    // Slice 1: human edit applies the value AND marks the field owned.
+    // Slice 1: human edit applies the value AND marks the field owned, carrying the note.
     expect((edited.metadata as Record<string, unknown>).severity).toBe('high');
-    expect((edited.field_controls as Record<string, unknown>).severity).toBeTruthy();
+    const sevControl = (edited.field_controls as Record<string, { note?: string; set_by?: string }>)
+      .severity;
+    expect(sevControl).toBeTruthy();
+    expect(sevControl.note).toBe('confirmed critical with eng');
+    expect(sevControl.set_by).toBe(workspace.users.owner.id);
 
     // Run 2 (replay) proposes a different severity for the SAME key.
     await ctx.api.watchers.completeWindow({

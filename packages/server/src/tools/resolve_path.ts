@@ -73,6 +73,9 @@ interface ViewTemplateTab {
 export interface ResolvedEntityDetails extends ResolvedPathEntity {
   parent_id: number | null;
   metadata: Record<string, any>;
+  /** Per-field human-ownership markers (key present = a human set that field).
+   *  Lets the UI badge owned fields + show the correction note. */
+  field_controls: Record<string, { note?: string | null; set_by?: string | null; set_at?: string }>;
   json_template: Record<string, any> | null;
   json_template_version: number | null;
   template_data: Record<string, unknown[]> | null;
@@ -105,6 +108,7 @@ interface ResolvedEntityRow {
   name: string;
   parent_id: number | null;
   metadata: Record<string, any> | null;
+  field_controls?: Record<string, unknown> | null;
   created_at: Date;
 }
 
@@ -418,6 +422,7 @@ async function _resolvePath(
           e.name,
           e.parent_id,
           e.metadata,
+          e.field_controls,
           e.created_at,
           COALESCE(vtv_entity.json_template, vtv_et.json_template) as json_template,
           COALESCE(vtv_entity.version, vtv_et.version) as json_template_version,
@@ -572,6 +577,7 @@ async function _resolvePath(
       name: entityRow.name,
       parent_id: entityRow.parent_id,
       metadata: safeEntityMetadata,
+      field_controls: (entityRow.field_controls as ResolvedEntityDetails['field_controls']) ?? {},
       json_template: resolvedTemplate,
       json_template_version: toVersionNumber(entityRow.json_template_version),
       template_data: redactedTemplateData,
@@ -721,6 +727,8 @@ async function resolveDerivedLeaf(
     name,
     parent_id: null,
     metadata: match,
+    // Derived ("view") rows aren't stored entities — no per-field ownership.
+    field_controls: {},
     json_template: null,
     json_template_version: null,
     template_data: null,

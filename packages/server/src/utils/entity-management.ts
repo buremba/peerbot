@@ -100,6 +100,11 @@ export interface EntityData {
   // Metadata - contains all type-specific fields
   metadata?: Record<string, any>;
 
+  // Optional human-correction note: on a human update it is stored on the
+  // field_controls marker for every field this edit claims, so the watcher (and
+  // the UI) can show WHY the value was set. Ignored for agent/system writes.
+  field_note?: string | null;
+
   // Convenience fields - will be merged into metadata
   domain?: string | null;
   category?: string | null;
@@ -410,7 +415,7 @@ export async function updateEntity(
           fields: metadataUpdates,
           source: 'human',
           actorId: ctx.userId,
-          note: null,
+          note: data.field_note ?? null,
           nowIso: new Date().toISOString(),
         });
         mergedMetadata = merge.nextMetadata;

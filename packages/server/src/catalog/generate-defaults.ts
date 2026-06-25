@@ -8,6 +8,7 @@ import {
 } from "../utils/connector-catalog";
 import type { CatalogEntry, CatalogManifest } from "./types";
 import { CATALOG_MANIFEST_VERSION } from "./types";
+import { WATCHER_CATALOG_TEMPLATES } from "./watcher-templates";
 
 function repoSkillsDir(): string {
 	const here =
@@ -123,6 +124,17 @@ export async function generateSkillsManifest(): Promise<CatalogManifest> {
 	return { version: CATALOG_MANIFEST_VERSION, kind: "skills", entries };
 }
 
+export function generateWatchersManifest(): CatalogManifest {
+	const entries = [...WATCHER_CATALOG_TEMPLATES].sort((a, b) =>
+		a.name.localeCompare(b.name),
+	);
+	return { version: CATALOG_MANIFEST_VERSION, kind: "watchers", entries };
+}
+
 export async function generateInMemoryManifests(): Promise<CatalogManifest[]> {
-	return [await generateConnectorsManifest(), await generateSkillsManifest()];
+	return [
+		await generateConnectorsManifest(),
+		await generateSkillsManifest(),
+		generateWatchersManifest(),
+	];
 }

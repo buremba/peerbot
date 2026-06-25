@@ -2,7 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import { createLogger } from "@lobu/core";
 import { generateInMemoryManifests } from "./generate-defaults";
 import type { CatalogEntry, CatalogKind, CatalogManifest } from "./types";
-import { CATALOG_MANIFEST_VERSION } from "./types";
+import { CATALOG_KINDS, CATALOG_MANIFEST_VERSION } from "./types";
 import { getConfiguredCatalogUris, resolveCatalogUri } from "./uris";
 
 const logger = createLogger("catalog");
@@ -23,7 +23,10 @@ function parseManifest(raw: unknown, source: string): CatalogManifest | null {
 		return null;
 	}
 	const kind = record.kind;
-	if (kind !== "connectors" && kind !== "skills") {
+	if (
+		typeof kind !== "string" ||
+		!(CATALOG_KINDS as readonly string[]).includes(kind)
+	) {
 		logger.warn(
 			{ source, kind },
 			"Ignoring catalog manifest with unknown kind",
@@ -61,7 +64,7 @@ function parseManifest(raw: unknown, source: string): CatalogManifest | null {
 		});
 	}
 
-	return { version: CATALOG_MANIFEST_VERSION, kind, entries };
+	return { version: CATALOG_MANIFEST_VERSION, kind: kind as CatalogKind, entries };
 }
 
 async function loadManifestFile(uri: string): Promise<CatalogManifest | null> {
@@ -118,16 +121,14 @@ async function allManifests(): Promise<CatalogManifest[]> {
 export async function listCatalogEntries(
 	kinds?: CatalogKind[],
 ): Promise<Record<CatalogKind, CatalogEntry[]>> {
-	const wanted = new Set(kinds ?? (["connectors", "skills"] as CatalogKind[]));
-	const result: Record<CatalogKind, CatalogEntry[]> = {
-		connectors: [],
-		skills: [],
-	};
+	const wanted = new Set(kinds ?? (CATALOG_KINDS as readonly CatalogKind[]));
+	const result = Object.fromEntries(
+		CATALOG_KINDS.map((kind) => [kind, [] as CatalogEntry[]]),
+	) as Record<CatalogKind, CatalogEntry[]>;
 
-	const seen: Record<CatalogKind, Set<string>> = {
-		connectors: new Set(),
-		skills: new Set(),
-	};
+	const seen = Object.fromEntries(
+		CATALOG_KINDS.map((kind) => [kind, new Set<string>()]),
+	) as Record<CatalogKind, Set<string>>;
 
 	for (const manifest of await allManifests()) {
 		if (!wanted.has(manifest.kind)) continue;

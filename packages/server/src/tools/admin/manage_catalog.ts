@@ -17,7 +17,11 @@ export const ListCatalogAction = Type.Object({
 	action: Type.Literal("list_catalog"),
 	kinds: Type.Optional(
 		Type.Array(
-			Type.Union([Type.Literal("connectors"), Type.Literal("skills")]),
+			Type.Union([
+				Type.Literal("connectors"),
+				Type.Literal("skills"),
+				Type.Literal("watchers"),
+			]),
 			{
 				description: "Manifest catalog kinds. Defaults to all.",
 			},

@@ -61,7 +61,7 @@ export function getDefaultCatalogDir(): string {
 
 export function getDefaultCatalogUris(): string[] {
 	const dir = getDefaultCatalogDir();
-	return ["connectors.json", "skills.json"].map((name) =>
+	return ["connectors.json", "skills.json", "watchers.json"].map((name) =>
 		pathToFileURL(resolve(dir, name)).toString(),
 	);
 }

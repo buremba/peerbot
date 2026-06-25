@@ -12,14 +12,16 @@ describe("connector-catalog helpers", () => {
 	it("defaults LOBU catalog URIs to dist/catalogs manifests or bundled connectors", () => {
 		const uris = getDefaultCatalogUris();
 
-		expect(uris.length).toBe(2);
+		expect(uris.length).toBe(3);
 		for (const uri of uris) {
 			expect(uri.startsWith("file://")).toBe(true);
 		}
 		const connectorsManifest = fileURLToPath(uris[0]!);
 		const skillsManifest = fileURLToPath(uris[1]!);
+		const watchersManifest = fileURLToPath(uris[2]!);
 		expect(connectorsManifest.endsWith("/connectors.json")).toBe(true);
 		expect(skillsManifest.endsWith("/skills.json")).toBe(true);
+		expect(watchersManifest.endsWith("/watchers.json")).toBe(true);
 		expect(existsSync(findBundledConnectorFile("google.gmail")!)).toBe(true);
 	});
 

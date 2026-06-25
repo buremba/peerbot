@@ -30,12 +30,47 @@ const logger = createLogger("chat-message-bridge");
  * `downloadUrl` is a signed, time-limited public artifact URL the worker
  * can fetch over the proxy without any platform-specific auth.
  */
-interface IngestedFile {
+export interface IngestedFile {
   id: string;
   name: string;
   mimetype: string;
   size: number;
   downloadUrl: string;
+}
+
+/**
+ * Markdown-safe display label for a transcript file reference. The artifact
+ * route's `Content-Disposition` still carries the real filename on download —
+ * this only needs to be a label that can't break the `[name](url)` link
+ * grammar, so the web's strip/lift regex stays reliable for *any* uploaded
+ * filename (e.g. one containing `]`, `)`, or newlines).
+ */
+function sanitizeRefLabel(name: string): string {
+  return name.replace(/[[\]()\r\n]+/g, " ").replace(/\s+/g, " ").trim() || "file";
+}
+
+/**
+ * Append a tokenless artifact-route reference (`[name](/api/v1/files/:id)`) for
+ * each non-image attachment to the user's message text, so non-image uploads
+ * survive in the (text+image-only) pi-ai transcript and the web can lift them
+ * back into attachment chips on reload. Images are skipped — they persist as
+ * inline transcript blocks, so a ref would render a duplicate chip. The history
+ * read path re-signs these tokenless refs with a fresh download token, so the
+ * persisted transcript never embeds an expiring credential.
+ *
+ * Pure + exported for unit testing.
+ */
+export function buildAttachmentTranscriptText(
+  messageContent: string,
+  ingestedFiles: IngestedFile[]
+): string {
+  const refs = ingestedFiles
+    .filter((f) => !f.mimetype?.startsWith("image/"))
+    .map((f) => `[${sanitizeRefLabel(f.name)}](/api/v1/files/${f.id})`);
+  if (refs.length === 0) return messageContent;
+  return [messageContent, refs.join("\n")]
+    .filter((part) => part.length > 0)
+    .join("\n\n");
 }
 
 const AUDIO_MIMES_PREFIX = ["audio/"] as const;

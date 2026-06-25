@@ -124,6 +124,29 @@ export default class SlackConnector extends IntegrationConnector {
           description:
             'Install the Lobu app on your Slack workspace to grant the bot token. Routing to agents is per-channel via /lobu link.',
         },
+        {
+          // "Sign in with Slack" (OpenID Connect). Fully self-describing: the
+          // declaration carries Slack's OIDC endpoints + login scopes, so the
+          // gateway wires it through Better Auth's provider-agnostic
+          // `genericOAuth` plugin (NOT the built-in `socialProviders` allowlist —
+          // Slack is not a Better Auth built-in social provider). Core stays
+          // provider-name-free; everything provider-specific lives here. Reuses
+          // the SAME hosted Lobu Slack app client as the install method above
+          // (env-var NAMES; the gateway resolves the values). Signing in
+          // auto-provisions the user's personal org + default agent via Better
+          // Auth's `user.create` hook (OIDC `sub` → Slack user id); no data feed.
+          type: 'oauth',
+          provider: 'slack',
+          loginScopes: ['openid', 'email', 'profile'],
+          authorizationUrl: 'https://slack.com/openid/connect/authorize',
+          tokenUrl: 'https://slack.com/api/openid.connect.token',
+          userinfoUrl: 'https://slack.com/api/openid.connect.userInfo',
+          clientIdKey: 'SLACK_CLIENT_ID',
+          clientSecretKey: 'SLACK_CLIENT_SECRET',
+          required: false,
+          description:
+            'Sign in with Slack to create or access your Lobu account using your Slack identity.',
+        },
       ],
     },
   };

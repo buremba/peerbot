@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { ConversationStateStore } from "../connections/conversation-state-store.js";
 import {
+  buildAttachmentTranscriptText,
   type InboundAttachmentLike,
   ingestInboundAttachments,
   isSenderAllowed,
@@ -14,6 +15,67 @@ import {
   createArtifactTestEnv,
   TEST_GATEWAY_URL,
 } from "./setup.js";
+
+describe("buildAttachmentTranscriptText", () => {
+  const file = (id: string, name: string, mimetype: string) => ({
+    id,
+    name,
+    mimetype,
+    size: 1,
+    downloadUrl: `http://gw/api/v1/files/${id}?token=x`,
+  });
+
+  test("appends a tokenless ref for a non-image file", () => {
+    expect(
+      buildAttachmentTranscriptText("see attached", [
+        file("abc", "report.pdf", "application/pdf"),
+      ])
+    ).toBe("see attached\n\n[report.pdf](/api/v1/files/abc)");
+  });
+
+  test("supports a file-only message (empty caption)", () => {
+    expect(
+      buildAttachmentTranscriptText("", [file("xyz", "notes.txt", "text/plain")])
+    ).toBe("[notes.txt](/api/v1/files/xyz)");
+  });
+
+  test("skips images (they persist as inline transcript blocks)", () => {
+    expect(
+      buildAttachmentTranscriptText("hi", [file("img", "pic.png", "image/png")])
+    ).toBe("hi");
+  });
+
+  test("appends one ref per non-image file, images skipped", () => {
+    expect(
+      buildAttachmentTranscriptText("docs", [
+        file("a", "a.pdf", "application/pdf"),
+        file("b", "pic.jpg", "image/jpeg"),
+        file("c", "b.csv", "text/csv"),
+      ])
+    ).toBe("docs\n\n[a.pdf](/api/v1/files/a)\n[b.csv](/api/v1/files/c)");
+  });
+
+  test("sanitizes filenames that would break the [name](url) link grammar", () => {
+    // brackets/parens/newlines in the label are collapsed so the web's
+    // strip/lift regex stays reliable; the real name rides Content-Disposition.
+    const out = buildAttachmentTranscriptText("x", [
+      file("id1", "weird]name)evil[.txt", "text/plain"),
+    ]);
+    expect(out).toBe("x\n\n[weird name evil .txt](/api/v1/files/id1)");
+    // label has no unescaped link-breaking chars
+    expect(/\[[^\]]*\]\(\/api\/v1\/files\/id1\)/.test(out)).toBe(true);
+  });
+
+  test("falls back to 'file' when the name sanitizes to empty", () => {
+    expect(
+      buildAttachmentTranscriptText("", [file("id2", "()[]", "text/plain")])
+    ).toBe("[file](/api/v1/files/id2)");
+  });
+
+  test("returns the original text unchanged when there are no files", () => {
+    expect(buildAttachmentTranscriptText("just text", [])).toBe("just text");
+  });
+});
 
 describe("parsePreviewLinkCode", () => {
   test("bare code paste in a DM", () => {

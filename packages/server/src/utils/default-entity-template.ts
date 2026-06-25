@@ -125,11 +125,10 @@ function coerceTemplate(raw: unknown): TemplateNode | null {
  * dashboard).
  *
  * Every render surface reuses this so a type renders identically everywhere:
- * watcher window (`deriveWatcherRender`), entity detail (`resolve_path`), and
- * event render (`get_content`). Surface-specific overrides (an entity instance's
- * own template, an event kind's `jsonTemplate`) are applied by the caller as the
- * first argument; the type's declared `viewTemplate` is the fallback that this
- * helper consults before auto-defaulting.
+ * entity detail (`resolve_path`) and event render (`get_content`). Surface-specific
+ * overrides (an entity instance's own template, an event kind's `jsonTemplate`) are
+ * applied by the caller as the first argument; the type's declared `viewTemplate`
+ * is the fallback that this helper consults before auto-defaulting.
  */
 export function resolveEntityRender(
   declaredTemplate: unknown,

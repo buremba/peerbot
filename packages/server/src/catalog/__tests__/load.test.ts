@@ -25,6 +25,24 @@ describe("catalog/load", () => {
 		clearCatalogCacheForTests();
 	});
 
+	it("serves bundled watcher templates when LOBU_CATALOG_URIS is unset", async () => {
+		const prev = process.env.LOBU_CATALOG_URIS;
+		delete process.env.LOBU_CATALOG_URIS;
+		clearCatalogCacheForTests();
+
+		const entries = await listCatalogEntries(["watchers"]);
+		expect(entries.watchers.length).toBeGreaterThan(0);
+		const first = entries.watchers[0];
+		expect(first?.id).toBeTruthy();
+		expect(first?.name).toBeTruthy();
+		// detail mirrors the watcher create-form fields (used for prefill)
+		expect(first?.detail.prompt).toBeTruthy();
+
+		if (prev === undefined) delete process.env.LOBU_CATALOG_URIS;
+		else process.env.LOBU_CATALOG_URIS = prev;
+		clearCatalogCacheForTests();
+	});
+
 	it("deduplicates catalog entries by id within a kind", async () => {
 		const prev = process.env.LOBU_CATALOG_URIS;
 		const dir = await mkdtemp(join(tmpdir(), "lobu-catalog-test-"));

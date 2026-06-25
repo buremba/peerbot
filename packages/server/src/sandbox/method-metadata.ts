@@ -353,7 +353,7 @@ export default async (_ctx, client) => {
 		access: "read",
 	},
 	"catalog.listCatalog": {
-		summary: "List global catalog entries (connectors, skills).",
+		summary: "List global catalog entries (connectors, skills, watchers).",
 		access: "read",
 	},
 	"catalog.listInstalled": {

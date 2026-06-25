@@ -20,7 +20,7 @@ export class ChatGPTOAuthModule extends BaseProviderModule {
     super(
       {
         providerId: "chatgpt",
-        providerDisplayName: "ChatGPT",
+        providerDisplayName: "ChatGPT (subscription login)",
         providerIconUrl:
           "https://www.google.com/s2/favicons?domain=chatgpt.com&sz=128",
         credentialEnvVarName: "OPENAI_API_KEY",
@@ -39,7 +39,8 @@ export class ChatGPTOAuthModule extends BaseProviderModule {
         apiKeyInstructions:
           'Enter your <a href="https://platform.openai.com/api-keys" target="_blank" class="text-blue-600 underline">OpenAI API key</a>:',
         apiKeyPlaceholder: "sk-...",
-        catalogDescription: "OpenAI's ChatGPT with device code authentication",
+        catalogDescription:
+          "Sign in with your ChatGPT Plus/Pro subscription (device code). No API key; uses your subscription, not metered API billing.",
       },
       authProfilesManager
     );

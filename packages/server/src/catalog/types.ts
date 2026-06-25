@@ -2,7 +2,9 @@
  * Unified catalog model:
  *
  * - **Global catalog** (`list_catalog` / GET /catalog): manifest files only
- *   (`LOBU_CATALOG_URIS`). Kinds: `connectors`, `skills`. No DB.
+ *   (`LOBU_CATALOG_URIS`). Kinds: `connectors`, `skills`, `watchers`. No DB.
+ *   Watcher entries are reusable templates browsed via the "From catalog"
+ *   create flow; their `detail` mirrors the watcher create form fields.
  *
  * - **Installed overlay** (`list_installed` / GET /installed): org or agent
  *   state layered on top of catalog browse. Pass `include=catalog` (HTTP) or
@@ -22,7 +24,7 @@
  */
 export const CATALOG_MANIFEST_VERSION = 1;
 
-export const CATALOG_KINDS = ["connectors", "skills"] as const;
+export const CATALOG_KINDS = ["connectors", "skills", "watchers"] as const;
 export type CatalogKind = (typeof CATALOG_KINDS)[number];
 
 export const ORG_INSTALLED_KINDS = ["connectors", "watchers"] as const;

@@ -214,7 +214,7 @@ describe("slack OAuth install routes", () => {
     expect(completeSlackOAuthInstall).not.toHaveBeenCalled();
   });
 
-  test("GET /slack/oauth_callback completes install and clears state", async () => {
+  test("GET /slack/oauth_callback completes install and redirects into the web app", async () => {
     const sql = getDb();
     const expiresAt = new Date(Date.now() + 600_000);
     await sql`
@@ -234,14 +234,14 @@ describe("slack OAuth install routes", () => {
     const response = await app.request(
       "/slack/oauth_callback?code=test-code&state=test-state"
     );
-    const body = await response.text();
 
-    expect(response.status).toBe(200);
-    expect(body).toContain("Slack installed");
-    // New install-store flow: the success page points users at /lobu link
-    // instead of surfacing an agent_connections id.
-    expect(body).toContain("/lobu link");
-    expect(body).toContain("Deploy tab");
+    // Web-first onboarding: on success the callback redirects back into the
+    // Lobu web app (org's /agents list, ?connected=<provider>) so the user can
+    // wire an agent in one click — instead of the legacy success HTML page.
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(
+      "https://gateway.example.com/org-default/agents?connected=slack"
+    );
     expect(completeSlackOAuthInstall).toHaveBeenCalledTimes(1);
     expect(completeSlackOAuthInstall.mock.calls[0]?.[1]).toBe(
       "https://gateway.example.com/slack/oauth_callback"

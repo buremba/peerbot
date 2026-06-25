@@ -1892,13 +1892,34 @@ function mountOAuthCodeExchangeRoutes(
 				consumed.redirectUri,
 				oauthState.organizationId,
 			);
+			// Redirect back into the Lobu web app so the user can wire an agent in
+			// one click — the agents list surfaces the now-connected workspace with
+			// a "Connect my DM" action, replacing the legacy "run /lobu link <code>"
+			// page. Falls back to the success page when the web origin or org slug
+			// can't be resolved (e.g. a headless/self-host install with no slug).
+			const webBase = params.getPublicGatewayUrl?.()?.replace(/\/+$/, "");
+			let orgSlug: string | null = null;
+			try {
+				const rows = (await getDb()`
+					SELECT slug FROM organization WHERE id = ${oauthState.organizationId} LIMIT 1
+				`) as Array<{ slug: string }>;
+				orgSlug = rows[0]?.slug ?? null;
+			} catch {
+				orgSlug = null;
+			}
+			if (webBase && orgSlug) {
+				return c.redirect(
+					`${webBase}/${orgSlug}/agents?connected=${encodeURIComponent(provider)}`,
+					302,
+				);
+			}
 			return c.html(
 				renderOAuthSuccessPage(result.teamName || result.teamId, undefined, {
 					title: `${providerDisplayName(provider)} installed`,
 					description:
-						"Workspace connected to Lobu. In a channel, run /lobu link <code> to wire an agent:",
+						"Workspace connected to Lobu. Open an agent's Reach tab to wire your DM — no code needed.",
 					details:
-						"Get a code from an agent's Deploy tab in your Lobu dashboard.",
+						"Your connected workspace now appears under the agent's Reach tab with a one-click Connect.",
 				}),
 			);
 		} catch (error) {

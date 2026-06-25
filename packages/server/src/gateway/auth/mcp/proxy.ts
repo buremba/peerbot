@@ -8,7 +8,10 @@ import {
 } from "@lobu/core";
 import type { Context } from "hono";
 import { Hono } from "hono";
-import { resolveAgentGuardrails } from "../../guardrails/aggregator.js";
+import {
+  enabledInlineGuardrails,
+  resolveAgentGuardrails,
+} from "../../guardrails/aggregator.js";
 import { recordGuardrailTrip } from "../../guardrails/audit.js";
 import { requiresToolApproval } from "../../permissions/approval-policy.js";
 import type { GrantStore } from "../../permissions/grant-store.js";
@@ -479,6 +482,7 @@ export class McpProxy {
 				settings ?? { guardrails: [] },
 				(settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),
 				this.guardrailRegistry,
+				{ inline: enabledInlineGuardrails(settings) },
 			);
 			const list = resolved.byStage["pre-tool"];
 			if (list.length === 0) return false;

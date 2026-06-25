@@ -1,3 +1,4 @@
+import type { GuardrailStage } from "./guardrails/types";
 import type { SecretRef } from "./secret-refs";
 
 export type ModelSelectionMode = "auto" | "pinned";
@@ -214,10 +215,12 @@ export interface SkillConfig {
    *     The optional `tools` field is ignored for builtins (built-ins
    *     decide their own input filtering); use an inline judge if you
    *     want per-tool narrowing.
-   *   - `{ kind: "judge", policy, tools? }` — ad-hoc LLM-judge policy;
+   *   - `{ kind: "judge", policy, tools?, model? }` — ad-hoc LLM-judge policy;
    *     `tools` narrows the judge to specific tool names (matched against
    *     `toolName` in {@link PreToolGuardrailContext}); when absent, the
-   *     guardrail runs on every pre-tool invocation.
+   *     guardrail runs on every pre-tool invocation. `model` pins the judge
+   *     model; when omitted it uses the gateway default (`EGRESS_JUDGE_MODEL`),
+   *     and with neither set the judge fails closed.
    */
   guardrails?: {
     "pre-tool"?: Array<SkillPreToolGuardrail>;
@@ -231,7 +234,32 @@ export interface SkillConfig {
  */
 export type SkillPreToolGuardrail =
   | { kind: "builtin"; name: string }
-  | { kind: "judge"; policy: string; tools?: string[] };
+  | { kind: "judge"; policy: string; tools?: string[]; model?: string };
+
+/**
+ * An operator-authored custom guardrail stored on an agent (`AgentSettings.
+ * guardrailsInline`). Unlike skill-declared guardrails (pre-tool only), the
+ * operator owns the agent so a custom guardrail may run at any stage. Each one
+ * is an inline LLM judge: the `policy` is evaluated by `model` (defaulting to
+ * the judge default) and trips when the judge denies.
+ *
+ * `name` is operator-given and must be unique across the agent's guardrails
+ * (built-ins included) — it's the catalog id, the detail route key, and the
+ * name recorded on every `guardrail-trip` event, so it has to be stable and
+ * collision-free or the aggregator's name-keyed dedup would silently drop it.
+ */
+export interface AgentInlineGuardrail {
+  name: string;
+  /** When false the guardrail is kept but not resolved into the run. */
+  enabled: boolean;
+  stage: GuardrailStage;
+  /** The judge policy prompt. */
+  policy: string;
+  /** Optional model override; defaults to the gateway's judge default. */
+  model?: string;
+  /** `pre-tool` only: narrow to specific tool names (empty = every tool). */
+  tools?: string[];
+}
 
 /**
  * Skills configuration for agent settings.

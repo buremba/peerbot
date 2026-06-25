@@ -19,7 +19,10 @@ import {
 	runGuardrailInstances,
 } from "@lobu/core";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
-import { resolveAgentGuardrails } from "./aggregator.js";
+import {
+  enabledInlineGuardrails,
+  resolveAgentGuardrails,
+} from "./aggregator.js";
 import { recordGuardrailTrip } from "./audit.js";
 
 const logger = createLogger("output-guardrail");
@@ -67,7 +70,8 @@ export async function runOutputGuardrailScan(
     const resolved = resolveAgentGuardrails(
       settings ?? { guardrails: [] },
       (settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),
-      registry
+      registry,
+      { inline: enabledInlineGuardrails(settings) }
     );
     const list = resolved.byStage.output;
     if (list.length === 0) return null;
@@ -151,7 +155,8 @@ export class OutputGuardrailScanner {
       const resolved = resolveAgentGuardrails(
         settings ?? { guardrails: [] },
         (settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),
-        this.registry!
+        this.registry!,
+        { inline: enabledInlineGuardrails(settings) }
       );
       return resolved.byStage.output.length > 0;
     } catch {

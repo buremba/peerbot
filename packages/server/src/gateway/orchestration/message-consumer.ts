@@ -15,7 +15,10 @@ import {
 	runGuardrailInstances,
 	SpanStatusCode,
 } from "@lobu/core";
-import { resolveAgentGuardrails } from "../guardrails/aggregator.js";
+import {
+  enabledInlineGuardrails,
+  resolveAgentGuardrails,
+} from "../guardrails/aggregator.js";
 import * as Sentry from "@sentry/node";
 import type { AgentSettingsStore } from "../auth/settings/agent-settings-store.js";
 import { platformMetadataString } from "../connections/platform-metadata.js";
@@ -381,7 +384,8 @@ export class MessageConsumer {
           const resolved = resolveAgentGuardrails(
             settings ?? { guardrails: [] },
             (settings?.skillsConfig?.skills ?? []).filter((s) => s.enabled),
-            this.guardrailRegistry
+            this.guardrailRegistry,
+            { inline: enabledInlineGuardrails(settings) }
           );
           const list = resolved.byStage.input;
           if (list.length > 0) {

@@ -30,7 +30,6 @@ import { generateWorkerToken } from "@lobu/core";
 import { PolicyStore } from "../permissions/policy-store.js";
 import { CircuitBreaker } from "../proxy/egress-judge/circuit-breaker.js";
 import { EgressJudge } from "../proxy/egress-judge/judge.js";
-import { DEFAULT_JUDGE_MODEL } from "../proxy/egress-judge/judge-utils.js";
 import type { ResolvedJudgeRule } from "../permissions/policy-store.js";
 import type { JudgeClient, JudgeVerdict } from "../proxy/egress-judge/types.js";
 import { VerdictCache } from "../proxy/egress-judge/cache.js";
@@ -542,7 +541,10 @@ describe("CRLF injection prevention in judge-provided reason", () => {
 
     setProxyPolicyStore(policyStore);
     setProxyEgressJudge(
-      new EgressJudge({ client: new InjectingJudgeClient() })
+      new EgressJudge({
+        client: new InjectingJudgeClient(),
+        defaultModel: "judge-test-model",
+      })
     );
 
     proxyPort = 10000 + Math.floor(Math.random() * 50000);
@@ -925,7 +927,7 @@ describe("PolicyStore.resolve — edge cases", () => {
 // ─── EgressJudge — additional behavioral coverage ────────────────────────────
 
 describe("EgressJudge — additional behavioral coverage", () => {
-  test("uses the default Haiku model when no override is set", async () => {
+  test("uses the configured default model when no per-rule override is set", async () => {
     let capturedModel = "";
     const client: JudgeClient = {
       async judge(args) {
@@ -934,12 +936,32 @@ describe("EgressJudge — additional behavioral coverage", () => {
       },
     };
 
-    const judge = new EgressJudge({ client });
+    const judge = new EgressJudge({ client, defaultModel: "configured-default" });
     await judge.decide(
       { agentId: "a", organizationId: "org-1", hostname: "example.com" },
       rule({ policyHash: "unique-model-1" })
     );
-    expect(capturedModel).toBe(DEFAULT_JUDGE_MODEL);
+    expect(capturedModel).toBe("configured-default");
+  });
+
+  test("fails closed without calling the client when no model is configured", async () => {
+    let calls = 0;
+    const client: JudgeClient = {
+      async judge() {
+        calls++;
+        return { verdict: "allow", reason: "ok" };
+      },
+    };
+    // No defaultModel and no per-rule judgeModel: there is no judge model to
+    // call, so the judge must deny rather than guess one.
+    const judge = new EgressJudge({ client });
+    const d = await judge.decide(
+      { agentId: "a", organizationId: "org-1", hostname: "example.com" },
+      rule({ policyHash: "no-model-1" })
+    );
+    expect(calls).toBe(0);
+    expect(d.verdict).toBe("deny");
+    expect(d.source).toBe("judge-error");
   });
 
   test("per-rule judgeModel overrides the default model", async () => {
@@ -969,6 +991,7 @@ describe("EgressJudge — additional behavioral coverage", () => {
     };
     const judge = new EgressJudge({
       client,
+      defaultModel: "judge-test-model",
       breakerFailureThreshold: 1,
       breakerCooldownMs: 60_000,
     });
@@ -996,7 +1019,7 @@ describe("EgressJudge — additional behavioral coverage", () => {
         return { verdict: "allow", reason: "ok" };
       },
     };
-    const judge = new EgressJudge({ client });
+    const judge = new EgressJudge({ client, defaultModel: "judge-test-model" });
     const req = { agentId: "a", organizationId: "org-1", hostname: "example.com" };
     const r = rule({ policyHash: "p-cache-meta", judgeName: "my-judge" });
 
@@ -1018,6 +1041,7 @@ describe("EgressJudge — additional behavioral coverage", () => {
     // High threshold — one failure must not trip the breaker
     const judge = new EgressJudge({
       client,
+      defaultModel: "judge-test-model",
       breakerFailureThreshold: 5,
     });
 

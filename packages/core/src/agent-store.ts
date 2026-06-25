@@ -9,6 +9,7 @@
 import type { PluginsConfig } from "./plugin-types";
 import type {
   AgentEgressConfig,
+  AgentInlineGuardrail,
   AuthProfile,
   InstalledProvider,
   McpServerConfig,
@@ -59,6 +60,14 @@ export interface AgentSettings {
    * output, pre-tool) and halts the run on the first trip.
    */
   guardrails?: string[];
+  /**
+   * Operator-authored custom guardrails (inline LLM judges). Unlike the
+   * `guardrails` name list (which references built-ins registered in the
+   * gateway), each entry here carries its own policy + stage + model and is
+   * materialized into a judge guardrail at resolve time. Enabled entries run
+   * in addition to the named built-ins.
+   */
+  guardrailsInline?: AgentInlineGuardrail[];
   /** OpenClaw plugin configuration */
   pluginsConfig?: PluginsConfig;
   /**

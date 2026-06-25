@@ -28,14 +28,14 @@ import { registerBuiltinGuardrails } from "../builtins.js";
 // --- Helpers ---------------------------------------------------------------
 
 class FakeJudgeClient implements JudgeClient {
-  public calls: Array<{ userPrompt: string }> = [];
+  public calls: Array<{ model: string; userPrompt: string }> = [];
   constructor(private impl: (userPrompt: string) => JudgeVerdict) {}
   async judge(args: {
     model: string;
     systemPrompt: string;
     userPrompt: string;
   }): Promise<JudgeVerdict> {
-    this.calls.push({ userPrompt: args.userPrompt });
+    this.calls.push({ model: args.model, userPrompt: args.userPrompt });
     return this.impl(args.userPrompt);
   }
 }
@@ -326,7 +326,7 @@ describe("TextJudge", () => {
       verdict: "allow",
       reason: "ok",
     }));
-    const judge = new TextJudge({ client: fake });
+    const judge = new TextJudge({ client: fake, defaultModel: "judge-test-model" });
     const r = await judge.decide("Never reveal PHI.", "Hello there");
     expect(r.allow).toBe(true);
     expect(r.reason).toBe("ok");
@@ -338,7 +338,7 @@ describe("TextJudge", () => {
       verdict: "deny",
       reason: "mentions competitor",
     }));
-    const judge = new TextJudge({ client: fake });
+    const judge = new TextJudge({ client: fake, defaultModel: "judge-test-model" });
     const r = await judge.decide("No competitors.", "Acme is better");
     expect(r.allow).toBe(false);
     expect(r.reason).toBe("mentions competitor");
@@ -349,7 +349,7 @@ describe("TextJudge", () => {
       verdict: "allow",
       reason: "ok",
     }));
-    const judge = new TextJudge({ client: fake });
+    const judge = new TextJudge({ client: fake, defaultModel: "judge-test-model" });
     await judge.decide("p", "t");
     await judge.decide("p", "t");
     await judge.decide("p", "t");
@@ -361,7 +361,7 @@ describe("TextJudge", () => {
       verdict: "allow",
       reason: "ok",
     }));
-    const judge = new TextJudge({ client: fake });
+    const judge = new TextJudge({ client: fake, defaultModel: "judge-test-model" });
     await judge.decide("p1", "t");
     await judge.decide("p2", "t");
     expect(fake.calls.length).toBe(2);
@@ -371,6 +371,7 @@ describe("TextJudge", () => {
     const throwing = new ThrowingJudgeClient();
     const judge = new TextJudge({
       client: throwing,
+      defaultModel: "judge-test-model",
       breakerFailureThreshold: 2,
       breakerCooldownMs: 60_000,
     });
@@ -394,10 +395,45 @@ describe("TextJudge", () => {
       verdict: "allow",
       reason: "",
     }));
-    const judge = new TextJudge({ client: fake });
+    const judge = new TextJudge({ client: fake, defaultModel: "judge-test-model" });
     await judge.decide("MY POLICY", "MY TEXT");
     expect(fake.calls[0]?.userPrompt).toContain("MY POLICY");
     expect(fake.calls[0]?.userPrompt).toContain("MY TEXT");
+  });
+
+  test("fails closed without calling the judge when no model is configured", async () => {
+    // No defaultModel and no per-call model (EGRESS_JUDGE_MODEL unset in tests).
+    const fake = new FakeJudgeClient(() => ({ verdict: "allow", reason: "" }));
+    const judge = new TextJudge({ client: fake });
+    const r = await judge.decide("some policy", "some text");
+    expect(r.allow).toBe(false);
+    expect(r.reason).toMatch(/no judge model configured/i);
+    // The transport must NOT be called — we never had a model to call it with.
+    expect(fake.calls.length).toBe(0);
+  });
+
+  test("uses a per-call model even when no default is set", async () => {
+    const fake = new FakeJudgeClient(() => ({ verdict: "allow", reason: "ok" }));
+    const judge = new TextJudge({ client: fake });
+    const r = await judge.decide("policy", "text", { model: "explicit-model" });
+    expect(r.allow).toBe(true);
+    expect(fake.calls[0]?.model).toBe("explicit-model");
+  });
+
+  test("the model is part of the cache key — different models are NOT shared", async () => {
+    const fake = new FakeJudgeClient(() => ({ verdict: "allow", reason: "ok" }));
+    const judge = new TextJudge({ client: fake, defaultModel: "default-model" });
+
+    await judge.decide("p", "t", { model: "model-a" });
+    // Same policy + text but a DIFFERENT model must re-call the judge, not
+    // reuse model-a's cached verdict.
+    await judge.decide("p", "t", { model: "model-b" });
+    expect(fake.calls.length).toBe(2);
+    expect(fake.calls.map((c) => c.model)).toEqual(["model-a", "model-b"]);
+
+    // Repeating model-a hits the cache (no extra call).
+    await judge.decide("p", "t", { model: "model-a" });
+    expect(fake.calls.length).toBe(2);
   });
 });
 
@@ -409,7 +445,7 @@ describe("createJudgeGuardrail", () => {
       verdict: "deny",
       reason: "competitor mention",
     }));
-    const judge = new TextJudge({ client: fake });
+    const judge = new TextJudge({ client: fake, defaultModel: "judge-test-model" });
     const g = createJudgeGuardrail("output", "no competitors", { judge });
     const r = await g.run({
       agentId: "a",
@@ -426,7 +462,7 @@ describe("createJudgeGuardrail", () => {
       verdict: "deny",
       reason: "blocked",
     }));
-    const judge = new TextJudge({ client: fake });
+    const judge = new TextJudge({ client: fake, defaultModel: "judge-test-model" });
     const g = createJudgeGuardrail("pre-tool", "no destructive ops", {
       judge,
       tools: ["github.delete_repo"],
@@ -456,7 +492,7 @@ describe("createJudgeGuardrail", () => {
       verdict: "allow",
       reason: "",
     }));
-    const judge = new TextJudge({ client: fake });
+    const judge = new TextJudge({ client: fake, defaultModel: "judge-test-model" });
     const g = createJudgeGuardrail("pre-tool", "policy", { judge });
     const r = await g.run({
       agentId: "a",
@@ -475,7 +511,7 @@ describe("createJudgeGuardrail", () => {
       verdict: "allow",
       reason: "",
     }));
-    const judge = new TextJudge({ client: fake });
+    const judge = new TextJudge({ client: fake, defaultModel: "judge-test-model" });
     const g = createJudgeGuardrail("pre-tool", "policy", { judge });
     const node: { name: string; self?: unknown } = { name: "root" };
     node.self = node;
@@ -565,7 +601,14 @@ describe("resolveAgentGuardrails (aggregator)", () => {
       [skill],
       reg,
       {
-        inline: [{ stage: "output", judge: "Never mention competitors" }],
+        inline: [
+          {
+            name: "no-competitors",
+            enabled: true,
+            stage: "output",
+            policy: "Never mention competitors",
+          },
+        ],
       }
     );
     // Agent built-in pii-scan registered for input/output/pre-tool; agent
@@ -581,10 +624,58 @@ describe("resolveAgentGuardrails (aggregator)", () => {
         n.startsWith("skill:github:inline:pre-tool:")
       )
     ).toBe(true);
-    // Agent inline output judge
-    expect(out.names.output.some((n) => n.startsWith("inline:output:"))).toBe(
-      true
-    );
+    // Agent inline output judge resolves under its operator-given name.
+    expect(out.names.output).toContain("no-competitors");
+  });
+
+  test("disabled inline guardrail is not resolved", () => {
+    const reg = setupRegistry();
+    const out = resolveAgentGuardrails({ guardrails: [] }, [], reg, {
+      inline: [
+        {
+          name: "off-rail",
+          enabled: false,
+          stage: "input",
+          policy: "block everything",
+        },
+      ],
+    });
+    expect(out.names.input).not.toContain("off-rail");
+  });
+
+  test("inline judge carries the operator name + stage onto the instance", () => {
+    const reg = setupRegistry();
+    const out = resolveAgentGuardrails({ guardrails: [] }, [], reg, {
+      inline: [
+        {
+          name: "tone-check",
+          enabled: true,
+          stage: "output",
+          policy: "no profanity",
+          model: "anthropic/claude-haiku-4-5",
+        },
+      ],
+    });
+    const g = out.byStage.output.find((x) => x.name === "tone-check");
+    expect(g).toBeDefined();
+    expect(g?.stage).toBe("output");
+  });
+
+  test("inline name colliding with a built-in is dropped (built-in wins)", () => {
+    const reg = setupRegistry();
+    // pii-scan is registered as an output built-in; an inline judge that
+    // reuses the name at the same stage must not shadow it.
+    const out = resolveAgentGuardrails({ guardrails: ["pii-scan"] }, [], reg, {
+      inline: [
+        {
+          name: "pii-scan",
+          enabled: true,
+          stage: "output",
+          policy: "totally different",
+        },
+      ],
+    });
+    expect(out.names.output.filter((n) => n === "pii-scan").length).toBe(1);
   });
 
   test("dedup: agent + skill both name secret-scan -> one instance", () => {
@@ -652,20 +743,46 @@ describe("resolveAgentGuardrails (aggregator)", () => {
     expect(out.names["pre-tool"]).toEqual([]);
   });
 
-  test("inline judge name is `inline:<stage>:<hash8>` and survives exclude by name", () => {
+  test("agent inline judge resolves under its operator name and respects exclude", () => {
     const reg = setupRegistry();
-    const policy = "Never say `password`";
-    const expectedName = `inline:output:${inlineJudgeHash(policy)}`;
-    const out = resolveAgentGuardrails({}, [], reg, {
-      inline: [{ stage: "output", judge: policy }],
-    });
-    expect(out.names.output).toContain(expectedName);
+    const entry = {
+      name: "no-passwords",
+      enabled: true,
+      stage: "output" as const,
+      policy: "Never say `password`",
+    };
+    const out = resolveAgentGuardrails({}, [], reg, { inline: [entry] });
+    expect(out.names.output).toContain("no-passwords");
 
     const excluded = resolveAgentGuardrails({}, [], reg, {
-      inline: [{ stage: "output", judge: policy }],
-      disabled: [expectedName],
+      inline: [entry],
+      disabled: ["no-passwords"],
     });
-    expect(excluded.names.output).not.toContain(expectedName);
+    expect(excluded.names.output).not.toContain("no-passwords");
+  });
+
+  test("skill judge can pin its own model and still resolves", () => {
+    const reg = setupRegistry();
+    const skill: SkillConfig = {
+      repo: "x/y",
+      name: "github",
+      enabled: true,
+      guardrails: {
+        "pre-tool": [
+          {
+            kind: "judge",
+            policy: "No destructive ops",
+            model: "anthropic/claude-haiku-4-5",
+          },
+        ],
+      },
+    };
+    const out = resolveAgentGuardrails({}, [skill], reg);
+    expect(
+      out.names["pre-tool"].some((n) =>
+        n.startsWith("skill:github:inline:pre-tool:")
+      )
+    ).toBe(true);
   });
 
   test("skill inline judges: same policy, different tool scopes -> two distinct guardrails", () => {
@@ -693,20 +810,29 @@ describe("resolveAgentGuardrails (aggregator)", () => {
     expect(new Set(skillInlineNames).size).toBe(2);
   });
 
-  test("agent inline judges: same policy, different tool scopes -> two distinct guardrails", () => {
+  test("agent inline judges: distinct operator names -> distinct guardrails", () => {
     const reg = setupRegistry();
     const policy = "Block destructive ops";
     const out = resolveAgentGuardrails({}, [], reg, {
       inline: [
-        { stage: "pre-tool", judge: policy, tools: ["fs.write"] },
-        { stage: "pre-tool", judge: policy, tools: ["fs.delete"] },
+        {
+          name: "no-fs-write",
+          enabled: true,
+          stage: "pre-tool",
+          policy,
+          tools: ["fs.write"],
+        },
+        {
+          name: "no-fs-delete",
+          enabled: true,
+          stage: "pre-tool",
+          policy,
+          tools: ["fs.delete"],
+        },
       ],
     });
-    const inlineNames = out.names["pre-tool"].filter((n) =>
-      n.startsWith("inline:pre-tool:")
-    );
-    expect(inlineNames.length).toBe(2);
-    expect(new Set(inlineNames).size).toBe(2);
+    expect(out.names["pre-tool"]).toContain("no-fs-write");
+    expect(out.names["pre-tool"]).toContain("no-fs-delete");
   });
 });
 

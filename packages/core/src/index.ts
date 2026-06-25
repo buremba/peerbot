@@ -96,6 +96,7 @@ export { extractTraceId, generateTraceId } from "./trace";
 // Core types
 export type {
   AgentEgressConfig,
+  AgentInlineGuardrail,
   AgentMcpConfig,
   AgentOptions,
   AuthProfile,

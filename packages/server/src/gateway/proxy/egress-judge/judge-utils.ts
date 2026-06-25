@@ -7,17 +7,17 @@
  */
 
 /**
- * Default model for all judge calls — operator-configurable via the
+ * Default model for all judge calls — set by the operator via the
  * `EGRESS_JUDGE_MODEL` env var (same pattern as `EGRESS_JUDGE_TIMEOUT_MS`).
- * The judge needs a fast, cheap tier (it runs fail-closed on every risky-domain
- * egress decision), so "the provider's newest model" would be the wrong choice
- * here — hence an explicit setting rather than live resolution. The fallback is
- * a version *alias* (not a dated snapshot) so it rolls forward to the current
- * Haiku release instead of rotting to a retired one. A per-rule
- * `egressConfig.judgeModel` still overrides this.
+ * The judge needs a fast, cheap tier and must not silently rot to a retired
+ * snapshot, so there is intentionally **no hardcoded fallback model**: when
+ * the env var is unset, callers must supply a model explicitly (a per-rule
+ * `egressConfig.judgeModel`, or — for custom guardrails — the guardrail's own
+ * `model`, which the UI/API require when this is undefined). With no model
+ * resolvable, the judge fails closed rather than guessing one.
  */
-export const DEFAULT_JUDGE_MODEL =
-  process.env.EGRESS_JUDGE_MODEL?.trim() || "claude-haiku-4-5";
+export const DEFAULT_JUDGE_MODEL: string | undefined =
+  process.env.EGRESS_JUDGE_MODEL?.trim() || undefined;
 
 /**
  * Hard ceiling on a single judge call. On expiry the call is abandoned, the

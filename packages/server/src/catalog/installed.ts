@@ -196,22 +196,31 @@ export async function listAgentInstalled(
 		const enabled = new Set(settings.guardrails ?? []);
 		const core = getLobuCoreServices();
 		const registry = core?.getGuardrailRegistry?.();
-		const items: InstalledItem[] = [];
+		// The guardrail *name* is the unit of configuration — `settings.guardrails`
+		// is a flat name list, so enabling a name arms it at every stage it is
+		// registered for. A single name can be registered at multiple stages (the
+		// built-in `pii-scan` runs at input/output/pre-tool), so the per-stage scan
+		// below would otherwise emit the same name three times: duplicate `id`s
+		// break the InstalledItem contract and the UI's name-keyed rows (React key
+		// collision, inflated count, one toggle flipping every copy). Collapse by
+		// name and carry the union of stages instead. Insertion order follows the
+		// stage scan so each name lists its stages input→output→pre-tool.
+		const byName = new Map<string, GuardrailStage[]>();
 		if (registry) {
 			const stages: GuardrailStage[] = ["input", "output", "pre-tool"];
 			for (const stage of stages) {
 				for (const guardrail of registry.list(stage)) {
-					items.push({
-						id: guardrail.name,
-						name: guardrail.name,
-						detail: {
-							stage: guardrail.stage,
-							enabled: enabled.has(guardrail.name),
-						},
-					});
+					const existing = byName.get(guardrail.name);
+					if (existing) existing.push(stage);
+					else byName.set(guardrail.name, [stage]);
 				}
 			}
 		}
+		const items: InstalledItem[] = Array.from(byName, ([name, stages]) => ({
+			id: name,
+			name,
+			detail: { stages, enabled: enabled.has(name) },
+		}));
 		result.guardrails = { kind: "guardrails", items };
 	}
 

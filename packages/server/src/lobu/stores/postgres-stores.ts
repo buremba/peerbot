@@ -64,6 +64,7 @@ function rowToSettings(row: Record<string, any>): AgentSettings {
 		showToolCalls: row.show_tool_calls ?? undefined,
 		preApprovedTools: row.pre_approved_tools ?? undefined,
 		guardrails: row.guardrails ?? undefined,
+		guardrailsInline: row.guardrails_inline ?? undefined,
 		updatedAt:
 			tsTime(row.updated_at),
 	};
@@ -142,7 +143,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
                    soul_md, user_md, identity_md,
                    skills_config, tools_config, plugins_config,
                    installed_providers, verbose_logging, show_tool_calls,
-                   pre_approved_tools, guardrails, updated_at
+                   pre_approved_tools, guardrails, guardrails_inline, updated_at
             FROM agents
             WHERE id = ${agentId} AND organization_id = ${orgId}
           `
@@ -152,7 +153,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
                    soul_md, user_md, identity_md,
                    skills_config, tools_config, plugins_config,
                    installed_providers, verbose_logging, show_tool_calls,
-                   pre_approved_tools, guardrails, updated_at
+                   pre_approved_tools, guardrails, guardrails_inline, updated_at
             FROM agents
             WHERE id = ${agentId}
           `;
@@ -183,6 +184,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           show_tool_calls = ${settings.showToolCalls ?? false},
           pre_approved_tools = ${sql.json(settings.preApprovedTools ?? [])},
           guardrails = ${sql.json(settings.guardrails ?? [])},
+          guardrails_inline = ${sql.json(settings.guardrailsInline ?? [])},
           updated_at = ${now}
         WHERE id = ${agentId} AND organization_id = ${orgId}
       `;
@@ -208,7 +210,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           skills_config = '{"skills": []}', tools_config = '{}', plugins_config = '{}',
           installed_providers = '[]', verbose_logging = false,
           show_tool_calls = false,
-          pre_approved_tools = '[]', guardrails = '[]',
+          pre_approved_tools = '[]', guardrails = '[]', guardrails_inline = '[]',
           updated_at = now()
         WHERE id = ${agentId} AND organization_id = ${orgId}
       `;

@@ -1,4 +1,5 @@
 import {
+  type AgentInlineGuardrail,
   type AgentSettings,
   type Guardrail,
   type GuardrailRegistry,
@@ -14,29 +15,30 @@ import {
 
 const logger = createLogger("guardrail-aggregator");
 
-/**
- * Inline guardrail entry declared by the agent in lobu.config.ts (see
- * `guardrails_inline` in the agent config). We accept the parsed shape
- * here so callers can pass either the toml-parsed entries or the in-memory
- * agent representation.
- */
-interface AgentInlineGuardrailEntry {
-  stage: GuardrailStage;
-  judge: string;
-  tools?: string[];
-}
-
 interface AgentGuardrailExtras {
   /**
-   * Inline guardrails declared in `[[agents.<id>.guardrails_inline]]`. Each
-   * materializes into an ad-hoc `inline:<stage>:<hash8>` guardrail.
+   * Operator-authored custom guardrails (`AgentSettings.guardrailsInline`).
+   * Each materializes into a judge guardrail under its operator-given `name`.
+   * Callers pass only the entries they want active (filter on `enabled`).
    */
-  inline?: AgentInlineGuardrailEntry[];
+  inline?: AgentInlineGuardrail[];
   /**
    * Operator's exclude list — names matched against the resolved guardrails'
    * `.name` (including synthesized inline names). Applied last.
    */
   disabled?: string[];
+}
+
+/**
+ * The agent's active custom guardrails, shaped for `extras.inline`. Disabled
+ * entries are kept in settings (so the operator can flip them back on) but
+ * never resolved into a run — every resolve call site filters through here so
+ * the input/output/pre-tool paths stay consistent.
+ */
+export function enabledInlineGuardrails(
+  settings: Pick<AgentSettings, "guardrailsInline"> | null | undefined
+): AgentInlineGuardrail[] {
+  return (settings?.guardrailsInline ?? []).filter((g) => g.enabled);
 }
 
 interface ResolvedAgentGuardrails {
@@ -122,8 +124,14 @@ export function resolveAgentGuardrails(
   }
 
   // ── 3. Agent-declared inline guardrails ────────────────────────────────
+  // Built-ins (step 1) are seen first, so a custom guardrail whose name
+  // collides with a built-in at the same stage is dropped here — the create/
+  // edit UI rejects such names up front so this stays a defensive guard.
   for (const entry of extras.inline ?? []) {
-    const g = createJudgeGuardrail(entry.stage, entry.judge, {
+    if (entry.enabled === false) continue;
+    const g = createJudgeGuardrail(entry.stage, entry.policy, {
+      name: entry.name,
+      model: entry.model,
       tools: entry.tools,
     });
     if (!seen[entry.stage].has(g.name)) {
@@ -173,6 +181,9 @@ function materializeSkillPreTool(
         // the aggregator's dedup would drop the second narrowing).
         name: `skill:${skill.name}:inline:pre-tool:${inlineJudgeHash(entry.policy, entry.tools)}`,
         tools: entry.tools,
+        // Skills can pin their own judge model; falls back to the gateway
+        // default (EGRESS_JUDGE_MODEL) when omitted.
+        model: entry.model,
       });
     default: {
       // Exhaustiveness guard — TS errors if `SkillPreToolGuardrail` grows

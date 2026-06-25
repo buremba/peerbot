@@ -97,7 +97,8 @@ export interface JudgeRunInput<TResult> {
 export abstract class JudgeRunner<TResult> {
   private readonly cache: VerdictCache;
   private readonly breaker: CircuitBreaker;
-  private readonly defaultModel: string;
+  /** Undefined when EGRESS_JUDGE_MODEL is unset — callers must pass a model. */
+  private readonly defaultModel: string | undefined;
   private readonly judgeTimeoutMs: number;
   private readonly inFlight = new Map<string, Promise<TResult>>();
   private readonly logger: ReturnType<typeof createLogger>;
@@ -138,18 +139,26 @@ export abstract class JudgeRunner<TResult> {
    * a live call goes through {@link runLiveJudge}.
    */
   protected async run(input: JudgeRunInput<TResult>): Promise<TResult> {
-    const cached = this.cache.get(input.cacheKey);
+    // The verdict depends on the model, so the cache + in-flight keys must
+    // include the effective model — otherwise two calls with the same
+    // policy/text but different models (or the same guardrail after a model
+    // edit) would reuse a verdict computed by the OTHER model. All default-model
+    // calls share a bucket; explicit models each get their own.
+    const model = input.model ?? this.defaultModel;
+    const key = `${input.cacheKey}model:${model ?? ""}`;
+
+    const cached = this.cache.get(key);
     if (cached) {
       return input.decorate(cached, { source: "cache", latencyMs: 0 });
     }
 
-    const existing = this.inFlight.get(input.cacheKey);
+    const existing = this.inFlight.get(key);
     if (existing) return existing;
 
-    const pending = this.runLiveJudge(input).finally(() => {
-      this.inFlight.delete(input.cacheKey);
+    const pending = this.runLiveJudge(input, key).finally(() => {
+      this.inFlight.delete(key);
     });
-    this.inFlight.set(input.cacheKey, pending);
+    this.inFlight.set(key, pending);
     return pending;
   }
 
@@ -158,8 +167,30 @@ export abstract class JudgeRunner<TResult> {
    * cache + decorate. Fails closed (deny) on an open circuit or any error,
    * recording a breaker failure in the latter case.
    */
-  private async runLiveJudge(input: JudgeRunInput<TResult>): Promise<TResult> {
+  private async runLiveJudge(
+    input: JudgeRunInput<TResult>,
+    cacheKey: string
+  ): Promise<TResult> {
     const { logPrefix, separator, deniedSuffix } = this.labels;
+
+    // No model resolvable (EGRESS_JUDGE_MODEL unset and no per-call model).
+    // This is a misconfiguration, not a transient fault, so fail closed
+    // WITHOUT touching the breaker — the UI/API require a model up front, so
+    // this is a defensive backstop.
+    const model = input.model ?? this.defaultModel;
+    if (!model) {
+      this.logger.warn(
+        `${logPrefix} no judge model configured ${separator} failing closed`,
+        { policyHash: input.policyHash, ...input.logFields }
+      );
+      return input.decorate(
+        {
+          verdict: "deny",
+          reason: `No judge model configured (set EGRESS_JUDGE_MODEL or specify a model); ${deniedSuffix}`,
+        },
+        { source: "judge-error", latencyMs: 0 }
+      );
+    }
 
     if (!this.breaker.canProceed(input.policyHash)) {
       this.logger.warn(`${logPrefix} circuit open ${separator} failing closed`, {
@@ -176,7 +207,6 @@ export abstract class JudgeRunner<TResult> {
     }
 
     const started = Date.now();
-    const model = input.model ?? this.defaultModel;
     const { systemPrompt, userPrompt } = input.buildPrompts();
     try {
       const verdict = await withTimeout(
@@ -185,7 +215,7 @@ export abstract class JudgeRunner<TResult> {
       );
       const latencyMs = Date.now() - started;
       this.breaker.onSuccess(input.policyHash);
-      this.cache.set(input.cacheKey, verdict);
+      this.cache.set(cacheKey, verdict);
       return input.decorate(verdict, { source: "judge", latencyMs });
     } catch (err) {
       this.breaker.onFailure(input.policyHash);

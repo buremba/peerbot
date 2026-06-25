@@ -491,6 +491,82 @@ routes.get('/:agentId/config', async (c) => {
   return c.json({ ...settings, authProfiles });
 });
 
+// ── Recent guardrail trips ───────────────────────────────────────────────────
+//
+// Read-only audit feed for the agent's Guardrails tab. Each `guardrail-trip`
+// event row is one stage a guardrail short-circuited (written by
+// `recordGuardrailTrip`). The rows are append-only and never superseded, so we
+// read `events` directly rather than the `current_event_records` view, which
+// would force an expensive `event_embeddings` join. Org-scoped + Postgres-backed
+// and therefore correct under N replicas (any pod can serve it).
+routes.get('/:agentId/guardrail-trips', async (c) => {
+  const { agentId } = c.req.param();
+  const organizationId = c.get('organizationId') as string;
+
+  // Clamp to a sane window — the UI asks for 50; cap so a hand-crafted query
+  // can't ask for an unbounded scan.
+  const limitRaw = Number.parseInt(c.req.query('limit') ?? '50', 10);
+  const limit = Number.isFinite(limitRaw)
+    ? Math.min(Math.max(limitRaw, 1), 200)
+    : 50;
+
+  // Optional narrowing to a single guardrail — the per-guardrail detail view
+  // asks for just that guardrail's catches.
+  const guardrail = c.req.query('guardrail');
+
+  const sql = getDb();
+  // `recordGuardrailTrip` writes `created_at` (default now()) but leaves
+  // `occurred_at` null, so coalesce to `created_at` — otherwise the UI shows
+  // "null" for the timestamp of every real trip.
+  const rows = await sql`
+    SELECT id, COALESCE(occurred_at, created_at) AS occurred_at, metadata
+      FROM events
+     WHERE organization_id = ${organizationId}
+       AND semantic_type = 'guardrail-trip'
+       AND metadata->>'agent_id' = ${agentId}
+       ${guardrail ? sql`AND metadata->>'guardrail' = ${guardrail}` : sql``}
+     ORDER BY COALESCE(occurred_at, created_at) DESC, id DESC
+     LIMIT ${limit}
+  `;
+
+  const agentName = (await configStore.getMetadata(agentId))?.name;
+
+  const trips = rows.map((row) => {
+    const metadata = (row.metadata ?? {}) as {
+      stage?: string;
+      guardrail?: string;
+      reason?: string | null;
+    };
+    const occurredAt =
+      row.occurred_at instanceof Date
+        ? row.occurred_at.toISOString()
+        : row.occurred_at
+          ? String(row.occurred_at)
+          : '';
+    return {
+      id: Number(row.id),
+      occurredAt,
+      agentId,
+      ...(agentName ? { agentName } : {}),
+      stage: metadata.stage,
+      guardrailName: metadata.guardrail,
+      ...(metadata.reason ? { reason: metadata.reason } : {}),
+    };
+  });
+
+  return c.json({ trips });
+});
+
+// ── Judge model default (for custom guardrail authoring) ─────────────────────
+//
+// Custom guardrails are LLM judges. There is no hardcoded judge model: the
+// operator sets one via `EGRESS_JUDGE_MODEL`. The create/edit UI uses this to
+// either show the configured default (model optional) or require a per-guardrail
+// model (when unset). Returns null when no gateway default is configured.
+routes.get('/:agentId/guardrail-judge-default', async (c) => {
+  return c.json({ defaultModel: process.env.EGRESS_JUDGE_MODEL?.trim() || null });
+});
+
 // ── Start provider OAuth login ───────────────────────────────────────────────
 
 routes.get('/:agentId/providers/:providerId/oauth/start', async (c) => {
@@ -672,6 +748,27 @@ routes.patch('/:agentId/config', async (c) => {
 
   if (!(await configStore.hasAgent(agentId))) {
     return c.json({ error: 'Agent not found' }, 404);
+  }
+
+  // Custom guardrails are LLM judges and need a model. With no gateway default
+  // (`EGRESS_JUDGE_MODEL` unset), every inline guardrail must carry its own
+  // `model` — otherwise it would fail closed at runtime with no model to call.
+  const judgeDefault = process.env.EGRESS_JUDGE_MODEL?.trim();
+  if (!judgeDefault && Array.isArray((updates as { guardrailsInline?: unknown }).guardrailsInline)) {
+    const inline = (updates as { guardrailsInline: Array<{ name?: string; model?: string }> })
+      .guardrailsInline;
+    const missing = inline.find(
+      (g) => typeof g?.model !== 'string' || g.model.trim() === ''
+    );
+    if (missing) {
+      return c.json(
+        {
+          error: 'guardrail_model_required',
+          error_description: `Custom guardrail "${missing.name ?? '(unnamed)'}" needs a model: the gateway has no default judge model (EGRESS_JUDGE_MODEL is unset).`,
+        },
+        400
+      );
+    }
   }
 
   // Auth profiles aren't part of the agent settings row — they're

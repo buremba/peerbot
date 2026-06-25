@@ -64,7 +64,9 @@ beforeAll(async () => {
   });
 
   setProxyPolicyStore(policyStore);
-  setProxyEgressJudge(new EgressJudge({ client: fakeClient }));
+  setProxyEgressJudge(
+    new EgressJudge({ client: fakeClient, defaultModel: "judge-test-model" })
+  );
 
   proxyPort = 10000 + Math.floor(Math.random() * 50000);
   proxyServer = await startHttpProxy(proxyPort, "127.0.0.1");

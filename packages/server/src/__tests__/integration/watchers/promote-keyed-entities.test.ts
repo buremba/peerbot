@@ -277,6 +277,82 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
     expect(Number(childCount[0].c)).toBe(2);
   });
 
+  it('syncs extracted fields into entities and respects a human-owned field on re-run, queuing an approval', async () => {
+    const ctx = await setupKeyedWatcher();
+    const { sql, workspace, watcherId } = ctx;
+
+    await createTestEvent({
+      entity_id: ctx.parentEntityId,
+      organization_id: workspace.org.id,
+      content: 'Users report the app crashing and loading slowly.',
+      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+
+    // Run 1: a non-key `severity` field is synced into the promoted entity's metadata.
+    await ctx.api.watchers.completeWindow({
+      watcher_id: String(watcherId),
+      window_token: token,
+      run_metadata: { watcher_run_id: runId },
+      extracted_data: {
+        problems: [
+          { category: 'Stability', name: 'App Crashes', severity: 'low' },
+          { category: 'Performance', name: 'Slow Loading', severity: 'low' },
+        ],
+      },
+    });
+
+    const appCrashesId = `${watcherId}::stability::app-crashes`;
+    const [created] = await sql`
+      SELECT e.id, e.metadata, e.field_controls
+      FROM entities e JOIN entity_identities ei ON ei.entity_id = e.id
+      WHERE ei.namespace = 'watcher_key' AND ei.identifier = ${appCrashesId}
+    `;
+    // Slice 2 (create): the extracted field value lands in metadata, not just provenance.
+    expect((created.metadata as Record<string, unknown>).severity).toBe('low');
+    expect(created.field_controls).toEqual({});
+    const entityId = Number(created.id);
+
+    // A human takes ownership of `severity`.
+    await workspace.owner.entities.update({ entity_id: entityId, metadata: { severity: 'high' } });
+    const [edited] = await sql`SELECT metadata, field_controls FROM entities WHERE id = ${entityId}`;
+    // Slice 1: human edit applies the value AND marks the field owned.
+    expect((edited.metadata as Record<string, unknown>).severity).toBe('high');
+    expect((edited.field_controls as Record<string, unknown>).severity).toBeTruthy();
+
+    // Run 2 (replay) proposes a different severity for the SAME key.
+    await ctx.api.watchers.completeWindow({
+      watcher_id: String(watcherId),
+      window_token: token,
+      run_metadata: { watcher_run_id: runId },
+      extracted_data: {
+        problems: [
+          { category: 'Stability', name: 'App Crashes', severity: 'critical' },
+          { category: 'Performance', name: 'Slow Loading', severity: 'low' },
+        ],
+      },
+    });
+
+    // Slice 2 (match): the watcher does NOT overwrite the human-owned value.
+    const [afterRerun] = await sql`SELECT metadata FROM entities WHERE id = ${entityId}`;
+    expect((afterRerun.metadata as Record<string, unknown>).severity).toBe('high');
+
+    // Slice 3: the blocked change is queued as a durable approval the human can act on.
+    const pending = await sql`
+      SELECT action_input FROM runs
+      WHERE organization_id = ${workspace.org.id}
+        AND run_type = 'internal'
+        AND action_key = 'entity_field_change'
+        AND approval_status = 'pending'
+    `;
+    expect(pending.length).toBeGreaterThan(0);
+    const proposal = pending[0].action_input as { entity_id: number; fields: Record<string, unknown> };
+    expect(proposal.entity_id).toBe(entityId);
+    expect(proposal.fields.severity).toBe('critical');
+  });
+
   it('disambiguates a slug that collides with a pre-existing sibling — window is NOT poison-pilled', async () => {
     const ctx = await setupKeyedWatcher();
     const { sql, workspace, parentEntityId } = ctx;

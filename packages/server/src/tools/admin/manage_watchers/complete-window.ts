@@ -11,7 +11,11 @@ import type { Env } from '../../../index';
 import { ToolUserError } from '../../../utils/errors';
 import { verifyWindowToken } from '../../../utils/jwt';
 import logger from '../../../utils/logger';
-import { promoteKeyedEntities } from '../../../utils/promote-keyed-entities';
+import {
+  type BlockedFieldProposal,
+  promoteKeyedEntities,
+} from '../../../utils/promote-keyed-entities';
+import { proposeEntityFieldChange } from '../entity-field-approval';
 import { computeStableKeys } from '../../../utils/stable-keys';
 import { deriveWatcherExtractionSchema } from '../../../utils/watcher-extraction-schema';
 import { trackWatcherReaction } from '../../../utils/watcher-reactions';
@@ -416,6 +420,9 @@ export async function handleCompleteWindow(
   //
   // Transaction for data writes.
   // ============================================
+  // Owned-field changes a watcher proposed but couldn't apply; surfaced out of the
+  // transaction and turned into approval cards once the window commits.
+  let blockedProposals: BlockedFieldProposal[] = [];
   const result = await sql.begin(async (tx) => {
     // ============================================
     // STEP 7: Get or create window with FINAL values
@@ -579,7 +586,7 @@ export async function handleCompleteWindow(
     // return above).
     // ============================================
     if (keyingConfig) {
-      await promoteKeyedEntities({
+      const promote = await promoteKeyedEntities({
         tx,
         extractedData,
         keyingConfig,
@@ -589,6 +596,9 @@ export async function handleCompleteWindow(
         parentEntityId,
         createdBy: watcherCreatedBy,
       });
+      // Owned-field changes the watcher couldn't apply — queue an approval for each
+      // AFTER the window transaction commits (an approval must not ride the tx).
+      blockedProposals = promote.blocked;
     }
 
     // ============================================
@@ -648,6 +658,25 @@ export async function handleCompleteWindow(
       window_created: windowCreated,
     };
   });
+
+  // Post-commit: turn any blocked owned-field changes into approval cards. Done
+  // after the window transaction so the durable approval (run + event + notify)
+  // is never rolled back with the window, and a failure here never undoes the
+  // committed sync. Best-effort per proposal.
+  for (const b of blockedProposals) {
+    await proposeEntityFieldChange(ctx, {
+      entity_id: b.entityId,
+      fields: b.fields,
+      current: b.current,
+      watcher_id: Number(watcherId),
+      reason: `Watcher proposes updating ${Object.keys(b.fields).join(', ')} (currently set by you).`,
+    }).catch((err) =>
+      logger.error(
+        { err, watcherId, entityId: b.entityId },
+        '[complete-window] failed to queue entity_field_change approval'
+      )
+    );
+  }
 
   // Execute reaction script inline (in-process via QuickJS WASM sandbox).
   // Fire on linked content OR on a freshly created window: device-run and

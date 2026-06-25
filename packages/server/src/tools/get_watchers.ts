@@ -44,7 +44,6 @@ import {
   ensureNumber,
   foldUnprocessedRanges,
   parseBigintArray,
-  queryUncondensedWindows,
 } from '../utils/window-utils';
 import { buildLatestWatcherRunJoinSql } from '../watchers/automation';
 import { getWorkspaceProvider } from '../workspace';
@@ -154,12 +153,6 @@ interface GetWatcherResult {
     granularity_actual: string | null;
     granularity_fallback_used: boolean;
   };
-  condensation?: {
-    ready: boolean;
-    uncondensed_count: number;
-    required_count: number;
-    window_range?: { start: string; end: string };
-  };
   warnings?: string[];
   view_url?: string;
 }
@@ -176,7 +169,6 @@ interface WindowRow {
   granularity: string;
   window_start: string;
   window_end: string;
-  is_rollup: boolean;
   content_analyzed: number;
   extracted_data: Record<string, unknown> | null;
   model_used: string | null;
@@ -212,8 +204,6 @@ interface WatcherQueryRow {
   entity_ids: string | number[];
   sources: WatcherSource[] | null;
   reaction_script: string | null;
-  condensation_prompt: string | null;
-  condensation_window_count: number | null;
   organization_id: string | null;
   watcher_run_id: number | null;
   watcher_run_status: string | null;
@@ -555,7 +545,7 @@ async function getWatcherImpl(
 
   // Fire watcher metadata query early (awaited after classification stats).
   // This single statement is the consolidated "Q-meta": watcher row +
-  // condensation columns + selected version row + entities (with parent
+  // selected version row + entities (with parent
   // info) + identity scopes for the watcher's primary entity + MAX(window_end)
   // + latest run via lateral. Replaces what used to be five separate
   // round-trips (entityCheck/watcherEntityQuery, watcher row, fetchEntityIdentityScopes,
@@ -564,8 +554,8 @@ async function getWatcherImpl(
   // The version row is *the requested version* — usually the watcher's
   // pinned current_version, but the optional template_version arg can
   // override it. We pass the resolved version number as $2; when it equals
-  // the pinned version, we read off `cv` directly (the join already there
-  // for condensation columns); when it differs, the JOIN still resolves
+  // the pinned version, we read off `cv` directly (the join is already there);
+  // when it differs, the JOIN still resolves
   // the right row via (watcher_id, version) which is unique.
   //
   // Two override mechanisms:
@@ -602,8 +592,6 @@ async function getWatcherImpl(
         i.entity_ids,
         i.sources,
         i.reaction_script,
-        cv.condensation_prompt,
-        cv.condensation_window_count,
         i.organization_id,
         -- Selected version row (pinned current_version unless template_version overrides)
         sv.id as sel_version_id,
@@ -647,7 +635,6 @@ async function getWatcherImpl(
         wr.created_at as watcher_run_created_at,
         wr.completed_at as watcher_run_completed_at
       FROM watchers i
-      LEFT JOIN watcher_versions cv ON i.current_version_id = cv.id
       LEFT JOIN watcher_versions sv
         ON sv.id = COALESCE(
              $3::bigint,
@@ -763,7 +750,6 @@ async function getWatcherImpl(
       granularity: w.granularity,
       window_start: w.window_start,
       window_end: w.window_end,
-      is_rollup: w.is_rollup,
       content_analyzed: w.content_analyzed,
       extracted_data: extractedData,
       previous_extracted_data: previousExtractedData,
@@ -783,13 +769,9 @@ async function getWatcherImpl(
   // ============================================
 
   let watcherMetadata: WatcherMetadata | undefined;
-  let watcherCondensationPrompt: string | null = null;
-  let watcherCondensationWindowCount: number | null = null;
 
   if (args.watcher_id && watcherRow) {
     const pinnedVersion = watcherRow.version;
-    watcherCondensationPrompt = watcherRow.condensation_prompt;
-    watcherCondensationWindowCount = watcherRow.condensation_window_count;
 
     // The selected version row (prompt/schema/template) was folded into the
     // watcher metadata query above via a `LEFT JOIN watcher_versions sv …`,
@@ -1092,35 +1074,6 @@ async function getWatcherImpl(
   }
 
   // ============================================
-  // Step 6.6: Compute condensation status
-  // ============================================
-
-  let condensationStatus: GetWatcherResult['condensation'] | undefined;
-
-  if (args.watcher_id && watcherCondensationPrompt) {
-    try {
-      const requiredCount = Number(watcherCondensationWindowCount) || 4;
-      const uncondensedResult = await queryUncondensedWindows(sql, args.watcher_id);
-      const uncondensedCount = uncondensedResult.length;
-
-      condensationStatus = {
-        ready: uncondensedCount >= requiredCount,
-        uncondensed_count: uncondensedCount,
-        required_count: requiredCount,
-      };
-
-      if (uncondensedCount > 0) {
-        condensationStatus.window_range = {
-          start: uncondensedResult[0].window_start,
-          end: uncondensedResult[uncondensedResult.length - 1].window_end,
-        };
-      }
-    } catch (err) {
-      logger.warn({ err }, '[get_watcher] Failed to compute condensation status');
-    }
-  }
-
-  // ============================================
   // Step 7: Diagnostic warnings for the no-windows case
   // ============================================
   // Replaces the previous cold-path block (a watchers re-fetch + a
@@ -1146,7 +1099,7 @@ async function getWatcherImpl(
 
   if (usedFallback && finalGranularity && actualGranularity) {
     warnings.push(
-      `No ${finalGranularity} windows available yet. Showing ${actualGranularity} windows instead. Rollups are generated automatically as more data is collected.`
+      `No ${finalGranularity} windows available yet. Showing ${actualGranularity} windows instead.`
     );
   }
 
@@ -1190,7 +1143,6 @@ async function getWatcherImpl(
       granularity_actual: actualGranularity || null,
       granularity_fallback_used: usedFallback,
     },
-    ...(condensationStatus && { condensation: condensationStatus }),
     ...(warnings.length > 0 && { warnings }),
     ...(entityInfoForUrl && { view_url: buildWatchersUrl(entityInfoForUrl, baseUrl) }),
   };

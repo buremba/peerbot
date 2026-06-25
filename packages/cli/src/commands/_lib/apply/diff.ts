@@ -640,20 +640,6 @@ function diffWatcher(
   ) {
     versionBound.push("classifiers");
   }
-  if (
-    desired.condensationPrompt !== undefined &&
-    desired.condensationPrompt !== (remote.condensation_prompt ?? "")
-  ) {
-    versionBound.push("condensation_prompt");
-  }
-  if (
-    desired.condensationWindowCount !== undefined &&
-    desired.condensationWindowCount !==
-      (remote.condensation_window_count ?? undefined)
-  ) {
-    versionBound.push("condensation_window_count");
-  }
-
   const changed = [...scalar, ...versionBound];
   if (reactionScriptDeclared) changed.push("reaction_script");
   if (changed.length === 0) {

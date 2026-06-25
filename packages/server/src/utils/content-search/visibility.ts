@@ -77,7 +77,7 @@ export function buildOrgScopeWhere(options: {
  *    are visible in both authed and unauthed cases.
  *
  * Returns an empty fragment when no scope is requested (callers like the
- * watcher-mode/condensation path that already select by other constraints).
+ * watcher-mode path that already select by other constraints).
  */
 export function buildConnectionVisibilityClause(
   options: {

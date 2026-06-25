@@ -131,6 +131,10 @@ describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
     oauth_tokens: new Set(['token_hash']),
     feeds: new Set(['checkpoint']),
     user: new Set(['email', 'phoneNumber', 'phoneNumberVerified']),
+    // Dead "condensation"/"rollup" watcher feature — code removed; the columns
+    // remain in the DB this release and a follow-up migration drops them.
+    watcher_versions: new Set(['condensation_prompt', 'condensation_window_count']),
+    watcher_windows: new Set(['is_rollup', 'source_window_ids', 'depth']),
   };
 
   it('should have every DB column listed in the schema (or intentionally omitted)', async (ctx) => {

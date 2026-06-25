@@ -61,7 +61,7 @@ export async function handleCreateVersion(
     SELECT
       name, description, prompt, version_sources,
       keying_config, classifiers,
-      reactions_guidance, condensation_prompt, condensation_window_count
+      reactions_guidance
     FROM watcher_versions
     WHERE watcher_id = ${groupId}
     ORDER BY version DESC LIMIT 1
@@ -139,7 +139,6 @@ export async function handleCreateVersion(
         id, watcher_id, version, name, description,
         prompt, version_sources,
         keying_config, classifiers,
-        condensation_prompt, condensation_window_count,
         reactions_guidance, change_notes, created_by, created_at
       ) VALUES (
         ${versionId}, ${groupId}, ${lockedNextVersion},
@@ -147,8 +146,6 @@ export async function handleCreateVersion(
         ${args.description !== undefined ? (args.description ?? null) : ((prev.description as string) ?? null)},
         ${prompt}, NULL,
         ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
-        ${args.condensation_prompt ?? (prev.condensation_prompt as string) ?? null},
-        ${args.condensation_window_count ?? (prev.condensation_window_count as number) ?? null},
         ${args.reactions_guidance ?? (prev.reactions_guidance as string) ?? null},
         ${args.change_notes ?? null}, ${createdBy}, NOW()
       )
@@ -283,7 +280,6 @@ export async function handleGetVersionDetails(
         id, version, name, description, prompt,
         version_sources,
         keying_config, classifiers,
-        condensation_prompt, condensation_window_count,
         reactions_guidance
       FROM watcher_versions
       WHERE watcher_id = ${args.watcher_id} AND version = ${args.version}
@@ -295,7 +291,6 @@ export async function handleGetVersionDetails(
         v.id, v.version, v.name, v.description, v.prompt,
         v.version_sources,
         v.keying_config, v.classifiers,
-        v.condensation_prompt, v.condensation_window_count,
         v.reactions_guidance
       FROM watcher_versions v
       JOIN watchers w ON v.id = w.current_version_id
@@ -326,8 +321,6 @@ export async function handleGetVersionDetails(
     ),
     keying_config: normalizeStoredJsonField(v.keying_config, undefined as unknown),
     classifiers: normalizeStoredJsonField(v.classifiers, undefined as unknown[] | undefined),
-    condensation_prompt: v.condensation_prompt as string | undefined,
-    condensation_window_count: v.condensation_window_count as number | undefined,
     reactions_guidance: v.reactions_guidance as string | undefined,
   };
 }

@@ -222,19 +222,6 @@ export const ManageWatchersSchema = Type.Object({
   set_as_current: Type.Optional(
     Type.Boolean({ description: '[create_version] Set as current version (default: true)' })
   ),
-  condensation_prompt: Type.Optional(
-    Type.String({
-      description:
-        '[create/create_version] Handlebars prompt for condensing windows into a rollup.',
-    })
-  ),
-  condensation_window_count: Type.Optional(
-    Type.Number({
-      description:
-        '[create/create_version] How many leaf windows to condense into one rollup. Default 4.',
-      minimum: 2,
-    })
-  ),
   reactions_guidance: Type.Optional(
     Type.String({
       description:

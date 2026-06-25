@@ -100,8 +100,6 @@ export async function handleList(
       cv.prompt,
       cv.classifiers,
       cv.keying_config,
-      cv.condensation_prompt,
-      cv.condensation_window_count,
       cv.reactions_guidance
     `;
 	}

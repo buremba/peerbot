@@ -127,10 +127,6 @@ export interface DesiredWatcher {
   keyingConfig?: Record<string, unknown>;
   /** Classifier definitions for extraction (server-side feature). */
   classifiers?: unknown[];
-  /** Handlebars prompt for condensing windows into a rollup. */
-  condensationPrompt?: string;
-  /** How many leaf windows to condense into one rollup (default 4 server-side). */
-  condensationWindowCount?: number;
 }
 
 export interface DesiredFeed {

@@ -93,8 +93,6 @@ export interface RemoteWatcher {
   prompt?: string | null;
   classifiers?: unknown[] | null;
   keying_config?: Record<string, unknown> | null;
-  condensation_prompt?: string | null;
-  condensation_window_count?: number | null;
   reactions_guidance?: string | null;
   // NB: reaction_script is NOT in list_watchers — push always (idempotent).
 }
@@ -802,7 +800,7 @@ export class ApplyClient {
 
   async listWatchers(): Promise<RemoteWatcher[]> {
     // `include_details=true` pulls the version-bound fields (prompt,
-    // classifiers, keying_config, condensation_*, reactions_guidance) too.
+    // classifiers, keying_config, reactions_guidance) too.
     // Apply diffs against these to detect drift on prompt / sources / etc.
     const { body } = await this.request<{ watchers?: RemoteWatcher[] }>(
       "GET",
@@ -833,8 +831,6 @@ export class ApplyClient {
     agent_kind?: string;
     keying_config?: Record<string, unknown>;
     classifiers?: unknown[];
-    condensation_prompt?: string;
-    condensation_window_count?: number;
   }): Promise<{ watcher_id?: string }> {
     const { body } = await this.request<{ watcher_id?: string }>(
       "POST",
@@ -876,12 +872,6 @@ export class ApplyClient {
         ...(payload.classifiers !== undefined
           ? { classifiers: payload.classifiers }
           : {}),
-        ...(payload.condensation_prompt !== undefined
-          ? { condensation_prompt: payload.condensation_prompt }
-          : {}),
-        ...(payload.condensation_window_count !== undefined
-          ? { condensation_window_count: payload.condensation_window_count }
-          : {}),
       }
     );
     return { ...(body.watcher_id ? { watcher_id: body.watcher_id } : {}) };
@@ -890,7 +880,7 @@ export class ApplyClient {
   /**
    * Update the **scalar** fields on the `watchers` row — these don't require
    * a new version. Version-bound fields (prompt / sources / reactions_guidance /
-   * keying_config / classifiers / condensation_*) require `createWatcherVersion`
+   * keying_config / classifiers) require `createWatcherVersion`
    * instead.
    *
    * `null` clears nullable fields (device_worker_id, scheduler_client_id,
@@ -947,8 +937,6 @@ export class ApplyClient {
     keying_config?: Record<string, unknown>;
     classifiers?: unknown[];
     reactions_guidance?: string;
-    condensation_prompt?: string;
-    condensation_window_count?: number;
     change_notes?: string;
   }): Promise<{ version?: number }> {
     const { body } = await this.request<{ version?: number }>(
@@ -968,12 +956,6 @@ export class ApplyClient {
           : {}),
         ...(payload.reactions_guidance !== undefined
           ? { reactions_guidance: payload.reactions_guidance }
-          : {}),
-        ...(payload.condensation_prompt !== undefined
-          ? { condensation_prompt: payload.condensation_prompt }
-          : {}),
-        ...(payload.condensation_window_count !== undefined
-          ? { condensation_window_count: payload.condensation_window_count }
           : {}),
         ...(payload.change_notes
           ? { change_notes: payload.change_notes }

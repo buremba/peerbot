@@ -65,8 +65,6 @@ export interface WatcherCreateInput {
 	description?: string;
 	keying_config?: Record<string, unknown>;
 	classifiers?: Record<string, unknown>;
-	condensation_prompt?: string;
-	condensation_window_count?: number;
 	reactions_guidance?: string;
 	agent_id?: string;
 	scheduler_client_id?: string;

@@ -6,7 +6,7 @@
  */
 
 import Ajv from 'ajv';
-import { createDbClientFromEnv, getDb, parsePgNumberArray, pgBigintArray } from '../../../db/client';
+import { createDbClientFromEnv, getDb, parsePgNumberArray } from '../../../db/client';
 import type { Env } from '../../../index';
 import { ToolUserError } from '../../../utils/errors';
 import { verifyWindowToken } from '../../../utils/jwt';
@@ -51,9 +51,6 @@ export async function handleCompleteWindow(
   content_linked: number;
   /** False on idempotent replays that reused an existing window. */
   window_created: boolean;
-  is_rollup?: boolean;
-  depth?: number;
-  source_window_ids?: number[];
   reaction_status: 'success' | 'failed' | 'skipped';
   reaction_error?: string;
 }> {
@@ -95,17 +92,12 @@ export async function handleCompleteWindow(
   const extractedData = normalizeExtractedData(args.extracted_data);
 
   // Verify and decode JWT window token(s) (in-memory)
-  type VerifiedWindowToken = Awaited<ReturnType<typeof verifyWindowToken>> & {
-    is_rollup?: boolean;
-    source_window_ids?: number[];
-    depth?: number;
-  };
-  let tokenPayloads: VerifiedWindowToken[];
+  let tokenPayloads: Awaited<ReturnType<typeof verifyWindowToken>>[];
 
   try {
-    tokenPayloads = (await Promise.all(
+    tokenPayloads = await Promise.all(
       windowTokens.map((token) => verifyWindowToken(token, env))
-    )) as VerifiedWindowToken[];
+    );
   } catch (error) {
     const errorMsg = getErrorMessage(error);
     // Agent-recoverable validation (the message says how) — ToolUserError so
@@ -124,9 +116,6 @@ export async function handleCompleteWindow(
     window_end,
     granularity,
     window_id: tokenWindowId,
-    is_rollup: tokenIsRollup,
-    source_window_ids: tokenSourceWindowIds,
-    depth: tokenDepth,
   } = firstToken;
 
   for (const token of tokenPayloads) {
@@ -141,17 +130,8 @@ export async function handleCompleteWindow(
     }
   }
 
-  if (tokenPayloads.length > 1 && tokenIsRollup) {
-    throw new Error('Rollup completion accepts exactly one window_token.');
-  }
-
   const pgSql = createDbClientFromEnv(env);
   await requireWatcherAccess(pgSql, [String(watcherId)], ctx, 'write');
-
-  const MAX_ROLLUP_DEPTH = 3;
-  if (tokenIsRollup && tokenDepth != null && tokenDepth > MAX_ROLLUP_DEPTH) {
-    throw new Error(`Rollup depth ${tokenDepth} exceeds maximum of ${MAX_ROLLUP_DEPTH}`);
-  }
 
   if (watcherRunId == null) {
     const runRows = await sql`
@@ -312,57 +292,6 @@ export async function handleCompleteWindow(
     logger.info(
       `[complete_window] Computed stable keys for entities at path "${keyingConfig.entity_path}"`
     );
-  }
-
-  // ROLLUP PATH: If this is a condensation rollup, skip content linking
-  if (tokenIsRollup && tokenSourceWindowIds && tokenSourceWindowIds.length > 0) {
-    const depth = tokenDepth ?? 1;
-
-    const sourceIds = tokenSourceWindowIds.map(Number);
-    // getNextNumericId uses a transaction-scoped advisory lock; it MUST run in
-    // the same transaction as the INSERT or the lock releases before the INSERT
-    // and two concurrent device-worker rollup completions race on the PK (both
-    // compute the same MAX(id)+1). Mirror the leaf-window path below.
-    //
-    // source_window_ids is integer[]; the prod pool runs fetch_types: false, so
-    // postgres.js can't serialize a bare JS array (it ships "5,6" and PG throws
-    // `malformed array literal`) — bind via the explicit literal idiom (#1046).
-    const newWindowId = await sql.begin(async (tx) => {
-      const allocatedWindowId = await getNextNumericId(tx, 'watcher_windows');
-      await tx`
-        INSERT INTO watcher_windows (
-          id, watcher_id, version_id, window_start, window_end, granularity,
-          extracted_data, content_analyzed, model_used, client_id, run_metadata,
-          is_rollup, depth, source_window_ids, run_id, created_at
-        ) VALUES (
-          ${allocatedWindowId}, ${watcherId}, ${resolvedVersionId}, ${window_start}, ${window_end}, ${granularity || timeGranularity},
-          ${tx.json(extractedData)}, 0, ${provenanceModel}, ${provenanceClientId}, ${tx.json(provenanceMetadata)},
-          true, ${depth}, ${pgBigintArray(sourceIds)}::int[], ${watcherRunId}, NOW()
-        )
-      `;
-      return allocatedWindowId;
-    });
-
-    logger.info(
-      `[complete_window] Created rollup window ${newWindowId} for watcher ${watcherId} ` +
-        `(depth=${depth}, sources=${tokenSourceWindowIds.join(',')})`
-    );
-
-    return {
-      action: 'complete_window',
-      watcher_id: String(watcherId),
-      window_id: newWindowId,
-      window_start,
-      window_end,
-      content_linked: 0,
-      // Rollups condense existing windows — no fresh signal, so the early
-      // return (before the reaction block) keeps reactions skipped.
-      window_created: true,
-      is_rollup: true,
-      depth,
-      source_window_ids: tokenSourceWindowIds,
-      reaction_status: 'skipped' as const,
-    };
   }
 
   // ============================================
@@ -575,8 +504,7 @@ export async function handleCompleteWindow(
     // watcher_id) is stamped onto each child's metadata — no separate event.
     // Runs on `tx` so the entity + identity writes commit atomically with the
     // window itself. Idempotent across re-runs and concurrent replicas
-    // (entity_identities live-unique key). Skipped on the rollup path (early
-    // return above).
+    // (entity_identities live-unique key).
     // ============================================
     if (keyingConfig) {
       await promoteKeyedEntities({

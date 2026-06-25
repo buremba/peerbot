@@ -669,7 +669,7 @@ function formatGetWatcherResult(result: any, _options: FormatterOptions): string
     md += `## ${idx + 1}. ${window.watcher_name}\n\n`;
 
     md += `**Window**: ${new Date(window.window_start).toLocaleDateString()} - ${new Date(window.window_end).toLocaleDateString()}  \n`;
-    md += `**Granularity**: ${window.granularity}${window.is_rollup ? ' (rollup)' : ''}  \n`;
+    md += `**Granularity**: ${window.granularity}  \n`;
     md += `**Content Analyzed**: ${window.content_analyzed}  \n`;
     md += `**Model**: ${window.model_used}  \n`;
     md += `**Execution Time**: ${window.execution_time_ms}ms\n\n`;

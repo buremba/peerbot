@@ -3,11 +3,11 @@
  *
  * When watcher_id is provided, fetch content for all of the watcher's
  * sources, compute the pending window, and generate a window_token for the
- * complete_window action (plus condensation rollups).
+ * complete_window action.
  */
 
 import type { ContentItem } from '@lobu/connector-sdk';
-import { getNextWatcherGranularity, inferWatcherGranularityFromSchedule } from '@lobu/connector-sdk';
+import { inferWatcherGranularityFromSchedule } from '@lobu/connector-sdk';
 import { type DbClient, parsePgNumberArray } from '../../db/client';
 import type { Env } from '../../index';
 import type { KeyingConfig, UnprocessedRange, WatcherSource } from '../../types/watchers';
@@ -17,11 +17,7 @@ import logger from '../../utils/logger';
 import { getRecentFeedbackSummary } from '../../utils/watcher-feedback';
 import { getAvailableOperations, getPastReactionsSummary } from '../../utils/watcher-reactions';
 import { deriveWatcherExtractionSchema } from '../../utils/watcher-extraction-schema';
-import {
-  computePendingWindow,
-  foldUnprocessedRanges,
-  queryUncondensedWindows,
-} from '../../utils/window-utils';
+import { computePendingWindow, foldUnprocessedRanges } from '../../utils/window-utils';
 import type { GetContentArgs } from './schema';
 import type { ClassifierConfig, GetContentResult } from './types';
 import { parseJson, parseRecordArray } from './types';
@@ -188,8 +184,6 @@ export async function handleWatcherMode(
       cv.prompt as template_prompt,
       cv.keying_config as template_keying_config,
       cv.reactions_guidance,
-      cv.condensation_prompt,
-      cv.condensation_window_count,
       cv.version_sources,
       (SELECT COALESCE(json_agg(json_build_object('id', e.id, 'name', e.name, 'type', et.slug)), '[]'::json) FROM entities e JOIN entity_types et ON et.id = e.entity_type_id WHERE e.id = ANY(i.entity_ids)) as entities
     FROM watchers i
@@ -219,89 +213,6 @@ export async function handleWatcherMode(
     parseJson(watcher.template_keying_config) as KeyingConfig | null,
     watcherId
   );
-
-  // ============================================
-  // Condensation mode: return prompt for rolling up completed leaf windows
-  // ============================================
-  if (args.condensation) {
-    const condensationPrompt = watcher.condensation_prompt as string | null;
-    const condensationWindowCount = Number(watcher.condensation_window_count) || 4;
-
-    if (!condensationPrompt) {
-      throw new Error(
-        `Watcher ${watcherId}'s template does not have a condensation_prompt configured. ` +
-          'Update the template version with a condensation_prompt to enable condensation.'
-      );
-    }
-
-    const uncondensedWindows = await queryUncondensedWindows(sql, watcherId);
-
-    if (uncondensedWindows.length < condensationWindowCount) {
-      return {
-        content: [],
-        total: 0,
-        page: { limit: 0, offset: 0, has_more: false },
-        condensation_ready: false,
-        hints: [
-          `Only ${uncondensedWindows.length} uncondensed windows available, need ${condensationWindowCount}. ` +
-            'Complete more windows before condensation.',
-        ],
-      };
-    }
-
-    // Take the oldest N windows for condensation
-    const sourceWindows = uncondensedWindows.slice(0, condensationWindowCount);
-    const sourceWindowIds = sourceWindows.map((w) => w.id);
-
-    // Build windows context for prompt template
-    const windowsContext = sourceWindows.map((w) => ({
-      ...w,
-      extracted_data:
-        typeof w.extracted_data === 'string' ? JSON.parse(w.extracted_data) : w.extracted_data,
-    }));
-
-    // Render condensation prompt — replace {{windows}} with JSON of window data.
-    // JS String.replace does not recurse into the replacement string,
-    // so content inside windowsJson cannot trigger further {{...}} matches.
-    const windowsJson = JSON.stringify(windowsContext, null, 2);
-    const condensationPromptRendered = condensationPrompt.replace(
-      /\{\{\{?windows\}\}\}?/g,
-      windowsJson
-    );
-
-    // Generate window token with rollup fields
-    const windowStart = sourceWindows[0].window_start;
-    const windowEnd = sourceWindows[sourceWindows.length - 1].window_end;
-
-    const rollupGranularity = getNextWatcherGranularity(timeGranularity) ?? timeGranularity;
-
-    const windowToken = await generateWindowToken(
-      {
-        watcher_id: watcherId,
-        window_start: windowStart,
-        window_end: windowEnd,
-        granularity: rollupGranularity,
-        content_count: 0,
-        content_ids: [],
-        is_rollup: true,
-        source_window_ids: sourceWindowIds,
-        depth: 1,
-      },
-      env
-    );
-
-    return {
-      content: [],
-      total: 0,
-      page: { limit: 0, offset: 0, has_more: false },
-      condensation_ready: true,
-      condensation_prompt_rendered: condensationPromptRendered,
-      window_token: windowToken,
-      window_start: windowStart,
-      window_end: windowEnd,
-      extraction_schema: templateExtractionSchema ?? undefined,
-    };
-  }
 
   const watcherEntityIds = parsePgNumberArray(watcher.entity_ids);
   let sources: WatcherSource[];

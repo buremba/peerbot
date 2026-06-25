@@ -221,12 +221,6 @@ export const GetContentSchema = Type.Object({
       }
     )
   ),
-  condensation: Type.Optional(
-    Type.Boolean({
-      description:
-        'When true with watcher_id, returns condensation prompt and window_token for rolling up completed leaf windows instead of fetching new content.',
-    })
-  ),
 });
 
 export type GetContentArgs = Static<typeof GetContentSchema>;
@@ -254,9 +248,6 @@ export function getIncludeSupersededValidationErrors(args: Partial<GetContentArg
   }
   if (args.before_occurred_at || args.before_id || args.after_occurred_at || args.after_id) {
     errors.push('cursor pagination is not supported');
-  }
-  if (args.condensation) {
-    errors.push('condensation mode is not supported');
   }
 
   return errors;

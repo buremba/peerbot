@@ -50,7 +50,6 @@ export interface WatcherWindow {
   granularity: string;
   window_start: string;
   window_end: string;
-  is_rollup: boolean;
   content_analyzed: number;
   extracted_data: Record<string, unknown>;
   previous_extracted_data?: Record<string, unknown>;

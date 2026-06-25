@@ -795,8 +795,6 @@ export async function executePlan(
         agent_kind: w.agentKind,
         keying_config: w.keyingConfig,
         classifiers: w.classifiers,
-        condensation_prompt: w.condensationPrompt,
-        condensation_window_count: w.condensationWindowCount,
       });
       watcherId = created.watcher_id;
     } else if (row.verb === "update") {
@@ -863,14 +861,6 @@ export async function executePlan(
             : {}),
           ...(versionBound.has("classifiers") && w.classifiers !== undefined
             ? { classifiers: w.classifiers }
-            : {}),
-          ...(versionBound.has("condensation_prompt") &&
-          w.condensationPrompt !== undefined
-            ? { condensation_prompt: w.condensationPrompt }
-            : {}),
-          ...(versionBound.has("condensation_window_count") &&
-          w.condensationWindowCount !== undefined
-            ? { condensation_window_count: w.condensationWindowCount }
             : {}),
         });
       }

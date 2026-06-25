@@ -85,9 +85,6 @@ export interface GetContentResult {
   }>;
   // Hints for the client
   hints?: string[];
-  // Condensation mode fields (watcher-mode only)
-  condensation_ready?: boolean;
-  condensation_prompt_rendered?: string;
 }
 
 // ============================================

@@ -195,13 +195,11 @@ export async function handleCreate(
         id, watcher_id, version, name, description,
         prompt, version_sources,
         keying_config, classifiers,
-        condensation_prompt, condensation_window_count,
         reactions_guidance, change_notes, created_by, created_at
       ) VALUES (
         ${versionId}, ${watcherId}, 1, ${args.name ?? args.slug}, ${args.description ?? null},
         ${args.prompt}, ${toJsonParam(tx, sources)},
         ${toJsonParam(tx, keyingConfig)}, ${toJsonParam(tx, classifiers)},
-        ${args.condensation_prompt ?? null}, ${args.condensation_window_count ?? null},
         ${args.reactions_guidance ?? null}, ${'Initial version'}, ${createdBy}, NOW()
       )
     `;

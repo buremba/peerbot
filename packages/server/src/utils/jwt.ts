@@ -30,10 +30,6 @@ interface WindowTokenPayload {
   granularity: string; // Required for window creation
   content_count: number; // Content count at token generation - for staleness detection
   content_ids: number[]; // Exact event IDs returned to the worker; complete_window links these deterministically
-  // Condensation/rollup fields
-  is_rollup?: boolean; // True when this token is for creating a rollup window
-  source_window_ids?: number[]; // IDs of leaf windows being condensed
-  depth?: number; // Condensation depth: 0=leaf, 1+=rollup tiers
   iat: number; // issued at - returned to caller for staleness detection
   exp: number; // expiration
 }

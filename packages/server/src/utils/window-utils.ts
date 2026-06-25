@@ -109,7 +109,6 @@ export async function computePendingWindow(
     SELECT window_end
     FROM watcher_windows
     WHERE watcher_id = ${watcherId}
-      AND COALESCE(is_rollup, false) = false
     ORDER BY window_end DESC
     LIMIT 1
   `;
@@ -163,9 +162,6 @@ export function buildWindowsSelectClause(): string {
       iw.granularity,
       iw.window_start,
       iw.window_end,
-      iw.is_rollup,
-      iw.depth,
-      iw.source_window_ids,
       iw.content_analyzed,
       iw.extracted_data,
       iw.model_used,
@@ -180,42 +176,6 @@ export function buildWindowsSelectClause(): string {
     LEFT JOIN watcher_versions watcher_v ON i.current_version_id = watcher_v.id
     LEFT JOIN watcher_versions window_v ON iw.version_id = window_v.id
   `.trim();
-}
-
-/**
- * Query uncondensed leaf windows for a watcher.
- * These are depth=0 windows not referenced in any rollup's source_window_ids.
- */
-export async function queryUncondensedWindows(
-  sql: DbClient,
-  watcherId: number | string
-): Promise<
-  Array<{
-    id: number;
-    window_start: string;
-    window_end: string;
-    extracted_data: unknown;
-    content_analyzed: number;
-  }>
-> {
-  const rows = await sql`
-    SELECT ww.id, ww.window_start, ww.window_end, ww.extracted_data, ww.content_analyzed
-    FROM watcher_windows ww
-    WHERE ww.watcher_id = ${watcherId} AND ww.depth = 0
-      AND NOT EXISTS (
-        SELECT 1 FROM watcher_windows rw
-        WHERE rw.is_rollup = true AND rw.watcher_id = ${watcherId}
-          AND ww.id = ANY(rw.source_window_ids)
-      )
-    ORDER BY ww.window_start
-  `;
-  return rows.map((r: any) => ({
-    id: Number(r.id),
-    window_start: r.window_start as string,
-    window_end: r.window_end as string,
-    extracted_data: r.extracted_data,
-    content_analyzed: Number(r.content_analyzed),
-  }));
 }
 
 /**

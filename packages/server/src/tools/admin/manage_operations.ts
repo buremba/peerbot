@@ -1238,17 +1238,24 @@ async function tryApproveEntityFieldChangeRun(
 
   try {
     const result = await applyEntityFieldChangeProposal(proposal, ctx.userId);
+    const staleFields = Object.keys(result.stale);
+    // The human re-edited every proposed field after the watcher queued this — the
+    // proposal is stale. Resolve the run without clobbering the newer human value.
+    const allStale = Object.keys(result.applied).length === 0 && staleFields.length > 0;
     await getDb()`
       UPDATE runs SET status = 'completed', completed_at = NOW(),
         action_output = ${getDb().json(result as unknown as Record<string, unknown>)}
       WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
     `;
+    const summary = allStale
+      ? `Field change skipped — ${staleFields.join(', ')} already changed since proposed`
+      : `Field change applied: ${fieldList}`;
     const eventId = await supersedeActionEvent(
       args.run_id,
       ctx.organizationId,
       'completed',
-      'entity_field_change — completed',
-      `Field change applied: ${fieldList}`,
+      allStale ? 'entity_field_change — skipped (stale)' : 'entity_field_change — completed',
+      summary,
       { output: result as unknown as Record<string, unknown> }
     );
     return {
@@ -1256,7 +1263,9 @@ async function tryApproveEntityFieldChangeRun(
       approved: true,
       run_id: args.run_id,
       event_id: eventId,
-      message: `Field change approved and applied: ${fieldList}.`,
+      message: allStale
+        ? `Field change skipped: ${staleFields.join(', ')} was changed by a human after the watcher proposed it.`
+        : `Field change approved and applied: ${fieldList}.`,
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);

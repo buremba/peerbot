@@ -97,4 +97,39 @@ describe('computeFieldMerge', () => {
     expect(r.blocked).toEqual({ status: { current: 'done', proposed: 'todo' } });
     expect(r.nextMetadata).toEqual({ status: 'done', score: 99 });
   });
+
+  it('deferred apply: stale proposal does NOT clobber a value the human moved since', () => {
+    // Proposal was built when status was 'high'; the human has since moved it to 'medium'.
+    const r = computeFieldMerge({
+      metadata: { status: 'medium' },
+      controls: { status: { set_by: 'usr_1', set_at: NOW } },
+      fields: { status: 'critical' },
+      source: 'human', // approver endorses
+      actorId: 'usr_approver',
+      note: null,
+      nowIso: NOW,
+      expectedCurrent: { status: 'high' },
+    });
+    expect(r.changed).toBe(false);
+    expect(r.applied).toEqual({});
+    expect(r.stale).toEqual({ status: { expected: 'high', live: 'medium' } });
+    expect(r.nextMetadata.status).toBe('medium'); // human's newer value untouched
+  });
+
+  it('deferred apply: proposal applies when the snapshot still matches live', () => {
+    const r = computeFieldMerge({
+      metadata: { status: 'high' },
+      controls: { status: { set_by: 'usr_1', set_at: NOW } },
+      fields: { status: 'critical' },
+      source: 'human',
+      actorId: 'usr_approver',
+      note: null,
+      nowIso: NOW,
+      expectedCurrent: { status: 'high' },
+    });
+    expect(r.changed).toBe(true);
+    expect(r.applied).toEqual({ status: { old: 'high', new: 'critical' } });
+    expect(r.stale).toEqual({});
+    expect(r.nextMetadata.status).toBe('critical');
+  });
 });

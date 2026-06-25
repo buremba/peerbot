@@ -33,12 +33,21 @@ export interface BlockedChange {
   current: unknown;
   proposed: unknown;
 }
+export interface StaleChange {
+  /** The live value the proposal was based on (proposal.current snapshot). */
+  expected: unknown;
+  /** The value actually in metadata now — a human moved it since the proposal. */
+  live: unknown;
+}
 
 export interface FieldMergeResult {
   /** Fields whose value changed and were written to metadata. */
   applied: Record<string, AppliedChange>;
   /** Owned fields a watcher tried to change — NOT written; surface as an approval. */
   blocked: Record<string, BlockedChange>;
+  /** Fields skipped because the live value drifted from the proposal's snapshot
+   *  (a human re-edited the field after the proposal was queued). NOT written. */
+  stale: Record<string, StaleChange>;
   nextMetadata: Record<string, unknown>;
   nextControls: Record<string, FieldControl>;
   changed: boolean;
@@ -72,16 +81,31 @@ export function computeFieldMerge(args: {
   actorId: string | null;
   note: string | null;
   nowIso: string;
+  /** When provided (deferred apply of a queued proposal), each field is written only
+   *  if its live metadata value still equals the snapshot the proposal was built on.
+   *  A drifted field is skipped (`stale`) so a stale approval can't clobber a value
+   *  the human moved after the proposal was queued. */
+  expectedCurrent?: Record<string, unknown> | null;
 }): FieldMergeResult {
-  const { metadata, controls, fields, source, actorId, note, nowIso } = args;
+  const { metadata, controls, fields, source, actorId, note, nowIso, expectedCurrent } = args;
   const nextMetadata: Record<string, unknown> = { ...metadata };
   const nextControls: Record<string, FieldControl> = { ...controls };
   const applied: Record<string, AppliedChange> = {};
   const blocked: Record<string, BlockedChange> = {};
+  const stale: Record<string, StaleChange> = {};
 
   for (const [field, value] of Object.entries(fields)) {
     const current = metadata[field];
     const owned = Object.hasOwn(controls, field);
+
+    // Deferred-apply staleness guard: the human re-edited the field after this
+    // proposal was queued, so the proposal is based on an outdated value — skip it.
+    if (expectedCurrent && Object.hasOwn(expectedCurrent, field)) {
+      if (!sameValue(current, expectedCurrent[field])) {
+        stale[field] = { expected: expectedCurrent[field] ?? null, live: current ?? null };
+        continue;
+      }
+    }
 
     // A watcher must never overwrite a human-owned field — propose instead.
     if (source === 'watcher' && owned) {
@@ -104,6 +128,7 @@ export function computeFieldMerge(args: {
   return {
     applied,
     blocked,
+    stale,
     nextMetadata,
     nextControls,
     changed: Object.keys(applied).length > 0,
@@ -123,6 +148,8 @@ export async function mergeEntityFields(params: {
   /** User id for a human edit; null/system otherwise. */
   actorId: string | null;
   note?: string | null;
+  /** Snapshot the proposal was built on (deferred-apply staleness guard). */
+  expectedCurrent?: Record<string, unknown> | null;
 }): Promise<FieldMergeResult> {
   const { tx, entityId, fields, source, actorId } = params;
 
@@ -146,6 +173,7 @@ export async function mergeEntityFields(params: {
     actorId,
     note: params.note ?? null,
     nowIso: new Date().toISOString(),
+    expectedCurrent: params.expectedCurrent ?? null,
   });
 
   if (merge.changed) {

@@ -115,7 +115,7 @@ describe('validateTableQuery', () => {
  */
 describe('QUERYABLE_SCHEMA vs database (drift detection)', () => {
   const INTENTIONALLY_OMITTED: Record<string, Set<string>> = {
-    entities: new Set(['embedding', 'content_tsv', 'content_hash']),
+    entities: new Set(['embedding', 'content_tsv', 'content_hash', 'field_controls']),
     events: new Set([]),
     connections: new Set(['credentials', 'unhealthy_alerted_at']),
     // Large per-connector JSONB blobs — too big and structure-dependent to expose

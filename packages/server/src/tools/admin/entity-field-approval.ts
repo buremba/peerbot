@@ -44,6 +44,34 @@ export async function proposeEntityFieldChange(
   proposal: EntityFieldChangeProposal
 ): Promise<{ runId: number; eventId: number; approvalUrl?: string }> {
   const sql = getDb();
+
+  // Idempotency: complete_window is replay-safe (retries + concurrent replicas),
+  // so the same blocked field-change can be proposed more than once. Collapse to a
+  // single pending approval — if an identical pending run already exists for this
+  // org+entity+proposed-fields, reuse it instead of stacking duplicate cards.
+  const existing = await sql<{ id: number; event_id: number | null }>`
+    SELECT r.id,
+           (SELECT e.id FROM events e
+              WHERE e.run_id = r.id
+                AND e.interaction_status = 'pending'
+              ORDER BY e.id DESC LIMIT 1) AS event_id
+    FROM runs r
+    WHERE r.organization_id = ${ctx.organizationId}
+      AND r.run_type = 'internal'
+      AND r.action_key = ${ENTITY_FIELD_CHANGE_ACTION_KEY}
+      AND r.approval_status = 'pending'
+      AND r.status = 'pending'
+      AND r.action_input->>'entity_id' = ${String(proposal.entity_id)}
+      AND r.action_input->'fields' = ${sql.json(proposal.fields)}::jsonb
+    ORDER BY r.id DESC
+    LIMIT 1
+  `;
+  if (existing.length > 0) {
+    const runId = Number(existing[0].id);
+    const eventId = existing[0].event_id != null ? Number(existing[0].event_id) : 0;
+    return { runId, eventId };
+  }
+
   const inserted = await sql`
     INSERT INTO runs (
       organization_id, run_type, action_key, action_input,
@@ -121,6 +149,8 @@ export async function applyEntityFieldChangeProposal(
       source: 'human',
       actorId: approverUserId,
       note: proposal.reason ?? null,
+      // Don't overwrite a field the human re-edited after this proposal was queued.
+      expectedCurrent: proposal.current ?? null,
     })
   );
 }

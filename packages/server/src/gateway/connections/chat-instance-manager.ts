@@ -186,7 +186,7 @@ const SLACK_HOME_NOTIFICATION_LIMIT = 5;
  * Notifications are the user's own, so they span all their orgs; `resource_url`
  * already carries each item's org slug for the deep link.
  */
-async function resolveSlackHomeUserInbox(
+export async function resolveSlackHomeUserInbox(
   slackUserId: string,
   teamId: string,
 ): Promise<SlackHomeInbox | null> {

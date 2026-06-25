@@ -279,11 +279,11 @@
     },
     {
       "id": "openai",
-      "name": "OpenAI",
-      "description": "OpenAI Models",
+      "name": "OpenAI API",
+      "description": "OpenAI platform API. Uses your OpenAI API key (sk-...), billed per token.",
       "providers": [
         {
-          "displayName": "OpenAI",
+          "displayName": "OpenAI API",
           "iconUrl": "https://www.google.com/s2/favicons?domain=openai.com&sz=128",
           "envVarName": "OPENAI_API_KEY",
           "upstreamBaseUrl": "https://api.openai.com/v1",

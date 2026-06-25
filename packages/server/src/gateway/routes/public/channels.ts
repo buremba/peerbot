@@ -371,7 +371,11 @@ export function createChannelBindingRoutes(
 
     try {
       // Resolve the install and confirm it belongs to the caller's org — never
-      // bind across tenants off a guessed external id.
+      // bind across tenants off a guessed external id. Require an ACTIVE install:
+      // `resolveByExternalId` falls back to the most-recent row when no active one
+      // exists, so a revoked/suspended workspace must not yield a bot token or a
+      // binding (the token may be dead and the workspace was intentionally turned
+      // off). Treat non-active as not-found.
       const install = await config.appInstallationStore.resolveByExternalId(
         "slack",
         externalId
@@ -379,7 +383,8 @@ export function createChannelBindingRoutes(
       if (
         !install ||
         install.provider !== "slack" ||
-        install.organizationId !== organizationId
+        install.organizationId !== organizationId ||
+        install.status !== "active"
       ) {
         return errorResponse(c, "Installation not found", 404);
       }

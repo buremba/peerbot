@@ -9,6 +9,7 @@ import { AgentMetadataStore } from "../auth/agent-metadata-store.js";
 import { UserAgentsStore } from "../auth/user-agents-store.js";
 import { createPostgresAgentConfigStore } from "../../lobu/stores/postgres-stores.js";
 import { createChannelBindingRoutes } from "../routes/public/channels.js";
+import { listCatalogConnectorDefinitions } from "../../utils/connector-catalog.js";
 import { setAuthProvider } from "../routes/public/settings-auth.js";
 import type { SlackWebApi } from "../connections/slack-web.js";
 import {
@@ -35,11 +36,13 @@ function makeSlackWebStub() {
   const posted: Array<{ channel: string; text: string }> = [];
   let openDmCalledWith: string | null = null;
   const api: SlackWebApi = {
-    async openDm(_botToken, slackUserId) {
+    async openDm(botToken, slackUserId) {
+      expect(botToken).toBe(BOT_TOKEN);
       openDmCalledWith = slackUserId;
       return DM_CHANNEL_ID;
     },
-    async postMessage(_botToken, channel, text) {
+    async postMessage(botToken, channel, text) {
+      expect(botToken).toBe(BOT_TOKEN);
       posted.push({ channel, text });
     },
   };
@@ -59,7 +62,13 @@ describe("channel installation routes", () => {
 
   beforeAll(async () => {
     await ensureDbForGatewayTests();
-  });
+    // Warm the connector catalog: GET /installations joins connector metadata via
+    // listCatalogConnectorDefinitions, which cold-compiles the bundled connectors
+    // (~5s) the first time when no prebuilt manifest exists (CI's integration job
+    // skips build:server). Warming here (cached) keeps the per-test handler call
+    // under the 5s timeout.
+    await listCatalogConnectorDefinitions();
+  }, 30_000);
 
   beforeEach(async () => {
     await resetTestDatabase();
@@ -208,5 +217,32 @@ describe("channel installation routes", () => {
       )
     );
     expect(res.status).toBe(404);
+  });
+
+  test("POST connect-dm rejects a revoked/suspended install — no DM, no binding", async () => {
+    authAs(USER_ID);
+    // Turn the connected workspace off. A revoked/suspended install must not
+    // yield a bot token or create a binding (the token may be dead and the
+    // workspace was intentionally disabled).
+    await orgContext.run({ organizationId: ORG_ID }, () =>
+      createPostgresAppInstallationStore().setStatusByExternalId(
+        "slack",
+        EXTERNAL_ID,
+        "suspended"
+      )
+    );
+    const stub = makeSlackWebStub();
+    const res = await orgContext.run({ organizationId: ORG_ID }, () =>
+      createApp(stub.api).request(
+        `/api/v1/agents/${AGENT_ID}/channels/installations/${EXTERNAL_ID}/connect-dm`,
+        { method: "POST", headers: { host: "localhost" } }
+      )
+    );
+    expect(res.status).toBe(404);
+    expect(stub.openDmCalledWith).toBeNull();
+    const bindings = await orgContext.run({ organizationId: ORG_ID }, () =>
+      channelBindingService.listBindings(AGENT_ID, ORG_ID)
+    );
+    expect(bindings).toHaveLength(0);
   });
 });

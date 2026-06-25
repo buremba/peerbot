@@ -23,7 +23,6 @@ import type {
   WatcherWindow,
   WatcherWindowReaction,
 } from '../types/watchers';
-import { deriveWatcherRender } from '../utils/watcher-render';
 import {
   buildEntityLinkUnion,
   STANDARD_IDENTITY_NAMESPACES,
@@ -847,17 +846,6 @@ async function getWatcherImpl(
     // Sources come from watcher row (or version if present)
     const watcherSources = parseWatcherSources(watcherRow.sources);
 
-    // Render home: an entity-typed watcher renders its window via the target
-    // entity type's render (consolidation — render lives on the type, sibling of
-    // the extraction-schema derivation; there is no per-watcher inline override).
-    // The client iterates the record array at entity_render_path, rendering each
-    // record with entity_type_render (the same template the entity detail page uses).
-    const derivedRender = await deriveWatcherRender(
-      sql,
-      ctx.organizationId,
-      (version?.keying_config as KeyingConfig | null | undefined) ?? null
-    );
-
     watcherMetadata = {
       watcher_id: watcherRow.watcher_id,
       watcher_name: watcherRow.name || (version?.name as string) || 'Watcher',
@@ -873,8 +861,6 @@ async function getWatcherImpl(
       prompt: version?.prompt as string | undefined,
       description: (version?.description as string) || undefined,
       keying_config: (version?.keying_config as KeyingConfig | null | undefined) ?? undefined,
-      entity_type_render: derivedRender?.render,
-      entity_render_path: derivedRender?.entityPath,
       rendered_prompt: version?.prompt
         ? renderPromptPreview(version.prompt as string, entitiesForTemplate)
         : undefined,

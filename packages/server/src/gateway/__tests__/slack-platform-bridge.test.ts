@@ -467,7 +467,9 @@ describe("Slack platform bridge", () => {
     const publishHomeView = mock(async () => undefined);
     await h.open("U123", publishHomeView);
 
-    expect(resolveUserInbox).toHaveBeenCalledWith("U123");
+    // resolveUserInbox is called with (slackUserId, teamId). The connection()
+    // helper has no metadata.teamId, so teamId falls back to '' (preview/unknown).
+    expect(resolveUserInbox).toHaveBeenCalledWith("U123", "");
     const text = blocksText(publishHomeView.mock.calls[0]![1] as any);
     expect(text).toContain("Notifications");
     expect(text).toContain("2 unread");
@@ -478,6 +480,21 @@ describe("Slack platform bridge", () => {
     // unread vs read markers present
     expect(text).toContain(":large_blue_circle:");
     expect(text).toContain(":white_circle:");
+  });
+
+  test("passes the connection team_id to resolveUserInbox for workspace installs", async () => {
+    const h = makeHomeChat();
+    const resolveUserInbox = mock(async () => null);
+    registerSlackAppHome(
+      h.chat,
+      connection({ metadata: { botUsername: "Lobster", teamId: "T_WORKSPACE" } }),
+      { publicGatewayUrl: "https://gw.example/", resolveUserInbox },
+    );
+    const publishHomeView = mock(async () => undefined);
+    await h.open("U123", publishHomeView);
+    // Must be scoped to the connection's workspace — a different workspace's
+    // identity row with the same platform_user_id must NOT be returned.
+    expect(resolveUserInbox).toHaveBeenCalledWith("U123", "T_WORKSPACE");
   });
 
   test("omits the notifications section when the user has no linked inbox", async () => {

@@ -222,9 +222,14 @@ interface SlackAppHomeDeps {
   ) => Promise<SlackHomeContext | null>;
   /**
    * Resolves the viewing Slack user's personal notification inbox, or null when
-   * they have no linked Lobu identity. Read-only; failures degrade to no inbox.
+   * they have no linked Lobu identity. `teamId` scopes the lookup to the
+   * correct Slack workspace (empty string for hosted-preview connections, which
+   * write identity rows with team_id=''). Read-only; failures degrade to no inbox.
    */
-  resolveUserInbox?: (slackUserId: string) => Promise<SlackHomeInbox | null>;
+  resolveUserInbox?: (
+    slackUserId: string,
+    teamId: string,
+  ) => Promise<SlackHomeInbox | null>;
 }
 
 // Internal plumbing MCPs (e.g. the Lobu memory backend) — not user integrations.
@@ -498,10 +503,16 @@ async function buildSlackHomeBlocks(
   ];
 
   // Personal notifications, for users who've linked a Lobu identity (both
-  // preview and BYO connections). Resolved by Slack user id; absent → skipped.
+  // preview and BYO connections). Scoped by teamId to prevent cross-workspace
+  // leaks when platform_user_id collides across Slack workspaces. Preview
+  // connections write identity rows with team_id='', so we pass '' there.
+  const teamId =
+    typeof connection.metadata?.teamId === "string"
+      ? connection.metadata.teamId
+      : "";
   let inbox: SlackHomeInbox | null = null;
   try {
-    inbox = (await deps.resolveUserInbox?.(userId)) ?? null;
+    inbox = (await deps.resolveUserInbox?.(userId, teamId)) ?? null;
   } catch (error) {
     logger.warn(
       { error, userId },

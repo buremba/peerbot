@@ -176,21 +176,25 @@ const SLACK_HOME_NOTIFICATION_LIMIT = 5;
 /**
  * The viewing Slack user's personal notification inbox for the App Home tab.
  *
- * `app_home_opened` carries no team_id and the preview Slack app has no OAuth
- * installs (it lives in a single workspace), so we map Slack user → Lobu user
- * by `platform_user_id` alone and bail if it's ambiguous (>1 identity). Returns
- * null when the user has no linked identity — the home tab then shows the setup
- * prompt instead. Notifications are the user's own, so they span all their orgs;
- * `resource_url` already carries each item's org slug for the deep link.
+ * `app_home_opened` carries no team_id, so the team_id must come from the
+ * connection's own metadata. For workspace installs this is the real Slack team
+ * id; for the hosted-preview connection (no OAuth, single workspace) it is the
+ * empty string, which is how the preview path writes identity rows. Scoping by
+ * team_id prevents a platform_user_id collision across workspaces from leaking
+ * one workspace user's inbox onto another. Returns null when the user has no
+ * linked identity — the home tab then shows the setup prompt instead.
+ * Notifications are the user's own, so they span all their orgs; `resource_url`
+ * already carries each item's org slug for the deep link.
  */
 async function resolveSlackHomeUserInbox(
   slackUserId: string,
+  teamId: string,
 ): Promise<SlackHomeInbox | null> {
   try {
     const db = getDb();
     const idRows = (await db`
       SELECT lobu_user_id FROM chat_user_identities
-      WHERE platform = 'slack' AND platform_user_id = ${slackUserId}
+      WHERE platform = 'slack' AND team_id = ${teamId} AND platform_user_id = ${slackUserId}
       LIMIT 2
     `) as unknown as { lobu_user_id: string }[];
     if (idRows.length !== 1) return null;

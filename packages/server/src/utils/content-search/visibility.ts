@@ -3,6 +3,8 @@
  * buildOrgScopeWhere, buildConnectionVisibilityClause, buildExcludeWatcherClause.
  */
 
+import { compileConnectionFkVisibility } from '../../authz/connection-visibility';
+import type { AuthzScope } from '../../authz/scope';
 import { validateNumericId } from '../sql-validation';
 
 /**
@@ -78,6 +80,11 @@ export function buildOrgScopeWhere(options: {
  *
  * Returns an empty fragment when no scope is requested (callers like the
  * watcher-mode/condensation path that already select by other constraints).
+ *
+ * Thin adapter over the one connection-visibility compiler (M1): builds an
+ * {@link AuthzScope} from this seam's legacy `{ organizationId, userId }` shape
+ * and defers the predicate to {@link compileConnectionFkVisibility}, so the rule
+ * lives in exactly one place.
  */
 export function buildConnectionVisibilityClause(
   options: {
@@ -89,15 +96,9 @@ export function buildConnectionVisibilityClause(
 ): { sql: string; params: Array<string | number | null> } {
   if (!options.organizationId) return { sql: '', params: [] };
 
-  const orgParam = `$${options.baseParamIndex}::text`;
-  const userParam = `$${options.baseParamIndex + 1}::text`;
-  return {
-    sql: `AND (${tableAlias}.connection_id IS NULL OR ${tableAlias}.connection_id IN (
-      SELECT vc.id FROM public.connections vc
-      WHERE vc.organization_id = ${orgParam}
-        AND vc.deleted_at IS NULL
-        AND (vc.visibility = 'org' OR (${userParam} IS NOT NULL AND vc.created_by = ${userParam}))
-    ))`,
-    params: [options.organizationId, options.userId ?? null],
+  const scope: AuthzScope = {
+    organizationId: options.organizationId,
+    principal: options.userId ?? null,
   };
+  return compileConnectionFkVisibility(scope, options.baseParamIndex, tableAlias);
 }

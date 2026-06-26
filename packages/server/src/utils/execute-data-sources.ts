@@ -556,6 +556,7 @@ export function buildScopedQuery(
       // audit/debug surface and there's no cross-user leak (a deleted private
       // connection still carries created_by, so the visibility predicate blocks
       // it). The per-user predicate is the security boundary.
+      // security-allowed: see block comment above the for-loop
       ctes.push(
         `"${safeName}" AS (SELECT ${sel(table, 'cn')} FROM public.connections cn WHERE cn.organization_id = ${orgP}` +
           connectionRowVisibility('cn') +
@@ -569,13 +570,13 @@ export function buildScopedQuery(
           `AND ent.organization_id = ${orgP}))`
       );
     } else if (table === 'event_classifications') {
-      // security-allowed: see block comment above the for-loop
       // `excerpts`/`values`/`reasoning` carry verbatim source-event content, so
       // the EXISTS must apply per-user connection visibility on `ev` — otherwise
       // any member reads classifications of another user's private-connection
       // events (the same leak the events CTE closes, on the joined table).
       // Use current_event_records (not public.events) for tombstone parity with
       // the events CTE — a superseded event's classifications shouldn't surface.
+      // security-allowed: see block comment above the for-loop
       ctes.push(
         `"${safeName}" AS (SELECT ${sel(table, 'ec')} FROM public.event_classifications ec WHERE EXISTS (` +
           'SELECT 1 FROM public.current_event_records ev ' +
@@ -618,6 +619,7 @@ export function buildScopedQuery(
       // Every feed derives from a connection (`connection_id` NOT NULL), so a
       // private connection's feeds (display_name, config, last_error) are
       // per-user too — gate via the owning connection's visibility.
+      // security-allowed: see block comment above the for-loop
       ctes.push(
         `"${safeName}" AS (SELECT ${sel(table, 'fd')} FROM public.feeds fd WHERE fd.organization_id = ${orgP}` +
           eventConnVisibility('fd') +

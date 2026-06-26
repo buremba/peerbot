@@ -50,6 +50,28 @@ describe('formatToolResult', () => {
       const md = formatToolResult('search_memory', result);
       expect(md).toContain('No Results Found');
     });
+
+    it('should render channel-conversation hits instead of "No Results"', () => {
+      const result = {
+        entity: null,
+        matches: [],
+        conversation_messages: [
+          {
+            platform: 'slack',
+            channel_id: 'C-RECAP',
+            thread_id: null,
+            author_name: 'Alice',
+            text: 'We reviewed the quarterly revenue forecast',
+            occurred_at: '2026-06-26T10:00:00.000Z',
+          },
+        ],
+      };
+      const md = formatToolResult('search_memory', result);
+      expect(md).not.toContain('No Results Found');
+      expect(md).toContain('Channel Conversation');
+      expect(md).toContain('quarterly revenue forecast');
+      expect(md).toContain('Alice');
+    });
   });
 
   describe('query_sql tool', () => {

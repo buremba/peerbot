@@ -317,10 +317,16 @@ export function formatToolResult(
  */
 function formatSearchResult(result: any, options: FormatterOptions): string {
   const { entity, matches, suggestion } = result;
+  const hasContent = result.content?.length > 0;
+  const hasConversation = result.conversation_messages?.length > 0;
 
   let md: string;
 
-  if (!entity && matches.length === 0) {
+  if (!entity && matches.length === 0 && (hasContent || hasConversation)) {
+    // Recall hits with no entity match — don't claim "No Results"; the content
+    // and channel-conversation sections appended below carry the answer.
+    md = '# 🔍 Search Results\n\n';
+  } else if (!entity && matches.length === 0) {
     md = `# ❌ No Results Found\n\n${suggestion || 'No matching entities found.'}\n\n`;
     if (result.existing_entities?.length > 0) {
       md += '## Existing Entities\n\n';
@@ -353,11 +359,31 @@ function formatSearchResult(result: any, options: FormatterOptions): string {
     );
   }
 
-  // Append content snippets if present
-  if (result.content && result.content.length > 0) {
+  // Append recall sources if present.
+  if (hasContent) {
     md += formatContentSnippets(result.content);
   }
+  if (hasConversation) {
+    md += formatConversationMessages(result.conversation_messages);
+  }
 
+  return md;
+}
+
+/** Render channel-conversation recall hits (`channel_messages`) — keeps default
+ * (non-JSON) MCP clients from seeing "No Results" when search_memory matched
+ * only past channel conversation. */
+function formatConversationMessages(messages: any[]): string {
+  let md = `## Channel Conversation (${messages.length})\n\n`;
+  for (const m of messages) {
+    const who = m.author_name || 'unknown';
+    const where = m.channel_id ? ` in #${m.channel_id}` : '';
+    const when = m.occurred_at ? ` · ${new Date(m.occurred_at).toLocaleString()}` : '';
+    md += `**${who}**${where}${when}\n`;
+    const text = m.text || '';
+    const excerpt = text.length > 300 ? `${text.slice(0, 300)}...` : text;
+    if (excerpt) md += `> ${excerpt.replace(/\n/g, '\n> ')}\n\n`;
+  }
   return md;
 }
 

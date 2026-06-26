@@ -10,8 +10,8 @@ import { buildConnectionVisibilityClause } from '../../utils/content-search/visi
 import {
   compileConnectionFkVisibility,
   compileConnectionRowVisibility,
-} from '../connection-visibility';
-import { authzScopeFromToolContext, headlessScope } from '../scope';
+} from '../../authz/connection-visibility';
+import { authzScopeFromToolContext, headlessScope } from '../../authz/scope';
 
 const scope = { organizationId: 'org_test', principal: 'user_a' };
 

@@ -52,6 +52,21 @@ export type ExecutorJob =
       sort?: { column: string; order: 'asc' | 'desc' };
     }
   | {
+      // Virtual-feed RECALL: same live, no-persistence read as `query`, plus the
+      // caller's keyword `terms` pushed down to the source.
+      mode: 'search';
+      feedKey?: string | null;
+      query: string;
+      terms: string[];
+      config: Record<string, unknown>;
+      credentials: SyncCredentials | null;
+      sessionState: Record<string, unknown> | null;
+      env: Record<string, string | undefined>;
+      limit?: number;
+      offset?: number;
+      sort?: { column: string; order: 'asc' | 'desc' };
+    }
+  | {
       // Subscribe with the provider at connect time so deliveries flow to
       // `callbackUrl` (`/api/v1/webhooks/:connectionId`). Runs once per
       // connection, not per delivery. Returns the provider subscription id +
@@ -98,6 +113,12 @@ export type ExecutorResult =
     }
   | {
       mode: 'query';
+      rows: Record<string, unknown>[];
+      columns?: { name: string; type: string }[];
+      total?: number;
+    }
+  | {
+      mode: 'search';
       rows: Record<string, unknown>[];
       columns?: { name: string; type: string }[];
       total?: number;

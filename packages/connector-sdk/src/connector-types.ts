@@ -430,6 +430,17 @@ export interface FeedDefinition {
    */
   userManaged?: boolean;
   /**
+   * When true, this feed is a VIRTUAL feed: it is read LIVE against the source
+   * via {@link ConnectorRuntime.query} (or {@link ConnectorRuntime.search} for
+   * keyword recall) at read time and NEVER synced — no events are persisted, no
+   * checkpoint is kept, and the feed scheduler never selects it for `sync()`.
+   * A user-configured virtual feed is a `feeds` row with `virtual = true` whose
+   * sync-lifecycle columns (schedule / next_run_at / checkpoint) stay NULL.
+   * The live query lives in the feed's stored `config` (for the postgres
+   * connector, `config.query` — the same read-only SELECT shape sync uses).
+   */
+  virtual?: boolean;
+  /**
    * Routes inbound app-webhook deliveries to this feed. Lives on the feed (not
    * the connector's webhook schema) because feeds_schema is the persisted,
    * server-readable surface — the app-webhook router reads this to dispatch a
@@ -874,6 +885,20 @@ export interface QueryResult {
   columns?: { name: string; type: string }[];
   /** Total matching rows (for pagination), when cheaply available. */
   total?: number;
+}
+
+/**
+ * Context passed to ConnectorRuntime.search() — a virtual-feed RECALL read.
+ * Same live, read-only, no-persistence contract as {@link QueryContext}, plus
+ * the keyword `terms` to push DOWN to the external source (e.g. an `ILIKE`
+ * predicate over the validated subquery), so recall is computed at the source
+ * instead of pulling the whole feed and filtering in-process. A connector that
+ * does not implement `search()` signals "recall over virtual unsupported" — a
+ * capability gap, not a runtime branch.
+ */
+export interface SearchContext<F = Record<string, unknown>> extends QueryContext<F> {
+  /** Keyword terms to match at the source. A row matches when every term hits at least one column. */
+  terms: string[];
 }
 
 // =============================================================================

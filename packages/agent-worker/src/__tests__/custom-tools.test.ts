@@ -28,7 +28,6 @@ describe("createOpenClawCustomTools", () => {
       "upload_file",
       "generate_image",
       "generate_audio",
-      "get_channel_history",
       "list_conversations",
       "read_conversation",
       "send_message",

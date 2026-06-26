@@ -949,8 +949,9 @@ Replace "YOUR_PROMPT_HERE" with the user's request. These agents can read/write 
 
   instructionParts.push(`## Conversation History
 
-You have access to get_channel_history to view previous messages in this thread.
-Use it when the user references past discussions or you need context.`);
+Use search_memory to look up past discussion — it returns matching messages from
+your channels (conversation_messages) alongside saved knowledge. Use it when the
+user references earlier discussion or you need prior context.`);
 
   // Owns the decision to force-end a turn so it never depends on the model
   // voluntarily stopping. AskUser calls `terminate("ask-user")` after posting

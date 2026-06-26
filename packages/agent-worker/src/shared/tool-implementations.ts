@@ -154,7 +154,7 @@ export interface GatewayParams {
   /**
    * Platform identifier (e.g. "slack", "telegram"). Genuinely absent for some
    * callers (tests, non-platform contexts), so optional here — but there is
-   * NO silent default: tools that need it (get_channel_history) throw if it
+   * NO silent default: tools that need it (read_conversation) throw if it
    * is missing.
    */
   platform?: string;
@@ -916,84 +916,6 @@ export async function generateAudio(
         `Voice message sent successfully (generated with ${provider}).`,
       uploadLog: (provider) => `Audio generated and sent using ${provider}`,
     },
-  });
-}
-
-// ============================================================================
-// get_channel_history
-// ============================================================================
-
-export async function getChannelHistory(
-  gw: GatewayParams,
-  args: { limit?: number; before?: string }
-): Promise<TextResult> {
-  return withErrorHandling("get_channel_history", async () => {
-    const limit = Math.min(Math.max(args.limit || 50, 1), 100);
-    const platform = gw.platform;
-    if (!platform) {
-      // No silent fallback: defaulting to "slack" returned another platform's
-      // (empty/wrong) history. Surface the wiring bug instead.
-      throw new Error("platform is required for get_channel_history");
-    }
-    logger.info(
-      `get_channel_history: limit=${limit}, before=${args.before || "none"}`
-    );
-
-    const params = new URLSearchParams({
-      platform,
-      channelId: gw.channelId,
-      conversationId: gw.conversationId,
-      limit: String(limit),
-    });
-
-    if (args.before) {
-      params.set("before", args.before);
-    }
-
-    interface HistoryResult {
-      messages: Array<{
-        timestamp: string;
-        user: string;
-        text: string;
-        isBot?: boolean;
-      }>;
-      nextCursor: string | null;
-      hasMore: boolean;
-      note?: string;
-    }
-
-    const { data, error } = await gatewayFetch<HistoryResult>(
-      gw,
-      `/internal/history?${params}`,
-      {},
-      "Failed to fetch channel history"
-    );
-    if (error) return error;
-    const history = data!;
-
-    if (history.note) {
-      return textResult(history.note);
-    }
-
-    if (history.messages.length === 0) {
-      return textResult("No messages found in channel history.");
-    }
-
-    const formatted = history.messages
-      .map((msg) => {
-        const time = new Date(msg.timestamp).toLocaleString();
-        const sender = msg.isBot ? `[Bot] ${msg.user}` : msg.user;
-        return `[${time}] ${sender}: ${msg.text}`;
-      })
-      .join("\n\n");
-
-    let result = `Found ${history.messages.length} messages:\n\n${formatted}`;
-
-    if (history.hasMore && history.nextCursor) {
-      result += `\n\n---\nMore messages available. Use before="${history.nextCursor}" to fetch older messages.`;
-    }
-
-    return textResult(result);
   });
 }
 

@@ -25,10 +25,6 @@ export const CUSTOM_TOOL_METADATA: Record<string, CustomToolMetadata> = {
     description:
       "Generate audio from text (text-to-speech). Use when you want to respond with a voice message, read content aloud, or when the user asks for audio output.",
   },
-  get_channel_history: {
-    description:
-      "Fetch previous messages from this conversation thread. Use when the user references past discussions, asks 'what did we talk about', or you need context.",
-  },
   ask_user: {
     description:
       "Posts a question with button options to the user. Session ends after posting. The user's response will arrive as a new message in the next session.",
@@ -94,9 +90,9 @@ export const TOOL_INTENT_RULES: ToolIntentRule[] = [
   {
     id: "conversation-history",
     title: "Thread History",
-    tools: ["get_channel_history"],
+    tools: ["search_memory"],
     instructionLines: [
-      "Use get_channel_history when the user references earlier discussion or you need prior thread context.",
+      "Use search_memory when the user references earlier discussion or you need prior thread context — it returns matching past channel messages (conversation_messages) from your channels alongside saved knowledge.",
     ],
     patterns: [
       /\b(earlier|previous|past)\b.*\b(thread|message|messages|discussion|conversation)\b/i,

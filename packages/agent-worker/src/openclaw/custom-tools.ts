@@ -10,7 +10,6 @@ import {
   checkMcpLogin,
   generateAudio,
   generateImage,
-  getChannelHistory,
   listConversations,
   logoutMcp,
   maybePostApprovalCard,
@@ -91,7 +90,7 @@ export function createOpenClawCustomTools(params: {
     workerToken: params.workerToken,
     channelId: params.channelId,
     conversationId: params.conversationId,
-    // No silent default — tools that need the platform (get_channel_history)
+    // No silent default — tools that need the platform (read_conversation)
     // fail loudly at the point of use instead of behaving as if on Slack.
     platform: params.platform,
     workspaceDir: params.workspaceDir,
@@ -193,24 +192,6 @@ export function createOpenClawCustomTools(params: {
         ),
       }),
       run: (args) => generateAudio(gw, args),
-    }),
-
-    createGatewayTool({
-      name: "get_channel_history",
-      parameters: Type.Object({
-        limit: Type.Optional(
-          Type.Number({
-            description: "Number of messages to fetch (default 50, max 100)",
-          })
-        ),
-        before: Type.Optional(
-          Type.String({
-            description:
-              "ISO timestamp cursor - fetch messages before this time (for pagination)",
-          })
-        ),
-      }),
-      run: (args) => getChannelHistory(gw, args),
     }),
 
     createGatewayTool({

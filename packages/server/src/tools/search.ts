@@ -12,6 +12,7 @@ import { hasRequiredMcpScope } from '../auth/tool-access';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { entityLinkMatchSql, searchContentByText } from '../utils/content-search';
+import { resolveBoundChannelRows, stripPlatformPrefix } from '../gateway/channels/bound-channels';
 import { toVectorLiteral } from '../utils/entity-management';
 import { ToolUserError } from '../utils/errors';
 import logger from '../utils/logger';
@@ -210,6 +211,20 @@ interface ContentSnippet {
   entity_ids: number[];
 }
 
+// A keyword/recency hit from the chat transcript (`channel_messages`). Distinct
+// from ContentSnippet on purpose: these are NOT `events`, so they carry no
+// event id (their `id` would mislead a get_content follow-up) and no embedding
+// similarity. They let search_memory surface past channel conversation without
+// a separate get_channel_history tool — see project_conversation_feeds_virtual.
+interface ConversationSnippet {
+  platform: string;
+  channel_id: string;
+  thread_id: string | null;
+  author_name: string | null;
+  text: string;
+  occurred_at: string | null;
+}
+
 interface UnifiedSearchResult {
   entity_type: string | null;
   entity: Entity | null;
@@ -223,6 +238,10 @@ interface UnifiedSearchResult {
     content_count: number;
   }>;
   content?: ContentSnippet[];
+  /** Past chat-channel messages matching the query, scoped to the agent's own
+   * bound channels. Replaces the get_channel_history tool — read past convos
+   * through the same search call. */
+  conversation_messages?: ConversationSnippet[];
   discovery_status?: 'not_found' | 'complete' | 'discovering';
   suggestion?: string;
   view_url?: string;
@@ -248,9 +267,13 @@ function emptyResult(overrides: Partial<UnifiedSearchResult> = {}): UnifiedSearc
   };
 }
 
-function withContent<T extends UnifiedSearchResult>(result: T, content: ContentSnippet[]): T {
-  if (content.length > 0) result.content = content;
-  return result;
+function withRecall<T extends UnifiedSearchResult>(
+  result: T,
+  recall: Partial<UnifiedSearchResult>
+): T {
+  // Each recall source already omits its facet when empty, so a plain merge is
+  // enough — no per-facet guards, no type-switch.
+  return Object.assign(result, recall);
 }
 
 // ============================================
@@ -303,6 +326,160 @@ async function fetchContentSnippets(
   }));
 }
 
+// Generic "what did we talk about" recall words carry no signal against a
+// transcript — if a prompt is ONLY these, keyword matching would return nothing,
+// so we fall back to recency (the "catch me up" case get_channel_history served).
+const RECALL_STOPWORDS = new Set([
+  'the', 'and', 'you', 'our', 'what', 'did', 'was', 'were', 'are', 'has', 'had',
+  'about', 'talk', 'talked', 'talking', 'discuss', 'discussed', 'discussion',
+  'earlier', 'previous', 'prev', 'past', 'before', 'recent', 'recently', 'lately',
+  'message', 'messages', 'thread', 'threads', 'conversation', 'conversations',
+  'history', 'said', 'say', 'tell', 'told', 'catch', 'again', 'this', 'that',
+  'they', 'them', 'here', 'there', 'with', 'from', 'your', 'mine', 'last', 'into',
+]);
+
+/**
+ * Keyword/recency hits from the chat transcript (`channel_messages`) — no
+ * embeddings. Scoped HARD to the channels the calling agent is bound to
+ * (`resolveBoundChannelRows`), which IS the tenant fence: channel_messages has
+ * no agent_id/user_id of its own, so an agent may only recall its own
+ * conversations, exactly like read_conversation. channel_messages carries only
+ * the recency index, so the scan is bounded to those channels.
+ *
+ * Distinctive terms are AND-matched (ILIKE). A prompt with NO distinctive term
+ * ("what did we talk about earlier") falls back to the most recent messages in
+ * the agent's channels rather than returning nothing.
+ */
+async function fetchConversationSnippets(
+  query: string,
+  organizationId: string,
+  agentId: string,
+  limit: number
+): Promise<ConversationSnippet[]> {
+  const sql = getDb();
+  const channels = await resolveBoundChannelRows(sql, { organizationId, agentId });
+  if (channels.length === 0) return [];
+
+  // Distinctive >2-char terms (generic recall words dropped). Escape LIKE
+  // metacharacters so a user's `%`/`_` is matched literally.
+  const terms = query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((t) => t.length > 2 && !RECALL_STOPWORDS.has(t))
+    .map((t) => t.replace(/[%_\\]/g, (m) => `\\${m}`))
+    .slice(0, 8);
+
+  // (connection_id, channel_id) pairs the agent can see. A binding's channel_id
+  // may be platform-prefixed (`slack:C…`); channel_messages stores the bare id.
+  let pairFilter = sql``;
+  channels.forEach((c, i) => {
+    const channelId = stripPlatformPrefix(c.platform, c.channel_id);
+    const clause = sql`(cm.connection_id = ${c.id} AND cm.channel_id = ${channelId})`;
+    pairFilter = i === 0 ? clause : sql`${pairFilter} OR ${clause}`;
+  });
+
+  // No distinctive term → recency fallback (all channels), else AND of ILIKEs.
+  let termFilter = sql`TRUE`;
+  terms.forEach((t, i) => {
+    const clause = sql`cm.text ILIKE ${`%${t}%`}`;
+    termFilter = i === 0 ? clause : sql`${termFilter} AND ${clause}`;
+  });
+
+  const rows = (await sql`
+    SELECT cm.platform, cm.channel_id, cm.thread_id, cm.author_name, cm.text, cm.occurred_at
+    FROM channel_messages cm
+    WHERE cm.organization_id = ${organizationId}
+      AND (${pairFilter})
+      AND (${termFilter})
+    ORDER BY cm.occurred_at DESC
+    LIMIT ${limit}
+  `) as Array<{
+    platform: string;
+    channel_id: string;
+    thread_id: string | null;
+    author_name: string | null;
+    text: string;
+    occurred_at: Date | null;
+  }>;
+
+  return rows.map((r) => ({
+    platform: r.platform,
+    channel_id: r.channel_id,
+    thread_id: r.thread_id,
+    author_name: r.author_name,
+    text: r.text.length > 500 ? `${r.text.slice(0, 500)}...` : r.text,
+    occurred_at: r.occurred_at ? new Date(r.occurred_at).toISOString() : null,
+  }));
+}
+
+interface RecallContext {
+  query: string | null;
+  organizationId: string;
+  userId: string | null;
+  /** Memory-scope filter for events content — the caller-supplied agent_id arg. */
+  contentAgentId: string | undefined;
+  /** Calling agent identity — the tenant fence for channel recall (its bindings). */
+  channelAgentId: string | null | undefined;
+  contentLimit: number;
+  env: Env;
+  queryEmbedding?: number[];
+}
+
+/**
+ * A recall source contributes ONLY the result facet it owns. Search therefore
+ * has no central type-switch over source kinds: adding a source (a third feed,
+ * a future store) is one entry in RECALL_SOURCES, never another branch. Each
+ * source is self-scoped and fails independently (see gatherRecall).
+ */
+type RecallSource = (ctx: RecallContext) => Promise<Partial<UnifiedSearchResult>>;
+
+/** Knowledge content (events) — semantic/keyword snippets. */
+const knowledgeContentSource: RecallSource = async (ctx) => {
+  const content = await fetchContentSnippets(
+    ctx.query,
+    ctx.organizationId,
+    ctx.userId,
+    ctx.contentLimit,
+    ctx.env,
+    ctx.queryEmbedding,
+    ctx.contentAgentId
+  );
+  return content.length > 0 ? { content } : {};
+};
+
+/** Past chat-channel conversation (channel_messages) — keyword/recency. */
+const channelConversationSource: RecallSource = async (ctx) => {
+  // Needs a calling agent (its bindings are the tenant fence) and a text query
+  // (keyword match has no embedding path).
+  if (!ctx.query || !ctx.channelAgentId) return {};
+  const conversation_messages = await fetchConversationSnippets(
+    ctx.query,
+    ctx.organizationId,
+    ctx.channelAgentId,
+    ctx.contentLimit
+  );
+  return conversation_messages.length > 0 ? { conversation_messages } : {};
+};
+
+const RECALL_SOURCES: RecallSource[] = [
+  knowledgeContentSource,
+  channelConversationSource,
+];
+
+/** Run every recall source and merge their facets into one fragment. Sources
+ * fail independently — one source's error never drops another's results. */
+async function gatherRecall(ctx: RecallContext): Promise<Partial<UnifiedSearchResult>> {
+  const fragments = await Promise.all(
+    RECALL_SOURCES.map((source) =>
+      source(ctx).catch((err) => {
+        logger.warn(`[search] recall source failed: ${getErrorMessage(err)}`);
+        return {} as Partial<UnifiedSearchResult>;
+      })
+    )
+  );
+  return Object.assign({}, ...fragments);
+}
+
 export const search = withValidatedArgs('search_memory', SearchSchema, searchImpl);
 
 async function searchImpl(
@@ -339,42 +516,41 @@ async function searchImpl(
   const hasContentSignal = Boolean(args.query || args.query_embedding?.length);
   const agentIdScope =
     args.agent_id ?? (args.metadata_filter?.agent_id as string | undefined);
-  const contentSearchPromise =
+  // Channel recall is fenced to the CALLING agent's own bindings (ctx.agentId),
+  // never a caller-supplied filter — that's the tenant boundary for transcript
+  // rows, which have no agent_id of their own. gatherRecall catches per source.
+  const recallPromise: Promise<Partial<UnifiedSearchResult>> =
     includeContent && hasContentSignal
-      ? fetchContentSnippets(
-          args.query ?? null,
-          ctx.organizationId,
-          ctx.userId,
+      ? gatherRecall({
+          query: args.query ?? null,
+          organizationId: ctx.organizationId,
+          userId: ctx.userId,
+          contentAgentId: agentIdScope,
+          channelAgentId: ctx.agentId,
           contentLimit,
           env,
-          args.query_embedding,
-          agentIdScope
-        ).catch((err) => {
-          logger.warn(
-            `[search] content search failed: ${getErrorMessage(err)}`
-          );
-          return [] as ContentSnippet[];
+          queryEmbedding: args.query_embedding,
         })
-      : Promise.resolve([] as ContentSnippet[]);
+      : Promise.resolve({});
 
   // ========================================
   // ID-BASED LOOKUP (highest priority)
   // ========================================
 
   if (args.entity_id) {
-    const [entity, contentSnippets] = await Promise.all([
+    const [entity, recall] = await Promise.all([
       fetchEntityById(args.entity_id, env, ctx.organizationId),
-      contentSearchPromise,
+      recallPromise,
     ]);
     if (entity) {
-      return withContent(await formatEntityResult([entity], args, ctx), contentSnippets);
+      return withRecall(await formatEntityResult([entity], args, ctx), recall);
     }
-    return withContent(
+    return withRecall(
       emptyResult({
         entity_type: args.entity_type || null,
         suggestion: `Entity with ID ${args.entity_id} not found`,
       }),
-      contentSnippets
+      recall
     );
   }
 
@@ -392,9 +568,9 @@ async function searchImpl(
     `[search] Querying entities for "${query ?? '(vector)'}" (entity_type=${args.entity_type}, fuzzy=${args.fuzzy}, market=${args.market}, has_embedding=${!!args.query_embedding})`
   );
 
-  let [results, contentSnippets] = await Promise.all([
+  let [results, recall] = await Promise.all([
     queryEntities(query, args, env, ctx.organizationId),
-    contentSearchPromise,
+    recallPromise,
   ]);
 
   if (results.length === 0 && query && !args.query_embedding?.length) {
@@ -416,7 +592,7 @@ async function searchImpl(
   }
 
   if (results.length > 0) {
-    return withContent(await formatEntityResult(results, args, ctx), contentSnippets);
+    return withRecall(await formatEntityResult(results, args, ctx), recall);
   }
 
   // ========================================
@@ -435,9 +611,9 @@ async function searchImpl(
   // Fetch top entities per type so the LLM knows what exists
   const existing_entities = await fetchTopEntitiesByType(ctx.organizationId);
 
-  return withContent(
+  return withRecall(
     emptyResult({ suggestion: suggestionText, existing_entities }),
-    contentSnippets
+    recall
   );
 }
 

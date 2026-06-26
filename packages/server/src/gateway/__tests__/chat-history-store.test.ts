@@ -168,7 +168,7 @@ describe("ConversationStateStore history", () => {
     expect(aHistory.some((m) => m.content === "thread-B-only")).toBe(false);
     expect(bHistory.some((m) => m.content === "thread-A-only")).toBe(false);
 
-    // getEntries is what get_channel_history (chat-instance-manager) calls.
+    // getEntries returns the thread-scoped sliding history window.
     const aEntries = await store.getEntries("conn", channel, threadA);
     expect(aEntries.map((e) => e.content)).toEqual(["thread-A-only"]);
   });

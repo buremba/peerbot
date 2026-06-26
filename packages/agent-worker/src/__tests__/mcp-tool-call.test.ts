@@ -15,14 +15,12 @@
  *   - Tool approval required (403): error message surfaced to model
  *   - fetch throws: caught and returned as error text
  *   - AskUser / UploadFile: gateway error propagation
- *   - getChannelHistory: empty-messages branch
  */
 
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import {
   askUserQuestion,
   callMcpTool,
-  getChannelHistory,
   uploadUserFile,
 } from "../shared/tool-implementations";
 import type { GatewayParams } from "../shared/tool-implementations";
@@ -317,77 +315,6 @@ describe("uploadUserFile edge cases", () => {
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// get_channel_history edge cases
-// ---------------------------------------------------------------------------
-
-describe("getChannelHistory edge cases", () => {
-  test("empty messages array returns 'No messages found'", async () => {
-    globalThis.fetch = mock(async () =>
-      Response.json({
-        messages: [],
-        nextCursor: null,
-        hasMore: false,
-      })
-    ) as unknown as typeof fetch;
-
-    const result = await getChannelHistory(gw, { limit: 10 });
-    expect(extractText(result as any)).toContain("No messages found");
-  });
-
-  test("hasMore=false with nextCursor null: no pagination hint appended", async () => {
-    globalThis.fetch = mock(async () =>
-      Response.json({
-        messages: [
-          {
-            timestamp: "2026-05-13T10:00:00.000Z",
-            user: "Alice",
-            text: "Hi",
-            isBot: false,
-          },
-        ],
-        nextCursor: null,
-        hasMore: false,
-      })
-    ) as unknown as typeof fetch;
-
-    const result = await getChannelHistory(gw, {});
-    const text = extractText(result as any);
-    expect(text).toContain("Alice: Hi");
-    expect(text).not.toContain("before=");
-  });
-
-  test("bot messages prefixed with [Bot]", async () => {
-    globalThis.fetch = mock(async () =>
-      Response.json({
-        messages: [
-          {
-            timestamp: "2026-05-13T10:00:00.000Z",
-            user: "Lobu",
-            text: "I can help",
-            isBot: true,
-          },
-        ],
-        nextCursor: null,
-        hasMore: false,
-      })
-    ) as unknown as typeof fetch;
-
-    const result = await getChannelHistory(gw, { limit: 1 });
-    const text = extractText(result as any);
-    expect(text).toContain("[Bot] Lobu");
-  });
-
-  test("gateway HTTP error surfaced as error text", async () => {
-    globalThis.fetch = mock(async () =>
-      Response.json({ error: "channel forbidden" }, { status: 403 })
-    ) as unknown as typeof fetch;
-
-    const result = await getChannelHistory(gw, { limit: 5 });
-    expect(extractText(result as any)).toContain("Error:");
   });
 });
 

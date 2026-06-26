@@ -190,32 +190,6 @@ export interface PlatformAdapter {
     conversationId?: string;
     teamId?: string;
   } | null;
-
-  /**
-   * Get conversation history for a channel/thread.
-   * Used by the get_channel_history tool to fetch past messages.
-   *
-   * @param channelId - Channel/chat identifier
-   * @param conversationId - Conversation identifier (optional)
-   * @param limit - Maximum number of messages to return
-   * @param before - ISO timestamp cursor for pagination
-   * @returns History response with messages and pagination info
-   */
-  getConversationHistory?(
-    channelId: string,
-    conversationId: string | undefined,
-    limit: number,
-    before: string | undefined
-  ): Promise<{
-    messages: Array<{
-      timestamp: string;
-      user: string;
-      text: string;
-      isBot?: boolean;
-    }>;
-    nextCursor: string | null;
-    hasMore: boolean;
-  }>;
 }
 
 // ============================================================================

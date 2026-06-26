@@ -37,9 +37,8 @@ const SCOPE_SEP = "|";
  * History is scoped to a single conversation, not a whole channel. For
  * threaded platforms (Slack threads, Telegram forum topics) two distinct
  * threads in the same channel must NOT share a sliding window — otherwise
- * thread B's messages bleed into thread A's context (and into
- * `get_channel_history`). Non-threaded callers pass `conversationId ===
- * channelId`, which collapses the scope back to the channel.
+ * thread B's messages bleed into thread A's context. Non-threaded callers pass
+ * `conversationId === channelId`, which collapses the scope back to the channel.
  */
 function historyScope(channelId: string, conversationId: string): string {
   return conversationId && conversationId !== channelId

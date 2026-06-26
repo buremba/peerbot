@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   askUserQuestion,
-  getChannelHistory,
   uploadUserFile,
 } from "../shared/tool-implementations";
 
@@ -197,51 +196,5 @@ describe("tool implementations", () => {
     // A failed post must not end the turn — the model should be free to react.
     expect(posted).toBe(0);
     expect(extractText(result as any)).toContain("Error");
-  });
-
-  test("getChannelHistory returns note responses and formatted history", async () => {
-    globalThis.fetch = mock(async () =>
-      Response.json({ note: "History unavailable" })
-    ) as unknown as typeof fetch;
-
-    const note = await getChannelHistory(gw, { limit: 5 });
-    expect(extractText(note as any)).toBe("History unavailable");
-
-    globalThis.fetch = mock(async () =>
-      Response.json({
-        messages: [
-          {
-            timestamp: "2026-04-11T18:30:00.000Z",
-            user: "Burak",
-            text: "Hello",
-            isBot: false,
-          },
-        ],
-        nextCursor: "2026-04-11T18:00:00.000Z",
-        hasMore: true,
-      })
-    ) as unknown as typeof fetch;
-
-    const history = await getChannelHistory(gw, { limit: 5 });
-    const text = extractText(history as any);
-    expect(text).toContain("Found 1 messages");
-    expect(text).toContain("Burak: Hello");
-    expect(text).toContain('before="2026-04-11T18:00:00.000Z"');
-  });
-
-  test("getChannelHistory fails loudly when platform is missing (no slack fallback)", async () => {
-    const fetchMock = mock(async () => Response.json({ messages: [] }));
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
-
-    const result = await getChannelHistory(
-      { ...gw, platform: undefined },
-      { limit: 5 }
-    );
-
-    expect(extractText(result as any)).toContain(
-      "platform is required for get_channel_history"
-    );
-    // Must not have silently queried the gateway as if on Slack.
-    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

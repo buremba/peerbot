@@ -35,10 +35,7 @@ import {
   resolveSecretValue,
 } from "../secrets/index.js";
 import { resolveAgentOptions } from "../services/platform-helpers.js";
-import {
-  ConversationStateStore,
-  type HistoryEntry,
-} from "./conversation-state-store.js";
+import { ConversationStateStore } from "./conversation-state-store.js";
 import { registerInteractionBridge } from "./interaction-bridge.js";
 import {
   type MessageHandlerBridge,
@@ -919,13 +916,11 @@ export class ChatInstanceManager {
 
   /**
    * Live channel history for a SPECIFIC connection (the conversations
-   * read_conversation tool). Unlike the cached `getPlatformConversationHistory`
-   * (a 10-message sliding cache selected globally by platform — wrong for the
-   * authorized-connection case AND too thin to "catch up" on a channel), this:
+   * read_conversation tool). This:
    *  - is scoped to the caller's authorized `connectionId` (no global
    *    re-selection → no cross-tenant read), and
    *  - pulls real platform history via `channel.messages` (the SDK's
-   *    `conversations.history`/`fetchChannelMessages`), not the cache.
+   *    `conversations.history`/`fetchChannelMessages`).
    * Returns newest-N in chronological (oldest-first) order. Multi-replica safe:
    * hydrates the connection on this pod from its row.
    */
@@ -2197,19 +2192,6 @@ export class ChatInstanceManager {
               descriptor.getInstructionProvider!(this),
           }
         : {}),
-      getConversationHistory: (
-        channelId: string,
-        conversationId: string | undefined,
-        limit: number,
-        before: string | undefined
-      ) =>
-        this.getPlatformConversationHistory(
-          name,
-          channelId,
-          conversationId,
-          limit,
-          before
-        ),
     };
   }
 
@@ -2357,72 +2339,6 @@ export class ChatInstanceManager {
       messageId,
       eventsUrl: `/api/v1/agents/${encodeURIComponent(sessionId)}/events`,
       queued: true,
-    };
-  }
-
-  async getPlatformConversationHistory(
-    name: string,
-    channelId: string,
-    conversationId: string | undefined,
-    limit: number,
-    before: string | undefined
-  ): Promise<{
-    messages: Array<{
-      timestamp: string;
-      user: string;
-      text: string;
-      isBot?: boolean;
-    }>;
-    nextCursor: string | null;
-    hasMore: boolean;
-  }> {
-    const connection = await this.selectConnectionForPlatform(name, channelId);
-    if (!connection) {
-      return { messages: [], nextCursor: null, hasMore: false };
-    }
-
-    // History is row-backed state — no warm instance required (a cold pod
-    // answering this on behalf of a connection hydrated elsewhere must see
-    // the same history).
-    const conversationState =
-      this.getInstance(connection.id)?.conversationState ??
-      new ConversationStateStore(await this.createStateAdapter());
-
-    // Scope to the thread when the caller is inside one — otherwise a
-    // threaded platform's get_channel_history would return the WHOLE channel
-    // (thread B's messages bleeding into thread A). Non-threaded callers pass
-    // conversationId === channelId (or undefined), collapsing to the channel.
-    let entries: HistoryEntry[] = await conversationState.getEntries(
-      connection.id,
-      channelId,
-      conversationId ?? channelId
-    );
-
-    if (before) {
-      const cutoff = Date.parse(before);
-      if (!Number.isNaN(cutoff)) {
-        entries = entries.filter((entry) => entry.timestamp < cutoff);
-      }
-    }
-
-    const hasMore = entries.length > limit;
-    const selected = entries.slice(-limit);
-    const nextCursor =
-      hasMore && selected[0]
-        ? new Date(selected[0].timestamp).toISOString()
-        : null;
-
-    return {
-      messages: selected.map((entry) => ({
-        timestamp: new Date(entry.timestamp).toISOString(),
-        user:
-          entry.authorName ||
-          (entry.role === "assistant" ? "assistant" : "user"),
-        text: entry.content,
-        isBot: entry.role === "assistant",
-      })),
-      nextCursor,
-      hasMore,
     };
   }
 

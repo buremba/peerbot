@@ -102,11 +102,6 @@ describe("getCustomToolDescription", () => {
     expect(desc).toContain("audio");
   });
 
-  test("returns the registered description for get_channel_history", () => {
-    const desc = getCustomToolDescription("get_channel_history");
-    expect(desc.length).toBeGreaterThan(0);
-  });
-
   test("returns the registered description for ask_user", () => {
     const desc = getCustomToolDescription("ask_user");
     expect(desc.length).toBeGreaterThan(0);

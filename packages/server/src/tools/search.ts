@@ -412,7 +412,7 @@ async function fetchConversationSnippets(
   }));
 }
 
-interface RecallContext {
+export interface RecallContext {
   query: string | null;
   organizationId: string;
   userId: string | null;
@@ -426,53 +426,71 @@ interface RecallContext {
 }
 
 /**
- * A recall source contributes ONLY the result facet it owns. Search therefore
- * has no central type-switch over source kinds: adding a source (a third feed,
- * a future store) is one entry in RECALL_SOURCES, never another branch. Each
- * source is self-scoped and fails independently (see gatherRecall).
+ * The consolidated recall types. We landed on TWO: `knowledge` (the `events`
+ * store — where data feeds and promoted memory live) and `conversation` (the
+ * `channel_messages` chat transcript). Both are read through ONE abstraction.
+ * Add a type here + a RECALL_SOURCES entry; nothing branches on the kind.
  */
-type RecallSource = (ctx: RecallContext) => Promise<Partial<UnifiedSearchResult>>;
+export type RecallKind = 'knowledge' | 'conversation';
 
-/** Knowledge content (events) — semantic/keyword snippets. */
-const knowledgeContentSource: RecallSource = async (ctx) => {
-  const content = await fetchContentSnippets(
-    ctx.query,
-    ctx.organizationId,
-    ctx.userId,
-    ctx.contentLimit,
-    ctx.env,
-    ctx.queryEmbedding,
-    ctx.contentAgentId
-  );
-  return content.length > 0 ? { content } : {};
+/**
+ * A recall source owns exactly one kind and contributes ONLY the result facet
+ * it produces (or `{}` when it has none). `gatherRecall` runs them all and
+ * merges — there is no central type-switch over kinds. Each source is
+ * self-scoped (its own tenant fence) and fails independently.
+ */
+export interface RecallSource {
+  readonly kind: RecallKind;
+  recall(ctx: RecallContext): Promise<Partial<UnifiedSearchResult>>;
+}
+
+/** `knowledge` — semantic/keyword snippets from the `events` store. */
+const knowledgeSource: RecallSource = {
+  kind: 'knowledge',
+  recall: async (ctx) => {
+    const content = await fetchContentSnippets(
+      ctx.query,
+      ctx.organizationId,
+      ctx.userId,
+      ctx.contentLimit,
+      ctx.env,
+      ctx.queryEmbedding,
+      ctx.contentAgentId
+    );
+    return content.length > 0 ? { content } : {};
+  },
 };
 
-/** Past chat-channel conversation (channel_messages) — keyword/recency. */
-const channelConversationSource: RecallSource = async (ctx) => {
-  // Needs a calling agent (its bindings are the tenant fence) and a text query
-  // (keyword match has no embedding path).
-  if (!ctx.query || !ctx.channelAgentId) return {};
-  const conversation_messages = await fetchConversationSnippets(
-    ctx.query,
-    ctx.organizationId,
-    ctx.channelAgentId,
-    ctx.contentLimit
-  );
-  return conversation_messages.length > 0 ? { conversation_messages } : {};
+/** `conversation` — keyword/recency hits from the `channel_messages` transcript. */
+const conversationSource: RecallSource = {
+  kind: 'conversation',
+  recall: async (ctx) => {
+    // Needs a calling agent (its bindings are the tenant fence) and a text query
+    // (keyword match has no embedding path).
+    if (!ctx.query || !ctx.channelAgentId) return {};
+    const conversation_messages = await fetchConversationSnippets(
+      ctx.query,
+      ctx.organizationId,
+      ctx.channelAgentId,
+      ctx.contentLimit
+    );
+    return conversation_messages.length > 0 ? { conversation_messages } : {};
+  },
 };
 
-const RECALL_SOURCES: RecallSource[] = [
-  knowledgeContentSource,
-  channelConversationSource,
-];
+export const RECALL_SOURCES: RecallSource[] = [knowledgeSource, conversationSource];
 
 /** Run every recall source and merge their facets into one fragment. Sources
- * fail independently — one source's error never drops another's results. */
-async function gatherRecall(ctx: RecallContext): Promise<Partial<UnifiedSearchResult>> {
+ * fail independently — one source's error never drops another's results. The
+ * `sources` param is injectable so the registry can be tested generically. */
+export async function gatherRecall(
+  ctx: RecallContext,
+  sources: RecallSource[] = RECALL_SOURCES
+): Promise<Partial<UnifiedSearchResult>> {
   const fragments = await Promise.all(
-    RECALL_SOURCES.map((source) =>
-      source(ctx).catch((err) => {
-        logger.warn(`[search] recall source failed: ${getErrorMessage(err)}`);
+    sources.map((source) =>
+      source.recall(ctx).catch((err) => {
+        logger.warn(`[search] recall source '${source.kind}' failed: ${getErrorMessage(err)}`);
         return {} as Partial<UnifiedSearchResult>;
       })
     )

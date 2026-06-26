@@ -25,6 +25,7 @@ import {
   ErrorResponseSchema,
   errorResponses,
 } from "../shared/openapi-responses.js";
+import { listConversationFeeds } from "../../../feeds/conversation-feeds.js";
 
 const logger = createLogger("connection-routes");
 const TAG = "Connections";
@@ -152,6 +153,46 @@ const GetConnectionRoute = createRoute({
       content: {
         "application/json": {
           schema: PlatformConnectionSchema,
+        },
+      },
+    },
+    ...errorResponses(ErrorResponseSchema, {
+      401: "Unauthorized",
+      403: "Forbidden",
+      404: "Connection not found",
+    }),
+  },
+});
+
+const FeedSpecSchema = z.object({
+  id: z.string(),
+  sourceKind: z.enum(["chat-channel", "virtual-live-dataset", "collected"]),
+  connectionId: z.string(),
+  label: z.string(),
+  status: z.enum(["active", "paused", "error"]),
+  lastActivityAt: z.string().nullable(),
+  targetAgentId: z.string().nullable().optional(),
+  itemCount: z.number().optional(),
+});
+
+const ListConnectionFeedsRoute = createRoute({
+  method: "get",
+  path: "/api/v1/connections/{id}/feeds",
+  tags: [TAG],
+  summary: "List a connection's feeds",
+  description:
+    "Lists the feeds under a connection. For a chat connection these are conversation feeds — one per channel/DM, projected on the fly from the message transcript (no feeds-table row).",
+  request: {
+    params: ConnectionIdParamsSchema,
+  },
+  responses: {
+    200: {
+      description: "Feeds",
+      content: {
+        "application/json": {
+          schema: z.object({
+            feeds: z.array(FeedSpecSchema),
+          }),
         },
       },
     },
@@ -357,6 +398,38 @@ export function createConnectionCrudRoutes(
       const status = message === "Connection not found" ? 404 : 400;
       return c.json({ error: message }, status);
     }
+  });
+
+  app.openapi(ListConnectionFeedsRoute, async (c): Promise<any> => {
+    const session = await requireSession(c);
+    if (session instanceof Response) return session;
+
+    const { id } = c.req.valid("param");
+    const connection = await manager.getConnection(id);
+    if (!connection) {
+      return c.json({ error: "Connection not found" }, 404);
+    }
+    // Same ACL as GetConnection: a bound connection is owner-gated; an unbound
+    // (shared-install) connection is admin-only. Conversation feeds expose
+    // channel ids + routed agents + activity, so reuse the connection's gate.
+    if (connection.agentId) {
+      const access = await verifyOwnedAgentAccess(
+        session,
+        connection.agentId,
+        accessConfig
+      );
+      if (!access.authorized) {
+        return c.json({ error: "Forbidden" }, 403);
+      }
+    } else if (!session.isAdmin && session.settingsMode !== "admin") {
+      return c.json({ error: "Forbidden" }, 403);
+    }
+
+    if (!connection.organizationId) {
+      return c.json({ feeds: [] });
+    }
+    const feeds = await listConversationFeeds(connection.organizationId, id);
+    return c.json({ feeds });
   });
 
   return app;

@@ -1,11 +1,12 @@
 # Feeds & Connections — the queryable-source model
 
-**Status: DESIGN.** Shipped today is only the `recall` lens over two stores
-(`events` + `channel_messages`) via the `RecallSource[]` registry in
-`packages/server/src/tools/search.ts`. Everything else here — the
-`virtual-live-dataset` kind, the `FeedReader` generalization — is the agreed
-target, not built. Reviewed with an external model (Q: collapse the axes? →
-"keep them orthogonal").
+**Status: PARTLY BUILT.** All three feed kinds already exist in some form (see
+the table). What **this PR** ships is the `recall` lens reading `channel_messages`
+(the `RecallSource[]` registry in `packages/server/src/tools/search.ts`). What is
+**not** built is the unified `FeedReader<S,L>` capability registry that would
+dispatch every `(kind, lens)` through one seam — today the lenses (recall /
+metric / query_sql) and the live-pushdown path live in separate code paths.
+Reviewed with an external model (Q: collapse the axes? → "keep them orthogonal").
 
 ## Mental model
 
@@ -27,7 +28,7 @@ bytes live" and "how the caller wants to read them" are different concerns.
 | kind | backing | status |
 | --- | --- | --- |
 | `chat-channel` | local transcript table `channel_messages` (live conversation) | exists |
-| `virtual-live-dataset` | external source queried **live** (e.g. a Postgres connector); nothing copied locally | design |
+| `virtual-live-dataset` | external source queried **live**, nothing copied locally — the codebase calls this a **virtual feed**: the PostgreSQL connector (`packages/connectors/src/postgres.ts`) `query()` live-pushdown + `QueryContext` (`connector-types.ts:842` "virtual feeds & external-backed derived entities"); metrics run live against it | **exists** |
 | `collected` | sync materializes rows into `events` (the classic data feed = real row in `feeds`) | exists |
 
 ### Axis 2 — Read lens (how you query)
@@ -83,8 +84,11 @@ remains the point-read of a single named conversation.
 
 ## Why not generalize to `FeedReader<S,L>` now
 
-Only the `recall` lens has multiple sources today; `metric` and `raw-sql` are
-separate existing paths, and the `virtual-live-dataset` kind does not exist.
-Generalizing now is building ahead of need. Promote `RecallSource` →
-`FeedReader` when a 3rd source kind or a second lens genuinely needs to share the
-registry — the current shape was chosen so that promotion is additive.
+All three kinds and all three lenses already exist — but in **separate code
+paths** (recall in `search.ts`; metric + the live-pushdown / virtual-feed read
+via the connector `query()` path; `query_sql` via `QUERYABLE_SCHEMA`). The
+unified `FeedReader<S,L>` registry is a **consolidation target, not a new
+capability**. This PR only touches the recall lens; promoting `RecallSource` →
+`FeedReader` (folding the other lenses + the virtual-feed/live-pushdown path
+under one tuple-dispatched registry) is the follow-up. The current shape was
+chosen so that promotion is additive.

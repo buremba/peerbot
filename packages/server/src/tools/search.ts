@@ -360,13 +360,13 @@ async function fetchConversationSnippets(
   const channels = await resolveBoundChannelRows(sql, { organizationId, agentId });
   if (channels.length === 0) return [];
 
-  // Distinctive >2-char terms (generic recall words dropped). Escape LIKE
-  // metacharacters so a user's `%`/`_` is matched literally.
-  const terms = query
-    .toLowerCase()
-    .split(/\s+/)
+  // Distinctive >2-char terms (generic recall words dropped). Tokenize on word
+  // characters, NOT whitespace — otherwise trailing punctuation ("earlier?",
+  // "revenue?") survives as an unmatchable term that both defeats the stopword
+  // filter and makes the ILIKE miss. Tokens are alphanumeric, so no LIKE
+  // metacharacter (`%` `_` `\`) can appear and no escaping is needed.
+  const terms = (query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])
     .filter((t) => t.length > 2 && !RECALL_STOPWORDS.has(t))
-    .map((t) => t.replace(/[%_\\]/g, (m) => `\\${m}`))
     .slice(0, 8);
 
   // (connection_id, channel_id) pairs the agent can see. A binding's channel_id

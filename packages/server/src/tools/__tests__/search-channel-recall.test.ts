@@ -161,4 +161,43 @@ describe('search_memory channel recall', () => {
     expect(texts.length).toBeGreaterThan(0);
     expect(texts.some((t) => t.includes('Sales numbers'))).toBe(true);
   });
+
+  it('tolerates trailing punctuation (tokenizes on word chars, not whitespace)', async () => {
+    const org = await createTestOrganization({ name: 'Punctuation Org' });
+    const user = await createTestUser();
+    await addUserToOrganization(user.id, org.id, 'owner');
+    const agent = await createTestAgent({ organizationId: org.id });
+
+    await bindChannelWithMessages({
+      organizationId: org.id,
+      agentId: agent.agentId,
+      connectionId: 'conn-punct',
+      channelId: 'C-PUNCT',
+      messages: ['We reviewed the quarterly revenue forecast on Tuesday'],
+    });
+    const ctx = {
+      organizationId: org.id,
+      userId: user.id,
+      agentId: agent.agentId,
+    } as Parameters<typeof search>[2];
+
+    // Keyword query ending in '?' still matches 'revenue' (the '?' is stripped).
+    const kw = await search(
+      { query: 'quarterly revenue?', include_content: true },
+      {} as Parameters<typeof search>[1],
+      ctx
+    );
+    expect(
+      (kw.conversation_messages ?? []).some((m) => m.text.includes('quarterly revenue'))
+    ).toBe(true);
+
+    // All-stop-word prompt ending in '?' → recency fallback, not empty
+    // (without word-char tokenizing, 'earlier?' survived as a dead term).
+    const generic = await search(
+      { query: 'what did we talk about earlier?', include_content: true },
+      {} as Parameters<typeof search>[1],
+      ctx
+    );
+    expect((generic.conversation_messages ?? []).length).toBeGreaterThan(0);
+  });
 });

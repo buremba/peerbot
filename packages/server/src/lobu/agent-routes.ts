@@ -740,6 +740,49 @@ routes.put('/:agentId/providers/:providerId/api-key', async (c) => {
 
 // ── Update agent config (settings) ───────────────────────────────────────────
 
+const GUARDRAIL_STAGES = new Set(['input', 'output', 'pre-tool']);
+
+/**
+ * Validate a `guardrailsInline` payload before it is persisted to agent
+ * settings. Returns a human-readable error string on the first invalid entry,
+ * or `null` when the payload is absent or fully valid. Persisting an entry with
+ * an invalid `stage` would crash the guardrail aggregator at message time, so
+ * we reject malformed input at the write boundary instead.
+ */
+export function validateGuardrailsInline(value: unknown): string | null {
+  if (value === undefined) return null;
+  if (!Array.isArray(value)) return 'guardrailsInline must be an array';
+  for (let i = 0; i < value.length; i++) {
+    const entry = value[i];
+    if (typeof entry !== 'object' || entry === null) {
+      return `guardrailsInline[${i}] must be an object`;
+    }
+    const g = entry as Record<string, unknown>;
+    if (typeof g.name !== 'string' || g.name.trim() === '') {
+      return `guardrailsInline[${i}].name must be a non-empty string`;
+    }
+    if (typeof g.enabled !== 'boolean') {
+      return `guardrailsInline[${i}].enabled must be a boolean`;
+    }
+    if (typeof g.stage !== 'string' || !GUARDRAIL_STAGES.has(g.stage)) {
+      return `guardrailsInline[${i}].stage must be one of: input, output, pre-tool`;
+    }
+    if (typeof g.policy !== 'string' || g.policy.trim() === '') {
+      return `guardrailsInline[${i}].policy must be a non-empty string`;
+    }
+    if (g.model !== undefined && typeof g.model !== 'string') {
+      return `guardrailsInline[${i}].model must be a string`;
+    }
+    if (
+      g.tools !== undefined &&
+      (!Array.isArray(g.tools) || g.tools.some((t) => typeof t !== 'string'))
+    ) {
+      return `guardrailsInline[${i}].tools must be an array of strings`;
+    }
+  }
+  return null;
+}
+
 routes.patch('/:agentId/config', async (c) => {
   const denied = requireSessionOrAdminPat(c);
   if (denied) return denied;
@@ -748,6 +791,19 @@ routes.patch('/:agentId/config', async (c) => {
 
   if (!(await configStore.hasAgent(agentId))) {
     return c.json({ error: 'Agent not found' }, 404);
+  }
+
+  // Validate inline guardrail shape before it is persisted. An invalid `stage`
+  // (or missing name/policy) would otherwise be written verbatim and then crash
+  // the guardrail aggregator mid-message (it indexes `seen[stage]`).
+  const guardrailError = validateGuardrailsInline(
+    (updates as { guardrailsInline?: unknown }).guardrailsInline
+  );
+  if (guardrailError) {
+    return c.json(
+      { error: 'invalid_guardrail', error_description: guardrailError },
+      400
+    );
   }
 
   // Custom guardrails are LLM judges and need a model. With no gateway default

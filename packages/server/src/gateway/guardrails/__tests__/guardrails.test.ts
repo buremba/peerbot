@@ -11,6 +11,7 @@ import { describe, expect, test } from "bun:test";
 import {
   createNoopGuardrail,
   GuardrailRegistry,
+  type GuardrailStage,
   type SkillConfig,
 } from "@lobu/core";
 import {
@@ -641,6 +642,29 @@ describe("resolveAgentGuardrails (aggregator)", () => {
       ],
     });
     expect(out.names.input).not.toContain("off-rail");
+  });
+
+  test("inline guardrail with an invalid stage is skipped, not thrown", () => {
+    const reg = setupRegistry();
+    // A malformed persisted row (out-of-band write, or pre-validation data)
+    // carries a stage outside {input,output,pre-tool}. Resolution must skip it,
+    // not crash the whole message handler by indexing `seen[badStage]`.
+    let out!: ReturnType<typeof resolveAgentGuardrails>;
+    expect(() => {
+      out = resolveAgentGuardrails({ guardrails: [] }, [], reg, {
+        inline: [
+          {
+            name: "bad-stage",
+            enabled: true,
+            stage: "outupt" as GuardrailStage,
+            policy: "block everything",
+          },
+        ],
+      });
+    }).not.toThrow();
+    expect(out.names.input).not.toContain("bad-stage");
+    expect(out.names.output).not.toContain("bad-stage");
+    expect(out.names["pre-tool"]).not.toContain("bad-stage");
   });
 
   test("inline judge carries the operator name + stage onto the instance", () => {

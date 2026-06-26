@@ -129,6 +129,17 @@ export function resolveAgentGuardrails(
   // edit UI rejects such names up front so this stays a defensive guard.
   for (const entry of extras.inline ?? []) {
     if (entry.enabled === false) continue;
+    // Defensive: a malformed persisted row can carry an invalid `stage`
+    // (the write path validates, but older rows or out-of-band writes might
+    // not). Indexing `seen[bad]` would be `undefined` and throw mid-message —
+    // skip and log instead of crashing the whole message handler.
+    if (!seen[entry.stage]) {
+      logger.warn(
+        { name: entry.name, stage: entry.stage },
+        "Inline guardrail has an invalid stage; skipping"
+      );
+      continue;
+    }
     const g = createJudgeGuardrail(entry.stage, entry.policy, {
       name: entry.name,
       model: entry.model,

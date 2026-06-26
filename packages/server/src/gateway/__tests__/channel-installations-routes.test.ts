@@ -193,16 +193,27 @@ describe("channel installation routes", () => {
     // The DM was opened with the caller's linked Slack identity.
     expect(stub.openDmCalledWith).toBe(SLACK_USER_ID);
 
-    // A binding row now routes the DM channel to this agent.
+    // A binding row now routes the DM channel to this agent. It MUST be stored
+    // under the canonical `slack:<id>` key — inbound Slack messages reach the
+    // dispatcher with `thread.channelId` already in that form, so a raw `D…`
+    // key would never match and the DM would silently fail to route.
+    const canonicalDm = `slack:${DM_CHANNEL_ID}`;
     const bindings = await orgContext.run({ organizationId: ORG_ID }, () =>
       channelBindingService.listBindings(AGENT_ID, ORG_ID)
     );
     expect(bindings).toHaveLength(1);
     expect(bindings[0]!.platform).toBe("slack");
-    expect(bindings[0]!.channelId).toBe(DM_CHANNEL_ID);
+    expect(bindings[0]!.channelId).toBe(canonicalDm);
     expect(bindings[0]!.teamId).toBe(TEAM_ID);
 
-    // And the welcome DM was posted to that channel.
+    // The inbound lookup path (canonical key + team) resolves this binding.
+    const looked = await orgContext.run({ organizationId: ORG_ID }, () =>
+      channelBindingService.getBinding("slack", canonicalDm, TEAM_ID, ORG_ID)
+    );
+    expect(looked?.agentId).toBe(AGENT_ID);
+
+    // And the welcome DM was posted to that channel — using the RAW id, which
+    // the Slack Web API expects (only the stored binding key is canonicalized).
     expect(stub.posted).toHaveLength(1);
     expect(stub.posted[0]!.channel).toBe(DM_CHANNEL_ID);
   });

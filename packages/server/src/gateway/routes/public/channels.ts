@@ -18,6 +18,7 @@ import {
   type SlackWebApi,
 } from "../../connections/slack-web.js";
 import { getDb } from "../../../db/client.js";
+import { canonicalSlackChannelId } from "../../../preview/slack.js";
 import type { AppInstallationStore } from "../../../lobu/stores/app-installation-store.js";
 import { orgContext } from "../../../lobu/stores/org-context.js";
 import type { SecretStore } from "../../secrets/index.js";
@@ -420,10 +421,15 @@ export function createChannelBindingRoutes(
         return errorResponse(c, "Could not open a Slack DM with you", 502);
       }
 
+      // Store the binding under the canonical `slack:<id>` channel key. Inbound
+      // Slack messages reach the dispatcher with `thread.channelId` already in
+      // canonical form, so a raw `D…` key here would never match and the DM
+      // would silently fail to route. (`dmChannelId` stays raw for the Slack
+      // Web API calls below, which expect the unprefixed id.)
       await config.channelBindingService.createBinding(
         agentId,
         "slack",
-        dmChannelId,
+        canonicalSlackChannelId(dmChannelId),
         install.externalTenantId,
         { configuredBy: payload.userId, organizationId }
       );

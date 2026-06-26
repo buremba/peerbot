@@ -8,6 +8,13 @@ dispatch every `(kind, lens)` through one seam — today the lenses (recall /
 metric / query_sql) and the live-pushdown path live in separate code paths.
 Reviewed with an external model (Q: collapse the axes? → "keep them orthogonal").
 
+**Related docs (authoritative for the kinds/lenses below):**
+[`docs/database-connectors.md`](./database-connectors.md) — the PostgreSQL
+connector, live-read `query()`, connection-backed entities, and the `virtual`
+feed-flag roadmap. [`docs/define-metric-design.md`](../define-metric-design.md) —
+the entity-bound metric lens. This doc is the *cross-cutting* model that ties the
+feed kinds and read lenses together; those two are the per-area sources of truth.
+
 ## Mental model
 
 A **connection** is a *queryable source* (Postgres-like). A **feed** is a *view*
@@ -28,7 +35,7 @@ bytes live" and "how the caller wants to read them" are different concerns.
 | kind | backing | status |
 | --- | --- | --- |
 | `chat-channel` | local transcript table `channel_messages` (live conversation) | exists |
-| `virtual-live-dataset` | external source queried **live**, nothing copied locally — the codebase calls this a **virtual feed**: the PostgreSQL connector (`packages/connectors/src/postgres.ts`) `query()` live-pushdown + `QueryContext` (`connector-types.ts:842` "virtual feeds & external-backed derived entities"); metrics run live against it | **exists** |
+| `virtual-live-dataset` | external source queried **live**, nothing copied locally — PostgreSQL connector (`packages/connectors/src/postgres.ts`) `query()` live-read + `QueryContext` (`connector-types.ts:842`). **Live-read infra + connection-backed live entities ship** (#1182), metrics run live against them; the user-facing `virtual` **feed flag** (+ `search()` + fan-out) is **Slice 2 / next** — see `database-connectors.md`. | **partial** |
 | `collected` | sync materializes rows into `events` (the classic data feed = real row in `feeds`) | exists |
 
 ### Axis 2 — Read lens (how you query)
@@ -36,7 +43,7 @@ bytes live" and "how the caller wants to read them" are different concerns.
 | lens | mechanism | status |
 | --- | --- | --- |
 | `recall` | fuzzy / semantic retrieval — `search_memory` | **shipped** |
-| `metric` | aggregation — `query_metric` → materialized `metric_series` | exists |
+| `metric` | aggregation — `query_metric` → materialized `metric_series` (see `define-metric-design.md`) | exists |
 | `raw-sql` | scoped SQL — `QUERYABLE_SCHEMA` → `buildScopedQuery` CTEs (`query_sql`) | exists |
 
 Any lens over any kind. Source kind = where bytes live; lens = read semantics.

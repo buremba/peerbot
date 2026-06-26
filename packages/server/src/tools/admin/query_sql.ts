@@ -268,6 +268,10 @@ export async function querySqlImpl(
     const scoped = validateAndScopeQuery(baseSql, targetOrgId, {
       safeColumns: SAFE_COLUMN_DEFS,
       restrictedTables: callerIsAdmin ? undefined : ADMIN_ONLY_QUERYABLE_TABLES,
+      // Per-user connection visibility: even an admin sees another user's
+      // PRIVATE-connection events only when org-visible. Cross-org reuses the
+      // same global user id, re-validated against the target org above.
+      userId: ctx.userId,
     });
     scopedSql = scoped.sql;
     params = scoped.params;

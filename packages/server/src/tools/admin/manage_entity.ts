@@ -129,6 +129,14 @@ export const ManageEntitySchema = Type.Object({
     })
   ),
 
+  // Human-correction annotation
+  field_note: Type.Optional(
+    Type.String({
+      description:
+        '[update] Optional note explaining a human correction. Stored on the per-field ownership marker for every metadata field this update sets, so a watcher (and the UI) can see why the value was set.',
+    })
+  ),
+
   // List/pagination
   search: Type.Optional(Type.String({ description: '[list] Search by name' })),
   limit: Type.Optional(
@@ -585,6 +593,10 @@ async function handleUpdate(
 
   // Metadata (replaces entire object)
   if (args.metadata !== undefined) updateData.metadata = args.metadata;
+
+  // Human-correction note: annotates the field_controls marker for the fields
+  // this edit claims (why the human set/overrode the value).
+  if (args.field_note !== undefined) updateData.field_note = args.field_note;
 
   const updatedEntity = await updateEntity(entityId, updateData, env, ctx);
   const entityDetails = (await getEntity(updatedEntity.id, env, ctx)) ?? updatedEntity;

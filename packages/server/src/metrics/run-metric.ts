@@ -26,6 +26,12 @@ interface RunMetricInput {
   segment?: string;
   /** Restrict to one entity (entities.id). */
   entityId?: number;
+  /**
+   * The requesting user, threaded into the events CTE for per-user connection
+   * visibility. Omit/null for headless callers (scheduled rollups, warehouse
+   * jobs) — yields org-visible-only, fail-closed for private-connection data.
+   */
+  userId?: string | null;
 }
 
 export async function runMetric(input: RunMetricInput): Promise<Record<string, unknown>[]> {
@@ -52,7 +58,9 @@ export async function runMetric(input: RunMetricInput): Promise<Record<string, u
     segment: input.segment,
     entityId: input.entityId,
   });
-  const scoped = validateAndScopeQuery(rawSql, input.organizationId);
+  const scoped = validateAndScopeQuery(rawSql, input.organizationId, {
+    userId: input.userId ?? null,
+  });
 
   const rows = await sql.begin(async (tx: typeof sql) => {
     await tx`SET TRANSACTION READ ONLY`;

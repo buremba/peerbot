@@ -18,6 +18,7 @@ import type { Env } from '../index';
 import { querySqlImpl } from '../tools/admin/query_sql';
 import type { ToolContext } from '../tools/registry';
 import { entityLinkMatchSql } from './content-search';
+import { computeFieldMerge, type FieldControl } from './entity-field-merge';
 import { type EntityHookContext, getEntityHooks } from './entity-hooks';
 import { ToolUserError } from './errors';
 import { requireWriteAccess } from './organization-access';
@@ -98,6 +99,11 @@ export interface EntityData {
 
   // Metadata - contains all type-specific fields
   metadata?: Record<string, any>;
+
+  // Optional human-correction note: on a human update it is stored on the
+  // field_controls marker for every field this edit claims, so the watcher (and
+  // the UI) can show WHY the value was set. Ignored for agent/system writes.
+  field_note?: string | null;
 
   // Convenience fields - will be merged into metadata
   domain?: string | null;
@@ -370,12 +376,18 @@ export async function updateEntity(
   const hasEmbedding = data.embedding !== undefined;
   const embeddingLiteral = toVectorLiteral(data.embedding);
 
+  // A genuine human edit (a real user, not an agent run) claims per-field ownership
+  // so a watcher can't later overwrite it without an approval. Agent/system writes keep
+  // the existing plain-merge behavior; watcher ownership-aware writes go through
+  // mergeEntityFields at the promotion call site.
+  const isHumanEdit = !!ctx.userId && !ctx.agentId;
+
   // Lock the entity row, merge metadata, and write in ONE transaction: concurrent
   // updates to the same entity serialize on the row lock, fixing the pre-existing
   // non-transactional read-modify-write race on entities.metadata.
   const result = await sql.begin(async (tx) => {
     const current = await tx`
-      SELECT metadata, organization_id FROM entities
+      SELECT metadata, field_controls, organization_id FROM entities
       WHERE id = ${entityId} AND deleted_at IS NULL
       FOR UPDATE
     `;
@@ -384,13 +396,33 @@ export async function updateEntity(
     }
 
     let mergedMetadata: Record<string, unknown> | null = null;
+    let mergedControls: Record<string, unknown> | null = null;
     if (hasMetadataUpdates) {
       const existing = (
         typeof current[0].metadata === 'string'
           ? JSON.parse(current[0].metadata as string)
           : (current[0].metadata ?? {})
       ) as Record<string, unknown>;
-      mergedMetadata = { ...existing, ...metadataUpdates };
+      if (isHumanEdit) {
+        const existingControls = (
+          typeof current[0].field_controls === 'string'
+            ? JSON.parse(current[0].field_controls as string)
+            : (current[0].field_controls ?? {})
+        ) as Record<string, FieldControl>;
+        const merge = computeFieldMerge({
+          metadata: existing,
+          controls: existingControls,
+          fields: metadataUpdates,
+          source: 'human',
+          actorId: ctx.userId,
+          note: data.field_note ?? null,
+          nowIso: new Date().toISOString(),
+        });
+        mergedMetadata = merge.nextMetadata;
+        mergedControls = merge.nextControls;
+      } else {
+        mergedMetadata = { ...existing, ...metadataUpdates };
+      }
     }
 
     await tx`
@@ -399,6 +431,7 @@ export async function updateEntity(
         slug = COALESCE(${newSlug}, slug),
         parent_id = CASE WHEN ${data.parent_id !== undefined} THEN ${data.parent_id ?? null}::bigint ELSE parent_id END,
         metadata = CASE WHEN ${hasMetadataUpdates} THEN ${mergedMetadata ? sql.json(mergedMetadata) : null} ELSE metadata END,
+        field_controls = CASE WHEN ${mergedControls !== null} THEN ${mergedControls ? sql.json(mergedControls) : sql.json({})} ELSE field_controls END,
         enabled_classifiers = CASE WHEN ${data.enabled_classifiers !== undefined} THEN ${data.enabled_classifiers ? pgTextArray(data.enabled_classifiers) : null}::text[] ELSE enabled_classifiers END,
         content = CASE WHEN ${hasContent} THEN ${contentValue} ELSE content END,
         embedding = CASE WHEN ${hasEmbedding} THEN ${embeddingLiteral}::vector ELSE embedding END,

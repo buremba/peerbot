@@ -9,6 +9,26 @@ interface TemplateEntity {
   id: number;
   name: string;
   type: string;
+  /** Current entity field values. */
+  metadata?: Record<string, unknown> | null;
+  /** field_path -> ownership marker; a key present means a human set that field. */
+  field_controls?: Record<string, { note?: string | null } | null> | null;
+}
+
+/**
+ * Render an entity for the prompt, surfacing any HUMAN-OWNED field values inline so
+ * the watcher sees the human's authoritative values (and reasons around them /
+ * proposes a change only on new evidence) rather than re-clobbering them.
+ */
+function renderEntity(e: TemplateEntity): string {
+  const owned = e.field_controls ? Object.keys(e.field_controls) : [];
+  if (owned.length === 0) return e.name;
+  const md = e.metadata ?? {};
+  const parts = owned.map((f) => {
+    const note = e.field_controls?.[f]?.note;
+    return `${f}=${JSON.stringify((md as Record<string, unknown>)[f])}${note ? ` (${note})` : ''}`;
+  });
+  return `${e.name} [set by you — do not change without new evidence: ${parts.join(', ')}]`;
 }
 
 interface TemplateContext {
@@ -87,7 +107,9 @@ function buildContext(context: TemplateContext): Record<string, unknown> {
   }
 
   return {
-    entities: stringifiable(context.entities, () => context.entities.map((e) => e.name).join(', ')),
+    entities: stringifiable(context.entities, () =>
+      context.entities.map(renderEntity).join(', ')
+    ),
     content: formatContentList(context.content),
     sources,
     data,

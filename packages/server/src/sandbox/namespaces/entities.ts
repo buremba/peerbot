@@ -40,6 +40,9 @@ export interface EntityUpdateInput {
 	content?: string;
 	metadata?: Record<string, unknown>;
 	enabled_classifiers?: string[];
+	/** Optional note explaining a human correction; stored on the per-field
+	 *  ownership marker for the metadata fields this update sets. */
+	field_note?: string;
 }
 
 export interface EntityLinkInput {

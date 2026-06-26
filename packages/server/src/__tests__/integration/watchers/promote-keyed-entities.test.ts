@@ -19,6 +19,9 @@ import { inferWatcherGranularityFromSchedule } from '@lobu/connector-sdk';
 import { slugify } from '@lobu/core';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { DbClient } from '../../../db/client';
+import type { Env } from '../../../index';
+import type { AuthContext } from '../../../tools/execute';
+import { executeTool } from '../../../tools/execute';
 import { createWatcherRun } from '../../../runs/queue-service';
 import { computePendingWindow } from '../../../utils/window-utils';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
@@ -52,6 +55,34 @@ const KEYED_EXTRACTED_DATA = {
     { category: 'Performance', name: 'Slow Loading' },
   ],
 };
+
+const TEST_ENV: Env = {
+  ENVIRONMENT: 'test',
+  DATABASE_URL: process.env.DATABASE_URL,
+  JWT_SECRET: 'test-jwt-secret-for-testing-only',
+  BETTER_AUTH_SECRET: 'test-auth-secret-for-testing-only',
+};
+
+/** Owner web-session auth context for invoking manage_operations.approve. */
+function ownerAuthCtx(orgId: string, userId: string): AuthContext {
+  return {
+    organizationId: orgId,
+    tokenOrganizationId: orgId,
+    userId,
+    memberRole: 'owner',
+    agentId: null,
+    requestedAgentId: null,
+    isAuthenticated: true,
+    clientId: null,
+    scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
+    tokenType: 'oauth',
+    requestUrl: `http://localhost/api/${orgId}`,
+    baseUrl: '',
+    scopedToOrg: true,
+    allowCrossOrg: false,
+    allowInternalTools: true,
+  };
+}
 
 async function setupKeyedWatcher() {
   const sql = getTestDb();
@@ -275,6 +306,197 @@ describe('complete_window promotes keyed rows into entities (P2 phase 1)', () =>
       WHERE parent_id = ${parentEntityId} AND organization_id = ${workspace.org.id}
     `;
     expect(Number(childCount[0].c)).toBe(2);
+  });
+
+  it('syncs extracted fields into entities and respects a human-owned field on re-run, queuing an approval', async () => {
+    const ctx = await setupKeyedWatcher();
+    const { sql, workspace, watcherId } = ctx;
+
+    await createTestEvent({
+      entity_id: ctx.parentEntityId,
+      organization_id: workspace.org.id,
+      content: 'Users report the app crashing and loading slowly.',
+      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+
+    // Run 1: a non-key `severity` field is synced into the promoted entity's metadata.
+    await ctx.api.watchers.completeWindow({
+      watcher_id: String(watcherId),
+      window_token: token,
+      run_metadata: { watcher_run_id: runId },
+      extracted_data: {
+        problems: [
+          { category: 'Stability', name: 'App Crashes', severity: 'low' },
+          { category: 'Performance', name: 'Slow Loading', severity: 'low' },
+        ],
+      },
+    });
+
+    const appCrashesId = `${watcherId}::stability::app-crashes`;
+    const [created] = await sql`
+      SELECT e.id, e.metadata, e.field_controls
+      FROM entities e JOIN entity_identities ei ON ei.entity_id = e.id
+      WHERE ei.namespace = 'watcher_key' AND ei.identifier = ${appCrashesId}
+    `;
+    // Slice 2 (create): the extracted field value lands in metadata, not just provenance.
+    expect((created.metadata as Record<string, unknown>).severity).toBe('low');
+    expect(created.field_controls).toEqual({});
+    const entityId = Number(created.id);
+
+    // A human takes ownership of `severity`, attaching a correction note.
+    await workspace.owner.entities.update({
+      entity_id: entityId,
+      metadata: { severity: 'high' },
+      field_note: 'confirmed critical with eng',
+    });
+    const [edited] = await sql`SELECT metadata, field_controls FROM entities WHERE id = ${entityId}`;
+    // Slice 1: human edit applies the value AND marks the field owned, carrying the note.
+    expect((edited.metadata as Record<string, unknown>).severity).toBe('high');
+    const sevControl = (edited.field_controls as Record<string, { note?: string; set_by?: string }>)
+      .severity;
+    expect(sevControl).toBeTruthy();
+    expect(sevControl.note).toBe('confirmed critical with eng');
+    expect(sevControl.set_by).toBe(workspace.users.owner.id);
+
+    // Run 2 (replay) proposes a different severity for the SAME key.
+    await ctx.api.watchers.completeWindow({
+      watcher_id: String(watcherId),
+      window_token: token,
+      run_metadata: { watcher_run_id: runId },
+      extracted_data: {
+        problems: [
+          { category: 'Stability', name: 'App Crashes', severity: 'critical' },
+          { category: 'Performance', name: 'Slow Loading', severity: 'low' },
+        ],
+      },
+    });
+
+    // Slice 2 (match): the watcher does NOT overwrite the human-owned value.
+    const [afterRerun] = await sql`SELECT metadata FROM entities WHERE id = ${entityId}`;
+    expect((afterRerun.metadata as Record<string, unknown>).severity).toBe('high');
+
+    // Slice 3: the blocked change is queued as a durable approval the human can act on.
+    const pendingRuns = async () => sql`
+      SELECT id, action_input FROM runs
+      WHERE organization_id = ${workspace.org.id}
+        AND run_type = 'internal'
+        AND action_key = 'entity_field_change'
+        AND approval_status = 'pending'
+    `;
+    const pending = await pendingRuns();
+    expect(pending.length).toBe(1);
+    const proposal = pending[0].action_input as { entity_id: number; fields: Record<string, unknown> };
+    expect(proposal.entity_id).toBe(entityId);
+    expect(proposal.fields.severity).toBe('critical');
+
+    // Idempotency: replaying the SAME window again must NOT stack a second
+    // pending approval card (complete_window is replay-safe under retries/replicas).
+    await ctx.api.watchers.completeWindow({
+      watcher_id: String(watcherId),
+      window_token: token,
+      run_metadata: { watcher_run_id: runId },
+      extracted_data: {
+        problems: [
+          { category: 'Stability', name: 'App Crashes', severity: 'critical' },
+          { category: 'Performance', name: 'Slow Loading', severity: 'low' },
+        ],
+      },
+    });
+    expect((await pendingRuns()).length).toBe(1);
+
+    // Slice 3 (apply): an owner approves via manage_operations → the value lands and
+    // the field stays human-owned (now carrying the approved value).
+    const approveRes = (await executeTool(
+      'manage_operations',
+      { action: 'approve', run_id: Number(pending[0].id) },
+      TEST_ENV,
+      ownerAuthCtx(workspace.org.id, workspace.users.owner.id)
+    )) as { approved?: boolean };
+    expect(approveRes.approved).toBe(true);
+
+    const [applied] = await sql`SELECT metadata, field_controls FROM entities WHERE id = ${entityId}`;
+    expect((applied.metadata as Record<string, unknown>).severity).toBe('critical');
+    // Still owned — an approved watcher value remains human-owned, not watcher-writable.
+    expect((applied.field_controls as Record<string, unknown>).severity).toBeTruthy();
+    const [approvedRun] = await sql`SELECT status, approval_status FROM runs WHERE id = ${Number(pending[0].id)}`;
+    expect(approvedRun.status).toBe('completed');
+    expect(approvedRun.approval_status).toBe('approved');
+  });
+
+  it('approving a STALE proposal does not clobber a value the human moved after it was queued', async () => {
+    const ctx = await setupKeyedWatcher();
+    const { sql, workspace, watcherId } = ctx;
+
+    await createTestEvent({
+      entity_id: ctx.parentEntityId,
+      organization_id: workspace.org.id,
+      content: 'Users report the app crashing.',
+      occurred_at: new Date(Date.now() - 60 * 60 * 1000),
+    });
+
+    const runId = await queueRunningRun(ctx);
+    const token = await readWindowToken(ctx);
+
+    // Run 1 seeds the entity; human then owns `severity` at 'high'.
+    await ctx.api.watchers.completeWindow({
+      watcher_id: String(watcherId),
+      window_token: token,
+      run_metadata: { watcher_run_id: runId },
+      extracted_data: {
+        problems: [
+          { category: 'Stability', name: 'App Crashes', severity: 'low' },
+          { category: 'Performance', name: 'Slow Loading', severity: 'low' },
+        ],
+      },
+    });
+    const appCrashesId = `${watcherId}::stability::app-crashes`;
+    const [created] = await sql`
+      SELECT e.id FROM entities e JOIN entity_identities ei ON ei.entity_id = e.id
+      WHERE ei.namespace = 'watcher_key' AND ei.identifier = ${appCrashesId}
+    `;
+    const entityId = Number(created.id);
+    await workspace.owner.entities.update({ entity_id: entityId, metadata: { severity: 'high' } });
+
+    // Run 2: watcher proposes 'critical' against the 'high' snapshot → pending approval.
+    await ctx.api.watchers.completeWindow({
+      watcher_id: String(watcherId),
+      window_token: token,
+      run_metadata: { watcher_run_id: runId },
+      extracted_data: {
+        problems: [
+          { category: 'Stability', name: 'App Crashes', severity: 'critical' },
+          { category: 'Performance', name: 'Slow Loading', severity: 'low' },
+        ],
+      },
+    });
+    const [pending] = await sql`
+      SELECT id, action_input FROM runs
+      WHERE organization_id = ${workspace.org.id} AND action_key = 'entity_field_change'
+        AND approval_status = 'pending'
+    `;
+    expect((pending.action_input as { current?: Record<string, unknown> }).current?.severity).toBe('high');
+
+    // The human moves severity to 'medium' AFTER the proposal was queued (proposal is now stale).
+    await workspace.owner.entities.update({ entity_id: entityId, metadata: { severity: 'medium' } });
+
+    // Approving the stale proposal must NOT overwrite the human's newer 'medium'.
+    const approveRes = (await executeTool(
+      'manage_operations',
+      { action: 'approve', run_id: Number(pending.id) },
+      TEST_ENV,
+      ownerAuthCtx(workspace.org.id, workspace.users.owner.id)
+    )) as { approved?: boolean; message?: string };
+    expect(approveRes.approved).toBe(true);
+
+    const [after] = await sql`SELECT metadata FROM entities WHERE id = ${entityId}`;
+    expect((after.metadata as Record<string, unknown>).severity).toBe('medium'); // human wins
+    // Run still resolves (terminal), it just applied nothing.
+    const [resolved] = await sql`SELECT status, approval_status FROM runs WHERE id = ${Number(pending.id)}`;
+    expect(resolved.status).toBe('completed');
+    expect(resolved.approval_status).toBe('approved');
   });
 
   it('disambiguates a slug that collides with a pre-existing sibling — window is NOT poison-pilled', async () => {

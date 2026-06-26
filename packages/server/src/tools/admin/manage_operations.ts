@@ -31,6 +31,11 @@ import {
   type ManageAgentsProposal,
   applyManageAgentsProposal,
 } from './manage_agents';
+import {
+  ENTITY_FIELD_CHANGE_ACTION_KEY,
+  type EntityFieldChangeProposal,
+  applyEntityFieldChangeProposal,
+} from './entity-field-approval';
 import { PaginationFields } from './schemas/common-fields';
 import { getErrorMessage } from "@lobu/core";
 
@@ -1168,6 +1173,146 @@ async function tryApproveManageAgentsRun(
   }
 }
 
+/**
+ * Claim a pending entity_field_change run (a watcher field-change held for
+ * approval). Mirrors claimManageAgentsRun. Returns the held proposal, or null when
+ * this run isn't a pending field-change run.
+ */
+async function claimEntityFieldChangeRun(
+  runId: number,
+  organizationId: string,
+  decision: 'approved' | 'rejected',
+  rejectReason?: string
+): Promise<{ proposal: EntityFieldChangeProposal } | null> {
+  const sql = getDb();
+  const rows =
+    decision === 'approved'
+      ? await sql`
+          UPDATE runs
+          SET approval_status = 'approved', status = 'running'
+          WHERE id = ${runId}
+            AND organization_id = ${organizationId}
+            AND approval_status = 'pending'
+            AND run_type = 'internal'
+            AND action_key = ${ENTITY_FIELD_CHANGE_ACTION_KEY}
+          RETURNING action_input
+        `
+      : await sql`
+          UPDATE runs
+          SET approval_status = 'rejected', status = 'cancelled',
+              error_message = ${rejectReason ?? 'Rejected by user'}, completed_at = NOW()
+          WHERE id = ${runId}
+            AND organization_id = ${organizationId}
+            AND approval_status = 'pending'
+            AND run_type = 'internal'
+            AND action_key = ${ENTITY_FIELD_CHANGE_ACTION_KEY}
+          RETURNING action_input
+        `;
+  if (rows.length === 0) return null;
+  const proposal = (rows[0] as { action_input: EntityFieldChangeProposal | null }).action_input;
+  if (!proposal) return null;
+  return { proposal };
+}
+
+/**
+ * Approve + apply a pending entity_field_change run. Returns a result when the run
+ * was a pending field-change run; null to fall through to other approval paths.
+ */
+async function tryApproveEntityFieldChangeRun(
+  args: Static<typeof ApproveAction>,
+  ctx: ToolContext
+): Promise<ManageOperationsResult | null> {
+  const claimed = await claimEntityFieldChangeRun(args.run_id, ctx.organizationId, 'approved');
+  if (!claimed) return null;
+  const { proposal } = claimed;
+  const fieldList = Object.keys(proposal.fields).join(', ');
+
+  await supersedeActionEvent(
+    args.run_id,
+    ctx.organizationId,
+    'confirmed',
+    'entity_field_change — applying',
+    `Field change confirmed: ${fieldList}`,
+    {}
+  );
+
+  try {
+    const result = await applyEntityFieldChangeProposal(proposal, ctx.userId);
+    const staleFields = Object.keys(result.stale);
+    // The human re-edited every proposed field after the watcher queued this — the
+    // proposal is stale. Resolve the run without clobbering the newer human value.
+    const allStale = Object.keys(result.applied).length === 0 && staleFields.length > 0;
+    await getDb()`
+      UPDATE runs SET status = 'completed', completed_at = NOW(),
+        action_output = ${getDb().json(result as unknown as Record<string, unknown>)}
+      WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
+    `;
+    const summary = allStale
+      ? `Field change skipped — ${staleFields.join(', ')} already changed since proposed`
+      : `Field change applied: ${fieldList}`;
+    const eventId = await supersedeActionEvent(
+      args.run_id,
+      ctx.organizationId,
+      'completed',
+      allStale ? 'entity_field_change — skipped (stale)' : 'entity_field_change — completed',
+      summary,
+      { output: result as unknown as Record<string, unknown> }
+    );
+    return {
+      action: 'approve',
+      approved: true,
+      run_id: args.run_id,
+      event_id: eventId,
+      message: allStale
+        ? `Field change skipped: ${staleFields.join(', ')} was changed by a human after the watcher proposed it.`
+        : `Field change approved and applied: ${fieldList}.`,
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await getDb()`
+      UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = ${errorMessage}
+      WHERE id = ${args.run_id} AND organization_id = ${ctx.organizationId}
+    `;
+    await supersedeActionEvent(
+      args.run_id,
+      ctx.organizationId,
+      'failed',
+      'entity_field_change — failed',
+      `Field change failed: ${errorMessage}`,
+      { error_message: errorMessage }
+    );
+    return { error: `Failed to apply field change: ${errorMessage}` };
+  }
+}
+
+/**
+ * Reject a pending entity_field_change run. Returns a result when the run was a
+ * pending field-change run; null to fall through.
+ */
+async function tryRejectEntityFieldChangeRun(
+  args: Static<typeof RejectAction>,
+  ctx: ToolContext
+): Promise<ManageOperationsResult | null> {
+  const reason = args.reason ?? 'Rejected by user';
+  const claimed = await claimEntityFieldChangeRun(
+    args.run_id,
+    ctx.organizationId,
+    'rejected',
+    reason
+  );
+  if (!claimed) return null;
+  const fieldList = Object.keys(claimed.proposal.fields).join(', ');
+  const eventId = await supersedeActionEvent(
+    args.run_id,
+    ctx.organizationId,
+    'rejected',
+    'entity_field_change — rejected',
+    `Field change rejected: ${fieldList}${args.reason ? ` — ${args.reason}` : ''}`,
+    { reason }
+  );
+  return { action: 'reject', rejected: true, run_id: args.run_id, event_id: eventId };
+}
+
 async function handleApprove(
   args: Static<typeof ApproveAction>,
   ctx: ToolContext,
@@ -1188,6 +1333,11 @@ async function handleApprove(
   // executor.
   const builderResult = await tryApproveManageAgentsRun(args, ctx, env);
   if (builderResult) return builderResult;
+
+  // Watcher field-change gate (run_type='internal', action_key='entity_field_change'):
+  // approve applies the proposed value to the entity (now human-owned).
+  const fieldChangeResult = await tryApproveEntityFieldChangeRun(args, ctx);
+  if (fieldChangeResult) return fieldChangeResult;
 
   const runRows = await sql`
     UPDATE runs
@@ -1313,6 +1463,10 @@ async function handleReject(
     );
     return { action: 'reject', rejected: true, run_id: args.run_id, event_id: eventId };
   }
+
+  // Watcher field-change gate? Cancel it; the entity keeps its human-owned value.
+  const fieldChangeReject = await tryRejectEntityFieldChangeRun(args, ctx);
+  if (fieldChangeReject) return fieldChangeReject;
 
   const updated = await sql`
     UPDATE runs

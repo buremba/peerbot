@@ -433,6 +433,14 @@ jobs:
         # gate: a value whose static type is a JS array, bound as a SQL param, fails.
         run: bun scripts/check-raw-array-params.mjs
 
+      - name: Connection-visibility compiler gate
+        # The per-user connection-visibility READ-SEAM gate (connection_id IN
+        # (SELECT ... FROM connections ... visibility ...)) must come from the one
+        # compiler (packages/server/src/authz/connection-visibility.ts), not be
+        # re-derived inline — that is how the authz gate silently drifts and leaks
+        # another user's private-connection data through a new read path.
+        run: bun scripts/check-connection-visibility-compiler.mjs
+
   typecheck:
     runs-on: ubuntu-latest
     timeout-minutes: 20

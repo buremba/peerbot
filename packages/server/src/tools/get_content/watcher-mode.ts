@@ -185,7 +185,7 @@ export async function handleWatcherMode(
       cv.keying_config as template_keying_config,
       cv.reactions_guidance,
       cv.version_sources,
-      (SELECT COALESCE(json_agg(json_build_object('id', e.id, 'name', e.name, 'type', et.slug)), '[]'::json) FROM entities e JOIN entity_types et ON et.id = e.entity_type_id WHERE e.id = ANY(i.entity_ids)) as entities
+      (SELECT COALESCE(json_agg(json_build_object('id', e.id, 'name', e.name, 'type', et.slug, 'metadata', e.metadata, 'field_controls', e.field_controls)), '[]'::json) FROM entities e JOIN entity_types et ON et.id = e.entity_type_id WHERE e.id = ANY(i.entity_ids)) as entities
     FROM watchers i
     LEFT JOIN watcher_versions cv
       ON cv.id = COALESCE(${pinnedVersionId}::bigint, i.current_version_id)

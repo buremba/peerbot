@@ -36,6 +36,7 @@
 import { slugify } from '@lobu/core';
 import type { DbClient } from '../db/client';
 import type { KeyingConfig } from '../types/watchers';
+import { type BlockedChange, mergeEntityFields } from './entity-field-merge';
 import { getValueAtPath } from './object-path';
 import logger from './logger';
 import { isUniqueViolation } from './pg-errors';
@@ -64,11 +65,25 @@ export interface PromoteKeyedEntitiesParams {
   createdBy?: string | null;
 }
 
+/** A field a watcher tried to change on an existing entity but is human-owned. */
+export interface BlockedFieldProposal {
+  entityId: number;
+  /** field_path -> proposed value the watcher wanted to write. */
+  fields: Record<string, unknown>;
+  /** field_path -> current human-owned value (for the approval diff). */
+  current: Record<string, unknown>;
+}
+
 export interface PromoteKeyedEntitiesResult {
   /** Number of distinct keyed rows that resolved to an entity. */
   promoted: number;
   /** Of those, how many created a brand-new entity (vs. matched an existing). */
   created: number;
+  /**
+   * Owned-field changes that were NOT applied — the caller queues an approval for
+   * each (post-commit), never overwriting a human value inline.
+   */
+  blocked: BlockedFieldProposal[];
 }
 
 /**
@@ -247,11 +262,20 @@ async function upsertKeyedEntity(params: {
   name: string;
   baseSlug: string;
   metadata: Record<string, unknown>;
+  /** Extracted entity field values to sync into metadata (excludes the stable key). */
+  fieldValues: Record<string, unknown>;
   createdBy: string;
-}): Promise<{ entityId: number; created: boolean }> {
+}): Promise<{
+  entityId: number;
+  created: boolean;
+  blocked: Record<string, BlockedChange>;
+}> {
   const { tx, organizationId, identifier } = params;
 
-  // 1. Existing identity → reuse its entity (the idempotent fast path).
+  // 1. Existing identity → reuse its entity (the idempotent fast path), and SYNC the
+  //    freshly-extracted field values into it honoring human ownership: un-owned
+  //    fields are written; human-owned fields are returned as `blocked` (the caller
+  //    queues an approval) and never overwritten.
   const existing = await tx<{ entity_id: number | string }>`
     SELECT ei.entity_id
     FROM entity_identities ei
@@ -264,7 +288,15 @@ async function upsertKeyedEntity(params: {
     LIMIT 1
   `;
   if (existing.length > 0) {
-    return { entityId: Number(existing[0].entity_id), created: false };
+    const entityId = Number(existing[0].entity_id);
+    const merge = await mergeEntityFields({
+      tx,
+      entityId,
+      fields: params.fieldValues,
+      source: 'watcher',
+      actorId: null,
+    });
+    return { entityId, created: false, blocked: merge.blocked };
   }
 
   // 2. Create the entity (sequence-allocated id — multi-replica safe),
@@ -295,7 +327,7 @@ async function upsertKeyedEntity(params: {
     RETURNING entity_id
   `;
   if (claimed.length > 0) {
-    return { entityId, created: true };
+    return { entityId, created: true, blocked: {} };
   }
 
   // Lost the race: another live transaction already claimed this key. Resolve
@@ -319,11 +351,11 @@ async function upsertKeyedEntity(params: {
       DELETE FROM entities
       WHERE id = ${entityId} AND organization_id = ${organizationId}
     `;
-    return { entityId: Number(winner[0].entity_id), created: false };
+    return { entityId: Number(winner[0].entity_id), created: false, blocked: {} };
   }
   // Extremely unlikely: the conflicting claim was tombstoned between our INSERT
   // and this re-read. Keep our entity as the canonical one.
-  return { entityId, created: true };
+  return { entityId, created: true, blocked: {} };
 }
 
 /**
@@ -347,6 +379,7 @@ export async function promoteKeyedEntities(
   const result: PromoteKeyedEntitiesResult = {
     promoted: 0,
     created: 0,
+    blocked: [],
   };
 
   const rows = getValueAtPath(extractedData, keyingConfig.entity_path);
@@ -386,7 +419,14 @@ export async function promoteKeyedEntities(
     const identifier = `${watcherId}::${stableKey}`;
     const name = buildEntityName(entityRecord, keyingConfig, stableKey);
     const slug = slugify(name) || stableKey;
+    // The extracted record's data fields (everything except the computed stable
+    // key) are the entity's field values — synced into metadata on create and,
+    // for existing entities, merged honoring human ownership.
+    const fieldValues = Object.fromEntries(
+      Object.entries(entityRecord).filter(([k]) => k !== keyingConfig.key_output_field)
+    );
     const metadata: Record<string, unknown> = {
+      ...fieldValues,
       watcher_id: watcherId,
       stable_key: stableKey,
       source: 'watcher_promotion',
@@ -397,7 +437,7 @@ export async function promoteKeyedEntities(
     };
 
     try {
-      const { created } = await tx.savepoint((sp) =>
+      const { created, blocked, entityId } = await tx.savepoint((sp) =>
         upsertKeyedEntity({
           tx: sp,
           organizationId,
@@ -407,11 +447,20 @@ export async function promoteKeyedEntities(
           name,
           baseSlug: slug,
           metadata,
+          fieldValues,
           createdBy,
         })
       );
       result.promoted += 1;
       if (created) result.created += 1;
+      const blockedFields = Object.keys(blocked);
+      if (blockedFields.length > 0) {
+        result.blocked.push({
+          entityId,
+          fields: Object.fromEntries(blockedFields.map((f) => [f, blocked[f].proposed])),
+          current: Object.fromEntries(blockedFields.map((f) => [f, blocked[f].current])),
+        });
+      }
     } catch (err) {
       // Non-fatal + savepoint-isolated: a single failing row rolls back only its
       // savepoint, never the window-completion transaction. Re-throwing here

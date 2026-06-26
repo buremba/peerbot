@@ -227,7 +227,9 @@ export function buildClientSDK(
 				import("../db/client"),
 				import("../utils/execute-data-sources"),
 			]);
-			const scoped = validateAndScopeQuery(querySql, ctx.organizationId);
+			const scoped = validateAndScopeQuery(querySql, ctx.organizationId, {
+				userId: ctx.userId,
+			});
 			const rows = await raceAbort(
 				getDb().begin(async (tx) => {
 					await tx.unsafe("SET TRANSACTION READ ONLY");

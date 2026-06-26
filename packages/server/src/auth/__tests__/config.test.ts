@@ -11,7 +11,9 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  buildGenericOAuthEntry,
   collectEnabledLoginProviderConfigs,
+  type EnabledLoginProviderConfig,
   getAuthConfig,
   getLoginProviderScopes,
   mergeLoginProviderConfigs,
@@ -216,5 +218,95 @@ describe('getAuthConfig', () => {
 
   it('should export getAuthConfig function', () => {
     expect(typeof getAuthConfig).toBe('function');
+  });
+});
+
+describe('non-OIDC login provider config (PKCE / basic-auth / extra params)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('collectEnabledLoginProviderConfigs threads usePkce, tokenEndpointAuthMethod and authParams', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const configs = collectEnabledLoginProviderConfigs([
+      {
+        key: 'custom.pkce',
+        auth_schema: {
+          methods: [
+            {
+              type: 'oauth',
+              provider: 'custompkce',
+              loginScopes: ['openid', 'email'],
+              authorizationUrl: 'https://idp.example.com/authorize',
+              tokenUrl: 'https://idp.example.com/token',
+              userinfoUrl: 'https://idp.example.com/userinfo',
+              tokenEndpointAuthMethod: 'client_secret_basic',
+              usePkce: true,
+              authParams: { prompt: 'consent', access_type: 'offline' },
+            },
+          ],
+        },
+      },
+    ]);
+    expect(configs).toHaveLength(1);
+    expect(configs[0]).toMatchObject({
+      provider: 'custompkce',
+      tokenEndpointAuthMethod: 'client_secret_basic',
+      usePkce: true,
+      authParams: { prompt: 'consent', access_type: 'offline' },
+    });
+  });
+
+  const baseRow: EnabledLoginProviderConfig = {
+    connectorKey: 'custom.pkce',
+    provider: 'custompkce',
+    loginScopes: ['openid', 'email'],
+    clientIdKey: 'CUSTOMPKCE_CLIENT_ID',
+    clientSecretKey: 'CUSTOMPKCE_CLIENT_SECRET',
+    authorizationUrl: 'https://idp.example.com/authorize',
+    tokenUrl: 'https://idp.example.com/token',
+    userinfoUrl: 'https://idp.example.com/userinfo',
+  };
+
+  it('buildGenericOAuthEntry threads pkce + basic authentication + authorizationUrlParams', () => {
+    const entry = buildGenericOAuthEntry(
+      {
+        ...baseRow,
+        tokenEndpointAuthMethod: 'client_secret_basic',
+        usePkce: true,
+        authParams: { prompt: 'consent' },
+      },
+      'cid',
+      'secret'
+    );
+    expect(entry).not.toBeNull();
+    expect(entry).toMatchObject({
+      providerId: 'custompkce',
+      clientId: 'cid',
+      clientSecret: 'secret',
+      authorizationUrl: 'https://idp.example.com/authorize',
+      tokenUrl: 'https://idp.example.com/token',
+      userInfoUrl: 'https://idp.example.com/userinfo',
+      scopes: ['openid', 'email'],
+      pkce: true,
+      authentication: 'basic',
+      authorizationUrlParams: { prompt: 'consent' },
+    });
+  });
+
+  it('maps client_secret_post → post and omits pkce/params when unset', () => {
+    const entry = buildGenericOAuthEntry(
+      { ...baseRow, tokenEndpointAuthMethod: 'client_secret_post' },
+      'cid',
+      'secret'
+    );
+    expect(entry?.authentication).toBe('post');
+    expect(entry).not.toHaveProperty('pkce');
+    expect(entry).not.toHaveProperty('authorizationUrlParams');
+  });
+
+  it('returns null (→ socialProviders route) when any endpoint is missing', () => {
+    const { userinfoUrl, ...noUserinfo } = baseRow;
+    expect(buildGenericOAuthEntry(noUserinfo, 'cid', 'secret')).toBeNull();
   });
 });

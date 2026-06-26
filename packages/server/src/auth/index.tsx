@@ -37,6 +37,8 @@ import {
 import { TtlCache } from "../utils/ttl-cache";
 import { resolveBaseUrl, safeParseUrl } from "./base-url";
 import {
+	buildGenericOAuthEntry,
+	type GenericOAuthEntry,
 	getAuthConfig as getAuthConfigFromEnv,
 	getEnabledLoginProviderConfigs,
 	resolveLoginProviderCredentials,
@@ -120,22 +122,7 @@ export async function createAuth(
 		string,
 		{ clientId: string; clientSecret: string; scope?: string[] }
 	> = {};
-	const genericOAuthConfigs: Array<{
-		providerId: string;
-		clientId: string;
-		clientSecret: string;
-		authorizationUrl: string;
-		tokenUrl: string;
-		userInfoUrl: string;
-		scopes?: string[];
-		mapProfileToUser: (profile: Record<string, unknown>) => {
-			id: string;
-			email?: string;
-			name?: string;
-			image?: string;
-			emailVerified?: boolean;
-		};
-	}> = [];
+	const genericOAuthConfigs: GenericOAuthEntry[] = [];
 
 	for (const row of providerRows) {
 		const provider = row.provider;
@@ -152,32 +139,13 @@ export async function createAuth(
 
 		if (!clientId || !clientSecret) continue;
 
-		// Self-describing connector → generic-oauth route.
-		if (row.authorizationUrl && row.tokenUrl && row.userinfoUrl) {
+		// Self-describing connector → generic-oauth route. The builder threads the
+		// non-OIDC knobs (PKCE, token-endpoint auth method, extra auth params) so
+		// providers that need them can actually complete sign-in.
+		const genericEntry = buildGenericOAuthEntry(row, clientId, clientSecret);
+		if (genericEntry) {
 			if (genericOAuthConfigs.some((c) => c.providerId === provider)) continue;
-			genericOAuthConfigs.push({
-				providerId: provider,
-				clientId,
-				clientSecret,
-				authorizationUrl: row.authorizationUrl,
-				tokenUrl: row.tokenUrl,
-				userInfoUrl: row.userinfoUrl,
-				...(row.loginScopes.length > 0 && { scopes: row.loginScopes }),
-				// Standard OIDC claim mapping — no provider special-casing. Slack's
-				// openid.connect.userInfo returns `sub` (stable user id) plus the
-				// usual email/name/picture claims.
-				mapProfileToUser: (profile) => ({
-					id: String(profile.sub ?? ""),
-					email:
-						typeof profile.email === "string" ? profile.email : undefined,
-					name: typeof profile.name === "string" ? profile.name : undefined,
-					image:
-						typeof profile.picture === "string"
-							? profile.picture
-							: undefined,
-					emailVerified: profile.email_verified === true,
-				}),
-			});
+			genericOAuthConfigs.push(genericEntry);
 			continue;
 		}
 

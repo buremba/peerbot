@@ -29,7 +29,7 @@ type TokenEndpointAuthMethod =
 	| "client_secret_basic"
 	| "none";
 
-interface EnabledLoginProviderConfig {
+export interface EnabledLoginProviderConfig {
 	connectorKey: string;
 	provider: string;
 	loginScopes: string[];
@@ -39,6 +39,10 @@ interface EnabledLoginProviderConfig {
 	tokenUrl?: string;
 	userinfoUrl?: string;
 	tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
+	/** PKCE for non-OIDC / public-client OAuth2 flows. */
+	usePkce?: boolean;
+	/** Extra params merged into the authorization URL (e.g. `prompt`, `access_type`). */
+	authParams?: Record<string, string>;
 }
 
 interface AuthConfigOptions {
@@ -57,6 +61,8 @@ type OAuthMethod = {
 	tokenUrl?: string;
 	userinfoUrl?: string;
 	tokenEndpointAuthMethod?: TokenEndpointAuthMethod;
+	usePkce?: boolean;
+	authParams?: Record<string, string>;
 	loginProvisioning?: {
 		autoCreateConnection?: boolean;
 	};
@@ -172,6 +178,11 @@ export function collectEnabledLoginProviderConfigs(
 				...(method.tokenEndpointAuthMethod && {
 					tokenEndpointAuthMethod: method.tokenEndpointAuthMethod,
 				}),
+				...(method.usePkce === true && { usePkce: true }),
+				...(method.authParams &&
+					typeof method.authParams === "object" && {
+						authParams: method.authParams,
+					}),
 			});
 		}
 	}
@@ -181,6 +192,88 @@ export function collectEnabledLoginProviderConfigs(
 
 function hasValue(value?: string): boolean {
 	return Boolean(value && value.trim().length > 0);
+}
+
+/**
+ * A self-describing OAuth login provider mapped onto Better Auth's
+ * provider-agnostic `genericOAuth` plugin config. Field names follow the
+ * plugin's `GenericOAuthConfig` (note `userInfoUrl` casing, `authentication`,
+ * `pkce`, `authorizationUrlParams`).
+ */
+export interface GenericOAuthEntry {
+	providerId: string;
+	clientId: string;
+	clientSecret: string;
+	authorizationUrl: string;
+	tokenUrl: string;
+	userInfoUrl: string;
+	scopes?: string[];
+	pkce?: boolean;
+	authentication?: "basic" | "post";
+	authorizationUrlParams?: Record<string, string>;
+	mapProfileToUser: (profile: Record<string, unknown>) => {
+		id: string;
+		email?: string;
+		name?: string;
+		image?: string;
+		emailVerified?: boolean;
+	};
+}
+
+function betterAuthTokenAuth(
+	method?: TokenEndpointAuthMethod,
+): "basic" | "post" | undefined {
+	if (method === "client_secret_basic") return "basic";
+	if (method === "client_secret_post") return "post";
+	// `none` (public client) has no client-secret auth — fall back to the
+	// plugin default and rely on PKCE; callers without a secret are filtered
+	// out upstream.
+	return undefined;
+}
+
+// Standard OIDC claim mapping — no provider special-casing. A self-describing
+// `userInfoUrl` (e.g. Slack's openid.connect.userInfo) returns `sub` (stable
+// user id) plus the usual email/name/picture claims.
+function mapOidcProfileToUser(profile: Record<string, unknown>) {
+	return {
+		id: String(profile.sub ?? ""),
+		email: typeof profile.email === "string" ? profile.email : undefined,
+		name: typeof profile.name === "string" ? profile.name : undefined,
+		image: typeof profile.picture === "string" ? profile.picture : undefined,
+		emailVerified: profile.email_verified === true,
+	};
+}
+
+/**
+ * Map a self-describing login provider onto a Better Auth `genericOAuth` entry,
+ * or `null` if it isn't self-describing (no authorize/token/userinfo endpoints —
+ * those route to the built-in `socialProviders` map instead). Threads the
+ * non-OIDC knobs (`usePkce`, `tokenEndpointAuthMethod`, `authParams`) through to
+ * the plugin so PKCE / basic-auth / extra-param providers can actually sign in.
+ */
+export function buildGenericOAuthEntry(
+	row: EnabledLoginProviderConfig,
+	clientId: string,
+	clientSecret: string,
+): GenericOAuthEntry | null {
+	if (!(row.authorizationUrl && row.tokenUrl && row.userinfoUrl)) return null;
+	const authentication = betterAuthTokenAuth(row.tokenEndpointAuthMethod);
+	return {
+		providerId: row.provider,
+		clientId,
+		clientSecret,
+		authorizationUrl: row.authorizationUrl,
+		tokenUrl: row.tokenUrl,
+		userInfoUrl: row.userinfoUrl,
+		...(row.loginScopes.length > 0 && { scopes: row.loginScopes }),
+		...(row.usePkce && { pkce: true }),
+		...(authentication && { authentication }),
+		...(row.authParams &&
+			Object.keys(row.authParams).length > 0 && {
+				authorizationUrlParams: row.authParams,
+			}),
+		mapProfileToUser: mapOidcProfileToUser,
+	};
 }
 
 const RESERVED_TOP_LEVEL_ROUTES = new Set([

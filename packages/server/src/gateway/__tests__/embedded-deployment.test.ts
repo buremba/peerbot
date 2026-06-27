@@ -452,6 +452,42 @@ describe("DeploymentManager", () => {
       }
     });
 
+    test("forwards Vercel workspace backend selector without Vercel credentials", async () => {
+      const previous = {
+        LOBU_WORKSPACE_BACKEND: process.env.LOBU_WORKSPACE_BACKEND,
+        VERCEL_TOKEN: process.env.VERCEL_TOKEN,
+        VERCEL_TEAM_ID: process.env.VERCEL_TEAM_ID,
+        VERCEL_PROJECT_ID: process.env.VERCEL_PROJECT_ID,
+      };
+      process.env.LOBU_WORKSPACE_BACKEND = "vercel";
+      process.env.VERCEL_TOKEN = "vercel-test-token";
+      process.env.VERCEL_TEAM_ID = "team_test";
+      process.env.VERCEL_PROJECT_ID = "prj_test";
+
+      try {
+        const msg = createTestMessagePayload();
+        await manager.ensureDeployment("worker-1", "user-1", "user-1", msg);
+
+        const spawnCall = mockSpawn.mock.calls.at(-1);
+        const spawnOptions = spawnCall?.[2] as
+          | { env?: Record<string, string> }
+          | undefined;
+
+        expect(spawnOptions?.env?.LOBU_WORKSPACE_BACKEND).toBe("vercel");
+        expect(spawnOptions?.env?.VERCEL_TOKEN).toBeUndefined();
+        expect(spawnOptions?.env?.VERCEL_TEAM_ID).toBeUndefined();
+        expect(spawnOptions?.env?.VERCEL_PROJECT_ID).toBeUndefined();
+      } finally {
+        for (const [key, value] of Object.entries(previous)) {
+          if (value === undefined) {
+            delete process.env[key];
+          } else {
+            process.env[key] = value;
+          }
+        }
+      }
+    });
+
     test("child process exit removes worker from map", async () => {
       const msg = createTestMessagePayload();
       await manager.ensureDeployment("worker-1", "user-1", "user-1", msg);

@@ -14,15 +14,19 @@ import fs from "node:fs";
 import path from "node:path";
 import { stripEnv } from "@lobu/core";
 import type { BashOperations } from "@mariozechner/pi-coding-agent";
-import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
 import type { GatewayParams } from "../shared/tool-implementations";
+import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
 import {
-  type SandboxStrategy,
   probeSandboxStrategy,
+  type SandboxStrategy,
   wrapInvocation,
 } from "./exec-sandbox";
 import type { McpCliCommand, McpRuntimeRef } from "./mcp-cli-commands";
 import { buildMcpCliCommands } from "./mcp-cli-commands";
+import {
+  createVercelSandboxBashOps,
+  useVercelSandboxBackend,
+} from "./vercel-sandbox-bash";
 
 const EMBEDDED_BASH_LIMITS = {
   maxCommandCount: 50_000,
@@ -403,6 +407,21 @@ async function adaptMcpCliCommand(
 export async function createEmbeddedBashOps(
   options: EmbeddedBashOpsOptions = {}
 ): Promise<BashOperations> {
+  if (useVercelSandboxBackend()) {
+    if (!options.gw) {
+      throw new Error(
+        "LOBU_WORKSPACE_BACKEND=vercel requires gateway parameters"
+      );
+    }
+    if (options.mcpExposure === "cli") {
+      console.warn(
+        "[embedded] LOBU_WORKSPACE_BACKEND=vercel routes bash through Vercel; MCP CLI exposure is unavailable there. Use MCP tools exposure instead."
+      );
+    }
+    console.log("[embedded] bash backend active: vercel persistent sandbox");
+    return createVercelSandboxBashOps({ gw: options.gw });
+  }
+
   const { Bash, ReadWriteFs } = await import("just-bash");
 
   const rawWorkspaceDir =

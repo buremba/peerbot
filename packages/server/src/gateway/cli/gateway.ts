@@ -5,22 +5,33 @@ import { createLogger } from "@lobu/core";
 import { apiReference } from "@scalar/hono-api-reference";
 import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
+import { createPostgresAppInstallationStore } from "../../lobu/stores/app-installation-store.js";
 import type { AgentMetadata } from "../auth/agent-metadata-store.js";
 import { takePendingTool } from "../auth/mcp/pending-tool-store.js";
 import { setEnvResolver } from "../auth/mcp/string-substitution.js";
 import { createAuthProfileLabel } from "../auth/settings/auth-profiles-manager.js";
 import { SystemEnvStore } from "../auth/system-env-store.js";
-import { createPostgresAppInstallationStore } from "../../lobu/stores/app-installation-store.js";
+import {
+  type BundledIntegrationConnector,
+  resolveAppInstallCredentials,
+} from "../installation/app-install-credentials.js";
 import { getMetricsText } from "../metrics/prometheus.js";
 import { getModelProviderModules } from "../modules/module-system.js";
 import { createAudioRoutes } from "../routes/internal/audio.js";
+import { createConversationsRoutes } from "../routes/internal/conversations.js";
 import { createDeviceAuthRoutes } from "../routes/internal/device-auth.js";
 import { createFileRoutes } from "../routes/internal/files.js";
-import { createConversationsRoutes } from "../routes/internal/conversations.js";
 import { createImageRoutes } from "../routes/internal/images.js";
 import { createInteractionRoutes } from "../routes/internal/interactions.js";
+import { createVercelSandboxRoutes } from "../routes/internal/vercel-sandbox.js";
 import { registerAutoOpenApiRoutes } from "../routes/openapi-auto.js";
 import { createAgentApi } from "../routes/public/agent.js";
+import { createAgentConfigRoutes } from "../routes/public/agent-config.js";
+import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
+import { createAgentRoutes } from "../routes/public/agents.js";
+import {
+  createInstallRoutes,
+} from "../routes/public/app-install.js";
 import {
   type AppWebhookProvider,
   createAppWebhookRoutes,
@@ -29,17 +40,6 @@ import {
   createDeclaredAppWebhookProvider,
   createDefaultAppWebhookSecretResolver,
 } from "../routes/public/app-webhooks.js";
-import {
-  createInstallRoutes,
-} from "../routes/public/app-install.js";
-import {
-  type BundledIntegrationConnector,
-  resolveAppInstallCredentials,
-} from "../installation/app-install-credentials.js";
-import { resolveInstallOrgId } from "../routes/public/install-org.js";
-import { createAgentConfigRoutes } from "../routes/public/agent-config.js";
-import { createAgentHistoryRoutes } from "../routes/public/agent-history.js";
-import { createAgentRoutes } from "../routes/public/agents.js";
 import { createChannelBindingRoutes } from "../routes/public/channels.js";
 import { createConnectAuthRoutes } from "../routes/public/connect-auth.js";
 import {
@@ -47,6 +47,7 @@ import {
   createConnectionWebhookRoutes,
 } from "../routes/public/connections.js";
 import { createPublicFileRoutes } from "../routes/public/files.js";
+import { resolveInstallOrgId } from "../routes/public/install-org.js";
 import { createLandingRoutes } from "../routes/public/landing.js";
 import { createMcpOAuthRoutes } from "../routes/public/mcp-oauth.js";
 import {
@@ -233,6 +234,9 @@ export function createGatewayApp(
     logger.debug(
       "Conversation routes enabled at :8080/internal/conversations/*"
     );
+
+    app.route("", createVercelSandboxRoutes());
+    logger.debug("Vercel sandbox routes enabled");
   }
 
   if (coreServices) {

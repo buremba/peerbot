@@ -1314,6 +1314,13 @@ export class DeploymentManager {
       envVars.APP_GIT_SHA = process.env.APP_GIT_SHA;
     }
 
+    // Non-secret worker runtime selector. Vercel credentials remain in the
+    // gateway process and are never forwarded to worker subprocesses.
+    if (process.env.LOBU_WORKSPACE_BACKEND?.trim()) {
+      envVars.LOBU_WORKSPACE_BACKEND =
+        process.env.LOBU_WORKSPACE_BACKEND.trim();
+    }
+
     // Add OTLP endpoint for distributed tracing
     const otlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
     if (otlpEndpoint) {
@@ -1331,8 +1338,9 @@ export class DeploymentManager {
     for (const key of Object.keys(process.env)) {
       if (key.startsWith(WORKER_ENV_PREFIX)) {
         const stripped = key.slice(WORKER_ENV_PREFIX.length);
-        if (stripped) {
-          envVars[stripped] = process.env[key]!;
+        const value = process.env[key];
+        if (stripped && value !== undefined) {
+          envVars[stripped] = value;
         }
       }
     }

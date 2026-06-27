@@ -70,38 +70,6 @@ const ALLOW_PRIVATE_V6: ReadonlyArray<readonly [string, number]> = [
   ['ff00::', 8],
 ];
 
-function buildV4List(ranges: ReadonlyArray<readonly [string, number]>): net.BlockList {
-  const list = new net.BlockList();
-  for (const [address, prefix] of ranges) list.addSubnet(address, prefix, 'ipv4');
-  return list;
-}
-
-function buildV6List(
-  ranges: ReadonlyArray<readonly [string, number]>,
-  withUnspecified: boolean,
-): net.BlockList {
-  const list = new net.BlockList();
-  if (withUnspecified) list.addAddress('::', 'ipv6');
-  for (const [address, prefix] of ranges) list.addSubnet(address, prefix, 'ipv6');
-  return list;
-}
-
-// `block-private` additionally blocks loopback (::1); `allow-private` allows it.
-const BLOCK_PRIVATE_V6_LIST = (() => {
-  const list = buildV6List(BLOCK_PRIVATE_V6, true);
-  list.addAddress('::1', 'ipv6');
-  return list;
-})();
-const BLOCK_PRIVATE_V4_LIST = buildV4List(BLOCK_PRIVATE_V4);
-const ALLOW_PRIVATE_V4_LIST = buildV4List(ALLOW_PRIVATE_V4);
-const ALLOW_PRIVATE_V6_LIST = buildV6List(ALLOW_PRIVATE_V6, true);
-
-function lists(policy: DbEgressPolicy): { v4: net.BlockList; v6: net.BlockList } {
-  return policy === 'block-private'
-    ? { v4: BLOCK_PRIVATE_V4_LIST, v6: BLOCK_PRIVATE_V6_LIST }
-    : { v4: ALLOW_PRIVATE_V4_LIST, v6: ALLOW_PRIVATE_V6_LIST };
-}
-
 type NormalizedHost =
   | { kind: 'ipv4'; value: string }
   | { kind: 'ipv6'; value: string }
@@ -110,6 +78,27 @@ type NormalizedHost =
 
 function hextetsToIpv4(high: number, low: number): string {
   return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
+}
+
+function ipv4ToNumber(address: string): number | undefined {
+  const parts = address.split('.');
+  if (parts.length !== 4) return undefined;
+  let value = 0;
+  for (const part of parts) {
+    if (!/^\d+$/.test(part)) return undefined;
+    const octet = Number.parseInt(part, 10);
+    if (!Number.isInteger(octet) || octet < 0 || octet > 255) return undefined;
+    value = (value << 8) | octet;
+  }
+  return value >>> 0;
+}
+
+function matchesIpv4Prefix(address: string, base: string, prefix: number): boolean {
+  const addressValue = ipv4ToNumber(address);
+  const baseValue = ipv4ToNumber(base);
+  if (addressValue === undefined || baseValue === undefined) return true;
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  return (addressValue & mask) === (baseValue & mask);
 }
 
 /** Expand a valid IPv6 (net.isIP === 6) into 8 unsigned 16-bit hextets. */
@@ -138,6 +127,32 @@ function expandIpv6ToHextets(addr: string): number[] {
   const rightWithSuffix = [...right, ...ipv4Suffix];
   const zeros = new Array(8 - left.length - rightWithSuffix.length).fill(0);
   return [...left, ...zeros, ...rightWithSuffix];
+}
+
+function ipv6ToBigInt(address: string): bigint {
+  return expandIpv6ToHextets(address).reduce(
+    (acc, hextet) => (acc << 16n) | BigInt(hextet),
+    0n,
+  );
+}
+
+function matchesIpv6Prefix(address: string, base: string, prefix: number): boolean {
+  const shift = 128n - BigInt(prefix);
+  return ipv6ToBigInt(address) >> shift === ipv6ToBigInt(base) >> shift;
+}
+
+function isBlockedV4(address: string, policy: DbEgressPolicy): boolean {
+  const ranges = policy === 'block-private' ? BLOCK_PRIVATE_V4 : ALLOW_PRIVATE_V4;
+  return ranges.some(([base, prefix]) => matchesIpv4Prefix(address, base, prefix));
+}
+
+function isBlockedV6(address: string, policy: DbEgressPolicy): boolean {
+  const ranges = policy === 'block-private' ? BLOCK_PRIVATE_V6 : ALLOW_PRIVATE_V6;
+  return (
+    matchesIpv6Prefix(address, '::', 128) ||
+    (policy === 'block-private' && matchesIpv6Prefix(address, '::1', 128)) ||
+    ranges.some(([base, prefix]) => matchesIpv6Prefix(address, base, prefix))
+  );
 }
 
 /**
@@ -218,12 +233,11 @@ export function normalizeIpLiteral(host: string): NormalizedHost {
  */
 export function isBlockedIp(ip: string, policy: DbEgressPolicy): boolean {
   const normalized = normalizeIpLiteral(ip);
-  const { v4, v6 } = lists(policy);
   switch (normalized.kind) {
     case 'ipv4':
-      return v4.check(normalized.value, 'ipv4');
+      return isBlockedV4(normalized.value, policy);
     case 'ipv6':
-      return v6.check(normalized.value, 'ipv6');
+      return isBlockedV6(normalized.value, policy);
     case 'invalid':
       return true;
     case 'not-ip':

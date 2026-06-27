@@ -28,17 +28,10 @@ afterEach(() => {
 
 describe("useVercelSandboxBackend", () => {
   test("is opt-in only", () => {
-    delete process.env.LOBU_WORKSPACE_BACKEND;
-    expect(useVercelSandboxBackend()).toBe(false);
-
-    process.env.LOBU_WORKSPACE_BACKEND = "vercel";
-    expect(useVercelSandboxBackend()).toBe(true);
-
-    process.env.LOBU_WORKSPACE_BACKEND = "vercel-sandbox";
-    expect(useVercelSandboxBackend()).toBe(true);
-
-    process.env.LOBU_WORKSPACE_BACKEND = "local";
-    expect(useVercelSandboxBackend()).toBe(false);
+    expect(useVercelSandboxBackend("")).toBe(false);
+    expect(useVercelSandboxBackend("vercel")).toBe(true);
+    expect(useVercelSandboxBackend("vercel-sandbox")).toBe(true);
+    expect(useVercelSandboxBackend("local")).toBe(false);
   });
 });
 

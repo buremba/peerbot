@@ -55,7 +55,7 @@ function stageFakeNpm(opts: { logFile: string; exitCode?: number }): string {
   const binPath = join(binDir, "npm");
   writeFileSync(binPath, script);
   chmodSync(binPath, 0o755);
-  return binDir;
+  return [binDir, ORIGINAL_PATH].filter(Boolean).join(":");
 }
 
 afterEach(() => {

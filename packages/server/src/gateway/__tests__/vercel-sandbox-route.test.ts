@@ -243,6 +243,8 @@ describe("createVercelSandboxRoutes", () => {
 	test("fails before Vercel when access-token credentials are partial", async () => {
 		process.env.LOBU_WORKSPACE_BACKEND = "vercel";
 		process.env.VERCEL_TOKEN = "vercel_test_token";
+		delete process.env.VERCEL_TEAM_ID;
+		delete process.env.VERCEL_PROJECT_ID;
 		const workspaceDir = path.resolve(
 			"workspaces",
 			"verceltestagent",

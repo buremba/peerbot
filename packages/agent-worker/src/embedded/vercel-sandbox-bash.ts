@@ -108,7 +108,9 @@ export function createVercelSandboxBashOps(params: {
   };
 }
 
-export function useVercelSandboxBackend(): boolean {
-  const value = process.env.LOBU_WORKSPACE_BACKEND?.toLowerCase();
+export function useVercelSandboxBackend(
+  backend = process.env.LOBU_WORKSPACE_BACKEND
+): boolean {
+  const value = backend?.toLowerCase();
   return value === "vercel" || value === "vercel-sandbox";
 }

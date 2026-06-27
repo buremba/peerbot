@@ -14,11 +14,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { stripEnv } from "@lobu/core";
 import type { BashOperations } from "@mariozechner/pi-coding-agent";
-import type { GatewayParams } from "../shared/tool-implementations";
 import { SENSITIVE_WORKER_ENV_KEYS } from "../shared/worker-env-keys";
+import type { GatewayParams } from "../shared/tool-implementations";
 import {
-  probeSandboxStrategy,
   type SandboxStrategy,
+  probeSandboxStrategy,
   wrapInvocation,
 } from "./exec-sandbox";
 import type { McpCliCommand, McpRuntimeRef } from "./mcp-cli-commands";

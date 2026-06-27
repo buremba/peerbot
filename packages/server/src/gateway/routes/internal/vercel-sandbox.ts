@@ -131,6 +131,20 @@ function stableSandboxName(params: {
 		.slice(0, 100);
 }
 
+function sameSnapshotRetention(
+	actual: Sandbox["keepLastSnapshots"],
+	expected: SandboxRetention["keepLastSnapshots"],
+	actualExpiration: Sandbox["snapshotExpiration"],
+	expectedExpiration: SandboxRetention["snapshotExpiration"],
+): boolean {
+	return (
+		actual?.count === expected.count &&
+		actual?.expiration === expected.expiration &&
+		actual?.deleteEvicted === expected.deleteEvicted &&
+		actualExpiration === expectedExpiration
+	);
+}
+
 function normalizeAllowedDomain(domain: string): string | null {
 	const trimmed = domain.trim();
 	if (!trimmed) return null;
@@ -224,9 +238,6 @@ function remoteCwd(cwd: unknown, workspaceDir: string): string {
 	}
 	const normalized = path.posix.normalize(`/${rel}`).slice(1);
 	if (normalized === "" || normalized === ".") return REMOTE_WORKSPACE_DIR;
-	if (normalized.split("/").includes("..")) {
-		throw new Error("cwd must stay inside the workspace");
-	}
 	return path.posix.join(REMOTE_WORKSPACE_DIR, normalized);
 }
 
@@ -258,12 +269,15 @@ async function getSandbox(params: {
 
 	if (
 		JSON.stringify(sandbox.networkPolicy) !==
-			JSON.stringify(params.networkPolicy) ||
+		JSON.stringify(params.networkPolicy) ||
 		sandbox.timeout !== timeout ||
 		sandbox.vcpus !== vcpus ||
-		JSON.stringify(sandbox.keepLastSnapshots) !==
-			JSON.stringify(retention.keepLastSnapshots) ||
-		sandbox.snapshotExpiration !== retention.snapshotExpiration
+		!sameSnapshotRetention(
+			sandbox.keepLastSnapshots,
+			retention.keepLastSnapshots,
+			sandbox.snapshotExpiration,
+			retention.snapshotExpiration,
+		)
 	) {
 		await sandbox.update({
 			networkPolicy: params.networkPolicy,

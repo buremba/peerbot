@@ -502,6 +502,17 @@ export function withSSEHeartbeat(response: Response, signal?: AbortSignal): Resp
   if (!response.headers.get('content-type')?.includes('text/event-stream') || !response.body) {
     return response;
   }
+  if (signal?.aborted) {
+    response.body.cancel().catch(() => undefined);
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.close();
+        },
+      }),
+      { status: response.status, headers: response.headers }
+    );
+  }
   const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
   const writer = writable.getWriter();
   const heartbeat = new TextEncoder().encode(': ping\n\n');

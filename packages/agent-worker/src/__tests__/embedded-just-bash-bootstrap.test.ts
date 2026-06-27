@@ -13,6 +13,7 @@ const originalEnv = {
   PATH: process.env.PATH,
   LOBU_EXEC_SANDBOX: process.env.LOBU_EXEC_SANDBOX,
   LOBU_ALLOW_UNSANDBOXED_EXEC: process.env.LOBU_ALLOW_UNSANDBOXED_EXEC,
+  LOBU_WORKSPACE_BACKEND: process.env.LOBU_WORKSPACE_BACKEND,
 };
 
 function restoreEnv(name: keyof typeof originalEnv): void {
@@ -31,6 +32,7 @@ afterEach(() => {
   restoreEnv("PATH");
   restoreEnv("LOBU_EXEC_SANDBOX");
   restoreEnv("LOBU_ALLOW_UNSANDBOXED_EXEC");
+  restoreEnv("LOBU_WORKSPACE_BACKEND");
   resetSandboxProbeForTests();
 });
 
@@ -50,6 +52,7 @@ describe("createEmbeddedBashOps", () => {
     process.env.PATH = `${nixBin}:${process.env.PATH ?? ""}`;
     process.env.LOBU_EXEC_SANDBOX = "off";
     delete process.env.LOBU_ALLOW_UNSANDBOXED_EXEC;
+    delete process.env.LOBU_WORKSPACE_BACKEND;
 
     const ops = await createEmbeddedBashOps({ workspaceDir: workspace });
     const chunks: string[] = [];

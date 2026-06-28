@@ -16,6 +16,7 @@ import { syncSlackConnectionAcl } from '../../../authz/slack-acl-sync';
 import { buildSlackChannelGraph } from '../../../authz/slack-channel-graph';
 import { search } from '../../../tools/search';
 import { clearEntityLinkRulesCache } from '../../../utils/entity-link-upsert';
+import { ensureMemberEntity } from '../../../utils/member-entity';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
@@ -270,6 +271,75 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     // only) recalls #eng, never #secret.
     const search1 = await searchAs(org.id, alice.id, agent.agentId);
     const channels = (search1.conversation_messages ?? []).map((m) => m.channel_id);
+    expect(channels).toContain('C01ENG');
+    expect(channels).not.toContain('C01SEC');
+  });
+
+  it('resolves a member provisioned through the REAL path (ensureMemberEntity), not a hand-seeded identity', async () => {
+    // setupWorkspace seeds Alice via seedSignedInMember, which writes the
+    // auth_user_id identity by hand. THIS test instead provisions a second user
+    // (Carol) the way production does — through ensureMemberEntity (the
+    // shared-org join path) — and DOES NOT touch entity_identities for her
+    // auth_user_id. If ensureMemberEntity stops writing that identity, Carol
+    // resolves to nothing and the gate fails closed → this test goes red. That
+    // is the production gap the hand-seeded tests masked.
+    const { org, agent } = await setupWorkspace();
+    const carol = await createTestUser({ name: 'Carol' });
+    await addUserToOrganization(carol.id, org.id, 'member');
+
+    // Real provisioning — writes the $member entity AND its auth_user_id identity.
+    await ensureMemberEntity({
+      organizationId: org.id,
+      userId: carol.id,
+      name: 'Carol',
+      email: 'carol@acme.test',
+      role: 'member',
+      status: 'active',
+    });
+    // The Slack link is a separate real mechanism (Connect-my-DM / email claim);
+    // attach it so the channel member collapses onto Carol's $member.
+    const sql = getTestDb();
+    const memberRows = await sql<{ entity_id: number }>`
+      SELECT entity_id FROM entity_identities
+      WHERE organization_id = ${org.id}
+        AND namespace = 'email' AND identifier = 'carol@acme.test'
+        AND deleted_at IS NULL
+      LIMIT 1
+    `;
+    // The email identity is written by ensureMemberEntity-adjacent provisioning;
+    // fall back to looking the member up by metadata if email identity is absent.
+    let memberEntityId: number | null = memberRows.length > 0 ? Number(memberRows[0].entity_id) : null;
+    if (memberEntityId === null) {
+      const byMeta = await sql<{ id: number }>`
+        SELECT e.id FROM entities e
+        JOIN entity_types et ON et.id = e.entity_type_id AND et.slug = '$member'
+        WHERE e.organization_id = ${org.id}
+          AND e.metadata->>'email' = 'carol@acme.test'
+          AND e.deleted_at IS NULL
+        LIMIT 1
+      `;
+      memberEntityId = byMeta.length > 0 ? Number(byMeta[0].id) : null;
+    }
+    expect(memberEntityId).not.toBeNull();
+    const combined = normalizeSlackUserId(TEAM, 'U01CAROL');
+    await sql`
+      INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier, source_connector)
+      VALUES (${org.id}, ${memberEntityId}, 'slack_user_id', ${combined}, 'connector:slack')
+    `;
+
+    // Carol is a member of #eng only.
+    await buildSlackChannelGraph({
+      organizationId: org.id,
+      connectionId: CONN,
+      teamId: TEAM,
+      channels: [
+        { channelId: 'C01ENG', name: 'eng', memberSlackUserIds: ['U01CAROL'] },
+        { channelId: 'C01SEC', name: 'secret', isPrivate: true, memberSlackUserIds: ['U01BOB'] },
+      ],
+    });
+
+    const result = await searchAs(org.id, carol.id, agent.agentId);
+    const channels = (result.conversation_messages ?? []).map((m) => m.channel_id);
     expect(channels).toContain('C01ENG');
     expect(channels).not.toContain('C01SEC');
   });

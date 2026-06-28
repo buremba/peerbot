@@ -50,40 +50,63 @@ export async function ensureMemberEntity(params: EnsureMemberEntityParams): Prom
   await ensureMemberEntityType(params.organizationId);
   const { emailField, imageField } = await resolveMemberSchemaFields(params.organizationId);
 
-  // Check if a $member entity with this email already exists
-  const existing = await sql.unsafe(
-    `SELECT e.id
-    FROM entities e
-    JOIN entity_types et ON et.id = e.entity_type_id
-    WHERE et.slug = '$member'
-      AND e.organization_id = $1
-      AND e.metadata->>$2 = $3
-      AND e.deleted_at IS NULL
-    LIMIT 1`,
-    [params.organizationId, emailField, params.email]
-  );
-  if (existing.length > 0) return;
-
-  const metadata: Record<string, unknown> = {
-    [emailField]: params.email,
-    status: params.status ?? 'active',
+  const findIdByEmail = async (): Promise<number | null> => {
+    const rows = await sql.unsafe<{ id: number }>(
+      `SELECT e.id
+      FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE et.slug = '$member'
+        AND e.organization_id = $1
+        AND e.metadata->>$2 = $3
+        AND e.deleted_at IS NULL
+      LIMIT 1`,
+      [params.organizationId, emailField, params.email]
+    );
+    return rows.length > 0 ? Number(rows[0].id) : null;
   };
-  if (params.image && imageField) metadata[imageField] = params.image;
-  if (params.role) metadata.role = params.role;
 
-  const entityData: Record<string, unknown> = {
+  // Check if a $member entity with this email already exists; create it if not.
+  let memberEntityId = await findIdByEmail();
+  if (memberEntityId === null) {
+    const metadata: Record<string, unknown> = {
+      [emailField]: params.email,
+      status: params.status ?? 'active',
+    };
+    if (params.image && imageField) metadata[imageField] = params.image;
+    if (params.role) metadata.role = params.role;
+
+    const entityData: Record<string, unknown> = {
       entity_type: '$member',
       name: params.name.trim(),
       organization_id: params.organizationId,
       metadata,
-  };
-  if (params.userId) {
-    (entityData as any).created_by = params.userId;
+    };
+    if (params.userId) {
+      (entityData as any).created_by = params.userId;
+    }
+    await createEntity(entityData as any, { skipHooks: true });
+    memberEntityId = await findIdByEmail();
   }
-  await createEntity(
-    entityData as any,
-    { skipHooks: true }
-  );
+
+  // Write the org-scoped auth_user_id identity so identity-based resolution (the
+  // authz channel-visibility gate's resolveRequesterMemberEntityId) can find this
+  // member in THIS org — not only the user's personal org. Without it, a member
+  // provisioned via a shared-org join (join-public) would resolve to nothing and
+  // every enforced connection would fail closed for them. Idempotent, and applied
+  // to existing members too so ones created before this gets backfilled. The
+  // 'auth:signup' source is the gate's anti-hijack guard — only written here from
+  // trusted server-side provisioning with a verified user id.
+  if (params.userId && memberEntityId !== null) {
+    await sql`
+      INSERT INTO entity_identities (
+        organization_id, entity_id, namespace, identifier, source_connector
+      ) VALUES (
+        ${params.organizationId}, ${memberEntityId}, 'auth_user_id', ${params.userId}, 'auth:signup'
+      )
+      ON CONFLICT (organization_id, namespace, identifier) WHERE deleted_at IS NULL
+      DO NOTHING
+    `;
+  }
 }
 
 /**

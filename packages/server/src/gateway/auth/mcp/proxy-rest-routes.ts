@@ -194,9 +194,22 @@ async function handleCallToolAuthenticated(
 		// structured `result_summary` (event ids + snippet text) through the
 		// `tool_use` SSE event.
 		const callerFormat = c.req.header("x-mcp-format");
-		const extraHeaders = callerFormat
-			? { "x-mcp-format": callerFormat }
-			: undefined;
+		const extraHeaders: Record<string, string> = {};
+		if (callerFormat) extraHeaders["x-mcp-format"] = callerFormat;
+
+		// Forward the caller's originating conversation to channel-scoped
+		// (first-party) MCP servers, so a server-side tool that schedules async
+		// work can deliver the eventual reply back into that conversation rather
+		// than a detached session. Gated on authScope === "channel" so a
+		// conversation id is never leaked to per-user third-party MCP servers.
+		if (httpServer.authScope === "channel") {
+			if (auth.tokenData.conversationId) {
+				extraHeaders["x-lobu-conversation-id"] = auth.tokenData.conversationId;
+			}
+			if (auth.tokenData.platform) {
+				extraHeaders["x-lobu-source-platform"] = auth.tokenData.platform;
+			}
+		}
 
 		let response = await proxy.upstream.sendUpstreamRequest(
 			httpServer,
@@ -206,7 +219,7 @@ async function handleCallToolAuthenticated(
 			jsonRpcBody,
 			scopeKey,
 			auth.token,
-			extraHeaders,
+			Object.keys(extraHeaders).length > 0 ? extraHeaders : undefined,
 		);
 
 		let data = (await parseJsonRpcResponse(response)) as JsonRpcResponse;

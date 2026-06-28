@@ -57,39 +57,81 @@ export function deriveConversationPlatform(conversationId: string): string {
 	return "web";
 }
 
+/** `{platform}:{team}:{channel}` — team-scoped so the same channel id in two
+ *  Slack workspaces never collides. `team` is "" for platforms without one. */
+function channelVisibilityKey(
+	platform: string,
+	teamId: string | null,
+	bareChannelId: string,
+): string {
+	return `${platform.toLowerCase()}:${teamId ?? ""}:${bareChannelId}`;
+}
+
+export interface ChannelVisibility {
+	/** Team-scoped keys the requester may read (per-agent fence ∩ per-user ACL). */
+	visibleKeys: Set<string>;
+	/** `{platform}:{channel}` → the team ids the AGENT is bound to it in. A
+	 *  channel bound in >1 team can't be disambiguated from a conversation id
+	 *  alone, so it fails closed. */
+	channelTeams: Map<string, Set<string>>;
+}
+
 /**
- * Normalized `{platform}:{bareChannelId}` keys the requester may read for this
- * agent: the per-agent channel fence (the agent's bound channels) INTERSECTED
- * with the per-user channel ACL gate ({@link filterChannelsForRequester}). A
- * platform conversation is visible iff its channel is in this set — so a user
- * never sees a channel transcript they're not a member of, exactly like recall.
+ * Which channels may THIS requester read for THIS agent — the per-agent channel
+ * fence (the agent's bound channels) INTERSECTED with the per-user channel ACL
+ * gate ({@link filterChannelsForRequester}), team-scoped. A platform conversation
+ * is visible iff {@link isConversationVisible}. Mirrors recall's gate so a user
+ * never sees a channel transcript they're not a member of.
  */
-export async function visibleChannelKeys(
+export async function resolveChannelVisibility(
 	sql: DbClient,
 	args: { organizationId: string; agentId: string; userId: string | null },
-): Promise<Set<string>> {
+): Promise<ChannelVisibility> {
 	const bound = await resolveBoundChannelRows(sql, {
 		organizationId: args.organizationId,
 		agentId: args.agentId,
 	});
+	const channelTeams = new Map<string, Set<string>>();
+	for (const c of bound) {
+		const bare = stripPlatformPrefix(c.platform, c.channel_id);
+		const pc = `${c.platform.toLowerCase()}:${bare}`;
+		const set = channelTeams.get(pc) ?? new Set<string>();
+		set.add(c.team_id ?? "");
+		channelTeams.set(pc, set);
+	}
 	const visible = await filterChannelsForRequester(sql, {
 		organizationId: args.organizationId,
 		userId: args.userId,
 		rows: bound,
 	});
-	return new Set(
-		visible.map(
-			(c) =>
-				`${c.platform.toLowerCase()}:${stripPlatformPrefix(c.platform, c.channel_id)}`,
+	const visibleKeys = new Set(
+		visible.map((c) =>
+			channelVisibilityKey(
+				c.platform,
+				c.team_id,
+				stripPlatformPrefix(c.platform, c.channel_id),
+			),
 		),
 	);
+	return { visibleKeys, channelTeams };
 }
 
-/** The `{platform}:{channel}` key for a platform conversation id, which is
- *  shaped `{platform}:{channel}:{thread}`. Compare against {@link visibleChannelKeys}. */
-export function conversationChannelKey(conversationId: string): string {
+/** Can the requester read this platform conversation (`{platform}:{channel}:{thread}`)?
+ *  Fail-closed: unbound, or a channel bound in more than one workspace (can't tie
+ *  the conversation to a team), is not visible. */
+export function isConversationVisible(
+	conversationId: string,
+	vis: ChannelVisibility,
+): boolean {
 	const parts = conversationId.split(":");
-	return `${(parts[0] ?? "").toLowerCase()}:${parts[1] ?? ""}`;
+	const platform = (parts[0] ?? "").toLowerCase();
+	const channel = parts[1] ?? "";
+	const teams = vis.channelTeams.get(`${platform}:${channel}`);
+	if (!teams || teams.size !== 1) return false; // unbound or ambiguous workspace
+	const [team] = [...teams];
+	return vis.visibleKeys.has(
+		channelVisibilityKey(platform, team || null, channel),
+	);
 }
 
 async function findConversationSessionFile(
@@ -253,7 +295,7 @@ export async function listAgentThreads(args: {
 		// ACL: a platform conversation is only listed if its channel is in the
 		// agent's bound channels AND (for ACL-graphed connections) the requester
 		// is a member — so a user never sees a channel transcript they can't read.
-		const channelKeys = await visibleChannelKeys(sql, {
+		const channelVis = await resolveChannelVisibility(sql, {
 			organizationId,
 			agentId,
 			userId,
@@ -274,9 +316,7 @@ export async function listAgentThreads(args: {
     `;
 		for (const row of platformRows) {
 			if (byThreadId.has(row.conversation_id)) continue;
-			if (!channelKeys.has(conversationChannelKey(row.conversation_id))) {
-				continue;
-			}
+			if (!isConversationVisible(row.conversation_id, channelVis)) continue;
 			const at = row.created_at.getTime();
 			byThreadId.set(row.conversation_id, {
 				id: row.conversation_id,

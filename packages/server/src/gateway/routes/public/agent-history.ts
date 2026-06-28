@@ -17,11 +17,11 @@ import { resolveOrgId } from "../../../lobu/stores/org-context.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
 import type { WorkerConnectionManager } from "../../gateway/connection-manager.js";
 import {
-	conversationChannelKey,
+	isConversationVisible,
 	listAgentThreads,
 	readConversationMessages,
 	readThreadMessages,
-	visibleChannelKeys,
+	resolveChannelVisibility,
 } from "../../services/agent-thread-list.js";
 import { readWatcherRunThreads } from "../../services/watcher-run-thread.js";
 import {
@@ -415,12 +415,12 @@ export function createAgentHistoryRoutes(deps: {
 		// the same per-agent fence ∩ per-user channel gate the listing applies.
 		// Fail closed (404, not 403) so an unauthorized id is indistinguishable
 		// from a non-existent one.
-		const channelKeys = await visibleChannelKeys(getDb(), {
+		const channelVis = await resolveChannelVisibility(getDb(), {
 			organizationId: scope.organizationId,
 			agentId: scope.agentId,
 			userId: scope.userId,
 		});
-		if (!channelKeys.has(conversationChannelKey(conversationId))) {
+		if (!isConversationVisible(conversationId, channelVis)) {
 			return errorResponse(c, "Conversation not found", 404);
 		}
 

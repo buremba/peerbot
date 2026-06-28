@@ -32,6 +32,8 @@ import type {
 import { EgressJudge } from "../proxy/egress-judge/judge.js";
 import {
   __testOnly,
+  type ResolvedNetworkConfig,
+  resolveNetworkConfig,
   setProxyEgressJudge,
   setProxyPolicyStore,
 } from "../proxy/http-proxy.js";
@@ -52,12 +54,16 @@ function policyStoreReturning(rule: ResolvedJudgeRule): PolicyStore {
 }
 
 describe("egress judge deny → guardrail-trip audit", () => {
+  // Complete-isolation config snapshot so the host is never globally allowed and
+  // the decision falls through to the judge. Passed explicitly into each
+  // checkDomainAccess call — no shared module state.
+  let config: ResolvedNetworkConfig;
+
   beforeEach(() => {
     insertEventCalls.length = 0;
-    // Complete-isolation global config so the host is never globally allowed
-    // and the decision falls through to the judge.
     process.env.WORKER_ALLOWED_DOMAINS = "";
     process.env.WORKER_DISALLOWED_DOMAINS = "";
+    config = resolveNetworkConfig();
     __testOnly.reset();
   });
 
@@ -73,6 +79,7 @@ describe("egress judge deny → guardrail-trip audit", () => {
     );
 
     const decision = await __testOnly.checkDomainAccess(
+      config,
       "api.github.com",
       "agent-a",
       "org-1"
@@ -116,6 +123,7 @@ describe("egress judge deny → guardrail-trip audit", () => {
     );
 
     const decision = await __testOnly.checkDomainAccess(
+      config,
       "api.github.com",
       "agent-a",
       "org-1"

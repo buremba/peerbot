@@ -55,10 +55,14 @@ interface ResolvedAgentGuardrails {
 }
 
 function emptyByStage(): Record<GuardrailStage, Guardrail[]> {
-  return { input: [], output: [], "pre-tool": [] };
+  // `egress` is part of the stage taxonomy but is never resolved/run by the
+  // message pipeline — enforcement lives in the http-proxy egress plane. The
+  // slot stays empty here; the resolution loops below iterate only the three
+  // message-pipeline stages so nothing is ever pushed into it.
+  return { input: [], output: [], "pre-tool": [], egress: [] };
 }
 function emptyNames(): Record<GuardrailStage, string[]> {
-  return { input: [], output: [], "pre-tool": [] };
+  return { input: [], output: [], "pre-tool": [], egress: [] };
 }
 
 /**
@@ -94,6 +98,8 @@ export function resolveAgentGuardrails(
     input: new Map(),
     output: new Map(),
     "pre-tool": new Map(),
+    // Never populated — egress is enforced in the http-proxy plane, not here.
+    egress: new Map(),
   };
 
   // ── 1. Agent's enabled built-ins (all stages) ──────────────────────────
@@ -129,6 +135,10 @@ export function resolveAgentGuardrails(
   // edit UI rejects such names up front so this stays a defensive guard.
   for (const entry of extras.inline ?? []) {
     if (entry.enabled === false) continue;
+    // `egress` guardrails are enforced in the http-proxy plane (the policy
+    // store + EgressJudge), never the message pipeline — skip them here so
+    // they are not materialized into a stage that's never run.
+    if (entry.stage === "egress") continue;
     // Defensive: a malformed persisted row can carry an invalid `stage`
     // (the write path validates, but older rows or out-of-band writes might
     // not). Indexing `seen[bad]` would be `undefined` and throw mid-message —

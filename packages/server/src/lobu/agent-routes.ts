@@ -740,7 +740,7 @@ routes.put('/:agentId/providers/:providerId/api-key', async (c) => {
 
 // ── Update agent config (settings) ───────────────────────────────────────────
 
-const GUARDRAIL_STAGES = new Set(['input', 'output', 'pre-tool']);
+const GUARDRAIL_STAGES = new Set(['input', 'output', 'pre-tool', 'egress']);
 
 /**
  * Validate a `guardrailsInline` payload before it is persisted to agent
@@ -765,7 +765,7 @@ export function validateGuardrailsInline(value: unknown): string | null {
       return `guardrailsInline[${i}].enabled must be a boolean`;
     }
     if (typeof g.stage !== 'string' || !GUARDRAIL_STAGES.has(g.stage)) {
-      return `guardrailsInline[${i}].stage must be one of: input, output, pre-tool`;
+      return `guardrailsInline[${i}].stage must be one of: input, output, pre-tool, egress`;
     }
     if (typeof g.policy !== 'string' || g.policy.trim() === '') {
       return `guardrailsInline[${i}].policy must be a non-empty string`;
@@ -778,6 +778,13 @@ export function validateGuardrailsInline(value: unknown): string | null {
       (!Array.isArray(g.tools) || g.tools.some((t) => typeof t !== 'string'))
     ) {
       return `guardrailsInline[${i}].tools must be an array of strings`;
+    }
+    if (
+      g.domains !== undefined &&
+      (!Array.isArray(g.domains) ||
+        g.domains.some((d) => typeof d !== 'string'))
+    ) {
+      return `guardrailsInline[${i}].domains must be an array of strings`;
     }
   }
   return null;

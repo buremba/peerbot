@@ -1518,6 +1518,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
 
       const {
         networkConfig: settingsNetwork,
+        guardrailsInline: settingsGuardrailsInline,
         mcpServers: settingsMcpServers,
         ...remainingOptions
       } = agentOptions;
@@ -1588,6 +1589,7 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
         },
         agentOptions: remainingOptions,
         networkConfig: session.networkConfig || settingsNetwork,
+        guardrailsInline: settingsGuardrailsInline,
         mcpConfig: settingsMcpServers
           ? { mcpServers: settingsMcpServers }
           : session.mcpConfig,

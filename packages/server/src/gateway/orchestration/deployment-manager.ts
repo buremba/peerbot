@@ -20,7 +20,7 @@ import type { ProviderCredentialContext } from "../embedded.js";
 import type { ModelProviderModule } from "../modules/module-system.js";
 import type { GrantStore } from "../permissions/grant-store.js";
 import {
-  buildPolicyBundle,
+  egressGuardrailsToPolicyBundle,
   type PolicyStore,
 } from "../permissions/policy-store.js";
 import {
@@ -1024,9 +1024,10 @@ export class DeploymentManager {
   }
 
   /**
-   * Sync per-agent egress judge policies (judgedDomains + named judges +
-   * operator extra_policy) into the policy store so the HTTP proxy can
-   * resolve them at request time.
+   * Sync per-agent egress judge policies into the policy store so the HTTP
+   * proxy can resolve them at request time. The source is the agent's
+   * `egress`-stage inline guardrails — each contributes a named judge (its
+   * `policy` + optional `model`) and routes its `domains` through it.
    */
   private syncEgressPolicy(
     messageData: MessagePayload,
@@ -1047,11 +1048,10 @@ export class DeploymentManager {
       return;
     }
 
-    const bundle = buildPolicyBundle({
-      judgedDomains: messageData.networkConfig?.judgedDomains,
-      judges: messageData.networkConfig?.judges,
-      egressConfig: messageData.egressConfig,
-    });
+    const egressGuardrails = (messageData.guardrailsInline ?? []).filter(
+      (g) => g.stage === "egress" && g.enabled
+    );
+    const bundle = egressGuardrailsToPolicyBundle(egressGuardrails);
     if (bundle) {
       this.policyStore.set(organizationId, agentId, bundle);
       if (deploymentName) {

@@ -24,8 +24,10 @@
  * or no `$member` in this org) sees NONE of an enforced connection's channels.
  */
 
+import { normalizeSlackUserId } from '@lobu/connector-sdk';
 import { type DbClient, pgTextArray } from '../db/client.js';
 import { stripPlatformPrefix } from '../gateway/channels/bound-channels.js';
+import { ACL_STALE_AFTER_MINUTES } from './acl-state.js';
 import { slackChannelKey } from './slack-channel-graph.js';
 
 /** A bound channel the gate decides on. Mirrors the fields `resolveBoundChannelRows`
@@ -76,14 +78,44 @@ export async function resolveRequesterMemberEntityId(
 }
 
 /**
- * How long a `fresh` ACL graph stays trusted without a re-sync. The background
- * sync (`./slack-acl-sync`) re-stamps `last_synced_at` every tick; if it stops
- * (pod down, Slack outage), a connection's graph ages past this window and the
- * gate stops trusting it — failing closed rather than serving stale membership.
- * Generous vs. the ~15-min sync cadence so a transient hiccup never blinks
- * recall off.
+ * Fallback requester resolution for someone talking to the bot INSIDE Slack,
+ * where the only id we have is their Slack user id (the message author), not an
+ * `auth_user_id`. Tries the team-scoped `slack_user_id` claim for each candidate
+ * team (the enforcing connections' teams). Without this, an in-Slack requester
+ * always misses the auth lookup and fails closed even on channels they belong to.
+ *
+ * Safe against hijack the same way the auth path is: the `slack_user_id` claim is
+ * only ever written server-side (by the graph builder / login promotion), never
+ * from user-supplied input, so resolving on it can't be forged. Returns the first
+ * entity that owns the claim, or null.
  */
-const ACL_STALE_AFTER_MINUTES = 60;
+async function resolveRequesterBySlackUserId(
+  sql: DbClient,
+  organizationId: string,
+  userId: string | null,
+  teamIds: string[],
+): Promise<number | null> {
+  if (!userId || teamIds.length === 0) return null;
+  const keys = [
+    ...new Set(teamIds.map((t) => normalizeSlackUserId(t, userId)).filter((k): k is string => !!k)),
+  ];
+  if (keys.length === 0) return null;
+  const rows = await sql<{ entity_id: number }>`
+		SELECT ei.entity_id
+		FROM entity_identities ei
+		JOIN entities e
+		  ON e.id = ei.entity_id
+		 AND e.organization_id = ei.organization_id
+		 AND e.deleted_at IS NULL
+		WHERE ei.organization_id = ${organizationId}
+		  AND ei.namespace = 'slack_user_id'
+		  AND ei.identifier = ANY(${pgTextArray(keys)}::text[])
+		  AND ei.deleted_at IS NULL
+		LIMIT 1
+	`;
+  return rows.length > 0 ? Number(rows[0].entity_id) : null;
+}
+
 
 /**
  * The ACL state of each connection that has been onboarded into the authz
@@ -185,9 +217,28 @@ export async function filterChannelsForRequester<T extends GatedChannelRow>(
   // actively enforcing (full+fresh). Onboarded-but-stale connections fail closed
   // regardless of who is asking, so they need no membership lookup.
   const anyEnforcing = [...states.values()].some((s) => s.enforce);
-  const memberEntityId = anyEnforcing
-    ? await resolveRequesterMemberEntityId(sql, organizationId, userId)
-    : null;
+  // Resolve the requester to a member. Prefer the auth_user_id claim (web/app
+  // path); fall back to the team-scoped slack_user_id claim for someone talking
+  // to the bot inside Slack, whose id is a Slack user id, not an auth id.
+  let memberEntityId: number | null = null;
+  if (anyEnforcing) {
+    memberEntityId = await resolveRequesterMemberEntityId(sql, organizationId, userId);
+    if (memberEntityId === null) {
+      const enforcingTeamIds = [
+        ...new Set(
+          rows
+            .filter((r) => states.get(r.id)?.enforce && r.team_id)
+            .map((r) => r.team_id as string),
+        ),
+      ];
+      memberEntityId = await resolveRequesterBySlackUserId(
+        sql,
+        organizationId,
+        userId,
+        enforcingTeamIds,
+      );
+    }
+  }
   const visibleKeys =
     memberEntityId === null
       ? new Set<string>()

@@ -3,19 +3,6 @@ name: account-brief
 description: Build a pre-renewal brief for a tracked account from its recent public news and announcements. Use before a renewal call or QBR, after the account-health watcher flags a risk. Reading public news is allowed; do not log in, submit forms, or touch any CRM write endpoint.
 nixPackages:
   - jq
-network:
-  allow:
-    - .reuters.com
-    - .apnews.com
-  judge:
-    - domain: newsapi.org
-      judge: news-read
-    - domain: .newsapi.org
-      judge: news-read
-judges:
-  news-read: >
-    Allow GET reads of public news and headlines. Deny logins, posting,
-    and any account, billing, or write action. Fail closed if unclear.
 ---
 
 # Account brief

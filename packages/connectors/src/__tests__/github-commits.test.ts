@@ -107,4 +107,23 @@ describe("GitHub commits feed", () => {
 		expect(unlinked.metadata.author_login).toBeUndefined();
 		expect(unlinked.metadata.author_id).toBeUndefined();
 	});
+
+	test("every event is stamped with github_repo_full_name for repo-ACL attribution", async () => {
+		const { connector } = buildConnector(COMMITS);
+
+		const result = await connector.sync({
+			config: { repo_owner: "Lobu-AI", repo_name: "Lobu" },
+			feedKey: "commits",
+			checkpoint: null,
+			credentials: { provider: "github", accessToken: "tok" },
+			entityIds: [],
+		});
+
+		// Lowercased to match normalizeGithubRepoFullName / the repo graph so the
+		// repo entity GITHUB_REPO_ENTITY_LINK resolves to is the SAME one
+		// buildGithubRepoGraph materializes from collaborators.
+		for (const event of result.events) {
+			expect(event.metadata.github_repo_full_name).toBe("lobu-ai/lobu");
+		}
+	});
 });

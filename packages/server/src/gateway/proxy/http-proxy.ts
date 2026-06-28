@@ -13,6 +13,7 @@ import {
 } from "../config/network-allowlist.js";
 import type { RevokedTokenStore } from "../auth/revoked-token-store.js";
 import { getRevokedTokenStore } from "../auth/revoked-token-store.js";
+import { recordGuardrailTrip } from "../guardrails/audit.js";
 import type { GrantStore } from "../permissions/grant-store.js";
 import type { PolicyStore } from "../permissions/policy-store.js";
 import { EgressJudge } from "./egress-judge/judge.js";
@@ -211,8 +212,29 @@ async function checkDomainAccess(
         },
         rule
       );
+      const allowed = decision.verdict === "allow";
+      if (!allowed) {
+        // Egress denials share the guardrail audit trail: a judge DENY writes a
+        // `guardrail-trip` event (stage `egress`) just like message-pipeline
+        // guardrails. Enforcement stays here in the proxy — this is audit only.
+        // Fire-and-forget: `recordGuardrailTrip` never rejects, so we don't
+        // await it on the egress hot path. `agentId`/`organizationId` are both
+        // guaranteed present by the enclosing guard.
+        void recordGuardrailTrip({
+          organizationId,
+          agentId,
+          stage: "egress",
+          guardrail: decision.judgeName,
+          reason: decision.reason,
+          metadata: {
+            hostname,
+            verdict: decision.verdict,
+            judgeSource: decision.source,
+          },
+        });
+      }
       return {
-        allowed: decision.verdict === "allow",
+        allowed,
         source: "judge",
         judge: decision,
       };

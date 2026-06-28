@@ -185,7 +185,7 @@ describe("loadDesiredStateFromConfig", () => {
     );
   });
 
-  test("loads agent-dir markdown + a file skill, merging skill network/nix", async () => {
+  test("loads agent-dir markdown + a file skill, merging skill nix", async () => {
     dir = mkdtempSync(join(import.meta.dir, "agentdir-"));
     const agentDir = join(dir, "agents", "crm");
     mkdirSync(join(agentDir, "skills", "crm-ops"), { recursive: true });
@@ -196,8 +196,6 @@ describe("loadDesiredStateFromConfig", () => {
       [
         `---`,
         `name: crm-ops`,
-        `network:`,
-        `  allow: ["api.crm.com"]`,
         `nixPackages: ["jq"]`,
         `---`,
         `Use the CRM API.`,
@@ -226,15 +224,13 @@ describe("loadDesiredStateFromConfig", () => {
     expect(settings?.soulMd).toBe("You are the CRM agent.");
     expect(settings?.identityMd).toBe("CRM identity.");
     expect(settings?.skillsConfig?.skills[0]?.name).toBe("crm-ops");
-    // Agent + skill network domains are unioned.
-    expect(settings?.networkConfig?.allowedDomains).toEqual([
-      "github.com",
-      "api.crm.com",
-    ]);
+    // Skills no longer contribute network — only the agent's domains remain.
+    expect(settings?.networkConfig?.allowedDomains).toEqual(["github.com"]);
+    // Skill nix packages still merge into the agent's worker sandbox.
     expect(settings?.nixConfig?.packages).toEqual(["jq"]);
   });
 
-  test("an inline defineSkill carries content + network with no files", async () => {
+  test("an inline defineSkill carries content with no files", async () => {
     dir = mkdtempSync(join(import.meta.dir, "inline-"));
     writeFileSync(
       join(dir, "lobu.config.ts"),
@@ -244,7 +240,6 @@ describe("loadDesiredStateFromConfig", () => {
         `  name: "greet",`,
         `  description: "Greet someone.",`,
         `  content: "Generate a warm greeting.",`,
-        `  network: { allowed: ["api.greet.com"] },`,
         `});`,
         `export default defineConfig({`,
         `  agents: [defineAgent({ id: "a", skills: [greet] })],`,
@@ -258,38 +253,6 @@ describe("loadDesiredStateFromConfig", () => {
     expect(skill?.name).toBe("greet");
     expect(skill?.content).toBe("Generate a warm greeting.");
     expect(skill?.description).toBe("Greet someone.");
-    expect(state.agents[0]?.settings.networkConfig?.allowedDomains).toEqual([
-      "api.greet.com",
-    ]);
-  });
-
-  test("an inline skill MCP server merges into agent mcpServers", async () => {
-    dir = mkdtempSync(join(import.meta.dir, "skillmcp-"));
-    writeFileSync(
-      join(dir, "lobu.config.ts"),
-      [
-        `import { defineAgent, defineConfig, defineSkill } from "@lobu/cli/config";`,
-        `const api = defineSkill({`,
-        `  name: "api",`,
-        `  content: "Use the API.",`,
-        `  mcpServers: { "support-api": { url: "https://api.example.com/mcp", type: "sse" } },`,
-        `});`,
-        `export default defineConfig({`,
-        `  agents: [defineAgent({ id: "a", skills: [api] })],`,
-        `});`,
-        ``,
-      ].join("\n")
-    );
-
-    const { state } = await loadDesiredStateFromConfig({ cwd: dir });
-    const mcp = (state.agents[0]?.settings.mcpServers ?? {}) as Record<
-      string,
-      { url?: string; type?: string }
-    >;
-    expect(mcp["support-api"]).toEqual({
-      url: "https://api.example.com/mcp",
-      type: "sse",
-    });
   });
 
   test("two agents: custom + default dirs keep index alignment", async () => {

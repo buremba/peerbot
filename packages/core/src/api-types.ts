@@ -25,15 +25,6 @@ export interface ModelOption {
   value: string;
 }
 
-export interface SkillMcpServerInfo {
-  id: string;
-  name?: string;
-  url?: string;
-  type?: "sse" | "streamable-http" | "stdio";
-  command?: string;
-  args?: string[];
-}
-
 export interface Skill {
   repo: string;
   name: string;
@@ -42,7 +33,6 @@ export interface Skill {
   system?: boolean;
   content?: string;
   contentFetchedAt?: number;
-  mcpServers?: SkillMcpServerInfo[];
   nixPackages?: string[];
   permissions?: string[];
   providers?: string[];

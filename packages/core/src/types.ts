@@ -126,9 +126,6 @@ export interface ConversationMessage {
  */
 export type ThinkingLevel = "off" | "low" | "medium" | "high";
 
-/**
- * MCP server declared by a skill manifest.
- */
 export interface McpOAuthConfig {
   /** Authorization endpoint (user verification page for device-code flow). */
   authUrl?: string;
@@ -146,18 +143,6 @@ export interface McpOAuthConfig {
   registrationUrl?: string;
   /** RFC 8707 resource indicator included in token requests. */
   resource?: string;
-}
-
-export interface SkillMcpServer {
-  id: string;
-  name?: string;
-  url?: string;
-  type?: "sse" | "streamable-http" | "stdio";
-  command?: string;
-  args?: string[];
-  oauth?: McpOAuthConfig;
-  inputs?: Array<{ id: string; label?: string; type?: string }>;
-  headers?: Record<string, string>;
 }
 
 /**
@@ -181,17 +166,8 @@ export interface SkillConfig {
   content?: string;
   /** When the content was last fetched (timestamp ms) */
   contentFetchedAt?: number;
-  /** MCP servers declared by the skill */
-  mcpServers?: SkillMcpServer[];
   /** System packages declared by the skill (nix) */
   nixPackages?: string[];
-  /** Network access policy declared by the skill */
-  networkConfig?: {
-    allowedDomains?: string[];
-    deniedDomains?: string[];
-    judgedDomains?: DomainJudgeRule[];
-    judges?: Record<string, string>;
-  };
   /** AI providers the skill requires */
   providers?: string[];
   /** Preferred model for this skill (e.g., "anthropic/claude-opus-4") */
@@ -330,8 +306,8 @@ export interface DomainJudgeRule {
 /**
  * Agent-level egress judge configuration (operator-controlled).
  *
- * Skills supply per-domain rules and named judge policies via their
- * {@link NetworkConfig}. This struct is merged on top at runtime:
+ * The agent's {@link NetworkConfig} supplies per-domain rules and named judge
+ * policies. This struct is merged on top at runtime:
  *   - {@link extraPolicy} is appended to every judge prompt for this agent.
  *   - {@link judgeModel} overrides the built-in judge model.
  */

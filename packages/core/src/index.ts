@@ -29,7 +29,6 @@ export type {
   PrefillMcp,
   PrefillSkill,
   Skill,
-  SkillMcpServerInfo,
 } from "./api-types";
 export * from "./capabilities";
 export type { CommandContext, CommandDefinition } from "./command-registry";
@@ -119,7 +118,6 @@ export type {
   RegistryEntry,
   SessionContext,
   SkillConfig,
-  SkillMcpServer,
   SkillPreToolGuardrail,
   SkillsConfig,
   SuggestedPrompt,

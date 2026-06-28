@@ -691,58 +691,6 @@ describe("lobu init --from-org", () => {
     expect(source).not.toContain("rename credential keys");
   });
 
-  test("local skill judged domains + judges round-trip into SKILL.md frontmatter", async () => {
-    const dir = mkFixtureDir();
-    await initFromOrg({
-      targetDir: dir,
-      fetchImpl: buildFetch({
-        "/oauth/userinfo": () => ({
-          organizations: [{ id: "org-1", slug: "acme", name: "Acme Inc" }],
-        }),
-        "/agents/skiller/config": () => ({
-          updatedAt: 0,
-          skillsConfig: {
-            skills: [
-              {
-                name: "research",
-                description: "web research",
-                enabled: true,
-                content: "Do research.",
-                networkConfig: {
-                  allowedDomains: ["wikipedia.org"],
-                  judgedDomains: [{ domain: "reddit.com", judge: "careful" }],
-                  judges: { careful: "Block anything risky." },
-                },
-              },
-            ],
-          },
-        }),
-        "/agents": () => ({
-          agents: [{ agentId: "skiller", name: "Skiller" }],
-        }),
-        "watchers?include_details": () => ({ watchers: [] }),
-        manage_entity_schema: () => ({
-          entity_types: [],
-          relationship_types: [],
-        }),
-        manage_auth_profiles: () => ({ auth_profiles: [] }),
-        manage_connections: () => ({ connections: [] }),
-      }),
-    });
-
-    const skillMd = readFileSync(
-      join(dir, "agents/skiller/skills/research/SKILL.md"),
-      "utf-8"
-    );
-    // Judged domains emit as a `network.judge` list; named judge policies as a
-    // top-level `judges:` map — exactly what parseSkillFrontmatter reads back.
-    expect(skillMd).toContain("judge:");
-    expect(skillMd).toContain('domain: "reddit.com"');
-    expect(skillMd).toContain('judge: "careful"');
-    expect(skillMd).toContain("judges:");
-    expect(skillMd).toContain('careful: "Block anything risky."');
-  });
-
   test("relationship-type rules hydrate via list_rules (real list omits them)", async () => {
     const dir = mkFixtureDir();
     await initFromOrg({

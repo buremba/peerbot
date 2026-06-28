@@ -822,7 +822,7 @@ describe("mergeAgentDirArtifacts", () => {
     expect(settings.skillsConfig?.skills[0]?.name).toBe("s");
   });
 
-  test("unions network allowed/denied/nix; agent wins on judged + judges", () => {
+  test("preserves agent network; unions skill nix packages", () => {
     const settings: Partial<AgentSettings> = {
       networkConfig: {
         allowedDomains: ["agent.com"],
@@ -838,57 +838,16 @@ describe("mergeAgentDirArtifacts", () => {
         content: "b",
         enabled: true,
         nixPackages: ["python311", "ffmpeg"],
-        networkConfig: {
-          allowedDomains: ["skill.com", "*"],
-          deniedDomains: ["bad.com"],
-          judgedDomains: [
-            { domain: "shared.com", judge: "skill-policy" },
-            { domain: "skill-only.com" },
-          ],
-          judges: { p: "skill prompt", q: "skill q" },
-        },
       },
     ]);
-    // "*" from a skill is dropped; agent + skill domains unioned + deduped.
-    expect(settings.networkConfig?.allowedDomains).toEqual([
-      "agent.com",
-      "skill.com",
-    ]);
-    expect(settings.networkConfig?.deniedDomains).toEqual(["bad.com"]);
-    // Agent wins on the shared judged domain; skill-only domain kept.
+    // Skills no longer contribute network — the agent's config is untouched.
+    expect(settings.networkConfig?.allowedDomains).toEqual(["agent.com"]);
     expect(settings.networkConfig?.judgedDomains).toEqual([
       { domain: "shared.com", judge: "agent-policy" },
-      { domain: "skill-only.com" },
     ]);
-    // Agent wins on the shared judge key; skill-only key kept.
-    expect(settings.networkConfig?.judges).toEqual({
-      p: "agent prompt",
-      q: "skill q",
-    });
+    expect(settings.networkConfig?.judges).toEqual({ p: "agent prompt" });
+    // Agent + skill nix packages are unioned + deduped.
     expect(settings.nixConfig?.packages).toEqual(["ffmpeg", "python311"]);
-  });
-
-  test("agent MCP servers win; skills add only new ids", () => {
-    const settings: Partial<AgentSettings> = {
-      mcpServers: { gmail: { url: "https://agent" } },
-    };
-    mergeAgentDirArtifacts(settings, {}, [
-      {
-        repo: "local/s",
-        name: "s",
-        content: "b",
-        enabled: true,
-        mcpServers: [
-          { id: "gmail", url: "https://skill-should-not-win" },
-          { id: "linear", url: "https://skill", type: "sse" },
-        ],
-      },
-    ]);
-    expect(settings.mcpServers?.gmail).toEqual({ url: "https://agent" });
-    expect(settings.mcpServers?.linear).toEqual({
-      url: "https://skill",
-      type: "sse",
-    });
   });
 
   test("no markdown / no skills leaves settings untouched", () => {

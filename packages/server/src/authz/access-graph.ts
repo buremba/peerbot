@@ -123,6 +123,21 @@ async function ensureResourceEntityType(orgId: string, type: AccessResourceType)
 	`;
 }
 
+/** Ensure the org has a `person` entity type — the type new (genuinely-unknown)
+ * members are auto-created as. Prod seeds default types at org creation, but a
+ * brand-new/default org may not have it yet; without it those members would
+ * silently fail to resolve while the connection is still stamped enforced (their
+ * recall would then fail closed). */
+async function ensurePersonEntityType(orgId: string): Promise<void> {
+  const sql = getDb();
+  await sql`
+		INSERT INTO entity_types (slug, name, organization_id, created_at, updated_at)
+		VALUES ('person', 'Person', ${orgId}, current_timestamp, current_timestamp)
+		ON CONFLICT (organization_id, slug) WHERE organization_id IS NOT NULL AND deleted_at IS NULL
+		DO NOTHING
+	`;
+}
+
 /** Find-or-create the org-scoped `member_of` relationship type. */
 async function ensureMemberOfType(orgId: string): Promise<number> {
   const sql = getDb();
@@ -272,6 +287,7 @@ export async function buildAccessGraph(params: {
   }
 
   await ensureResourceEntityType(organizationId, resourceType);
+  await ensurePersonEntityType(organizationId);
 
   // 1) Resolve every resource to its entity, keyed on the source identity namespace.
   const resourceItems = resources.map((r) => ({

@@ -55,10 +55,14 @@ interface ResolvedAgentGuardrails {
 }
 
 function emptyByStage(): Record<GuardrailStage, Guardrail[]> {
-  return { input: [], output: [], "pre-tool": [] };
+  // `egress` is part of the stage taxonomy but is never resolved/run by the
+  // message pipeline — enforcement lives in the http-proxy egress plane. The
+  // slot stays empty here; the resolution loops below iterate only the three
+  // message-pipeline stages so nothing is ever pushed into it.
+  return { input: [], output: [], "pre-tool": [], egress: [] };
 }
 function emptyNames(): Record<GuardrailStage, string[]> {
-  return { input: [], output: [], "pre-tool": [] };
+  return { input: [], output: [], "pre-tool": [], egress: [] };
 }
 
 /**
@@ -94,6 +98,8 @@ export function resolveAgentGuardrails(
     input: new Map(),
     output: new Map(),
     "pre-tool": new Map(),
+    // Never populated — egress is enforced in the http-proxy plane, not here.
+    egress: new Map(),
   };
 
   // ── 1. Agent's enabled built-ins (all stages) ──────────────────────────

@@ -31,13 +31,21 @@ async function slackPost(
   method: string,
   body: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
+  // Slack's read methods (conversations.members/list, users.info, …) accept ONLY
+  // application/x-www-form-urlencoded — a JSON body yields `invalid_arguments`.
+  // Form encoding is accepted by every Web API method (including chat.postMessage
+  // / conversations.open used here), so encode uniformly.
+  const form = new URLSearchParams();
+  for (const [key, value] of Object.entries(body)) {
+    if (value !== undefined && value !== null) form.set(key, String(value));
+  }
   const res = await fetch(`https://slack.com/api/${method}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${botToken}`,
-      "Content-Type": "application/json; charset=utf-8",
+      "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
     },
-    body: JSON.stringify(body),
+    body: form.toString(),
   });
   const json = (await res.json()) as Record<string, unknown>;
   if (json.ok !== true) {

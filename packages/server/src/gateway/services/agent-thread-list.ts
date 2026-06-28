@@ -1,7 +1,12 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { sanitizeConversationId, titleFromSessionJsonl } from "@lobu/core";
-import { getDb } from "../../db/client.js";
+import { filterChannelsForRequester } from "../../authz/channel-visibility.js";
+import { type DbClient, getDb } from "../../db/client.js";
+import {
+	resolveBoundChannelRows,
+	stripPlatformPrefix,
+} from "../channels/bound-channels.js";
 import {
 	buildApiConversationId,
 	extractThreadIdFromConversationId,
@@ -50,6 +55,41 @@ export function deriveConversationPlatform(conversationId: string): string {
 		if (/^[a-z][a-z0-9_-]*$/.test(prefix)) return prefix;
 	}
 	return "web";
+}
+
+/**
+ * Normalized `{platform}:{bareChannelId}` keys the requester may read for this
+ * agent: the per-agent channel fence (the agent's bound channels) INTERSECTED
+ * with the per-user channel ACL gate ({@link filterChannelsForRequester}). A
+ * platform conversation is visible iff its channel is in this set — so a user
+ * never sees a channel transcript they're not a member of, exactly like recall.
+ */
+export async function visibleChannelKeys(
+	sql: DbClient,
+	args: { organizationId: string; agentId: string; userId: string | null },
+): Promise<Set<string>> {
+	const bound = await resolveBoundChannelRows(sql, {
+		organizationId: args.organizationId,
+		agentId: args.agentId,
+	});
+	const visible = await filterChannelsForRequester(sql, {
+		organizationId: args.organizationId,
+		userId: args.userId,
+		rows: bound,
+	});
+	return new Set(
+		visible.map(
+			(c) =>
+				`${c.platform.toLowerCase()}:${stripPlatformPrefix(c.platform, c.channel_id)}`,
+		),
+	);
+}
+
+/** The `{platform}:{channel}` key for a platform conversation id, which is
+ *  shaped `{platform}:{channel}:{thread}`. Compare against {@link visibleChannelKeys}. */
+export function conversationChannelKey(conversationId: string): string {
+	const parts = conversationId.split(":");
+	return `${(parts[0] ?? "").toLowerCase()}:${parts[1] ?? ""}`;
 }
 
 async function findConversationSessionFile(
@@ -210,6 +250,14 @@ export async function listAgentThreads(args: {
 	// the `{agentId}_{userId}_…` app-thread prefix, so they're excluded above.
 	if (scope === "all" && organizationId) {
 		const sql = getDb();
+		// ACL: a platform conversation is only listed if its channel is in the
+		// agent's bound channels AND (for ACL-graphed connections) the requester
+		// is a member — so a user never sees a channel transcript they can't read.
+		const channelKeys = await visibleChannelKeys(sql, {
+			organizationId,
+			agentId,
+			userId,
+		});
 		const platformRows = await sql<{
 			conversation_id: string;
 			snapshot_jsonl: string;
@@ -226,6 +274,9 @@ export async function listAgentThreads(args: {
     `;
 		for (const row of platformRows) {
 			if (byThreadId.has(row.conversation_id)) continue;
+			if (!channelKeys.has(conversationChannelKey(row.conversation_id))) {
+				continue;
+			}
 			const at = row.created_at.getTime();
 			byThreadId.set(row.conversation_id, {
 				id: row.conversation_id,

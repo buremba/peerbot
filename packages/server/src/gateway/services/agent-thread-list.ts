@@ -28,11 +28,13 @@ export interface AgentThreadSummary {
 	title: string;
 	createdAt: number;
 	updatedAt: number;
-	/** "web" for the app's own threads; otherwise the source platform derived
-	 *  from the conversation id prefix (slack, telegram, …). */
+	/** "web" for the app's own threads; "watcher" for watcher activity; otherwise
+	 *  the source platform derived from the conversation id prefix (slack, …). */
 	platform: string;
 	/** Raw conversation id — used to read a platform conversation read-only. */
 	conversationId: string;
+	/** Set on `platform: "watcher"` entries — routes to the watcher's page. */
+	watcherId?: number;
 }
 
 /**
@@ -235,6 +237,41 @@ export async function listAgentThreads(args: {
 				updatedAt: at,
 				platform: deriveConversationPlatform(row.conversation_id),
 				conversationId: row.conversation_id,
+			});
+		}
+
+		// One entry per WATCHER (not per run) — its latest run time + name, so the
+		// activity panel can show watcher activity alongside chats and route to the
+		// watcher's page.
+		const watcherRows = await sql<{
+			watcher_id: number;
+			name: string | null;
+			last_at: Date;
+		}>`
+      SELECT w.id AS watcher_id, w.name, mx.last_at
+      FROM (
+        SELECT (regexp_match(conversation_id, '_watcher_([0-9]+)_run_'))[1]::int AS watcher_id,
+               max(created_at) AS last_at
+        FROM public.agent_transcript_snapshot
+        WHERE organization_id = ${organizationId}
+          AND agent_id = ${agentId}
+          AND terminal_status = 'completed'
+          AND conversation_id LIKE '%\\_watcher\\_%\\_run\\_%'
+        GROUP BY 1
+      ) mx
+      JOIN public.watchers w ON w.id = mx.watcher_id
+    `;
+		for (const row of watcherRows) {
+			const key = `watcher_${row.watcher_id}`;
+			const at = row.last_at.getTime();
+			byThreadId.set(key, {
+				id: key,
+				title: row.name ?? `Watcher ${row.watcher_id}`,
+				createdAt: at,
+				updatedAt: at,
+				platform: "watcher",
+				conversationId: key,
+				watcherId: row.watcher_id,
 			});
 		}
 	}

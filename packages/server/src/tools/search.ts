@@ -13,6 +13,7 @@ import { getDb } from '../db/client';
 import type { Env } from '../index';
 import { entityLinkMatchSql, searchContentByText } from '../utils/content-search';
 import { resolveBoundChannelRows, stripPlatformPrefix } from '../gateway/channels/bound-channels';
+import { filterChannelsForRequester } from '../authz/channel-visibility';
 import { toVectorLiteral } from '../utils/entity-management';
 import { ToolUserError } from '../utils/errors';
 import logger from '../utils/logger';
@@ -341,10 +342,17 @@ const RECALL_STOPWORDS = new Set([
 /**
  * Keyword/recency hits from the chat transcript (`channel_messages`) — no
  * embeddings. Scoped HARD to the channels the calling agent is bound to
- * (`resolveBoundChannelRows`), which IS the tenant fence: channel_messages has
- * no agent_id/user_id of its own, so an agent may only recall its own
- * conversations, exactly like read_conversation. channel_messages carries only
- * the recency index, so the scan is bounded to those channels.
+ * (`resolveBoundChannelRows`), which IS the per-agent tenant fence:
+ * channel_messages has no agent_id/user_id of its own, so an agent may only
+ * recall its own conversations, exactly like read_conversation. channel_messages
+ * carries only the recency index, so the scan is bounded to those channels.
+ *
+ * The bound-channel set is then INTERSECTED with what the requesting USER may
+ * read (`filterChannelsForRequester`): for a connection whose channel-ACL graph
+ * is materialized + fresh, a channel survives only if the user is `member_of`
+ * it, so an agent acting for a user never surfaces a channel the user isn't in.
+ * Connections without a fresh ACL graph pass through on the per-agent fence
+ * alone (no behavior change). See authz/channel-visibility.
  *
  * Distinctive terms are AND-matched (ILIKE). A prompt with NO distinctive term
  * ("what did we talk about earlier") falls back to the most recent messages in
@@ -353,11 +361,21 @@ const RECALL_STOPWORDS = new Set([
 async function fetchConversationSnippets(
   query: string,
   organizationId: string,
+  userId: string | null,
   agentId: string,
   limit: number
 ): Promise<ConversationSnippet[]> {
   const sql = getDb();
-  const channels = await resolveBoundChannelRows(sql, { organizationId, agentId });
+  const boundChannels = await resolveBoundChannelRows(sql, { organizationId, agentId });
+  if (boundChannels.length === 0) return [];
+  // Per-user ACL gate: drop channels the requester isn't a member of, for
+  // connections that have a fresh channel-ACL graph. Non-enforced connections
+  // are returned unchanged, so this is a no-op until a workspace is graphed.
+  const channels = await filterChannelsForRequester(sql, {
+    organizationId,
+    userId,
+    rows: boundChannels,
+  });
   if (channels.length === 0) return [];
 
   // Distinctive >2-char terms (generic recall words dropped). Tokenize on word
@@ -466,11 +484,13 @@ const conversationSource: RecallSource = {
   kind: 'conversation',
   recall: async (ctx) => {
     // Needs a calling agent (its bindings are the tenant fence) and a text query
-    // (keyword match has no embedding path).
+    // (keyword match has no embedding path). The requesting user (`ctx.userId`)
+    // is the per-user side of the gate — see fetchConversationSnippets.
     if (!ctx.query || !ctx.channelAgentId) return {};
     const conversation_messages = await fetchConversationSnippets(
       ctx.query,
       ctx.organizationId,
+      ctx.userId,
       ctx.channelAgentId,
       ctx.contentLimit
     );

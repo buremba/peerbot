@@ -195,6 +195,28 @@ describe('slack channel graph', () => {
     expect(await memberOfEdges(org.id)).toHaveLength(2);
   });
 
+  it('revokes a departed member — re-sync without Alice soft-deletes her edge', async () => {
+    const { org } = await seedOrg('Revoke Org');
+    const base = { organizationId: org.id, connectionId: 'conn-acme', teamId: TEAM };
+
+    await buildSlackChannelGraph({
+      ...base,
+      channels: [
+        { channelId: 'C01ENG', name: 'eng', memberSlackUserIds: ['U01ALICE', 'U01BOB'] },
+      ],
+    });
+    expect(await memberOfEdges(org.id)).toHaveLength(2);
+
+    // Alice left #eng — re-sync reflects the source's current membership.
+    const rerun = await buildSlackChannelGraph({
+      ...base,
+      channels: [{ channelId: 'C01ENG', name: 'eng', memberSlackUserIds: ['U01BOB'] }],
+    });
+    expect(rerun.removedEdges).toBe(1);
+    expect(rerun.createdEdges).toBe(0);
+    expect(await memberOfEdges(org.id)).toHaveLength(1); // only Bob remains
+  });
+
   it('tenant-scopes channels by team — the same channel id in two orgs is two entities', async () => {
     const a = await seedOrg('Tenant A');
     const b = await seedOrg('Tenant B');

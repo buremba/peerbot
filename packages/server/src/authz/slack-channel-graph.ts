@@ -33,7 +33,7 @@
 
 import { normalizeSlackUserId } from '@lobu/connector-sdk';
 import { createLogger } from '@lobu/core';
-import { getDb, pgTextArray } from '../db/client.js';
+import { getDb, pgBigintArray, pgTextArray } from '../db/client.js';
 import { resolveEntityLinksForItems } from '../utils/entity-link-upsert.js';
 
 const logger = createLogger('slack-channel-graph');
@@ -64,12 +64,15 @@ export interface SlackChannelGraphResult {
   memberEntityIds: number[];
   /** How many `member_of` edges were newly created (vs already present). */
   createdEdges: number;
+  /** How many stale `member_of` edges were soft-deleted (members who left). */
+  removedEdges: number;
 }
 
 const EMPTY_RESULT: SlackChannelGraphResult = {
   channelEntityIds: {},
   memberEntityIds: [],
   createdEdges: 0,
+  removedEdges: 0,
 };
 
 /** The team-scoped channel key the gate matches on (`T…:C…`, upper-cased). */
@@ -278,20 +281,26 @@ export async function buildSlackChannelGraph(params: {
   }
 
   // 3) Write person -> channel `member_of` edges, idempotent on the live-triple
-  // unique index.
+  // unique index. Accumulate the CURRENT member set per channel entity so we can
+  // reconcile departures below.
   const typeId = await ensureMemberOfType(organizationId);
   const sql = getDb();
   const memberEntityIds = new Set<number>();
+  const currentMembersByChannel = new Map<number, Set<number>>();
   let createdEdges = 0;
   for (let i = 0; i < channels.length; i++) {
     const channelEntityId = channelEntityIdByIndex.get(i);
     if (channelEntityId === undefined) continue;
+    const channelMembers =
+      currentMembersByChannel.get(channelEntityId) ?? new Set<number>();
+    currentMembersByChannel.set(channelEntityId, channelMembers);
     for (const u of channels[i].memberSlackUserIds) {
       const combined = memberKeys.get(u);
       if (!combined) continue;
       const memberEntityId = memberEntityByCombined.get(combined);
       if (memberEntityId === undefined) continue;
       memberEntityIds.add(memberEntityId);
+      channelMembers.add(memberEntityId);
       const inserted = await sql<{ id: number }[]>`
 				INSERT INTO entity_relationships (
 					organization_id, from_entity_id, to_entity_id, relationship_type_id,
@@ -310,6 +319,31 @@ export async function buildSlackChannelGraph(params: {
     }
   }
 
+  // 4) Reconcile DEPARTURES — the build is a full re-sync of each channel's
+  // membership, so a `member_of` edge to a synced channel whose member is NOT in
+  // the current set means that person left: soft-delete it so they immediately
+  // lose recall access. WITHOUT this, leavers keep visibility forever (the gate
+  // only reads live edges). Scoped to `to_entity_id` = a channel we just synced,
+  // so person→company edges (GitHub team graph) are never touched. An empty
+  // member set deletes all of that channel's edges (the channel was synced with
+  // zero members) — the live caller must not pass empty-on-fetch-error, exactly
+  // like the identity emitter's null guard.
+  let removedEdges = 0;
+  for (const [channelEntityId, channelMembers] of currentMembersByChannel) {
+    const keep = [...channelMembers];
+    const removed = await sql<{ id: number }[]>`
+			UPDATE entity_relationships
+			SET deleted_at = current_timestamp, updated_at = current_timestamp
+			WHERE organization_id = ${organizationId}
+			  AND relationship_type_id = ${typeId}
+			  AND to_entity_id = ${channelEntityId}
+			  AND deleted_at IS NULL
+			  AND from_entity_id <> ALL(${pgBigintArray(keep)}::bigint[])
+			RETURNING id
+		`;
+    removedEdges += removed.length;
+  }
+
   await markAclEnforced(organizationId, connectionId);
 
   logger.info(
@@ -320,6 +354,7 @@ export async function buildSlackChannelGraph(params: {
       channels: Object.keys(channelEntityIds).length,
       members: memberEntityIds.size,
       created_edges: createdEdges,
+      removed_edges: removedEdges,
     },
     'Built Slack channel graph',
   );
@@ -328,5 +363,6 @@ export async function buildSlackChannelGraph(params: {
     channelEntityIds,
     memberEntityIds: [...memberEntityIds],
     createdEdges,
+    removedEdges,
   };
 }

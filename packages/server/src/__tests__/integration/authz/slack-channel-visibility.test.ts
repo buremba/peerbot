@@ -185,6 +185,29 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     expect(result.conversation_messages ?? []).toHaveLength(0);
   });
 
+  it('revokes on departure: a member who leaves #eng loses recall on the next sync', async () => {
+    const { org, alice, agent } = await setupWorkspace();
+    // Alice is in #eng → can recall it.
+    await buildSlackChannelGraph({
+      organizationId: org.id,
+      connectionId: CONN,
+      teamId: TEAM,
+      channels: [{ channelId: 'C01ENG', name: 'eng', memberSlackUserIds: ['U01ALICE'] }],
+    });
+    const before = await searchAs(org.id, alice.id, agent.agentId);
+    expect((before.conversation_messages ?? []).map((m) => m.channel_id)).toContain('C01ENG');
+
+    // Alice leaves #eng → re-sync with the new membership (just Bob).
+    await buildSlackChannelGraph({
+      organizationId: org.id,
+      connectionId: CONN,
+      teamId: TEAM,
+      channels: [{ channelId: 'C01ENG', name: 'eng', memberSlackUserIds: ['U01BOB'] }],
+    });
+    const after = await searchAs(org.id, alice.id, agent.agentId);
+    expect((after.conversation_messages ?? []).map((m) => m.channel_id)).not.toContain('C01ENG');
+  });
+
   it('no regression: WITHOUT a materialized graph the legacy per-agent fence applies', async () => {
     const { org, alice, agent } = await setupWorkspace();
     // No buildSlackChannelGraph → connection is not enforced → both channels recall.

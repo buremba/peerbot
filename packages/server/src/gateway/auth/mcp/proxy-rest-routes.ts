@@ -197,18 +197,20 @@ async function handleCallToolAuthenticated(
 		const extraHeaders: Record<string, string> = {};
 		if (callerFormat) extraHeaders["x-mcp-format"] = callerFormat;
 
-		// Forward the caller's originating conversation to channel-scoped
+		// Forward the caller's originating conversation context to channel-scoped
 		// (first-party) MCP servers, so a server-side tool that schedules async
-		// work can deliver the eventual reply back into that conversation rather
-		// than a detached session. Gated on authScope === "channel" so a
-		// conversation id is never leaked to per-user third-party MCP servers.
+		// work can deliver the eventual reply back into that channel rather than a
+		// detached session. The channel/connection ids are what let the server
+		// reconstruct a real platform message. Gated on authScope === "channel" so
+		// this context is never leaked to per-user third-party MCP servers.
 		if (httpServer.authScope === "channel") {
-			if (auth.tokenData.conversationId) {
-				extraHeaders["x-lobu-conversation-id"] = auth.tokenData.conversationId;
-			}
-			if (auth.tokenData.platform) {
-				extraHeaders["x-lobu-source-platform"] = auth.tokenData.platform;
-			}
+			const td = auth.tokenData;
+			if (td.conversationId) extraHeaders["x-lobu-conversation-id"] = td.conversationId;
+			if (td.channelId) extraHeaders["x-lobu-channel-id"] = td.channelId;
+			if (td.teamId) extraHeaders["x-lobu-team-id"] = td.teamId;
+			if (td.connectionId) extraHeaders["x-lobu-connection-id"] = td.connectionId;
+			if (td.platform) extraHeaders["x-lobu-source-platform"] = td.platform;
+			if (td.userId) extraHeaders["x-lobu-source-user-id"] = td.userId;
 		}
 
 		let response = await proxy.upstream.sendUpstreamRequest(

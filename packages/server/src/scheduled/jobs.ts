@@ -27,6 +27,7 @@ import {
   createThreadForAgent,
   enqueueAgentMessage,
 } from '../gateway/services/agent-threads';
+import { buildMessagePayload } from '../gateway/services/platform-helpers';
 
 /**
  * Construct the TaskScheduler, register every periodic task, start dispatch,
@@ -322,6 +323,17 @@ function registerMaintenanceTasks(
       prompt?: string;
       thread_id?: string | null;
       reason?: string | null;
+      // Optional platform delivery target captured from the conversation that
+      // scheduled the wake (e.g. by a first-party MCP tool). When present the
+      // reply is posted back into that channel instead of the default api thread.
+      delivery?: {
+        platform?: string;
+        conversationId?: string;
+        channelId?: string;
+        teamId?: string | null;
+        connectionId?: string | null;
+        userId?: string | null;
+      } | null;
     };
     const orgId = p.__organization_id ?? p.organization_id;
     if (!orgId || !p.agent_id || !p.prompt) {
@@ -349,6 +361,48 @@ function registerMaintenanceTasks(
     }
     const sessionManager = coreServices.getSessionManager();
     const queueProducer = coreServices.getQueueProducer();
+
+    // When the schedule carries a captured platform delivery target (a wake that
+    // originated from a Slack/Telegram conversation), dispatch a real platform
+    // message so the reply posts back into that channel. The default path below
+    // dispatches an api-platform message, which only reaches a connected SSE
+    // client — a background wake has none, so its reply would otherwise drop.
+    const delivery =
+      p.delivery && typeof p.delivery === 'object' ? p.delivery : null;
+    if (
+      delivery &&
+      (delivery.platform === 'slack' || delivery.platform === 'telegram') &&
+      delivery.channelId &&
+      delivery.connectionId
+    ) {
+      await queueProducer.enqueueMessage(
+        buildMessagePayload({
+          platform: delivery.platform,
+          userId: delivery.userId || p.__created_by_user || 'scheduled',
+          botId: delivery.platform,
+          conversationId: delivery.conversationId || delivery.channelId,
+          teamId: delivery.teamId || delivery.platform,
+          agentId: p.agent_id,
+          organizationId: orgId,
+          messageId: `wake_${p.__scheduled_job_id ?? p.agent_id}_${Date.now()}`,
+          messageText: p.prompt,
+          channelId: delivery.channelId,
+          platformMetadata: {
+            agentId: p.agent_id,
+            chatId: delivery.channelId,
+            senderId: delivery.userId || undefined,
+            teamId: delivery.teamId || undefined,
+            connectionId: delivery.connectionId,
+            responseChannel: delivery.channelId,
+            organizationId: orgId,
+            source: 'scheduled-job',
+          },
+          agentOptions: {},
+        })
+      );
+      return;
+    }
+
     let threadId = p.thread_id ?? null;
     if (!threadId) {
       const result = await createThreadForAgent(

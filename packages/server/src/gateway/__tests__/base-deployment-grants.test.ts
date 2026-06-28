@@ -150,26 +150,38 @@ describe("DeploymentManager.syncNetworkConfigGrants", () => {
     const barebones = new TestDeploymentManager(TEST_CONFIG);
     barebones.setPolicyStore(policyStore);
 
+    // Egress judges are sourced from the agent's `egress`-stage inline
+    // guardrails — each becomes a named judge gating its `domains`.
     await barebones.syncNetworkConfigGrants(
       buildPayload({
-        networkConfig: {
-          judgedDomains: [{ domain: "api.example.com" }],
-          judges: { default: "initial policy" },
-        },
-        egressConfig: { extraPolicy: "operator policy" },
+        guardrailsInline: [
+          {
+            name: "default",
+            enabled: true,
+            stage: "egress",
+            policy: "initial policy",
+            model: "model-x",
+            domains: ["api.example.com"],
+          },
+        ],
       })
     );
 
     let resolved = policyStore.resolve("test-org", "agent-1", "api.example.com");
     expect(resolved?.policy).toContain("initial policy");
-    expect(resolved?.policy).toContain("operator policy");
+    expect(resolved?.judgeModel).toBe("model-x");
 
     await barebones.syncNetworkConfigGrants(
       buildPayload({
-        networkConfig: {
-          judgedDomains: [{ domain: "api.example.com" }],
-          judges: { default: "updated policy" },
-        },
+        guardrailsInline: [
+          {
+            name: "default",
+            enabled: true,
+            stage: "egress",
+            policy: "updated policy",
+            domains: ["api.example.com"],
+          },
+        ],
       })
     );
 

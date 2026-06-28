@@ -83,4 +83,33 @@ describe('validateGuardrailsInline', () => {
       ])
     ).toMatch(/tools must be an array of strings/);
   });
+
+  test('accepts an egress guardrail with a domains selector (round-trip)', () => {
+    expect(
+      validateGuardrailsInline([
+        {
+          name: 'egress-github',
+          enabled: true,
+          stage: 'egress',
+          policy: 'only allow github reads',
+          model: 'anthropic/claude-haiku-4-5',
+          domains: ['.github.com', 'api.github.com'],
+        },
+      ])
+    ).toBeNull();
+  });
+
+  test('rejects domains that are not a string array', () => {
+    expect(
+      validateGuardrailsInline([
+        {
+          name: 'g',
+          enabled: true,
+          stage: 'egress',
+          policy: 'x',
+          domains: [1],
+        },
+      ])
+    ).toMatch(/domains must be an array of strings/);
+  });
 });

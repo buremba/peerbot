@@ -1,8 +1,20 @@
 import crypto from "node:crypto";
-import type { AgentEgressConfig, DomainJudgeRule } from "@lobu/core";
+import type { AgentInlineGuardrail } from "@lobu/core";
 import { createLogger, normalizeDomainPattern } from "@lobu/core";
 
 const logger = createLogger("policy-store");
+
+/**
+ * Per-domain rule that routes matching requests through a named egress judge.
+ * Internal to the egress policy plane (the public agent-facing surface is the
+ * `egress`-stage inline guardrail + its `domains` selector).
+ */
+interface JudgedDomainRule {
+  /** Domain pattern — exact or `.wildcard`, same format as allow/deny lists. */
+  domain: string;
+  /** Named judge policy key. */
+  judge?: string;
+}
 
 /**
  * Per-agent bundle of egress judge policies. Populated by the deployment
@@ -11,19 +23,18 @@ const logger = createLogger("policy-store");
  */
 interface JudgePolicyBundle {
   /** Domain rules that require a judge verdict. */
-  judgedDomains: DomainJudgeRule[];
-  /** Named judge policy texts. Key "default" is used when a rule omits `judge`. */
+  judgedDomains: JudgedDomainRule[];
+  /** Named judge policy texts. */
   judges: Record<string, string>;
-  /** Operator policy appended to every judge prompt. */
-  extraPolicy?: string;
-  /** Optional judge model override. */
-  judgeModel?: string;
+  /** Optional per-judge model override, keyed by judge name. */
+  judgeModels?: Record<string, string>;
 }
 
 /**
  * Resolved judge rule data returned by {@link PolicyStore.resolve}.
- * `policy` is the composed policy text (skill's selected judge + agent's
- * extra policy), `policyHash` keys the verdict cache.
+ * `policy` is the composed policy text, `policyHash` keys the verdict cache,
+ * and `judgeModel` is the per-judge model (undefined falls back to the
+ * gateway default in the {@link EgressJudge}/JudgeRunner downstream).
  */
 export interface ResolvedJudgeRule {
   judgeName: string;
@@ -35,12 +46,12 @@ export interface ResolvedJudgeRule {
 interface PreparedJudge {
   policy: string;
   policyHash: string;
+  model?: string;
 }
 
 interface PreparedBundle {
-  judgedDomains: DomainJudgeRule[];
+  judgedDomains: JudgedDomainRule[];
   preparedJudges: Record<string, PreparedJudge>;
-  judgeModel?: string;
 }
 
 /**
@@ -74,7 +85,6 @@ export class PolicyStore {
       agentId,
       domains: prepared.judgedDomains.length,
       judges: Object.keys(prepared.preparedJudges).length,
-      hasExtraPolicy: !!bundle.extraPolicy,
     });
   }
 
@@ -119,25 +129,65 @@ export class PolicyStore {
       judgeName,
       policy: judge.policy,
       policyHash: judge.policyHash,
-      judgeModel: prepared.judgeModel,
+      judgeModel: judge.model,
     };
   }
 }
 
 /**
- * Build a {@link JudgePolicyBundle} from the pieces the deployment manager
- * already holds. Returns `undefined` when the agent has no judged-domain
- * rules (common case — no need to occupy a map slot).
+ * Translate an agent's `egress`-stage inline guardrails into a
+ * {@link JudgePolicyBundle}. Each enabled egress guardrail becomes a named
+ * judge (`judges[g.name] = { policy: g.policy, model: g.model }`) and routes
+ * every hostname in its `domains` selector through that judge. Returns
+ * `undefined` when no egress guardrail declares any domain (common case — no
+ * need to occupy a map slot).
+ *
+ * This is the sole production path into the policy store; it produces the same
+ * bundle shape the legacy `network.judged`/`judges`/`egressConfig` path did
+ * (see {@link buildPolicyBundle}, kept as the equivalence-test oracle).
  */
-export function buildPolicyBundle(input: {
-  judgedDomains?: DomainJudgeRule[];
-  judges?: Record<string, string>;
-  egressConfig?: AgentEgressConfig;
-}): JudgePolicyBundle | undefined {
+export function egressGuardrailsToPolicyBundle(
+  guardrails: AgentInlineGuardrail[]
+): JudgePolicyBundle | undefined {
   // Normalize first, then dedupe by normalized domain. Equivalent rules
   // (e.g. `*.slack.com` and `.slack.com`, or case variants) collapse to one;
-  // last declaration wins so operator-level rules can override skill-level.
-  const dedupedByDomain = new Map<string, DomainJudgeRule>();
+  // last declaration wins, matching the legacy path.
+  const dedupedByDomain = new Map<string, JudgedDomainRule>();
+  const judges: Record<string, string> = {};
+  const judgeModels: Record<string, string> = {};
+  for (const g of guardrails) {
+    if (!g.enabled || g.stage !== "egress") continue;
+    if (typeof g.policy !== "string" || g.policy.trim() === "") continue;
+    judges[g.name] = g.policy;
+    if (g.model) judgeModels[g.name] = g.model;
+    for (const domain of g.domains ?? []) {
+      if (!domain) continue;
+      const normalized = normalizeDomainPattern(domain);
+      dedupedByDomain.set(normalized, { domain: normalized, judge: g.name });
+    }
+  }
+  const judgedDomains = Array.from(dedupedByDomain.values());
+  if (judgedDomains.length === 0) return undefined;
+  return {
+    judgedDomains,
+    judges,
+    ...(Object.keys(judgeModels).length > 0 ? { judgeModels } : {}),
+  };
+}
+
+/**
+ * Reference (oracle) builder for the LEGACY `network.judged`/`judges`/
+ * `egressConfig` source. No longer wired into production — kept so the
+ * equivalence test can prove {@link egressGuardrailsToPolicyBundle} resolves
+ * identically to the path it replaced. The legacy agent-wide `judgeModel` maps
+ * onto every named judge.
+ */
+export function buildPolicyBundle(input: {
+  judgedDomains?: JudgedDomainRule[];
+  judges?: Record<string, string>;
+  egressConfig?: { judgeModel?: string };
+}): JudgePolicyBundle | undefined {
+  const dedupedByDomain = new Map<string, JudgedDomainRule>();
   for (const r of input.judgedDomains ?? []) {
     if (!r?.domain) continue;
     const normalized = normalizeDomainPattern(r.domain);
@@ -147,20 +197,20 @@ export function buildPolicyBundle(input: {
     });
   }
   const judgedDomains = Array.from(dedupedByDomain.values());
-
   if (judgedDomains.length === 0) return undefined;
 
-  const bundle: JudgePolicyBundle = {
-    judgedDomains,
-    judges: input.judges ?? {},
-  };
-  if (input.egressConfig?.extraPolicy) {
-    bundle.extraPolicy = input.egressConfig.extraPolicy;
-  }
+  const judges = { ...(input.judges ?? {}) };
+  const judgeModels: Record<string, string> = {};
   if (input.egressConfig?.judgeModel) {
-    bundle.judgeModel = input.egressConfig.judgeModel;
+    for (const name of Object.keys(judges)) {
+      judgeModels[name] = input.egressConfig.judgeModel;
+    }
   }
-  return bundle;
+  return {
+    judgedDomains,
+    judges,
+    ...(Object.keys(judgeModels).length > 0 ? { judgeModels } : {}),
+  };
 }
 
 function prepareBundle(
@@ -170,25 +220,24 @@ function prepareBundle(
 ): PreparedBundle {
   const preparedJudges: Record<string, PreparedJudge> = {};
   for (const [name, rawPolicy] of Object.entries(bundle.judges)) {
-    const composed = bundle.extraPolicy
-      ? `${rawPolicy.trim()}\n\nAdditional operator policy:\n${bundle.extraPolicy.trim()}`
-      : rawPolicy.trim();
+    const composed = rawPolicy.trim();
+    const model = bundle.judgeModels?.[name];
     preparedJudges[name] = {
       policy: composed,
       policyHash: hashPolicy(organizationId, agentId, name, composed),
+      ...(model ? { model } : {}),
     };
   }
   return {
     judgedDomains: bundle.judgedDomains,
     preparedJudges,
-    ...(bundle.judgeModel ? { judgeModel: bundle.judgeModel } : {}),
   };
 }
 
 function findMatchingRule(
   hostname: string,
-  rules: DomainJudgeRule[]
-): DomainJudgeRule | undefined {
+  rules: JudgedDomainRule[]
+): JudgedDomainRule | undefined {
   const normalized = hostname.toLowerCase();
 
   const exact = rules.find(

@@ -574,16 +574,12 @@ describe("mapProjectToDesiredState", () => {
     expect(state.agents).toHaveLength(1);
   });
 
-  test("maps network judged domains + named judge policies", () => {
+  test("maps network allow/deny domains", () => {
     const agent = defineAgent({
       id: "ofc",
       network: {
         allowed: ["api.z.ai"],
-        judged: [
-          { domain: "deliveroo.co.uk", judge: "deliveroo" },
-          { domain: ".deliveroo.co.uk", judge: "deliveroo" },
-        ],
-        judges: { deliveroo: "Allow reads; deny checkout." },
+        denied: ["evil.example.com"],
       },
     });
     const state = mapProjectToDesiredState(
@@ -592,17 +588,12 @@ describe("mapProjectToDesiredState", () => {
     );
     const net = state.agents[0]?.settings.networkConfig;
     expect(net?.allowedDomains).toEqual(["api.z.ai"]);
-    expect(net?.judgedDomains).toEqual([
-      { domain: "deliveroo.co.uk", judge: "deliveroo" },
-      { domain: ".deliveroo.co.uk", judge: "deliveroo" },
-    ]);
-    expect(net?.judges).toEqual({ deliveroo: "Allow reads; deny checkout." });
+    expect(net?.deniedDomains).toEqual(["evil.example.com"]);
   });
 
-  test("maps egress, tools, guardrails, nix packages", () => {
+  test("maps tools, guardrails, nix packages", () => {
     const agent = defineAgent({
       id: "a",
-      egress: { extraPolicy: "no payments", judgeModel: "haiku" },
       tools: {
         preApproved: ["/mcp/gmail/tools/send_email"],
         allowed: ["Bash", "Bash"],
@@ -616,10 +607,6 @@ describe("mapProjectToDesiredState", () => {
       defineConfig({ agents: [agent] }),
       env
     ).agents[0]?.settings;
-    expect(settings?.egressConfig).toEqual({
-      extraPolicy: "no payments",
-      judgeModel: "haiku",
-    });
     expect(settings?.preApprovedTools).toEqual(["/mcp/gmail/tools/send_email"]);
     expect(settings?.toolsConfig).toEqual({
       allowedTools: ["Bash"],
@@ -738,25 +725,6 @@ describe("mapProjectToDesiredState", () => {
     expect(mapped?.platforms?.[0]?.type).toBe("rest");
   });
 
-  test("dedups judged domains by domain (last wins), matching buildAgentSettings", () => {
-    const agent = defineAgent({
-      id: "a",
-      network: {
-        judged: [
-          { domain: "x.com", judge: "first" },
-          { domain: "x.com", judge: "second" },
-          { domain: "y.com" },
-        ],
-      },
-    });
-    const net = mapProjectToDesiredState(defineConfig({ agents: [agent] }), env)
-      .agents[0]?.settings.networkConfig;
-    expect(net?.judgedDomains).toEqual([
-      { domain: "x.com", judge: "second" },
-      { domain: "y.com" },
-    ]);
-  });
-
   test("collects mcp env + oauth clientId/clientSecret $VAR refs (parity with collectEnvRefs)", () => {
     const agent = defineAgent({
       id: "a",
@@ -798,7 +766,6 @@ describe("mapProjectToDesiredState", () => {
       env
     ).agents[0]?.settings;
     expect(settings).not.toHaveProperty("networkConfig");
-    expect(settings).not.toHaveProperty("egressConfig");
     expect(settings).not.toHaveProperty("toolsConfig");
     expect(settings).not.toHaveProperty("preApprovedTools");
     expect(settings).not.toHaveProperty("guardrails");
@@ -822,12 +789,11 @@ describe("mergeAgentDirArtifacts", () => {
     expect(settings.skillsConfig?.skills[0]?.name).toBe("s");
   });
 
-  test("unions network allowed/denied/nix; agent wins on judged + judges", () => {
+  test("preserves agent network; unions skill nix packages", () => {
     const settings: Partial<AgentSettings> = {
       networkConfig: {
         allowedDomains: ["agent.com"],
-        judgedDomains: [{ domain: "shared.com", judge: "agent-policy" }],
-        judges: { p: "agent prompt" },
+        deniedDomains: ["blocked.com"],
       },
       nixConfig: { packages: ["ffmpeg"] },
     };
@@ -838,57 +804,13 @@ describe("mergeAgentDirArtifacts", () => {
         content: "b",
         enabled: true,
         nixPackages: ["python311", "ffmpeg"],
-        networkConfig: {
-          allowedDomains: ["skill.com", "*"],
-          deniedDomains: ["bad.com"],
-          judgedDomains: [
-            { domain: "shared.com", judge: "skill-policy" },
-            { domain: "skill-only.com" },
-          ],
-          judges: { p: "skill prompt", q: "skill q" },
-        },
       },
     ]);
-    // "*" from a skill is dropped; agent + skill domains unioned + deduped.
-    expect(settings.networkConfig?.allowedDomains).toEqual([
-      "agent.com",
-      "skill.com",
-    ]);
-    expect(settings.networkConfig?.deniedDomains).toEqual(["bad.com"]);
-    // Agent wins on the shared judged domain; skill-only domain kept.
-    expect(settings.networkConfig?.judgedDomains).toEqual([
-      { domain: "shared.com", judge: "agent-policy" },
-      { domain: "skill-only.com" },
-    ]);
-    // Agent wins on the shared judge key; skill-only key kept.
-    expect(settings.networkConfig?.judges).toEqual({
-      p: "agent prompt",
-      q: "skill q",
-    });
+    // Skills no longer contribute network — the agent's config is untouched.
+    expect(settings.networkConfig?.allowedDomains).toEqual(["agent.com"]);
+    expect(settings.networkConfig?.deniedDomains).toEqual(["blocked.com"]);
+    // Agent + skill nix packages are unioned + deduped.
     expect(settings.nixConfig?.packages).toEqual(["ffmpeg", "python311"]);
-  });
-
-  test("agent MCP servers win; skills add only new ids", () => {
-    const settings: Partial<AgentSettings> = {
-      mcpServers: { gmail: { url: "https://agent" } },
-    };
-    mergeAgentDirArtifacts(settings, {}, [
-      {
-        repo: "local/s",
-        name: "s",
-        content: "b",
-        enabled: true,
-        mcpServers: [
-          { id: "gmail", url: "https://skill-should-not-win" },
-          { id: "linear", url: "https://skill", type: "sse" },
-        ],
-      },
-    ]);
-    expect(settings.mcpServers?.gmail).toEqual({ url: "https://agent" });
-    expect(settings.mcpServers?.linear).toEqual({
-      url: "https://skill",
-      type: "sse",
-    });
   });
 
   test("no markdown / no skills leaves settings untouched", () => {

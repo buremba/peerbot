@@ -295,7 +295,7 @@ function emitAgent(
     fields.push(`providers: [\n    ${items.join(",\n    ")},\n  ]`);
   }
 
-  // network ← networkConfig (allowed/denied/judged/judges).
+  // network ← networkConfig (allowed/denied).
   const net = settings?.networkConfig;
   if (net) {
     const netFields: string[] = [];
@@ -305,35 +305,9 @@ function emitAgent(
     if (net.deniedDomains?.length) {
       netFields.push(`denied: ${emitValue(net.deniedDomains, 2)}`);
     }
-    if (net.judgedDomains?.length) {
-      netFields.push(
-        `judged: ${emitValue(
-          net.judgedDomains.map((r) => ({
-            domain: r.domain,
-            ...(r.judge ? { judge: r.judge } : {}),
-          })),
-          2
-        )}`
-      );
-    }
-    if (net.judges && Object.keys(net.judges).length > 0) {
-      netFields.push(`judges: ${emitValue(net.judges, 2)}`);
-    }
     if (netFields.length > 0) {
       fields.push(`network: ${objectLiteral(netFields, 1)}`);
     }
-  }
-
-  // egress ← egressConfig.
-  const egress = settings?.egressConfig;
-  if (egress && (egress.extraPolicy || egress.judgeModel)) {
-    const egFields: string[] = [];
-    if (egress.extraPolicy) {
-      egFields.push(`extraPolicy: ${str(egress.extraPolicy)}`);
-    }
-    if (egress.judgeModel)
-      egFields.push(`judgeModel: ${str(egress.judgeModel)}`);
-    fields.push(`egress: ${objectLiteral(egFields, 1)}`);
   }
 
   // tools ← toolsConfig + preApprovedTools.
@@ -535,49 +509,11 @@ function emitSkillFile(
 ): string {
   const fm: string[] = [`name: ${skill.name}`];
   if (skill.description) fm.push(`description: ${skill.description}`);
-  const net = skill.networkConfig;
-  if (
-    net?.allowedDomains?.length ||
-    net?.deniedDomains?.length ||
-    net?.judgedDomains?.length
-  ) {
-    fm.push("network:");
-    if (net?.allowedDomains?.length) {
-      fm.push(`  allow: [${net.allowedDomains.map((d) => str(d)).join(", ")}]`);
-    }
-    if (net?.deniedDomains?.length) {
-      fm.push(`  deny: [${net.deniedDomains.map((d) => str(d)).join(", ")}]`);
-    }
-    // Judged domains round-trip as a `network.judge` YAML list of
-    // `{ domain, judge? }` — the exact shape the SKILL.md frontmatter loader
-    // reads back (parseSkillFrontmatter → `fm.network.judge`). Omitting these
-    // (the prior behaviour) silently dropped per-skill egress-judge rules.
-    if (net?.judgedDomains?.length) {
-      fm.push("  judge:");
-      for (const rule of net.judgedDomains) {
-        fm.push(`    - domain: ${str(rule.domain)}`);
-        if (rule.judge) fm.push(`      judge: ${str(rule.judge)}`);
-      }
-    }
-  }
-  // Named judge policies (referenced by `network.judge[].judge`) live at the
-  // frontmatter top level under `judges:` (str() emits a JSON-quoted scalar,
-  // which is valid YAML even for multi-line policy text).
-  if (net?.judges && Object.keys(net.judges).length > 0) {
-    fm.push("judges:");
-    for (const [name, policy] of Object.entries(net.judges)) {
-      fm.push(`  ${name}: ${str(policy)}`);
-    }
-  }
   if (skill.nixPackages?.length) {
     fm.push(
       `nixPackages: [${skill.nixPackages.map((p) => str(p)).join(", ")}]`
     );
   }
-  // NOTE: skill-level `mcpServers` (rare) are not emitted yet — the stored
-  // shape is SkillMcpServer[] while the frontmatter loader expects a YAML
-  // record, and secret-bearing fields would need `$VAR` placeholders. Agent
-  // mcpServers DO round-trip (emitMcpServers). Tracked as a follow-up.
   const body = skill.content ?? "";
   return `---\n${fm.join("\n")}\n---\n${body}\n`;
 }

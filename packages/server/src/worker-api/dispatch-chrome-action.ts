@@ -48,6 +48,62 @@ export interface ChromeActionDispatchResult {
 }
 
 /**
+ * Resolve an online Owletto Chrome extension to run a chrome action against, and
+ * self-heal the org's `chrome` connection pin to it.
+ *
+ * Both this dispatch and the poll claim gate on `connections.device_worker_id`,
+ * but nothing keeps the generic `chrome` action connection bound to the current
+ * extension worker: re-pairing mints a NEW device worker and leaves the chrome
+ * connection pinned to the old (now offline) one — or never pinned at all (it's
+ * not a bundled device connector, so `device-reconcile` doesn't touch it). The
+ * result: a server-side chrome connector (Revolut, LinkedIn) can't reach an
+ * extension that IS online, and dispatch fails with "no online paired
+ * extension". So resolve any online, debugger-capable chrome-extension worker in
+ * the org INDEPENDENT of the existing pin, then repin the connection to it
+ * before enqueuing — fixing both the NULL-pin and stale-pin (post-re-pair) cases.
+ *
+ * Returns the chrome connection id + the resolved worker, or null when no online
+ * extension exists in the org.
+ */
+export async function resolveOnlineChromeConnection(
+  organizationId: string,
+  sql = getDb()
+): Promise<{ connectionId: number; deviceWorkerId: string } | null> {
+  const rows = (await sql`
+    SELECT
+      con.id AS connection_id,
+      con.device_worker_id AS current_pin,
+      dw.id AS online_worker_id
+    FROM connections con
+    JOIN device_workers dw ON dw.organization_id = con.organization_id
+    WHERE con.organization_id = ${organizationId}
+      AND con.connector_key = 'chrome'
+      AND con.status = 'active'
+      AND con.deleted_at IS NULL
+      AND dw.platform = 'chrome-extension'
+      AND dw.capabilities::jsonb @> '["browser.debugger"]'::jsonb
+      AND dw.last_seen_at > now() - make_interval(mins => ${DEVICE_ONLINE_WINDOW_MINUTES})
+    ORDER BY dw.last_seen_at DESC
+    LIMIT 1
+  `) as Array<{ connection_id: number; current_pin: string | null; online_worker_id: string }>;
+
+  if (rows.length === 0) return null;
+  const { connection_id, current_pin, online_worker_id } = rows[0];
+
+  // Self-heal the pin so the poll claim (which gates on device_worker_id) routes
+  // the run to the online worker. Covers a NULL pin and a stale post-re-pair pin.
+  if (current_pin !== online_worker_id) {
+    await sql`
+      UPDATE connections
+      SET device_worker_id = ${online_worker_id}::uuid, updated_at = now()
+      WHERE id = ${connection_id}
+    `;
+  }
+
+  return { connectionId: connection_id, deviceWorkerId: online_worker_id };
+}
+
+/**
  * Core chrome-action dispatch, callable in-process (no HTTP Context):
  *
  *   1. Pick an online paired Owletto chrome connection in `organizationId`.
@@ -74,43 +130,24 @@ export async function dispatchChromeActionToExtension(params: {
     params;
   const sql = getDb();
 
-  // (1) Pick an online chrome connection in this org.
-  const chromeConnectionRows = (await sql`
-    SELECT
-      con.id AS connection_id,
-      con.device_worker_id,
-      dw.last_seen_at
-    FROM connections con
-    JOIN device_workers dw ON dw.id = con.device_worker_id
-    WHERE con.organization_id = ${organizationId}
-      AND con.connector_key = 'chrome'
-      AND con.status = 'active'
-      AND con.deleted_at IS NULL
-      AND dw.capabilities::jsonb @> '["browser.debugger"]'::jsonb
-      AND dw.last_seen_at > now() - make_interval(mins => ${DEVICE_ONLINE_WINDOW_MINUTES})
-    ORDER BY dw.last_seen_at DESC
-    LIMIT 1
-  `) as Array<{
-    connection_id: number;
-    device_worker_id: string;
-    last_seen_at: Date | string;
-  }>;
-
-  if (chromeConnectionRows.length === 0) {
+  // (1) Pick an online chrome extension in this org and pin the chrome
+  //     connection to it (self-heals NULL / stale-after-re-pair pins so the
+  //     poll claim can route the run). See resolveOnlineChromeConnection.
+  const chromeConnection = await resolveOnlineChromeConnection(organizationId, sql);
+  if (!chromeConnection) {
     return {
       status: 'failed',
       error_message:
         'No online paired Owletto Chrome extension in this organization. Pair a Chrome extension first (and make sure it is running).',
     };
   }
-  const chromeConnection = chromeConnectionRows[0];
 
   // (2) Insert a device-bound chrome connector action run.
   let runId: number;
   try {
     runId = await createConnectorOperationRun({
       organizationId,
-      connectionId: chromeConnection.connection_id,
+      connectionId: chromeConnection.connectionId,
       connectorKey: 'chrome',
       operationKey: actionKey,
       operationInput: actionInput ?? {},
@@ -131,8 +168,8 @@ export async function dispatchChromeActionToExtension(params: {
       run_id: runId,
       parent_run_id: parentRunId,
       action_key: actionKey,
-      chrome_connection_id: chromeConnection.connection_id,
-      device_worker_id: chromeConnection.device_worker_id,
+      chrome_connection_id: chromeConnection.connectionId,
+      device_worker_id: chromeConnection.deviceWorkerId,
     },
     '[dispatchChromeAction] dispatched'
   );

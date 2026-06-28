@@ -183,4 +183,20 @@ describe('virtual feed flag (Slice 2)', () => {
       readVirtualFeed({ scope: ownerScope(), feedId: nonVirtualFeedId })
     ).rejects.toThrow(/not a virtual feed/i);
   }, 60_000);
+
+  it('refuses to read a PAUSED virtual feed live (status gate)', async () => {
+    // A paused (or error) feed is not deleted but must not serve live reads —
+    // the lookup gates on f.status = 'active', so it resolves to "not found".
+    const db = getTestDb();
+    const [paused] = await db`
+      INSERT INTO feeds (organization_id, connection_id, feed_key, status, virtual, config, created_at, updated_at)
+      VALUES (${orgId}, ${orgConnId}, 'query', 'paused', true,
+        ${db.json({ query: VFEED_SQL, primary_key: 'id', cursor_column: 'id' })}, NOW(), NOW())
+      RETURNING id
+    `;
+    const pausedId = Number((paused as { id: number }).id);
+    await expect(
+      readVirtualFeed({ scope: ownerScope(), feedId: pausedId })
+    ).rejects.toThrow(/not found or not accessible/i);
+  }, 60_000);
 });

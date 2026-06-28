@@ -17,6 +17,13 @@ export interface SlackWebApi {
   openDm(botToken: string, slackUserId: string): Promise<string>;
   /** `chat.postMessage` of a plain-text body. Throws on a Slack-level error. */
   postMessage(botToken: string, channel: string, text: string): Promise<void>;
+  /**
+   * `conversations.members` for one channel — the bare `U…` ids of every member,
+   * following `response_metadata.next_cursor` to completion. Throws on a
+   * Slack-level error (the ACL sync treats a throw as fail-closed). Used by the
+   * authz channel-membership sync to materialize the read-ACL graph.
+   */
+  conversationMembers(botToken: string, channelId: string): Promise<string[]>;
 }
 
 async function slackPost(
@@ -63,6 +70,29 @@ export function createSlackWebApi(): SlackWebApi {
         );
         throw error;
       }
+    },
+    async conversationMembers(botToken, channelId) {
+      const members: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const json = await slackPost(botToken, "conversations.members", {
+          channel: channelId,
+          limit: 200,
+          ...(cursor ? { cursor } : {}),
+        });
+        const page = Array.isArray(json.members)
+          ? (json.members as unknown[]).filter(
+              (m): m is string => typeof m === "string"
+            )
+          : [];
+        members.push(...page);
+        const meta = json.response_metadata as
+          | { next_cursor?: string }
+          | undefined;
+        const next = meta?.next_cursor;
+        cursor = next && next.length > 0 ? next : undefined;
+      } while (cursor);
+      return members;
     },
   };
 }

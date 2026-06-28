@@ -73,26 +73,55 @@ export async function resolveRequesterMemberEntityId(
 }
 
 /**
- * The subset of `connectionIds` whose ACLs are enforced right now
- * (`acl_support='full'` AND `freshness_state='fresh'`). Everything else keeps
- * the legacy per-agent fence.
+ * How long a `fresh` ACL graph stays trusted without a re-sync. The background
+ * sync (`./slack-acl-sync`) re-stamps `last_synced_at` every tick; if it stops
+ * (pod down, Slack outage), a connection's graph ages past this window and the
+ * gate stops trusting it — failing closed rather than serving stale membership.
+ * Generous vs. the ~15-min sync cadence so a transient hiccup never blinks
+ * recall off.
  */
-export async function getEnforcedConnectionIds(
+const ACL_STALE_AFTER_MINUTES = 60;
+
+/**
+ * The ACL state of each connection that has been onboarded into the authz
+ * program. A connection ABSENT from the returned map has no
+ * `authz_source_acl_state` row at all — it was never graphed, so it keeps the
+ * legacy per-agent fence. A connection PRESENT in the map has been onboarded and
+ * MUST be enforced: it may use membership filtering only when `enforce` is true
+ * (`acl_support='full'` AND `freshness_state='fresh'` AND the graph was synced
+ * within {@link ACL_STALE_AFTER_MINUTES}). Any other state — stale/failed/unknown
+ * freshness, partial/none support, or a `fresh` row that has aged out — fails
+ * closed: its channels are dropped, never passed through as legacy. Otherwise a
+ * connection whose graph goes stale would silently re-expose every channel.
+ */
+export async function getConnectionAclStates(
   sql: DbClient,
   organizationId: string,
   connectionIds: string[],
-): Promise<Set<string>> {
+): Promise<Map<string, { enforce: boolean }>> {
   const ids = [...new Set(connectionIds)].filter(Boolean);
-  if (ids.length === 0) return new Set();
-  const rows = await sql<{ connection_id: string }>`
-		SELECT connection_id
+  if (ids.length === 0) return new Map();
+  const rows = await sql<{
+    connection_id: string;
+    enforce: boolean;
+  }>`
+		SELECT
+			connection_id,
+			(
+				acl_support = 'full'
+				AND freshness_state = 'fresh'
+				AND last_synced_at IS NOT NULL
+				AND last_synced_at >= current_timestamp - make_interval(mins => ${ACL_STALE_AFTER_MINUTES})
+			) AS enforce
 		FROM authz_source_acl_state
 		WHERE organization_id = ${organizationId}
 		  AND connection_id = ANY(${pgTextArray(ids)}::text[])
-		  AND acl_support = 'full'
-		  AND freshness_state = 'fresh'
 	`;
-  return new Set(rows.map((r) => String(r.connection_id)));
+  const out = new Map<string, { enforce: boolean }>();
+  for (const r of rows) {
+    out.set(String(r.connection_id), { enforce: r.enforce === true });
+  }
+  return out;
 }
 
 /**
@@ -140,23 +169,31 @@ export async function filterChannelsForRequester<T extends GatedChannelRow>(
   const { organizationId, userId, rows } = params;
   if (rows.length === 0) return rows;
 
-  const enforced = await getEnforcedConnectionIds(
+  const states = await getConnectionAclStates(
     sql,
     organizationId,
     rows.map((r) => r.id),
   );
-  // Nothing enforced → no per-user gating to apply; preserve legacy behavior
-  // without paying for member resolution.
-  if (enforced.size === 0) return rows;
+  // No connection onboarded into authz → no per-user gating to apply; preserve
+  // legacy behavior without paying for member resolution.
+  if (states.size === 0) return rows;
 
-  const memberEntityId = await resolveRequesterMemberEntityId(sql, organizationId, userId);
+  // Only resolve the requester's membership when at least one connection is
+  // actively enforcing (full+fresh). Onboarded-but-stale connections fail closed
+  // regardless of who is asking, so they need no membership lookup.
+  const anyEnforcing = [...states.values()].some((s) => s.enforce);
+  const memberEntityId = anyEnforcing
+    ? await resolveRequesterMemberEntityId(sql, organizationId, userId)
+    : null;
   const visibleKeys =
     memberEntityId === null
       ? new Set<string>()
       : await getVisibleChannelKeysForMember(sql, organizationId, memberEntityId);
 
   return rows.filter((r) => {
-    if (!enforced.has(r.id)) return true; // legacy fence still applies
+    const state = states.get(r.id);
+    if (!state) return true; // never graphed → legacy fence still applies
+    if (!state.enforce) return false; // onboarded but stale/unsupported → fail closed
     if (!r.team_id) return false; // can't form the key → fail closed
     const key = slackChannelKey(r.team_id, stripPlatformPrefix(r.platform, r.channel_id));
     return visibleKeys.has(key);

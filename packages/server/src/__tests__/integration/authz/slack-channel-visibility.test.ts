@@ -12,6 +12,7 @@
 
 import { normalizeSlackUserId } from '@lobu/connector-sdk';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { syncSlackConnectionAcl } from '../../../authz/slack-acl-sync';
 import { buildSlackChannelGraph } from '../../../authz/slack-channel-graph';
 import { search } from '../../../tools/search';
 import { clearEntityLinkRulesCache } from '../../../utils/entity-link-upsert';
@@ -215,5 +216,93 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     const channels = (result.conversation_messages ?? []).map((m) => m.channel_id);
     expect(channels).toContain('C01ENG');
     expect(channels).toContain('C01SEC');
+  });
+
+  it('fails closed when the graph ages past the freshness window (no stale-membership re-exposure)', async () => {
+    const { org, alice, agent } = await setupWorkspace();
+    // Alice is a member of #eng → a FRESH graph lets her recall it.
+    await buildSlackChannelGraph({
+      organizationId: org.id,
+      connectionId: CONN,
+      teamId: TEAM,
+      channels: [{ channelId: 'C01ENG', name: 'eng', memberSlackUserIds: ['U01ALICE'] }],
+    });
+    const fresh = await searchAs(org.id, alice.id, agent.agentId);
+    expect((fresh.conversation_messages ?? []).map((m) => m.channel_id)).toContain('C01ENG');
+
+    // The sync stops: age this connection's graph past the 60-min window. An
+    // onboarded-but-stale connection must FAIL CLOSED (drop its channels), NOT
+    // fall back to the legacy fence — serving stale membership is the hole the
+    // age-based gate closes. Alice loses recall even though she's still a member.
+    const sql = getTestDb();
+    await sql`
+      UPDATE authz_source_acl_state
+      SET last_synced_at = current_timestamp - interval '90 minutes'
+      WHERE organization_id = ${org.id} AND connection_id = ${CONN}
+    `;
+    const stale = await searchAs(org.id, alice.id, agent.agentId);
+    expect(stale.conversation_messages ?? []).toHaveLength(0);
+  });
+
+  it('enforces through the PRODUCTION sync path (syncSlackConnectionAcl), not just the test builder', async () => {
+    const { org, alice, agent } = await setupWorkspace();
+
+    // Drive the real production caller with a stubbed Slack API + token resolver,
+    // exactly as runSlackAclSyncTick wires it in prod. THIS is what activates the
+    // gate for a live connection — buildSlackChannelGraph is never called by hand.
+    const membersByChannel: Record<string, string[]> = {
+      C01ENG: ['U01ALICE'],
+      C01SEC: ['U01BOB'],
+    };
+    const result = await syncSlackConnectionAcl(
+      {
+        slackWeb: {
+          conversationMembers: async (_token, channelId) => membersByChannel[channelId] ?? [],
+        },
+        resolveBotToken: async () => 'xoxb-test-token',
+      },
+      { connectionId: CONN, organizationId: org.id },
+    );
+    expect(result.ok).toBe(true);
+    expect(result.channelsSynced).toBe(2);
+
+    // The gate now enforces off the materialized graph: Alice (member of #eng
+    // only) recalls #eng, never #secret.
+    const search1 = await searchAs(org.id, alice.id, agent.agentId);
+    const channels = (search1.conversation_messages ?? []).map((m) => m.channel_id);
+    expect(channels).toContain('C01ENG');
+    expect(channels).not.toContain('C01SEC');
+  });
+
+  it('production sync FAILS CLOSED for an already-graphed connection when Slack fetch throws', async () => {
+    const { org, alice, agent } = await setupWorkspace();
+    // First a good sync so the connection has a materialized (enforced) graph.
+    await syncSlackConnectionAcl(
+      {
+        slackWeb: { conversationMembers: async () => ['U01ALICE'] },
+        resolveBotToken: async () => 'xoxb-test-token',
+      },
+      { connectionId: CONN, organizationId: org.id },
+    );
+    expect((await searchAs(org.id, alice.id, agent.agentId)).conversation_messages ?? []).not
+      .toHaveLength(0);
+
+    // Slack outage on the next tick: ANY channel fetch throws → the sync must
+    // mark the connection failed (not leave a half-synced graph), and the gate
+    // then drops every channel until a later tick succeeds.
+    const result = await syncSlackConnectionAcl(
+      {
+        slackWeb: {
+          conversationMembers: async () => {
+            throw new Error('slack outage');
+          },
+        },
+        resolveBotToken: async () => 'xoxb-test-token',
+      },
+      { connectionId: CONN, organizationId: org.id },
+    );
+    expect(result.ok).toBe(false);
+    const after = await searchAs(org.id, alice.id, agent.agentId);
+    expect(after.conversation_messages ?? []).toHaveLength(0);
   });
 });

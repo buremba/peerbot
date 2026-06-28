@@ -16,6 +16,7 @@
 
 import { normalizeGithubRepoFullName } from '@lobu/connector-sdk';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { syncGithubConnectionAcl } from '../../../authz/github-acl-sync';
 import { buildGithubRepoGraph } from '../../../authz/github-repo-graph';
 import type { ToolContext } from '../../../tools/registry';
 import { search } from '../../../tools/search';
@@ -160,6 +161,68 @@ describe('github repo visibility gate (e2e via search_memory content)', () => {
     const ids = await recallContentIds(ctxFor(org.id, 'intruder-user-id'));
     expect(ids.has(eventAId)).toBe(false);
     expect(ids.has(eventBId)).toBe(false);
+  });
+
+  it('enforces through the PRODUCTION sync path (syncGithubConnectionAcl), not just the test builder', async () => {
+    const org = await createTestOrganization({ name: 'Acme Sync' });
+    const alice = await createTestUser({ name: 'Alice', email: 'alice-sync@example.com' });
+    await addUserToOrganization(alice.id, org.id, 'owner');
+    const conn = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'github',
+      visibility: 'org',
+      createDefaultFeed: false,
+    });
+    await seedSignedInMember({ orgId: org.id, userId: alice.id, name: 'Alice', githubUserId: '101' });
+
+    // Drive the REAL sync with a stubbed GitHub API + repo list — exactly as
+    // runGithubAclSyncTick wires it in prod. THIS materializes the graph.
+    const collaborators: Record<string, { login: string; id: number }[]> = {
+      'acme/repo-a': [{ login: 'alice', id: 101 }],
+      'acme/repo-b': [{ login: 'bob', id: 102 }],
+    };
+    const result = await syncGithubConnectionAcl(
+      {
+        listRepos: async () => [
+          { owner: 'acme', repo: 'repo-a' },
+          { owner: 'acme', repo: 'repo-b' },
+        ],
+        fetchCollaborators: async ({ repo }) => collaborators[`${repo.owner}/${repo.repo}`] ?? [],
+      },
+      { connectionId: String(conn.id), organizationId: org.id },
+    );
+    expect(result.ok).toBe(true);
+    expect(result.reposSynced).toBe(2);
+
+    // Resolve the repo entities the sync materialized, attribute an event to each.
+    const sql = getTestDb();
+    const repoId = async (fullName: string): Promise<number> => {
+      const rows = await sql<{ entity_id: number }>`
+        SELECT entity_id FROM entity_identities
+        WHERE organization_id = ${org.id} AND namespace = 'github_repo_full_name'
+          AND identifier = ${fullName} AND deleted_at IS NULL LIMIT 1`;
+      return Number(rows[0].entity_id);
+    };
+    const eventA = await createTestEvent({
+      organization_id: org.id,
+      connection_id: conn.id,
+      connector_key: 'github',
+      content: 'repo A issue: quarterly metrics',
+      entity_ids: [await repoId('acme/repo-a')],
+      embedding: axisVec(0),
+    });
+    const eventB = await createTestEvent({
+      organization_id: org.id,
+      connection_id: conn.id,
+      connector_key: 'github',
+      content: 'repo B issue: confidential quarterly metrics',
+      entity_ids: [await repoId('acme/repo-b')],
+      embedding: axisVec(0),
+    });
+
+    const ids = await recallContentIds(ctxFor(org.id, alice.id));
+    expect(ids.has(eventA.id)).toBe(true);
+    expect(ids.has(eventB.id)).toBe(false);
   });
 
   it('no regression: WITHOUT a graph the connection stays on legacy connection-visibility (both visible)', async () => {

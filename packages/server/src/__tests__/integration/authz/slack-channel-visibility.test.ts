@@ -375,4 +375,28 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     const after = await searchAs(org.id, alice.id, agent.agentId);
     expect(after.conversation_messages ?? []).toHaveLength(0);
   });
+
+  it('resolves an in-Slack requester via slack_user_id when they have no auth identity', async () => {
+    const { org, agent } = await setupWorkspace();
+    // Dave is a Slack-only user (never signed in to the web app → no auth_user_id).
+    // The graph auto-creates his person entity with a slack_user_id claim + a
+    // member_of edge to #eng.
+    await buildSlackChannelGraph({
+      organizationId: org.id,
+      connectionId: CONN,
+      teamId: TEAM,
+      channels: [
+        { channelId: 'C01ENG', name: 'eng', memberSlackUserIds: ['U01DAVE'] },
+        { channelId: 'C01SEC', name: 'secret', isPrivate: true, memberSlackUserIds: ['U01BOB'] },
+      ],
+    });
+
+    // ctx.userId is Dave's bare Slack id (the in-Slack message author), NOT an
+    // auth_user_id — the auth lookup misses, so this only passes via the
+    // slack_user_id fallback. Without it, Dave fails closed and sees nothing.
+    const result = await searchAs(org.id, 'U01DAVE', agent.agentId);
+    const channels = (result.conversation_messages ?? []).map((m) => m.channel_id);
+    expect(channels).toContain('C01ENG');
+    expect(channels).not.toContain('C01SEC');
+  });
 });

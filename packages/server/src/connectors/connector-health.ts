@@ -23,7 +23,22 @@
  */
 
 import { type DbClient, getDb } from '../db/client';
+import { notifyBrowserAuthExpired } from '../notifications/triggers';
 import logger from '../utils/logger';
+
+/**
+ * Does this feed error look like an expired/invalid site session (the user must
+ * re-login), rather than infra/transport (offline device, network, 5xx)? Used
+ * to fire a user-facing "needs sign-in" notification on top of the operator
+ * alert. Kept deliberately tight so device-offline ("No online paired Owletto
+ * Chrome extension …") and generic failures are NOT misclassified as auth.
+ */
+const AUTH_EXPIRED_RE =
+  /(sign[\s-]?in|\bsso\b|re-?auth|reauthenticat|session\s+(?:expired|needs|invalid|timed)|cookies?[\s\S]{0,30}expired|authentication\s+failed|unauthor|login\s+required|not\s+logged\s*in)/i;
+
+export function isBrowserAuthExpiredError(lastError: string | null | undefined): boolean {
+  return !!lastError && AUTH_EXPIRED_RE.test(lastError);
+}
 
 /**
  * A feed is "failing" if its most recent sync failed OR it has accumulated at
@@ -87,6 +102,9 @@ export interface ConnectorHealthResult {
   newlyAlerted: number;
   /** Connections that recovered on THIS run (marker re-armed). */
   recovered: number;
+  /** Newly-unhealthy connections whose failure was an expired site session,
+   * for which a user-facing "needs sign-in" notification was sent. */
+  authNotified: number;
   details: UnhealthyConnection[];
 }
 
@@ -94,6 +112,8 @@ interface HealthDeps {
   sql?: DbClient;
   config?: ConnectorHealthConfig;
   now?: () => number;
+  /** Injectable for tests; defaults to the real browser-auth-expired trigger. */
+  notifyAuthExpired?: typeof notifyBrowserAuthExpired;
 }
 
 interface UnhealthyRow {
@@ -201,6 +221,7 @@ export async function runConnectorHealthCheck(
   const sql = deps.sql ?? getDb();
   const cfg = deps.config ?? DEFAULT_CONNECTOR_HEALTH_CONFIG;
   const nowMs = (deps.now ?? (() => Date.now()))();
+  const notifyAuthExpired = deps.notifyAuthExpired ?? notifyBrowserAuthExpired;
 
   const rows = await loadConnectionHealthRows(sql, cfg);
 
@@ -209,6 +230,7 @@ export async function runConnectorHealthCheck(
     unhealthy: 0,
     newlyAlerted: 0,
     recovered: 0,
+    authNotified: 0,
     details: [],
   };
 
@@ -281,6 +303,27 @@ export async function runConnectorHealthCheck(
       },
       `[connector-health] connector unhealthy (${reason}): ${row.connector_key}`
     );
+
+    // On the unhealthy transition, if the failure is an expired site session
+    // (not an offline device / transport error), also notify the org's admins
+    // to re-login — the operator alert above can't reach the person who has to
+    // sign in. Deduped by the same unhealthy_alerted_at claim, so it fires once
+    // per episode. Best-effort: a notification failure must not break the scan.
+    if (isBrowserAuthExpiredError(row.last_error)) {
+      try {
+        await notifyAuthExpired({
+          orgId: row.organization_id,
+          connectionId,
+          connectorKey: row.connector_key,
+        });
+        result.authNotified += 1;
+      } catch (err) {
+        logger.warn(
+          { err, connection_id: connectionId },
+          '[connector-health] failed to send browser-auth-expired notification'
+        );
+      }
+    }
   }
 
   return result;

@@ -20,7 +20,10 @@ import { syncGithubConnectionAcl } from '../../../authz/github-acl-sync';
 import { buildGithubRepoGraph } from '../../../authz/github-repo-graph';
 import type { ToolContext } from '../../../tools/registry';
 import { search } from '../../../tools/search';
-import { clearEntityLinkRulesCache } from '../../../utils/entity-link-upsert';
+import {
+  clearEntityLinkRulesCache,
+  resolveEntityLinksForItems,
+} from '../../../utils/entity-link-upsert';
 import { initWorkspaceProvider } from '../../../workspace';
 import { cleanupTestDatabase, getTestDb } from '../../setup/test-db';
 import {
@@ -223,6 +226,65 @@ describe('github repo visibility gate (e2e via search_memory content)', () => {
     const ids = await recallContentIds(ctxFor(org.id, alice.id));
     expect(ids.has(eventA.id)).toBe(true);
     expect(ids.has(eventB.id)).toBe(false);
+  });
+
+  it('ingestion path: a stamped github event resolves to the SAME repo entity the graph gates on', async () => {
+    const org = await createTestOrganization({ name: 'Acme Ingest' });
+    const alice = await createTestUser({ name: 'Alice', email: 'alice-ingest@example.com' });
+    await addUserToOrganization(alice.id, org.id, 'owner');
+    const conn = await createTestConnection({
+      organization_id: org.id,
+      connector_key: 'github',
+      visibility: 'org',
+      createDefaultFeed: false,
+    });
+    await seedSignedInMember({ orgId: org.id, userId: alice.id, name: 'Alice', githubUserId: '101' });
+
+    // Graph: alice collaborates on repo-a only.
+    const graph = await buildGithubRepoGraph({
+      organizationId: org.id,
+      connectionId: String(conn.id),
+      repos: [
+        { fullName: 'acme/repo-a', collaborators: [{ login: 'alice', id: 101 }] },
+        { fullName: 'acme/repo-b', collaborators: [{ login: 'bob', id: 102 }] },
+      ],
+    });
+    const repoAId = graph.resourceEntityIds[normalizeGithubRepoFullName('acme/repo-a') as string];
+
+    // Drive the REAL ingestion entity-link resolver with the connector's repo
+    // link rule shape (mirrors GITHUB_REPO_ENTITY_LINK in connectors/src/github.ts)
+    // on an event stamped with github_repo_full_name. This proves the chain the
+    // connector emits → server resolves: metadata.github_repo_full_name resolves
+    // to the SAME repo entity the graph built (one entity, no forked duplicate).
+    const githubRepoLinkRule = {
+      entityType: 'repo',
+      autoCreate: true,
+      titlePath: 'metadata.github_repo_full_name',
+      identities: [
+        { namespace: 'github_repo_full_name', eventPath: 'metadata.github_repo_full_name', primary: true },
+      ],
+    };
+    const resolved = await resolveEntityLinksForItems({
+      connectorKey: 'github',
+      orgId: org.id,
+      items: [{ origin_type: 'issue', metadata: { github_repo_full_name: 'acme/repo-a' } }],
+      rules: { issue: [githubRepoLinkRule] },
+    });
+    const ingestedRepoIds = resolved.get(0) ?? [];
+    // The repo entity ingestion links to IS the one the graph gates on.
+    expect(ingestedRepoIds).toContain(repoAId);
+
+    // And an event linked via that ingestion-resolved entity is gated for alice.
+    const event = await createTestEvent({
+      organization_id: org.id,
+      connection_id: conn.id,
+      connector_key: 'github',
+      content: 'repo A issue: quarterly metrics',
+      entity_ids: ingestedRepoIds,
+      embedding: axisVec(0),
+    });
+    const ids = await recallContentIds(ctxFor(org.id, alice.id));
+    expect(ids.has(event.id)).toBe(true);
   });
 
   it('no regression: WITHOUT a graph the connection stays on legacy connection-visibility (both visible)', async () => {

@@ -3,17 +3,26 @@
 -- Per-(org, connection) ACL enforcement state — the single switch the
 -- visibility gate reads to decide "is this connection's data access-controlled
 -- yet?" A connection is ENFORCED (per-user channel gating active) only when
--- `acl_support = 'full'` AND `freshness_state = 'fresh'`. Anything else (no row,
--- partial support, stale/unknown/failed freshness) means the gate does NOT
--- restrict this connection's rows beyond the existing per-agent fence — so a
--- connector whose ACL compiler hasn't run (or has gone stale) never silently
--- enforces a half-built graph. This is decision 5/7 of the authz program
+-- `acl_support = 'full'` AND `freshness_state = 'fresh'` AND the graph was synced
+-- recently (the gate ages out a `fresh` row past its staleness window). The two
+-- cases differ:
+--   * NO row at all (connection never graphed) → the gate leaves this
+--     connection on the existing per-agent fence, so a connector whose ACL
+--     compiler has never run is never silently half-enforced.
+--   * A row in ANY non-enforcing state (partial support, or stale/unknown/failed
+--     freshness, or a `fresh` row aged past the window) → the gate FAILS CLOSED:
+--     it drops the connection's channels rather than reverting to legacy, because
+--     an onboarded connection whose graph goes stale must not silently re-expose
+--     every channel.
+-- This is decision 5/7 of the authz program
 -- (docs/plans/authz-acl-permission-program.md): "rollout = the permanent model,
--- not a flag"; the (acl_support, freshness_state) pair IS that data.
+-- not a flag"; the (acl_support, freshness_state, last_synced_at) triple IS that
+-- data.
 --
--- buildSlackChannelGraph stamps a row here ('full','fresh') once it has
--- materialized a workspace's channel membership graph. Later milestones add the
--- freshness reconcile job that flips stale connections back to 'stale'.
+-- buildSlackChannelGraph stamps a row here ('full','fresh', now()) once it has
+-- materialized a workspace's channel membership graph; the periodic
+-- authz-acl-sync tick re-stamps last_synced_at, and the gate's age window flips a
+-- connection fail-closed if that tick stops.
 CREATE TABLE IF NOT EXISTS public.authz_source_acl_state (
     organization_id text NOT NULL,
     connection_id text NOT NULL,

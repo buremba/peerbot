@@ -12,9 +12,12 @@
  *
  * Enforcement is per-connection and OFF by default: a connection's rows are
  * gated only once it has a fresh `authz_source_acl_state` row (`acl_support
- * = 'full'` AND `freshness_state = 'fresh'`). A connection with no/partial/stale
- * ACL state keeps the existing per-agent behavior, so a half-built or absent
- * graph never silently hides (or, worse, mis-enforces) a channel.
+ * = 'full'` AND `freshness_state = 'fresh'`). A connection that was NEVER graphed
+ * (no `authz_source_acl_state` row) keeps the existing per-agent behavior, so an
+ * absent graph never silently hides a channel. But once a row exists, anything
+ * short of full+fresh — partial/none support, stale/failed freshness, or a fresh
+ * row aged past the window — fails CLOSED rather than passing through, so a
+ * half-built or stalled graph can never mis-enforce.
  *
  * Fail-closed: for an ENFORCED connection, a channel is dropped unless the
  * requester is provably a member. An unresolved requester (anonymous/headless,

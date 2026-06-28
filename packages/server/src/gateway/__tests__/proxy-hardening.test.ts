@@ -694,8 +694,8 @@ describe("VerdictCache — key independence", () => {
     expect(cache.get(key1)).toBeDefined();
   });
 
-  test("adding extraPolicy changes the composed policy text and its hash", () => {
-    // PolicyStore computes the hash at set() time. Adding extraPolicy changes
+  test("editing the judge policy text changes the composed text and its hash", () => {
+    // PolicyStore computes the hash at set() time. Editing the policy changes
     // the composed text → different hash → old cache entries are invalidated
     // automatically because the key changes.
     const store = new PolicyStore();
@@ -704,18 +704,17 @@ describe("VerdictCache — key independence", () => {
       judgedDomains: [{ domain: "example.com" }],
       judges: { default: "allow reads" },
     });
-    const without = store.resolve("org-1", "agent-x","example.com");
+    const before = store.resolve("org-1", "agent-x","example.com");
 
     store.set("org-1", "agent-x", {
       judgedDomains: [{ domain: "example.com" }],
-      judges: { default: "allow reads" },
-      extraPolicy: "Never send PII",
+      judges: { default: "allow reads. Never send PII" },
     });
-    const withExtra = store.resolve("org-1", "agent-x","example.com");
+    const after = store.resolve("org-1", "agent-x","example.com");
 
-    expect(without).toBeDefined();
-    expect(withExtra).toBeDefined();
-    expect(without!.policyHash).not.toBe(withExtra!.policyHash);
+    expect(before).toBeDefined();
+    expect(after).toBeDefined();
+    expect(before!.policyHash).not.toBe(after!.policyHash);
   });
 
   test("same policy text in two agents produces different policyHash (no cross-agent cache collision)", () => {

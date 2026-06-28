@@ -295,7 +295,7 @@ function emitAgent(
     fields.push(`providers: [\n    ${items.join(",\n    ")},\n  ]`);
   }
 
-  // network ← networkConfig (allowed/denied/judged/judges).
+  // network ← networkConfig (allowed/denied).
   const net = settings?.networkConfig;
   if (net) {
     const netFields: string[] = [];
@@ -305,35 +305,9 @@ function emitAgent(
     if (net.deniedDomains?.length) {
       netFields.push(`denied: ${emitValue(net.deniedDomains, 2)}`);
     }
-    if (net.judgedDomains?.length) {
-      netFields.push(
-        `judged: ${emitValue(
-          net.judgedDomains.map((r) => ({
-            domain: r.domain,
-            ...(r.judge ? { judge: r.judge } : {}),
-          })),
-          2
-        )}`
-      );
-    }
-    if (net.judges && Object.keys(net.judges).length > 0) {
-      netFields.push(`judges: ${emitValue(net.judges, 2)}`);
-    }
     if (netFields.length > 0) {
       fields.push(`network: ${objectLiteral(netFields, 1)}`);
     }
-  }
-
-  // egress ← egressConfig.
-  const egress = settings?.egressConfig;
-  if (egress && (egress.extraPolicy || egress.judgeModel)) {
-    const egFields: string[] = [];
-    if (egress.extraPolicy) {
-      egFields.push(`extraPolicy: ${str(egress.extraPolicy)}`);
-    }
-    if (egress.judgeModel)
-      egFields.push(`judgeModel: ${str(egress.judgeModel)}`);
-    fields.push(`egress: ${objectLiteral(egFields, 1)}`);
   }
 
   // tools ← toolsConfig + preApprovedTools.

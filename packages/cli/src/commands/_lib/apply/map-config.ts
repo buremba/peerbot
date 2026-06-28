@@ -305,40 +305,11 @@ function mapAgent(
 
   const allowed = agent.network?.allowed ?? [];
   const denied = agent.network?.denied ?? [];
-  const judges = agent.network?.judges ?? {};
-  const hasJudges = Object.keys(judges).length > 0;
-  // Dedup judged rules by domain (last wins), matching buildAgentSettings.
-  const judgedByDomain = new Map<string, { domain: string; judge?: string }>();
-  for (const rule of agent.network?.judged ?? []) {
-    judgedByDomain.set(rule.domain, {
-      domain: rule.domain,
-      ...(rule.judge ? { judge: rule.judge } : {}),
-    });
-  }
-  const judgedDomains = [...judgedByDomain.values()];
-  if (
-    allowed.length > 0 ||
-    denied.length > 0 ||
-    judgedDomains.length > 0 ||
-    hasJudges
-  ) {
+  if (allowed.length > 0 || denied.length > 0) {
     settings.networkConfig = {
       ...(allowed.length > 0 ? { allowedDomains: [...new Set(allowed)] } : {}),
       ...(denied.length > 0 ? { deniedDomains: [...new Set(denied)] } : {}),
-      ...(judgedDomains.length > 0 ? { judgedDomains } : {}),
-      ...(hasJudges ? { judges } : {}),
     };
-  }
-
-  if (agent.egress) {
-    const egressConfig: NonNullable<AgentSettings["egressConfig"]> = {};
-    if (agent.egress.extraPolicy) {
-      egressConfig.extraPolicy = agent.egress.extraPolicy;
-    }
-    if (agent.egress.judgeModel)
-      egressConfig.judgeModel = agent.egress.judgeModel;
-    if (Object.keys(egressConfig).length > 0)
-      settings.egressConfig = egressConfig;
   }
 
   if (agent.tools) {

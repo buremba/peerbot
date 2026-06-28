@@ -201,7 +201,7 @@ export interface DesiredAgent {
   metadata: DesiredAgentMetadata;
   /**
    * Settings payload destined for `PATCH /:agentId/config`. Built by the mapper
-   * + agent-dir loader: networkConfig, skillsConfig, egressConfig,
+   * + agent-dir loader: networkConfig, skillsConfig,
    * preApprovedTools, guardrails, toolsConfig, nixConfig, mcpServers,
    * modelSelection, providerModelPreferences, installedProviders,
    * identityMd/soulMd/userMd.

@@ -50,7 +50,6 @@ function rowToSettings(row: Record<string, any>): AgentSettings {
 		modelSelection: row.model_selection ?? undefined,
 		providerModelPreferences: row.provider_model_preferences ?? undefined,
 		networkConfig: row.network_config ?? undefined,
-		egressConfig: row.egress_config ?? undefined,
 		nixConfig: row.nix_config ?? undefined,
 		mcpServers: row.mcp_servers ?? undefined,
 		soulMd: row.soul_md ?? undefined,
@@ -139,7 +138,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			const rows = orgId
 				? await sql`
             SELECT model, model_selection, provider_model_preferences,
-                   network_config, egress_config, nix_config, mcp_servers,
+                   network_config, nix_config, mcp_servers,
                    soul_md, user_md, identity_md,
                    skills_config, tools_config, plugins_config,
                    installed_providers, verbose_logging, show_tool_calls,
@@ -149,7 +148,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           `
 				: await sql`
             SELECT model, model_selection, provider_model_preferences,
-                   network_config, egress_config, nix_config, mcp_servers,
+                   network_config, nix_config, mcp_servers,
                    soul_md, user_md, identity_md,
                    skills_config, tools_config, plugins_config,
                    installed_providers, verbose_logging, show_tool_calls,
@@ -170,7 +169,6 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           model_selection = ${sql.json(settings.modelSelection ?? {})},
           provider_model_preferences = ${sql.json(settings.providerModelPreferences ?? {})},
           network_config = ${sql.json(settings.networkConfig ?? {})},
-          egress_config = ${sql.json(settings.egressConfig ?? {})},
           nix_config = ${sql.json(settings.nixConfig ?? {})},
           mcp_servers = ${sql.json(settings.mcpServers ?? {})},
           soul_md = ${settings.soulMd ?? ""},
@@ -204,7 +202,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			await sql`
         UPDATE agents SET
           model = NULL, model_selection = '{}', provider_model_preferences = '{}',
-          network_config = '{}', egress_config = '{}', nix_config = '{}',
+          network_config = '{}', nix_config = '{}',
           mcp_servers = '{}',
           soul_md = '', user_md = '', identity_md = '',
           skills_config = '{"skills": []}', tools_config = '{}', plugins_config = '{}',

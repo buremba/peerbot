@@ -135,6 +135,10 @@ export function resolveAgentGuardrails(
   // edit UI rejects such names up front so this stays a defensive guard.
   for (const entry of extras.inline ?? []) {
     if (entry.enabled === false) continue;
+    // `egress` guardrails are enforced in the http-proxy plane (the policy
+    // store + EgressJudge), never the message pipeline — skip them here so
+    // they are not materialized into a stage that's never run.
+    if (entry.stage === "egress") continue;
     // Defensive: a malformed persisted row can carry an invalid `stage`
     // (the write path validates, but older rows or out-of-band writes might
     // not). Indexing `seen[bad]` would be `undefined` and throw mid-message —

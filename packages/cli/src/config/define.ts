@@ -401,30 +401,11 @@ export interface ProviderConfig {
   key?: string | SecretRef;
 }
 
-/** Per-domain egress-judge rule: route `domain` through the named judge policy. */
-export interface JudgedDomain {
-  domain: string;
-  /** Name of a policy declared in {@link NetworkConfig.judges}. */
-  judge?: string;
-}
-
 export interface NetworkConfig {
   /** Domains the worker may reach (exact or `.wildcard`). */
   allowed?: string[];
   /** Domains explicitly blocked (takes precedence over `allowed`). */
   denied?: string[];
-  /** Domains routed through the LLM egress judge. */
-  judged?: JudgedDomain[];
-  /** Named judge policies (prompt text), referenced by `judged[].judge`. */
-  judges?: Record<string, string>;
-}
-
-/** Operator-level overrides for the LLM egress judge. */
-export interface EgressConfig {
-  /** Extra instructions appended to the egress judge prompt. */
-  extraPolicy?: string;
-  /** Override the model the egress judge runs on. */
-  judgeModel?: string;
 }
 
 /** Worker-side tool permissions. */
@@ -516,7 +497,6 @@ export interface Agent {
   skills?: Skill[];
   providers?: ProviderConfig[];
   network?: NetworkConfig;
-  egress?: EgressConfig;
   tools?: ToolsConfig;
   /** Guardrails enabled for this agent, by registered name. */
   guardrails?: string[];

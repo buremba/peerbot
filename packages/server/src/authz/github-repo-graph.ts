@@ -4,21 +4,16 @@
  * exactly this caller in mind).
  *
  * A repo's read audience is its COLLABORATORS. Each repo becomes a `repo` entity
- * keyed on its `github_repo_full_name` (`owner/repo`, normalized) — the same key
- * the GitHub connector stamps on data it ingests, so a later repo-visibility gate
- * can join an event's repo to these `member_of` edges. Each collaborator resolves
- * identity-first on `github_user_id` (+ `github_login`), so a collaborator who has
- * also authored issues — or signed in — collapses onto their existing entity
- * instead of forking a duplicate. Folding GitHub onto the shared engine gives it
- * the departure reconcile + identity-first collapse the original org-level
- * `buildGithubTeamGraph` lacked.
- *
- * NOTE: this materializes the graph (repo → member edges + `authz_source_acl_state`);
- * it does NOT yet gate GitHub recall. GitHub data lives in `events` and is read
- * through `buildScopedQuery`/connection-visibility, and those rows do not carry a
- * repo identity today — wiring per-repo enforcement needs the connector to stamp
- * `metadata.github_repo_full_name` at ingestion plus a repo-visibility compiler.
- * That is the follow-up; this is the audience graph it will read.
+ * keyed on its `github_repo_full_name` (`owner/repo`, normalized) — the SAME key
+ * the GitHub connector stamps on the data it ingests (`metadata.github_repo_full_name`
+ * + the repo entity link), so the resource gate (`./resource-visibility`) joins an
+ * event's repo to these `member_of` edges and restricts GitHub recall to repos the
+ * requester belongs to. Each collaborator resolves identity-first on
+ * `github_user_id` (+ `github_login`), so a collaborator who has also authored
+ * issues — or signed in — collapses onto their existing entity instead of forking
+ * a duplicate. Folding GitHub onto the shared engine gives it the departure
+ * reconcile + identity-first collapse the original org-level `buildGithubTeamGraph`
+ * lacked.
  */
 
 import {

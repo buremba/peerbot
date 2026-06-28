@@ -668,6 +668,10 @@ export default class GitHubConnector extends ConnectorRuntime {
                 source: { type: 'string' },
               },
             },
+            // Repo-scoped: link to the repo so the ACL gate treats it like every
+            // other repo event (visible to collaborators) instead of dropping it
+            // — these kinds have no person link of their own.
+            entityLinks: [GITHUB_REPO_ENTITY_LINK],
           },
           stargazer_profile: {
             description: 'A public GitHub profile observation for a stargazer',
@@ -680,6 +684,7 @@ export default class GitHubConnector extends ConnectorRuntime {
                 account: { type: 'object' },
               },
             },
+            entityLinks: [GITHUB_REPO_ENTITY_LINK],
           },
         },
       },

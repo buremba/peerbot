@@ -22,10 +22,32 @@ function isSafeThreadId(id: string): boolean {
 }
 
 export interface AgentThreadSummary {
+	/** Routing key: a thread id for web conversations (chattable), or the raw
+	 *  conversation id for platform conversations (read-only). */
 	id: string;
 	title: string;
 	createdAt: number;
 	updatedAt: number;
+	/** "web" for the app's own threads; otherwise the source platform derived
+	 *  from the conversation id prefix (slack, telegram, …). */
+	platform: string;
+	/** Raw conversation id — used to read a platform conversation read-only. */
+	conversationId: string;
+}
+
+/**
+ * Platform a conversation originated on, derived from its conversation id.
+ * Platform sessions key on a colon-prefixed id (e.g. `slack:{channel}:{ts}`,
+ * `telegram:{chat}:{topic}`); the app's own threads use `{agentId}_{userId}_…`
+ * (no colon) and are "web".
+ */
+export function deriveConversationPlatform(conversationId: string): string {
+	const colon = conversationId.indexOf(":");
+	if (colon > 0) {
+		const prefix = conversationId.slice(0, colon).toLowerCase();
+		if (/^[a-z][a-z0-9_-]*$/.test(prefix)) return prefix;
+	}
+	return "web";
 }
 
 async function findConversationSessionFile(
@@ -88,8 +110,11 @@ export async function listAgentThreads(args: {
 	agentId: string;
 	organizationId?: string;
 	userId: string;
+	/** "user" (default): only the requesting user's app threads. "all": every
+	 *  conversation for the agent across platforms (Slack, Telegram, …). */
+	scope?: "user" | "all";
 }): Promise<AgentThreadSummary[]> {
-	const { agentId, organizationId, userId } = args;
+	const { agentId, organizationId, userId, scope = "user" } = args;
 	const conversationPrefix = organizationId
 		? `${agentId}_${userId}_${organizationId}_`
 		: `${agentId}_${userId}_`;
@@ -130,6 +155,8 @@ export async function listAgentThreads(args: {
 				),
 				createdAt: at,
 				updatedAt: at,
+				platform: "web",
+				conversationId: row.conversation_id,
 			});
 		}
 	}
@@ -171,10 +198,84 @@ export async function listAgentThreads(args: {
 			),
 			createdAt: at,
 			updatedAt: at,
+			platform: "web",
+			conversationId: workspaceConversationId,
 		});
 	}
 
+	// "all" scope: also surface this agent's PLATFORM conversations (Slack,
+	// Telegram, …). Those key on a colon-prefixed conversation id rather than
+	// the `{agentId}_{userId}_…` app-thread prefix, so they're excluded above.
+	if (scope === "all" && organizationId) {
+		const sql = getDb();
+		const platformRows = await sql<{
+			conversation_id: string;
+			snapshot_jsonl: string;
+			created_at: Date;
+		}>`
+      SELECT DISTINCT ON (conversation_id)
+        conversation_id, snapshot_jsonl, created_at
+      FROM public.agent_transcript_snapshot
+      WHERE organization_id = ${organizationId}
+        AND agent_id = ${agentId}
+        AND terminal_status = 'completed'
+        AND conversation_id LIKE '%:%'
+      ORDER BY conversation_id, run_id DESC
+    `;
+		for (const row of platformRows) {
+			if (byThreadId.has(row.conversation_id)) continue;
+			const at = row.created_at.getTime();
+			byThreadId.set(row.conversation_id, {
+				id: row.conversation_id,
+				title: titleFromSessionJsonl(
+					row.snapshot_jsonl,
+					row.conversation_id,
+				),
+				createdAt: at,
+				updatedAt: at,
+				platform: deriveConversationPlatform(row.conversation_id),
+				conversationId: row.conversation_id,
+			});
+		}
+	}
+
 	return [...byThreadId.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+/**
+ * Read one conversation's messages by its RAW conversation id (e.g. a platform
+ * thread `slack:{channel}:{ts}`). Read-only — used to render platform
+ * conversations that aren't routable through the app chat composer.
+ */
+export async function readConversationMessages(args: {
+	agentId: string;
+	organizationId: string;
+	conversationId: string;
+	cursor: string;
+	limit: number;
+}) {
+	const { agentId, organizationId, conversationId, cursor, limit } = args;
+	const jsonl = await readSnapshotJsonl({
+		agentId,
+		organizationId,
+		conversationId,
+	});
+	if (jsonl === null) {
+		return {
+			messages: [],
+			nextCursor: null,
+			hasMore: false,
+			sessionId: conversationId,
+			threadId: conversationId,
+		};
+	}
+	return {
+		...paginateSessionMessages(jsonl, cursor, limit, {
+			excludeVerbose: true,
+			sessionIdFallback: conversationId,
+		}),
+		threadId: conversationId,
+	};
 }
 
 export async function loadConversationTranscriptJsonl(

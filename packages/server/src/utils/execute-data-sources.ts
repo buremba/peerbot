@@ -22,6 +22,7 @@ import {
   compileConnectionFkVisibility,
   compileConnectionRowVisibility,
 } from '../authz/connection-visibility';
+import { compileResourceVisibility } from '../authz/resource-visibility';
 import type { AuthzScope } from '../authz/scope';
 import {
   ADMIN_ONLY_QUERYABLE_TABLES,
@@ -417,6 +418,17 @@ export function buildScopedQuery(
     return ` ${vis.sql}`;
   };
 
+  // Per-resource membership gate for an events table (alias has `entity_ids` +
+  // `connection_id`): on ACL-enforced connections, restrict to events linked to a
+  // resource the requester is `member_of`. Composed AFTER eventConnVisibility on
+  // event-bearing tables ONLY (NOT feeds, which carry no entity_ids).
+  const eventResourceVisibility = (alias: string): string => {
+    const vis = compileResourceVisibility(scope, idx + 1, alias);
+    params.push(...vis.params);
+    idx += vis.params.length;
+    return ` ${vis.sql}`;
+  };
+
   // For the `connections` table itself: the row is visible when org-shared or
   // owned by the requesting user (mirrors manage_connections CRUD).
   const connectionRowVisibility = (alias: string): string => {
@@ -545,6 +557,7 @@ export function buildScopedQuery(
       }
 
       eventsCte += eventConnVisibility('ev');
+      eventsCte += eventResourceVisibility('ev');
 
       eventsCte += ')';
       ctes.push(eventsCte);
@@ -583,6 +596,7 @@ export function buildScopedQuery(
           'JOIN public.entities ent ON ent.id = ANY(ev.entity_ids) ' +
           `WHERE ev.id = ec.event_id AND ent.organization_id = ${orgP}` +
           eventConnVisibility('ev') +
+          eventResourceVisibility('ev') +
           '))'
       );
     } else if (table === 'watcher_versions') {

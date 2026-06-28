@@ -4,6 +4,7 @@
  */
 
 import { compileConnectionFkVisibility } from '../../authz/connection-visibility';
+import { compileResourceVisibility } from '../../authz/resource-visibility';
 import type { AuthzScope } from '../../authz/scope';
 import { validateNumericId } from '../sql-validation';
 
@@ -100,5 +101,18 @@ export function buildConnectionVisibilityClause(
     organizationId: options.organizationId,
     principal: options.userId ?? null,
   };
-  return compileConnectionFkVisibility(scope, options.baseParamIndex, tableAlias);
+  // Compose the two read gates: per-connection visibility AND per-resource
+  // membership (the latter only constrains ACL-enforced connections). Resource
+  // visibility binds its own params AFTER the connection-visibility params, so a
+  // single returned `{ sql, params }` keeps every caller's `$N` indexing intact.
+  const conn = compileConnectionFkVisibility(scope, options.baseParamIndex, tableAlias);
+  const resource = compileResourceVisibility(
+    scope,
+    options.baseParamIndex + conn.params.length,
+    tableAlias,
+  );
+  return {
+    sql: `${conn.sql} ${resource.sql}`,
+    params: [...conn.params, ...resource.params],
+  };
 }

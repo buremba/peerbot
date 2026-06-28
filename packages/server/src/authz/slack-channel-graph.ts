@@ -21,9 +21,8 @@
 
 import { normalizeSlackUserId } from '@lobu/connector-sdk';
 import { type AccessResource, buildAccessGraph } from './access-graph.js';
+import { SLACK_SOURCE } from './sources.js';
 
-const SLACK_CONNECTOR_KEY = 'slack';
-const SLACK_CHANNEL_ID_NS = 'slack_channel_id';
 const SLACK_USER_ID_NS = 'slack_user_id';
 
 /** A Slack channel and the (bare `U…`) ids of its members. */
@@ -98,16 +97,9 @@ export async function buildSlackChannelGraph(params: {
   const result = await buildAccessGraph({
     organizationId,
     connectionId,
-    connectorKey: SLACK_CONNECTOR_KEY,
-    resourceType: {
-      slug: 'channel',
-      name: 'Channel',
-      description:
-        'A chat channel (Slack channel, etc.) — the unit of conversation access control',
-      icon: 'hash',
-      namespace: SLACK_CHANNEL_ID_NS,
-    },
-    memberIdentities: [{ namespace: SLACK_USER_ID_NS, primary: true }],
+    connectorKey: SLACK_SOURCE.key,
+    resourceType: SLACK_SOURCE.resourceType,
+    memberIdentities: SLACK_SOURCE.memberIdentities,
     resources,
   });
 

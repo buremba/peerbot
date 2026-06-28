@@ -24,6 +24,7 @@
 import { normalizeSlackUserId } from '@lobu/connector-sdk';
 import { type DbClient, pgTextArray } from '../db/client.js';
 import { stripPlatformPrefix } from '../gateway/channels/bound-channels.js';
+import { ACL_STALE_AFTER_MINUTES } from './acl-state.js';
 import { slackChannelKey } from './slack-channel-graph.js';
 
 /** A bound channel the gate decides on. Mirrors the fields `resolveBoundChannelRows`
@@ -112,15 +113,6 @@ async function resolveRequesterBySlackUserId(
   return rows.length > 0 ? Number(rows[0].entity_id) : null;
 }
 
-/**
- * How long a `fresh` ACL graph stays trusted without a re-sync. The background
- * sync (`./slack-acl-sync`) re-stamps `last_synced_at` every tick; if it stops
- * (pod down, Slack outage), a connection's graph ages past this window and the
- * gate stops trusting it — failing closed rather than serving stale membership.
- * Generous vs. the ~15-min sync cadence so a transient hiccup never blinks
- * recall off.
- */
-const ACL_STALE_AFTER_MINUTES = 60;
 
 /**
  * The ACL state of each connection that has been onboarded into the authz

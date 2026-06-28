@@ -32,9 +32,8 @@ import {
   type AccessResource,
   buildAccessGraph,
 } from './access-graph.js';
+import { GITHUB_SOURCE } from './sources.js';
 
-const GITHUB_CONNECTOR_KEY = 'github';
-const GITHUB_REPO_FULL_NAME_NS = 'github_repo_full_name';
 const GITHUB_USER_ID_NS = 'github_user_id';
 const GITHUB_LOGIN_NS = 'github_login';
 
@@ -81,18 +80,9 @@ export async function buildGithubRepoGraph(params: {
   return buildAccessGraph({
     organizationId: params.organizationId,
     connectionId: params.connectionId,
-    connectorKey: GITHUB_CONNECTOR_KEY,
-    resourceType: {
-      slug: 'repo',
-      name: 'Repository',
-      description: 'A code repository — the unit of repo access control',
-      icon: 'git-branch',
-      namespace: GITHUB_REPO_FULL_NAME_NS,
-    },
-    memberIdentities: [
-      { namespace: GITHUB_USER_ID_NS, primary: true },
-      { namespace: GITHUB_LOGIN_NS },
-    ],
+    connectorKey: GITHUB_SOURCE.key,
+    resourceType: GITHUB_SOURCE.resourceType,
+    memberIdentities: GITHUB_SOURCE.memberIdentities,
     resources,
   });
 }

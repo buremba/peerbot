@@ -9,6 +9,8 @@
 
 import { createLogger } from "@lobu/core";
 import { type Context, Hono } from "hono";
+import { getChannelAudiences } from "../../../authz/audience.js";
+import { resolveBoundChannelRows } from "../../channels/bound-channels.js";
 import type { AgentMetadataStore } from "../../auth/agent-metadata-store.js";
 import type { SettingsTokenPayload } from "../../auth/settings/token-service.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
@@ -181,6 +183,33 @@ export function createChannelBindingRoutes(
     } catch (error) {
       logger.error("Failed to list bindings", { error, agentId });
       return errorResponse(c, "Failed to list bindings", 500);
+    }
+  });
+
+  // GET /api/v1/agents/{agentId}/channels/audience
+  // Read-only governance view: for each of this agent's bound channels, who can
+  // recall it (the `member_of` audience) + the connection's enforcement state.
+  // The inverse of the recall gate; Slack is the source of truth.
+  router.get("/audience", async (c) => {
+    const auth = await authorizeWithOrg(c);
+    if (auth instanceof Response) return auth;
+    const { agentId, payload, organizationId } = auth;
+
+    try {
+      const sql = getDb();
+      const rows = await resolveBoundChannelRows(sql, {
+        organizationId,
+        agentId,
+      });
+      const audiences = await getChannelAudiences(sql, {
+        organizationId,
+        userId: payload.userId ?? null,
+        rows,
+      });
+      return c.json({ agentId, audiences });
+    } catch (error) {
+      logger.error("Failed to load channel audience", { error, agentId });
+      return errorResponse(c, "Failed to load channel audience", 500);
     }
   });
 

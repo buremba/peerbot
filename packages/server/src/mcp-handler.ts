@@ -812,6 +812,14 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
       const messages = Array.isArray(body) ? body : [body];
       const isInitialize = messages.some((m: any) => m.method === 'initialize');
       if (!isInitialize) {
+        // Recover ONLY from a persisted, server-issued session row — e.g. a
+        // cross-replica hop or pod restart within the TTL, where `getSession`
+        // proves the id was genuinely issued and is still valid. We deliberately
+        // do NOT re-mint a session from request auth alone for an id with no
+        // persisted record: that would accept (and persist a row under) any
+        // caller-supplied session id. Per the MCP Streamable HTTP spec, an
+        // unknown/expired session must instead yield 404 so the client starts a
+        // fresh session via `initialize` with a new server-generated id.
         const recoveredAuthCtx = await recoverSessionAuthContext(c, sessionId);
         if (recoveredAuthCtx) {
           const { transport, server } = createSessionTransport(
@@ -828,9 +836,9 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
 
         await deletePersistedSession(sessionId);
         return buildJsonRpcErrorResponse(
-          'Session not found. Send an initialize POST first.',
+          'MCP session expired or not recognized. Start a new session by sending an initialize request — spec-compliant clients re-initialize automatically on 404.',
           null,
-          400
+          404
         );
       }
     } catch {
@@ -886,18 +894,16 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
     return response;
   }
 
-  // GET without valid session
+  // GET without a live session (e.g. an SSE reconnect after the session aged
+  // out). Mirror the POST stale-session path: 404 + the same actionable message
+  // so spec-compliant clients re-initialize rather than treating it as fatal.
+  // We don't delete any persisted row here — a within-TTL row stays recoverable
+  // by a subsequent POST.
   if (req.method === 'GET') {
-    return new Response(
-      JSON.stringify({
-        jsonrpc: '2.0',
-        error: {
-          code: -32000,
-          message: 'Invalid or missing session. Send an initialize POST first.',
-        },
-        id: null,
-      }),
-      { status: 400, headers: { 'Content-Type': 'application/json' } }
+    return buildJsonRpcErrorResponse(
+      'MCP session expired or not recognized. Start a new session by sending an initialize request — spec-compliant clients re-initialize automatically on 404.',
+      null,
+      404
     );
   }
 

@@ -351,36 +351,6 @@ export interface ToolsConfig {
   mcpExposure?: "tools" | "cli";
 }
 
-/**
- * MCP server configuration for per-agent MCP servers.
- * Supports both HTTP/SSE and stdio MCP servers.
- */
-export interface McpServerConfig {
-  /** For HTTP/SSE MCPs: upstream URL */
-  url?: string;
-  /** Server type: HTTP MCP transport or "stdio" for command-based */
-  type?: "sse" | "streamable-http" | "stdio";
-  /** For stdio MCPs: command to execute */
-  command?: string;
-  /** For stdio MCPs: command arguments */
-  args?: string[];
-  /** For stdio MCPs: environment variables */
-  env?: Record<string, string>;
-  /** Additional headers for HTTP MCPs */
-  headers?: Record<string, string>;
-  /** Optional description for the MCP */
-  description?: string;
-}
-
-/**
- * Per-agent MCP configuration.
- * These MCPs are ADDED to global MCPs (not replacing).
- */
-export interface AgentMcpConfig {
-  /** Additional MCP servers for this agent */
-  mcpServers: Record<string, McpServerConfig>;
-}
-
 interface MemoryFlushOptions {
   enabled?: boolean;
   softThresholdTokens?: number;

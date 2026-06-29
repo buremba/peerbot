@@ -931,19 +931,6 @@ curl -X POST http://localhost:8787/api/v1/agents/{agentId}/messages \\
   -H "Content-Type: application/json" \\
   -d '{"content": "Hello!"}'
 \`\`\`
-
-## MCP Servers
-
-Agents can be configured with custom MCP (Model Context Protocol) servers:
-
-\`\`\`json
-{
-  "mcpServers": {
-    "my-http-mcp": { "url": "https://my-mcp.com/sse" },
-    "my-stdio-mcp": { "command": "npx", "args": ["-y", "@org/mcp"] }
-  }
-}
-\`\`\`
       `,
     },
     tags: [

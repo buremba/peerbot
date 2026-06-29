@@ -421,28 +421,6 @@ export interface ToolsConfig {
   strict?: boolean;
 }
 
-/** OAuth flow for a custom MCP server. */
-export interface McpServerOAuth {
-  authUrl: string;
-  tokenUrl: string;
-  clientId?: string;
-  clientSecret?: string | SecretRef;
-  scopes?: string[];
-  tokenEndpointAuthMethod?: string;
-}
-
-/** A custom MCP server made available to the agent's worker. */
-export interface McpServer {
-  url?: string;
-  command?: string;
-  args?: string[];
-  headers?: Record<string, string>;
-  type?: "sse" | "streamable-http" | "stdio";
-  authScope?: "user" | "channel";
-  oauth?: McpServerOAuth;
-  env?: Record<string, string>;
-}
-
 /** A chat-platform binding for an agent (Telegram/Slack/Discord/…). */
 export interface Platform {
   /** Platform type: `telegram`, `slack`, `discord`, `whatsapp`, `teams`, `google_chat`, `rest`, … */
@@ -502,8 +480,6 @@ export interface Agent {
   guardrails?: string[];
   /** Nix packages provisioned into the worker environment. */
   nixPackages?: string[];
-  /** Custom MCP servers, keyed by id. */
-  mcpServers?: Record<string, McpServer>;
   /**
    * Chat-platform bindings (`lobu apply` upserts each by a stable id). A
    * `slack`/`telegram` entry with no `config` is the hosted Lobu bot: it is

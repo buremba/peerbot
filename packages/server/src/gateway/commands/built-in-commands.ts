@@ -69,9 +69,6 @@ export function registerBuiltInCommands(
       const modelSelection = getModelSelectionState(settings);
       const effectiveModel = resolveEffectiveModelRef(settings);
       const model = effectiveModel || "auto";
-      const mcpCount = settings?.mcpServers
-        ? Object.keys(settings.mcpServers).length
-        : 0;
       const skillsCount = settings?.skillsConfig?.skills
         ? Object.keys(settings.skillsConfig.skills).length
         : 0;
@@ -79,7 +76,6 @@ export function registerBuiltInCommands(
       const parts = [
         `Agent: ${ctx.agentId}`,
         `Model: ${model} (${modelSelection.mode})`,
-        `MCP servers: ${mcpCount}`,
         `Skills: ${skillsCount}`,
       ];
 

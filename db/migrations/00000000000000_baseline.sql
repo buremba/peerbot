@@ -482,7 +482,6 @@ CREATE TABLE public.agents (
     provider_model_preferences jsonb DEFAULT '{}'::jsonb,
     network_config jsonb DEFAULT '{}'::jsonb,
     nix_config jsonb DEFAULT '{}'::jsonb,
-    mcp_servers jsonb DEFAULT '{}'::jsonb,
     agent_integrations jsonb DEFAULT '{}'::jsonb,
     soul_md text DEFAULT ''::text,
     user_md text DEFAULT ''::text,

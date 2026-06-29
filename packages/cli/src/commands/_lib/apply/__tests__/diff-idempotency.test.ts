@@ -697,8 +697,9 @@ describe("computeDiff — deepEqual is key-order agnostic", () => {
       buildAgent("triage", {
         metadata: { agentId: "triage", name: "Triage" },
         settings: {
-          mcpServers: {
-            docs: { url: "https://docs.example.com/mcp", type: "sse" },
+          toolsConfig: {
+            allowedTools: ["bash"],
+            deniedTools: ["delete"],
           },
         },
       }),
@@ -711,9 +712,10 @@ describe("computeDiff — deepEqual is key-order agnostic", () => {
         [
           "triage",
           {
-            // Same values, `type` before `url`
-            mcpServers: {
-              docs: { type: "sse", url: "https://docs.example.com/mcp" },
+            // Same values, different object-key order.
+            toolsConfig: {
+              deniedTools: ["delete"],
+              allowedTools: ["bash"],
             },
             updatedAt: 0,
           },

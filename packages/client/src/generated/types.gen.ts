@@ -36,21 +36,6 @@ export type PostApiV1AgentsData = {
       allowedDomains?: Array<string>;
       deniedDomains?: Array<string>;
     };
-    mcpServers?: {
-      [key: string]: {
-        url?: string;
-        type?: "sse" | "streamable-http" | "stdio";
-        command?: string;
-        args?: Array<string>;
-        env?: {
-          [key: string]: string;
-        };
-        headers?: {
-          [key: string]: string;
-        };
-        description?: string;
-      };
-    };
     nix?: {
       flakeUrl?: string;
       packages?: Array<string>;

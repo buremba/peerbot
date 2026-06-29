@@ -118,7 +118,7 @@ This file is optional and can be left empty.
 
 A skill is declared on the agent in `lobu.config.ts`, either inline with `defineSkill(...)` or loaded from a `SKILL.md` with `skillFromFile(...)`. There is no folder auto-discovery, so a `SKILL.md` can live anywhere you reference it from. The conventional spots are `agents/<agent>/skills/<name>/SKILL.md` (kept next to one agent) and `skills/<name>/SKILL.md` (shared, referenced by more than one agent).
 
-See [Skills](/getting-started/skills/) for declaring them and the [`SKILL.md` Reference](/reference/skill-md/) for the file format, frontmatter, packages, MCP servers, and network declarations.
+See [Skills](/getting-started/skills/) and the [`SKILL.md` Reference](/reference/skill-md/) for the file format, frontmatter, packages, and network declarations.
 
 ## lobu.config.ts
 
@@ -127,7 +127,6 @@ See [Skills](/getting-started/skills/) for declaring them and the [`SKILL.md` Re
 - which agent directories exist
 - which providers and connections to use
 - which registry skills are enabled
-- which custom MCP servers are attached directly to the agent
 - what network and tool policy applies
 
 Use the [`lobu.config.ts` Reference](/reference/lobu-config/) for the exact schema. Keep operator policy there rather than spreading it into prompt files or `SKILL.md`.

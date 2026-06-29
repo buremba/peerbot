@@ -35,7 +35,7 @@ Authentication is shared with the rest of the CLI. Run `lobu login` once.
 ## What gets synced
 
 - Agents (metadata: `agentId`, `name`, `description`)
-- Agent settings: `networkConfig`, `egressConfig`, `nixConfig`, `mcpServers`, `skillsConfig`, `toolsConfig`, `guardrails`, `preApprovedTools`, `providerModelPreferences`, `modelSelection`, `IDENTITY.md` / `SOUL.md` / `USER.md`
+- Agent settings: `networkConfig`, `egressConfig`, `nixConfig`, `skillsConfig`, `toolsConfig`, `guardrails`, `preApprovedTools`, `providerModelPreferences`, `modelSelection`, `IDENTITY.md` / `SOUL.md` / `USER.md`
 - Memory entity types, relationship types, and watchers declared with `defineEntityType` / `defineRelationshipType` / `defineWatcher`
 - Connections and auth profiles declared with `defineConnection` / `defineAuthProfile`, plus the connectors they reference
 
@@ -113,7 +113,6 @@ If any call fails, the CLI prints partial progress and exits non-zero. Every end
 Before any mutation, `lobu apply` collects every `secret("VAR")` reference in `lobu.config.ts`:
 
 - provider `key` on `defineAgent({ providers })`
-- `mcpServers` `headers`, `env`, and `oauth` credentials on `defineAgent`
 - `credentials` on `defineAuthProfile`
 
 Each name must be set in the apply runner's environment (e.g. via `.env` loaded by your shell). Any missing name short-circuits the apply with a list of every missing var.

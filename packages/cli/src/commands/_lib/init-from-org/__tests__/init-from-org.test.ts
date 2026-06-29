@@ -567,64 +567,6 @@ describe("lobu init --from-org", () => {
     }
   });
 
-  test("MCP oauth clientSecret → emits secret() AND imports it (no missing-import)", async () => {
-    const dir = mkFixtureDir();
-    await initFromOrg({
-      targetDir: dir,
-      fetchImpl: buildFetch({
-        "/oauth/userinfo": () => ({
-          organizations: [{ id: "org-1", slug: "acme", name: "Acme Inc" }],
-        }),
-        // Agent config whose ONLY secret-bearing field is an MCP oauth
-        // clientSecret — no providers/platforms/auth profiles — so a dropped
-        // `secret` import would produce a config that references `secret`
-        // without importing it (the B1 regression).
-        "/agents/mcpbot/config": () => ({
-          updatedAt: 0,
-          mcpServers: {
-            notion: {
-              url: "https://mcp.notion.test",
-              type: "streamable-http",
-              oauth: {
-                authUrl: "https://notion.test/oauth/authorize",
-                tokenUrl: "https://notion.test/oauth/token",
-                clientId: "public-id",
-                clientSecret: "super-secret",
-              },
-            },
-          },
-        }),
-        "/agents": () => ({ agents: [{ agentId: "mcpbot", name: "MCP Bot" }] }),
-        "watchers?include_details": () => ({ watchers: [] }),
-        manage_entity_schema: () => ({
-          entity_types: [],
-          relationship_types: [],
-        }),
-        manage_auth_profiles: () => ({ auth_profiles: [] }),
-        manage_connections: () => ({ connections: [] }),
-      }),
-    });
-
-    const source = readFileSync(join(dir, "lobu.config.ts"), "utf-8");
-    // clientSecret is a write-only secret() placeholder, never the stored value.
-    expect(source).toContain("clientSecret: secret(");
-    expect(source).not.toContain("super-secret");
-    // ...AND the `secret` import is present so the file compiles.
-    expect(source).toMatch(
-      /import\s*\{[^}]*\bsecret\b[^}]*\}\s*from\s*"@lobu\/cli\/config"/s
-    );
-
-    // Round-trips: jiti loads the regenerated config without a missing-import
-    // ReferenceError, proving the import is wired.
-    process.env.NOTION_MCP_CLIENT_SECRET = "filled-in";
-    try {
-      const { state } = await loadDesiredStateFromConfig({ cwd: dir });
-      expect(state.agents[0]?.metadata.agentId).toBe("mcpbot");
-    } finally {
-      process.env.NOTION_MCP_CLIENT_SECRET = undefined;
-    }
-  });
-
   test("oauth_app profile → credentials keyed by the connector's oauth method (clientIdKey/clientSecretKey)", async () => {
     const dir = mkFixtureDir();
     await initFromOrg({

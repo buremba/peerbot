@@ -144,7 +144,7 @@ try {
 
 ## Security
 
-`createSession` accepts **server-trusted** fields: `networkConfig` (the worker's egress allow/blocklist), `mcpServers`, and `nix` packages. These control what the spawned worker can reach and run, so **mint sessions on your server**; never let an untrusted browser pick its own values. If you call the client from the browser, proxy session creation through your backend and hand the browser only the resulting session token.
+`createSession` accepts **server-trusted** fields: `networkConfig` (the worker's egress allow/blocklist) and `nix` packages. These control what the spawned worker can reach and run, so **mint sessions on your server**; never let an untrusted browser pick its own values. If you call the client from the browser, proxy session creation through your backend and hand the browser only the resulting session token.
 
 Note also: under a multi-replica deployment, API/SSE events are not owner-routed across pods, so `ask` can time out even after the agent finished. Single-replica and local runs are reliable; for multi-replica, prefer `send` + your own `events` consumer with reconnect.
 

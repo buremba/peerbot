@@ -79,9 +79,9 @@ const assistant = defineAgent({
     extraPolicy: "Never exfiltrate PATs or bearer tokens.",
     judgeModel: "claude-haiku-4-5-20251001",
   },
-  // Tool policy (worker-side visibility + MCP approval override).
+  // Tool policy (worker-side visibility + approval override).
   tools: {
-    // Bypass the in-thread approval card for these destructive MCP tools.
+    // Bypass the in-thread approval card for these operations/tools.
     preApproved: ["/mcp/gmail/tools/list_messages", "/mcp/linear/tools/*"],
     // Worker-side tool visibility (optional).
     allowed: ["Read", "Grep", "mcp__gmail__*"],
@@ -90,20 +90,6 @@ const assistant = defineAgent({
   },
   // Nix packages provisioned into the worker environment.
   nixPackages: ["imagemagick", "ffmpeg"],
-  // Custom MCP servers, keyed by id.
-  mcpServers: {
-    "custom-tools": {
-      url: "https://my-mcp.example.com",
-      headers: { Authorization: "Bearer $MCP_TOKEN" },
-      oauth: {
-        authUrl: "https://auth.example.com/authorize",
-        tokenUrl: "https://auth.example.com/token",
-        clientId: "$OAUTH_CLIENT_ID",
-        clientSecret: secret("OAUTH_CLIENT_SECRET"),
-        scopes: ["read", "write"],
-      },
-    },
-  },
 });
 
 // Lobu memory schema, declared at the project level, not on the agent.
@@ -205,7 +191,6 @@ Connections, the memory schema, and watchers are declared at the project level (
 | `tools` | `ToolsConfig` | no | Tool policy: pre-approval bypass + worker-side visibility |
 | `guardrails` | `string[]` | no | Guardrails enabled for this agent. Each name must match a guardrail registered in the gateway's `GuardrailRegistry` at startup |
 | `nixPackages` | `string[]` | no | Nix packages to install in the worker environment |
-| `mcpServers` | `Record<string, McpServer>` | no | Custom MCP servers, keyed by id |
 | `platforms` | `Platform[]` | no | Chat-platform bindings. A `slack` / `telegram` entry with no `config` uses the hosted Lobu bot (no token; `lobu run` prints a `/lobu link <code>`); provide `config` to run your own app |
 
 #### `ProviderConfig`
@@ -273,34 +258,6 @@ Operator-level tool policy. Two independent concerns. See [Tool Policy](/guides/
 | `strict` | boolean | no | If `true`, ONLY `allowed` tools are permitted (defaults are ignored). Default `false` |
 
 **`preApproved` is an operator-only escape hatch.** Destructive MCP tools normally require user approval in-thread (per MCP `destructiveHint` annotations). Skills cannot set this field; bypassing approval is strictly the operator's call, visible in the `lobu.config.ts` diff.
-
-#### `McpServer`
-
-Each entry in `mcpServers` defines a custom MCP server. Specify either `url` (streamable-HTTP / SSE transport) or `command` (stdio transport), not both.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `url` | string | no | HTTP endpoint URL (streamable-HTTP or SSE transport) |
-| `type` | `streamable-http` \| `sse` \| `stdio` | no | Transport kind. Defaults to `streamable-http` for HTTP URLs; `sse` is the legacy two-channel HTTP transport; `stdio` runs a local `command` |
-| `command` | string | no | Stdio transport: command to run |
-| `args` | `string[]` | no | Stdio transport: command arguments |
-| `env` | `Record<string, string>` | no | Environment variables passed to the MCP process |
-| `headers` | `Record<string, string>` | no | HTTP headers sent with requests |
-| `authScope` | `user` \| `channel` | no | Credential scope for OAuth-authenticated MCPs. `user` (default): each chat user logs in separately. `channel`: one credential shared across all users in a channel, only for shared-data integrations where per-user attribution isn't needed |
-| `oauth` | `McpServerOAuth` | no | OAuth configuration (see below) |
-
-#### `McpServerOAuth`
-
-OAuth configuration for MCP servers that require authenticated access.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `authUrl` | string | yes | Authorization endpoint |
-| `tokenUrl` | string | yes | Token endpoint |
-| `clientId` | string | no | OAuth client ID |
-| `clientSecret` | string \| `SecretRef` | no | OAuth client secret (use `secret("ENV_VAR")`) |
-| `scopes` | `string[]` | no | Requested scopes |
-| `tokenEndpointAuthMethod` | string | no | Auth method: `none`, `client_secret_post`, `client_secret_basic` |
 
 #### `Platform`
 

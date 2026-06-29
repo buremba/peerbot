@@ -345,12 +345,6 @@ function emitAgent(
     fields.push(`nixPackages: ${emitValue(settings.nixConfig.packages, 1)}`);
   }
 
-  // mcpServers ← mcpServers (client secrets → secret placeholders).
-  const mcp = settings?.mcpServers;
-  if (mcp && Object.keys(mcp).length > 0) {
-    fields.push(`mcpServers: ${emitMcpServers(mcp, secrets)}`);
-  }
-
   // Agent-dir markdown.
   if (settings?.soulMd) {
     files.push({
@@ -439,69 +433,6 @@ function emitAgent(
   const handleName = minter.mint(agent.agentId, "Agent");
   const decl = `const ${handleName} = defineAgent(${objectLiteral(fields, 0)});`;
   return { handle: { name: handleName, decl }, files };
-}
-
-function emitMcpServers(
-  mcp: NonNullable<AgentSettings["mcpServers"]>,
-  secrets: SecretCollector
-): string {
-  const entries = Object.entries(mcp).sort(([a], [b]) => a.localeCompare(b));
-  const lines = entries.map(([id, server]) => {
-    const sFields: string[] = [];
-    if (server.url) sFields.push(`url: ${str(server.url)}`);
-    if (server.type) sFields.push(`type: ${str(server.type)}`);
-    if (server.command) sFields.push(`command: ${str(server.command)}`);
-    if (server.args?.length) sFields.push(`args: ${emitValue(server.args, 3)}`);
-    if (server.headers && Object.keys(server.headers).length > 0) {
-      sFields.push(`headers: ${emitValue(server.headers, 3)}`);
-    }
-    if (server.env && Object.keys(server.env).length > 0) {
-      sFields.push(`env: ${emitValue(server.env, 3)}`);
-    }
-    // oauth + authScope live on the stored config under a loose cast.
-    const loose = server as Record<string, unknown>;
-    if (typeof loose.authScope === "string") {
-      sFields.push(`authScope: ${str(loose.authScope)}`);
-    }
-    if (loose.oauth && typeof loose.oauth === "object") {
-      sFields.push(
-        `oauth: ${emitMcpOAuth(loose.oauth as Record<string, unknown>, secrets, id)}`
-      );
-    }
-    return `${str(id)}: ${objectLiteral(sFields, 2)}`;
-  });
-  return `{\n    ${lines.join(",\n    ")},\n  }`;
-}
-
-function emitMcpOAuth(
-  oauth: Record<string, unknown>,
-  secrets: SecretCollector,
-  serverId: string
-): string {
-  const fields: string[] = [];
-  if (typeof oauth.authUrl === "string")
-    fields.push(`authUrl: ${str(oauth.authUrl)}`);
-  if (typeof oauth.tokenUrl === "string") {
-    fields.push(`tokenUrl: ${str(oauth.tokenUrl)}`);
-  }
-  if (typeof oauth.clientId === "string") {
-    fields.push(`clientId: ${str(oauth.clientId)}`);
-  }
-  if (oauth.clientSecret !== undefined) {
-    // Write-only — never emit the stored value.
-    fields.push(
-      `clientSecret: ${secrets.ref(envVarFor(serverId, "MCP_CLIENT_SECRET"))}`
-    );
-  }
-  if (Array.isArray(oauth.scopes)) {
-    fields.push(`scopes: ${emitValue(oauth.scopes, 3)}`);
-  }
-  if (typeof oauth.tokenEndpointAuthMethod === "string") {
-    fields.push(
-      `tokenEndpointAuthMethod: ${str(oauth.tokenEndpointAuthMethod)}`
-    );
-  }
-  return objectLiteral(fields, 3);
 }
 
 function emitSkillFile(

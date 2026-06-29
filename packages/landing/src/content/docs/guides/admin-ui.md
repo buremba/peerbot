@@ -64,7 +64,6 @@ This returns everything about the agent:
 | `providers` | Installed providers, connection status, model preferences, available catalog |
 | `instructions` | Identity, soul, and user prompts (the IDENTITY.md / SOUL.md / USER.md content) |
 | `skills` | Enabled skills with metadata, MCP server status |
-| `mcpServers` | Custom MCP server configurations |
 | `tools` | Nix packages, domain grants |
 | `settings` | Verbose logging, memory enabled |
 

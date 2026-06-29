@@ -5,7 +5,6 @@ import {
   createLogger,
   createRootSpan,
   generateWorkerToken,
-  type McpServerConfig,
   type NetworkConfig,
   normalizeDomainPatterns,
   verifyWorkerToken,
@@ -62,16 +61,6 @@ const NetworkConfigSchema = z.object({
   deniedDomains: z.array(z.string()).optional(),
 });
 
-const McpServerConfigSchema = z.object({
-  url: z.string().optional(),
-  type: z.enum(["sse", "streamable-http", "stdio"]).optional(),
-  command: z.string().optional(),
-  args: z.array(z.string()).optional(),
-  env: z.record(z.string(), z.string()).optional(),
-  headers: z.record(z.string(), z.string()).optional(),
-  description: z.string().optional(),
-});
-
 const NixConfigSchema = z.object({
   flakeUrl: z.string().optional(),
   packages: z.array(z.string()).optional(),
@@ -93,7 +82,6 @@ const CreateAgentRequestSchema = z.object({
   dryRun: z.boolean().optional(),
   intent: WatcherRunIntentSchema.optional(),
   networkConfig: NetworkConfigSchema.optional(),
-  mcpServers: z.record(z.string(), McpServerConfigSchema).optional(),
   nix: NixConfigSchema.optional(),
 });
 
@@ -223,52 +211,6 @@ function normalizeNetworkConfig(config: NetworkConfig): NetworkConfig {
     allowedDomains: normalizeDomainPatterns(config.allowedDomains),
     deniedDomains: normalizeDomainPatterns(config.deniedDomains),
   };
-}
-
-function validateMcpServerConfig(
-  id: string,
-  config: McpServerConfig
-): string | null {
-  if (!config.url && !config.command) {
-    return `MCP ${id}: must specify either 'url' or 'command'`;
-  }
-  if (
-    config.url &&
-    !config.url.startsWith("http://") &&
-    !config.url.startsWith("https://")
-  ) {
-    return `MCP ${id}: url must be http:// or https://`;
-  }
-  if (config.command) {
-    const dangerousCommands = [
-      "rm",
-      "sudo",
-      "curl",
-      "wget",
-      "sh",
-      "bash",
-      "zsh",
-      "kill",
-    ];
-    const baseCommand = config.command.split("/").pop()?.split(" ")[0] || "";
-    if (dangerousCommands.includes(baseCommand)) {
-      return `MCP ${id}: command '${baseCommand}' is not allowed`;
-    }
-  }
-  return null;
-}
-
-function validateMcpConfig(
-  mcpServers: Record<string, McpServerConfig>
-): string | null {
-  for (const [id, config] of Object.entries(mcpServers)) {
-    if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
-      return `MCP ID '${id}' is invalid`;
-    }
-    const error = validateMcpServerConfig(id, config);
-    if (error) return error;
-  }
-  return null;
 }
 
 // =============================================================================
@@ -802,7 +744,6 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       dryRun,
       intent,
       networkConfig,
-      mcpServers,
       nix: nixConfig,
     } = body;
 
@@ -813,16 +754,6 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
     // Validate network config
     if (normalizedNetworkConfig) {
       const error = validateNetworkConfig(normalizedNetworkConfig);
-      if (error) {
-        return c.json({ success: false, error }, 400);
-      }
-    }
-
-    // Validate MCP config
-    if (mcpServers) {
-      const error = validateMcpConfig(
-        mcpServers as Record<string, McpServerConfig>
-      );
       if (error) {
         return c.json({ success: false, error }, 400);
       }
@@ -1051,9 +982,6 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       provider,
       model,
       networkConfig: normalizedNetworkConfig,
-      mcpConfig: mcpServers
-        ? { mcpServers: mcpServers as Record<string, McpServerConfig> }
-        : undefined,
       nixConfig,
       agentId,
       ...(tokenOrganizationId ? { organizationId: tokenOrganizationId } : {}),
@@ -1519,7 +1447,6 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
       const {
         networkConfig: settingsNetwork,
         guardrailsInline: settingsGuardrailsInline,
-        mcpServers: settingsMcpServers,
         ...remainingOptions
       } = agentOptions;
 
@@ -1590,9 +1517,6 @@ export function createAgentApi(config: AgentApiConfig): OpenAPIHono {
         agentOptions: remainingOptions,
         networkConfig: session.networkConfig || settingsNetwork,
         guardrailsInline: settingsGuardrailsInline,
-        mcpConfig: settingsMcpServers
-          ? { mcpServers: settingsMcpServers }
-          : session.mcpConfig,
       });
 
       rootSpan?.end();

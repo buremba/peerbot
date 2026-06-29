@@ -743,10 +743,9 @@ export class CoreServices {
 			throw new Error("Queue must be initialized before MCP services");
 		}
 
-		// Initialize simplified MCP config service (no OAuth discovery)
+		// Initialize system MCP config service. External MCP capabilities are
+		// connector-backed operations; the worker only receives lobu-memory.
 		this.mcpConfigService = new McpConfigService({
-			agentSettingsStore: this.agentSettingsStore,
-			configResolver: this.providerConfigResolver,
 			lobuMemory: {
 				publicBaseUrl: this.config.lobuMemory.publicBaseUrl,
 				resolveOrgSlug: async (agentId: string) => {

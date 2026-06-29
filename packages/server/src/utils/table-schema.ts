@@ -308,7 +308,8 @@ export const QUERYABLE_SCHEMA = {
         'last_repair_at',
         'first_failure_at',
         'last_repair_post_hash',
-        'virtual'
+        'virtual',
+        'kind'
       ),
     },
     // connector_definitions (excludes: large *_config JSONB blobs)

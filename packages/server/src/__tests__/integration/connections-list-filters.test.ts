@@ -4,8 +4,20 @@ import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
 import { createTestConnection } from "../setup/test-fixtures";
 import { TestWorkspace } from "../setup/test-mcp-client";
 
+type Facets = {
+	data: boolean;
+	chat: boolean;
+	actions: boolean;
+	audience: boolean;
+};
+
 type ConnectionListResult = {
-	connections?: Array<{ id: number; display_name?: string | null }>;
+	connections?: Array<{
+		id: number;
+		display_name?: string | null;
+		facets?: Facets;
+		effective_credential_mode?: string | null;
+	}>;
 };
 
 type ConnectorGroupsResult = {
@@ -13,6 +25,7 @@ type ConnectorGroupsResult = {
 		connector_key: string;
 		connector_name: string | null;
 		connection_count: number;
+		facets?: Facets;
 		connections: Array<{
 			id: number;
 			display_name: string | null;
@@ -34,6 +47,7 @@ describe("manage_connections and manage_feeds list filters", () => {
 	let orgConnectionId: number;
 	let memberPrivateConnectionId: number;
 	let adminPrivateConnectionId: number;
+	let slackChatConnectionId: number;
 	let orgFeedId: number;
 	let memberPrivateFeedId: number;
 
@@ -79,6 +93,26 @@ describe("manage_connections and manage_feeds list filters", () => {
 		);
 
 		const sql = getTestDb();
+
+		// A managed Slack chat connection: an ACL source (audience) + a live bot
+		// adapter (chat). createTestConnection has no credential_mode param, so we
+		// stamp the Stage-2a chat marker directly. createDefaultFeed gives it data.
+		slackChatConnectionId = Number(
+			(
+				await createTestConnection({
+					organization_id: workspace.org.id,
+					connector_key: "slack",
+					display_name: "Org Slack",
+					created_by: workspace.users.owner.id,
+					visibility: "org",
+				})
+			).id,
+		);
+		await sql`
+			UPDATE connections SET credential_mode = 'managed'
+			WHERE id = ${slackChatConnectionId}
+		`;
+
 		const feedRows = (await sql`
 			SELECT id, connection_id
 			FROM feeds
@@ -150,6 +184,42 @@ describe("manage_connections and manage_feeds list filters", () => {
 		);
 		expect(anonymousGithub?.connection_count).toBe(1);
 		expect(ids(anonymousGithub?.connections)).toEqual([orgConnectionId]);
+	});
+
+	it("derives facets + credential mode on list (end-to-end SQL → helper)", async () => {
+		const result = (await workspace.owner.connections.list({
+			connection_ids: [orgConnectionId, slackChatConnectionId],
+		})) as ConnectionListResult;
+
+		const github = result.connections?.find((c) => c.id === orgConnectionId);
+		// GitHub: ACL source (audience) + a live feed (data); not chat, and the
+		// test catalog seeds no github operations (actions off).
+		expect(github?.facets).toMatchObject({
+			data: true,
+			chat: false,
+			audience: true,
+		});
+
+		const slack = result.connections?.find(
+			(c) => c.id === slackChatConnectionId,
+		);
+		// Slack chat connection: credential_mode set (chat) + ACL source (audience).
+		expect(slack?.facets).toMatchObject({ chat: true, audience: true });
+		expect(slack?.effective_credential_mode).toBe("managed");
+	});
+
+	it("derives connector-group facets (union across the group)", async () => {
+		const groups = (await workspace.owner.connections.manage({
+			action: "list_connector_groups",
+		})) as ConnectorGroupsResult;
+
+		const githubGroup = groups.groups?.find(
+			(g) => g.connector_key === "github",
+		);
+		expect(githubGroup?.facets).toMatchObject({ audience: true, chat: false });
+
+		const slackGroup = groups.groups?.find((g) => g.connector_key === "slack");
+		expect(slackGroup?.facets).toMatchObject({ chat: true, audience: true });
 	});
 
 	it("applies connection visibility to list and get", async () => {

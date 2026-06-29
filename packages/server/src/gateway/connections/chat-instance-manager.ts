@@ -23,6 +23,7 @@ import { type AdapterPostableMessage, Chat } from "chat";
 import { getDb } from "../../db/client.js";
 import { orgContext, tryGetOrgId } from "../../lobu/stores/org-context.js";
 import {
+  deleteSlackInstall,
   getSlackInstallById,
   SLACK_INSTALLATION_ID_PREFIX,
 } from "../../lobu/stores/slack-installations.js";
@@ -555,6 +556,62 @@ export class ChatInstanceManager {
     await this.deleteClaimForConnection(id);
 
     logger.info({ id, historyDeleted, secretsDeleted }, "Connection removed");
+  }
+
+  /**
+   * Revoke a MANAGED connection (a Lobu-hosted OAuth install, e.g. an "Add to
+   * Slack" workspace). Unlike `removeConnection` (which drops a BYO
+   * `agent_connections` row), a managed install lives in `app_installations`
+   * with its bot token in the secret store — so revoke purges the install + its
+   * token via the provider store, then soft-deletes the unified `connections`
+   * projection so it disappears from the UI. The connection id from the UI is
+   * the `connections` bigint id; its `slug` is the provider external id
+   * (`slackinst-…`) the install store keys on.
+   */
+  async revokeManagedConnection(
+    connectionId: number
+  ): Promise<{ revoked: true }> {
+    const sql = getDb();
+    const rows = await sql`
+      SELECT organization_id, slug, connector_key, credential_mode
+      FROM connections
+      WHERE id = ${connectionId} AND deleted_at IS NULL
+      LIMIT 1
+    `;
+    if (rows.length === 0) throw new Error("Connection not found");
+    const row = rows[0] as {
+      organization_id: string;
+      slug: string;
+      connector_key: string;
+      credential_mode: string | null;
+    };
+    if (row.credential_mode !== "managed") {
+      throw new Error("Only managed installs can be revoked");
+    }
+
+    if (row.connector_key === "slack") {
+      await deleteSlackInstall(
+        this.services.getAppInstallationStore(),
+        this.services.getSecretStore(),
+        row.slug
+      );
+    } else {
+      throw new Error(
+        `Revoke not supported for connector "${row.connector_key}"`
+      );
+    }
+
+    // Soft-delete the unified projection so the UI stops listing it. Past
+    // events stay (append-only); only the connection record is tombstoned.
+    await sql`
+      UPDATE connections SET deleted_at = now(), updated_at = now()
+      WHERE id = ${connectionId} AND organization_id = ${row.organization_id}
+    `;
+    logger.info(
+      { connectionId, connectorKey: row.connector_key },
+      "Revoked managed connection"
+    );
+    return { revoked: true };
   }
 
   async restartConnection(id: string): Promise<void> {

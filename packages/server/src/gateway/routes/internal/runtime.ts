@@ -48,17 +48,26 @@ export function createRuntimeRoutes(): Hono<WorkerContext> {
         return errorResponse(c, "Missing command", 400);
       }
 
-      const credentials = await resolveRuntimeCredentials(
+      let credentials = await resolveRuntimeCredentials(
         provider,
         worker.organizationId,
         worker.environmentId
       );
       if (!credentials) {
-        return errorResponse(
-          c,
-          "Runtime provider credentials unavailable",
-          424
-        );
+        // No vault/system credential configured. A provider that can
+        // self-authenticate (e.g. Vercel via an ambient VERCEL_OIDC_TOKEN when
+        // Lobu runs on Vercel) is allowed to proceed with no explicit creds;
+        // otherwise fail closed so a misconfigured environment can't run
+        // unauthenticated.
+        if (provider.canSelfAuth?.()) {
+          credentials = { values: {}, source: "system" };
+        } else {
+          return errorResponse(
+            c,
+            "Runtime provider credentials unavailable",
+            424
+          );
+        }
       }
 
       const workspaceDir = resolveWorkspacePath(

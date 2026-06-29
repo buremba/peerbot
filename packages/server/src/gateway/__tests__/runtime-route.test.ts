@@ -80,6 +80,7 @@ const originalEnv = {
   VERCEL_SANDBOX_DEFAULT_RUNTIME: process.env.VERCEL_SANDBOX_DEFAULT_RUNTIME,
   VERCEL_TEAM_ID: process.env.VERCEL_TEAM_ID,
   VERCEL_TOKEN: process.env.VERCEL_TOKEN,
+  VERCEL_OIDC_TOKEN: process.env.VERCEL_OIDC_TOKEN,
 };
 
 function restoreEnv(name: keyof typeof originalEnv): void {
@@ -123,6 +124,7 @@ afterEach(async () => {
   restoreEnv("VERCEL_SANDBOX_DEFAULT_RUNTIME");
   restoreEnv("VERCEL_TEAM_ID");
   restoreEnv("VERCEL_TOKEN");
+  restoreEnv("VERCEL_OIDC_TOKEN");
   remoteFiles.clear();
   getOrCreateMock.mockClear();
   mkdirMock.mockClear();
@@ -197,6 +199,7 @@ describe("createRuntimeRoutes", () => {
     delete process.env.VERCEL_TOKEN;
     delete process.env.VERCEL_TEAM_ID;
     delete process.env.VERCEL_PROJECT_ID;
+    delete process.env.VERCEL_OIDC_TOKEN;
     const workspaceDir = path.resolve("workspaces", "verceltestagent", "conv-1");
 
     const router = createRuntimeRoutes();
@@ -217,6 +220,33 @@ describe("createRuntimeRoutes", () => {
       error: "Runtime provider credentials unavailable",
     });
     expect(getOrCreateMock).not.toHaveBeenCalled();
+  });
+
+  test("proceeds via OIDC self-auth when no explicit credential but VERCEL_OIDC_TOKEN is present", async () => {
+    delete process.env.VERCEL_TOKEN;
+    delete process.env.VERCEL_TEAM_ID;
+    delete process.env.VERCEL_PROJECT_ID;
+    process.env.VERCEL_OIDC_TOKEN = "oidc.test.token";
+    const workspaceDir = path.resolve("workspaces", "verceltestagent", "conv-1");
+
+    const router = createRuntimeRoutes();
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({
+          agentId: "verceltestagent",
+          runtimeProviderId: "vercel",
+        })}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ command: "pwd", workspaceDir }),
+    });
+
+    // No explicit creds + OIDC present → route lets the SDK self-auth (no 424).
+    expect(res.status).toBe(200);
+    expect(getOrCreateMock).toHaveBeenCalledTimes(1);
+    // SDK self-resolves OIDC — no explicit token/teamId/projectId passed in.
+    expect(getOrCreateMock.mock.calls[0]?.[0]).not.toHaveProperty("token");
   });
 
   test("424s when required credentials are only partially configured", async () => {

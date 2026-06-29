@@ -59,5 +59,13 @@ export interface GatewayRuntimeProvider {
   /** Stable id; matches the worker-side provider id and the token claim. */
   readonly id: string;
   readonly credentialFields: RuntimeCredentialField[];
+  /**
+   * Optional: returns true when the provider can authenticate without an
+   * explicit vault/system credential (e.g. Vercel via an ambient
+   * `VERCEL_OIDC_TOKEN`). When true and no credential resolves, the route
+   * proceeds with empty credentials and lets the provider SDK self-auth;
+   * when absent/false, a missing credential fails closed.
+   */
+  canSelfAuth?(): boolean;
   exec(ctx: RuntimeExecContext): Promise<RuntimeExecResult>;
 }

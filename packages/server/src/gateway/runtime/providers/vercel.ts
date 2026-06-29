@@ -216,6 +216,11 @@ export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
     { key: "teamId", systemEnvVar: "VERCEL_TEAM_ID", required: true },
     { key: "projectId", systemEnvVar: "VERCEL_PROJECT_ID", required: true },
   ],
+  canSelfAuth(): boolean {
+    // Vercel's recommended auth: an ambient OIDC token (present when Lobu runs
+    // on Vercel, or pulled via `vercel env pull`). The SDK self-resolves it.
+    return !!process.env.VERCEL_OIDC_TOKEN?.trim();
+  },
   async exec(ctx: RuntimeExecContext): Promise<RuntimeExecResult> {
     const sandboxName = stableSandboxName({
       organizationId: ctx.organizationId,

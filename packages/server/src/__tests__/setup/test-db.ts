@@ -356,27 +356,72 @@ export async function cleanupTestDatabase(): Promise<void> {
 
   if (tables.length > 0) {
     const quotedTables = tables.map(({ tablename }) => `"${tablename}"`).join(', ');
-    // Disable triggers for faster truncation, but ONLY via `SET LOCAL` inside a
-    // single transaction. `SET LOCAL` is scoped to the transaction and reverts on
-    // COMMIT, and the whole `db.begin` callback runs on ONE reserved connection —
-    // so the `replica` role can never leak back onto a pooled connection.
-    //
-    // The previous version issued `SET session_replication_role = 'replica'` and
-    // the `'origin'` reset as standalone statements over the pool (max 5). Under a
-    // warm pool those two statements routed to DIFFERENT connections, stranding one
-    // connection in `replica` mode indefinitely. Any later test that ran a raw
-    // INSERT/UPDATE on that connection silently skipped BEFORE triggers — which is
-    // exactly how the derived-entity-type guard triggers stopped firing mid-suite
-    // (the INSERT then tripped a NOT NULL constraint instead of the trigger, and
-    // the UPDATEs resolved with no error at all).
-    //
-    // `session_replication_role` is superuser-only; on a non-superuser test role
-    // (the PG15+ fresh-`createdb` shape from #950) we skip the disable entirely.
-    // `TRUNCATE ... CASCADE` respects FK ordering on its own, so this only forgoes
-    // the speedup, never correctness.
+    // Truncate every table, retrying on deadlock. See `truncateAllTables` for
+    // why the trigger-disable runs via `SET LOCAL` inside a transaction (#1607)
+    // and why a co-running background poller's DML can deadlock the cleanup.
     const canDisableTriggers = await connectionCanDisableTriggers(db);
+    await truncateAllTables(db, quotedTables, canDisableTriggers);
+  }
+
+  // Fix check constraints that are out-of-date relative to the app code
+  await fixSchemaConstraints(db);
+}
+
+/**
+ * Max times to re-attempt the cleanup TRUNCATE after a deadlock (40P01).
+ */
+const TRUNCATE_DEADLOCK_RETRIES = 8;
+
+/**
+ * Run the (whole-database) cleanup `TRUNCATE … CASCADE`, retrying on deadlock.
+ *
+ * These bun:test suites co-run many files in ONE process against a SHARED
+ * database, and several of them start background DB pollers that are never
+ * stopped — e.g. `ChatInstanceManager.initialize()`'s 15s exclusive-lease tick,
+ * the task-scheduler, and the stale-run reaper. Those timers keep firing
+ * `INSERT`/`UPDATE` statements on the app connection pool AFTER the test that
+ * created them has finished, overlapping the NEXT test's `beforeEach`
+ * `cleanupTestDatabase()`.
+ *
+ * That overlap is a textbook deadlock cycle:
+ *   - `TRUNCATE … CASCADE` grabs `AccessExclusiveLock` on every table, one at a
+ *     time, in the order they appear in the list (≈ pg_class order).
+ *   - A concurrent `INSERT` into a child table grabs `RowExclusiveLock` on the
+ *     child, then needs a `RowShareLock` on each FK-referenced PARENT to
+ *     validate the foreign key (`agent_connections → organization/agents`,
+ *     and since #1604 `agent_channel_bindings → connections`).
+ *   - If TRUNCATE has already locked the parent and the INSERT already holds the
+ *     child, each waits on a lock the other holds → `40P01 deadlock detected`.
+ *     Postgres aborts one victim; when the victim is OUR `db.begin(…)` TRUNCATE
+ *     transaction, the error propagates out of `cleanupTestDatabase()` and fails
+ *     whichever test's `beforeEach` ran it.
+ *
+ * The conflicting background statement completes in milliseconds, so retrying
+ * the begin/TRUNCATE after a short backoff is deterministic recovery (the lock
+ * the INSERT held is gone by the next attempt) — NOT a probabilistic
+ * odds-lowering hack, and NOT a re-broadening of the 42P01-only catch. We retry
+ * ONLY on 40P01, tolerate ONLY 42P01 (a listed table vanished mid-truncate),
+ * and re-throw every other error and the final deadlock so a genuinely stuck
+ * cleanup still surfaces.
+ */
+export async function truncateAllTables(
+  db: postgres.Sql,
+  quotedTables: string,
+  canDisableTriggers: boolean
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
     try {
       if (canDisableTriggers) {
+        // Disable triggers for faster truncation, but ONLY via `SET LOCAL`
+        // inside a single transaction. `SET LOCAL` is scoped to the
+        // transaction and reverts on COMMIT, and the whole `db.begin` callback
+        // runs on ONE reserved connection — so the `replica` role can never
+        // leak back onto a pooled connection (the bug fixed in #1607).
+        //
+        // `session_replication_role` is superuser-only; on a non-superuser test
+        // role (the PG15+ fresh-`createdb` shape from #950) we skip the disable
+        // entirely. `TRUNCATE … CASCADE` respects FK ordering on its own, so
+        // this only forgoes the speedup, never correctness.
         await db.begin(async (tx) => {
           await tx.unsafe(`SET LOCAL session_replication_role = 'replica'`);
           await tx.unsafe(`TRUNCATE ${quotedTables} CASCADE`);
@@ -384,19 +429,25 @@ export async function cleanupTestDatabase(): Promise<void> {
       } else {
         await db.unsafe(`TRUNCATE ${quotedTables} CASCADE`);
       }
+      return;
     } catch (err) {
-      // Only tolerate the intended "a listed table disappeared mid-truncate"
-      // case (undefined_table, 42P01). Anything else — a permission error, a
-      // failed `SET LOCAL`, a transaction abort, a lock timeout — is a real
-      // cleanup failure that would leave the DB dirty for the next test, so
-      // re-throw it rather than silently swallow.
       const code = (err as { code?: string } | null)?.code;
-      if (code !== '42P01') throw err;
+      // 42P01 (undefined_table): a listed table disappeared mid-truncate.
+      // Tolerated — the next test re-runs migrations/cleanup anyway.
+      if (code === '42P01') return;
+      // 40P01 (deadlock_detected): a leaked background poller's DML held FK
+      // row-share locks in the opposite order. Retry after a short backoff.
+      if (code === '40P01' && attempt < TRUNCATE_DEADLOCK_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+        continue;
+      }
+      // Anything else — a permission error, a failed `SET LOCAL`, a transaction
+      // abort, a lock timeout — or a deadlock that survived every retry is a
+      // real cleanup failure that would leave the DB dirty for the next test,
+      // so re-throw rather than silently swallow.
+      throw err;
     }
   }
-
-  // Fix check constraints that are out-of-date relative to the app code
-  await fixSchemaConstraints(db);
 }
 
 /**

@@ -104,3 +104,7 @@ packages/*/~/
 .cli-smoke-run/
 .mac-cli-auth-e2e/
 examples/lobu-crm/evals/tool-surface/last-run.json
+
+# Generated connector metadata temp dirs (.connector-meta-<hash>/).
+.connector-meta-*/
+**/.connector-meta-*/

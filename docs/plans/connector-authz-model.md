@@ -171,6 +171,21 @@ Ordered by how much they threaten the stated requirements.
 - **D5 — First source: GitHub.** Repo-collaborator ACL sync already exists; resource = repo;
   GitHub App = clean org backbone. Lowest new work, best end-to-end proof of P2.
 
+### Identity & login — what ships today (no enterprise layer needed)
+
+The D1 identity link works on the OSS path now: better-auth `genericOAuth` + built-in
+`socialProviders`, credential-resolved **per org** (an org can use its own OAuth app). So
+"log in with your company Google/GSuite (or GitHub, or any OIDC provider) and see only your
+data" works today — the access decision uses the user's *verified* login identity + the
+**source's own ACL** (GitHub collaborators, Slack channels). No SCIM or directory sync is
+required for a connector vertical.
+
+The enterprise identity layer — SAML, SCIM provisioning, enforced/domain-routed SSO, and
+IdP-group→access federation — is intentionally **kept out of this OSS core** and speced
+separately as a closed layer (owletto `docs/enterprise-idp-rfc.md`). It plugs in via the
+existing seams (the better-auth `plugins` array + the authz `sources.ts` registry) without
+forking core, and is additive — verticals ship on the path above first.
+
 ### Implied next steps
 1. GitHub P2 vertical: org-App backbone connection + confirm repo ACL sync feeds the gate +
    connector stamps repo resource id (per the authz program, mostly wiring an existing path).

@@ -35,6 +35,21 @@ persistent, cross-user picture. The moment you keep a central copy you inherit t
 attribution problem Claude designed around. **The ACL mirror is the price of the shared
 corpus** — you cannot have Lobu's shared memory *and* Claude's "no attribution needed."
 
+## How Glean / Copilot do it (the org-backbone reference point)
+
+Glean is the canonical "org backbone + ACL mirror" product, and it shows the identity step
+done well: the **admin** connects each source once and Glean crawls everything, mirroring
+each document's **ACL** into the index. The **user logs in once via SSO** — never to the
+individual tools. Identity is **federated from a shared corporate IdP** (Okta/Google/Azure
+AD): the SSO assertion gives an *authoritative, verified* email/subject, and because every
+source sits behind that same IdP, "this user = this Jira accountId = this GitHub SAML
+identity" is a SCIM directory lookup, not a guess. Microsoft Copilot does the same via
+Azure AD/Graph.
+
+Takeaway: requiring users to log into every tool individually is *more* friction than Glean
+and is only necessary when there is **no** shared IdP. "Email match" is risky only when
+*guessed*; from a verified SSO assertion it is authoritative — that is the whole trick.
+
 ## Recommended model: org backbone + ACL mirror + per-user overlay
 
 A superset of Claude's model:
@@ -135,10 +150,32 @@ Ordered by how much they threaten the stated requirements.
     no access" from "empty because there's no data," to give a useful message (prompt connect
     vs say nothing found).
 
-## Decisions needed
+## Decisions made (2026-06-29)
 
-- D1: Identity-link mechanism for backbone mode (gap #1).
-- D2: Accept resource-level mirror, or invest in sub-resource ACLs (gap #2)?
-- D3: Writes — block without per-user creds, or require overlay (gap #4)?
-- D4: Partial-result disclosure policy (gap #5).
-- D5: First source to take through P2 (GitHub is closest — repo ACL sync already exists).
+- **D1 — Identity link: hybrid (IdP-federated + verify-OAuth fallback).** SSO orgs federate
+  identity from the verified SSO assertion + SCIM (Glean-style, login once); no-SSO/personal
+  accounts fall back to one-click per-source verify-OAuth (Claude-style). Authoritative in
+  both modes — never email-guessing. Slots into the existing `$member` identity collapse
+  (`auth:signup` identity).
+- **D2 — ACL fidelity: resource-level, upgrade per source.** Ship repo/project-membership
+  gating now (reuses the engine); tighten to sub-resource only where a source needs it. The
+  promise is "resource-level mirror," tightened per source — not a blanket "exactly matches
+  the source." High-sensitivity sources needing sub-resource fidelity are candidates to stay
+  per-user (Claude-style) instead of joining the backbone.
+- **D3 — Writes: require per-user creds.** Reads may come from the backbone, but any action
+  (create/comment/merge) runs as the user's connected account. No admin-token writes
+  (confused-deputy). Implies the per-user overlay is a prerequisite for write-enabled tools.
+- **D4 — Partial results: disclose when likely incomplete.** The gate must emit a "rows were
+  filtered" signal; the agent flags "limited to what you can access" only when it fires.
+  Requires a filtered-count signal out of `resource-visibility`.
+- **D5 — First source: GitHub.** Repo-collaborator ACL sync already exists; resource = repo;
+  GitHub App = clean org backbone. Lowest new work, best end-to-end proof of P2.
+
+### Implied next steps
+1. GitHub P2 vertical: org-App backbone connection + confirm repo ACL sync feeds the gate +
+   connector stamps repo resource id (per the authz program, mostly wiring an existing path).
+2. Identity: SSO/SCIM-federated identity link (D1) + verify-OAuth fallback; map onto `$member`.
+3. Gate signal for D4 (filtered-count) surfaced to the worker for disclosure.
+4. Write path (D3): per-user-cred requirement enforced at the connector-operation layer.
+5. Derived-data gating (gap #3) and backbone/overlay dedup (gap #9) before scaling beyond
+   one source.

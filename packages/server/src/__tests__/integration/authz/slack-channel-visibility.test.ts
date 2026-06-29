@@ -260,7 +260,7 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
         slackWeb: {
           conversationMembers: async (_token, channelId) => membersByChannel[channelId] ?? [],
         },
-        resolveBotToken: async () => 'xoxb-test-token',
+        resolveBotIdentity: async () => ({ token: 'xoxb-test-token', botUserId: null }),
       },
       { connectionId: CONN, organizationId: org.id },
     );
@@ -298,8 +298,8 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
           },
         },
         // Only the Acme workspace has a token — reaching T02OTHER would fail closed.
-        resolveBotToken: async ({ teamId }) =>
-          teamId === TEAM ? 'xoxb-test-token' : null,
+        resolveBotIdentity: async ({ teamId }) =>
+          teamId === TEAM ? { token: 'xoxb-test-token', botUserId: null } : null,
       },
       { connectionId: CONN, organizationId: org.id },
     );
@@ -386,7 +386,7 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     await syncSlackConnectionAcl(
       {
         slackWeb: { conversationMembers: async () => ['U01ALICE'] },
-        resolveBotToken: async () => 'xoxb-test-token',
+        resolveBotIdentity: async () => ({ token: 'xoxb-test-token', botUserId: null }),
       },
       { connectionId: CONN, organizationId: org.id },
     );
@@ -403,7 +403,7 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
             throw new Error('slack outage');
           },
         },
-        resolveBotToken: async () => 'xoxb-test-token',
+        resolveBotIdentity: async () => ({ token: 'xoxb-test-token', botUserId: null }),
       },
       { connectionId: CONN, organizationId: org.id },
     );

@@ -13,12 +13,16 @@
 
 import { type DbClient, pgBigintArray, pgTextArray } from "../db/client.js";
 import { stripPlatformPrefix } from "../gateway/channels/bound-channels.js";
-import { ACL_STALE_AFTER_MINUTES } from "./acl-state.js";
+import {
+  type ChannelEnforcement,
+  getConnectionEnforcement,
+  NOT_GRAPHED,
+  rowToChannelKey,
+} from "./acl-state.js";
 import {
   type GatedChannelRow,
-  resolveRequesterMemberEntityId,
+  resolveRequesterMember,
 } from "./channel-visibility.js";
-import { slackChannelKey } from "./slack-channel-graph.js";
 
 /**
  * How a member appears to the requester:
@@ -34,26 +38,8 @@ export interface AudienceMember {
   displayName: string;
   /** Team-scoped Slack user id (`T…:U…`) when the member carries one. */
   slackUserId: string | null;
-  email: string | null;
   isYou: boolean;
   source: AudienceMemberSource;
-}
-
-/**
- * Per-connection enforcement state:
- *  - `enforced`    — `acl_support='full'` AND `freshness_state='fresh'` AND synced
- *                    within {@link ACL_STALE_AFTER_MINUTES}; recall is membership-gated.
- *  - `stale`       — onboarded (an `authz_source_acl_state` row exists) but not
- *                    currently enforcing (partial/stale/aged-out) → fails closed.
- *  - `not-graphed` — no ACL row at all; legacy per-agent fence, no audience graph.
- */
-export type EnforcementStatus = "enforced" | "stale" | "not-graphed";
-
-export interface ChannelEnforcement {
-  status: EnforcementStatus;
-  aclSupport: string | null;
-  freshnessState: string | null;
-  lastSyncedAt: string | null;
 }
 
 export interface ChannelAudience {
@@ -72,13 +58,6 @@ export interface ChannelAudience {
   memberCount: number;
   members: AudienceMember[];
 }
-
-const NOT_GRAPHED: ChannelEnforcement = {
-  status: "not-graphed",
-  aclSupport: null,
-  freshnessState: null,
-  lastSyncedAt: null,
-};
 
 /**
  * For each bound channel, return its audience (members `member_of` the channel)
@@ -102,41 +81,49 @@ export async function getChannelAudiences(
   const keyByRow = new Map<GatedChannelRow, string | null>();
   const allKeys: string[] = [];
   for (const r of rows) {
-    const key = r.team_id
-      ? slackChannelKey(
-          r.team_id,
-          stripPlatformPrefix(r.platform, r.channel_id),
-        )
-      : null;
+    const key = rowToChannelKey(r);
     keyByRow.set(r, key);
     if (key) allKeys.push(key);
   }
 
-  // 2-4. Resolve channels → resource entities, fan out to members + enforcement,
-  //      and resolve the requester (web/auth path) for the "you" highlight.
-  const [keyToEntity, enforcement, requesterEntityId, teamNames] =
-    await Promise.all([
-      resolveChannelEntityIds(sql, organizationId, allKeys),
-      getConnectionEnforcement(
-        sql,
-        organizationId,
-        rows.map((r) => r.id),
-      ),
-      resolveRequesterMemberEntityId(sql, organizationId, userId),
-      resolveTeamNames(
-        sql,
-        organizationId,
-        rows.map((r) => r.team_id).filter((t): t is string => !!t),
-      ),
-    ]);
-  const resourceIds = [
-    ...new Set([...keyToEntity.values()].map((e) => e.id)),
-  ];
-  const membersByResource = await getAudienceMembers(
-    sql,
-    organizationId,
-    resourceIds,
-  );
+  // 2. Resolve channels → resource entities, the per-connection enforcement
+  //    state, and workspace names. (Requester + members come next, once we know
+  //    which connections actually enforce — see step 3.)
+  const [keyToEntity, enforcement, teamNames] = await Promise.all([
+    resolveChannelEntityIds(sql, organizationId, allKeys),
+    getConnectionEnforcement(
+      sql,
+      organizationId,
+      rows.map((r) => r.id),
+    ),
+    resolveTeamNames(
+      sql,
+      organizationId,
+      rows.map((r) => r.team_id).filter((t): t is string => !!t),
+    ),
+  ]);
+
+  // 3. The audience mirrors the gate: members are only reported for ENFORCED
+  //    connections (a stale/aged-out connection fails closed). So only fetch
+  //    members for resources whose connection enforces — fetching the rest would
+  //    just be discarded — and map each enforced resource to its channel team so
+  //    a member's Slack id can be scoped to THIS workspace.
+  const enforcedResourceTeam = new Map<number, string>();
+  const enforcingTeamIds = new Set<string>();
+  for (const r of rows) {
+    if (enforcement.get(r.id)?.status !== "enforced") continue;
+    if (r.team_id) enforcingTeamIds.add(r.team_id);
+    const key = keyByRow.get(r);
+    const entity = key ? keyToEntity.get(key) : undefined;
+    if (entity && r.team_id) enforcedResourceTeam.set(entity.id, r.team_id);
+  }
+
+  // 4. Resolve the requester (auth + in-Slack fallback) for the "you" highlight,
+  //    and fetch members for the enforced resources, in parallel.
+  const [requesterEntityId, membersByResource] = await Promise.all([
+    resolveRequesterMember(sql, organizationId, userId, [...enforcingTeamIds]),
+    getAudienceMembers(sql, organizationId, enforcedResourceTeam),
+  ]);
 
   return rows.map((r) => {
     const enf = enforcement.get(r.id) ?? NOT_GRAPHED;
@@ -233,25 +220,38 @@ interface RawMember {
   resource_entity_id: number;
   member_entity_id: number;
   display_name: string;
-  slack_user_id: string | null;
-  email: string | null;
   has_auth: boolean;
 }
 
-/** Members `member_of` each resource entity, with the identities the UI renders. */
+/** A member resolved for one resource, with the Slack id scoped to that
+ * resource's channel team. */
+interface AudienceRow {
+  member_entity_id: number;
+  display_name: string;
+  slack_user_id: string | null;
+  has_auth: boolean;
+}
+
+/**
+ * Members `member_of` each enforced resource entity, with the identities the UI
+ * renders. `resourceTeam` maps each resource entity id to its Slack workspace so
+ * a member's Slack id is scoped to THIS channel's team — a member who belongs to
+ * several workspaces carries one `slack_user_id` identity per team, and the
+ * audience for a channel must show the id for that channel's workspace, not an
+ * arbitrary one.
+ */
 async function getAudienceMembers(
   sql: DbClient,
   organizationId: string,
-  resourceIds: number[],
-): Promise<Map<number, RawMember[]>> {
+  resourceTeam: Map<number, string>,
+): Promise<Map<number, AudienceRow[]>> {
+  const resourceIds = [...resourceTeam.keys()];
   if (resourceIds.length === 0) return new Map();
   const rows = await sql<RawMember>`
     SELECT
       r.to_entity_id AS resource_entity_id,
       me.id AS member_entity_id,
       me.name AS display_name,
-      MAX(CASE WHEN mi.namespace = 'slack_user_id' THEN mi.identifier END) AS slack_user_id,
-      MAX(CASE WHEN mi.namespace = 'email' THEN mi.identifier END) AS email,
       bool_or(mi.namespace = 'auth_user_id' AND mi.source_connector = 'auth:signup') AS has_auth
     FROM entity_relationships r
     JOIN entity_relationship_types rt
@@ -272,62 +272,53 @@ async function getAudienceMembers(
     GROUP BY r.to_entity_id, me.id, me.name
     ORDER BY me.name ASC
   `;
-  const out = new Map<number, RawMember[]>();
-  for (const r of rows) {
-    const id = Number(r.resource_entity_id);
-    const list = out.get(id) ?? [];
-    list.push(r);
-    out.set(id, list);
-  }
-  return out;
-}
 
-/** Per-connection enforcement detail (status + the columns the detail panel shows). */
-async function getConnectionEnforcement(
-  sql: DbClient,
-  organizationId: string,
-  connectionIds: string[],
-): Promise<Map<string, ChannelEnforcement>> {
-  const ids = [...new Set(connectionIds)].filter(Boolean);
-  if (ids.length === 0) return new Map();
-  const rows = await sql<{
-    connection_id: string;
-    acl_support: string | null;
-    freshness_state: string | null;
-    last_synced_at: Date | null;
-    enforce: boolean;
-  }>`
-    SELECT
-      connection_id,
-      acl_support,
-      freshness_state,
-      last_synced_at,
-      (
-        acl_support = 'full'
-        AND freshness_state = 'fresh'
-        AND last_synced_at IS NOT NULL
-        AND last_synced_at >= current_timestamp - make_interval(mins => ${ACL_STALE_AFTER_MINUTES})
-      ) AS enforce
-    FROM authz_source_acl_state
-    WHERE organization_id = ${organizationId}
-      AND connection_id = ANY(${pgTextArray(ids)}::text[])
-  `;
-  const out = new Map<string, ChannelEnforcement>();
+  // Fetch each member's team-scoped Slack ids in a separate scalar query (no
+  // array readback, safe under fetch_types:false) and pick the one matching the
+  // resource's team at grouping time.
+  const memberIds = [...new Set(rows.map((r) => Number(r.member_entity_id)))];
+  const slackIdsByMember = new Map<number, string[]>();
+  if (memberIds.length > 0) {
+    const idRows = await sql<{ entity_id: number; identifier: string }>`
+      SELECT entity_id, identifier
+      FROM entity_identities
+      WHERE organization_id = ${organizationId}
+        AND namespace = 'slack_user_id'
+        AND entity_id = ANY(${pgBigintArray(memberIds)}::bigint[])
+        AND deleted_at IS NULL
+    `;
+    for (const r of idRows) {
+      const id = Number(r.entity_id);
+      const list = slackIdsByMember.get(id) ?? [];
+      list.push(String(r.identifier));
+      slackIdsByMember.set(id, list);
+    }
+  }
+
+  const out = new Map<number, AudienceRow[]>();
   for (const r of rows) {
-    out.set(String(r.connection_id), {
-      status: r.enforce === true ? "enforced" : "stale",
-      aclSupport: r.acl_support ?? null,
-      freshnessState: r.freshness_state ?? null,
-      lastSyncedAt: r.last_synced_at
-        ? new Date(r.last_synced_at).toISOString()
-        : null,
+    const resourceId = Number(r.resource_entity_id);
+    const memberId = Number(r.member_entity_id);
+    // `slack_user_id` identities are stored uppercased (`T…:U…`); scope to the
+    // resource's team so a multi-workspace member shows this channel's id.
+    const teamPrefix = `${resourceTeam.get(resourceId)?.toUpperCase()}:`;
+    const slackUserId =
+      slackIdsByMember.get(memberId)?.find((i) => i.startsWith(teamPrefix)) ??
+      null;
+    const list = out.get(resourceId) ?? [];
+    list.push({
+      member_entity_id: memberId,
+      display_name: r.display_name,
+      slack_user_id: slackUserId,
+      has_auth: r.has_auth,
     });
+    out.set(resourceId, list);
   }
   return out;
 }
 
 function toAudienceMember(
-  m: RawMember,
+  m: AudienceRow,
   requesterEntityId: number | null,
 ): AudienceMember {
   const isYou =
@@ -342,7 +333,6 @@ function toAudienceMember(
     entityId: Number(m.member_entity_id),
     displayName: m.display_name,
     slackUserId: m.slack_user_id ?? null,
-    email: m.email ?? null,
     isYou,
     source,
   };

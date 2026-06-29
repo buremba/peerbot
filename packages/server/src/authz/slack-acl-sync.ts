@@ -41,12 +41,19 @@ const logger = createLogger('slack-acl-sync');
  * Slack API and token resolver, and the live tick wires the real ones. */
 export interface SlackAclSyncDeps {
   slackWeb: Pick<SlackWebApi, 'conversationMembers' | 'conversationInfo'>;
-  /** Resolve the bot token for a workspace, or null if none is available
-   * (no active install / unresolvable secret) — null is treated fail-closed. */
-  resolveBotToken: (params: {
+  /**
+   * Resolve the bot IDENTITY for a workspace — its token plus the bot's own
+   * Slack user id — from the app installation, or null if none is available (no
+   * active install / unresolvable secret), which is treated fail-closed. The bot
+   * id is sourced from the install (stamped at install time), NOT from the
+   * connection metadata, whose `botUserId` is only backfilled lazily at adapter
+   * init: in the window before the adapter first runs it is null, which would let
+   * the bot slip into the `member_of` graph and the audience.
+   */
+  resolveBotIdentity: (params: {
     organizationId: string;
     teamId: string;
-  }) => Promise<string | null>;
+  }) => Promise<{ token: string; botUserId: string | null } | null>;
 }
 
 export interface SlackAclSyncResult {
@@ -116,19 +123,6 @@ export async function syncSlackConnectionAcl(
     return { ok: true, teamsSynced: 0, channelsSynced: 0 };
   }
 
-  // The bot is itself a member of every channel it's in, so `conversations.members`
-  // includes it. Drop it: a bot is not an audience and must never gain a
-  // `member_of` edge (it would inflate "who can recall" AND, via the gate, count
-  // as a member). The bot's own Slack user id is backfilled onto the connection
-  // metadata at adapter init; absent it, we simply don't filter (no regression).
-  const connRow = await sql<{ bot_user_id: string | null }>`
-		SELECT metadata->>'botUserId' AS bot_user_id
-		FROM agent_connections
-		WHERE id = ${connectionId} AND organization_id = ${organizationId}
-		LIMIT 1
-	`;
-  const botUserId = connRow[0]?.bot_user_id ?? null;
-
   // Group channels by workspace/team — one graph build per team.
   const byTeam = new Map<string, string[]>();
   for (const r of slackRows) {
@@ -142,16 +136,22 @@ export async function syncSlackConnectionAcl(
   let channelsSynced = 0;
   try {
     for (const [teamId, channelIds] of byTeam) {
-      const token = await deps.resolveBotToken({ organizationId, teamId });
-      if (!token) {
+      const identity = await deps.resolveBotIdentity({ organizationId, teamId });
+      if (!identity) {
         throw new Error(`No bot token for team ${teamId}`);
       }
+      const { token, botUserId } = identity;
       const channels: SlackChannelInput[] = [];
       for (const channelId of channelIds) {
         const rawMembers = await deps.slackWeb.conversationMembers(
           token,
           channelId,
         );
+        // The bot is itself a member of every channel it's in, so
+        // `conversations.members` includes it. Drop it: a bot is not an audience
+        // and must never gain a `member_of` edge (it would inflate "who can
+        // recall" AND, via the gate, count as a member). The bot id is the
+        // install's, scoped to THIS team. Absent it, we don't filter (no regression).
         const memberSlackUserIds = botUserId
           ? rawMembers.filter((u) => u !== botUserId)
           : rawMembers;
@@ -223,14 +223,15 @@ export async function runSlackAclSyncTick(coreServices: CoreServices): Promise<v
 
   const deps: SlackAclSyncDeps = {
     slackWeb,
-    resolveBotToken: async ({ teamId }) => {
+    resolveBotIdentity: async ({ teamId }) => {
       const install = await getSlackInstallByTeamId(installStore, teamId);
       if (!install || install.status !== 'active') return null;
       const tokenRef = (install.config as { botToken?: string }).botToken;
       const token = await orgContext.run({ organizationId: install.organizationId }, () =>
         resolveSecretValue(secretStore, tokenRef),
       );
-      return token ?? null;
+      if (!token) return null;
+      return { token, botUserId: install.botUserId ?? null };
     },
   };
 

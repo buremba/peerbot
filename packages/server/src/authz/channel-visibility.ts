@@ -26,9 +26,7 @@
 
 import { normalizeSlackUserId } from '@lobu/connector-sdk';
 import { type DbClient, pgTextArray } from '../db/client.js';
-import { stripPlatformPrefix } from '../gateway/channels/bound-channels.js';
-import { ACL_STALE_AFTER_MINUTES } from './acl-state.js';
-import { slackChannelKey } from './slack-channel-graph.js';
+import { getConnectionEnforcement, rowToChannelKey } from './acl-state.js';
 
 /** A bound channel the gate decides on. Mirrors the fields `resolveBoundChannelRows`
  * returns (`id` is the connection id). */
@@ -116,47 +114,28 @@ async function resolveRequesterBySlackUserId(
   return rows.length > 0 ? Number(rows[0].entity_id) : null;
 }
 
-
 /**
- * The ACL state of each connection that has been onboarded into the authz
- * program. A connection ABSENT from the returned map has no
- * `authz_source_acl_state` row at all — it was never graphed, so it keeps the
- * legacy per-agent fence. A connection PRESENT in the map has been onboarded and
- * MUST be enforced: it may use membership filtering only when `enforce` is true
- * (`acl_support='full'` AND `freshness_state='fresh'` AND the graph was synced
- * within {@link ACL_STALE_AFTER_MINUTES}). Any other state — stale/failed/unknown
- * freshness, partial/none support, or a `fresh` row that has aged out — fails
- * closed: its channels are dropped, never passed through as legacy. Otherwise a
- * connection whose graph goes stale would silently re-expose every channel.
+ * Resolve the requester to a `$member` entity id, combining BOTH paths the
+ * authz program supports: prefer the auth-server signup claim (web/app sign-in),
+ * then fall back to the team-scoped `slack_user_id` claim for someone talking to
+ * the bot INSIDE Slack (whose only id is a Slack user id). `enforcingTeamIds`
+ * scopes the Slack fallback to the teams whose connections are actually
+ * enforcing. Returns null when neither resolves (→ fail closed).
+ *
+ * The single resolver shared by the gate ({@link filterChannelsForRequester})
+ * and the audience read's "you" highlight, so the two never disagree on who the
+ * requester is.
  */
-export async function getConnectionAclStates(
+export async function resolveRequesterMember(
   sql: DbClient,
   organizationId: string,
-  connectionIds: string[],
-): Promise<Map<string, { enforce: boolean }>> {
-  const ids = [...new Set(connectionIds)].filter(Boolean);
-  if (ids.length === 0) return new Map();
-  const rows = await sql<{
-    connection_id: string;
-    enforce: boolean;
-  }>`
-		SELECT
-			connection_id,
-			(
-				acl_support = 'full'
-				AND freshness_state = 'fresh'
-				AND last_synced_at IS NOT NULL
-				AND last_synced_at >= current_timestamp - make_interval(mins => ${ACL_STALE_AFTER_MINUTES})
-			) AS enforce
-		FROM authz_source_acl_state
-		WHERE organization_id = ${organizationId}
-		  AND connection_id = ANY(${pgTextArray(ids)}::text[])
-	`;
-  const out = new Map<string, { enforce: boolean }>();
-  for (const r of rows) {
-    out.set(String(r.connection_id), { enforce: r.enforce === true });
-  }
-  return out;
+  userId: string | null,
+  enforcingTeamIds: string[],
+): Promise<number | null> {
+  if (!userId) return null;
+  const byAuth = await resolveRequesterMemberEntityId(sql, organizationId, userId);
+  if (byAuth !== null) return byAuth;
+  return resolveRequesterBySlackUserId(sql, organizationId, userId, enforcingTeamIds);
 }
 
 /**
@@ -204,7 +183,7 @@ export async function filterChannelsForRequester<T extends GatedChannelRow>(
   const { organizationId, userId, rows } = params;
   if (rows.length === 0) return rows;
 
-  const states = await getConnectionAclStates(
+  const states = await getConnectionEnforcement(
     sql,
     organizationId,
     rows.map((r) => r.id),
@@ -216,29 +195,17 @@ export async function filterChannelsForRequester<T extends GatedChannelRow>(
   // Only resolve the requester's membership when at least one connection is
   // actively enforcing (full+fresh). Onboarded-but-stale connections fail closed
   // regardless of who is asking, so they need no membership lookup.
-  const anyEnforcing = [...states.values()].some((s) => s.enforce);
-  // Resolve the requester to a member. Prefer the auth_user_id claim (web/app
-  // path); fall back to the team-scoped slack_user_id claim for someone talking
-  // to the bot inside Slack, whose id is a Slack user id, not an auth id.
-  let memberEntityId: number | null = null;
-  if (anyEnforcing) {
-    memberEntityId = await resolveRequesterMemberEntityId(sql, organizationId, userId);
-    if (memberEntityId === null) {
-      const enforcingTeamIds = [
-        ...new Set(
-          rows
-            .filter((r) => states.get(r.id)?.enforce && r.team_id)
-            .map((r) => r.team_id as string),
-        ),
-      ];
-      memberEntityId = await resolveRequesterBySlackUserId(
-        sql,
-        organizationId,
-        userId,
-        enforcingTeamIds,
-      );
-    }
-  }
+  const anyEnforcing = [...states.values()].some((s) => s.status === "enforced");
+  const enforcingTeamIds = [
+    ...new Set(
+      rows
+        .filter((r) => states.get(r.id)?.status === "enforced" && r.team_id)
+        .map((r) => r.team_id as string),
+    ),
+  ];
+  const memberEntityId = anyEnforcing
+    ? await resolveRequesterMember(sql, organizationId, userId, enforcingTeamIds)
+    : null;
   const visibleKeys =
     memberEntityId === null
       ? new Set<string>()
@@ -247,9 +214,9 @@ export async function filterChannelsForRequester<T extends GatedChannelRow>(
   return rows.filter((r) => {
     const state = states.get(r.id);
     if (!state) return true; // never graphed → legacy fence still applies
-    if (!state.enforce) return false; // onboarded but stale/unsupported → fail closed
-    if (!r.team_id) return false; // can't form the key → fail closed
-    const key = slackChannelKey(r.team_id, stripPlatformPrefix(r.platform, r.channel_id));
+    if (state.status !== "enforced") return false; // stale/unsupported → fail closed
+    const key = rowToChannelKey(r);
+    if (key === null) return false; // no team id → can't form the key → fail closed
     return visibleKeys.has(key);
   });
 }

@@ -156,20 +156,20 @@ describe('channel audience read', () => {
   it('excludes the Lobu bot from a channel audience even though it is a Slack member', async () => {
     const { org, alice, agent } = await setupWorkspace();
     const sql = getTestDb();
-    // The adapter backfills the bot's own Slack user id onto the connection.
-    await sql`
-      UPDATE agent_connections SET metadata = '{"botUserId":"UBOTLOBU"}'::jsonb
-      WHERE id = ${CONN}
-    `;
 
-    // Production sync path: conversations.members returns Alice AND the bot.
+    // Production sync path: conversations.members returns Alice AND the bot. The
+    // bot's own Slack user id comes from the INSTALL (resolveBotIdentity), not the
+    // connection metadata — so it filters even before the adapter has backfilled.
     const result = await syncSlackConnectionAcl(
       {
         slackWeb: {
           conversationMembers: async () => ['U01ALICE', 'UBOTLOBU'],
           conversationInfo: async () => ({ name: 'eng', isPrivate: false }),
         },
-        resolveBotToken: async () => 'xoxb-test-token',
+        resolveBotIdentity: async () => ({
+          token: 'xoxb-test-token',
+          botUserId: 'UBOTLOBU',
+        }),
       },
       { connectionId: CONN, organizationId: org.id },
     );

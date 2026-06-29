@@ -36,6 +36,7 @@ import type { StoredConnection } from "@lobu/core";
 import { type DbClient, getDb } from "../../db/client.js";
 import { constantTimeEqual } from "../../utils/constant-time-equal.js";
 import { insertEvent } from "../../utils/insert-event.js";
+import { captureWebhookStreamingFeed } from "../../lib/streaming-feeds.js";
 import logger from "../../utils/logger.js";
 import { getClientIP, getRateLimiter } from "../../utils/rate-limiter.js";
 import { resolveSecretValue, type SecretStore } from "../secrets/index.js";
@@ -595,6 +596,10 @@ export async function handleWebhookIngest(
 			{ connectionId: stored.id, eventId: landedId, dedupeSource },
 			"[webhook-ingest] delivery persisted",
 		);
+		// Materialize this webhook source as a streaming feed (idempotent,
+		// fire-and-forget — never blocks the ack). The first delivery creates it;
+		// later ones no-op.
+		captureWebhookStreamingFeed(stored.id, organizationId);
 		return json(202, { ok: true, id: landedId });
 	} catch (error) {
 		if (isUniqueViolation(error)) {

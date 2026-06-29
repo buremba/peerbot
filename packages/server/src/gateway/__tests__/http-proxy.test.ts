@@ -427,6 +427,9 @@ describe("HTTP Proxy IDN/Unicode egress matching", () => {
   // checkDomainAccess call — no shared module state, no cross-file env race.
   let config: ResolvedNetworkConfig;
 
+  const prevAllowed = process.env.WORKER_ALLOWED_DOMAINS;
+  const prevDisallowed = process.env.WORKER_DISALLOWED_DOMAINS;
+
   beforeAll(() => {
     process.env.WORKER_ALLOWED_DOMAINS = "*";
     process.env.WORKER_DISALLOWED_DOMAINS = "münchen.de";
@@ -434,8 +437,12 @@ describe("HTTP Proxy IDN/Unicode egress matching", () => {
   });
 
   afterAll(() => {
-    process.env.WORKER_ALLOWED_DOMAINS = "*";
-    delete process.env.WORKER_DISALLOWED_DOMAINS;
+    // Restore the pre-suite env rather than hardcoding cleanup, so this block
+    // can't leak its blocklist into later files in Bun's shared process.
+    if (prevAllowed === undefined) delete process.env.WORKER_ALLOWED_DOMAINS;
+    else process.env.WORKER_ALLOWED_DOMAINS = prevAllowed;
+    if (prevDisallowed === undefined) delete process.env.WORKER_DISALLOWED_DOMAINS;
+    else process.env.WORKER_DISALLOWED_DOMAINS = prevDisallowed;
   });
 
   test("punycode host (HTTP path) is blocked by the Unicode blocklist entry", async () => {

@@ -381,7 +381,10 @@ export async function handleGet(
               AND NOT (dw.id IS NOT NULL AND dw.last_seen_at > now() - interval '20 minutes')
              THEN 'offline'
            END AS device_status,
-           (SELECT COUNT(*) FROM current_event_records e WHERE e.connection_id = c.id)::int AS event_count
+           (SELECT COUNT(*) FROM current_event_records e WHERE e.connection_id = c.id)::int AS event_count,
+           -- feed_count so facets.data can account for live feeds even when the
+           -- connector declares no feeds_schema (mirrors handleList).
+           (SELECT COUNT(*) FROM feeds f WHERE f.connection_id = c.id AND f.deleted_at IS NULL)::int AS feed_count
     FROM connections c
     LEFT JOIN LATERAL (
       SELECT name, feeds_schema, auth_schema

@@ -128,23 +128,6 @@ export interface PostedDurableApproval extends BaseMessage {
 }
 
 /**
- * Payload emitted on "status-message:created" — platform renderers listen for this.
- */
-export interface PostedStatusMessage extends BaseMessage {
-  platform: string;
-  text: string;
-  /**
-   * Dispatch origin (watcher-run/connector-repair/scheduled-job/internal) for a
-   * headless turn. Propagated onto the cross-pod thread_response row so the
-   * consumer's headless owner-gate exemption applies — without it a status
-   * message from a headless turn would owner-gate, re-queue 30x and dead-letter
-   * (no SSE/bridge owner exists on any pod). Matches PostedQuestion/
-   * PostedToolApproval.
-   */
-  source?: string;
-}
-
-/**
  * Platform-agnostic interaction service (fire-and-forget).
  * Posts questions with buttons; no blocking, no state machine.
  * User clicks → platform converts to regular message → normal queue.
@@ -349,43 +332,6 @@ export class InteractionService extends EventEmitter {
     );
 
     this.emit("link-button:created", posted);
-    return posted;
-  }
-
-  /**
-   * Post a plain text status message (non-blocking, fire-and-forget).
-   * Emits "status-message:created" for platform renderers.
-   */
-  async postStatusMessage(
-    conversationId: string,
-    channelId: string,
-    teamId: string | undefined,
-    connectionId: string | undefined,
-    platform: string,
-    text: string,
-    source?: string
-  ): Promise<PostedStatusMessage> {
-    assertRoutableInteraction(connectionId, platform, "status message");
-    if (this.beforeCreateHook) {
-      await this.beforeCreateHook("", conversationId);
-    }
-
-    const posted: PostedStatusMessage = {
-      id: `sm_${randomUUID()}`,
-      conversationId,
-      channelId,
-      teamId,
-      connectionId,
-      platform,
-      text,
-      source,
-    };
-
-    logger.info(
-      `Posted status message ${posted.id} for conversation ${conversationId}`
-    );
-
-    this.emit("status-message:created", posted);
     return posted;
   }
 

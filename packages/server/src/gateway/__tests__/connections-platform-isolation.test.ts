@@ -234,13 +234,6 @@ describe("InteractionService — connectionId is required", () => {
     ).rejects.toThrow(/connectionId is required/);
   });
 
-  test("postStatusMessage throws when connectionId is undefined", async () => {
-    const svc = new InteractionService();
-    await expect(
-      svc.postStatusMessage("conv", "ch", undefined, undefined, "slack", "hi")
-    ).rejects.toThrow(/connectionId is required/);
-  });
-
   // platform "api" has no Chat SDK connection — its cards are routed by
   // conversationId through the API platform's event.platform === "api"
   // subscriptions, and chat bridges drop foreign-platform events in
@@ -306,14 +299,10 @@ describe("InteractionService — connectionId is required", () => {
     const received: unknown[] = [];
     svc.on("question:created", (e) => received.push(e));
     svc.on("link-button:created", (e) => received.push(e));
-    svc.on("status-message:created", (e) => received.push(e));
     svc.on("tool:approval-needed", (e) => received.push(e));
 
     await svc
       .postQuestion("u", "conv", "ch", undefined, undefined, "slack", "?", ["A"])
-      .catch(() => undefined);
-    await svc
-      .postStatusMessage("conv", "ch", undefined, undefined, "slack", "hi")
       .catch(() => undefined);
 
     expect(received).toHaveLength(0);
@@ -361,16 +350,6 @@ describe("InteractionService — platform field on emitted events", () => {
     expect(received[0].platform).toBe("discord");
   });
 
-  test("postStatusMessage carries platform", async () => {
-    const svc = new InteractionService();
-    const received: any[] = [];
-    svc.on("status-message:created", (e) => received.push(e));
-
-    await svc.postStatusMessage("conv", "ch", undefined, "conn-1", "teams", "Working...");
-
-    expect(received).toHaveLength(1);
-    expect(received[0].platform).toBe("teams");
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -531,7 +510,6 @@ describe("registerInteractionBridge — cross-platform isolation", () => {
     expect(svc.listenerCount("question:created")).toBe(0);
     expect(svc.listenerCount("link-button:created")).toBe(0);
     expect(svc.listenerCount("tool:approval-needed")).toBe(0);
-    expect(svc.listenerCount("status-message:created")).toBe(0);
 
     // Emit after unregister — should be completely silent
     const slackEvent: PostedQuestion = {
@@ -879,23 +857,10 @@ describe("registerSlackPlatformHandlers — DM vs group channel detection", () =
 });
 
 // ---------------------------------------------------------------------------
-// 9. InteractionService.postStatusMessage — unique ids
+// 9. InteractionService — unique event ids
 // ---------------------------------------------------------------------------
 
 describe("InteractionService — unique event ids", () => {
-  test("each postStatusMessage call emits a distinct id", async () => {
-    const svc = new InteractionService();
-    const ids: string[] = [];
-    svc.on("status-message:created", (e) => ids.push(e.id));
-
-    await svc.postStatusMessage("conv", "ch", undefined, "conn-1", "slack", "A");
-    await svc.postStatusMessage("conv", "ch", undefined, "conn-1", "slack", "B");
-    await svc.postStatusMessage("conv", "ch", undefined, "conn-1", "slack", "C");
-
-    expect(ids).toHaveLength(3);
-    expect(new Set(ids).size).toBe(3);
-  });
-
   test("each postLinkButton call emits a distinct id", async () => {
     const svc = new InteractionService();
     const ids: string[] = [];

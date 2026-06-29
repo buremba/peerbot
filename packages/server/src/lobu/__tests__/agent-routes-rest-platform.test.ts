@@ -31,7 +31,7 @@
  * Uses the embedded Postgres gateway test harness; no network.
  */
 
-import { beforeAll, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import {
   ensureDbForGatewayTests,
   resetTestDatabase,
@@ -84,6 +84,17 @@ async function seedOrgAndAgent(orgId: string, agentId: string): Promise<void> {
   `;
 }
 
+// Every ChatInstanceManager this file builds is tracked here and shut down in
+// `afterEach`. `initialize()` starts a 15s `connection_claims` exclusive-lease
+// `setInterval` (`startExclusiveRunner`); left running it keeps firing
+// `exclusiveTick` DB queries on the shared app pool AFTER the test finishes,
+// which overlaps the NEXT test's `beforeEach` cleanup `TRUNCATE … CASCADE` and
+// deadlocks (40P01). `shutdown()` clears that interval (and is a safe no-op for
+// managers that were never initialized), so no background DML crosses a test
+// boundary. (#1609's cleanup retry is the resilience net; this stops the leak
+// it papers over.)
+const createdManagers: Array<{ shutdown: () => Promise<void> }> = [];
+
 /**
  * Real ChatInstanceManager over the real Postgres stores — startInstance is
  * NOT stubbed, so an adapter-requiring platform would actually try to boot.
@@ -122,6 +133,7 @@ async function buildRealManager() {
   manager.connectionStore = connectionStore;
   manager.slackCoordinator = manager.buildSlackCoordinator();
 
+  createdManagers.push(manager);
   return { manager, services, connectionStore, orgContext };
 }
 
@@ -143,6 +155,18 @@ beforeEach(async () => {
   const { manager } = await buildRealManager();
   chatManagerStash.manager = manager;
 }, 30_000);
+
+afterEach(async () => {
+  // Stop every manager built during the test so no background exclusive-lease
+  // tick keeps issuing DB statements into the next test's TRUNCATE cleanup.
+  for (const manager of createdManagers.splice(0)) {
+    await manager.shutdown();
+    // Guard: shutdown() must actually clear the 15s exclusive-lease interval —
+    // a leaked timer is exactly what deadlocked the co-running suites.
+    expect((manager as any).exclusiveTimer).toBeUndefined();
+  }
+  chatManagerStash.manager = null;
+});
 
 describe('PUT /agents/:agentId/platforms/by-stable-id — type rest (#1179)', () => {
   test('creates the platform row without instantiating a chat adapter', async () => {

@@ -41,6 +41,7 @@ import {
 	handleGet,
 	handleList,
 	handleListConnectorGroups,
+	handleListReach,
 	handleUpdate,
 } from "./manage_connections/handlers/crud";
 import {
@@ -51,6 +52,7 @@ import {
 	InstallConnectorAction,
 	ListConnectorGroupsAction,
 	ListAction,
+	ListReachAction,
 	ReauthenticateAction,
 	SetConnectorEntityLinkOverridesAction,
 	TestAction,
@@ -72,6 +74,7 @@ const manageConnectionsTool = defineActionTool("manage_connections", {
 		handleListConnectorGroups,
 	),
 	list: action(ListAction, handleList),
+	list_reach: action(ListReachAction, handleListReach),
 	get: action(GetAction, handleGet),
 	create: action(CreateAction, handleCreate),
 	connect: action(ConnectAction, handleConnect),

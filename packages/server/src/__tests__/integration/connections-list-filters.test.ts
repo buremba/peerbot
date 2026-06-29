@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { pgBigintArray } from "../../db/client";
 import { cleanupTestDatabase, getTestDb } from "../setup/test-db";
-import { createTestConnection } from "../setup/test-fixtures";
+import { createTestAgent, createTestConnection } from "../setup/test-fixtures";
 import { TestWorkspace } from "../setup/test-mcp-client";
 
 type Facets = {
@@ -184,6 +184,34 @@ describe("manage_connections and manage_feeds list filters", () => {
 		);
 		expect(anonymousGithub?.connection_count).toBe(1);
 		expect(ids(anonymousGithub?.connections)).toEqual([orgConnectionId]);
+	});
+
+	it("list_reach returns a connection's channel bindings (id + platform/team fallback)", async () => {
+		const sql = getTestDb();
+		const agent = await createTestAgent({
+			organizationId: workspace.org.id,
+			ownerUserId: workspace.users.owner.id,
+		});
+		// One binding linked by connection_id, one unlinked (connection_id NULL)
+		// that must match by platform + team (the connection has no team → NULL).
+		await sql`
+			INSERT INTO agent_channel_bindings
+				(organization_id, agent_id, platform, channel_id, team_id, connection_id)
+			VALUES
+				(${workspace.org.id}, ${agent.agentId}, 'slack', 'C_LINKED', NULL, ${slackChatConnectionId}),
+				(${workspace.org.id}, ${agent.agentId}, 'slack', 'C_FALLBACK', NULL, NULL)
+		`;
+
+		const result = (await workspace.owner.connections.manage({
+			action: "list_reach",
+			connection_id: slackChatConnectionId,
+		})) as {
+			channels?: Array<{ channel_id: string; agent_id: string }>;
+		};
+		const channelIds = (result.channels ?? [])
+			.map((c) => c.channel_id)
+			.sort();
+		expect(channelIds).toEqual(["C_FALLBACK", "C_LINKED"]);
 	});
 
 	it("derives facets + credential mode on list (end-to-end SQL → helper)", async () => {

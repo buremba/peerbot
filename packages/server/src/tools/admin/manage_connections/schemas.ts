@@ -11,6 +11,19 @@ import { PaginationFields } from "../schemas/common-fields";
 
 export const ListConnectorGroupsAction = Type.Object({
 	action: Type.Literal("list_connector_groups"),
+	entity_id: Type.Optional(
+		Type.Number({
+			description:
+				"Filter to connectors that have a connection (or feed) linked to this entity.",
+		}),
+	),
+});
+
+export const ListReachAction = Type.Object({
+	action: Type.Literal("list_reach"),
+	connection_id: Type.Number({
+		description: "Connection whose channel bindings (reach) to list.",
+	}),
 });
 
 export const ListAction = Type.Object({
@@ -350,6 +363,16 @@ export type ManageConnectionsResult =
 				}>;
 			}>;
 	  }
+	| {
+			action: "list_reach";
+			connection_id: number;
+			channels: Array<{
+				agent_id: string;
+				platform: string;
+				channel_id: string;
+				team_id: string | null;
+			}>;
+	  }
 	| { action: "get"; connection: ConnectionRow; view_url?: string }
 	| {
 			action: "create";
@@ -419,6 +442,7 @@ export type ManageConnectionsResult =
 export type ConnectionsArgs =
 	| Static<typeof ListConnectorGroupsAction>
 	| Static<typeof ListAction>
+	| Static<typeof ListReachAction>
 	| Static<typeof GetAction>
 	| Static<typeof CreateAction>
 	| Static<typeof ConnectAction>

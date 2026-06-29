@@ -1,5 +1,47 @@
 # Changelog
 
+## [13.2.0](https://github.com/lobu-ai/lobu/compare/lobu-v13.1.0...lobu-v13.2.0) (2026-06-29)
+
+
+### Features
+
+* agent UX consolidation + cross-platform conversations (server + owletto) ([#1595](https://github.com/lobu-ai/lobu/issues/1595)) ([3704c1e](https://github.com/lobu-ai/lobu/commit/3704c1e69ce6f1e316a23f5fbad2a5fdb71ab7eb))
+* **authz:** channel audience read + Reach endpoint; fix Slack read-method encoding ([#1600](https://github.com/lobu-ai/lobu/issues/1600)) ([604b33f](https://github.com/lobu-ai/lobu/commit/604b33fe4bc71a8af4d04c596a65dfc31f00435e))
+* **authz:** generic access-graph engine + GitHub repo source + in-Slack requester resolution ([#1590](https://github.com/lobu-ai/lobu/issues/1590)) ([0c4cec5](https://github.com/lobu-ai/lobu/commit/0c4cec56c3be920525f9ee0604e260a8da6995b3))
+* **catalog:** add watchers as a global catalog kind with bundled templates ([#1535](https://github.com/lobu-ai/lobu/issues/1535)) ([c798452](https://github.com/lobu-ai/lobu/commit/c79845216cac703cd80b8f509af06ba9e0edffbd))
+* **connections:** facets + list_reach + managed revoke (Stage 2b backend) ([#1608](https://github.com/lobu-ai/lobu/issues/1608)) ([49ae445](https://github.com/lobu-ai/lobu/commit/49ae4454536fefaa740d0727625ef5fd765baf7a))
+* **connections:** unify model — Stage 1 expand/backfill (additive, no cutover) ([#1604](https://github.com/lobu-ai/lobu/issues/1604)) ([24b03d8](https://github.com/lobu-ai/lobu/commit/24b03d82c7b20ca526dfa7fabeb584ccf4d3b5b9))
+* **connectors:** add Sign in with Slack login provider ([#1562](https://github.com/lobu-ai/lobu/issues/1562)) ([627fe3b](https://github.com/lobu-ai/lobu/commit/627fe3b9a48b027fb67f3d69f8e9240f16e784b5))
+* **connectors:** notify when Revolut needs browser sign-in ([553f1c3](https://github.com/lobu-ai/lobu/commit/553f1c3ed95e4c4be92b13ad5cf0afb5cb42aadd))
+* **feeds:** virtual feed flag (Slice 2) — live-read declarable feeds ([#1581](https://github.com/lobu-ai/lobu/issues/1581)) ([73bd37c](https://github.com/lobu-ai/lobu/commit/73bd37cc8cecc27595a89f2a08b8838c014da46f))
+* **guardrails:** custom inline-judge guardrails, trips API, env-only judge model ([#1565](https://github.com/lobu-ai/lobu/issues/1565)) ([fbccae9](https://github.com/lobu-ai/lobu/commit/fbccae975f1dc92ede9675c12a80338170349d0d))
+* remove agent MCP server settings ([#1614](https://github.com/lobu-ai/lobu/issues/1614)) ([65c3542](https://github.com/lobu-ai/lobu/commit/65c35424a175e441029bb57f6cbfaeadb5102736))
+* **server:** allow file-only messages + harden attachment transcript refs ([#1557](https://github.com/lobu-ai/lobu/issues/1557)) ([6df3575](https://github.com/lobu-ai/lobu/commit/6df35756bbe2498e73b0be376706ea49f7c52cd8))
+* **server:** attribute egress guardrail trips to their conversation ([#1601](https://github.com/lobu-ai/lobu/issues/1601)) ([5eb48bd](https://github.com/lobu-ai/lobu/commit/5eb48bd8dc1aa2dd49c7301c6944e6d6ca78c718))
+* **server:** authorization/ACL program — Slack channel visibility gate (vertical 1) ([#1586](https://github.com/lobu-ai/lobu/issues/1586)) ([9d4a298](https://github.com/lobu-ai/lobu/commit/9d4a298571e21ea4d330586b360fb05a053fd9cb))
+* **server:** per-user connection visibility on the SQL scoping seam ([#1574](https://github.com/lobu-ai/lobu/issues/1574)) ([c835e85](https://github.com/lobu-ai/lobu/commit/c835e8569b64b8281fc68f65be2fa1ebb1ceacd7))
+* **server:** read past channel conversation via search_memory; retire get_channel_history ([#1578](https://github.com/lobu-ai/lobu/issues/1578)) ([b767dca](https://github.com/lobu-ai/lobu/commit/b767dca244b6bcf9204a015e682adc06f777e1f1))
+* **server:** Settings escape hatch on the extension bootstrap error card ([#1572](https://github.com/lobu-ai/lobu/issues/1572)) ([0e27794](https://github.com/lobu-ai/lobu/commit/0e27794ff3f18ca358cd0c74dadec690cf1602a5))
+* **slack:** personal notifications + agent setup link on App Home ([#1546](https://github.com/lobu-ai/lobu/issues/1546)) ([3ca71dc](https://github.com/lobu-ai/lobu/commit/3ca71dc07404a4a8c80be87f47e5fd6b13e5f314))
+* **slack:** web-first connected-apps onboarding (server) ([#1568](https://github.com/lobu-ai/lobu/issues/1568)) ([b063c89](https://github.com/lobu-ai/lobu/commit/b063c89f016ea4cb95f24ef82aec7ef78f6e8cf0))
+* **watchers:** sync extracted fields into entities + human-AI field ownership loop ([#1573](https://github.com/lobu-ai/lobu/issues/1573)) ([0d902a7](https://github.com/lobu-ai/lobu/commit/0d902a73078dfb883d9aa4925d1519903fd9b2b6))
+* **web:** consolidate entity detail into entities browser + entity_id filters ([#1569](https://github.com/lobu-ai/lobu/issues/1569)) ([edf0ee1](https://github.com/lobu-ai/lobu/commit/edf0ee10e11375b60641d21af9c6bf80f4cac1c8))
+
+
+### Bug Fixes
+
+* **db:** resolve duplicate migration version 20260626000000 [dup-version-rename] ([#1588](https://github.com/lobu-ai/lobu/issues/1588)) ([09767c0](https://github.com/lobu-ai/lobu/commit/09767c0fd0ac5aeae84cfd62d31972632e5390bf))
+* **server:** auto-bind the chrome connection to the online extension on dispatch ([#1597](https://github.com/lobu-ai/lobu/issues/1597)) ([2b8119e](https://github.com/lobu-ai/lobu/commit/2b8119e8ded55530ffffcedfe7d3f1191fbd2348))
+* **server:** guardrail validation, Slack DM binding, non-OIDC OAuth (+owletto cleanup) ([#1579](https://github.com/lobu-ai/lobu/issues/1579)) ([cd47bfb](https://github.com/lobu-ai/lobu/commit/cd47bfbe69246fefff7b4e827d5a90024ca7cad7))
+* **server:** notify the user to re-login when a connector's site session expires ([#1596](https://github.com/lobu-ai/lobu/issues/1596)) ([b3c6502](https://github.com/lobu-ai/lobu/commit/b3c650268482b434a021b823956897686c9e03bd))
+* **server:** require explicit org selection when pairing a multi-org device ([#1594](https://github.com/lobu-ai/lobu/issues/1594)) ([1b308be](https://github.com/lobu-ai/lobu/commit/1b308be69cd3d7db4ae5c9da8603fe343831388f))
+* **server:** resolve proxy network config per-server, not via a lazy global ([#1598](https://github.com/lobu-ai/lobu/issues/1598)) ([2191d23](https://github.com/lobu-ai/lobu/commit/2191d232bacc5c57bc9254a8c6ed18d3cb9b84ad))
+* **server:** return 404 for expired/unknown MCP sessions so clients re-initialize ([#1616](https://github.com/lobu-ai/lobu/issues/1616)) ([940388f](https://github.com/lobu-ai/lobu/commit/940388fce7f7e3881b709685219fd00d0449773c))
+* **server:** stop session_replication_role leaking across the test pool ([#1607](https://github.com/lobu-ai/lobu/issues/1607)) ([aae191c](https://github.com/lobu-ai/lobu/commit/aae191c1898cd158cdc65c37b0ea2effa270606c))
+* **server:** wire grant + policy stores into the HTTP egress proxy at boot ([#1599](https://github.com/lobu-ai/lobu/issues/1599)) ([3e2ecd0](https://github.com/lobu-ai/lobu/commit/3e2ecd0991b3884d7f11fccb30475894f3b83cbb))
+* **test:** retry cleanup TRUNCATE on deadlock with co-running pollers ([#1609](https://github.com/lobu-ai/lobu/issues/1609)) ([a15212c](https://github.com/lobu-ai/lobu/commit/a15212c924887d040de2ee047d7d8d1bd8172930))
+* **test:** stop leaking the exclusive-lease poller across integration tests ([#1610](https://github.com/lobu-ai/lobu/issues/1610)) ([22b62bd](https://github.com/lobu-ai/lobu/commit/22b62bd3083eafa09e84a515ae814f379c63e3b6))
+
 ## [13.1.0](https://github.com/lobu-ai/lobu/compare/lobu-v13.0.0...lobu-v13.1.0) (2026-06-24)
 
 

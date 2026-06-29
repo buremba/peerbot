@@ -147,7 +147,12 @@ async function checkDomainAccess(
   hostname: string,
   agentId: string | undefined,
   organizationId: string | undefined,
-  requestContext?: { method?: string; path?: string }
+  requestContext?: {
+    method?: string;
+    path?: string;
+    conversationId?: string;
+    userId?: string;
+  }
 ): Promise<AccessDecision> {
   const global = config;
 
@@ -231,6 +236,8 @@ async function checkDomainAccess(
         void recordGuardrailTrip({
           organizationId,
           agentId,
+          conversationId: requestContext?.conversationId,
+          userId: requestContext?.userId,
           stage: "egress",
           guardrail: decision.judgeName,
           reason: decision.reason,
@@ -680,7 +687,11 @@ async function handleConnect(
     config,
     hostname,
     tokenData.agentId,
-    tokenData.organizationId
+    tokenData.organizationId,
+    {
+      conversationId: tokenData.conversationId,
+      userId: tokenData.userId,
+    }
   );
   logAccessDecision(
     "CONNECT",
@@ -835,6 +846,8 @@ async function handleProxyRequest(
     {
       method: req.method,
       path: parsedUrl.pathname + parsedUrl.search,
+      conversationId: tokenData.conversationId,
+      userId: tokenData.userId,
     }
   );
   logAccessDecision(

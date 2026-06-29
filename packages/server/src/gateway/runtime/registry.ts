@@ -18,3 +18,8 @@ export function getGatewayRuntimeProvider(
   if (!id) return undefined;
   return REGISTRY.get(id.trim().toLowerCase());
 }
+
+/** Registered provider ids — the set of connectable sandbox providers. */
+export function listGatewayRuntimeProviderIds(): string[] {
+  return [...REGISTRY.keys()];
+}

@@ -76,7 +76,7 @@ routes.use('*', async (c, next) => {
  * Returns a Response when the request must be rejected; returns null when the
  * caller should proceed.
  */
-function requireSessionOrAdminPat(c: any): Response | null {
+export function requireSessionOrAdminPat(c: any): Response | null {
   const authSource = c.get('authSource') as
     | 'session'
     | 'pat'

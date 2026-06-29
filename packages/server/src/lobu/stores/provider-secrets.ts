@@ -17,6 +17,7 @@
 import {
 	createLogger,
 	decrypt,
+	encrypt,
 	getErrorMessage,
 } from "@lobu/core";
 import { getDb } from "../../db/client.js";
@@ -39,6 +40,28 @@ export function environmentSecretName(
   field: string
 ): string {
   return `environment:${environmentId}:${field}`;
+}
+
+/**
+ * Encrypt + upsert one credential field for a runtime environment into the
+ * org vault (`environment:<id>:<field>`). Used by the environments API; the
+ * plaintext is never persisted and the gateway resolves it back via
+ * {@link readEnvironmentSecret} at exec time.
+ */
+export async function writeEnvironmentSecret(
+  environmentId: string,
+  field: string,
+  organizationId: string,
+  value: string
+): Promise<void> {
+  const sql = getDb();
+  const ciphertext = encrypt(value);
+  await sql`
+    INSERT INTO agent_secrets (organization_id, name, ciphertext, updated_at)
+    VALUES (${organizationId}, ${environmentSecretName(environmentId, field)}, ${ciphertext}, now())
+    ON CONFLICT (organization_id, name)
+    DO UPDATE SET ciphertext = EXCLUDED.ciphertext, updated_at = now()
+  `;
 }
 
 /**

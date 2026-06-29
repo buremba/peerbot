@@ -8,7 +8,10 @@ import { registerGatewayRuntimeProvider } from "./registry.js";
 
 registerGatewayRuntimeProvider(vercelGatewayRuntimeProvider);
 
-export { getGatewayRuntimeProvider } from "./registry.js";
+export {
+  getGatewayRuntimeProvider,
+  listGatewayRuntimeProviderIds,
+} from "./registry.js";
 export type {
   GatewayRuntimeProvider,
   RuntimeExecContext,

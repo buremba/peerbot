@@ -40,6 +40,7 @@ import {
 import { isExcludedSpaPath } from "./http/spa-route-filter";
 import { isShuttingDown } from "./lifecycle-state";
 import { agentRoutes } from "./lobu/agent-routes";
+import { environmentRoutes } from "./lobu/environment-routes";
 import { clientRoutes, platformSchemaRoutes } from "./lobu/client-routes";
 import { isLobuGatewayRunning } from "./lobu/gateway";
 import { handleMcp } from "./mcp-handler";
@@ -1313,6 +1314,7 @@ app.patch("/api/:orgSlug/organization/visibility", mcpAuth, async (c) => {
 app.route("/catalog", globalCatalogRoutes);
 app.route("/api/:orgSlug/installed", orgInstalledRoutes);
 app.route("/api/:orgSlug/agents", agentRoutes);
+app.route("/api/:orgSlug/environments", environmentRoutes);
 app.route("/api/:orgSlug/clients", clientRoutes);
 app.route("/api/agents/platforms", platformSchemaRoutes);
 

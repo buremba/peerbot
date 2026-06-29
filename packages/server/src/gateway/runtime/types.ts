@@ -20,6 +20,14 @@ export interface RuntimeCredentialField {
   /** Deployment-wide system-env fallback var (e.g. "VERCEL_TOKEN"). */
   systemEnvVar: string;
   required: boolean;
+  /**
+   * Whether this field is a secret. Secret fields (e.g. an API token) are never
+   * returned to the UI. Non-secret fields (`false` — e.g. teamId/projectId, which
+   * are plain identifiers) may be surfaced for display. Defaults to secret.
+   */
+  secret?: boolean;
+  /** Human label for the field in credential-entry UIs. */
+  label?: string;
 }
 
 export interface ResolvedRuntimeCredentials {

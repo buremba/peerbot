@@ -212,9 +212,27 @@ async function getSandbox(params: {
 export const vercelGatewayRuntimeProvider: GatewayRuntimeProvider = {
   id: "vercel",
   credentialFields: [
-    { key: "token", systemEnvVar: "VERCEL_TOKEN", required: true },
-    { key: "teamId", systemEnvVar: "VERCEL_TEAM_ID", required: true },
-    { key: "projectId", systemEnvVar: "VERCEL_PROJECT_ID", required: true },
+    {
+      key: "token",
+      systemEnvVar: "VERCEL_TOKEN",
+      required: true,
+      secret: true,
+      label: "Access token",
+    },
+    {
+      key: "teamId",
+      systemEnvVar: "VERCEL_TEAM_ID",
+      required: true,
+      secret: false,
+      label: "Team ID",
+    },
+    {
+      key: "projectId",
+      systemEnvVar: "VERCEL_PROJECT_ID",
+      required: true,
+      secret: false,
+      label: "Project ID",
+    },
   ],
   canSelfAuth(): boolean {
     // Vercel's recommended auth: an ambient OIDC token (present when Lobu runs

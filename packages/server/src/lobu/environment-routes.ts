@@ -19,10 +19,14 @@ import type { Env } from "../index";
 import {
   createEnvironment,
   deleteEnvironment,
+  type EnvironmentRow,
   listEnvironments,
   setEnvironmentCredentialName,
 } from "./stores/environment-store";
-import { writeEnvironmentSecret } from "./stores/provider-secrets";
+import {
+  readEnvironmentSecret,
+  writeEnvironmentSecret,
+} from "./stores/provider-secrets";
 import { orgContext } from "./stores/org-context";
 import { requireSessionOrAdminPat } from "./agent-routes";
 
@@ -82,7 +86,14 @@ async function applyCredential(
 // connectable provider kinds. Devices are merged client-side from /api/me/devices.
 routes.get("/", async (c) => {
   const orgId = c.get("organizationId") as string;
-  const environments = await listEnvironments(orgId);
+  const rows = await listEnvironments(orgId);
+  // `connected` reflects the ACTUAL vault contents (the provider's required
+  // credential fields), not the stale `credential_name` column — so a credential
+  // written by any path shows correctly. `details` carries only the non-secret
+  // identifier fields (e.g. teamId/projectId) for display; secrets never leave.
+  const environments = await Promise.all(
+    rows.map((env) => decorateEnvironment(env, orgId))
+  );
   return c.json({
     builtin: {
       id: "builtin",
@@ -94,6 +105,25 @@ routes.get("/", async (c) => {
     availableProviders: listGatewayRuntimeProviderIds(),
   });
 });
+
+async function decorateEnvironment(
+  env: EnvironmentRow,
+  organizationId: string
+): Promise<EnvironmentRow & { details: Record<string, string> }> {
+  const provider = getGatewayRuntimeProvider(env.providerKind);
+  if (!provider) return { ...env, connected: false, details: {} };
+  const details: Record<string, string> = {};
+  let connected = true;
+  for (const field of provider.credentialFields) {
+    const value = await readEnvironmentSecret(env.id, field.key, organizationId);
+    if (value) {
+      if (field.secret === false) details[field.key] = value;
+    } else if (field.required) {
+      connected = false;
+    }
+  }
+  return { ...env, connected, details };
+}
 
 // Create an environment, optionally writing its credential in the same call.
 routes.post("/", async (c) => {

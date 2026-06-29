@@ -197,8 +197,7 @@ describe("resolveAgentOptions model resolution", () => {
       ],
     });
   });
-
-);
+});
 
 describe("resolveAgentId", () => {
   test("returns null when no binding and connection has no agent", async () => {

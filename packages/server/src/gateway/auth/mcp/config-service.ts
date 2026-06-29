@@ -7,10 +7,6 @@ const LOBU_MEMORY_MCP_ID = "lobu-memory";
 interface HttpMcpServerConfig {
   id: string;
   upstreamUrl: string;
-  oauth?: undefined;
-  inputs?: undefined;
-  headers?: undefined;
-  authScope?: undefined;
   /**
    * Marks the embedded Lobu MCP server. The gateway proxy passes the worker JWT
    * directly, bypasses the SSRF localhost guard, and stamps the upstream

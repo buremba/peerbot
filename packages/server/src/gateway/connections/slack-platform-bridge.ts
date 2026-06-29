@@ -731,7 +731,6 @@ async function startMcpConnectFlow(params: {
     scopeKey: userId,
     wwwAuthenticate: null,
     redirectUri,
-    staticOauth: httpServer.oauth,
     platform: "slack",
     channelId: userId,
     conversationId: userId,

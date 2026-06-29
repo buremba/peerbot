@@ -514,6 +514,10 @@ routes.get('/:agentId/guardrail-trips', async (c) => {
   // asks for just that guardrail's catches.
   const guardrail = c.req.query('guardrail');
 
+  // Optional narrowing to one conversation — the chat view asks for just the
+  // trips that fired during this conversation so it can flag the affected turn.
+  const conversationId = c.req.query('conversationId');
+
   const sql = getDb();
   // `recordGuardrailTrip` writes `created_at` (default now()) but leaves
   // `occurred_at` null, so coalesce to `created_at` — otherwise the UI shows
@@ -525,6 +529,7 @@ routes.get('/:agentId/guardrail-trips', async (c) => {
        AND semantic_type = 'guardrail-trip'
        AND metadata->>'agent_id' = ${agentId}
        ${guardrail ? sql`AND metadata->>'guardrail' = ${guardrail}` : sql``}
+       ${conversationId ? sql`AND metadata->>'conversation_id' = ${conversationId}` : sql``}
      ORDER BY COALESCE(occurred_at, created_at) DESC, id DESC
      LIMIT ${limit}
   `;
@@ -536,6 +541,7 @@ routes.get('/:agentId/guardrail-trips', async (c) => {
       stage?: string;
       guardrail?: string;
       reason?: string | null;
+      conversation_id?: string | null;
     };
     const occurredAt =
       row.occurred_at instanceof Date
@@ -551,6 +557,9 @@ routes.get('/:agentId/guardrail-trips', async (c) => {
       stage: metadata.stage,
       guardrailName: metadata.guardrail,
       ...(metadata.reason ? { reason: metadata.reason } : {}),
+      ...(metadata.conversation_id
+        ? { conversationId: metadata.conversation_id }
+        : {}),
     };
   });
 

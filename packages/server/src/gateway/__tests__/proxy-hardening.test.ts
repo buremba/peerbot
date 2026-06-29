@@ -36,6 +36,8 @@ import { VerdictCache } from "../proxy/egress-judge/cache.js";
 import { withFreePortRetry } from "../../__tests__/setup/free-port.js";
 import {
   __testOnly,
+  type ResolvedNetworkConfig,
+  resolveNetworkConfig,
   setProxyEgressJudge,
   setProxyPolicyStore,
   setProxyRevokedTokenStore,
@@ -1063,10 +1065,15 @@ describe("egress denylist — trailing-dot FQDN canonicalization", () => {
   const prevAllowed = process.env.WORKER_ALLOWED_DOMAINS;
   const prevDisallowed = process.env.WORKER_DISALLOWED_DOMAINS;
 
+  // Config snapshot for this block — built from the env set in beforeEach and
+  // passed into each checkDomainAccess call, so the assertions don't depend on
+  // any shared module state.
+  let config: ResolvedNetworkConfig;
+
   beforeEach(() => {
     process.env.WORKER_ALLOWED_DOMAINS = "*";
     process.env.WORKER_DISALLOWED_DOMAINS = "pastebin.com";
-    __testOnly.reset();
+    config = resolveNetworkConfig();
   });
 
   afterEach(() => {
@@ -1074,28 +1081,32 @@ describe("egress denylist — trailing-dot FQDN canonicalization", () => {
     else process.env.WORKER_ALLOWED_DOMAINS = prevAllowed;
     if (prevDisallowed === undefined) delete process.env.WORKER_DISALLOWED_DOMAINS;
     else process.env.WORKER_DISALLOWED_DOMAINS = prevDisallowed;
-    __testOnly.reset();
   });
 
   test("blocks a denylisted host written with a trailing dot", async () => {
     expect(
-      (await __testOnly.checkDomainAccess("pastebin.com", undefined, undefined)).allowed
+      (await __testOnly.checkDomainAccess(config, "pastebin.com", undefined, undefined))
+        .allowed
     ).toBe(false);
     // The bug: this returned allowed:true before the canonicalization fix.
     expect(
-      (await __testOnly.checkDomainAccess("pastebin.com.", undefined, undefined)).allowed
+      (await __testOnly.checkDomainAccess(config, "pastebin.com.", undefined, undefined))
+        .allowed
     ).toBe(false);
     expect(
-      (await __testOnly.checkDomainAccess("pastebin.com..", undefined, undefined)).allowed
+      (await __testOnly.checkDomainAccess(config, "pastebin.com..", undefined, undefined))
+        .allowed
     ).toBe(false);
   });
 
   test("still allows a non-denylisted host (trailing dot or not) in unrestricted mode", async () => {
     expect(
-      (await __testOnly.checkDomainAccess("example.com", undefined, undefined)).allowed
+      (await __testOnly.checkDomainAccess(config, "example.com", undefined, undefined))
+        .allowed
     ).toBe(true);
     expect(
-      (await __testOnly.checkDomainAccess("example.com.", undefined, undefined)).allowed
+      (await __testOnly.checkDomainAccess(config, "example.com.", undefined, undefined))
+        .allowed
     ).toBe(true);
   });
 });

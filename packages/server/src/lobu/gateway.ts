@@ -28,6 +28,7 @@ import { Orchestrator } from "../gateway/orchestration/index";
 import {
 	startFilteringProxy,
 	stopFilteringProxy,
+	wireProxyEgressStores,
 } from "../gateway/proxy/proxy-manager";
 import { SecretStoreRegistry } from "../gateway/secrets/index";
 import type { Env } from "../index";
@@ -386,6 +387,9 @@ export async function initLobuGateway(): Promise<Hono | null> {
 			coreServices.getAgentSettingsStore() ?? undefined,
 		);
 		logger.info("[Lobu] Embedded orchestrator injected core services");
+
+		wireProxyEgressStores(coreServices);
+		logger.info("[Lobu] Egress grant + policy stores wired into HTTP proxy");
 
 		// Wire the deployment manager's idle clock into the worker gateway so every
 		// worker-driven HTTP response (delta / status_update / ACK / terminal reply)

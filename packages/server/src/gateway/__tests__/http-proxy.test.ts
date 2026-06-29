@@ -14,6 +14,8 @@ import { generateWorkerToken, verifyWorkerToken } from "@lobu/core";
 import type { RevokedTokenStore } from "../auth/revoked-token-store.js";
 import {
   __testOnly,
+  type ResolvedNetworkConfig,
+  resolveNetworkConfig,
   setProxyRevokedTokenStore,
   startHttpProxy,
   stopHttpProxy,
@@ -28,7 +30,10 @@ let proxyServer: http.Server;
 
 beforeAll(async () => {
   process.env.ENCRYPTION_KEY = TEST_ENCRYPTION_KEY;
-  // Default to unrestricted for auth tests; domain tests use per-deployment config
+  // Unrestricted for the auth + unrestricted-mode tests. `startHttpProxy`
+  // snapshots this env into the server's immutable config, so every request in
+  // this file sees "*" regardless of what a sibling test file left in the shared
+  // module/env — no ordering dependence, no reset needed.
   process.env.WORKER_ALLOWED_DOMAINS = "*";
 
   proxyPort = 10000 + Math.floor(Math.random() * 50000);
@@ -418,20 +423,31 @@ describe("HTTP Proxy IDN/Unicode egress matching", () => {
   const HTTP_HOST = "xn--mnchen-3ya.de"; // what `new URL("http://münchen.de/").hostname` yields
   const CONNECT_HOST = "münchen.de"; // what the CONNECT parser returns verbatim
 
+  // Snapshot the unrestricted-with-blocklist config and pass it into each
+  // checkDomainAccess call — no shared module state, no cross-file env race.
+  let config: ResolvedNetworkConfig;
+
+  const prevAllowed = process.env.WORKER_ALLOWED_DOMAINS;
+  const prevDisallowed = process.env.WORKER_DISALLOWED_DOMAINS;
+
   beforeAll(() => {
     process.env.WORKER_ALLOWED_DOMAINS = "*";
     process.env.WORKER_DISALLOWED_DOMAINS = "münchen.de";
-    __testOnly.reset();
+    config = resolveNetworkConfig();
   });
 
   afterAll(() => {
-    process.env.WORKER_ALLOWED_DOMAINS = "*";
-    delete process.env.WORKER_DISALLOWED_DOMAINS;
-    __testOnly.reset();
+    // Restore the pre-suite env rather than hardcoding cleanup, so this block
+    // can't leak its blocklist into later files in Bun's shared process.
+    if (prevAllowed === undefined) delete process.env.WORKER_ALLOWED_DOMAINS;
+    else process.env.WORKER_ALLOWED_DOMAINS = prevAllowed;
+    if (prevDisallowed === undefined) delete process.env.WORKER_DISALLOWED_DOMAINS;
+    else process.env.WORKER_DISALLOWED_DOMAINS = prevDisallowed;
   });
 
   test("punycode host (HTTP path) is blocked by the Unicode blocklist entry", async () => {
     const decision = await __testOnly.checkDomainAccess(
+      config,
       HTTP_HOST,
       "idn-test-agent",
       undefined
@@ -442,6 +458,7 @@ describe("HTTP Proxy IDN/Unicode egress matching", () => {
 
   test("Unicode host (CONNECT path) is blocked by the same blocklist entry", async () => {
     const decision = await __testOnly.checkDomainAccess(
+      config,
       CONNECT_HOST,
       "idn-test-agent",
       undefined

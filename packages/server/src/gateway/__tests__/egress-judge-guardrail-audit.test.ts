@@ -9,7 +9,7 @@
  * `insertEvent` seam so no Postgres is required.
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 // Capture `insertEvent` calls instead of hitting Postgres. `recordGuardrailTrip`
 // (the audit path) is the only consumer reached here; the other exports are
@@ -32,6 +32,8 @@ import type {
 import { EgressJudge } from "../proxy/egress-judge/judge.js";
 import {
   __testOnly,
+  type ResolvedNetworkConfig,
+  resolveNetworkConfig,
   setProxyEgressJudge,
   setProxyPolicyStore,
 } from "../proxy/http-proxy.js";
@@ -52,13 +54,29 @@ function policyStoreReturning(rule: ResolvedJudgeRule): PolicyStore {
 }
 
 describe("egress judge deny → guardrail-trip audit", () => {
+  // Complete-isolation config snapshot so the host is never globally allowed and
+  // the decision falls through to the judge. Passed explicitly into each
+  // checkDomainAccess call — no shared module state.
+  let config: ResolvedNetworkConfig;
+
+  const prevAllowed = process.env.WORKER_ALLOWED_DOMAINS;
+  const prevDisallowed = process.env.WORKER_DISALLOWED_DOMAINS;
+
   beforeEach(() => {
     insertEventCalls.length = 0;
-    // Complete-isolation global config so the host is never globally allowed
-    // and the decision falls through to the judge.
     process.env.WORKER_ALLOWED_DOMAINS = "";
     process.env.WORKER_DISALLOWED_DOMAINS = "";
+    config = resolveNetworkConfig();
     __testOnly.reset();
+  });
+
+  afterEach(() => {
+    // Restore the pre-suite env so the blank allow/deny settings can't leak into
+    // later files in Bun's shared process and reintroduce order-dependence.
+    if (prevAllowed === undefined) delete process.env.WORKER_ALLOWED_DOMAINS;
+    else process.env.WORKER_ALLOWED_DOMAINS = prevAllowed;
+    if (prevDisallowed === undefined) delete process.env.WORKER_DISALLOWED_DOMAINS;
+    else process.env.WORKER_DISALLOWED_DOMAINS = prevDisallowed;
   });
 
   test("a judged-domain DENY records a guardrail-trip with stage egress", async () => {
@@ -73,6 +91,7 @@ describe("egress judge deny → guardrail-trip audit", () => {
     );
 
     const decision = await __testOnly.checkDomainAccess(
+      config,
       "api.github.com",
       "agent-a",
       "org-1"
@@ -116,6 +135,7 @@ describe("egress judge deny → guardrail-trip audit", () => {
     );
 
     const decision = await __testOnly.checkDomainAccess(
+      config,
       "api.github.com",
       "agent-a",
       "org-1"

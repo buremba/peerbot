@@ -798,7 +798,7 @@ async function handleProxyRequest(
   res: http.ServerResponse
 ): Promise<void> {
   if (req.method === "CONNECT") {
-    await handleConnectRequestFallback(req, res);
+    await handleConnectRequestFallback(config, req, res);
     return;
   }
 
@@ -941,6 +941,7 @@ async function handleProxyRequest(
 }
 
 async function handleConnectRequestFallback(
+  config: ResolvedNetworkConfig,
   req: http.IncomingMessage,
   res: http.ServerResponse
 ): Promise<void> {
@@ -964,9 +965,14 @@ async function handleConnectRequestFallback(
 
   const { deploymentName, tokenData } = auth;
   const decision = await checkDomainAccess(
+    config,
     hostname,
     tokenData.agentId,
-    tokenData.organizationId
+    tokenData.organizationId,
+    {
+      conversationId: tokenData.conversationId,
+      userId: tokenData.userId,
+    }
   );
   logAccessDecision(
     "CONNECT",

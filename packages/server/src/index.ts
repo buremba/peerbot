@@ -714,10 +714,10 @@ app.get("/api/health", restHealth);
 // not exposed to public ingress consumers. Mounted before mcpAuth so the
 // route handles its own auth without falling into the OAuth-bearer path.
 import { createSmokeRoutes } from "./gateway/routes/internal/smoke";
-import { createVercelSandboxRoutes } from "./gateway/routes/internal/vercel-sandbox";
+import { createRuntimeRoutes } from "./gateway/routes/internal/runtime";
 
 app.route("/api/internal/smoke", createSmokeRoutes());
-app.route("", createVercelSandboxRoutes());
+app.route("", createRuntimeRoutes());
 
 import {
 	completeActionRun,

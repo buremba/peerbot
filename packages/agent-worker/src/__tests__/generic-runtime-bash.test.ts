@@ -1,12 +1,10 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import {
-  createVercelSandboxBashOps,
-  useVercelSandboxBackend,
-} from "../embedded/vercel-sandbox-bash";
+import { createGenericRuntimeBashOps } from "../embedded/runtime/generic-runtime-bash";
+import { getWorkerRuntimeProvider } from "../embedded/runtime/index";
 
 const originalEnv = {
   JUST_BASH_ALLOWED_DOMAINS: process.env.JUST_BASH_ALLOWED_DOMAINS,
-  LOBU_WORKSPACE_BACKEND: process.env.LOBU_WORKSPACE_BACKEND,
+  LOBU_RUNTIME_PROVIDER: process.env.LOBU_RUNTIME_PROVIDER,
 };
 const originalFetch = globalThis.fetch;
 
@@ -21,22 +19,23 @@ function restoreEnv(name: keyof typeof originalEnv): void {
 
 afterEach(() => {
   restoreEnv("JUST_BASH_ALLOWED_DOMAINS");
-  restoreEnv("LOBU_WORKSPACE_BACKEND");
+  restoreEnv("LOBU_RUNTIME_PROVIDER");
   globalThis.fetch = originalFetch;
   mock.restore();
 });
 
-describe("useVercelSandboxBackend", () => {
-  test("is opt-in only", () => {
-    expect(useVercelSandboxBackend("")).toBe(false);
-    expect(useVercelSandboxBackend("vercel")).toBe(true);
-    expect(useVercelSandboxBackend("vercel-sandbox")).toBe(true);
-    expect(useVercelSandboxBackend("local")).toBe(false);
+describe("worker runtime registry", () => {
+  test("resolves registered providers and ignores unknown selectors", () => {
+    expect(getWorkerRuntimeProvider("vercel")?.id).toBe("vercel");
+    expect(getWorkerRuntimeProvider("VERCEL")?.id).toBe("vercel");
+    expect(getWorkerRuntimeProvider("")).toBeUndefined();
+    expect(getWorkerRuntimeProvider(undefined)).toBeUndefined();
+    expect(getWorkerRuntimeProvider("local")).toBeUndefined();
   });
 });
 
-describe("createVercelSandboxBashOps", () => {
-  test("posts bash execution to the internal gateway route", async () => {
+describe("createGenericRuntimeBashOps", () => {
+  test("posts bash execution to the generic runtime route without naming a provider", async () => {
     process.env.JUST_BASH_ALLOWED_DOMAINS = JSON.stringify([
       "github.com",
       ".npmjs.org",
@@ -48,7 +47,9 @@ describe("createVercelSandboxBashOps", () => {
     );
     globalThis.fetch = fetchMock as typeof fetch;
 
-    const ops = createVercelSandboxBashOps({
+    const provider = getWorkerRuntimeProvider("vercel");
+    if (!provider) throw new Error("vercel provider not registered");
+    const ops = createGenericRuntimeBashOps(provider, {
       gw: {
         gatewayUrl: "http://127.0.0.1:8787/lobu/",
         workerToken: "worker-token",
@@ -77,18 +78,23 @@ describe("createVercelSandboxBashOps", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://127.0.0.1:8787/lobu/internal/vercel-sandbox/exec");
+    expect(url).toBe("http://127.0.0.1:8787/lobu/internal/runtime/exec");
     expect(init.method).toBe("POST");
     expect(init.headers).toEqual({
       authorization: "Bearer worker-token",
       "content-type": "application/json",
     });
-    expect(JSON.parse(String(init.body))).toEqual({
+    const body = JSON.parse(String(init.body));
+    // The worker never selects a provider — the gateway derives it from the token.
+    expect(body).not.toHaveProperty("provider");
+    expect(body).toEqual({
       command: "echo ok",
       cwd: "/subdir",
       workspaceDir: "/workspace/conv",
       timeoutMs: 3000,
       env: {
+        // WORKER_TOKEN / DISPATCHER_URL / HTTP_PROXY / NO_PROXY stripped; the
+        // provider's remoteEnv overrides HOME and adds the sandbox tmp/cache.
         HOME: "/vercel/sandbox",
         PATH: "/usr/bin",
         TMPDIR: "/vercel/sandbox/.tmp",
@@ -105,7 +111,9 @@ describe("createVercelSandboxBashOps", () => {
       Response.json({ error: "not enabled" }, { status: 404 })
     ) as typeof fetch;
 
-    const ops = createVercelSandboxBashOps({
+    const provider = getWorkerRuntimeProvider("vercel");
+    if (!provider) throw new Error("vercel provider not registered");
+    const ops = createGenericRuntimeBashOps(provider, {
       gw: {
         gatewayUrl: "http://127.0.0.1:8787/lobu",
         workerToken: "worker-token",

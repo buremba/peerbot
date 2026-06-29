@@ -1314,11 +1314,12 @@ export class DeploymentManager {
       envVars.APP_GIT_SHA = process.env.APP_GIT_SHA;
     }
 
-    // Non-secret worker runtime selector. Vercel credentials remain in the
-    // gateway process and are never forwarded to worker subprocesses.
-    if (process.env.LOBU_WORKSPACE_BACKEND?.trim()) {
-      envVars.LOBU_WORKSPACE_BACKEND =
-        process.env.LOBU_WORKSPACE_BACKEND.trim();
+    // Non-secret worker runtime selector — tells the worker which provider
+    // client to use for bash. Provider credentials remain in the gateway
+    // process and are never forwarded to worker subprocesses.
+    if (process.env.LOBU_RUNTIME_PROVIDER?.trim()) {
+      envVars.LOBU_RUNTIME_PROVIDER =
+        process.env.LOBU_RUNTIME_PROVIDER.trim();
     }
 
     // Add OTLP endpoint for distributed tracing

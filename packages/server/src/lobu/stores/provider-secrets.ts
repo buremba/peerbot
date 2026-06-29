@@ -28,6 +28,54 @@ export function providerOrgSecretName(providerId: string): string {
 }
 
 /**
+ * Vault row name for one credential field of a runtime environment. Keyed by
+ * `environments.id` (not provider kind) so two environments of the same
+ * provider in one org keep distinct credentials — e.g.
+ * `environment:env-abc:token`. Org-scoping is still enforced by the
+ * `(organization_id, name)` PK on `agent_secrets`.
+ */
+export function environmentSecretName(
+  environmentId: string,
+  field: string
+): string {
+  return `environment:${environmentId}:${field}`;
+}
+
+/**
+ * Read + decrypt one credential field for a runtime environment. Returns null
+ * on miss/expiry/decrypt-failure so the caller can fall back to system env.
+ * Mirrors {@link readOrgSharedProviderApiKey} but keyed per-environment.
+ */
+export async function readEnvironmentSecret(
+  environmentId: string,
+  field: string,
+  organizationId: string
+): Promise<string | null> {
+  const sql = getDb();
+  const rows = (await sql`
+    SELECT ciphertext
+    FROM agent_secrets
+    WHERE organization_id = ${organizationId}
+      AND name = ${environmentSecretName(environmentId, field)}
+      AND (expires_at IS NULL OR expires_at > now())
+    LIMIT 1
+  `) as Array<{ ciphertext: string }>;
+  const ciphertext = rows[0]?.ciphertext;
+  if (!ciphertext) return null;
+  try {
+    return decrypt(ciphertext);
+  } catch (error) {
+    logger.warn(
+      `Failed to decrypt environment secret ${environmentSecretName(
+        environmentId,
+        field
+      )}: ${getErrorMessage(error)}`
+    );
+    return null;
+  }
+}
+
+/**
  * Read + decrypt the org-shared API key for a provider (tier 2 of the
  * resolution chain above). Returns null when no row exists, the row expired,
  * or the ciphertext fails to decrypt — every miss is silent so callers keep

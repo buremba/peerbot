@@ -23,7 +23,7 @@ import { createDeviceAuthRoutes } from "../routes/internal/device-auth.js";
 import { createFileRoutes } from "../routes/internal/files.js";
 import { createImageRoutes } from "../routes/internal/images.js";
 import { createInteractionRoutes } from "../routes/internal/interactions.js";
-import { createVercelSandboxRoutes } from "../routes/internal/vercel-sandbox.js";
+import { createRuntimeRoutes } from "../routes/internal/runtime.js";
 import { registerAutoOpenApiRoutes } from "../routes/openapi-auto.js";
 import { createAgentApi } from "../routes/public/agent.js";
 import { createAgentConfigRoutes } from "../routes/public/agent-config.js";
@@ -235,8 +235,8 @@ export function createGatewayApp(
       "Conversation routes enabled at :8080/internal/conversations/*"
     );
 
-    app.route("", createVercelSandboxRoutes());
-    logger.debug("Vercel sandbox routes enabled");
+    app.route("", createRuntimeRoutes());
+    logger.debug("Runtime provider routes enabled");
   }
 
   if (coreServices) {

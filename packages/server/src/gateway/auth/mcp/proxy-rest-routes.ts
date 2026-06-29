@@ -109,8 +109,7 @@ async function handleCallToolAuthenticated(
 	if (!httpServer) {
 		return c.json({ error: `MCP server '${mcpId}' not found` }, 404);
 	}
-	const channelId = auth.tokenData.channelId || "";
-	const scopeKey = computeScopeKey(httpServer, requesterUserId, channelId);
+	const scopeKey = computeScopeKey(requesterUserId);
 
 	// Parse body early so tool arguments are available for the approval message.
 	let toolArguments: Record<string, unknown> = {};
@@ -210,44 +209,6 @@ async function handleCallToolAuthenticated(
 			extraHeaders,
 		);
 
-		// Detect HTTP 401 + WWW-Authenticate → start MCP OAuth 2.1 auth-code flow.
-		// This path runs before JSON-RPC parsing because most compliant MCP
-		// servers (Sentry, etc.) return 401 at the transport layer, not a
-		// JSON-RPC error body.
-		if (response.status === 401) {
-			const payload = await proxy.authFlows.handleUpstream401({
-				response,
-				mcpId,
-				agentId,
-				userId: requesterUserId,
-				organizationId: auth.tokenData.organizationId,
-				scopeKey,
-				httpServer,
-				wwwAuthenticate: response.headers.get("www-authenticate"),
-				platform: auth.tokenData.platform,
-				channelId,
-				conversationId: auth.tokenData.conversationId || "",
-				teamId: auth.tokenData.teamId,
-				connectionId: auth.tokenData.connectionId,
-				source: auth.tokenData.source,
-				deviceAuthFallback: true,
-			});
-			return c.json(
-				{
-					content: [
-						{
-							type: "text",
-							text: payload
-								? JSON.stringify(payload)
-								: `Authentication required for ${mcpId} but OAuth discovery failed.`,
-						},
-					],
-					isError: true,
-				},
-				200,
-			);
-		}
-
 		let data = (await parseJsonRpcResponse(response)) as JsonRpcResponse;
 
 		// Re-initialize session and retry on stale-session errors.
@@ -297,44 +258,6 @@ async function handleCallToolAuthenticated(
 				toolName,
 				error: data.error,
 			});
-
-			// Detect auth errors — auto-start device-code auth flow
-			if (/unauthorized|unauthenticated|forbidden/i.test(errorMsg)) {
-				const autoAuthResult = await proxy.authFlows.tryAutoDeviceAuth(
-					mcpId,
-					agentId,
-					scopeKey,
-					auth.tokenData.organizationId,
-				);
-				if (autoAuthResult) {
-					await proxy.authFlows.fireAuthRequired(
-						agentId,
-						requesterUserId,
-						mcpId,
-						autoAuthResult,
-						auth.tokenData.channelId || "",
-						auth.tokenData.conversationId || "",
-						auth.tokenData.teamId,
-						auth.tokenData.connectionId,
-						auth.tokenData.platform,
-						auth.tokenData.source,
-					);
-				}
-				return c.json(
-					{
-						content: [
-							{
-								type: "text",
-								text: autoAuthResult
-									? JSON.stringify(autoAuthResult)
-									: `Authentication required for ${mcpId}. Call ${mcpId}_login to authenticate.`,
-							},
-						],
-						isError: true,
-					},
-					200,
-				);
-			}
 
 			return c.json(
 				{

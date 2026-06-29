@@ -39,15 +39,6 @@ export const INITIALIZED_NOTIFICATION_BODY = JSON.stringify({
 	method: "notifications/initialized",
 });
 
-/** Payload shape surfaced to the user when an MCP upstream needs auth. */
-export type AuthRequiredPayload = {
-	status: "login_required" | "pending";
-	url?: string;
-	userCode?: string;
-	message: string;
-	expiresInSeconds?: number;
-};
-
 /**
  * Parse a JSON-RPC response body that may be either a plain JSON object
  * (Content-Type: application/json) or a single-event SSE stream
@@ -91,11 +82,6 @@ export interface JsonRpcResponse {
 export interface HttpMcpServerConfig {
 	id: string;
 	upstreamUrl: string;
-	oauth?: import("@lobu/core").McpOAuthConfig;
-	inputs?: unknown[];
-	headers?: Record<string, string>;
-	/** Credential scoping strategy: "user" (default) or "channel" (shared in a Slack channel). */
-	authScope?: "user" | "channel";
 	/** True when the upstream is the same embedded Lobu process (lobu-memory). */
 	internal?: boolean;
 }
@@ -164,7 +150,6 @@ export function extractSessionToken(c: Context): string | null {
 
 export function buildUpstreamHeaders(
 	sessionId: string | null,
-	configHeaders?: Record<string, string>,
 	credentialToken?: string,
 	internal?: boolean,
 ): Record<string, string> {
@@ -175,14 +160,6 @@ export function buildUpstreamHeaders(
 		Accept: "application/json, text/event-stream",
 	};
 
-	// Merge custom headers from server config (e.g. static auth tokens)
-	if (configHeaders) {
-		for (const [key, value] of Object.entries(configHeaders)) {
-			headers[key] = value;
-		}
-	}
-
-	// Per-user credential takes precedence over config headers for Authorization
 	if (credentialToken) {
 		headers.Authorization = `Bearer ${credentialToken}`;
 	}
@@ -201,18 +178,11 @@ export function buildUpstreamHeaders(
 }
 
 /**
- * Compute the credential scope key from the server config + request context.
- * Returns `channel-<channelId>` when `authScope === "channel"` (and channelId
- * is present), otherwise `userId` for per-user scope.
+ * Compute the credential scope key for upstream session isolation. The only
+ * configured MCP server is the internal lobu-memory server (per-user scope),
+ * so the scope key is always the user id.
  */
-export function computeScopeKey(
-	httpServer: HttpMcpServerConfig,
-	userId: string,
-	channelId: string | undefined,
-): string {
-	if (httpServer.authScope === "channel" && channelId) {
-		return `channel-${channelId}`;
-	}
+export function computeScopeKey(userId: string): string {
 	return userId;
 }
 

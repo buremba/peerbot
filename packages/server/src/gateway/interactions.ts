@@ -353,36 +353,6 @@ export class InteractionService extends EventEmitter {
   }
 
   /**
-   * Post an OAuth/login link button for an MCP auth flow.
-   */
-  async postOauthLink(
-    userId: string,
-    conversationId: string,
-    channelId: string,
-    teamId: string | undefined,
-    connectionId: string | undefined,
-    platform: string,
-    url: string,
-    label: string,
-    body?: string,
-    source?: string
-  ): Promise<PostedLinkButton> {
-    return this.postLinkButton(
-      userId,
-      conversationId,
-      channelId,
-      teamId,
-      connectionId,
-      platform,
-      url,
-      label,
-      "oauth",
-      body,
-      source
-    );
-  }
-
-  /**
    * Post a plain text status message (non-blocking, fire-and-forget).
    * Emits "status-message:created" for platform renderers.
    */

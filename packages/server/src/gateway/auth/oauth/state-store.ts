@@ -6,8 +6,8 @@ import { getDb } from "../../../db/client.js";
  * Generic OAuth state store for CSRF protection.
  *
  * Backed by `public.oauth_states`. Each scope (e.g. `claude:oauth_state`,
- * `slack:oauth:state`, `mcp-oauth:state`) is stamped on the row so a single
- * table can hold every flow's nonces; the unique 32-byte token is the row id.
+ * `slack:oauth:state`) is stamped on the row so a single table can hold every
+ * flow's nonces; the unique 32-byte token is the row id.
  *
  * Tokens default to a 5-minute TTL, overridable per-instance via the
  * constructor `ttlSeconds` option (e.g. the GitHub App install flow, which a

@@ -2,8 +2,7 @@ import dns from "node:dns/promises";
 import * as net from "node:net";
 
 /**
- * SSRF / reserved-IP guard shared by the MCP proxy (gateway/auth/mcp/proxy.ts)
- * and the MCP OAuth discovery module (gateway/auth/mcp/oauth-discovery.ts).
+ * SSRF / reserved-IP guard used by the MCP proxy (gateway/auth/mcp/proxy.ts).
  *
  * The matcher collapses the spellings an attacker can use to dress up an
  * internal address so `net.BlockList` won't recognise it: IPv4-mapped IPv6

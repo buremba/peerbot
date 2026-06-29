@@ -241,14 +241,6 @@ describe("InteractionService — connectionId is required", () => {
     ).rejects.toThrow(/connectionId is required/);
   });
 
-  test("postOauthLink throws when connectionId is undefined", async () => {
-    const svc = new InteractionService();
-    await expect(
-      svc.postOauthLink("u", "conv", "ch", undefined, undefined, "slack",
-        "https://example.com", "Sign in")
-    ).rejects.toThrow(/connectionId is required/);
-  });
-
   // platform "api" has no Chat SDK connection — its cards are routed by
   // conversationId through the API platform's event.platform === "api"
   // subscriptions, and chat bridges drop foreign-platform events in
@@ -993,19 +985,5 @@ describe("InteractionService.postLinkButton — body field", () => {
       "https://example.com", "Connect", "oauth");
 
     expect(received[0]!.body).toBeUndefined();
-  });
-
-  test("postOauthLink delegates to postLinkButton with linkType=oauth", async () => {
-    const svc = new InteractionService();
-    const received: PostedLinkButton[] = [];
-    svc.on("link-button:created", (e) => received.push(e));
-
-    await svc.postOauthLink("u", "conv", "ch", undefined, "conn-1", "telegram",
-      "https://oauth.example.com/auth", "Sign in", "Please sign in.");
-
-    expect(received[0]!.linkType).toBe("oauth");
-    expect(received[0]!.platform).toBe("telegram");
-    expect(received[0]!.label).toBe("Sign in");
-    expect(received[0]!.body).toBe("Please sign in.");
   });
 });

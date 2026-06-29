@@ -6,80 +6,11 @@ import {
 	expect,
 	test,
 } from "bun:test";
-import { encrypt, type SecretRef, type WorkerTokenData } from "@lobu/core";
-import { tryGetOrgId } from "../../lobu/stores/org-context.js";
+import { encrypt, type WorkerTokenData } from "@lobu/core";
 import { McpProxy } from "../auth/mcp/proxy.js";
-import { createDeviceAuthRoutes } from "../routes/internal/device-auth.js";
-import type { SecretListEntry, WritableSecretStore } from "../secrets/index.js";
-
-class OrgScopedWritableStore implements WritableSecretStore {
-	private readonly entries = new Map<string, string>();
-
-	constructor(private readonly organizationId: string) {}
-
-	seed(name: string, value: string): void {
-		this.entries.set(name, value);
-	}
-
-	read(name: string): string | null {
-		return this.entries.get(name) ?? null;
-	}
-
-	async get(ref: SecretRef): Promise<string | null> {
-		if (tryGetOrgId() !== this.organizationId) return null;
-		if (!ref.startsWith("secret://")) return null;
-		const name = decodeURIComponent(ref.slice("secret://".length));
-		return this.entries.get(name) ?? null;
-	}
-
-	async put(name: string, value: string): Promise<SecretRef> {
-		if (tryGetOrgId() !== this.organizationId) {
-			throw new Error("test secret write missing org context");
-		}
-		this.entries.set(name, value);
-		return `secret://${encodeURIComponent(name)}` as SecretRef;
-	}
-
-	async delete(nameOrRef: string): Promise<void> {
-		if (tryGetOrgId() !== this.organizationId) {
-			throw new Error("test secret delete missing org context");
-		}
-		const name = nameOrRef.startsWith("secret://")
-			? decodeURIComponent(nameOrRef.slice("secret://".length))
-			: nameOrRef;
-		this.entries.delete(name);
-	}
-
-	async list(prefix?: string): Promise<SecretListEntry[]> {
-		if (tryGetOrgId() !== this.organizationId) return [];
-		return Array.from(this.entries.keys())
-			.filter((name) => !prefix || name.startsWith(prefix))
-			.map((name) => ({
-				ref: `secret://${encodeURIComponent(name)}` as SecretRef,
-				backend: "memory",
-				name,
-				updatedAt: Date.now(),
-			}));
-	}
-}
 
 function createWorkerToken(data: Omit<WorkerTokenData, "timestamp">): string {
 	return encrypt(JSON.stringify({ ...data, timestamp: Date.now() }));
-}
-
-function storedCredential(
-	accessToken: string,
-	overrides: Record<string, unknown> = {},
-): string {
-	return JSON.stringify({
-		accessToken,
-		refreshToken: "refresh-token",
-		expiresAt: Date.now() + 60 * 60 * 1000,
-		clientId: "client-id",
-		tokenUrl: "https://auth.example/token",
-		tokenEndpointAuthMethod: "none",
-		...overrides,
-	});
 }
 
 describe("McpProxy org context", () => {
@@ -103,303 +34,8 @@ describe("McpProxy org context", () => {
 		}
 	});
 
-	test("resolves org-scoped MCP credentials from the worker token organization", async () => {
-		const orgId = "org-mcp-proxy-test";
-		const mcpId = "test-mcp";
-		const agentId = "agent1";
-		const userId = "user1";
-		const store = new OrgScopedWritableStore(orgId);
-		store.seed(
-			`mcp-auth/${agentId}/${userId}/${mcpId}/credential`,
-			storedCredential("oauth-access-token"),
-		);
-		const token = createWorkerToken({
-			userId,
-			conversationId: "conv1",
-			deploymentName: "deploy1",
-			channelId: "ch1",
-			agentId,
-			organizationId: orgId,
-		});
-		const proxy = new McpProxy(
-			{
-				getHttpServer: async () => ({
-					id: mcpId,
-					upstreamUrl: "https://upstream.example/mcp",
-				}),
-				getAllHttpServers: async () => new Map(),
-			},
-			{ secretStore: store },
-		);
-
-		let capturedAuthorization: string | null = null;
-		globalThis.fetch = async (_url, init) => {
-			capturedAuthorization = new Headers(init?.headers).get("Authorization");
-			return new Response(
-				JSON.stringify({
-					jsonrpc: "2.0",
-					id: 1,
-					result: {
-						content: [{ type: "text", text: "ok" }],
-						isError: false,
-					},
-				}),
-				{
-					status: 200,
-					headers: { "Content-Type": "application/json" },
-				},
-			);
-		};
-
-		const res = await proxy.getApp().request(`/${mcpId}/tools/my_tool`, {
-			method: "POST",
-			headers: {
-				Authorization: `Bearer ${token}`,
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({ arg1: "value1" }),
-		});
-
-		expect(res.status).toBe(200);
-		expect(capturedAuthorization).toBe("Bearer oauth-access-token");
-	});
-
-	test("device-auth worker routes write and read credentials in the worker token organization", async () => {
-		const orgId = "org-device-auth-test";
-		const mcpId = "device-mcp";
-		const agentId = "agent-device";
-		const userId = "user-device";
-		const store = new OrgScopedWritableStore(orgId);
-		const token = createWorkerToken({
-			userId,
-			conversationId: "conv-device",
-			deploymentName: "deploy-device",
-			channelId: "ch-device",
-			agentId,
-			organizationId: orgId,
-		});
-		const router = createDeviceAuthRoutes({
-			secretStore: store,
-			mcpConfigService: {
-				getHttpServer: async () => ({
-					upstreamUrl: "https://issuer.example/mcp",
-					oauth: {
-						clientId: "client-id",
-						deviceAuthorizationUrl:
-							"https://issuer.example/oauth/device_authorization",
-						tokenUrl: "https://issuer.example/oauth/token",
-					},
-				}),
-			} as unknown as Parameters<
-				typeof createDeviceAuthRoutes
-			>[0]["mcpConfigService"],
-		});
-
-		globalThis.fetch = async (url) => {
-			const href = String(url);
-			if (href.endsWith("/oauth/device_authorization")) {
-				return Response.json({
-					device_code: "device-code",
-					user_code: "USER-CODE",
-					verification_uri: "https://issuer.example/device",
-					expires_in: 600,
-					interval: 1,
-				});
-			}
-			if (href.endsWith("/oauth/token")) {
-				return Response.json({
-					access_token: "device-access-token",
-					refresh_token: "device-refresh-token",
-					expires_in: 3600,
-				});
-			}
-			throw new Error(`unexpected fetch ${href}`);
-		};
-
-		const authHeaders = {
-			Authorization: `Bearer ${token}`,
-			"Content-Type": "application/json",
-		};
-		const start = await router.request("/internal/device-auth/start", {
-			method: "POST",
-			headers: authHeaders,
-			body: JSON.stringify({ mcpId }),
-		});
-		expect(start.status).toBe(200);
-
-		const poll = await router.request("/internal/device-auth/poll", {
-			method: "POST",
-			headers: authHeaders,
-			body: JSON.stringify({ mcpId }),
-		});
-		expect(poll.status).toBe(200);
-		expect(await poll.json()).toEqual({ status: "complete" });
-
-		const status = await router.request(
-			`/internal/device-auth/status?mcpId=${mcpId}`,
-			{ headers: { Authorization: `Bearer ${token}` } },
-		);
-		expect(status.status).toBe(200);
-		expect(await status.json()).toEqual({ authenticated: true });
-	});
-
-	test("direct tool discovery resolves credentials from token organization", async () => {
-		const orgId = "org-tool-discovery-test";
-		const mcpId = "discovery-mcp";
-		const agentId = "agent-discovery";
-		const userId = "user-discovery";
-		const store = new OrgScopedWritableStore(orgId);
-		store.seed(
-			`mcp-auth/${agentId}/${userId}/${mcpId}/credential`,
-			storedCredential("discovery-access-token"),
-		);
-		const tokenData: WorkerTokenData = {
-			userId,
-			conversationId: "conv-discovery",
-			deploymentName: "deploy-discovery",
-			channelId: "ch-discovery",
-			agentId,
-			organizationId: orgId,
-			timestamp: Date.now(),
-		};
-		const proxy = new McpProxy(
-			{
-				getHttpServer: async () => ({
-					id: mcpId,
-					upstreamUrl: "https://upstream.example/mcp",
-				}),
-				getAllHttpServers: async () => new Map(),
-			},
-			{ secretStore: store },
-		);
-
-		const capturedAuthorizations: Array<string | null> = [];
-		globalThis.fetch = async (_url, init) => {
-			capturedAuthorizations.push(
-				new Headers(init?.headers).get("Authorization"),
-			);
-			const body = String(init?.body ?? "");
-			if (body.includes('"method":"tools/list"')) {
-				return Response.json({
-					jsonrpc: "2.0",
-					id: 1,
-					result: { tools: [{ name: "list_repos" }] },
-				});
-			}
-			return Response.json({
-				jsonrpc: "2.0",
-				id: 0,
-				result: {},
-			});
-		};
-
-		const { tools } = await proxy.fetchToolsForMcp(
-			mcpId,
-			agentId,
-			tokenData,
-		);
-
-		expect(tools.map((tool) => tool.name)).toEqual(["list_repos"]);
-		expect(capturedAuthorizations.length).toBeGreaterThan(0);
-		expect(
-			capturedAuthorizations.every(
-				(value) => value === "Bearer discovery-access-token",
-			),
-		).toBe(true);
-	});
-
-	test("direct tool discovery refreshes and re-stores credentials inside token organization", async () => {
-		const orgId = "org-tool-refresh-test";
-		const mcpId = "refresh-mcp";
-		const agentId = "agent-refresh";
-		const userId = "user-refresh";
-		const credentialKey = `mcp-auth/${agentId}/${userId}/${mcpId}/credential`;
-		const store = new OrgScopedWritableStore(orgId);
-		store.seed(
-			credentialKey,
-			storedCredential("expired-access-token", {
-				expiresAt: Date.now() - 1,
-			}),
-		);
-		const tokenData: WorkerTokenData = {
-			userId,
-			conversationId: "conv-refresh",
-			deploymentName: "deploy-refresh",
-			channelId: "ch-refresh",
-			agentId,
-			organizationId: orgId,
-			timestamp: Date.now(),
-		};
-		const proxy = new McpProxy(
-			{
-				getHttpServer: async () => ({
-					id: mcpId,
-					upstreamUrl: "https://upstream.example/mcp",
-				}),
-				getAllHttpServers: async () => new Map(),
-			},
-			{ secretStore: store },
-		);
-
-		let refreshCalls = 0;
-		const capturedAuthorizations: Array<string | null> = [];
-		globalThis.fetch = async (url, init) => {
-			const href = String(url);
-			if (href === "https://auth.example/token") {
-				refreshCalls++;
-				const body = String(init?.body ?? "");
-				expect(body).toContain("grant_type=refresh_token");
-				expect(body).toContain("refresh_token=refresh-token");
-				return Response.json({
-					access_token: "refreshed-access-token",
-					refresh_token: "refresh-token-2",
-					expires_in: 3600,
-				});
-			}
-
-			capturedAuthorizations.push(
-				new Headers(init?.headers).get("Authorization"),
-			);
-			const body = String(init?.body ?? "");
-			if (body.includes('"method":"tools/list"')) {
-				return Response.json({
-					jsonrpc: "2.0",
-					id: 1,
-					result: { tools: [{ name: "list_repos" }] },
-				});
-			}
-			return Response.json({
-				jsonrpc: "2.0",
-				id: 0,
-				result: {},
-			});
-		};
-
-		const { tools } = await proxy.fetchToolsForMcp(
-			mcpId,
-			agentId,
-			tokenData,
-		);
-
-		expect(tools.map((tool) => tool.name)).toEqual(["list_repos"]);
-		expect(refreshCalls).toBe(1);
-		expect(capturedAuthorizations.length).toBeGreaterThan(0);
-		expect(
-			capturedAuthorizations.every(
-				(value) => value === "Bearer refreshed-access-token",
-			),
-		).toBe(true);
-		const persisted = JSON.parse(store.read(credentialKey) ?? "{}") as {
-			accessToken?: string;
-			refreshToken?: string;
-		};
-		expect(persisted.accessToken).toBe("refreshed-access-token");
-		expect(persisted.refreshToken).toBe("refresh-token-2");
-	});
-
 	test("REST tool calls without token organization fail before upstream access", async () => {
 		const mcpId = "rest-missing-org-mcp";
-		const store = new OrgScopedWritableStore("unused-org");
 		const token = createWorkerToken({
 			userId: "user-rest-missing-org",
 			conversationId: "conv-rest-missing-org",
@@ -414,7 +50,7 @@ describe("McpProxy org context", () => {
 				},
 				getAllHttpServers: async () => new Map(),
 			},
-			{ secretStore: store },
+			{},
 		);
 
 		let upstreamCalled = false;
@@ -441,7 +77,6 @@ describe("McpProxy org context", () => {
 
 	test("JSON-RPC proxy calls without token organization fail before upstream access", async () => {
 		const mcpId = "proxy-missing-org-mcp";
-		const store = new OrgScopedWritableStore("unused-org");
 		const token = createWorkerToken({
 			userId: "user-proxy-missing-org",
 			conversationId: "conv-proxy-missing-org",
@@ -456,7 +91,7 @@ describe("McpProxy org context", () => {
 				},
 				getAllHttpServers: async () => new Map(),
 			},
-			{ secretStore: store },
+			{},
 		);
 
 		let upstreamCalled = false;
@@ -489,52 +124,5 @@ describe("McpProxy org context", () => {
 			},
 		});
 		expect(upstreamCalled).toBe(false);
-	});
-
-	test("approved tool execution resolves credentials from the pending invocation organization", async () => {
-		const orgId = "org-approved-tool-test";
-		const mcpId = "approved-mcp";
-		const agentId = "agent-approved";
-		const userId = "user-approved";
-		const store = new OrgScopedWritableStore(orgId);
-		store.seed(
-			`mcp-auth/${agentId}/${userId}/${mcpId}/credential`,
-			storedCredential("approved-access-token"),
-		);
-		const proxy = new McpProxy(
-			{
-				getHttpServer: async () => ({
-					id: mcpId,
-					upstreamUrl: "https://upstream.example/mcp",
-				}),
-				getAllHttpServers: async () => new Map(),
-			},
-			{ secretStore: store },
-		);
-
-		let capturedAuthorization: string | null = null;
-		globalThis.fetch = async (_url, init) => {
-			capturedAuthorization = new Headers(init?.headers).get("Authorization");
-			return Response.json({
-				jsonrpc: "2.0",
-				id: 1,
-				result: {
-					content: [{ type: "text", text: "approved" }],
-					isError: false,
-				},
-			});
-		};
-
-		const result = await proxy.executeToolDirect(
-			agentId,
-			userId,
-			mcpId,
-			"approved_tool",
-			{},
-			{ organizationId: orgId },
-		);
-
-		expect(result.isError).toBe(false);
-		expect(capturedAuthorization).toBe("Bearer approved-access-token");
 	});
 });

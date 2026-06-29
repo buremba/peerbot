@@ -275,6 +275,42 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     expect(channels).not.toContain('C01SEC');
   });
 
+  it('scopes the production sync to the connection workspace — a second workspace never leaks in', async () => {
+    const { org, agent } = await setupWorkspace();
+    const sql = getTestDb();
+    // CONN is the Acme (T01ACME) workspace bot.
+    await sql`UPDATE agent_connections SET metadata = ${sql.json({ teamId: TEAM })} WHERE id = ${CONN}`;
+    // A binding to a channel in a DIFFERENT workspace (the same agent's second
+    // Slack connection) must NOT be synced under CONN — otherwise CONN would
+    // fetch it with the wrong token and fail closed, or stamp it under itself.
+    await sql`
+      INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id)
+      VALUES (${org.id}, ${agent.agentId}, 'slack', 'C02FOREIGN', 'T02OTHER')
+    `;
+
+    const fetched: string[] = [];
+    const result = await syncSlackConnectionAcl(
+      {
+        slackWeb: {
+          conversationMembers: async (_t, channelId) => {
+            fetched.push(channelId);
+            return ['U01ALICE'];
+          },
+        },
+        // Only the Acme workspace has a token — reaching T02OTHER would fail closed.
+        resolveBotToken: async ({ teamId }) =>
+          teamId === TEAM ? 'xoxb-test-token' : null,
+      },
+      { connectionId: CONN, organizationId: org.id },
+    );
+
+    // The foreign channel is excluded, so the sync stays green and only Acme's
+    // channels are fetched. Pre-fix this threw (no token for T02OTHER) → ok=false.
+    expect(result.ok).toBe(true);
+    expect(result.channelsSynced).toBe(2);
+    expect(fetched.sort()).toEqual(['C01ENG', 'C01SEC']);
+  });
+
   it('resolves a member provisioned through the REAL path (ensureMemberEntity), not a hand-seeded identity', async () => {
     // setupWorkspace seeds Alice via seedSignedInMember, which writes the
     // auth_user_id identity by hand. THIS test instead provisions a second user

@@ -17,9 +17,13 @@ import { resolveOrgId } from "../../../lobu/stores/org-context.js";
 import type { UserAgentsStore } from "../../auth/user-agents-store.js";
 import type { WorkerConnectionManager } from "../../gateway/connection-manager.js";
 import {
+	isConversationVisible,
 	listAgentThreads,
+	readConversationMessages,
 	readThreadMessages,
+	resolveChannelVisibility,
 } from "../../services/agent-thread-list.js";
+import { readWatcherRunThreads } from "../../services/watcher-run-thread.js";
 import {
 	createOwnershipResolver,
 	resolveSettingsLookupUserId,
@@ -341,10 +345,14 @@ export function createAgentHistoryRoutes(deps: {
 		const scope = await getAuthorizedAgentScope(c);
 		if (!scope) return errorResponse(c, "Unauthorized", 401);
 
+		// `?scope=all` widens the list to every conversation for the agent across
+		// platforms (Slack, Telegram, …), not just the requesting user's threads.
+		const listScope = c.req.query("scope") === "all" ? "all" : "user";
 		const threads = await listAgentThreads({
 			agentId: scope.agentId,
 			organizationId: scope.organizationId,
 			userId: scope.userId,
+			scope: listScope,
 		});
 		return c.json({ threads });
 	});
@@ -386,6 +394,99 @@ export function createAgentHistoryRoutes(deps: {
 						}
 					: message,
 			);
+		}
+		return c.json(data);
+	});
+
+	// Read a PLATFORM conversation (e.g. `slack:{channel}:{ts}`) read-only by its
+	// raw conversation id. The id carries colons, so it's URL-encoded in the path.
+	app.get("/conversations/:conversationId/messages", async (c) => {
+		const scope = await getAuthorizedAgentScope(c);
+		if (!scope) return errorResponse(c, "Unauthorized", 401);
+		if (!scope.organizationId) return c.json({ messages: [] });
+
+		const conversationId = decodeURIComponent(c.req.param("conversationId") || "");
+		// Platform conversation ids are `{platform}:{...}` — alnum/._:- only.
+		if (!conversationId || !/^[a-zA-Z0-9._:-]+$/.test(conversationId)) {
+			return errorResponse(c, "Invalid conversation id", 400);
+		}
+
+		// ACL: the requester must be able to read this conversation's channel —
+		// the same per-agent fence ∩ per-user channel gate the listing applies.
+		// Fail closed (404, not 403) so an unauthorized id is indistinguishable
+		// from a non-existent one.
+		const channelVis = await resolveChannelVisibility(getDb(), {
+			organizationId: scope.organizationId,
+			agentId: scope.agentId,
+			userId: scope.userId,
+		});
+		if (!isConversationVisible(conversationId, channelVis)) {
+			return errorResponse(c, "Conversation not found", 404);
+		}
+
+		const cursor = c.req.query("cursor") || "";
+		const limit = Math.min(parseInt(c.req.query("limit") || "200", 10), 200);
+
+		const data = await readConversationMessages({
+			agentId: scope.agentId,
+			organizationId: scope.organizationId,
+			conversationId,
+			cursor,
+			limit,
+		});
+		if (artifactStore && publicGatewayUrl && Array.isArray(data.messages)) {
+			data.messages = data.messages.map((message) =>
+				message.role === "user"
+					? {
+							...message,
+							content: resignFileRefs(
+								message.content,
+								artifactStore,
+								publicGatewayUrl,
+							),
+						}
+					: message,
+			);
+		}
+		return c.json(data);
+	});
+
+	// A watcher's recent completed runs as ready-to-stitch transcripts — the
+	// read-only run history rendered as one conversation. Watcher conversation
+	// ids are org-less but the snapshot row carries the org; the service bridges
+	// that, so we just hand it the requester's resolved org.
+	app.get("/watchers/:watcherId/thread", async (c) => {
+		const scope = await getAuthorizedAgentScope(c);
+		if (!scope) return errorResponse(c, "Unauthorized", 401);
+		if (!scope.organizationId) return c.json({ runs: [] });
+
+		const watcherId = Number(c.req.param("watcherId"));
+		if (!Number.isFinite(watcherId)) {
+			return errorResponse(c, "Invalid watcher id", 400);
+		}
+		const limit = Math.min(parseInt(c.req.query("limit") || "20", 10), 50);
+
+		const data = await readWatcherRunThreads({
+			agentId: scope.agentId,
+			watcherId,
+			organizationId: scope.organizationId,
+			limit,
+		});
+		if (artifactStore && publicGatewayUrl) {
+			for (const run of data.runs) {
+				run.messages = run.messages.map((message) =>
+					message.role === "user"
+						? {
+								...message,
+								content: resignFileRefs(
+									message.content,
+									artifactStore,
+									publicGatewayUrl,
+								),
+							}
+						: message,
+				);
+			}
 		}
 		return c.json(data);
 	});

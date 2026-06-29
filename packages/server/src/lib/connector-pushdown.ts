@@ -179,6 +179,7 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
      WHERE f.id = $1
        AND f.organization_id = $3
        AND f.deleted_at IS NULL
+       AND f.status = 'active'
        AND c.deleted_at IS NULL
        AND c.status = 'active'
        ${vis.sql}

@@ -119,8 +119,13 @@ async function resolveOrganizationForGrant(params: {
   userId: string;
   resourceOrgSlug: string | null;
   explicitOrgId: string | undefined;
+  // When true, a user who belongs to more than one org and didn't pass an
+  // explicit org (or resource slug) must pick one — we do NOT silently bind to
+  // their personal org. Used by the first-party device-pairing flow, where a
+  // silent personal-org default landed the device in the wrong workspace.
+  forceSelectionForMultiOrg?: boolean;
 }): Promise<OrgResolutionResult> {
-  const { sql, userId, resourceOrgSlug, explicitOrgId } = params;
+  const { sql, userId, resourceOrgSlug, explicitOrgId, forceSelectionForMultiOrg } = params;
 
   const lookupOrgAccess = async (column: 'slug' | 'id', value: string) => {
     if (column === 'slug') {
@@ -204,6 +209,21 @@ async function resolveOrganizationForGrant(params: {
     return {
       error: createOAuthError('access_denied', 'No organization membership found for MCP scopes'),
       status: 403,
+    };
+  }
+
+  // First-party device pairing: a multi-org user MUST choose explicitly. Skip
+  // the personal-org default below so the device can't be silently bound to the
+  // wrong workspace. Single-org users (length === 1) have no ambiguity and fall
+  // through to the normal resolution.
+  if (forceSelectionForMultiOrg && memberships.length > 1) {
+    return {
+      orgSelectionRequired: true,
+      organizations: memberships.map((m) => ({
+        id: m.organization_id,
+        name: m.name,
+        slug: m.slug,
+      })),
     };
   }
 
@@ -892,6 +912,9 @@ oauthRoutes.post('/oauth/device/approve', requireAuth, async (c) => {
       userId: user.id,
       resourceOrgSlug: getOrgSlugFromResource(deviceCode.resource),
       explicitOrgId: body.organization_id,
+      // Device pairing must not silently default a multi-org user's device to
+      // their personal org — require an explicit pick.
+      forceSelectionForMultiOrg: true,
     });
     if ('error' in orgResult) {
       return c.json(orgResult.error, orgResult.status as 400);

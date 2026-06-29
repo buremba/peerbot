@@ -201,7 +201,7 @@ export interface DesiredAgent {
   metadata: DesiredAgentMetadata;
   /**
    * Settings payload destined for `PATCH /:agentId/config`. Built by the mapper
-   * + agent-dir loader: networkConfig, skillsConfig, egressConfig,
+   * + agent-dir loader: networkConfig, skillsConfig,
    * preApprovedTools, guardrails, toolsConfig, nixConfig, mcpServers,
    * modelSelection, providerModelPreferences, installedProviders,
    * identityMd/soulMd/userMd.
@@ -266,29 +266,6 @@ interface SkillFrontmatter {
   name?: string;
   description?: string;
   nixPackages?: string[];
-  network?: {
-    allow?: string[];
-    deny?: string[];
-    judge?: Array<string | { domain: string; judge?: string }>;
-  };
-  judges?: Record<string, string>;
-  mcpServers?: SkillMcpInput;
-}
-
-function normalizeDomainPattern(pattern: string): string {
-  const trimmed = pattern.trim().toLowerCase();
-  if (!trimmed) return "";
-  if (trimmed === "*") return "*";
-  if (trimmed.startsWith("*.")) return `.${trimmed.slice(2)}`;
-  return trimmed;
-}
-
-function normalizeDomainPatterns(patterns?: string[]): string[] | undefined {
-  if (!patterns?.length) return undefined;
-  const normalized = [
-    ...new Set(patterns.map(normalizeDomainPattern).filter(Boolean)),
-  ];
-  return normalized.length > 0 ? normalized : undefined;
 }
 
 async function parseSkillFrontmatter(raw: string): Promise<{
@@ -309,16 +286,12 @@ type SkillConfigEntry = NonNullable<
   AgentSettings["skillsConfig"]
 >["skills"][number];
 
-type SkillMcpInput = Record<
-  string,
-  { url?: string; type?: string; command?: string; args?: string[] }
->;
-
 /**
  * Map a resolved skill (inline `defineSkill` or file-loaded `skillFromFile`)
  * into a `SkillConfig` entry — the shape stored on agent settings and synced to
- * the worker's `.skills/`. The network/nix/mcp here merge into the agent's
- * worker sandbox at apply time, which is why skills resolve eagerly.
+ * the worker's `.skills/`. The nix packages here merge into the agent's worker
+ * sandbox at apply time, which is why skills resolve eagerly. Skills are
+ * prompt/behavior only — they declare no network or MCP config.
  */
 function skillToConfig(args: {
   name: string;
@@ -326,11 +299,6 @@ function skillToConfig(args: {
   source: "inline" | "file";
   description?: string;
   nixPackages?: string[];
-  allow?: string[];
-  deny?: string[];
-  judged?: Array<{ domain: string; judge?: string }>;
-  judges?: Record<string, string>;
-  mcpServers?: SkillMcpInput;
 }): SkillConfigEntry {
   const skill: SkillConfigEntry = {
     repo: `${args.source}/${args.name}`,
@@ -340,37 +308,6 @@ function skillToConfig(args: {
   };
   if (args.description) skill.description = args.description;
   if (args.nixPackages?.length) skill.nixPackages = args.nixPackages;
-
-  const judgedDomains = (args.judged ?? []).map((entry) => ({
-    domain: normalizeDomainPattern(entry.domain),
-    ...(entry.judge ? { judge: entry.judge } : {}),
-  }));
-  const allowedDomains = normalizeDomainPatterns(args.allow);
-  const deniedDomains = normalizeDomainPatterns(args.deny);
-  if (
-    allowedDomains ||
-    deniedDomains ||
-    judgedDomains.length > 0 ||
-    args.judges
-  ) {
-    skill.networkConfig = {
-      allowedDomains,
-      deniedDomains,
-      ...(judgedDomains.length > 0 ? { judgedDomains } : {}),
-      ...(args.judges ? { judges: args.judges } : {}),
-    };
-  }
-
-  const mcpEntries = Object.entries(args.mcpServers ?? {});
-  if (mcpEntries.length > 0) {
-    skill.mcpServers = mcpEntries.map(([id, mcp]) => ({
-      id,
-      url: mcp.url,
-      type: mcp.type as "sse" | "stdio" | undefined,
-      command: mcp.command,
-      args: mcp.args,
-    }));
-  }
   return skill;
 }
 
@@ -418,32 +355,17 @@ async function resolveSkill(
       source: "file",
       description: fm?.description,
       nixPackages: fm?.nixPackages,
-      allow: fm?.network?.allow,
-      deny: fm?.network?.deny,
-      judged: (fm?.network?.judge ?? []).map((e) =>
-        typeof e === "string"
-          ? { domain: e }
-          : { domain: e.domain, ...(e.judge ? { judge: e.judge } : {}) }
-      ),
-      judges: fm?.judges,
-      mcpServers: fm?.mcpServers,
     });
   }
   if (!skill.name) {
     throw new ValidationError("defineSkill requires a `name`.");
   }
-  const net = skill.network;
   return skillToConfig({
     name: skill.name,
     content: skill.content ?? "",
     source: "inline",
     description: skill.description,
     nixPackages: skill.nixPackages,
-    allow: net?.allowed,
-    deny: net?.denied,
-    judged: net?.judged,
-    judges: net?.judges,
-    mcpServers: skill.mcpServers,
   });
 }
 

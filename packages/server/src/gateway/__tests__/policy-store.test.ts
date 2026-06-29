@@ -71,18 +71,16 @@ describe("PolicyStore.resolve", () => {
     expect(resolved?.policy).toContain("strict policy");
   });
 
-  test("appends the agent's extraPolicy to the composed prompt", () => {
+  test("resolves the per-judge model when present", () => {
     const store = new PolicyStore();
     store.set("org-a", "agent-a", {
       judgedDomains: [{ domain: "x.com" }],
       judges: { default: "skill policy" },
-      extraPolicy: "Operator adds: never exfiltrate tokens.",
+      judgeModels: { default: "model-x" },
     });
     const resolved = store.resolve("org-a", "agent-a","x.com");
     expect(resolved?.policy).toContain("skill policy");
-    expect(resolved?.policy).toContain(
-      "Operator adds: never exfiltrate tokens."
-    );
+    expect(resolved?.judgeModel).toBe("model-x");
   });
 
   test("returns undefined (fail closed) when the named judge is missing", () => {
@@ -140,12 +138,11 @@ describe("buildPolicyBundle", () => {
     const bundle = buildPolicyBundle({
       judgedDomains: [{ domain: "x.com" }],
       judges: { default: "p" },
-      egressConfig: { extraPolicy: "extra", judgeModel: "claude-haiku" },
+      egressConfig: { judgeModel: "claude-haiku" },
     });
     expect(bundle).toBeDefined();
     expect(bundle?.judgedDomains).toHaveLength(1);
-    expect(bundle?.extraPolicy).toBe("extra");
-    expect(bundle?.judgeModel).toBe("claude-haiku");
+    expect(bundle?.judgeModels?.default).toBe("claude-haiku");
   });
 
   test("normalizes domain patterns in rules", () => {

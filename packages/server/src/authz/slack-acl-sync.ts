@@ -88,10 +88,29 @@ export async function syncSlackConnectionAcl(
     organizationId,
     connectionId,
   });
+
+  // `resolveBoundChannelRows` joins bindings on (org, agent, platform) — NOT on
+  // workspace — so an agent with a SECOND Slack connection (another workspace)
+  // would pull that workspace's channels in here too. A real workspace
+  // connection carries `metadata.teamId`; scope to it so we only ever fetch
+  // members with THIS connection's token and stamp THIS connection's ACL state.
+  // A preview connection (no teamId, the hosted-bot invariant) serves cross-org
+  // bindings by design, so it stays unscoped.
+  const [conn] = await sql<{ team_id: string | null }>`
+		SELECT metadata->>'teamId' AS team_id
+		FROM agent_connections
+		WHERE id = ${connectionId} AND organization_id = ${organizationId}
+		LIMIT 1
+	`;
+  const connTeamId = conn?.team_id ?? null;
+
   // Only Slack rows that carry a team id can be team-scoped into the graph; a
   // channel with no team id is dropped fail-closed by the gate anyway.
   const slackRows = bound.filter(
-    (r) => r.platform.startsWith('slack') && r.team_id,
+    (r) =>
+      r.platform.startsWith('slack') &&
+      r.team_id &&
+      (connTeamId === null || r.team_id === connTeamId),
   );
   if (slackRows.length === 0) {
     return { ok: true, teamsSynced: 0, channelsSynced: 0 };

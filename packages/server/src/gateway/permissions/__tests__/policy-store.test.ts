@@ -11,15 +11,16 @@
  *   - resolve: returns undefined when named judge is missing (fails closed)
  *   - buildPolicyBundle: deduplicates equivalent domain patterns
  *   - buildPolicyBundle: returns undefined when no judged domains
- *   - buildPolicyBundle: appends extraPolicy to each judge
+ *   - buildPolicyBundle: maps the legacy agent-wide judgeModel onto judges
  *   - set/clear: clear removes the agent's policy
  *   - policyHash: stable between calls for same input
- *   - policyHash: changes when extraPolicy changes (cache key discipline)
  */
 
+import type { AgentInlineGuardrail } from "@lobu/core";
 import { describe, expect, test } from "bun:test";
 import {
   buildPolicyBundle,
+  egressGuardrailsToPolicyBundle,
   PolicyStore,
 } from "../policy-store.js";
 
@@ -179,35 +180,32 @@ describe("PolicyStore — policyHash", () => {
     expect(h1).toBe(h2);
   });
 
-  test("policyHash differs when extraPolicy changes", () => {
+  test("policyHash differs when the judge policy text changes", () => {
     const store = new PolicyStore();
     store.set("org-1", "agent-1", {
       judgedDomains: [{ domain: "api.example.com" }],
-      judges: { default: "Base policy." },
-      extraPolicy: "Extra A.",
+      judges: { default: "Base policy A." },
     });
     const hashA = store.resolve("org-1", "agent-1", "api.example.com")!.policyHash;
 
     store.set("org-1", "agent-1", {
       judgedDomains: [{ domain: "api.example.com" }],
-      judges: { default: "Base policy." },
-      extraPolicy: "Extra B.",
+      judges: { default: "Base policy B." },
     });
     const hashB = store.resolve("org-1", "agent-1", "api.example.com")!.policyHash;
 
     expect(hashA).not.toBe(hashB);
   });
 
-  test("extraPolicy is appended to composed policy text", () => {
+  test("resolve carries the per-judge model", () => {
     const store = new PolicyStore();
     store.set("org-1", "agent-1", {
       judgedDomains: [{ domain: "api.example.com" }],
       judges: { default: "Base policy." },
-      extraPolicy: "Additional constraint.",
+      judgeModels: { default: "model-x" },
     });
     const result = store.resolve("org-1", "agent-1", "api.example.com")!;
-    expect(result.policy).toContain("Base policy.");
-    expect(result.policy).toContain("Additional constraint.");
+    expect(result.judgeModel).toBe("model-x");
   });
 });
 
@@ -255,21 +253,99 @@ describe("buildPolicyBundle", () => {
     expect(bundle!.judgedDomains[0]!.domain).toBe("api.example.com");
   });
 
-  test("carries extraPolicy from egressConfig", () => {
-    const bundle = buildPolicyBundle({
-      judgedDomains: [{ domain: "api.example.com" }],
-      judges: { default: "Base." },
-      egressConfig: { extraPolicy: "Never leak tokens." },
-    });
-    expect(bundle!.extraPolicy).toBe("Never leak tokens.");
-  });
-
-  test("carries judgeModel from egressConfig", () => {
+  test("maps the legacy agent-wide judgeModel onto each named judge", () => {
     const bundle = buildPolicyBundle({
       judgedDomains: [{ domain: "api.example.com" }],
       judges: { default: "Base." },
       egressConfig: { judgeModel: "claude-haiku-4-5-20251001" },
     });
-    expect(bundle!.judgeModel).toBe("claude-haiku-4-5-20251001");
+    expect(bundle!.judgeModels?.default).toBe("claude-haiku-4-5-20251001");
+  });
+});
+
+// ─── egress-guardrail → policy-bundle equivalence (the safety net) ────────────
+//
+// Proves the NEW source (an `egress`-stage inline guardrail) resolves to the
+// SAME `ResolvedJudgeRule` the EgressJudge consumes as the LEGACY
+// `network.judged`/`judges`/`egressConfig` source did. Only the bundle SOURCE
+// changed; enforcement (PolicyStore.resolve → EgressJudge.decide) is untouched.
+
+describe("egressGuardrailsToPolicyBundle — equivalence with the legacy path", () => {
+  test("resolves identically to the old network.judged/judges/judgeModel path", () => {
+    const org = "org-eq";
+    const agent = "agent-eq";
+    const host = "api.github.com";
+
+    // NEW path: a single egress inline guardrail.
+    const guardrail: AgentInlineGuardrail = {
+      name: "repo",
+      enabled: true,
+      stage: "egress",
+      policy: "only github",
+      domains: [".github.com"],
+      model: "x",
+    };
+    const newBundle = egressGuardrailsToPolicyBundle([guardrail]);
+    expect(newBundle).toBeDefined();
+    const newStore = new PolicyStore();
+    newStore.set(org, agent, newBundle!);
+    const fromNew = newStore.resolve(org, agent, host);
+
+    // OLD path: the exact inputs the legacy source produced.
+    const oldBundle = buildPolicyBundle({
+      judgedDomains: [{ domain: ".github.com", judge: "repo" }],
+      judges: { repo: "only github" },
+      egressConfig: { judgeModel: "x" },
+    });
+    expect(oldBundle).toBeDefined();
+    // Same (org, agent) so the agent-scoped policyHash is comparable; separate
+    // store instance so the two bundles don't clobber one another.
+    const oldStore = new PolicyStore();
+    oldStore.set(org, agent, oldBundle!);
+    const fromOld = oldStore.resolve(org, agent, host);
+
+    expect(fromNew).toBeDefined();
+    expect(fromOld).toBeDefined();
+    // Behaviour-preserving for EgressJudge.decide: identical composed policy,
+    // cache-keying hash, judge name, and per-judge model.
+    expect(fromNew!.policy).toBe(fromOld!.policy);
+    expect(fromNew!.policyHash).toBe(fromOld!.policyHash);
+    expect(fromNew!.judgeName).toBe(fromOld!.judgeName);
+    expect(fromNew!.judgeModel).toBe(fromOld!.judgeModel);
+    expect(fromNew!.judgeModel).toBe("x");
+  });
+
+  test("returns undefined when no egress guardrail declares a domain", () => {
+    expect(egressGuardrailsToPolicyBundle([])).toBeUndefined();
+    expect(
+      egressGuardrailsToPolicyBundle([
+        {
+          name: "no-domains",
+          enabled: true,
+          stage: "egress",
+          policy: "p",
+          model: "m",
+        },
+      ])
+    ).toBeUndefined();
+    // Disabled / non-egress entries are ignored.
+    expect(
+      egressGuardrailsToPolicyBundle([
+        {
+          name: "disabled",
+          enabled: false,
+          stage: "egress",
+          policy: "p",
+          domains: [".github.com"],
+        },
+        {
+          name: "wrong-stage",
+          enabled: true,
+          stage: "pre-tool",
+          policy: "p",
+          tools: ["bash"],
+        },
+      ])
+    ).toBeUndefined();
   });
 });

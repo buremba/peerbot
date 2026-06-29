@@ -401,30 +401,11 @@ export interface ProviderConfig {
   key?: string | SecretRef;
 }
 
-/** Per-domain egress-judge rule: route `domain` through the named judge policy. */
-export interface JudgedDomain {
-  domain: string;
-  /** Name of a policy declared in {@link NetworkConfig.judges}. */
-  judge?: string;
-}
-
 export interface NetworkConfig {
   /** Domains the worker may reach (exact or `.wildcard`). */
   allowed?: string[];
   /** Domains explicitly blocked (takes precedence over `allowed`). */
   denied?: string[];
-  /** Domains routed through the LLM egress judge. */
-  judged?: JudgedDomain[];
-  /** Named judge policies (prompt text), referenced by `judged[].judge`. */
-  judges?: Record<string, string>;
-}
-
-/** Operator-level overrides for the LLM egress judge. */
-export interface EgressConfig {
-  /** Extra instructions appended to the egress judge prompt. */
-  extraPolicy?: string;
-  /** Override the model the egress judge runs on. */
-  judgeModel?: string;
 }
 
 /** Worker-side tool permissions. */
@@ -516,7 +497,6 @@ export interface Agent {
   skills?: Skill[];
   providers?: ProviderConfig[];
   network?: NetworkConfig;
-  egress?: EgressConfig;
   tools?: ToolsConfig;
   /** Guardrails enabled for this agent, by registered name. */
   guardrails?: string[];
@@ -546,20 +526,8 @@ export function defineAgent(config: Omit<Agent, "kind">): Agent {
 // ---------------------------------------------------------------------------
 
 /**
- * MCP server a skill declares. Skills support the basic transport shape only;
- * for servers that need auth (custom headers or OAuth), declare them on the
- * agent via `defineAgent({ mcpServers })`, which has full secret support.
- */
-export interface SkillMcpServer {
-  url?: string;
-  command?: string;
-  args?: string[];
-  type?: "sse" | "streamable-http" | "stdio";
-}
-
-/**
- * A skill an agent can use — an instruction block (`content`) plus the egress,
- * nix, and MCP it declares. Skills are referenced explicitly from
+ * A skill an agent can use — an instruction block (`content`) plus the nix
+ * packages it declares. Skills are referenced explicitly from
  * {@link Agent.skills}; there is no directory auto-discovery.
  *
  * Build one of two ways, both producing this same object:
@@ -569,9 +537,9 @@ export interface SkillMcpServer {
  *     fields from its frontmatter + body. `path` is mutually exclusive with the
  *     inline fields.
  *
- * The frontmatter a skill declares (`network`, `nixPackages`, `mcpServers`) is
- * merged into the agent's worker sandbox at apply time — that's why skills are
- * resolved eagerly, not loaded by the worker at run time.
+ * The frontmatter a skill declares (`nixPackages`) is merged into the agent's
+ * worker sandbox at apply time — that's why skills are resolved eagerly, not
+ * loaded by the worker at run time.
  */
 export interface Skill {
   readonly kind: "skill";
@@ -586,13 +554,6 @@ export interface Skill {
   content?: string;
   /** Nix packages provisioned into the worker when this skill is present. */
   nixPackages?: string[];
-  /** Egress the skill needs — merged into the agent's network allowlist. */
-  network?: NetworkConfig;
-  /**
-   * MCP servers the skill declares, keyed by id. Basic transport shape only; a
-   * server that needs auth (headers/OAuth) belongs on the agent's `mcpServers`.
-   */
-  mcpServers?: Record<string, SkillMcpServer>;
   /**
    * Load body + frontmatter from a `SKILL.md`, relative to the config file. Set
    * by {@link skillFromFile}; resolved by the loader. Mutually exclusive with

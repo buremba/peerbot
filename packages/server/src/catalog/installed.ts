@@ -143,9 +143,7 @@ export async function listAgentInstalled(
 				enabled: skill.enabled,
 				description: skill.description,
 				system: skill.system,
-				mcp_servers: skill.mcpServers,
 				nix_packages: skill.nixPackages,
-				network_config: skill.networkConfig,
 			},
 		}));
 		result.skills = {

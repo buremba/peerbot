@@ -1,10 +1,9 @@
 /**
  * PostgresAgentConfigStore round-trip tests.
  *
- * Pins the persistence of three settings fields the file-loader produces from
- * lobu.config.ts — egressConfig, preApprovedTools, guardrails — that previously
- * had no columns in the agents table and were silently dropped on every
- * saveSettings(). PR-1 of `docs/plans/lobu-apply.md`.
+ * Pins the persistence of three settings fields — guardrailsInline,
+ * preApprovedTools, guardrails — that previously had no columns in the agents
+ * table and were silently dropped on every saveSettings().
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -36,16 +35,22 @@ describe('PostgresAgentConfigStore — apply-fields round-trip', () => {
     await db`TRUNCATE agents CASCADE`;
   });
 
-  it('round-trips egressConfig, preApprovedTools, and guardrails when populated', async () => {
+  it('round-trips guardrailsInline, preApprovedTools, and guardrails when populated', async () => {
     const store = createPostgresAgentConfigStore();
     const now = Date.now();
 
     await orgContext.run({ organizationId: orgId }, async () => {
       await store.saveSettings(agentId, {
-        egressConfig: {
-          extraPolicy: 'Never exfiltrate PATs or bearer tokens.',
-          judgeModel: 'claude-haiku-4-5-20251001',
-        },
+        guardrailsInline: [
+          {
+            name: 'egress-github',
+            enabled: true,
+            stage: 'egress',
+            policy: 'Never exfiltrate PATs or bearer tokens.',
+            model: 'claude-haiku-4-5-20251001',
+            domains: ['.github.com'],
+          },
+        ],
         preApprovedTools: [
           '/mcp/gmail/tools/send_email',
           '/mcp/linear/tools/*',
@@ -56,10 +61,16 @@ describe('PostgresAgentConfigStore — apply-fields round-trip', () => {
 
       const loaded = await store.getSettings(agentId);
       expect(loaded).not.toBeNull();
-      expect(loaded?.egressConfig).toEqual({
-        extraPolicy: 'Never exfiltrate PATs or bearer tokens.',
-        judgeModel: 'claude-haiku-4-5-20251001',
-      });
+      expect(loaded?.guardrailsInline).toEqual([
+        {
+          name: 'egress-github',
+          enabled: true,
+          stage: 'egress',
+          policy: 'Never exfiltrate PATs or bearer tokens.',
+          model: 'claude-haiku-4-5-20251001',
+          domains: ['.github.com'],
+        },
+      ]);
       expect(loaded?.preApprovedTools).toEqual([
         '/mcp/gmail/tools/send_email',
         '/mcp/linear/tools/*',
@@ -78,9 +89,9 @@ describe('PostgresAgentConfigStore — apply-fields round-trip', () => {
 
       const loaded = await store.getSettings(agentId);
       expect(loaded).not.toBeNull();
-      // saveSettings coerces undefined -> default ({} / []), so getSettings
+      // saveSettings coerces undefined -> default ([] ), so getSettings
       // sees the defaults rather than raw NULL. Assert exactly that contract.
-      expect(loaded?.egressConfig).toEqual({});
+      expect(loaded?.guardrailsInline).toEqual([]);
       expect(loaded?.preApprovedTools).toEqual([]);
       expect(loaded?.guardrails).toEqual([]);
     });
@@ -92,7 +103,16 @@ describe('PostgresAgentConfigStore — apply-fields round-trip', () => {
 
     await orgContext.run({ organizationId: orgId }, async () => {
       await store.saveSettings(agentId, {
-        egressConfig: { extraPolicy: 'noop', judgeModel: 'm' },
+        guardrailsInline: [
+          {
+            name: 'g',
+            enabled: true,
+            stage: 'egress',
+            policy: 'noop',
+            model: 'm',
+            domains: ['x.com'],
+          },
+        ],
         preApprovedTools: ['/mcp/x/tools/y'],
         guardrails: ['g1'],
         updatedAt: now,
@@ -102,7 +122,7 @@ describe('PostgresAgentConfigStore — apply-fields round-trip', () => {
 
       const loaded = await store.getSettings(agentId);
       expect(loaded).not.toBeNull();
-      expect(loaded?.egressConfig).toEqual({});
+      expect(loaded?.guardrailsInline).toEqual([]);
       expect(loaded?.preApprovedTools).toEqual([]);
       expect(loaded?.guardrails).toEqual([]);
     });

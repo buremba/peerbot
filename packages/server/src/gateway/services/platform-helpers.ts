@@ -149,8 +149,8 @@ export async function resolveAgentOptions(
   if (settings.networkConfig) {
     mergedOptions.networkConfig = settings.networkConfig;
   }
-  if (settings.egressConfig) {
-    mergedOptions.egressConfig = settings.egressConfig;
+  if (settings.guardrailsInline?.length) {
+    mergedOptions.guardrailsInline = settings.guardrailsInline;
   }
   if (settings.nixConfig) {
     mergedOptions.nixConfig = settings.nixConfig;
@@ -184,8 +184,8 @@ export async function resolveAgentOptions(
 
 /**
  * Build a MessagePayload from common fields.
- * Extracts networkConfig, nixConfig, mcpServers, preApprovedTools from
- * agentOptions before constructing the payload.
+ * Extracts networkConfig, guardrailsInline, nixConfig, mcpServers,
+ * preApprovedTools from agentOptions before constructing the payload.
  */
 export function buildMessagePayload(params: {
   platform: string;
@@ -203,7 +203,7 @@ export function buildMessagePayload(params: {
 }): MessagePayload {
   const {
     networkConfig,
-    egressConfig,
+    guardrailsInline,
     nixConfig,
     mcpServers,
     preApprovedTools,
@@ -224,7 +224,7 @@ export function buildMessagePayload(params: {
     platformMetadata: params.platformMetadata,
     agentOptions: remainingOptions,
     networkConfig,
-    egressConfig,
+    guardrailsInline,
     nixConfig,
     mcpConfig: mcpServers ? { mcpServers } : undefined,
     preApprovedTools,

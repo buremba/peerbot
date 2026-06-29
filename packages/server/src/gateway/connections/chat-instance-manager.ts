@@ -1569,12 +1569,31 @@ export class ChatInstanceManager {
    * install projection over the generic store rather than the bigint PK.
    */
   private async resolveStored(id: string): Promise<StoredConnection | null> {
+    // Read cutover (connections-unify Stage 2a): prefer the unified `connections`
+    // projection. The connection store now resolves BOTH BYO (slug
+    // `agentconn-<id>`) AND managed Slack installs (slug = the `slackinst-…` id)
+    // from `connections` by slug, so a single store read covers both. Dual-write
+    // keeps the projection live; the store also falls back to legacy
+    // `agent_connections` internally on a projection miss.
+    if (this.connectionStore) {
+      const fromConnections = await this.connectionStore.getConnection(id);
+      if (fromConnections) return fromConnections;
+    }
+
+    // Legacy fallback for a managed install not yet projected into `connections`
+    // (created before this deploy, or a crash between the app_installations
+    // upsert and its projection write). Maps the app_installations row to the
+    // agentless connection shape the runtime expects.
     if (id.startsWith(SLACK_INSTALLATION_ID_PREFIX)) {
       const inst = await getSlackInstallById(
         this.services.getAppInstallationStore(),
         id
       );
       if (!inst) return null;
+      logger.info(
+        { id },
+        "connections projection miss; resolved Slack install from app_installations"
+      );
       return {
         id: inst.id,
         platform: "slack",
@@ -1592,8 +1611,7 @@ export class ChatInstanceManager {
         updatedAt: inst.updatedAt,
       };
     }
-    if (!this.connectionStore) return null;
-    return this.connectionStore.getConnection(id);
+    return null;
   }
 
   /**

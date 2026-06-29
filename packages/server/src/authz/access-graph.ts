@@ -339,6 +339,27 @@ export async function buildAccessGraph(params: {
   // unique index. Accumulate the CURRENT member set per resource for reconcile.
   const typeId = await ensureMemberOfType(organizationId);
   const sql = getDb();
+
+  // Keep each resource entity's display name fresh. `titlePath` only sets the
+  // name on auto-CREATE, so a name that wasn't available at first graph (or a
+  // later channel/repo RENAME) would otherwise stick to the stale value / the
+  // raw id. Refresh from the source-provided name here. Scoped to the resources
+  // in this build; idempotent (the `name <>` guard no-ops when unchanged).
+  for (let i = 0; i < resources.length; i++) {
+    const id = resourceEntityIdByIndex.get(i);
+    const name = resources[i].name;
+    if (id && name) {
+      await sql`
+        UPDATE entities
+        SET name = ${name}, updated_at = current_timestamp
+        WHERE id = ${id}
+          AND organization_id = ${organizationId}
+          AND name <> ${name}
+          AND deleted_at IS NULL
+      `;
+    }
+  }
+
   const memberEntityIds = new Set<number>();
   const currentMembersByResource = new Map<number, Set<number>>();
   let createdEdges = 0;

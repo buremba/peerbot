@@ -165,7 +165,10 @@ describe('channel audience read', () => {
     // Production sync path: conversations.members returns Alice AND the bot.
     const result = await syncSlackConnectionAcl(
       {
-        slackWeb: { conversationMembers: async () => ['U01ALICE', 'UBOTLOBU'] },
+        slackWeb: {
+          conversationMembers: async () => ['U01ALICE', 'UBOTLOBU'],
+          conversationInfo: async () => ({ name: 'eng', isPrivate: false }),
+        },
         resolveBotToken: async () => 'xoxb-test-token',
       },
       { connectionId: CONN, organizationId: org.id },
@@ -187,6 +190,8 @@ describe('channel audience read', () => {
     const botCombined = normalizeSlackUserId(TEAM, 'UBOTLOBU');
     expect(eng?.members.some((m) => m.slackUserId === botCombined)).toBe(false);
     expect(eng?.members[0]?.isYou).toBe(true);
+    // conversations.info name is captured and surfaced on the audience.
+    expect(eng?.channelName).toBe('eng');
   });
 
   it('reports no current audience for a stale (aged-out) connection even with old member_of edges', async () => {

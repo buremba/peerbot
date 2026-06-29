@@ -61,7 +61,13 @@ export interface ChannelAudience {
   platform: string;
   /** As stored on the binding (may be platform-prefixed, e.g. `slack:C…`). */
   channelId: string;
+  /** Human channel name (e.g. `announcements`) from the synced graph; null if
+   * the sync hasn't captured it yet (falls back to the id in the UI). */
+  channelName: string | null;
   teamId: string | null;
+  /** Human workspace name (e.g. `Lobu`) from the app installation; null if no
+   * active install resolves for the team. */
+  teamName: string | null;
   enforcement: ChannelEnforcement;
   memberCount: number;
   members: AudienceMember[];
@@ -108,16 +114,24 @@ export async function getChannelAudiences(
 
   // 2-4. Resolve channels → resource entities, fan out to members + enforcement,
   //      and resolve the requester (web/auth path) for the "you" highlight.
-  const [keyToEntity, enforcement, requesterEntityId] = await Promise.all([
-    resolveChannelEntityIds(sql, organizationId, allKeys),
-    getConnectionEnforcement(
-      sql,
-      organizationId,
-      rows.map((r) => r.id),
-    ),
-    resolveRequesterMemberEntityId(sql, organizationId, userId),
-  ]);
-  const resourceIds = [...new Set(keyToEntity.values())];
+  const [keyToEntity, enforcement, requesterEntityId, teamNames] =
+    await Promise.all([
+      resolveChannelEntityIds(sql, organizationId, allKeys),
+      getConnectionEnforcement(
+        sql,
+        organizationId,
+        rows.map((r) => r.id),
+      ),
+      resolveRequesterMemberEntityId(sql, organizationId, userId),
+      resolveTeamNames(
+        sql,
+        organizationId,
+        rows.map((r) => r.team_id).filter((t): t is string => !!t),
+      ),
+    ]);
+  const resourceIds = [
+    ...new Set([...keyToEntity.values()].map((e) => e.id)),
+  ];
   const membersByResource = await getAudienceMembers(
     sql,
     organizationId,
@@ -127,7 +141,14 @@ export async function getChannelAudiences(
   return rows.map((r) => {
     const enf = enforcement.get(r.id) ?? NOT_GRAPHED;
     const key = keyByRow.get(r) ?? null;
-    const resourceId = key ? keyToEntity.get(key) : undefined;
+    const entity = key ? keyToEntity.get(key) : undefined;
+    const resourceId = entity?.id;
+    // The sync seeds the channel entity name to its id when Slack didn't return
+    // a name; surface a real name only when it differs from the bare id.
+    const bareChannel = stripPlatformPrefix(r.platform, r.channel_id);
+    const channelName =
+      entity && entity.name !== bareChannel ? entity.name : null;
+    const teamName = r.team_id ? (teamNames.get(r.team_id) ?? null) : null;
     // The audience is the inverse of the recall gate, which only honors
     // membership when the connection is ENFORCED (full+fresh). A `stale` /
     // aged-out connection fails CLOSED — nobody can currently recall — so its
@@ -142,7 +163,9 @@ export async function getChannelAudiences(
       connectionId: r.id,
       platform: r.platform,
       channelId: r.channel_id,
+      channelName,
       teamId: r.team_id,
+      teamName,
       enforcement: enf,
       memberCount: members.length,
       members,
@@ -150,16 +173,17 @@ export async function getChannelAudiences(
   });
 }
 
-/** Resolve team-scoped channel keys (`T…:C…`) → their `channel` resource entity ids. */
+/** Resolve team-scoped channel keys (`T…:C…`) → their `channel` resource entity
+ * (id + the entity's display name, which the sync sets to the Slack channel name). */
 async function resolveChannelEntityIds(
   sql: DbClient,
   organizationId: string,
   keys: string[],
-): Promise<Map<string, number>> {
+): Promise<Map<string, { id: number; name: string }>> {
   const uniq = [...new Set(keys)].filter(Boolean);
   if (uniq.length === 0) return new Map();
-  const rows = await sql<{ identifier: string; entity_id: number }>`
-    SELECT ei.identifier, ei.entity_id
+  const rows = await sql<{ identifier: string; entity_id: number; name: string }>`
+    SELECT ei.identifier, ei.entity_id, e.name
     FROM entity_identities ei
     JOIN entities e
       ON e.id = ei.entity_id
@@ -174,8 +198,34 @@ async function resolveChannelEntityIds(
       AND ei.identifier = ANY(${pgTextArray(uniq)}::text[])
       AND ei.deleted_at IS NULL
   `;
-  const out = new Map<string, number>();
-  for (const r of rows) out.set(String(r.identifier), Number(r.entity_id));
+  const out = new Map<string, { id: number; name: string }>();
+  for (const r of rows)
+    out.set(String(r.identifier), {
+      id: Number(r.entity_id),
+      name: String(r.name),
+    });
+  return out;
+}
+
+/** Resolve team ids → workspace display name from the active Slack install. */
+async function resolveTeamNames(
+  sql: DbClient,
+  organizationId: string,
+  teamIds: string[],
+): Promise<Map<string, string>> {
+  const uniq = [...new Set(teamIds)].filter(Boolean);
+  if (uniq.length === 0) return new Map();
+  const rows = await sql<{ external_tenant_id: string; team_name: string | null }>`
+    SELECT external_tenant_id, metadata->>'team_name' AS team_name
+    FROM app_installations
+    WHERE organization_id = ${organizationId}
+      AND provider = 'slack'
+      AND status = 'active'
+      AND external_tenant_id = ANY(${pgTextArray(uniq)}::text[])
+  `;
+  const out = new Map<string, string>();
+  for (const r of rows)
+    if (r.team_name) out.set(String(r.external_tenant_id), String(r.team_name));
   return out;
 }
 

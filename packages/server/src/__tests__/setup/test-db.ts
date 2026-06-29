@@ -384,8 +384,14 @@ export async function cleanupTestDatabase(): Promise<void> {
       } else {
         await db.unsafe(`TRUNCATE ${quotedTables} CASCADE`);
       }
-    } catch {
-      // Ignore errors for tables that may not exist.
+    } catch (err) {
+      // Only tolerate the intended "a listed table disappeared mid-truncate"
+      // case (undefined_table, 42P01). Anything else — a permission error, a
+      // failed `SET LOCAL`, a transaction abort, a lock timeout — is a real
+      // cleanup failure that would leave the DB dirty for the next test, so
+      // re-throw it rather than silently swallow.
+      const code = (err as { code?: string } | null)?.code;
+      if (code !== '42P01') throw err;
     }
   }
 

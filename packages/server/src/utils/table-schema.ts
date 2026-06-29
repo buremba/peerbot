@@ -111,7 +111,9 @@ export const QUERYABLE_SCHEMA = {
         'visibility',
         'deleted_at',
         'agent_id',
-        'device_worker_id'
+        'device_worker_id',
+        'external_tenant_id',
+        'credential_mode'
       ),
     },
     // watchers

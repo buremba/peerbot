@@ -354,26 +354,39 @@ export async function cleanupTestDatabase(): Promise<void> {
     AND tablename NOT LIKE 'schema_migrations%'
   `;
 
-  // Disable triggers temporarily for faster truncation. `session_replication_role`
-  // is superuser-only, so on a non-superuser test role (the PG15+ fresh-`createdb`
-  // shape from #950, where DATABASE_URL points at a plain CREATE-granted user) this
-  // throws `permission denied to set parameter` (42501). Treat it as best-effort:
-  // `TRUNCATE ... CASCADE` already respects FK ordering on its own, so skipping the
-  // trigger-disable only forgoes the speedup, never correctness.
-  const triggersDisabled = await trySetReplicationRole(db, 'replica');
-
   if (tables.length > 0) {
     const quotedTables = tables.map(({ tablename }) => `"${tablename}"`).join(', ');
+    // Disable triggers for faster truncation, but ONLY via `SET LOCAL` inside a
+    // single transaction. `SET LOCAL` is scoped to the transaction and reverts on
+    // COMMIT, and the whole `db.begin` callback runs on ONE reserved connection —
+    // so the `replica` role can never leak back onto a pooled connection.
+    //
+    // The previous version issued `SET session_replication_role = 'replica'` and
+    // the `'origin'` reset as standalone statements over the pool (max 5). Under a
+    // warm pool those two statements routed to DIFFERENT connections, stranding one
+    // connection in `replica` mode indefinitely. Any later test that ran a raw
+    // INSERT/UPDATE on that connection silently skipped BEFORE triggers — which is
+    // exactly how the derived-entity-type guard triggers stopped firing mid-suite
+    // (the INSERT then tripped a NOT NULL constraint instead of the trigger, and
+    // the UPDATEs resolved with no error at all).
+    //
+    // `session_replication_role` is superuser-only; on a non-superuser test role
+    // (the PG15+ fresh-`createdb` shape from #950) we skip the disable entirely.
+    // `TRUNCATE ... CASCADE` respects FK ordering on its own, so this only forgoes
+    // the speedup, never correctness.
+    const canDisableTriggers = await connectionCanDisableTriggers(db);
     try {
-      await db.unsafe(`TRUNCATE ${quotedTables} CASCADE`);
+      if (canDisableTriggers) {
+        await db.begin(async (tx) => {
+          await tx.unsafe(`SET LOCAL session_replication_role = 'replica'`);
+          await tx.unsafe(`TRUNCATE ${quotedTables} CASCADE`);
+        });
+      } else {
+        await db.unsafe(`TRUNCATE ${quotedTables} CASCADE`);
+      }
     } catch {
       // Ignore errors for tables that may not exist.
     }
-  }
-
-  // Re-enable triggers only if we managed to disable them.
-  if (triggersDisabled) {
-    await trySetReplicationRole(db, 'origin');
   }
 
   // Fix check constraints that are out-of-date relative to the app code
@@ -381,23 +394,21 @@ export async function cleanupTestDatabase(): Promise<void> {
 }
 
 /**
- * Best-effort `SET session_replication_role`. Returns true if the role was set,
- * false if the connection user lacks the superuser right (42501) — the caller
- * then proceeds without trigger-disabling, which is safe for `TRUNCATE CASCADE`.
- * Any other error is a real problem and surfaces.
+ * Whether this connection's role may set `session_replication_role` (superuser
+ * only). Cached for the process — the DATABASE_URL user never changes mid-run.
+ * Embedded Postgres / CI's `postgres` role are superusers; the #950 non-owner
+ * test role is not.
  */
-async function trySetReplicationRole(
-  db: postgres.Sql,
-  role: 'replica' | 'origin'
-): Promise<boolean> {
+let cachedCanDisableTriggers: boolean | null = null;
+async function connectionCanDisableTriggers(db: postgres.Sql): Promise<boolean> {
+  if (cachedCanDisableTriggers !== null) return cachedCanDisableTriggers;
   try {
-    await db.unsafe(`SET session_replication_role = '${role}'`);
-    return true;
-  } catch (err) {
-    const code = (err as { code?: string } | null)?.code;
-    if (code === '42501') return false;
-    throw err;
+    const [row] = await db`SELECT current_setting('is_superuser') AS is_superuser`;
+    cachedCanDisableTriggers = String(row?.is_superuser).toLowerCase() === 'on';
+  } catch {
+    cachedCanDisableTriggers = false;
   }
+  return cachedCanDisableTriggers;
 }
 
 /**

@@ -126,9 +126,6 @@ export interface ConversationMessage {
  */
 export type ThinkingLevel = "off" | "low" | "medium" | "high";
 
-/**
- * MCP server declared by a skill manifest.
- */
 export interface McpOAuthConfig {
   /** Authorization endpoint (user verification page for device-code flow). */
   authUrl?: string;
@@ -146,18 +143,6 @@ export interface McpOAuthConfig {
   registrationUrl?: string;
   /** RFC 8707 resource indicator included in token requests. */
   resource?: string;
-}
-
-export interface SkillMcpServer {
-  id: string;
-  name?: string;
-  url?: string;
-  type?: "sse" | "streamable-http" | "stdio";
-  command?: string;
-  args?: string[];
-  oauth?: McpOAuthConfig;
-  inputs?: Array<{ id: string; label?: string; type?: string }>;
-  headers?: Record<string, string>;
 }
 
 /**
@@ -181,17 +166,8 @@ export interface SkillConfig {
   content?: string;
   /** When the content was last fetched (timestamp ms) */
   contentFetchedAt?: number;
-  /** MCP servers declared by the skill */
-  mcpServers?: SkillMcpServer[];
   /** System packages declared by the skill (nix) */
   nixPackages?: string[];
-  /** Network access policy declared by the skill */
-  networkConfig?: {
-    allowedDomains?: string[];
-    deniedDomains?: string[];
-    judgedDomains?: DomainJudgeRule[];
-    judges?: Record<string, string>;
-  };
   /** AI providers the skill requires */
   providers?: string[];
   /** Preferred model for this skill (e.g., "anthropic/claude-opus-4") */
@@ -259,6 +235,11 @@ export interface AgentInlineGuardrail {
   model?: string;
   /** `pre-tool` only: narrow to specific tool names (empty = every tool). */
   tools?: string[];
+  /**
+   * `egress` only: hostnames this judge gates (exact or `.wildcard`), mirroring
+   * `tools` for pre-tool. Empty/omitted = no egress routing.
+   */
+  domains?: string[];
 }
 
 /**
@@ -303,43 +284,6 @@ export interface NetworkConfig {
   allowedDomains?: string[];
   /** Domains explicitly blocked (takes precedence over allowedDomains). */
   deniedDomains?: string[];
-  /**
-   * Domains that require an LLM judge verdict per request. Matched after the
-   * global blocklist/allowlist and before fail-closed. When matched, the
-   * proxy invokes the named judge policy (or "default") and allows only if
-   * the verdict is "allow".
-   */
-  judgedDomains?: DomainJudgeRule[];
-  /**
-   * Named judge policies. Keys are referenced by {@link DomainJudgeRule.judge};
-   * the entry "default" is used when a rule omits `judge`.
-   */
-  judges?: Record<string, string>;
-}
-
-/**
- * Per-domain rule that routes matching requests through the LLM egress judge.
- */
-export interface DomainJudgeRule {
-  /** Domain pattern — same format as {@link NetworkConfig.allowedDomains}. */
-  domain: string;
-  /** Named judge policy key; defaults to "default". */
-  judge?: string;
-}
-
-/**
- * Agent-level egress judge configuration (operator-controlled).
- *
- * Skills supply per-domain rules and named judge policies via their
- * {@link NetworkConfig}. This struct is merged on top at runtime:
- *   - {@link extraPolicy} is appended to every judge prompt for this agent.
- *   - {@link judgeModel} overrides the built-in judge model.
- */
-export interface AgentEgressConfig {
-  /** Operator policy appended to every judge prompt for this agent. */
-  extraPolicy?: string;
-  /** Judge model identifier (defaults to a fast Haiku model). */
-  judgeModel?: string;
 }
 
 /**
@@ -405,36 +349,6 @@ export interface ToolsConfig {
    *   tool list small; relies on the sandboxed bash to invoke MCP tools.
    */
   mcpExposure?: "tools" | "cli";
-}
-
-/**
- * MCP server configuration for per-agent MCP servers.
- * Supports both HTTP/SSE and stdio MCP servers.
- */
-export interface McpServerConfig {
-  /** For HTTP/SSE MCPs: upstream URL */
-  url?: string;
-  /** Server type: HTTP MCP transport or "stdio" for command-based */
-  type?: "sse" | "streamable-http" | "stdio";
-  /** For stdio MCPs: command to execute */
-  command?: string;
-  /** For stdio MCPs: command arguments */
-  args?: string[];
-  /** For stdio MCPs: environment variables */
-  env?: Record<string, string>;
-  /** Additional headers for HTTP MCPs */
-  headers?: Record<string, string>;
-  /** Optional description for the MCP */
-  description?: string;
-}
-
-/**
- * Per-agent MCP configuration.
- * These MCPs are ADDED to global MCPs (not replacing).
- */
-export interface AgentMcpConfig {
-  /** Additional MCP servers for this agent */
-  mcpServers: Record<string, McpServerConfig>;
 }
 
 interface MemoryFlushOptions {

@@ -31,22 +31,6 @@ export interface CreateSessionRequest {
     deniedDomains?: string[];
   };
   /**
-   * Server-trusted: MCP servers the worker may reach. Mint sessions
-   * **server-side** — do not let an untrusted browser inject MCP servers.
-   */
-  mcpServers?: Record<
-    string,
-    {
-      url?: string;
-      type?: "sse" | "streamable-http" | "stdio";
-      command?: string;
-      args?: string[];
-      env?: Record<string, string>;
-      headers?: Record<string, string>;
-      description?: string;
-    }
-  >;
-  /**
    * Server-trusted: nix packages provisioned into the worker runtime. Mint
    * sessions **server-side** — do not let an untrusted browser pick packages.
    */

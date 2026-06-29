@@ -42,6 +42,9 @@ export async function materializeDueFeeds(env: Env, db?: DbClient): Promise<Chec
         AND c.status = 'active'
         AND c.deleted_at IS NULL
         AND f.deleted_at IS NULL
+        -- Virtual feeds are read LIVE at request time (query()/search()), never
+        -- synced — exclude them from the sync scheduler entirely.
+        AND f.virtual IS NOT TRUE
         AND f.next_run_at <= current_timestamp
         AND NOT EXISTS (
           SELECT 1 FROM runs r

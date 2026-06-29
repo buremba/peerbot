@@ -7,6 +7,7 @@
  */
 
 import type { Env } from '@lobu/connector-sdk';
+import { runAclSyncTick } from '../authz/acl-sync';
 import type { CoreServices } from '../gateway/services/core-services';
 import { getChatInstanceManager } from '../lobu/gateway';
 import { cleanupExpiredMcpSessions } from '../mcp-handler';
@@ -146,6 +147,20 @@ function registerMaintenanceTasks(
       }
     },
     { cron: '*/5 * * * *' },
+  );
+
+  // ACL sync — re-materializes every registered source's `member_of` graph (the
+  // authz read-gates' source of truth) from live membership: Slack channels via
+  // `conversations.members`, GitHub repos via collaborators. Joins/leaves
+  // converge within the cadence and the gate's freshness window keeps a stalled
+  // connection fail-closed. Single-claimant per tick via the runs-queue. No-ops
+  // on zero connections per source.
+  scheduler.register(
+    'authz-acl-sync',
+    async () => {
+      await runAclSyncTick(coreServices);
+    },
+    { cron: '*/15 * * * *' },
   );
 
   // Connector health alerter — surfaces connectors that have silently died

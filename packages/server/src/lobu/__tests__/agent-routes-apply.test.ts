@@ -188,45 +188,6 @@ describe('POST /agents — idempotent same-org create', () => {
     expect(rows.length).toBe(1);
   });
 
-  test('idempotent path does not re-inject the Lobu MCP server', async () => {
-    const app = await importAgentRoutes();
-    const { getDb } = await import('../../db/client.js');
-    const sql = getDb();
-
-    // Create the agent.
-    const create = await app.request('/', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ agentId: 'mcp-agent', name: 'MCP' }),
-    });
-    expect(create.status).toBe(201);
-
-    // Operator has overridden mcpServers with a different value (e.g. via
-    // `lobu apply` patching settings later). Simulate that by writing
-    // directly to the column.
-    await sql`
-      UPDATE agents
-      SET mcp_servers = ${sql.json({ 'lobu-memory': { url: 'http://operator-set' } })},
-          updated_at = NOW()
-      WHERE id = 'mcp-agent'
-    `;
-
-    // Idempotent POST must NOT clobber the operator-set value.
-    const second = await app.request('/', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ agentId: 'mcp-agent', name: 'MCP' }),
-    });
-    expect(second.status).toBe(200);
-
-    const rows = await sql`
-      SELECT mcp_servers FROM agents WHERE id = 'mcp-agent'
-    `;
-    expect(rows[0].mcp_servers).toEqual({
-      'lobu-memory': { url: 'http://operator-set' },
-    });
-  });
-
   test('cross-org create succeeds — agent ids are per-org-unique', async () => {
     // Post-Phase-C the agents PK is (organization_id, id), so two orgs can
     // own an agent with the same id without colliding. Pre-seed an agent in
@@ -540,62 +501,10 @@ describe('concurrent-apply race fixes', () => {
     const rows = await sql`SELECT id FROM agents WHERE id = 'race-agent'`;
     expect(rows.length).toBe(1);
 
-    // The auto-injected MCP server is exactly one entry — not double-written
-    // by both handlers (which would have left the same value but proved both
-    // ran the saveSettings path).
     const settings = await sql`
-      SELECT mcp_servers, pre_approved_tools FROM agents WHERE id = 'race-agent'
+      SELECT pre_approved_tools FROM agents WHERE id = 'race-agent'
     `;
-    expect(settings[0].mcp_servers).toEqual({
-      'lobu-memory': { url: expect.stringContaining('/mcp/'), type: 'streamable-http' },
-    });
     expect(settings[0].pre_approved_tools).toEqual(['/mcp/lobu-memory/tools/*']);
-  });
-
-  test('POST /agents — concurrent create cannot overwrite operator-set MCP servers', async () => {
-    const app = await importAgentRoutes();
-    const { getDb } = await import('../../db/client.js');
-    const sql = getDb();
-
-    // First, do a normal create so the row + initial MCP server exist.
-    const initial = await app.request('/', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ agentId: 'preserved-agent', name: 'Preserved' }),
-    });
-    expect(initial.status).toBe(201);
-
-    // Operator overrides mcp_servers (e.g. via a subsequent PATCH /config).
-    await sql`
-      UPDATE agents
-      SET mcp_servers = ${sql.json({ 'lobu-memory': { url: 'http://operator-set' } })},
-          updated_at = NOW()
-      WHERE id = 'preserved-agent'
-    `;
-
-    // Two concurrent re-applies must both take the idempotent path; neither
-    // should re-run the MCP auto-injection.
-    const [r1, r2] = await Promise.all([
-      app.request('/', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ agentId: 'preserved-agent', name: 'Preserved' }),
-      }),
-      app.request('/', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ agentId: 'preserved-agent', name: 'Preserved' }),
-      }),
-    ]);
-    expect(r1.status).toBe(200);
-    expect(r2.status).toBe(200);
-
-    const after = await sql`
-      SELECT mcp_servers FROM agents WHERE id = 'preserved-agent'
-    `;
-    expect(after[0].mcp_servers).toEqual({
-      'lobu-memory': { url: 'http://operator-set' },
-    });
   });
 
   test('PUT /platforms/by-stable-id — two concurrent identical PUTs converge to one row', async () => {
@@ -818,59 +727,6 @@ describe('residual-race fixes (PR-466 follow-up)', () => {
     authStash.mcpAuthInfo = null;
     chatManagerStash.manager = null;
   });
-
-  test(
-    'POST /agents — concurrent creates always leave mcpServers populated (20 iterations)',
-    async () => {
-      // The pre-fix flow split row creation and the auto-injected `mcpServers`
-      // into two writes (INSERT, then `saveSettings`). A concurrent loser
-      // returning 200 in the idempotent branch could observe the row before
-      // the winner's `saveSettings` landed and clobber `mcpServers` via a
-      // PATCH that races with the deferred winner write. Folding the column
-      // into the INSERT makes the loser see fully-initialized state on its
-      // first read.
-      const app = await importAgentRoutes();
-      const { getDb } = await import('../../db/client.js');
-      const sql = getDb();
-
-      for (let i = 0; i < 20; i++) {
-        const agentId = `race-mcp-${i}`;
-        const payload = JSON.stringify({
-          agentId,
-          name: `Race MCP ${i}`,
-        });
-
-        const [r1, r2] = await Promise.all([
-          app.request('/', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: payload,
-          }),
-          app.request('/', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: payload,
-          }),
-        ]);
-
-        const statuses = [r1.status, r2.status].sort();
-        expect(statuses).toEqual([200, 201]);
-
-        // The agent row exists exactly once and `mcp_servers["lobu-memory"].url` is
-        // populated regardless of which request handler ran the INSERT and
-        // which observed it via the idempotent branch.
-        const rows = await sql`
-          SELECT id, mcp_servers FROM agents WHERE id = ${agentId}
-        `;
-        expect(rows.length).toBe(1);
-        const mcpServers = rows[0].mcp_servers as
-          | { 'lobu-memory'?: { url?: string } }
-          | undefined;
-        expect(mcpServers?.['lobu-memory']?.url).toBeTruthy();
-        expect(mcpServers?.['lobu-memory']?.url).toContain('/mcp/');
-      }
-    }
-  );
 
   test(
     'PUT /platforms/by-stable-id — concurrent PUTs invoke addConnection exactly once',

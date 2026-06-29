@@ -295,7 +295,7 @@ function emitAgent(
     fields.push(`providers: [\n    ${items.join(",\n    ")},\n  ]`);
   }
 
-  // network ← networkConfig (allowed/denied/judged/judges).
+  // network ← networkConfig (allowed/denied).
   const net = settings?.networkConfig;
   if (net) {
     const netFields: string[] = [];
@@ -305,35 +305,9 @@ function emitAgent(
     if (net.deniedDomains?.length) {
       netFields.push(`denied: ${emitValue(net.deniedDomains, 2)}`);
     }
-    if (net.judgedDomains?.length) {
-      netFields.push(
-        `judged: ${emitValue(
-          net.judgedDomains.map((r) => ({
-            domain: r.domain,
-            ...(r.judge ? { judge: r.judge } : {}),
-          })),
-          2
-        )}`
-      );
-    }
-    if (net.judges && Object.keys(net.judges).length > 0) {
-      netFields.push(`judges: ${emitValue(net.judges, 2)}`);
-    }
     if (netFields.length > 0) {
       fields.push(`network: ${objectLiteral(netFields, 1)}`);
     }
-  }
-
-  // egress ← egressConfig.
-  const egress = settings?.egressConfig;
-  if (egress && (egress.extraPolicy || egress.judgeModel)) {
-    const egFields: string[] = [];
-    if (egress.extraPolicy) {
-      egFields.push(`extraPolicy: ${str(egress.extraPolicy)}`);
-    }
-    if (egress.judgeModel)
-      egFields.push(`judgeModel: ${str(egress.judgeModel)}`);
-    fields.push(`egress: ${objectLiteral(egFields, 1)}`);
   }
 
   // tools ← toolsConfig + preApprovedTools.
@@ -369,12 +343,6 @@ function emitAgent(
   // nixPackages ← nixConfig.packages.
   if (settings?.nixConfig?.packages?.length) {
     fields.push(`nixPackages: ${emitValue(settings.nixConfig.packages, 1)}`);
-  }
-
-  // mcpServers ← mcpServers (client secrets → secret placeholders).
-  const mcp = settings?.mcpServers;
-  if (mcp && Object.keys(mcp).length > 0) {
-    fields.push(`mcpServers: ${emitMcpServers(mcp, secrets)}`);
   }
 
   // Agent-dir markdown.
@@ -467,117 +435,16 @@ function emitAgent(
   return { handle: { name: handleName, decl }, files };
 }
 
-function emitMcpServers(
-  mcp: NonNullable<AgentSettings["mcpServers"]>,
-  secrets: SecretCollector
-): string {
-  const entries = Object.entries(mcp).sort(([a], [b]) => a.localeCompare(b));
-  const lines = entries.map(([id, server]) => {
-    const sFields: string[] = [];
-    if (server.url) sFields.push(`url: ${str(server.url)}`);
-    if (server.type) sFields.push(`type: ${str(server.type)}`);
-    if (server.command) sFields.push(`command: ${str(server.command)}`);
-    if (server.args?.length) sFields.push(`args: ${emitValue(server.args, 3)}`);
-    if (server.headers && Object.keys(server.headers).length > 0) {
-      sFields.push(`headers: ${emitValue(server.headers, 3)}`);
-    }
-    if (server.env && Object.keys(server.env).length > 0) {
-      sFields.push(`env: ${emitValue(server.env, 3)}`);
-    }
-    // oauth + authScope live on the stored config under a loose cast.
-    const loose = server as Record<string, unknown>;
-    if (typeof loose.authScope === "string") {
-      sFields.push(`authScope: ${str(loose.authScope)}`);
-    }
-    if (loose.oauth && typeof loose.oauth === "object") {
-      sFields.push(
-        `oauth: ${emitMcpOAuth(loose.oauth as Record<string, unknown>, secrets, id)}`
-      );
-    }
-    return `${str(id)}: ${objectLiteral(sFields, 2)}`;
-  });
-  return `{\n    ${lines.join(",\n    ")},\n  }`;
-}
-
-function emitMcpOAuth(
-  oauth: Record<string, unknown>,
-  secrets: SecretCollector,
-  serverId: string
-): string {
-  const fields: string[] = [];
-  if (typeof oauth.authUrl === "string")
-    fields.push(`authUrl: ${str(oauth.authUrl)}`);
-  if (typeof oauth.tokenUrl === "string") {
-    fields.push(`tokenUrl: ${str(oauth.tokenUrl)}`);
-  }
-  if (typeof oauth.clientId === "string") {
-    fields.push(`clientId: ${str(oauth.clientId)}`);
-  }
-  if (oauth.clientSecret !== undefined) {
-    // Write-only — never emit the stored value.
-    fields.push(
-      `clientSecret: ${secrets.ref(envVarFor(serverId, "MCP_CLIENT_SECRET"))}`
-    );
-  }
-  if (Array.isArray(oauth.scopes)) {
-    fields.push(`scopes: ${emitValue(oauth.scopes, 3)}`);
-  }
-  if (typeof oauth.tokenEndpointAuthMethod === "string") {
-    fields.push(
-      `tokenEndpointAuthMethod: ${str(oauth.tokenEndpointAuthMethod)}`
-    );
-  }
-  return objectLiteral(fields, 3);
-}
-
 function emitSkillFile(
   skill: NonNullable<AgentSettings["skillsConfig"]>["skills"][number]
 ): string {
   const fm: string[] = [`name: ${skill.name}`];
   if (skill.description) fm.push(`description: ${skill.description}`);
-  const net = skill.networkConfig;
-  if (
-    net?.allowedDomains?.length ||
-    net?.deniedDomains?.length ||
-    net?.judgedDomains?.length
-  ) {
-    fm.push("network:");
-    if (net?.allowedDomains?.length) {
-      fm.push(`  allow: [${net.allowedDomains.map((d) => str(d)).join(", ")}]`);
-    }
-    if (net?.deniedDomains?.length) {
-      fm.push(`  deny: [${net.deniedDomains.map((d) => str(d)).join(", ")}]`);
-    }
-    // Judged domains round-trip as a `network.judge` YAML list of
-    // `{ domain, judge? }` — the exact shape the SKILL.md frontmatter loader
-    // reads back (parseSkillFrontmatter → `fm.network.judge`). Omitting these
-    // (the prior behaviour) silently dropped per-skill egress-judge rules.
-    if (net?.judgedDomains?.length) {
-      fm.push("  judge:");
-      for (const rule of net.judgedDomains) {
-        fm.push(`    - domain: ${str(rule.domain)}`);
-        if (rule.judge) fm.push(`      judge: ${str(rule.judge)}`);
-      }
-    }
-  }
-  // Named judge policies (referenced by `network.judge[].judge`) live at the
-  // frontmatter top level under `judges:` (str() emits a JSON-quoted scalar,
-  // which is valid YAML even for multi-line policy text).
-  if (net?.judges && Object.keys(net.judges).length > 0) {
-    fm.push("judges:");
-    for (const [name, policy] of Object.entries(net.judges)) {
-      fm.push(`  ${name}: ${str(policy)}`);
-    }
-  }
   if (skill.nixPackages?.length) {
     fm.push(
       `nixPackages: [${skill.nixPackages.map((p) => str(p)).join(", ")}]`
     );
   }
-  // NOTE: skill-level `mcpServers` (rare) are not emitted yet — the stored
-  // shape is SkillMcpServer[] while the frontmatter loader expects a YAML
-  // record, and secret-bearing fields would need `$VAR` placeholders. Agent
-  // mcpServers DO round-trip (emitMcpServers). Tracked as a follow-up.
   const body = skill.content ?? "";
   return `---\n${fm.join("\n")}\n---\n${body}\n`;
 }

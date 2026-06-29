@@ -13,6 +13,7 @@ import {
 } from "../config/network-allowlist.js";
 import type { RevokedTokenStore } from "../auth/revoked-token-store.js";
 import { getRevokedTokenStore } from "../auth/revoked-token-store.js";
+import { recordGuardrailTrip } from "../guardrails/audit.js";
 import type { GrantStore } from "../permissions/grant-store.js";
 import type { PolicyStore } from "../permissions/policy-store.js";
 import { EgressJudge } from "./egress-judge/judge.js";
@@ -25,9 +26,31 @@ import {
 
 const logger = createLogger("http-proxy");
 
-interface ResolvedNetworkConfig {
+/**
+ * The worker network allow/deny config for one proxy server, resolved once from
+ * the environment when the server starts. It is an immutable snapshot threaded
+ * through the request handlers — there is deliberately NO process-wide mutable
+ * cache. A lazily-populated module global (the previous design) read `process.env`
+ * at whatever moment the first request happened to fire and then froze that value
+ * for the life of the process, which made behavior order-dependent (and, in the
+ * test runner where the module + env are shared across files, leaked one file's
+ * env into another's). Resolving per-server removes that coupling entirely.
+ */
+export interface ResolvedNetworkConfig {
   allowedDomains: string[];
   deniedDomains: string[];
+}
+
+/**
+ * Resolve the worker network allow/deny config from the current environment.
+ * Called once per {@link startHttpProxy}. The pattern lists are pre-lowercased
+ * here so the per-request matcher never re-lowercases on the hot path.
+ */
+export function resolveNetworkConfig(): ResolvedNetworkConfig {
+  return {
+    allowedDomains: loadAllowedDomains().map((d) => d.toLowerCase()),
+    deniedDomains: loadDisallowedDomains().map((d) => d.toLowerCase()),
+  };
 }
 
 interface TargetResolutionResult {
@@ -37,9 +60,6 @@ interface TargetResolutionResult {
   clientMessage?: string;
   reason?: string;
 }
-
-// Cache for global defaults (used when no deployment identified)
-let globalConfig: ResolvedNetworkConfig | null = null;
 
 // Module-level grant store reference for domain grant checks
 let proxyGrantStore: GrantStore | null = null;
@@ -102,18 +122,6 @@ export function setProxyEgressJudge(judge: EgressJudge): void {
   proxyEgressJudge = judge;
 }
 
-function getGlobalConfig(): ResolvedNetworkConfig {
-  if (!globalConfig) {
-    // Pre-lowercase the env-driven pattern lists once so the per-request
-    // matcher doesn't re-lowercase every pattern on every outbound request.
-    globalConfig = {
-      allowedDomains: loadAllowedDomains().map((d) => d.toLowerCase()),
-      deniedDomains: loadDisallowedDomains().map((d) => d.toLowerCase()),
-    };
-  }
-  return globalConfig;
-}
-
 /**
  * Outcome of a full access decision. When the judge is consulted,
  * `judge` carries the verdict so the caller can surface the reason to
@@ -135,12 +143,18 @@ interface AccessDecision {
  *    host → invoke the LLM judge → allow/block based on verdict
  */
 async function checkDomainAccess(
+  config: ResolvedNetworkConfig,
   hostname: string,
   agentId: string | undefined,
   organizationId: string | undefined,
-  requestContext?: { method?: string; path?: string }
+  requestContext?: {
+    method?: string;
+    path?: string;
+    conversationId?: string;
+    userId?: string;
+  }
 ): Promise<AccessDecision> {
-  const global = getGlobalConfig();
+  const global = config;
 
   // Canonicalize once so the denylist, allowlist, grant store, and judge all
   // match the same name (closes the trailing-dot FQDN blocklist bypass).
@@ -211,8 +225,31 @@ async function checkDomainAccess(
         },
         rule
       );
+      const allowed = decision.verdict === "allow";
+      if (!allowed) {
+        // Egress denials share the guardrail audit trail: a judge DENY writes a
+        // `guardrail-trip` event (stage `egress`) just like message-pipeline
+        // guardrails. Enforcement stays here in the proxy — this is audit only.
+        // Fire-and-forget: `recordGuardrailTrip` never rejects, so we don't
+        // await it on the egress hot path. `agentId`/`organizationId` are both
+        // guaranteed present by the enclosing guard.
+        void recordGuardrailTrip({
+          organizationId,
+          agentId,
+          conversationId: requestContext?.conversationId,
+          userId: requestContext?.userId,
+          stage: "egress",
+          guardrail: decision.judgeName,
+          reason: decision.reason,
+          metadata: {
+            hostname,
+            verdict: decision.verdict,
+            judgeSource: decision.source,
+          },
+        });
+      }
       return {
-        allowed: decision.verdict === "allow",
+        allowed,
         source: "judge",
         judge: decision,
       };
@@ -246,9 +283,13 @@ export const __testOnly = {
   isBlockedIpAddress,
   checkDomainAccess,
   canonicalizeHostname,
-  /** Reset cached global config + module-level stores so tests can rebuild them. */
+  /**
+   * Clear the explicitly-injected test doubles (stores + DNS override) so one
+   * test file's injection doesn't leak into another. Network config is NOT here:
+   * it's no longer a module global — each {@link startHttpProxy} resolves its own
+   * immutable snapshot, and direct {@link checkDomainAccess} callers pass one in.
+   */
   reset: () => {
-    globalConfig = null;
     proxyGrantStore = null;
     proxyPolicyStore = null;
     proxyEgressJudge = null;
@@ -596,6 +637,7 @@ function parseConnectTarget(
  * Handle HTTPS CONNECT tunneling with per-deployment network config
  */
 async function handleConnect(
+  config: ResolvedNetworkConfig,
   req: http.IncomingMessage,
   clientSocket: import("stream").Duplex,
   head: Buffer
@@ -657,9 +699,14 @@ async function handleConnect(
   // TLS CONNECT tunneling means we cannot see the method or path — the
   // judge decides on hostname alone.
   const decision = await checkDomainAccess(
+    config,
     hostname,
     tokenData.agentId,
-    tokenData.organizationId
+    tokenData.organizationId,
+    {
+      conversationId: tokenData.conversationId,
+      userId: tokenData.userId,
+    }
   );
   logAccessDecision(
     "CONNECT",
@@ -746,6 +793,7 @@ async function handleConnect(
  * Handle regular HTTP proxy requests with per-deployment network config
  */
 async function handleProxyRequest(
+  config: ResolvedNetworkConfig,
   req: http.IncomingMessage,
   res: http.ServerResponse
 ): Promise<void> {
@@ -790,10 +838,18 @@ async function handleProxyRequest(
   // Check domain access: global config → grant store → LLM egress judge.
   // Plain HTTP: method and path are visible and are passed through to the
   // judge so policies can reason about specific endpoints.
-  const decision = await checkDomainAccess(hostname, tokenData.agentId, tokenData.organizationId, {
-    method: req.method,
-    path: parsedUrl.pathname + parsedUrl.search,
-  });
+  const decision = await checkDomainAccess(
+    config,
+    hostname,
+    tokenData.agentId,
+    tokenData.organizationId,
+    {
+      method: req.method,
+      path: parsedUrl.pathname + parsedUrl.search,
+      conversationId: tokenData.conversationId,
+      userId: tokenData.userId,
+    }
+  );
   logAccessDecision(
     req.method ?? "?",
     hostname,
@@ -957,17 +1013,21 @@ async function handleConnectRequestFallback(
  *
  * @param port - Port to listen on (default 8118)
  * @param host - Bind address (default "::" for all interfaces)
+ * @param config - Network allow/deny config for this server. Defaults to a fresh
+ *   snapshot resolved from the environment; tests pass one explicitly so the
+ *   server's behavior is fully determined by its arguments, not ambient state.
  * @returns Promise that resolves with the server once listening, or rejects on error
  */
 export function startHttpProxy(
   port: number = 8118,
-  host: string = "::"
+  host: string = "::",
+  config: ResolvedNetworkConfig = resolveNetworkConfig()
 ): Promise<http.Server> {
   return new Promise((resolve, reject) => {
-    const global = getGlobalConfig();
+    const global = config;
 
     const server = http.createServer((req, res) => {
-      handleProxyRequest(req, res).catch((err) => {
+      handleProxyRequest(config, req, res).catch((err) => {
         logger.error("Error handling proxy request:", err);
         if (!res.headersSent) {
           res.writeHead(500, { "Content-Type": "text/plain" });
@@ -978,7 +1038,7 @@ export function startHttpProxy(
 
     // Handle CONNECT method for HTTPS tunneling
     server.on("connect", (req, clientSocket, head) => {
-      handleConnect(req, clientSocket, head).catch((err) => {
+      handleConnect(config, req, clientSocket, head).catch((err) => {
         logger.error("Error handling CONNECT:", err);
         try {
           clientSocket.write("HTTP/1.1 500 Internal Server Error\r\n\r\n");

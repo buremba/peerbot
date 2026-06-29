@@ -80,6 +80,7 @@ export type {
   Run,
   RunStatus,
   RunType,
+  SearchContext,
   SyncContext,
   SyncCredentials,
   SyncResult,

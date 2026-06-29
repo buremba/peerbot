@@ -17,7 +17,7 @@ class MockProviderRegistryService {
 }
 
 describe("ProviderConfigResolver", () => {
-  test("returns provider configs and no bundled MCP servers", async () => {
+  test("returns provider configs", async () => {
     const resolver = new ProviderConfigResolver(
       new MockProviderRegistryService({
         groq: {
@@ -31,7 +31,6 @@ describe("ProviderConfigResolver", () => {
       }) as any
     );
 
-    expect(await resolver.getGlobalMcpServers()).toEqual({});
     expect(Object.keys(await resolver.getProviderConfigs())).toEqual(["groq"]);
   });
 });

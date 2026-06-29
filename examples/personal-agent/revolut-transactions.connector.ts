@@ -386,6 +386,28 @@ export class RevolutAuthWallError extends Error {
   }
 }
 
+async function notifyRevolutAuthWall(
+  dispatcher: ChromeActionDispatcher,
+  landedUrl: string,
+  tabId?: number
+): Promise<void> {
+  try {
+    await dispatcher.dispatch("show_notification", {
+      notification_id: "revolut-auth-wall",
+      title: "Revolut needs sign-in",
+      message:
+        "Enter your Revolut passcode in the focused Chrome window, then rerun the sync.",
+      body: "Enter your Revolut passcode in the focused Chrome window, then rerun the sync.",
+      landed_url: landedUrl,
+      click_url: landedUrl,
+      ...(typeof tabId === "number" ? { tab_id: tabId } : {}),
+    });
+  } catch {
+    // Best-effort only: lack of notification permission or an unavailable
+    // extension notification API must not hide the real auth-wall failure.
+  }
+}
+
 // ---------------------------------------------------------------------------
 // DOM scrape (declarative cs_scrape via the extension's content script)
 // ---------------------------------------------------------------------------
@@ -475,7 +497,9 @@ async function scrapeTransactionRows(
     persistent: false,
   });
   if (!result.loggedIn) {
-    throw new RevolutAuthWallError(result.landedUrl ?? url);
+    const landedUrl = result.landedUrl ?? url;
+    await notifyRevolutAuthWall(dispatcher, landedUrl, result.tabId);
+    throw new RevolutAuthWallError(landedUrl);
   }
   return result.items;
 }

@@ -667,18 +667,6 @@ export class WorkerGateway {
           skillsConfig = skills
             .filter((s) => s.enabled && s.content)
             .map((s) => ({ name: s.name, content: s.content! }));
-          // Build MCP context map: MCP server ID → skill instructions
-          for (const skill of skills) {
-            if (
-              skill.enabled &&
-              skill.instructions?.trim() &&
-              skill.mcpServers?.length
-            ) {
-              for (const mcp of skill.mcpServers) {
-                mcpContext[mcp.id] = skill.instructions.trim();
-              }
-            }
-          }
         } catch (error) {
           logger.error("Failed to fetch skills config for worker sync", {
             error,

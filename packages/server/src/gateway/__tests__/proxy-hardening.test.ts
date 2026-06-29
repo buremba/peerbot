@@ -36,6 +36,8 @@ import { VerdictCache } from "../proxy/egress-judge/cache.js";
 import { withFreePortRetry } from "../../__tests__/setup/free-port.js";
 import {
   __testOnly,
+  type ResolvedNetworkConfig,
+  resolveNetworkConfig,
   setProxyEgressJudge,
   setProxyPolicyStore,
   setProxyRevokedTokenStore,
@@ -684,8 +686,8 @@ describe("VerdictCache — key independence", () => {
     expect(cache.get(key1)).toBeDefined();
   });
 
-  test("adding extraPolicy changes the composed policy text and its hash", () => {
-    // PolicyStore computes the hash at set() time. Adding extraPolicy changes
+  test("editing the judge policy text changes the composed text and its hash", () => {
+    // PolicyStore computes the hash at set() time. Editing the policy changes
     // the composed text → different hash → old cache entries are invalidated
     // automatically because the key changes.
     const store = new PolicyStore();
@@ -694,18 +696,17 @@ describe("VerdictCache — key independence", () => {
       judgedDomains: [{ domain: "example.com" }],
       judges: { default: "allow reads" },
     });
-    const without = store.resolve("org-1", "agent-x","example.com");
+    const before = store.resolve("org-1", "agent-x","example.com");
 
     store.set("org-1", "agent-x", {
       judgedDomains: [{ domain: "example.com" }],
-      judges: { default: "allow reads" },
-      extraPolicy: "Never send PII",
+      judges: { default: "allow reads. Never send PII" },
     });
-    const withExtra = store.resolve("org-1", "agent-x","example.com");
+    const after = store.resolve("org-1", "agent-x","example.com");
 
-    expect(without).toBeDefined();
-    expect(withExtra).toBeDefined();
-    expect(without!.policyHash).not.toBe(withExtra!.policyHash);
+    expect(before).toBeDefined();
+    expect(after).toBeDefined();
+    expect(before!.policyHash).not.toBe(after!.policyHash);
   });
 
   test("same policy text in two agents produces different policyHash (no cross-agent cache collision)", () => {
@@ -1054,10 +1055,15 @@ describe("egress denylist — trailing-dot FQDN canonicalization", () => {
   const prevAllowed = process.env.WORKER_ALLOWED_DOMAINS;
   const prevDisallowed = process.env.WORKER_DISALLOWED_DOMAINS;
 
+  // Config snapshot for this block — built from the env set in beforeEach and
+  // passed into each checkDomainAccess call, so the assertions don't depend on
+  // any shared module state.
+  let config: ResolvedNetworkConfig;
+
   beforeEach(() => {
     process.env.WORKER_ALLOWED_DOMAINS = "*";
     process.env.WORKER_DISALLOWED_DOMAINS = "pastebin.com";
-    __testOnly.reset();
+    config = resolveNetworkConfig();
   });
 
   afterEach(() => {
@@ -1065,28 +1071,32 @@ describe("egress denylist — trailing-dot FQDN canonicalization", () => {
     else process.env.WORKER_ALLOWED_DOMAINS = prevAllowed;
     if (prevDisallowed === undefined) delete process.env.WORKER_DISALLOWED_DOMAINS;
     else process.env.WORKER_DISALLOWED_DOMAINS = prevDisallowed;
-    __testOnly.reset();
   });
 
   test("blocks a denylisted host written with a trailing dot", async () => {
     expect(
-      (await __testOnly.checkDomainAccess("pastebin.com", undefined, undefined)).allowed
+      (await __testOnly.checkDomainAccess(config, "pastebin.com", undefined, undefined))
+        .allowed
     ).toBe(false);
     // The bug: this returned allowed:true before the canonicalization fix.
     expect(
-      (await __testOnly.checkDomainAccess("pastebin.com.", undefined, undefined)).allowed
+      (await __testOnly.checkDomainAccess(config, "pastebin.com.", undefined, undefined))
+        .allowed
     ).toBe(false);
     expect(
-      (await __testOnly.checkDomainAccess("pastebin.com..", undefined, undefined)).allowed
+      (await __testOnly.checkDomainAccess(config, "pastebin.com..", undefined, undefined))
+        .allowed
     ).toBe(false);
   });
 
   test("still allows a non-denylisted host (trailing dot or not) in unrestricted mode", async () => {
     expect(
-      (await __testOnly.checkDomainAccess("example.com", undefined, undefined)).allowed
+      (await __testOnly.checkDomainAccess(config, "example.com", undefined, undefined))
+        .allowed
     ).toBe(true);
     expect(
-      (await __testOnly.checkDomainAccess("example.com.", undefined, undefined)).allowed
+      (await __testOnly.checkDomainAccess(config, "example.com.", undefined, undefined))
+        .allowed
     ).toBe(true);
   });
 });

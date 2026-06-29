@@ -10,12 +10,17 @@
  *   - `input`    — user message before dispatch to worker
  *   - `output`   — worker-produced text/attachments before user rendering
  *   - `pre-tool` — tool call authorization (agent → gateway MCP proxy)
+ *   - `egress`   — outbound network request authorization, evaluated in the
+ *                  http-proxy egress plane (LLM egress judge). Enforcement
+ *                  stays in the proxy — this stage is NOT run by the message
+ *                  pipeline; it exists so egress denials share the guardrail
+ *                  stage taxonomy and audit trail (`guardrail-trip` events).
  *
  * Register guardrails in a {@link GuardrailRegistry} and enable them per-agent
  * via `defineAgent({ guardrails: ["name-a", "name-b"] })` in `lobu.config.ts`.
  */
 
-export type GuardrailStage = "input" | "output" | "pre-tool";
+export type GuardrailStage = "input" | "output" | "pre-tool" | "egress";
 
 /**
  * Context shape passed to each stage. Each stage has a distinct payload so
@@ -48,10 +53,27 @@ export interface PreToolGuardrailContext {
   conversationId?: string;
 }
 
+/**
+ * Context for an egress decision. Unlike the other stages this is NOT
+ * evaluated in the message pipeline — it is produced by the http-proxy egress
+ * plane (the LLM egress judge) which owns enforcement. The stage exists so
+ * egress denials are typed against the same taxonomy and emit the same
+ * `guardrail-trip` audit events as message-pipeline guardrails.
+ */
+export interface EgressGuardrailContext {
+  agentId: string;
+  organizationId: string;
+  /** Destination host the worker is attempting to reach. */
+  hostname: string;
+  method?: string;
+  path?: string;
+}
+
 export type GuardrailContext = {
   input: InputGuardrailContext;
   output: OutputGuardrailContext;
   "pre-tool": PreToolGuardrailContext;
+  egress: EgressGuardrailContext;
 };
 
 /**

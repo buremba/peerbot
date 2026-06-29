@@ -42,6 +42,12 @@ export function extractStageText<S extends GuardrailStage>(
         ? `tool: ${c.toolName}\narguments: ${args}`
         : args;
     }
+    case "egress":
+      // Egress has no message text — the judge inspects hostname/method/path,
+      // not free-form content. This extractor is only used by the
+      // message-pipeline scanners (pii-scan / judge-factory), which never run
+      // at the egress stage, so an empty string is the correct no-op.
+      return "";
     default:
       if (options.throwOnUnknown) {
         throw new Error(`Unknown guardrail stage: ${String(stage)}`);

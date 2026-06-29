@@ -14,6 +14,7 @@ import { resolveCredentialsByConnectionId } from '../../mcp-proxy/credential-res
 import { notifyActionApprovalNeeded } from '../../notifications/triggers';
 import { resolveActionMode } from '../../operations/action-modes';
 import { getOperationForConnection, listOperations } from '../../operations/connector-operations';
+import { validateOperationInput } from '../../operations/input-validation';
 import type { AvailableOperation, OperationDescriptor } from '../../operations/types';
 import { resolveConnectorCode } from '../../utils/ensure-connector-installed';
 import { resolveExecutionAuth } from '../../utils/execution-context';
@@ -695,6 +696,13 @@ async function handleExecute(
   }
 
   const input = args.input ?? {};
+  const validationError = validateOperationInput(operation, input);
+  if (validationError) {
+    return {
+      error: `Invalid input for operation '${operation.operation_key}': ${validationError}`,
+    };
+  }
+
   const mode = resolveActionMode(operation, connection.config);
   if (mode === 'disabled') {
     return {
@@ -1339,6 +1347,42 @@ async function handleApprove(
   const fieldChangeResult = await tryApproveEntityFieldChangeRun(args, ctx);
   if (fieldChangeResult) return fieldChangeResult;
 
+  const pendingRows = await sql`
+    SELECT id, connection_id, action_key, action_input
+    FROM runs
+    WHERE id = ${args.run_id}
+      AND organization_id = ${ctx.organizationId}
+      AND approval_status = 'pending'
+      AND run_type = 'action'
+    LIMIT 1
+  `;
+  if (pendingRows.length === 0) {
+    return { error: 'Run not found or not pending approval' };
+  }
+
+  const pendingRun = pendingRows[0] as {
+    id: number;
+    connection_id: number;
+    action_key: string;
+    action_input: Record<string, unknown> | null;
+  };
+  const resolved = await getOperationForConnection(
+    ctx.organizationId,
+    pendingRun.connection_id,
+    pendingRun.action_key
+  );
+  if (!resolved) {
+    return { error: `Operation '${pendingRun.action_key}' is no longer available for this connection.` };
+  }
+
+  const approvedInput = args.input ?? pendingRun.action_input ?? {};
+  const validationError = validateOperationInput(resolved.operation, approvedInput);
+  if (validationError) {
+    return {
+      error: `Invalid input for operation '${resolved.operation.operation_key}': ${validationError}`,
+    };
+  }
+
   const runRows = await sql`
     UPDATE runs
     SET approval_status = 'approved',
@@ -1359,14 +1403,6 @@ async function handleApprove(
     action_key: string;
     action_input: Record<string, unknown> | null;
   };
-  const resolved = await getOperationForConnection(
-    ctx.organizationId,
-    run.connection_id,
-    run.action_key
-  );
-  if (!resolved) {
-    return { error: `Operation '${run.action_key}' is no longer available for this connection.` };
-  }
 
   const eventId = await supersedeActionEvent(
     args.run_id,

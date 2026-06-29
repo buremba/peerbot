@@ -37,6 +37,7 @@ import {
   type EventEnvelope,
   type QueryContext,
   type QueryResult,
+  type SearchContext,
   type SyncContext,
   type SyncResult,
 } from '@lobu/connector-sdk';
@@ -144,6 +145,19 @@ function assertIdentifier(value: string, label: string): string {
     );
   }
   return value;
+}
+
+/** Double embedded quotes so a probed column name is safe inside `q."…"`. */
+function quoteIdent(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Escape LIKE/ILIKE wildcards so a user search term matches literally — the
+ * default Postgres escape char is backslash, so `\%` / `\_` / `\\` are literals.
+ */
+function escapeLike(term: string): string {
+  return term.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
 /**
@@ -486,6 +500,87 @@ export default class PostgresConnector extends ConnectorRuntime {
       }
       const columns = cols.map((c) => ({ name: c.name, type: PG_OID[c.type]?.display ?? 'unknown' }));
       return { rows, columns, total };
+    } finally {
+      await sql.end({ timeout: 5 });
+    }
+  }
+
+  /**
+   * Virtual-feed RECALL: live read with the caller's keyword `terms` pushed DOWN
+   * as an `ILIKE` predicate over the validated subquery, inside the SAME
+   * read-only transaction + egress guard as query(). The output columns are
+   * probed (LIMIT 0) so each term is matched against EVERY column cast to text;
+   * a row matches when every term hits at least one column. Terms are bound
+   * parameters (never interpolated) and wildcard-escaped, so a term like `50%`
+   * matches literally. Empty `terms` ⇒ behaves like query() (no predicate).
+   */
+  async search(ctx: SearchContext): Promise<QueryResult> {
+    const connectionString = (ctx.config as Record<string, unknown>).DATABASE_URL as
+      | string
+      | undefined;
+    if (!connectionString) {
+      throw new Error('DATABASE_URL is required');
+    }
+    const baseSql = validateReadOnlySelect(ctx.query);
+    const terms = (ctx.terms ?? []).map((t) => t.trim()).filter(Boolean);
+    const limit =
+      ctx.limit !== undefined ? Math.min(Math.max(Math.trunc(ctx.limit), 1), 5000) : 1000;
+    const offset = ctx.offset !== undefined ? Math.max(Math.trunc(ctx.offset), 0) : 0;
+    let orderBy = '';
+    if (ctx.sort?.column) {
+      const col = assertIdentifier(ctx.sort.column, 'sort.column');
+      orderBy = `ORDER BY q."${col}" ${ctx.sort.order === 'desc' ? 'DESC' : 'ASC'}`;
+    }
+
+    await guardDbHost(connectionString, ctx.config as Record<string, unknown>);
+    const sql = postgres(connectionString, POOL_OPTS);
+    try {
+      const { data, columns, total } = (await sql.begin(async (tx) => {
+        await setReadOnly(tx, 30000);
+        // Probe output columns so recall spans every column (cast to text).
+        const probe = await tx.unsafe(`SELECT * FROM (\n${baseSql}\n) q LIMIT 0`);
+        const cols =
+          (probe as unknown as { columns?: Array<{ name: string; type: number }> }).columns ?? [];
+        const names = cols.map((c) => c.name);
+        if (new Set(names).size !== names.length) {
+          throw new Error(
+            'query has duplicate output column names — alias each selected column to a distinct name (the row object would otherwise drop a value).',
+          );
+        }
+
+        // Each term → an OR across all columns; terms AND together. Terms are
+        // bound params ($1..$n); column identifiers come from the live result
+        // set and are quote-escaped. No columns or no terms ⇒ no predicate.
+        const params: unknown[] = [];
+        let whereClause = '';
+        if (terms.length > 0 && names.length > 0) {
+          const perTerm = terms.map((term) => {
+            params.push(`%${escapeLike(term)}%`);
+            const idx = params.length;
+            const ors = names.map((n) => `q.${quoteIdent(n)}::text ILIKE $${idx}`).join(' OR ');
+            return `(${ors})`;
+          });
+          whereClause = `WHERE ${perTerm.join(' AND ')}`;
+        }
+
+        const wrapped = `SELECT * FROM (\n${baseSql}\n) q\n${whereClause}\n${orderBy}\nLIMIT ${limit} OFFSET ${offset}`;
+        const countSql = `SELECT count(*)::int AS n FROM (\n${baseSql}\n) q\n${whereClause}`;
+        const rows = await tx.unsafe(wrapped, params as never[]);
+        const counted = (await tx.unsafe(countSql, params as never[])) as unknown as Array<{
+          n: number;
+        }>;
+        return { data: rows, columns: cols, total: counted[0]?.n };
+      })) as unknown as {
+        data: Array<Record<string, unknown>>;
+        columns: Array<{ name: string; type: number }>;
+        total: number | undefined;
+      };
+      const rows = Array.isArray(data) ? (data as Array<Record<string, unknown>>) : [];
+      const outCols = columns.map((c) => ({
+        name: c.name,
+        type: PG_OID[c.type]?.display ?? 'unknown',
+      }));
+      return { rows, columns: outCols, total };
     } finally {
       await sql.end({ timeout: 5 });
     }

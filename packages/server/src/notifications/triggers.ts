@@ -106,15 +106,23 @@ export async function notifyBrowserAuthExpired(params: {
   orgId: string;
   connectionId: number;
   connectorKey: string;
-  authProfileSlug: string;
+  /**
+   * Set for connectors that store a `browser_session` auth profile (the CLI /
+   * Mac browser-auth capture flow). Omitted for extension-scrape connectors
+   * (e.g. Revolut, LinkedIn) that reuse the live browser session and have no
+   * stored auth profile — those just need the user to re-login on the site.
+   */
+  authProfileSlug?: string | null;
 }): Promise<void> {
   await notifyOrgAdmins(params.orgId, (orgSlug) => ({
     type: 'browser_auth_expired',
-    title: `Browser auth expired for ${params.connectorKey}`,
-    body:
-      'Session needs re-authentication.\n' +
-      'Enable remote debugging in Chrome: chrome://inspect/#remote-debugging\n' +
-      `Or run: lobu memory browser-auth --connector ${params.connectorKey} --auth-profile-slug ${params.authProfileSlug}`,
+    title: `${params.connectorKey} needs sign-in`,
+    body: params.authProfileSlug
+      ? 'Session needs re-authentication.\n' +
+        'Enable remote debugging in Chrome: chrome://inspect/#remote-debugging\n' +
+        `Or run: lobu memory browser-auth --connector ${params.connectorKey} --auth-profile-slug ${params.authProfileSlug}`
+      : `Your ${params.connectorKey} session has expired, so syncing has stopped. ` +
+        `Open ${params.connectorKey} in the browser where your Owletto extension runs and sign in to resume.`,
     resourceType: 'connection',
     resourceId: String(params.connectionId),
     resourceUrl: orgSlug ? `/${orgSlug}/connectors` : undefined,

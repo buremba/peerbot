@@ -16,7 +16,6 @@ import { ChannelBindingService } from '../gateway/channels/binding-service';
 import { configsEqual } from '../gateway/connections/config-equal';
 import { createAuthProfileLabel } from '../gateway/auth/settings/auth-profiles-manager';
 import type { Env } from '../index';
-import { getConfiguredPublicOrigin } from '../utils/public-origin';
 import { countRuntimeMessagingClientsByAgent } from './client-routes';
 import { getChatInstanceManager, getLobuCoreServices } from './gateway';
 import {
@@ -353,30 +352,25 @@ routes.post('/', async (c) => {
   // same operator can both reach this endpoint with the same agentId. The
   // previous version did INSERT-then-saveSettings as two separate writes:
   // a "loser" returning 200 in the idempotent branch could see the row
-  // before the winner's saveSettings landed, then immediately PATCH
-  // `mcpServers` with operator config — only for the winner's deferred
-  // saveSettings to clobber it moments later. Folding `mcp_servers` into
-  // the same INSERT statement closes that gap: the row + auto-injected
-  // MCP server land atomically and the loser's idempotent 200 already
-  // reflects fully-initialized state.
+  // before the winner's saveSettings landed, then immediately PATCH it with
+  // operator config — only for the winner's deferred saveSettings to clobber
+  // it moments later. Folding `pre_approved_tools` into the same INSERT
+  // statement closes that gap: the row + auto-injected pre-approvals land
+  // atomically and the loser's idempotent 200 already reflects
+  // fully-initialized state. The `lobu-memory` MCP server itself is no longer
+  // stored per-agent — it's derived at worker startup by McpConfigService.
   const sql = getDb();
   const now = new Date();
-  const orgSlug = c.req.param('orgSlug');
-  const publicUrl =
-    getConfiguredPublicOrigin() || `http://localhost:${process.env.PORT || '8787'}`;
-  const ownerMcpServers = {
-    'lobu-memory': { url: `${publicUrl}/mcp/${orgSlug}`, type: 'streamable-http' },
-  };
   const ownerPreApprovedTools = ['/mcp/lobu-memory/tools/*'];
   const inserted = await sql`
     INSERT INTO agents (
       id, organization_id, name, description, owner_platform, owner_user_id,
-      mcp_servers, pre_approved_tools, created_at, updated_at
+      pre_approved_tools, created_at, updated_at
     )
     VALUES (
       ${agentId}, ${orgId}, ${name}, ${description ?? null},
       'lobu', ${user.id},
-      ${sql.json(ownerMcpServers)}, ${sql.json(ownerPreApprovedTools)}, ${now}, ${now}
+      ${sql.json(ownerPreApprovedTools)}, ${now}, ${now}
     )
     ON CONFLICT (organization_id, id) DO NOTHING
     RETURNING id
@@ -514,6 +508,10 @@ routes.get('/:agentId/guardrail-trips', async (c) => {
   // asks for just that guardrail's catches.
   const guardrail = c.req.query('guardrail');
 
+  // Optional narrowing to one conversation — the chat view asks for just the
+  // trips that fired during this conversation so it can flag the affected turn.
+  const conversationId = c.req.query('conversationId');
+
   const sql = getDb();
   // `recordGuardrailTrip` writes `created_at` (default now()) but leaves
   // `occurred_at` null, so coalesce to `created_at` — otherwise the UI shows
@@ -525,6 +523,7 @@ routes.get('/:agentId/guardrail-trips', async (c) => {
        AND semantic_type = 'guardrail-trip'
        AND metadata->>'agent_id' = ${agentId}
        ${guardrail ? sql`AND metadata->>'guardrail' = ${guardrail}` : sql``}
+       ${conversationId ? sql`AND metadata->>'conversation_id' = ${conversationId}` : sql``}
      ORDER BY COALESCE(occurred_at, created_at) DESC, id DESC
      LIMIT ${limit}
   `;
@@ -536,6 +535,7 @@ routes.get('/:agentId/guardrail-trips', async (c) => {
       stage?: string;
       guardrail?: string;
       reason?: string | null;
+      conversation_id?: string | null;
     };
     const occurredAt =
       row.occurred_at instanceof Date
@@ -551,6 +551,9 @@ routes.get('/:agentId/guardrail-trips', async (c) => {
       stage: metadata.stage,
       guardrailName: metadata.guardrail,
       ...(metadata.reason ? { reason: metadata.reason } : {}),
+      ...(metadata.conversation_id
+        ? { conversationId: metadata.conversation_id }
+        : {}),
     };
   });
 
@@ -740,7 +743,7 @@ routes.put('/:agentId/providers/:providerId/api-key', async (c) => {
 
 // ── Update agent config (settings) ───────────────────────────────────────────
 
-const GUARDRAIL_STAGES = new Set(['input', 'output', 'pre-tool']);
+const GUARDRAIL_STAGES = new Set(['input', 'output', 'pre-tool', 'egress']);
 
 /**
  * Validate a `guardrailsInline` payload before it is persisted to agent
@@ -765,7 +768,7 @@ export function validateGuardrailsInline(value: unknown): string | null {
       return `guardrailsInline[${i}].enabled must be a boolean`;
     }
     if (typeof g.stage !== 'string' || !GUARDRAIL_STAGES.has(g.stage)) {
-      return `guardrailsInline[${i}].stage must be one of: input, output, pre-tool`;
+      return `guardrailsInline[${i}].stage must be one of: input, output, pre-tool, egress`;
     }
     if (typeof g.policy !== 'string' || g.policy.trim() === '') {
       return `guardrailsInline[${i}].policy must be a non-empty string`;
@@ -778,6 +781,13 @@ export function validateGuardrailsInline(value: unknown): string | null {
       (!Array.isArray(g.tools) || g.tools.some((t) => typeof t !== 'string'))
     ) {
       return `guardrailsInline[${i}].tools must be an array of strings`;
+    }
+    if (
+      g.domains !== undefined &&
+      (!Array.isArray(g.domains) ||
+        g.domains.some((d) => typeof d !== 'string'))
+    ) {
+      return `guardrailsInline[${i}].domains must be an array of strings`;
     }
   }
   return null;

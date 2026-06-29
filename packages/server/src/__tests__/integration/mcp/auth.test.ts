@@ -1006,6 +1006,68 @@ describe('MCP Authentication', () => {
       expect(body.error).toBe('access_denied');
     });
 
+    it('forces org selection on the device flow even when the user has a personal org', async () => {
+      // A multi-org user WITH a personal org used to be silently bound to that
+      // personal org (no picker), which landed the device in the wrong
+      // workspace. Device pairing must now require an explicit pick.
+      const sql = getTestDb();
+      const pUser = await createTestUser({});
+      const personalOrg = await createTestOrganization({ name: 'Personal Org (device)' });
+      await addUserToOrganization(pUser.id, personalOrg.id);
+      // organization.metadata is text storing JSON (see findExistingPersonalOrg).
+      await sql`
+        UPDATE "organization"
+        SET metadata = ${JSON.stringify({ personal_org_for_user_id: pUser.id })}
+        WHERE id = ${personalOrg.id}
+      `;
+      const otherOrg = await createTestOrganization({ name: 'Other Org (device)' });
+      await addUserToOrganization(pUser.id, otherOrg.id);
+
+      const pSession = await createTestSession(pUser.id);
+      const dc = await createTestDeviceCode(deviceClient.client_id);
+
+      const response = await post('/oauth/device/approve', {
+        body: { user_code: dc.userCode, approved: true },
+        cookie: pSession.cookieHeader,
+        headers: { Origin: 'http://localhost' },
+      });
+
+      const body = await response.json();
+      expect(response.status).toBe(400);
+      expect(body.error).toBe('org_selection_required');
+      const ids = (body.organizations as { id: string }[]).map((o) => o.id);
+      expect(ids).toContain(personalOrg.id);
+      expect(ids).toContain(otherOrg.id);
+    });
+
+    it('still approves with an explicit organization_id when the user has a personal org', async () => {
+      // The override path stays intact — an explicit pick binds the device to it.
+      const sql = getTestDb();
+      const pUser = await createTestUser({});
+      const personalOrg = await createTestOrganization({ name: 'Personal Org (device override)' });
+      await addUserToOrganization(pUser.id, personalOrg.id);
+      await sql`
+        UPDATE "organization"
+        SET metadata = ${JSON.stringify({ personal_org_for_user_id: pUser.id })}
+        WHERE id = ${personalOrg.id}
+      `;
+      const otherOrg = await createTestOrganization({ name: 'Other Org (device override)' });
+      await addUserToOrganization(pUser.id, otherOrg.id);
+
+      const pSession = await createTestSession(pUser.id);
+      const dc = await createTestDeviceCode(deviceClient.client_id);
+
+      const response = await post('/oauth/device/approve', {
+        body: { user_code: dc.userCode, approved: true, organization_id: otherOrg.id },
+        cookie: pSession.cookieHeader,
+        headers: { Origin: 'http://localhost' },
+      });
+
+      const body = await response.json();
+      expect(response.status).toBe(200);
+      expect(body.status).toBe('approved');
+    });
+
     it('attaches a polling device worker to the org its token was approved for', async () => {
       const dc = await createTestDeviceCode(deviceClient.client_id);
 

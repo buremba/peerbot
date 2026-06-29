@@ -253,6 +253,28 @@ async function executeConnectorRuntime(
     };
   }
 
+  if (job.mode === 'search') {
+    // Virtual-feed recall: live read with keyword terms pushed down. Persists
+    // nothing (like `query`/`action`).
+    const searchResult = await instance.search({
+      feedKey: job.feedKey ?? undefined,
+      query: job.query,
+      terms: job.terms,
+      config: { ...job.env, ...job.config },
+      credentials: job.credentials,
+      sessionState: job.sessionState,
+      limit: job.limit,
+      offset: job.offset,
+      sort: job.sort,
+    });
+    return {
+      mode: 'search',
+      rows: searchResult.rows ?? [],
+      columns: searchResult.columns,
+      total: searchResult.total,
+    };
+  }
+
   // mode === 'sync'
   const emitEvents = async (events: EventEnvelope[]) => {
     for (let index = 0; index < events.length; index += EVENT_CHUNK_SIZE) {

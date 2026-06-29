@@ -177,9 +177,9 @@ async function buildModel(exampleName: string): Promise<UseCaseModel | null> {
       agentId,
       skillId: agentId,
       description,
-      // The SDK config declares MCP/local skills via the agent dir + mcpServers,
-      // not a flat enabled-skills list; the landing page only renders an empty
-      // skills list today, so leave these unset.
+      // The SDK config declares local skills via the agent dir, not a flat
+      // enabled-skills list; the landing page only renders an empty skills
+      // list today, so leave these unset.
       skills: [],
       nixPackages,
       allowedDomains,

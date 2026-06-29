@@ -17,7 +17,6 @@ import type {
   Connection,
   ConnectorRef,
   EntityType,
-  McpServer,
   Project,
   ProviderConfig,
   RelationshipType,
@@ -135,20 +134,6 @@ function platformStableId(
     .join("-");
 }
 
-/** Credential value → `$VAR` string; collects the referenced secret name. */
-function credentialString(
-  value: string | { readonly $secret: string },
-  required: Set<string>
-): string {
-  if (isSecretRef(value)) {
-    required.add(value.$secret);
-    return `$${value.$secret}`;
-  }
-  const ref = envRefName(value);
-  if (ref) required.add(ref);
-  return value;
-}
-
 /**
  * Resolve a credential to its actual secret value, mirroring the TOML loader's
  * connector-credential handling (`loadConnectors` in desired-state.ts): a
@@ -191,10 +176,9 @@ export interface AgentMarkdown {
  * results in) so it can be unit-tested directly.
  *
  * Mirrors `buildAgentSettings`'s skill-merge semantics exactly: agent-level
- * network/nix/mcp is laid down first (already in `settings`), then skills are
- * merged on top — allowed/denied/nix are unioned (deduped), judged-domains and
- * judges are skill-first with the AGENT WINNING on conflicts, and skill MCP
- * servers add only ids the agent didn't already define.
+ * nix is laid down first (already in `settings`), then skill nix packages are
+ * unioned on top (deduped). Skills are prompt/behavior only — they no longer
+ * contribute network or MCP config.
  */
 export function mergeAgentDirArtifacts(
   settings: Partial<AgentSettings>,
@@ -209,46 +193,6 @@ export function mergeAgentDirArtifacts(
     settings.skillsConfig = { skills: localSkills };
   }
 
-  // Network merge — agent values are already in settings.networkConfig.
-  const allowed = [...(settings.networkConfig?.allowedDomains ?? [])];
-  const denied = [...(settings.networkConfig?.deniedDomains ?? [])];
-  const judgedByDomain = new Map<string, { domain: string; judge?: string }>();
-  const judges: Record<string, string> = {};
-  // Skills first.
-  for (const skill of localSkills) {
-    const net = skill.networkConfig;
-    if (!net) continue;
-    if (net.allowedDomains?.length) {
-      allowed.push(...net.allowedDomains.filter((d) => d !== "*"));
-    }
-    if (net.deniedDomains?.length) denied.push(...net.deniedDomains);
-    for (const rule of net.judgedDomains ?? []) {
-      judgedByDomain.set(rule.domain, rule);
-    }
-    if (net.judges) Object.assign(judges, net.judges);
-  }
-  // Agent overrides skills on judged/judges.
-  for (const rule of settings.networkConfig?.judgedDomains ?? []) {
-    judgedByDomain.set(rule.domain, rule);
-  }
-  Object.assign(judges, settings.networkConfig?.judges ?? {});
-
-  const judgedDomains = [...judgedByDomain.values()];
-  const hasJudges = Object.keys(judges).length > 0;
-  if (
-    allowed.length > 0 ||
-    denied.length > 0 ||
-    judgedDomains.length > 0 ||
-    hasJudges
-  ) {
-    settings.networkConfig = {
-      ...(allowed.length > 0 ? { allowedDomains: [...new Set(allowed)] } : {}),
-      ...(denied.length > 0 ? { deniedDomains: [...new Set(denied)] } : {}),
-      ...(judgedDomains.length > 0 ? { judgedDomains } : {}),
-      ...(hasJudges ? { judges } : {}),
-    };
-  }
-
   // Nix merge — agent packages first, then skill packages, deduped.
   const nixPackages = [
     ...(settings.nixConfig?.packages ?? []),
@@ -260,82 +204,6 @@ export function mergeAgentDirArtifacts(
       packages: [...new Set(nixPackages)],
     };
   }
-
-  // MCP merge — agent servers win; skills add only ids the agent didn't define.
-  const mcpServers: Record<string, unknown> = { ...settings.mcpServers };
-  for (const skill of localSkills) {
-    for (const mcp of skill.mcpServers ?? []) {
-      if (mcpServers[mcp.id]) continue;
-      mcpServers[mcp.id] = {
-        ...(mcp.url ? { url: mcp.url } : {}),
-        ...(mcp.type ? { type: mcp.type } : {}),
-        ...(mcp.command ? { command: mcp.command } : {}),
-        ...(mcp.args ? { args: mcp.args } : {}),
-      };
-    }
-  }
-  if (Object.keys(mcpServers).length > 0) {
-    settings.mcpServers = mcpServers as AgentSettings["mcpServers"];
-  }
-}
-
-/**
- * Map SDK MCP server config to the agent-settings shape. Mirrors the TOML
- * loader, including the loose cast: `authScope`/`oauth` aren't on the typed
- * `McpServerConfig`, but the server accepts them. `$VAR` refs in headers/env and
- * a `secret()` (or `$VAR`) `clientSecret` are collected into `required` so the
- * apply secrets gate fails loud, and passed through verbatim (the server/secret
- * proxy resolves them) — matching `buildAgentSettings`.
- */
-function mapMcpServers(
-  servers: Record<string, McpServer>,
-  required: Set<string>
-): NonNullable<AgentSettings["mcpServers"]> {
-  const out: Record<string, Record<string, unknown>> = {};
-  for (const [id, mcp] of Object.entries(servers)) {
-    const mapped: Record<string, unknown> = {};
-    if (mcp.url) mapped.url = mcp.url;
-    if (mcp.type) mapped.type = mcp.type;
-    if (mcp.command) mapped.command = mcp.command;
-    if (mcp.args) mapped.args = mcp.args;
-    if (mcp.headers) {
-      for (const v of Object.values(mcp.headers)) {
-        const ref = envRefName(v);
-        if (ref) required.add(ref);
-      }
-      mapped.headers = { ...mcp.headers };
-    }
-    if (mcp.env) {
-      for (const v of Object.values(mcp.env)) {
-        const ref = envRefName(v);
-        if (ref) required.add(ref);
-      }
-      mapped.env = { ...mcp.env };
-    }
-    if (mcp.authScope) mapped.authScope = mcp.authScope;
-    if (mcp.oauth) {
-      // `client_id` may itself be a `$VAR` ref — collect it like the TOML
-      // loader's collectEnvRefs does (it's passed through verbatim).
-      if (mcp.oauth.clientId) {
-        const ref = envRefName(mcp.oauth.clientId);
-        if (ref) required.add(ref);
-      }
-      mapped.oauth = {
-        authUrl: mcp.oauth.authUrl,
-        tokenUrl: mcp.oauth.tokenUrl,
-        ...(mcp.oauth.clientId ? { clientId: mcp.oauth.clientId } : {}),
-        ...(mcp.oauth.clientSecret
-          ? { clientSecret: credentialString(mcp.oauth.clientSecret, required) }
-          : {}),
-        ...(mcp.oauth.scopes ? { scopes: mcp.oauth.scopes } : {}),
-        ...(mcp.oauth.tokenEndpointAuthMethod
-          ? { tokenEndpointAuthMethod: mcp.oauth.tokenEndpointAuthMethod }
-          : {}),
-      };
-    }
-    out[id] = mapped;
-  }
-  return out as NonNullable<AgentSettings["mcpServers"]>;
 }
 
 function mapAgent(
@@ -363,40 +231,11 @@ function mapAgent(
 
   const allowed = agent.network?.allowed ?? [];
   const denied = agent.network?.denied ?? [];
-  const judges = agent.network?.judges ?? {};
-  const hasJudges = Object.keys(judges).length > 0;
-  // Dedup judged rules by domain (last wins), matching buildAgentSettings.
-  const judgedByDomain = new Map<string, { domain: string; judge?: string }>();
-  for (const rule of agent.network?.judged ?? []) {
-    judgedByDomain.set(rule.domain, {
-      domain: rule.domain,
-      ...(rule.judge ? { judge: rule.judge } : {}),
-    });
-  }
-  const judgedDomains = [...judgedByDomain.values()];
-  if (
-    allowed.length > 0 ||
-    denied.length > 0 ||
-    judgedDomains.length > 0 ||
-    hasJudges
-  ) {
+  if (allowed.length > 0 || denied.length > 0) {
     settings.networkConfig = {
       ...(allowed.length > 0 ? { allowedDomains: [...new Set(allowed)] } : {}),
       ...(denied.length > 0 ? { deniedDomains: [...new Set(denied)] } : {}),
-      ...(judgedDomains.length > 0 ? { judgedDomains } : {}),
-      ...(hasJudges ? { judges } : {}),
     };
-  }
-
-  if (agent.egress) {
-    const egressConfig: NonNullable<AgentSettings["egressConfig"]> = {};
-    if (agent.egress.extraPolicy) {
-      egressConfig.extraPolicy = agent.egress.extraPolicy;
-    }
-    if (agent.egress.judgeModel)
-      egressConfig.judgeModel = agent.egress.judgeModel;
-    if (Object.keys(egressConfig).length > 0)
-      settings.egressConfig = egressConfig;
   }
 
   if (agent.tools) {
@@ -421,10 +260,6 @@ function mapAgent(
 
   if (agent.nixPackages?.length) {
     settings.nixConfig = { packages: [...new Set(agent.nixPackages)] };
-  }
-
-  if (agent.mcpServers && Object.keys(agent.mcpServers).length > 0) {
-    settings.mcpServers = mapMcpServers(agent.mcpServers, required);
   }
 
   const providerKeys: { providerId: string; value: string }[] = [];

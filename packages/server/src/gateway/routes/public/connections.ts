@@ -333,5 +333,31 @@ export function createConnectionCrudRoutes(
     return c.json(connection);
   });
 
+  // Revoke a MANAGED install (e.g. an "Add to Slack" workspace). Unlike the
+  // generic connection delete, this purges the install + its bot token via the
+  // provider store and tombstones the unified `connections` row. A managed
+  // install is unbound (no owning agent), so — mirroring the unbound-read gate
+  // above — it requires an admin/settings-admin session. `:id` is the
+  // `connections` bigint id (what the UI holds), not a runtime id.
+  app.post("/api/v1/connections/:id/revoke", async (c): Promise<Response> => {
+    const session = await requireSession(c);
+    if (session instanceof Response) return session;
+    if (!session.isAdmin && session.settingsMode !== "admin") {
+      return c.json({ error: "Forbidden" }, 403);
+    }
+    const connectionId = Number(c.req.param("id"));
+    if (!Number.isFinite(connectionId)) {
+      return c.json({ error: "Invalid connection id" }, 400);
+    }
+    try {
+      const result = await manager.revokeManagedConnection(connectionId);
+      return c.json(result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const status = message === "Connection not found" ? 404 : 400;
+      return c.json({ error: message }, status);
+    }
+  });
+
   return app;
 }

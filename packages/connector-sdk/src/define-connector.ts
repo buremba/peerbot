@@ -40,6 +40,7 @@ import type {
   QueryResult,
   ReflectContext,
   ReflectResult,
+  SearchContext,
   SyncContext,
   SyncResult,
   WebhookRegistration,
@@ -81,6 +82,13 @@ export interface ConnectorSpec
    * entities (returns rows, no persistence). Omitted ⇒ live queries unsupported.
    */
   query?(ctx: QueryContext): Promise<QueryResult>;
+  /**
+   * Optional virtual-feed recall handler. When provided, lowers to
+   * `ConnectorRuntime.search` — the platform calls it to read a virtual feed
+   * live with the caller's keyword terms pushed down to the source. Omitted ⇒
+   * recall over this connector's virtual feeds is unsupported.
+   */
+  search?(ctx: SearchContext): Promise<QueryResult>;
   /**
    * Optional metric-reflection handler. When provided, lowers to
    * `ConnectorRuntime.reflectMetrics` — contributes entity types federating the
@@ -133,6 +141,7 @@ function buildDefinition(spec: ConnectorSpec): ConnectorDefinition {
           displayNameTemplate: feed.displayNameTemplate,
           configSchema: feed.configSchema,
           userManaged: feed.userManaged,
+          virtual: feed.virtual,
           eventKinds: feed.eventKinds,
         },
       ]),
@@ -204,6 +213,13 @@ export function defineConnector(spec: ConnectorSpec): ConnectorClass {
         return super.query(ctx);
       }
       return spec.query(ctx);
+    }
+
+    async search(ctx: SearchContext): Promise<QueryResult> {
+      if (!spec.search) {
+        return super.search(ctx);
+      }
+      return spec.search(ctx);
     }
 
     async reflectMetrics(ctx: ReflectContext): Promise<ReflectResult> {

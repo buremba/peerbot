@@ -63,6 +63,7 @@ describe('extensionDomScrape', () => {
     expect(res.loggedIn).toBe(true);
     expect(res.count).toBe(2);
     expect(res.host).toBe('www.example.com');
+    expect(res.tabId).toBe(7);
   });
 
   test('treats absent loggedIn as logged in and defaults count to item length', async () => {
@@ -95,22 +96,20 @@ describe('extensionDomScrape', () => {
     expect(res.count).toBe(0);
   });
 
-  test('honors persistent/focus overrides and handles a missing result envelope', async () => {
+  test('honors persistent/focus overrides and fails loudly on a missing result envelope', async () => {
     const { dispatcher, log } = makeDispatcher({});
-    const res = await extensionDomScrape<{ id?: string }>({
-      dispatcher,
-      url: 'https://www.example.com/feed/',
-      config: {},
-      parseRows: (rows) => rows as { id?: string }[],
-      allowedOrigins: ['example.com'],
-      persistent: false,
-      focus: false,
-    });
+    await expect(
+      extensionDomScrape<{ id?: string }>({
+        dispatcher,
+        url: 'https://www.example.com/feed/',
+        config: {},
+        parseRows: (rows) => rows as { id?: string }[],
+        allowedOrigins: ['example.com'],
+        persistent: false,
+        focus: false,
+      })
+    ).rejects.toThrow(/cs_scrape returned no result/);
     expect(log[0].input.persistent).toBe(false);
     expect(log[0].input.focus).toBe(false);
-    // No `result` → empty rows, logged-in by default, count 0.
-    expect(res.items).toEqual([]);
-    expect(res.loggedIn).toBe(true);
-    expect(res.count).toBe(0);
   });
 });

@@ -111,7 +111,9 @@ export const QUERYABLE_SCHEMA = {
         'visibility',
         'deleted_at',
         'agent_id',
-        'device_worker_id'
+        'device_worker_id',
+        'external_tenant_id',
+        'credential_mode'
       ),
     },
     // watchers
@@ -305,7 +307,8 @@ export const QUERYABLE_SCHEMA = {
         'repair_attempt_count',
         'last_repair_at',
         'first_failure_at',
-        'last_repair_post_hash'
+        'last_repair_post_hash',
+        'virtual'
       ),
     },
     // connector_definitions (excludes: large *_config JSONB blobs)

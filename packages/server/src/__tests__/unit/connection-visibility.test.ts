@@ -56,14 +56,20 @@ describe('connection-visibility compiler (M1 one-compiler)', () => {
     });
   });
 
-  it('the recall/content adapter is a byte-identical pass-through to the compiler', () => {
+  it('the recall/content adapter composes the connection-visibility compiler verbatim, then the resource gate', () => {
     const viaAdapter = buildConnectionVisibilityClause(
       { organizationId: 'org_test', userId: 'user_a', baseParamIndex: 7 },
       'f'
     );
     const viaCompiler = compileConnectionFkVisibility(scope, 7, 'f');
-    expect(viaAdapter.sql).toBe(viaCompiler.sql);
-    expect(viaAdapter.params).toEqual(viaCompiler.params);
+    // Connection visibility is STILL the one compiler's output, verbatim — the
+    // adapter prefixes it (no re-derivation), then ANDs the orthogonal resource
+    // gate, whose params follow the connection-visibility params in order.
+    expect(viaAdapter.sql.startsWith(viaCompiler.sql)).toBe(true);
+    expect(viaAdapter.params.slice(0, viaCompiler.params.length)).toEqual(viaCompiler.params);
+    // Plus the per-resource membership gate composed after it.
+    expect(viaAdapter.sql).toContain('member_of');
+    expect(viaAdapter.params).toEqual(['org_test', 'user_a', 'org_test', 'user_a']);
   });
 
   it('the adapter still returns empty when no org is requested', () => {

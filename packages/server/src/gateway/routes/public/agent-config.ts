@@ -293,7 +293,6 @@ async function buildResolvedConfigResponse(
 			configManaged: [] as string[],
 		},
 		skills: sanitized.skillsConfig?.skills || [],
-		mcpServers: sanitized.mcpServers || {},
 		tools: {
 			nixPackages: sanitized.nixConfig?.packages || [],
 			permissions: grants,

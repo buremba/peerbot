@@ -29,7 +29,6 @@ export type {
   PrefillMcp,
   PrefillSkill,
   Skill,
-  SkillMcpServerInfo,
 } from "./api-types";
 export * from "./capabilities";
 export type { CommandContext, CommandDefinition } from "./command-registry";
@@ -95,22 +94,18 @@ export { getSentry, initSentry } from "./sentry";
 export { extractTraceId, generateTraceId } from "./trace";
 // Core types
 export type {
-  AgentEgressConfig,
   AgentInlineGuardrail,
-  AgentMcpConfig,
   AgentOptions,
   AuthProfile,
   CliBackendConfig,
   ConversationMessage,
   DeclaredCredential,
-  DomainJudgeRule,
   HistoryMessage,
   InstalledProvider,
   InstructionContext,
   InstructionProvider,
   LogLevel,
   McpOAuthConfig,
-  McpServerConfig,
   ModelSelectionMode,
   ModelSelectionState,
   NetworkConfig,
@@ -119,7 +114,6 @@ export type {
   RegistryEntry,
   SessionContext,
   SkillConfig,
-  SkillMcpServer,
   SkillPreToolGuardrail,
   SkillsConfig,
   SuggestedPrompt,

@@ -15,6 +15,7 @@ import type {
   QueryResult,
   ReflectContext,
   ReflectResult,
+  SearchContext,
   SyncContext,
   SyncResult,
   WebhookRegistration,
@@ -96,6 +97,18 @@ export abstract class ConnectorRuntime<C = Record<string, unknown>, F = Record<s
   // biome-ignore lint/correctness/noUnusedFunctionParameters: contract signature — subclasses receive the full QueryContext
   async query(ctx: QueryContext<F>): Promise<QueryResult> {
     throw new Error(`${this.definition.key} does not support live queries`);
+  }
+
+  /**
+   * Keyword RECALL over a virtual feed: read LIVE against the source pushing the
+   * caller's `ctx.terms` DOWN as a source-side predicate (no copy, no events).
+   * Same read-only contract as {@link query}. Default implementation throws —
+   * a connector that doesn't override signals "recall over virtual unsupported"
+   * (a capability gap surfaced to the caller, not a runtime branch).
+   */
+  // biome-ignore lint/correctness/noUnusedFunctionParameters: contract signature — subclasses receive the full SearchContext
+  async search(ctx: SearchContext<F>): Promise<QueryResult> {
+    throw new Error(`${this.definition.key} does not support recall over virtual feeds`);
   }
 
   /**

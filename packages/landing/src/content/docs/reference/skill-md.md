@@ -50,11 +50,6 @@ When asked to work with PDFs, use `pdftotext` first.
 name: My Skill
 description: What this skill does
 
-mcpServers:
-  my-mcp:
-    url: https://my-mcp.example.com
-    # type: streamable-http   # default for HTTP URLs; or sse / stdio
-
 nixPackages:
   - jq
   - ripgrep
@@ -87,18 +82,11 @@ The body acts as a system prompt extension.
 |-------|------|-------------|
 | `name` | string | Display name shown in settings and search results |
 | `description` | string | Short summary for the skill registry |
-| `mcpServers` | object | MCP server connections keyed by server ID |
-| `mcpServers.<id>.url` | string | HTTP endpoint URL (streamable-HTTP or SSE transport) |
-| `mcpServers.<id>.type` | `streamable-http` \| `sse` \| `stdio` | Transport type. Omit it for an HTTP `url` and the connection defaults to streamable-HTTP; `sse` is the legacy two-channel HTTP transport; `stdio` runs a local `command` |
-| `mcpServers.<id>.command` | string | Command for stdio MCP servers |
-| `mcpServers.<id>.args` | string[] | Arguments for stdio MCP servers |
 | `nixPackages` | string[] | System packages to install in the worker |
 | `network.allow` | string[] | Domains the worker sandbox can reach |
 | `network.deny` | string[] | Domains to block |
 | `network.judge` | array | Domains routed through the LLM egress judge. Each entry is a bare domain string (uses the `default` judge policy) or an object `{ domain, judge }` naming a policy in the top-level `judges` map |
 | `judges` | object | Named judge policies (string → policy text) referenced by `network.judge[].judge`; the `default` key applies when an entry omits `judge` |
-
-Skill MCP entries support only `url` / `type` / `command` / `args` — for `headers`, `env`, `oauth`, or `authScope`, configure the MCP server on the agent in [`lobu.config.ts`](/reference/lobu-config/) via the agent `mcpServers` field.
 
 ## Markdown Body
 
@@ -106,10 +94,10 @@ The markdown body after the frontmatter is appended to the agent's prompt when t
 
 ## Notes
 
-- `SKILL.md` frontmatter does not configure tool approval or `preApproved` MCP tools.
+- `SKILL.md` frontmatter does not configure tool approval or `preApproved` grants.
 - `contracts.tools` belongs in an OpenClaw plugin manifest (`openclaw.plugin.json`), not in `SKILL.md` frontmatter — the skill parser ignores it.
 - When both a skill and the agent declare egress-judge rules, the `lobu.config.ts` policy wins on named judges and judged-domain rules.
-- For MCP servers that should live directly on the agent rather than inside a skill, configure them in [`lobu.config.ts`](/reference/lobu-config/).
+- Install service integrations as connectors, not as skill-local MCP servers.
 
 ## Related Docs
 

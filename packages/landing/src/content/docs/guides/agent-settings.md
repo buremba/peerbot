@@ -15,7 +15,7 @@ Two surfaces feed an agent's effective config:
 Runtime config keys:
 
 - **Provider and model** — `model`, `modelSelection` (auto/pinned), `providerModelPreferences`, `installedProviders`
-- **Skills/plugins and MCP server config** — `skillsConfig`, `mcpServers`, `pluginsConfig`
+- **Skills/plugins and connector config** — `skillsConfig`, `pluginsConfig`, and connector connections
 - **Permission grants (network domains)** — `networkConfig`
 - **Agent prompts** — `identityMd`, `soulMd`, `userMd`
 - **Auth profiles** — `authProfiles` for multi-provider credential management

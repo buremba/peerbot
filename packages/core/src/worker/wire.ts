@@ -8,15 +8,14 @@
  *
  * Before this lived in core, the worker had its own `MessagePayload`
  * declaration that was a structural subset of the gateway's (missing
- * `organizationId`, `networkConfig`, `egressConfig`, `mcpConfig`, `nixConfig`,
- * `preApprovedTools`). At runtime the worker's zod schema was patched with
+ * `organizationId`, `networkConfig`, `nixConfig`, `preApprovedTools`). At
+ * runtime the worker's zod schema was patched with
  * `.passthrough()` so the extra fields survived parsing, but the static type
  * silently lied. Hoisting closes the gap.
  */
 
 import type {
-  AgentEgressConfig,
-  AgentMcpConfig,
+  AgentInlineGuardrail,
   AgentOptions,
   NetworkConfig,
   NixConfig,
@@ -97,11 +96,14 @@ export interface MessagePayload {
    */
   runJobToken?: string;
 
-  /** Per-agent egress judge configuration. */
-  egressConfig?: AgentEgressConfig;
-
-  /** Per-agent MCP configuration (additive to global MCPs). */
-  mcpConfig?: AgentMcpConfig;
+  /**
+   * Per-agent operator-authored inline guardrails. Threaded alongside
+   * `networkConfig` so the deployment manager can sync the `egress`-stage
+   * entries into the egress policy store (the proxy-plane LLM judge). The
+   * input/output/pre-tool entries are resolved separately by the message
+   * pipeline from agent settings; they ride here only for the egress sync.
+   */
+  guardrailsInline?: AgentInlineGuardrail[];
 
   /** Nix environment configuration for the agent workspace. */
   nixConfig?: NixConfig;

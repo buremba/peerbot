@@ -282,6 +282,25 @@ const GITHUB_PERSON_ENTITY_LINK: EntityLinkRule = {
   },
 };
 
+// Link each repo-scoped event to the `repo` entity it belongs to, so the authz
+// resource gate (authz/resource-visibility) can restrict recall to repos the
+// requester is `member_of`. Keyed on `github_repo_full_name` to match the repo
+// entities `buildGithubRepoGraph` materializes from collaborators — both sides
+// resolve to ONE repo entity. The full name is stamped on every event in
+// `sync()` (see stampRepoAttribution).
+const GITHUB_REPO_ENTITY_LINK: EntityLinkRule = {
+  entityType: 'repo',
+  autoCreate: true,
+  titlePath: 'metadata.github_repo_full_name',
+  identities: [
+    {
+      namespace: IDENTITY.GITHUB_REPO_FULL_NAME,
+      eventPath: 'metadata.github_repo_full_name',
+      primary: true,
+    },
+  ],
+};
+
 export default class GitHubConnector extends ConnectorRuntime {
   readonly definition: ConnectorDefinition = {
     key: 'github',
@@ -424,7 +443,7 @@ export default class GitHubConnector extends ConnectorRuntime {
                 author_id: { type: 'string' },
               },
             },
-            entityLinks: [GITHUB_PERSON_ENTITY_LINK],
+            entityLinks: [GITHUB_PERSON_ENTITY_LINK, GITHUB_REPO_ENTITY_LINK],
           },
         },
       },
@@ -456,7 +475,7 @@ export default class GitHubConnector extends ConnectorRuntime {
                 author_id: { type: 'string' },
               },
             },
-            entityLinks: [GITHUB_PERSON_ENTITY_LINK],
+            entityLinks: [GITHUB_PERSON_ENTITY_LINK, GITHUB_REPO_ENTITY_LINK],
           },
         },
       },
@@ -484,7 +503,7 @@ export default class GitHubConnector extends ConnectorRuntime {
                 author_id: { type: 'string' },
               },
             },
-            entityLinks: [GITHUB_PERSON_ENTITY_LINK],
+            entityLinks: [GITHUB_PERSON_ENTITY_LINK, GITHUB_REPO_ENTITY_LINK],
           },
         },
       },
@@ -512,7 +531,7 @@ export default class GitHubConnector extends ConnectorRuntime {
                 author_id: { type: 'string' },
               },
             },
-            entityLinks: [GITHUB_PERSON_ENTITY_LINK],
+            entityLinks: [GITHUB_PERSON_ENTITY_LINK, GITHUB_REPO_ENTITY_LINK],
           },
         },
       },
@@ -543,7 +562,7 @@ export default class GitHubConnector extends ConnectorRuntime {
                 author_id: { type: 'string' },
               },
             },
-            entityLinks: [GITHUB_PERSON_ENTITY_LINK],
+            entityLinks: [GITHUB_PERSON_ENTITY_LINK, GITHUB_REPO_ENTITY_LINK],
           },
         },
       },
@@ -572,7 +591,7 @@ export default class GitHubConnector extends ConnectorRuntime {
                 author_id: { type: 'string' },
               },
             },
-            entityLinks: [GITHUB_PERSON_ENTITY_LINK],
+            entityLinks: [GITHUB_PERSON_ENTITY_LINK, GITHUB_REPO_ENTITY_LINK],
           },
         },
       },
@@ -602,7 +621,7 @@ export default class GitHubConnector extends ConnectorRuntime {
                 author_id: { type: 'string' },
               },
             },
-            entityLinks: [GITHUB_PERSON_ENTITY_LINK],
+            entityLinks: [GITHUB_PERSON_ENTITY_LINK, GITHUB_REPO_ENTITY_LINK],
           },
         },
       },
@@ -633,7 +652,7 @@ export default class GitHubConnector extends ConnectorRuntime {
                 author_id: { type: 'string' },
               },
             },
-            entityLinks: [GITHUB_PERSON_ENTITY_LINK],
+            entityLinks: [GITHUB_PERSON_ENTITY_LINK, GITHUB_REPO_ENTITY_LINK],
           },
           stargazer_unstarred: {
             description: 'A GitHub user unstarred the repository',
@@ -649,6 +668,10 @@ export default class GitHubConnector extends ConnectorRuntime {
                 source: { type: 'string' },
               },
             },
+            // Repo-scoped: link to the repo so the ACL gate treats it like every
+            // other repo event (visible to collaborators) instead of dropping it
+            // — these kinds have no person link of their own.
+            entityLinks: [GITHUB_REPO_ENTITY_LINK],
           },
           stargazer_profile: {
             description: 'A public GitHub profile observation for a stargazer',
@@ -661,6 +684,7 @@ export default class GitHubConnector extends ConnectorRuntime {
                 account: { type: 'object' },
               },
             },
+            entityLinks: [GITHUB_REPO_ENTITY_LINK],
           },
         },
       },
@@ -782,6 +806,7 @@ export default class GitHubConnector extends ConnectorRuntime {
 
     if (contentType === 'stargazers') {
       const result = await this.syncStargazers(repo, ctx.checkpoint, token);
+      this.stampRepoAttribution(result.events, repo);
       return {
         events: result.events,
         checkpoint: {
@@ -802,6 +827,7 @@ export default class GitHubConnector extends ConnectorRuntime {
       labelsFilter: config.labels_filter ?? [],
       token,
     });
+    this.stampRepoAttribution(events, repo);
 
     return {
       events,
@@ -999,6 +1025,22 @@ export default class GitHubConnector extends ConnectorRuntime {
     const fallback = new Date();
     fallback.setDate(fallback.getDate() - lookbackDays);
     return fallback.toISOString();
+  }
+
+  /**
+   * Stamp `metadata.github_repo_full_name` (lowercased `owner/repo`) on every
+   * event so the authz resource gate can link it to its `repo` entity (via
+   * GITHUB_REPO_ENTITY_LINK) and restrict recall to repos the requester belongs
+   * to. Lowercased to match `normalizeGithubRepoFullName` / the repo graph.
+   */
+  private stampRepoAttribution(events: EventEnvelope[], repo: RepoRef): void {
+    const fullName = `${repo.owner}/${repo.repo}`.toLowerCase();
+    for (const event of events) {
+      event.metadata = {
+        ...(event.metadata ?? {}),
+        github_repo_full_name: fullName,
+      };
+    }
   }
 
   private async syncContent(params: {

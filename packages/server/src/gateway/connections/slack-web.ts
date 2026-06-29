@@ -46,14 +46,7 @@ async function slackPost(
   // / conversations.open used here), so encode uniformly.
   const form = new URLSearchParams();
   for (const [key, value] of Object.entries(body)) {
-    if (value === undefined || value === null) continue;
-    // Slack's structured params (e.g. `blocks`, `attachments`) must be JSON
-    // strings in a form body — `String(obj)` would emit "[object Object]".
-    // Scalars (channel, text, limit, cursor) pass through unchanged.
-    form.set(
-      key,
-      typeof value === "object" ? JSON.stringify(value) : String(value)
-    );
+    if (value !== undefined && value !== null) form.set(key, String(value));
   }
   const res = await fetch(`https://slack.com/api/${method}`, {
     method: "POST",

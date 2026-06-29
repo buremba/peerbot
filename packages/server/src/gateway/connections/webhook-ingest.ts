@@ -36,7 +36,10 @@ import type { StoredConnection } from "@lobu/core";
 import { type DbClient, getDb } from "../../db/client.js";
 import { constantTimeEqual } from "../../utils/constant-time-equal.js";
 import { insertEvent } from "../../utils/insert-event.js";
-import { captureWebhookStreamingFeed } from "../../lib/streaming-feeds.js";
+import {
+	resolveWebhookStreamingFeedId,
+	WEBHOOK_FEED_KEY,
+} from "../../lib/streaming-feeds.js";
 import logger from "../../utils/logger.js";
 import { getClientIP, getRateLimiter } from "../../utils/rate-limiter.js";
 import { resolveSecretValue, type SecretStore } from "../secrets/index.js";
@@ -535,6 +538,13 @@ export async function handleWebhookIngest(
 			: extractTitle(parsed, config.titlePath);
 	const eventContent = isSearchableEnabled(config) ? renderPayloadText(parsed) : null;
 
+	// Attribute the event to this webhook source's streaming feed (idempotently
+	// materialized; best-effort so it never blocks ingestion).
+	const streamingFeedId = await resolveWebhookStreamingFeedId(
+		stored.id,
+		organizationId,
+	);
+
 	try {
 		const landedId = await getDb().begin(async (tx) => {
 			// Insert FIRST (empty entity_ids). A concurrent duplicate trips the
@@ -546,6 +556,8 @@ export async function handleWebhookIngest(
 					organizationId,
 					originId,
 					connectorKey,
+					feedKey: streamingFeedId !== null ? WEBHOOK_FEED_KEY : null,
+					feedId: streamingFeedId,
 					semanticType,
 					payloadType: "json_template",
 					payloadData,
@@ -596,10 +608,6 @@ export async function handleWebhookIngest(
 			{ connectionId: stored.id, eventId: landedId, dedupeSource },
 			"[webhook-ingest] delivery persisted",
 		);
-		// Materialize this webhook source as a streaming feed (idempotent,
-		// fire-and-forget — never blocks the ack). The first delivery creates it;
-		// later ones no-op.
-		captureWebhookStreamingFeed(stored.id, organizationId);
 		return json(202, { ok: true, id: landedId });
 	} catch (error) {
 		if (isUniqueViolation(error)) {

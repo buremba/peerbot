@@ -22,48 +22,71 @@ const logger = createLogger("streaming-feeds");
 /** Stable feed_key for a webhook connection's single streaming feed. */
 export const WEBHOOK_FEED_KEY = "webhook";
 
+async function findWebhookFeedId(
+  sql: ReturnType<typeof getDb>,
+  connectionId: string | number,
+): Promise<number | null> {
+  const rows = await sql`
+    SELECT id FROM feeds
+    WHERE connection_id = ${connectionId}::bigint
+      AND feed_key = ${WEBHOOK_FEED_KEY}
+      AND deleted_at IS NULL
+    LIMIT 1
+  `;
+  return rows[0] ? Number(rows[0].id) : null;
+}
+
 /**
- * Idempotently ensure the streaming feed for a webhook connection. Safe under
- * N replicas: a transaction-scoped advisory lock on the (connection) tuple
- * serializes the check-then-insert across pods, so concurrent deliveries can't
- * create duplicate feeds. Leaves sync-lifecycle columns NULL (see invariant).
+ * Idempotently ensure the streaming feed for a webhook connection, returning
+ * its id. Fast path: a lock-free SELECT when the feed already exists (the common
+ * case after the first delivery), so the hot ingest path never serializes. Slow
+ * path (first delivery only): a transaction-scoped advisory lock on the
+ * (connection) tuple serializes the check-then-insert across N replicas, so
+ * concurrent first deliveries can't create duplicates. Leaves sync-lifecycle
+ * columns NULL (see invariant).
  */
 export async function ensureWebhookStreamingFeed(
   connectionId: string | number,
   organizationId: string,
-): Promise<void> {
+): Promise<number> {
   const sql = getDb();
-  await sql.begin(async (tx) => {
+  const existing = await findWebhookFeedId(sql, connectionId);
+  if (existing !== null) return existing;
+
+  return await sql.begin(async (tx) => {
     await tx.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
       `webhook-feed:${connectionId}`,
     ]);
-    await tx`
+    const again = await findWebhookFeedId(tx as ReturnType<typeof getDb>, connectionId);
+    if (again !== null) return again;
+    const inserted = await tx`
       INSERT INTO feeds (
         organization_id, connection_id, feed_key, display_name, status, kind, virtual
-      )
-      SELECT
+      ) VALUES (
         ${organizationId}, ${connectionId}::bigint, ${WEBHOOK_FEED_KEY},
         'Webhook events', 'active', 'streaming', false
-      WHERE NOT EXISTS (
-        SELECT 1 FROM feeds
-        WHERE connection_id = ${connectionId}::bigint
-          AND feed_key = ${WEBHOOK_FEED_KEY}
-          AND deleted_at IS NULL
       )
+      RETURNING id
     `;
+    return Number(inserted[0].id);
   });
 }
 
-/** Fire-and-forget wrapper: materializing the feed must never block a webhook
- *  ack or a turn. Idempotent, so a lost call is recovered on the next delivery. */
-export function captureWebhookStreamingFeed(
+/** Best-effort resolve of the webhook streaming feed id for attributing an
+ *  ingested event. Never throws — feed attribution must not break ingestion;
+ *  on failure the event lands without a feed_id and is recovered on the next
+ *  delivery (the feed is created idempotently). */
+export async function resolveWebhookStreamingFeedId(
   connectionId: string | number,
   organizationId: string,
-): void {
-  ensureWebhookStreamingFeed(connectionId, organizationId).catch((err) => {
+): Promise<number | null> {
+  try {
+    return await ensureWebhookStreamingFeed(connectionId, organizationId);
+  } catch (err) {
     logger.warn(
       { connectionId, err: String(err) },
-      "ensure webhook streaming feed failed (non-fatal)",
+      "resolve webhook streaming feed failed (non-fatal)",
     );
-  });
+    return null;
+  }
 }

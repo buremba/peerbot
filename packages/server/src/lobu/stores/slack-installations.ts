@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createLogger } from "@lobu/core";
+import type { StoredConnection } from "@lobu/core";
+import { getDb } from "../../db/client.js";
 import type { WritableSecretStore } from "../../gateway/secrets/index.js";
 import {
   deleteSecretsByPrefix,
@@ -10,6 +12,7 @@ import type {
   AppInstallationStatus,
   AppInstallationStore,
 } from "./app-installation-store.js";
+import { upsertChatConnectionProjection } from "./connections-projection.js";
 import { orgContext } from "./org-context.js";
 
 /**
@@ -235,6 +238,41 @@ export async function upsertSlackInstallByTeam(
       );
       throw new Error("Slack install upsert lost its external id");
     }
+
+    // Dual-write-through (connections-unify Stage 2a): mirror the managed install
+    // into the `connections` projection (by slug = the slackinst- external id),
+    // so the chat runtime — which reads `connections` — sees the install. Its
+    // own advisory lock (keyed on the chat tenant tuple) keeps one active row per
+    // (org, slack, team) on the partial-unique `connections_active_chat_tenant`
+    // index. Separate transaction from the app_installations upsert above; a
+    // crash between them is covered by the runtime's read-fallback to
+    // `getSlackInstallById`, so a missing projection only costs one fallback.
+    const projection: StoredConnection = {
+      id: slackRow.id,
+      platform: SLACK_PROVIDER,
+      organizationId,
+      config: slackRow.config,
+      settings: { allowGroups: true },
+      metadata: {
+        teamId,
+        ...(slackRow.teamName ? { teamName: slackRow.teamName } : {}),
+        ...(slackRow.botUserId ? { botUserId: slackRow.botUserId } : {}),
+      },
+      status: "active",
+      createdAt: slackRow.createdAt,
+      updatedAt: slackRow.updatedAt,
+    };
+    const db = getDb();
+    await db.begin(async (tx: typeof db) => {
+      await upsertChatConnectionProjection(
+        tx,
+        (v) => db.json(v),
+        projection,
+        organizationId,
+        "managed"
+      );
+    });
+
     return slackRow;
   });
 }
@@ -289,6 +327,13 @@ export async function markSlackInstallStopped(
     id,
     "suspended" satisfies AppInstallationStatus
   );
+  // Keep the connections projection coherent — the chat runtime reads it, so a
+  // still-active projection would route to a stopped install. The slackinst-
+  // external id is globally unique, so the slug-scoped update needs no org.
+  await getDb()`
+    UPDATE connections SET status = 'paused', updated_at = now()
+    WHERE slug = ${id} AND deleted_at IS NULL AND credential_mode = 'managed'
+  `;
 }
 
 /** Delete a Slack install and purge its bot-token secret. */
@@ -302,6 +347,13 @@ export async function deleteSlackInstall(
   const row = await store.resolveByExternalId(SLACK_PROVIDER, id);
   const orgId = row?.organizationId;
   await store.deleteByExternalId(SLACK_PROVIDER, id);
+  // Soft-delete the connections projection so the runtime stops reading it (a
+  // connections HIT would otherwise shadow the now-deleted install — the
+  // read-fallback only covers a MISS). Slug-scoped: slackinst- ids are unique.
+  await getDb()`
+    UPDATE connections SET deleted_at = now(), updated_at = now()
+    WHERE slug = ${id} AND deleted_at IS NULL AND credential_mode = 'managed'
+  `;
   const purge = () =>
     deleteSecretsByPrefix(secretStore, `installations/${id}/`);
   if (orgId) {

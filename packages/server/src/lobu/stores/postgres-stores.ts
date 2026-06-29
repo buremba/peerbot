@@ -6,9 +6,18 @@ import type {
 	ChannelBinding,
 	StoredConnection,
 } from "@lobu/core";
+import { createLogger } from "@lobu/core";
 import { getDb, tsTime, tsTimeOrNull } from "../../db/client";
 import { recordLifecycleEvent } from "../../utils/insert-event";
+import {
+	connectionsRowToStored,
+	legacyIdToSlug,
+	softDeleteChatConnectionProjection,
+	upsertChatConnectionProjection,
+} from "./connections-projection";
 import { getOrgId, tryGetOrgId } from "./org-context";
+
+const connLogger = createLogger("postgres-agent-connection-store");
 
 export const AGENT_ID_PATTERN = /^[a-z][a-z0-9-]{2,59}$/;
 
@@ -324,6 +333,26 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 		async getConnection(connectionId) {
 			const sql = getDb();
 			const orgId = tryGetOrgId();
+			// Read cutover (Stage 2a): prefer the `connections` projection (by slug),
+			// fall back to legacy `agent_connections` on a miss. Write-through keeps
+			// the projection current, so the fallback should rarely fire (only for a
+			// row created before this deploy / not yet projected).
+			const slug = legacyIdToSlug(connectionId);
+			const projRows = orgId
+				? await sql`
+            SELECT * FROM connections
+            WHERE organization_id = ${orgId} AND slug = ${slug}
+              AND credential_mode IS NOT NULL AND deleted_at IS NULL
+            LIMIT 1
+          `
+				: await sql`
+            SELECT * FROM connections
+            WHERE slug = ${slug}
+              AND credential_mode IS NOT NULL AND deleted_at IS NULL
+            LIMIT 1
+          `;
+			if (projRows.length > 0) return connectionsRowToStored(projRows[0]);
+
 			const rows = orgId
 				? await sql`
             SELECT * FROM agent_connections
@@ -334,69 +363,54 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
             WHERE id = ${connectionId}
           `;
 			if (rows.length === 0) return null;
+			connLogger.info(
+				{ connectionId },
+				"connections projection miss; resolved from legacy agent_connections",
+			);
 			return rowToConnection(rows[0]);
 		},
 		async listConnections(filter) {
 			const sql = getDb();
 			const orgId = tryGetOrgId();
+			const agentId = filter?.agentId ?? null;
+			const platform = filter?.platform ?? null;
 
-			if (filter?.agentId && filter?.platform) {
-				const rows = orgId
-					? await sql`
-              SELECT * FROM agent_connections
-              WHERE organization_id = ${orgId}
-                AND agent_id = ${filter.agentId}
-                AND platform = ${filter.platform}
-              ORDER BY created_at DESC
-            `
-					: await sql`
-              SELECT * FROM agent_connections
-              WHERE agent_id = ${filter.agentId}
-                AND platform = ${filter.platform}
-              ORDER BY created_at DESC
-            `;
-				return rows.map(rowToConnection);
-			}
-			if (filter?.agentId) {
-				const rows = orgId
-					? await sql`
-              SELECT * FROM agent_connections
-              WHERE organization_id = ${orgId} AND agent_id = ${filter.agentId}
-              ORDER BY created_at DESC
-            `
-					: await sql`
-              SELECT * FROM agent_connections
-              WHERE agent_id = ${filter.agentId}
-              ORDER BY created_at DESC
-            `;
-				return rows.map(rowToConnection);
-			}
-			if (filter?.platform) {
-				const rows = orgId
-					? await sql`
-              SELECT * FROM agent_connections
-              WHERE organization_id = ${orgId} AND platform = ${filter.platform}
-              ORDER BY created_at DESC
-            `
-					: await sql`
-              SELECT * FROM agent_connections
-              WHERE platform = ${filter.platform}
-              ORDER BY created_at DESC
-            `;
-				return rows.map(rowToConnection);
-			}
+			// Read cutover (Stage 2a): the `connections` chat projection is the
+			// preferred source; `credential_mode IS NOT NULL` selects chat rows only
+			// (data connectors leave it NULL). filter.agentId → agent_id,
+			// filter.platform → connector_key.
+			const projRows = await sql`
+        SELECT * FROM connections
+        WHERE credential_mode IS NOT NULL AND deleted_at IS NULL
+          ${orgId ? sql`AND organization_id = ${orgId}` : sql``}
+          ${agentId ? sql`AND agent_id = ${agentId}` : sql``}
+          ${platform ? sql`AND connector_key = ${platform}` : sql``}
+        ORDER BY created_at DESC
+      `;
+			const result = projRows.map(connectionsRowToStored);
+			const seenSlugs = new Set(projRows.map((r: { slug: string }) => r.slug));
 
-			const rows = orgId
-				? await sql`
-            SELECT * FROM agent_connections
-            WHERE organization_id = ${orgId}
-            ORDER BY created_at DESC
-          `
-				: await sql`
-            SELECT * FROM agent_connections
-            ORDER BY created_at DESC
-          `;
-			return rows.map(rowToConnection);
+			// Union-with-deference: append any legacy `agent_connections` row whose
+			// derived slug is NOT already covered by the projection (created/edited
+			// before write-through, or projection missing). Dedupe by slug so a
+			// backfilled row isn't double-counted.
+			const legacyRows = await sql`
+        SELECT * FROM agent_connections
+        WHERE TRUE
+          ${orgId ? sql`AND organization_id = ${orgId}` : sql``}
+          ${agentId ? sql`AND agent_id = ${agentId}` : sql``}
+          ${platform ? sql`AND platform = ${platform}` : sql``}
+        ORDER BY created_at DESC
+      `;
+			for (const lr of legacyRows) {
+				if (seenSlugs.has(legacyIdToSlug(lr.id))) continue;
+				connLogger.info(
+					{ connectionId: lr.id },
+					"connections projection miss in list; including legacy agent_connections row",
+				);
+				result.push(rowToConnection(lr));
+			}
+			return result;
 		},
 		async saveConnection(connection) {
 			const sql = getDb();
@@ -432,22 +446,37 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 			}
 
 			const now = new Date();
-			await sql`
-        INSERT INTO agent_connections (id, organization_id, agent_id, platform, config, settings, metadata, status, error_message, created_at, updated_at)
-        VALUES (
-          ${connection.id}, ${orgId}, ${connection.agentId ?? null}, ${connection.platform},
-          ${sql.json(configToPersist)}, ${sql.json(connection.settings)}, ${sql.json(connection.metadata)},
-          ${connection.status}, ${connection.errorMessage ?? null}, ${now}, ${now}
-        )
-        ON CONFLICT (id) DO UPDATE SET
-          platform = EXCLUDED.platform,
-          config = EXCLUDED.config,
-          settings = EXCLUDED.settings,
-          metadata = EXCLUDED.metadata,
-          status = EXCLUDED.status,
-          error_message = EXCLUDED.error_message,
-          updated_at = ${now}
-      `;
+			// Dual-write-through (connections-unify Stage 2a): the legacy
+			// `agent_connections` write AND the `connections` projection (by slug)
+			// land in ONE transaction, so a crash between them can never diverge the
+			// two sources. Legacy stays the durable, reversible source; the
+			// projection is what the chat runtime reads (memo keys on
+			// connections.updated_at, status-health reads it).
+			await sql.begin(async (tx: typeof sql) => {
+				await tx`
+          INSERT INTO agent_connections (id, organization_id, agent_id, platform, config, settings, metadata, status, error_message, created_at, updated_at)
+          VALUES (
+            ${connection.id}, ${orgId}, ${connection.agentId ?? null}, ${connection.platform},
+            ${sql.json(configToPersist)}, ${sql.json(connection.settings)}, ${sql.json(connection.metadata)},
+            ${connection.status}, ${connection.errorMessage ?? null}, ${now}, ${now}
+          )
+          ON CONFLICT (id) DO UPDATE SET
+            platform = EXCLUDED.platform,
+            config = EXCLUDED.config,
+            settings = EXCLUDED.settings,
+            metadata = EXCLUDED.metadata,
+            status = EXCLUDED.status,
+            error_message = EXCLUDED.error_message,
+            updated_at = ${now}
+        `;
+				await upsertChatConnectionProjection(
+					tx,
+					(v) => sql.json(v),
+					{ ...connection, config: configToPersist },
+					orgId,
+					"byo",
+				);
+			});
 		},
 		async updateConnection(connectionId, updates) {
 			const existing = await this.getConnection(connectionId);
@@ -458,14 +487,21 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 		async deleteConnection(connectionId) {
 			const sql = getDb();
 			const orgId = tryGetOrgId();
-			if (orgId) {
-				await sql`
-          DELETE FROM agent_connections
-          WHERE id = ${connectionId} AND organization_id = ${orgId}
-        `;
-			} else {
-				await sql`DELETE FROM agent_connections WHERE id = ${connectionId}`;
-			}
+			// Dual-write-through: hard-delete the legacy row (existing behaviour) and
+			// soft-delete (`deleted_at`) the connections projection, in one tx so the
+			// two sources never diverge. Soft-delete keeps the unified row for audit /
+			// reversibility, matching the Stage-1 backfill's down path.
+			await sql.begin(async (tx: typeof sql) => {
+				if (orgId) {
+					await tx`
+            DELETE FROM agent_connections
+            WHERE id = ${connectionId} AND organization_id = ${orgId}
+          `;
+				} else {
+					await tx`DELETE FROM agent_connections WHERE id = ${connectionId}`;
+				}
+				await softDeleteChatConnectionProjection(tx, orgId, connectionId);
+			});
 		},
 		async getChannelBinding(platform, channelId, teamId) {
 			const sql = getDb();

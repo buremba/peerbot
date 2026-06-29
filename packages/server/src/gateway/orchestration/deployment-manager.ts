@@ -38,6 +38,7 @@ import {
 } from "./deployment-utils.js";
 import { failTurnsForDeployment } from "./turn-liveness.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
+import { resolveAgentRuntimeSelection } from "../../lobu/stores/environment-store.js";
 
 const logger = createLogger("orchestrator");
 
@@ -627,6 +628,10 @@ export function buildDeploymentWorkerToken(args: {
   platform?: string;
   platformMetadata?: Record<string, unknown>;
   traceId?: string;
+  /** Resolved runtime provider + environment, so the deployment-lifetime token
+   *  also carries the claim the runtime route reads (parity with the per-run mint). */
+  runtimeProviderId?: string;
+  environmentId?: string;
 }): string {
   return generateWorkerToken(
     args.userId,
@@ -1486,6 +1491,15 @@ export class DeploymentManager {
       organizationId: validated.organizationId,
     };
 
+    // Resolve the agent's selected Environment → runtime provider once. Used for
+    // BOTH the deployment token claim (so the runtime route picks the provider)
+    // and the worker's LOBU_RUNTIME_PROVIDER below (so the worker's bash backend
+    // routes there). Per-agent selection wins; the env-var fallback in
+    // buildWorkerTokenClaims / assembleBaseEnv covers the unpinned case.
+    const runtimeSelection = agentId
+      ? await resolveAgentRuntimeSelection(agentId, validated.organizationId)
+      : {};
+
     const workerToken = buildDeploymentWorkerToken({
       userId,
       conversationId,
@@ -1497,6 +1511,8 @@ export class DeploymentManager {
       organizationId: validated.organizationId,
       platformMetadata,
       traceId,
+      runtimeProviderId: runtimeSelection.runtimeProviderId,
+      environmentId: runtimeSelection.environmentId,
     });
 
     const dispatcherHost = this.getDispatcherHost();
@@ -1518,6 +1534,13 @@ export class DeploymentManager {
       proxyUrl,
       dispatcherHost
     );
+
+    // Per-agent runtime selection overrides the deployment-wide
+    // LOBU_RUNTIME_PROVIDER (set by assembleBaseEnv) so the worker's bash
+    // backend routes to the agent's chosen provider.
+    if (runtimeSelection.runtimeProviderId) {
+      envVars.LOBU_RUNTIME_PROVIDER = runtimeSelection.runtimeProviderId;
+    }
 
     // Include host-provided secret references when requested.
     if (includeSecrets && this.moduleEnvVarsBuilder) {

@@ -142,16 +142,25 @@ export async function resolveAgentRuntimeSelection(
   organizationId: string | undefined
 ): Promise<{ runtimeProviderId?: string; environmentId?: string }> {
   if (!agentId || !organizationId) return {};
-  const sql = getDb();
-  const rows = (await sql`
-    SELECT e.id AS environment_id, e.provider_kind
-    FROM agents a
-    JOIN environments e
-      ON e.id = a.environment_id AND e.organization_id = a.organization_id
-    WHERE a.id = ${agentId} AND a.organization_id = ${organizationId}
-    LIMIT 1
-  `) as Array<{ environment_id: string; provider_kind: string }>;
-  const row = rows[0];
-  if (!row) return {};
-  return { runtimeProviderId: row.provider_kind, environmentId: row.environment_id };
+  try {
+    const sql = getDb();
+    const rows = (await sql`
+      SELECT e.id AS environment_id, e.provider_kind
+      FROM agents a
+      JOIN environments e
+        ON e.id = a.environment_id AND e.organization_id = a.organization_id
+      WHERE a.id = ${agentId} AND a.organization_id = ${organizationId}
+      LIMIT 1
+    `) as Array<{ environment_id: string; provider_kind: string }>;
+    const row = rows[0];
+    if (!row) return {};
+    return {
+      runtimeProviderId: row.provider_kind,
+      environmentId: row.environment_id,
+    };
+  } catch {
+    // Fail safe: a resolution error must not block worker spawn or token mint —
+    // fall back to the deployment-wide LOBU_RUNTIME_PROVIDER (or builtin).
+    return {};
+  }
 }

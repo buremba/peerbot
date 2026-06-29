@@ -316,6 +316,15 @@ export type ConnectorActionOk<A extends string, Extra = unknown> = {
 /** A connection row as returned by the list/get/create/update handlers. */
 export type ConnectionRow = Record<string, unknown>;
 
+/** Derived roles a connection (or connector group) plays. See
+ *  `handlers/facets.ts` — these are computed, never stored. */
+export interface ConnectionFacets {
+	data: boolean;
+	chat: boolean;
+	actions: boolean;
+	audience: boolean;
+}
+
 export type ManageConnectionsResult =
 	| { error: string; setup_url?: string }
 	| {
@@ -333,6 +342,7 @@ export type ManageConnectionsResult =
 				connector_name: string | null;
 				favicon_domain: string | null;
 				connection_count: number;
+				facets: ConnectionFacets;
 				connections: Array<{
 					id: number;
 					display_name: string | null;

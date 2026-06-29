@@ -51,6 +51,7 @@ import { assertConnectorAllowedInCloud } from '../../../../utils/connector-cloud
 import { ensureConnectorInstalled } from '../../../../utils/ensure-connector-installed';
 import { unregisterConnectorWebhook } from '../../../../connect/webhook-registration';
 import { enrichConnectorGroupsWithCatalogDisplay } from '../../../../catalog/connector-group-display';
+import { deriveConnectionFacets, deriveEffectiveCredentialMode } from './facets';
 
 // ============================================
 // handleListConnectorGroups
@@ -94,6 +95,9 @@ export async function handleListConnectorGroups(
            MAX(cd.name) AS connector_name,
            MAX(cd.favicon_domain) AS favicon_domain,
            COUNT(*)::int AS connection_count,
+           bool_or(c.credential_mode IS NOT NULL) AS has_chat_connection,
+           bool_or(fc.feed_count > 0) AS has_active_feeds,
+           bool_or(cd.has_feeds_schema) AS connector_has_feeds,
            COALESCE(
              json_agg(
                json_build_object(
@@ -107,7 +111,10 @@ export async function handleListConnectorGroups(
            ) AS connections
     FROM connections c
     LEFT JOIN LATERAL (
-      SELECT name, favicon_domain
+      SELECT name, favicon_domain,
+             (feeds_schema IS NOT NULL
+              AND feeds_schema::text <> '{}'
+              AND feeds_schema::text <> 'null') AS has_feeds_schema
       FROM connector_definitions
       WHERE key = c.connector_key
         AND status = 'active'
@@ -137,15 +144,29 @@ export async function handleListConnectorGroups(
   query = sql`${query} GROUP BY c.connector_key ORDER BY MAX(cd.name), c.connector_key`;
 
   const rows = await query;
-  const groups = rows.map((row) => ({
-    connector_key: String(row.connector_key),
-    connector_name:
-      row.connector_name != null ? String(row.connector_name) : null,
-    favicon_domain:
-      row.favicon_domain != null ? String(row.favicon_domain) : null,
-    connection_count: Number(row.connection_count) || 0,
-    connections: mapConnectorGroupSummaries(row.connections),
-  }));
+  const connectorKeys = [...new Set(rows.map((r) => String(r.connector_key)))];
+  const opsSummaries = await getOperationsSummaryBatch(organizationId, connectorKeys);
+
+  const groups = rows.map((row) => {
+    const connectorKey = String(row.connector_key);
+    const feedCount = row.has_active_feeds === true ? 1 : 0;
+    return {
+      connector_key: connectorKey,
+      connector_name:
+        row.connector_name != null ? String(row.connector_name) : null,
+      favicon_domain:
+        row.favicon_domain != null ? String(row.favicon_domain) : null,
+      connection_count: Number(row.connection_count) || 0,
+      connections: mapConnectorGroupSummaries(row.connections),
+      facets: deriveConnectionFacets({
+        connectorKey,
+        isChat: row.has_chat_connection === true,
+        feedCount,
+        connectorHasFeeds: row.connector_has_feeds === true,
+        hasOperations: (opsSummaries.get(connectorKey)?.total ?? 0) > 0,
+      }),
+    };
+  });
 
   return {
     action: 'list_connector_groups',
@@ -169,6 +190,7 @@ export async function handleList(
   let query = sql`
     SELECT c.*,
            cd.name AS connector_name,
+           cd.has_feeds_schema,
            ap.slug AS auth_profile_slug,
            ap.display_name AS auth_profile_name,
            ap.status AS auth_profile_status,
@@ -213,7 +235,10 @@ export async function handleList(
            ) AS entity_names
     FROM connections c
     LEFT JOIN LATERAL (
-      SELECT name
+      SELECT name,
+             (feeds_schema IS NOT NULL
+              AND feeds_schema::text <> '{}'
+              AND feeds_schema::text <> 'null') AS has_feeds_schema
       FROM connector_definitions
       WHERE key = c.connector_key
         AND status = 'active'
@@ -276,13 +301,26 @@ export async function handleList(
 
   const connections = resolved.map((row) => {
     const operationsSummary = summaries.get(String(row.connector_key)) ?? { ...EMPTY_SUMMARY };
+    const hasOperations = operationsSummary.total > 0;
     return {
       ...row,
       // Postgres returns bigint[] as a literal string ('{2}'); parse to number[]
       // so the API contract matches the typed entity_ids the UI picker expects.
       entity_ids: parsePgNumberArray(row.entity_ids),
       operations_summary: operationsSummary,
-      has_operations: operationsSummary.total > 0,
+      has_operations: hasOperations,
+      facets: deriveConnectionFacets({
+        connectorKey: String(row.connector_key),
+        isChat: row.credential_mode != null,
+        feedCount: Number(row.feed_count) || 0,
+        connectorHasFeeds: row.has_feeds_schema === true,
+        hasOperations,
+      }),
+      effective_credential_mode: deriveEffectiveCredentialMode({
+        credentialMode: row.credential_mode as string | null,
+        appAuthProfileId: row.app_auth_profile_id,
+        authProfileId: row.auth_profile_id,
+      }),
     };
   });
 
@@ -391,13 +429,33 @@ export async function handleGet(
     String((resolved as any).connector_key)
   );
 
+  const getRow = resolved as Record<string, unknown>;
+  const feedsSchema = getRow.feeds_schema;
+  const connectorHasFeeds =
+    feedsSchema != null &&
+    JSON.stringify(feedsSchema) !== '{}' &&
+    JSON.stringify(feedsSchema) !== 'null';
+  const hasOperations = operationsSummary.total > 0;
+
   return {
     action: 'get',
     connection: {
       ...resolved,
       ...(connectToken ? { connect_token: connectToken } : {}),
       operations_summary: operationsSummary,
-      has_operations: operationsSummary.total > 0,
+      has_operations: hasOperations,
+      facets: deriveConnectionFacets({
+        connectorKey: String(getRow.connector_key),
+        isChat: getRow.credential_mode != null,
+        feedCount: Number(getRow.feed_count) || 0,
+        connectorHasFeeds,
+        hasOperations,
+      }),
+      effective_credential_mode: deriveEffectiveCredentialMode({
+        credentialMode: getRow.credential_mode as string | null,
+        appAuthProfileId: getRow.app_auth_profile_id,
+        authProfileId: getRow.auth_profile_id,
+      }),
     },
     view_url: viewUrl,
   };

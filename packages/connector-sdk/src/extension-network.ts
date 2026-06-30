@@ -328,7 +328,10 @@ async function safeCloseTab(dispatcher: ChromeActionDispatcher, tabId: number) {
     // of where it ended up), so we don't need to forward the allowlist here.
     await dispatcher.dispatch('close_tab', { tab_id: tabId });
   } catch (err) {
-    sdkLogger.warn({ err, tabId }, '[ExtensionNetwork] close_tab failed (already gone?)');
+    sdkLogger.warn(
+      { err, tabId, reason: err instanceof Error ? err.message : String(err) },
+      '[ExtensionNetwork] close_tab failed'
+    );
   }
 }
 

@@ -142,6 +142,17 @@ export async function dispatchChromeActionToExtension(params: {
     };
   }
 
+  // Stamp holder_run_id on every chrome action so the extension can scope
+  // scratch-tab ownership/cleanup to the parent sync run.
+  const operationInput: Record<string, unknown> = { ...(actionInput ?? {}) };
+  if (
+    parentRunId != null &&
+    operationInput.holder_run_id == null &&
+    operationInput.parent_run_id == null
+  ) {
+    operationInput.holder_run_id = parentRunId;
+  }
+
   // (2) Insert a device-bound chrome connector action run.
   let runId: number;
   try {
@@ -150,7 +161,7 @@ export async function dispatchChromeActionToExtension(params: {
       connectionId: chromeConnection.connectionId,
       connectorKey: 'chrome',
       operationKey: actionKey,
-      operationInput: actionInput ?? {},
+      operationInput,
       approvalMode: 'device',
       requireCompiledCode: false,
     });

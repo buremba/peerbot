@@ -1,5 +1,29 @@
 # Changelog
 
+## [13.3.0](https://github.com/lobu-ai/lobu/compare/lobu-v13.2.0...lobu-v13.3.0) (2026-06-30)
+
+
+### Features
+
+* **auth:** stamp slack_user_id on Slack sign-in so ACL collapses onto $member ([#1646](https://github.com/lobu-ai/lobu/issues/1646)) ([edfb379](https://github.com/lobu-ai/lobu/commit/edfb379b3d20668cd578fb1ec03aa867fe6710db))
+* **chat:** WS-A keystone — Slack senders attributed + managed installs recallable ([#1648](https://github.com/lobu-ai/lobu/issues/1648)) ([120bc08](https://github.com/lobu-ai/lobu/commit/120bc085e683300234601e1b7e3a87699edc527b))
+* **connections:** single-table cutover — drop agent_connections ([#1623](https://github.com/lobu-ai/lobu/issues/1623)) ([d76de19](https://github.com/lobu-ai/lobu/commit/d76de19f9b07a4e9786cf0237c031fa1befc1dfd))
+* **connectors:** migrate X connector to Owletto extension + home-timeline feed ([#1611](https://github.com/lobu-ai/lobu/issues/1611)) ([dd009e8](https://github.com/lobu-ai/lobu/commit/dd009e807e34684e2ddcc0704539b0bdd34fd0b7))
+* **contacts:** signal-gate person autoCreate + seed metric aliases on create ([#1630](https://github.com/lobu-ai/lobu/issues/1630)) ([8f989c3](https://github.com/lobu-ai/lobu/commit/8f989c3055cfe2593f1be11d77bf63f7b4450f3a))
+* **personal-agent:** signal-based subscriptions/trips + governed GBP spend metrics + goal/learning ([#1640](https://github.com/lobu-ai/lobu/issues/1640)) ([4ccba9b](https://github.com/lobu-ai/lobu/commit/4ccba9b1cdbd73e80074f8adbb2af841de616a6f))
+* **personal-agent:** value USD/EUR-pocket spend at the user's realised rate (no more null GBP) ([#1642](https://github.com/lobu-ai/lobu/issues/1642)) ([772bcc4](https://github.com/lobu-ai/lobu/commit/772bcc41bae8fe58a62d948b077e7763c7e80aa6))
+* **revolut:** full multi-account backfill via in-page ?to= replay + rich fields ([#1637](https://github.com/lobu-ai/lobu/issues/1637)) ([a3691bd](https://github.com/lobu-ai/lobu/commit/a3691bd648cec4259d266b30202f0b14d3b5f581))
+* **revolut:** real scroll pagination + rich enrichment + wait-for-data poll ([#1632](https://github.com/lobu-ai/lobu/issues/1632)) ([3815a58](https://github.com/lobu-ai/lobu/commit/3815a580a55f5ccc762fc12ba0ee26d411561817))
+* **runtime:** generic vault-backed RuntimeProvider + Environments ([#1618](https://github.com/lobu-ai/lobu/issues/1618)) ([4e60691](https://github.com/lobu-ai/lobu/commit/4e60691bea1b079563993760c7c497a83e46b630))
+* **scheduled:** deliver wake_agent replies to the originating platform channel ([#1589](https://github.com/lobu-ai/lobu/issues/1589)) ([75abd21](https://github.com/lobu-ai/lobu/commit/75abd21b0771be99183e17d99049b93b1a2c200d))
+
+
+### Bug Fixes
+
+* **revolut:** intercept retail API instead of scraping DOM (correct amounts) ([#1629](https://github.com/lobu-ai/lobu/issues/1629)) ([ce2c042](https://github.com/lobu-ai/lobu/commit/ce2c0421439137c7c931bcc47d3affcbcc1a0676))
+* **runtime:** gateway-authoritative egress allowlist + propagate SSE abort ([#1631](https://github.com/lobu-ai/lobu/issues/1631)) ([1c21479](https://github.com/lobu-ai/lobu/commit/1c214796fb61e8971a085e51d0ac175394cdc9c6))
+* stop duplicate chrome device rows on native re-pair + GC stale devices ([#1635](https://github.com/lobu-ai/lobu/issues/1635)) ([74efd22](https://github.com/lobu-ai/lobu/commit/74efd226b2045963af634b7e4cb76b6387c014c2))
+
 ## [13.2.0](https://github.com/lobu-ai/lobu/compare/lobu-v13.1.0...lobu-v13.2.0) (2026-06-29)
 
 

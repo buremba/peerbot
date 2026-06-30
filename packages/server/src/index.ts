@@ -18,6 +18,7 @@ import { LOBU_LOGO_PNG_BASE64 } from "./assets/logo";
 import { createAuth } from "./auth";
 import { getAuthConfig as getAuthConfigFromEnv } from "./auth/config";
 import { mcpAuth } from "./auth/middleware";
+import { consumePendingOnboardingIntent } from "./auth/onboarding-intents";
 import { oauthRoutes } from "./auth/oauth/routes";
 import { findExistingPersonalOrg } from "./auth/personal-org-provisioning";
 import { credentialRoutes } from "./auth/routes";
@@ -940,6 +941,12 @@ app.delete("/api/me/devices/:id", mcpAuth, deleteDeviceWorker);
 // Mint a child device-worker token for the caller — used by the Owletto Mac
 // bridge's native-messaging host to auto-pair Owletto for Chrome.
 app.post("/api/me/devices/mint-child-token", mcpAuth, mintDeviceChildToken);
+app.post("/api/me/onboarding/intent/consume", mcpAuth, async (c) => {
+	const user = c.get("user");
+	if (!user) return c.json({ error: "Unauthorized" }, 401);
+	const intent = await consumePendingOnboardingIntent(user.id);
+	return c.json({ intent });
+});
 // UI → worker signal channel. Separate path prefix so the worker API auth
 // middleware above doesn't cover it (this one is hit from the web session).
 app.get("/api/auth-runs/active", getActiveAuthRun);

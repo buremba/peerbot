@@ -44,6 +44,10 @@ import {
 	resolveLoginProviderCredentials,
 	resolveRequestOrganizationId,
 } from "./config";
+import {
+	enqueueAppInstallOnboardingForNewSignup,
+	markNewUserForOnboarding,
+} from "./onboarding-intents";
 import { findExistingPersonalOrg } from "./personal-org-provisioning";
 // Side-effect imports: each connector self-registers on load, so the
 // registry is fully populated before any auth hook can fire. Add a new
@@ -719,6 +723,15 @@ export async function createAuth(
 					},
 					after: async (user, context) => {
 						try {
+							await markNewUserForOnboarding(user.id);
+						} catch (error) {
+							console.error(
+								"[Auth] Failed to mark new user onboarding intent:",
+								error,
+							);
+						}
+
+						try {
 							const { ensurePersonalOrganization } = await import(
 								"./personal-org-provisioning"
 							);
@@ -834,6 +847,17 @@ export async function createAuth(
 								| string
 								| null,
 						};
+						try {
+							await enqueueAppInstallOnboardingForNewSignup({
+								userId: account.userId,
+								providerId: account.providerId,
+							});
+						} catch (error) {
+							console.error(
+								"[Auth] Failed to enqueue app-install onboarding intent:",
+								error,
+							);
+						}
 						try {
 							const { provisionConnectorFromSocialLogin } = await import(
 								"./social-login-provisioning"

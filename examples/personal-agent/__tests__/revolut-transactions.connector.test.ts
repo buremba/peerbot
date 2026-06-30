@@ -34,7 +34,16 @@ const SAMPLE_RESPONSE = [
     currency: "GBP",
     amount: -19052, // → £190.52, NOT £19,052 (the prod corruption)
     description: "Whole Foods Market",
-    merchant: { name: "Whole Foods Market" },
+    category: "groceries",
+    countryCode: "GB",
+    fee: 0,
+    rate: 1,
+    merchant: {
+      name: "Whole Foods Market",
+      mcc: "5411",
+      category: "groceries",
+      country: "GB",
+    },
   },
   {
     id: "txn-coffee",
@@ -114,6 +123,25 @@ describe("parseTransactionsResponse", () => {
     expect(byId["txn-salary"].amount).toBeCloseTo(3500, 2);
     expect(byId["txn-salary"].direction).toBe("in");
     expect(byId["txn-tokyo"].amount).toBe(500); // JPY whole units
+  });
+
+  test("captures rich fields (category, mcc, country, fee, fx) the API carries", () => {
+    const wf = txns.find(
+      (t) => t.id === "txn-wholefoods"
+    ) as RevolutTransaction;
+    expect(wf.category).toBe("groceries");
+    expect(wf.mcc).toBe("5411");
+    expect(wf.countryCode).toBe("GB");
+    expect(wf.merchantCountry).toBe("GB");
+    expect(wf.fee).toBe(0);
+    expect(wf.fxRate).toBe(1);
+    const ev = transactionToEvent(wf);
+    expect(ev.metadata).toMatchObject({
+      category: "groceries",
+      mcc: "5411",
+      country_code: "GB",
+      merchant_country: "GB",
+    });
   });
 
   test("maps currency, date, state, type, description", () => {

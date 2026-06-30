@@ -73,6 +73,19 @@ export interface RevolutTransaction {
   type?: string;
   /** Revolut state, e.g. COMPLETED, PENDING. */
   state?: string;
+  // ── Rich fields the retail API carries (a statement export does not) ──
+  /** Revolut's own spend category, e.g. "shopping", "groceries", "transport". */
+  category?: string;
+  /** Merchant category code (ISO 18245), e.g. "5734". */
+  mcc?: string;
+  /** ISO country where the transaction occurred, e.g. "US". */
+  countryCode?: string;
+  /** ISO country of the merchant, e.g. "US". */
+  merchantCountry?: string;
+  /** Transaction fee in major units (0 when none). */
+  fee?: number;
+  /** FX rate applied (1 when same-currency). */
+  fxRate?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -113,8 +126,22 @@ interface RawRevolutTxn {
   amount?: unknown;
   balance?: unknown;
   description?: unknown;
-  merchant?: { name?: unknown } | null;
+  category?: unknown;
+  countryCode?: unknown;
+  fee?: unknown;
+  rate?: unknown;
+  merchant?: {
+    name?: unknown;
+    mcc?: unknown;
+    category?: unknown;
+    country?: unknown;
+  } | null;
   counterpart?: { amount?: unknown; currency?: unknown } | null;
+}
+
+/** Read a string field, returning undefined for anything else. */
+function str(v: unknown): string | undefined {
+  return typeof v === "string" && v.trim() ? v.trim() : undefined;
 }
 
 /**
@@ -182,6 +209,19 @@ export function parseTransactionsResponse(json: unknown): RevolutTransaction[] {
       occurredAt,
       ...(typeof raw.type === "string" ? { type: raw.type } : {}),
       ...(typeof raw.state === "string" ? { state: raw.state } : {}),
+      // Rich fields (statement exports lack these).
+      ...(str(raw.category) ? { category: str(raw.category) } : {}),
+      ...(str(raw.merchant?.mcc) ? { mcc: str(raw.merchant?.mcc) } : {}),
+      ...(str(raw.countryCode) ? { countryCode: str(raw.countryCode) } : {}),
+      ...(str(raw.merchant?.country)
+        ? { merchantCountry: str(raw.merchant?.country) }
+        : {}),
+      ...(typeof raw.fee === "number" && Number.isFinite(raw.fee)
+        ? { fee: minorToMajor(raw.fee, currency) }
+        : {}),
+      ...(typeof raw.rate === "number" && Number.isFinite(raw.rate)
+        ? { fxRate: raw.rate }
+        : {}),
     });
   }
   return out;
@@ -254,6 +294,12 @@ export function transactionToEvent(t: RevolutTransaction): EventEnvelope {
       currency: t.currency,
       ...(t.type ? { transaction_type: t.type } : {}),
       ...(t.state ? { state: t.state } : {}),
+      ...(t.category ? { category: t.category } : {}),
+      ...(t.mcc ? { mcc: t.mcc } : {}),
+      ...(t.countryCode ? { country_code: t.countryCode } : {}),
+      ...(t.merchantCountry ? { merchant_country: t.merchantCountry } : {}),
+      ...(t.fee !== undefined ? { fee: t.fee } : {}),
+      ...(t.fxRate !== undefined ? { fx_rate: t.fxRate } : {}),
     },
   };
 }
@@ -371,6 +417,12 @@ const transactionMetadataSchema = {
     currency: { type: "string" },
     transaction_type: { type: "string" },
     state: { type: "string" },
+    category: { type: "string" },
+    mcc: { type: "string" },
+    country_code: { type: "string" },
+    merchant_country: { type: "string" },
+    fee: { type: "number" },
+    fx_rate: { type: "number" },
   },
 };
 
@@ -380,7 +432,7 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     name: "Revolut",
     description:
       "Syncs Revolut account transactions by intercepting the retail API JSON the Revolut web app fetches (no public API), through your paired Owletto Chrome session — no separate login, exact amounts (no DOM parsing).",
-    version: "4.0.0",
+    version: "4.1.0",
     faviconDomain: "app.revolut.com",
     authSchema: {
       // Auth is implicit via the paired Owletto extension's signed-in Chrome —
@@ -445,24 +497,18 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
         responseTimeoutMs: 8000,
       },
       parseResponse: (_url, json) => parseTransactionsResponse(json),
-      // Revolut's transaction list is an inner virtualized scroll container, so
-      // scrolling the window alone may not page it. Scroll the deepest
-      // scrollable element (the list), then nudge the window as a fallback, and
-      // dispatch an `End` key to trigger lazy-load either way.
+      // Revolut's transaction list is virtualized with NO scrollable overflow
+      // container (document height == viewport), so `scrollTo` is a no-op and
+      // DOM-synthesized wheel events (isTrusted=false) are ignored — the list
+      // only fetches older `?to=` pages on a REAL scroll. We use the extension's
+      // `scroll` op (CDP Input.dispatchMouseEvent type:mouseWheel), a trusted
+      // wheel the page honours, firing several ticks over the list each step.
       triggerNextPage: async (tabId, d) => {
-        await d.dispatch("evaluate", {
+        await d.dispatch("scroll", {
           tab_id: tabId,
-          expression: `(() => {
-            const els = [...document.querySelectorAll('*')].filter((e) => {
-              const s = getComputedStyle(e);
-              return /(auto|scroll)/.test(s.overflowY) && e.scrollHeight > e.clientHeight + 40;
-            });
-            els.sort((a, b) => b.scrollHeight - a.scrollHeight);
-            const target = els[0];
-            if (target) target.scrollTo(0, target.scrollHeight);
-            window.scrollTo(0, document.documentElement.scrollHeight);
-            return 1;
-          })()`,
+          delta_y: 1500,
+          steps: 6,
+          step_delay_ms: 250,
           allowed_origins: REVOLUT_ALLOWED_ORIGINS,
         });
       },

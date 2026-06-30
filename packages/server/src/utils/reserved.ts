@@ -5,10 +5,11 @@
 const OWNER_ROUTE_SEGMENTS = [
   'agents',
   'connectors',
-  'events',
+  'devices',
+  'environments',
+  'memory',
   'members',
   'settings',
-  'watchers',
 ] as const;
 
 /**
@@ -69,4 +70,3 @@ export const RESERVED_ENTITY_TYPES = [
   'connections',
   'connector',
 ];
-

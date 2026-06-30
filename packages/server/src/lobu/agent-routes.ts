@@ -1162,7 +1162,10 @@ routes.put('/:agentId/platforms/by-stable-id/:stableId', async (c) => {
           ${sql.json({ settings: {}, chatMetadata: {} })}, 'byo',
           ${legacyIdToSlug(stableId)}, 'org', ${claimNow}, ${claimNow}
         )
-        ON CONFLICT (organization_id, slug) WHERE deleted_at IS NULL DO NOTHING
+        -- Arbiter on the GLOBAL chat-slug uniqueness (connections_chat_slug_unique),
+        -- mirroring the retired ON CONFLICT (agent_connections.id): a re-claim of an
+        -- existing live chat slug is a no-op, and the loser re-reads the row below.
+        ON CONFLICT (slug) WHERE credential_mode IS NOT NULL AND deleted_at IS NULL DO NOTHING
         RETURNING slug
       `;
 

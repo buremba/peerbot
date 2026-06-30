@@ -9,7 +9,8 @@
  * `$member` and minted a separate `person` for the same human.
  *
  * Flow: provision a `$member` with ONLY `auth_user_id` (the pre-fix state) →
- * run `persistLoginSlackIdentity` (network reads stubbed, real DB write) →
+ * run `persistLoginSlackIdentity` via the PRIMARY id_token path (the injected
+ * network deps THROW, proving no userinfo fetch is needed; real DB write) →
  * build the channel graph with that user as a channel member → assert the
  * member edge lands on the EXISTING `$member`, and no new `person` was created.
  */
@@ -36,31 +37,27 @@ const TEAM = "T01ACME";
 const CONN = "conn-acme";
 const SLACK_USER = "U01ALICE";
 
-/** persistLoginSlackIdentity deps: real tenant resolution, stubbed network. */
-function slackDeps(teamId: string | undefined) {
-	return {
-		resolveTenantMember,
-		getEnabledLoginProviderConfigs: async () => [
-			{
-				connectorKey: "slack",
-				provider: "slack",
-				loginScopes: [],
-				clientIdKey: "SLACK_CLIENT_ID",
-				clientSecretKey: "SLACK_CLIENT_SECRET",
-				userinfoUrl: "https://slack.test/userInfo",
-			},
-		],
-		fetchUserInfoWithRaw: async () => ({
-			raw: teamId
-				? {
-						"https://slack.com/team_id": teamId,
-						"https://slack.com/user_id": SLACK_USER,
-					}
-				: { "https://slack.com/user_id": SLACK_USER },
-			normalized: null,
-		}),
-	};
+/** Build an (unsigned-but-well-formed) JWT carrying the given claims. */
+function makeJwt(claims: Record<string, unknown>): string {
+	const b64 = (o: unknown) =>
+		Buffer.from(JSON.stringify(o)).toString("base64url");
+	return `${b64({ alg: "HS256", typ: "JWT" })}.${b64(claims)}.sig`;
 }
+
+/**
+ * persistLoginSlackIdentity deps for the PRIMARY (id_token) path: real tenant
+ * resolution, and a network layer that THROWS — proving the id_token path needs
+ * no userinfo fetch / provider-config read at all.
+ */
+const noNetworkDeps = {
+	resolveTenantMember,
+	getEnabledLoginProviderConfigs: async () => {
+		throw new Error("provider-config lookup must not run on the id_token path");
+	},
+	fetchUserInfoWithRaw: async () => {
+		throw new Error("userinfo fetch must not run on the id_token path");
+	},
+};
 
 describe("sign-in slack_user_id collapse (e2e via channel graph)", () => {
 	beforeAll(async () => {
@@ -113,15 +110,21 @@ describe("sign-in slack_user_id collapse (e2e via channel graph)", () => {
 			status: "active",
 		});
 
-		// Slack sign-in writes the team-scoped slack_user_id onto the SAME $member.
+		// Slack sign-in writes the team-scoped slack_user_id onto the SAME $member,
+		// reading team + user straight from the stored id_token (no network).
 		await persistLoginSlackIdentity(
 			{
 				providerId: "slack",
 				userId: alice.id,
 				accessToken: "xoxp-token",
 				accountId: SLACK_USER,
+				idToken: makeJwt({
+					"https://slack.com/team_id": TEAM,
+					"https://slack.com/user_id": SLACK_USER,
+					sub: SLACK_USER,
+				}),
 			},
-			slackDeps(TEAM),
+			noNetworkDeps,
 		);
 
 		// Build the channel graph with Alice as a member of #eng.

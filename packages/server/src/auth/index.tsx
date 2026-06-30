@@ -837,6 +837,9 @@ export async function createAuth(
 							accountId: (account as Record<string, unknown>).accountId as
 								| string
 								| null,
+							idToken: (account as Record<string, unknown>).idToken as
+								| string
+								| null,
 						};
 						try {
 							const { provisionConnectorFromSocialLogin } = await import(
@@ -873,6 +876,9 @@ export async function createAuth(
 								| string
 								| null,
 							accountId: (account as Record<string, unknown>).accountId as
+								| string
+								| null,
+							idToken: (account as Record<string, unknown>).idToken as
 								| string
 								| null,
 						};

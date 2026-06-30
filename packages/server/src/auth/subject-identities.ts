@@ -133,6 +133,32 @@ export interface LoginAccountForSlackIdentity {
 	 * from the BetterAuth row PK. Preferred over the userinfo body when present.
 	 */
 	accountId?: string | null;
+	/**
+	 * The OIDC id_token BetterAuth stored on the account row at the login code
+	 * exchange. Slack's id_token payload carries both `https://slack.com/team_id`
+	 * and `https://slack.com/user_id`, so when present we read them straight from
+	 * it — no second HTTP round-trip / provider-config lookup needed.
+	 */
+	idToken?: string | null;
+}
+
+/**
+ * Decode the claims (payload) of a JWT without verifying its signature. Safe
+ * here because this is our own server-stored token from a TLS code exchange —
+ * same trust level as the access token we already store and use. Mirrors
+ * better-auth's own `decodeJwt`. Returns null on any malformation.
+ */
+function decodeJwtClaims(jwt: string): Record<string, unknown> | null {
+	const seg = jwt.split(".")[1];
+	if (!seg) return null;
+	try {
+		return JSON.parse(Buffer.from(seg, "base64url").toString("utf8")) as Record<
+			string,
+			unknown
+		>;
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -182,24 +208,43 @@ export async function persistLoginSlackIdentity(
 			return;
 		}
 
-		const cfgs = await deps.getEnabledLoginProviderConfigs(
-			resolved.tenantOrganizationId,
-		);
-		const slackCfg = cfgs.find((c) => c.provider.toLowerCase() === "slack");
+		let teamId: string | null | undefined;
+		let bareUser: string | null | undefined;
+		let source: "id_token" | "userinfo-fallback" = "id_token";
 
-		const { raw } = await deps.fetchUserInfoWithRaw({
-			provider: "slack",
-			accessToken: account.accessToken,
-			userinfoUrl: slackCfg?.userinfoUrl,
-		});
+		// PRIMARY: read team + user straight out of the stored id_token. No network.
+		if (account.idToken) {
+			const claims = decodeJwtClaims(account.idToken);
+			if (claims) {
+				teamId = claims["https://slack.com/team_id"] as
+					| string
+					| null
+					| undefined;
+				bareUser = (account.accountId ??
+					claims["https://slack.com/user_id"] ??
+					claims.sub) as string | null | undefined;
+			}
+		}
 
-		const teamId = raw?.["https://slack.com/team_id"] as
-			| string
-			| null
-			| undefined;
-		const bareUser = (account.accountId ??
-			raw?.["https://slack.com/user_id"] ??
-			raw?.sub) as string | null | undefined;
+		// FALLBACK: no id_token (or it yielded no team_id) → the userinfo endpoint.
+		// One extra HTTP round-trip + a provider-config DB read, kept behind the
+		// injected deps seam so it stays testable.
+		if (!teamId) {
+			source = "userinfo-fallback";
+			const cfgs = await deps.getEnabledLoginProviderConfigs(
+				resolved.tenantOrganizationId,
+			);
+			const slackCfg = cfgs.find((c) => c.provider.toLowerCase() === "slack");
+			const { raw } = await deps.fetchUserInfoWithRaw({
+				provider: "slack",
+				accessToken: account.accessToken,
+				userinfoUrl: slackCfg?.userinfoUrl,
+			});
+			teamId = raw?.["https://slack.com/team_id"] as string | null | undefined;
+			bareUser = (account.accountId ??
+				raw?.["https://slack.com/user_id"] ??
+				raw?.sub) as string | null | undefined;
+		}
 
 		// null = missing team id or malformed → NEVER write a bare, un-scoped id
 		// (two workspaces can share a `U…`, so a bare id would bleed across orgs).
@@ -220,7 +265,11 @@ export async function persistLoginSlackIdentity(
 			[{ namespace: "slack_user_id", identifier: combined }],
 		);
 		log.debug(
-			{ userId: account.userId, organizationId: resolved.tenantOrganizationId },
+			{
+				userId: account.userId,
+				organizationId: resolved.tenantOrganizationId,
+				source,
+			},
 			"slack-identity: wrote slack_user_id onto $member",
 		);
 	} catch (err) {

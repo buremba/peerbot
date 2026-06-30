@@ -75,7 +75,5 @@ export const RESERVED_ENTITY_TYPES = [
   'watcher',
   'content',
   'source',
-  'sources',
-  'connections',
   'connector',
 ];

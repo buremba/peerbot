@@ -436,22 +436,25 @@ const SETUP_EXPR = `(async () => {
   const caps = (window.__lobuHdrs || []).filter((h) => h && h["x-device-id"]);
   if (!caps.length) return { authed: true, captured: false };
   window.__lobuHeaders = caps[caps.length - 1];
-  window.__lobuAll = []; window.__lobuSeen = {}; window.__lobuCursor = null;
+  window.__lobuSeen = {}; window.__lobuCursor = null;
   window.__lobuDone = false; window.__lobuStop = null;
   return { authed: true, captured: true };
 })()`;
 
-// 2. Page older history in-page using the captured headers. Each call walks up
-// to PAGES_PER_BATCH `?to=<cursor>` pages (kept small so a single evaluate stays
-// well under the op timeout), accumulating raw rows in `__lobuAll` and advancing
-// the cursor to the oldest `startedDate` seen. `__lobuDone` flips when a page
-// returns nothing new/older (we've reached the start of history) or on an error.
+// 2. Page older history in-page using the captured headers and RETURN the raw
+// rows fetched this call (no separate read-out phase — keeps the run well under
+// the device-worker's ~95s budget). Each call walks up to PAGES_PER_BATCH
+// `?to=<cursor>` pages, dedups against `__lobuSeen`, advances `__lobuCursor` to
+// the oldest `startedDate`, and returns the new rows. `__lobuDone` flips when a
+// page returns nothing new/older (start of history reached) or on an error.
+// PAGES_PER_BATCH is small so each return stays modest (~125 rows/page).
 const PAGE_BATCH_EXPR = `(async () => {
-  if (!window.__lobuHeaders) return { done: true, total: 0, stop: "no_headers" };
-  if (window.__lobuDone) return { done: true, total: (window.__lobuAll || []).length, stop: window.__lobuStop };
+  if (!window.__lobuHeaders) return { done: true, rows: [], stop: "no_headers" };
+  if (window.__lobuDone) return { done: true, rows: [], stop: window.__lobuStop };
   const h = window.__lobuHeaders;
   const base = "/api/retail/user/current/transactions/last";
-  for (let k = 0; k < 8; k++) {
+  const rows = [];
+  for (let k = 0; k < 4; k++) {
     const url = base + "?count=200" + (window.__lobuCursor ? ("&to=" + window.__lobuCursor) : "");
     let r;
     try { r = await fetch(url, { credentials: "include", headers: h }); }
@@ -464,20 +467,15 @@ const PAGE_BATCH_EXPR = `(async () => {
     for (const t of page) {
       const id = t && t.id; const sd = Number(t && t.startedDate);
       if (Number.isFinite(sd) && sd < oldest) oldest = sd;
-      if (typeof id === "string" && !window.__lobuSeen[id]) { window.__lobuSeen[id] = 1; window.__lobuAll.push(t); added++; }
+      if (typeof id === "string" && !window.__lobuSeen[id]) { window.__lobuSeen[id] = 1; rows.push(t); added++; }
     }
     const prevCursor = window.__lobuCursor == null ? Infinity : window.__lobuCursor;
     if (!Number.isFinite(oldest) || !(oldest < prevCursor)) { window.__lobuDone = true; window.__lobuStop = "no_progress"; break; }
     window.__lobuCursor = oldest;
     if (added === 0) { window.__lobuDone = true; window.__lobuStop = "no_new"; break; }
-    await new Promise((r) => setTimeout(r, 120));
   }
-  return { done: window.__lobuDone, total: window.__lobuAll.length, stop: window.__lobuStop };
+  return { done: window.__lobuDone, rows: rows, stop: window.__lobuStop };
 })()`;
-
-// 3. Read harvested raw rows back out in chunks (one evaluate return per chunk).
-const readChunkExpr = (off: number, lim: number): string =>
-  `(window.__lobuAll || []).slice(${off}, ${off + lim})`;
 
 /**
  * Crawl the FULL retail transaction history by replaying the `transactions/last`
@@ -486,9 +484,11 @@ const readChunkExpr = (off: number, lim: number): string =>
  * Reuses the ONE persistent window the user signs into once: a fresh background
  * tab bounces to sso.revolut.com (rwa auth is bound to the signed-in tab), so
  * the persistent window is the only context where the retail API authenticates.
- * We capture the app's own request headers there (SETUP_EXPR), page the whole
- * history in-page batches (PAGE_BATCH_EXPR), then read the raw rows out and parse
- * them with the same `parseTransactionsResponse` used for intercepted bodies.
+ * We capture the app's own request headers there (SETUP_EXPR), then page the
+ * whole history in batches that RETURN their raw rows (PAGE_BATCH_EXPR), parsing
+ * each batch with the same `parseTransactionsResponse` used for intercepted
+ * bodies. Inlining the rows (vs a read-out phase) keeps total dispatch time
+ * under the device-worker's ~95s ceiling.
  */
 async function crawlFetchPaging(
   dispatcher: ChromeActionDispatcher,
@@ -519,41 +519,31 @@ async function crawlFetchPaging(
   const s = setup.value ?? {};
   if (!s.authed || !s.captured) return { items: [], apiCallCount: 0 };
 
-  // Page the full history in-page, batch by batch, until done.
-  let total = 0;
+  // Page the full history in-page, batch by batch, parsing each batch's returned
+  // raw rows inline until done. The cross-batch `seen` set is belt-and-braces;
+  // the in-page `__lobuSeen` already dedups across batches.
+  const items: RevolutTransaction[] = [];
+  const seen = new Set<string>();
+  let apiCallCount = 0;
   for (let batch = 0; batch < maxBatches; batch++) {
     const b = await dispatcher.dispatch<{
-      value?: { done?: boolean; total?: number };
+      value?: { done?: boolean; rows?: unknown };
     }>("evaluate", {
       tab_id: tabId,
       expression: PAGE_BATCH_EXPR,
       allowed_origins: allowed,
     });
     const v = b.value ?? {};
-    if (typeof v.total === "number") total = v.total;
-    if (v.done) break;
-  }
-
-  // Read the raw rows back out in chunks and parse (same enrichment path).
-  const items: RevolutTransaction[] = [];
-  const seen = new Set<string>();
-  let apiCallCount = 0;
-  const READ_CHUNK = 200;
-  for (let off = 0; off < total; off += READ_CHUNK) {
-    const c = await dispatcher.dispatch<{ value?: unknown }>("evaluate", {
-      tab_id: tabId,
-      expression: readChunkExpr(off, READ_CHUNK),
-      allowed_origins: allowed,
-    });
-    const chunk = c.value;
-    if (!Array.isArray(chunk) || chunk.length === 0) continue;
-    apiCallCount += 1;
-    for (const t of parseTransactionsResponse(chunk)) {
-      if (!seen.has(t.id)) {
-        seen.add(t.id);
-        items.push(t);
+    if (Array.isArray(v.rows) && v.rows.length > 0) {
+      apiCallCount += 1;
+      for (const t of parseTransactionsResponse(v.rows)) {
+        if (!seen.has(t.id)) {
+          seen.add(t.id);
+          items.push(t);
+        }
       }
     }
+    if (v.done) break;
   }
   return { items, apiCallCount };
 }
@@ -623,7 +613,7 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     name: "Revolut",
     description:
       "Syncs Revolut account transactions by intercepting the retail API JSON the Revolut web app fetches (no public API), through your paired Owletto Chrome session — no separate login, exact amounts (no DOM parsing).",
-    version: "4.4.0",
+    version: "4.4.1",
     faviconDomain: "app.revolut.com",
     authSchema: {
       // Auth is implicit via the paired Owletto extension's signed-in Chrome —
@@ -677,13 +667,13 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     const backfill = config.backfill === true;
 
     // How long to wait for the user to enter their passcode before giving up.
-    // Revolut's rwa session is short-lived, so rather than failing the instant
-    // we hit the auth wall, we fire the sign-in notification and keep retrying
-    // the crawl every `EMPTY_RETRY_POLL_MS` — the moment the user signs in, the next
-    // attempt succeeds and proceeds straight into the backfill within the fresh
-    // session window. 0 disables the wait (fail fast).
+    // The device worker has a HARD ~95s per-run budget, so the wait MUST stay
+    // short — a long wait gets the whole run killed mid-paging. We fire the
+    // sign-in notification and retry the crawl every `EMPTY_RETRY_POLL_MS`; for a
+    // reliable backfill the user should sign in BEFORE triggering (then the first
+    // attempt is authed and no wait is consumed). 0 disables the wait (fail fast).
     const dataWaitMs =
-      Math.max(0, Math.min(600, Number(config.wait_for_data_seconds ?? 180))) *
+      Math.max(0, Math.min(80, Number(config.wait_for_data_seconds ?? 30))) *
       1000;
 
     // One crawl attempt: capture headers in the persistent signed-in window and

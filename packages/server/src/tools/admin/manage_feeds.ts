@@ -19,6 +19,7 @@ import { readChannelTranscript } from '../../gateway/connections/channel-transcr
 import type { Env } from '../../index';
 import { getAuthProfileById } from '../../utils/auth-profiles';
 import { nextRunAt, validateSchedule } from '../../utils/cron';
+import { getWorkspaceRole } from '../../utils/organization-access';
 import { recordChangeEvent } from '../../utils/insert-event';
 import logger from '../../utils/logger';
 import { syncOAuthConnectionsForAuthProfile } from '../../utils/oauth-connection-state';
@@ -257,7 +258,21 @@ async function handleReadChannelFeed(
   ctx: ToolContext
 ): Promise<ManageFeedsResult> {
   const sql = getDb();
-  const { organizationId } = ctx;
+  const { organizationId, userId } = ctx;
+  // Connection-visibility gate (mirrors manage_connections crud handleList/Get):
+  // read_channel_feed is in PUBLIC_READ_ACTIONS, so a transcript is content an
+  // anonymous caller could otherwise pull by guessing a feed_id. Anonymous sees
+  // org-visible connections only; a non-admin member sees org + their own
+  // private connections; owners/admins see all.
+  let visibilityFilter = sql``;
+  if (!userId) {
+    visibilityFilter = sql`AND c.visibility = 'org'`;
+  } else {
+    const role = await getWorkspaceRole(sql, organizationId, userId);
+    if (role !== 'owner' && role !== 'admin') {
+      visibilityFilter = sql`AND (c.visibility = 'org' OR c.created_by = ${userId})`;
+    }
+  }
   // Resolve the feed's connection slug + channel key, then map to the runtime
   // ids channel_messages is keyed by: the BYO namespace is stripped off the
   // slug (mirror of resolveBoundChannelRows), and the platform prefix
@@ -270,6 +285,7 @@ async function handleReadChannelFeed(
       AND f.organization_id = ${organizationId}
       AND f.deleted_at IS NULL
       AND c.deleted_at IS NULL
+      ${visibilityFilter}
   `) as Array<{ feed_key: string; slug: string }>;
   if (rows.length === 0) return { error: 'Feed not found' };
   const { feed_key, slug } = rows[0];

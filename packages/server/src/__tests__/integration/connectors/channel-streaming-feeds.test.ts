@@ -23,7 +23,7 @@ import {
 } from "../../../gateway/channels/channel-feed";
 import type { Env } from "../../../index";
 import { materializeDueFeeds } from "../../../scheduled/check-due-feeds";
-import { cleanupTestDatabase, getTestDb } from "../../setup/test-db";
+import { getTestDb } from "../../setup/test-db";
 import { createTestAgent, createTestConnection } from "../../setup/test-fixtures";
 import { TestWorkspace } from "../../setup/test-mcp-client";
 
@@ -54,7 +54,12 @@ describe("channel streaming feeds", () => {
   let orgId: string;
 
   beforeAll(async () => {
-    workspace = await TestWorkspace.create({ name: "Channel Feeds Org" });
+    // Public workspace so the visibility-gate test can exercise an anonymous
+    // reader (who can reach a public org but not its private connections).
+    workspace = await TestWorkspace.create({
+      name: "Channel Feeds Org",
+      visibility: "public",
+    });
     orgId = workspace.org.id;
   });
 
@@ -232,5 +237,58 @@ describe("channel streaming feeds", () => {
     // …but it does NOT make the connection claim the data facet.
     expect(result.connection.facets.data).toBe(false);
     expect(result.connection.facets.chat).toBe(true);
+  });
+
+  it("does not leak a PRIVATE connection's transcript to an anonymous caller", async () => {
+    // A private chat connection: visible only to its creator / org admins.
+    const priv = await createTestConnection({
+      organization_id: orgId,
+      connector_key: "slack",
+      display_name: "Private Slack",
+      visibility: "private",
+      created_by: workspace.users.owner.id,
+      createDefaultFeed: false,
+    });
+    const sql = getTestDb();
+    await sql`
+      UPDATE connections SET credential_mode = 'managed', external_tenant_id = 'TPRIV'
+      WHERE id = ${priv.id}
+    `;
+    const slugRow = (await sql`SELECT slug FROM connections WHERE id = ${priv.id}`) as Array<{
+      slug: string;
+    }>;
+    const runtimeConnId = slugRow[0].slug.startsWith("agentconn-")
+      ? slugRow[0].slug.slice(10)
+      : slugRow[0].slug;
+    const feedId = await ensureStreamingChannelFeed({
+      connectionId: priv.id,
+      organizationId: orgId,
+      channelKey: "slack:CPRIV",
+    });
+    await sql`
+      INSERT INTO channel_messages (
+        organization_id, connection_id, platform, channel_id,
+        platform_message_id, author_name, is_bot, text, occurred_at
+      ) VALUES (
+        ${orgId}, ${runtimeConnId}, 'slack', 'CPRIV',
+        'mp', 'Secret', false, 'private secret message', NOW()
+      )
+    `;
+
+    // Owner (creator) CAN read it.
+    const ownerRes = (await workspace.owner.feeds.manage({
+      action: "read_channel_feed",
+      feed_id: feedId,
+    })) as { messages?: unknown[]; error?: string };
+    expect(ownerRes.messages?.length).toBe(1);
+
+    // Anonymous reader of the public org must NOT — the gate hides the private
+    // connection's feed, so the transcript is never resolved.
+    const anonRes = (await workspace.asAnonymous().feeds.manage({
+      action: "read_channel_feed",
+      feed_id: feedId,
+    })) as { messages?: unknown[]; error?: string };
+    expect(anonRes.messages).toBeUndefined();
+    expect(anonRes.error).toBe("Feed not found");
   });
 });

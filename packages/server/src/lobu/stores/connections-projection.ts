@@ -1,20 +1,16 @@
 /**
- * Connections-unify Stage 2a — the chat ⇄ `connections` projection.
+ * The chat ⇄ `connections` mapping + writer. `connections` is the SOLE source of
+ * truth for chat connections: the legacy `agent_connections` table is gone, so
+ * the chat runtime reads and writes `connections` exclusively. A BYO chat
+ * connection is keyed by `slug` (`agentconn-<id>`); a managed Slack install keeps
+ * its `slackinst-<id>` external id AS the slug. Adapter config + `settings` +
+ * `chatMetadata` fold into the `config` jsonb; the provider tenant lifts into the
+ * first-class `external_tenant_id` column.
  *
- * Stage 1 backfilled chat rows (BYO `agent_connections` + managed Slack
- * `app_installations`) into the unified `connections` table. Stage 2a repoints
- * the chat runtime to read `connections` as the source of truth, with the
- * legacy tables kept written too (dual-write-through) so the projection stays
- * live — every chat write lands in BOTH `connections` (by slug, in one
- * transaction with the legacy write) and the legacy table. That keeps the
- * connections row coherent for reads (the ChatInstanceManager memo keys on
- * `connections.updated_at`, status-health reads it) while preserving
- * reversibility: dropping `connections` leaves the legacy tables complete.
- *
- * This module owns the bidirectional mapping + the projection writer. It does
- * NOT import from `slack-installations.ts` (that file imports the writer here),
- * so the managed-install wire prefix is mirrored locally to keep the dependency
- * one-directional.
+ * This module owns the bidirectional id⇄slug mapping + the projection writer. It
+ * does NOT import from `slack-installations.ts` (that file imports the writer
+ * here), so the managed-install wire prefix is mirrored locally to keep the
+ * dependency one-directional.
  */
 
 import type { StoredConnection } from "@lobu/core";

@@ -844,7 +844,7 @@ export async function resolveChannelMessageSender(
 
   const firstHit = (matches: Map<string, number>): number | null => {
     for (const id of identities) {
-      const hit = matches.get(`${id.namespace} ${id.identifier}`);
+      const hit = matches.get(`${id.namespace}\u0000${id.identifier}`);
       if (hit !== undefined) return hit;
     }
     return null;

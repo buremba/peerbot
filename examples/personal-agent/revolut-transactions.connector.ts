@@ -568,7 +568,7 @@ const configSchema = {
       maximum: 200,
       default: 20,
       description:
-        "Maximum scroll iterations to make the app paginate older transactions. Each page is ~125 rows, so 20 covers normal incremental syncs; raise it (e.g. 200) for a deep first backfill spanning years of history.",
+        "Maximum paging batches (each fetches up to 4 `?to=` cursor pages of ~125 rows). 20 covers normal incremental syncs; raise it (e.g. 200) for a deep first backfill spanning years of history. (Name kept for config compatibility; the connector no longer scrolls.)",
     },
     backfill: {
       type: "boolean",
@@ -579,10 +579,10 @@ const configSchema = {
     wait_for_data_seconds: {
       type: "integer",
       minimum: 0,
-      maximum: 600,
-      default: 180,
+      maximum: 80,
+      default: 30,
       description:
-        "If the crawl returns no data, keep retrying every 10s for this many seconds before failing. For Revolut the empty result means the passcode/sign-in wall (the sign-in notification fires once), so a run triggered before sign-in still completes once you authenticate. 0 = fail fast.",
+        "If the crawl returns no data, keep retrying every 10s for this many seconds before failing. For Revolut the empty result means the passcode/sign-in wall (the sign-in notification fires once), so a run triggered before sign-in still completes once you authenticate. Capped at 80s because the device worker has a hard ~95s per-run budget. 0 = fail fast.",
     },
   },
 };

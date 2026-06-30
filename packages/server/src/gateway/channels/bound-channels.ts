@@ -67,25 +67,30 @@ export async function resolveBoundChannelRows(
   // `external_tenant_id`. Chat rows carry `credential_mode IS NOT NULL`.
   return (await sql`
     SELECT id, platform, channel_id, team_id, created_at FROM (
-      -- (A) the org's own connections, scoped to (org, agent, platform).
-      -- KNOWN LIMITATION: not scoped by workspace/team. An agent with TWO Slack
-      -- connections (two workspaces) cross-joins a channel onto both, so
-      -- list_conversations can surface a duplicate handle and a post may route
-      -- via the wrong workspace. A correct fix needs binding.team_id and
-      -- connection.external_tenant_id to be reliably co-populated, which they
-      -- are NOT today (bindings carry a team id, connections often don't) — so a
-      -- naive team-match join drops legitimate single-workspace bindings. Tracked
-      -- as a follow-up (team_id data-model alignment), not fixed here. Single-
-      -- workspace agents and non-Slack platforms are unaffected.
+      -- (A) the org's own connections. A binding matches its serving connection
+      -- by the unified connection_id link (the source of truth — populated for
+      -- every binding by the connections-unify backfill/re-sync) when set, and
+      -- falls back to the legacy (org, agent, platform) tuple only when the
+      -- binding is not yet linked. The connection_id path is what lets MANAGED
+      -- Slack OAuth installs (slackinst- slug, agent_id NULL) resolve their
+      -- channels at all — the tuple join never matched a NULL agent_id.
+      -- KNOWN LIMITATION (tuple fallback only): an agent with TWO Slack
+      -- connections cross-joins a channel onto both via the tuple; linked
+      -- bindings route precisely by connection_id, so this only affects
+      -- not-yet-linked bindings.
       SELECT
         CASE WHEN ac.slug LIKE 'agentconn-%'
           THEN substring(ac.slug from 11) ELSE ac.slug END AS id,
         ac.connector_key AS platform, b.channel_id, b.team_id, b.created_at
       FROM connections ac
       JOIN agent_channel_bindings b
-        ON b.organization_id = ac.organization_id
-       AND b.agent_id = ac.agent_id
-       AND b.platform = ac.connector_key
+        ON (
+             b.connection_id = ac.id
+             OR (b.connection_id IS NULL
+                 AND b.organization_id = ac.organization_id
+                 AND b.agent_id = ac.agent_id
+                 AND b.platform = ac.connector_key)
+           )
       WHERE ac.organization_id = ${organizationId}
         AND ac.status = 'active'
         AND ac.credential_mode IS NOT NULL
@@ -118,9 +123,13 @@ export async function resolveBoundChannelRows(
           SELECT 1
           FROM connections own
           JOIN agent_channel_bindings ob
-            ON ob.organization_id = own.organization_id
-           AND ob.agent_id = own.agent_id
-           AND ob.platform = own.connector_key
+            ON (
+                 ob.connection_id = own.id
+                 OR (ob.connection_id IS NULL
+                     AND ob.organization_id = own.organization_id
+                     AND ob.agent_id = own.agent_id
+                     AND ob.platform = own.connector_key)
+               )
           WHERE own.organization_id = ${organizationId}
             AND own.status = 'active'
             AND own.credential_mode IS NOT NULL

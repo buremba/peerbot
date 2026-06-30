@@ -181,6 +181,44 @@ export async function upsertChatConnectionProjection(
         "Demoted sibling active chat connection (one-active-per-tenant)",
       );
     }
+
+    // A MANAGED install binds a provider workspace (Slack team) to exactly ONE
+    // org — the OAuth install moves with the workspace. On a reinstall/transfer
+    // of the same team into a different org, the old org's managed projection
+    // would otherwise stay 'active', leaving a stale routing/ACL row for a team
+    // this org no longer owns. Demote any OTHER org's active managed projection
+    // for this team (global tenant lock so it serializes cross-replica). BYO
+    // connections can legitimately coexist cross-org, so this is managed-only.
+    if (credentialMode === "managed") {
+      await sql.unsafe("SELECT pg_advisory_xact_lock(hashtext($1))", [
+        `chatconn:managed:${conn.platform}:${externalTenantId}`,
+      ]);
+      const transferred = await sql`
+        UPDATE connections SET status = 'paused', updated_at = now()
+        WHERE connector_key = ${conn.platform}
+          AND external_tenant_id = ${externalTenantId}
+          AND credential_mode = 'managed'
+          AND status = 'active'
+          AND deleted_at IS NULL
+          AND organization_id <> ${orgId}
+        RETURNING slug, organization_id
+      `;
+      if (transferred.length > 0) {
+        logger.info(
+          {
+            orgId,
+            platform: conn.platform,
+            teamId: externalTenantId,
+            activated: slug,
+            demoted: transferred.map(
+              (r: { slug: string; organization_id: string }) =>
+                `${r.organization_id}:${r.slug}`,
+            ),
+          },
+          "Demoted stale managed install in another org (workspace transfer)",
+        );
+      }
+    }
   }
 
   await sql`

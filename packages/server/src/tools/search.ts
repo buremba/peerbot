@@ -9,8 +9,10 @@
 
 import { type Static, Type } from '@sinclair/typebox';
 import { hasRequiredMcpScope } from '../auth/tool-access';
+import { type AuthzScope, authzScopeFromToolContext } from '../authz/scope';
 import { getDb } from '../db/client';
 import type { Env } from '../index';
+import type { FeedReader } from '../lib/feed-reader';
 import { entityLinkMatchSql, searchContentByText } from '../utils/content-search';
 import { resolveBoundChannelRows, stripPlatformPrefix } from '../gateway/channels/bound-channels';
 import { filterChannelsForRequester } from '../authz/channel-visibility';
@@ -282,9 +284,8 @@ function withRecall<T extends UnifiedSearchResult>(
 // ============================================
 
 async function fetchContentSnippets(
+  gate: AuthzScope,
   query: string | null,
-  organizationId: string,
-  userId: string | null,
   contentLimit: number,
   env: Env,
   queryEmbedding?: number[],
@@ -293,13 +294,13 @@ async function fetchContentSnippets(
   const result = await searchContentByText(
     query,
     {
-      organization_id: organizationId,
+      organization_id: gate.organizationId,
       // Enforce the org/private-connection visibility boundary on the recall
       // path, exactly as get_content does. Without visibility_scope the
       // connection-visibility clause is skipped entirely, so search_memory
       // (publicly readable) would expose another member's private-connection
       // content. See get-content-visibility / search-cross-org tests.
-      visibility_scope: { organizationId, userId },
+      visibility_scope: { organizationId: gate.organizationId, userId: gate.principal },
       limit: contentLimit,
       min_similarity: 0.4,
       query_embedding: queryEmbedding,
@@ -359,21 +360,25 @@ const RECALL_STOPWORDS = new Set([
  * the agent's channels rather than returning nothing.
  */
 async function fetchConversationSnippets(
+  gate: AuthzScope,
   query: string,
-  organizationId: string,
-  userId: string | null,
-  agentId: string,
   limit: number
 ): Promise<ConversationSnippet[]> {
   const sql = getDb();
-  const boundChannels = await resolveBoundChannelRows(sql, { organizationId, agentId });
+  // The calling agent (the transcript tenant fence) MUST be present — the
+  // conversation reader guards on it before calling, and we defend here too.
+  if (!gate.agentId) return [];
+  const boundChannels = await resolveBoundChannelRows(sql, {
+    organizationId: gate.organizationId,
+    agentId: gate.agentId,
+  });
   if (boundChannels.length === 0) return [];
   // Per-user ACL gate: drop channels the requester isn't a member of, for
   // connections that have a fresh channel-ACL graph. Non-enforced connections
   // are returned unchanged, so this is a no-op until a workspace is graphed.
   const channels = await filterChannelsForRequester(sql, {
-    organizationId,
-    userId,
+    organizationId: gate.organizationId,
+    userId: gate.principal,
     rows: boundChannels,
   });
   if (channels.length === 0) return [];
@@ -406,7 +411,7 @@ async function fetchConversationSnippets(
   const rows = (await sql`
     SELECT cm.platform, cm.channel_id, cm.thread_id, cm.author_name, cm.text, cm.occurred_at
     FROM channel_messages cm
-    WHERE cm.organization_id = ${organizationId}
+    WHERE cm.organization_id = ${gate.organizationId}
       AND (${pairFilter})
       AND (${termFilter})
     ORDER BY cm.occurred_at DESC
@@ -432,12 +437,10 @@ async function fetchConversationSnippets(
 
 export interface RecallContext {
   query: string | null;
-  organizationId: string;
-  userId: string | null;
-  /** Memory-scope filter for events content — the caller-supplied agent_id arg. */
+  /** Memory-scope filter for events content — the caller-supplied agent_id arg.
+   * This is a CONTENT filter (which agent's memory), NOT a gate field; the
+   * tenant/principal/calling-agent identity travels on the {@link AuthzScope}. */
   contentAgentId: string | undefined;
-  /** Calling agent identity — the tenant fence for channel recall (its bindings). */
-  channelAgentId: string | null | undefined;
   contentLimit: number;
   env: Env;
   queryEmbedding?: number[];
@@ -452,24 +455,24 @@ export interface RecallContext {
 export type RecallKind = 'knowledge' | 'conversation';
 
 /**
- * A recall source owns exactly one kind and contributes ONLY the result facet
- * it produces (or `{}` when it has none). `gatherRecall` runs them all and
- * merges — there is no central type-switch over kinds. Each source is
- * self-scoped (its own tenant fence) and fails independently.
+ * A recall source is a {@link FeedReader}: it owns exactly one kind and
+ * contributes ONLY the result facet it produces (or `{}` when it has none).
+ * `gatherRecall` runs them all and merges — there is no central type-switch over
+ * kinds. Each reader receives the ACL gate ({@link AuthzScope}) as a REQUIRED,
+ * typed argument, so a new reader cannot compile without it and cannot silently
+ * leak across users. Readers fail independently.
  */
-export interface RecallSource {
+export type RecallSource = FeedReader<RecallContext, Partial<UnifiedSearchResult>> & {
   readonly kind: RecallKind;
-  recall(ctx: RecallContext): Promise<Partial<UnifiedSearchResult>>;
-}
+};
 
 /** `knowledge` — semantic/keyword snippets from the `events` store. */
 const knowledgeSource: RecallSource = {
   kind: 'knowledge',
-  recall: async (ctx) => {
+  read: async (gate, ctx) => {
     const content = await fetchContentSnippets(
+      gate,
       ctx.query,
-      ctx.organizationId,
-      ctx.userId,
       ctx.contentLimit,
       ctx.env,
       ctx.queryEmbedding,
@@ -482,34 +485,32 @@ const knowledgeSource: RecallSource = {
 /** `conversation` — keyword/recency hits from the `channel_messages` transcript. */
 const conversationSource: RecallSource = {
   kind: 'conversation',
-  recall: async (ctx) => {
-    // Needs a calling agent (its bindings are the tenant fence) and a text query
-    // (keyword match has no embedding path). The requesting user (`ctx.userId`)
-    // is the per-user side of the gate — see fetchConversationSnippets.
-    if (!ctx.query || !ctx.channelAgentId) return {};
-    const conversation_messages = await fetchConversationSnippets(
-      ctx.query,
-      ctx.organizationId,
-      ctx.userId,
-      ctx.channelAgentId,
-      ctx.contentLimit
-    );
+  read: async (gate, ctx) => {
+    // Needs a calling agent (its bindings are the tenant fence, on the gate) and
+    // a text query (keyword match has no embedding path). The requesting user
+    // (`gate.principal`) is the per-user side of the gate — see
+    // fetchConversationSnippets.
+    if (!ctx.query || !gate.agentId) return {};
+    const conversation_messages = await fetchConversationSnippets(gate, ctx.query, ctx.contentLimit);
     return conversation_messages.length > 0 ? { conversation_messages } : {};
   },
 };
 
 export const RECALL_SOURCES: RecallSource[] = [knowledgeSource, conversationSource];
 
-/** Run every recall source and merge their facets into one fragment. Sources
- * fail independently — one source's error never drops another's results. The
- * `sources` param is injectable so the registry can be tested generically. */
+/** Run every recall reader under `gate` and merge their facets into one
+ * fragment. Readers fail independently — one reader's error never drops
+ * another's results. The `sources` param is injectable so the registry can be
+ * tested generically. The gate is a required, explicit argument: it is the ACL
+ * boundary every reader compiles against, never buried in `ctx`. */
 export async function gatherRecall(
+  gate: AuthzScope,
   ctx: RecallContext,
   sources: RecallSource[] = RECALL_SOURCES
 ): Promise<Partial<UnifiedSearchResult>> {
   const fragments = await Promise.all(
     sources.map((source) =>
-      source.recall(ctx).catch((err) => {
+      source.read(gate, ctx).catch((err) => {
         logger.warn(`[search] recall source '${source.kind}' failed: ${getErrorMessage(err)}`);
         return {} as Partial<UnifiedSearchResult>;
       })
@@ -559,16 +560,20 @@ async function searchImpl(
   // rows, which have no agent_id of their own. gatherRecall catches per source.
   const recallPromise: Promise<Partial<UnifiedSearchResult>> =
     includeContent && hasContentSignal
-      ? gatherRecall({
-          query: args.query ?? null,
-          organizationId: ctx.organizationId,
-          userId: ctx.userId,
-          contentAgentId: agentIdScope,
-          channelAgentId: ctx.agentId,
-          contentLimit,
-          env,
-          queryEmbedding: args.query_embedding,
-        })
+      ? gatherRecall(
+          authzScopeFromToolContext({
+            organizationId: ctx.organizationId,
+            userId: ctx.userId,
+            agentId: ctx.agentId,
+          }),
+          {
+            query: args.query ?? null,
+            contentAgentId: agentIdScope,
+            contentLimit,
+            env,
+            queryEmbedding: args.query_embedding,
+          }
+        )
       : Promise.resolve({});
 
   // ========================================

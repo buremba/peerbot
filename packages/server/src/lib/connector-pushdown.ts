@@ -11,6 +11,7 @@ import { executeCompiledConnector } from '@lobu/connector-worker/executor/runtim
 import { compileConnectionRowVisibility } from '../authz/connection-visibility';
 import type { AuthzScope } from '../authz/scope';
 import { getDb } from '../db/client';
+import type { FeedReader } from './feed-reader';
 import { isCloudMode } from '../utils/cloud-mode';
 import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
@@ -119,6 +120,47 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
   }
   return { rows: result.rows, columns: result.columns ?? [], total: result.total };
 }
+
+/**
+ * Non-gate inputs to {@link connectorQueryReader.read}. The tenant + principal
+ * arrive on the {@link AuthzScope} gate; everything here is the query payload.
+ * `isAdmin` stays a ctx input because the AuthzScope shape has no admin
+ * dimension yet — translating it into the existing `runConnectorQuery` SQL gate
+ * is deliberately behavior-preserving (the SQL visibility clause is unchanged).
+ */
+export interface ConnectorQueryCtx {
+  connectionSlug: string;
+  query: string;
+  isAdmin: boolean;
+  feedKey?: string;
+  config?: Record<string, unknown>;
+  limit?: number;
+  offset?: number;
+  sort?: { column: string; order: 'asc' | 'desc' };
+}
+
+/**
+ * {@link runConnectorQuery} registered under the {@link FeedReader} contract: the
+ * ACL gate is a required, typed argument. The reader translates the gate's
+ * `organizationId`/`principal` into the existing `runConnectorQuery` primitives
+ * — the SQL visibility gate and behavior are unchanged.
+ */
+export const connectorQueryReader: FeedReader<ConnectorQueryCtx, ConnectorQueryResult> = {
+  kind: 'connector-query',
+  read: (gate, ctx) =>
+    runConnectorQuery({
+      organizationId: gate.organizationId,
+      userId: gate.principal,
+      isAdmin: ctx.isAdmin,
+      connectionSlug: ctx.connectionSlug,
+      query: ctx.query,
+      feedKey: ctx.feedKey,
+      config: ctx.config,
+      limit: ctx.limit,
+      offset: ctx.offset,
+      sort: ctx.sort,
+    }),
+};
 
 /** Params for {@link readVirtualFeed}. */
 export interface ReadVirtualFeedParams {
@@ -278,3 +320,17 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
   }
   return { rows: result.rows, columns: result.columns ?? [], total: result.total };
 }
+
+/** Non-gate inputs to {@link virtualFeedReader.read} — everything in
+ * {@link ReadVirtualFeedParams} except the gate (`scope`). */
+export type VirtualFeedReadCtx = Omit<ReadVirtualFeedParams, 'scope'>;
+
+/**
+ * {@link readVirtualFeed} registered under the {@link FeedReader} contract. The
+ * gate (its `AuthzScope`) becomes the required first argument; the reader simply
+ * forwards it as `scope`. Visibility-compilation behavior is unchanged.
+ */
+export const virtualFeedReader: FeedReader<VirtualFeedReadCtx, ReadVirtualFeedResult> = {
+  kind: 'virtual-feed',
+  read: (gate, ctx) => readVirtualFeed({ scope: gate, ...ctx }),
+};

@@ -484,9 +484,7 @@ async function crawlPersistentWindow(
     for (let i = 0; i < maxScrolls; i++) {
       await dispatcher.dispatch("scroll", {
         tab_id: tabId,
-        delta_y: 1500,
-        steps: 6,
-        step_delay_ms: 250,
+        steps: 4,
         allowed_origins: allowed,
       });
       await sleep(2500);

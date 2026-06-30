@@ -89,6 +89,12 @@ export default class WhatsAppLocalConnector extends BridgeOnlyConnector {
               {
                 entityType: 'person',
                 autoCreate: true,
+                // Only mint a contact for 1:1 chats. Group messages still link to
+                // a contact if one already exists, but the group-member flood
+                // (hundreds of @lid senders you've never spoken to 1:1) never
+                // materializes a `person` row. Outbound messages carry no
+                // sender_jid, so they produce no identity and no-op here too.
+                createWhen: { path: 'metadata.is_group', equals: false },
                 titlePath: 'metadata.push_name',
                 identities: [
                   { namespace: IDENTITY.WA_JID, eventPath: 'metadata.sender_jid' },

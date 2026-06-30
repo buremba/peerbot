@@ -146,7 +146,14 @@ export default class GmailConnector extends ConnectorRuntime<GmailCheckpoint, Gm
             entityLinks: [
               {
                 entityType: 'person',
-                autoCreate: true,
+                // Don't mint a contact per inbound sender. Every from-address is a
+                // sender — overwhelmingly brands, newsletters, and no-reply system
+                // addresses, all of which carry a from_name, so no per-event signal
+                // separates a real contact from a brand. The identifier still lands
+                // in entity_identities and links to an existing contact on match;
+                // promoting a real email contact is interaction-driven (a reply /
+                // contacts-source bridge), handled outside ingest.
+                autoCreate: false,
                 titlePath: 'metadata.from_name',
                 identities: [{ namespace: IDENTITY.EMAIL, eventPath: 'metadata.from_email' }],
                 traits: {

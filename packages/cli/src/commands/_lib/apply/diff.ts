@@ -487,10 +487,17 @@ function diffEntityType(
         changed: (d, r) => !deepEqual(d.metrics, r.metrics),
       },
       {
-        // event_kinds round-trips verbatim; both sides omit it for a type with
-        // no declared kinds, so deepEqual(undefined, undefined) ⇒ no churn.
+        // event_kinds — prune-aware, like viewTemplate. event_kinds can be
+        // authored out-of-band via manage_entity_schema (a connector feed, the
+        // UI, an agent), so a config that simply doesn't declare them must NOT
+        // wipe them. Declared: diff and set on change. Omitted + prune: a
+        // present remote set is a removal (apply clears it). Omitted + no prune:
+        // unmanaged, never churns — the out-of-band kinds are left alone.
         name: "eventKinds",
-        changed: (d, r) => !deepEqual(d.eventKinds, r.eventKinds),
+        changed: (d, r) =>
+          d.eventKinds !== undefined
+            ? !deepEqual(d.eventKinds, r.eventKinds)
+            : prune && r.eventKinds !== undefined,
       },
       {
         // View template — prune-aware. Declared: diff against the remote current

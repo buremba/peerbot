@@ -389,60 +389,74 @@ const topic = defineEntityType({
 });
 
 // Trips are clusters of COMPLETED card payments in a NON-home country,
-// concentrated in time. We key on `merchant_country` (not the old currency
-// guess — a single trip mixes VND/USD/GBP) and per calendar month. The country
-// denylist drops home (GB/GBR) plus the online-merchant domiciles (IE/LU/EE)
-// that otherwise surface as bogus "trips" spread across years.
+// concentrated in time. We key on `merchant_country` (a single trip mixes
+// VND/USD/GBP, so the old currency-clustering was wrong) per calendar month.
+// The country denylist drops home (GB/GBR) plus the online-merchant domiciles
+// (IE/LU/EE) that surface as bogus "trips" spread across years.
 //
-// Cost is reported two honest ways: `local_spend` in the trip's dominant
-// foreign currency (always exact), and `gbp_known` — the GBP we can state
-// exactly (native GBP + Revolut-booked GBP counterpart). The remaining
-// pocket-funded spend has no per-transaction GBP; its GBP cost lives on the
-// funding EXCHANGE event, so attributing it into the trip total is a deliberate
-// follow-up rather than a guessed FX conversion here.
-// One CTE aggregates per (country, month, currency); the outer query rolls each
-// (country, month) into a trip, picking the dominant currency for the headline
-// local figure. The >= 6 burst threshold keeps steady online spend billed
-// abroad (e.g. US-domiciled SaaS, a handful of charges every month) from
-// surfacing as bogus trips — a real trip is a concentrated burst.
+// A real trip is a SHORT, VARIED burst — so beyond the >= 6 transaction count
+// we require span <= 16 days and >= 3 distinct categories. That distinguishes
+// travel (concentrated, restaurants + transport + shopping in a couple of
+// weeks) from steady online spend billed abroad (US-domiciled SaaS: spread
+// across the whole month, one or two service categories) which otherwise
+// surfaced as a monthly "US trip".
+//
+// GBP cost is the sum of two exact sources, never a guessed FX rate:
+//   • gbp_known  — native GBP + Revolut-booked GBP counterpart on the trip's
+//                  own card payments.
+//   • gbp_funded — GBP exchanged INTO the trip's local currency around the trip
+//                  window (a Revolut "Exchanged to <ccy>" event). This recovers
+//                  the cost of pocket spend, which carries no per-transaction
+//                  GBP (e.g. a VND-pocket Vietnam trip: £688 on cards + £1,500
+//                  exchanged to VND). gbp_cost = gbp_known + gbp_funded.
 const tripBackingSql = `
-WITH by_ccy AS (
+WITH tx AS (
   SELECT
     metadata->>'merchant_country' AS country,
     date_trunc('month', occurred_at) AS mon,
     coalesce(metadata->>'currency', 'GBP') AS currency,
-    sum(nullif(metadata->>'amount', '')::numeric) AS ccy_amount,
-    sum(${gbpAmountSql}) AS ccy_gbp,
-    count(*) AS ccy_n,
-    min(occurred_at::date) AS first_d,
-    max(occurred_at::date) AS last_d
+    metadata->>'category' AS category,
+    nullif(metadata->>'amount', '')::numeric AS amount,
+    ${gbpAmountSql} AS gbp,
+    occurred_at::date AS d
   FROM events
   WHERE ${completedCardSpendWhere}
     AND nullif(metadata->>'amount', '') IS NOT NULL
     AND metadata->>'merchant_country' IS NOT NULL
     AND metadata->>'merchant_country' NOT IN ('', 'GB', 'GBR', 'IE', 'LU', 'EE')
-  GROUP BY 1, 2, 3
 )
 SELECT
   'trip:' || country || ':' || to_char(mon, 'YYYY-MM') AS id,
-  country || ' trip (' || min(first_d)::text || ' to ' || max(last_d)::text || ')' AS name,
+  country || ' trip (' || min(d)::text || ' to ' || max(d)::text || ')' AS name,
   'trip-' || lower(country) || '-' || to_char(mon, 'YYYY-MM') AS slug,
   country AS destination,
-  min(first_d)::text AS start_date,
-  max(last_d)::text AS end_date,
-  (array_agg(currency ORDER BY ccy_n DESC, ccy_amount DESC))[1] AS local_currency,
-  round((array_agg(ccy_amount ORDER BY ccy_n DESC, ccy_amount DESC))[1], 2) AS local_spend,
-  round(sum(ccy_gbp), 2) AS gbp_known,
-  string_agg(currency, ',' ORDER BY currency) AS currencies,
-  sum(ccy_n)::int AS transaction_count,
-  CASE
-    WHEN sum(ccy_n) >= 12 THEN 'high'
-    WHEN sum(ccy_n) >= 6 THEN 'medium'
-    ELSE 'low'
-  END AS confidence
-FROM by_ccy
+  min(d)::text AS start_date,
+  max(d)::text AS end_date,
+  mode() WITHIN GROUP (ORDER BY currency) AS local_currency,
+  round(sum(gbp), 2) AS gbp_known,
+  nullif(
+    round(
+      coalesce(sum(gbp), 0)
+      + (
+        SELECT coalesce(sum(nullif(e.metadata->>'amount', '')::numeric), 0)
+        FROM events e
+        WHERE e.semantic_type = 'transaction'
+          AND e.metadata->>'transaction_type' = 'EXCHANGE'
+          AND e.metadata->>'state' = 'COMPLETED'
+          AND e.metadata->>'currency' = 'GBP'
+          AND e.metadata->>'direction' = 'out'
+          AND e.metadata->>'description' = 'Exchanged to ' || mode() WITHIN GROUP (ORDER BY tx.currency)
+          AND e.occurred_at::date BETWEEN min(tx.d) - 21 AND max(tx.d) + 3
+      ), 2
+    ),
+    0
+  ) AS gbp_cost,
+  string_agg(DISTINCT currency, ',' ORDER BY currency) AS currencies,
+  count(*)::int AS transaction_count,
+  CASE WHEN (max(d) - min(d)) <= 10 AND count(*) >= 12 THEN 'high' ELSE 'medium' END AS confidence
+FROM tx
 GROUP BY country, mon
-HAVING sum(ccy_n) >= 6
+HAVING count(*) >= 6 AND (max(d) - min(d)) <= 16 AND count(DISTINCT category) >= 3
 ORDER BY start_date DESC
 `;
 
@@ -482,12 +496,22 @@ const trip = defineEntityType({
       "x-table-column": true,
       "x-table-label": "Local spend",
     },
+    gbp_cost: {
+      type: "number",
+      description:
+        "Best GBP estimate of the trip: exact card GBP plus GBP exchanged into the local currency around the trip",
+      "x-table-column": true,
+      "x-table-label": "GBP cost",
+    },
     gbp_known: {
       type: "number",
       description:
-        "GBP cost known exactly (native GBP + GBP counterpart); excludes pocket-funded spend realised at an earlier exchange",
-      "x-table-column": true,
-      "x-table-label": "GBP (known)",
+        "GBP spent directly on cards, known exactly (native GBP + GBP counterpart)",
+    },
+    gbp_funded: {
+      type: "number",
+      description:
+        "GBP exchanged into the local currency around the trip window (funds pocket spend)",
     },
     currencies: {
       type: "string",

@@ -306,6 +306,53 @@ describe("computeDiff — idempotency (applying twice is a no-op)", () => {
       expect(row.changedFields).toContain("eventKinds");
   });
 
+  test("entity type: omitted eventKinds is unmanaged WITHOUT prune (no churn)", () => {
+    const desired = buildState([], {
+      memorySchema: {
+        entityTypes: [{ slug: "deal", name: "Deal" }],
+        relationshipTypes: [],
+      },
+    });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      // Kinds authored out-of-band (manage_entity_schema / a connector feed)
+      // the config doesn't declare — must not be pruned by a partial config.
+      entityTypes: [
+        {
+          slug: "deal",
+          name: "Deal",
+          eventKinds: { note: { description: "x" } },
+        },
+      ],
+    };
+    const plan = computeDiff(desired, remote);
+    expect(plan.rows.find((r) => r.kind === "entity-type")?.verb).toBe("noop");
+  });
+
+  test("entity type: omitted eventKinds WITH prune clears a present remote set", () => {
+    const desired = buildState([], {
+      memorySchema: {
+        entityTypes: [{ slug: "deal", name: "Deal" }],
+        relationshipTypes: [],
+      },
+    });
+    const remote: RemoteSnapshot = {
+      ...emptyRemote(),
+      entityTypes: [
+        {
+          slug: "deal",
+          name: "Deal",
+          eventKinds: { note: { description: "x" } },
+        },
+      ],
+    };
+    const plan = computeDiff(desired, remote, { prune: true });
+    const row = plan.rows.find((r) => r.kind === "entity-type");
+    expect(row?.verb).toBe("update");
+    if (row?.kind === "entity-type")
+      expect(row.changedFields).toContain("eventKinds");
+  });
+
   test("entity type: same declared viewTemplate is a noop", () => {
     const viewTemplate = { type: "card", children: [] };
     const desired = buildState([], {

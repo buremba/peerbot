@@ -97,7 +97,7 @@ export async function notifyConnectionPermissionRequest(params: {
       body: `A new connection was created and requires OAuth authorization.${urlLine}`,
       resourceType: 'connection',
       resourceId: String(params.connectionId),
-      resourceUrl: orgSlug ? `/${orgSlug}/connections` : undefined,
+      resourceUrl: orgSlug ? `/${orgSlug}/connectors` : undefined,
     };
   });
 }

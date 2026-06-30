@@ -1,5 +1,9 @@
 /**
- * FeedReader — the ONE read-path contract for every feed/recall source.
+ * FeedReader — the read contract for the recall registry (`RECALL_SOURCES` in
+ * search.ts). It is the ONE shape every recall source implements; the registry
+ * fans out over readers without branching on kind. (Other feed read seams like
+ * `readVirtualFeed`/`runConnectorQuery` take the same `AuthzScope` gate directly
+ * but are single functions, not registry members, so they don't implement this.)
  *
  * The access-graph ACL gate ({@link AuthzScope}) is a REQUIRED, typed argument of
  * `read`, threaded by the registry to every reader — it is never buried in a

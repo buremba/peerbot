@@ -93,7 +93,11 @@ function restoreEnv(name: keyof typeof originalEnv): void {
 }
 
 function token(
-  options: { agentId?: string; runtimeProviderId?: string } = {}
+  options: {
+    agentId?: string;
+    runtimeProviderId?: string;
+    allowedDomains?: string[];
+  } = {}
 ): string {
   return generateWorkerToken("user-1", "conv-1", "deploy-1", {
     channelId: "chan-1",
@@ -102,6 +106,7 @@ function token(
     organizationId: "org-1",
     agentId: options.agentId,
     runtimeProviderId: options.runtimeProviderId,
+    allowedDomains: options.allowedDomains,
   });
 }
 
@@ -347,6 +352,38 @@ describe("createRuntimeRoutes", () => {
     expect(getOrCreateMock).toHaveBeenCalledTimes(1);
   });
 
+  test("ignores a body-supplied egress allowlist and uses the signed token claim", async () => {
+    setVercelSystemCreds();
+    const workspaceDir = path.resolve("workspaces", "verceltestagent", "conv-1");
+
+    const router = createRuntimeRoutes();
+    const res = await router.request("/internal/runtime/exec", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token({
+          agentId: "verceltestagent",
+          runtimeProviderId: "vercel",
+          // The gateway-signed allowlist for this agent.
+          allowedDomains: ["github.com"],
+        })}`,
+        "content-type": "application/json",
+      },
+      // A compromised worker tries to widen egress to everything via the body.
+      body: JSON.stringify({
+        command: "pwd",
+        workspaceDir,
+        allowedDomains: ["*"],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    // The sandbox network policy reflects the TOKEN's allowlist, NOT the body's
+    // "*": the body must not be able to escalate to an allow-all sandbox.
+    expect(getOrCreateMock.mock.calls[0]?.[0]).toMatchObject({
+      networkPolicy: { allow: ["github.com"] },
+    });
+  });
+
   test("executes in a persistent named sandbox without local file sync", async () => {
     setVercelSystemCreds();
     process.env.LOBU_VERCEL_SANDBOX_NAME_PREFIX = "lobu-test";
@@ -364,6 +401,8 @@ describe("createRuntimeRoutes", () => {
         authorization: `Bearer ${token({
           agentId: "verceltestagent",
           runtimeProviderId: "vercel",
+          // The egress allowlist now rides the signed token, not the body.
+          allowedDomains: ["github.com", ".npmjs.org", "bad domain"],
         })}`,
         "content-type": "application/json",
       },
@@ -372,7 +411,6 @@ describe("createRuntimeRoutes", () => {
         cwd: subdir,
         workspaceDir,
         timeoutMs: 1_000,
-        allowedDomains: ["github.com", ".npmjs.org", "bad domain"],
       }),
     });
 

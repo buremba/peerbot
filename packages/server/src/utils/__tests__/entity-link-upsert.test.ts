@@ -372,6 +372,252 @@ describe('applyEntityLinks', () => {
     expect(winner[0].metadata.push_name).toBe('Casey');
   });
 
+  it('createWhen gates auto-create: group message mints nothing, 1:1 mints a contact', async () => {
+    const { org } = await setupOrg('createWhen gate org');
+    const sql = getTestDb();
+
+    await installRule(org.id, 'whatsapp', 'message', {
+      entityType: '$member',
+      autoCreate: true,
+      createWhen: { path: 'metadata.is_group', equals: false },
+      titlePath: 'metadata.push_name',
+      identities: [{ namespace: 'wa_jid', eventPath: 'metadata.sender_jid' }],
+    });
+
+    await applyEntityLinks({
+      connectorKey: 'whatsapp',
+      feedKey: FEED_KEY,
+      orgId: org.id,
+      items: [
+        // group sender → gated out, no entity
+        {
+          origin_type: 'message',
+          metadata: { sender_jid: '99@lid', is_group: true, push_name: 'Group Member' },
+        },
+        // 1:1 partner → minted
+        {
+          origin_type: 'message',
+          metadata: { sender_jid: '14155551234@s.whatsapp.net', is_group: false, push_name: 'Rob' },
+        },
+      ],
+    });
+
+    const rows = await sql<{ name: string }[]>`
+      SELECT e.name FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE e.organization_id = ${org.id} AND et.slug = '$member' AND e.deleted_at IS NULL
+    `;
+    expect(rows.map((r) => r.name)).toEqual(['Rob']);
+
+    // The gated-out group sender's identifier is NOT claimed by any entity.
+    const groupIdent = await sql<{ count: string }[]>`
+      SELECT COUNT(*)::text AS count FROM entity_identities
+      WHERE organization_id = ${org.id} AND namespace = 'wa_jid' AND identifier = '99@lid'
+    `;
+    expect(groupIdent[0].count).toBe('0');
+  });
+
+  it('createWhen gates only CREATE: a group message still accretes onto an existing contact', async () => {
+    const { org, user } = await setupOrg('createWhen match org');
+    const sql = getTestDb();
+
+    const [{ id: entityId }] = await sql<{ id: number | string }[]>`
+      INSERT INTO entities (organization_id, entity_type_id, name, slug, metadata, created_by)
+      VALUES (
+        ${org.id},
+        (SELECT id FROM entity_types WHERE slug = '$member' AND organization_id = ${org.id} AND deleted_at IS NULL),
+        'Rob', 'member-rob', '{"aliases":["14155551234@s.whatsapp.net"]}'::jsonb, ${user.id}
+      )
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier, source_connector)
+      VALUES (${org.id}, ${Number(entityId)}, 'wa_jid', '14155551234@s.whatsapp.net', 'seed')
+    `;
+
+    await installRule(org.id, 'whatsapp', 'message', {
+      entityType: '$member',
+      autoCreate: true,
+      createWhen: { path: 'metadata.is_group', equals: false },
+      identities: [
+        { namespace: 'wa_jid', eventPath: 'metadata.sender_jid' },
+        { namespace: 'phone', eventPath: 'metadata.sender_phone' },
+      ],
+    });
+
+    // A GROUP message from the known contact, carrying a new phone identifier.
+    await applyEntityLinks({
+      connectorKey: 'whatsapp',
+      feedKey: FEED_KEY,
+      orgId: org.id,
+      items: [
+        {
+          origin_type: 'message',
+          metadata: {
+            sender_jid: '14155551234@s.whatsapp.net',
+            sender_phone: '14155551234',
+            is_group: true,
+          },
+        },
+      ],
+    });
+
+    // Matched the existing entity (gate doesn't block match) and accreted phone.
+    const idents = await sql<{ namespace: string }[]>`
+      SELECT namespace FROM entity_identities
+      WHERE organization_id = ${org.id} AND entity_id = ${Number(entityId)} ORDER BY namespace
+    `;
+    expect(idents.map((r) => r.namespace)).toEqual(['phone', 'wa_jid']);
+    // No SECOND entity was created from the group message.
+    const count = await sql<{ count: string }[]>`
+      SELECT COUNT(*)::text AS count FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE e.organization_id = ${org.id} AND et.slug = '$member' AND e.deleted_at IS NULL
+    `;
+    expect(count[0].count).toBe('1');
+  });
+
+  it('seeds metadata.aliases from identifiers on create (metric resolution path)', async () => {
+    const { org } = await setupOrg('aliases-on-create org');
+    const sql = getTestDb();
+
+    await installRule(org.id, 'whatsapp', 'message', {
+      entityType: '$member',
+      autoCreate: true,
+      identities: [
+        { namespace: 'wa_jid', eventPath: 'metadata.sender_jid' },
+        { namespace: 'phone', eventPath: 'metadata.sender_phone' },
+      ],
+    });
+
+    await applyEntityLinks({
+      connectorKey: 'whatsapp',
+      feedKey: FEED_KEY,
+      orgId: org.id,
+      items: [
+        {
+          origin_type: 'message',
+          metadata: { sender_jid: '14155551234@s.whatsapp.net', sender_phone: '+1 (415) 555-1234' },
+        },
+      ],
+    });
+
+    const rows = await sql<{ metadata: { aliases?: string[] } }[]>`
+      SELECT e.metadata FROM entities e
+      JOIN entity_types et ON et.id = e.entity_type_id
+      WHERE e.organization_id = ${org.id} AND et.slug = '$member' AND e.deleted_at IS NULL
+    `;
+    expect(rows).toHaveLength(1);
+    expect([...(rows[0].metadata.aliases ?? [])].sort()).toEqual([
+      '14155551234',
+      '14155551234@s.whatsapp.net',
+    ]);
+  });
+
+  it('appends a cross-channel identifier to metadata.aliases on accrete', async () => {
+    const { org, user } = await setupOrg('aliases-accrete org');
+    const sql = getTestDb();
+
+    const [{ id: entityId }] = await sql<{ id: number | string }[]>`
+      INSERT INTO entities (organization_id, entity_type_id, name, slug, metadata, created_by)
+      VALUES (
+        ${org.id},
+        (SELECT id FROM entity_types WHERE slug = '$member' AND organization_id = ${org.id} AND deleted_at IS NULL),
+        'Rob', 'member-rob2', '{"aliases":["14155551234@s.whatsapp.net"]}'::jsonb, ${user.id}
+      )
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier, source_connector)
+      VALUES (${org.id}, ${Number(entityId)}, 'wa_jid', '14155551234@s.whatsapp.net', 'seed')
+    `;
+
+    await installRule(org.id, 'whatsapp', 'message', {
+      entityType: '$member',
+      autoCreate: true,
+      identities: [
+        { namespace: 'wa_jid', eventPath: 'metadata.sender_jid' },
+        { namespace: 'phone', eventPath: 'metadata.sender_phone' },
+      ],
+    });
+
+    await applyEntityLinks({
+      connectorKey: 'whatsapp',
+      feedKey: FEED_KEY,
+      orgId: org.id,
+      items: [
+        {
+          origin_type: 'message',
+          metadata: { sender_jid: '14155551234@s.whatsapp.net', sender_phone: '14155551234' },
+        },
+      ],
+    });
+
+    const rows = await sql<{ metadata: { aliases?: string[] } }[]>`
+      SELECT metadata FROM entities WHERE id = ${Number(entityId)}
+    `;
+    expect([...(rows[0].metadata.aliases ?? [])].sort()).toEqual([
+      '14155551234',
+      '14155551234@s.whatsapp.net',
+    ]);
+  });
+
+  it('backfills metadata.aliases on a normal match for a legacy entity that has none', async () => {
+    const { org, user } = await setupOrg('aliases-backfill org');
+    const sql = getTestDb();
+
+    // Legacy entity: has the identity row but NO aliases key in metadata (created
+    // by the pre-aliases path). A plain matching message must repair it.
+    const [{ id: entityId }] = await sql<{ id: number | string }[]>`
+      INSERT INTO entities (organization_id, entity_type_id, name, slug, metadata, created_by)
+      VALUES (
+        ${org.id},
+        (SELECT id FROM entity_types WHERE slug = '$member' AND organization_id = ${org.id} AND deleted_at IS NULL),
+        'Rob', 'member-legacy', '{"push_name":"Rob"}'::jsonb, ${user.id}
+      )
+      RETURNING id
+    `;
+    await sql`
+      INSERT INTO entity_identities (organization_id, entity_id, namespace, identifier, source_connector)
+      VALUES (${org.id}, ${Number(entityId)}, 'wa_jid', '14155551234@s.whatsapp.net', 'seed')
+    `;
+
+    await installRule(org.id, 'whatsapp', 'message', {
+      entityType: '$member',
+      autoCreate: true,
+      createWhen: { path: 'metadata.is_group', equals: false },
+      identities: [
+        { namespace: 'wa_jid', eventPath: 'metadata.sender_jid' },
+        { namespace: 'phone', eventPath: 'metadata.sender_phone' },
+      ],
+    });
+
+    await applyEntityLinks({
+      connectorKey: 'whatsapp',
+      feedKey: FEED_KEY,
+      orgId: org.id,
+      items: [
+        {
+          origin_type: 'message',
+          metadata: {
+            sender_jid: '14155551234@s.whatsapp.net',
+            sender_phone: '14155551234',
+            is_group: false,
+          },
+        },
+      ],
+    });
+
+    const rows = await sql<{ metadata: { aliases?: string[] } }[]>`
+      SELECT metadata FROM entities WHERE id = ${Number(entityId)}
+    `;
+    // The matched-on wa_jid AND the newly-accreted phone are both repaired in.
+    expect([...(rows[0].metadata.aliases ?? [])].sort()).toEqual([
+      '14155551234',
+      '14155551234@s.whatsapp.net',
+    ]);
+  });
+
   it('resolveEntityLinksForItems writes through the passed transaction handle', async () => {
     const { org } = await setupOrg('tx-threaded org');
     const sql = getTestDb();

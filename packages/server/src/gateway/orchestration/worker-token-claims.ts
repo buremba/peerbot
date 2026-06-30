@@ -35,6 +35,12 @@ export interface WorkerTokenClaimsArgs {
    * pinned to builtin doesn't inherit the deployment-wide LOBU_RUNTIME_PROVIDER.
    */
   runtimeExplicit?: boolean;
+  /**
+   * The agent's resolved egress allowlist (`networkConfig.allowedDomains`). Set
+   * here so the runtime route can read it off the SIGNED token instead of
+   * trusting a worker-supplied body — see WorkerTokenData.allowedDomains.
+   */
+  allowedDomains?: string[];
 }
 
 /**
@@ -61,6 +67,7 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
   source?: string;
   runtimeProviderId?: string;
   environmentId?: string;
+  allowedDomains?: string[];
 } {
   // Per-agent environment selection wins; otherwise the deployment-wide
   // selector covers self-host / org-default — UNLESS the agent made an explicit
@@ -90,5 +97,9 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
     // env-var fallback has no environment row, so credentials resolve from
     // system env.
     environmentId: runtimeProviderId ? args.environmentId : undefined,
+    // Non-empty only; an empty list is equivalent to absent (deny-all) and
+    // keeps the token payload minimal.
+    allowedDomains:
+      args.allowedDomains && args.allowedDomains.length > 0 ? args.allowedDomains : undefined,
   };
 }

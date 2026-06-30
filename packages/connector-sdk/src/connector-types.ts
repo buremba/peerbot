@@ -547,12 +547,42 @@ export interface EntityLinkRule {
    * When false, unmatched events stay unlinked and no entity is created.
    */
   autoCreate?: boolean;
+  /**
+   * Gate `autoCreate` on a per-event signal. Matching an EXISTING entity is
+   * unaffected; this only decides whether a NEW entity is minted on a miss.
+   * Omitted → create whenever `autoCreate` is true (the historical behavior).
+   *
+   * Lets a connector ingest every event into `entity_identities` aliases but
+   * only materialize a typed entity for senders that clear an interaction bar —
+   * e.g. WhatsApp mints a `person` only for 1:1 chats
+   * (`{ path: 'metadata.is_group', equals: false }`), never for the group flood.
+   */
+  createWhen?: EntityLinkPredicate;
   /** Dot path used for `entities.name` on create. */
   titlePath?: string;
   /** Identifier specs. At least one is required. */
   identities: EntityIdentitySpec[];
   /** Optional descriptive fields written to entities.metadata. */
   traits?: Record<string, EntityTraitSpec>;
+}
+
+/**
+ * A small, JSON-serializable predicate evaluated against the ingested event
+ * item (`{ metadata, title, origin_type }`) to gate `autoCreate`. All declared
+ * conditions are ANDed; an omitted condition is ignored. `path` is a dot-path
+ * resolved the same way as identity `eventPath` (e.g. `metadata.is_group`).
+ * Deliberately closed — no expressions, no SQL — so it stays cheap to evaluate
+ * inline at ingest and safe to persist as untrusted JSON in an install override.
+ */
+export interface EntityLinkPredicate {
+  /** Dot-path into the event item, e.g. `metadata.is_group`. */
+  path: string;
+  /** Create only when the value strictly equals this (`===`). */
+  equals?: string | number | boolean;
+  /** Create only when the value does NOT strictly equal this. */
+  notEquals?: string | number | boolean;
+  /** `true` → value must be present (not null/undefined/`''`); `false` → must be absent. */
+  exists?: boolean;
 }
 
 /**
@@ -572,6 +602,11 @@ export interface EntityLinkOverride {
   retargetEntityType?: string;
   /** Override autoCreate on the matched rule. */
   autoCreate?: boolean;
+  /**
+   * Override the createWhen gate on the matched rule. `null` clears it (mint on
+   * every miss); an object replaces it. Omitted leaves the connector's gate.
+   */
+  createWhen?: EntityLinkPredicate | null;
   /** Filter out identity specs by namespace before matching/persisting. */
   maskIdentities?: string[];
 }

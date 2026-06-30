@@ -136,23 +136,67 @@ export class ChannelBindingService {
       // same platform+channel can never collide with — and silently take over —
       // this org's row. `organization_id` is intentionally NOT in the SET list:
       // a binding must never change owners.
+      //
+      // Link `connection_id` to the active chat connection for this (org,
+      // platform, team) at bind time (mirrors the connections-unify backfill's
+      // Step 3, but at runtime so it works for installs created after the
+      // one-shot migration). This is the ONLY thing that makes a MANAGED Slack
+      // install (slackinst- slug, connection agent_id NULL) resolve its channels
+      // in `resolveBoundChannelRows` branch (A): the tuple fallback joins on
+      // `b.agent_id = ac.agent_id`, which can never match a NULL connection
+      // agent_id, so without this link a managed install's transcript is an
+      // unrecallable orphan. COALESCE on conflict keeps an existing link if the
+      // connection isn't resolvable yet (binding created before the install row).
       await sql`
-        INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
-        VALUES (${orgId}, ${agentId}, ${platform}, ${channelId}, ${teamId}, now())
+        INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id, created_at)
+        VALUES (
+          ${orgId}, ${agentId}, ${platform}, ${channelId}, ${teamId},
+          (
+            SELECT c.id FROM connections c
+            WHERE c.deleted_at IS NULL
+              AND c.status = 'active'
+              AND c.credential_mode IS NOT NULL
+              AND c.organization_id = ${orgId}
+              AND c.connector_key = ${platform}
+              AND c.external_tenant_id = ${teamId}
+            ORDER BY c.updated_at DESC
+            LIMIT 1
+          ),
+          now()
+        )
         ON CONFLICT (organization_id, platform, channel_id, team_id) DO UPDATE SET
           agent_id = EXCLUDED.agent_id,
+          connection_id = COALESCE(EXCLUDED.connection_id, agent_channel_bindings.connection_id),
           created_at = EXCLUDED.created_at
       `;
     } else {
       // For team_id IS NULL the unique constraint above doesn't fire (PG
       // treats NULL as distinct). The companion org-scoped partial unique index
       // (agent_channel_bindings_org_no_team_unique) is what we conflict on.
+      // Tenantless (Telegram, etc.) bindings link to the active chat connection
+      // owned by this agent (mirrors the backfill's tenantless match).
       await sql`
-        INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, created_at)
-        VALUES (${orgId}, ${agentId}, ${platform}, ${channelId}, NULL, now())
+        INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id, created_at)
+        VALUES (
+          ${orgId}, ${agentId}, ${platform}, ${channelId}, NULL,
+          (
+            SELECT c.id FROM connections c
+            WHERE c.deleted_at IS NULL
+              AND c.status = 'active'
+              AND c.credential_mode IS NOT NULL
+              AND c.organization_id = ${orgId}
+              AND c.connector_key = ${platform}
+              AND c.external_tenant_id IS NULL
+              AND c.agent_id = ${agentId}
+            ORDER BY c.updated_at DESC
+            LIMIT 1
+          ),
+          now()
+        )
         ON CONFLICT (organization_id, platform, channel_id)
           WHERE team_id IS NULL
           DO UPDATE SET agent_id = EXCLUDED.agent_id,
+            connection_id = COALESCE(EXCLUDED.connection_id, agent_channel_bindings.connection_id),
             created_at = EXCLUDED.created_at
       `;
     }

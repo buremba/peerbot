@@ -136,7 +136,6 @@ interface RawRevolutTxn {
     category?: unknown;
     country?: unknown;
   } | null;
-  counterpart?: { amount?: unknown; currency?: unknown } | null;
 }
 
 /** Read a string field, returning undefined for anything else. */

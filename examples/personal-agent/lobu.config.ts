@@ -148,6 +148,27 @@ const gbpAmountSql = `CASE
     ELSE NULL
   END`;
 
+// Pocket-spend fallback rate. A spend from a multi-currency pocket (USD/EUR
+// charges from a USD/EUR balance) carries no per-transaction GBP — there is no
+// exact figure to read. Rather than leave those costs null or invent a market
+// rate, we convert at the user's OWN realised rate: the average GBP-per-unit
+// across their actual conversions (rows where `counterpart_currency = 'GBP'`).
+// It's their real, data-grounded rate (USD ≈ 0.76, EUR ≈ 0.85), and it self-
+// updates as they transact. Returns NULL for a currency they've never converted,
+// so the caller can still distinguish "estimated" from "truly unknown".
+const realizedGbpRateSql = (ccyExpr: string) => `(
+    SELECT round(avg(
+      nullif(r.metadata->>'counterpart_amount', '')::numeric
+      / nullif(nullif(r.metadata->>'amount', '')::numeric, 0)
+    ), 6)
+    FROM events r
+    WHERE r.semantic_type = 'transaction'
+      AND r.metadata->>'counterpart_currency' = 'GBP'
+      AND r.metadata->>'currency' = ${ccyExpr}
+      AND nullif(r.metadata->>'amount', '')::numeric > 0
+      AND nullif(r.metadata->>'counterpart_amount', '')::numeric > 0
+  )`;
+
 // Spend rows we treat as real consumption: a COMPLETED outbound CARD_PAYMENT.
 // This single predicate removes the three classes that polluted the old views:
 //   • DECLINED / FAILED / REVERTED / DELETED states (money never moved — e.g.
@@ -301,7 +322,15 @@ SELECT
   max(tx_date)::text AS last_seen,
   round(avg(extract(day from occurred_at)))::int AS billing_day,
   round(sum(amount), 2) AS total_spent,
-  round(sum(gbp), 2) AS total_spent_gbp,
+  nullif(
+    round(
+      coalesce(sum(gbp), 0)
+      + coalesce(sum(amount) FILTER (WHERE gbp IS NULL), 0)
+        * coalesce(${realizedGbpRateSql("max(card.currency)")}, 0),
+      2
+    ),
+    0
+  ) AS total_spent_gbp,
   count(*)::int AS charge_count,
   count(distinct date_trunc('month', occurred_at))::int AS active_months
 FROM card
@@ -370,7 +399,7 @@ const subscription = defineEntityType({
     total_spent_gbp: {
       type: "number",
       description:
-        "Total in GBP where exactly known (native GBP + Revolut-booked GBP counterpart); null portion = USD/EUR-pocket charges funded at an earlier exchange",
+        "Total in GBP: exact where known (native GBP + Revolut-booked GBP counterpart), and pocket charges (USD/EUR) valued at the user's own realised conversion rate",
     },
     charge_count: { type: "integer" },
     active_months: { type: "integer" },
@@ -436,18 +465,28 @@ SELECT
   round(sum(gbp), 2) AS gbp_known,
   nullif(
     round(
+      -- exact card GBP (native + GBP counterpart)
       coalesce(sum(gbp), 0)
-      + (
-        SELECT coalesce(sum(nullif(e.metadata->>'amount', '')::numeric), 0)
-        FROM events e
-        WHERE e.semantic_type = 'transaction'
-          AND e.metadata->>'transaction_type' = 'EXCHANGE'
-          AND e.metadata->>'state' = 'COMPLETED'
-          AND e.metadata->>'currency' = 'GBP'
-          AND e.metadata->>'direction' = 'out'
-          AND e.metadata->>'description' = 'Exchanged to ' || mode() WITHIN GROUP (ORDER BY tx.currency)
-          AND e.occurred_at::date BETWEEN min(tx.d) - 21 AND max(tx.d) + 3
-      ), 2
+      -- plus the pocket-spend cost: the GBP exchanged into the local currency
+      -- around the trip (exact) when present, else the untraced pocket spend
+      -- valued at the user's realised rate (covers long-held USD/EUR pockets
+      -- with no in-window exchange).
+      + coalesce(
+          nullif((
+            SELECT coalesce(sum(nullif(e.metadata->>'amount', '')::numeric), 0)
+            FROM events e
+            WHERE e.semantic_type = 'transaction'
+              AND e.metadata->>'transaction_type' = 'EXCHANGE'
+              AND e.metadata->>'state' = 'COMPLETED'
+              AND e.metadata->>'currency' = 'GBP'
+              AND e.metadata->>'direction' = 'out'
+              AND e.metadata->>'description' = 'Exchanged to ' || mode() WITHIN GROUP (ORDER BY tx.currency)
+              AND e.occurred_at::date BETWEEN min(tx.d) - 21 AND max(tx.d) + 3
+          ), 0),
+          coalesce(sum(amount) FILTER (WHERE gbp IS NULL), 0)
+            * coalesce(${realizedGbpRateSql("mode() WITHIN GROUP (ORDER BY tx.currency)")}, 0)
+        ),
+      2
     ),
     0
   ) AS gbp_cost,
@@ -499,7 +538,7 @@ const trip = defineEntityType({
     gbp_cost: {
       type: "number",
       description:
-        "Best GBP estimate of the trip: exact card GBP plus GBP exchanged into the local currency around the trip",
+        "Best GBP estimate of the trip: exact card GBP, plus pocket cost — GBP exchanged into the local currency around the trip, or (for long-held pockets with no in-window exchange) pocket spend at the user's realised rate",
       "x-table-column": true,
       "x-table-label": "GBP cost",
     },

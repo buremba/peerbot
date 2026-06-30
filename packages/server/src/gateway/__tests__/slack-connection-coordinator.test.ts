@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { getDb } from "../../db/client.js";
 import { upsertSlackInstallByTeam } from "../../lobu/stores/slack-installations.js";
 import { SlackConnectionCoordinator } from "../connections/slack-connection-coordinator.js";
 import type { PlatformConnection } from "../connections/types.js";
@@ -183,18 +184,27 @@ const SLACK_ENV_KEYS = [
 describe("SlackConnectionCoordinator", () => {
   const savedEnv: Record<string, string | undefined> = {};
 
-  beforeEach(() => {
+  beforeEach(async () => {
     for (const key of SLACK_ENV_KEYS) {
       savedEnv[key] = process.env[key];
       delete process.env[key];
     }
+    // The managed-install path now dual-writes a `connections` projection (Stage
+    // 2a), whose organization_id FKs `organization` — seed the test org so the
+    // write-through INSERT is satisfied (an OAuth install always has a real org).
+    await getDb()`
+      INSERT INTO organization (id, name, slug)
+      VALUES ('org-acme', 'Acme', 'org-acme') ON CONFLICT DO NOTHING
+    `;
+    await getDb()`DELETE FROM connections WHERE organization_id = 'org-acme'`;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const key of SLACK_ENV_KEYS) {
       if (savedEnv[key] === undefined) delete process.env[key];
       else process.env[key] = savedEnv[key];
     }
+    await getDb()`DELETE FROM connections WHERE organization_id = 'org-acme'`;
   });
 
   test("ensureWorkspaceInstallation persists an app_installations row with only tenant data", async () => {

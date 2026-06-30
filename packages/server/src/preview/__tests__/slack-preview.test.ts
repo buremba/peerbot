@@ -7,6 +7,7 @@ import {
   createTestAgent,
   createTestOrganization,
   createTestUser,
+  insertChatConnectionRow,
 } from "../../__tests__/setup/test-fixtures.js";
 import { getDb } from "../../db/client.js";
 import { registerBuiltInCommands } from "../../gateway/commands/built-in-commands.js";
@@ -359,12 +360,15 @@ describe("Public preview — /lobu try a demo agent", () => {
     await createTestAgent({ organizationId: PREVIEW_ORG, agentId: DEMO_B, name: "Lunch Bot" });
     await createTestAgent({ organizationId: OTHER_ORG, agentId: "private-agent", name: "Private" });
 
-    const sql = getDb();
-    await sql`
-      INSERT INTO agent_connections (id, organization_id, agent_id, platform, config, settings, metadata, status, created_at, updated_at)
-      VALUES (${PREVIEW_CONN}, ${PREVIEW_ORG}, ${CONCIERGE}, 'slack', ${sql.json({ platform: "slack" })},
-              ${sql.json({ previewMode: true })}, ${sql.json({})}, 'active', now(), now())
-    `;
+    await insertChatConnectionRow({
+      id: PREVIEW_CONN,
+      organizationId: PREVIEW_ORG,
+      agentId: CONCIERGE,
+      platform: "slack",
+      config: { platform: "slack" },
+      settings: { previewMode: true },
+      status: "active",
+    });
   });
 
   beforeEach(async () => {

@@ -10,7 +10,11 @@
 
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { getTestDb, cleanupTestDatabase } from '../../setup/test-db';
-import { createTestAgent, createTestOrganization } from '../../setup/test-fixtures';
+import {
+  createTestAgent,
+  createTestOrganization,
+  insertChatConnectionRow,
+} from '../../setup/test-fixtures';
 import {
   resolveAddressableTargets,
   resolveAuthorizedTarget,
@@ -22,19 +26,19 @@ async function seedSlackConnection(opts: {
   organizationId: string;
   agentId: string;
   connectionId: string;
-  status?: string;
+  status?: 'active' | 'stopped' | 'error' | 'paused';
   settings?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
 }): Promise<void> {
-  const sql = getTestDb();
-  await sql`
-    INSERT INTO agent_connections
-      (id, organization_id, agent_id, platform, config, settings, metadata, status, created_at, updated_at)
-    VALUES (
-      ${opts.connectionId}, ${opts.organizationId}, ${opts.agentId}, 'slack',
-      ${sql.json({})}, ${sql.json(opts.settings ?? {})}, ${sql.json(opts.metadata ?? {})}, ${opts.status ?? 'active'}, NOW(), NOW()
-    )
-  `;
+  await insertChatConnectionRow({
+    id: opts.connectionId,
+    organizationId: opts.organizationId,
+    agentId: opts.agentId,
+    platform: 'slack',
+    status: opts.status,
+    settings: opts.settings,
+    metadata: opts.metadata,
+  });
 }
 
 async function seedBinding(opts: {

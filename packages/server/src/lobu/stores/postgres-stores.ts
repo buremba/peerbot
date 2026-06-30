@@ -4,11 +4,17 @@ import type {
 	AgentMetadata,
 	AgentSettings,
 	ChannelBinding,
-	StoredConnection,
 } from "@lobu/core";
 import { getDb, tsTime, tsTimeOrNull } from "../../db/client";
 import { recordLifecycleEvent } from "../../utils/insert-event";
+import {
+	connectionsRowToStored,
+	legacyIdToSlug,
+	softDeleteChatConnectionProjection,
+	upsertChatConnectionProjection,
+} from "./connections-projection";
 import { getOrgId, tryGetOrgId } from "./org-context";
+
 
 export const AGENT_ID_PATTERN = /^[a-z][a-z0-9-]{2,59}$/;
 
@@ -95,24 +101,6 @@ function isSecretField(key: string): boolean {
 
 function isRedactedSecretValue(value: unknown): value is string {
 	return typeof value === "string" && value.startsWith("***");
-}
-
-function rowToConnection(row: Record<string, any>): StoredConnection {
-	return {
-		id: row.id,
-		platform: row.platform,
-		agentId: row.agent_id ?? undefined,
-		organizationId: row.organization_id ?? undefined,
-		config: row.config ?? {},
-		settings: row.settings ?? {},
-		metadata: row.metadata ?? {},
-		status: row.status,
-		errorMessage: row.error_message ?? undefined,
-		createdAt:
-			tsTime(row.created_at),
-		updatedAt:
-			tsTime(row.updated_at),
-	};
 }
 
 function rowToChannelBinding(row: Record<string, any>): ChannelBinding {
@@ -326,130 +314,94 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 		async getConnection(connectionId) {
 			const sql = getDb();
 			const orgId = tryGetOrgId();
-			const rows = orgId
+			// `connections` is the sole source of truth (chat rows carry a non-null
+			// credential_mode; data connectors leave it NULL). Keyed by slug.
+			const slug = legacyIdToSlug(connectionId);
+			const projRows = orgId
 				? await sql`
-            SELECT * FROM agent_connections
-            WHERE id = ${connectionId} AND organization_id = ${orgId}
+            SELECT * FROM connections
+            WHERE organization_id = ${orgId} AND slug = ${slug}
+              AND credential_mode IS NOT NULL AND deleted_at IS NULL
+            LIMIT 1
           `
 				: await sql`
-            SELECT * FROM agent_connections
-            WHERE id = ${connectionId}
+            SELECT * FROM connections
+            WHERE slug = ${slug}
+              AND credential_mode IS NOT NULL AND deleted_at IS NULL
+            LIMIT 1
           `;
-			if (rows.length === 0) return null;
-			return rowToConnection(rows[0]);
+			return projRows.length > 0 ? connectionsRowToStored(projRows[0]) : null;
 		},
 		async listConnections(filter) {
 			const sql = getDb();
 			const orgId = tryGetOrgId();
+			const agentId = filter?.agentId ?? null;
+			const platform = filter?.platform ?? null;
 
-			if (filter?.agentId && filter?.platform) {
-				const rows = orgId
-					? await sql`
-              SELECT * FROM agent_connections
-              WHERE organization_id = ${orgId}
-                AND agent_id = ${filter.agentId}
-                AND platform = ${filter.platform}
-              ORDER BY created_at DESC
-            `
-					: await sql`
-              SELECT * FROM agent_connections
-              WHERE agent_id = ${filter.agentId}
-                AND platform = ${filter.platform}
-              ORDER BY created_at DESC
-            `;
-				return rows.map(rowToConnection);
-			}
-			if (filter?.agentId) {
-				const rows = orgId
-					? await sql`
-              SELECT * FROM agent_connections
-              WHERE organization_id = ${orgId} AND agent_id = ${filter.agentId}
-              ORDER BY created_at DESC
-            `
-					: await sql`
-              SELECT * FROM agent_connections
-              WHERE agent_id = ${filter.agentId}
-              ORDER BY created_at DESC
-            `;
-				return rows.map(rowToConnection);
-			}
-			if (filter?.platform) {
-				const rows = orgId
-					? await sql`
-              SELECT * FROM agent_connections
-              WHERE organization_id = ${orgId} AND platform = ${filter.platform}
-              ORDER BY created_at DESC
-            `
-					: await sql`
-              SELECT * FROM agent_connections
-              WHERE platform = ${filter.platform}
-              ORDER BY created_at DESC
-            `;
-				return rows.map(rowToConnection);
-			}
-
-			const rows = orgId
-				? await sql`
-            SELECT * FROM agent_connections
-            WHERE organization_id = ${orgId}
-            ORDER BY created_at DESC
-          `
-				: await sql`
-            SELECT * FROM agent_connections
-            ORDER BY created_at DESC
-          `;
-			return rows.map(rowToConnection);
+			// `connections` is the sole source of truth; `credential_mode IS NOT NULL`
+			// selects chat rows only (data connectors leave it NULL). filter.agentId →
+			// agent_id, filter.platform → connector_key.
+			const projRows = await sql`
+        SELECT * FROM connections
+        WHERE credential_mode IS NOT NULL AND deleted_at IS NULL
+          ${orgId ? sql`AND organization_id = ${orgId}` : sql``}
+          ${agentId ? sql`AND agent_id = ${agentId}` : sql``}
+          ${platform ? sql`AND connector_key = ${platform}` : sql``}
+        ORDER BY created_at DESC
+      `;
+			return projRows.map(connectionsRowToStored);
 		},
 		async saveConnection(connection) {
 			const sql = getDb();
 			const orgId = getOrgId();
-			const configToPersist = { ...connection.config };
-			const existingRows = await sql`
-        SELECT config
-        FROM agent_connections
-        WHERE id = ${connection.id} AND organization_id = ${orgId}
-        LIMIT 1
-      `;
-			const existingConfig =
-				existingRows[0] &&
-				typeof existingRows[0].config === "object" &&
-				existingRows[0].config
-					? (existingRows[0].config as Record<string, any>)
-					: null;
+			const slug = legacyIdToSlug(connection.id);
 
-			// ChatInstanceManager normalizes secret fields into `secret://` refs
-			// before reaching here. The remaining special case is the API surface
-			// that hands back `***last4`-redacted values when a sanitized
-			// connection is round-tripped to an UPDATE — preserve the existing
-			// ref/value so a non-edited secret doesn't overwrite the real one.
-			if (existingConfig) {
-				for (const [key, value] of Object.entries(configToPersist)) {
-					if (!isSecretField(key) || !isRedactedSecretValue(value)) continue;
+			// One transaction so the secret-preserving read, the
+			// `pg_advisory_xact_lock` taken inside upsertChatConnectionProjection,
+			// the one-active-per-tenant demotion, and the upsert are all serialized
+			// together. The advisory lock is TRANSACTION-scoped — calling the writer
+			// on the pool handle would release it after the first statement and
+			// defeat the cross-replica serialization.
+			await sql.begin(async (tx: typeof sql) => {
+				const configToPersist = { ...connection.config };
+				const existingRows = await tx`
+          SELECT config
+          FROM connections
+          WHERE slug = ${slug} AND organization_id = ${orgId}
+          LIMIT 1
+        `;
+				const existingConfig =
+					existingRows[0] &&
+					typeof existingRows[0].config === "object" &&
+					existingRows[0].config
+						? (existingRows[0].config as Record<string, any>)
+						: null;
 
-					const existingValue = existingConfig[key];
-					if (typeof existingValue === "string" && existingValue.length > 0) {
-						configToPersist[key] = existingValue;
+				// ChatInstanceManager normalizes secret fields into `secret://` refs
+				// before reaching here. The remaining special case is the API surface
+				// that hands back `***last4`-redacted values when a sanitized
+				// connection is round-tripped to an UPDATE — preserve the existing
+				// ref/value so a non-edited secret doesn't overwrite the real one.
+				if (existingConfig) {
+					for (const [key, value] of Object.entries(configToPersist)) {
+						if (!isSecretField(key) || !isRedactedSecretValue(value)) continue;
+
+						const existingValue = existingConfig[key];
+						if (typeof existingValue === "string" && existingValue.length > 0) {
+							configToPersist[key] = existingValue;
+						}
 					}
 				}
-			}
 
-			const now = new Date();
-			await sql`
-        INSERT INTO agent_connections (id, organization_id, agent_id, platform, config, settings, metadata, status, error_message, created_at, updated_at)
-        VALUES (
-          ${connection.id}, ${orgId}, ${connection.agentId ?? null}, ${connection.platform},
-          ${sql.json(configToPersist)}, ${sql.json(connection.settings)}, ${sql.json(connection.metadata)},
-          ${connection.status}, ${connection.errorMessage ?? null}, ${now}, ${now}
-        )
-        ON CONFLICT (id) DO UPDATE SET
-          platform = EXCLUDED.platform,
-          config = EXCLUDED.config,
-          settings = EXCLUDED.settings,
-          metadata = EXCLUDED.metadata,
-          status = EXCLUDED.status,
-          error_message = EXCLUDED.error_message,
-          updated_at = ${now}
-      `;
+				// `connections` is the sole source of truth — persist the chat projection.
+				await upsertChatConnectionProjection(
+					tx,
+					(v) => sql.json(v),
+					{ ...connection, config: configToPersist },
+					orgId,
+					"byo",
+				);
+			});
 		},
 		async updateConnection(connectionId, updates) {
 			const existing = await this.getConnection(connectionId);
@@ -460,14 +412,9 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 		async deleteConnection(connectionId) {
 			const sql = getDb();
 			const orgId = tryGetOrgId();
-			if (orgId) {
-				await sql`
-          DELETE FROM agent_connections
-          WHERE id = ${connectionId} AND organization_id = ${orgId}
-        `;
-			} else {
-				await sql`DELETE FROM agent_connections WHERE id = ${connectionId}`;
-			}
+			// `connections` is the sole source of truth — soft-delete (`deleted_at`)
+			// the chat projection (kept for audit; getConnection filters it out).
+			await softDeleteChatConnectionProjection(sql, orgId, connectionId);
 		},
 		async getChannelBinding(platform, channelId, teamId) {
 			const sql = getDb();

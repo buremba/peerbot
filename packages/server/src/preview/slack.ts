@@ -4,6 +4,7 @@ import type { Context } from "hono";
 import { getDb } from "../db/client";
 import { parseJsonBody } from "../gateway/routes/shared/helpers";
 import type { Env } from "../index";
+import { legacyIdToSlug } from "../lobu/stores/connections-projection";
 import { errorMessage } from "../utils/errors";
 import logger from "../utils/logger";
 import { requireOrgUser } from "../utils/require-org-user";
@@ -343,8 +344,10 @@ async function resolvePreviewConnectionOrg(
 	const sql = getDb();
 	const rows = (await sql`
     SELECT organization_id, agent_id
-    FROM agent_connections
-    WHERE id = ${connectionId}
+    FROM connections
+    WHERE slug = ${legacyIdToSlug(connectionId)}
+      AND credential_mode IS NOT NULL
+      AND deleted_at IS NULL
     LIMIT 1
   `) as Array<{ organization_id: string | null; agent_id: string | null }>;
 	const row = rows[0];

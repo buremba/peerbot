@@ -24,6 +24,7 @@ import {
   createPostgresAgentConnectionStore,
 } from './stores/postgres-stores';
 import { orgContext } from './stores/org-context';
+import { legacyIdToSlug } from './stores/connections-projection';
 
 const routes = new Hono<{ Bindings: Env }>();
 
@@ -235,9 +236,11 @@ routes.get('/', async (c) => {
     SELECT c.agent_id,
       count(*)::int as count,
       count(*) FILTER (WHERE c.status = 'active')::int as active_count
-    FROM agent_connections c
-    JOIN agents a ON a.id = c.agent_id
-    WHERE a.organization_id = ${orgId}
+    FROM connections c
+    JOIN agents a ON a.id = c.agent_id AND a.organization_id = c.organization_id
+    WHERE c.organization_id = ${orgId}
+      AND c.credential_mode IS NOT NULL
+      AND c.deleted_at IS NULL
     GROUP BY c.agent_id
   `;
   const countMap = new Map(connCounts.map((r: any) => [r.agent_id, r.count]));
@@ -266,10 +269,12 @@ routes.get('/', async (c) => {
       // a raw `'{telegram,slack}'` string when postgres.js has no array parser for
       // the element OID, which then blows up `.map` in the UI.
       sql`
-        SELECT c.agent_id, array_agg(DISTINCT c.platform::text) as platforms
-        FROM agent_connections c
-        JOIN agents a ON a.id = c.agent_id
-        WHERE a.organization_id = ${orgId}
+        SELECT c.agent_id, array_agg(DISTINCT c.connector_key::text) as platforms
+        FROM connections c
+        JOIN agents a ON a.id = c.agent_id AND a.organization_id = c.organization_id
+        WHERE c.organization_id = ${orgId}
+          AND c.credential_mode IS NOT NULL
+          AND c.deleted_at IS NULL
         GROUP BY c.agent_id
       `,
       // Provider ids per agent, from the agent row's installed_providers list.
@@ -411,8 +416,9 @@ routes.get('/:agentId', async (c) => {
     SELECT
       count(*)::int as connection_count,
       count(*) FILTER (WHERE status = 'active')::int as active_connection_count
-    FROM agent_connections
+    FROM connections
     WHERE agent_id = ${agentId} AND organization_id = ${organizationId}
+      AND credential_mode IS NOT NULL AND deleted_at IS NULL
   `;
   const clientIds = new Set<string>();
   const runtimeClientCounts = await countRuntimeMessagingClientsByAgent(organizationId);
@@ -931,9 +937,10 @@ routes.delete('/:agentId/channel-bindings', async (c) => {
 // ============================================================
 // Platform routes (nested under /:agentId/platforms)
 //
-// Storage internals still live in the `agent_connections` table — the rename
-// is user-facing only. ChatInstanceManager and the connection store keep
-// their existing names because they're used by other (chat-side) callers.
+// Storage lives in the unified `connections` table (chat rows carry a non-null
+// credential_mode); the `platforms` route naming is user-facing only.
+// ChatInstanceManager and the connection store keep their existing names
+// because they're used by other (chat-side) callers.
 // ============================================================
 
 // ── List platforms ───────────────────────────────────────────────────────────
@@ -1147,16 +1154,20 @@ routes.put('/:agentId/platforms/by-stable-id/:stableId', async (c) => {
       const claimNow = new Date();
       const claimOrgId = c.get('organizationId') as string;
       const claimed = await sql`
-        INSERT INTO agent_connections (
-          id, organization_id, agent_id, platform, config, settings, metadata, status, created_at, updated_at
+        INSERT INTO connections (
+          organization_id, connector_key, agent_id, display_name, status,
+          config, credential_mode, slug, visibility, created_at, updated_at
         )
         VALUES (
-          ${stableId}, ${claimOrgId}, ${agentId}, ${platform},
-          ${sql.json({})}, ${sql.json({})}, ${sql.json({})},
-          'stopped', ${claimNow}, ${claimNow}
+          ${claimOrgId}, ${platform}, ${agentId}, ${platform}, 'paused',
+          ${sql.json({ settings: {}, chatMetadata: {} })}, 'byo',
+          ${legacyIdToSlug(stableId)}, 'org', ${claimNow}, ${claimNow}
         )
-        ON CONFLICT (id) DO NOTHING
-        RETURNING id
+        -- Arbiter on the GLOBAL chat-slug uniqueness (connections_chat_slug_unique),
+        -- mirroring the retired ON CONFLICT (agent_connections.id): a re-claim of an
+        -- existing live chat slug is a no-op, and the loser re-reads the row below.
+        ON CONFLICT (slug) WHERE credential_mode IS NOT NULL AND deleted_at IS NULL DO NOTHING
+        RETURNING slug
       `;
 
       if (claimed.length > 0) {

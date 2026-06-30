@@ -31,6 +31,7 @@
  * workspace (channel ids are workspace-scoped, not global).
  */
 import type { DbClient } from "../../db/client.js";
+import { legacyIdToSlug } from "../../lobu/stores/connections-projection.js";
 
 interface BoundChannelRow {
   /** Connection id that owns the post (preview conn for cross-org). */
@@ -51,32 +52,53 @@ export async function resolveBoundChannelRows(
   }
 ): Promise<BoundChannelRow[]> {
   const { organizationId, agentId, connectionId } = opts;
-  const agentFilterA = agentId ? sql`AND ac.agent_id = ${agentId}` : sql``;
+  const slugFilter = connectionId ? legacyIdToSlug(connectionId) : null;
+  // Agent scope is BINDING ownership (`b.agent_id`), NOT the connection's
+  // agent_id — a managed Slack install has agent_id NULL but its bindings still
+  // belong to the agent that linked them, so filtering on the connection would
+  // hide managed-install channels from agent-scoped list/search/audience paths.
+  const agentFilterA = agentId ? sql`AND b.agent_id = ${agentId}` : sql``;
   const agentFilterB = agentId ? sql`AND b.agent_id = ${agentId}` : sql``;
-  const ownAgentFilter = agentId ? sql`AND own.agent_id = ${agentId}` : sql``;
-  const connFilterA = connectionId ? sql`AND ac.id = ${connectionId}` : sql``;
-  const connFilterB = connectionId ? sql`AND pc.id = ${connectionId}` : sql``;
+  const ownAgentFilter = agentId ? sql`AND ob.agent_id = ${agentId}` : sql``;
+  const connFilterA = slugFilter ? sql`AND ac.slug = ${slugFilter}` : sql``;
+  const connFilterB = slugFilter ? sql`AND pc.slug = ${slugFilter}` : sql``;
 
+  // `connections` keys chat rows by `slug` (`agentconn-<id>` for BYO,
+  // `slackinst-<id>` verbatim for managed). Callers expect the runtime
+  // connection id, so strip the BYO namespace back off in SQL (mirror of
+  // `slugToLegacyId`). Folded columns: platform → `connector_key`,
+  // settings/metadata → `config.{settings,chatMetadata}`, teamId →
+  // `external_tenant_id`. Chat rows carry `credential_mode IS NOT NULL`.
   return (await sql`
     SELECT id, platform, channel_id, team_id, created_at FROM (
-      -- (A) the org's own connections, scoped to (org, agent, platform).
-      -- KNOWN LIMITATION: not scoped by workspace/team. An agent with TWO Slack
-      -- connections (two workspaces) cross-joins a channel onto both, so
-      -- list_conversations can surface a duplicate handle and a post may route
-      -- via the wrong workspace. A correct fix needs binding.team_id and
-      -- connection.metadata->>'teamId' to be reliably co-populated, which they
-      -- are NOT today (bindings carry a team id, connections often don't) — so a
-      -- naive team-match join drops legitimate single-workspace bindings. Tracked
-      -- as a follow-up (team_id data-model alignment), not fixed here. Single-
-      -- workspace agents and non-Slack platforms are unaffected.
-      SELECT ac.id, ac.platform, b.channel_id, b.team_id, b.created_at
-      FROM agent_connections ac
+      -- (A) the org's own connections. A binding matches its serving connection
+      -- by the unified connection_id link (the source of truth — populated for
+      -- every binding by the connections-unify backfill/re-sync) when set, and
+      -- falls back to the legacy (org, agent, platform) tuple only when the
+      -- binding is not yet linked. The connection_id path is what lets MANAGED
+      -- Slack OAuth installs (slackinst- slug, agent_id NULL) resolve their
+      -- channels at all — the tuple join never matched a NULL agent_id.
+      -- KNOWN LIMITATION (tuple fallback only): an agent with TWO Slack
+      -- connections cross-joins a channel onto both via the tuple; linked
+      -- bindings route precisely by connection_id, so this only affects
+      -- not-yet-linked bindings.
+      SELECT
+        CASE WHEN ac.slug LIKE 'agentconn-%'
+          THEN substring(ac.slug from 11) ELSE ac.slug END AS id,
+        ac.connector_key AS platform, b.channel_id, b.team_id, b.created_at
+      FROM connections ac
       JOIN agent_channel_bindings b
-        ON b.organization_id = ac.organization_id
-       AND b.agent_id = ac.agent_id
-       AND b.platform = ac.platform
+        ON (
+             b.connection_id = ac.id
+             OR (b.connection_id IS NULL
+                 AND b.organization_id = ac.organization_id
+                 AND b.agent_id = ac.agent_id
+                 AND b.platform = ac.connector_key)
+           )
       WHERE ac.organization_id = ${organizationId}
         AND ac.status = 'active'
+        AND ac.credential_mode IS NOT NULL
+        AND ac.deleted_at IS NULL
         ${agentFilterA}
         ${connFilterA}
 
@@ -84,27 +106,38 @@ export async function resolveBoundChannelRows(
 
       -- (B) hosted-preview cross-org: this org's (agent's) bindings via the
       -- shared preview connection. NO agent_id join on the preview conn; gated
-      -- to previewMode + no metadata.teamId so a normal bot is never borrowed.
-      SELECT pc.id, pc.platform, b.channel_id, b.team_id, b.created_at
+      -- to previewMode + no teamId so a normal bot is never borrowed.
+      SELECT
+        CASE WHEN pc.slug LIKE 'agentconn-%'
+          THEN substring(pc.slug from 11) ELSE pc.slug END AS id,
+        pc.connector_key AS platform, b.channel_id, b.team_id, b.created_at
       FROM agent_channel_bindings b
-      JOIN agent_connections pc
-        ON pc.platform = b.platform
+      JOIN connections pc
+        ON pc.connector_key = b.platform
        AND pc.status = 'active'
-       AND pc.settings->'previewMode' = 'true'::jsonb
-       AND (pc.metadata->>'teamId') IS NULL
+       AND pc.credential_mode IS NOT NULL
+       AND pc.deleted_at IS NULL
+       AND pc.config->'settings'->'previewMode' = 'true'::jsonb
+       AND COALESCE(pc.external_tenant_id, pc.config->'chatMetadata'->>'teamId') IS NULL
       WHERE b.organization_id = ${organizationId}
         ${agentFilterB}
         ${connFilterB}
         -- Skip channels the org/agent already owns via branch A.
         AND NOT EXISTS (
           SELECT 1
-          FROM agent_connections own
+          FROM connections own
           JOIN agent_channel_bindings ob
-            ON ob.organization_id = own.organization_id
-           AND ob.agent_id = own.agent_id
-           AND ob.platform = own.platform
+            ON (
+                 ob.connection_id = own.id
+                 OR (ob.connection_id IS NULL
+                     AND ob.organization_id = own.organization_id
+                     AND ob.agent_id = own.agent_id
+                     AND ob.platform = own.connector_key)
+               )
           WHERE own.organization_id = ${organizationId}
             AND own.status = 'active'
+            AND own.credential_mode IS NOT NULL
+            AND own.deleted_at IS NULL
             ${ownAgentFilter}
             AND ob.platform = b.platform
             AND ob.channel_id = b.channel_id

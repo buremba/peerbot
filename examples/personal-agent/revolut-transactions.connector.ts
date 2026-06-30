@@ -528,16 +528,22 @@ const pageBatchExpr = (internalPocketId: string): string => {
   const pocket = ${pocket};
   const base = "/api/retail/user/current/transactions/last";
   const rows = [];
+  // Retry transient 5xx / network errors with exponential backoff so a brief
+  // rate-limit burst doesn't abort the whole crawl mid-history (which would
+  // silently stop a backfill partway and report "success"). Non-5xx errors
+  // (401/404) fail fast.
   const fetchPage = async (url) => {
-    for (let attempt = 0; attempt < 2; attempt++) {
+    let lastErr = "retry_exhausted";
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (attempt > 0) await new Promise(x => setTimeout(x, 400 * attempt * attempt));
       let r;
       try { r = await fetch(url, { credentials: "include", headers: h }); }
-      catch (e) { return { err: "neterr" }; }
-      if (r.status >= 500 && attempt === 0) { await new Promise(x => setTimeout(x, 700)); continue; }
+      catch (e) { lastErr = "neterr"; continue; }
+      if (r.status >= 500) { lastErr = "http_" + r.status; continue; }
       if (!r.ok) return { err: "http_" + r.status };
       try { return { page: await r.json() }; } catch (e) { return { err: "parseerr" }; }
     }
-    return { err: "retry_exhausted" };
+    return { err: lastErr };
   };
   for (let k = 0; k < 4; k++) {
     const url = base + "?count=200"
@@ -584,18 +590,20 @@ async function crawlFetchPaging(
 ): Promise<{ items: RevolutTransaction[]; apiCallCount: number }> {
   const allowed = REVOLUT_ALLOWED_ORIGINS;
   const PAGE_BATCH_EXPR = pageBatchExpr(internalPocketId);
-  // Open / reuse the single persistent window. Focused so the user can complete
-  // the passcode in place if the run lands on the auth wall.
+  // Open / reuse the single persistent window in the BACKGROUND (not focused) so
+  // a routine authed sync never pops the window to the foreground. We only
+  // surface it below if the run actually needs the user to sign in.
   const nav = await dispatcher.dispatch<{ tab_id: number }>("navigate", {
     url: startUrl,
     persistent: true,
-    window_focused: true,
+    window_focused: false,
     wait_for_load: true,
     allowed_origins: allowed,
   });
   const tabId = nav.tab_id;
 
-  // Capture headers / auth-check. Empty result (SSO wall or capture miss) returns
+  // Capture headers / auth-check. On a miss (SSO wall / capture fail), FOCUS the
+  // persistent window so the user can complete the passcode in place, then return
   // no items so the upstream wait-poll fires the sign-in notice and retries.
   const setup = await dispatcher.dispatch<{
     value?: { authed?: boolean; captured?: boolean };
@@ -605,7 +613,18 @@ async function crawlFetchPaging(
     allowed_origins: allowed,
   });
   const s = setup.value ?? {};
-  if (!s.authed || !s.captured) return { items: [], apiCallCount: 0 };
+  if (!s.authed || !s.captured) {
+    await dispatcher
+      .dispatch("navigate", {
+        url: startUrl,
+        persistent: true,
+        window_focused: true,
+        wait_for_load: false,
+        allowed_origins: allowed,
+      })
+      .catch(() => undefined);
+    return { items: [], apiCallCount: 0 };
+  }
 
   // Page the full history in-page, batch by batch, parsing each batch's returned
   // raw rows inline until done. The cross-batch `seen` set is belt-and-braces;
@@ -715,7 +734,7 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     name: "Revolut",
     description:
       "Syncs Revolut account transactions by intercepting the retail API JSON the Revolut web app fetches (no public API), through your paired Owletto Chrome session — no separate login, exact amounts (no DOM parsing).",
-    version: "4.5.0",
+    version: "4.5.1",
     faviconDomain: "app.revolut.com",
     authSchema: {
       // Auth is implicit via the paired Owletto extension's signed-in Chrome —

@@ -1,22 +1,34 @@
--- Seed currency aliases on the Revolut account assets.
+-- Seed currency aliases on the Revolut account asset.
 --
 -- The `asset` entity type declares governed spend metrics whose `transactions`
 -- eventSet resolves each transaction to an account by matching the
 -- transaction's `currency` against the asset's `metadata.aliases`. Aliases are
 -- ENTITY DATA, not schema, so `lobu apply` does not set them — run this once
--- (per environment) after the assets exist.
+-- (per environment) after the asset exists.
 --
--- Idempotent: re-running sets the same aliases. Only ONE asset may own a given
--- currency code, or transactions in that currency would resolve to (and be
--- counted by) more than one account. The savings account is therefore NOT
--- aliased 'GBP'; its flows are TRANSFER and excluded from card spend anyway.
+-- This org runs a single consolidated Revolut account (the per-currency assets
+-- were retired), so that one active asset is aliased with every currency it
+-- transacts in and owns all transactions; `currency` is a metric dimension.
+-- The asset alias array is REPLACED (not appended) so re-running is idempotent.
 --
 -- Scope to the buremba org if running against a shared database.
-UPDATE entities SET metadata = jsonb_set(coalesce(metadata, '{}'::jsonb), '{aliases}', '["GBP"]'::jsonb)
-  WHERE entity_type = 'asset' AND name = 'Revolut GBP';
-UPDATE entities SET metadata = jsonb_set(coalesce(metadata, '{}'::jsonb), '{aliases}', '["USD"]'::jsonb)
-  WHERE entity_type = 'asset' AND name = 'Revolut USD';
-UPDATE entities SET metadata = jsonb_set(coalesce(metadata, '{}'::jsonb), '{aliases}', '["EUR"]'::jsonb)
-  WHERE entity_type = 'asset' AND name = 'Revolut EUR';
-UPDATE entities SET metadata = jsonb_set(coalesce(metadata, '{}'::jsonb), '{aliases}', '["VND"]'::jsonb)
-  WHERE entity_type = 'asset' AND name = 'Revolut VND';
+UPDATE entities AS e
+SET metadata = jsonb_set(
+  coalesce(e.metadata, '{}'::jsonb),
+  '{aliases}',
+  (
+    SELECT coalesce(jsonb_agg(DISTINCT ev.metadata->>'currency'), '[]'::jsonb)
+    FROM events ev
+    WHERE ev.organization_id = e.organization_id
+      AND ev.semantic_type = 'transaction'
+      AND ev.metadata->>'state' = 'COMPLETED'
+      AND ev.metadata->>'transaction_type' = 'CARD_PAYMENT'
+      AND ev.metadata->>'currency' IS NOT NULL
+  )
+)
+WHERE e.entity_type_id = (
+    SELECT id FROM entity_types et
+    WHERE et.organization_id = e.organization_id AND et.slug = 'asset'
+  )
+  AND e.name = 'Revolut'
+  AND e.deleted_at IS NULL;

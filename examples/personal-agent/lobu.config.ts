@@ -47,6 +47,32 @@ const person = defineEntityType({
     company: { type: "string" },
     session_prefix: { type: "string" },
   },
+  // WhatsApp message metric (already live in prod). Declared here so `apply`
+  // preserves it rather than pruning it — a person aliases their `sender_jid`,
+  // and inbound messages on the local WhatsApp connector resolve to them.
+  eventSets: {
+    wa_messages: {
+      by: "alias",
+      field: "metadata->>'sender_jid'",
+      against: "aliases",
+      where: "connector_key='whatsapp.local'",
+    },
+  },
+  measures: {
+    messages_received: {
+      eventSet: "wa_messages",
+      agg: "count",
+      where: "metadata->>'from_me'='false'",
+      description: "WhatsApp messages received from this person.",
+      tier: "silver",
+    },
+  },
+  dimensions: {
+    chat: {
+      expr: "metadata->>'chat_jid'",
+      description: "WhatsApp chat the message belongs to.",
+    },
+  },
 });
 
 const company = defineEntityType({
@@ -165,14 +191,15 @@ const asset = defineEntityType({
       description: "When acquired",
     },
   },
-  // Governed spend metrics over the Revolut transaction stream. Transactions
-  // resolve to a currency-keyed account asset: the eventSet matches each
-  // transaction's `currency` against the asset's aliases, so the "Revolut GBP"
-  // asset (alias `["GBP"]`) owns every GBP transaction, "Revolut USD" the USD
-  // ones, etc. Querying the measure without an entity rolls up across all
-  // currency accounts; because the measure is GBP-normalised, that roll-up is a
-  // valid single GBP total. Aliases are seeded once per asset (they are entity
-  // data, not schema); see examples/personal-agent/seed-asset-aliases.sql.
+  // Governed spend metrics over the Revolut transaction stream. The eventSet
+  // resolves a transaction to an account by matching its `currency` against the
+  // account asset's aliases. The buremba org runs a single consolidated Revolut
+  // account, so that one asset is aliased with EVERY currency it transacts in
+  // (GBP, USD, EUR, …) and owns all transactions; `currency` is then a
+  // dimension, not a separate entity per pocket. Because the measure is
+  // GBP-normalised, the per-account roll-up is a valid single GBP total. Aliases
+  // are entity data, not schema — seed them with
+  // examples/personal-agent/seed-asset-aliases.sql.
   eventSets: {
     transactions: {
       by: "alias",

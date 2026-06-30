@@ -237,8 +237,8 @@ routes.get('/', async (c) => {
       count(*)::int as count,
       count(*) FILTER (WHERE c.status = 'active')::int as active_count
     FROM connections c
-    JOIN agents a ON a.id = c.agent_id
-    WHERE a.organization_id = ${orgId}
+    JOIN agents a ON a.id = c.agent_id AND a.organization_id = c.organization_id
+    WHERE c.organization_id = ${orgId}
       AND c.credential_mode IS NOT NULL
       AND c.deleted_at IS NULL
     GROUP BY c.agent_id
@@ -271,8 +271,8 @@ routes.get('/', async (c) => {
       sql`
         SELECT c.agent_id, array_agg(DISTINCT c.connector_key::text) as platforms
         FROM connections c
-        JOIN agents a ON a.id = c.agent_id
-        WHERE a.organization_id = ${orgId}
+        JOIN agents a ON a.id = c.agent_id AND a.organization_id = c.organization_id
+        WHERE c.organization_id = ${orgId}
           AND c.credential_mode IS NOT NULL
           AND c.deleted_at IS NULL
         GROUP BY c.agent_id

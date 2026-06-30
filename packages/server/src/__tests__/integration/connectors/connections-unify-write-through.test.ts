@@ -1,20 +1,17 @@
 /**
- * Connections-unify Stage 2a — dual-write-through + read cutover.
+ * Connections-unify — `connections` is the sole source of truth for chat.
  *
- * Stage 1 backfilled a one-time `connections` projection. Stage 2a repoints the
- * chat runtime to READ that projection (preferring it, falling back to the
- * legacy tables on a miss) and keeps it live by WRITING through every chat write
- * to BOTH the legacy table and the `connections` row, in one transaction.
- *
- * These tests drive the real Postgres `AgentConnectionStore` (BYO) and the Slack
- * install path (managed) against `lobu_test`, proving:
- *   1. saveConnection writes both sources; getConnection reads the projection
- *      (id preserved, config un-folded, tenant lifted, status mapped);
- *   2. updateConnection edits are reflected on read AND bump connections.updated_at,
- *      with both sources holding the SAME post-write state (no divergence);
- *   3. a stop write maps to paused→stopped; delete soft-deletes the projection;
- *   4. listConnections prefers the projection and unions un-projected legacy rows;
- *   5. one-active-per-tenant: a second active BYO slack save demotes the first;
+ * The legacy `agent_connections` table is gone; the store reads AND writes the
+ * unified `connections` table exclusively (folding adapter config + settings +
+ * metadata into `config`, lifting the tenant into `external_tenant_id`, keying by
+ * `slug`). These tests drive the real Postgres `AgentConnectionStore` (BYO) and
+ * the Slack install path (managed) against `lobu_test`, proving:
+ *   1. saveConnection writes the projection; getConnection reads it back (id
+ *      preserved, config un-folded, tenant lifted, status mapped);
+ *   2. updateConnection edits are reflected on read AND bump connections.updated_at;
+ *   3. a stop write maps to paused→stopped on read; delete soft-deletes the row;
+ *   4. listConnections returns the saved connections;
+ *   5. one-active-per-tenant: a second active slack save demotes the first;
  *   6. the managed Slack install path projects a credential_mode=managed row that
  *      getConnection resolves by its slackinst- id.
  */
@@ -64,7 +61,7 @@ async function projBySlug(orgId: string, slug: string): Promise<ProjRow | null> 
 	return rows[0] ?? null;
 }
 
-describe("connections-unify Stage 2a write-through + read cutover", () => {
+describe("connections-unify single-table store (chat)", () => {
 	let orgId: string;
 	let agentId: string;
 
@@ -78,11 +75,10 @@ describe("connections-unify Stage 2a write-through + read cutover", () => {
 	afterAll(async () => {
 		const sql = getDb();
 		await sql`DELETE FROM connections WHERE organization_id = ${orgId}`;
-		await sql`DELETE FROM agent_connections WHERE organization_id = ${orgId}`;
 		await sql`DELETE FROM app_installations WHERE organization_id = ${orgId}`;
 	});
 
-	it("saveConnection writes both sources; read resolves from the projection", async () => {
+	it("saveConnection writes the connections row; read resolves it", async () => {
 		await withOrg(orgId, () =>
 			store.saveConnection({
 				id: "wt-slack-1",
@@ -109,12 +105,6 @@ describe("connections-unify Stage 2a write-through + read cutover", () => {
 			(proj?.config?.chatMetadata as Record<string, unknown>)?.teamId,
 		).toBe("TW1");
 
-		// Legacy row also written (durable source).
-		const [legacy] = (await getDb()`
-			SELECT status FROM agent_connections WHERE id = 'wt-slack-1'
-		`) as Array<{ status: string }>;
-		expect(legacy.status).toBe("active");
-
 		// Read resolves from the projection: id PRESERVED (not the bigint PK),
 		// config un-folded, settings/metadata restored, status mapped.
 		const read = await withOrg(orgId, () => store.getConnection("wt-slack-1"));
@@ -126,7 +116,7 @@ describe("connections-unify Stage 2a write-through + read cutover", () => {
 		expect(read?.status).toBe("active");
 	});
 
-	it("updateConnection reflects the edit, bumps connections.updated_at, keeps both sources in sync", async () => {
+	it("updateConnection reflects the edit and bumps connections.updated_at", async () => {
 		const before = await projBySlug(orgId, "agentconn-wt-slack-1");
 		await new Promise((r) => setTimeout(r, 10));
 
@@ -147,13 +137,7 @@ describe("connections-unify Stage 2a write-through + read cutover", () => {
 		expect(new Date(after!.updated_at).getTime()).toBeGreaterThan(
 			new Date(before!.updated_at).getTime(),
 		);
-
-		// No divergence: both sources hold the same post-write token.
 		expect(after?.config?.botToken).toBe("secret://wt-1-rotated");
-		const [legacy] = (await getDb()`
-			SELECT config FROM agent_connections WHERE id = 'wt-slack-1'
-		`) as Array<{ config: Record<string, any> }>;
-		expect(legacy.config.botToken).toBe("secret://wt-1-rotated");
 	});
 
 	it("a stop write maps paused→stopped on read", async () => {
@@ -166,37 +150,31 @@ describe("connections-unify Stage 2a write-through + read cutover", () => {
 		expect(read?.status).toBe("stopped"); // mapped back for the runtime
 	});
 
-	it("falls back to legacy agent_connections when no projection exists", async () => {
-		// Seed a legacy-only row (no projection) — simulates a pre-deploy row.
-		await getDb()`
-			INSERT INTO agent_connections (id, organization_id, agent_id, platform, config, settings, metadata, status, created_at, updated_at)
-			VALUES ('wt-legacy-only', ${orgId}, ${agentId}, 'telegram',
-			        ${getDb().json({ platform: "telegram", botToken: "secret://leg" })},
-			        ${getDb().json({ allowGroups: true })}, ${getDb().json({})},
-			        'active', now(), now())
-		`;
-		const read = await withOrg(orgId, () =>
-			store.getConnection("wt-legacy-only"),
+	it("listConnections returns the saved connections", async () => {
+		// A second connection (telegram, tenantless) saved through the store.
+		await withOrg(orgId, () =>
+			store.saveConnection({
+				id: "wt-telegram-1",
+				platform: "telegram",
+				agentId,
+				organizationId: orgId,
+				config: { platform: "telegram", botToken: "secret://tg" },
+				settings: { allowGroups: true },
+				metadata: {},
+				status: "active",
+				createdAt: Date.now(),
+				updatedAt: Date.now(),
+			}),
 		);
-		expect(read?.id).toBe("wt-legacy-only");
-		expect(read?.platform).toBe("telegram");
-		expect(read?.status).toBe("active");
 
-		// listConnections unions the un-projected legacy row in (deference by slug).
-		const list = await withOrg(orgId, () =>
-			store.listConnections({ agentId }),
-		);
+		const list = await withOrg(orgId, () => store.listConnections({ agentId }));
 		const ids = list.map((c) => c.id);
-		expect(ids).toContain("wt-legacy-only"); // legacy union
-		expect(ids).toContain("wt-slack-1"); // projection
+		expect(ids).toContain("wt-telegram-1");
+		expect(ids).toContain("wt-slack-1");
 	});
 
-	it("deleteConnection hard-deletes legacy and soft-deletes the projection", async () => {
+	it("deleteConnection soft-deletes the projection", async () => {
 		await withOrg(orgId, () => store.deleteConnection("wt-slack-1"));
-		const [legacy] = (await getDb()`
-			SELECT 1 FROM agent_connections WHERE id = 'wt-slack-1'
-		`) as unknown[];
-		expect(legacy).toBeUndefined();
 		const proj = await projBySlug(orgId, "agentconn-wt-slack-1");
 		expect(proj?.deleted_at).not.toBeNull();
 		const read = await withOrg(orgId, () => store.getConnection("wt-slack-1"));
@@ -205,10 +183,7 @@ describe("connections-unify Stage 2a write-through + read cutover", () => {
 
 	it("one-active-per-tenant: a second active projection write demotes the first sibling", async () => {
 		// Drive the projection writer directly: two DIFFERENT chat connections
-		// (distinct slugs) contending for the same (org, slack, tenant). The legacy
-		// agent_connections table has its own one-slack-per-workspace constraint, so
-		// the cross-source (BYO↔managed) contention this demote resolves is only
-		// reachable at the connections layer — exercise it there.
+		// (distinct slugs) contending for the same (org, slack, tenant).
 		const db = getDb();
 		const writeActive = (id: string) =>
 			db.begin(async (tx: typeof db) =>

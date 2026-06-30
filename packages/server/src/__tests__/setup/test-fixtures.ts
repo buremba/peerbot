@@ -193,6 +193,76 @@ export async function createTestAgent(options: {
 }
 
 // ============================================
+// Chat connection fixtures
+// ============================================
+
+/**
+ * Seed a chat connection directly into the unified `connections` table in the
+ * folded shape the runtime reads (mirror of `upsertChatConnectionProjection` +
+ * the Stage-1 backfill). Replaces the legacy `INSERT INTO agent_connections`
+ * fixture now that `connections` is the sole source of truth.
+ *
+ * `id` is the runtime connection id; the slug is derived the same way the
+ * projection does (`slackinst-` ids pass through, everything else gets the
+ * `agentconn-` namespace). `settings` and `metadata` fold into
+ * `config.{settings,chatMetadata}`; `metadata.teamId` lifts into the first-class
+ * `external_tenant_id` column. Legacy status maps stopped/* → paused.
+ */
+export async function insertChatConnectionRow(opts: {
+  id: string;
+  organizationId: string;
+  agentId?: string | null;
+  platform: string;
+  status?: 'active' | 'stopped' | 'error' | 'paused';
+  config?: Record<string, unknown>;
+  settings?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  credentialMode?: 'byo' | 'managed';
+}): Promise<void> {
+  const sql = getTestDb();
+  const slug = opts.id.startsWith('slackinst-') ? opts.id : `agentconn-${opts.id}`;
+  const metadata = opts.metadata ?? {};
+  const teamId =
+    typeof metadata.teamId === 'string' && metadata.teamId.length > 0
+      ? metadata.teamId
+      : null;
+  const teamName =
+    typeof metadata.teamName === 'string' && metadata.teamName.length > 0
+      ? metadata.teamName
+      : null;
+  const rawStatus = opts.status ?? 'active';
+  const status =
+    rawStatus === 'active' ? 'active' : rawStatus === 'error' ? 'error' : 'paused';
+  const credentialMode =
+    opts.credentialMode ?? (opts.id.startsWith('slackinst-') ? 'managed' : 'byo');
+  const foldedConfig = {
+    ...(opts.config ?? {}),
+    settings: opts.settings ?? {},
+    chatMetadata: metadata,
+  };
+
+  await sql`
+    INSERT INTO connections (
+      organization_id, connector_key, external_tenant_id, agent_id, display_name,
+      status, config, credential_mode, slug, visibility, created_at, updated_at
+    ) VALUES (
+      ${opts.organizationId}, ${opts.platform}, ${teamId}, ${opts.agentId ?? null},
+      ${teamName ?? opts.platform}, ${status}, ${sql.json(foldedConfig)},
+      ${credentialMode}, ${slug}, 'org', NOW(), NOW()
+    )
+    ON CONFLICT (organization_id, slug) WHERE deleted_at IS NULL DO UPDATE SET
+      connector_key = EXCLUDED.connector_key,
+      external_tenant_id = EXCLUDED.external_tenant_id,
+      agent_id = EXCLUDED.agent_id,
+      display_name = EXCLUDED.display_name,
+      status = EXCLUDED.status,
+      config = EXCLUDED.config,
+      credential_mode = EXCLUDED.credential_mode,
+      updated_at = NOW()
+  `;
+}
+
+// ============================================
 // Entity Fixtures
 // ============================================
 

@@ -455,8 +455,8 @@ describe("updateConnection config rejection (parity with addConnection)", () => 
   });
 });
 
-describe("idx_agent_connections_slack_workspace (install race)", () => {
-  test("a second non-stopped Slack connection for the same (org, teamId) is refused by the DB", async () => {
+describe("connections_active_chat_tenant (one active per workspace)", () => {
+  test("a second active Slack connection for the same (org, teamId) DEMOTES the first", async () => {
     const { orgContext } = await import("../../../lobu/stores/org-context.js");
     const { connectionStore } = await buildReplica();
     await seedAgentRow("agent-slack-uniq", { organizationId: "org-uniq" });
@@ -474,35 +474,46 @@ describe("idx_agent_connections_slack_workspace (install race)", () => {
       updatedAt: Date.now(),
     });
 
+    const get = (id: string) =>
+      orgContext.run({ organizationId: "org-uniq" }, () =>
+        connectionStore.getConnection(id),
+      );
+
     await orgContext.run({ organizationId: "org-uniq" }, async () => {
       await connectionStore.saveConnection(row("conn-uniq-1"));
     });
 
-    let failed: unknown = null;
+    // Activating a second connection for the SAME workspace is no longer
+    // refused: the projection writer takes the one-active-per-tenant slot and
+    // demotes the prior active sibling to 'paused' (→ 'stopped' on read), the
+    // same way the Slack app-installation store does. The partial unique index
+    // `connections_active_chat_tenant` is never contended because the demote
+    // runs first in the same transaction.
     await orgContext.run({ organizationId: "org-uniq" }, async () => {
-      try {
-        await connectionStore.saveConnection(row("conn-uniq-2"));
-      } catch (error) {
-        failed = error;
-      }
+      await connectionStore.saveConnection(row("conn-uniq-2"));
     });
-    expect(String(failed)).toContain("idx_agent_connections_slack_workspace");
+    expect((await get("conn-uniq-1"))?.status).toBe("stopped");
+    expect((await get("conn-uniq-2"))?.status).toBe("active");
 
-    // A stopped duplicate is allowed (history rows demoted by the migration).
+    // A stopped duplicate doesn't contend for the slot at all.
     await orgContext.run({ organizationId: "org-uniq" }, async () => {
       await connectionStore.saveConnection({
         ...row("conn-uniq-3"),
         status: "stopped" as const,
       });
     });
+    expect((await get("conn-uniq-2"))?.status).toBe("active");
+    expect((await get("conn-uniq-3"))?.status).toBe("stopped");
 
-    // A different workspace in the same org is allowed.
+    // A different workspace in the same org keeps its own active slot.
     await orgContext.run({ organizationId: "org-uniq" }, async () => {
       await connectionStore.saveConnection({
         ...row("conn-uniq-4"),
         metadata: { teamId: "T0OTHER" },
       });
     });
+    expect((await get("conn-uniq-2"))?.status).toBe("active");
+    expect((await get("conn-uniq-4"))?.status).toBe("active");
   });
 });
 

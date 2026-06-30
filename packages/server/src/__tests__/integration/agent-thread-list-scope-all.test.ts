@@ -22,6 +22,7 @@ import {
 	createTestAgent,
 	createTestOrganization,
 	createTestUser,
+	insertChatConnectionRow,
 } from "../setup/test-fixtures";
 
 const AGENT = "thread-list-scope-all-agent";
@@ -92,9 +93,13 @@ describe("listAgentThreads scope=all", () => {
 		// The agent is bound to channel C123 (per-agent fence) — so its transcript
 		// is listable; CSECRET has no binding and must never surface.
 		const connId = `conn_${WATCHER_ID}`;
-		await sql`
-      INSERT INTO agent_connections (id, organization_id, agent_id, platform, status)
-      VALUES (${connId}, ${org}, ${AGENT}, 'slack', 'active')`;
+		await insertChatConnectionRow({
+			id: connId,
+			organizationId: org,
+			agentId: AGENT,
+			platform: "slack",
+			status: "active",
+		});
 		await sql`
       INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id)
       VALUES (${org}, ${AGENT}, 'slack', 'slack:C123', 'T1')`;

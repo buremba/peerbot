@@ -25,6 +25,7 @@ import {
   createTestEntity,
   createTestOrganization,
   createTestUser,
+  insertChatConnectionRow,
 } from '../../setup/test-fixtures';
 
 const TEAM = 'T01ACME';
@@ -112,11 +113,13 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     `;
 
     // The bot connection + bindings to BOTH channels.
-    const sql = getTestDb();
-    await sql`
-      INSERT INTO agent_connections (id, agent_id, platform, organization_id, status)
-      VALUES (${CONN}, ${agent.agentId}, 'slack', ${org.id}, 'active')
-    `;
+    await insertChatConnectionRow({
+      id: CONN,
+      agentId: agent.agentId,
+      platform: 'slack',
+      organizationId: org.id,
+      status: 'active',
+    });
     await bindChannel({
       orgId: org.id,
       agentId: agent.agentId,
@@ -279,7 +282,12 @@ describe('slack channel visibility gate (e2e via search_memory)', () => {
     const { org, agent } = await setupWorkspace();
     const sql = getTestDb();
     // CONN is the Acme (T01ACME) workspace bot.
-    await sql`UPDATE agent_connections SET metadata = ${sql.json({ teamId: TEAM })} WHERE id = ${CONN}`;
+    await sql`
+      UPDATE connections
+      SET external_tenant_id = ${TEAM},
+          config = jsonb_set(config, '{chatMetadata,teamId}', to_jsonb(${TEAM}::text))
+      WHERE slug = ${`agentconn-${CONN}`} AND organization_id = ${org.id}
+    `;
     // A binding to a channel in a DIFFERENT workspace (the same agent's second
     // Slack connection) must NOT be synced under CONN — otherwise CONN would
     // fetch it with the wrong token and fail closed, or stamp it under itself.

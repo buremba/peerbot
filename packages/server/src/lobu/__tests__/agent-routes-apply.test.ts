@@ -254,9 +254,10 @@ describe('PUT /agents/:agentId/platforms/by-stable-id/:stableId', () => {
     const { getDb } = await import('../../db/client.js');
     const sql = getDb();
     const rows = await sql`
-      SELECT id, agent_id, platform
-      FROM agent_connections
-      WHERE id = 'host-agent-telegram-prod'
+      SELECT slug, agent_id, connector_key AS platform
+      FROM connections
+      WHERE slug = 'agentconn-host-agent-telegram-prod'
+        AND deleted_at IS NULL
     `;
     expect(rows.length).toBe(1);
     expect(rows[0].agent_id).toBe('host-agent');
@@ -289,7 +290,7 @@ describe('PUT /agents/:agentId/platforms/by-stable-id/:stableId', () => {
     const { getDb } = await import('../../db/client.js');
     const sql = getDb();
     const before = await sql`
-      SELECT updated_at FROM agent_connections WHERE id = ${stableId}
+      SELECT updated_at FROM connections WHERE slug = ${`agentconn-${stableId}`}
     `;
     const beforeUpdatedAt = before[0].updated_at;
 
@@ -310,7 +311,7 @@ describe('PUT /agents/:agentId/platforms/by-stable-id/:stableId', () => {
     expect(body.platform?.id).toBe(stableId);
 
     const after = await sql`
-      SELECT updated_at FROM agent_connections WHERE id = ${stableId}
+      SELECT updated_at FROM connections WHERE slug = ${`agentconn-${stableId}`}
     `;
     expect(after[0].updated_at?.getTime?.() ?? after[0].updated_at).toBe(
       beforeUpdatedAt?.getTime?.() ?? beforeUpdatedAt
@@ -544,7 +545,8 @@ describe('concurrent-apply race fixes', () => {
     const { getDb } = await import('../../db/client.js');
     const sql = getDb();
     const rows = await sql`
-      SELECT id, agent_id, platform FROM agent_connections WHERE id = ${stableId}
+      SELECT agent_id, connector_key AS platform FROM connections
+      WHERE slug = ${`agentconn-${stableId}`} AND deleted_at IS NULL
     `;
     expect(rows.length).toBe(1);
     expect(rows[0].agent_id).toBe('race-host');
@@ -786,22 +788,26 @@ describe('residual-race fixes (PR-466 follow-up)', () => {
           const { getDb } = await import('../../db/client.js');
           const sql = getDb();
           const rows = await sql`
-            SELECT * FROM agent_connections WHERE id = ${stableId}
+            SELECT * FROM connections WHERE slug = ${`agentconn-${stableId}`}
           `;
           const row = rows[0] ?? {};
+          // `connections` folds settings/metadata into `config`.
+          const storedConfig = (row.config ?? {}) as Record<string, unknown>;
+          const { settings: storedSettings, chatMetadata: storedMetadata, ...adapterConfig } =
+            storedConfig;
           const updatedConfig =
             ((updates as { config?: Record<string, unknown> }).config ??
-              row.config) ?? {};
+              adapterConfig) ?? {};
           const updatedSettings =
             ((updates as { settings?: Record<string, unknown> }).settings ??
-              row.settings) ?? {};
+              storedSettings) ?? {};
           return {
             id: stableId,
-            platform: row.platform ?? 'telegram',
+            platform: row.connector_key ?? 'telegram',
             agentId: row.agent_id ?? 'mgr-host',
             config: updatedConfig,
             settings: updatedSettings,
-            metadata: row.metadata ?? {},
+            metadata: (storedMetadata as Record<string, unknown>) ?? {},
             status: 'active' as const,
             createdAt:
               row.created_at instanceof Date
@@ -840,7 +846,8 @@ describe('residual-race fixes (PR-466 follow-up)', () => {
       const { getDb } = await import('../../db/client.js');
       const sql = getDb();
       const rows = await sql`
-        SELECT id FROM agent_connections WHERE id = ${stableId}
+        SELECT slug FROM connections WHERE slug = ${`agentconn-${stableId}`}
+          AND deleted_at IS NULL
       `;
       expect(rows.length).toBe(1);
     }

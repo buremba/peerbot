@@ -15,6 +15,7 @@ import {
   createTestAgent,
   createTestOrganization,
   createTestUser,
+  insertChatConnectionRow,
 } from '../../__tests__/setup/test-fixtures';
 import { initWorkspaceProvider } from '../../workspace';
 import { search } from '../search';
@@ -27,10 +28,13 @@ async function bindChannelWithMessages(opts: {
   messages: string[];
 }): Promise<void> {
   const sql = getTestDb();
-  await sql`
-    INSERT INTO agent_connections (id, agent_id, platform, organization_id, status)
-    VALUES (${opts.connectionId}, ${opts.agentId}, 'slack', ${opts.organizationId}, 'active')
-  `;
+  await insertChatConnectionRow({
+    id: opts.connectionId,
+    agentId: opts.agentId,
+    platform: 'slack',
+    organizationId: opts.organizationId,
+    status: 'active',
+  });
   await sql`
     INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id)
     VALUES (${opts.organizationId}, ${opts.agentId}, 'slack', ${opts.channelId})

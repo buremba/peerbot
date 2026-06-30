@@ -101,10 +101,16 @@ async function ensureTelegramWebhookSecret(
   // the first writer generates and the rest read its ref. Returns the
   // effective `secret://` ref, or null when there is no stored row to lock.
   const slug = legacyIdToSlug(connection.id);
+  // `connections` is unique per (organization_id, slug) — scope BOTH the lock
+  // and the write to this connection's org so a slug shared across orgs can
+  // never share or overwrite another tenant's secretToken. A missing org (an
+  // unpersisted in-memory connection) matches no row and falls to the
+  // persist-then-reread path below.
+  const orgId = connection.organizationId ?? null;
   const tokenRef = await getDb().begin(async (tx) => {
     const rows = await tx<{ config: Record<string, unknown> | null }>`
       SELECT config FROM connections
-      WHERE slug = ${slug}
+      WHERE slug = ${slug} AND organization_id = ${orgId} AND deleted_at IS NULL
       FOR UPDATE
     `;
     const row = rows[0];
@@ -129,7 +135,7 @@ async function ensureTelegramWebhookSecret(
         SET config = COALESCE(config, '{}'::jsonb)
                      || jsonb_build_object('secretToken', ${ref}::text),
             updated_at = now()
-        WHERE slug = ${slug}
+        WHERE slug = ${slug} AND organization_id = ${orgId} AND deleted_at IS NULL
       `;
       generated = true;
     }

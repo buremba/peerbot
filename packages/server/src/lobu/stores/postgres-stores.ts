@@ -349,45 +349,54 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 		async saveConnection(connection) {
 			const sql = getDb();
 			const orgId = getOrgId();
-			const configToPersist = { ...connection.config };
 			const slug = legacyIdToSlug(connection.id);
-			const existingRows = await sql`
-        SELECT config
-        FROM connections
-        WHERE slug = ${slug} AND organization_id = ${orgId}
-        LIMIT 1
-      `;
-			const existingConfig =
-				existingRows[0] &&
-				typeof existingRows[0].config === "object" &&
-				existingRows[0].config
-					? (existingRows[0].config as Record<string, any>)
-					: null;
 
-			// ChatInstanceManager normalizes secret fields into `secret://` refs
-			// before reaching here. The remaining special case is the API surface
-			// that hands back `***last4`-redacted values when a sanitized
-			// connection is round-tripped to an UPDATE — preserve the existing
-			// ref/value so a non-edited secret doesn't overwrite the real one.
-			if (existingConfig) {
-				for (const [key, value] of Object.entries(configToPersist)) {
-					if (!isSecretField(key) || !isRedactedSecretValue(value)) continue;
+			// One transaction so the secret-preserving read, the
+			// `pg_advisory_xact_lock` taken inside upsertChatConnectionProjection,
+			// the one-active-per-tenant demotion, and the upsert are all serialized
+			// together. The advisory lock is TRANSACTION-scoped — calling the writer
+			// on the pool handle would release it after the first statement and
+			// defeat the cross-replica serialization.
+			await sql.begin(async (tx: typeof sql) => {
+				const configToPersist = { ...connection.config };
+				const existingRows = await tx`
+          SELECT config
+          FROM connections
+          WHERE slug = ${slug} AND organization_id = ${orgId}
+          LIMIT 1
+        `;
+				const existingConfig =
+					existingRows[0] &&
+					typeof existingRows[0].config === "object" &&
+					existingRows[0].config
+						? (existingRows[0].config as Record<string, any>)
+						: null;
 
-					const existingValue = existingConfig[key];
-					if (typeof existingValue === "string" && existingValue.length > 0) {
-						configToPersist[key] = existingValue;
+				// ChatInstanceManager normalizes secret fields into `secret://` refs
+				// before reaching here. The remaining special case is the API surface
+				// that hands back `***last4`-redacted values when a sanitized
+				// connection is round-tripped to an UPDATE — preserve the existing
+				// ref/value so a non-edited secret doesn't overwrite the real one.
+				if (existingConfig) {
+					for (const [key, value] of Object.entries(configToPersist)) {
+						if (!isSecretField(key) || !isRedactedSecretValue(value)) continue;
+
+						const existingValue = existingConfig[key];
+						if (typeof existingValue === "string" && existingValue.length > 0) {
+							configToPersist[key] = existingValue;
+						}
 					}
 				}
-			}
 
-			// `connections` is the sole source of truth — persist the chat projection.
-			await upsertChatConnectionProjection(
-				sql,
-				(v) => sql.json(v),
-				{ ...connection, config: configToPersist },
-				orgId,
-				"byo",
-			);
+				// `connections` is the sole source of truth — persist the chat projection.
+				await upsertChatConnectionProjection(
+					tx,
+					(v) => sql.json(v),
+					{ ...connection, config: configToPersist },
+					orgId,
+					"byo",
+				);
+			});
 		},
 		async updateConnection(connectionId, updates) {
 			const existing = await this.getConnection(connectionId);

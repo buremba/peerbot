@@ -29,6 +29,12 @@ export interface WorkerTokenClaimsArgs {
   runtimeProviderId?: string;
   /** The `environments.id` whose vault credential backs the provider above. */
   environmentId?: string;
+  /**
+   * True when the agent has an explicit runtime selection (a provider or
+   * builtin). When true, the env-var fallback below is suppressed so an agent
+   * pinned to builtin doesn't inherit the deployment-wide LOBU_RUNTIME_PROVIDER.
+   */
+  runtimeExplicit?: boolean;
 }
 
 /**
@@ -57,12 +63,14 @@ export function buildWorkerTokenClaims(args: WorkerTokenClaimsArgs): {
   environmentId?: string;
 } {
   // Per-agent environment selection wins; otherwise the deployment-wide
-  // selector covers self-host / org-default. Resolving the env fallback here
-  // keeps both mints in lockstep (the same parity invariant as the routing
-  // claims above).
+  // selector covers self-host / org-default — UNLESS the agent made an explicit
+  // selection (e.g. pinned to builtin), in which case we honor it and skip the
+  // env-var fallback. Resolving here keeps both mints in lockstep.
   const runtimeProviderId =
     args.runtimeProviderId ??
-    (process.env.LOBU_RUNTIME_PROVIDER?.trim() || undefined);
+    (args.runtimeExplicit
+      ? undefined
+      : process.env.LOBU_RUNTIME_PROVIDER?.trim() || undefined);
   return {
     channelId: args.channelId,
     teamId: args.teamId,

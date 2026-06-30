@@ -137,30 +137,50 @@ export async function getEnvironmentProviderKind(
  * back to the deployment-wide `LOBU_RUNTIME_PROVIDER` (or in-process just-bash).
  * One JOIN query on the dispatch path.
  */
+export interface AgentRuntimeSelection {
+  runtimeProviderId?: string;
+  environmentId?: string;
+  /**
+   * True when the agent has an explicit selection (a provider environment OR
+   * the literal `'builtin'`). Explicit selections must NOT fall back to the
+   * deployment-wide `LOBU_RUNTIME_PROVIDER`; an agent pinned to builtin runs
+   * local just-bash even on a self-host that set the env var. `false` means
+   * unset → env-var fallback is allowed.
+   */
+  explicit: boolean;
+}
+
 export async function resolveAgentRuntimeSelection(
   agentId: string | undefined,
   organizationId: string | undefined
-): Promise<{ runtimeProviderId?: string; environmentId?: string }> {
-  if (!agentId || !organizationId) return {};
+): Promise<AgentRuntimeSelection> {
+  if (!agentId || !organizationId) return { explicit: false };
   try {
     const sql = getDb();
     const rows = (await sql`
-      SELECT e.id AS environment_id, e.provider_kind
+      SELECT a.environment_id, e.provider_kind
       FROM agents a
-      JOIN environments e
+      LEFT JOIN environments e
         ON e.id = a.environment_id AND e.organization_id = a.organization_id
       WHERE a.id = ${agentId} AND a.organization_id = ${organizationId}
       LIMIT 1
-    `) as Array<{ environment_id: string; provider_kind: string }>;
+    `) as Array<{ environment_id: string | null; provider_kind: string | null }>;
     const row = rows[0];
-    if (!row) return {};
-    return {
-      runtimeProviderId: row.provider_kind,
-      environmentId: row.environment_id,
-    };
+    // No row, or environment_id NULL → unset; env-var fallback is allowed.
+    if (!row || row.environment_id == null) return { explicit: false };
+    // A provider environment → run there.
+    if (row.provider_kind) {
+      return {
+        runtimeProviderId: row.provider_kind,
+        environmentId: row.environment_id,
+        explicit: true,
+      };
+    }
+    // environment_id set but not a provider row ('builtin', or a deleted env) →
+    // explicit no-remote-runtime: local just-bash, do not fall back to the env var.
+    return { explicit: true };
   } catch {
-    // Fail safe: a resolution error must not block worker spawn or token mint —
-    // fall back to the deployment-wide LOBU_RUNTIME_PROVIDER (or builtin).
-    return {};
+    // Fail safe: a resolution error must not block worker spawn or token mint.
+    return { explicit: false };
   }
 }

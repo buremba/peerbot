@@ -44,12 +44,15 @@ routes.use("*", async (c, next) => {
  * credentialed. Validates every supplied field against the provider's declared
  * credentialFields, and requires all `required` fields be present.
  */
-async function applyCredential(
-  environmentId: string,
+/**
+ * Validate a credential payload against the provider's declared fields WITHOUT
+ * writing anything — so create-with-credential can validate before inserting the
+ * environment row (no orphaned row on a bad credential).
+ */
+function validateCredential(
   providerKind: string,
-  organizationId: string,
   credential: Record<string, unknown>
-): Promise<{ error: string } | null> {
+): { error: string } | null {
   const provider = getGatewayRuntimeProvider(providerKind);
   if (!provider) return { error: `Unknown runtime provider: ${providerKind}` };
 
@@ -66,6 +69,19 @@ async function applyCredential(
       return { error: `Missing required credential field: ${field.key}` };
     }
   }
+  return null;
+}
+
+async function applyCredential(
+  environmentId: string,
+  providerKind: string,
+  organizationId: string,
+  credential: Record<string, unknown>
+): Promise<{ error: string } | null> {
+  const invalid = validateCredential(providerKind, credential);
+  if (invalid) return invalid;
+  const provider = getGatewayRuntimeProvider(providerKind);
+  if (!provider) return { error: `Unknown runtime provider: ${providerKind}` };
 
   for (const field of provider.credentialFields) {
     const value = credential[field.key];
@@ -152,16 +168,32 @@ routes.post("/", async (c) => {
   }
   const scope = body.scope === "private" ? "private" : "org";
 
+  // Validate the credential BEFORE inserting the row, so a bad credential can't
+  // leave an orphaned environment behind.
+  const hasCredential =
+    !!body.credential && typeof body.credential === "object";
+  if (hasCredential) {
+    const invalid = validateCredential(
+      providerKind,
+      body.credential as Record<string, unknown>
+    );
+    if (invalid) return c.json({ error: invalid.error }, 400);
+  }
+
   const env = await createEnvironment(orgId, { name, providerKind, scope });
 
-  if (body.credential && typeof body.credential === "object") {
+  if (hasCredential) {
     const result = await applyCredential(
       env.id,
       providerKind,
       orgId,
       body.credential as Record<string, unknown>
     );
-    if (result) return c.json({ error: result.error }, 400);
+    if (result) {
+      // Vault write failed after the row was created — roll back the row.
+      await deleteEnvironment(env.id, orgId).catch(() => {});
+      return c.json({ error: result.error }, 400);
+    }
     env.connected = true;
   }
 

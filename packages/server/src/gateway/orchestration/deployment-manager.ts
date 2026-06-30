@@ -632,6 +632,7 @@ export function buildDeploymentWorkerToken(args: {
    *  also carries the claim the runtime route reads (parity with the per-run mint). */
   runtimeProviderId?: string;
   environmentId?: string;
+  runtimeExplicit?: boolean;
 }): string {
   return generateWorkerToken(
     args.userId,
@@ -1498,7 +1499,7 @@ export class DeploymentManager {
     // buildWorkerTokenClaims / assembleBaseEnv covers the unpinned case.
     const runtimeSelection = agentId
       ? await resolveAgentRuntimeSelection(agentId, validated.organizationId)
-      : {};
+      : { explicit: false };
 
     const workerToken = buildDeploymentWorkerToken({
       userId,
@@ -1513,6 +1514,7 @@ export class DeploymentManager {
       traceId,
       runtimeProviderId: runtimeSelection.runtimeProviderId,
       environmentId: runtimeSelection.environmentId,
+      runtimeExplicit: runtimeSelection.explicit,
     });
 
     const dispatcherHost = this.getDispatcherHost();
@@ -1537,9 +1539,13 @@ export class DeploymentManager {
 
     // Per-agent runtime selection overrides the deployment-wide
     // LOBU_RUNTIME_PROVIDER (set by assembleBaseEnv) so the worker's bash
-    // backend routes to the agent's chosen provider.
+    // backend routes to the agent's chosen provider. An explicit builtin pin
+    // clears it so the worker runs local just-bash even on a self-host that set
+    // the env var.
     if (runtimeSelection.runtimeProviderId) {
       envVars.LOBU_RUNTIME_PROVIDER = runtimeSelection.runtimeProviderId;
+    } else if (runtimeSelection.explicit) {
+      delete envVars.LOBU_RUNTIME_PROVIDER;
     }
 
     // Include host-provided secret references when requested.

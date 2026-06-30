@@ -143,6 +143,7 @@ export function buildRunJobToken(args: {
    */
   runtimeProviderId?: string;
   environmentId?: string;
+  runtimeExplicit?: boolean;
 }): string | undefined {
   if (args.runId === undefined) return undefined;
   return generateWorkerToken(
@@ -376,6 +377,7 @@ export class MessageConsumer {
         adminTools,
         runtimeProviderId: runtimeSelection.runtimeProviderId,
         environmentId: runtimeSelection.environmentId,
+        runtimeExplicit: runtimeSelection.explicit,
       });
 
       logger.info(

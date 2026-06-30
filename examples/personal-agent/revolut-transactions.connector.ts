@@ -93,6 +93,24 @@ export interface RevolutTransaction {
   fee?: number;
   /** FX rate applied (1 when same-currency). */
   fxRate?: number;
+  /** Original foreign amount (major units) before conversion, from `counterpart`. */
+  counterpartAmount?: number;
+  /** Currency of the original foreign amount, e.g. "THB". */
+  counterpartCurrency?: string;
+  /** Merchant city/locality, when present. */
+  merchantCity?: string;
+  /** Last 4 digits of the card used (card transactions only). */
+  cardLastFour?: string;
+  /** Card label/nickname, e.g. "Amazon" (card transactions only). */
+  cardLabel?: string;
+  /** Internal pocket/account id this transaction belongs to (`account.id`). */
+  accountId?: string;
+  /** True when Revolut classifies the payment as a subscription. */
+  isSubscription?: boolean;
+  /** Reason string for non-completed states, e.g. "merchant_blocked_manually". */
+  reason?: string;
+  /** Free-form Revolut tag, e.g. "shopping". */
+  tag?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,12 +155,19 @@ interface RawRevolutTxn {
   countryCode?: unknown;
   fee?: unknown;
   rate?: unknown;
+  reason?: unknown;
+  tag?: unknown;
+  paymentInitiationType?: unknown;
   merchant?: {
     name?: unknown;
     mcc?: unknown;
     category?: unknown;
     country?: unknown;
+    city?: unknown;
   } | null;
+  counterpart?: { amount?: unknown; currency?: unknown } | null;
+  card?: { lastFour?: unknown; label?: unknown } | null;
+  account?: { id?: unknown; type?: unknown } | null;
 }
 
 /** Read a string field, returning undefined for anything else. */
@@ -228,6 +253,36 @@ export function parseTransactionsResponse(json: unknown): RevolutTransaction[] {
       ...(typeof raw.rate === "number" && Number.isFinite(raw.rate)
         ? { fxRate: raw.rate }
         : {}),
+      // counterpart = original foreign leg (amount in ITS own currency's minor units).
+      ...(raw.counterpart &&
+      typeof raw.counterpart.amount === "number" &&
+      Number.isFinite(raw.counterpart.amount) &&
+      str(raw.counterpart.currency)
+        ? {
+            counterpartAmount: Math.abs(
+              minorToMajor(
+                raw.counterpart.amount,
+                str(raw.counterpart.currency) as string
+              )
+            ),
+            counterpartCurrency: (
+              str(raw.counterpart.currency) as string
+            ).toUpperCase(),
+          }
+        : {}),
+      ...(str(raw.merchant?.city)
+        ? { merchantCity: str(raw.merchant?.city) }
+        : {}),
+      ...(str(raw.card?.lastFour)
+        ? { cardLastFour: str(raw.card?.lastFour) }
+        : {}),
+      ...(str(raw.card?.label) ? { cardLabel: str(raw.card?.label) } : {}),
+      ...(str(raw.account?.id) ? { accountId: str(raw.account?.id) } : {}),
+      ...(raw.paymentInitiationType === "SUBSCRIPTION"
+        ? { isSubscription: true }
+        : {}),
+      ...(str(raw.reason) ? { reason: str(raw.reason) } : {}),
+      ...(str(raw.tag) ? { tag: str(raw.tag) } : {}),
     });
   }
   return out;
@@ -306,6 +361,19 @@ export function transactionToEvent(t: RevolutTransaction): EventEnvelope {
       ...(t.merchantCountry ? { merchant_country: t.merchantCountry } : {}),
       ...(t.fee !== undefined ? { fee: t.fee } : {}),
       ...(t.fxRate !== undefined ? { fx_rate: t.fxRate } : {}),
+      ...(t.counterpartAmount !== undefined
+        ? { counterpart_amount: t.counterpartAmount }
+        : {}),
+      ...(t.counterpartCurrency
+        ? { counterpart_currency: t.counterpartCurrency }
+        : {}),
+      ...(t.merchantCity ? { merchant_city: t.merchantCity } : {}),
+      ...(t.cardLastFour ? { card_last_four: t.cardLastFour } : {}),
+      ...(t.cardLabel ? { card_label: t.cardLabel } : {}),
+      ...(t.accountId ? { account_id: t.accountId } : {}),
+      ...(t.isSubscription ? { is_subscription: true } : {}),
+      ...(t.reason ? { reason: t.reason } : {}),
+      ...(t.tag ? { tag: t.tag } : {}),
     },
   };
 }
@@ -448,20 +516,36 @@ const SETUP_EXPR = `(async () => {
 // the oldest `startedDate`, and returns the new rows. `__lobuDone` flips when a
 // page returns nothing new/older (start of history reached) or on an error.
 // PAGES_PER_BATCH is small so each return stays modest (~125 rows/page).
-const PAGE_BATCH_EXPR = `(async () => {
+// `internalPocketId` scopes paging to one account/pocket (omit for the primary
+// account). A short inter-fetch delay + a single 5xx retry avoid Revolut's
+// rate-limit 500s under back-to-back paging.
+const pageBatchExpr = (internalPocketId: string): string => {
+  const pocket = JSON.stringify(internalPocketId || "");
+  return `(async () => {
   if (!window.__lobuHeaders) return { done: true, rows: [], stop: "no_headers" };
   if (window.__lobuDone) return { done: true, rows: [], stop: window.__lobuStop };
   const h = window.__lobuHeaders;
+  const pocket = ${pocket};
   const base = "/api/retail/user/current/transactions/last";
   const rows = [];
+  const fetchPage = async (url) => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let r;
+      try { r = await fetch(url, { credentials: "include", headers: h }); }
+      catch (e) { return { err: "neterr" }; }
+      if (r.status >= 500 && attempt === 0) { await new Promise(x => setTimeout(x, 700)); continue; }
+      if (!r.ok) return { err: "http_" + r.status };
+      try { return { page: await r.json() }; } catch (e) { return { err: "parseerr" }; }
+    }
+    return { err: "retry_exhausted" };
+  };
   for (let k = 0; k < 4; k++) {
-    const url = base + "?count=200" + (window.__lobuCursor ? ("&to=" + window.__lobuCursor) : "");
-    let r;
-    try { r = await fetch(url, { credentials: "include", headers: h }); }
-    catch (e) { window.__lobuDone = true; window.__lobuStop = "neterr"; break; }
-    if (!r.ok) { window.__lobuDone = true; window.__lobuStop = "http_" + r.status; break; }
-    let page;
-    try { page = await r.json(); } catch (e) { window.__lobuDone = true; window.__lobuStop = "parseerr"; break; }
+    const url = base + "?count=200"
+      + (pocket ? ("&internalPocketId=" + pocket) : "")
+      + (window.__lobuCursor ? ("&to=" + window.__lobuCursor) : "");
+    const res = await fetchPage(url);
+    if (res.err) { window.__lobuDone = true; window.__lobuStop = res.err; break; }
+    const page = res.page;
     if (!Array.isArray(page) || page.length === 0) { window.__lobuDone = true; window.__lobuStop = "empty"; break; }
     let oldest = Infinity; let added = 0;
     for (const t of page) {
@@ -473,9 +557,11 @@ const PAGE_BATCH_EXPR = `(async () => {
     if (!Number.isFinite(oldest) || !(oldest < prevCursor)) { window.__lobuDone = true; window.__lobuStop = "no_progress"; break; }
     window.__lobuCursor = oldest;
     if (added === 0) { window.__lobuDone = true; window.__lobuStop = "no_new"; break; }
+    await new Promise(x => setTimeout(x, 80));
   }
   return { done: window.__lobuDone, rows: rows, stop: window.__lobuStop };
 })()`;
+};
 
 /**
  * Crawl the FULL retail transaction history by replaying the `transactions/last`
@@ -493,9 +579,11 @@ const PAGE_BATCH_EXPR = `(async () => {
 async function crawlFetchPaging(
   dispatcher: ChromeActionDispatcher,
   startUrl: string,
-  maxBatches: number
+  maxBatches: number,
+  internalPocketId: string
 ): Promise<{ items: RevolutTransaction[]; apiCallCount: number }> {
   const allowed = REVOLUT_ALLOWED_ORIGINS;
+  const PAGE_BATCH_EXPR = pageBatchExpr(internalPocketId);
   // Open / reuse the single persistent window. Focused so the user can complete
   // the passcode in place if the run lands on the auth wall.
   const nav = await dispatcher.dispatch<{ tab_id: number }>("navigate", {
@@ -562,6 +650,11 @@ const configSchema = {
       description:
         'If set, keep only transactions in this ISO 4217 currency (e.g. "GBP").',
     },
+    internal_pocket_id: {
+      type: "string",
+      description:
+        "Scope this feed to one account/pocket by its `internalPocketId` (the `id` from the wallet, e.g. the USD or EUR current account). Omit to sync the primary account. Add one feed per pocket to cover every currency account; each keeps its own checkpoint.",
+    },
     max_scrolls: {
       type: "integer",
       minimum: 1,
@@ -604,6 +697,15 @@ const transactionMetadataSchema = {
     merchant_country: { type: "string" },
     fee: { type: "number" },
     fx_rate: { type: "number" },
+    counterpart_amount: { type: "number" },
+    counterpart_currency: { type: "string" },
+    merchant_city: { type: "string" },
+    card_last_four: { type: "string" },
+    card_label: { type: "string" },
+    account_id: { type: "string" },
+    is_subscription: { type: "boolean" },
+    reason: { type: "string" },
+    tag: { type: "string" },
   },
 };
 
@@ -613,7 +715,7 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     name: "Revolut",
     description:
       "Syncs Revolut account transactions by intercepting the retail API JSON the Revolut web app fetches (no public API), through your paired Owletto Chrome session — no separate login, exact amounts (no DOM parsing).",
-    version: "4.4.1",
+    version: "4.5.0",
     faviconDomain: "app.revolut.com",
     authSchema: {
       // Auth is implicit via the paired Owletto extension's signed-in Chrome —
@@ -655,6 +757,14 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
       config.currency_filter.trim()
         ? config.currency_filter.trim().toUpperCase()
         : null;
+    // Scope paging to one account/pocket (its `internalPocketId` from the wallet).
+    // Omit to sync the primary account. Use one feed per pocket to cover every
+    // currency account / savings vault — each keeps its own simple checkpoint.
+    const internalPocketId =
+      typeof config.internal_pocket_id === "string" &&
+      config.internal_pocket_id.trim()
+        ? config.internal_pocket_id.trim()
+        : "";
     // Each "batch" pages up to 8 `?to=` cursor pages (~125 rows each), so the
     // default 20 covers ~20k rows; a deep backfill raises it for full history.
     const maxBatches = Math.max(
@@ -678,7 +788,8 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
 
     // One crawl attempt: capture headers in the persistent signed-in window and
     // page the full history in-page via the `?to=` cursor (see crawlFetchPaging).
-    const runCrawl = () => crawlFetchPaging(dispatcher, startUrl, maxBatches);
+    const runCrawl = () =>
+      crawlFetchPaging(dispatcher, startUrl, maxBatches, internalPocketId);
 
     let result = await runCrawl();
 

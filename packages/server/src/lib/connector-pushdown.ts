@@ -11,21 +11,21 @@ import { executeCompiledConnector } from '@lobu/connector-worker/executor/runtim
 import { compileConnectionRowVisibility } from '../authz/connection-visibility';
 import type { AuthzScope } from '../authz/scope';
 import { getDb } from '../db/client';
-import type { FeedReader } from './feed-reader';
 import { isCloudMode } from '../utils/cloud-mode';
 import { assertConnectorAllowedInCloud } from '../utils/connector-cloud-gate';
 import { resolveConnectorCode } from '../utils/ensure-connector-installed';
 import { resolveExecutionAuth } from '../utils/execution-context';
 
 interface ConnectorQueryParams {
-  organizationId: string;
+  /** The ACL gate — tenant + principal. Its `organizationId`/`principal` drive
+   * the same connection visibility as manage_connections. */
+  scope: AuthzScope;
   /** Connection slug (org-scoped). */
   connectionSlug: string;
   /** Read-only SQL to push down (a derived entity's backing_sql, or a feed query). */
   query: string;
-  /** Caller identity — enforces the same connection visibility as manage_connections. */
-  userId: string | null;
-  /** Owner/admin callers see every connection; members only org-visible or their own. */
+  /** Owner/admin callers see every connection; members only org-visible or their
+   * own. Not part of the gate — AuthzScope has no admin dimension. */
   isAdmin: boolean;
   feedKey?: string;
   config?: Record<string, unknown>;
@@ -47,11 +47,11 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
   const connRows = await sql`
     SELECT id, connector_key, auth_profile_id, app_auth_profile_id
     FROM connections
-    WHERE organization_id = ${p.organizationId}
+    WHERE organization_id = ${p.scope.organizationId}
       AND slug = ${p.connectionSlug}
       AND deleted_at IS NULL
       AND status = 'active'
-      AND (${p.isAdmin} OR visibility = 'org' OR created_by = ${p.userId})
+      AND (${p.isAdmin} OR visibility = 'org' OR created_by = ${p.scope.principal})
     LIMIT 1
   `;
   if (connRows.length === 0) {
@@ -78,7 +78,7 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
   const compiledCode = await resolveConnectorCode(conn.connector_key, rawCode);
 
   const { credentials, connectionCredentials, sessionState } = await resolveExecutionAuth({
-    organizationId: p.organizationId,
+    organizationId: p.scope.organizationId,
     connectionId: conn.id,
     authProfileId: Number(conn.auth_profile_id) || null,
     appAuthProfileId: Number(conn.app_auth_profile_id) || null,
@@ -120,47 +120,6 @@ export async function runConnectorQuery(p: ConnectorQueryParams): Promise<Connec
   }
   return { rows: result.rows, columns: result.columns ?? [], total: result.total };
 }
-
-/**
- * Non-gate inputs to {@link connectorQueryReader.read}. The tenant + principal
- * arrive on the {@link AuthzScope} gate; everything here is the query payload.
- * `isAdmin` stays a ctx input because the AuthzScope shape has no admin
- * dimension yet — translating it into the existing `runConnectorQuery` SQL gate
- * is deliberately behavior-preserving (the SQL visibility clause is unchanged).
- */
-export interface ConnectorQueryCtx {
-  connectionSlug: string;
-  query: string;
-  isAdmin: boolean;
-  feedKey?: string;
-  config?: Record<string, unknown>;
-  limit?: number;
-  offset?: number;
-  sort?: { column: string; order: 'asc' | 'desc' };
-}
-
-/**
- * {@link runConnectorQuery} registered under the {@link FeedReader} contract: the
- * ACL gate is a required, typed argument. The reader translates the gate's
- * `organizationId`/`principal` into the existing `runConnectorQuery` primitives
- * — the SQL visibility gate and behavior are unchanged.
- */
-export const connectorQueryReader: FeedReader<ConnectorQueryCtx, ConnectorQueryResult> = {
-  kind: 'connector-query',
-  read: (gate, ctx) =>
-    runConnectorQuery({
-      organizationId: gate.organizationId,
-      userId: gate.principal,
-      isAdmin: ctx.isAdmin,
-      connectionSlug: ctx.connectionSlug,
-      query: ctx.query,
-      feedKey: ctx.feedKey,
-      config: ctx.config,
-      limit: ctx.limit,
-      offset: ctx.offset,
-      sort: ctx.sort,
-    }),
-};
 
 /** Params for {@link readVirtualFeed}. */
 export interface ReadVirtualFeedParams {

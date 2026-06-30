@@ -9,7 +9,7 @@
 import { type Static, Type } from '@sinclair/typebox';
 import { authzScopeFromToolContext } from '../../authz/scope';
 import { getDb } from '../../db/client';
-import { connectorQueryReader } from '../../lib/connector-pushdown';
+import { runConnectorQuery } from '../../lib/connector-pushdown';
 import { validateAndScopeQuery } from '../../utils/execute-data-sources';
 import logger from '../../utils/logger';
 import { raceAbort } from '../../utils/race-abort';
@@ -238,19 +238,17 @@ export async function querySqlImpl(
     if ('error' in bounds) return errorResult(bounds.error, startTime);
     const { limit, offset } = bounds;
     try {
-      const r = await connectorQueryReader.read(
-        authzScopeFromToolContext({ organizationId: targetOrgId, userId: ctx.userId }),
-        {
-          connectionSlug: args.connection,
-          query: baseSql,
-          isAdmin: callerIsAdmin,
-          limit,
-          offset,
-          sort: args.sort_by
-            ? { column: args.sort_by, order: args.sort_order === 'desc' ? 'desc' : 'asc' }
-            : undefined,
-        }
-      );
+      const r = await runConnectorQuery({
+        scope: authzScopeFromToolContext({ organizationId: targetOrgId, userId: ctx.userId }),
+        isAdmin: callerIsAdmin,
+        connectionSlug: args.connection,
+        query: baseSql,
+        limit,
+        offset,
+        sort: args.sort_by
+          ? { column: args.sort_by, order: args.sort_order === 'desc' ? 'desc' : 'asc' }
+          : undefined,
+      });
       return {
         rows: r.rows,
         columns: r.columns,

@@ -189,7 +189,7 @@ INTEGRATION_EXIT=0
       bun test "$d" || rc=1
     done
     exit $rc );                                                                        ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
-  (cd packages/server && bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
+  (cd packages/server && bun test src/lobu/__tests__ src/scheduled src/workspace/__tests__ src/tools/admin/__tests__); ec=$?; [ $ec -gt $INTEGRATION_EXIT ] && INTEGRATION_EXIT=$ec
 } > "$INTEGRATION_LOG" 2>&1
 set -e
 

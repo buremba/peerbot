@@ -30,6 +30,9 @@ export default defineConfig({
       "src/lobu/__tests__/**",
       "src/scheduled/**/__tests__/**",
       "src/workspace/**/__tests__/**",
+      // src/tools/admin/__tests__ is bun:test (schedule-delivery suites), run via
+      // the same `bun test … src/tools/admin/__tests__` job — keep it off vitest.
+      "src/tools/admin/__tests__/**",
       "**/node_modules/**",
       "**/dist/**",
     ],

@@ -17,6 +17,7 @@
  */
 
 import { getDb } from '../db/client';
+import { runtimeConnectionIdToSlug } from '../lobu/stores/connections-projection';
 import { nextRunAt as nextCronTickAt } from '../utils/cron';
 import logger from '../utils/logger';
 import type { TaskScheduler } from './task-scheduler';
@@ -42,6 +43,84 @@ export const DELIVERABLE_CHAT_PLATFORMS = ['slack', 'telegram'] as const;
 
 export function isDeliverableChatPlatform(platform: string): boolean {
   return (DELIVERABLE_CHAT_PLATFORMS as readonly string[]).includes(platform);
+}
+
+export type DeliveryAuthzDenyReason =
+  | 'connection-missing'
+  | 'platform-changed'
+  | 'connection-inactive'
+  | 'agent-mismatch'
+  | 'channel-unbound';
+
+export type DeliveryAuthzResult =
+  | { authorized: true }
+  | { authorized: false; reason: DeliveryAuthzDenyReason };
+
+/**
+ * Is `agentId` authorized to deliver into the connection/channel named by a
+ * delivery context? Single source of truth shared by the create-time gate
+ * (`manage_schedules`, which maps the deny reason to a user-facing error) and
+ * the fire-time re-check (`scheduled/jobs.ts`, which only needs the boolean).
+ * Both must agree, and a cron can fire long after creation, so the same
+ * validation runs at both points against the live connection + binding rows.
+ */
+export async function validateDeliveryAuthorization(params: {
+  organizationId: string;
+  agentId: string;
+  delivery: ScheduledDeliveryContext;
+}): Promise<DeliveryAuthzResult> {
+  const sql = getDb();
+  const { organizationId, agentId, delivery } = params;
+  const connectionRows = (await sql`
+    SELECT connector_key, agent_id, status
+    FROM connections
+    WHERE organization_id = ${organizationId}
+      AND slug = ${runtimeConnectionIdToSlug(delivery.connectionId)}
+      AND credential_mode IS NOT NULL
+      AND deleted_at IS NULL
+    LIMIT 1
+  `) as unknown as Array<{
+    connector_key: string;
+    agent_id: string | null;
+    status: string;
+  }>;
+  const connection = connectionRows[0];
+  if (!connection) return { authorized: false, reason: 'connection-missing' };
+  if (connection.connector_key !== delivery.platform) {
+    return { authorized: false, reason: 'platform-changed' };
+  }
+  if (connection.status !== 'active') {
+    return { authorized: false, reason: 'connection-inactive' };
+  }
+  if (connection.agent_id) {
+    return connection.agent_id === agentId
+      ? { authorized: true }
+      : { authorized: false, reason: 'agent-mismatch' };
+  }
+
+  const bindingRows = delivery.teamId
+    ? await sql`
+        SELECT agent_id
+        FROM agent_channel_bindings
+        WHERE organization_id = ${organizationId}
+          AND platform = ${delivery.platform}
+          AND channel_id = ${delivery.channelId}
+          AND team_id = ${delivery.teamId}
+        LIMIT 1
+      `
+    : await sql`
+        SELECT agent_id
+        FROM agent_channel_bindings
+        WHERE organization_id = ${organizationId}
+          AND platform = ${delivery.platform}
+          AND channel_id = ${delivery.channelId}
+          AND team_id IS NULL
+        LIMIT 1
+      `;
+  const binding = (bindingRows as unknown as Array<{ agent_id: string }>)[0];
+  return binding?.agent_id === agentId
+    ? { authorized: true }
+    : { authorized: false, reason: 'channel-unbound' };
 }
 
 export interface ScheduledJobRow {

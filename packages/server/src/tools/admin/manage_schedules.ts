@@ -22,6 +22,7 @@ import { type Static, Type } from '@sinclair/typebox';
 import { action, defineActionTool } from './action-tool';
 import {
   createScheduledJob,
+  type DeliveryAuthzDenyReason,
   deleteScheduledJob,
   getScheduledJob,
   isDeliverableChatPlatform,
@@ -29,13 +30,12 @@ import {
   pauseScheduledJob,
   type ScheduledDeliveryContext,
   type ScheduledJobRow,
+  validateDeliveryAuthorization,
 } from '../../scheduled/scheduled-jobs-service';
 import type { ToolContext, ToolSourceContext } from '../registry';
 import logger from '../../utils/logger';
 import { nextRunAt as nextCronTickAt } from '../../utils/cron';
 import { getErrorMessage } from "@lobu/core";
-import { getDb } from '../../db/client';
-import { runtimeConnectionIdToSlug } from '../../lobu/stores/connections-projection';
 
 // ============================================
 // Schema
@@ -247,6 +247,19 @@ function sourceToDeliveryContext(
   };
 }
 
+const DELIVERY_DENY_MESSAGE: Record<DeliveryAuthzDenyReason, string> = {
+  'connection-missing':
+    'Cannot schedule chat delivery: source connection no longer exists.',
+  'platform-changed':
+    'Cannot schedule chat delivery: source connection platform changed.',
+  'connection-inactive':
+    'Cannot schedule chat delivery: source connection is not active.',
+  'agent-mismatch':
+    'Cannot schedule chat delivery for a different agent on this connection.',
+  'channel-unbound':
+    'Cannot schedule chat delivery: channel is not bound to the target agent.',
+};
+
 async function resolveTrustedDeliveryContext(
   payload: Static<typeof CreateAction>['payload'],
   ctx: ToolContext
@@ -256,57 +269,14 @@ async function resolveTrustedDeliveryContext(
   const context = sourceToDeliveryContext(ctx.sourceContext);
   if (!context) return { context: null };
 
-  const sql = getDb();
-  const connectionRows = (await sql`
-    SELECT connector_key, agent_id, status
-    FROM connections
-    WHERE organization_id = ${ctx.organizationId}
-      AND slug = ${runtimeConnectionIdToSlug(context.connectionId)}
-      AND credential_mode IS NOT NULL
-      AND deleted_at IS NULL
-    LIMIT 1
-  `) as unknown as Array<{ connector_key: string; agent_id: string | null; status: string }>;
-  const connection = connectionRows[0];
-  if (!connection) {
-    return { context: null, error: 'Cannot schedule chat delivery: source connection no longer exists.' };
+  const result = await validateDeliveryAuthorization({
+    organizationId: ctx.organizationId,
+    agentId: payload.agent_id,
+    delivery: context,
+  });
+  if (!result.authorized) {
+    return { context: null, error: DELIVERY_DENY_MESSAGE[result.reason] };
   }
-  if (connection.connector_key !== context.platform) {
-    return { context: null, error: 'Cannot schedule chat delivery: source connection platform changed.' };
-  }
-  if (connection.status !== 'active') {
-    return { context: null, error: 'Cannot schedule chat delivery: source connection is not active.' };
-  }
-  if (connection.agent_id) {
-    if (connection.agent_id !== payload.agent_id) {
-      return { context: null, error: 'Cannot schedule chat delivery for a different agent on this connection.' };
-    }
-    return { context };
-  }
-
-  const bindingRows = context.teamId
-    ? await sql`
-        SELECT agent_id
-        FROM agent_channel_bindings
-        WHERE organization_id = ${ctx.organizationId}
-          AND platform = ${context.platform}
-          AND channel_id = ${context.channelId}
-          AND team_id = ${context.teamId}
-        LIMIT 1
-      `
-    : await sql`
-        SELECT agent_id
-        FROM agent_channel_bindings
-        WHERE organization_id = ${ctx.organizationId}
-          AND platform = ${context.platform}
-          AND channel_id = ${context.channelId}
-          AND team_id IS NULL
-        LIMIT 1
-      `;
-  const binding = (bindingRows as unknown as Array<{ agent_id: string }>)[0];
-  if (!binding || binding.agent_id !== payload.agent_id) {
-    return { context: null, error: 'Cannot schedule chat delivery: channel is not bound to the target agent.' };
-  }
-
   return { context };
 }
 

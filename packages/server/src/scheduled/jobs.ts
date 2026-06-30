@@ -21,6 +21,7 @@ import {
   isDeliverableChatPlatform,
   registerScheduledJobsTicker,
   type ScheduledDeliveryContext,
+  validateDeliveryAuthorization,
 } from './scheduled-jobs-service';
 import { TaskScheduler } from './task-scheduler';
 import { triggerEmbedBackfill } from './trigger-embed-backfill';
@@ -32,7 +33,6 @@ import {
   enqueueAgentMessage,
 } from '../gateway/services/agent-threads';
 import { buildMessagePayload } from '../gateway/services/platform-helpers';
-import { runtimeConnectionIdToSlug } from '../lobu/stores/connections-projection';
 
 function asDeliveryContext(value: unknown): ScheduledDeliveryContext | null {
   if (!value || typeof value !== 'object') return null;
@@ -55,50 +55,6 @@ function asDeliveryContext(value: unknown): ScheduledDeliveryContext | null {
   };
 }
 
-async function deliveryContextStillAuthorized(params: {
-  organizationId: string;
-  agentId: string;
-  delivery: ScheduledDeliveryContext;
-}): Promise<boolean> {
-  const sql = getDb();
-  const { organizationId, agentId, delivery } = params;
-  const connectionRows = (await sql`
-    SELECT connector_key, agent_id, status
-    FROM connections
-    WHERE organization_id = ${organizationId}
-      AND slug = ${runtimeConnectionIdToSlug(delivery.connectionId)}
-      AND credential_mode IS NOT NULL
-      AND deleted_at IS NULL
-    LIMIT 1
-  `) as unknown as Array<{ connector_key: string; agent_id: string | null; status: string }>;
-  const connection = connectionRows[0];
-  if (!connection) return false;
-  if (connection.connector_key !== delivery.platform) return false;
-  if (connection.status !== 'active') return false;
-  if (connection.agent_id) return connection.agent_id === agentId;
-
-  const bindingRows = delivery.teamId
-    ? await sql`
-        SELECT agent_id
-        FROM agent_channel_bindings
-        WHERE organization_id = ${organizationId}
-          AND platform = ${delivery.platform}
-          AND channel_id = ${delivery.channelId}
-          AND team_id = ${delivery.teamId}
-        LIMIT 1
-      `
-    : await sql`
-        SELECT agent_id
-        FROM agent_channel_bindings
-        WHERE organization_id = ${organizationId}
-          AND platform = ${delivery.platform}
-          AND channel_id = ${delivery.channelId}
-          AND team_id IS NULL
-        LIMIT 1
-      `;
-  const binding = (bindingRows as unknown as Array<{ agent_id: string }>)[0];
-  return binding?.agent_id === agentId;
-}
 
 /**
  * Construct the TaskScheduler, register every periodic task, start dispatch,
@@ -449,11 +405,13 @@ export async function runWakeAgentTask(
   if (
     delivery &&
     isDeliverableChatPlatform(delivery.platform) &&
-    (await deliveryContextStillAuthorized({
-      organizationId: orgId,
-      agentId: p.agent_id,
-      delivery,
-    }))
+    (
+      await validateDeliveryAuthorization({
+        organizationId: orgId,
+        agentId: p.agent_id,
+        delivery,
+      })
+    ).authorized
   ) {
     await queueProducer.enqueueMessage(
       buildMessagePayload({

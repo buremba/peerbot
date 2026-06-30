@@ -168,10 +168,18 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
     );
   }
 
-  const body = await parseJsonBody<{ platform?: string; label?: string }>(
-    c,
-    'Invalid or missing JSON body'
-  );
+  const body = await parseJsonBody<{
+    platform?: string;
+    label?: string;
+    /**
+     * Optional: the sibling's existing worker_id. When the Mac bridge forwards
+     * the extension's already-stored id we reuse that device identity (re-mint
+     * the bound PAT, keep the same row) instead of minting a fresh one, so
+     * native re-pairs don't churn the device id and accumulate orphaned
+     * `device_workers` rows. See the reuse branch below.
+     */
+    worker_id?: string;
+  }>(c, 'Invalid or missing JSON body');
   if (body instanceof Response) return body;
   const platform = (body.platform ?? '').trim();
   if (!platform) {
@@ -184,6 +192,10 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
     return c.json({ error: `platform '${platform}' is not eligible for child-token mint` }, 400);
   }
   const label = body.label?.toString().trim() || null;
+  // The sibling's previously-stored worker_id, if the Mac bridge forwarded it.
+  // Trimmed; validated against ownership + platform in the reuse branch below,
+  // so a stale/garbage value just falls through to a fresh mint.
+  const requestedWorkerId = (body.worker_id ?? '').trim();
 
   try {
     const sql = getDb();
@@ -197,28 +209,97 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
     const organizationId =
       (c.var.organizationId as string | null | undefined) ?? orgRows[0]?.id ?? null;
 
-    const workerId = crypto.randomUUID();
+    // Identity reuse: when the sibling forwards its existing worker_id AND it
+    // already belongs to this user as a chrome-extension device, keep that
+    // identity stable — re-mint the PAT bound to the same worker_id (revoking
+    // the previous child PAT first) and reuse the existing device_workers row.
+    // This is what stops each Mac-bridge re-pair from minting a fresh uuid and
+    // orphaning the previous row (the source of the duplicate "chrome" entries
+    // on the Devices page). Falls through to a fresh mint for the first-ever
+    // pair, a stale/garbage id, or an id owned by another user/platform — i.e.
+    // any case where reuse would be unsafe or a no-op.
+    let workerId: string;
+    if (requestedWorkerId) {
+      const existing = (await sql`
+        SELECT worker_id FROM device_workers
+        WHERE user_id = ${userId}
+          AND worker_id = ${requestedWorkerId}
+          AND platform = 'chrome-extension'
+        LIMIT 1
+      `) as unknown as Array<{ worker_id: string }>;
+      workerId = existing[0]?.worker_id ?? crypto.randomUUID();
+    } else {
+      workerId = crypto.randomUUID();
+    }
+    const reused = workerId === requestedWorkerId;
+
     const patService = new PersonalAccessTokenService(sql);
-    const created = await patService.create(
-      userId,
-      organizationId,
-      `device:${platform}:${workerId.slice(0, 8)}`,
-      {
-        scope: 'device_worker:run',
-        description: label ?? undefined,
-        workerId,
-      }
-    );
-    // Pre-create the device_workers row with platform set. The next poll
-    // call from the child sees this row, can't change platform (poll's
-    // ON CONFLICT preserves it via COALESCE + a SELECT-then-reject check),
-    // and the gateway's capability authorization uses the stored platform
-    // rather than whatever the bearer self-reports.
-    await sql`
-      INSERT INTO device_workers (user_id, worker_id, platform, capabilities, organization_id)
-      VALUES (${userId}, ${workerId}, ${platform}, ${sql.json([])}, ${organizationId})
-      ON CONFLICT (user_id, worker_id) DO NOTHING
+    // Upsert the device_workers row (exists on reuse, created on first mint).
+    // On the reuse path this MUST run inside the same transaction as the PAT
+    // mint/revoke (see below) so last_seen_at refresh + new-PAT-visibility
+    // commit atomically — otherwise a concurrent reaper could see the reused
+    // row still stale (30+ days unseen) and the freshly-minted PAT as already
+    // committed, then delete the row and revoke that brand-new PAT. The helper
+    // takes the db handle (sql for fresh-mint, tx for reuse) so both paths run
+    // the identical statement. Platform is bound once and never changed here
+    // (poll's ON CONFLICT preserves it via COALESCE + a SELECT-then-reject
+    // check, and the gateway's capability authorization uses the stored
+    // platform rather than whatever the bearer self-reports).
+    const upsertDeviceWorker = (db: typeof sql) => db`
+      INSERT INTO device_workers (user_id, worker_id, platform, capabilities, label, organization_id)
+      VALUES (${userId}, ${workerId}, ${platform}, ${db.json([])}, ${label}, ${organizationId})
+      ON CONFLICT (user_id, worker_id) DO UPDATE
+        SET last_seen_at = NOW(),
+            label = COALESCE(EXCLUDED.label, device_workers.label)
     `;
+
+    let created: { id: number; token: string };
+    if (reused) {
+      created = await sql.begin(async (tx) => {
+        await tx`SELECT pg_advisory_xact_lock(hashtext('lobu:mint-child'), hashtext(${workerId}))`;
+        // Refresh last_seen_at in the SAME transaction so the reaper can never
+        // observe a committed, valid PAT bound to a still-stale reused row. Do
+        // this BEFORE the PAT mint/revoke so this tx acquires the device_workers
+        // row lock before any personal_access_tokens row locks — the same
+        // lock order the reaper uses (DELETE device_workers → UPDATE PATs),
+        // which avoids a cross-transaction deadlock when both touch the same
+        // stale reused device at once.
+        await upsertDeviceWorker(tx);
+        const minted = await new PersonalAccessTokenService(tx).create(
+          userId,
+          organizationId,
+          `device:${platform}:${workerId.slice(0, 8)}`,
+          {
+            scope: 'device_worker:run',
+            description: label ?? undefined,
+            workerId,
+          }
+        );
+        await tx`
+          UPDATE personal_access_tokens
+          SET revoked_at = NOW(), updated_at = NOW()
+          WHERE user_id = ${userId}
+            AND worker_id = ${workerId}
+            AND id <> ${minted.id}
+            AND revoked_at IS NULL
+        `;
+        return minted;
+      });
+    } else {
+      created = await patService.create(
+        userId,
+        organizationId,
+        `device:${platform}:${workerId.slice(0, 8)}`,
+        {
+          scope: 'device_worker:run',
+          description: label ?? undefined,
+          workerId,
+        }
+      );
+      // Fresh row — no staleness to race against, so the upsert runs outside a
+      // transaction (the INSERT sets last_seen_at = NOW() via the column default).
+      await upsertDeviceWorker(sql);
+    }
 
     // Also mint a Better Auth session token for the same user. The sibling
     // device's iframe needs a session cookie (not a PAT) to land signed-in;
@@ -242,6 +323,12 @@ export async function mintDeviceChildToken(c: Context<{ Bindings: Env }>) {
     }
 
     const gatewayUrl = new URL(c.req.url).origin;
+    if (reused) {
+      logger.info(
+        { userId, workerId, platform },
+        '[mintDeviceChildToken] reused existing device identity on re-pair'
+      );
+    }
     return c.json({
       worker_id: workerId,
       access_token: created.token,

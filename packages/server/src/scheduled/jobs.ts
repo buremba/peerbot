@@ -20,6 +20,7 @@ import { refreshConnectorDefinitions } from './refresh-connector-definitions';
 import { registerScheduledJobsTicker } from './scheduled-jobs-service';
 import { TaskScheduler } from './task-scheduler';
 import { triggerEmbedBackfill } from './trigger-embed-backfill';
+import { runReapStaleDeviceWorkers } from './reap-stale-device-workers';
 import { getDb, pgTextArray } from '../db/client';
 import { createNotificationForUsers } from '../notifications/service';
 import {
@@ -214,6 +215,21 @@ function registerMaintenanceTasks(
       }
     },
     { cron: '0 * * * *' },
+  );
+
+  // Stale device-worker reaper — deletes device_workers rows that are unseen
+  // for 30+ days AND have no pinned connections/watchers/auth-profiles. Safety
+  // net for orphaning that identity-reuse-at-mint can't cover (extension
+  // uninstall, "clear extension data", abandoned second machine): those rows
+  // have no live credential anywhere, so they're dead and only clutter the
+  // Devices page. Single-claimant per tick; pure Postgres (multi-replica safe).
+  // Daily is plenty — these rows are already a month stale.
+  scheduler.register(
+    'reap-stale-device-workers',
+    async () => {
+      await runReapStaleDeviceWorkers();
+    },
+    { cron: '0 3 * * *' },
   );
 
   // Watcher automation: reconcile in-flight runs, materialize newly-due runs,

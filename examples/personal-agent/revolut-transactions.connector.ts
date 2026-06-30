@@ -5,8 +5,9 @@
  * user's transactions by INTERCEPTING the retail API JSON the Revolut web app
  * (`app.revolut.com`) already fetches — not by scraping the rendered DOM. It
  * runs inside the user's real signed-in Chrome via the paired Owletto
- * extension: open the transactions view in a background tab, attach the CDP
- * Network domain, scroll to make the app paginate, and parse the
+ * extension: open the transactions view in a single persistent, rendered (but
+ * non-focused) window, attach the CDP Network domain, real-wheel-scroll to make
+ * the app paginate older pages, and parse the
  * `GET /api/retail/user/current/transactions/last` responses.
  *
  * Why intercept, not scrape: the previous DOM-scrape path parsed amounts out of
@@ -36,7 +37,6 @@ import {
   type ConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
-  extensionNetworkSync,
   type SyncContext,
   type SyncResult,
 } from "@lobu/connector-sdk";
@@ -386,6 +386,125 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Drain one batch of intercepted responses and parse them into transactions. */
+async function drainTransactions(
+  dispatcher: ChromeActionDispatcher,
+  sessionId: string
+): Promise<RevolutTransaction[]> {
+  const d = await dispatcher.dispatch<{
+    responses?: Array<{ body?: string; base64_encoded?: boolean }>;
+  }>("network_intercept_drain", {
+    session_id: sessionId,
+    allowed_origins: REVOLUT_ALLOWED_ORIGINS,
+  });
+  const out: RevolutTransaction[] = [];
+  for (const r of d.responses ?? []) {
+    if (r.base64_encoded || typeof r.body !== "string") continue;
+    let json: unknown;
+    try {
+      json = JSON.parse(r.body);
+    } catch {
+      continue;
+    }
+    out.push(...parseTransactionsResponse(json));
+  }
+  return out;
+}
+
+/**
+ * Crawl the retail transactions API inside a SINGLE persistent, rendered (but
+ * non-focused) Owletto window.
+ *
+ * The persistent window is the load-bearing detail. Revolut's virtualized list
+ * only fetches older `?to=` pages on a REAL wheel scroll, and a CDP wheel only
+ * takes effect in a RENDERED tab — a throwaway BACKGROUND tab (what the generic
+ * `extensionNetworkSync` opens) is frame-throttled, so the wheel is silently
+ * dropped (acked: 0) and the list never pages. A persistent window renders, so
+ * the wheel scrolls and the app paginates. The window is reused across runs (the
+ * user signs into it once) and is never closed here.
+ */
+async function crawlPersistentWindow(
+  dispatcher: ChromeActionDispatcher,
+  startUrl: string,
+  maxScrolls: number
+): Promise<{ items: RevolutTransaction[]; apiCallCount: number }> {
+  const allowed = REVOLUT_ALLOWED_ORIGINS;
+  // 1. Open / reuse the single persistent rendered window (non-focused).
+  const blank = await dispatcher.dispatch<{ tab_id: number }>("navigate", {
+    url: "about:blank",
+    persistent: true,
+    wait_for_load: true,
+    allowed_origins: allowed,
+  });
+  const tabId = blank.tab_id;
+
+  const items: RevolutTransaction[] = [];
+  const seen = new Set<string>();
+  let apiCallCount = 0;
+  const absorb = (batch: RevolutTransaction[]) => {
+    if (batch.length > 0) apiCallCount += 1;
+    for (const t of batch) {
+      if (!seen.has(t.id)) {
+        seen.add(t.id);
+        items.push(t);
+      }
+    }
+  };
+
+  let sessionId: string | null = null;
+  try {
+    // 2. Start the Network listener BEFORE navigating so the on-load fetch is
+    // captured.
+    const start = await dispatcher.dispatch<{ session_id: string }>(
+      "network_intercept_start",
+      {
+        tab_id: tabId,
+        patterns: [{ regex: TRANSACTIONS_LAST_PATTERN }],
+        max_buffer_responses: 200,
+        max_body_bytes: 4_194_304,
+        allowed_origins: allowed,
+      }
+    );
+    sessionId = start.session_id;
+
+    // 3. Navigate the persistent window to the transactions list.
+    await dispatcher.dispatch("navigate", {
+      tab_id: tabId,
+      url: startUrl,
+      wait_for_load: true,
+      allowed_origins: allowed,
+    });
+
+    // 4. Let the initial render fire its fetch, then drain page 1.
+    await sleep(8000);
+    absorb(await drainTransactions(dispatcher, sessionId));
+
+    // 5. Scroll loop: a real CDP wheel makes the app fetch the next `?to=` page.
+    let prev = items.length;
+    for (let i = 0; i < maxScrolls; i++) {
+      await dispatcher.dispatch("scroll", {
+        tab_id: tabId,
+        delta_y: 1500,
+        steps: 6,
+        step_delay_ms: 250,
+        allowed_origins: allowed,
+      });
+      await sleep(2500);
+      absorb(await drainTransactions(dispatcher, sessionId));
+      if (items.length === prev) break;
+      prev = items.length;
+    }
+  } finally {
+    if (sessionId) {
+      await dispatcher
+        .dispatch("network_intercept_stop", { session_id: sessionId })
+        .catch(() => undefined);
+    }
+    // The persistent window is reused across runs — do NOT close it.
+  }
+  return { items, apiCallCount };
+}
+
 const configSchema = {
   type: "object",
   properties: {
@@ -451,7 +570,7 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     name: "Revolut",
     description:
       "Syncs Revolut account transactions by intercepting the retail API JSON the Revolut web app fetches (no public API), through your paired Owletto Chrome session — no separate login, exact amounts (no DOM parsing).",
-    version: "4.2.0",
+    version: "4.3.0",
     faviconDomain: "app.revolut.com",
     authSchema: {
       // Auth is implicit via the paired Owletto extension's signed-in Chrome —
@@ -512,38 +631,11 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
       Math.max(0, Math.min(600, Number(config.wait_for_data_seconds ?? 180))) *
       1000;
 
-    // One crawl attempt: intercept the retail API the SPA fetches on scroll.
-    // The helper opens an about:blank tab, starts the Network listener BEFORE
-    // navigating (so the initial render's XHRs aren't missed), then
-    // scroll-paginates with the real CDP wheel and drains.
+    // One crawl attempt in the single persistent rendered window (see
+    // crawlPersistentWindow — the rendered window is what lets the CDP wheel
+    // actually scroll Revolut's virtualized list and page older history).
     const runCrawl = () =>
-      extensionNetworkSync<RevolutTransaction>({
-        dispatcher,
-        url: startUrl,
-        config: {
-          interceptPatterns: [{ regex: TRANSACTIONS_LAST_PATTERN }],
-          allowedOrigins: REVOLUT_ALLOWED_ORIGINS,
-          maxScrolls,
-          scrollDelayMs: 2500,
-          responseTimeoutMs: 8000,
-        },
-        parseResponse: (_url, json) => parseTransactionsResponse(json),
-        // Revolut's transaction list is virtualized with NO scrollable overflow
-        // container (document height == viewport), so `scrollTo` is a no-op and
-        // DOM-synthesized wheel events (isTrusted=false) are ignored — the list
-        // only fetches older `?to=` pages on a REAL scroll. We use the
-        // extension's `scroll` op (CDP Input.dispatchMouseEvent type:mouseWheel),
-        // a trusted wheel the page honours, firing several ticks over the list.
-        triggerNextPage: async (tabId, d) => {
-          await d.dispatch("scroll", {
-            tab_id: tabId,
-            delta_y: 1500,
-            steps: 6,
-            step_delay_ms: 250,
-            allowed_origins: REVOLUT_ALLOWED_ORIGINS,
-          });
-        },
-      });
+      crawlPersistentWindow(dispatcher, startUrl, maxScrolls);
 
     let result = await runCrawl();
 

@@ -1407,8 +1407,6 @@ export class ChatInstanceManager {
         // The initialized adapter (with the live Slack WebClient) — `chat.initialize()`
         // below mutates it to add `.client`; event handlers fire only afterwards.
         adapter,
-        mcpConfigService: this.services.getMcpConfigService(),
-        secretStore: this.services.getSecretStore(),
         publicGatewayUrl: this.publicGatewayUrl,
         resolveHomeContext: resolveSlackHomeContext,
         resolveUserInbox: resolveSlackHomeUserInbox,

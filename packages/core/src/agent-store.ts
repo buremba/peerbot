@@ -11,7 +11,6 @@ import type {
   AgentInlineGuardrail,
   AuthProfile,
   InstalledProvider,
-  McpServerConfig,
   ModelSelectionState,
   NetworkConfig,
   NixConfig,
@@ -39,8 +38,6 @@ export interface AgentSettings {
   networkConfig?: NetworkConfig;
   /** Nix environment configuration */
   nixConfig?: NixConfig;
-  /** Additional MCP servers */
-  mcpServers?: Record<string, McpServerConfig>;
   /** Internal marker: MCP IDs already acknowledged to the user in chat */
   mcpInstallNotified?: Record<string, number>;
   /** Workspace identity/instruction files (markdown content) */

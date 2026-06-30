@@ -174,7 +174,6 @@ export async function enqueueAgentMessage(
       model: session.model,
     },
     networkConfig: session.networkConfig,
-    mcpConfig: session.mcpConfig,
   });
 
   return { messageId, jobId };

@@ -77,13 +77,13 @@ See [Skills](/getting-started/skills/) for which coding agents this supports and
 | `agents/my-agent/IDENTITY.md` | "Make this a customer support agent for Acme Corp" |
 | `agents/my-agent/SOUL.md` | "Add rules: never share pricing, always confirm before cancellations" |
 | `agents/my-agent/USER.md` | "Set timezone to US/Pacific, company plan is Enterprise" |
-| `lobu.config.ts` | "Add a GitHub MCP server and allow github.com and api.linear.app" |
+| `lobu.config.ts` | "Allow this agent to reach github.com and api.linear.app" |
 | `agents/my-agent/evals/` | "Write an eval that tests the agent follows the cancellation rule" |
 | `agents/my-agent/skills/` | "Create a custom skill for our internal API" |
 
 ## Configuration
 
-`lobu.config.ts` plus the files under `agents/<id>/` are the source of truth: agents, providers, network policy, tool policy, MCP servers, and (optionally) the memory schema. `lobu.config.ts` is a TypeScript module that default-exports `defineConfig({...})` and imports its authoring functions from `@lobu/cli/config`. Edit it locally and `lobu run` picks it up immediately.
+`lobu.config.ts` plus the files under `agents/<id>/` are the source of truth: agents, providers, network policy, tool policy, connectors, and (optionally) the memory schema. `lobu.config.ts` is a TypeScript module that default-exports `defineConfig({...})` and imports its authoring functions from `@lobu/cli/config`. Edit it locally and `lobu run` picks it up immediately.
 
 To run an agent on **Lobu Cloud**, push the same project up with `lobu apply`:
 

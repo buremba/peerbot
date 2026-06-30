@@ -1,4 +1,4 @@
-import type { AgentMcpConfig, NetworkConfig, NixConfig } from "@lobu/core";
+import type { NetworkConfig, NixConfig } from "@lobu/core";
 
 /**
  * Platform-agnostic session types and utilities
@@ -31,8 +31,6 @@ export interface ThreadSession {
   model?: string;
   /** Per-agent network configuration for sandbox isolation */
   networkConfig?: NetworkConfig;
-  /** Per-agent MCP configuration (additive to global MCPs) */
-  mcpConfig?: AgentMcpConfig;
   /** Nix environment configuration for agent workspace */
   nixConfig?: NixConfig;
   /** Original agent ID (before composite session key generation) */

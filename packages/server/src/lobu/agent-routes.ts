@@ -16,7 +16,6 @@ import { ChannelBindingService } from '../gateway/channels/binding-service';
 import { configsEqual } from '../gateway/connections/config-equal';
 import { createAuthProfileLabel } from '../gateway/auth/settings/auth-profiles-manager';
 import type { Env } from '../index';
-import { getConfiguredPublicOrigin } from '../utils/public-origin';
 import { countRuntimeMessagingClientsByAgent } from './client-routes';
 import { getChatInstanceManager, getLobuCoreServices } from './gateway';
 import {
@@ -353,30 +352,25 @@ routes.post('/', async (c) => {
   // same operator can both reach this endpoint with the same agentId. The
   // previous version did INSERT-then-saveSettings as two separate writes:
   // a "loser" returning 200 in the idempotent branch could see the row
-  // before the winner's saveSettings landed, then immediately PATCH
-  // `mcpServers` with operator config — only for the winner's deferred
-  // saveSettings to clobber it moments later. Folding `mcp_servers` into
-  // the same INSERT statement closes that gap: the row + auto-injected
-  // MCP server land atomically and the loser's idempotent 200 already
-  // reflects fully-initialized state.
+  // before the winner's saveSettings landed, then immediately PATCH it with
+  // operator config — only for the winner's deferred saveSettings to clobber
+  // it moments later. Folding `pre_approved_tools` into the same INSERT
+  // statement closes that gap: the row + auto-injected pre-approvals land
+  // atomically and the loser's idempotent 200 already reflects
+  // fully-initialized state. The `lobu-memory` MCP server itself is no longer
+  // stored per-agent — it's derived at worker startup by McpConfigService.
   const sql = getDb();
   const now = new Date();
-  const orgSlug = c.req.param('orgSlug');
-  const publicUrl =
-    getConfiguredPublicOrigin() || `http://localhost:${process.env.PORT || '8787'}`;
-  const ownerMcpServers = {
-    'lobu-memory': { url: `${publicUrl}/mcp/${orgSlug}`, type: 'streamable-http' },
-  };
   const ownerPreApprovedTools = ['/mcp/lobu-memory/tools/*'];
   const inserted = await sql`
     INSERT INTO agents (
       id, organization_id, name, description, owner_platform, owner_user_id,
-      mcp_servers, pre_approved_tools, created_at, updated_at
+      pre_approved_tools, created_at, updated_at
     )
     VALUES (
       ${agentId}, ${orgId}, ${name}, ${description ?? null},
       'lobu', ${user.id},
-      ${sql.json(ownerMcpServers)}, ${sql.json(ownerPreApprovedTools)}, ${now}, ${now}
+      ${sql.json(ownerPreApprovedTools)}, ${now}, ${now}
     )
     ON CONFLICT (organization_id, id) DO NOTHING
     RETURNING id

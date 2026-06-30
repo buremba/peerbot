@@ -310,7 +310,6 @@ function diffAgent(
 const SETTINGS_FIELDS: Array<keyof AgentSettings> = [
   "networkConfig",
   "nixConfig",
-  "mcpServers",
   "skillsConfig",
   "toolsConfig",
   "guardrails",

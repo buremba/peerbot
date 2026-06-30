@@ -21,55 +21,11 @@ import {
   expect,
   test,
 } from "bun:test";
-import { generateWorkerToken, type SecretRef } from "@lobu/core";
-import { MockMessageQueue } from "@lobu/core/testing";
+import { generateWorkerToken } from "@lobu/core";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import { McpProxy } from "../auth/mcp/proxy.js";
 import { McpToolCache } from "../auth/mcp/tool-cache.js";
 import { GrantStore } from "../permissions/grant-store.js";
-import type {
-  SecretListEntry,
-  WritableSecretStore,
-} from "../secrets/index.js";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-class InMemoryWritableStore implements WritableSecretStore {
-  private readonly entries = new Map<
-    string,
-    { value: string; updatedAt: number }
-  >();
-  async get(ref: SecretRef): Promise<string | null> {
-    if (!ref.startsWith("secret://")) return null;
-    const name = decodeURIComponent(ref.slice("secret://".length));
-    return this.entries.get(name)?.value ?? null;
-  }
-  async put(name: string, value: string): Promise<SecretRef> {
-    this.entries.set(name, { value, updatedAt: Date.now() });
-    return `secret://${encodeURIComponent(name)}` as SecretRef;
-  }
-  async delete(nameOrRef: string): Promise<void> {
-    const name = nameOrRef.startsWith("secret://")
-      ? decodeURIComponent(nameOrRef.slice("secret://".length))
-      : nameOrRef;
-    this.entries.delete(name);
-  }
-  async list(prefix?: string): Promise<SecretListEntry[]> {
-    const out: SecretListEntry[] = [];
-    for (const [name, e] of this.entries) {
-      if (prefix && !name.startsWith(prefix)) continue;
-      out.push({
-        ref: `secret://${encodeURIComponent(name)}` as SecretRef,
-        backend: "memory",
-        name,
-        updatedAt: e.updatedAt,
-      });
-    }
-    return out;
-  }
-}
 
 interface HttpMcpServerConfig {
   id: string;
@@ -191,9 +147,7 @@ describe("SSRF guard", () => {
       const configSource = createConfigSource({
         "priv-mcp": { id: "priv-mcp", upstreamUrl: url },
       });
-      const proxy = new McpProxy(configSource, {
-        secretStore: new InMemoryWritableStore(),
-      });
+      const proxy = new McpProxy(configSource, {      });
       const app = proxy.getApp();
 
       // The fetch mock should NOT be called — the SSRF guard intercepts first.
@@ -233,9 +187,7 @@ describe("SSRF guard", () => {
     const configSource = createConfigSource({
       "priv-mcp": { id: "priv-mcp", upstreamUrl: "http://[::1]:9000/mcp" },
     });
-    const proxy = new McpProxy(configSource, {
-      secretStore: new InMemoryWritableStore(),
-    });
+    const proxy = new McpProxy(configSource, {    });
     const app = proxy.getApp();
 
     // Either SSRF blocks before fetch (403/502), or fetch throws (Connection refused
@@ -261,9 +213,7 @@ describe("SSRF guard", () => {
     const configSource = createConfigSource({
       "pub-mcp": { id: "pub-mcp", upstreamUrl: "http://public-mcp.example.com:9000/mcp" },
     });
-    const proxy = new McpProxy(configSource, {
-      secretStore: new InMemoryWritableStore(),
-    });
+    const proxy = new McpProxy(configSource, {    });
     const app = proxy.getApp();
 
     globalThis.fetch = async () =>
@@ -296,9 +246,7 @@ describe("SSRF guard", () => {
         internal: true,
       },
     });
-    const proxy = new McpProxy(configSource, {
-      secretStore: new InMemoryWritableStore(),
-    });
+    const proxy = new McpProxy(configSource, {    });
     const app = proxy.getApp();
 
     globalThis.fetch = async () =>
@@ -329,9 +277,7 @@ describe("SSRF guard", () => {
         upstreamUrl: "http://192.168.0.1/mcp",
       },
     });
-    const proxy = new McpProxy(configSource, {
-      secretStore: new InMemoryWritableStore(),
-    });
+    const proxy = new McpProxy(configSource, {    });
     const app = proxy.getApp();
 
     // fetch should not be called
@@ -376,9 +322,7 @@ describe("cross-agent JWT isolation", () => {
       getAllHttpServers: async () => new Map(),
     };
 
-    const proxy = new McpProxy(configSource, {
-      secretStore: new InMemoryWritableStore(),
-    });
+    const proxy = new McpProxy(configSource, {    });
     const app = proxy.getApp();
 
     successFetch();
@@ -408,9 +352,7 @@ describe("cross-agent JWT isolation", () => {
       getAllHttpServers: async () => new Map(),
     };
 
-    const proxy = new McpProxy(configSource, {
-      secretStore: new InMemoryWritableStore(),
-    });
+    const proxy = new McpProxy(configSource, {    });
     const app = proxy.getApp();
 
     globalThis.fetch = async () =>
@@ -442,9 +384,7 @@ describe("cross-agent JWT isolation", () => {
     const configSource = createConfigSource({
       "shared-mcp": { id: "shared-mcp", upstreamUrl: "http://shared.example.com/mcp" },
     });
-    const proxy = new McpProxy(configSource, {
-      secretStore: new InMemoryWritableStore(),
-      toolCache,
+    const proxy = new McpProxy(configSource, {      toolCache,
       grantStore,
     });
     const app = proxy.getApp();
@@ -510,9 +450,7 @@ describe("tool registry collision — same tool name on two MCPs", () => {
       slack: { id: "slack", upstreamUrl: "http://slack.example.com/mcp" },
       teams: { id: "teams", upstreamUrl: "http://teams.example.com/mcp" },
     });
-    const proxy = new McpProxy(configSource, {
-      secretStore: new InMemoryWritableStore(),
-    });
+    const proxy = new McpProxy(configSource, {    });
     const app = proxy.getApp();
 
     let lastUrl = "";
@@ -592,9 +530,7 @@ describe("tool approval — onToolBlocked and wildcard grants", () => {
     });
 
     let blockedCount = 0;
-    const proxy = new McpProxy(configSource, {
-      secretStore: new InMemoryWritableStore(),
-      toolCache,
+    const proxy = new McpProxy(configSource, {      toolCache,
       grantStore,
     });
 
@@ -651,9 +587,7 @@ describe("tool approval — onToolBlocked and wildcard grants", () => {
     const configSource = createConfigSource({
       "gh-mcp": { id: "gh-mcp", upstreamUrl: "http://gh.example.com/mcp" },
     });
-    const proxy = new McpProxy(configSource, {
-      secretStore: new InMemoryWritableStore(),
-      toolCache,
+    const proxy = new McpProxy(configSource, {      toolCache,
       grantStore,
     });
     const app = proxy.getApp();
@@ -705,9 +639,7 @@ describe("tool approval — onToolBlocked and wildcard grants", () => {
     });
 
     let blockedCount = 0;
-    const proxy = new McpProxy(configSource, {
-      secretStore: new InMemoryWritableStore(),
-      // No toolCache — forces fetchToolsForMcp to be called.
+    const proxy = new McpProxy(configSource, {      // No toolCache — forces fetchToolsForMcp to be called.
       grantStore,
     });
     proxy.onToolBlocked = async () => {
@@ -751,9 +683,7 @@ describe("tool approval — onToolBlocked and wildcard grants", () => {
     });
 
     const captured: Record<string, unknown>[] = [];
-    const proxy = new McpProxy(configSource, {
-      secretStore: new InMemoryWritableStore(),
-      toolCache,
+    const proxy = new McpProxy(configSource, {      toolCache,
       grantStore,
     });
     proxy.onToolBlocked = async (
@@ -801,9 +731,7 @@ describe("request body size limit", () => {
     const configSource = createConfigSource({
       "test-mcp": { id: "test-mcp", upstreamUrl: "http://test.example.com/mcp" },
     });
-    const proxy = new McpProxy(configSource, {
-      secretStore: new InMemoryWritableStore(),
-    });
+    const proxy = new McpProxy(configSource, {    });
     const app = proxy.getApp();
 
     successFetch();
@@ -832,9 +760,7 @@ describe("SSE-framed JSON-RPC response", () => {
     const configSource = createConfigSource({
       "sse-mcp": { id: "sse-mcp", upstreamUrl: "http://sse.example.com/mcp" },
     });
-    const proxy = new McpProxy(configSource, {
-      secretStore: new InMemoryWritableStore(),
-    });
+    const proxy = new McpProxy(configSource, {    });
     const app = proxy.getApp();
 
     const sseBody = [
@@ -912,9 +838,7 @@ describe("concurrent tool calls", () => {
     const configSource = createConfigSource({
       "conc-mcp": { id: "conc-mcp", upstreamUrl: "http://conc.example.com/mcp" },
     });
-    const proxy = new McpProxy(configSource, {
-      secretStore: new InMemoryWritableStore(),
-    });
+    const proxy = new McpProxy(configSource, {    });
     const app = proxy.getApp();
 
     let callCount = 0;
@@ -968,9 +892,7 @@ describe("executeToolDirect", () => {
         upstreamUrl: "http://direct.example.com/mcp",
       },
     });
-    const proxy = new McpProxy(configSource, {
-      secretStore: new InMemoryWritableStore(),
-    });
+    const proxy = new McpProxy(configSource, {    });
 
     globalThis.fetch = async () =>
       new Response(
@@ -997,9 +919,7 @@ describe("executeToolDirect", () => {
 
   test("executeToolDirect returns error when MCP server not found", async () => {
     const configSource = createConfigSource({});
-    const proxy = new McpProxy(configSource, {
-      secretStore: new InMemoryWritableStore(),
-    });
+    const proxy = new McpProxy(configSource, {    });
 
     const result = await proxy.executeToolDirect(
       "agent1",
@@ -1021,9 +941,7 @@ describe("executeToolDirect", () => {
         upstreamUrl: "http://flaky.example.com/mcp",
       },
     });
-    const proxy = new McpProxy(configSource, {
-      secretStore: new InMemoryWritableStore(),
-    });
+    const proxy = new McpProxy(configSource, {    });
 
     globalThis.fetch = async () => {
       throw new Error("Connection refused");

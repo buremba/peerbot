@@ -53,7 +53,7 @@ psql "$DATABASE_URL" -c "DELETE FROM chat_state_lists WHERE key LIKE 'history:%'
 curl -v http://localhost:8118
 
 # For OAuth flows: check browser console and Lobu logs
-# For static headers: verify ${env:VAR} syntax in mcpServers config
+# For static headers: verify connector secret placeholder syntax
 ```
 
 ## Platform connection issues

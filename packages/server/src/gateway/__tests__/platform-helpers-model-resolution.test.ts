@@ -197,35 +197,6 @@ describe("resolveAgentOptions model resolution", () => {
       ],
     });
   });
-
-  test("normalizes lobu-memory MCP servers to the local embedded upstream", async () => {
-    process.env.PORT = "8787";
-
-    const settingsStore = {
-      getSettings: async () =>
-        ({
-          mcpServers: {
-            "lobu-memory": {
-              url: "https://app.example.test/mcp/buremba",
-              type: "streamable-http",
-            },
-          },
-        }) as any,
-    };
-
-    const resolved = await resolveAgentOptions(
-      "agent-1",
-      {},
-      settingsStore as any
-    );
-
-    expect(resolved.mcpServers).toEqual({
-      "lobu-memory": {
-        url: "http://127.0.0.1:8787/mcp/buremba",
-        type: "streamable-http",
-      },
-    });
-  });
 });
 
 describe("resolveAgentId", () => {

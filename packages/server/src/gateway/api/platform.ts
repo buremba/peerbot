@@ -123,22 +123,6 @@ export class ApiPlatform implements PlatformAdapter {
       });
     });
 
-    // Status messages (e.g. "Processing…", MCP auth prompts) are pushed to the
-    // browser's SSE socket the same way as the cards above, so under N>1 they
-    // hit the same cross-pod loss: posted on the worker's pod, the browser's SSE
-    // is pinned to a different pod and never sees the status. Enqueue onto the
-    // owner-gated thread_response queue like the others. The SSE event name is
-    // `status` and the SPA reads `payload.status` (see ApiResponseRenderer.
-    // handleStatusUpdate + owletto lobu-runtime-provider), so the card data must
-    // surface as `{ type: "status", status: <text> }`.
-    interactionService.on("status-message:created", (event: any) => {
-      if (event.platform !== "api") return;
-      this.enqueueInteractionCard(queue, event, "status", {
-        type: "status",
-        status: event.text,
-      });
-    });
-
     logger.debug("✅ API platform initialized");
   }
 

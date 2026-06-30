@@ -95,7 +95,6 @@ export { extractTraceId, generateTraceId } from "./trace";
 // Core types
 export type {
   AgentInlineGuardrail,
-  AgentMcpConfig,
   AgentOptions,
   AuthProfile,
   CliBackendConfig,
@@ -107,7 +106,6 @@ export type {
   InstructionProvider,
   LogLevel,
   McpOAuthConfig,
-  McpServerConfig,
   ModelSelectionMode,
   ModelSelectionState,
   NetworkConfig,

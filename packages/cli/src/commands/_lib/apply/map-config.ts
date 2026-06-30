@@ -17,7 +17,6 @@ import type {
   Connection,
   ConnectorRef,
   EntityType,
-  McpServer,
   Project,
   ProviderConfig,
   RelationshipType,
@@ -135,20 +134,6 @@ function platformStableId(
     .join("-");
 }
 
-/** Credential value → `$VAR` string; collects the referenced secret name. */
-function credentialString(
-  value: string | { readonly $secret: string },
-  required: Set<string>
-): string {
-  if (isSecretRef(value)) {
-    required.add(value.$secret);
-    return `$${value.$secret}`;
-  }
-  const ref = envRefName(value);
-  if (ref) required.add(ref);
-  return value;
-}
-
 /**
  * Resolve a credential to its actual secret value, mirroring the TOML loader's
  * connector-credential handling (`loadConnectors` in desired-state.ts): a
@@ -221,65 +206,6 @@ export function mergeAgentDirArtifacts(
   }
 }
 
-/**
- * Map SDK MCP server config to the agent-settings shape. Mirrors the TOML
- * loader, including the loose cast: `authScope`/`oauth` aren't on the typed
- * `McpServerConfig`, but the server accepts them. `$VAR` refs in headers/env and
- * a `secret()` (or `$VAR`) `clientSecret` are collected into `required` so the
- * apply secrets gate fails loud, and passed through verbatim (the server/secret
- * proxy resolves them) — matching `buildAgentSettings`.
- */
-function mapMcpServers(
-  servers: Record<string, McpServer>,
-  required: Set<string>
-): NonNullable<AgentSettings["mcpServers"]> {
-  const out: Record<string, Record<string, unknown>> = {};
-  for (const [id, mcp] of Object.entries(servers)) {
-    const mapped: Record<string, unknown> = {};
-    if (mcp.url) mapped.url = mcp.url;
-    if (mcp.type) mapped.type = mcp.type;
-    if (mcp.command) mapped.command = mcp.command;
-    if (mcp.args) mapped.args = mcp.args;
-    if (mcp.headers) {
-      for (const v of Object.values(mcp.headers)) {
-        const ref = envRefName(v);
-        if (ref) required.add(ref);
-      }
-      mapped.headers = { ...mcp.headers };
-    }
-    if (mcp.env) {
-      for (const v of Object.values(mcp.env)) {
-        const ref = envRefName(v);
-        if (ref) required.add(ref);
-      }
-      mapped.env = { ...mcp.env };
-    }
-    if (mcp.authScope) mapped.authScope = mcp.authScope;
-    if (mcp.oauth) {
-      // `client_id` may itself be a `$VAR` ref — collect it like the TOML
-      // loader's collectEnvRefs does (it's passed through verbatim).
-      if (mcp.oauth.clientId) {
-        const ref = envRefName(mcp.oauth.clientId);
-        if (ref) required.add(ref);
-      }
-      mapped.oauth = {
-        authUrl: mcp.oauth.authUrl,
-        tokenUrl: mcp.oauth.tokenUrl,
-        ...(mcp.oauth.clientId ? { clientId: mcp.oauth.clientId } : {}),
-        ...(mcp.oauth.clientSecret
-          ? { clientSecret: credentialString(mcp.oauth.clientSecret, required) }
-          : {}),
-        ...(mcp.oauth.scopes ? { scopes: mcp.oauth.scopes } : {}),
-        ...(mcp.oauth.tokenEndpointAuthMethod
-          ? { tokenEndpointAuthMethod: mcp.oauth.tokenEndpointAuthMethod }
-          : {}),
-      };
-    }
-    out[id] = mapped;
-  }
-  return out as NonNullable<AgentSettings["mcpServers"]>;
-}
-
 function mapAgent(
   agent: Agent,
   env: NodeJS.ProcessEnv,
@@ -334,10 +260,6 @@ function mapAgent(
 
   if (agent.nixPackages?.length) {
     settings.nixConfig = { packages: [...new Set(agent.nixPackages)] };
-  }
-
-  if (agent.mcpServers && Object.keys(agent.mcpServers).length > 0) {
-    settings.mcpServers = mapMcpServers(agent.mcpServers, required);
   }
 
   const providerKeys: { providerId: string; value: string }[] = [];

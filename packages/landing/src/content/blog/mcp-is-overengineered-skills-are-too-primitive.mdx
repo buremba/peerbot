@@ -94,11 +94,6 @@ nixPackages:
   - jq
   - mediainfo
 
-mcpServers:
-  cloud-storage:
-    url: https://storage-mcp.example.com/mcp
-    type: sse
-
 network:
   allow:
     - storage.googleapis.com
@@ -112,14 +107,14 @@ You process video files using ffmpeg. For every video task:
 1. Use `mediainfo` to inspect the input file first
 2. Use `ffmpeg` for transcoding, trimming, and format conversion
 3. Use `jq` to parse and transform metadata JSON
-4. Upload results via the cloud-storage MCP server
+4. Upload results via the cloud-storage connector
 
 Never delete source files.
 ```
 
-`nixPackages` installs ffmpeg, jq, and mediainfo via Nix. `network.allow` configures the sandbox to only allow those two domains. `mcpServers` registers a cloud storage MCP server behind the gateway proxy with per-user credential injection. The markdown body gets injected into the agent's system prompt. If you want to lock down tool visibility or pre-approve specific MCP calls, that lives in `lobu.config.ts`, not in `SKILL.md`.
+`nixPackages` installs ffmpeg, jq, and mediainfo via Nix. `network.allow` configures the sandbox to only allow those two domains. The cloud storage capability is installed as a connector, so it gets connection auth, approval, and audit behavior. The markdown body gets injected into the agent's system prompt. If you want to lock down tool visibility or pre-approve actions, that lives in `lobu.config.ts`, not in `SKILL.md`.
 
-When a user enables this skill, the gateway resolves every section. The worker starts with those binaries on `$PATH`, the network sandbox blocks everything except the declared domains, and the MCP server is available. The agent starts and has no idea any of this happened.
+When a user enables this skill, the gateway resolves every section. The worker starts with those binaries on `$PATH`, and the network sandbox blocks everything except the declared domains. The agent starts and has no idea any of this happened.
 
 Same SKILL.md. Same environment. Every time.
 

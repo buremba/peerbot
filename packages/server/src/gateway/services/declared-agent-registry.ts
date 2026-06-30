@@ -74,10 +74,6 @@ export function entryFromAgentConfig(agent: AgentConfig): DeclaredAgentEntry {
     }
   }
 
-  if (agent.skills?.mcp) {
-    settings.mcpServers = agent.skills.mcp;
-  }
-
   if (agent.network) {
     settings.networkConfig = {
       allowedDomains: agent.network.allowed,

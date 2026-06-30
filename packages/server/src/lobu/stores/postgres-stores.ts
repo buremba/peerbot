@@ -60,7 +60,6 @@ function rowToSettings(row: Record<string, any>): AgentSettings {
 		providerModelPreferences: row.provider_model_preferences ?? undefined,
 		networkConfig: row.network_config ?? undefined,
 		nixConfig: row.nix_config ?? undefined,
-		mcpServers: row.mcp_servers ?? undefined,
 		soulMd: row.soul_md ?? undefined,
 		userMd: row.user_md ?? undefined,
 		identityMd: row.identity_md ?? undefined,
@@ -147,7 +146,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
 			const rows = orgId
 				? await sql`
             SELECT model, model_selection, provider_model_preferences,
-                   network_config, nix_config, mcp_servers,
+                   network_config, nix_config,
                    soul_md, user_md, identity_md,
                    skills_config, tools_config, plugins_config,
                    installed_providers, verbose_logging, show_tool_calls,
@@ -157,7 +156,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           `
 				: await sql`
             SELECT model, model_selection, provider_model_preferences,
-                   network_config, nix_config, mcp_servers,
+                   network_config, nix_config,
                    soul_md, user_md, identity_md,
                    skills_config, tools_config, plugins_config,
                    installed_providers, verbose_logging, show_tool_calls,
@@ -179,7 +178,6 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           provider_model_preferences = ${sql.json(settings.providerModelPreferences ?? {})},
           network_config = ${sql.json(settings.networkConfig ?? {})},
           nix_config = ${sql.json(settings.nixConfig ?? {})},
-          mcp_servers = ${sql.json(settings.mcpServers ?? {})},
           soul_md = ${settings.soulMd ?? ""},
           user_md = ${settings.userMd ?? ""},
           identity_md = ${settings.identityMd ?? ""},
@@ -212,7 +210,6 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
         UPDATE agents SET
           model = NULL, model_selection = '{}', provider_model_preferences = '{}',
           network_config = '{}', nix_config = '{}',
-          mcp_servers = '{}',
           soul_md = '', user_md = '', identity_md = '',
           skills_config = '{"skills": []}', tools_config = '{}', plugins_config = '{}',
           installed_providers = '[]', verbose_logging = false,

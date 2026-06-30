@@ -352,6 +352,43 @@ export default class ChromeConnector extends ConnectorRuntime {
           properties: { tab_id: { type: 'integer' } },
         },
       },
+      show_notification: {
+        key: 'show_notification',
+        name: 'Show desktop notification',
+        description:
+          'Show an urgent Chrome desktop notification from Owletto. No-ops when the user has not granted the optional notifications permission.',
+        requiresApproval: false,
+        inputSchema: {
+          type: 'object',
+          required: ['title'],
+          properties: {
+            title: { type: 'string', maxLength: 80 },
+            message: { type: 'string', maxLength: 240 },
+            body: { type: 'string', maxLength: 240 },
+            notification_id: { type: 'string', maxLength: 120 },
+            tab_id: {
+              type: 'integer',
+              description:
+                'Tab to focus when the notification is clicked. Falls back to click_url if the tab is gone.',
+            },
+            click_url: {
+              type: 'string',
+              format: 'uri',
+              description:
+                'URL to open when clicked if tab_id is absent or the tab no longer exists.',
+            },
+            landed_url: { type: 'string', format: 'uri' },
+          },
+        },
+        outputSchema: {
+          type: 'object',
+          properties: {
+            shown: { type: 'boolean' },
+            reason: { type: 'string' },
+            notification_id: { type: 'string' },
+          },
+        },
+      },
       network_intercept_start: {
         key: 'network_intercept_start',
         name: 'Start network interception',

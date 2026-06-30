@@ -53,6 +53,8 @@ export interface ExtensionDomScrapeResult<TItem> {
   count: number;
   host?: string;
   landedUrl?: string;
+  /** Tab the content-script scrape ran in. Useful for focusing an auth-wall tab. */
+  tabId?: number;
 }
 
 /**
@@ -98,5 +100,6 @@ export async function extensionDomScrape<TItem>(opts: {
     count: result.count ?? items.length,
     host: result.host,
     landedUrl: result.landedUrl,
+    tabId: observation.tab_id,
   };
 }

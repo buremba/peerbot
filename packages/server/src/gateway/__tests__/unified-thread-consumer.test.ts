@@ -516,7 +516,7 @@ describe("chat interaction fan-out producer (registerChatInteractionFanout)", ()
     expect(send).not.toHaveBeenCalled();
   });
 
-  test("fans out every interaction channel (approval, link-button, status)", () => {
+  test("fans out every interaction channel (approval, link-button)", () => {
     const { svc, send } = makeFanout({ warmLocally: false });
 
     svc.emit("tool:approval-needed", {
@@ -527,19 +527,14 @@ describe("chat interaction fan-out producer (registerChatInteractionFanout)", ()
       ...slackQuestion,
       id: "lb_1",
     });
-    svc.emit("status-message:created", {
-      ...slackQuestion,
-      id: "sm_1",
-    });
 
-    expect(send).toHaveBeenCalledTimes(3);
+    expect(send).toHaveBeenCalledTimes(2);
     const names = send.mock.calls.map(
       (c: any[]) => c[1].customEvent.data.eventName
     );
     expect(names).toEqual([
       "tool:approval-needed",
       "link-button:created",
-      "status-message:created",
     ]);
   });
 

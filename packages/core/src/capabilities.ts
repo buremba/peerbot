@@ -20,6 +20,7 @@ export const BROWSER_CAPABILITIES = [
   "browser.history",
   "browser.bookmarks",
   "browser.downloads",
+  "browser.notifications",
   "browser.debugger",
   // browser.cookies intentionally absent in v1 — high-trust, not approved
 ] as const;

@@ -60,34 +60,6 @@ function normalizeLobuPluginConfig(
   };
 }
 
-function normalizeLobuMemoryMcpServers(
-  mcpServers: Record<string, any> | undefined
-): Record<string, any> | undefined {
-  if (!mcpServers?.["lobu-memory"]) {
-    return mcpServers;
-  }
-
-  const port = process.env.PORT || process.env.GATEWAY_PORT || "8787";
-  const configuredUrl = mcpServers["lobu-memory"]?.url;
-  let normalizedUrl = `http://127.0.0.1:${port}/mcp/lobu-memory`;
-  if (typeof configuredUrl === "string") {
-    try {
-      const parsed = new URL(configuredUrl);
-      normalizedUrl = `http://127.0.0.1:${port}${parsed.pathname}`;
-    } catch {
-      // Keep the stable fallback above.
-    }
-  }
-  return {
-    ...mcpServers,
-    "lobu-memory": {
-      ...mcpServers["lobu-memory"],
-      url: normalizedUrl,
-      type: "streamable-http",
-    },
-  };
-}
-
 function normalizePluginsConfig(
   pluginsConfig: PluginsConfig | undefined
 ): PluginsConfig | undefined {
@@ -161,11 +133,6 @@ export async function resolveAgentOptions(
   if (settings.preApprovedTools?.length) {
     mergedOptions.preApprovedTools = settings.preApprovedTools;
   }
-  if (settings.mcpServers) {
-    mergedOptions.mcpServers = normalizeLobuMemoryMcpServers(
-      settings.mcpServers
-    );
-  }
   if (settings.pluginsConfig) {
     mergedOptions.pluginsConfig = normalizePluginsConfig(
       settings.pluginsConfig
@@ -184,8 +151,8 @@ export async function resolveAgentOptions(
 
 /**
  * Build a MessagePayload from common fields.
- * Extracts networkConfig, guardrailsInline, nixConfig, mcpServers,
- * preApprovedTools from agentOptions before constructing the payload.
+ * Extracts networkConfig, guardrailsInline, nixConfig, preApprovedTools from
+ * agentOptions before constructing the payload.
  */
 export function buildMessagePayload(params: {
   platform: string;
@@ -205,7 +172,6 @@ export function buildMessagePayload(params: {
     networkConfig,
     guardrailsInline,
     nixConfig,
-    mcpServers,
     preApprovedTools,
     ...remainingOptions
   } = params.agentOptions;
@@ -226,7 +192,6 @@ export function buildMessagePayload(params: {
     networkConfig,
     guardrailsInline,
     nixConfig,
-    mcpConfig: mcpServers ? { mcpServers } : undefined,
     preApprovedTools,
   };
 }

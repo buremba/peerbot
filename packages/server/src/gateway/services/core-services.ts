@@ -743,10 +743,9 @@ export class CoreServices {
 			throw new Error("Queue must be initialized before MCP services");
 		}
 
-		// Initialize simplified MCP config service (no OAuth discovery)
+		// Initialize system MCP config service. External MCP capabilities are
+		// connector-backed operations; the worker only receives lobu-memory.
 		this.mcpConfigService = new McpConfigService({
-			agentSettingsStore: this.agentSettingsStore,
-			configResolver: this.providerConfigResolver,
 			lobuMemory: {
 				publicBaseUrl: this.config.lobuMemory.publicBaseUrl,
 				resolveOrgSlug: async (agentId: string) => {
@@ -776,10 +775,8 @@ export class CoreServices {
 		}
 		const mcpToolCache = new McpToolCache();
 		this.mcpProxy = new McpProxy(this.mcpConfigService, {
-			secretStore: this.secretStore,
 			toolCache: mcpToolCache,
 			grantStore: this.grantStore,
-			publicGatewayUrl: this.config.mcp.publicGatewayUrl,
 			agentSettingsStore: this.agentSettingsStore,
 			guardrailRegistry: this.guardrailRegistry,
 		});
@@ -814,44 +811,6 @@ export class CoreServices {
 				source,
 			);
 		};
-		this.mcpProxy.onAuthRequired = async (
-			_agentId,
-			userId,
-			mcpId,
-			payload,
-			channelId,
-			conversationId,
-			teamId,
-			connectionId,
-			platform,
-			source,
-		) => {
-			if (payload.url) {
-				await this.interactionService?.postOauthLink(
-					userId,
-					conversationId,
-					channelId,
-					teamId,
-					connectionId,
-					platform || "unknown",
-					payload.url,
-					`Connect ${mcpId}`,
-					`Sign in to ${mcpId} so I can use its tools on your behalf.`,
-					source,
-				);
-				return;
-			}
-
-			await this.interactionService?.postStatusMessage(
-				conversationId,
-				channelId,
-				teamId,
-				connectionId,
-				platform || "unknown",
-				payload.message,
-				source,
-			);
-		};
 		logger.debug("MCP proxy initialized");
 
 		// Initialize worker gateway
@@ -863,7 +822,6 @@ export class CoreServices {
 			this.mcpProxy,
 			this.providerCatalogService,
 			this.agentSettingsStore,
-			this.secretStore,
 		);
 		logger.debug("Worker gateway initialized");
 

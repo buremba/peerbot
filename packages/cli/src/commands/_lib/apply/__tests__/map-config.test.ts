@@ -617,45 +617,6 @@ describe("mapProjectToDesiredState", () => {
     expect(settings?.nixConfig).toEqual({ packages: ["ffmpeg", "python311"] });
   });
 
-  test("maps custom MCP servers and collects oauth/header secret refs", () => {
-    const agent = defineAgent({
-      id: "a",
-      mcpServers: {
-        linear: {
-          url: "https://mcp.linear.app/sse",
-          type: "sse",
-          headers: { Authorization: "$LINEAR_TOKEN" },
-          oauth: {
-            authUrl: "https://linear.app/oauth/authorize",
-            tokenUrl: "https://api.linear.app/oauth/token",
-            clientId: "cid",
-            clientSecret: secret("LINEAR_CLIENT_SECRET"),
-            scopes: ["read"],
-          },
-        },
-      },
-    });
-    const state = mapProjectToDesiredState(
-      defineConfig({ agents: [agent] }),
-      env
-    );
-    const linear = state.agents[0]?.settings.mcpServers?.linear as
-      | Record<string, unknown>
-      | undefined;
-    expect(linear?.url).toBe("https://mcp.linear.app/sse");
-    expect(linear?.headers).toEqual({ Authorization: "$LINEAR_TOKEN" });
-    expect(linear?.oauth).toEqual({
-      authUrl: "https://linear.app/oauth/authorize",
-      tokenUrl: "https://api.linear.app/oauth/token",
-      clientId: "cid",
-      clientSecret: "$LINEAR_CLIENT_SECRET",
-      scopes: ["read"],
-    });
-    expect(state.requiredSecrets).toEqual(
-      expect.arrayContaining(["LINEAR_TOKEN", "LINEAR_CLIENT_SECRET"])
-    );
-  });
-
   test("maps org metadata into memory", () => {
     const state = mapProjectToDesiredState(
       defineConfig({
@@ -725,41 +686,6 @@ describe("mapProjectToDesiredState", () => {
     expect(mapped?.platforms?.[0]?.type).toBe("rest");
   });
 
-  test("collects mcp env + oauth clientId/clientSecret $VAR refs (parity with collectEnvRefs)", () => {
-    const agent = defineAgent({
-      id: "a",
-      mcpServers: {
-        svc: {
-          command: "node",
-          args: ["server.js"],
-          env: { TOKEN: "$SVC_TOKEN" },
-          oauth: {
-            authUrl: "https://a",
-            tokenUrl: "https://t",
-            clientId: "$SVC_CLIENT_ID",
-            clientSecret: "$SVC_CLIENT_SECRET",
-          },
-        },
-      },
-    });
-    const state = mapProjectToDesiredState(
-      defineConfig({ agents: [agent] }),
-      env
-    );
-    expect(state.requiredSecrets).toEqual(
-      expect.arrayContaining([
-        "SVC_TOKEN",
-        "SVC_CLIENT_ID",
-        "SVC_CLIENT_SECRET",
-      ])
-    );
-    // A `$VAR`-string clientSecret is passed through verbatim.
-    const oauth = (
-      state.agents[0]?.settings.mcpServers?.svc as Record<string, unknown>
-    ).oauth as Record<string, unknown>;
-    expect(oauth.clientSecret).toBe("$SVC_CLIENT_SECRET");
-  });
-
   test("omits absent agent settings (no empty config objects)", () => {
     const settings = mapProjectToDesiredState(
       defineConfig({ agents: [defineAgent({ id: "a" })] }),
@@ -770,7 +696,6 @@ describe("mapProjectToDesiredState", () => {
     expect(settings).not.toHaveProperty("preApprovedTools");
     expect(settings).not.toHaveProperty("guardrails");
     expect(settings).not.toHaveProperty("nixConfig");
-    expect(settings).not.toHaveProperty("mcpServers");
   });
 });
 

@@ -90,9 +90,9 @@ const JobEventSchema = z.object({
       // which silently dropped these fields and broke every Telegram chat
       // when snapshot mode became the default in PR #871. Declare them
       // explicitly so they survive parsing, and `.passthrough()` keeps any
-      // future MessagePayload field (mcpConfig, nixConfig, egressConfig,
-      // preApprovedTools, exec* fields, organizationId, networkConfig...)
-      // from regressing the same way.
+      // future MessagePayload field (nixConfig, egressConfig, preApprovedTools,
+      // exec* fields, organizationId, networkConfig...) from regressing the
+      // same way.
       runId: z.number().optional(),
       runJobToken: z.string().optional(),
     })

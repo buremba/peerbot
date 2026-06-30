@@ -10,9 +10,4 @@ export class ProviderConfigResolver {
     return this.providerRegistryService.getProviderConfigs();
   }
 
-  async getGlobalMcpServers(): Promise<
-    Record<string, Record<string, unknown>>
-  > {
-    return {};
-  }
 }

@@ -8,7 +8,6 @@ import type {
   InteractionService,
   PostedLinkButton,
   PostedQuestion,
-  PostedStatusMessage,
   PostedToolApproval,
 } from "../interactions.js";
 import type { GrantStore } from "../permissions/grant-store.js";
@@ -476,24 +475,9 @@ export function registerInteractionBridge(
     },
   );
 
-  const onStatusMessageCreated = withResolvedThread<PostedStatusMessage>(
-    "status-message:created",
-    async (event, thread) => {
-      try {
-        await thread.post(event.text);
-      } catch (error) {
-        logger.warn(
-          { connectionId, error: String(error) },
-					"Failed to post status message interaction",
-        );
-      }
-    },
-  );
-
   interactionService.on("question:created", onQuestionCreated);
   interactionService.on("tool:approval-needed", onToolApprovalNeeded);
   interactionService.on("link-button:created", onLinkButtonCreated);
-  interactionService.on("status-message:created", onStatusMessageCreated);
 
   registerActionHandlers(
     chat,
@@ -616,7 +600,6 @@ export function registerInteractionBridge(
     interactionService.off("question:created", onQuestionCreated);
     interactionService.off("tool:approval-needed", onToolApprovalNeeded);
     interactionService.off("link-button:created", onLinkButtonCreated);
-    interactionService.off("status-message:created", onStatusMessageCreated);
     for (const timer of activeTimers) {
       clearTimeout(timer);
     }

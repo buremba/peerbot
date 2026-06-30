@@ -8,15 +8,14 @@
  *
  * Before this lived in core, the worker had its own `MessagePayload`
  * declaration that was a structural subset of the gateway's (missing
- * `organizationId`, `networkConfig`, `mcpConfig`, `nixConfig`,
- * `preApprovedTools`). At runtime the worker's zod schema was patched with
+ * `organizationId`, `networkConfig`, `nixConfig`, `preApprovedTools`). At
+ * runtime the worker's zod schema was patched with
  * `.passthrough()` so the extra fields survived parsing, but the static type
  * silently lied. Hoisting closes the gap.
  */
 
 import type {
   AgentInlineGuardrail,
-  AgentMcpConfig,
   AgentOptions,
   NetworkConfig,
   NixConfig,
@@ -105,9 +104,6 @@ export interface MessagePayload {
    * pipeline from agent settings; they ride here only for the egress sync.
    */
   guardrailsInline?: AgentInlineGuardrail[];
-
-  /** Per-agent MCP configuration (additive to global MCPs). */
-  mcpConfig?: AgentMcpConfig;
 
   /** Nix environment configuration for the agent workspace. */
   nixConfig?: NixConfig;

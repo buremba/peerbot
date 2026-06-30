@@ -334,6 +334,91 @@ describe("ChatInstanceManager — Telegram webhook secret (finding #2)", () => {
     // Two row-locked backfills serialize on the connection row; allow headroom
     // over the 5s default for CI's slower Postgres.
   }, 15000);
+
+  test("backfill is org-scoped — a same-slug connection in another org is untouched", async () => {
+    // `connections` is unique per (organization_id, slug); the runtime
+    // connection id maps to the same slug, so two orgs can each own a row with
+    // slug `agentconn-<id>`. The backfill MUST scope its SELECT/UPDATE by org,
+    // or it would lock/overwrite the sibling org's secretToken.
+    const orgA = "org-tg-iso-a";
+    const orgB = "org-tg-iso-b";
+    const agentA = "agent-tg-iso-a";
+    const agentB = "agent-tg-iso-b";
+    const sharedId = "conn-shared-tg";
+    const { manager, connectionStore, orgContext } = await buildManager(
+      orgA,
+      agentA
+    );
+    await seedAgentRow(agentB, { organizationId: orgB });
+
+    // orgA: telegram row WITHOUT a token (the backfill target).
+    await orgContext.run({ organizationId: orgA }, () =>
+      connectionStore.saveConnection({
+        id: sharedId,
+        platform: "telegram",
+        agentId: agentA,
+        organizationId: orgA,
+        config: { platform: "telegram", botToken: "123456:fake-a" },
+        settings: { allowGroups: true },
+        metadata: {},
+        status: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      })
+    );
+    // orgB: SAME id (→ same slug) WITH a distinct pre-existing token.
+    await orgContext.run({ organizationId: orgB }, () =>
+      connectionStore.saveConnection({
+        id: sharedId,
+        platform: "telegram",
+        agentId: agentB,
+        organizationId: orgB,
+        config: {
+          platform: "telegram",
+          botToken: "123456:fake-b",
+          secretToken: "secret://orgB-untouched",
+        },
+        settings: { allowGroups: true },
+        metadata: {},
+        status: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      })
+    );
+
+    // Backfill orgA only.
+    const runtimeConnection: any = {
+      id: sharedId,
+      platform: "telegram",
+      agentId: agentA,
+      organizationId: orgA,
+      config: { platform: "telegram", botToken: "123456:fake-a" },
+      settings: { allowGroups: true },
+      metadata: {},
+      status: "active",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    await orgContext.run({ organizationId: orgA }, () =>
+      manager.ensureTelegramWebhookSecret(runtimeConnection)
+    );
+
+    // orgA gained a fresh persisted token.
+    const storedA = await orgContext.run({ organizationId: orgA }, () =>
+      connectionStore.getConnection(sharedId)
+    );
+    const tokenA = (storedA!.config as any).secretToken as string;
+    expect(typeof tokenA).toBe("string");
+    expect(tokenA.startsWith("secret://")).toBe(true);
+
+    // orgB's token is EXACTLY what it was — not overwritten, not orgA's.
+    const storedB = await orgContext.run({ organizationId: orgB }, () =>
+      connectionStore.getConnection(sharedId)
+    );
+    const tokenB = (storedB!.config as any).secretToken as string;
+    expect(tokenB).toBe("secret://orgB-untouched");
+    expect(tokenB).not.toBe(tokenA);
+  });
 });
 
 describe("ChatInstanceManager — Telegram webhook auth E2E (finding #2)", () => {

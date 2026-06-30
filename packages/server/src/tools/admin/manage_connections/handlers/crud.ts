@@ -97,6 +97,9 @@ export async function handleListConnectorGroups(
            COUNT(*)::int AS connection_count,
            bool_or(c.credential_mode IS NOT NULL) AS has_chat_connection,
            bool_or(fc.feed_count > 0) AS has_active_feeds,
+           -- DATA-facet input: only non-streaming feeds count, so a chat-only
+           -- group whose channels became streaming feeds isn't mislabeled data.
+           bool_or(fc.data_feed_count > 0) AS has_active_data_feeds,
            bool_or(cd.has_feeds_schema) AS connector_has_feeds,
            COALESCE(
              json_agg(
@@ -123,7 +126,8 @@ export async function handleListConnectorGroups(
       LIMIT 1
     ) cd ON TRUE
     LEFT JOIN LATERAL (
-      SELECT COUNT(*)::int AS feed_count
+      SELECT COUNT(*)::int AS feed_count,
+             COUNT(*) FILTER (WHERE f.kind <> 'streaming')::int AS data_feed_count
       FROM feeds f
       WHERE f.connection_id = c.id
         AND f.deleted_at IS NULL
@@ -162,7 +166,7 @@ export async function handleListConnectorGroups(
 
   const groups = rows.map((row) => {
     const connectorKey = String(row.connector_key);
-    const feedCount = row.has_active_feeds === true ? 1 : 0;
+    const feedCount = row.has_active_data_feeds === true ? 1 : 0;
     return {
       connector_key: connectorKey,
       connector_name:
@@ -230,6 +234,11 @@ export async function handleList(
            -- page, handleGet below still computes it — that path is a single
            -- row and costs ~1.2ms.
            (SELECT COUNT(*) FROM feeds f WHERE f.connection_id = c.id AND f.deleted_at IS NULL)::int AS feed_count,
+           -- The DATA facet must not light up just because a chat connection's
+           -- channels are now streaming feeds: count only non-streaming feeds
+           -- (collected/virtual) for facet.data. feed_count stays the TOTAL
+           -- (drives the feeds rail, which lists channels too).
+           (SELECT COUNT(*) FROM feeds f WHERE f.connection_id = c.id AND f.deleted_at IS NULL AND f.kind <> 'streaming')::int AS data_feed_count,
            (SELECT ct.token FROM connect_tokens ct
             WHERE ct.connection_id = c.id AND ct.status = 'pending' AND ct.expires_at > NOW()
             ORDER BY ct.created_at DESC LIMIT 1) AS connect_token,
@@ -325,7 +334,7 @@ export async function handleList(
       facets: deriveConnectionFacets({
         connectorKey: String(row.connector_key),
         isChat: row.credential_mode != null,
-        feedCount: Number(row.feed_count) || 0,
+        feedCount: Number(row.data_feed_count) || 0,
         connectorHasFeeds: row.has_feeds_schema === true,
         hasOperations,
       }),
@@ -382,9 +391,11 @@ export async function handleGet(
              THEN 'offline'
            END AS device_status,
            (SELECT COUNT(*) FROM current_event_records e WHERE e.connection_id = c.id)::int AS event_count,
-           -- feed_count so facets.data can account for live feeds even when the
-           -- connector declares no feeds_schema (mirrors handleList).
-           (SELECT COUNT(*) FROM feeds f WHERE f.connection_id = c.id AND f.deleted_at IS NULL)::int AS feed_count
+           -- feed_count = TOTAL live feeds (drives the feeds rail, channels
+           -- included). data_feed_count excludes streaming channels so the DATA
+           -- facet stays off for a pure-chat connection (mirrors list).
+           (SELECT COUNT(*) FROM feeds f WHERE f.connection_id = c.id AND f.deleted_at IS NULL)::int AS feed_count,
+           (SELECT COUNT(*) FROM feeds f WHERE f.connection_id = c.id AND f.deleted_at IS NULL AND f.kind <> 'streaming')::int AS data_feed_count
     FROM connections c
     LEFT JOIN LATERAL (
       SELECT name, feeds_schema, auth_schema
@@ -463,7 +474,7 @@ export async function handleGet(
       facets: deriveConnectionFacets({
         connectorKey: String(getRow.connector_key),
         isChat: getRow.credential_mode != null,
-        feedCount: Number(getRow.feed_count) || 0,
+        feedCount: Number(getRow.data_feed_count) || 0,
         connectorHasFeeds,
         hasOperations,
       }),

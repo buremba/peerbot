@@ -367,20 +367,6 @@ export function parseBrowserSearchResponse(
 	return extractTweetsFromInstructions(instructions);
 }
 
-/**
- * Parse x.com GraphQL home-timeline responses (HomeTimeline = "For you",
- * HomeLatestTimeline = "Following"). Both nest under
- * `data.home.home_timeline_urt.instructions`.
- */
-export function parseBrowserTimelineResponse(
-	_url: string,
-	json: unknown,
-): XTweet[] {
-	const data = json as any;
-	const instructions = data?.data?.home?.home_timeline_urt?.instructions ?? [];
-	return extractTweetsFromInstructions(instructions);
-}
-
 function tweetToEvent(tweet: XTweet): EventEnvelope {
 	const engagementData = {
 		reply_count: tweet.replies,
@@ -594,9 +580,8 @@ async function syncViaOAuthApi(
 }
 
 /**
- * Drive the paired extension's network intercept against a URL, parsing
- * intercepted x.com GraphQL responses. Shared by search and home-timeline
- * syncs — only the URL, intercept patterns, and parser differ.
+ * Drive the paired extension's network intercept for x.com search, parsing
+ * intercepted GraphQL SearchTimeline responses.
  */
 async function syncViaExtension(args: {
 	ctx: SyncContext;

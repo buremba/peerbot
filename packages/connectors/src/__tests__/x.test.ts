@@ -8,8 +8,6 @@ mock.module("@lobu/connector-sdk", connectorSdkMock);
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let parseBrowserSearchResponse: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
-let parseBrowserTimelineResponse: any;
-// biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let extractTweetsFromInstructions: any;
 // biome-ignore lint/suspicious/noExplicitAny: dynamic import after mock
 let finalizeSyncResult: any;
@@ -25,7 +23,6 @@ let XConnector: any;
 beforeAll(async () => {
 	const mod = await import("../x");
 	parseBrowserSearchResponse = mod.parseBrowserSearchResponse;
-	parseBrowserTimelineResponse = mod.parseBrowserTimelineResponse;
 	extractTweetsFromInstructions = mod.extractTweetsFromInstructions;
 	finalizeSyncResult = mod.finalizeSyncResult;
 	buildHomeFeedTweets = mod.buildHomeFeedTweets;
@@ -66,10 +63,6 @@ function wrapSearchInstructions(instructions: unknown[]) {
 			search_by_raw_query: { search_timeline: { timeline: { instructions } } },
 		},
 	};
-}
-
-function wrapHomeInstructions(instructions: unknown[]) {
-	return { data: { home: { home_timeline_urt: { instructions } } } };
 }
 
 describe("extractTweetsFromInstructions", () => {
@@ -242,51 +235,6 @@ describe("parseBrowserSearchResponse", () => {
 
 	test("returns [] for an unrelated response shape", () => {
 		expect(parseBrowserSearchResponse("https://x.com/", { data: {} })).toEqual(
-			[],
-		);
-	});
-});
-
-describe("parseBrowserTimelineResponse", () => {
-	test("reads home_timeline_urt instructions", () => {
-		const json = wrapHomeInstructions([
-			{
-				entries: [
-					{
-						entryId: "tweet-9",
-						content: {
-							itemContent: {
-								tweet_results: {
-									result: tweetResult("9", "home", "on my timeline"),
-								},
-							},
-						},
-					},
-				],
-			},
-		]);
-		const tweets = parseBrowserTimelineResponse("https://x.com/home", json);
-		expect(tweets).toHaveLength(1);
-		expect(tweets[0]).toMatchObject({ id: "9", username: "home" });
-	});
-
-	test("returns [] for a search-shaped response", () => {
-		const json = wrapSearchInstructions([
-			{
-				entries: [
-					{
-						entryId: "tweet-1",
-						content: {
-							itemContent: {
-								tweet_results: { result: tweetResult("1", "a", "x") },
-							},
-						},
-					},
-				],
-			},
-		]);
-		// Home parser must NOT accidentally read search responses (different path).
-		expect(parseBrowserTimelineResponse("https://x.com/home", json)).toEqual(
 			[],
 		);
 	});

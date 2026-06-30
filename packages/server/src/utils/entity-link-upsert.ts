@@ -24,7 +24,6 @@ import type {
 } from '@lobu/connector-sdk';
 import {
   IDENTITY,
-  normalizeEmail,
   normalizeIdentifier,
   normalizeSlackUserId,
 } from '@lobu/connector-sdk';
@@ -819,9 +818,9 @@ async function resolveLinksByKind(
  *   3. else mint a `person`, gated on a real (non-bot) human WITH a team id and a
  *      well-formed identity. Bots, team-less rows, and malformed ids → null.
  *
- * Identity is `slack_user_id = normalizeSlackUserId(teamId, authorId)` (`T…:U…`),
- * with an optional `email` secondary; a bare `U…` with no team is dropped so a
- * malformed (non-workspace-scoped) key never poisons cross-workspace matching.
+ * Identity is `slack_user_id = normalizeSlackUserId(teamId, authorId)` (`T…:U…`);
+ * a bare `U…` with no team is dropped so a malformed (non-workspace-scoped) key
+ * never poisons cross-workspace matching.
  */
 export async function resolveChannelMessageSender(
   sql: DbClient,
@@ -831,7 +830,6 @@ export async function resolveChannelMessageSender(
     authorId?: string | null;
     authorName?: string | null;
     isBot: boolean;
-    email?: string | null;
   }
 ): Promise<number | null> {
   if (params.isBot) return null;
@@ -843,15 +841,6 @@ export async function resolveChannelMessageSender(
   const identities: ExtractedLink['identities'] = [
     { namespace: IDENTITY.SLACK_USER_ID, identifier: slackId, matchOnly: false, primary: false },
   ];
-  const email = normalizeEmail(params.email ?? null);
-  if (email) {
-    identities.push({
-      namespace: IDENTITY.EMAIL,
-      identifier: email,
-      matchOnly: false,
-      primary: false,
-    });
-  }
 
   const firstHit = (matches: Map<string, number>): number | null => {
     for (const id of identities) {
@@ -881,16 +870,8 @@ export async function resolveChannelMessageSender(
   );
   if (personHit !== null) return personHit;
 
-  // 3) Mint a person — gated on a real human (is_bot=false). isBot is already
-  // rejected above, so this only re-states the contract via the same predicate
-  // primitive the connector autoCreate gate uses.
-  if (
-    !passesCreateWhen({ path: 'is_bot', equals: false }, {
-      is_bot: params.isBot,
-    } as unknown as BatchItem)
-  ) {
-    return null;
-  }
+  // 3) Mint a person. Non-bot is already enforced by the early return above, so
+  // the only remaining gate is a real org member to attribute the create to.
   const creatorUserId = await resolveOrgCreator(params.orgId);
   if (!creatorUserId) return null;
 

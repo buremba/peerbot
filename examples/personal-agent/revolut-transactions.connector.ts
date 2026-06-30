@@ -111,6 +111,16 @@ export interface RevolutTransaction {
   reason?: string;
   /** Free-form Revolut tag, e.g. "shopping". */
   tag?: string;
+  /** True for an online / internet (e-commerce) payment, false for in-person. */
+  ecommerce?: boolean;
+  /** True when the cardholder was physically present (card-present terminal). */
+  cardholderPresent?: boolean;
+  /** Groups the legs of one logical transaction (e.g. both sides of a transfer). */
+  groupKey?: string;
+  /** True when the card used is a credit card (vs debit). */
+  isCreditCard?: boolean;
+  /** Canonical merchant brand id — same across a brand's varying merchant ids. */
+  merchantBrandId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -158,15 +168,19 @@ interface RawRevolutTxn {
   reason?: unknown;
   tag?: unknown;
   paymentInitiationType?: unknown;
+  eCommerce?: unknown;
+  cardholderPresent?: unknown;
+  groupKey?: unknown;
   merchant?: {
     name?: unknown;
     mcc?: unknown;
     category?: unknown;
     country?: unknown;
     city?: unknown;
+    brandId?: unknown;
   } | null;
   counterpart?: { amount?: unknown; currency?: unknown } | null;
-  card?: { lastFour?: unknown; label?: unknown } | null;
+  card?: { lastFour?: unknown; label?: unknown; credit?: unknown } | null;
   account?: { id?: unknown; type?: unknown } | null;
 }
 
@@ -283,6 +297,19 @@ export function parseTransactionsResponse(json: unknown): RevolutTransaction[] {
         : {}),
       ...(str(raw.reason) ? { reason: str(raw.reason) } : {}),
       ...(str(raw.tag) ? { tag: str(raw.tag) } : {}),
+      ...(typeof raw.eCommerce === "boolean"
+        ? { ecommerce: raw.eCommerce }
+        : {}),
+      ...(typeof raw.cardholderPresent === "boolean"
+        ? { cardholderPresent: raw.cardholderPresent }
+        : {}),
+      ...(str(raw.groupKey) ? { groupKey: str(raw.groupKey) } : {}),
+      ...(typeof raw.card?.credit === "boolean"
+        ? { isCreditCard: raw.card.credit }
+        : {}),
+      ...(str(raw.merchant?.brandId)
+        ? { merchantBrandId: str(raw.merchant?.brandId) }
+        : {}),
     });
   }
   return out;
@@ -374,6 +401,15 @@ export function transactionToEvent(t: RevolutTransaction): EventEnvelope {
       ...(t.isSubscription ? { is_subscription: true } : {}),
       ...(t.reason ? { reason: t.reason } : {}),
       ...(t.tag ? { tag: t.tag } : {}),
+      ...(t.ecommerce !== undefined ? { ecommerce: t.ecommerce } : {}),
+      ...(t.cardholderPresent !== undefined
+        ? { cardholder_present: t.cardholderPresent }
+        : {}),
+      ...(t.groupKey ? { group_key: t.groupKey } : {}),
+      ...(t.isCreditCard !== undefined
+        ? { is_credit_card: t.isCreditCard }
+        : {}),
+      ...(t.merchantBrandId ? { merchant_brand_id: t.merchantBrandId } : {}),
     },
   };
 }
@@ -725,6 +761,11 @@ const transactionMetadataSchema = {
     is_subscription: { type: "boolean" },
     reason: { type: "string" },
     tag: { type: "string" },
+    ecommerce: { type: "boolean" },
+    cardholder_present: { type: "boolean" },
+    group_key: { type: "string" },
+    is_credit_card: { type: "boolean" },
+    merchant_brand_id: { type: "string" },
   },
 };
 
@@ -734,7 +775,7 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     name: "Revolut",
     description:
       "Syncs Revolut account transactions by intercepting the retail API JSON the Revolut web app fetches (no public API), through your paired Owletto Chrome session — no separate login, exact amounts (no DOM parsing).",
-    version: "4.5.1",
+    version: "4.5.2",
     faviconDomain: "app.revolut.com",
     authSchema: {
       // Auth is implicit via the paired Owletto extension's signed-in Chrome —

@@ -17,7 +17,11 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import type { EntityLinkOverrides, EntityLinkRule } from '@lobu/connector-sdk';
+import type {
+  EntityLinkOverrides,
+  EntityLinkPredicate,
+  EntityLinkRule,
+} from '@lobu/connector-sdk';
 import { normalizeIdentifier } from '@lobu/connector-sdk';
 import { type DbClient, getDb, pgTextArray } from '../db/client';
 import { resolveEntityLinkRules } from './entity-link-validation';
@@ -162,6 +166,66 @@ type ExtractedLink = {
   traits: Map<string, unknown>;
   title: string;
 };
+
+/**
+ * Evaluate a rule's `createWhen` gate against the event item. Returns true (mint
+ * allowed) when the predicate is absent or every declared condition holds; all
+ * conditions AND together. Only gates the CREATE-on-miss branch — matching an
+ * existing entity is never affected.
+ */
+function passesCreateWhen(predicate: EntityLinkPredicate | undefined, item: BatchItem): boolean {
+  if (!predicate) return true;
+  const value = getValueAtPath(item, predicate.path);
+  if (predicate.equals !== undefined && value !== predicate.equals) return false;
+  if (predicate.notEquals !== undefined && value === predicate.notEquals) return false;
+  if (predicate.exists !== undefined) {
+    const present = value !== undefined && value !== null && value !== '';
+    if (present !== predicate.exists) return false;
+  }
+  return true;
+}
+
+/**
+ * Ensure each identifier value is present in `entities.metadata.aliases` — the
+ * flat alias array the metric compiler resolves event fields against
+ * (`metadata->'aliases'`). entity_identities serves recall/authz; aliases serve
+ * metrics; both must carry a contact's identifiers or its per-entity metrics
+ * silently drop.
+ *
+ * Done as ONE atomic UPDATE that unions the row's existing aliases with the new
+ * identifiers in SQL — a JS read-modify-write would let concurrent ingests on
+ * the same entity clobber each other's additions. The `@>` guard means the write
+ * is skipped (0 rows) when every identifier is already present, so repeat
+ * messages from a known, fully-aliased sender cost only a PK lookup. Passing the
+ * entity's full identifier set (not just freshly-inserted ones) also repairs a
+ * legacy entity whose `entity_identities` predate aliases-on-create.
+ */
+async function ensureAliases(
+  sql: DbClient,
+  params: { orgId: string; entityId: number; identifiers: string[] }
+): Promise<void> {
+  if (params.identifiers.length === 0) return;
+  await sql`
+    UPDATE entities
+    SET metadata = jsonb_set(
+          COALESCE(metadata, '{}'::jsonb),
+          '{aliases}',
+          (
+            SELECT to_jsonb(array_agg(DISTINCT a))
+            FROM (
+              SELECT jsonb_array_elements_text(COALESCE(metadata->'aliases', '[]'::jsonb)) AS a
+              UNION
+              SELECT unnest(${pgTextArray(params.identifiers)}::text[]) AS a
+            ) u
+          )
+        ),
+        updated_at = current_timestamp
+    WHERE id = ${params.entityId}
+      AND organization_id = ${params.orgId}
+      AND deleted_at IS NULL
+      AND NOT (COALESCE(metadata->'aliases', '[]'::jsonb) @> ${sql.json(params.identifiers)}::jsonb)
+  `;
+}
 
 function extractLink(item: BatchItem, rule: EntityLinkRule): ExtractedLink | null {
   const identities: ExtractedLink['identities'] = [];
@@ -320,6 +384,14 @@ async function createEntityWithIdentities(
     entityId,
     connectorKey: params.connectorKey,
     identities: persisted,
+  });
+  // Seed metadata.aliases from the identifiers that actually attached, so the
+  // metric compiler (which resolves event fields against metadata->'aliases')
+  // can attribute this contact's events from the moment it's created.
+  await ensureAliases(sql, {
+    orgId: params.orgId,
+    entityId,
+    identifiers: attached.map((a) => a.identifier),
   });
   return { entityId, attached };
 }
@@ -616,11 +688,22 @@ async function resolveLinksByKind(
       if (entityId !== null) {
         // Matched an existing entity: accrete the non-matchOnly identities; the
         // identifier(s) we matched on already belong to this entity.
-        attached = await insertIdentities(sql, {
+        const fresh = await insertIdentities(sql, {
           orgId: params.orgId,
           entityId,
           connectorKey: params.connectorKey,
           identities: link.identities.filter((i) => !i.matchOnly),
+        });
+        attached = [...fresh];
+        // Mirror this link's non-matchOnly identifiers into metadata.aliases for
+        // metric resolution. Passing the full set (not just `fresh`) repairs a
+        // legacy entity whose identities predate aliases-on-create; ensureAliases'
+        // `@>` guard makes it a no-op write once the aliases are complete, so a
+        // repeat message from a known sender stays cheap.
+        await ensureAliases(sql, {
+          orgId: params.orgId,
+          entityId,
+          identifiers: link.identities.filter((i) => !i.matchOnly).map((i) => i.identifier),
         });
         // The matched identifiers themselves are this entity's even if a
         // re-insert was a no-op (they were how we found it), so claim them too.
@@ -629,7 +712,7 @@ async function resolveLinksByKind(
             attached.push({ namespace: id.namespace, identifier: id.identifier });
           }
         }
-      } else if (rule.autoCreate) {
+      } else if (rule.autoCreate && passesCreateWhen(rule.createWhen, item)) {
         if (!creatorUserId) {
           logger.warn(
             { orgId: params.orgId, entityType: rule.entityType },

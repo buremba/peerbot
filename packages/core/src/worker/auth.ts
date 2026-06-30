@@ -70,6 +70,21 @@ export interface WorkerTokenData {
    * normal token grants no admin access.
    */
   adminTools?: string[];
+  /**
+   * Selected runtime-provider id (e.g. "vercel"), resolved from the agent's
+   * environment at token-mint time. The generic `/internal/runtime/exec` route
+   * trusts THIS signed claim to pick the gateway-side provider — the worker
+   * never names a provider over the wire, so a compromised worker cannot reach
+   * a provider/credential its org didn't configure. Absent → the worker runs
+   * its in-process just-bash backend (no remote runtime).
+   */
+  runtimeProviderId?: string;
+  /**
+   * The `environments.id` whose vault credential backs {@link runtimeProviderId}
+   * (rows `environment:<id>:<field>`). Absent → gateway resolves the provider
+   * credential from system env only. Set together with `runtimeProviderId`.
+   */
+  environmentId?: string;
 }
 
 export function generateWorkerToken(
@@ -105,6 +120,10 @@ export function generateWorkerToken(
      * Builder admin-tool allowlist for this turn. See WorkerTokenData.adminTools.
      */
     adminTools?: string[];
+    /** Selected runtime provider id. See WorkerTokenData.runtimeProviderId. */
+    runtimeProviderId?: string;
+    /** Selected environment id backing the runtime credential. See WorkerTokenData.environmentId. */
+    environmentId?: string;
   }
 ): string {
   if (!options.channelId) {
@@ -129,6 +148,8 @@ export function generateWorkerToken(
     runId: options.runId,
     messageId: options.messageId,
     adminTools: options.adminTools,
+    runtimeProviderId: options.runtimeProviderId,
+    environmentId: options.environmentId,
   };
 
   return encrypt(JSON.stringify(payload));
@@ -202,6 +223,23 @@ export function verifyWorkerToken(token: string): WorkerTokenData | null {
         logger.error("Worker token rejected: adminTools must be a string[]");
         return null;
       }
+    }
+    // `runtimeProviderId` / `environmentId` are optional but, when present, the
+    // runtime route trusts them to pick a provider + vault credential. A forged
+    // token with a non-string here must be rejected, not coerced.
+    if (
+      data.runtimeProviderId !== undefined &&
+      typeof data.runtimeProviderId !== "string"
+    ) {
+      logger.error("Worker token rejected: runtimeProviderId must be a string");
+      return null;
+    }
+    if (
+      data.environmentId !== undefined &&
+      typeof data.environmentId !== "string"
+    ) {
+      logger.error("Worker token rejected: environmentId must be a string");
+      return null;
     }
 
     // Default TTL 2h (was 24h — a leaked token had no revocation path for a

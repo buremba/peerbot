@@ -152,6 +152,7 @@ test-unit:
 	@# src/gateway/infrastructure/queue runs in the gateway loop in test-integration (#1238)
 	@bun test packages/connector-worker
 	@bun test packages/client packages/promptfoo-provider
+	@bun test examples/personal-agent
 
 # Integration suite — vitest under Node + bun:test packages that need Postgres.
 # Requires DATABASE_URL pointing at a Postgres with pgvector installed.

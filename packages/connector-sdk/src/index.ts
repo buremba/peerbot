@@ -65,6 +65,7 @@ export type {
   EntityIdentitySpec,
   EntityLinkOverride,
   EntityLinkOverrides,
+  EntityLinkPredicate,
   EntityLinkRule,
   EntityTraitSpec,
   EventEnvelope,

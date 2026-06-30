@@ -38,6 +38,7 @@ import {
 } from "./deployment-utils.js";
 import { failTurnsForDeployment } from "./turn-liveness.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
+import { resolveAgentRuntimeSelection } from "../../lobu/stores/environment-store.js";
 
 const logger = createLogger("orchestrator");
 
@@ -627,6 +628,11 @@ export function buildDeploymentWorkerToken(args: {
   platform?: string;
   platformMetadata?: Record<string, unknown>;
   traceId?: string;
+  /** Resolved runtime provider + environment, so the deployment-lifetime token
+   *  also carries the claim the runtime route reads (parity with the per-run mint). */
+  runtimeProviderId?: string;
+  environmentId?: string;
+  runtimeExplicit?: boolean;
 }): string {
   return generateWorkerToken(
     args.userId,
@@ -1314,6 +1320,14 @@ export class DeploymentManager {
       envVars.APP_GIT_SHA = process.env.APP_GIT_SHA;
     }
 
+    // Non-secret worker runtime selector — tells the worker which provider
+    // client to use for bash. Provider credentials remain in the gateway
+    // process and are never forwarded to worker subprocesses.
+    if (process.env.LOBU_RUNTIME_PROVIDER?.trim()) {
+      envVars.LOBU_RUNTIME_PROVIDER =
+        process.env.LOBU_RUNTIME_PROVIDER.trim();
+    }
+
     // Add OTLP endpoint for distributed tracing
     const otlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
     if (otlpEndpoint) {
@@ -1331,8 +1345,9 @@ export class DeploymentManager {
     for (const key of Object.keys(process.env)) {
       if (key.startsWith(WORKER_ENV_PREFIX)) {
         const stripped = key.slice(WORKER_ENV_PREFIX.length);
-        if (stripped) {
-          envVars[stripped] = process.env[key]!;
+        const value = process.env[key];
+        if (stripped && value !== undefined) {
+          envVars[stripped] = value;
         }
       }
     }
@@ -1477,6 +1492,15 @@ export class DeploymentManager {
       organizationId: validated.organizationId,
     };
 
+    // Resolve the agent's selected Environment → runtime provider once. Used for
+    // BOTH the deployment token claim (so the runtime route picks the provider)
+    // and the worker's LOBU_RUNTIME_PROVIDER below (so the worker's bash backend
+    // routes there). Per-agent selection wins; the env-var fallback in
+    // buildWorkerTokenClaims / assembleBaseEnv covers the unpinned case.
+    const runtimeSelection = agentId
+      ? await resolveAgentRuntimeSelection(agentId, validated.organizationId)
+      : { explicit: false };
+
     const workerToken = buildDeploymentWorkerToken({
       userId,
       conversationId,
@@ -1488,6 +1512,9 @@ export class DeploymentManager {
       organizationId: validated.organizationId,
       platformMetadata,
       traceId,
+      runtimeProviderId: runtimeSelection.runtimeProviderId,
+      environmentId: runtimeSelection.environmentId,
+      runtimeExplicit: runtimeSelection.explicit,
     });
 
     const dispatcherHost = this.getDispatcherHost();
@@ -1509,6 +1536,17 @@ export class DeploymentManager {
       proxyUrl,
       dispatcherHost
     );
+
+    // Per-agent runtime selection overrides the deployment-wide
+    // LOBU_RUNTIME_PROVIDER (set by assembleBaseEnv) so the worker's bash
+    // backend routes to the agent's chosen provider. An explicit builtin pin
+    // clears it so the worker runs local just-bash even on a self-host that set
+    // the env var.
+    if (runtimeSelection.runtimeProviderId) {
+      envVars.LOBU_RUNTIME_PROVIDER = runtimeSelection.runtimeProviderId;
+    } else if (runtimeSelection.explicit) {
+      delete envVars.LOBU_RUNTIME_PROVIDER;
+    }
 
     // Include host-provided secret references when requested.
     if (includeSecrets && this.moduleEnvVarsBuilder) {

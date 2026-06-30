@@ -30,6 +30,12 @@ export function validateEntityLinkOverrides(overrides: unknown): string[] {
     if (o.autoCreate !== undefined && typeof o.autoCreate !== 'boolean') {
       errors.push(`${ctx}.autoCreate: must be a boolean`);
     }
+    if (o.createWhen !== undefined && o.createWhen !== null) {
+      const p = o.createWhen;
+      if (typeof p !== 'object' || Array.isArray(p) || typeof (p as { path?: unknown }).path !== 'string') {
+        errors.push(`${ctx}.createWhen: must be null or an object with a string 'path'`);
+      }
+    }
     if (
       o.maskIdentities !== undefined &&
       (!Array.isArray(o.maskIdentities) || !o.maskIdentities.every((s) => typeof s === 'string'))
@@ -102,6 +108,9 @@ export function resolveEntityLinkRules(
       ...rule,
       entityType: ov.retargetEntityType || rule.entityType,
       autoCreate: typeof ov.autoCreate === 'boolean' ? ov.autoCreate : rule.autoCreate,
+      // `null` clears the gate (mint on every miss); an object replaces it;
+      // omitted keeps the connector's declared gate (preserved by `...rule`).
+      createWhen: ov.createWhen === null ? undefined : (ov.createWhen ?? rule.createWhen),
       identities: nextIdentities,
     });
   }

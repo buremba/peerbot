@@ -40,6 +40,7 @@ afterAll(async () => {
 
 afterEach(() => {
   __testOnly.setDnsLookup(null);
+  __testOnly.setUpstreamRequestTimeoutMs(null);
 });
 
 function basicAuth(user: string, pass: string): string {
@@ -59,6 +60,7 @@ function rawGet(
 ): Promise<{ statusCode: number; body: string }> {
   return new Promise((resolve, reject) => {
     const socket = new net.Socket();
+    let settled = false;
     socket.connect(proxyPort, "127.0.0.1", () => {
       socket.write(
         `GET ${targetUrl} HTTP/1.1\r\nHost: ${new URL(targetUrl).host}\r\n` +
@@ -69,7 +71,14 @@ function rawGet(
     socket.on("data", (c: Buffer) => {
       data += c.toString();
     });
+    const timer = setTimeout(() => {
+      socket.destroy();
+      finish();
+    }, 1000);
     const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       const statusMatch = data.match(/^HTTP\/\d\.\d (\d+)/);
       const headerEnd = data.indexOf("\r\n\r\n");
       resolve({
@@ -82,10 +91,6 @@ function rawGet(
     // The proxy answers auth/domain/IP rejections immediately; only an
     // upstream connect attempt can stall. Treat a stall as "no proxy-side
     // rejection arrived" — fine for the permitted-host assertion.
-    socket.setTimeout(4000, () => {
-      socket.destroy();
-      finish();
-    });
   });
 }
 
@@ -210,6 +215,7 @@ describe("HTTP proxy SSRF guards", () => {
         { address: "203.0.113.10", family: 4 },
       ]
     );
+    __testOnly.setUpstreamRequestTimeoutMs(250);
     const res = await rawGet(
       "http://public.example/",
       basicAuth(deployment, token(deployment))
@@ -252,6 +258,7 @@ describe("HTTP proxy SSRF guards", () => {
         ? [{ address: "203.0.113.7", family: 4 }]
         : [{ address: "127.0.0.1", family: 4 }];
     });
+    __testOnly.setUpstreamRequestTimeoutMs(250);
 
     const client = new net.Socket();
     try {

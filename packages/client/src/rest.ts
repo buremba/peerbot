@@ -72,12 +72,10 @@ export class LobuRestClient {
     options: StreamEventsOptions = {}
   ): AsyncIterable<LobuSseEvent<TData>> {
     const controller = new AbortController();
-    const abort = () => controller.abort();
-    options.signal?.addEventListener("abort", abort, { once: true });
-    if (options.signal?.aborted) controller.abort();
-
     const queue: Array<LobuSseEvent<TData>> = [];
-    let done = false;
+    let done = options.signal?.aborted === true;
+    let pumpDone = false;
+    let stoppedByCaller = done;
     let pumpError: unknown;
     let wake: (() => void) | undefined;
 
@@ -85,6 +83,13 @@ export class LobuRestClient {
       wake?.();
       wake = undefined;
     };
+    const abort = () => {
+      done = true;
+      stoppedByCaller = true;
+      wakeReader();
+    };
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) abort();
 
     const result = await getApiV1AgentsByAgentIdEvents({
       client: this.client,
@@ -126,9 +131,12 @@ export class LobuRestClient {
           // only data payloads, so the queue is the public SDK surface.
         }
       } catch (error) {
-        if (pumpError === undefined) pumpError = error;
+        if (!controller.signal.aborted && pumpError === undefined) {
+          pumpError = error;
+        }
       } finally {
         done = true;
+        pumpDone = true;
         wakeReader();
       }
     })();
@@ -147,9 +155,15 @@ export class LobuRestClient {
       }
       if (pumpError) throw pumpError;
     } finally {
-      controller.abort();
+      if (!stoppedByCaller || pumpDone) {
+        try {
+          controller.abort();
+        } catch {
+          // Bun can throw from stream cancellation during abort propagation.
+        }
+      }
       options.signal?.removeEventListener("abort", abort);
-      await pump;
+      if (pumpDone) await pump;
     }
   }
 

@@ -23,6 +23,7 @@ import {
 } from "./exec-sandbox";
 import type { McpCliCommand, McpRuntimeRef } from "./mcp-cli-commands";
 import { buildMcpCliCommands } from "./mcp-cli-commands";
+import { getWorkerRuntimeProvider } from "./runtime";
 
 const EMBEDDED_BASH_LIMITS = {
   maxCommandCount: 50_000,
@@ -403,6 +404,26 @@ async function adaptMcpCliCommand(
 export async function createEmbeddedBashOps(
   options: EmbeddedBashOpsOptions = {}
 ): Promise<BashOperations> {
+  const runtimeProvider = getWorkerRuntimeProvider(
+    process.env.LOBU_RUNTIME_PROVIDER
+  );
+  if (runtimeProvider) {
+    if (!options.gw) {
+      throw new Error(
+        `LOBU_RUNTIME_PROVIDER=${runtimeProvider.id} requires gateway parameters`
+      );
+    }
+    if (options.mcpExposure === "cli") {
+      console.warn(
+        `[embedded] LOBU_RUNTIME_PROVIDER=${runtimeProvider.id} routes bash through a remote runtime; MCP CLI exposure is unavailable there. Use MCP tools exposure instead.`
+      );
+    }
+    console.log(
+      `[embedded] bash backend active: ${runtimeProvider.id} runtime provider`
+    );
+    return runtimeProvider.createBashOps({ gw: options.gw });
+  }
+
   const { Bash, ReadWriteFs } = await import("just-bash");
 
   const rawWorkspaceDir =

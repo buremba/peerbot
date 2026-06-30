@@ -62,6 +62,13 @@ export interface AgentSettings {
    * in addition to the named built-ins.
    */
   guardrailsInline?: AgentInlineGuardrail[];
+  /**
+   * Selected execution environment. References an `environments.id`, the
+   * literal `'builtin'`, or undefined (default: builtin in-process / the
+   * deployment-wide `LOBU_RUNTIME_PROVIDER`). Resolved to a runtime provider +
+   * vault credential at worker-token mint time.
+   */
+  environmentId?: string;
   /** OpenClaw plugin configuration */
   pluginsConfig?: PluginsConfig;
   /**

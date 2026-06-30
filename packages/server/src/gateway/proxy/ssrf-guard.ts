@@ -36,20 +36,35 @@ const blockedIpv6Ranges: ReadonlyArray<readonly [string, number]> = [
   ["ff00::", 8],
 ];
 
-const blockedIpv4List = new net.BlockList();
-for (const [address, prefix] of blockedIpv4Ranges) {
-  blockedIpv4List.addSubnet(address, prefix, "ipv4");
-}
-
-const blockedIpv6List = new net.BlockList();
-blockedIpv6List.addAddress("::", "ipv6");
-blockedIpv6List.addAddress("::1", "ipv6");
-for (const [address, prefix] of blockedIpv6Ranges) {
-  blockedIpv6List.addSubnet(address, prefix, "ipv6");
-}
-
 function hextetsToIpv4(high: number, low: number): string {
   return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
+}
+
+function ipv4ToNumber(address: string): number | undefined {
+  const parts = address.split(".");
+  if (parts.length !== 4) return undefined;
+  let value = 0;
+  for (const part of parts) {
+    if (!/^\d+$/.test(part)) return undefined;
+    const octet = Number.parseInt(part, 10);
+    if (!Number.isInteger(octet) || octet < 0 || octet > 255) {
+      return undefined;
+    }
+    value = (value << 8) | octet;
+  }
+  return value >>> 0;
+}
+
+function matchesIpv4Prefix(
+  address: string,
+  base: string,
+  prefix: number
+): boolean {
+  const addressValue = ipv4ToNumber(address);
+  const baseValue = ipv4ToNumber(base);
+  if (addressValue === undefined || baseValue === undefined) return true;
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  return (addressValue & mask) === (baseValue & mask);
 }
 
 /** Expand a valid (net.isIP===6) IPv6 string into 8 unsigned 16-bit hextets. */
@@ -80,6 +95,38 @@ function expandIpv6ToHextets(addr: string): number[] {
   const rightWithSuffix = [...right, ...ipv4Suffix];
   const zeros = new Array(8 - left.length - rightWithSuffix.length).fill(0);
   return [...left, ...zeros, ...rightWithSuffix];
+}
+
+function ipv6ToBigInt(address: string): bigint {
+  return expandIpv6ToHextets(address).reduce(
+    (acc, hextet) => (acc << 16n) | BigInt(hextet),
+    0n
+  );
+}
+
+function matchesIpv6Prefix(
+  address: string,
+  base: string,
+  prefix: number
+): boolean {
+  const shift = 128n - BigInt(prefix);
+  return ipv6ToBigInt(address) >> shift === ipv6ToBigInt(base) >> shift;
+}
+
+function isBlockedIpv4(address: string): boolean {
+  return blockedIpv4Ranges.some(([base, prefix]) =>
+    matchesIpv4Prefix(address, base, prefix)
+  );
+}
+
+function isBlockedIpv6(address: string): boolean {
+  return (
+    matchesIpv6Prefix(address, "::", 128) ||
+    matchesIpv6Prefix(address, "::1", 128) ||
+    blockedIpv6Ranges.some(([base, prefix]) =>
+      matchesIpv6Prefix(address, base, prefix)
+    )
+  );
 }
 
 /**
@@ -186,9 +233,9 @@ export function isReservedIp(ip: string): boolean {
   const normalized = normalizeIpLiteral(ip);
   switch (normalized.kind) {
     case "ipv4":
-      return blockedIpv4List.check(normalized.value, "ipv4");
+      return isBlockedIpv4(normalized.value);
     case "ipv6":
-      return blockedIpv6List.check(normalized.value, "ipv6");
+      return isBlockedIpv6(normalized.value);
     case "invalid":
       return true;
     case "not-ip":

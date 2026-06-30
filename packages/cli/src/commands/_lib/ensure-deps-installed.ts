@@ -12,7 +12,7 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 
 // Per-process memo so `lobu apply` installs each project root at most once.
 const ensuredRoots = new Set<string>();
@@ -56,15 +56,28 @@ function installIsStale(root: string): boolean {
 }
 
 function hasOnPath(bin: string): boolean {
+  const cmd = commandOnPath(bin);
+  if (!cmd) return false;
   try {
     // `env: process.env` is node's default; passed explicitly because bun
     // otherwise resolves the binary against the STARTUP environment's PATH,
     // ignoring runtime changes (which the tests rely on to stage fakes).
-    execFileSync(bin, ["--version"], { stdio: "ignore", env: process.env });
+    execFileSync(cmd, ["--version"], { stdio: "ignore", env: process.env });
     return true;
   } catch {
     return false;
   }
+}
+
+function commandOnPath(bin: string): string | null {
+  const path = process.env.PATH;
+  if (!path) return null;
+  for (const dir of path.split(delimiter)) {
+    if (!dir) continue;
+    const candidate = join(dir, bin);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
 }
 
 const bunInstaller = { cmd: "bun", args: ["install", "--ignore-scripts"] };
@@ -104,8 +117,12 @@ export function installProjectDeps(
   } = {}
 ): { installer: string } {
   const installer = pickInstaller(root);
+  const cmd = commandOnPath(installer.cmd);
+  if (!cmd) {
+    throw new Error(`Installer not found on PATH: ${installer.cmd}`);
+  }
   // `env: process.env` — see hasOnPath for why it's passed explicitly.
-  execFileSync(installer.cmd, installer.args, {
+  execFileSync(cmd, installer.args, {
     cwd: root,
     stdio: opts.stdio ?? "inherit",
     env: process.env,

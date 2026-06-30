@@ -39,6 +39,7 @@ import {
   type OrchestratorConfig,
 } from "./deployment-manager.js";
 import { buildWorkerTokenClaims } from "./worker-token-claims.js";
+import { resolveAgentRuntimeSelection } from "../../lobu/stores/environment-store.js";
 import { getDb } from "../../db/client.js";
 
 const logger = createLogger("orchestrator");
@@ -135,6 +136,14 @@ export function buildRunJobToken(args: {
    * execute gate; undefined for every normal agent/turn.
    */
   adminTools?: string[];
+  /**
+   * Resolved runtime provider + environment for this agent (from its selected
+   * Environment). Stamped into the token so the generic runtime route picks the
+   * provider + vault credential. Undefined → deployment-wide LOBU_RUNTIME_PROVIDER.
+   */
+  runtimeProviderId?: string;
+  environmentId?: string;
+  runtimeExplicit?: boolean;
 }): string | undefined {
   if (args.runId === undefined) return undefined;
   return generateWorkerToken(
@@ -341,6 +350,14 @@ export class MessageConsumer {
         userId: data.userId,
       });
 
+      // Resolve the agent's selected execution environment → runtime provider +
+      // credential, stamped into the per-run token. Falls back to the
+      // deployment-wide selector when no environment is pinned.
+      const runtimeSelection = await resolveAgentRuntimeSelection(
+        data.agentId,
+        data.organizationId
+      );
+
       data.runJobToken = buildRunJobToken({
         userId: data.userId,
         conversationId: effectiveConversationId,
@@ -358,6 +375,9 @@ export class MessageConsumer {
         // turn on the deployment.
         messageId: data.messageId,
         adminTools,
+        runtimeProviderId: runtimeSelection.runtimeProviderId,
+        environmentId: runtimeSelection.environmentId,
+        runtimeExplicit: runtimeSelection.explicit,
       });
 
       logger.info(

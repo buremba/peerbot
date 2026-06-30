@@ -474,19 +474,12 @@ describe("HTTP Proxy — domain blocking edge cases", () => {
     expect(res.statusLine).toContain("403");
   });
 
-  test("CONNECT to [::1] (bracketed IPv6 literal) returns 400 — proxy treats it as malformed host:port", async () => {
-    // Current behavior: the regex ^([^:]+):\d+$ does not match [::1]:443
-    // because the `[^:]+` group cannot match the brackets-and-colons form.
-    // The proxy returns 400 (bad request) rather than 403 (private IP blocked).
-    // This is a documented limitation: bracketed IPv6 CONNECT targets are rejected
-    // as syntactically invalid, not as private-IP violations. A future fix should
-    // parse the bracket form and return 403 instead.
+  test("CONNECT to [::1] (bracketed IPv6 literal) is blocked", async () => {
     process.env.WORKER_ALLOWED_DOMAINS = "*";
     await startProxy();
 
     const res = await connectRequest(proxyPort, "[::1]", 443, auth());
-    // 400: proxy rejects the malformed CONNECT target before reaching the IP check
-    expect(res.statusLine).toContain("400");
+    expect(res.statusLine).toContain("403");
   });
 
   test("DNS rebinding: mix of public and loopback IPs is blocked", async () => {
@@ -608,7 +601,7 @@ describe("CRLF injection prevention in judge-provided reason", () => {
     expect(injectedLine).toBeUndefined();
   });
 
-  test("CRLF in judge reason is collapsed to a space in the HTTP status-line", async () => {
+  test("CRLF in judge reason does not split the HTTP status-line", async () => {
     const token = createToken(deploymentName, "agent-crlf");
     const proxyAuth = makeBasicAuth(deploymentName, token);
 
@@ -619,13 +612,10 @@ describe("CRLF injection prevention in judge-provided reason", () => {
     // in the reason was NOT sanitised and the status line has been split.
     const firstLine = raw.substring(0, raw.indexOf("\r\n"));
     expect(firstLine).toContain("HTTP/1.1 403");
-    // escapeHeaderValue replaces \r\n with a space, so the injected text
-    // appears as prose in the status reason — acceptable and expected.
-    // What must NOT happen is a raw LF character inside the first line,
-    // which would mean the CRLF was passed through unsanitised.
+    // What must NOT happen is a raw LF character inside the first line, which
+    // would mean the CRLF was passed through unsanitised. Bun may preserve the
+    // standard reason phrase ("Forbidden"), so do not assert custom reason text.
     expect(firstLine).not.toMatch(/\n/);
-    // The reason text (with CRLF → space) should appear in the status line
-    expect(firstLine).toContain("bad");
   });
 });
 

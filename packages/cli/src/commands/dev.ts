@@ -688,12 +688,22 @@ async function waitForServerReachable(
 export function isPortFree(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const server = createServer();
+    let settled = false;
     const settle = (free: boolean) => {
+      if (settled) return;
+      settled = true;
       server.removeAllListeners();
-      server.close(() => resolve(free));
+      resolve(free);
     };
     server.once("error", () => settle(false));
-    server.once("listening", () => settle(true));
+    server.once("listening", () => {
+      server.once("close", () => settle(true));
+      try {
+        server.close();
+      } catch {
+        settle(true);
+      }
+    });
     try {
       server.listen({ port, host: "127.0.0.1", exclusive: true });
     } catch {

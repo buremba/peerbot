@@ -356,11 +356,8 @@ describe('withSSEHeartbeat — abort signal clears heartbeat interval', () => {
   });
 
   it('does not leave a live interval when the signal is already aborted at bind time', async () => {
-    // Regression for the codex audit follow-up: bindRequestAbortToStream fires
-    // abortWriter() synchronously when the signal is pre-aborted, so the
-    // setInterval call MUST happen before the bind for clearInterval() to see
-    // a defined intervalId. If the order is wrong, the interval keeps firing
-    // even though `terminated` is already true.
+    // Regression for the codex audit follow-up: pre-aborted requests should not
+    // create heartbeat state that can survive after the request is already gone.
     const ctrl = new AbortController();
     ctrl.abort();
 

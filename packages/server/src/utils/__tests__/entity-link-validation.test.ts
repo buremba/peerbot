@@ -34,6 +34,20 @@ describe('validateEntityLinkOverrides', () => {
         /maskIdentities: must be an array of strings/.test(e)
       )
     ).toBe(true);
+    expect(
+      validateEntityLinkOverrides({ $member: { createWhen: { equals: false } } }).some((e) =>
+        /createWhen: must be null or an object with a string 'path'/.test(e)
+      )
+    ).toBe(true);
+  });
+
+  it('accepts a well-formed createWhen override and null', () => {
+    expect(
+      validateEntityLinkOverrides({
+        $member: { createWhen: { path: 'metadata.is_group', equals: false } },
+        chat_group: { createWhen: null },
+      })
+    ).toEqual([]);
   });
 });
 
@@ -61,5 +75,17 @@ describe('resolveEntityLinkRules', () => {
         $member: { maskIdentities: ['phone', 'email'] },
       })
     ).toEqual([]);
+  });
+
+  it('preserves a connector-declared createWhen through overrides', () => {
+    const gated: EntityLinkRule = { ...baseRule, createWhen: { path: 'metadata.is_group', equals: false } };
+    const [out] = resolveEntityLinkRules([gated], { $member: { autoCreate: false } });
+    expect(out.createWhen).toEqual({ path: 'metadata.is_group', equals: false });
+  });
+
+  it('createWhen: null in an override clears the gate', () => {
+    const gated: EntityLinkRule = { ...baseRule, createWhen: { path: 'metadata.is_group', equals: false } };
+    const [out] = resolveEntityLinkRules([gated], { $member: { createWhen: null } });
+    expect(out.createWhen).toBeUndefined();
   });
 });

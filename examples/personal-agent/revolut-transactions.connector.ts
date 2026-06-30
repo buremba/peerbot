@@ -2,35 +2,29 @@
  * Revolut Connector
  *
  * Revolut has no public personal-banking API, so this connector reads the
- * RENDERED transaction list from the Revolut web app (`app.revolut.com`) via
- * the paired Owletto Chrome extension — not Revolut's internal
- * `/api/retail/...` JSON. The extension drives the user's real signed-in Chrome
- * session: navigate to the transactions view in a non-disruptive background
- * scrape window, scroll to lazy-load older rows, then extract each transaction
- * straight from the DOM.
+ * user's transactions by INTERCEPTING the retail API JSON the Revolut web app
+ * (`app.revolut.com`) already fetches — not by scraping the rendered DOM. It
+ * runs inside the user's real signed-in Chrome via the paired Owletto
+ * extension: open the transactions view in a background tab, attach the CDP
+ * Network domain, scroll to make the app paginate, and parse the
+ * `GET /api/retail/user/current/transactions/last` responses.
  *
- * Why DOM, not network-intercept or CDP: Revolut's `app.revolut.com` access
- * token is bound to the browser that minted it (per-request `x-device-id`
- * header + Cloudflare/TLS fingerprint), so replaying its internal API in any
- * other context (a Playwright window over CDP, exported cookies) 401s and
- * bounces to `sso.revolut.com`. Reading what the real session already rendered
- * sidesteps that entirely, and is robust against Revolut rotating/obfuscating
- * those internal endpoints. No `--remote-debugging-port`, no separate Chrome
- * profile, no cookie cloning.
+ * Why intercept, not scrape: the previous DOM-scrape path parsed amounts out of
+ * rendered row text, which broke against Revolut's virtualized SPA and produced
+ * corrupt amounts (a coffee read as £180,611). The retail API returns `amount`
+ * as a signed integer in MINOR units (−£23.45 = `-2345`); dividing by
+ * 10^exponent is exact and kills the decimal-parse corruption entirely.
  *
- * Visibility: the transaction list is a virtualized DOM (rows recycle out as
- * you scroll) and only paints in a rendered tab — a hidden/background tab never
- * loads it. We navigate with `focus_mode:"window"` (a small, non-focused scrape
- * window that renders without switching the user's tab); if that returns
- * nothing (e.g. fully occluded) we retry once with `bring_to_front`. Because
- * the list virtualizes, we HARVEST rows after every scroll step and accumulate
- * them (deduped) rather than extracting once at the end.
+ * Why intercept, not replay: the retail API authenticates via an app-added
+ * header (NOT cookies) bound to the browser that minted it, so an in-page
+ * `fetch()` or a replay from any other context 401s. Intercepting the app's OWN
+ * request captures its real headers + response for free.
  *
- * Auth is implicit: the user is already signed into app.revolut.com in the
- * paired Chrome. Revolut's session expires often (passcode / SSO re-auth), so
- * if the navigate lands on `sso.revolut.com` (host differs from requested) or a
- * login form with zero rows, we `focus_tab` to surface the tab to the user and
- * throw `RevolutAuthWallError` instead of silently scraping a logged-out page.
+ * Auth is implicit but two-layered: SSO login ≠ retail-API auth. The app-level
+ * passcode (rwa flow) must be entered in app.revolut.com or the retail API 401s
+ * (`{code:9001}`) and the page renders skeletons. When that happens — no
+ * transactions intercepted — we `notifyRevolutAuthWall` and throw
+ * `RevolutAuthWallError` instead of reporting a silently-empty sync.
  *
  * The emitted event shape matches the original file-import Revolut connector
  * (`semantic_type: "transaction"`, metadata `{ date, description, amount,
@@ -42,8 +36,7 @@ import {
   type ConnectorDefinition,
   ConnectorRuntime,
   type EventEnvelope,
-  type ExtensionScrapeConfig,
-  extensionDomScrape,
+  extensionNetworkSync,
   type SyncContext,
   type SyncResult,
 } from "@lobu/connector-sdk";
@@ -58,12 +51,18 @@ export interface RevolutCheckpoint {
 }
 
 export interface RevolutTransaction {
+  /** The retail API transaction id (a stable uuid). */
   id: string;
   description: string;
   /** Absolute value in major currency units (e.g. 20.0 for £20.00). */
   amount: number;
   direction: "in" | "out";
-  /** Account balance after the transaction, in major units (may be absent). */
+  /**
+   * Account balance after the transaction, in major units. The retail
+   * `transactions/last` array does NOT carry a balance field, so this is
+   * effectively always absent today; kept optional for parity with the
+   * original file-import shape and in case a pocket endpoint includes it.
+   */
   balance?: number;
   currency: string;
   /** ISO calendar date (YYYY-MM-DD) the transaction settled / started. */
@@ -76,205 +75,113 @@ export interface RevolutTransaction {
   state?: string;
 }
 
-/** A single transaction row scraped from the DOM (before parsing). */
-export interface RevolutDomRow {
-  /** Day-group heading, e.g. "26 May" or "3 Jan" (no year in the web app). */
-  day?: string;
-  /** Merchant / description, e.g. "O2", "Bought GBP with USD". */
-  desc?: string;
-  /** Amount strings as rendered, primary first: e.g. ["-£34.13", "-$46.15"]. */
-  amounts?: string[];
-  /** Time line, e.g. "07:18" or "07:18 · D4468637". */
-  timeRef?: string;
-}
-
 // ---------------------------------------------------------------------------
 // Parsing
 // ---------------------------------------------------------------------------
 
-// Symbol → ISO 4217. Revolut renders amounts with a leading symbol; we map the
-// common ones and fall back to any 3-letter code present in the string.
-const SYMBOL_TO_CURRENCY: Record<string, string> = {
-  "£": "GBP",
-  $: "USD",
-  "€": "EUR",
-  "¥": "JPY",
-  "₹": "INR",
-  "₽": "RUB",
-  "₺": "TRY",
-  "₩": "KRW",
-  "₪": "ILS",
-  "₴": "UAH",
-  "₫": "VND",
-  "₱": "PHP",
-  "฿": "THB",
-  "₦": "NGN",
-  R$: "BRL",
-  zł: "PLN",
-  Fr: "CHF",
+// ISO 4217 currencies whose minor-unit exponent is NOT 2. The retail API
+// returns `amount`/`balance` as signed integers in minor units; we divide by
+// 10^exponent. Default is 2 (GBP, USD, EUR, …); these are the exceptions.
+const CURRENCY_EXPONENT: Record<string, number> = {
+  JPY: 0,
+  KRW: 0,
+  VND: 0,
+  CLP: 0,
+  ISK: 0,
+  HUF: 0, // Revolut quotes HUF in whole forint
+  BHD: 3,
+  KWD: 3,
+  OMR: 3,
+  TND: 3,
+  JOD: 3,
 };
 
-const MONTHS: Record<string, number> = {
-  jan: 0,
-  feb: 1,
-  mar: 2,
-  apr: 3,
-  may: 4,
-  jun: 5,
-  jul: 6,
-  aug: 7,
-  sep: 8,
-  sept: 8,
-  oct: 9,
-  nov: 10,
-  dec: 11,
-};
+/** Convert a signed minor-unit integer to major units for the given currency. */
+export function minorToMajor(minor: number, currency: string): number {
+  const exp = CURRENCY_EXPONENT[(currency ?? "").toUpperCase()] ?? 2;
+  return minor / 10 ** exp;
+}
+
+/** One raw transaction object as it appears in the `transactions/last` JSON. */
+interface RawRevolutTxn {
+  id?: unknown;
+  type?: unknown;
+  state?: unknown;
+  startedDate?: unknown;
+  completedDate?: unknown;
+  currency?: unknown;
+  amount?: unknown;
+  balance?: unknown;
+  description?: unknown;
+  merchant?: { name?: unknown } | null;
+  counterpart?: { amount?: unknown; currency?: unknown } | null;
+}
 
 /**
- * Parse a rendered amount string like "-£34.13", "+£34.13", "-$1,234.56",
- * "1.234,56 zł" into { amount (signed, major units), currency }.
+ * Parse a `GET /api/retail/user/current/transactions/last` response body into
+ * RevolutTransactions. The response is a JSON ARRAY of transaction objects.
  *
- * Returns the SIGNED value so callers can derive direction. Handles both
- * thousands/decimal conventions: a comma is a decimal separator only when 1-2
- * digits trail it (e.g. "1,80" vs "1,234").
+ * Amounts are signed minor-unit integers → `minorToMajor`. A negative `amount`
+ * is money out. `startedDate` is epoch-ms. We keep every state (COMPLETED /
+ * PENDING / DECLINED / REVERTED) and stamp `state` in metadata rather than
+ * dropping rows, so spend filtering stays a downstream (metric-layer) decision
+ * and nothing is silently lost.
+ *
+ * Returns `[]` for a non-array body — notably the retail auth-wall error body
+ * `{code:9001,"message":"Phone and/or passcode are incorrect"}` — so the sync's
+ * zero-items branch can raise the auth wall.
  */
-export function parseAmountString(
-  raw: string
-): { amount: number; currency: string } | null {
-  const s = (raw ?? "").trim();
-  if (!s) return null;
-
-  // Currency: prefer an explicit 3-letter ISO code, else a known symbol.
-  let currency: string | null = null;
-  const isoMatch = s.match(/\b([A-Z]{3})\b/);
-  if (isoMatch) currency = isoMatch[1];
-  if (!currency) {
-    // Longest symbols first so "R$" beats "$".
-    for (const sym of Object.keys(SYMBOL_TO_CURRENCY).sort(
-      (a, b) => b.length - a.length
-    )) {
-      if (s.includes(sym)) {
-        currency = SYMBOL_TO_CURRENCY[sym];
-        break;
-      }
-    }
-  }
-  if (!currency) return null;
-
-  // Sign: an explicit minus, or a parenthesised negative. Default positive.
-  const negative = /-/.test(s) || /^\(.*\)$/.test(s.replace(/\s/g, ""));
-
-  // Strip everything but digits and separators, then normalise to a JS number.
-  const numPart = s.replace(/[^\d.,]/g, "");
-  if (!numPart) return null;
-  let normalised: string;
-  const lastComma = numPart.lastIndexOf(",");
-  const lastDot = numPart.lastIndexOf(".");
-  if (lastComma !== -1 && lastDot !== -1) {
-    // Both present: the later one is the decimal separator.
-    normalised =
-      lastComma > lastDot
-        ? numPart.replace(/\./g, "").replace(",", ".")
-        : numPart.replace(/,/g, "");
-  } else if (lastComma !== -1) {
-    // Only comma: decimal if 1-2 trailing digits, else thousands.
-    const decimals = numPart.length - lastComma - 1;
-    normalised =
-      decimals === 1 || decimals === 2
-        ? numPart.replace(",", ".")
-        : numPart.replace(/,/g, "");
-  } else {
-    normalised = numPart;
-  }
-
-  const value = Number.parseFloat(normalised);
-  if (!Number.isFinite(value)) return null;
-  return {
-    amount: negative ? -Math.abs(value) : Math.abs(value),
-    currency: currency.toUpperCase(),
-  };
-}
-
-/**
- * Resolve a bare "26 May" / "3 Jan" day heading to a full Date. The web app
- * omits the year on day headings, so we assume the day belongs to the current
- * year; if that lands in the future relative to `now`, it's the prior year
- * (handles the Dec→Jan boundary). An explicit 4-digit year in the heading wins.
- * The time, if present, is applied; otherwise noon UTC (a stable anchor).
- */
-export function parseRevolutDate(
-  day: string,
-  timeRef: string,
-  now: number = Date.now()
-): Date | null {
-  const dm = (day ?? "").match(/(\d{1,2})\s*([A-Za-z]{3,4})\.?\s*(\d{4})?/);
-  if (!dm) return null;
-  const dayNum = Number.parseInt(dm[1], 10);
-  const month = MONTHS[dm[2].toLowerCase()];
-  if (month === undefined || !Number.isFinite(dayNum)) return null;
-
-  const explicitYear = dm[3] ? Number.parseInt(dm[3], 10) : null;
-  const tm = (timeRef ?? "").match(/(\d{1,2}):(\d{2})/);
-  const hours = tm ? Number.parseInt(tm[1], 10) : 12;
-  const minutes = tm ? Number.parseInt(tm[2], 10) : 0;
-
-  let year = explicitYear ?? new Date(now).getUTCFullYear();
-  let d = new Date(Date.UTC(year, month, dayNum, hours, minutes, 0));
-  if (!explicitYear && d.getTime() > now + 86_400_000) {
-    // A future date with no explicit year → it belongs to the prior year.
-    year -= 1;
-    d = new Date(Date.UTC(year, month, dayNum, hours, minutes, 0));
-  }
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
-/** Deterministic id for a row that carries no DOM id: hash its stable fields.
- * `timeRef` (the row's "HH:MM[ · ref]" line) is part of the basis so two
- * same-day transactions with the same merchant and amount but different times
- * get distinct ids instead of colliding and being deduped away. */
-function synthesizeId(
-  date: string,
-  desc: string,
-  signedAmount: string,
-  timeRef: string
-): string {
-  const basis = `${date}|${desc}|${signedAmount}|${timeRef}`;
-  let h = 2166136261;
-  for (let i = 0; i < basis.length; i++) {
-    h ^= basis.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return (h >>> 0).toString(16).padStart(8, "0");
-}
-
-/** Map scraped DOM rows to RevolutTransactions (drops unparseable rows). */
-export function buildTransactionsFromDom(
-  rows: RevolutDomRow[],
-  now: number = Date.now()
-): RevolutTransaction[] {
+export function parseTransactionsResponse(json: unknown): RevolutTransaction[] {
+  if (!Array.isArray(json)) return [];
   const out: RevolutTransaction[] = [];
-  for (const r of rows) {
-    const desc = (r?.desc ?? "").trim();
-    const amounts = Array.isArray(r?.amounts) ? r.amounts : [];
-    if (!desc || amounts.length === 0) continue;
+  for (const raw of json as RawRevolutTxn[]) {
+    if (!raw || typeof raw !== "object") continue;
 
-    const money = parseAmountString(amounts[0]);
-    if (!money) continue;
+    const id = typeof raw.id === "string" ? raw.id : null;
+    const amountMinor =
+      typeof raw.amount === "number" && Number.isFinite(raw.amount)
+        ? raw.amount
+        : null;
+    const currency =
+      typeof raw.currency === "string" ? raw.currency.toUpperCase() : null;
+    const startedMs =
+      typeof raw.startedDate === "number" && Number.isFinite(raw.startedDate)
+        ? raw.startedDate
+        : typeof raw.completedDate === "number" &&
+            Number.isFinite(raw.completedDate)
+          ? raw.completedDate
+          : null;
+    if (!id || amountMinor === null || !currency || startedMs === null) {
+      continue;
+    }
 
-    const occurredAt = parseRevolutDate(r?.day ?? "", r?.timeRef ?? "", now);
-    if (!occurredAt) continue;
+    const occurredAt = new Date(startedMs);
+    if (Number.isNaN(occurredAt.getTime())) continue;
 
-    const signedStr =
-      money.amount < 0 ? `-${Math.abs(money.amount)}` : `${money.amount}`;
-    const date = occurredAt.toISOString().slice(0, 10);
+    const major = minorToMajor(amountMinor, currency);
+    const merchantName =
+      raw.merchant && typeof raw.merchant.name === "string"
+        ? raw.merchant.name.trim()
+        : "";
+    const description =
+      merchantName ||
+      (typeof raw.description === "string" ? raw.description.trim() : "") ||
+      raw.type?.toString?.() ||
+      "Transaction";
+
     out.push({
-      id: synthesizeId(date, desc, signedStr, (r?.timeRef ?? "").trim()),
-      description: desc,
-      amount: Math.abs(money.amount),
-      direction: money.amount < 0 ? "out" : "in",
-      currency: money.currency,
-      date,
+      id,
+      description,
+      amount: Math.abs(major),
+      direction: major < 0 ? "out" : "in",
+      ...(typeof raw.balance === "number" && Number.isFinite(raw.balance)
+        ? { balance: minorToMajor(raw.balance, currency) }
+        : {}),
+      currency,
+      date: occurredAt.toISOString().slice(0, 10),
       occurredAt,
+      ...(typeof raw.type === "string" ? { type: raw.type } : {}),
+      ...(typeof raw.state === "string" ? { state: raw.state } : {}),
     });
   }
   return out;
@@ -376,11 +283,11 @@ function requireExtensionDispatcher(ctx: SyncContext): ChromeActionDispatcher {
   return handle;
 }
 
-/** Raised when the scrape lands on Revolut's passcode / SSO sign-in wall. */
+/** Raised when the retail API is unauthenticated (passcode / SSO sign-in wall). */
 export class RevolutAuthWallError extends Error {
   constructor(landedUrl: string) {
     super(
-      `Revolut session needs sign-in (redirected to ${landedUrl}). The scrape tab was focused so you can re-enter your passcode; the next sync will use the authenticated session.`
+      `Revolut session needs sign-in (no transactions returned from ${landedUrl}). Enter your Revolut passcode in the focused Chrome window; the next sync will use the authenticated session.`
     );
     this.name = "RevolutAuthWallError";
   }
@@ -388,8 +295,7 @@ export class RevolutAuthWallError extends Error {
 
 async function notifyRevolutAuthWall(
   dispatcher: ChromeActionDispatcher,
-  landedUrl: string,
-  tabId?: number
+  landedUrl: string
 ): Promise<void> {
   try {
     await dispatcher.dispatch("show_notification", {
@@ -400,108 +306,11 @@ async function notifyRevolutAuthWall(
       body: "Enter your Revolut passcode in the focused Chrome window, then rerun the sync.",
       landed_url: landedUrl,
       click_url: landedUrl,
-      ...(typeof tabId === "number" ? { tab_id: tabId } : {}),
     });
   } catch {
     // Best-effort only: lack of notification permission or an unavailable
     // extension notification API must not hide the real auth-wall failure.
   }
-}
-
-// ---------------------------------------------------------------------------
-// DOM scrape (declarative cs_scrape via the extension's content script)
-// ---------------------------------------------------------------------------
-
-const REVOLUT_ALLOWED_ORIGINS = ["revolut.com", "*.revolut.com"];
-
-// A transaction line carries either a currency symbol or a 3-letter ISO code,
-// plus a digit. A time line starts "HH:MM".
-const AMOUNT_LINE_RE = /[£$€¥₹₽₺₩₪₴₫₱฿₦]|\b[A-Z]{3}\b/;
-const TIME_LINE_RE = /^\d{1,2}:\d{2}/;
-
-// Declarative config for the extension's content-script scraper. The list is a
-// set of `[role="transactions-group"]` day sections (the group's first text
-// line is the day heading), each holding one `button` per transaction. We grab
-// every row's full innerText plus the clean merchant name ([class*=ItemTitle])
-// and parse amounts/time/desc out of the text in TS (rawRowToDomRow). The
-// content script handles scroll pagination + the virtualized-list dedup, so no
-// in-page accumulator is needed. `loggedOutWhen` flags the app->sso redirect.
-const REVOLUT_SCRAPE_CONFIG: ExtensionScrapeConfig = {
-  scroll: { max: 20, stall: 3, waitMs: 1500 },
-  loggedOutWhen: {
-    hostRegex: "sso\\.revolut\\.com",
-    pathRegex: "(signin|passcode|login)",
-  },
-  group: {
-    selector: '[role="transactions-group"]',
-    rowSelector: "button",
-    labelFromFirstLine: true,
-  },
-  requireFields: ["text"],
-  fields: {
-    text: { take: "text" },
-    title: { selector: '[class*="ItemTitle"]', take: "text", firstLine: true },
-  },
-};
-
-/** Convert one raw cs_scrape row ({ group, text, title }) into a RevolutDomRow,
- * splitting the row's innerText into amount lines and a time line (the same
- * shape buildTransactionsFromDom expects). */
-function rawRowToDomRow(raw: Record<string, unknown>): RevolutDomRow {
-  const text = typeof raw.text === "string" ? raw.text : "";
-  const lines = text
-    .split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const amounts = lines.filter((l) => AMOUNT_LINE_RE.test(l) && /\d/.test(l));
-  const timeRef = lines.find((l) => TIME_LINE_RE.test(l)) ?? "";
-  const title = typeof raw.title === "string" ? raw.title.trim() : "";
-  const desc = title || lines[0] || "";
-  const day = typeof raw.group === "string" ? raw.group : "";
-  return { day, desc, amounts, timeRef };
-}
-
-/**
- * Render the Revolut transactions page in the paired Chrome and harvest rows
- * via one declarative `cs_scrape` (content script — no debugger, so the page
- * renders normally). The content script scrolls `maxScrolls` times and returns
- * deduped rows. On an auth wall (`loggedOutWhen` matched the app->sso redirect),
- * `extensionDomScrape` reports `loggedIn:false` and we raise — never scrape a
- * logged-out page.
- */
-async function scrapeTransactionRows(
-  dispatcher: ChromeActionDispatcher,
-  url: string,
-  maxScrolls: number
-): Promise<RevolutDomRow[]> {
-  // Scrape in a FRESH, dedicated window each run — never reuse a long-lived one.
-  //
-  // The extension's `genericScrape` harvests from the tab's CURRENT scroll
-  // position and only scrolls further DOWN, and Revolut's list virtualizes
-  // off-screen rows. A reused window left scrolled deep into history by the
-  // previous run therefore harvests only OLD rows and walks the sync backwards
-  // in time. A fresh window (persistent:false) always loads `/transactions` at
-  // the top (newest), can't be corrupted by a concurrent run sharing the same
-  // window, and stays signed in via the Chrome profile's Revolut session
-  // cookies. The extension's tab-reaper disposes the window shortly after the
-  // run, so nothing accumulates.
-  const result = await extensionDomScrape<RevolutDomRow>({
-    dispatcher,
-    url,
-    config: {
-      ...REVOLUT_SCRAPE_CONFIG,
-      scroll: { ...REVOLUT_SCRAPE_CONFIG.scroll, max: maxScrolls },
-    },
-    parseRows: (raw) => raw.map(rawRowToDomRow),
-    allowedOrigins: REVOLUT_ALLOWED_ORIGINS,
-    persistent: false,
-  });
-  if (!result.loggedIn) {
-    const landedUrl = result.landedUrl ?? url;
-    await notifyRevolutAuthWall(dispatcher, landedUrl, result.tabId);
-    throw new RevolutAuthWallError(landedUrl);
-  }
-  return result.items;
 }
 
 // ---------------------------------------------------------------------------
@@ -513,6 +322,12 @@ async function scrapeTransactionRows(
 // `/transactions?accountType=pocket&walletId=<uuid>&pocketId=<uuid>` — point a
 // second feed's `start_url` there to sync a non-default currency pocket.
 const DEFAULT_START_URL = "https://app.revolut.com/transactions";
+
+// The retail endpoint the SPA fetches as you scroll the transaction list. We
+// intercept its response body rather than scraping the rendered rows.
+const TRANSACTIONS_LAST_PATTERN = "api/retail/user/current/transactions/last";
+
+const REVOLUT_ALLOWED_ORIGINS = ["revolut.com", "*.revolut.com"];
 
 const configSchema = {
   type: "object",
@@ -531,10 +346,16 @@ const configSchema = {
     max_scrolls: {
       type: "integer",
       minimum: 1,
-      maximum: 100,
+      maximum: 200,
       default: 20,
       description:
-        "Maximum scroll iterations to lazy-load older transactions (default: 20).",
+        "Maximum scroll iterations to make the app paginate older transactions. Each page is ~125 rows, so 20 covers normal incremental syncs; raise it (e.g. 200) for a deep first backfill spanning years of history.",
+    },
+    backfill: {
+      type: "boolean",
+      default: false,
+      description:
+        "One-time historical backfill: ignore the checkpoint and re-emit EVERY fetched transaction (the gateway dedups by id, so re-emitting is safe). Pair with a high max_scrolls to re-ingest years of history with correct amounts, then set back to false for normal incremental syncs.",
     },
   },
 };
@@ -558,23 +379,23 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     key: "revolut",
     name: "Revolut",
     description:
-      "Syncs Revolut account transactions by reading the rendered Revolut web app (no public API) through your paired Owletto Chrome session — no separate login, robust against Revolut's rotating internal API.",
-    version: "3.4.0",
+      "Syncs Revolut account transactions by intercepting the retail API JSON the Revolut web app fetches (no public API), through your paired Owletto Chrome session — no separate login, exact amounts (no DOM parsing).",
+    version: "4.0.0",
     faviconDomain: "app.revolut.com",
     authSchema: {
       // Auth is implicit via the paired Owletto extension's signed-in Chrome —
-      // no CDP, no cookie capture. Each run scrapes in a fresh, dedicated window
-      // (shared profile cookies keep it signed in); when Revolut's session
-      // expires the page redirects to sso.revolut.com, `loggedOutWhen` flags it,
-      // and the sync fails with a "needs sign-in" message so the user can
-      // re-authenticate Revolut in Chrome before the next run.
+      // no CDP attach from our side beyond the Network domain, no cookie
+      // capture. When Revolut's session/passcode expires the retail API 401s
+      // and returns no transactions; the sync fails with a "needs sign-in"
+      // message so the user can re-authenticate in Chrome before the next run.
       methods: [{ type: "none" }],
     },
     feeds: {
       transactions: {
         key: "transactions",
         name: "Transactions",
-        description: "Account transactions read from the Revolut web app DOM.",
+        description:
+          "Account transactions read from the Revolut web app's retail API.",
         configSchema,
         eventKinds: {
           transaction: {
@@ -603,24 +424,67 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
         : null;
     const maxScrolls = Math.max(
       1,
-      Math.min(100, Number(config.max_scrolls ?? 20) || 20)
+      Math.min(200, Number(config.max_scrolls ?? 20) || 20)
     );
+    // Backfill mode ignores the checkpoint and re-emits every fetched row (the
+    // gateway dedups by origin_id), so historical transactions older than the
+    // checkpoint are re-ingested with correct amounts.
+    const backfill = config.backfill === true;
 
-    const rows = await scrapeTransactionRows(dispatcher, startUrl, maxScrolls);
-    const all = buildTransactionsFromDom(rows);
+    // Intercept the retail API the SPA fetches on scroll. The helper opens an
+    // about:blank tab, starts the Network listener BEFORE navigating (so the
+    // initial render's XHRs aren't missed), then scroll-paginates and drains.
+    const result = await extensionNetworkSync<RevolutTransaction>({
+      dispatcher,
+      url: startUrl,
+      config: {
+        interceptPatterns: [{ regex: TRANSACTIONS_LAST_PATTERN }],
+        allowedOrigins: REVOLUT_ALLOWED_ORIGINS,
+        maxScrolls,
+        scrollDelayMs: 2500,
+        responseTimeoutMs: 8000,
+      },
+      parseResponse: (_url, json) => parseTransactionsResponse(json),
+      // Revolut's transaction list is an inner virtualized scroll container, so
+      // scrolling the window alone may not page it. Scroll the deepest
+      // scrollable element (the list), then nudge the window as a fallback, and
+      // dispatch an `End` key to trigger lazy-load either way.
+      triggerNextPage: async (tabId, d) => {
+        await d.dispatch("evaluate", {
+          tab_id: tabId,
+          expression: `(() => {
+            const els = [...document.querySelectorAll('*')].filter((e) => {
+              const s = getComputedStyle(e);
+              return /(auto|scroll)/.test(s.overflowY) && e.scrollHeight > e.clientHeight + 40;
+            });
+            els.sort((a, b) => b.scrollHeight - a.scrollHeight);
+            const target = els[0];
+            if (target) target.scrollTo(0, target.scrollHeight);
+            window.scrollTo(0, document.documentElement.scrollHeight);
+            return 1;
+          })()`,
+          allowed_origins: REVOLUT_ALLOWED_ORIGINS,
+        });
+      },
+    });
 
-    // Fail closed. We only reach here logged in (scrapeTransactionRows throws on
-    // an auth wall), so ZERO parsed transactions almost certainly means a DOM /
-    // selector regression or an unrendered list — not a genuinely empty
-    // account. Surfacing it as a failure (instead of a silent empty sync) keeps
-    // it alertable and leaves the checkpoint untouched.
-    if (all.length === 0) {
-      throw new Error(
-        "Revolut scrape returned 0 transactions on a logged-in page — likely a DOM/selector change or an unrendered list; failing rather than reporting an empty sync."
-      );
+    // Fail closed. Zero intercepted transactions means the retail API returned
+    // nothing parseable — almost always the passcode/SSO wall (401 `{code:9001}`
+    // body, an sso.revolut.com redirect, or skeleton rows that never fire the
+    // fetch), not a genuinely empty account. Notify + raise the typed auth-wall
+    // error (leaves the checkpoint untouched) instead of a silent empty sync.
+    if (result.items.length === 0) {
+      await notifyRevolutAuthWall(dispatcher, startUrl);
+      throw new RevolutAuthWallError(startUrl);
     }
 
-    let transactions = filterTransactionsSinceCheckpoint(all, checkpoint);
+    const all = result.items;
+    // A null checkpoint makes the filter dedup-only (emit everything) — that IS
+    // backfill mode; otherwise drop rows at/older than the checkpoint.
+    let transactions = filterTransactionsSinceCheckpoint(
+      all,
+      backfill ? null : checkpoint
+    );
     if (currencyFilter) {
       transactions = transactions.filter((t) => t.currency === currencyFilter);
     }
@@ -631,11 +495,8 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     const events: EventEnvelope[] = transactions.map(transactionToEvent);
 
     // Monotonic high-water mark: advance to the newest transaction we actually
-    // saw, but NEVER move the checkpoint backwards in time. Belt-and-suspenders
-    // on top of the fresh-window scrape (which already loads newest-first): if a
-    // partial/mis-rendered scrape ever surfaces only old rows, the checkpoint
-    // holds instead of rewinding and re-ingesting years of history. `newestSeen`
-    // is the max over the FULL scrape, not just the post-checkpoint slice.
+    // saw, but NEVER move the checkpoint backwards in time. `newestSeen` is the
+    // max over the FULL intercept, not just the post-checkpoint slice.
     const newestSeen = all.reduce<RevolutTransaction | null>(
       (max, t) =>
         !max || t.occurredAt.getTime() > max.occurredAt.getTime() ? t : max,
@@ -659,8 +520,10 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
       checkpoint: newCheckpoint as unknown as Record<string, unknown>,
       metadata: {
         items_found: events.length,
-        items_scraped: rows.length,
-        backend: "extension-dom",
+        items_scraped: all.length,
+        api_calls: result.apiCallCount,
+        backend: "extension-network",
+        mode: backfill ? "backfill" : "incremental",
         ...(currencyFilter ? { currency_filter: currencyFilter } : {}),
       },
     };

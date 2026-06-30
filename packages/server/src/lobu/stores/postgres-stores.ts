@@ -69,6 +69,7 @@ function rowToSettings(row: Record<string, any>): AgentSettings {
 		preApprovedTools: row.pre_approved_tools ?? undefined,
 		guardrails: row.guardrails ?? undefined,
 		guardrailsInline: row.guardrails_inline ?? undefined,
+		environmentId: row.environment_id ?? undefined,
 		updatedAt:
 			tsTime(row.updated_at),
 	};
@@ -129,7 +130,8 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
                    soul_md, user_md, identity_md,
                    skills_config, tools_config, plugins_config,
                    installed_providers, verbose_logging, show_tool_calls,
-                   pre_approved_tools, guardrails, guardrails_inline, updated_at
+                   pre_approved_tools, guardrails, guardrails_inline,
+                   environment_id, updated_at
             FROM agents
             WHERE id = ${agentId} AND organization_id = ${orgId}
           `
@@ -139,7 +141,8 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
                    soul_md, user_md, identity_md,
                    skills_config, tools_config, plugins_config,
                    installed_providers, verbose_logging, show_tool_calls,
-                   pre_approved_tools, guardrails, guardrails_inline, updated_at
+                   pre_approved_tools, guardrails, guardrails_inline,
+                   environment_id, updated_at
             FROM agents
             WHERE id = ${agentId}
           `;
@@ -169,6 +172,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           pre_approved_tools = ${sql.json(settings.preApprovedTools ?? [])},
           guardrails = ${sql.json(settings.guardrails ?? [])},
           guardrails_inline = ${sql.json(settings.guardrailsInline ?? [])},
+          environment_id = ${settings.environmentId ?? null},
           updated_at = ${now}
         WHERE id = ${agentId} AND organization_id = ${orgId}
       `;
@@ -194,6 +198,7 @@ export function createPostgresAgentConfigStore(): AgentConfigStore {
           installed_providers = '[]', verbose_logging = false,
           show_tool_calls = false,
           pre_approved_tools = '[]', guardrails = '[]', guardrails_inline = '[]',
+          environment_id = NULL,
           updated_at = now()
         WHERE id = ${agentId} AND organization_id = ${orgId}
       `;

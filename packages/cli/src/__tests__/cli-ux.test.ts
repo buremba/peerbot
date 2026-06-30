@@ -36,7 +36,10 @@ describe("isPortFree", () => {
     try {
       expect(await isPortFree(address.port)).toBe(false);
     } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => {
+        server.once("close", () => resolve());
+        server.close();
+      });
     }
   });
 });

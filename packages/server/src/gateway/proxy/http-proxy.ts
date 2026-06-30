@@ -277,6 +277,7 @@ type DnsLookupAllFn = (
 ) => Promise<LookupAddress[]>;
 
 let dnsLookupOverride: DnsLookupAllFn | null = null;
+let upstreamRequestTimeoutMs = 30_000;
 
 export const __testOnly = {
   isBlockedIpAddress,
@@ -294,9 +295,16 @@ export const __testOnly = {
     proxyEgressJudge = null;
     proxyRevokedTokenStore = null;
     dnsLookupOverride = null;
+    upstreamRequestTimeoutMs = 30_000;
   },
   setDnsLookup(fn: DnsLookupAllFn | null): void {
     dnsLookupOverride = fn;
+  },
+  setUpstreamRequestTimeoutMs(timeoutMs: number | null): void {
+    upstreamRequestTimeoutMs =
+      timeoutMs !== null && Number.isFinite(timeoutMs) && timeoutMs > 0
+        ? timeoutMs
+        : 30_000;
   },
 };
 
@@ -610,13 +618,19 @@ function escapeHeaderValue(value: string): string {
     .slice(0, 300);
 }
 
-/**
- * Extract hostname from CONNECT request
- */
-function extractConnectHostname(url: string): string | null {
-  // CONNECT requests are in format: "host:port"
-  const match = url.match(/^([^:]+):\d+$/);
-  return match?.[1] ? match[1] : null;
+function parseConnectTarget(
+  url: string
+): { hostname: string; port: number } | null {
+  const match =
+    url.match(/^\[([^\]]+)\]:(\d+)$/) ?? url.match(/^([^:]+):(\d+)$/);
+  const hostname = match?.[1];
+  const portRaw = match?.[2];
+  if (!hostname || !portRaw) return null;
+
+  const port = Number.parseInt(portRaw, 10);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+
+  return { hostname, port };
 }
 
 /**
@@ -629,14 +643,15 @@ async function handleConnect(
   head: Buffer
 ): Promise<void> {
   const url = req.url || "";
-  const hostname = extractConnectHostname(url);
+  const target = parseConnectTarget(url);
 
-  if (!hostname) {
+  if (!target) {
     logger.warn(`Invalid CONNECT request: ${url}`);
     clientSocket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
     clientSocket.end();
     return;
   }
+  const { hostname, port } = target;
 
   let targetSocket: net.Socket | null = null;
   clientSocket.on("error", (err) => {
@@ -743,26 +758,6 @@ async function handleConnect(
 
   logger.debug(`Allowing CONNECT to ${hostname} via ${resolvedIp}`);
 
-  // Parse host and port. The port must be a real integer in 1..65535 —
-  // `parseInt(...) || 443` would silently accept "99999" or "0" and hand a
-  // bogus value to `net.connect`.
-  const [host, portStr] = url.split(":");
-  const port = portStr ? Number.parseInt(portStr, 10) : 443;
-
-  if (!host) {
-    logger.warn(`Invalid CONNECT host: ${url}`);
-    clientSocket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
-    clientSocket.end();
-    return;
-  }
-
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    logger.warn(`Invalid CONNECT port: ${url}`);
-    clientSocket.write("HTTP/1.1 400 Bad Request\r\n\r\n");
-    clientSocket.end();
-    return;
-  }
-
   // Establish connection to target
   const tunnelSocket = net.connect(port, resolvedIp, () => {
     // Send success response to client
@@ -802,6 +797,11 @@ async function handleProxyRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse
 ): Promise<void> {
+  if (req.method === "CONNECT") {
+    await handleConnectRequestFallback(config, req, res);
+    return;
+  }
+
   const targetUrl = req.url;
 
   if (!targetUrl) {
@@ -859,10 +859,12 @@ async function handleProxyRequest(
   );
   if (!decision.allowed) {
     const reason = decision.judge?.reason ?? `Domain not allowed: ${hostname}`;
+    const safeReason = escapeHeaderValue(reason);
     logger.warn(
       `Blocked request to ${hostname} (deployment: ${deploymentName}) - ${reason}`
     );
-    res.writeHead(403, escapeHeaderValue(reason), {
+    res.statusMessage = safeReason;
+    res.writeHead(403, {
       "Content-Type": "text/plain",
     });
     res.end(
@@ -929,9 +931,80 @@ async function handleProxyRequest(
       res.end();
     }
   });
+  const upstreamTimer = setTimeout(() => {
+    proxyReq.destroy(new Error("Upstream request timed out"));
+  }, upstreamRequestTimeoutMs);
+  proxyReq.on("close", () => clearTimeout(upstreamTimer));
 
   // Stream request body
   req.pipe(proxyReq);
+}
+
+async function handleConnectRequestFallback(
+  config: ResolvedNetworkConfig,
+  req: http.IncomingMessage,
+  res: http.ServerResponse
+): Promise<void> {
+  const target = parseConnectTarget(req.url || "");
+  if (!target) {
+    res.writeHead(400, { "Content-Type": "text/plain" });
+    res.end("Bad Request: Invalid CONNECT target\n");
+    return;
+  }
+
+  const { hostname } = target;
+  const auth = await validateProxyAuth(req);
+  if (!auth) {
+    res.writeHead(407, {
+      "Content-Type": "text/plain",
+      "Proxy-Authenticate": 'Basic realm="lobu-proxy"',
+    });
+    res.end("407 Proxy Authentication Required\n");
+    return;
+  }
+
+  const { deploymentName, tokenData } = auth;
+  const decision = await checkDomainAccess(
+    config,
+    hostname,
+    tokenData.agentId,
+    tokenData.organizationId,
+    {
+      conversationId: tokenData.conversationId,
+      userId: tokenData.userId,
+    }
+  );
+  logAccessDecision(
+    "CONNECT",
+    hostname,
+    deploymentName,
+    tokenData.agentId,
+    decision
+  );
+  if (!decision.allowed) {
+    const reason = decision.judge?.reason ?? `Domain not allowed: ${hostname}`;
+    const safeReason = escapeHeaderValue(reason);
+    res.statusMessage = safeReason;
+    res.writeHead(403, {
+      "Content-Type": "text/plain",
+    });
+    res.end(
+      `403 Forbidden - ${reason}. Network access is configured via lobu.config.ts, skill configs, or the gateway configuration APIs.\n`
+    );
+    return;
+  }
+
+  const targetResolution = await resolveAndValidateTarget(hostname);
+  if (!targetResolution.ok) {
+    res.writeHead(targetResolution.statusCode ?? 502, {
+      "Content-Type": "text/plain",
+    });
+    res.end(`${targetResolution.clientMessage}\n`);
+    return;
+  }
+
+  res.writeHead(200, "Connection Established");
+  res.end();
 }
 
 /**
@@ -1018,6 +1091,10 @@ export function stopHttpProxy(server: http.Server): Promise<void> {
   return new Promise((resolve, reject) => {
     server.close((err) => {
       if (err) {
+        if (err.message === "Server is not running") {
+          resolve();
+          return;
+        }
         logger.error("Error stopping HTTP proxy:", err);
         reject(err);
       } else {
@@ -1025,5 +1102,7 @@ export function stopHttpProxy(server: http.Server): Promise<void> {
         resolve();
       }
     });
+    server.closeIdleConnections?.();
+    server.closeAllConnections?.();
   });
 }

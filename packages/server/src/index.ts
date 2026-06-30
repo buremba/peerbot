@@ -40,6 +40,7 @@ import {
 import { isExcludedSpaPath } from "./http/spa-route-filter";
 import { isShuttingDown } from "./lifecycle-state";
 import { agentRoutes } from "./lobu/agent-routes";
+import { environmentRoutes } from "./lobu/environment-routes";
 import { clientRoutes, platformSchemaRoutes } from "./lobu/client-routes";
 import { isLobuGatewayRunning } from "./lobu/gateway";
 import { handleMcp } from "./mcp-handler";
@@ -714,8 +715,10 @@ app.get("/api/health", restHealth);
 // not exposed to public ingress consumers. Mounted before mcpAuth so the
 // route handles its own auth without falling into the OAuth-bearer path.
 import { createSmokeRoutes } from "./gateway/routes/internal/smoke";
+import { createRuntimeRoutes } from "./gateway/routes/internal/runtime";
 
 app.route("/api/internal/smoke", createSmokeRoutes());
+app.route("", createRuntimeRoutes());
 
 import {
 	completeActionRun,
@@ -1311,6 +1314,7 @@ app.patch("/api/:orgSlug/organization/visibility", mcpAuth, async (c) => {
 app.route("/catalog", globalCatalogRoutes);
 app.route("/api/:orgSlug/installed", orgInstalledRoutes);
 app.route("/api/:orgSlug/agents", agentRoutes);
+app.route("/api/:orgSlug/environments", environmentRoutes);
 app.route("/api/:orgSlug/clients", clientRoutes);
 app.route("/api/agents/platforms", platformSchemaRoutes);
 

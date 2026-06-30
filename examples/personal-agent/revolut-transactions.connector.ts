@@ -375,8 +375,13 @@ const TRANSACTIONS_LAST_PATTERN = "api/retail/user/current/transactions/last";
 
 const REVOLUT_ALLOWED_ORIGINS = ["revolut.com", "*.revolut.com"];
 
-/** Poll interval while waiting for the user to enter their Revolut passcode. */
-const AUTH_POLL_MS = 10_000;
+// Generic "retry the crawl while it returns no data" mechanism. The blocking
+// reason is connector-specific (for Revolut it's the passcode/sign-in wall);
+// the wait/retry itself is not. This wants lifting into the SDK
+// (`extensionNetworkSync` gaining a `retryWhileEmptyMs`/`onEmptyRetry` option)
+// so any connector can reuse it — kept connector-local for now because the
+// runtime-provided SDK would need a release before a new option takes effect.
+const EMPTY_RETRY_POLL_MS = 10_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -410,13 +415,13 @@ const configSchema = {
       description:
         "One-time historical backfill: ignore the checkpoint and re-emit EVERY fetched transaction (the gateway dedups by id, so re-emitting is safe). Pair with a high max_scrolls to re-ingest years of history with correct amounts, then set back to false for normal incremental syncs.",
     },
-    auth_wait_seconds: {
+    wait_for_data_seconds: {
       type: "integer",
       minimum: 0,
       maximum: 600,
       default: 180,
       description:
-        "On the passcode/sign-in wall, keep retrying the crawl every 10s for this many seconds (the sign-in notification fires once) so a run triggered before sign-in still completes once you authenticate. 0 = fail fast.",
+        "If the crawl returns no data, keep retrying every 10s for this many seconds before failing. For Revolut the empty result means the passcode/sign-in wall (the sign-in notification fires once), so a run triggered before sign-in still completes once you authenticate. 0 = fail fast.",
     },
   },
 };
@@ -501,11 +506,11 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     // How long to wait for the user to enter their passcode before giving up.
     // Revolut's rwa session is short-lived, so rather than failing the instant
     // we hit the auth wall, we fire the sign-in notification and keep retrying
-    // the crawl every `AUTH_POLL_MS` — the moment the user signs in, the next
+    // the crawl every `EMPTY_RETRY_POLL_MS` — the moment the user signs in, the next
     // attempt succeeds and proceeds straight into the backfill within the fresh
     // session window. 0 disables the wait (fail fast).
-    const authWaitMs =
-      Math.max(0, Math.min(600, Number(config.auth_wait_seconds ?? 180))) *
+    const dataWaitMs =
+      Math.max(0, Math.min(600, Number(config.wait_for_data_seconds ?? 180))) *
       1000;
 
     // One crawl attempt: intercept the retail API the SPA fetches on scroll.
@@ -546,13 +551,13 @@ export default class RevolutTransactionsConnector extends ConnectorRuntime {
     // Auth-wait poll. Zero intercepted transactions means the passcode/SSO wall
     // (401 `{code:9001}`, an sso.revolut.com redirect, or skeleton rows that
     // never fire the fetch). Notify once, then re-run the crawl every
-    // AUTH_POLL_MS until the user signs in or the wait window elapses, so a run
+    // EMPTY_RETRY_POLL_MS until the user signs in or the wait window elapses, so a run
     // triggered before sign-in still completes once they authenticate.
-    if (result.items.length === 0 && authWaitMs > 0) {
+    if (result.items.length === 0 && dataWaitMs > 0) {
       await notifyRevolutAuthWall(dispatcher, startUrl);
-      const deadline = Date.now() + authWaitMs;
+      const deadline = Date.now() + dataWaitMs;
       while (result.items.length === 0 && Date.now() < deadline) {
-        await sleep(AUTH_POLL_MS);
+        await sleep(EMPTY_RETRY_POLL_MS);
         result = await runCrawl();
       }
     }

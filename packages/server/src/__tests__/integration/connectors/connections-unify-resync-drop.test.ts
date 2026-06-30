@@ -74,6 +74,7 @@ interface Captured {
 	byoTc: { status: string } | null;
 	bindingLinked: boolean;
 	webhook: { connectorKey: string; credentialMode: string | null } | null;
+	tenantContention: { orphanPruned: boolean | null; newActive: string | null } | null;
 	tableDropped: boolean;
 }
 
@@ -100,6 +101,7 @@ describe("connections-unify resync + DROP migration", () => {
 			byoTc: null,
 			bindingLinked: false,
 			webhook: null,
+			tenantContention: null,
 			tableDropped: false,
 		};
 
@@ -160,6 +162,22 @@ describe("connections-unify resync + DROP migration", () => {
 					        ${tx.json({ platform: "webhook", signatureSecret: "secret://wh" })},
 					        ${tx.json({})}, ${tx.json({})}, 'active')
 				`;
+				// H: an ACTIVE orphan BYO projection for tenant TORPHAN (its legacy
+				//    source is gone) PLUS a NEW active BYO row for the SAME tenant. The
+				//    orphan must be pruned BEFORE the upsert, or inserting the new
+				//    active row trips connections_active_chat_tenant (two active per
+				//    tenant). No agent_connections row backs the orphan.
+				await tx`
+					INSERT INTO connections (organization_id, connector_key, external_tenant_id, agent_id, display_name, status, config, credential_mode, slug, visibility)
+					VALUES (${orgId}, 'slack', 'TORPHAN', ${agentId}, 'slack', 'active',
+					        ${tx.json({ settings: {}, chatMetadata: { teamId: "TORPHAN" } })}, 'byo', 'agentconn-rs-orphan-active', 'org')
+				`;
+				await tx`
+					INSERT INTO agent_connections (id, organization_id, agent_id, platform, config, settings, metadata, status)
+					VALUES ('rs-new-torphan', ${orgId}, ${agentId}, 'slack',
+					        ${tx.json({ platform: "slack", botToken: "secret://torphan" })},
+					        ${tx.json({})}, ${tx.json({ teamId: "TORPHAN" })}, 'active')
+				`;
 
 				// ── run the migration's up-section verbatim ──────────────────────
 				await tx.unsafe(upSection);
@@ -209,6 +227,19 @@ describe("connections-unify resync + DROP migration", () => {
 					? { connectorKey: wh.connector_key, credentialMode: wh.credential_mode }
 					: null;
 
+				const [orphanActive] = await tx`
+					SELECT deleted_at FROM connections
+					WHERE organization_id = ${orgId} AND slug = 'agentconn-rs-orphan-active'
+				`;
+				const [newTorphan] = await tx`
+					SELECT status FROM connections
+					WHERE organization_id = ${orgId} AND slug = 'agentconn-rs-new-torphan' AND deleted_at IS NULL
+				`;
+				result.tenantContention = {
+					orphanPruned: orphanActive ? orphanActive.deleted_at !== null : null,
+					newActive: newTorphan?.status ?? null,
+				};
+
 				const [{ exists: tableExists }] = await tx`
 					SELECT EXISTS (
 						SELECT 1 FROM information_schema.tables
@@ -256,6 +287,13 @@ describe("connections-unify resync + DROP migration", () => {
 	it("G. migrates a platform=webhook (#1235) row instead of dropping it", () => {
 		expect(captured.webhook?.connectorKey).toBe("webhook");
 		expect(captured.webhook?.credentialMode).toBe("byo");
+	});
+
+	it("H. prunes an active orphan before upserting a new active row for the same tenant", () => {
+		// The whole migration would throw on connections_active_chat_tenant if the
+		// orphan were not pruned first; reaching here at all proves the ordering.
+		expect(captured.tenantContention?.orphanPruned).toBe(true);
+		expect(captured.tenantContention?.newActive).toBe("active");
 	});
 
 	it("F. drops the legacy agent_connections table", () => {

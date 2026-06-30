@@ -17,12 +17,29 @@
 -- Scope: ONLY BYO chat (`agentconn-<id>` rows). Managed Slack installs live in
 -- `app_installations` (`slackinst-` rows) — a different table, not retired here —
 -- so they are left untouched except where a managed row must yield the
--- one-active-per-tenant slot to a now-active BYO sibling (Step 1, mirrors the
+-- one-active-per-tenant slot to a now-active BYO sibling (Step 2, mirrors the
 -- Stage-1 BYO-wins rule + the runtime demote in upsertChatConnectionProjection).
 
--- ── Step 1: yield the active-tenant slot — demote any managed install whose ──
+-- ── Step 1: prune orphans — BYO projection rows whose legacy source was deleted
+-- (hard-deleted in agent_connections by old code after the Stage-1 backfill).
+-- MUST run BEFORE the upsert: an ACTIVE orphan for (org, platform, team) still
+-- occupies the `connections_active_chat_tenant` slot, so inserting the new
+-- ACTIVE BYO row for the same tenant in Step 3 would trip the partial unique
+-- index. Pruning here frees the slot first.
+UPDATE public.connections c
+SET deleted_at = now(), updated_at = now()
+WHERE c.credential_mode = 'byo'
+  AND c.slug LIKE 'agentconn-%'
+  AND c.deleted_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM public.agent_connections ac
+      WHERE 'agentconn-' || ac.id = c.slug
+        AND ac.organization_id = c.organization_id
+  );
+
+-- ── Step 2: yield the active-tenant slot — demote any managed install whose ──
 -- (org, platform, team) now has an ACTIVE BYO agent_connections row, so the
--- Step 2 upsert can activate the BYO projection without tripping the partial
+-- Step 3 upsert can activate the BYO projection without tripping the partial
 -- unique index `connections_active_chat_tenant`. (agent_connections is
 -- unique-per-(org, team) for Slack via idx_agent_connections_slack_workspace, so
 -- there is no BYO-vs-BYO contest; only BYO-vs-managed needs resolving.)
@@ -40,7 +57,7 @@ WHERE c.credential_mode = 'managed'
         AND ac.status = 'active'
   );
 
--- ── Step 2: upsert EVERY agent_connections row from the frozen legacy snapshot ──
+-- ── Step 3: upsert EVERY agent_connections row from the frozen legacy snapshot ──
 -- slug = 'agentconn-'||id keys the projection 1:1 to its agent_connections row.
 -- NO platform filter: agent_connections only ever held chat-store connections
 -- (the AgentConnectionStore's rows), and ALL of them — including the #1235
@@ -86,20 +103,6 @@ ON CONFLICT (organization_id, slug) WHERE deleted_at IS NULL DO UPDATE SET
     config = EXCLUDED.config,
     error_message = EXCLUDED.error_message,
     updated_at = EXCLUDED.updated_at;
-
--- ── Step 3: prune orphans — BYO projection rows whose legacy source was deleted
--- (hard-deleted in agent_connections by old code after the Stage-1 backfill) must
--- not linger as live connections once the legacy table is gone.
-UPDATE public.connections c
-SET deleted_at = now(), updated_at = now()
-WHERE c.credential_mode = 'byo'
-  AND c.slug LIKE 'agentconn-%'
-  AND c.deleted_at IS NULL
-  AND NOT EXISTS (
-      SELECT 1 FROM public.agent_connections ac
-      WHERE 'agentconn-' || ac.id = c.slug
-        AND ac.organization_id = c.organization_id
-  );
 
 -- ── Step 4: link any still-unlinked bindings to their backfilled chat connection
 -- (re-run of Stage-1 Step 3 for bindings created since). `credential_mode IS NOT

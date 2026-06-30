@@ -103,7 +103,7 @@ jobs:
         # the postgres command, so set it system-wide + reload.
         run: |
           PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres \
-            -c "ALTER SYSTEM SET maintenance_work_mem='256MB'; SELECT pg_reload_conf();"
+            -c "ALTER SYSTEM SET maintenance_work_mem='256MB'" -c "SELECT pg_reload_conf()"
 
       - name: core security tests (encryption, worker-auth)
         run: |
@@ -196,7 +196,7 @@ jobs:
         # the postgres command, so set it system-wide + reload.
         run: |
           PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres \
-            -c "ALTER SYSTEM SET maintenance_work_mem='256MB'; SELECT pg_reload_conf();"
+            -c "ALTER SYSTEM SET maintenance_work_mem='256MB'" -c "SELECT pg_reload_conf()"
 
       - name: webhook-signatures (WS1)
         working-directory: packages/server

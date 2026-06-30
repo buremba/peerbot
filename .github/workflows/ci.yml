@@ -353,7 +353,7 @@ jobs:
         # sessions pick it up).
         run: |
           PGPASSWORD=postgres psql -h 127.0.0.1 -p 5433 -U postgres \
-            -c "ALTER SYSTEM SET maintenance_work_mem='256MB'; SELECT pg_reload_conf();"
+            -c "ALTER SYSTEM SET maintenance_work_mem='256MB'" -c "SELECT pg_reload_conf()"
 
       - name: server integration suite (vitest under Node)
         working-directory: packages/server
@@ -624,7 +624,7 @@ jobs:
             sleep 1
           done
           PGPASSWORD=postgres psql -h 127.0.0.1 -p 5432 -U postgres \
-            -c "ALTER SYSTEM SET maintenance_work_mem='256MB'; SELECT pg_reload_conf();"
+            -c "ALTER SYSTEM SET maintenance_work_mem='256MB'" -c "SELECT pg_reload_conf()"
 
       - name: Apply all migrations against an empty Postgres
         env:

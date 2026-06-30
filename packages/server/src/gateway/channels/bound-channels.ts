@@ -53,9 +53,13 @@ export async function resolveBoundChannelRows(
 ): Promise<BoundChannelRow[]> {
   const { organizationId, agentId, connectionId } = opts;
   const slugFilter = connectionId ? legacyIdToSlug(connectionId) : null;
-  const agentFilterA = agentId ? sql`AND ac.agent_id = ${agentId}` : sql``;
+  // Agent scope is BINDING ownership (`b.agent_id`), NOT the connection's
+  // agent_id — a managed Slack install has agent_id NULL but its bindings still
+  // belong to the agent that linked them, so filtering on the connection would
+  // hide managed-install channels from agent-scoped list/search/audience paths.
+  const agentFilterA = agentId ? sql`AND b.agent_id = ${agentId}` : sql``;
   const agentFilterB = agentId ? sql`AND b.agent_id = ${agentId}` : sql``;
-  const ownAgentFilter = agentId ? sql`AND own.agent_id = ${agentId}` : sql``;
+  const ownAgentFilter = agentId ? sql`AND ob.agent_id = ${agentId}` : sql``;
   const connFilterA = slugFilter ? sql`AND ac.slug = ${slugFilter}` : sql``;
   const connFilterB = slugFilter ? sql`AND pc.slug = ${slugFilter}` : sql``;
 

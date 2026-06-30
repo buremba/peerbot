@@ -71,6 +71,15 @@ describe("connections-unify managed-install routing", () => {
 		expect(rows.find((r) => r.channel_id === "slack:C-MANAGED")?.id).toBe(
 			"slackinst-mr-test",
 		);
+
+		// AGENT-SCOPED paths (list_conversations / search / channel-audience) must
+		// ALSO see it: the binding belongs to the agent that linked it, even though
+		// the managed connection's own agent_id is NULL.
+		const agentScoped = await resolveBoundChannelRows(sql, {
+			organizationId: orgId,
+			agentId,
+		});
+		expect(agentScoped.map((r) => r.channel_id)).toContain("slack:C-MANAGED");
 	});
 
 	it("reinstalling a team into another org demotes the prior org's managed projection", async () => {

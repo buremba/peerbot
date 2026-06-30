@@ -212,6 +212,8 @@ export function createConversationsRoutes(): Hono<WorkerContext> {
           platformMessageId: sent.messageId,
           authorId: worker.agentId,
           authorName: worker.agentId,
+          // Bot's own post — no sender attribution; team_id is not in scope here.
+          teamId: null,
           isBot: true,
           text,
           occurredAt: new Date(),

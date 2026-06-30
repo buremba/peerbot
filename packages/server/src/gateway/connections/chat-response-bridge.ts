@@ -420,6 +420,7 @@ export class ChatResponseBridge implements ResponseRenderer {
           platformMessageId: `bot:${payload.messageId}`,
           authorId: replyMd.agentId,
           authorName: replyMd.agentId,
+          teamId: replyMd.teamId ?? null,
           isBot: true,
           text: historyText,
           occurredAt: new Date(),

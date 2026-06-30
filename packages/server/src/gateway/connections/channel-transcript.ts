@@ -12,6 +12,7 @@
  */
 import { createLogger } from "@lobu/core";
 import { getDb } from "../../db/client.js";
+import { resolveChannelMessageSender } from "../../utils/entity-link-upsert.js";
 import { stripPlatformPrefix } from "../channels/bound-channels.js";
 
 const logger = createLogger("channel-transcript");
@@ -29,6 +30,10 @@ interface PersistChannelMessageParams {
   platformMessageId: string;
   authorId?: string | null;
   authorName?: string | null;
+  /** Workspace/tenant id the author id is scoped to (Slack team_id). Required to
+   * attribute a sender — Slack user ids aren't globally unique. Null for the
+   * bot's own posts and tenantless platforms. */
+  teamId?: string | null;
   isBot: boolean;
   text: string;
   occurredAt: Date;
@@ -53,15 +58,40 @@ export async function persistChannelMessage(
   // agree on one key (else read_conversation silently returns nothing).
   const channelId = stripPlatformPrefix(params.platform, params.channelId);
   const sql = getDb();
+  const teamId = params.teamId ?? null;
+
+  // Store-only sender attribution: resolve a real (non-bot) author to its
+  // person/$member entity from the normalized identity index. NO event row, no
+  // embedding — channel_messages stays out of the knowledge pipeline. Best-effort
+  // and isolated: a resolution failure must never block transcript capture.
+  let authorEntityId: number | null = null;
+  if (!params.isBot && teamId && params.authorId) {
+    try {
+      authorEntityId = await resolveChannelMessageSender(sql, {
+        orgId: params.organizationId,
+        teamId,
+        authorId: params.authorId,
+        authorName: params.authorName ?? null,
+        isBot: params.isBot,
+      });
+    } catch (err) {
+      logger.warn(
+        { connectionId: params.connectionId, err: String(err) },
+        "sender attribution failed (non-fatal)"
+      );
+    }
+  }
+
   await sql`
     INSERT INTO channel_messages (
       organization_id, connection_id, platform, channel_id, thread_id,
-      platform_message_id, author_id, author_name, is_bot, text, occurred_at
+      platform_message_id, author_id, author_name, team_id, author_entity_id,
+      is_bot, text, occurred_at
     ) VALUES (
       ${params.organizationId}, ${params.connectionId}, ${params.platform},
       ${channelId}, ${params.threadId ?? null}, ${params.platformMessageId},
-      ${params.authorId ?? null}, ${params.authorName ?? null}, ${params.isBot},
-      ${text}, ${params.occurredAt}
+      ${params.authorId ?? null}, ${params.authorName ?? null}, ${teamId},
+      ${authorEntityId}, ${params.isBot}, ${text}, ${params.occurredAt}
     )
     ON CONFLICT (connection_id, channel_id, platform_message_id) DO NOTHING
   `;

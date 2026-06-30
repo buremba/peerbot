@@ -412,6 +412,7 @@ export class MessageHandlerBridge {
         platformMessageId: messageId,
         authorId: userId,
         authorName: message.author?.fullName ?? message.author?.userName,
+        teamId: teamId ?? null,
         isBot: message.author?.isMe === true,
         text: typeof message.text === "string" ? message.text : "",
         occurredAt:
@@ -645,6 +646,7 @@ export class MessageHandlerBridge {
                 platformMessageId: prior.id,
                 authorId: prior.author?.userId,
                 authorName: prior.author?.fullName,
+                teamId: teamId ?? null,
                 isBot: prior.author?.isMe === true,
                 text,
                 occurredAt: new Date(sentAt),

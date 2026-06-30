@@ -22,7 +22,12 @@ import type {
   EntityLinkPredicate,
   EntityLinkRule,
 } from '@lobu/connector-sdk';
-import { normalizeIdentifier } from '@lobu/connector-sdk';
+import {
+  IDENTITY,
+  normalizeEmail,
+  normalizeIdentifier,
+  normalizeSlackUserId,
+} from '@lobu/connector-sdk';
 import { type DbClient, getDb, pgTextArray } from '../db/client';
 import { resolveEntityLinkRules } from './entity-link-validation';
 import logger from './logger';
@@ -793,4 +798,128 @@ async function resolveLinksByKind(
   }
 
   return resolvedByItem;
+}
+
+/**
+ * Resolve the SENDER of a captured chat message to a person/$member entity id —
+ * STORE-ONLY attribution for `channel_messages.author_entity_id`.
+ *
+ * Unlike {@link applyEntityLinks}, this writes NO event row, stamps no
+ * `events.metadata`, and never enters the embed pipeline: it only reads the
+ * normalized identity index and, on a miss, mints a `person` (gated). Transcript
+ * is high-volume operational data, so the caller fire-and-forgets this — a
+ * resolution failure must never block capture or a webhook ack.
+ *
+ * Resolution order (driven by the #1646 cross-source collapse — a signed-in
+ * human is a `$member` carrying the team-scoped `slack_user_id`):
+ *   1. an existing `$member` with this `slack_user_id` (the signed-in human) —
+ *      return it; never create a `$member` here (membership provisioning owns
+ *      that, so attribution and ACL converge on the SAME entity).
+ *   2. else an existing `person` with it — return it.
+ *   3. else mint a `person`, gated on a real (non-bot) human WITH a team id and a
+ *      well-formed identity. Bots, team-less rows, and malformed ids → null.
+ *
+ * Identity is `slack_user_id = normalizeSlackUserId(teamId, authorId)` (`T…:U…`),
+ * with an optional `email` secondary; a bare `U…` with no team is dropped so a
+ * malformed (non-workspace-scoped) key never poisons cross-workspace matching.
+ */
+export async function resolveChannelMessageSender(
+  sql: DbClient,
+  params: {
+    orgId: string;
+    teamId?: string | null;
+    authorId?: string | null;
+    authorName?: string | null;
+    isBot: boolean;
+    email?: string | null;
+  }
+): Promise<number | null> {
+  if (params.isBot) return null;
+
+  const slackId = normalizeSlackUserId(params.teamId, params.authorId);
+  // Drop a bare `U…` with no team — never store a malformed, team-less key.
+  if (!slackId) return null;
+
+  const identities: ExtractedLink['identities'] = [
+    { namespace: IDENTITY.SLACK_USER_ID, identifier: slackId, matchOnly: false, primary: false },
+  ];
+  const email = normalizeEmail(params.email ?? null);
+  if (email) {
+    identities.push({
+      namespace: IDENTITY.EMAIL,
+      identifier: email,
+      matchOnly: false,
+      primary: false,
+    });
+  }
+
+  const firstHit = (matches: Map<string, number>): number | null => {
+    for (const id of identities) {
+      const hit = matches.get(`${id.namespace} ${id.identifier}`);
+      if (hit !== undefined) return hit;
+    }
+    return null;
+  };
+
+  // 1) Signed-in human ($member, carrying slack_user_id from #1646). No create.
+  const memberHit = firstHit(
+    await lookupMatches(sql, {
+      orgId: params.orgId,
+      entityType: '$member',
+      identities: [identities],
+    })
+  );
+  if (memberHit !== null) return memberHit;
+
+  // 2) An existing person.
+  const personHit = firstHit(
+    await lookupMatches(sql, {
+      orgId: params.orgId,
+      entityType: 'person',
+      identities: [identities],
+    })
+  );
+  if (personHit !== null) return personHit;
+
+  // 3) Mint a person — gated on a real human (is_bot=false). isBot is already
+  // rejected above, so this only re-states the contract via the same predicate
+  // primitive the connector autoCreate gate uses.
+  if (
+    !passesCreateWhen({ path: 'is_bot', equals: false }, {
+      is_bot: params.isBot,
+    } as unknown as BatchItem)
+  ) {
+    return null;
+  }
+  const creatorUserId = await resolveOrgCreator(params.orgId);
+  if (!creatorUserId) return null;
+
+  const created = await createEntityWithIdentities(sql, {
+    orgId: params.orgId,
+    connectorKey: 'slack',
+    entityType: 'person',
+    title: params.authorName?.trim() || '',
+    identities,
+    traits: new Map(),
+    creatorUserId,
+  });
+  if (created !== null && created.attached.length > 0) {
+    return created.entityId;
+  }
+  // Lost the identity create-race (a concurrent ingest minted the person first):
+  // drop the identity-less orphan and resolve to the winner instead.
+  if (created !== null) {
+    await sql`
+      DELETE FROM entities
+      WHERE id = ${created.entityId} AND organization_id = ${params.orgId}
+    `;
+    return firstHit(
+      await lookupMatches(sql, {
+        orgId: params.orgId,
+        entityType: 'person',
+        identities: [identities],
+      })
+    );
+  }
+  return null;
 }

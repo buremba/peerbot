@@ -19,7 +19,6 @@ import { getMetricsText } from "../metrics/prometheus.js";
 import { getModelProviderModules } from "../modules/module-system.js";
 import { createAudioRoutes } from "../routes/internal/audio.js";
 import { createConversationsRoutes } from "../routes/internal/conversations.js";
-import { createDeviceAuthRoutes } from "../routes/internal/device-auth.js";
 import { createFileRoutes } from "../routes/internal/files.js";
 import { createImageRoutes } from "../routes/internal/images.js";
 import { createInteractionRoutes } from "../routes/internal/interactions.js";
@@ -49,7 +48,6 @@ import {
 import { createPublicFileRoutes } from "../routes/public/files.js";
 import { resolveInstallOrgId } from "../routes/public/install-org.js";
 import { createLandingRoutes } from "../routes/public/landing.js";
-import { createMcpOAuthRoutes } from "../routes/public/mcp-oauth.js";
 import {
   type AuthProvider,
   setAuthProvider,
@@ -186,21 +184,6 @@ export function createGatewayApp(
     logger.debug("Worker gateway routes enabled at :8080/worker/*");
   }
 
-  // MCP OAuth callback MUST register before the MCP proxy mount at /mcp,
-  // otherwise the proxy's `/:mcpId/*` route swallows /mcp/oauth/callback.
-  if (coreServices) {
-    const mcpOAuthRouter = createMcpOAuthRoutes({
-      secretStore: coreServices.getSecretStore(),
-      publicGatewayUrl: coreServices.getPublicGatewayUrl(),
-      coreServices,
-      chatInstanceManager: chatInstanceManager ?? undefined,
-    });
-    app.route("", mcpOAuthRouter);
-    logger.debug(
-			"MCP OAuth callback route enabled at :8080/mcp/oauth/callback",
-    );
-  }
-
   if (mcpProxy) {
     app.all("/", async (c, next) => {
       if (mcpProxy.isMcpRequest(c)) {
@@ -237,20 +220,6 @@ export function createGatewayApp(
 
     app.route("", createRuntimeRoutes());
     logger.debug("Runtime provider routes enabled");
-  }
-
-  if (coreServices) {
-    const mcpConfigService = coreServices.getMcpConfigService();
-    if (mcpConfigService) {
-      const deviceAuthRouter = createDeviceAuthRoutes({
-        mcpConfigService,
-        secretStore: coreServices.getSecretStore(),
-      });
-      app.route("", deviceAuthRouter);
-      logger.debug(
-				"Device auth routes enabled at :8080/internal/device-auth/*",
-      );
-    }
   }
 
   if (coreServices) {

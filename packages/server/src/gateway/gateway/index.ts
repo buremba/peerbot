@@ -8,7 +8,6 @@ import type {
 import {
 	createLogger,
 	generateWorkerToken,
-	getErrorMessage,
 	encrypt,
 	verifyWorkerToken,
 } from "@lobu/core";
@@ -22,8 +21,6 @@ import type { McpConfigService } from "../auth/mcp/config-service.js";
 import type { McpProxy } from "../auth/mcp/proxy.js";
 import type { McpTool } from "../auth/mcp/tool-cache.js";
 import type { ProviderCatalogService } from "../auth/provider-catalog.js";
-import { getStoredCredential } from "../routes/internal/device-auth.js";
-import type { WritableSecretStore } from "../secrets/index.js";
 import { resolveEffectiveModelRef } from "../auth/settings/model-selection.js";
 import type { IMessageQueue } from "../infrastructure/queue/index.js";
 import {
@@ -69,7 +66,6 @@ export class WorkerGateway {
   private mcpProxy?: McpProxy;
   private providerCatalogService?: ProviderCatalogService;
   private agentSettingsStore?: AgentSettingsStore;
-  private secretStore?: WritableSecretStore;
   private deploymentActivityTracker?: DeploymentActivityTracker;
 
   constructor(
@@ -79,8 +75,7 @@ export class WorkerGateway {
     instructionService: InstructionService,
     mcpProxy?: McpProxy,
     providerCatalogService?: ProviderCatalogService,
-    agentSettingsStore?: AgentSettingsStore,
-    secretStore?: WritableSecretStore
+    agentSettingsStore?: AgentSettingsStore
   ) {
     this.queue = queue;
     this.publicGatewayUrl = publicGatewayUrl;
@@ -91,7 +86,6 @@ export class WorkerGateway {
     this.mcpProxy = mcpProxy;
     this.providerCatalogService = providerCatalogService;
     this.agentSettingsStore = agentSettingsStore;
-    this.secretStore = secretStore;
 
     // Setup Hono app
     this.app = new Hono();
@@ -154,68 +148,26 @@ export class WorkerGateway {
     logger.debug("Worker gateway routes registered");
   }
 
-  private async enrichMcpStatus(
+  private enrichMcpStatus(
     mcpStatus: Array<{
       id: string;
       name: string;
       requiresAuth: boolean;
       requiresInput: boolean;
-    }>,
-    agentId: string,
-    userId: string
-  ): Promise<
-    Array<{
-      id: string;
-      name: string;
-      requiresAuth: boolean;
-      requiresInput: boolean;
-      authenticated: boolean;
-      configured: boolean;
     }>
-  > {
-    const secretStore = this.secretStore;
-    if (!secretStore || !agentId || !userId) {
-      return mcpStatus.map((mcp) => ({
-        ...mcp,
-        authenticated: false,
-        configured: !mcp.requiresInput,
-      }));
-    }
-
-    return Promise.all(
-      mcpStatus.map(async (mcp) => {
-        if (!mcp.requiresAuth) {
-          return {
-            ...mcp,
-            authenticated: false,
-            configured: !mcp.requiresInput,
-          };
-        }
-
-        let credential: Awaited<ReturnType<typeof getStoredCredential>> = null;
-        try {
-          credential = await getStoredCredential(
-            secretStore,
-            agentId,
-            userId,
-            mcp.id
-          );
-        } catch (error) {
-          logger.warn("Failed to look up stored MCP credential", {
-            mcpId: mcp.id,
-            agentId,
-            userId,
-            error: getErrorMessage(error),
-          });
-        }
-
-        return {
-          ...mcp,
-          authenticated: !!credential,
-          configured: !mcp.requiresInput,
-        };
-      })
-    );
+  ): Array<{
+    id: string;
+    name: string;
+    requiresAuth: boolean;
+    requiresInput: boolean;
+    authenticated: boolean;
+    configured: boolean;
+  }> {
+    return mcpStatus.map((mcp) => ({
+      ...mcp,
+      authenticated: false,
+      configured: !mcp.requiresInput,
+    }));
   }
 
   /**
@@ -601,11 +553,7 @@ export class WorkerGateway {
         ),
       ]);
 
-      const enrichedMcpStatus = await this.enrichMcpStatus(
-        contextData.mcpStatus,
-        agentId || userId,
-        userId
-      );
+      const enrichedMcpStatus = this.enrichMcpStatus(contextData.mcpStatus);
 
       // Fetch tool lists and instructions for ALL MCPs (unauthenticated ones
       // will attempt discovery without credentials)

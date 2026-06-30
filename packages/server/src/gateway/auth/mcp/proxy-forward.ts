@@ -163,29 +163,12 @@ async function handleProxyRequestAuthenticated(
 		}
 	}
 
-	const channelId = tokenData.channelId || "";
-	const scopeKey = computeScopeKey(httpServer, tokenData.userId, channelId);
+	const scopeKey = computeScopeKey(tokenData.userId);
 
 	try {
-		return await forwardRequest(
-			proxy,
-			c,
-			httpServer,
-			agentId,
-			mcpId,
-			scopeKey,
-			{
-				userId: tokenData.userId,
-				platform: tokenData.platform,
-				channelId,
-				conversationId: tokenData.conversationId || "",
-				teamId: tokenData.teamId,
-				connectionId: tokenData.connectionId,
-				workerToken: sessionToken,
-				organizationId: tokenData.organizationId,
-				source: tokenData.source,
-			},
-		);
+		return await forwardRequest(proxy, c, httpServer, agentId, mcpId, scopeKey, {
+			workerToken: sessionToken,
+		});
 	} catch (error) {
 		logger.error("Failed to proxy MCP request", { error, mcpId });
 		return sendJsonRpcError(
@@ -204,15 +187,7 @@ async function forwardRequest(
 	mcpId: string,
 	scopeKey?: string,
 	authContext?: {
-		userId: string;
-		platform?: string;
-		channelId: string;
-		conversationId: string;
-		teamId?: string;
-		connectionId?: string;
 		workerToken?: string;
-		organizationId?: string;
-		source?: string;
 	},
 ): Promise<Response> {
 	const ssrfBlock = await ssrfBlockResponse(httpServer, mcpId, agentId);
@@ -239,20 +214,10 @@ async function forwardRequest(
 		return new Response("Request body too large", { status: 413 });
 	}
 
-	// Internal MCPs (lobu-memory) accept the worker JWT directly; forcing a
-	// second OAuth login would block unattended watcher runs. Non-internal
-	// MCPs use per-user credentials.
-	let credentialToken: string | undefined;
-	if (httpServer.internal) {
-		credentialToken = authContext?.workerToken;
-	} else if (scopeKey) {
-		const token = await proxy.upstream.resolveCredentialToken(
-			agentId,
-			scopeKey,
-			mcpId,
-		);
-		if (token) credentialToken = token;
-	}
+	// Internal MCPs (lobu-memory) accept the worker JWT directly.
+	const credentialToken = httpServer.internal
+		? authContext?.workerToken
+		: undefined;
 
 	// If no active session exists, re-initialize before forwarding
 	if (!sessionId && c.req.method === "POST") {
@@ -283,7 +248,6 @@ async function forwardRequest(
 
 	const headers = buildUpstreamHeaders(
 		sessionId,
-		httpServer.headers,
 		credentialToken,
 		httpServer.internal === true,
 	);
@@ -294,42 +258,6 @@ async function forwardRequest(
 		body: bodyText || undefined,
 		signal: upstreamTimeoutSignal(c.req.method),
 	});
-
-	// Detect HTTP 401 + WWW-Authenticate → start MCP OAuth 2.1 auth-code flow.
-	if (response.status === 401 && authContext) {
-		const payload = await proxy.authFlows.handleUpstream401({
-			response,
-			mcpId,
-			agentId,
-			userId: authContext.userId,
-			organizationId: authContext.organizationId,
-			scopeKey: scopeKey ?? authContext.userId,
-			httpServer,
-			wwwAuthenticate: response.headers.get("www-authenticate"),
-			platform: authContext.platform ?? "",
-			channelId: authContext.channelId,
-			conversationId: authContext.conversationId,
-			teamId: authContext.teamId,
-			connectionId: authContext.connectionId,
-			source: authContext.source,
-			deviceAuthFallback: false,
-		});
-		const finalPayload = payload ?? {
-			status: "login_required" as const,
-			message: `Authentication required for ${mcpId}.`,
-		};
-		return c.json(
-			{
-				jsonrpc: "2.0",
-				id: null,
-				result: {
-					content: [{ type: "text", text: JSON.stringify(finalPayload) }],
-					isError: true,
-				},
-			},
-			200,
-		);
-	}
 
 	// Stale-session recovery: if upstream returns 404 we sent a session id
 	// it no longer recognizes (e.g. server restart). Drop the cached id,
@@ -356,7 +284,6 @@ async function forwardRequest(
 			sessionId = proxy.upstream.getSession(sessionKey);
 			const retryHeaders = buildUpstreamHeaders(
 				sessionId,
-				httpServer.headers,
 				credentialToken,
 				httpServer.internal === true,
 			);

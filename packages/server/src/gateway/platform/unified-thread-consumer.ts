@@ -556,14 +556,12 @@ export class UnifiedThreadResponseConsumer {
  * The InteractionService emit channels that carry a CHAT-PLATFORM interaction
  * card, mapped to whether the event's `id` is durable enough to drive the
  * bridge's per-connection `handledEvents` dedup (all of them are — every posted
- * interaction gets a unique `id`). Status messages are included so a cross-pod
- * status note isn't silently dropped.
+ * interaction gets a unique `id`).
  */
 const CHAT_INTERACTION_CHANNELS = [
   "question:created",
   "tool:approval-needed",
   "link-button:created",
-  "status-message:created",
 ] as const;
 
 /**

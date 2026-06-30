@@ -1,12 +1,6 @@
 import { createLogger } from "@lobu/core";
 import { isInternalUrl } from "../../proxy/ssrf-guard.js";
 import {
-	getStoredCredential,
-	refreshCredential,
-	tryCompletePendingDeviceAuth,
-} from "../../routes/internal/device-auth.js";
-import type { WritableSecretStore } from "../../secrets/index.js";
-import {
 	buildSessionKey,
 	buildUpstreamHeaders,
 	type HttpMcpServerConfig,
@@ -66,8 +60,6 @@ export class McpUpstreamClient {
 		{ sessionId: string; expiresAt: number }
 	>();
 
-	constructor(private readonly secretStore: WritableSecretStore) {}
-
 	getSession(key: string): string | null {
 		const entry = this.sessions.get(key);
 		if (!entry) return null;
@@ -91,47 +83,10 @@ export class McpUpstreamClient {
 		this.sessions.delete(key);
 	}
 
-	async resolveCredentialToken(
-		agentId: string,
-		userId: string,
-		mcpId: string,
-	): Promise<string | null> {
-		const credential = await getStoredCredential(
-			this.secretStore,
-			agentId,
-			userId,
-			mcpId,
-		);
-		if (!credential) {
-			// No stored credential — check if there's a pending device-auth to complete
-			return tryCompletePendingDeviceAuth(
-				this.secretStore,
-				agentId,
-				userId,
-				mcpId,
-			);
-		}
-
-		// Check if token is still valid (5 minute buffer)
-		if (credential.expiresAt > Date.now() + 5 * 60 * 1000) {
-			return credential.accessToken;
-		}
-
-		// Token expired or expiring soon — refresh
-		const refreshed = await refreshCredential(
-			this.secretStore,
-			agentId,
-			userId,
-			mcpId,
-			credential,
-		);
-		return refreshed?.accessToken ?? null;
-	}
-
 	/**
 	 * Single egress point for non-streamed JSON-RPC calls to an MCP upstream.
-	 * Resolves the per-scope credential, runs the SSRF guard, and tracks the
-	 * upstream session id.
+	 * The internal lobu-memory server accepts the worker JWT directly; runs the
+	 * SSRF guard and tracks the upstream session id.
 	 */
 	async sendUpstreamRequest(
 		httpServer: HttpMcpServerConfig,
@@ -147,22 +102,14 @@ export class McpUpstreamClient {
 		const sessionId = this.getSession(sessionKey);
 
 		// Internal MCPs (lobu-memory) live in the same Lobu process and accept
-		// the worker JWT directly; forcing a second OAuth login would block
-		// unattended watcher runs. Non-internal MCPs use per-user credentials.
-		let credentialToken: string | undefined;
-		if (httpServer.internal) {
-			credentialToken = directAuthToken;
-		} else if (scopeKey) {
-			const token = await this.resolveCredentialToken(agentId, scopeKey, mcpId);
-			if (token) credentialToken = token;
-		}
+		// the worker JWT directly.
+		const credentialToken = httpServer.internal ? directAuthToken : undefined;
 
 		const ssrfBlock = await ssrfBlockResponse(httpServer, mcpId, agentId);
 		if (ssrfBlock) return ssrfBlock;
 
 		const headers = buildUpstreamHeaders(
 			sessionId,
-			httpServer.headers,
 			credentialToken,
 			httpServer.internal === true,
 		);

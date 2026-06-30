@@ -6,52 +6,11 @@ import {
   expect,
   test,
 } from "bun:test";
-import { generateWorkerToken, type SecretRef } from "@lobu/core";
-import { MockMessageQueue } from "@lobu/core/testing";
+import { generateWorkerToken } from "@lobu/core";
 import { orgContext } from "../../lobu/stores/org-context.js";
 import { McpProxy } from "../auth/mcp/proxy.js";
 import { McpToolCache } from "../auth/mcp/tool-cache.js";
 import { GrantStore } from "../permissions/grant-store.js";
-import {
-  type SecretListEntry,
-  type WritableSecretStore,
-} from "../secrets/index.js";
-
-class InMemoryWritableStore implements WritableSecretStore {
-  private readonly entries = new Map<string, { value: string; updatedAt: number }>();
-  async get(ref: SecretRef): Promise<string | null> {
-    if (!ref.startsWith("secret://")) return null;
-    const name = decodeURIComponent(ref.slice("secret://".length));
-    return this.entries.get(name)?.value ?? null;
-  }
-  async put(name: string, value: string): Promise<SecretRef> {
-    this.entries.set(name, { value, updatedAt: Date.now() });
-    return `secret://${encodeURIComponent(name)}` as SecretRef;
-  }
-  async delete(nameOrRef: string): Promise<void> {
-    const name = nameOrRef.startsWith("secret://")
-      ? decodeURIComponent(nameOrRef.slice("secret://".length))
-      : nameOrRef;
-    this.entries.delete(name);
-  }
-  async list(prefix?: string): Promise<SecretListEntry[]> {
-    const out: SecretListEntry[] = [];
-    for (const [name, e] of this.entries) {
-      if (prefix && !name.startsWith(prefix)) continue;
-      out.push({
-        ref: `secret://${encodeURIComponent(name)}` as SecretRef,
-        backend: "memory",
-        name,
-        updatedAt: e.updatedAt,
-      });
-    }
-    return out;
-  }
-}
-
-function createTestSecretStore(_queue: MockMessageQueue): InMemoryWritableStore {
-  return new InMemoryWritableStore();
-}
 
 const TEST_ENCRYPTION_KEY =
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -127,10 +86,7 @@ afterAll(() => {
 });
 
 describe("McpProxy", () => {
-  let queue: MockMessageQueue;
-
   beforeEach(() => {
-    queue = new MockMessageQueue();
     globalThis.fetch = originalFetch;
   });
 
@@ -141,9 +97,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const proxy = new McpProxy(configSource, {
-        secretStore: createTestSecretStore(queue),
-      });
+      const proxy = new McpProxy(configSource, {      });
       const app = proxy.getApp();
 
       const res = await app.request("/test-mcp/tools", { method: "GET" });
@@ -156,9 +110,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const proxy = new McpProxy(configSource, {
-        secretStore: createTestSecretStore(queue),
-      });
+      const proxy = new McpProxy(configSource, {      });
       const app = proxy.getApp();
 
       const res = await app.request("/test-mcp/tools", {
@@ -172,9 +124,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const proxy = new McpProxy(configSource, {
-        secretStore: createTestSecretStore(queue),
-      });
+      const proxy = new McpProxy(configSource, {      });
       const app = proxy.getApp();
 
       mockUpstreamFetch({
@@ -194,9 +144,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const proxy = new McpProxy(configSource, {
-        secretStore: createTestSecretStore(queue),
-      });
+      const proxy = new McpProxy(configSource, {      });
       const app = proxy.getApp();
 
       mockUpstreamFetch({
@@ -220,9 +168,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const proxy = new McpProxy(configSource, {
-        secretStore: createTestSecretStore(queue),
-      });
+      const proxy = new McpProxy(configSource, {      });
       const app = proxy.getApp();
 
       const tools = [
@@ -248,9 +194,7 @@ describe("McpProxy", () => {
 
     test("returns 404 for unknown MCP", async () => {
       const configSource = createMockConfigSource({});
-      const proxy = new McpProxy(configSource, {
-        secretStore: createTestSecretStore(queue),
-      });
+      const proxy = new McpProxy(configSource, {      });
       const app = proxy.getApp();
 
       const res = await app.request("/nonexistent/tools", {
@@ -266,9 +210,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const proxy = new McpProxy(configSource, {
-        secretStore: createTestSecretStore(queue),
-      });
+      const proxy = new McpProxy(configSource, {      });
       const app = proxy.getApp();
 
       globalThis.fetch = async () => {
@@ -289,9 +231,7 @@ describe("McpProxy", () => {
         "test-mcp": TEST_SERVER,
       });
       const toolCache = new McpToolCache();
-      const proxy = new McpProxy(configSource, {
-        secretStore: createTestSecretStore(queue),
-        toolCache,
+      const proxy = new McpProxy(configSource, {        toolCache,
       });
       const app = proxy.getApp();
 
@@ -336,9 +276,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const proxy = new McpProxy(configSource, {
-        secretStore: createTestSecretStore(queue),
-      });
+      const proxy = new McpProxy(configSource, {      });
       const app = proxy.getApp();
 
       mockUpstreamFetch({
@@ -369,9 +307,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const proxy = new McpProxy(configSource, {
-        secretStore: createTestSecretStore(queue),
-      });
+      const proxy = new McpProxy(configSource, {      });
       const app = proxy.getApp();
 
       const res = await app.request("/test-mcp/tools/my_tool", {
@@ -389,9 +325,7 @@ describe("McpProxy", () => {
 
     test("returns 404 for unknown MCP", async () => {
       const configSource = createMockConfigSource({});
-      const proxy = new McpProxy(configSource, {
-        secretStore: createTestSecretStore(queue),
-      });
+      const proxy = new McpProxy(configSource, {      });
       const app = proxy.getApp();
 
       const res = await app.request("/nonexistent/tools/my_tool", {
@@ -409,9 +343,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const proxy = new McpProxy(configSource, {
-        secretStore: createTestSecretStore(queue),
-      });
+      const proxy = new McpProxy(configSource, {      });
       const app = proxy.getApp();
 
       globalThis.fetch = async () => {
@@ -439,9 +371,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource({
         "test-mcp": TEST_SERVER,
       });
-      const proxy = new McpProxy(configSource, {
-        secretStore: createTestSecretStore(queue),
-      });
+      const proxy = new McpProxy(configSource, {      });
       const app = proxy.getApp();
 
       let callCount = 0;
@@ -498,9 +428,7 @@ describe("McpProxy", () => {
       const configSource = createMockConfigSource(servers);
       const toolCache = new McpToolCache();
       const grantStore = new GrantStore();
-      const proxy = new McpProxy(configSource, {
-        secretStore: createTestSecretStore(queue),
-        toolCache,
+      const proxy = new McpProxy(configSource, {        toolCache,
         grantStore,
       });
       return { proxy, toolCache, grantStore, configSource };
@@ -660,9 +588,7 @@ describe("McpProxy", () => {
           upstreamUrl: "http://upstream2:9000/mcp",
         },
       });
-      const proxy = new McpProxy(configSource, {
-        secretStore: createTestSecretStore(queue),
-      });
+      const proxy = new McpProxy(configSource, {      });
       const app = proxy.getApp();
 
       globalThis.fetch = async (url: string | URL | Request) => {
@@ -706,9 +632,7 @@ describe("McpProxy", () => {
           upstreamUrl: "http://bad-upstream:9000/mcp",
         },
       });
-      const proxy = new McpProxy(configSource, {
-        secretStore: createTestSecretStore(queue),
-      });
+      const proxy = new McpProxy(configSource, {      });
       const app = proxy.getApp();
 
       globalThis.fetch = async (url: string | URL | Request) => {
@@ -749,9 +673,7 @@ describe("McpProxy", () => {
   describe("isMcpRequest", () => {
     test("returns true with x-mcp-id header", async () => {
       const configSource = createMockConfigSource({});
-      const proxy = new McpProxy(configSource, {
-        secretStore: createTestSecretStore(queue),
-      });
+      const proxy = new McpProxy(configSource, {      });
 
       // Use a wrapper Hono app to get a real Context object
       const { Hono } = await import("hono");
@@ -771,9 +693,7 @@ describe("McpProxy", () => {
 
     test("returns false without x-mcp-id header", async () => {
       const configSource = createMockConfigSource({});
-      const proxy = new McpProxy(configSource, {
-        secretStore: createTestSecretStore(queue),
-      });
+      const proxy = new McpProxy(configSource, {      });
 
       const { Hono } = await import("hono");
       const wrapper = new Hono();

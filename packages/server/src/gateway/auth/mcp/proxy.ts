@@ -15,13 +15,8 @@ import {
 import { recordGuardrailTrip } from "../../guardrails/audit.js";
 import { requiresToolApproval } from "../../permissions/approval-policy.js";
 import type { GrantStore } from "../../permissions/grant-store.js";
-import type { WritableSecretStore } from "../../secrets/index.js";
 import type { AgentSettingsStore } from "../settings/agent-settings-store.js";
 import { storePendingTool } from "./pending-tool-store.js";
-import {
-	McpAuthFlows,
-	type OnAuthRequiredHandler,
-} from "./proxy-auth-flows.js";
 import { handleProxyRequest } from "./proxy-forward.js";
 import {
 	handleCallTool,
@@ -58,8 +53,6 @@ export class McpProxy {
 	readonly guardrailRegistry?: GuardrailRegistry;
 	/** @internal Upstream transport client (sessions, credentials, egress). */
 	readonly upstream: McpUpstreamClient;
-	/** @internal Auth-flow helper (401 handling, OAuth/device-code kickoff). */
-	readonly authFlows: McpAuthFlows;
 
 	/** Callback invoked when a tool call is blocked for approval. */
 	public onToolBlocked?: (
@@ -78,23 +71,11 @@ export class McpProxy {
 		source: string | undefined,
 	) => Promise<void>;
 
-	/** Callback invoked when an MCP auth flow is started or already pending. */
-	public get onAuthRequired(): OnAuthRequiredHandler | undefined {
-		return this.authFlows.onAuthRequired;
-	}
-
-	public set onAuthRequired(handler: OnAuthRequiredHandler | undefined) {
-		this.authFlows.onAuthRequired = handler;
-	}
-
 	constructor(
 		readonly configService: McpConfigSource,
 		options: {
-			secretStore: WritableSecretStore;
 			toolCache?: McpToolCache;
 			grantStore?: GrantStore;
-			/** Absolute gateway URL for OAuth redirect_uri construction. */
-			publicGatewayUrl?: string;
 			/** Source of per-agent guardrail enable lists for the pre-tool stage. */
 			agentSettingsStore?: AgentSettingsStore;
 			/** Shared registry of guardrails; pre-tool stage entries are queried. */
@@ -105,12 +86,7 @@ export class McpProxy {
 		this.grantStore = options.grantStore;
 		this.agentSettingsStore = options.agentSettingsStore;
 		this.guardrailRegistry = options.guardrailRegistry;
-		this.upstream = new McpUpstreamClient(options.secretStore);
-		this.authFlows = new McpAuthFlows(
-			configService,
-			options.secretStore,
-			options.publicGatewayUrl,
-		);
+		this.upstream = new McpUpstreamClient();
 		this.app = new Hono();
 		this.setupRoutes();
 		logger.debug("MCP proxy initialized");
@@ -158,11 +134,7 @@ export class McpProxy {
 			};
 		}
 
-		// executeToolDirect is called from the interaction bridge after user
-		// approval, where no channelId is carried — so we can only honor
-		// authScope="user" here. For channel-scoped servers, fall back to
-		// userId (still correct for the requesting user's personal credential).
-		const scopeKey = computeScopeKey(httpServer, userId, undefined);
+		const scopeKey = computeScopeKey(userId);
 
 		const jsonRpcBody = JSON.stringify({
 			jsonrpc: "2.0",
@@ -271,8 +243,7 @@ export class McpProxy {
 		}
 
 		const userId = tokenData?.userId;
-		const channelId = tokenData?.channelId || "";
-		const scopeKey = computeScopeKey(httpServer, userId, channelId);
+		const scopeKey = computeScopeKey(userId);
 
 		try {
 			// Clear any stale session before fresh tool discovery
@@ -289,21 +260,12 @@ export class McpProxy {
 					workerToken,
 				);
 
-				// Tool discovery runs before the agent has a chance to call anything.
-				// If the server demands OAuth, kick off the auth-code flow here so the
-				// "Connect X" link reaches the user up-front.
+				// The only configured MCP server is the internal lobu-memory server,
+				// which accepts the worker JWT directly — a 401 here means discovery
+				// can't proceed, so degrade to an empty tool list.
 				if (initResponse.status === 401) {
-					const wwwAuth = initResponse.headers.get("www-authenticate");
 					await initResponse.body?.cancel().catch(() => {
 						/* noop */
-					});
-					await this.authFlows.fireAuthCodeFlowFromDiscovery({
-						mcpId,
-						agentId,
-						httpServer,
-						wwwAuthenticate: wwwAuth,
-						scopeKey,
-						tokenData,
 					});
 					return { tools: [] };
 				}
@@ -356,17 +318,8 @@ export class McpProxy {
 			);
 
 			if (response.status === 401) {
-				const wwwAuth = response.headers.get("www-authenticate");
 				await response.body?.cancel().catch(() => {
 					/* noop */
-				});
-				await this.authFlows.fireAuthCodeFlowFromDiscovery({
-					mcpId,
-					agentId,
-					httpServer,
-					wwwAuthenticate: wwwAuth,
-					scopeKey,
-					tokenData,
 				});
 				return { tools: [] };
 			}

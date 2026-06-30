@@ -1,5 +1,11 @@
 # Authorization / ACL — finalized architecture
 
+> **Related design docs:** connector authorization & data attribution model →
+> [`connector-authz-model.md`](connector-authz-model.md) (org backbone + ACL gate +
+> per-user overlay, decisions D1–D5). The **closed** enterprise IdP layer (SAML/SCIM/
+> enforced SSO/IdP-group federation, D6–D8) is speced in the `owletto` repo at
+> `docs/enterprise-idp-rfc.md` — intentionally kept out of OSS core.
+
 **Status: FINALIZED (decisions locked via interview; pi-reviewed — 7 correctness
 fixes folded in: two-sided `user ∩ agent` gate, explicit `deny_read`, ACL-expr →
 effective principals, freshness-inside-gate, team-scoped Slack ids, fail-closed

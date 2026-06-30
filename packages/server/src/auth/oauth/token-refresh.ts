@@ -1,10 +1,10 @@
 /**
  * Shared OAuth refresh-token plumbing (RFC 6749 §6).
  *
- * Two paths independently implemented the "build refresh form body / client
- * auth header / fetch token endpoint / parse token response" dance:
- *   - MCP credential refresh (gateway/routes/internal/device-auth.ts)
- *   - account-row token refresh (auth/credentials.ts)
+ * Several call sites independently implemented the "build refresh form body /
+ * client auth header / fetch token endpoint / parse token response" dance,
+ * e.g. account-row token refresh (auth/credentials.ts) and the OAuth
+ * base-client (gateway/auth/oauth/base-client.ts).
  *
  * The request/response mechanics live here; locking, persistence, and
  * logging stay with the callers. The two call sites historically differ in

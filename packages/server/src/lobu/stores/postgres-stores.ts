@@ -9,7 +9,7 @@ import { getDb, tsTime, tsTimeOrNull } from "../../db/client";
 import { recordLifecycleEvent } from "../../utils/insert-event";
 import {
 	connectionsRowToStored,
-	legacyIdToSlug,
+	runtimeConnectionIdToSlug,
 	softDeleteChatConnectionProjection,
 	upsertChatConnectionProjection,
 } from "./connections-projection";
@@ -316,7 +316,7 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 			const orgId = tryGetOrgId();
 			// `connections` is the sole source of truth (chat rows carry a non-null
 			// credential_mode; data connectors leave it NULL). Keyed by slug.
-			const slug = legacyIdToSlug(connectionId);
+			const slug = runtimeConnectionIdToSlug(connectionId);
 			const projRows = orgId
 				? await sql`
             SELECT * FROM connections
@@ -354,7 +354,7 @@ export function createPostgresAgentConnectionStore(): AgentConnectionStore {
 		async saveConnection(connection) {
 			const sql = getDb();
 			const orgId = getOrgId();
-			const slug = legacyIdToSlug(connection.id);
+			const slug = runtimeConnectionIdToSlug(connection.id);
 
 			// One transaction so the secret-preserving read, the
 			// `pg_advisory_xact_lock` taken inside upsertChatConnectionProjection,

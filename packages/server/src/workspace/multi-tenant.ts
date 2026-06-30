@@ -331,6 +331,16 @@ export class MultiTenantProvider implements WorkspaceProvider {
           scopes: ['mcp:read', 'mcp:write', 'mcp:admin'],
           expiresAt: Math.floor((tokenData.timestamp + 2 * 60 * 60 * 1000) / 1000),
           tokenType: 'pat',
+          agentId: tokenData.agentId,
+          sourceContext: {
+            platform: tokenData.platform || undefined,
+            conversationId: tokenData.conversationId || undefined,
+            channelId: tokenData.channelId || undefined,
+            teamId: tokenData.teamId || undefined,
+            connectionId: tokenData.connectionId || undefined,
+            userId: tokenData.userId || undefined,
+            source: tokenData.source || undefined,
+          },
           // Builder admin-tool grant rides the per-run worker token (set only
           // for the system agent on an owner/admin turn). Carried through so the
           // execute gate lets the builder call its allowlisted internal tools.

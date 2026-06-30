@@ -1,16 +1,15 @@
 /**
  * The chat ⇄ `connections` mapping + writer. `connections` is the SOLE source of
- * truth for chat connections: the legacy `agent_connections` table is gone, so
- * the chat runtime reads and writes `connections` exclusively. A BYO chat
- * connection is keyed by `slug` (`agentconn-<id>`); a managed Slack install keeps
- * its `slackinst-<id>` external id AS the slug. Adapter config + `settings` +
- * `chatMetadata` fold into the `config` jsonb; the provider tenant lifts into the
- * first-class `external_tenant_id` column.
+ * truth for chat connections: chat runtime reads and writes `connections`
+ * exclusively. A BYO chat connection is keyed by `slug` (`agentconn-<id>`); a
+ * managed Slack install keeps its `slackinst-<id>` external id AS the slug.
+ * Adapter config + `settings` + `chatMetadata` fold into the `config` jsonb; the
+ * provider tenant lifts into the first-class `external_tenant_id` column.
  *
- * This module owns the bidirectional id⇄slug mapping + the projection writer. It
- * does NOT import from `slack-installations.ts` (that file imports the writer
- * here), so the managed-install wire prefix is mirrored locally to keep the
- * dependency one-directional.
+ * This module owns the bidirectional runtime-id⇄slug mapping + the projection
+ * writer. It does NOT import from `slack-installations.ts` (that file imports
+ * the writer here), so the managed-install wire prefix is mirrored locally to
+ * keep the dependency one-directional.
  */
 
 import type { StoredConnection } from "@lobu/core";
@@ -37,17 +36,17 @@ export type ChatCredentialMode = "byo" | "managed";
 /**
  * Runtime connection id → `connections.slug`. BYO ids gain the `agentconn-`
  * namespace; managed Slack ids (`slackinst-…`) ARE the slug. Inverse of
- * {@link slugToLegacyId}.
+ * {@link slugToRuntimeConnectionId}.
  */
-export function legacyIdToSlug(id: string): string {
+export function runtimeConnectionIdToSlug(id: string): string {
   return id.startsWith(SLACK_INSTALLATION_ID_PREFIX)
     ? id
     : `${BYO_SLUG_PREFIX}${id}`;
 }
 
 /** `connections.slug` → the runtime connection id (strips the BYO namespace;
- *  managed slugs pass through). Inverse of {@link legacyIdToSlug}. */
-export function slugToLegacyId(slug: string): string {
+ *  managed slugs pass through). Inverse of {@link runtimeConnectionIdToSlug}. */
+export function slugToRuntimeConnectionId(slug: string): string {
   return slug.startsWith(BYO_SLUG_PREFIX)
     ? slug.slice(BYO_SLUG_PREFIX.length)
     : slug;
@@ -83,7 +82,7 @@ export function connectionsStatusToLegacy(
 /**
  * Map a `connections` chat row (decrypted config) → `StoredConnection`. Un-folds
  * the Stage-1 `config.{settings,chatMetadata}` back into the legacy shape, and
- * preserves the runtime id (`slugToLegacyId`) so secret prefixes, the instance
+ * preserves the runtime id (`slugToRuntimeConnectionId`) so secret prefixes, the instance
  * memo key, `connection_claims.connection_id`, and the webhook URL all stay
  * identical to the legacy runtime.
  */
@@ -100,7 +99,7 @@ export function connectionsRowToStored(
     metadata.teamId = row.external_tenant_id;
   }
   const out: StoredConnection = {
-    id: slugToLegacyId(row.slug),
+    id: slugToRuntimeConnectionId(row.slug),
     platform: row.connector_key,
     config: adapterConfig,
     settings: (settings as StoredConnection["settings"]) ?? {},
@@ -140,7 +139,7 @@ export async function upsertChatConnectionProjection(
   orgId: string,
   credentialMode: ChatCredentialMode,
 ): Promise<void> {
-  const slug = legacyIdToSlug(conn.id);
+  const slug = runtimeConnectionIdToSlug(conn.id);
   const status = legacyStatusToConnections(conn.status);
   const rawTeamId = conn.metadata?.teamId;
   const externalTenantId =
@@ -251,7 +250,7 @@ export async function softDeleteChatConnectionProjection(
   orgId: string | null | undefined,
   connectionId: string,
 ): Promise<void> {
-  const slug = legacyIdToSlug(connectionId);
+  const slug = runtimeConnectionIdToSlug(connectionId);
   if (orgId) {
     await sql`
       UPDATE connections SET deleted_at = now(), updated_at = now()

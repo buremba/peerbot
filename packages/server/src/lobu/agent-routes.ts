@@ -24,7 +24,7 @@ import {
   createPostgresAgentConnectionStore,
 } from './stores/postgres-stores';
 import { orgContext } from './stores/org-context';
-import { legacyIdToSlug } from './stores/connections-projection';
+import { runtimeConnectionIdToSlug } from './stores/connections-projection';
 
 const routes = new Hono<{ Bindings: Env }>();
 
@@ -1161,7 +1161,7 @@ routes.put('/:agentId/platforms/by-stable-id/:stableId', async (c) => {
         VALUES (
           ${claimOrgId}, ${platform}, ${agentId}, ${platform}, 'paused',
           ${sql.json({ settings: {}, chatMetadata: {} })}, 'byo',
-          ${legacyIdToSlug(stableId)}, 'org', ${claimNow}, ${claimNow}
+          ${runtimeConnectionIdToSlug(stableId)}, 'org', ${claimNow}, ${claimNow}
         )
         -- Arbiter on the GLOBAL chat-slug uniqueness (connections_chat_slug_unique),
         -- mirroring the retired ON CONFLICT (agent_connections.id): a re-claim of an

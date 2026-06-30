@@ -18,7 +18,7 @@ import { getConfiguredPublicOrigin } from '../utils/public-origin';
 import { enforceRoleScopeAccess } from './access-control';
 import { recordToolInvocationAudit } from './audit';
 import { listOrganizations } from './organizations';
-import { getTool, type TokenType, type ToolContext } from './registry';
+import { getTool, type TokenType, type ToolContext, type ToolSourceContext } from './registry';
 
 export interface AuthContext {
   organizationId: string | null;
@@ -34,6 +34,7 @@ export interface AuthContext {
   memberRole: string | null;
   agentId: string | null;
   requestedAgentId: string | null;
+  sourceContext?: ToolSourceContext | null;
   isAuthenticated: boolean;
   clientId: string | null;
   scopes?: string[] | null;
@@ -67,8 +68,9 @@ export function extractAuthContext(c: Context<{ Bindings: Env }>): AuthContext {
     tokenOrganizationId: mcpAuthInfo?.organizationId ?? null,
     userId: mcpAuthInfo?.userId || c.var.session?.userId || null,
     memberRole: c.var.memberRole,
-    agentId: null,
-    requestedAgentId: null,
+    agentId: mcpAuthInfo?.agentId ?? null,
+    requestedAgentId: mcpAuthInfo?.agentId ?? null,
+    sourceContext: mcpAuthInfo?.sourceContext ?? null,
     isAuthenticated: c.var.mcpIsAuthenticated || false,
     clientId: mcpAuthInfo?.clientId ?? null,
     // Token callers (oauth/pat) carry real MCP scopes — pass them straight
@@ -243,6 +245,7 @@ export function toToolContext(authCtx: AuthContext): ToolContext {
     userId: authCtx.userId,
     memberRole: authCtx.memberRole,
     agentId: authCtx.agentId,
+    sourceContext: authCtx.sourceContext ?? null,
     isAuthenticated: authCtx.isAuthenticated,
     clientId: authCtx.clientId,
     scopes: authCtx.scopes,

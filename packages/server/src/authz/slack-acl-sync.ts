@@ -32,8 +32,8 @@ import { createSlackWebApi, type SlackWebApi } from '../gateway/connections/slac
 import { resolveSecretValue } from '../gateway/secrets/index.js';
 import type { CoreServices } from '../gateway/services/core-services.js';
 import {
-  legacyIdToSlug,
-  slugToLegacyId,
+  runtimeConnectionIdToSlug,
+  slugToRuntimeConnectionId,
 } from '../lobu/stores/connections-projection.js';
 import { getSlackInstallByTeamId } from '../lobu/stores/slack-installations.js';
 import { orgContext } from '../lobu/stores/org-context.js';
@@ -110,7 +110,7 @@ export async function syncSlackConnectionAcl(
   const [conn] = await sql<{ team_id: string | null }>`
 		SELECT COALESCE(external_tenant_id, config->'chatMetadata'->>'teamId') AS team_id
 		FROM connections
-		WHERE slug = ${legacyIdToSlug(connectionId)}
+		WHERE slug = ${runtimeConnectionIdToSlug(connectionId)}
 		  AND organization_id = ${organizationId}
 		  AND credential_mode IS NOT NULL
 		  AND deleted_at IS NULL
@@ -226,7 +226,7 @@ export async function runSlackAclSyncTick(coreServices: CoreServices): Promise<v
 		  AND deleted_at IS NULL
 	`;
   const connections = connRows.map((r) => ({
-    id: slugToLegacyId(r.slug),
+    id: slugToRuntimeConnectionId(r.slug),
     organization_id: r.organization_id,
   }));
   if (connections.length === 0) return;

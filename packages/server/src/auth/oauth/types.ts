@@ -205,6 +205,18 @@ export interface AuthInfo {
   clientId: string;
   scopes: string[];
   expiresAt: number; // Unix timestamp
+  /** Verified agent context for worker direct-auth sessions. */
+  agentId?: string | null;
+  /** Verified source conversation for worker direct-auth tool calls. */
+  sourceContext?: {
+    platform?: string;
+    conversationId?: string;
+    channelId?: string;
+    teamId?: string;
+    connectionId?: string;
+    userId?: string;
+    source?: string;
+  } | null;
   resource?: string;
   tokenType: 'access_token' | 'pat';
   /**

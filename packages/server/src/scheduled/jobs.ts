@@ -17,7 +17,10 @@ import { checkStalledExecutions } from './check-stalled-executions';
 import { runConnectorHealthCheck } from '../connectors/connector-health';
 import { runClassificationReconciliation } from './classification-reconciliation';
 import { refreshConnectorDefinitions } from './refresh-connector-definitions';
-import { registerScheduledJobsTicker } from './scheduled-jobs-service';
+import {
+  registerScheduledJobsTicker,
+  type ScheduledDeliveryContext,
+} from './scheduled-jobs-service';
 import { TaskScheduler } from './task-scheduler';
 import { triggerEmbedBackfill } from './trigger-embed-backfill';
 import { runReapStaleDeviceWorkers } from './reap-stale-device-workers';
@@ -28,6 +31,73 @@ import {
   enqueueAgentMessage,
 } from '../gateway/services/agent-threads';
 import { buildMessagePayload } from '../gateway/services/platform-helpers';
+import { runtimeConnectionIdToSlug } from '../lobu/stores/connections-projection';
+
+function asDeliveryContext(value: unknown): ScheduledDeliveryContext | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Partial<ScheduledDeliveryContext>;
+  if (
+    typeof candidate.platform !== 'string' ||
+    typeof candidate.conversationId !== 'string' ||
+    typeof candidate.channelId !== 'string' ||
+    typeof candidate.connectionId !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    platform: candidate.platform,
+    conversationId: candidate.conversationId,
+    channelId: candidate.channelId,
+    teamId: typeof candidate.teamId === 'string' ? candidate.teamId : null,
+    connectionId: candidate.connectionId,
+    userId: typeof candidate.userId === 'string' ? candidate.userId : null,
+  };
+}
+
+async function deliveryContextStillAuthorized(params: {
+  organizationId: string;
+  agentId: string;
+  delivery: ScheduledDeliveryContext;
+}): Promise<boolean> {
+  const sql = getDb();
+  const { organizationId, agentId, delivery } = params;
+  const connectionRows = (await sql`
+    SELECT connector_key, agent_id, status
+    FROM connections
+    WHERE organization_id = ${organizationId}
+      AND slug = ${runtimeConnectionIdToSlug(delivery.connectionId)}
+      AND credential_mode IS NOT NULL
+      AND deleted_at IS NULL
+    LIMIT 1
+  `) as unknown as Array<{ connector_key: string; agent_id: string | null; status: string }>;
+  const connection = connectionRows[0];
+  if (!connection) return false;
+  if (connection.connector_key !== delivery.platform) return false;
+  if (connection.status !== 'active') return false;
+  if (connection.agent_id) return connection.agent_id === agentId;
+
+  const bindingRows = delivery.teamId
+    ? await sql`
+        SELECT agent_id
+        FROM agent_channel_bindings
+        WHERE organization_id = ${organizationId}
+          AND platform = ${delivery.platform}
+          AND channel_id = ${delivery.channelId}
+          AND team_id = ${delivery.teamId}
+        LIMIT 1
+      `
+    : await sql`
+        SELECT agent_id
+        FROM agent_channel_bindings
+        WHERE organization_id = ${organizationId}
+          AND platform = ${delivery.platform}
+          AND channel_id = ${delivery.channelId}
+          AND team_id IS NULL
+        LIMIT 1
+      `;
+  const binding = (bindingRows as unknown as Array<{ agent_id: string }>)[0];
+  return binding?.agent_id === agentId;
+}
 
 /**
  * Construct the TaskScheduler, register every periodic task, start dispatch,
@@ -318,22 +388,12 @@ function registerMaintenanceTasks(
       __created_by_user?: string | null;
       __created_by_agent?: string | null;
       __scheduled_job_id?: string;
+      __delivery_context?: unknown;
       organization_id?: string;
       agent_id?: string;
       prompt?: string;
       thread_id?: string | null;
       reason?: string | null;
-      // Optional platform delivery target captured from the conversation that
-      // scheduled the wake (e.g. by a first-party MCP tool). When present the
-      // reply is posted back into that channel instead of the default api thread.
-      delivery?: {
-        platform?: string;
-        conversationId?: string;
-        channelId?: string;
-        teamId?: string | null;
-        connectionId?: string | null;
-        userId?: string | null;
-      } | null;
     };
     const orgId = p.__organization_id ?? p.organization_id;
     if (!orgId || !p.agent_id || !p.prompt) {
@@ -347,7 +407,9 @@ function registerMaintenanceTasks(
     // ghost — so verify the target exists and auto-pause the schedule
     // when it doesn't.
     const agentRows = (await sql`
-      SELECT id FROM agents WHERE id = ${p.agent_id} LIMIT 1
+      SELECT id FROM agents
+      WHERE organization_id = ${orgId} AND id = ${p.agent_id}
+      LIMIT 1
     `) as unknown as Array<{ id: string }>;
     if (agentRows.length === 0) {
       logger.warn(
@@ -362,25 +424,26 @@ function registerMaintenanceTasks(
     const sessionManager = coreServices.getSessionManager();
     const queueProducer = coreServices.getQueueProducer();
 
-    // When the schedule carries a captured platform delivery target (a wake that
-    // originated from a Slack/Telegram conversation), dispatch a real platform
-    // message so the reply posts back into that channel. The default path below
-    // dispatches an api-platform message, which only reaches a connected SSE
-    // client — a background wake has none, so its reply would otherwise drop.
-    const delivery =
-      p.delivery && typeof p.delivery === 'object' ? p.delivery : null;
+    // When the schedule carries trusted gateway-owned delivery context, dispatch
+    // a real platform message so the reply posts back into the originating chat
+    // channel. User action_args never supply this value; the ticker injects it
+    // from scheduled_jobs.delivery_context.
+    const delivery = asDeliveryContext(p.__delivery_context);
     if (
       delivery &&
       (delivery.platform === 'slack' || delivery.platform === 'telegram') &&
-      delivery.channelId &&
-      delivery.connectionId
+      (await deliveryContextStillAuthorized({
+        organizationId: orgId,
+        agentId: p.agent_id,
+        delivery,
+      }))
     ) {
       await queueProducer.enqueueMessage(
         buildMessagePayload({
           platform: delivery.platform,
           userId: delivery.userId || p.__created_by_user || 'scheduled',
           botId: delivery.platform,
-          conversationId: delivery.conversationId || delivery.channelId,
+          conversationId: delivery.conversationId,
           teamId: delivery.teamId || delivery.platform,
           agentId: p.agent_id,
           organizationId: orgId,

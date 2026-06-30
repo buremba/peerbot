@@ -751,6 +751,12 @@ export async function handleMcp(c: Context<{ Bindings: Env }>): Promise<Response
       // Assign it straight through — `hasRequiredMcpScope` fails closed on
       // null, so coercing to null would wrongly deny a valid refreshed session.
       session.authCtx.scopes = freshCtx.scopes;
+      // Identity belongs to the MCP session, but worker-originated source
+      // conversation is per request. The gateway may reuse the same upstream
+      // MCP session across turns for the same user/agent, so keep the mutable
+      // auth context current before tools read ToolContext.sourceContext.
+      session.authCtx.sourceContext = freshCtx.sourceContext ?? null;
+      session.authCtx.adminTools = freshCtx.adminTools ?? null;
 
       if (session.authCtx.scopedToOrg) {
         if (freshCtx.organizationId !== session.authCtx.organizationId) {

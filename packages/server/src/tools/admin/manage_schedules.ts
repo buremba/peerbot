@@ -26,12 +26,15 @@ import {
   getScheduledJob,
   listScheduledJobs,
   pauseScheduledJob,
+  type ScheduledDeliveryContext,
   type ScheduledJobRow,
 } from '../../scheduled/scheduled-jobs-service';
-import type { ToolContext } from '../registry';
+import type { ToolContext, ToolSourceContext } from '../registry';
 import logger from '../../utils/logger';
 import { nextRunAt as nextCronTickAt } from '../../utils/cron';
 import { getErrorMessage } from "@lobu/core";
+import { getDb } from '../../db/client';
+import { runtimeConnectionIdToSlug } from '../../lobu/stores/connections-projection';
 
 // ============================================
 // Schema
@@ -147,22 +150,24 @@ async function handleCreate(
   }
   // action_type comes from the payload's discriminant `type`.
   const actionType = args.payload.type;
-  // Strip the discriminant before persisting — handlers know their own type.
-  const { type: _omit, ...actionArgs } = args.payload as Record<string, unknown> & {
-    type: string;
-  };
+  // Persist only the schema-owned action fields. TypeBox permits additional
+  // properties by default, so never copy the raw payload wholesale into a
+  // durable scheduler row.
+  const actionArgs = actionArgsForPayload(args.payload);
+
+  const delivery = await resolveTrustedDeliveryContext(args.payload, ctx);
+  if (delivery.error) return { error: delivery.error };
 
   const job = await createScheduledJob({
     organizationId: ctx.organizationId,
     actionType,
     actionArgs,
+    deliveryContext: delivery.context,
     description: args.description,
     cron: args.cron ?? null,
     runAt: runAtDate,
     createdByUser: ctx.userId ?? null,
-    // ToolContext doesn't carry an agent attribution today; populated by
-    // the gateway agent path when it lands (TODO once that wiring exists).
-    createdByAgent: null,
+    createdByAgent: ctx.agentId ?? null,
     sourceRunId: args.source_run_id ?? null,
     sourceEventId: args.source_event_id ?? null,
     sourceThreadId: args.source_thread_id ?? null,
@@ -204,12 +209,110 @@ async function handleCancel(
   return { ok: true };
 }
 
+function actionArgsForPayload(
+  payload: Static<typeof CreateAction>['payload']
+): Record<string, unknown> {
+  if (payload.type === 'wake_agent') {
+    return {
+      agent_id: payload.agent_id,
+      prompt: payload.prompt,
+      ...(payload.thread_id ? { thread_id: payload.thread_id } : {}),
+      ...(payload.reason ? { reason: payload.reason } : {}),
+    };
+  }
+  return {
+    title: payload.title,
+    ...(payload.body !== undefined ? { body: payload.body } : {}),
+    ...(payload.recipients !== undefined ? { recipients: payload.recipients } : {}),
+    ...(payload.resource_url !== undefined ? { resource_url: payload.resource_url } : {}),
+  };
+}
+
+function sourceToDeliveryContext(
+  source: ToolSourceContext | null | undefined
+): ScheduledDeliveryContext | null {
+  if (!source?.platform || source.platform === 'api') return null;
+  if (!source.connectionId || !source.channelId || !source.conversationId) return null;
+  return {
+    platform: source.platform,
+    conversationId: source.conversationId,
+    channelId: source.channelId,
+    teamId: source.teamId ?? null,
+    connectionId: source.connectionId,
+    userId: source.userId ?? null,
+  };
+}
+
+async function resolveTrustedDeliveryContext(
+  payload: Static<typeof CreateAction>['payload'],
+  ctx: ToolContext
+): Promise<{ context: ScheduledDeliveryContext | null; error?: string }> {
+  if (payload.type !== 'wake_agent') return { context: null };
+
+  const context = sourceToDeliveryContext(ctx.sourceContext);
+  if (!context) return { context: null };
+
+  const sql = getDb();
+  const connectionRows = (await sql`
+    SELECT connector_key, agent_id, status
+    FROM connections
+    WHERE organization_id = ${ctx.organizationId}
+      AND slug = ${runtimeConnectionIdToSlug(context.connectionId)}
+      AND credential_mode IS NOT NULL
+      AND deleted_at IS NULL
+    LIMIT 1
+  `) as unknown as Array<{ connector_key: string; agent_id: string | null; status: string }>;
+  const connection = connectionRows[0];
+  if (!connection) {
+    return { context: null, error: 'Cannot schedule chat delivery: source connection no longer exists.' };
+  }
+  if (connection.connector_key !== context.platform) {
+    return { context: null, error: 'Cannot schedule chat delivery: source connection platform changed.' };
+  }
+  if (connection.status !== 'active') {
+    return { context: null, error: 'Cannot schedule chat delivery: source connection is not active.' };
+  }
+  if (connection.agent_id) {
+    if (connection.agent_id !== payload.agent_id) {
+      return { context: null, error: 'Cannot schedule chat delivery for a different agent on this connection.' };
+    }
+    return { context };
+  }
+
+  const bindingRows = context.teamId
+    ? await sql`
+        SELECT agent_id
+        FROM agent_channel_bindings
+        WHERE organization_id = ${ctx.organizationId}
+          AND platform = ${context.platform}
+          AND channel_id = ${context.channelId}
+          AND team_id = ${context.teamId}
+        LIMIT 1
+      `
+    : await sql`
+        SELECT agent_id
+        FROM agent_channel_bindings
+        WHERE organization_id = ${ctx.organizationId}
+          AND platform = ${context.platform}
+          AND channel_id = ${context.channelId}
+          AND team_id IS NULL
+        LIMIT 1
+      `;
+  const binding = (bindingRows as unknown as Array<{ agent_id: string }>)[0];
+  if (!binding || binding.agent_id !== payload.agent_id) {
+    return { context: null, error: 'Cannot schedule chat delivery: channel is not bound to the target agent.' };
+  }
+
+  return { context };
+}
+
 function serializeSchedule(row: ScheduledJobRow) {
   return {
     id: row.id,
     organization_id: row.organization_id,
     action_type: row.action_type,
     action_args: row.action_args,
+    delivery_context: row.delivery_context,
     cron: row.cron,
     next_run_at: row.next_run_at,
     last_fired_at: row.last_fired_at,

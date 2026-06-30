@@ -31,7 +31,7 @@
  * workspace (channel ids are workspace-scoped, not global).
  */
 import type { DbClient } from "../../db/client.js";
-import { legacyIdToSlug } from "../../lobu/stores/connections-projection.js";
+import { runtimeConnectionIdToSlug } from "../../lobu/stores/connections-projection.js";
 
 interface BoundChannelRow {
   /** Connection id that owns the post (preview conn for cross-org). */
@@ -52,7 +52,7 @@ export async function resolveBoundChannelRows(
   }
 ): Promise<BoundChannelRow[]> {
   const { organizationId, agentId, connectionId } = opts;
-  const slugFilter = connectionId ? legacyIdToSlug(connectionId) : null;
+  const slugFilter = connectionId ? runtimeConnectionIdToSlug(connectionId) : null;
   // Agent scope is BINDING ownership (`b.agent_id`), NOT the connection's
   // agent_id — a managed Slack install has agent_id NULL but its bindings still
   // belong to the agent that linked them, so filtering on the connection would
@@ -66,7 +66,7 @@ export async function resolveBoundChannelRows(
   // `connections` keys chat rows by `slug` (`agentconn-<id>` for BYO,
   // `slackinst-<id>` verbatim for managed). Callers expect the runtime
   // connection id, so strip the BYO namespace back off in SQL (mirror of
-  // `slugToLegacyId`). Folded columns: platform → `connector_key`,
+  // `slugToRuntimeConnectionId`). Folded columns: platform → `connector_key`,
   // settings/metadata → `config.{settings,chatMetadata}`, teamId →
   // `external_tenant_id`. Chat rows carry `credential_mode IS NOT NULL`.
   return (await sql`

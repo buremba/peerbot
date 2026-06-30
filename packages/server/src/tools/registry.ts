@@ -52,6 +52,16 @@ export interface ToolAnnotations {
 
 export type TokenType = 'oauth' | 'session' | 'pat' | 'anonymous';
 
+export interface ToolSourceContext {
+  platform?: string;
+  conversationId?: string;
+  channelId?: string;
+  teamId?: string;
+  connectionId?: string;
+  userId?: string;
+  source?: string;
+}
+
 /**
  * Tool execution context from authentication
  * Passed to all tool handlers for organization scoping
@@ -65,6 +75,8 @@ export interface ToolContext {
   memberRole: string | null;
   /** Durable Lobu/Lobu agent identity bound to this MCP session, when provided. */
   agentId?: string | null;
+  /** Verified source conversation for worker-originated tool calls, when any. */
+  sourceContext?: ToolSourceContext | null;
   /** Whether request was authenticated */
   isAuthenticated: boolean;
   /** OAuth client ID that created this request (null for session/anonymous) */

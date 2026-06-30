@@ -9,7 +9,7 @@
 import { randomUUID } from "node:crypto";
 import { createLogger, isSecretRef } from "@lobu/core";
 import { getDb } from "../../../db/client.js";
-import { legacyIdToSlug } from "../../../lobu/stores/connections-projection.js";
+import { runtimeConnectionIdToSlug } from "../../../lobu/stores/connections-projection.js";
 import { isCloudMode } from "../../../utils/cloud-mode.js";
 import type { IFileHandler } from "../../platform/file-handler.js";
 import { persistSecretValue, resolveSecretValue } from "../../secrets/index.js";
@@ -100,7 +100,7 @@ async function ensureTelegramWebhookSecret(
   // same transaction. Concurrent replicas serialize on the row lock, so only
   // the first writer generates and the rest read its ref. Returns the
   // effective `secret://` ref, or null when there is no stored row to lock.
-  const slug = legacyIdToSlug(connection.id);
+  const slug = runtimeConnectionIdToSlug(connection.id);
   // `connections` is unique per (organization_id, slug) — scope BOTH the lock
   // and the write to this connection's org so a slug shared across orgs can
   // never share or overwrite another tenant's secretToken. A missing org (an

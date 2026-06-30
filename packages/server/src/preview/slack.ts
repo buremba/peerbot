@@ -4,7 +4,7 @@ import type { Context } from "hono";
 import { getDb } from "../db/client";
 import { parseJsonBody } from "../gateway/routes/shared/helpers";
 import type { Env } from "../index";
-import { legacyIdToSlug } from "../lobu/stores/connections-projection";
+import { runtimeConnectionIdToSlug } from "../lobu/stores/connections-projection";
 import { errorMessage } from "../utils/errors";
 import logger from "../utils/logger";
 import { requireOrgUser } from "../utils/require-org-user";
@@ -345,7 +345,7 @@ async function resolvePreviewConnectionOrg(
 	const rows = (await sql`
     SELECT organization_id, agent_id
     FROM connections
-    WHERE slug = ${legacyIdToSlug(connectionId)}
+    WHERE slug = ${runtimeConnectionIdToSlug(connectionId)}
       AND credential_mode IS NOT NULL
       AND deleted_at IS NULL
     LIMIT 1

@@ -320,17 +320,3 @@ export async function readVirtualFeed(p: ReadVirtualFeedParams): Promise<ReadVir
   }
   return { rows: result.rows, columns: result.columns ?? [], total: result.total };
 }
-
-/** Non-gate inputs to {@link virtualFeedReader.read} — everything in
- * {@link ReadVirtualFeedParams} except the gate (`scope`). */
-export type VirtualFeedReadCtx = Omit<ReadVirtualFeedParams, 'scope'>;
-
-/**
- * {@link readVirtualFeed} registered under the {@link FeedReader} contract. The
- * gate (its `AuthzScope`) becomes the required first argument; the reader simply
- * forwards it as `scope`. Visibility-compilation behavior is unchanged.
- */
-export const virtualFeedReader: FeedReader<VirtualFeedReadCtx, ReadVirtualFeedResult> = {
-  kind: 'virtual-feed',
-  read: (gate, ctx) => readVirtualFeed({ scope: gate, ...ctx }),
-};

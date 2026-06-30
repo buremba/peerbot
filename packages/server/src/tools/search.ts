@@ -459,8 +459,9 @@ export type RecallKind = 'knowledge' | 'conversation';
  * contributes ONLY the result facet it produces (or `{}` when it has none).
  * `gatherRecall` runs them all and merges — there is no central type-switch over
  * kinds. Each reader receives the ACL gate ({@link AuthzScope}) as a REQUIRED,
- * typed argument, so a new reader cannot compile without it and cannot silently
- * leak across users. Readers fail independently.
+ * typed argument supplied by `gatherRecall` — never buried in `ctx`, so it can't
+ * be dropped at the call site. (The gate enforcing the scope is verified by the
+ * per-source ACL tests, not by the type.) Readers fail independently.
  */
 export type RecallSource = FeedReader<RecallContext, Partial<UnifiedSearchResult>> & {
   readonly kind: RecallKind;

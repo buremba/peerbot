@@ -105,35 +105,9 @@ describe('recall gate is a REQUIRED, typed argument (the contract)', () => {
     expect(leaky.kind).toBe('knowledge');
     expect(ok.kind).toBe('knowledge');
   });
-
-  it('a membership-gated reader denies a non-member principal (no rows)', async () => {
-    // Model the channel-recall ACL: rows exist for the channel, but the reader
-    // returns them ONLY when the gate's principal is a member. Because the gate —
-    // not a loose ctx — carries the principal, the reader can (and must) deny a
-    // non-member. This is the registry-seam analogue of the e2e fail-closed test
-    // in search-channel-visibility.test.ts.
-    const MEMBERS = new Set(['member-user']);
-    const membershipGated: RecallSource = {
-      kind: 'conversation',
-      read: async (g) =>
-        g.principal && MEMBERS.has(g.principal)
-          ? // biome-ignore lint/suspicious/noExplicitAny: fixture snippet
-            { conversation_messages: [{ text: 'secret channel msg' } as any] }
-          : {},
-    };
-
-    const asMember = await gatherRecall(
-      { organizationId: 'org-1', principal: 'member-user', agentId: 'a' },
-      ctx,
-      [membershipGated],
-    );
-    expect(asMember.conversation_messages).toHaveLength(1);
-
-    const asNonMember = await gatherRecall(
-      { organizationId: 'org-1', principal: 'stranger-user', agentId: 'a' },
-      ctx,
-      [membershipGated],
-    );
-    expect(asNonMember.conversation_messages).toBeUndefined();
-  });
+  // NOTE: that a reader DENIES a non-member is NOT asserted here — a fake source
+  // proves nothing about production enforcement. The real fail-closed regression
+  // runs `gatherRecall` against the production `conversationSource` over a seeded
+  // ACL graph in
+  // __tests__/integration/authz/slack-channel-visibility.test.ts.
 });

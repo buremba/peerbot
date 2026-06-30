@@ -1,6 +1,10 @@
 import { createLogger } from "@lobu/core";
 import { getDb, tsTime } from "../../db/client.js";
 import { requireOrgId, resolveOrgId } from "../../lobu/stores/org-context.js";
+import {
+  resolveStreamingChannelFeedId,
+  softDeleteStreamingChannelFeed,
+} from "./channel-feed.js";
 
 const logger = createLogger("channel-binding-service");
 
@@ -19,6 +23,10 @@ interface ChannelBinding {
   /** Org that owns this binding. Preview messages arrive on a connection in a
    * different org, so the caller needs the binding's own org to route. */
   organizationId?: string;
+  /** Connection this binding routes through (the unified `connections.id`).
+   * Set once the binding is linked; used to materialize / soft-delete the
+   * channel's streaming feed. */
+  connectionId?: string;
   createdAt: number;
 }
 
@@ -29,6 +37,7 @@ function rowToBinding(row: Record<string, any>): ChannelBinding {
     teamId: row.team_id ?? undefined,
     agentId: row.agent_id,
     organizationId: row.organization_id ?? undefined,
+    connectionId: row.connection_id != null ? String(row.connection_id) : undefined,
     createdAt:
       tsTime(row.created_at),
   };
@@ -130,6 +139,11 @@ export class ChannelBindingService {
       options?.organizationId,
       "ChannelBindingService.createBinding",
     );
+    // The upsert RETURNs the final linked connection_id (its own resolved value,
+    // or a pre-existing link kept via COALESCE) so we can materialize the
+    // channel's streaming feed against the SAME connection the binding routes
+    // through — no second resolve that could diverge.
+    let linkedConnectionId: string | null = null;
     if (teamId) {
       // The (organization_id, platform, channel_id, team_id) UNIQUE covers the
       // team-id-set case. The key is org-scoped so a sibling tenant binding the
@@ -147,7 +161,7 @@ export class ChannelBindingService {
       // agent_id, so without this link a managed install's transcript is an
       // unrecallable orphan. COALESCE on conflict keeps an existing link if the
       // connection isn't resolvable yet (binding created before the install row).
-      await sql`
+      const rows = await sql`
         INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id, created_at)
         VALUES (
           ${orgId}, ${agentId}, ${platform}, ${channelId}, ${teamId},
@@ -168,14 +182,17 @@ export class ChannelBindingService {
           agent_id = EXCLUDED.agent_id,
           connection_id = COALESCE(EXCLUDED.connection_id, agent_channel_bindings.connection_id),
           created_at = EXCLUDED.created_at
+        RETURNING connection_id
       `;
+      linkedConnectionId =
+        rows[0]?.connection_id != null ? String(rows[0].connection_id) : null;
     } else {
       // For team_id IS NULL the unique constraint above doesn't fire (PG
       // treats NULL as distinct). The companion org-scoped partial unique index
       // (agent_channel_bindings_org_no_team_unique) is what we conflict on.
       // Tenantless (Telegram, etc.) bindings link to the active chat connection
       // owned by this agent (mirrors the backfill's tenantless match).
-      await sql`
+      const rows = await sql`
         INSERT INTO agent_channel_bindings (organization_id, agent_id, platform, channel_id, team_id, connection_id, created_at)
         VALUES (
           ${orgId}, ${agentId}, ${platform}, ${channelId}, NULL,
@@ -198,9 +215,26 @@ export class ChannelBindingService {
           DO UPDATE SET agent_id = EXCLUDED.agent_id,
             connection_id = COALESCE(EXCLUDED.connection_id, agent_channel_bindings.connection_id),
             created_at = EXCLUDED.created_at
+        RETURNING connection_id
       `;
+      linkedConnectionId =
+        rows[0]?.connection_id != null ? String(rows[0].connection_id) : null;
     }
     logger.info(`Created binding: ${platform}/${channelId} → ${agentId}`);
+
+    // Materialize the channel as a streaming feed under its connection, so it
+    // surfaces in the unified Feeds list instead of a bespoke channel island.
+    // Best-effort: a feed-materialize failure must never fail the bind (recall
+    // is driven by the binding, not the feed). When the connection isn't linked
+    // yet (binding created before its managed install row), skip — the next
+    // bind that resolves the link materializes it idempotently.
+    if (linkedConnectionId) {
+      await resolveStreamingChannelFeedId({
+        connectionId: linkedConnectionId,
+        organizationId: orgId,
+        channelKey: channelId,
+      });
+    }
   }
 
   async deleteBinding(
@@ -252,6 +286,17 @@ export class ChannelBindingService {
       }
     }
     logger.info(`Deleted binding: ${platform}/${channelId} from ${agentId}`);
+
+    // The channel is no longer bound, so its streaming feed is retired
+    // (soft-delete). Best-effort: the binding (the routing contract) is already
+    // gone; a lingering feed row is cosmetic and never blocks the unbind. Keyed
+    // by the connection the binding routed through + the channel id (= feed_key).
+    if (existing.connectionId) {
+      await softDeleteStreamingChannelFeed({
+        connectionId: existing.connectionId,
+        channelKey: channelId,
+      });
+    }
     return true;
   }
 

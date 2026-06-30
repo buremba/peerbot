@@ -67,9 +67,9 @@ export async function notifyActionApprovalNeeded(params: {
     const connLabel = params.connectionName ? ` on ${params.connectionName}` : '';
     const resourceUrl =
       params.eventId && orgSlug
-        ? `/${orgSlug}/events/${params.eventId}`
+        ? `/${orgSlug}/memory?content_ids=${params.eventId}`
         : orgSlug
-          ? `/${orgSlug}/events?run=${params.runId}`
+          ? `/${orgSlug}/memory?run_ids=${params.runId}`
           : undefined;
     const urlLine = params.approvalUrl ? `\n\nReview: ${params.approvalUrl}` : '';
     return {

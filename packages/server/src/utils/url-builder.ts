@@ -92,10 +92,13 @@ export function buildConnectionsUrl(
 
 /**
  * Build permalink URL for a single knowledge item
- * Pattern: /{ownerSlug}/events/{eventId}
+ * Pattern: /{ownerSlug}/memory?content_ids={eventId}
  */
 export function buildEventPermalink(ownerSlug: string, eventId: number, baseUrl?: string): string {
-  return withBaseUrl(normalizeBaseUrl(baseUrl), `/${ownerSlug}/events/${eventId}`);
+  return withBaseUrl(
+    normalizeBaseUrl(baseUrl),
+    `/${ownerSlug}/memory?content_ids=${eventId}`
+  );
 }
 
 /**

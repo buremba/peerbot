@@ -325,7 +325,7 @@ export function extractTweetsFromInstructions(instructions: any[]): XTweet[] {
 		for (const entry of entries) {
 			// Skip promoted entries by entryId prefix (promoted-tweet-…, promotedTweet-…).
 			const entryId: string = entry?.entryId ?? "";
-			if (/promoted/i.test(entryId)) continue;
+			if (/^promoted/i.test(entryId)) continue;
 
 			// A single tweet item.
 			const itemResult =
@@ -638,7 +638,10 @@ async function syncSearchViaExtension(
 	checkpoint: XCheckpoint,
 ): Promise<SyncResult> {
 	const searchQuery = buildSearchQuery(config);
-	const maxScrolls = (config.max_scrolls as number) ?? 10;
+	const maxScrolls = Math.max(
+		1,
+		Math.min(50, Number(config.max_scrolls ?? 10) || 10),
+	);
 	const searchFilter = (config.search_filter as string) ?? "live";
 	const searchUrl = `https://x.com/search?q=${encodeURIComponent(searchQuery)}&src=typed_query&f=${searchFilter}`;
 
